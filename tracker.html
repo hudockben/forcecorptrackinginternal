@@ -82,6 +82,25 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
+    /* ── Project Info ── */
+    .info-wrap { max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; }
+    .info-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+    .info-section-title { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--green); margin-bottom: 1rem; }
+    .info-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.85rem 1.25rem; }
+    .info-grid.wide { grid-template-columns: 1fr; }
+    .info-field label { display: block; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: #888; margin-bottom: 0.3rem; }
+    .info-field input, .info-field select, .info-field textarea {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-family: inherit; font-size: 0.85rem; padding: 0.45rem 0.6rem;
+      box-sizing: border-box; transition: border-color 0.15s;
+    }
+    .info-field input:focus, .info-field select:focus, .info-field textarea:focus {
+      outline: none; border-color: var(--green);
+    }
+    .info-field textarea { resize: vertical; min-height: 90px; }
+    .info-saved-badge { font-size: 0.7rem; color: var(--green); margin-left: 0.6rem; opacity: 0; transition: opacity 0.3s; }
+    .info-saved-badge.show { opacity: 1; }
+
     /* ── Buttons ── */
     .btn {
       padding: 0.4rem 1rem;
@@ -488,6 +507,7 @@
 <!-- ══════════════ TABS ══════════════ -->
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="home">Home</button>
+  <button class="tab-btn"        data-tab="info">Project Info</button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="daily">Daily Tracking</button>
   <button class="tab-btn"        data-tab="project">Project Dashboard</button>
@@ -500,7 +520,147 @@
   </div>
 </div>
 
-<!-- ══════════════ PROJECT DASHBOARD TAB ══════════════ -->
+<!-- ══════════════ PROJECT INFO TAB ══════════════ -->
+<div class="tab-panel" id="tab-info">
+  <div class="info-wrap">
+
+    <div class="info-section">
+      <div class="info-section-title">Project Details</div>
+      <div class="info-grid">
+        <div class="info-field">
+          <label>Project Name</label>
+          <input type="text" id="info-project-name" placeholder="e.g. Route 9 Widening" />
+        </div>
+        <div class="info-field">
+          <label>Job Number</label>
+          <input type="text" id="info-job-number" placeholder="e.g. 2025-014" />
+        </div>
+        <div class="info-field">
+          <label>Project Status</label>
+          <select id="info-status">
+            <option value="">— select —</option>
+            <option>Bidding</option>
+            <option>Awarded</option>
+            <option>In Progress</option>
+            <option>Substantially Complete</option>
+            <option>Complete</option>
+            <option>On Hold</option>
+          </select>
+        </div>
+        <div class="info-field">
+          <label>Contract Type</label>
+          <select id="info-contract-type">
+            <option value="">— select —</option>
+            <option>Lump Sum</option>
+            <option>Unit Price</option>
+            <option>Cost Plus</option>
+            <option>Time &amp; Material</option>
+            <option>GMP</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Parties</div>
+      <div class="info-grid">
+        <div class="info-field">
+          <label>Client / Owner</label>
+          <input type="text" id="info-client" placeholder="Client name" />
+        </div>
+        <div class="info-field">
+          <label>General Contractor</label>
+          <input type="text" id="info-gc" placeholder="GC name (if sub)" />
+        </div>
+        <div class="info-field">
+          <label>Project Manager</label>
+          <input type="text" id="info-pm" placeholder="PM name" />
+        </div>
+        <div class="info-field">
+          <label>Superintendent</label>
+          <input type="text" id="info-super" placeholder="Super name" />
+        </div>
+        <div class="info-field">
+          <label>Estimator</label>
+          <input type="text" id="info-estimator" placeholder="Estimator name" />
+        </div>
+        <div class="info-field">
+          <label>Client Contact</label>
+          <input type="text" id="info-client-contact" placeholder="Name / phone / email" />
+        </div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Location &amp; Schedule</div>
+      <div class="info-grid">
+        <div class="info-field">
+          <label>Project Address</label>
+          <input type="text" id="info-address" placeholder="Street address" />
+        </div>
+        <div class="info-field">
+          <label>City / State</label>
+          <input type="text" id="info-city-state" placeholder="City, ST" />
+        </div>
+        <div class="info-field">
+          <label>Start Date</label>
+          <input type="date" id="info-start-date" />
+        </div>
+        <div class="info-field">
+          <label>Projected Completion</label>
+          <input type="date" id="info-end-date" />
+        </div>
+        <div class="info-field">
+          <label>Contract Days</label>
+          <input type="number" id="info-contract-days" placeholder="0" min="0" />
+        </div>
+        <div class="info-field">
+          <label>Working Days Logged</label>
+          <input type="text" id="info-days-logged" disabled style="color:#888; cursor:default" placeholder="Auto-computed" />
+        </div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Contract &amp; Financials</div>
+      <div class="info-grid">
+        <div class="info-field">
+          <label>Original Contract Amount</label>
+          <input type="number" id="info-contract-amount" placeholder="0.00" step="any" min="0" />
+        </div>
+        <div class="info-field">
+          <label>Revised Contract Amount</label>
+          <input type="number" id="info-revised-amount" placeholder="0.00" step="any" min="0" />
+        </div>
+        <div class="info-field">
+          <label>Retention %</label>
+          <input type="number" id="info-retention" placeholder="10" step="any" min="0" max="100" />
+        </div>
+        <div class="info-field">
+          <label>Total Bid Cost</label>
+          <input type="text" id="info-total-bid" disabled style="color:#888; cursor:default" placeholder="Auto-computed from Cost Tracking" />
+        </div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Scope &amp; Notes</div>
+      <div class="info-grid wide">
+        <div class="info-field">
+          <label>Project Scope / Description</label>
+          <textarea id="info-scope" placeholder="Brief description of the work…"></textarea>
+        </div>
+        <div class="info-field">
+          <label>Special Conditions / Notes</label>
+          <textarea id="info-notes" placeholder="Liquidated damages, DBWH, prevailing wage, bonding requirements…"></textarea>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════════ PROJECT DASHBOARD TAB
 <div class="tab-panel" id="tab-project">
   <div class="home-wrap" id="project-content">
     <!-- rendered by JS -->
@@ -714,12 +874,13 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     renderHeaderActions();
     if (activeTab === 'home')    renderHomeTab();
     if (activeTab === 'project') renderProjectDashboard();
+    if (activeTab === 'info')    renderProjectInfoComputed();
   });
 });
 
 function renderHeaderActions() {
   const el = document.getElementById('header-actions');
-  if (activeTab === 'home' || activeTab === 'project') {
+  if (activeTab === 'home' || activeTab === 'project' || activeTab === 'info') {
     el.innerHTML = `<a href="index.html" class="btn btn-ghost">&#8592; Landing Page</a>`;
   } else if (activeTab === 'cost') {
     el.innerHTML = `
@@ -1079,6 +1240,61 @@ function renderProjectDashboard() {
 }
 
 renderHeaderActions();
+
+/* ═══════════════════════════════════════════
+   PROJECT INFO
+═══════════════════════════════════════════ */
+const INFO_KEY = 'fct_project_info';
+
+const infoFields = [
+  'project-name','job-number','status','contract-type',
+  'client','gc','pm','super','estimator','client-contact',
+  'address','city-state','start-date','end-date','contract-days',
+  'contract-amount','revised-amount','retention',
+  'scope','notes',
+];
+
+function loadProjectInfo() {
+  let data = {};
+  try { data = JSON.parse(localStorage.getItem(INFO_KEY)) || {}; } catch {}
+  infoFields.forEach(f => {
+    const el = document.getElementById('info-' + f);
+    if (el && !el.disabled) el.value = data[f] || '';
+  });
+}
+
+function saveProjectInfo() {
+  const data = {};
+  infoFields.forEach(f => {
+    const el = document.getElementById('info-' + f);
+    if (el && !el.disabled) data[f] = el.value;
+  });
+  localStorage.setItem(INFO_KEY, JSON.stringify(data));
+}
+
+function renderProjectInfoComputed() {
+  // Working days logged — count of unique dates from daily tracking
+  const daysEl = document.getElementById('info-days-logged');
+  if (daysEl) {
+    const uniqueDates = new Set(dailyRows.map(r => r.date).filter(Boolean));
+    daysEl.value = uniqueDates.size ? uniqueDates.size + ' days' : '';
+  }
+  // Total bid cost — sum from cost tracking
+  const bidEl = document.getElementById('info-total-bid');
+  if (bidEl) {
+    const total = costRows.reduce((s, r) =>
+      s + (parseFloat(r.quantity)||0) * (parseFloat(r.bid_item_cost)||0), 0);
+    bidEl.value = total ? '$' + fmt(total) : '';
+  }
+}
+
+// Auto-save on any change inside the info tab
+document.getElementById('tab-info').addEventListener('input', () => {
+  saveProjectInfo();
+});
+document.getElementById('tab-info').addEventListener('change', () => {
+  saveProjectInfo();
+});
 
 /* ═══════════════════════════════════════════
    LISTS (dropdown options)
@@ -1621,10 +1837,12 @@ function downloadCSV(content, filename) {
 loadLists();
 loadCostRows();
 loadDailyRows();
+loadProjectInfo();
 renderCostTable();
 renderDailyTable();
 renderHomeTab();
 renderProjectDashboard();
+renderProjectInfoComputed();
 renderHeaderActions();
 </script>
 </body>
