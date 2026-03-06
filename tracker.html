@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ForceCorpTracking — Tracker</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #111118;
+      --surface2:  #1a1a26;
+      --border:    #2a2a3a;
+      --green:     #22c55e;
+      --green-dim: #16a34a;
+      --red:       #ef4444;
+      --yellow:    #eab308;
+      --text:      #e0e0e0;
+      --muted:     #666;
+      --calc:      #1e2a1e;  /* background for calculated cells */
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    header .brand {
+      font-size: 0.75rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--green);
+      font-weight: 600;
+    }
+    header .actions {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+    .btn {
+      padding: 0.4rem 1rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-green  { background: var(--green-dim); color: #fff; }
+    .btn-ghost  { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-danger { background: #7f1d1d; color: #fca5a5; }
+
+    /* ── Table wrapper ── */
+    .table-wrap {
+      overflow-x: auto;
+      padding: 1rem;
+    }
+
+    table {
+      border-collapse: collapse;
+      min-width: 100%;
+      white-space: nowrap;
+    }
+
+    /* Column group headers */
+    thead tr.group-row th {
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 0.65rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 0.35rem 0.5rem;
+      border: 1px solid var(--border);
+      text-align: center;
+    }
+    thead tr.group-row th.g-base   { background: #12121c; }
+    thead tr.group-row th.g-cost   { background: #0f1a12; color: #4ade80; }
+    thead tr.group-row th.g-labor  { background: #1a180f; color: #fbbf24; }
+    thead tr.group-row th.g-equip  { background: #1a100f; color: #f87171; }
+
+    thead tr.col-row th {
+      background: var(--surface2);
+      color: #aaa;
+      font-weight: 600;
+      font-size: 0.7rem;
+      letter-spacing: 0.05em;
+      padding: 0.45rem 0.6rem;
+      border: 1px solid var(--border);
+      text-align: center;
+      position: sticky;
+      top: 46px;
+    }
+    thead tr.col-row th.calc-hdr {
+      background: #0f1f0f;
+      color: #4ade80;
+    }
+
+    /* Body rows */
+    tbody tr { transition: background 0.1s; }
+    tbody tr:hover td { background: #16161f; }
+    tbody tr:hover td.calc { background: #131f13; }
+
+    td {
+      border: 1px solid var(--border);
+      padding: 0;
+      vertical-align: middle;
+    }
+    td.calc {
+      background: var(--calc);
+      color: #86efac;
+      text-align: right;
+      padding: 0 0.5rem;
+      font-variant-numeric: tabular-nums;
+    }
+    td.calc.warn  { color: var(--yellow); }
+    td.calc.over  { color: var(--red); }
+
+    /* Editable inputs inside cells */
+    td input[type="text"],
+    td input[type="number"] {
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text);
+      padding: 0.35rem 0.5rem;
+      font-size: 13px;
+      font-family: inherit;
+      text-align: right;
+    }
+    td input[type="text"] { text-align: left; }
+    td input:focus { background: #1e1e2e; }
+
+    td select {
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text);
+      padding: 0.35rem 0.5rem;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      appearance: none;
+    }
+    td select:focus { background: #1e1e2e; }
+
+    /* Status badge colors inside select */
+    .status-active   { color: var(--green); }
+    .status-complete { color: #60a5fa; }
+    .status-hold     { color: var(--yellow); }
+    .status-risk     { color: var(--red); }
+
+    /* Row delete button */
+    td.del-cell {
+      text-align: center;
+      padding: 0 0.3rem;
+      width: 32px;
+    }
+    .del-btn {
+      background: none;
+      border: none;
+      color: #555;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 2px 4px;
+      border-radius: 2px;
+      transition: color 0.15s;
+    }
+    .del-btn:hover { color: var(--red); }
+
+    /* Empty state */
+    .empty-row td {
+      text-align: center;
+      color: var(--muted);
+      padding: 2rem;
+      font-size: 0.85rem;
+    }
+
+    /* Legend */
+    .legend {
+      display: flex;
+      gap: 1.25rem;
+      padding: 0.5rem 1.25rem;
+      font-size: 0.7rem;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .legend span { display: flex; align-items: center; gap: 0.3rem; }
+    .legend .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      display: inline-block;
+    }
+    .dot-calc  { background: #22c55e; }
+    .dot-warn  { background: var(--yellow); }
+    .dot-over  { background: var(--red); }
+  </style>
+</head>
+<body>
+
+<header>
+  <span class="brand">ForceCorpTracking</span>
+  <div class="actions">
+    <button class="btn btn-ghost" onclick="exportCSV()">Export CSV</button>
+    <button class="btn btn-green" onclick="addRow()">+ Add Row</button>
+    <a href="index.html" class="btn btn-ghost" style="text-decoration:none">&#8592; Home</a>
+  </div>
+</header>
+
+<div class="table-wrap">
+  <table id="tracker">
+    <thead>
+      <!-- Group row -->
+      <tr class="group-row">
+        <th class="g-base" colspan="1"></th><!-- del -->
+        <th class="g-base" colspan="2">Identification</th>
+        <th class="g-cost" colspan="11">Cost Tracking</th>
+        <th class="g-labor" colspan="4">Labor</th>
+        <th class="g-equip" colspan="3">Equipment</th>
+      </tr>
+      <!-- Column row -->
+      <tr class="col-row">
+        <th></th>
+        <th>Cost Code</th>
+        <th>Sub Code</th>
+        <!-- Cost -->
+        <th>Quantity</th>
+        <th>Running Qty</th>
+        <th class="calc-hdr">% Complete</th>
+        <th>Bid Item Cost</th>
+        <th>Running Item Cost</th>
+        <th>Past Avg</th>
+        <th class="calc-hdr">Total Cost (Bid)</th>
+        <th class="calc-hdr">Running Total Cost</th>
+        <th class="calc-hdr">Total Cost %</th>
+        <th>Status</th>
+        <th class="calc-hdr">Projected Cost</th>
+        <!-- Labor -->
+        <th>Cum. Labor Hrs</th>
+        <th>Days Worked</th>
+        <th># Laborers</th>
+        <th class="calc-hdr">MU / Labor Hr</th>
+        <!-- Equipment -->
+        <th>Equip Total Cost</th>
+        <th>Equip Hours</th>
+        <th class="calc-hdr">Equip Cost / Hr</th>
+        <th class="calc-hdr">MU / Equip Hr</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<div class="legend">
+  <span><span class="dot dot-calc"></span> Calculated field</span>
+  <span><span class="dot dot-warn"></span> Running cost &gt;80% of bid</span>
+  <span><span class="dot dot-over"></span> Running cost &gt;100% of bid (over budget)</span>
+</div>
+
+<script>
+  const STORAGE_KEY = 'fct_rows';
+
+  const defaultRow = () => ({
+    id: Date.now() + Math.random(),
+    cost_code: '',
+    sub_code: '',
+    quantity: '',
+    running_qty: '',
+    bid_item_cost: '',
+    running_item_cost: '',
+    past_avg: '',
+    status: 'Active',
+    cum_labor_hrs: '',
+    days_worked: '',
+    num_laborers: '',
+    equip_total_cost: '',
+    equip_hours: '',
+  });
+
+  function calc(row) {
+    const qty      = parseFloat(row.quantity)          || 0;
+    const rqty     = parseFloat(row.running_qty)       || 0;
+    const bic      = parseFloat(row.bid_item_cost)     || 0;
+    const ric      = parseFloat(row.running_item_cost) || 0;
+    const clh      = parseFloat(row.cum_labor_hrs)     || 0;
+    const etc      = parseFloat(row.equip_total_cost)  || 0;
+    const eh       = parseFloat(row.equip_hours)       || 0;
+
+    const pct_complete    = qty  ? (rqty / qty) * 100         : 0;
+    const total_cost_bid  = qty  * bic;
+    const running_total   = rqty * ric;
+    const total_cost_pct  = total_cost_bid ? (running_total / total_cost_bid) * 100 : 0;
+    const projected_cost  = running_total + (qty - rqty) * ric;
+    const mu_labor_hr     = clh  ? running_total / clh         : 0;
+    const equip_cost_hr   = eh   ? etc / eh                    : 0;
+    const mu_equip_hr     = eh   ? qty / eh                    : 0;
+
+    return { pct_complete, total_cost_bid, running_total, total_cost_pct,
+             projected_cost, mu_labor_hr, equip_cost_hr, mu_equip_hr };
+  }
+
+  function fmt(n, decimals = 2) {
+    if (!n && n !== 0) return '—';
+    return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  }
+
+  function fmtPct(n) { return fmt(n, 1) + '%'; }
+
+  function costClass(pct) {
+    if (pct >= 100) return 'over';
+    if (pct >= 80)  return 'warn';
+    return '';
+  }
+
+  function statusClass(s) {
+    return { Active: 'status-active', Complete: 'status-complete',
+             'On Hold': 'status-hold', 'At Risk': 'status-risk' }[s] || '';
+  }
+
+  let rows = [];
+
+  function load() {
+    try { rows = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+    catch { rows = []; }
+  }
+
+  function save() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
+  }
+
+  function render() {
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="22">No rows yet. Click "+ Add Row" to get started.</td></tr>';
+      return;
+    }
+
+    rows.forEach((row, i) => {
+      const c = calc(row);
+      const tc = costClass(c.total_cost_pct);
+      const tr = document.createElement('tr');
+
+      tr.innerHTML = `
+        <td class="del-cell"><button class="del-btn" data-i="${i}" title="Delete row">&#10005;</button></td>
+        <td><input type="text"   data-i="${i}" data-f="cost_code"         value="${esc(row.cost_code)}"         placeholder="e.g. 03-200"></td>
+        <td><input type="text"   data-i="${i}" data-f="sub_code"          value="${esc(row.sub_code)}"          placeholder="e.g. A"></td>
+        <td><input type="number" data-i="${i}" data-f="quantity"          value="${row.quantity}"          step="any" placeholder="0"></td>
+        <td><input type="number" data-i="${i}" data-f="running_qty"       value="${row.running_qty}"       step="any" placeholder="0"></td>
+        <td class="calc">${fmtPct(c.pct_complete)}</td>
+        <td><input type="number" data-i="${i}" data-f="bid_item_cost"     value="${row.bid_item_cost}"     step="any" placeholder="0.00"></td>
+        <td><input type="number" data-i="${i}" data-f="running_item_cost" value="${row.running_item_cost}" step="any" placeholder="0.00"></td>
+        <td><input type="number" data-i="${i}" data-f="past_avg"          value="${row.past_avg}"          step="any" placeholder="0.00"></td>
+        <td class="calc">$${fmt(c.total_cost_bid)}</td>
+        <td class="calc ${tc}">$${fmt(c.running_total)}</td>
+        <td class="calc ${tc}">${fmtPct(c.total_cost_pct)}</td>
+        <td>
+          <select data-i="${i}" data-f="status" class="${statusClass(row.status)}">
+            <option ${row.status==='Active'   ?'selected':''}>Active</option>
+            <option ${row.status==='Complete' ?'selected':''}>Complete</option>
+            <option ${row.status==='On Hold'  ?'selected':''}>On Hold</option>
+            <option ${row.status==='At Risk'  ?'selected':''}>At Risk</option>
+          </select>
+        </td>
+        <td class="calc ${tc}">$${fmt(c.projected_cost)}</td>
+        <td><input type="number" data-i="${i}" data-f="cum_labor_hrs"   value="${row.cum_labor_hrs}"   step="any" placeholder="0"></td>
+        <td><input type="number" data-i="${i}" data-f="days_worked"     value="${row.days_worked}"     step="any" placeholder="0"></td>
+        <td><input type="number" data-i="${i}" data-f="num_laborers"    value="${row.num_laborers}"    step="any" placeholder="0"></td>
+        <td class="calc">${fmt(c.mu_labor_hr, 4)}</td>
+        <td><input type="number" data-i="${i}" data-f="equip_total_cost" value="${row.equip_total_cost}" step="any" placeholder="0.00"></td>
+        <td><input type="number" data-i="${i}" data-f="equip_hours"      value="${row.equip_hours}"      step="any" placeholder="0"></td>
+        <td class="calc">${fmt(c.equip_cost_hr, 4)}</td>
+        <td class="calc">${fmt(c.mu_equip_hr, 4)}</td>
+      `;
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function esc(s) {
+    return String(s || '').replace(/"/g, '&quot;');
+  }
+
+  function addRow() {
+    rows.push(defaultRow());
+    save();
+    render();
+    // scroll to bottom
+    document.getElementById('tbody').lastElementChild
+      ?.querySelector('input')?.focus();
+  }
+
+  // Delegate input/change events
+  document.getElementById('tracker').addEventListener('input', e => {
+    const el = e.target;
+    const i  = el.dataset.i;
+    const f  = el.dataset.f;
+    if (i === undefined || !f) return;
+    rows[i][f] = el.value;
+    save();
+    // Re-render only calc cells in this row for performance
+    renderCalcCells(parseInt(i));
+    // Update select class
+    if (f === 'status') el.className = statusClass(el.value);
+  });
+
+  document.getElementById('tracker').addEventListener('click', e => {
+    const btn = e.target.closest('.del-btn');
+    if (!btn) return;
+    const i = parseInt(btn.dataset.i);
+    rows.splice(i, 1);
+    save();
+    render();
+  });
+
+  function renderCalcCells(i) {
+    const c  = calc(rows[i]);
+    const tc = costClass(c.total_cost_pct);
+    const tr = document.getElementById('tbody').children[i];
+    if (!tr) return;
+    const calcs = tr.querySelectorAll('td.calc');
+    // Order must match render():
+    // 0: pct_complete, 1: total_cost_bid, 2: running_total, 3: total_cost_pct,
+    // 4: projected_cost, 5: mu_labor_hr, 6: equip_cost_hr, 7: mu_equip_hr
+    calcs[0].textContent = fmtPct(c.pct_complete);
+    calcs[1].textContent = '$' + fmt(c.total_cost_bid);
+
+    calcs[2].textContent = '$' + fmt(c.running_total);
+    calcs[2].className   = 'calc ' + tc;
+
+    calcs[3].textContent = fmtPct(c.total_cost_pct);
+    calcs[3].className   = 'calc ' + tc;
+
+    calcs[4].textContent = '$' + fmt(c.projected_cost);
+    calcs[4].className   = 'calc ' + tc;
+
+    calcs[5].textContent = fmt(c.mu_labor_hr, 4);
+    calcs[6].textContent = fmt(c.equip_cost_hr, 4);
+    calcs[7].textContent = fmt(c.mu_equip_hr, 4);
+  }
+
+  function exportCSV() {
+    const headers = [
+      'Cost Code','Sub Code','Quantity','Running Qty','% Complete',
+      'Bid Item Cost','Running Item Cost','Past Avg',
+      'Total Cost (Bid)','Running Total Cost','Total Cost %',
+      'Status','Projected Cost',
+      'Cum Labor Hrs','Days Worked','# Laborers','MU/Labor Hr',
+      'Equip Total Cost','Equip Hours','Equip Cost/Hr','MU/Equip Hr'
+    ];
+    const csvRows = [headers.join(',')];
+    rows.forEach(row => {
+      const c = calc(row);
+      csvRows.push([
+        row.cost_code, row.sub_code,
+        row.quantity, row.running_qty, c.pct_complete.toFixed(2),
+        row.bid_item_cost, row.running_item_cost, row.past_avg,
+        c.total_cost_bid.toFixed(2), c.running_total.toFixed(2), c.total_cost_pct.toFixed(2),
+        row.status, c.projected_cost.toFixed(2),
+        row.cum_labor_hrs, row.days_worked, row.num_laborers, c.mu_labor_hr.toFixed(4),
+        row.equip_total_cost, row.equip_hours, c.equip_cost_hr.toFixed(4), c.mu_equip_hr.toFixed(4)
+      ].map(v => `"${v}"`).join(','));
+    });
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'forcecorp_tracking.csv';
+    a.click();
+  }
+
+  // Init
+  load();
+  render();
+</script>
+</body>
+</html>
