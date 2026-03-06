@@ -419,6 +419,60 @@
       border-radius: 4px;
       margin-bottom: 2rem;
     }
+
+    /* ── Project Dashboard ── */
+    .project-table {
+      width: 100%;
+      border-collapse: collapse;
+      white-space: nowrap;
+      font-size: 12px;
+      margin-bottom: 2rem;
+    }
+    .project-table thead tr.group-row th {
+      font-size: 0.6rem; letter-spacing: 0.12em;
+      text-transform: uppercase; padding: 0.3rem 0.5rem;
+      border: 1px solid var(--border); text-align: center;
+    }
+    .project-table thead tr.col-row th {
+      background: var(--surface2); color: #aaa;
+      font-weight: 600; font-size: 0.65rem; letter-spacing: 0.05em;
+      padding: 0.4rem 0.6rem; border: 1px solid var(--border);
+      text-align: center;
+    }
+    .project-table thead tr.col-row th.calc-hdr { background: #0f1f0f; color: #4ade80; }
+    .project-table td {
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.6rem;
+      vertical-align: middle;
+    }
+    .project-table td.calc {
+      background: var(--calc); color: #86efac;
+      text-align: right; font-variant-numeric: tabular-nums;
+    }
+    .project-table td.calc.warn { color: var(--yellow); }
+    .project-table td.calc.over { color: var(--red); }
+    .project-table tbody tr:hover td { background: #16161f; }
+    .project-table tbody tr:hover td.calc { background: #131f13; }
+    .project-table tfoot td {
+      background: var(--surface2); font-weight: 700;
+    }
+    .project-table .num { text-align: right; }
+    .project-table .ctr { text-align: center; }
+
+    .proj-cost-bar-wrap { margin-bottom: 0.3rem; }
+    .proj-cost-bar {
+      display: flex; height: 5px; border-radius: 3px;
+      overflow: hidden; background: var(--surface2); min-width: 80px;
+    }
+    .pcb-labor  { background: var(--yellow); }
+    .pcb-equip  { background: var(--red); }
+    .pcb-mat    { background: #a78bfa; }
+
+    .cost-mix-legend {
+      display: flex; gap: 1rem; font-size: 0.65rem;
+      color: var(--muted); flex-wrap: wrap; margin-bottom: 2rem;
+    }
+    .cost-mix-legend span { display: flex; align-items: center; gap: 0.3rem; }
   </style>
 </head>
 <body>
@@ -436,11 +490,19 @@
   <button class="tab-btn active" data-tab="home">Home</button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="daily">Daily Tracking</button>
+  <button class="tab-btn"        data-tab="project">Project Dashboard</button>
 </nav>
 
 <!-- ══════════════ HOME TAB ══════════════ -->
 <div class="tab-panel active" id="tab-home">
   <div class="home-wrap" id="home-content">
+    <!-- rendered by JS -->
+  </div>
+</div>
+
+<!-- ══════════════ PROJECT DASHBOARD TAB ══════════════ -->
+<div class="tab-panel" id="tab-project">
+  <div class="home-wrap" id="project-content">
     <!-- rendered by JS -->
   </div>
 </div>
@@ -647,13 +709,14 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p =>
       p.classList.toggle('active', p.id === 'tab-' + activeTab));
     renderHeaderActions();
-    if (activeTab === 'home') renderHomeTab();
+    if (activeTab === 'home')    renderHomeTab();
+    if (activeTab === 'project') renderProjectDashboard();
   });
 });
 
 function renderHeaderActions() {
   const el = document.getElementById('header-actions');
-  if (activeTab === 'home') {
+  if (activeTab === 'home' || activeTab === 'project') {
     el.innerHTML = `<a href="index.html" class="btn btn-ghost">&#8592; Landing Page</a>`;
   } else if (activeTab === 'cost') {
     el.innerHTML = `
@@ -782,6 +845,235 @@ function renderHomeTab() {
     }
   `;
 }
+
+/* ═══════════════════════════════════════════
+   PROJECT DASHBOARD
+═══════════════════════════════════════════ */
+function renderProjectDashboard() {
+  // ── Aggregate daily rows by cost_code + sub_code ──
+  const projects = {};
+
+  dailyRows.forEach(row => {
+    const key = (row.cost_code || '(No Code)') + '||' + (row.sub_code || '');
+    if (!projects[key]) {
+      projects[key] = {
+        cost_code: row.cost_code || '',
+        sub_code:  row.sub_code  || '',
+        entries:   0,
+        dates:     new Set(),
+        employees: new Set(),
+        job_classes: new Set(),
+        labor_hours:  0,
+        labor_cost:   0,
+        equip_hours:  0,
+        equip_cost:   0,
+        material_cost: 0,
+        total_cost:   0,
+        quantity:     0,
+      };
+    }
+    const p = projects[key];
+    const c = calcDaily(row);
+    p.entries++;
+    if (row.date)      p.dates.add(row.date);
+    if (row.employee)  p.employees.add(row.employee);
+    if (row.job_class) p.job_classes.add(row.job_class);
+    p.labor_hours   += parseFloat(row.labor_hours)  || 0;
+    p.labor_cost    += c.labor_cost;
+    p.equip_hours   += parseFloat(row.equip_hours)  || 0;
+    p.equip_cost    += c.equip_total;
+    p.material_cost += parseFloat(row.material_cost) || 0;
+    p.total_cost    += c.total_cost;
+    p.quantity      += parseFloat(row.quantity)      || 0;
+  });
+
+  // ── Match against cost tracking for bid comparison ──
+  const bidMap = {};
+  costRows.forEach(row => {
+    const c = calcCost(row);
+    const key = (row.cost_code || '') + '||' + (row.sub_code || '');
+    bidMap[key] = {
+      bid_total:     c.total_cost_bid,
+      running_total: c.running_total,
+      projected:     c.projected_cost,
+      pct_complete:  c.pct_complete,
+      status:        row.status,
+    };
+  });
+
+  // ── Grand totals ──
+  let gLaborCost = 0, gEquipCost = 0, gMatCost = 0, gTotal = 0;
+  let gLaborHrs  = 0, gEquipHrs  = 0, gQty = 0;
+  const keys = Object.keys(projects);
+  keys.forEach(k => {
+    const p = projects[k];
+    gLaborCost += p.labor_cost;
+    gEquipCost += p.equip_cost;
+    gMatCost   += p.material_cost;
+    gTotal     += p.total_cost;
+    gLaborHrs  += p.labor_hours;
+    gEquipHrs  += p.equip_hours;
+    gQty       += p.quantity;
+  });
+
+  const grandLaborPct = gTotal ? (gLaborCost / gTotal) * 100 : 0;
+  const grandEquipPct = gTotal ? (gEquipCost / gTotal) * 100 : 0;
+  const grandMatPct   = gTotal ? (gMatCost   / gTotal) * 100 : 0;
+
+  // ── Unique employee / day counts across all projects ──
+  const allEmployees = new Set(dailyRows.map(r => r.employee).filter(Boolean));
+  const allDates     = new Set(dailyRows.map(r => r.date).filter(Boolean));
+
+  document.getElementById('project-content').innerHTML = `
+    <p class="home-title">Project Dashboard</p>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Projects</div>
+        <div class="stat-value">${keys.length}</div>
+        <div class="stat-sub">cost code groups</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Days Logged</div>
+        <div class="stat-value">${allDates.size}</div>
+        <div class="stat-sub">unique dates</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Employees</div>
+        <div class="stat-value">${allEmployees.size}</div>
+        <div class="stat-sub">across all projects</div>
+      </div>
+      <div class="stat-card yellow">
+        <div class="stat-label">Total Labor Cost</div>
+        <div class="stat-value">$${fmt(gLaborCost, 0)}</div>
+        <div class="stat-sub">${fmt(gLaborHrs, 1)} hrs &nbsp;·&nbsp; ${fmtPct(grandLaborPct)} of total</div>
+      </div>
+      <div class="stat-card red">
+        <div class="stat-label">Total Equipment Cost</div>
+        <div class="stat-value">$${fmt(gEquipCost, 0)}</div>
+        <div class="stat-sub">${fmt(gEquipHrs, 1)} hrs &nbsp;·&nbsp; ${fmtPct(grandEquipPct)} of total</div>
+      </div>
+      <div class="stat-card blue">
+        <div class="stat-label">Total Material Cost</div>
+        <div class="stat-value">$${fmt(gMatCost, 0)}</div>
+        <div class="stat-sub">${fmtPct(grandMatPct)} of total</div>
+      </div>
+      <div class="stat-card green">
+        <div class="stat-label">Grand Total Cost</div>
+        <div class="stat-value">$${fmt(gTotal, 0)}</div>
+        <div class="stat-sub">labor + equip + material</div>
+      </div>
+    </div>
+
+    <p class="home-section-title">Cost Mix — All Projects</p>
+    <div class="proj-cost-bar-wrap" style="margin-bottom:0.5rem">
+      <div class="proj-cost-bar" style="height:10px; border-radius:4px">
+        <div class="pcb-labor" style="width:${grandLaborPct.toFixed(1)}%" title="Labor ${fmtPct(grandLaborPct)}"></div>
+        <div class="pcb-equip" style="width:${grandEquipPct.toFixed(1)}%" title="Equipment ${fmtPct(grandEquipPct)}"></div>
+        <div class="pcb-mat"   style="width:${grandMatPct.toFixed(1)}%"   title="Material ${fmtPct(grandMatPct)}"></div>
+      </div>
+    </div>
+    <div class="cost-mix-legend">
+      <span><span class="dot" style="background:var(--yellow)"></span>Labor — ${fmtPct(grandLaborPct)}</span>
+      <span><span class="dot" style="background:var(--red)"></span>Equipment — ${fmtPct(grandEquipPct)}</span>
+      <span><span class="dot" style="background:#a78bfa"></span>Material — ${fmtPct(grandMatPct)}</span>
+    </div>
+
+    <p class="home-section-title">Breakdown by Cost Code / Sub Code</p>
+    ${keys.length === 0
+      ? `<div class="home-empty">No daily tracking data yet. Add entries in the Daily Tracking tab.</div>`
+      : `<div style="overflow-x:auto">
+          <table class="project-table">
+            <thead>
+              <tr class="group-row">
+                <th class="g-code"  colspan="2">Identification</th>
+                <th class="g-id"    colspan="4">Activity</th>
+                <th class="g-labor" colspan="3">Labor</th>
+                <th class="g-equip" colspan="3">Equipment</th>
+                <th class="g-mat"   colspan="1">Material</th>
+                <th class="g-sum"   colspan="5">Cost vs Bid</th>
+              </tr>
+              <tr class="col-row">
+                <th>Cost Code</th>
+                <th>Sub Code</th>
+                <th class="ctr">Entries</th>
+                <th class="ctr">Days</th>
+                <th class="ctr">Employees</th>
+                <th class="ctr">Job Classes</th>
+                <th class="num">Labor Hrs</th>
+                <th class="calc-hdr">Labor Cost</th>
+                <th class="num">Labor Cost %</th>
+                <th class="num">Equip Hrs</th>
+                <th class="calc-hdr">Equip Cost</th>
+                <th class="num">Equip Cost %</th>
+                <th class="calc-hdr">Material Cost</th>
+                <th class="calc-hdr">Daily Total</th>
+                <th class="num">Bid Total</th>
+                <th class="calc-hdr">Variance</th>
+                <th class="calc-hdr">% of Bid</th>
+                <th class="num">Quantity</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${keys.map(key => {
+                const p   = projects[key];
+                const bid = bidMap[key];
+                const bidTotal  = bid ? bid.bid_total : null;
+                const variance  = bidTotal != null ? p.total_cost - bidTotal : null;
+                const bidPct    = bidTotal ? (p.total_cost / bidTotal) * 100 : null;
+                const varClass  = variance  > 0 ? 'over' : '';
+                const pctClass  = bidPct   != null ? costClass(bidPct) : '';
+                const laborPct  = p.total_cost ? (p.labor_cost  / p.total_cost * 100) : 0;
+                const equipPct  = p.total_cost ? (p.equip_cost  / p.total_cost * 100) : 0;
+                const mixBar    = `
+                  <div class="proj-cost-bar" style="margin-top:4px">
+                    <div class="pcb-labor" style="width:${laborPct.toFixed(1)}%"></div>
+                    <div class="pcb-equip" style="width:${equipPct.toFixed(1)}%"></div>
+                    <div class="pcb-mat"   style="width:${(100-laborPct-equipPct).toFixed(1)}%"></div>
+                  </div>`;
+                return `<tr>
+                  <td style="font-weight:600">${esc(p.cost_code) || '<span style="color:#555">—</span>'}</td>
+                  <td>${esc(p.sub_code) || '<span style="color:#555">—</span>'}</td>
+                  <td class="ctr">${p.entries}</td>
+                  <td class="ctr">${p.dates.size}</td>
+                  <td class="ctr">${p.employees.size}</td>
+                  <td class="ctr">${p.job_classes.size}</td>
+                  <td class="num">${fmt(p.labor_hours, 1)}</td>
+                  <td class="calc">$${fmt(p.labor_cost)}${mixBar}</td>
+                  <td class="num" style="color:var(--yellow)">${fmtPct(laborPct)}</td>
+                  <td class="num">${fmt(p.equip_hours, 1)}</td>
+                  <td class="calc">$${fmt(p.equip_cost)}</td>
+                  <td class="num" style="color:var(--red)">${fmtPct(equipPct)}</td>
+                  <td class="calc">$${fmt(p.material_cost)}</td>
+                  <td class="calc">$${fmt(p.total_cost)}</td>
+                  <td class="num">${bidTotal != null ? '$'+fmt(bidTotal) : '<span style="color:#555">—</span>'}</td>
+                  <td class="calc ${varClass}">${variance != null ? (variance >= 0 ? '+' : '') + '$' + fmt(Math.abs(variance)) + (variance > 0 ? ' over' : ' under') : '<span style="color:#555">—</span>'}</td>
+                  <td class="calc ${pctClass}">${bidPct != null ? fmtPct(bidPct) : '<span style="color:#555">—</span>'}</td>
+                  <td class="num">${fmt(p.quantity, 2)}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="6" style="padding:0.4rem 0.6rem; color:#888; font-size:0.65rem; letter-spacing:0.1em; text-transform:uppercase; border:1px solid var(--border)">Totals</td>
+                <td class="num" style="border:1px solid var(--border); font-weight:700">${fmt(gLaborHrs, 1)}</td>
+                <td class="calc" style="font-weight:700">$${fmt(gLaborCost)}</td>
+                <td style="border:1px solid var(--border)"></td>
+                <td class="num" style="border:1px solid var(--border); font-weight:700">${fmt(gEquipHrs, 1)}</td>
+                <td class="calc" style="font-weight:700">$${fmt(gEquipCost)}</td>
+                <td style="border:1px solid var(--border)"></td>
+                <td class="calc" style="font-weight:700">$${fmt(gMatCost)}</td>
+                <td class="calc" style="font-weight:700">$${fmt(gTotal)}</td>
+                <td colspan="4" style="border:1px solid var(--border)"></td>
+                <td class="num" style="border:1px solid var(--border); font-weight:700">${fmt(gQty, 2)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>`
+    }
+  `;
+}
+
 renderHeaderActions();
 
 /* ═══════════════════════════════════════════
@@ -1279,6 +1571,7 @@ loadDailyRows();
 renderCostTable();
 renderDailyTable();
 renderHomeTab();
+renderProjectDashboard();
 renderHeaderActions();
 </script>
 </body>
