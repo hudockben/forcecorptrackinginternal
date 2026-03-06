@@ -304,6 +304,121 @@
     }
     .add-item-row input:focus { border-color: var(--green-dim); }
     .add-item-row input.cost-new { flex: 0 0 110px; text-align: right; }
+
+    /* ── Home Tab ── */
+    .home-wrap {
+      padding: 1.5rem 1.25rem;
+      max-width: 1100px;
+    }
+    .home-title {
+      font-size: 0.7rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 2rem;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1rem 1.1rem;
+    }
+    .stat-card .stat-label {
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.4rem;
+    }
+    .stat-card .stat-value {
+      font-size: 1.45rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      line-height: 1.1;
+    }
+    .stat-card .stat-sub {
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-top: 0.2rem;
+    }
+    .stat-card.green  { border-color: #16a34a44; }
+    .stat-card.green .stat-value { color: var(--green); }
+    .stat-card.yellow { border-color: #eab30844; }
+    .stat-card.yellow .stat-value { color: var(--yellow); }
+    .stat-card.red    { border-color: #ef444444; }
+    .stat-card.red .stat-value { color: var(--red); }
+    .stat-card.blue   { border-color: #60a5fa44; }
+    .stat-card.blue .stat-value { color: var(--blue); }
+
+    .home-section-title {
+      font-size: 0.7rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+      padding-bottom: 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .status-bar-wrap { margin-bottom: 2rem; }
+    .status-bar {
+      display: flex;
+      height: 8px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--surface2);
+      margin-bottom: 0.5rem;
+    }
+    .status-bar-seg { height: 100%; transition: width 0.4s ease; }
+    .sb-active   { background: var(--green); }
+    .sb-complete { background: var(--blue); }
+    .sb-hold     { background: var(--yellow); }
+    .sb-risk     { background: var(--red); }
+    .status-legend {
+      display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: 0.72rem;
+    }
+    .status-legend span { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); }
+    .status-legend .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+    .recent-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      margin-bottom: 2rem;
+    }
+    .recent-table th {
+      background: var(--surface2);
+      color: #888;
+      font-weight: 600;
+      font-size: 0.65rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.4rem 0.7rem;
+      border: 1px solid var(--border);
+      text-align: left;
+    }
+    .recent-table td {
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.7rem;
+      color: var(--text);
+    }
+    .recent-table tr:hover td { background: #16161f; }
+    .home-empty {
+      color: var(--muted);
+      font-size: 0.82rem;
+      padding: 1.5rem;
+      text-align: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-bottom: 2rem;
+    }
   </style>
 </head>
 <body>
@@ -318,12 +433,20 @@
 
 <!-- ══════════════ TABS ══════════════ -->
 <nav class="tab-bar">
-  <button class="tab-btn active" data-tab="cost">Cost Tracking</button>
+  <button class="tab-btn active" data-tab="home">Home</button>
+  <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="daily">Daily Tracking</button>
 </nav>
 
+<!-- ══════════════ HOME TAB ══════════════ -->
+<div class="tab-panel active" id="tab-home">
+  <div class="home-wrap" id="home-content">
+    <!-- rendered by JS -->
+  </div>
+</div>
+
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
-<div class="tab-panel active" id="tab-cost">
+<div class="tab-panel" id="tab-cost">
   <div class="table-wrap">
     <table id="tracker">
       <thead>
@@ -515,7 +638,7 @@ function esc(s) { return String(s || '').replace(/"/g, '&quot;'); }
 /* ═══════════════════════════════════════════
    TABS
 ═══════════════════════════════════════════ */
-let activeTab = 'cost';
+let activeTab = 'home';
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -524,25 +647,140 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p =>
       p.classList.toggle('active', p.id === 'tab-' + activeTab));
     renderHeaderActions();
+    if (activeTab === 'home') renderHomeTab();
   });
 });
 
 function renderHeaderActions() {
   const el = document.getElementById('header-actions');
-  if (activeTab === 'cost') {
+  if (activeTab === 'home') {
+    el.innerHTML = `<a href="index.html" class="btn btn-ghost">&#8592; Landing Page</a>`;
+  } else if (activeTab === 'cost') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
       <button class="btn btn-green" onclick="addCostRow()">+ Add Row</button>
-      <a href="index.html" class="btn btn-ghost">&#8592; Home</a>
+      <a href="index.html" class="btn btn-ghost">&#8592; Landing Page</a>
     `;
   } else {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportDailyCSV()">Export CSV</button>
       <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
       <button class="btn btn-green" onclick="addDailyRow()">+ Add Row</button>
-      <a href="index.html" class="btn btn-ghost">&#8592; Home</a>
+      <a href="index.html" class="btn btn-ghost">&#8592; Landing Page</a>
     `;
   }
+}
+
+function renderHomeTab() {
+  // ── Aggregate cost tracking stats ──
+  let totalBid = 0, totalRunning = 0, totalProjected = 0;
+  let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
+
+  costRows.forEach(row => {
+    const c = calcCost(row);
+    totalBid       += c.total_cost_bid;
+    totalRunning   += c.running_total;
+    totalProjected += c.projected_cost;
+    if (row.status) statusCounts[row.status] = (statusCounts[row.status] || 0) + 1;
+  });
+
+  const overallPct = totalBid ? (totalRunning / totalBid) * 100 : 0;
+  const totalItems = costRows.length;
+  const totalDailyEntries = dailyRows.length;
+
+  // ── Status bar widths ──
+  const total = Object.values(statusCounts).reduce((a, b) => a + b, 0) || 1;
+  const pActive   = (statusCounts.Active   / total * 100).toFixed(1);
+  const pComplete = (statusCounts.Complete / total * 100).toFixed(1);
+  const pHold     = (statusCounts['On Hold'] / total * 100).toFixed(1);
+  const pRisk     = (statusCounts['At Risk'] / total * 100).toFixed(1);
+
+  // ── Recent daily entries (last 5 sorted by date desc) ──
+  const recent = [...dailyRows]
+    .filter(r => r.date)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 5);
+
+  const overClass = overallPct >= 100 ? 'red' : overallPct >= 80 ? 'yellow' : 'green';
+
+  document.getElementById('home-content').innerHTML = `
+    <p class="home-title">Overview</p>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Cost Items</div>
+        <div class="stat-value">${totalItems}</div>
+        <div class="stat-sub">tracked items</div>
+      </div>
+      <div class="stat-card green">
+        <div class="stat-label">Total Bid Cost</div>
+        <div class="stat-value">$${fmt(totalBid, 0)}</div>
+        <div class="stat-sub">across all items</div>
+      </div>
+      <div class="stat-card ${overClass}">
+        <div class="stat-label">Running Total Cost</div>
+        <div class="stat-value">$${fmt(totalRunning, 0)}</div>
+        <div class="stat-sub">${fmtPct(overallPct)} of bid</div>
+      </div>
+      <div class="stat-card ${overClass}">
+        <div class="stat-label">Overall % Complete</div>
+        <div class="stat-value">${fmtPct(overallPct)}</div>
+        <div class="stat-sub">running / bid</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Projected Cost</div>
+        <div class="stat-value">$${fmt(totalProjected, 0)}</div>
+        <div class="stat-sub">at current rates</div>
+      </div>
+      <div class="stat-card blue">
+        <div class="stat-label">Daily Entries</div>
+        <div class="stat-value">${totalDailyEntries}</div>
+        <div class="stat-sub">logged records</div>
+      </div>
+    </div>
+
+    <p class="home-section-title">Status Breakdown — Cost Items</p>
+    <div class="status-bar-wrap">
+      <div class="status-bar">
+        <div class="status-bar-seg sb-active"   style="width:${pActive}%"></div>
+        <div class="status-bar-seg sb-complete" style="width:${pComplete}%"></div>
+        <div class="status-bar-seg sb-hold"     style="width:${pHold}%"></div>
+        <div class="status-bar-seg sb-risk"     style="width:${pRisk}%"></div>
+      </div>
+      <div class="status-legend">
+        <span><span class="dot sb-active"></span>Active — ${statusCounts.Active}</span>
+        <span><span class="dot sb-complete"></span>Complete — ${statusCounts.Complete}</span>
+        <span><span class="dot sb-hold"></span>On Hold — ${statusCounts['On Hold']}</span>
+        <span><span class="dot sb-risk"></span>At Risk — ${statusCounts['At Risk']}</span>
+      </div>
+    </div>
+
+    <p class="home-section-title">Recent Daily Entries</p>
+    ${recent.length === 0
+      ? `<div class="home-empty">No daily entries yet. Switch to the Daily Tracking tab to add records.</div>`
+      : `<table class="recent-table">
+          <thead><tr>
+            <th>Date</th><th>Employee</th><th>Cost Code</th><th>Sub Code</th>
+            <th>Field Type</th><th>Labor Cost</th><th>Equip Total</th><th>Total Cost</th>
+          </tr></thead>
+          <tbody>
+            ${recent.map(row => {
+              const c = calcDaily(row);
+              return `<tr>
+                <td>${row.date || '—'}</td>
+                <td>${esc(row.employee) || '—'}</td>
+                <td>${esc(row.cost_code) || '—'}</td>
+                <td>${esc(row.sub_code) || '—'}</td>
+                <td>${esc(row.field_type) || '—'}</td>
+                <td>$${fmt(c.labor_cost)}</td>
+                <td>$${fmt(c.equip_total)}</td>
+                <td>$${fmt(c.total_cost)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`
+    }
+  `;
 }
 renderHeaderActions();
 
@@ -1040,6 +1278,8 @@ loadCostRows();
 loadDailyRows();
 renderCostTable();
 renderDailyTable();
+renderHomeTab();
+renderHeaderActions();
 </script>
 </body>
 </html>
