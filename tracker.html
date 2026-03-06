@@ -513,9 +513,11 @@
     <table id="tracker">
       <thead>
         <tr class="group-row">
-          <th class="g-base" colspan="1"></th>
-          <th class="g-base" colspan="2">Identification</th>
-          <th class="g-cost" colspan="11">Cost Tracking</th>
+          <th class="g-base"  colspan="1"></th>
+          <th class="g-base"  colspan="3">Identification</th>
+          <th class="g-cost"  colspan="3">Bid Plan</th>
+          <th class="g-sum"   colspan="4">Company Actuals (from Daily)</th>
+          <th class="g-sum"   colspan="2">Progress</th>
           <th class="g-labor" colspan="4">Labor</th>
           <th class="g-equip" colspan="4">Equipment</th>
         </tr>
@@ -523,23 +525,22 @@
           <th></th>
           <th>Cost Code</th>
           <th>Sub Code</th>
-          <th>Quantity</th>
-          <th>Running Qty</th>
-          <th class="calc-hdr">% Complete</th>
-          <th>Bid Item Cost</th>
-          <th>Running Item Cost</th>
-          <th>Past Avg</th>
-          <th class="calc-hdr">Total Cost (Bid)</th>
-          <th class="calc-hdr">Running Total Cost</th>
-          <th class="calc-hdr">Total Cost %</th>
           <th>Status</th>
+          <th>Bid Qty</th>
+          <th>Bid Item Cost</th>
+          <th class="calc-hdr">Total Cost (Bid)</th>
+          <th class="calc-hdr">Running Qty</th>
+          <th class="calc-hdr">Running Total</th>
+          <th class="calc-hdr">Past Avg</th>
+          <th class="calc-hdr">Total Cost %</th>
+          <th class="calc-hdr">% Complete</th>
           <th class="calc-hdr">Projected Cost</th>
-          <th>Cum. Labor Hrs</th>
-          <th>Days Worked</th>
-          <th># Laborers</th>
+          <th class="calc-hdr">Cum. Labor Hrs</th>
+          <th class="calc-hdr">Days Worked</th>
+          <th class="calc-hdr">Avg Laborers</th>
           <th class="calc-hdr">MU / Labor Hr</th>
-          <th>Equip Total Cost</th>
-          <th>Equip Hours</th>
+          <th class="calc-hdr">Equip Total</th>
+          <th class="calc-hdr">Equip Hours</th>
           <th class="calc-hdr">Equip Cost / Hr</th>
           <th class="calc-hdr">MU / Equip Hr</th>
         </tr>
@@ -548,9 +549,11 @@
     </table>
   </div>
   <div class="legend">
-    <span><span class="dot dot-calc"></span> Calculated field</span>
+    <span><span class="dot dot-calc"></span> Computed from all daily tracking entries</span>
     <span><span class="dot dot-warn"></span> Running cost &gt;80% of bid</span>
-    <span><span class="dot dot-over"></span> Running cost &gt;100% (over budget)</span>
+    <span><span class="dot dot-over"></span> Over budget (&gt;100% of bid)</span>
+    <span>Past Avg = Running Total ÷ Running Qty (company average cost per unit)</span>
+    <span>Dim rows = cost codes found in daily tracking with no bid entry yet</span>
   </div>
 </div>
 
@@ -721,7 +724,7 @@ function renderHeaderActions() {
   } else if (activeTab === 'cost') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
-      <button class="btn btn-green" onclick="addCostRow()">+ Add Row</button>
+      <button class="btn btn-green" onclick="addCostRow()">+ Add Bid Entry</button>
       <a href="index.html" class="btn btn-ghost">&#8592; Landing Page</a>
     `;
   } else {
@@ -735,15 +738,20 @@ function renderHeaderActions() {
 }
 
 function renderHomeTab() {
-  // ── Aggregate cost tracking stats ──
+  // ── Aggregate using daily data for actuals ──
+  const agg = buildDailyAgg();
   let totalBid = 0, totalRunning = 0, totalProjected = 0;
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
 
   costRows.forEach(row => {
-    const c = calcCost(row);
-    totalBid       += c.total_cost_bid;
-    totalRunning   += c.running_total;
-    totalProjected += c.projected_cost;
+    const bq  = parseFloat(row.quantity)      || 0;
+    const bic = parseFloat(row.bid_item_cost) || 0;
+    const key = (row.cost_code||'')+'||'+(row.sub_code||'');
+    const a   = agg[key] || { running_qty:0, total_cost:0 };
+    const past_avg = a.running_qty ? a.total_cost / a.running_qty : bic;
+    totalBid       += bq * bic;
+    totalRunning   += a.total_cost;
+    totalProjected += a.total_cost + (bq - a.running_qty) * past_avg;
     if (row.status) statusCounts[row.status] = (statusCounts[row.status] || 0) + 1;
   });
 
@@ -890,14 +898,10 @@ function renderProjectDashboard() {
   // ── Match against cost tracking for bid comparison ──
   const bidMap = {};
   costRows.forEach(row => {
-    const c = calcCost(row);
     const key = (row.cost_code || '') + '||' + (row.sub_code || '');
     bidMap[key] = {
-      bid_total:     c.total_cost_bid,
-      running_total: c.running_total,
-      projected:     c.projected_cost,
-      pct_complete:  c.pct_complete,
-      status:        row.status,
+      bid_total: (parseFloat(row.quantity) || 0) * (parseFloat(row.bid_item_cost) || 0),
+      status:    row.status,
     };
   });
 
@@ -1223,7 +1227,7 @@ function addListItem(key) {
 }
 
 /* ═══════════════════════════════════════════
-   COST TRACKING
+   COST TRACKING  (company averages compiled from all daily data)
 ═══════════════════════════════════════════ */
 const COST_KEY = 'fct_rows';
 let costRows = [];
@@ -1234,97 +1238,125 @@ function loadCostRows() {
 }
 function saveCostRows() { localStorage.setItem(COST_KEY, JSON.stringify(costRows)); }
 
+// Only store bid/plan data — actuals come from daily aggregation
 const defaultCostRow = () => ({
   id: Date.now() + Math.random(),
   cost_code: '', sub_code: '',
-  quantity: '', running_qty: '',
-  bid_item_cost: '', running_item_cost: '',
-  past_avg: '', status: 'Active',
-  cum_labor_hrs: '', days_worked: '', num_laborers: '',
-  equip_total_cost: '', equip_hours: '',
+  quantity: '',      // bid quantity
+  bid_item_cost: '', // bid cost per unit
+  status: 'Active',
 });
 
-function calcCost(row) {
-  const qty  = parseFloat(row.quantity)          || 0;
-  const rqty = parseFloat(row.running_qty)       || 0;
-  const bic  = parseFloat(row.bid_item_cost)     || 0;
-  const ric  = parseFloat(row.running_item_cost) || 0;
-  const clh  = parseFloat(row.cum_labor_hrs)     || 0;
-  const etc  = parseFloat(row.equip_total_cost)  || 0;
-  const eh   = parseFloat(row.equip_hours)       || 0;
-
-  return {
-    pct_complete:   qty  ? (rqty / qty) * 100             : 0,
-    total_cost_bid: qty  * bic,
-    running_total:  rqty * ric,
-    total_cost_pct: (qty * bic) ? (rqty * ric) / (qty * bic) * 100 : 0,
-    projected_cost: (rqty * ric) + (qty - rqty) * ric,
-    mu_labor_hr:    clh  ? (rqty * ric) / clh             : 0,
-    equip_cost_hr:  eh   ? etc / eh                       : 0,
-    mu_equip_hr:    eh   ? qty / eh                       : 0,
-  };
+// Aggregate all daily rows by cost_code + sub_code key
+function buildDailyAgg() {
+  const agg = {};
+  dailyRows.forEach(row => {
+    const key = (row.cost_code || '') + '||' + (row.sub_code || '');
+    if (!agg[key]) agg[key] = {
+      running_qty: 0, total_cost: 0,
+      labor_hours: 0, equip_hours: 0, equip_cost: 0,
+      material_cost: 0, dates: new Set(),
+    };
+    const a = agg[key];
+    const c = calcDaily(row);
+    a.running_qty   += parseFloat(row.quantity)      || 0;
+    a.total_cost    += c.total_cost;
+    a.labor_hours   += parseFloat(row.labor_hours)   || 0;
+    a.equip_hours   += parseFloat(row.equip_hours)   || 0;
+    a.equip_cost    += c.equip_total;
+    a.material_cost += parseFloat(row.material_cost) || 0;
+    if (row.date) a.dates.add(row.date);
+  });
+  return agg;
 }
 
 function renderCostTable() {
   const tbody = document.getElementById('cost-tbody');
   tbody.innerHTML = '';
-  if (costRows.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="22">No rows yet. Click "+ Add Row" to get started.</td></tr>';
+  const agg = buildDailyAgg();
+
+  // Combine: bid-tracked rows + any cost codes in daily with no bid entry
+  const bidKeys = costRows.map(r => (r.cost_code || '') + '||' + (r.sub_code || ''));
+  const dailyOnlyKeys = Object.keys(agg).filter(k => !bidKeys.includes(k));
+
+  if (costRows.length === 0 && dailyOnlyKeys.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="21">No data yet. Add a bid entry or log daily records to populate company averages.</td></tr>';
     return;
   }
-  costRows.forEach((row, i) => {
-    const c  = calcCost(row);
-    const tc = costClass(c.total_cost_pct);
+
+  function renderRow(cost_code, sub_code, status, bid_qty, bid_ic, a, i, editable) {
+    const bq          = parseFloat(bid_qty)  || 0;
+    const bic         = parseFloat(bid_ic)   || 0;
+    const total_bid   = bq * bic;
+    const rqty        = a.running_qty;
+    const rtotal      = a.total_cost;
+    const past_avg    = rqty    ? rtotal / rqty          : 0;
+    const total_pct   = total_bid ? (rtotal / total_bid) * 100 : 0;
+    const pct_comp    = bq      ? (rqty / bq) * 100      : 0;
+    const projected   = rtotal  + (bq - rqty) * past_avg;
+    const days        = a.dates.size;
+    const avg_lab     = (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
+    const mu_lab      = a.labor_hours ? rqty / a.labor_hours : 0;
+    const eq_cost_hr  = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
+    const mu_eq       = a.equip_hours ? rqty / a.equip_hours : 0;
+    const tc          = total_bid ? costClass(total_pct) : '';
     const tr = document.createElement('tr');
-    tr.innerHTML = `
+    if (!editable) tr.style.opacity = '0.65';
+    tr.innerHTML = editable ? `
       <td class="del-cell"><button class="del-btn" data-tab="cost" data-i="${i}">&#10005;</button></td>
-      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="cost_code"         value="${esc(row.cost_code)}"         placeholder="03-200"></td>
-      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="sub_code"          value="${esc(row.sub_code)}"          placeholder="A"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="quantity"          value="${row.quantity}"          step="any" placeholder="0"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="running_qty"       value="${row.running_qty}"       step="any" placeholder="0"></td>
-      <td class="calc">${fmtPct(c.pct_complete)}</td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="bid_item_cost"     value="${row.bid_item_cost}"     step="any" placeholder="0.00"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="running_item_cost" value="${row.running_item_cost}" step="any" placeholder="0.00"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="past_avg"          value="${row.past_avg}"          step="any" placeholder="0.00"></td>
-      <td class="calc">$${fmt(c.total_cost_bid)}</td>
-      <td class="calc ${tc}">$${fmt(c.running_total)}</td>
-      <td class="calc ${tc}">${fmtPct(c.total_cost_pct)}</td>
+      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="cost_code"    value="${esc(cost_code)}"    placeholder="03-200"></td>
+      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="sub_code"     value="${esc(sub_code)}"     placeholder="A"></td>
       <td>
-        <select data-tab="cost" data-i="${i}" data-f="status" class="${statusClass(row.status)}">
-          <option ${row.status==='Active'   ?'selected':''}>Active</option>
-          <option ${row.status==='Complete' ?'selected':''}>Complete</option>
-          <option ${row.status==='On Hold'  ?'selected':''}>On Hold</option>
-          <option ${row.status==='At Risk'  ?'selected':''}>At Risk</option>
+        <select data-tab="cost" data-i="${i}" data-f="status" class="${statusClass(status)}">
+          <option ${status==='Active'   ?'selected':''}>Active</option>
+          <option ${status==='Complete' ?'selected':''}>Complete</option>
+          <option ${status==='On Hold'  ?'selected':''}>On Hold</option>
+          <option ${status==='At Risk'  ?'selected':''}>At Risk</option>
         </select>
       </td>
-      <td class="calc ${tc}">$${fmt(c.projected_cost)}</td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="cum_labor_hrs"    value="${row.cum_labor_hrs}"    step="any" placeholder="0"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="days_worked"      value="${row.days_worked}"      step="any" placeholder="0"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="num_laborers"     value="${row.num_laborers}"     step="any" placeholder="0"></td>
-      <td class="calc">${fmt(c.mu_labor_hr, 4)}</td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="equip_total_cost" value="${row.equip_total_cost}" step="any" placeholder="0.00"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="equip_hours"      value="${row.equip_hours}"      step="any" placeholder="0"></td>
-      <td class="calc">${fmt(c.equip_cost_hr, 4)}</td>
-      <td class="calc">${fmt(c.mu_equip_hr, 4)}</td>
+      <td><input type="number" data-tab="cost" data-i="${i}" data-f="quantity"     value="${bid_qty}"     step="any" placeholder="0"></td>
+      <td><input type="number" data-tab="cost" data-i="${i}" data-f="bid_item_cost" value="${bid_ic}" step="any" placeholder="0.00"></td>
+      <td class="calc">${total_bid ? '$'+fmt(total_bid) : '—'}</td>
+    ` : `
+      <td class="del-cell"></td>
+      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(cost_code) || '—'}</td>
+      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(sub_code)  || '—'}</td>
+      <td style="padding:0.35rem 0.5rem; font-size:0.68rem; color:#555">No bid entry</td>
+      <td class="calc" style="color:#555">—</td>
+      <td class="calc" style="color:#555">—</td>
+      <td class="calc" style="color:#555">—</td>
+    `;
+    tr.innerHTML += `
+      <td class="calc ${tc}">$${fmt(rqty, 2)}</td>
+      <td class="calc ${tc}">$${fmt(rtotal)}</td>
+      <td class="calc" title="Company average cost per unit">${rqty ? '$'+fmt(past_avg) : '—'}</td>
+      <td class="calc ${tc}">${total_bid ? fmtPct(total_pct) : '—'}</td>
+      <td class="calc ${tc}">${bq ? fmtPct(pct_comp) : '—'}</td>
+      <td class="calc ${tc}">${bq ? '$'+fmt(projected) : '—'}</td>
+      <td class="calc">${fmt(a.labor_hours, 1)}</td>
+      <td class="calc">${days}</td>
+      <td class="calc">${avg_lab ? fmt(avg_lab, 1) : '—'}</td>
+      <td class="calc">${mu_lab ? fmt(mu_lab, 4) : '—'}</td>
+      <td class="calc">$${fmt(a.equip_cost)}</td>
+      <td class="calc">${fmt(a.equip_hours, 1)}</td>
+      <td class="calc">${eq_cost_hr ? fmt(eq_cost_hr, 4) : '—'}</td>
+      <td class="calc">${mu_eq ? fmt(mu_eq, 4) : '—'}</td>
     `;
     tbody.appendChild(tr);
-  });
-}
+  }
 
-function renderCostCalcCells(i) {
-  const c  = calcCost(costRows[i]);
-  const tc = costClass(c.total_cost_pct);
-  const tr = document.getElementById('cost-tbody').children[i];
-  if (!tr) return;
-  const calcs = tr.querySelectorAll('td.calc');
-  calcs[0].textContent = fmtPct(c.pct_complete);
-  calcs[1].textContent = '$' + fmt(c.total_cost_bid);
-  calcs[2].textContent = '$' + fmt(c.running_total);  calcs[2].className = 'calc ' + tc;
-  calcs[3].textContent = fmtPct(c.total_cost_pct);    calcs[3].className = 'calc ' + tc;
-  calcs[4].textContent = '$' + fmt(c.projected_cost); calcs[4].className = 'calc ' + tc;
-  calcs[5].textContent = fmt(c.mu_labor_hr, 4);
-  calcs[6].textContent = fmt(c.equip_cost_hr, 4);
-  calcs[7].textContent = fmt(c.mu_equip_hr, 4);
+  // Bid-tracked rows (editable)
+  costRows.forEach((row, i) => {
+    const key = (row.cost_code || '') + '||' + (row.sub_code || '');
+    const a   = agg[key] || { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, material_cost:0, dates:new Set() };
+    renderRow(row.cost_code, row.sub_code, row.status, row.quantity, row.bid_item_cost, a, i, true);
+  });
+
+  // Daily-only rows (read-only — no bid entry yet)
+  dailyOnlyKeys.forEach(key => {
+    const [cc, sc] = key.split('||');
+    renderRow(cc, sc, '', '', '', agg[key], -1, false);
+  });
 }
 
 function addCostRow() {
@@ -1334,19 +1366,41 @@ function addCostRow() {
 }
 
 function exportCostCSV() {
-  const headers = ['Cost Code','Sub Code','Quantity','Running Qty','% Complete','Bid Item Cost',
-    'Running Item Cost','Past Avg','Total Cost (Bid)','Running Total Cost','Total Cost %',
-    'Status','Projected Cost','Cum Labor Hrs','Days Worked','# Laborers','MU/Labor Hr',
-    'Equip Total Cost','Equip Hours','Equip Cost/Hr','MU/Equip Hr'];
+  const agg = buildDailyAgg();
+  const headers = ['Cost Code','Sub Code','Status','Bid Qty','Bid Item Cost','Total Cost (Bid)',
+    'Running Qty','Running Total','Past Avg','Total Cost %','% Complete','Projected Cost',
+    'Cum Labor Hrs','Days Worked','Avg Laborers','MU/Labor Hr',
+    'Equip Total','Equip Hours','Equip Cost/Hr','MU/Equip Hr'];
   const rows = [headers.join(',')];
-  costRows.forEach(row => {
-    const c = calcCost(row);
-    rows.push([row.cost_code, row.sub_code, row.quantity, row.running_qty,
-      c.pct_complete.toFixed(2), row.bid_item_cost, row.running_item_cost, row.past_avg,
-      c.total_cost_bid.toFixed(2), c.running_total.toFixed(2), c.total_cost_pct.toFixed(2),
-      row.status, c.projected_cost.toFixed(2), row.cum_labor_hrs, row.days_worked,
-      row.num_laborers, c.mu_labor_hr.toFixed(4), row.equip_total_cost, row.equip_hours,
-      c.equip_cost_hr.toFixed(4), c.mu_equip_hr.toFixed(4)
+
+  const allKeys = [
+    ...costRows.map(r => (r.cost_code||'')+'||'+(r.sub_code||'')),
+    ...Object.keys(agg).filter(k => !costRows.some(r => (r.cost_code||'')+'||'+(r.sub_code||'')===k))
+  ];
+
+  allKeys.forEach(key => {
+    const cr  = costRows.find(r => (r.cost_code||'')+'||'+(r.sub_code||'')===key);
+    const a   = agg[key] || { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, dates:new Set() };
+    const bq  = parseFloat(cr?.quantity)      || 0;
+    const bic = parseFloat(cr?.bid_item_cost) || 0;
+    const rqty = a.running_qty, rtotal = a.total_cost;
+    const past_avg = rqty ? rtotal / rqty : 0;
+    const total_bid = bq * bic;
+    const days = a.dates.size;
+    rows.push([
+      cr?.cost_code || key.split('||')[0], cr?.sub_code || key.split('||')[1],
+      cr?.status || '',
+      bq, bic, total_bid.toFixed(2),
+      rqty.toFixed(2), rtotal.toFixed(2), past_avg.toFixed(4),
+      total_bid ? ((rtotal/total_bid)*100).toFixed(2) : '',
+      bq ? ((rqty/bq)*100).toFixed(2) : '',
+      bq ? (rtotal + (bq-rqty)*past_avg).toFixed(2) : '',
+      a.labor_hours.toFixed(1), days,
+      (days && a.labor_hours) ? (a.labor_hours/days/8).toFixed(2) : '',
+      a.labor_hours ? (rqty/a.labor_hours).toFixed(4) : '',
+      a.equip_cost.toFixed(2), a.equip_hours.toFixed(1),
+      a.equip_hours ? (a.equip_cost/a.equip_hours).toFixed(4) : '',
+      a.equip_hours ? (rqty/a.equip_hours).toFixed(4) : '',
     ].map(v => `"${v}"`).join(','));
   });
   downloadCSV(rows.join('\n'), 'cost_tracking.csv');
@@ -1513,8 +1567,7 @@ document.addEventListener('input', e => {
   if (tab === 'cost') {
     costRows[i][f] = el.value;
     saveCostRows();
-    renderCostCalcCells(i);
-    if (f === 'status') el.className = statusClass(el.value);
+    renderCostTable();
   } else if (tab === 'daily') {
     dailyRows[i][f] = el.value;
     // Auto-fill equip unit cost when equipment is selected
