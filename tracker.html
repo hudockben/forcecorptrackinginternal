@@ -101,6 +101,117 @@
     .info-saved-badge { font-size: 0.7rem; color: var(--green); margin-left: 0.6rem; opacity: 0; transition: opacity 0.3s; }
     .info-saved-badge.show { opacity: 1; }
 
+    /* ── Project Cards ── */
+    .proj-wrap { padding: 1.25rem; max-width: 1200px; margin: 0 auto; }
+    .proj-toolbar { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1.25rem; }
+    .proj-search {
+      flex: 1; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-family: inherit;
+      font-size: 0.85rem; padding: 0.5rem 0.85rem;
+      outline: none; transition: border-color 0.15s;
+    }
+    .proj-search:focus { border-color: var(--green); }
+    .proj-search::placeholder { color: var(--muted); }
+
+    .proj-cards { display: flex; flex-direction: column; gap: 1rem; }
+
+    .proj-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; overflow: hidden;
+      transition: border-color 0.15s;
+    }
+    .proj-card:hover { border-color: #3a3a50; }
+
+    .proj-card-header {
+      display: flex; align-items: center; gap: 1rem;
+      padding: 0.9rem 1.25rem; cursor: pointer;
+      transition: background 0.15s;
+    }
+    .proj-card-header:hover { background: var(--surface2); }
+
+    .proj-card-title { flex: 1; min-width: 0; }
+    .proj-card-name { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-bottom: 0.2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .proj-card-meta { font-size: 0.72rem; color: var(--muted); }
+
+    .proj-card-badges { display: flex; gap: 0.4rem; align-items: center; flex-shrink: 0; flex-wrap: wrap; }
+    .proj-badge {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; padding: 0.2rem 0.5rem; border-radius: 3px;
+      white-space: nowrap;
+    }
+    .badge-bidding         { background: #1d3a6e; color: var(--blue); }
+    .badge-awarded         { background: #1e3a20; color: #86efac; }
+    .badge-in-progress     { background: #1a2d12; color: var(--green); }
+    .badge-substantially   { background: #0f2020; color: #34d399; }
+    .badge-complete        { background: #0f1f3a; color: #60a5fa; }
+    .badge-on-hold         { background: #2a2000; color: var(--yellow); }
+    .badge-default         { background: var(--surface2); color: var(--muted); }
+
+    .proj-card-toggle {
+      background: none; border: none; color: var(--muted); font-size: 16px;
+      cursor: pointer; transition: transform 0.2s, color 0.15s;
+      line-height: 1; padding: 0.2rem; flex-shrink: 0;
+    }
+    .proj-card.expanded .proj-card-toggle { transform: rotate(180deg); color: var(--green); }
+
+    .proj-card-body { display: none; border-top: 1px solid var(--border); }
+    .proj-card.expanded .proj-card-body { display: block; }
+
+    .proj-card-body .info-section {
+      border: none; border-bottom: 1px solid var(--border);
+      border-radius: 0; margin-bottom: 0;
+    }
+
+    /* ── Bid Items ── */
+    .bid-section { padding: 1.1rem 1.5rem; border-top: 1px solid var(--border); }
+    .bid-section-title {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--blue); margin-bottom: 0.75rem;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .bid-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 0.6rem; }
+    .bid-table th {
+      background: var(--surface2); color: #888; font-size: 0.63rem; font-weight: 700;
+      letter-spacing: 0.07em; text-transform: uppercase; padding: 0.4rem 0.6rem;
+      border: 1px solid var(--border); text-align: left;
+    }
+    .bid-table th.num { text-align: right; }
+    .bid-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
+    .bid-table td input {
+      width: 100%; background: transparent; border: none; outline: none;
+      color: var(--text); font-size: 0.82rem; font-family: inherit; padding: 0.35rem 0.6rem;
+    }
+    .bid-table td input:focus { background: #1e1e2e; }
+    .bid-table td input.num { text-align: right; }
+    .bid-table td.bid-calc {
+      background: var(--calc); color: #86efac; text-align: right;
+      padding: 0 0.6rem; font-variant-numeric: tabular-nums;
+    }
+    .bid-table td.bid-actual { background: #1a1800; color: var(--yellow); text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
+    .bid-table td.bid-under  { background: #0d1f0d; color: var(--green); text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
+    .bid-table td.bid-over   { background: #1f0d0d; color: var(--red);   text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
+    .bid-table td.bid-del    { width: 32px; text-align: center; padding: 0 0.3rem; }
+    .bid-table tfoot tr td {
+      background: var(--surface2); font-weight: 700; padding: 0.45rem 0.6rem;
+      border: 1px solid var(--border); font-variant-numeric: tabular-nums;
+    }
+    .bid-table tfoot .foot-label { color: #888; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .bid-table tfoot .foot-bid    { color: #86efac; text-align: right; }
+    .bid-table tfoot .foot-actual { color: var(--yellow); text-align: right; }
+    .bid-table tfoot .foot-under  { color: var(--green); text-align: right; }
+    .bid-table tfoot .foot-over   { color: var(--red);   text-align: right; }
+
+    .proj-card-footer {
+      display: flex; gap: 0.75rem; align-items: center; justify-content: flex-end;
+      padding: 0.85rem 1.5rem; border-top: 1px solid var(--border);
+      background: var(--surface2);
+    }
+    .proj-no-results {
+      text-align: center; color: var(--muted); padding: 3rem 1rem;
+      font-size: 0.85rem; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
     /* ── Buttons ── */
     .btn {
       padding: 0.4rem 1rem;
@@ -522,142 +633,7 @@
 
 <!-- ══════════════ PROJECT INFO TAB ══════════════ -->
 <div class="tab-panel" id="tab-info">
-  <div class="info-wrap">
-
-    <div class="info-section">
-      <div class="info-section-title">Project Details</div>
-      <div class="info-grid">
-        <div class="info-field">
-          <label>Project Name</label>
-          <input type="text" id="info-project-name" placeholder="e.g. Route 9 Widening" />
-        </div>
-        <div class="info-field">
-          <label>Job Number</label>
-          <input type="text" id="info-job-number" placeholder="e.g. 2025-014" />
-        </div>
-        <div class="info-field">
-          <label>Project Status</label>
-          <select id="info-status">
-            <option value="">— select —</option>
-            <option>Bidding</option>
-            <option>Awarded</option>
-            <option>In Progress</option>
-            <option>Substantially Complete</option>
-            <option>Complete</option>
-            <option>On Hold</option>
-          </select>
-        </div>
-        <div class="info-field">
-          <label>Contract Type</label>
-          <select id="info-contract-type">
-            <option value="">— select —</option>
-            <option>Lump Sum</option>
-            <option>Unit Price</option>
-            <option>Cost Plus</option>
-            <option>Time &amp; Material</option>
-            <option>GMP</option>
-          </select>
-        </div>
-      </div>
-    </div>
-
-    <div class="info-section">
-      <div class="info-section-title">Parties</div>
-      <div class="info-grid">
-        <div class="info-field">
-          <label>Client / Owner</label>
-          <input type="text" id="info-client" placeholder="Client name" />
-        </div>
-        <div class="info-field">
-          <label>General Contractor</label>
-          <input type="text" id="info-gc" placeholder="GC name (if sub)" />
-        </div>
-        <div class="info-field">
-          <label>Project Manager</label>
-          <input type="text" id="info-pm" placeholder="PM name" />
-        </div>
-        <div class="info-field">
-          <label>Superintendent</label>
-          <input type="text" id="info-super" placeholder="Super name" />
-        </div>
-        <div class="info-field">
-          <label>Estimator</label>
-          <input type="text" id="info-estimator" placeholder="Estimator name" />
-        </div>
-        <div class="info-field">
-          <label>Client Contact</label>
-          <input type="text" id="info-client-contact" placeholder="Name / phone / email" />
-        </div>
-      </div>
-    </div>
-
-    <div class="info-section">
-      <div class="info-section-title">Location &amp; Schedule</div>
-      <div class="info-grid">
-        <div class="info-field">
-          <label>Project Address</label>
-          <input type="text" id="info-address" placeholder="Street address" />
-        </div>
-        <div class="info-field">
-          <label>City / State</label>
-          <input type="text" id="info-city-state" placeholder="City, ST" />
-        </div>
-        <div class="info-field">
-          <label>Start Date</label>
-          <input type="date" id="info-start-date" />
-        </div>
-        <div class="info-field">
-          <label>Projected Completion</label>
-          <input type="date" id="info-end-date" />
-        </div>
-        <div class="info-field">
-          <label>Contract Days</label>
-          <input type="number" id="info-contract-days" placeholder="0" min="0" />
-        </div>
-        <div class="info-field">
-          <label>Working Days Logged</label>
-          <input type="text" id="info-days-logged" disabled style="color:#888; cursor:default" placeholder="Auto-computed" />
-        </div>
-      </div>
-    </div>
-
-    <div class="info-section">
-      <div class="info-section-title">Contract &amp; Financials</div>
-      <div class="info-grid">
-        <div class="info-field">
-          <label>Original Contract Amount</label>
-          <input type="number" id="info-contract-amount" placeholder="0.00" step="any" min="0" />
-        </div>
-        <div class="info-field">
-          <label>Revised Contract Amount</label>
-          <input type="number" id="info-revised-amount" placeholder="0.00" step="any" min="0" />
-        </div>
-        <div class="info-field">
-          <label>Retention %</label>
-          <input type="number" id="info-retention" placeholder="10" step="any" min="0" max="100" />
-        </div>
-        <div class="info-field">
-          <label>Total Bid Cost</label>
-          <input type="text" id="info-total-bid" disabled style="color:#888; cursor:default" placeholder="Auto-computed from Cost Tracking" />
-        </div>
-      </div>
-    </div>
-
-    <div class="info-section">
-      <div class="info-section-title">Scope &amp; Notes</div>
-      <div class="info-grid wide">
-        <div class="info-field">
-          <label>Project Scope / Description</label>
-          <textarea id="info-scope" placeholder="Brief description of the work…"></textarea>
-        </div>
-        <div class="info-field">
-          <label>Special Conditions / Notes</label>
-          <textarea id="info-notes" placeholder="Liquidated damages, DBWH, prevailing wage, bonding requirements…"></textarea>
-        </div>
-      </div>
-    </div>
-
-  </div>
+  <div id="proj-root"><!-- rendered by JS --></div>
 </div>
 
 <!-- ══════════════ PROJECT DASHBOARD TAB
@@ -859,6 +835,7 @@ function statusClass(s) {
            'On Hold':'status-hold', 'At Risk':'status-risk' }[s] || '';
 }
 function esc(s) { return String(s || '').replace(/"/g, '&quot;'); }
+function escT(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 /* ═══════════════════════════════════════════
    TABS
@@ -1242,59 +1219,333 @@ function renderProjectDashboard() {
 renderHeaderActions();
 
 /* ═══════════════════════════════════════════
-   PROJECT INFO
+   PROJECTS — multi-project card system
 ═══════════════════════════════════════════ */
-const INFO_KEY = 'fct_project_info';
+const PROJECTS_KEY = 'fct_projects';
+const INFO_KEY_LEGACY = 'fct_project_info'; // for migration only
 
-const infoFields = [
-  'project-name','job-number','status','contract-type',
-  'client','gc','pm','super','estimator','client-contact',
-  'address','city-state','start-date','end-date','contract-days',
-  'contract-amount','revised-amount','retention',
-  'scope','notes',
-];
+let projectsList = [];
+let projSearch   = '';
 
-function loadProjectInfo() {
-  let data = {};
-  try { data = JSON.parse(localStorage.getItem(INFO_KEY)) || {}; } catch {}
-  infoFields.forEach(f => {
-    const el = document.getElementById('info-' + f);
-    if (el && !el.disabled) el.value = data[f] || '';
-  });
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+function loadProjects() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PROJECTS_KEY));
+    if (Array.isArray(saved) && saved.length) { projectsList = saved; return; }
+  } catch {}
+  // Migrate legacy single project
+  try {
+    const legacy = JSON.parse(localStorage.getItem(INFO_KEY_LEGACY));
+    if (legacy && legacy['project-name']) {
+      projectsList = [Object.assign({ id: uid(), bidItems: [] }, legacy)];
+      saveProjects(); return;
+    }
+  } catch {}
+  projectsList = [];
 }
 
-function saveProjectInfo() {
-  const data = {};
-  infoFields.forEach(f => {
-    const el = document.getElementById('info-' + f);
-    if (el && !el.disabled) data[f] = el.value;
-  });
-  localStorage.setItem(INFO_KEY, JSON.stringify(data));
+function saveProjects() {
+  localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList));
 }
 
-function renderProjectInfoComputed() {
-  // Working days logged — count of unique dates from daily tracking
-  const daysEl = document.getElementById('info-days-logged');
-  if (daysEl) {
-    const uniqueDates = new Set(dailyRows.map(r => r.date).filter(Boolean));
-    daysEl.value = uniqueDates.size ? uniqueDates.size + ' days' : '';
-  }
-  // Total bid cost — sum from cost tracking
-  const bidEl = document.getElementById('info-total-bid');
-  if (bidEl) {
-    const total = costRows.reduce((s, r) =>
-      s + (parseFloat(r.quantity)||0) * (parseFloat(r.bid_item_cost)||0), 0);
-    bidEl.value = total ? '$' + fmt(total) : '';
-  }
+function getProj(id) { return projectsList.find(p => p.id === id); }
+
+function addProject() {
+  const p = { id: uid(), bidItems: [],
+    'project-name':'','job-number':'','status':'','contract-type':'',
+    'client':'','gc':'','pm':'','super':'','estimator':'','client-contact':'',
+    'address':'','city-state':'','start-date':'','end-date':'','contract-days':'',
+    'contract-amount':'','revised-amount':'','retention':'','scope':'','notes':''
+  };
+  projectsList.push(p);
+  saveProjects();
+  renderProjectsTab();
+  const card = document.getElementById('pcard-' + p.id);
+  if (card) { card.classList.add('expanded'); card.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 }
 
-// Auto-save on any change inside the info tab
-document.getElementById('tab-info').addEventListener('input', () => {
-  saveProjectInfo();
-});
-document.getElementById('tab-info').addEventListener('change', () => {
-  saveProjectInfo();
-});
+function deleteProject(id) {
+  if (!confirm('Delete this project and all its bid items?')) return;
+  projectsList = projectsList.filter(p => p.id !== id);
+  saveProjects();
+  renderProjectsTab();
+}
+
+function toggleCard(id) {
+  const card = document.getElementById('pcard-' + id);
+  if (card) card.classList.toggle('expanded');
+}
+
+function updateProjectField(id, field, value) {
+  const p = getProj(id); if (!p) return;
+  p[field] = value;
+  saveProjects();
+  // Live-update header without full re-render
+  const nameEl  = document.getElementById('pcn-' + id);
+  const metaEl  = document.getElementById('pcm-' + id);
+  const badgeEl = document.getElementById('pcb-' + id);
+  if (nameEl)  nameEl.textContent  = p['project-name'] || 'Untitled Project';
+  if (metaEl)  metaEl.textContent  = [p['job-number'], p['client']].filter(Boolean).join(' · ');
+  if (badgeEl) { badgeEl.className = 'proj-badge ' + statusBadgeClass(p['status']); badgeEl.textContent = p['status'] || ''; }
+}
+
+function statusBadgeClass(s) {
+  return ({ 'Bidding':'badge-bidding','Awarded':'badge-awarded','In Progress':'badge-in-progress',
+    'Substantially Complete':'badge-substantially','Complete':'badge-complete','On Hold':'badge-on-hold' })[s] || 'badge-default';
+}
+
+// ── Bid Items ──
+function addBidItem(projId) {
+  const p = getProj(projId); if (!p) return;
+  p.bidItems.push({ id: uid(), cost_code:'', sub_code:'', description:'', quantity:'', unit_cost:'' });
+  saveProjects();
+  renderBidTable(projId);
+}
+
+function removeBidItem(projId, itemId) {
+  const p = getProj(projId); if (!p) return;
+  p.bidItems = p.bidItems.filter(b => b.id !== itemId);
+  saveProjects();
+  renderBidTable(projId);
+}
+
+function updateBidItem(projId, itemId, field, value) {
+  const p = getProj(projId); if (!p) return;
+  const item = p.bidItems.find(b => b.id === itemId); if (!item) return;
+  item[field] = value;
+  saveProjects();
+  // Refresh just this row's calculated cells + footer totals
+  const qty = parseFloat(item.quantity) || 0;
+  const uc  = parseFloat(item.unit_cost) || 0;
+  const bidTot = qty * uc;
+  const calcEl = document.getElementById('bic-' + itemId);
+  if (calcEl) calcEl.textContent = bidTot ? '$' + fmt(bidTot) : '—';
+  renderBidFooter(projId);
+}
+
+function actualForBidItem(b) {
+  if (!b.cost_code && !b.sub_code) return 0;
+  return dailyRows.reduce((s, r) => {
+    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
+        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+      const c = calcDaily(r);
+      return s + c.total_cost;
+    }
+    return s;
+  }, 0);
+}
+
+function renderBidFooter(projId) {
+  const p = getProj(projId); if (!p) return;
+  const footEl = document.getElementById('bfoot-' + projId); if (!footEl) return;
+  const totalBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
+  const totalActual = (p.bidItems||[]).reduce((s,b) => s + actualForBidItem(b), 0);
+  const diff = totalBid - totalActual;
+  const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
+  const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
+  footEl.innerHTML = `
+    <td class="foot-label" colspan="3">Totals</td>
+    <td class="foot-label num" style="text-align:right">—</td>
+    <td class="foot-label num" style="text-align:right">—</td>
+    <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
+    <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
+    <td class="${diffCls}">${diffTxt}</td>
+    <td></td>`;
+}
+
+function renderBidTable(projId) {
+  const p = getProj(projId); if (!p) return;
+  const tbody = document.getElementById('btbody-' + projId); if (!tbody) return;
+  tbody.innerHTML = (p.bidItems||[]).map(b => {
+    const bidTot = (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0);
+    const actual = actualForBidItem(b);
+    const diff   = bidTot - actual;
+    const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
+    const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
+    return `<tr>
+      <td><input type="text" class="num" value="${esc(b.cost_code)}" placeholder="Code"
+        oninput="updateBidItem('${projId}','${b.id}','cost_code',this.value)"></td>
+      <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub"
+        oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
+      <td><input type="text" value="${esc(b.description)}" placeholder="Description"
+        oninput="updateBidItem('${projId}','${b.id}','description',this.value)"></td>
+      <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
+        oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
+      <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
+        oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
+      <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
+      <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
+      <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
+      <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
+  renderBidFooter(projId);
+}
+
+function projectCardHTML(p) {
+  const name   = p['project-name'] || 'Untitled Project';
+  const meta   = [p['job-number'], p['client']].filter(Boolean).join(' · ');
+  const status = p['status'] || '';
+  const totalBid = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
+  const totalActual = (p.bidItems||[]).reduce((s,b)=>s+actualForBidItem(b),0);
+  const diff = totalBid - totalActual;
+  const uniqueDates = new Set(dailyRows.map(r => r.date).filter(Boolean));
+
+  const makeOpt = (vals, sel) => vals.map(v => `<option value="${v}" ${sel===v?'selected':''}>${v||'— select —'}</option>`).join('');
+
+  return `<div class="proj-card" id="pcard-${p.id}">
+  <div class="proj-card-header" onclick="toggleCard('${p.id}')">
+    <div class="proj-card-title">
+      <div class="proj-card-name" id="pcn-${p.id}">${esc(name)}</div>
+      <div class="proj-card-meta" id="pcm-${p.id}">${esc(meta)}</div>
+    </div>
+    <div class="proj-card-badges">
+      <span class="proj-badge ${statusBadgeClass(status)}" id="pcb-${p.id}">${esc(status)}</span>
+      ${totalBid ? `<span class="proj-badge badge-default">Bid $${fmt(totalBid,0)}</span>` : ''}
+      ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
+      ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff)+' under':'$'+fmt(Math.abs(diff))+' over'}</span>` : ''}
+    </div>
+    <button class="proj-card-toggle">▾</button>
+  </div>
+  <div class="proj-card-body">
+
+    <div class="info-section">
+      <div class="info-section-title">Project Details</div>
+      <div class="info-grid">
+        <div class="info-field"><label>Project Name</label>
+          <input type="text" value="${esc(p['project-name']||'')}" placeholder="e.g. Route 9 Widening"
+            oninput="updateProjectField('${p.id}','project-name',this.value)"></div>
+        <div class="info-field"><label>Job Number</label>
+          <input type="text" value="${esc(p['job-number']||'')}" placeholder="e.g. 2025-014"
+            oninput="updateProjectField('${p.id}','job-number',this.value)"></div>
+        <div class="info-field"><label>Project Status</label>
+          <select onchange="updateProjectField('${p.id}','status',this.value)">
+            ${makeOpt(['','Bidding','Awarded','In Progress','Substantially Complete','Complete','On Hold'], p['status']||'')}
+          </select></div>
+        <div class="info-field"><label>Contract Type</label>
+          <select onchange="updateProjectField('${p.id}','contract-type',this.value)">
+            ${makeOpt(['','Lump Sum','Unit Price','Cost Plus','Time & Material','GMP'], p['contract-type']||'')}
+          </select></div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Parties</div>
+      <div class="info-grid">
+        ${[['client','Client / Owner'],['gc','General Contractor'],['pm','Project Manager'],
+           ['super','Superintendent'],['estimator','Estimator'],['client-contact','Client Contact']].map(([f,l])=>`
+        <div class="info-field"><label>${l}</label>
+          <input type="text" value="${esc(p[f]||'')}" placeholder="${l}"
+            oninput="updateProjectField('${p.id}','${f}',this.value)"></div>`).join('')}
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Location &amp; Schedule</div>
+      <div class="info-grid">
+        <div class="info-field"><label>Project Address</label>
+          <input type="text" value="${esc(p['address']||'')}" placeholder="Street address"
+            oninput="updateProjectField('${p.id}','address',this.value)"></div>
+        <div class="info-field"><label>City / State</label>
+          <input type="text" value="${esc(p['city-state']||'')}" placeholder="City, ST"
+            oninput="updateProjectField('${p.id}','city-state',this.value)"></div>
+        <div class="info-field"><label>Start Date</label>
+          <input type="date" value="${esc(p['start-date']||'')}"
+            onchange="updateProjectField('${p.id}','start-date',this.value)"></div>
+        <div class="info-field"><label>Projected Completion</label>
+          <input type="date" value="${esc(p['end-date']||'')}"
+            onchange="updateProjectField('${p.id}','end-date',this.value)"></div>
+        <div class="info-field"><label>Contract Days</label>
+          <input type="number" value="${esc(p['contract-days']||'')}" placeholder="0" min="0"
+            oninput="updateProjectField('${p.id}','contract-days',this.value)"></div>
+        <div class="info-field"><label>Working Days Logged</label>
+          <input type="text" value="${uniqueDates.size ? uniqueDates.size+' days' : ''}" disabled
+            style="color:#888;cursor:default" placeholder="Auto-computed"></div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Contract &amp; Financials</div>
+      <div class="info-grid">
+        <div class="info-field"><label>Original Contract Amount</label>
+          <input type="number" value="${esc(p['contract-amount']||'')}" placeholder="0.00" step="any" min="0"
+            oninput="updateProjectField('${p.id}','contract-amount',this.value)"></div>
+        <div class="info-field"><label>Revised Contract Amount</label>
+          <input type="number" value="${esc(p['revised-amount']||'')}" placeholder="0.00" step="any" min="0"
+            oninput="updateProjectField('${p.id}','revised-amount',this.value)"></div>
+        <div class="info-field"><label>Retention %</label>
+          <input type="number" value="${esc(p['retention']||'')}" placeholder="10" step="any" min="0" max="100"
+            oninput="updateProjectField('${p.id}','retention',this.value)"></div>
+        <div class="info-field"><label>Total Bid Cost</label>
+          <input type="text" value="${totalBid?'$'+fmt(totalBid):''}" disabled
+            style="color:#86efac;cursor:default" placeholder="Sum of bid items below"></div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Scope &amp; Notes</div>
+      <div class="info-grid wide">
+        <div class="info-field"><label>Project Scope / Description</label>
+          <textarea oninput="updateProjectField('${p.id}','scope',this.value)">${escT(p['scope']||'')}</textarea></div>
+        <div class="info-field"><label>Special Conditions / Notes</label>
+          <textarea oninput="updateProjectField('${p.id}','notes',this.value)">${escT(p['notes']||'')}</textarea></div>
+      </div>
+    </div>
+
+    <div class="bid-section">
+      <div class="bid-section-title">
+        <span>Bid Line Items vs Actuals</span>
+        <button class="btn btn-blue" onclick="addBidItem('${p.id}')">+ Add Item</button>
+      </div>
+      <table class="bid-table">
+        <thead><tr>
+          <th>Cost Code</th><th>Sub Code</th><th>Description</th>
+          <th class="num">Quantity</th><th class="num">Unit Cost</th>
+          <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+          <th class="num">Variance</th><th></th>
+        </tr></thead>
+        <tbody id="btbody-${p.id}"></tbody>
+        <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
+      </table>
+    </div>
+
+    <div class="proj-card-footer">
+      <button class="btn btn-danger" onclick="deleteProject('${p.id}')">Delete Project</button>
+    </div>
+  </div>
+</div>`;
+}
+
+function renderProjectsTab() {
+  const root = document.getElementById('proj-root'); if (!root) return;
+  const q = projSearch.toLowerCase();
+  const filtered = q
+    ? projectsList.filter(p =>
+        (p['project-name']||'').toLowerCase().includes(q) ||
+        (p['job-number']||'').toLowerCase().includes(q)   ||
+        (p['client']||'').toLowerCase().includes(q))
+    : projectsList;
+  root.innerHTML = `
+    <div class="proj-wrap">
+      <div class="proj-toolbar">
+        <input class="proj-search" type="text" placeholder="Search by project name, job number, or client…"
+          value="${esc(projSearch)}" oninput="projSearch=this.value;renderProjectsTab()">
+        <button class="btn btn-green" onclick="addProject()">+ Add Project</button>
+      </div>
+      <div class="proj-cards">
+        ${filtered.length
+          ? filtered.map(p => projectCardHTML(p)).join('')
+          : `<div class="proj-no-results">${projSearch
+              ? 'No projects match your search.'
+              : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`}
+      </div>
+    </div>`;
+  // Populate bid tables after DOM is built
+  filtered.forEach(p => renderBidTable(p.id));
+}
+
+function renderProjectInfoComputed() { renderProjectsTab(); }
 
 /* ═══════════════════════════════════════════
    LISTS (dropdown options)
@@ -1837,12 +2088,12 @@ function downloadCSV(content, filename) {
 loadLists();
 loadCostRows();
 loadDailyRows();
-loadProjectInfo();
+loadProjects();
 renderCostTable();
 renderDailyTable();
 renderHomeTab();
 renderProjectDashboard();
-renderProjectInfoComputed();
+renderProjectsTab();
 renderHeaderActions();
 </script>
 </body>
