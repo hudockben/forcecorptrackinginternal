@@ -629,6 +629,21 @@
       display: flex; gap: 1rem; font-size: 0.65rem;
       color: var(--muted); flex-wrap: wrap; margin-bottom: 2rem;
     }
+
+    /* Daily Tracking fullscreen view */
+    #tab-daily { height: calc(100vh - 96px); display: none; flex-direction: column; }
+    #tab-daily.active { display: flex; }
+    .daily-view-wrap { display: flex; flex-direction: column; height: 100%; }
+    .daily-view-header {
+      display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+      padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border);
+      background: var(--surface); flex-shrink: 0;
+    }
+    .daily-view-title {
+      font-size: 0.85rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--green); text-align: center;
+    }
+    .daily-view-table { flex: 1; overflow: auto; margin: 0; border-radius: 0; }
     .cost-mix-legend span { display: flex; align-items: center; gap: 0.3rem; }
   </style>
 </head>
@@ -722,6 +737,11 @@
   </div>
 </div>
 
+
+<!-- ══════════════ DAILY TRACKING FULLSCREEN ══════════════ -->
+<div class="tab-panel" id="tab-daily">
+  <div id="daily-view-root"><!-- rendered by openDailyView() --></div>
+</div>
 
 <!-- ══════════════ MANAGE LISTS MODAL ══════════════ -->
 <div class="modal-overlay" id="modal-overlay">
@@ -883,6 +903,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'home')    renderHomeTab();
     if (activeTab === 'project') renderProjectDashboard();
     if (activeTab === 'info')    renderProjectInfoComputed();
+    if (activeTab === 'daily')   { /* rendered by openDailyView() */ }
   });
 });
 
@@ -893,6 +914,14 @@ function renderHeaderActions() {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
       <button class="btn btn-green" onclick="addCostRow()">+ Add Bid Entry</button>
+      ${logoutBtn}
+    `;
+  } else if (activeTab === 'daily') {
+    const projId = dailyViewProjId;
+    el.innerHTML = `
+      <button class="btn btn-ghost" onclick="exportDailyCSV('${projId}')">Export CSV</button>
+      <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
+      <button class="btn btn-green" onclick="addDailyRow('${projId}');renderDailyView()">+ Add Row</button>
       ${logoutBtn}
     `;
   } else {
@@ -1441,7 +1470,7 @@ function projectCardHTML(p) {
   <div class="proj-card-body">
 
     <div class="proj-card-quicklinks">
-      <button class="btn btn-green" onclick="addDailyRow('${p.id}');document.getElementById('daily-section-${p.id}').scrollIntoView({behavior:'smooth',block:'start'})">+ Add Daily Entry</button>
+      <button class="btn btn-green" onclick="openDailyView('${p.id}')">Enter Daily Tracking</button>
     </div>
 
     <div class="info-section">
@@ -1969,6 +1998,88 @@ function exportCostCSV() {
     ].map(v => `"${v}"`).join(','));
   });
   downloadCSV(rows.join('\n'), 'cost_tracking.csv');
+}
+
+/* ═══════════════════════════════════════════
+   DAILY TRACKING FULLSCREEN VIEW
+═══════════════════════════════════════════ */
+
+let dailyViewProjId = null;
+
+function openDailyView(projId) {
+  dailyViewProjId = projId;
+  // Clear proj-root so there's no duplicate daily-tbody id in the DOM
+  document.getElementById('proj-root').innerHTML = '';
+  activeTab = 'daily';
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-daily').classList.add('active');
+  renderDailyView();
+  renderHeaderActions();
+}
+
+function closeDailyView() {
+  dailyViewProjId = null;
+  activeTab = 'info';
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === 'info'));
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-info'));
+  renderHeaderActions();
+  renderProjectsTab();
+}
+
+function renderDailyView() {
+  const projId = dailyViewProjId;
+  const p = getProj(projId);
+  if (!p) return;
+  const root = document.getElementById('daily-view-root');
+  const name = p['project-name'] || 'Untitled Project';
+  root.innerHTML = `
+    <div class="daily-view-wrap">
+      <div class="daily-view-header">
+        <div>
+          <button class="btn btn-ghost" onclick="closeDailyView()">&#8592; Back to Project Info</button>
+        </div>
+        <div class="daily-view-title">${esc(name)} — Daily Tracking</div>
+        <div></div>
+      </div>
+      <div class="daily-table-wrap daily-view-table">
+        <table class="daily-inner-table">
+          <thead>
+            <tr class="group-row">
+              <th class="g-base"  colspan="1"></th>
+              <th class="g-id"    colspan="3">Identification</th>
+              <th class="g-code"  colspan="2">Cost Code</th>
+              <th class="g-labor" colspan="4">Labor</th>
+              <th class="g-equip" colspan="4">Equipment</th>
+              <th class="g-mat"   colspan="6">Material</th>
+              <th class="g-sum"   colspan="2">Summary</th>
+            </tr>
+            <tr class="col-row">
+              <th></th>
+              <th>Date</th><th>Field Type</th><th>Employee</th>
+              <th>Cost Code</th><th>Sub Code</th>
+              <th>Job Class</th><th>Rate</th><th>Labor Hours</th>
+              <th class="calc-hdr">Labor Cost</th>
+              <th>Equipment</th><th>Equip Unit Cost</th><th>Equip Hours</th>
+              <th class="calc-hdr">Equip Total Cost</th>
+              <th>Material</th><th>Supplier</th><th>PO #</th>
+              <th>Units Purchased</th><th>Unit Cost</th><th>Material Cost</th>
+              <th class="calc-hdr">Total Cost</th><th>Quantity</th>
+            </tr>
+          </thead>
+          <tbody id="daily-tbody-${projId}"></tbody>
+        </table>
+      </div>
+      <div class="legend" style="padding:0.6rem 1rem">
+        <span><span class="dot dot-calc"></span> Calculated</span>
+        <span>Labor Cost = Rate &times; Labor Hours</span>
+        <span>Equip Total = Unit Cost &times; Equip Hours</span>
+        <span>Total = Labor + Equip + Material</span>
+      </div>
+    </div>`;
+  renderDailyTable(projId);
 }
 
 /* ═══════════════════════════════════════════
