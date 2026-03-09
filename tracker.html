@@ -170,7 +170,11 @@
       width: 100%; border-collapse: collapse;
       font-size: 0.78rem; white-space: nowrap;
     }
-    .daily-inner-table thead th { position: sticky; top: 0; z-index: 2; }
+    .daily-inner-table thead tr.group-row th  { position: sticky; top: 0; z-index: 3; }
+    .daily-inner-table thead tr.col-row th    { position: sticky; top: 28px; z-index: 3; }
+    .daily-inner-table thead tr.tot-row th    { position: sticky; top: 57px; z-index: 3; background: #0a1a12; border-bottom: 2px solid var(--green); font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0.28rem 0.5rem; }
+    .daily-inner-table thead tr.tot-row th.tot-lbl-hdr { color: #6b7280; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; text-align: left; }
+    .daily-inner-table thead tr.tot-row th.tot-num-hdr  { color: #86efac; text-align: right; font-weight: 700; }
     .daily-inner-table tfoot td { position: sticky; bottom: 0; z-index: 2; background: #0e1a1a; border-top: 2px solid var(--green); font-weight: 700; font-variant-numeric: tabular-nums; padding: 0.3rem 0.5rem; white-space: nowrap; }
     .daily-inner-table tfoot td.tot-num { color: #86efac; text-align: right; }
     .daily-inner-table tfoot td.tot-lbl { color: #aaa; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -2409,6 +2413,19 @@ function renderDailyView() {
                 return `<th${calc?' class="calc-hdr filtered-calc"':''}><span class="col-filter-wrap">${labels[idx]}<button class="col-filter-btn${(dailyFilters[projId]&&dailyFilters[projId][f]&&dailyFilters[projId][f].size)?' active':''}" onclick="openColFilter(event,'${projId}','${f}')">▾</button></span></th>`;
               }).join('')}
             </tr>
+            <tr class="tot-row" id="daily-tot-top-${projId}">
+              <th></th>
+              <th colspan="7" class="tot-lbl-hdr">Totals</th>
+              <th id="daily-tt-lh-${projId}"  class="tot-num-hdr">—</th>
+              <th id="daily-tt-lc-${projId}"  class="tot-num-hdr">—</th>
+              <th colspan="2"></th>
+              <th id="daily-tt-eh-${projId}"  class="tot-num-hdr">—</th>
+              <th id="daily-tt-ec-${projId}"  class="tot-num-hdr">—</th>
+              <th colspan="5"></th>
+              <th id="daily-tt-mc-${projId}"  class="tot-num-hdr">—</th>
+              <th id="daily-tt-tc-${projId}"  class="tot-num-hdr">—</th>
+              <th></th>
+            </tr>
           </thead>
           <tbody id="daily-tbody-${projId}"></tbody>
           <tfoot id="daily-tfoot-${projId}"></tfoot>
@@ -2707,9 +2724,7 @@ function renderDailyCalcCells(projId, i) {
 
 function updateDailyTotals(projId) {
   const p = getProj(projId); if (!p) return;
-  const tfoot = document.getElementById('daily-tfoot-' + projId); if (!tfoot) return;
   const tbody = document.getElementById('daily-tbody-' + projId); if (!tbody) return;
-  // Collect indices of visible rows from data-i attributes
   const visibleIndices = [...new Set(
     [...tbody.querySelectorAll('[data-i]')].map(el => parseInt(el.dataset.i))
   )];
@@ -2718,16 +2733,18 @@ function updateDailyTotals(projId) {
   visibleIndices.forEach(i => {
     const r = rows[i]; if (!r) return;
     const c = calcDaily(r);
-    lh += parseFloat(r.labor_hours)  || 0;
+    lh += parseFloat(r.labor_hours) || 0;
     lc += c.labor_cost;
-    eh += parseFloat(r.equip_hours)  || 0;
+    eh += parseFloat(r.equip_hours) || 0;
     ec += c.equip_total;
     mc += c.material_cost;
     tc += c.total_cost;
   });
-  // colspan layout: del(1) date(1) field_type(1) employee(1) cost_code(1) sub_code(1) job_class(1) rate(1) labor_hours(1) labor_cost(1) equipment(1) equip_unit_cost(1) equip_hours(1) equip_total(1) material(1) supplier(1) po_num(1) units_purchased(1) unit_cost(1) material_cost(1) total_cost(1) quantity(1)
-  tfoot.innerHTML = `<tr>
-    <td colspan="8" class="tot-lbl">Filtered Totals (${visibleIndices.length} rows)</td>
+  const n = visibleIndices.length;
+  // Bottom tfoot
+  const tfoot = document.getElementById('daily-tfoot-' + projId);
+  if (tfoot) tfoot.innerHTML = `<tr>
+    <td colspan="8" class="tot-lbl">Filtered Totals (${n} row${n===1?'':'s'})</td>
     <td class="tot-num">${fmt(lh)} hrs</td>
     <td class="tot-num">$${fmt(lc)}</td>
     <td colspan="2"></td>
@@ -2738,6 +2755,16 @@ function updateDailyTotals(projId) {
     <td class="tot-num">$${fmt(tc)}</td>
     <td></td>
   </tr>`;
+  // Top header totals row
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  set('daily-tt-lh-'+projId, fmt(lh)+' hrs');
+  set('daily-tt-lc-'+projId, '$'+fmt(lc));
+  set('daily-tt-eh-'+projId, fmt(eh)+' hrs');
+  set('daily-tt-ec-'+projId, '$'+fmt(ec));
+  set('daily-tt-mc-'+projId, '$'+fmt(mc));
+  set('daily-tt-tc-'+projId, '$'+fmt(tc));
+  const lbl = document.querySelector(`#daily-tot-top-${projId} .tot-lbl-hdr`);
+  if (lbl) lbl.textContent = `Totals (${n} row${n===1?'':'s'})`;
 }
 
 function addDailyRow(projId) { addDailyRows(projId); }
