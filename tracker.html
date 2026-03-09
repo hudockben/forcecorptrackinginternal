@@ -1398,7 +1398,7 @@ async function loadCompanyInfo() {
 function saveCompanyInfo() { apiPut(COMPANY_KEY, companyInfo); }
 
 function addCompanyEmployee() {
-  companyInfo.employees.push({ id: uid(), name: '', job_class: '', rate: '' });
+  companyInfo.employees.push({ id: uid(), name: '', job_class: '', rate: '', pw_rate: '' });
   saveCompanyInfo();
   renderCompanyTab();
 }
@@ -1406,7 +1406,7 @@ function addCompanyEmployee() {
 function updateCompanyEmployee(id, field, value) {
   const emp = companyInfo.employees.find(e => e.id === id);
   if (!emp) return;
-  emp[field] = field === 'rate' ? (value === '' ? '' : parseFloat(value) || '') : value;
+  emp[field] = (field === 'rate' || field === 'pw_rate') ? (value === '' ? '' : parseFloat(value) || '') : value;
   saveCompanyInfo();
 }
 
@@ -1448,9 +1448,11 @@ function renderCompanyTab() {
           oninput="updateCompanyEmployee('${e.id}','job_class',this.value)"></td>
         <td><input type="number" class="num" value="${e.rate === '' ? '' : e.rate}" placeholder="0.00" step="any"
           oninput="updateCompanyEmployee('${e.id}','rate',this.value)"></td>
+        <td><input type="number" class="num" value="${e.pw_rate === '' || e.pw_rate === undefined ? '' : e.pw_rate}" placeholder="0.00" step="any"
+          oninput="updateCompanyEmployee('${e.id}','pw_rate',this.value)"></td>
         <td class="co-del"><button class="del-btn" onclick="removeCompanyEmployee('${e.id}')">✕</button></td>
       </tr>`).join('')
-    : `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:1rem 0">No employees yet — click <strong>+ Add Employee</strong> to start.</td></tr>`;
+    : `<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:1rem 0">No employees yet — click <strong>+ Add Employee</strong> to start.</td></tr>`;
 
   const eqRows = companyInfo.equipment.length
     ? companyInfo.equipment.map(e => `
@@ -1476,6 +1478,7 @@ function renderCompanyTab() {
               <th>Name</th>
               <th>Job Class</th>
               <th class="num">Rate ($/hr)</th>
+              <th class="num">PW Rate ($/hr)</th>
               <th></th>
             </tr></thead>
             <tbody>${empRows}</tbody>
@@ -1743,6 +1746,10 @@ function projectCardHTML(p) {
           <select onchange="updateProjectField('${p.id}','contract-type',this.value)">
             ${makeOpt(['','Lump Sum','Unit Price','Cost Plus','Time & Material','GMP'], p['contract-type']||'')}
           </select></div>
+        <div class="info-field"><label>Prevailing Wage Project</label>
+          <select onchange="updateProjectField('${p.id}','prevailing-wage',this.value)">
+            ${makeOpt(['No','Yes'], p['prevailing-wage']||'No')}
+          </select></div>
       </div>
     </div>
 
@@ -1837,7 +1844,9 @@ function projectCardHTML(p) {
               ? `<div class="assign-empty">No company employees defined yet. Add employees in the <strong>Company Info</strong> tab.</div>`
               : companyInfo.employees.map(emp => {
                   const checked = (p.assignedEmployees || []).includes(emp.id);
-                  const meta = [emp.job_class, emp.rate !== '' ? '$'+emp.rate+'/hr' : ''].filter(Boolean).join(' — ');
+                  const rateStr = emp.rate !== '' && emp.rate !== undefined ? '$'+emp.rate+'/hr' : '';
+                  const pwStr  = emp.pw_rate !== '' && emp.pw_rate !== undefined ? 'PW:$'+emp.pw_rate+'/hr' : '';
+                  const meta = [emp.job_class, rateStr, pwStr].filter(Boolean).join(' — ');
                   return `<label class="assign-item">
                     <input type="checkbox" ${checked ? 'checked' : ''}
                       onchange="toggleAssignedEmployee('${p.id}','${emp.id}',this.checked)">
@@ -2695,12 +2704,16 @@ document.addEventListener('input', e => {
     // Auto-fill rate when employee is selected from company list
     if (f === 'employee') {
       const emp = companyInfo.employees.find(e => e.name === el.value);
-      if (emp && emp.rate) {
-        p.dailyRows[i].rate = emp.rate;
-        const row = document.getElementById('daily-tbody-' + projId)?.children[i];
-        if (row) {
-          const rateInput = row.querySelector('[data-f="rate"]');
-          if (rateInput) rateInput.value = emp.rate;
+      if (emp) {
+        const isPW = p['prevailing-wage'] === 'Yes';
+        const autoRate = isPW && emp.pw_rate !== '' && emp.pw_rate !== undefined ? emp.pw_rate : emp.rate;
+        if (autoRate !== '' && autoRate !== undefined) {
+          p.dailyRows[i].rate = autoRate;
+          const row = document.getElementById('daily-tbody-' + projId)?.children[i];
+          if (row) {
+            const rateInput = row.querySelector('[data-f="rate"]');
+            if (rateInput) rateInput.value = autoRate;
+          }
         }
       }
       if (emp && emp.job_class) {
