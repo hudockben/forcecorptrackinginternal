@@ -1661,8 +1661,6 @@ function renderBidFooter(projId) {
 function renderBidTable(projId) {
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById('btbody-' + projId); if (!tbody) return;
-  const ccOpts = ['', ...getCostCodes()];
-  const scOpts = ['', ...getSubCodes()];
   tbody.innerHTML = (p.bidItems||[]).map(b => {
     const bidTot  = (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0);
     const actual  = actualForBidItem(b, projId);
@@ -1670,11 +1668,11 @@ function renderBidTable(projId) {
     const diff    = bidTot - actual;
     const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
     const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
-    const ccSel = `<select onchange="updateBidItem('${projId}','${b.id}','cost_code',this.value)">${ccOpts.map(o=>`<option value="${esc(o)}"${o===b.cost_code?'selected':''}>${esc(o)||'—'}</option>`).join('')}</select>`;
-    const scSel = `<select onchange="updateBidItem('${projId}','${b.id}','sub_code',this.value)">${scOpts.map(o=>`<option value="${esc(o)}"${o===b.sub_code?'selected':''}>${esc(o)||'—'}</option>`).join('')}</select>`;
     return `<tr>
-      <td>${ccSel}</td>
-      <td>${scSel}</td>
+      <td><input type="text" value="${esc(b.cost_code)}" placeholder="e.g. 03-200"
+        oninput="updateBidItem('${projId}','${b.id}','cost_code',this.value)"></td>
+      <td><input type="text" value="${esc(b.sub_code)}" placeholder="e.g. A"
+        oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
       <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
         oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
       <td class="bid-calc" id="biq-${b.id}">${runQty ? fmt(runQty) : '—'}</td>
@@ -2599,8 +2597,8 @@ function renderDailyTable(projId) {
     return;
   }
 
-  const costCodes     = getCostCodes();
-  const subCodes      = getSubCodes();
+  const costCodes = [...new Set((p.bidItems||[]).map(b => b.cost_code).filter(Boolean))];
+  const subCodes  = [...new Set((p.bidItems||[]).map(b => b.sub_code).filter(Boolean))];
   const projFieldTypes = p.fieldTypes || [];
   const allFieldTypes = [...new Set([...projFieldTypes, ...lists.field_types])];
   const fieldTypeOpts = ['', ...allFieldTypes];
