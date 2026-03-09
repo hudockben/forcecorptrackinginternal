@@ -202,6 +202,13 @@
       color: var(--text); font-size: 0.82rem; font-family: inherit; padding: 0.35rem 0.6rem;
     }
     .bid-table td input:focus { background: #1e1e2e; }
+    .bid-table td select {
+      width: 100%; background: transparent; border: none; outline: none;
+      color: var(--text); font-size: 0.82rem; font-family: inherit; padding: 0.35rem 0.6rem;
+      cursor: pointer;
+    }
+    .bid-table td select:focus { background: #1e1e2e; }
+    .bid-table td select option { background: #1a1a2e; color: var(--text); }
     .bid-table td input.num { text-align: right; }
     .bid-table td.bid-calc {
       background: var(--calc); color: #86efac; text-align: right;
@@ -1573,7 +1580,7 @@ function statusBadgeClass(s) {
 // ── Bid Items ──
 function addBidItem(projId) {
   const p = getProj(projId); if (!p) return;
-  p.bidItems.push({ id: uid(), cost_code:'', sub_code:'', description:'', quantity:'', unit_cost:'' });
+  p.bidItems.push({ id: uid(), cost_code:'', sub_code:'', quantity:'', unit_cost:'' });
   saveProjects();
   renderBidTable(projId);
 }
@@ -1590,13 +1597,31 @@ function updateBidItem(projId, itemId, field, value) {
   const item = p.bidItems.find(b => b.id === itemId); if (!item) return;
   item[field] = value;
   saveProjects();
-  // Refresh just this row's calculated cells + footer totals
+  // Changing code fields changes which daily rows are matched — full re-render
+  if (field === 'cost_code' || field === 'sub_code') {
+    renderBidTable(projId);
+    return;
+  }
+  // Otherwise just refresh the bid total cell + footer
   const qty = parseFloat(item.quantity) || 0;
   const uc  = parseFloat(item.unit_cost) || 0;
   const bidTot = qty * uc;
   const calcEl = document.getElementById('bic-' + itemId);
   if (calcEl) calcEl.textContent = bidTot ? '$' + fmt(bidTot) : '—';
   renderBidFooter(projId);
+}
+
+function runningQtyForBidItem(b, projId) {
+  if (!b.cost_code && !b.sub_code) return 0;
+  const proj = getProj(projId);
+  const rows = proj ? (proj.dailyRows || []) : [];
+  return rows.reduce((s, r) => {
+    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
+        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+      return s + (parseFloat(r.quantity) || 0);
+    }
+    return s;
+  }, 0);
 }
 
 function actualForBidItem(b, projId) {
@@ -1618,12 +1643,14 @@ function renderBidFooter(projId) {
   const footEl = document.getElementById('bfoot-' + projId); if (!footEl) return;
   const totalBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
   const totalActual = (p.bidItems||[]).reduce((s,b) => s + actualForBidItem(b, projId), 0);
+  const totalRunQty = (p.bidItems||[]).reduce((s,b) => s + runningQtyForBidItem(b, projId), 0);
   const diff = totalBid - totalActual;
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
   footEl.innerHTML = `
-    <td class="foot-label" colspan="3">Totals</td>
+    <td class="foot-label" colspan="2">Totals</td>
     <td class="foot-label num" style="text-align:right">—</td>
+    <td class="foot-label num" style="text-align:right">${totalRunQty ? fmt(totalRunQty) : '—'}</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
@@ -1634,21 +1661,23 @@ function renderBidFooter(projId) {
 function renderBidTable(projId) {
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById('btbody-' + projId); if (!tbody) return;
+  const ccOpts = ['', ...getCostCodes()];
+  const scOpts = ['', ...getSubCodes()];
   tbody.innerHTML = (p.bidItems||[]).map(b => {
-    const bidTot = (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0);
-    const actual = actualForBidItem(b, projId);
-    const diff   = bidTot - actual;
+    const bidTot  = (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0);
+    const actual  = actualForBidItem(b, projId);
+    const runQty  = runningQtyForBidItem(b, projId);
+    const diff    = bidTot - actual;
     const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
     const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
+    const ccSel = `<select onchange="updateBidItem('${projId}','${b.id}','cost_code',this.value)">${ccOpts.map(o=>`<option value="${esc(o)}"${o===b.cost_code?'selected':''}>${esc(o)||'—'}</option>`).join('')}</select>`;
+    const scSel = `<select onchange="updateBidItem('${projId}','${b.id}','sub_code',this.value)">${scOpts.map(o=>`<option value="${esc(o)}"${o===b.sub_code?'selected':''}>${esc(o)||'—'}</option>`).join('')}</select>`;
     return `<tr>
-      <td><input type="text" class="num" value="${esc(b.cost_code)}" placeholder="Code"
-        oninput="updateBidItem('${projId}','${b.id}','cost_code',this.value)"></td>
-      <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub"
-        oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
-      <td><input type="text" value="${esc(b.description)}" placeholder="Description"
-        oninput="updateBidItem('${projId}','${b.id}','description',this.value)"></td>
+      <td>${ccSel}</td>
+      <td>${scSel}</td>
       <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
         oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
+      <td class="bid-calc" id="biq-${b.id}">${runQty ? fmt(runQty) : '—'}</td>
       <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
         oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
       <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
@@ -1823,8 +1852,8 @@ function projectCardHTML(p) {
       </div>
       <table class="bid-table">
         <thead><tr>
-          <th>Cost Code</th><th>Sub Code</th><th>Description</th>
-          <th class="num">Quantity</th><th class="num">Unit Cost</th>
+          <th>Cost Code</th><th>Sub Code</th>
+          <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Unit Cost</th>
           <th class="num">Bid Total</th><th class="num">Actual Cost</th>
           <th class="num">Variance</th><th></th>
         </tr></thead>
