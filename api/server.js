@@ -11,10 +11,10 @@
 
 'use strict';
 
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const express = require('express');
-const cors    = require('cors');
+const path    = require('path');
 const { neon } = require('@neondatabase/serverless');
 
 // ── Neon connection ────────────────────────────────────────────────────────
@@ -30,8 +30,10 @@ const sql = neon(process.env.DATABASE_URL);
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// Serve static files (index.html, tracker.html) so /api paths work locally
+app.use(express.static(path.join(__dirname, '..')));
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 
@@ -94,6 +96,7 @@ app.put('/api/data/:key', async (req, res) => {
 
 // ── Start ──────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`ForceCorpTracking API listening on http://localhost:${PORT}`);
-  console.log('Connected to Neon database via DATABASE_URL');
+  console.log(`ForceCorpTracking running at http://localhost:${PORT}`);
+  console.log(`  App:    http://localhost:${PORT}/tracker.html`);
+  console.log(`  Health: http://localhost:${PORT}/api/health`);
 });
