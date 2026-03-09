@@ -167,15 +167,31 @@
     .daily-section .bid-section-title { color: var(--green); }
     .daily-table-wrap { overflow-x: auto; margin-bottom: 0.4rem; }
     .daily-inner-table {
-      width: 100%; border-collapse: collapse;
+      width: 100%; border-collapse: separate; border-spacing: 0;
       font-size: 0.78rem; white-space: nowrap;
     }
-    .daily-inner-table thead tr.group-row th  { position: sticky; top: 0; z-index: 3; }
-    .daily-inner-table thead tr.col-row th    { position: sticky; top: 28px; z-index: 3; }
-    .daily-inner-table thead tr.tot-row th    { position: sticky; top: 57px; z-index: 3; background: #0a1a12; border-bottom: 2px solid var(--green); font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0.28rem 0.5rem; }
+    .daily-inner-table td,
+    .daily-inner-table thead th { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .daily-inner-table thead th:first-child,
+    .daily-inner-table td:first-child { border-left: 1px solid var(--border); }
+    .daily-inner-table thead tr:first-child th { border-top: 1px solid var(--border); }
+    /* Sticky rows — must have explicit solid backgrounds to cover scrolling content */
+    .daily-inner-table thead tr.group-row th {
+      position: sticky; top: 0; z-index: 3;
+      background: var(--surface);
+    }
+    .daily-inner-table thead tr.col-row th {
+      position: sticky; top: 29px; z-index: 3;
+      background: var(--surface2);
+    }
+    .daily-inner-table thead tr.tot-row th {
+      position: sticky; top: 61px; z-index: 3;
+      background: #0a1a12; border-bottom: 2px solid var(--green);
+      font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0.28rem 0.5rem;
+    }
     .daily-inner-table thead tr.tot-row th.tot-lbl-hdr { color: #6b7280; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; text-align: left; }
     .daily-inner-table thead tr.tot-row th.tot-num-hdr  { color: #86efac; text-align: right; font-weight: 700; }
-    .daily-inner-table tfoot td { position: sticky; bottom: 0; z-index: 2; background: #0e1a1a; border-top: 2px solid var(--green); font-weight: 700; font-variant-numeric: tabular-nums; padding: 0.3rem 0.5rem; white-space: nowrap; }
+    .daily-inner-table tfoot td { position: sticky; bottom: 0; z-index: 2; background: #0e1a1a !important; border-top: 2px solid var(--green) !important; font-weight: 700; font-variant-numeric: tabular-nums; padding: 0.3rem 0.5rem; white-space: nowrap; }
     .daily-inner-table tfoot td.tot-num { color: #86efac; text-align: right; }
     .daily-inner-table tfoot td.tot-lbl { color: #aaa; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
     .daily-inner-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
