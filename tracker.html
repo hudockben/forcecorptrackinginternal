@@ -631,7 +631,10 @@
 
 <!-- ══════════════ HEADER ══════════════ -->
 <header>
-  <span class="brand">ForceCorpTracking</span>
+  <div style="display:flex;align-items:center;gap:1rem;">
+    <span class="brand">ForceCorpTracking</span>
+    <span id="user-badge" style="font-size:0.7rem;color:#444;letter-spacing:0.05em;"></span>
+  </div>
   <div class="actions" id="header-actions">
     <!-- injected by JS based on active tab -->
   </div>
@@ -782,15 +785,41 @@
 
 <script>
 /* ═══════════════════════════════════════════
+   AUTH — check token on load, expose helpers
+═══════════════════════════════════════════ */
+const fctToken = localStorage.getItem('fct_token');
+const fctUser  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+
+if (!fctToken || !fctUser) {
+  window.location.replace('index.html');
+}
+
+function logout() {
+  localStorage.removeItem('fct_token');
+  localStorage.removeItem('fct_user');
+  window.location.replace('index.html');
+}
+
+// Show user + company in header badge
+(function () {
+  const badge = document.getElementById('user-badge');
+  if (badge && fctUser) {
+    badge.textContent = `${fctUser.companyName || fctUser.companyCode} · ${fctUser.username}`;
+  }
+})();
+
+/* ═══════════════════════════════════════════
    NEON DATABASE API LAYER
    Replaces localStorage with server-backed persistence.
-   API server must be running at API_BASE (see api/server.js).
 ═══════════════════════════════════════════ */
 const API_BASE = '/api';
 
 async function apiGet(key) {
   try {
-    const r = await fetch(`${API_BASE}/data/${key}`);
+    const r = await fetch(`${API_BASE}/data/${key}`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (r.status === 401) { logout(); return null; }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const { value } = await r.json();
     return value;
@@ -804,7 +833,10 @@ function apiPut(key, value) {
   // Fire-and-forget — UI is already updated in memory
   fetch(`${API_BASE}/data/${key}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${fctToken}`,
+    },
     body: JSON.stringify({ value })
   }).catch(err => console.warn(`[DB] PUT ${key} failed:`, err.message));
 }
@@ -851,14 +883,15 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 function renderHeaderActions() {
   const el = document.getElementById('header-actions');
+  const logoutBtn = `<button class="btn btn-ghost" onclick="logout()">Sign Out</button>`;
   if (activeTab === 'cost') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
       <button class="btn btn-green" onclick="addCostRow()">+ Add Bid Entry</button>
-      <a href="index.html" class="btn btn-ghost">&#8592; Landing Page</a>
+      ${logoutBtn}
     `;
   } else {
-    el.innerHTML = `<a href="index.html" class="btn btn-ghost">&#8592; Landing Page</a>`;
+    el.innerHTML = logoutBtn;
   }
 }
 

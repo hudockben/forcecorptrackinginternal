@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ForceCorpTracking</title>
+  <title>ForceCorpTracking — Sign In</title>
   <style>
     *, *::before, *::after {
       box-sizing: border-box;
@@ -39,84 +39,6 @@
         radial-gradient(circle at 80% 20%, rgba(0, 180, 80, 0.08) 0%, transparent 50%);
     }
 
-    .container {
-      position: relative;
-      z-index: 1;
-      text-align: center;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 2rem;
-    }
-
-    .logo {
-      font-size: 0.85rem;
-      letter-spacing: 0.4em;
-      text-transform: uppercase;
-      color: #2ecc71;
-      font-weight: 600;
-      opacity: 0.9;
-    }
-
-    h1 {
-      font-size: clamp(2.5rem, 6vw, 4.5rem);
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      line-height: 1.1;
-      background: linear-gradient(135deg, #ffffff 0%, #a0ffcc 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-
-    .tagline {
-      font-size: 1.1rem;
-      color: #888;
-      max-width: 420px;
-      line-height: 1.6;
-    }
-
-    .enter-btn {
-      margin-top: 1rem;
-      padding: 0.85rem 3rem;
-      font-size: 1rem;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #fff;
-      background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      position: relative;
-      overflow: hidden;
-      transition: transform 0.15s ease, box-shadow 0.15s ease;
-      box-shadow: 0 0 20px rgba(22, 163, 74, 0.35);
-    }
-
-    .enter-btn::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background: linear-gradient(135deg, rgba(255,255,255,0.12) 0%, transparent 60%);
-      opacity: 0;
-      transition: opacity 0.2s ease;
-    }
-
-    .enter-btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 32px rgba(22, 163, 74, 0.55);
-    }
-
-    .enter-btn:hover::before {
-      opacity: 1;
-    }
-
-    .enter-btn:active {
-      transform: translateY(0);
-      box-shadow: 0 0 16px rgba(22, 163, 74, 0.4);
-    }
-
     .grid-lines {
       position: fixed;
       inset: 0;
@@ -127,6 +49,145 @@
       background-size: 60px 60px;
       pointer-events: none;
     }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      max-width: 400px;
+      padding: 0 1.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2rem;
+    }
+
+    .logo-wrap {
+      text-align: center;
+    }
+
+    .logo {
+      font-size: 0.8rem;
+      letter-spacing: 0.4em;
+      text-transform: uppercase;
+      color: #2ecc71;
+      font-weight: 600;
+    }
+
+    .logo-title {
+      font-size: clamp(1.8rem, 5vw, 2.6rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      background: linear-gradient(135deg, #ffffff 0%, #a0ffcc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-top: 0.4rem;
+    }
+
+    .card {
+      width: 100%;
+      background: #111118;
+      border: 1px solid #2a2a3a;
+      border-radius: 8px;
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .card-title {
+      font-size: 0.7rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: #666;
+      text-align: center;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #888;
+    }
+
+    input {
+      width: 100%;
+      padding: 0.65rem 0.85rem;
+      background: #0a0a0f;
+      border: 1px solid #2a2a3a;
+      border-radius: 4px;
+      color: #e0e0e0;
+      font-size: 0.9rem;
+      font-family: inherit;
+      transition: border-color 0.15s;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: #22c55e;
+    }
+
+    input::placeholder {
+      color: #444;
+    }
+
+    .submit-btn {
+      width: 100%;
+      padding: 0.75rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #fff;
+      background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s;
+      box-shadow: 0 0 20px rgba(22, 163, 74, 0.3);
+      margin-top: 0.25rem;
+    }
+
+    .submit-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 24px rgba(22, 163, 74, 0.5);
+    }
+
+    .submit-btn:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    .submit-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .error-msg {
+      font-size: 0.8rem;
+      color: #ef4444;
+      text-align: center;
+      min-height: 1.2em;
+      display: none;
+    }
+
+    .error-msg.visible {
+      display: block;
+    }
+
+    .tagline {
+      font-size: 0.8rem;
+      color: #444;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -134,10 +195,124 @@
   <div class="grid-lines"></div>
 
   <main class="container">
-    <span class="logo">ForceCorpTracking</span>
-    <h1>Track. Analyze.<br>Optimize.</h1>
-    <p class="tagline">Real-time workforce intelligence for the modern enterprise.</p>
-    <button class="enter-btn" onclick="window.location.href='tracker.html'">Enter</button>
+    <div class="logo-wrap">
+      <div class="logo">ForceCorpTracking</div>
+      <div class="logo-title">Track. Analyze.<br>Optimize.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Sign In to Your Account</div>
+
+      <form id="loginForm" novalidate>
+        <div style="display:flex;flex-direction:column;gap:1rem;">
+          <div class="field">
+            <label for="companyCode">Company Code</label>
+            <input
+              id="companyCode"
+              type="text"
+              placeholder="e.g. ACME"
+              autocomplete="organization"
+              autocapitalize="characters"
+              spellcheck="false"
+              required
+            />
+          </div>
+
+          <div class="field">
+            <label for="username">Username</label>
+            <input
+              id="username"
+              type="text"
+              placeholder="your username"
+              autocomplete="username"
+              spellcheck="false"
+              required
+            />
+          </div>
+
+          <div class="field">
+            <label for="password">Password</label>
+            <input
+              id="password"
+              type="password"
+              placeholder="••••••••"
+              autocomplete="current-password"
+              required
+            />
+          </div>
+
+          <div class="error-msg" id="errorMsg"></div>
+
+          <button type="submit" class="submit-btn" id="submitBtn">Sign In</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="tagline">Real-time workforce intelligence for the modern enterprise.</div>
   </main>
+
+  <script>
+    // Redirect if already logged in
+    (function () {
+      const token = localStorage.getItem('fct_token');
+      if (token) window.location.replace('tracker.html');
+    })();
+
+    const form      = document.getElementById('loginForm');
+    const errorMsg  = document.getElementById('errorMsg');
+    const submitBtn = document.getElementById('submitBtn');
+
+    function showError(msg) {
+      errorMsg.textContent = msg;
+      errorMsg.classList.add('visible');
+    }
+
+    function clearError() {
+      errorMsg.classList.remove('visible');
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearError();
+
+      const companyCode = document.getElementById('companyCode').value.trim();
+      const username    = document.getElementById('username').value.trim();
+      const password    = document.getElementById('password').value;
+
+      if (!companyCode || !username || !password) {
+        showError('All fields are required.');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Signing in…';
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ companyCode, username, password }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          showError(data.error || 'Sign-in failed. Please try again.');
+          return;
+        }
+
+        // Persist token + user info
+        localStorage.setItem('fct_token', data.token);
+        localStorage.setItem('fct_user',  JSON.stringify(data.user));
+
+        window.location.replace('tracker.html');
+      } catch {
+        showError('Network error — please check your connection.');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign In';
+      }
+    });
+  </script>
 </body>
 </html>
