@@ -1833,11 +1833,73 @@ function projectCardHTML(p) {
       </table>
     </div>
 
+    <div class="info-section">
+      <div class="info-section-title">Assigned Resources</div>
+      <div class="info-grid">
+        <div class="info-field">
+          <label>Assigned Employees</label>
+          <div class="assign-list">
+            ${companyInfo.employees.length === 0
+              ? `<div class="assign-empty">No company employees defined yet. Add employees in the <strong>Company Info</strong> tab.</div>`
+              : companyInfo.employees.map(emp => {
+                  const checked = (p.assignedEmployees || []).includes(emp.id);
+                  const meta = [emp.job_class, emp.rate !== '' ? '$'+emp.rate+'/hr' : ''].filter(Boolean).join(' — ');
+                  return `<label class="assign-item">
+                    <input type="checkbox" ${checked ? 'checked' : ''}
+                      onchange="toggleAssignedEmployee('${p.id}','${emp.id}',this.checked)">
+                    <span>${esc(emp.name || '(unnamed)')}</span>
+                    ${meta ? `<span class="assign-meta">${esc(meta)}</span>` : ''}
+                  </label>`;
+                }).join('')}
+          </div>
+        </div>
+        <div class="info-field">
+          <label>Assigned Equipment</label>
+          <div class="assign-list">
+            ${(p.equipRates || []).filter(e => e.name).map(eq => `
+              <label class="assign-item">
+                <input type="checkbox" checked disabled title="Project-specific equipment (always included)">
+                <span>${esc(eq.name)}</span>
+                ${eq.rate !== '' && eq.rate !== undefined ? `<span class="assign-meta">$${eq.rate}/hr</span>` : ''}
+                <span class="assign-badge-proj">project</span>
+              </label>`).join('')}
+            ${companyInfo.equipment.length === 0 && !(p.equipRates || []).filter(e => e.name).length
+              ? `<div class="assign-empty">No company equipment defined yet. Add equipment in the <strong>Company Info</strong> tab.</div>`
+              : companyInfo.equipment.map(eq => {
+                  const checked = (p.assignedEquipment || []).includes(eq.id);
+                  return `<label class="assign-item">
+                    <input type="checkbox" ${checked ? 'checked' : ''}
+                      onchange="toggleAssignedEquipment('${p.id}','${eq.id}',this.checked)">
+                    <span>${esc(eq.name || '(unnamed)')}</span>
+                    ${eq.rate !== '' && eq.rate !== undefined ? `<span class="assign-meta">$${eq.rate}/hr</span>` : ''}
+                  </label>`;
+                }).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="proj-card-footer">
       <button class="btn btn-danger" onclick="deleteProject('${p.id}')">Delete Project</button>
     </div>
   </div>
 </div>`;
+}
+
+function toggleAssignedEmployee(projId, empId, checked) {
+  const p = getProj(projId); if (!p) return;
+  if (!Array.isArray(p.assignedEmployees)) p.assignedEmployees = [];
+  if (checked) { if (!p.assignedEmployees.includes(empId)) p.assignedEmployees.push(empId); }
+  else { p.assignedEmployees = p.assignedEmployees.filter(id => id !== empId); }
+  saveProjects();
+}
+
+function toggleAssignedEquipment(projId, eqId, checked) {
+  const p = getProj(projId); if (!p) return;
+  if (!Array.isArray(p.assignedEquipment)) p.assignedEquipment = [];
+  if (checked) { if (!p.assignedEquipment.includes(eqId)) p.assignedEquipment.push(eqId); }
+  else { p.assignedEquipment = p.assignedEquipment.filter(id => id !== eqId); }
+  saveProjects();
 }
 
 function renderProjectsTab() {
@@ -2482,12 +2544,38 @@ function renderDailyTable(projId) {
   const costCodes     = getCostCodes();
   const subCodes      = getSubCodes();
   const fieldTypeOpts = ['', ...lists.field_types];
-  const employeeOpts  = ['', ...lists.employees];
+
+  // Employee dropdown: use assigned company employees if any, else fall back to lists.employees
+  let employeeOpts;
+  if ((p.assignedEmployees || []).length > 0) {
+    const assignedEmpNames = p.assignedEmployees
+      .map(id => companyInfo.employees.find(e => e.id === id))
+      .filter(Boolean)
+      .map(e => e.name || '');
+    employeeOpts = ['', ...assignedEmpNames];
+  } else {
+    employeeOpts = ['', ...lists.employees];
+  }
+
   const jobClassOpts  = ['', ...lists.job_classes];
-  // Project-specific rates take priority; fall back to global equipment list
+
+  // Equipment dropdown: start with project-specific, add assigned company equipment, fall back to global list
   const projEquip = (p.equipRates || []).filter(e => e.name);
-  const globalEquip = lists.equipment.filter(e => e.name && !projEquip.find(pe => pe.name === e.name));
-  const allEquip = [...projEquip, ...globalEquip];
+  let allEquip;
+  if ((p.assignedEquipment || []).length > 0) {
+    const assignedCoEquip = p.assignedEquipment
+      .map(id => companyInfo.equipment.find(e => e.id === id))
+      .filter(Boolean);
+    // Merge: proj rates first, then assigned company equipment not already in proj rates
+    const merged = [...projEquip];
+    assignedCoEquip.forEach(ce => {
+      if (!merged.find(pe => pe.name === ce.name)) merged.push({ name: ce.name, rate: ce.rate });
+    });
+    allEquip = merged;
+  } else {
+    const globalEquip = lists.equipment.filter(e => e.name && !projEquip.find(pe => pe.name === e.name));
+    allEquip = [...projEquip, ...globalEquip];
+  }
   const equipOpts = ['', ...allEquip.map(e => e.name)];
   const supplierOpts  = ['', ...lists.suppliers];
   const ccOpts        = ['', ...costCodes];
@@ -2585,6 +2673,7 @@ document.addEventListener('input', e => {
     // Auto-fill equip unit cost when equipment is selected (project rates take priority)
     if (f === 'equipment') {
       const eq = (p.equipRates || []).find(e => e.name === el.value)
+              || companyInfo.equipment.find(e => e.name === el.value)
               || lists.equipment.find(e => e.name === el.value);
       if (eq) {
         p.dailyRows[i].equip_unit_cost = eq.rate ?? eq.unit_cost;
@@ -2636,6 +2725,7 @@ function downloadCSV(content, filename) {
   await loadLists();
   await loadCostRows();
   await loadProjects();
+  await loadCompanyInfo();
   renderCostTable();
   renderHomeTab();
   renderProjectDashboard();
