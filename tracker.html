@@ -645,6 +645,41 @@
     }
     .daily-view-table { flex: 1; overflow: auto; margin: 0; border-radius: 0; }
     .cost-mix-legend span { display: flex; align-items: center; gap: 0.3rem; }
+
+    /* Column filter */
+    .col-filter-wrap { position: relative; display: inline-flex; align-items: center; gap: 3px; }
+    .col-filter-btn {
+      background: none; border: none; cursor: pointer; padding: 1px 3px;
+      font-size: 0.6rem; line-height: 1; color: inherit; opacity: 0.5;
+      border-radius: 3px; transition: opacity 0.15s;
+    }
+    .col-filter-btn:hover, .col-filter-btn.active { opacity: 1; color: var(--green); }
+    .col-filter-btn.active { background: rgba(74,222,128,0.15); }
+    .col-filter-dropdown {
+      position: absolute; top: calc(100% + 4px); left: 0; z-index: 1000;
+      background: #1a1a1a; border: 1px solid var(--border); border-radius: 6px;
+      min-width: 180px; max-height: 280px; display: flex; flex-direction: column;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .col-filter-search {
+      padding: 6px 8px; border: none; border-bottom: 1px solid var(--border);
+      background: #111; color: var(--text); font-size: 0.75rem; border-radius: 6px 6px 0 0;
+      outline: none;
+    }
+    .col-filter-list { overflow-y: auto; flex: 1; padding: 4px 0; }
+    .col-filter-item {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 10px; font-size: 0.75rem; cursor: pointer;
+      color: var(--text); user-select: none;
+    }
+    .col-filter-item:hover { background: var(--surface2); }
+    .col-filter-item input[type=checkbox] { accent-color: var(--green); cursor: pointer; }
+    .col-filter-actions {
+      display: flex; gap: 6px; padding: 6px 8px;
+      border-top: 1px solid var(--border);
+    }
+    .col-filter-actions button { flex: 1; font-size: 0.7rem; padding: 4px 0; }
+    th.filtered { background: rgba(74,222,128,0.08) !important; }
   </style>
 </head>
 <body>
@@ -2042,7 +2077,11 @@ function renderDailyView() {
           <button class="btn btn-ghost" onclick="closeDailyView()">&#8592; Back to Project Info</button>
         </div>
         <div class="daily-view-title">${esc(name)} — Daily Tracking</div>
-        <div></div>
+        <div style="display:flex;justify-content:flex-end">
+          ${Object.values(getDailyFilters(projId)).some(s => s && s.size)
+            ? `<button class="btn btn-ghost" style="font-size:0.72rem" onclick="clearAllDailyFilters('${projId}')">&#10005; Clear Filters</button>`
+            : ''}
+        </div>
       </div>
       <div class="daily-table-wrap daily-view-table">
         <table class="daily-inner-table">
@@ -2056,17 +2095,13 @@ function renderDailyView() {
               <th class="g-mat"   colspan="6">Material</th>
               <th class="g-sum"   colspan="2">Summary</th>
             </tr>
-            <tr class="col-row">
+            <tr class="col-row" id="daily-col-row-${projId}">
               <th></th>
-              <th>Date</th><th>Field Type</th><th>Employee</th>
-              <th>Cost Code</th><th>Sub Code</th>
-              <th>Job Class</th><th>Rate</th><th>Labor Hours</th>
-              <th class="calc-hdr">Labor Cost</th>
-              <th>Equipment</th><th>Equip Unit Cost</th><th>Equip Hours</th>
-              <th class="calc-hdr">Equip Total Cost</th>
-              <th>Material</th><th>Supplier</th><th>PO #</th>
-              <th>Units Purchased</th><th>Unit Cost</th><th>Material Cost</th>
-              <th class="calc-hdr">Total Cost</th><th>Quantity</th>
+              ${['date','field_type','employee','cost_code','sub_code','job_class','rate','labor_hours','labor_cost','equipment','equip_unit_cost','equip_hours','equip_total_cost','material','supplier','po_num','units_purchased','unit_cost','material_cost','total_cost','quantity'].map((f,idx) => {
+                const labels = ['Date','Field Type','Employee','Cost Code','Sub Code','Job Class','Rate','Labor Hours','Labor Cost','Equipment','Equip Unit Cost','Equip Hours','Equip Total Cost','Material','Supplier','PO #','Units Purchased','Unit Cost','Material Cost','Total Cost','Quantity'];
+                const calc = ['labor_cost','equip_total_cost','total_cost'].includes(f);
+                return `<th${calc?' class="calc-hdr filtered-calc"':''}><span class="col-filter-wrap">${labels[idx]}<button class="col-filter-btn${(dailyFilters[projId]&&dailyFilters[projId][f]&&dailyFilters[projId][f].size)?' active':''}" onclick="openColFilter(event,'${projId}','${f}')">▾</button></span></th>`;
+              }).join('')}
             </tr>
           </thead>
           <tbody id="daily-tbody-${projId}"></tbody>
@@ -2117,14 +2152,137 @@ function makeSelect(options, selected, dataTab, dataI, dataF, dataProj) {
   </select>`;
 }
 
+/* ── Daily column filters ── */
+// dailyFilters[projId][field] = Set of allowed values (null/missing = no filter)
+const dailyFilters = {};
+
+function getDailyFilters(projId) {
+  if (!dailyFilters[projId]) dailyFilters[projId] = {};
+  return dailyFilters[projId];
+}
+
+function openColFilter(e, projId, field) {
+  e.stopPropagation();
+  // Close any open dropdowns
+  document.querySelectorAll('.col-filter-dropdown').forEach(d => d.remove());
+
+  const btn = e.currentTarget;
+  const p = getProj(projId); if (!p) return;
+  const rows = p.dailyRows || [];
+  const filters = getDailyFilters(projId);
+
+  // Collect unique values for this field (including computed ones)
+  const calcFields = { labor_cost: r => '$'+fmt(calcDaily(r).labor_cost),
+                       equip_total_cost: r => '$'+fmt(calcDaily(r).equip_total),
+                       total_cost: r => '$'+fmt(calcDaily(r).total_cost) };
+  const getVal = r => calcFields[field] ? calcFields[field](r) : (r[field] ?? '');
+  const allVals = [...new Set(rows.map(getVal))].sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true}));
+
+  const activeSet = filters[field] || null; // null = all shown
+
+  const dd = document.createElement('div');
+  dd.className = 'col-filter-dropdown';
+  dd.innerHTML = `
+    <input class="col-filter-search" type="text" placeholder="Search…" oninput="filterColSearch(this)">
+    <div class="col-filter-list">
+      <label class="col-filter-item" id="cfi-selectall-${field}">
+        <input type="checkbox" id="cfi-all-${field}" ${!activeSet ? 'checked' : ''} onchange="colFilterSelectAll(this,'${projId}','${field}')"> (Select All)
+      </label>
+      ${allVals.map(v => `
+        <label class="col-filter-item">
+          <input type="checkbox" class="cfi-val" data-val="${esc(v)}" ${!activeSet || activeSet.has(String(v)) ? 'checked' : ''}>
+          ${esc(String(v) || '(blank)')}
+        </label>`).join('')}
+    </div>
+    <div class="col-filter-actions">
+      <button class="btn btn-ghost" onclick="cancelColFilter(this)">Cancel</button>
+      <button class="btn btn-green" onclick="applyColFilter(this,'${projId}','${field}')">Apply</button>
+    </div>`;
+
+  btn.parentElement.appendChild(dd);
+
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener('click', function handler(ev) {
+      if (!dd.contains(ev.target)) { dd.remove(); document.removeEventListener('click', handler); }
+    });
+  }, 0);
+}
+
+function filterColSearch(input) {
+  const q = input.value.toLowerCase();
+  input.closest('.col-filter-dropdown').querySelectorAll('.cfi-val').forEach(cb => {
+    const item = cb.closest('.col-filter-item');
+    item.style.display = cb.dataset.val.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+function colFilterSelectAll(allCb, projId, field) {
+  const dd = allCb.closest('.col-filter-dropdown');
+  dd.querySelectorAll('.cfi-val').forEach(cb => cb.checked = allCb.checked);
+}
+
+function cancelColFilter(btn) {
+  btn.closest('.col-filter-dropdown').remove();
+}
+
+function applyColFilter(btn, projId, field) {
+  const dd = btn.closest('.col-filter-dropdown');
+  const filters = getDailyFilters(projId);
+  const allCb = dd.querySelector(`#cfi-all-${field}`);
+  const valCbs = [...dd.querySelectorAll('.cfi-val')];
+  const checkedVals = valCbs.filter(cb => cb.checked).map(cb => cb.dataset.val);
+  const allChecked = checkedVals.length === valCbs.length;
+
+  if (allChecked) {
+    delete filters[field];
+  } else {
+    filters[field] = new Set(checkedVals);
+  }
+  dd.remove();
+  renderDailyTable(projId);
+  // Update header filter button state
+  const colRow = document.getElementById('daily-col-row-' + projId);
+  if (colRow) {
+    colRow.querySelectorAll('.col-filter-btn').forEach(b => {
+      const f = b.getAttribute('onclick').match(/'([^']+)'$/)?.[1];
+      if (f) b.classList.toggle('active', !!(filters[f] && filters[f].size));
+    });
+    colRow.querySelectorAll('th').forEach(th => {
+      const f = th.querySelector('.col-filter-btn')?.getAttribute('onclick').match(/'([^']+)'$/)?.[1];
+      if (f) th.classList.toggle('filtered', !!(filters[f] && filters[f].size));
+    });
+  }
+}
+
+function clearAllDailyFilters(projId) {
+  if (dailyFilters[projId]) dailyFilters[projId] = {};
+  renderDailyView();
+}
+
 function renderDailyTable(projId) {
   const p     = getProj(projId); if (!p) return;
-  const rows  = p.dailyRows || [];
+  const allRows = p.dailyRows || [];
+  const filters = getDailyFilters(projId);
+  const calcFields = { labor_cost: r => '$'+fmt(calcDaily(r).labor_cost),
+                       equip_total_cost: r => '$'+fmt(calcDaily(r).equip_total),
+                       total_cost: r => '$'+fmt(calcDaily(r).total_cost) };
+  const getVal = (field, r) => calcFields[field] ? calcFields[field](r) : String(r[field] ?? '');
+
+  // Apply filters — keep original indices for data-i attributes
+  const rows = allRows.map((r, i) => ({ r, i })).filter(({ r }) =>
+    Object.entries(filters).every(([field, set]) => !set || !set.size || set.has(getVal(field, r)))
+  );
+
   const tbody = document.getElementById('daily-tbody-' + projId); if (!tbody) return;
   tbody.innerHTML = '';
 
-  if (rows.length === 0) {
+  if (allRows.length === 0) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="23">No entries yet. Click &ldquo;+ Add Row&rdquo; to get started.</td></tr>';
+    return;
+  }
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="23">No rows match the active filters.</td></tr>';
     return;
   }
 
@@ -2138,7 +2296,7 @@ function renderDailyTable(projId) {
   const ccOpts        = ['', ...costCodes];
   const scOpts        = ['', ...subCodes];
 
-  rows.forEach((row, i) => {
+  rows.forEach(({ r: row, i }) => {
     const c  = calcDaily(row);
     const tr = document.createElement('tr');
     tr.innerHTML = `
