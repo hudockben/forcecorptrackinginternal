@@ -2545,7 +2545,7 @@ function renderDailyTable(projId) {
   const subCodes      = getSubCodes();
   const fieldTypeOpts = ['', ...lists.field_types];
 
-  // Employee dropdown: use assigned company employees if any, else fall back to lists.employees
+  // Employee dropdown: assigned → all company employees → legacy list
   let employeeOpts;
   if ((p.assignedEmployees || []).length > 0) {
     const assignedEmpNames = p.assignedEmployees
@@ -2553,6 +2553,8 @@ function renderDailyTable(projId) {
       .filter(Boolean)
       .map(e => e.name || '');
     employeeOpts = ['', ...assignedEmpNames];
+  } else if (companyInfo.employees.length > 0) {
+    employeeOpts = ['', ...companyInfo.employees.map(e => e.name || '').filter(Boolean)];
   } else {
     employeeOpts = ['', ...lists.employees];
   }
@@ -2572,6 +2574,9 @@ function renderDailyTable(projId) {
       if (!merged.find(pe => pe.name === ce.name)) merged.push({ name: ce.name, rate: ce.rate });
     });
     allEquip = merged;
+  } else if (companyInfo.equipment.length > 0) {
+    const coEquip = companyInfo.equipment.filter(ce => !projEquip.find(pe => pe.name === ce.name));
+    allEquip = [...projEquip, ...coEquip.map(e => ({ name: e.name, rate: e.rate }))];
   } else {
     const globalEquip = lists.equipment.filter(e => e.name && !projEquip.find(pe => pe.name === e.name));
     allEquip = [...projEquip, ...globalEquip];
@@ -2670,6 +2675,26 @@ document.addEventListener('input', e => {
     const p = getProj(projId); if (!p) return;
     if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
     p.dailyRows[i][f] = el.value;
+    // Auto-fill rate when employee is selected from company list
+    if (f === 'employee') {
+      const emp = companyInfo.employees.find(e => e.name === el.value);
+      if (emp && emp.rate) {
+        p.dailyRows[i].rate = emp.rate;
+        const row = document.getElementById('daily-tbody-' + projId)?.children[i];
+        if (row) {
+          const rateInput = row.querySelector('[data-f="rate"]');
+          if (rateInput) rateInput.value = emp.rate;
+        }
+      }
+      if (emp && emp.job_class) {
+        p.dailyRows[i].job_class = emp.job_class;
+        const row = document.getElementById('daily-tbody-' + projId)?.children[i];
+        if (row) {
+          const jcSel = row.querySelector('[data-f="job_class"]');
+          if (jcSel) jcSel.value = emp.job_class;
+        }
+      }
+    }
     // Auto-fill equip unit cost when equipment is selected (project rates take priority)
     if (f === 'equipment') {
       const eq = (p.equipRates || []).find(e => e.name === el.value)
