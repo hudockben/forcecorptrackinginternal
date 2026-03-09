@@ -1477,6 +1477,44 @@ function renderBidTable(projId) {
   renderBidFooter(projId);
 }
 
+/* ── Equipment Rates (per project) ── */
+function renderEquipTable(projId) {
+  const p = getProj(projId); if (!p) return;
+  const tbody = document.getElementById('equip-tbody-' + projId); if (!tbody) return;
+  const rates = p.equipRates || [];
+  tbody.innerHTML = rates.length
+    ? rates.map((eq, i) => `
+      <tr>
+        <td><input type="text" value="${esc(eq.name)}" placeholder="e.g. Excavator CAT 320"
+          oninput="updateEquipRate('${projId}',${i},'name',this.value)"></td>
+        <td><input type="number" class="num" value="${eq.rate||''}" placeholder="0.00" step="any"
+          oninput="updateEquipRate('${projId}',${i},'rate',this.value)"></td>
+        <td class="bid-del"><button class="del-btn" onclick="removeEquipRate('${projId}',${i})">✕</button></td>
+      </tr>`).join('')
+    : `<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:1rem 0">No equipment yet — click <strong>+ Add Equipment</strong> to start.</td></tr>`;
+}
+
+function addEquipRate(projId) {
+  const p = getProj(projId); if (!p) return;
+  if (!Array.isArray(p.equipRates)) p.equipRates = [];
+  p.equipRates.push({ name: '', rate: '' });
+  saveProjects();
+  renderEquipTable(projId);
+}
+
+function updateEquipRate(projId, idx, field, value) {
+  const p = getProj(projId); if (!p || !p.equipRates || !p.equipRates[idx]) return;
+  p.equipRates[idx][field] = field === 'rate' ? (parseFloat(value) || '') : value;
+  saveProjects();
+}
+
+function removeEquipRate(projId, idx) {
+  const p = getProj(projId); if (!p) return;
+  p.equipRates.splice(idx, 1);
+  saveProjects();
+  renderEquipTable(projId);
+}
+
 function projectCardHTML(p) {
   const name   = p['project-name'] || 'Untitled Project';
   const meta   = [p['job-number'], p['client']].filter(Boolean).join(' · ');
@@ -1608,49 +1646,20 @@ function projectCardHTML(p) {
       </table>
     </div>
 
-    <div class="bid-section daily-section" id="daily-section-${p.id}">
+
+    <div class="bid-section">
       <div class="bid-section-title">
-        <span>Daily Tracking</span>
-        <div style="display:flex;gap:0.5rem">
-          <button class="btn btn-ghost" onclick="exportDailyCSV('${p.id}')">Export CSV</button>
-          <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
-          <button class="btn btn-green" onclick="addDailyRow('${p.id}')">+ Add Row</button>
-        </div>
+        <span>Equipment Rates</span>
+        <button class="btn btn-blue" onclick="addEquipRate('${p.id}')">+ Add Equipment</button>
       </div>
-      <div class="daily-table-wrap">
-        <table class="daily-inner-table">
-          <thead>
-            <tr class="group-row">
-              <th class="g-base"  colspan="1"></th>
-              <th class="g-id"    colspan="3">Identification</th>
-              <th class="g-code"  colspan="2">Cost Code</th>
-              <th class="g-labor" colspan="4">Labor</th>
-              <th class="g-equip" colspan="4">Equipment</th>
-              <th class="g-mat"   colspan="6">Material</th>
-              <th class="g-sum"   colspan="2">Summary</th>
-            </tr>
-            <tr class="col-row">
-              <th></th>
-              <th>Date</th><th>Field Type</th><th>Employee</th>
-              <th>Cost Code</th><th>Sub Code</th>
-              <th>Job Class</th><th>Rate</th><th>Labor Hours</th>
-              <th class="calc-hdr">Labor Cost</th>
-              <th>Equipment</th><th>Equip Unit Cost</th><th>Equip Hours</th>
-              <th class="calc-hdr">Equip Total Cost</th>
-              <th>Material</th><th>Supplier</th><th>PO #</th>
-              <th>Units Purchased</th><th>Unit Cost</th><th>Material Cost</th>
-              <th class="calc-hdr">Total Cost</th><th>Quantity</th>
-            </tr>
-          </thead>
-          <tbody id="daily-tbody-${p.id}"></tbody>
-        </table>
-      </div>
-      <div class="legend" style="padding:0.4rem 0 0">
-        <span><span class="dot dot-calc"></span> Calculated</span>
-        <span>Labor Cost = Rate &times; Labor Hours</span>
-        <span>Equip Total = Unit Cost &times; Equip Hours</span>
-        <span>Total = Labor + Equip + Material</span>
-      </div>
+      <table class="bid-table equip-rate-table">
+        <thead><tr>
+          <th>Equipment Name</th>
+          <th class="num">Rate ($/hr)</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="equip-tbody-${p.id}"></tbody>
+      </table>
     </div>
 
     <div class="proj-card-footer">
@@ -1684,8 +1693,7 @@ function renderProjectsTab() {
               : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`}
       </div>
     </div>`;
-  // Populate bid tables and daily tables after DOM is built
-  filtered.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); });
+  filtered.forEach(p => { renderBidTable(p.id); renderEquipTable(p.id); });
 }
 
 function renderProjectInfoComputed() { renderProjectsTab(); }
@@ -2305,7 +2313,11 @@ function renderDailyTable(projId) {
   const fieldTypeOpts = ['', ...lists.field_types];
   const employeeOpts  = ['', ...lists.employees];
   const jobClassOpts  = ['', ...lists.job_classes];
-  const equipOpts     = ['', ...lists.equipment.map(e => e.name)];
+  // Project-specific rates take priority; fall back to global equipment list
+  const projEquip = (p.equipRates || []).filter(e => e.name);
+  const globalEquip = lists.equipment.filter(e => e.name && !projEquip.find(pe => pe.name === e.name));
+  const allEquip = [...projEquip, ...globalEquip];
+  const equipOpts = ['', ...allEquip.map(e => e.name)];
   const supplierOpts  = ['', ...lists.suppliers];
   const ccOpts        = ['', ...costCodes];
   const scOpts        = ['', ...subCodes];
@@ -2399,15 +2411,16 @@ document.addEventListener('input', e => {
     const p = getProj(projId); if (!p) return;
     if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
     p.dailyRows[i][f] = el.value;
-    // Auto-fill equip unit cost when equipment is selected
+    // Auto-fill equip unit cost when equipment is selected (project rates take priority)
     if (f === 'equipment') {
-      const eq = lists.equipment.find(e => e.name === el.value);
+      const eq = (p.equipRates || []).find(e => e.name === el.value)
+              || lists.equipment.find(e => e.name === el.value);
       if (eq) {
-        p.dailyRows[i].equip_unit_cost = eq.unit_cost;
+        p.dailyRows[i].equip_unit_cost = eq.rate ?? eq.unit_cost;
         const row = document.getElementById('daily-tbody-' + projId)?.children[i];
         if (row) {
           const ucInput = row.querySelector('[data-f="equip_unit_cost"]');
-          if (ucInput) ucInput.value = eq.unit_cost;
+          if (ucInput) ucInput.value = eq.rate ?? eq.unit_cost;
         }
       }
     }
