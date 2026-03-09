@@ -782,6 +782,34 @@
 
 <script>
 /* ═══════════════════════════════════════════
+   NEON DATABASE API LAYER
+   Replaces localStorage with server-backed persistence.
+   API server must be running at API_BASE (see api/server.js).
+═══════════════════════════════════════════ */
+const API_BASE = 'http://localhost:3001/api';
+
+async function apiGet(key) {
+  try {
+    const r = await fetch(`${API_BASE}/data/${key}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const { value } = await r.json();
+    return value;
+  } catch (err) {
+    console.warn(`[DB] GET ${key} failed:`, err.message);
+    return null;
+  }
+}
+
+function apiPut(key, value) {
+  // Fire-and-forget — UI is already updated in memory
+  fetch(`${API_BASE}/data/${key}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value })
+  }).catch(err => console.warn(`[DB] PUT ${key} failed:`, err.message));
+}
+
+/* ═══════════════════════════════════════════
    SHARED UTILITIES
 ═══════════════════════════════════════════ */
 function fmt(n, decimals = 2) {
@@ -1190,38 +1218,25 @@ let projSearch   = '';
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
-function loadProjects() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(PROJECTS_KEY));
-    if (Array.isArray(saved) && saved.length) {
-      projectsList = saved;
-      // Ensure every project has a dailyRows array
-      projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
-      // One-time migration: pull old global daily rows into the first project
-      const oldDaily = localStorage.getItem('fct_daily_rows');
-      if (oldDaily) {
-        try {
-          const rows = JSON.parse(oldDaily) || [];
-          if (rows.length) { projectsList[0].dailyRows = rows; saveProjects(); }
-        } catch {}
-        localStorage.removeItem('fct_daily_rows');
-      }
-      return;
-    }
-  } catch {}
-  // Migrate legacy single project
-  try {
-    const legacy = JSON.parse(localStorage.getItem(INFO_KEY_LEGACY));
-    if (legacy && legacy['project-name']) {
-      projectsList = [Object.assign({ id: uid(), bidItems: [], dailyRows: [] }, legacy)];
-      saveProjects(); return;
-    }
-  } catch {}
+async function loadProjects() {
+  let saved = await apiGet('fct_projects');
+  // First-run migration: pull any existing localStorage data into the DB
+  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
+    try {
+      const local = JSON.parse(localStorage.getItem(PROJECTS_KEY));
+      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_projects', saved); }
+    } catch {}
+  }
+  if (Array.isArray(saved) && saved.length) {
+    projectsList = saved;
+    projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
+    return;
+  }
   projectsList = [];
 }
 
 function saveProjects() {
-  localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList));
+  apiPut('fct_projects', projectsList);
 }
 
 function getProj(id) { return projectsList.find(p => p.id === id); }
@@ -1584,11 +1599,17 @@ const defaultLists = {
 
 let lists = {};
 
-function loadLists() {
-  try { lists = { ...defaultLists, ...JSON.parse(localStorage.getItem(LISTS_KEY)) }; }
-  catch { lists = { ...defaultLists }; }
+async function loadLists() {
+  let saved = await apiGet('fct_lists');
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+    try {
+      const local = JSON.parse(localStorage.getItem(LISTS_KEY));
+      if (local && typeof local === 'object') { saved = local; apiPut('fct_lists', saved); }
+    } catch {}
+  }
+  lists = { ...defaultLists, ...(saved || {}) };
 }
-function saveLists() { localStorage.setItem(LISTS_KEY, JSON.stringify(lists)); }
+function saveLists() { apiPut('fct_lists', lists); }
 
 // Build <option> tags for a simple string list
 function buildOptions(arr, selected = '') {
@@ -1719,14 +1740,21 @@ function addListItem(key) {
 /* ═══════════════════════════════════════════
    COST TRACKING  (company averages compiled from all daily data)
 ═══════════════════════════════════════════ */
-const COST_KEY = 'fct_rows';
+const COST_KEY = 'fct_cost_rows';
 let costRows = [];
 
-function loadCostRows() {
-  try { costRows = JSON.parse(localStorage.getItem(COST_KEY)) || []; }
-  catch { costRows = []; }
+async function loadCostRows() {
+  let saved = await apiGet('fct_cost_rows');
+  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
+    // Try legacy localStorage key as migration fallback
+    try {
+      const local = JSON.parse(localStorage.getItem('fct_rows'));
+      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_cost_rows', saved); }
+    } catch {}
+  }
+  costRows = Array.isArray(saved) ? saved : [];
 }
-function saveCostRows() { localStorage.setItem(COST_KEY, JSON.stringify(costRows)); }
+function saveCostRows() { apiPut('fct_cost_rows', costRows); }
 
 // Only store bid/plan data — actuals come from daily aggregation
 const defaultCostRow = () => ({
@@ -2095,14 +2123,16 @@ function downloadCSV(content, filename) {
 /* ═══════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════ */
-loadLists();
-loadCostRows();
-loadProjects();
-renderCostTable();
-renderHomeTab();
-renderProjectDashboard();
-renderProjectsTab();
-renderHeaderActions();
+(async () => {
+  await loadLists();
+  await loadCostRows();
+  await loadProjects();
+  renderCostTable();
+  renderHomeTab();
+  renderProjectDashboard();
+  renderProjectsTab();
+  renderHeaderActions();
+})();
 </script>
 </body>
 </html>
