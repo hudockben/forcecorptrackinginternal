@@ -680,6 +680,54 @@
     }
     .col-filter-actions button { flex: 1; font-size: 0.7rem; padding: 4px 0; }
     th.filtered { background: rgba(74,222,128,0.08) !important; }
+
+    /* ── Company Info Tab ── */
+    .company-wrap { max-width: 1100px; margin: 1.5rem auto; padding: 0 1rem; }
+    .company-section-title {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--green); margin-bottom: 1rem;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .company-columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+    @media (max-width: 700px) {
+      .company-columns { grid-template-columns: 1fr; }
+    }
+    .company-section {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1.25rem 1.5rem;
+    }
+    .company-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 0.6rem; }
+    .company-table th {
+      background: var(--surface2); color: #888; font-size: 0.63rem; font-weight: 700;
+      letter-spacing: 0.07em; text-transform: uppercase; padding: 0.4rem 0.6rem;
+      border: 1px solid var(--border); text-align: left;
+    }
+    .company-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
+    .company-table td input {
+      width: 100%; background: transparent; border: none; outline: none;
+      color: var(--text); font-size: 0.82rem; font-family: inherit; padding: 0.35rem 0.6rem;
+    }
+    .company-table td input:focus { background: #1e1e2e; }
+    .company-table td input.num { text-align: right; }
+    .company-table td.co-del { width: 32px; text-align: center; padding: 0 0.3rem; }
+
+    /* Assigned Resources checkboxes */
+    .assign-list { display: flex; flex-direction: column; gap: 0.4rem; }
+    .assign-item {
+      display: flex; align-items: center; gap: 0.6rem;
+      font-size: 0.82rem; color: var(--text); padding: 0.2rem 0;
+    }
+    .assign-item input[type=checkbox] { accent-color: var(--green); cursor: pointer; width: 14px; height: 14px; }
+    .assign-item .assign-meta { font-size: 0.72rem; color: var(--muted); }
+    .assign-badge-proj {
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+      padding: 0.1rem 0.35rem; border-radius: 2px; background: #1d3a6e; color: var(--blue);
+    }
+    .assign-empty { font-size: 0.8rem; color: var(--muted); padding: 0.5rem 0; }
   </style>
 </head>
 <body>
@@ -699,6 +747,7 @@
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="home">Home</button>
   <button class="tab-btn"        data-tab="info">Project Info</button>
+  <button class="tab-btn"        data-tab="company">Company Info</button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="project">Project Dashboard</button>
 </nav>
@@ -713,6 +762,11 @@
 <!-- ══════════════ PROJECT INFO TAB ══════════════ -->
 <div class="tab-panel" id="tab-info">
   <div id="proj-root"><!-- rendered by JS --></div>
+</div>
+
+<!-- ══════════════ COMPANY INFO TAB ══════════════ -->
+<div class="tab-panel" id="tab-company">
+  <div id="company-root"><!-- rendered by JS --></div>
 </div>
 
 <!-- ══════════════ PROJECT DASHBOARD TAB
@@ -938,6 +992,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'home')    renderHomeTab();
     if (activeTab === 'project') renderProjectDashboard();
     if (activeTab === 'info')    renderProjectInfoComputed();
+    if (activeTab === 'company') renderCompanyTab();
     if (activeTab === 'daily')   { /* rendered by openDailyView() */ }
   });
 });
@@ -1319,6 +1374,122 @@ let projectsList = [];
 let projSearch   = '';
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+/* ═══════════════════════════════════════════
+   COMPANY INFO — employees & equipment with rates
+═══════════════════════════════════════════ */
+const COMPANY_KEY = 'fct_company';
+let companyInfo = { employees: [], equipment: [] };
+
+async function loadCompanyInfo() {
+  const saved = await apiGet(COMPANY_KEY);
+  companyInfo = { employees: [], equipment: [], ...(saved || {}) };
+}
+
+function saveCompanyInfo() { apiPut(COMPANY_KEY, companyInfo); }
+
+function addCompanyEmployee() {
+  companyInfo.employees.push({ id: uid(), name: '', job_class: '', rate: '' });
+  saveCompanyInfo();
+  renderCompanyTab();
+}
+
+function updateCompanyEmployee(id, field, value) {
+  const emp = companyInfo.employees.find(e => e.id === id);
+  if (!emp) return;
+  emp[field] = field === 'rate' ? (value === '' ? '' : parseFloat(value) || '') : value;
+  saveCompanyInfo();
+}
+
+function removeCompanyEmployee(id) {
+  companyInfo.employees = companyInfo.employees.filter(e => e.id !== id);
+  saveCompanyInfo();
+  renderCompanyTab();
+}
+
+function addCompanyEquipment() {
+  companyInfo.equipment.push({ id: uid(), name: '', rate: '' });
+  saveCompanyInfo();
+  renderCompanyTab();
+}
+
+function updateCompanyEquipment(id, field, value) {
+  const eq = companyInfo.equipment.find(e => e.id === id);
+  if (!eq) return;
+  eq[field] = field === 'rate' ? (value === '' ? '' : parseFloat(value) || '') : value;
+  saveCompanyInfo();
+}
+
+function removeCompanyEquipment(id) {
+  companyInfo.equipment = companyInfo.equipment.filter(e => e.id !== id);
+  saveCompanyInfo();
+  renderCompanyTab();
+}
+
+function renderCompanyTab() {
+  const root = document.getElementById('company-root');
+  if (!root) return;
+
+  const empRows = companyInfo.employees.length
+    ? companyInfo.employees.map(e => `
+      <tr>
+        <td><input type="text" value="${esc(e.name)}" placeholder="Employee name"
+          oninput="updateCompanyEmployee('${e.id}','name',this.value)"></td>
+        <td><input type="text" value="${esc(e.job_class)}" placeholder="e.g. Laborer"
+          oninput="updateCompanyEmployee('${e.id}','job_class',this.value)"></td>
+        <td><input type="number" class="num" value="${e.rate === '' ? '' : e.rate}" placeholder="0.00" step="any"
+          oninput="updateCompanyEmployee('${e.id}','rate',this.value)"></td>
+        <td class="co-del"><button class="del-btn" onclick="removeCompanyEmployee('${e.id}')">✕</button></td>
+      </tr>`).join('')
+    : `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:1rem 0">No employees yet — click <strong>+ Add Employee</strong> to start.</td></tr>`;
+
+  const eqRows = companyInfo.equipment.length
+    ? companyInfo.equipment.map(e => `
+      <tr>
+        <td><input type="text" value="${esc(e.name)}" placeholder="e.g. Excavator CAT 320"
+          oninput="updateCompanyEquipment('${e.id}','name',this.value)"></td>
+        <td><input type="number" class="num" value="${e.rate === '' ? '' : e.rate}" placeholder="0.00" step="any"
+          oninput="updateCompanyEquipment('${e.id}','rate',this.value)"></td>
+        <td class="co-del"><button class="del-btn" onclick="removeCompanyEquipment('${e.id}')">✕</button></td>
+      </tr>`).join('')
+    : `<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:1rem 0">No equipment yet — click <strong>+ Add Equipment</strong> to start.</td></tr>`;
+
+  root.innerHTML = `
+    <div class="company-wrap">
+      <div class="company-columns">
+        <div class="company-section">
+          <div class="company-section-title">
+            <span>Employees</span>
+            <button class="btn btn-green" onclick="addCompanyEmployee()">+ Add Employee</button>
+          </div>
+          <table class="company-table">
+            <thead><tr>
+              <th>Name</th>
+              <th>Job Class</th>
+              <th class="num">Rate ($/hr)</th>
+              <th></th>
+            </tr></thead>
+            <tbody>${empRows}</tbody>
+          </table>
+        </div>
+
+        <div class="company-section">
+          <div class="company-section-title">
+            <span>Equipment</span>
+            <button class="btn btn-green" onclick="addCompanyEquipment()">+ Add Equipment</button>
+          </div>
+          <table class="company-table">
+            <thead><tr>
+              <th>Equipment Name</th>
+              <th class="num">Rate ($/hr)</th>
+              <th></th>
+            </tr></thead>
+            <tbody>${eqRows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
 
 async function loadProjects() {
   let saved = await apiGet('fct_projects');
