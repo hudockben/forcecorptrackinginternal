@@ -170,6 +170,10 @@
       width: 100%; border-collapse: collapse;
       font-size: 0.78rem; white-space: nowrap;
     }
+    .daily-inner-table thead th { position: sticky; top: 0; z-index: 2; }
+    .daily-inner-table tfoot td { position: sticky; bottom: 0; z-index: 2; background: #0e1a1a; border-top: 2px solid var(--green); font-weight: 700; font-variant-numeric: tabular-nums; padding: 0.3rem 0.5rem; white-space: nowrap; }
+    .daily-inner-table tfoot td.tot-num { color: #86efac; text-align: right; }
+    .daily-inner-table tfoot td.tot-lbl { color: #aaa; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
     .daily-inner-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
     .daily-inner-table td.del-cell { width: 26px; text-align: center; padding: 0 0.2rem; }
     .daily-inner-table td.del-cell .del-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
@@ -1027,7 +1031,12 @@ function renderHeaderActions() {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportDailyCSV('${projId}')">Export CSV</button>
       <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
-      <button class="btn btn-green" onclick="addDailyRow('${projId}');renderDailyView()">+ Add Row</button>
+      <span style="display:inline-flex;align-items:center;gap:0.3rem">
+        <input id="add-row-qty" type="number" min="1" max="100" value="1"
+          style="width:3.5rem;padding:0.3rem 0.4rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.82rem;text-align:center"
+          title="Number of rows to add">
+        <button class="btn btn-green" onclick="addDailyRows('${projId}');renderDailyView()">+ Add Row</button>
+      </span>
       ${logoutBtn}
     `;
   } else {
@@ -2396,18 +2405,20 @@ function renderDailyView() {
               <th></th>
               ${['date','field_type','employee','cost_code','sub_code','job_class','rate','labor_hours','labor_cost','equipment','equip_unit_cost','equip_hours','equip_total_cost','material','supplier','po_num','units_purchased','unit_cost','material_cost','total_cost','quantity'].map((f,idx) => {
                 const labels = ['Date','Field Type','Employee','Cost Code','Sub Code','Job Class','Rate','Labor Hours','Labor Cost','Equipment','Equip Unit Cost','Equip Hours','Equip Total Cost','Material','Supplier','PO #','Units Purchased','Unit Cost','Material Cost','Total Cost','Quantity'];
-                const calc = ['labor_cost','equip_total_cost','total_cost'].includes(f);
+                const calc = ['labor_cost','equip_total_cost','material_cost','total_cost'].includes(f);
                 return `<th${calc?' class="calc-hdr filtered-calc"':''}><span class="col-filter-wrap">${labels[idx]}<button class="col-filter-btn${(dailyFilters[projId]&&dailyFilters[projId][f]&&dailyFilters[projId][f].size)?' active':''}" onclick="openColFilter(event,'${projId}','${f}')">▾</button></span></th>`;
               }).join('')}
             </tr>
           </thead>
           <tbody id="daily-tbody-${projId}"></tbody>
+          <tfoot id="daily-tfoot-${projId}"></tfoot>
         </table>
       </div>
       <div class="legend" style="padding:0.6rem 1rem">
         <span><span class="dot dot-calc"></span> Calculated</span>
         <span>Labor Cost = Rate &times; Labor Hours</span>
         <span>Equip Total = Unit Cost &times; Equip Hours</span>
+        <span>Material Cost = Units Purchased &times; Unit Cost</span>
         <span>Total = Labor + Equip + Material</span>
       </div>
     </div>`;
@@ -2438,8 +2449,11 @@ function calcDaily(row) {
 
   const labor_cost      = rate * labor_hours;
   const equip_total     = euc  * equip_hours;
-  const total_cost      = labor_cost + equip_total + mat_cost;
-  return { labor_cost, equip_total, total_cost };
+  const units           = parseFloat(row.units_purchased) || 0;
+  const uc              = parseFloat(row.unit_cost)        || 0;
+  const material_cost   = units * uc;
+  const total_cost      = labor_cost + equip_total + material_cost;
+  return { labor_cost, equip_total, material_cost, total_cost };
 }
 
 function makeSelect(options, selected, dataTab, dataI, dataF, dataProj) {
@@ -2471,6 +2485,7 @@ function openColFilter(e, projId, field) {
   // Collect unique values for this field (including computed ones)
   const calcFields = { labor_cost: r => '$'+fmt(calcDaily(r).labor_cost),
                        equip_total_cost: r => '$'+fmt(calcDaily(r).equip_total),
+                       material_cost: r => '$'+fmt(calcDaily(r).material_cost),
                        total_cost: r => '$'+fmt(calcDaily(r).total_cost) };
   const getVal = r => calcFields[field] ? calcFields[field](r) : (r[field] ?? '');
   const allVals = [...new Set(rows.map(getVal))].sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true}));
@@ -2577,6 +2592,7 @@ function renderDailyTable(projId) {
   const filters = getDailyFilters(projId);
   const calcFields = { labor_cost: r => '$'+fmt(calcDaily(r).labor_cost),
                        equip_total_cost: r => '$'+fmt(calcDaily(r).equip_total),
+                       material_cost: r => '$'+fmt(calcDaily(r).material_cost),
                        total_cost: r => '$'+fmt(calcDaily(r).total_cost) };
   const getVal = (field, r) => calcFields[field] ? calcFields[field](r) : String(r[field] ?? '');
 
@@ -2643,7 +2659,10 @@ function renderDailyTable(projId) {
     const c  = calcDaily(row);
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td class="del-cell"><button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${i}">&#10005;</button></td>
+      <td class="del-cell" style="white-space:nowrap">
+        <button class="del-btn copy-btn" title="Copy row" data-tab="daily-copy" data-proj="${projId}" data-i="${i}" style="background:#1e3a5f;color:#7dd3fc;border-radius:2px;margin-right:1px">&#9112;</button>
+        <button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${i}">&#10005;</button>
+      </td>
       <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="date"           value="${esc(row.date)}"></td>
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', i, 'field_type',      projId)}</td>
       <td>${makeSelect(employeeOpts,  row.employee,         'daily', i, 'employee',         projId)}</td>
@@ -2662,29 +2681,71 @@ function renderDailyTable(projId) {
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="po_num"          value="${row.po_num}"          placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="units_purchased" value="${row.units_purchased}" step="any" placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="material_cost"   value="${row.material_cost}"   step="any" placeholder="0.00"></td>
+      <td class="calc">$${fmt(c.material_cost)}</td>
       <td class="calc">$${fmt(c.total_cost)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
     `;
     tbody.appendChild(tr);
   });
+  updateDailyTotals(projId);
 }
 
 function renderDailyCalcCells(projId, i) {
   const p = getProj(projId); if (!p) return;
   const c  = calcDaily((p.dailyRows || [])[i]);
-  const tr = document.getElementById('daily-tbody-' + projId)?.children[i];
+  const tbody = document.getElementById('daily-tbody-' + projId); if (!tbody) return;
+  // find the visible row that corresponds to data-i index
+  const tr = [...tbody.querySelectorAll('tr')].find(r => r.querySelector('[data-i="'+i+'"]'));
   if (!tr) return;
   const calcs = tr.querySelectorAll('td.calc');
   calcs[0].textContent = '$' + fmt(c.labor_cost);
   calcs[1].textContent = '$' + fmt(c.equip_total);
-  calcs[2].textContent = '$' + fmt(c.total_cost);
+  calcs[2].textContent = '$' + fmt(c.material_cost);
+  calcs[3].textContent = '$' + fmt(c.total_cost);
+  updateDailyTotals(projId);
 }
 
-function addDailyRow(projId) {
+function updateDailyTotals(projId) {
+  const p = getProj(projId); if (!p) return;
+  const tfoot = document.getElementById('daily-tfoot-' + projId); if (!tfoot) return;
+  const tbody = document.getElementById('daily-tbody-' + projId); if (!tbody) return;
+  // Collect indices of visible rows from data-i attributes
+  const visibleIndices = [...new Set(
+    [...tbody.querySelectorAll('[data-i]')].map(el => parseInt(el.dataset.i))
+  )];
+  const rows = p.dailyRows || [];
+  let lh = 0, lc = 0, eh = 0, ec = 0, mc = 0, tc = 0;
+  visibleIndices.forEach(i => {
+    const r = rows[i]; if (!r) return;
+    const c = calcDaily(r);
+    lh += parseFloat(r.labor_hours)  || 0;
+    lc += c.labor_cost;
+    eh += parseFloat(r.equip_hours)  || 0;
+    ec += c.equip_total;
+    mc += c.material_cost;
+    tc += c.total_cost;
+  });
+  // colspan layout: del(1) date(1) field_type(1) employee(1) cost_code(1) sub_code(1) job_class(1) rate(1) labor_hours(1) labor_cost(1) equipment(1) equip_unit_cost(1) equip_hours(1) equip_total(1) material(1) supplier(1) po_num(1) units_purchased(1) unit_cost(1) material_cost(1) total_cost(1) quantity(1)
+  tfoot.innerHTML = `<tr>
+    <td colspan="8" class="tot-lbl">Filtered Totals (${visibleIndices.length} rows)</td>
+    <td class="tot-num">${fmt(lh)} hrs</td>
+    <td class="tot-num">$${fmt(lc)}</td>
+    <td colspan="2"></td>
+    <td class="tot-num">${fmt(eh)} hrs</td>
+    <td class="tot-num">$${fmt(ec)}</td>
+    <td colspan="5"></td>
+    <td class="tot-num">$${fmt(mc)}</td>
+    <td class="tot-num">$${fmt(tc)}</td>
+    <td></td>
+  </tr>`;
+}
+
+function addDailyRow(projId) { addDailyRows(projId); }
+function addDailyRows(projId) {
   const p = getProj(projId); if (!p) return;
   if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
-  p.dailyRows.push(defaultDailyRow());
+  const qty = Math.max(1, Math.min(100, parseInt(document.getElementById('add-row-qty')?.value) || 1));
+  for (let i = 0; i < qty; i++) p.dailyRows.push(defaultDailyRow());
   saveProjects();
   renderDailyTable(projId);
 }
@@ -2779,6 +2840,14 @@ document.addEventListener('click', e => {
     costRows.splice(i, 1);
     saveCostRows();
     renderCostTable();
+  } else if (tab === 'daily-copy') {
+    const projId = btn.dataset.proj;
+    const p = getProj(projId); if (!p) return;
+    const src = p.dailyRows[i]; if (!src) return;
+    const copy = { ...src, id: Date.now() + Math.random() };
+    p.dailyRows.splice(i + 1, 0, copy);
+    saveProjects();
+    renderDailyTable(projId);
   } else if (tab === 'daily') {
     const projId = btn.dataset.proj;
     const p = getProj(projId); if (!p) return;
