@@ -226,6 +226,11 @@
       padding: 0.85rem 1.5rem; border-top: 1px solid var(--border);
       background: var(--surface2);
     }
+    .proj-card-quicklinks {
+      display: flex; gap: 0.75rem; align-items: center;
+      padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+    }
     .proj-no-results {
       text-align: center; color: var(--muted); padding: 3rem 1rem;
       font-size: 0.85rem; background: var(--surface); border: 1px solid var(--border);
@@ -1435,6 +1440,10 @@ function projectCardHTML(p) {
   </div>
   <div class="proj-card-body">
 
+    <div class="proj-card-quicklinks">
+      <button class="btn btn-green" onclick="addDailyRow('${p.id}');document.getElementById('daily-section-${p.id}').scrollIntoView({behavior:'smooth',block:'start'})">+ Add Daily Entry</button>
+    </div>
+
     <div class="info-section">
       <div class="info-section-title">Project Details</div>
       <div class="info-grid">
@@ -1535,7 +1544,7 @@ function projectCardHTML(p) {
       </table>
     </div>
 
-    <div class="bid-section daily-section">
+    <div class="bid-section daily-section" id="daily-section-${p.id}">
       <div class="bid-section-title">
         <span>Daily Tracking</span>
         <div style="display:flex;gap:0.5rem">
