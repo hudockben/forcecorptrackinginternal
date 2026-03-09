@@ -647,7 +647,7 @@
     .cost-mix-legend span { display: flex; align-items: center; gap: 0.3rem; }
 
     /* Column filter */
-    .col-filter-wrap { position: relative; display: inline-flex; align-items: center; gap: 3px; }
+    .col-filter-wrap { display: inline-flex; align-items: center; gap: 3px; }
     .col-filter-btn {
       background: none; border: none; cursor: pointer; padding: 1px 3px;
       font-size: 0.6rem; line-height: 1; color: inherit; opacity: 0.5;
@@ -2199,7 +2199,21 @@ function openColFilter(e, projId, field) {
       <button class="btn btn-green" onclick="applyColFilter(this,'${projId}','${field}')">Apply</button>
     </div>`;
 
-  btn.parentElement.appendChild(dd);
+  // Use fixed positioning so the dropdown escapes any overflow:hidden/auto container
+  dd.style.position = 'fixed';
+  document.body.appendChild(dd);
+
+  const rect = btn.getBoundingClientRect();
+  const ddH = 280; // max-height
+  const spaceBelow = window.innerHeight - rect.bottom;
+  if (spaceBelow < ddH && rect.top > ddH) {
+    dd.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+    dd.style.top = 'auto';
+  } else {
+    dd.style.top  = (rect.bottom + 4) + 'px';
+    dd.style.bottom = 'auto';
+  }
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
 
   // Close on outside click
   setTimeout(() => {
