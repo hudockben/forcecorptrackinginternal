@@ -728,6 +728,15 @@
       padding: 0.1rem 0.35rem; border-radius: 2px; background: #1d3a6e; color: var(--blue);
     }
     .assign-empty { font-size: 0.8rem; color: var(--muted); padding: 0.5rem 0; }
+    .proj-fieldtype-tag {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      background: #1a2a1a; border: 1px solid var(--green); color: var(--green);
+      border-radius: 4px; padding: 0.2rem 0.5rem; font-size: 0.8rem;
+    }
+    .proj-fieldtype-tag button {
+      background: none; border: none; color: var(--green); cursor: pointer;
+      font-size: 1rem; line-height: 1; padding: 0; margin: 0;
+    }
   </style>
 </head>
 <body>
@@ -1818,21 +1827,6 @@ function projectCardHTML(p) {
     </div>
 
 
-    <div class="bid-section">
-      <div class="bid-section-title">
-        <span>Equipment Rates</span>
-        <button class="btn btn-blue" onclick="addEquipRate('${p.id}')">+ Add Equipment</button>
-      </div>
-      <table class="bid-table equip-rate-table">
-        <thead><tr>
-          <th>Equipment Name</th>
-          <th class="num">Rate ($/hr)</th>
-          <th></th>
-        </tr></thead>
-        <tbody id="equip-tbody-${p.id}"></tbody>
-      </table>
-    </div>
-
     <div class="info-section">
       <div class="info-section-title">Assigned Resources</div>
       <div class="info-grid">
@@ -1856,14 +1850,7 @@ function projectCardHTML(p) {
         <div class="info-field">
           <label>Assigned Equipment</label>
           <div class="assign-list">
-            ${(p.equipRates || []).filter(e => e.name).map(eq => `
-              <label class="assign-item">
-                <input type="checkbox" checked disabled title="Project-specific equipment (always included)">
-                <span>${esc(eq.name)}</span>
-                ${eq.rate !== '' && eq.rate !== undefined ? `<span class="assign-meta">$${eq.rate}/hr</span>` : ''}
-                <span class="assign-badge-proj">project</span>
-              </label>`).join('')}
-            ${companyInfo.equipment.length === 0 && !(p.equipRates || []).filter(e => e.name).length
+            ${companyInfo.equipment.length === 0
               ? `<div class="assign-empty">No company equipment defined yet. Add equipment in the <strong>Company Info</strong> tab.</div>`
               : companyInfo.equipment.map(eq => {
                   const checked = (p.assignedEquipment || []).includes(eq.id);
@@ -1879,11 +1866,44 @@ function projectCardHTML(p) {
       </div>
     </div>
 
+    <div class="info-section">
+      <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Field Types</span>
+        <button class="btn btn-blue" onclick="addProjectFieldType('${p.id}')">+ Add Field Type</button>
+      </div>
+      <div id="proj-fieldtypes-${p.id}" style="display:flex;flex-wrap:wrap;gap:0.5rem;padding:0.5rem 0">
+        ${(p.fieldTypes || []).length === 0
+          ? `<span style="color:var(--muted);font-size:0.85rem">No project-specific field types yet. Add some above, or use the global list via Settings.</span>`
+          : (p.fieldTypes || []).map((ft, i) => `
+            <span class="proj-fieldtype-tag">
+              ${esc(ft)}
+              <button onclick="removeProjectFieldType('${p.id}',${i})" title="Remove">&times;</button>
+            </span>`).join('')}
+      </div>
+    </div>
+
     <div class="proj-card-footer">
       <button class="btn btn-danger" onclick="deleteProject('${p.id}')">Delete Project</button>
     </div>
   </div>
 </div>`;
+}
+
+function addProjectFieldType(projId) {
+  const val = prompt('Enter field type name:');
+  if (!val || !val.trim()) return;
+  const p = getProj(projId); if (!p) return;
+  if (!Array.isArray(p.fieldTypes)) p.fieldTypes = [];
+  p.fieldTypes.push(val.trim());
+  saveProjects();
+  renderProjects();
+}
+
+function removeProjectFieldType(projId, idx) {
+  const p = getProj(projId); if (!p || !p.fieldTypes) return;
+  p.fieldTypes.splice(idx, 1);
+  saveProjects();
+  renderProjects();
 }
 
 function toggleAssignedEmployee(projId, empId, checked) {
@@ -2543,7 +2563,9 @@ function renderDailyTable(projId) {
 
   const costCodes     = getCostCodes();
   const subCodes      = getSubCodes();
-  const fieldTypeOpts = ['', ...lists.field_types];
+  const projFieldTypes = p.fieldTypes || [];
+  const allFieldTypes = [...new Set([...projFieldTypes, ...lists.field_types])];
+  const fieldTypeOpts = ['', ...allFieldTypes];
 
   // Employee dropdown: assigned → all company employees → legacy list
   let employeeOpts;
@@ -2559,27 +2581,22 @@ function renderDailyTable(projId) {
     employeeOpts = ['', ...lists.employees];
   }
 
-  const jobClassOpts  = ['', ...lists.job_classes];
+  const companyJobClasses = [...new Set(companyInfo.employees.map(e => e.job_class).filter(Boolean))];
+  const allJobClasses = [...new Set([...lists.job_classes, ...companyJobClasses])];
+  const jobClassOpts = ['', ...allJobClasses];
 
-  // Equipment dropdown: start with project-specific, add assigned company equipment, fall back to global list
-  const projEquip = (p.equipRates || []).filter(e => e.name);
+  // Equipment dropdown: assigned company equipment → all company equipment → global list
   let allEquip;
   if ((p.assignedEquipment || []).length > 0) {
     const assignedCoEquip = p.assignedEquipment
       .map(id => companyInfo.equipment.find(e => e.id === id))
-      .filter(Boolean);
-    // Merge: proj rates first, then assigned company equipment not already in proj rates
-    const merged = [...projEquip];
-    assignedCoEquip.forEach(ce => {
-      if (!merged.find(pe => pe.name === ce.name)) merged.push({ name: ce.name, rate: ce.rate });
-    });
-    allEquip = merged;
+      .filter(Boolean)
+      .map(e => ({ name: e.name, rate: e.rate }));
+    allEquip = assignedCoEquip;
   } else if (companyInfo.equipment.length > 0) {
-    const coEquip = companyInfo.equipment.filter(ce => !projEquip.find(pe => pe.name === ce.name));
-    allEquip = [...projEquip, ...coEquip.map(e => ({ name: e.name, rate: e.rate }))];
+    allEquip = companyInfo.equipment.map(e => ({ name: e.name, rate: e.rate }));
   } else {
-    const globalEquip = lists.equipment.filter(e => e.name && !projEquip.find(pe => pe.name === e.name));
-    allEquip = [...projEquip, ...globalEquip];
+    allEquip = lists.equipment.filter(e => e.name);
   }
   const equipOpts = ['', ...allEquip.map(e => e.name)];
   const supplierOpts  = ['', ...lists.suppliers];
@@ -2695,10 +2712,9 @@ document.addEventListener('input', e => {
         }
       }
     }
-    // Auto-fill equip unit cost when equipment is selected (project rates take priority)
+    // Auto-fill equip unit cost from company info or global list
     if (f === 'equipment') {
-      const eq = (p.equipRates || []).find(e => e.name === el.value)
-              || companyInfo.equipment.find(e => e.name === el.value)
+      const eq = companyInfo.equipment.find(e => e.name === el.value)
               || lists.equipment.find(e => e.name === el.value);
       if (eq) {
         p.dailyRows[i].equip_unit_cost = eq.rate ?? eq.unit_cost;
