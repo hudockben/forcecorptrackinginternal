@@ -1494,7 +1494,7 @@ function renderBidFooter(projId) {
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
   footEl.innerHTML = `
-    <td class="foot-label" colspan="3">Totals</td>
+    <td class="foot-label" colspan="2">Totals</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
@@ -1522,8 +1522,6 @@ function renderBidTable(projId) {
         oninput="updateBidItem('${projId}','${b.id}','cost_code',this.value)"></td>
       <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub"
         oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
-      <td><input type="text" value="${esc(b.description)}" placeholder="Description"
-        oninput="updateBidItem('${projId}','${b.id}','description',this.value)"></td>
       <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
         oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
       <td class="bid-calc">${rqty || '—'}</td>
@@ -1535,7 +1533,7 @@ function renderBidTable(projId) {
       <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
       <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
+  }).join('') || `<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
   renderBidFooter(projId);
 }
 
@@ -1657,7 +1655,7 @@ function projectCardHTML(p) {
       </div>
       <table class="bid-table">
         <thead><tr>
-          <th>Cost Code</th><th>Sub Code</th><th>Description</th>
+          <th>Cost Code</th><th>Sub Code</th>
           <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th>
           <th class="num">Bid Total</th><th class="num">Actual Cost</th>
           <th class="num">Variance</th><th></th>
@@ -1665,11 +1663,6 @@ function projectCardHTML(p) {
         <tbody id="btbody-${p.id}"></tbody>
         <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
       </table>
-    </div>
-
-    <div class="bid-section" style="display:flex;align-items:center;justify-content:space-between">
-      <span style="color:var(--muted);font-size:0.82rem">Daily field entries for this project</span>
-      <button class="btn btn-green" onclick="openDailyView('${p.id}')">Daily Tracking &#8594;</button>
     </div>
 
     <div class="proj-card-footer">
