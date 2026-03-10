@@ -1669,7 +1669,10 @@ function projectCardHTML(p) {
     <div class="bid-section">
       <div class="bid-section-title">
         <span>Bid Line Items vs Actuals</span>
-        <button class="btn btn-blue" onclick="addBidItem('${p.id}')">+ Add Item</button>
+        <div style="display:flex;gap:0.5rem">
+          <button class="btn btn-ghost" onclick="exportBidPDF('${p.id}')">&#8595; PDF</button>
+          <button class="btn btn-blue" onclick="addBidItem('${p.id}')">+ Add Item</button>
+        </div>
       </div>
       <table class="bid-table">
         <thead><tr>
@@ -2203,6 +2206,49 @@ function addDailyRow(projId) {
   p.dailyRows.push(defaultDailyRow());
   saveProjects();
   renderDailyTable(projId);
+}
+
+function exportBidPDF(projId) {
+  const p = getProj(projId); if (!p) return;
+  const name = p['project-name'] || 'Project';
+  const jobNo = p['job-number'] ? ` — ${p['job-number']}` : '';
+  const table = document.getElementById('btbody-' + projId)?.closest('table');
+  if (!table) return;
+  const tableHTML = table.outerHTML;
+
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>${name} — Bid Line Items vs Actuals</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; font-size: 11px; color: #000; background: #fff; padding: 24px; }
+    h2 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    p.meta { font-size: 10px; color: #555; margin-bottom: 14px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; white-space: nowrap; }
+    thead th { background: #f0f0f0; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+    thead th.num, td.num { text-align: right; }
+    td input { border: none; background: transparent; font-size: 11px; font-family: inherit; width: 100%; }
+    td.bid-calc, td.bid-actual, td.bid-under, td.bid-over { text-align: right; }
+    td.bid-under { color: #166534; }
+    td.bid-over  { color: #991b1b; }
+    tfoot td { font-weight: 700; font-size: 10px; background: #f9f9f9; border-top: 2px solid #999; }
+    tfoot .foot-bid    { color: #166534; text-align: right; }
+    tfoot .foot-actual { color: #92400e; text-align: right; }
+    tfoot .foot-under  { color: #166534; text-align: right; }
+    tfoot .foot-over   { color: #991b1b; text-align: right; }
+    tfoot .foot-label  { color: #555; }
+    td.bid-del { display: none; }
+    th:last-child { display: none; }
+    @media print { body { padding: 0; } }
+  </style>
+  </head><body>
+  <h2>Bid Line Items vs Actuals — ${esc(name)}${esc(jobNo)}</h2>
+  <p class="meta">Printed ${new Date().toLocaleDateString()}</p>
+  ${tableHTML}
+  <script>window.onload = () => { window.print(); }<\/script>
+  </body></html>`);
+  win.document.close();
 }
 
 function exportDailyCSV(projId) {
