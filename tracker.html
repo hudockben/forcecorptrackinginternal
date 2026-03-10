@@ -1491,8 +1491,17 @@ function renderBidFooter(projId) {
   const footEl = document.getElementById('bfoot-' + projId); if (!footEl) return;
   const totalBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
   const totalActual = (p.bidItems||[]).reduce((s,b) => s + actualForBidItem(b, projId), 0);
+  const totalProj   = (p.bidItems||[]).reduce((s,b) => {
+    const bidQty = parseFloat(b.quantity) || 0;
+    const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
+    const actual = actualForBidItem(b, projId);
+    const rqty   = runningQtyForBidItem(b, projId);
+    return s + (rqty > 0 ? (actual / rqty) * bidQty : bidTot);
+  }, 0);
   const diff = totalBid - totalActual;
+  const projDiff = totalProj - totalBid;
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
+  const projCls = projDiff <= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
   footEl.innerHTML = `
     <td class="foot-label" colspan="2">Totals</td>
@@ -1503,6 +1512,7 @@ function renderBidFooter(projId) {
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
+    <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>
     <td></td>`;
 }
 
@@ -1518,6 +1528,12 @@ function renderBidTable(projId) {
     const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
     const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
     const pct     = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : '—';
+    // Projected cost = (actual ÷ running qty) × bid qty  (actual cost-per-unit × full bid qty)
+    // Falls back to bid total when no running qty yet
+    const proj    = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+    const projDiff = proj - bidTot;
+    const projCls  = projDiff <= 0 ? 'bid-under' : 'bid-over';
+    const projTxt  = bidTot ? '$' + fmt(proj) : '—';
     return `<tr>
       <td><input type="text" class="num" value="${esc(b.cost_code)}" placeholder="Code"
         oninput="updateBidItem('${projId}','${b.id}','cost_code',this.value)"></td>
@@ -1532,9 +1548,10 @@ function renderBidTable(projId) {
       <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
       <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
       <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
+      <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>
       <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
+  }).join('') || `<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
   renderBidFooter(projId);
 }
 
@@ -1659,7 +1676,7 @@ function projectCardHTML(p) {
           <th>Cost Code</th><th>Sub Code</th>
           <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th>
           <th class="num">Bid Total</th><th class="num">Actual Cost</th>
-          <th class="num">Variance</th><th></th>
+          <th class="num">Variance</th><th class="num">Projected Cost</th><th></th>
         </tr></thead>
         <tbody id="btbody-${p.id}"></tbody>
         <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
