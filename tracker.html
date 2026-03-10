@@ -170,6 +170,23 @@
       width: 100%; border-collapse: collapse;
       font-size: 0.78rem; white-space: nowrap;
     }
+    /* Totals row inside thead */
+    .daily-inner-table thead tr.totals-row th {
+      position: sticky; top: 0; z-index: 4;
+      background: #0d1a0d; border: 1px solid var(--border);
+      font-size: 0.72rem; font-weight: 700; padding: 0.3rem 0.5rem;
+      text-align: right;
+    }
+    .daily-inner-table thead tr.totals-row th.dft-label {
+      text-align: right; color: #888; letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    .daily-inner-table thead tr.totals-row th.dft-val  { color: var(--text); font-variant-numeric: tabular-nums; }
+    .daily-inner-table thead tr.totals-row th.dft-green  { color: var(--green); }
+    .daily-inner-table thead tr.totals-row th.dft-yellow { color: var(--yellow); }
+    .daily-inner-table thead tr.totals-row th.dft-empty  { background: var(--bg); }
+    /* Push group-row and col-row down by totals-row height (~30px) */
+    .daily-inner-table thead tr.group-row th { top: 30px; }
+    .daily-inner-table thead tr.col-row   th { top: 58px; }
     .daily-inner-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
     .daily-inner-table td.del-cell { width: 26px; text-align: center; padding: 0 0.2rem; }
     .daily-inner-table td.del-cell .del-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
@@ -671,17 +688,21 @@
       <button class="btn btn-green" id="daily-fs-add">+ Add Row</button>
     </div>
   </div>
-  <div id="daily-fs-totals" style="display:flex;flex-wrap:wrap;gap:0.25rem 1.5rem;padding:0.45rem 1.25rem;background:var(--surface2);border-bottom:1px solid var(--border);font-size:0.78rem;color:var(--muted);">
-    <span>Labor Hrs: <strong id="dft-lhrs" style="color:var(--text)">—</strong></span>
-    <span>Labor Cost: <strong id="dft-lcost" style="color:var(--green)">—</strong></span>
-    <span>Equip Hrs: <strong id="dft-ehrs" style="color:var(--text)">—</strong></span>
-    <span>Equip Cost: <strong id="dft-ecost" style="color:var(--yellow)">—</strong></span>
-    <span>Material: <strong id="dft-mat" style="color:var(--yellow)">—</strong></span>
-    <span>Total Cost: <strong id="dft-total" style="color:var(--green)">—</strong></span>
-  </div>
   <div class="daily-table-wrap" style="flex:1;overflow:auto;">
     <table class="daily-inner-table">
       <thead>
+        <tr class="totals-row">
+          <th colspan="8" class="dft-label">Totals</th>
+          <th id="dft-lhrs"  class="dft-val">—</th>
+          <th id="dft-lcost" class="dft-val dft-green">—</th>
+          <th colspan="2"    class="dft-empty"></th>
+          <th id="dft-ehrs"  class="dft-val">—</th>
+          <th id="dft-ecost" class="dft-val dft-yellow">—</th>
+          <th colspan="5"    class="dft-empty"></th>
+          <th id="dft-mat"   class="dft-val dft-yellow">—</th>
+          <th id="dft-total" class="dft-val dft-green">—</th>
+          <th                class="dft-empty"></th>
+        </tr>
         <tr class="group-row">
           <th class="g-base"  colspan="1"></th>
           <th class="g-id"    colspan="3">Identification</th>
