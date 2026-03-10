@@ -1602,6 +1602,7 @@ function renderBidFooter(projId) {
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
+    <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
     <td class="foot-label num" style="text-align:right">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
@@ -1642,6 +1643,7 @@ function renderBidTable(projId) {
       <td class="bid-calc">${pct}</td>
       <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
         oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
+      <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual / rqty) : '—'}</td>
       <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
       <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
       <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
@@ -1650,7 +1652,7 @@ function renderBidTable(projId) {
       <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>
       <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
+  }).join('') || `<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
   renderBidFooter(projId);
 }
 
@@ -1816,7 +1818,7 @@ function projectCardHTML(p) {
       <table class="bid-table">
         <thead><tr>
           <th>Cost Code</th><th>Sub Code</th>
-          <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th>
+          <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
           <th class="num">Bid Total</th><th class="num">Actual Cost</th>
           <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
           <th class="num">Variance</th><th class="num">Projected Cost</th><th></th>
