@@ -676,6 +676,7 @@
   <button class="tab-btn"        data-tab="info">Project Info</button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="project">Project Dashboard</button>
+  <button class="tab-btn"        data-tab="supplier">Suppliers</button>
 </nav>
 
 <!-- ══════════════ HOME TAB ══════════════ -->
@@ -779,6 +780,11 @@
   </div>
 </div>
 
+<!-- ══════════════ SUPPLIER TAB ══════════════ -->
+<div class="tab-panel" id="tab-supplier">
+  <div id="supplier-root"></div>
+</div>
+
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
 <div class="tab-panel" id="tab-cost">
   <div class="table-wrap">
@@ -843,7 +849,6 @@
         <button class="modal-tab-btn" data-list="employees">Employees</button>
         <button class="modal-tab-btn" data-list="job_classes">Job Classes</button>
         <button class="modal-tab-btn" data-list="equipment">Equipment</button>
-        <button class="modal-tab-btn" data-list="suppliers">Suppliers</button>
       </div>
 
       <!-- Field Types -->
@@ -883,14 +888,6 @@
         </div>
       </div>
 
-      <!-- Suppliers -->
-      <div class="list-panel" id="panel-suppliers">
-        <div class="list-items" id="items-suppliers"></div>
-        <div class="add-item-row">
-          <input type="text" id="new-suppliers" placeholder="Add supplier…" />
-          <button class="btn btn-green" onclick="addListItem('suppliers')">+ Add</button>
-        </div>
-      </div>
     </div>
   </div>
 </div>
@@ -987,9 +984,10 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p =>
       p.classList.toggle('active', p.id === 'tab-' + activeTab));
     renderHeaderActions();
-    if (activeTab === 'home')    renderHomeTab();
-    if (activeTab === 'project') renderProjectDashboard();
-    if (activeTab === 'info')    renderProjectInfoComputed();
+    if (activeTab === 'home')     renderHomeTab();
+    if (activeTab === 'project')  renderProjectDashboard();
+    if (activeTab === 'info')     renderProjectInfoComputed();
+    if (activeTab === 'supplier') renderSupplierTab();
   });
 });
 
@@ -1747,8 +1745,78 @@ async function loadLists() {
     } catch {}
   }
   lists = { ...defaultLists, ...(saved || {}) };
+  // Migrate suppliers from string[] to {name,state}[]
+  lists.suppliers = lists.suppliers.map(s => typeof s === 'string' ? { name: s, state: '' } : s);
 }
 function saveLists() { apiPut('fct_lists', lists); }
+
+/* ── Supplier Tab ── */
+function renderSupplierTab() {
+  const root = document.getElementById('supplier-root');
+  const sups = lists.suppliers;
+  const rowsHTML = sups.length === 0
+    ? `<tr><td colspan="3" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No suppliers yet. Click + Add Supplier to begin.</td></tr>`
+    : sups.map((s, i) => `
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:0.4rem 0.6rem">
+          <input type="text" value="${esc(s.name || '')}" data-sup-idx="${i}" data-sup-field="name"
+            placeholder="Supplier name"
+            style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.875rem;outline:none;padding:0.15rem 0">
+        </td>
+        <td style="padding:0.4rem 0.6rem">
+          <input type="text" value="${esc(s.state || '')}" data-sup-idx="${i}" data-sup-field="state"
+            placeholder="e.g. TX" maxlength="2"
+            style="width:70px;background:transparent;border:none;color:var(--text);font-size:0.875rem;outline:none;padding:0.15rem 0;text-transform:uppercase">
+        </td>
+        <td style="text-align:center;padding:0.25rem">
+          <button class="del-btn" onclick="deleteSupplier(${i})">&#10005;</button>
+        </td>
+      </tr>`).join('');
+
+  root.innerHTML = `
+    <div style="padding:1.5rem;max-width:680px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Suppliers</span>
+        <button class="btn btn-green" onclick="addSupplier()">+ Add Supplier</button>
+      </div>
+      <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;overflow:hidden">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase">Supplier Name</th>
+            <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;width:100px">State</th>
+            <th style="width:40px;border-bottom:1px solid var(--border)"></th>
+          </tr>
+        </thead>
+        <tbody>${rowsHTML}</tbody>
+      </table>
+    </div>`;
+}
+
+function addSupplier() {
+  lists.suppliers.push({ name: '', state: '' });
+  saveLists();
+  renderSupplierTab();
+  // Focus the new name input
+  const inputs = document.querySelectorAll('#supplier-root [data-sup-field="name"]');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+}
+
+function deleteSupplier(idx) {
+  lists.suppliers.splice(idx, 1);
+  saveLists();
+  renderSupplierTab();
+  projectsList.forEach(p => renderDailyTable(p.id));
+}
+
+document.getElementById('supplier-root').addEventListener('input', e => {
+  const el = e.target;
+  const idx = parseInt(el.dataset.supIdx);
+  const field = el.dataset.supField;
+  if (isNaN(idx) || !field || !lists.suppliers[idx]) return;
+  lists.suppliers[idx][field] = field === 'state' ? el.value.toUpperCase() : el.value;
+  saveLists();
+  projectsList.forEach(p => renderDailyTable(p.id));
+});
 
 // Build <option> tags for a simple string list
 function buildOptions(arr, selected = '') {
@@ -1793,7 +1861,7 @@ document.getElementById('modal-tabs').addEventListener('click', e => {
 });
 
 function renderAllListPanels() {
-  ['field_types','employees','job_classes','suppliers'].forEach(key => {
+  ['field_types','employees','job_classes'].forEach(key => {
     const container = document.getElementById('items-' + key);
     container.innerHTML = '';
     lists[key].forEach((val, idx) => {
@@ -1854,7 +1922,7 @@ document.querySelector('.modal-body').addEventListener('click', e => {
 });
 
 // Add new enter key support
-['field_types','employees','job_classes','equipment','suppliers'].forEach(key => {
+['field_types','employees','job_classes','equipment'].forEach(key => {
   const input = document.getElementById('new-' + key);
   if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') addListItem(key); });
 });
@@ -2153,7 +2221,7 @@ function renderDailyTable(projId) {
   const employeeOpts  = ['', ...lists.employees];
   const jobClassOpts  = ['', ...lists.job_classes];
   const equipOpts     = ['', ...lists.equipment.map(e => e.name)];
-  const supplierOpts  = ['', ...lists.suppliers];
+  const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean)];
   const ccOpts        = ['', ...costCodes];
   const scOpts        = ['', ...subCodes];
 
