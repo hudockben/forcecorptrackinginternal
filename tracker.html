@@ -660,6 +660,53 @@
   <div id="proj-root"><!-- rendered by JS --></div>
 </div>
 
+<!-- ══════════════ DAILY TRACKING FULL-SCREEN ══════════════ -->
+<div id="daily-fullscreen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
+    <button class="btn btn-ghost" onclick="closeDailyView()">&#8592; Back</button>
+    <span id="daily-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
+    <div style="margin-left:auto;display:flex;gap:0.5rem">
+      <button class="btn btn-ghost" id="daily-fs-export">Export CSV</button>
+      <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
+      <button class="btn btn-green" id="daily-fs-add">+ Add Row</button>
+    </div>
+  </div>
+  <div class="daily-table-wrap" style="flex:1;overflow:auto;">
+    <table class="daily-inner-table">
+      <thead>
+        <tr class="group-row">
+          <th class="g-base"  colspan="1"></th>
+          <th class="g-id"    colspan="3">Identification</th>
+          <th class="g-code"  colspan="2">Cost Code</th>
+          <th class="g-labor" colspan="4">Labor</th>
+          <th class="g-equip" colspan="4">Equipment</th>
+          <th class="g-mat"   colspan="6">Material</th>
+          <th class="g-sum"   colspan="2">Summary</th>
+        </tr>
+        <tr class="col-row">
+          <th></th>
+          <th>Date</th><th>Field Type</th><th>Employee</th>
+          <th>Cost Code</th><th>Sub Code</th>
+          <th>Job Class</th><th>Rate</th><th>Labor Hours</th>
+          <th class="calc-hdr">Labor Cost</th>
+          <th>Equipment</th><th>Equip Unit Cost</th><th>Equip Hours</th>
+          <th class="calc-hdr">Equip Total Cost</th>
+          <th>Material</th><th>Supplier</th><th>PO #</th>
+          <th>Units Purchased</th><th>Unit Cost</th><th>Material Cost</th>
+          <th class="calc-hdr">Total Cost</th><th>Quantity</th>
+        </tr>
+      </thead>
+      <tbody id="daily-fs-tbody"></tbody>
+    </table>
+  </div>
+  <div class="legend" style="padding:0.4rem 1.25rem;border-top:1px solid var(--border)">
+    <span><span class="dot dot-calc"></span> Calculated</span>
+    <span>Labor Cost = Rate &times; Labor Hours</span>
+    <span>Equip Total = Unit Cost &times; Equip Hours</span>
+    <span>Total = Labor + Equip + Material</span>
+  </div>
+</div>
+
 <!-- ══════════════ PROJECT DASHBOARD TAB
 <div class="tab-panel" id="tab-project">
   <div class="home-wrap" id="project-content">
@@ -1555,49 +1602,9 @@ function projectCardHTML(p) {
       </table>
     </div>
 
-    <div class="bid-section daily-section">
-      <div class="bid-section-title">
-        <span>Daily Tracking</span>
-        <div style="display:flex;gap:0.5rem">
-          <button class="btn btn-ghost" onclick="exportDailyCSV('${p.id}')">Export CSV</button>
-          <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
-          <button class="btn btn-green" onclick="addDailyRow('${p.id}')">+ Add Row</button>
-        </div>
-      </div>
-      <div class="daily-table-wrap">
-        <table class="daily-inner-table">
-          <thead>
-            <tr class="group-row">
-              <th class="g-base"  colspan="1"></th>
-              <th class="g-id"    colspan="3">Identification</th>
-              <th class="g-code"  colspan="2">Cost Code</th>
-              <th class="g-labor" colspan="4">Labor</th>
-              <th class="g-equip" colspan="4">Equipment</th>
-              <th class="g-mat"   colspan="6">Material</th>
-              <th class="g-sum"   colspan="2">Summary</th>
-            </tr>
-            <tr class="col-row">
-              <th></th>
-              <th>Date</th><th>Field Type</th><th>Employee</th>
-              <th>Cost Code</th><th>Sub Code</th>
-              <th>Job Class</th><th>Rate</th><th>Labor Hours</th>
-              <th class="calc-hdr">Labor Cost</th>
-              <th>Equipment</th><th>Equip Unit Cost</th><th>Equip Hours</th>
-              <th class="calc-hdr">Equip Total Cost</th>
-              <th>Material</th><th>Supplier</th><th>PO #</th>
-              <th>Units Purchased</th><th>Unit Cost</th><th>Material Cost</th>
-              <th class="calc-hdr">Total Cost</th><th>Quantity</th>
-            </tr>
-          </thead>
-          <tbody id="daily-tbody-${p.id}"></tbody>
-        </table>
-      </div>
-      <div class="legend" style="padding:0.4rem 0 0">
-        <span><span class="dot dot-calc"></span> Calculated</span>
-        <span>Labor Cost = Rate &times; Labor Hours</span>
-        <span>Equip Total = Unit Cost &times; Equip Hours</span>
-        <span>Total = Labor + Equip + Material</span>
-      </div>
+    <div class="bid-section" style="display:flex;align-items:center;justify-content:space-between">
+      <span style="color:var(--muted);font-size:0.82rem">Daily field entries for this project</span>
+      <button class="btn btn-green" onclick="openDailyView('${p.id}')">Daily Tracking &#8594;</button>
     </div>
 
     <div class="proj-card-footer">
@@ -2106,6 +2113,30 @@ function exportDailyCSV(projId) {
   });
   const name = (p['project-name'] || 'project').replace(/[^a-z0-9]/gi, '_').toLowerCase();
   downloadCSV(csvRows.join('\n'), `daily_${name}.csv`);
+}
+
+let dailyViewProjId = null;
+
+function openDailyView(projId) {
+  const p = getProj(projId); if (!p) return;
+  dailyViewProjId = projId;
+  document.getElementById('daily-fs-title').textContent =
+    (p['project-name'] || 'Untitled Project') + ' — Daily Tracking';
+  document.getElementById('daily-fs-add').onclick    = () => addDailyRow(projId);
+  document.getElementById('daily-fs-export').onclick = () => exportDailyCSV(projId);
+  // Give the tbody the id that renderDailyTable expects
+  document.getElementById('daily-fs-tbody').id = 'daily-tbody-' + projId;
+  document.getElementById('daily-fullscreen').style.display = 'flex';
+  renderDailyTable(projId);
+}
+
+function closeDailyView() {
+  document.getElementById('daily-fullscreen').style.display = 'none';
+  if (dailyViewProjId) {
+    const tbody = document.getElementById('daily-tbody-' + dailyViewProjId);
+    if (tbody) tbody.id = 'daily-fs-tbody';
+    dailyViewProjId = null;
+  }
 }
 
 /* ═══════════════════════════════════════════
