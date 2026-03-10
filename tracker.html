@@ -187,6 +187,18 @@
     /* Push group-row and col-row down by totals-row height (~30px) */
     .daily-inner-table thead tr.group-row th { top: 30px; }
     .daily-inner-table thead tr.col-row   th { top: 58px; }
+    /* Column filter buttons */
+    .cfb {
+      background: none; border: none; cursor: pointer; font-size: 0.6rem;
+      color: var(--muted); padding: 0 0.1rem; line-height: 1; vertical-align: middle;
+      opacity: 0.6; transition: opacity 0.15s, color 0.15s;
+    }
+    .cfb:hover { opacity: 1; }
+    .cfb.active { color: var(--green); opacity: 1; }
+    /* Filter dropdown item */
+    .dff-item { display:flex; align-items:center; gap:0.4rem; padding:0.25rem 0.6rem; cursor:pointer; font-size:0.78rem; }
+    .dff-item:hover { background: var(--surface2); }
+    .dff-item input[type=checkbox] { accent-color: var(--green); cursor:pointer; }
     .daily-inner-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
     .daily-inner-table td.del-cell { width: 26px; text-align: center; padding: 0 0.2rem; }
     .daily-inner-table td.del-cell .del-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
@@ -712,21 +724,44 @@
           <th class="g-mat"   colspan="6">Material</th>
           <th class="g-sum"   colspan="2">Summary</th>
         </tr>
-        <tr class="col-row">
+        <tr class="col-row" id="daily-col-row">
           <th></th>
-          <th>Date</th><th>Field Type</th><th>Employee</th>
-          <th>Cost Code</th><th>Sub Code</th>
-          <th>Job Class</th><th>Rate</th><th>Labor Hours</th>
+          <th>Date <button class="cfb" data-f="date">▼</button></th>
+          <th>Field Type <button class="cfb" data-f="field_type">▼</button></th>
+          <th>Employee <button class="cfb" data-f="employee">▼</button></th>
+          <th>Cost Code <button class="cfb" data-f="cost_code">▼</button></th>
+          <th>Sub Code <button class="cfb" data-f="sub_code">▼</button></th>
+          <th>Job Class <button class="cfb" data-f="job_class">▼</button></th>
+          <th>Rate <button class="cfb" data-f="rate">▼</button></th>
+          <th>Labor Hours <button class="cfb" data-f="labor_hours">▼</button></th>
           <th class="calc-hdr">Labor Cost</th>
-          <th>Equipment</th><th>Equip Unit Cost</th><th>Equip Hours</th>
+          <th>Equipment <button class="cfb" data-f="equipment">▼</button></th>
+          <th>Equip Unit Cost <button class="cfb" data-f="equip_unit_cost">▼</button></th>
+          <th>Equip Hours <button class="cfb" data-f="equip_hours">▼</button></th>
           <th class="calc-hdr">Equip Total Cost</th>
-          <th>Material</th><th>Supplier</th><th>PO #</th>
-          <th>Units Purchased</th><th>Unit Cost</th><th>Material Cost</th>
-          <th class="calc-hdr">Total Cost</th><th>Quantity</th>
+          <th>Material <button class="cfb" data-f="material">▼</button></th>
+          <th>Supplier <button class="cfb" data-f="supplier">▼</button></th>
+          <th>PO # <button class="cfb" data-f="po_num">▼</button></th>
+          <th>Units Purchased <button class="cfb" data-f="units_purchased">▼</button></th>
+          <th>Unit Cost <button class="cfb" data-f="unit_cost">▼</button></th>
+          <th>Material Cost <button class="cfb" data-f="material_cost">▼</button></th>
+          <th class="calc-hdr">Total Cost</th>
+          <th>Quantity <button class="cfb" data-f="quantity">▼</button></th>
         </tr>
       </thead>
       <tbody id="daily-fs-tbody"></tbody>
     </table>
+  </div>
+  <!-- Column filter dropdown -->
+  <div id="daily-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;display:none;flex-direction:column;">
+    <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+      <input id="dff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+    </div>
+    <div id="dff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+    <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+      <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearDailyFilter()">Clear</button>
+      <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyDailyFilter()">Apply</button>
+    </div>
   </div>
   <div class="legend" style="padding:0.4rem 1.25rem;border-top:1px solid var(--border)">
     <span><span class="dot dot-calc"></span> Calculated</span>
@@ -2079,13 +2114,22 @@ function renderDailyTotals(projId) {
 
 function renderDailyTable(projId) {
   const p     = getProj(projId); if (!p) return;
-  const rows  = p.dailyRows || [];
+  const allRows = p.dailyRows || [];
+  // Apply column filters
+  const rows = allRows.filter(row =>
+    Object.entries(dailyFilters).every(([f, allowed]) => allowed.has(String(row[f] ?? '')))
+  );
   const tbody = document.getElementById('daily-tbody-' + projId); if (!tbody) return;
   tbody.innerHTML = '';
   renderDailyTotals(projId);
+  _updateFilterButtons();
 
-  if (rows.length === 0) {
+  if (allRows.length === 0) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="23">No entries yet. Click &ldquo;+ Add Row&rdquo; to get started.</td></tr>';
+    return;
+  }
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="23">No rows match the active filters.</td></tr>';
     return;
   }
 
@@ -2170,6 +2214,101 @@ function exportDailyCSV(projId) {
   downloadCSV(csvRows.join('\n'), `daily_${name}.csv`);
 }
 
+/* ── Column filters ── */
+let dailyFilters = {};      // { field: Set<string> }  — absent key = no filter
+let _dffField    = null;    // field currently being filtered
+let _dffPending  = null;    // Set being edited in the dropdown
+
+function _updateFilterButtons() {
+  document.querySelectorAll('.cfb').forEach(btn => {
+    const f = btn.dataset.f;
+    btn.classList.toggle('active', !!dailyFilters[f]);
+  });
+}
+
+function openDailyFilter(field, btn) {
+  const proj = getProj(dailyViewProjId); if (!proj) return;
+  _dffField = field;
+
+  // Collect unique values for this field
+  const rows = proj.dailyRows || [];
+  const unique = [...new Set(rows.map(r => String(r[field] ?? '')))].sort();
+  const active = dailyFilters[field] || null;   // null = all shown
+  _dffPending = active ? new Set(active) : null; // null = all selected
+
+  // Build list
+  const list = document.getElementById('dff-list');
+  const allChecked = !_dffPending;
+  list.innerHTML = `<label class="dff-item" id="dff-all-label">
+    <input type="checkbox" id="dff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="dff-val-cb" value="${esc(v)}" ${(!_dffPending || _dffPending.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  // Select-all logic
+  document.getElementById('dff-all').addEventListener('change', e => {
+    document.querySelectorAll('.dff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.dff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.dff-val-cb')].every(c => c.checked);
+    document.getElementById('dff-all').checked = all;
+  }));
+
+  // Search filter within dropdown
+  document.getElementById('dff-search').value = '';
+  document.getElementById('dff-search').oninput = e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#dff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  // Position near button
+  const dd = document.getElementById('daily-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyDailyFilter() {
+  const cbs = [...document.querySelectorAll('.dff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allChecked = document.getElementById('dff-all')?.checked;
+  if (allChecked || checked.length === cbs.length) {
+    delete dailyFilters[_dffField];
+  } else {
+    dailyFilters[_dffField] = new Set(checked);
+  }
+  document.getElementById('daily-filter-dd').style.display = 'none';
+  _updateFilterButtons();
+  renderDailyTable(dailyViewProjId);
+}
+
+function clearDailyFilter() {
+  delete dailyFilters[_dffField];
+  document.getElementById('daily-filter-dd').style.display = 'none';
+  _updateFilterButtons();
+  renderDailyTable(dailyViewProjId);
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', e => {
+  const dd = document.getElementById('daily-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('cfb')) {
+    dd.style.display = 'none';
+  }
+});
+
+// Wire filter buttons via delegation
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.cfb');
+  if (!btn || !dailyViewProjId) return;
+  e.stopPropagation();
+  openDailyFilter(btn.dataset.f, btn);
+});
+
 let dailyViewProjId = null;
 
 function openDailyView(projId) {
@@ -2187,6 +2326,8 @@ function openDailyView(projId) {
 
 function closeDailyView() {
   document.getElementById('daily-fullscreen').style.display = 'none';
+  document.getElementById('daily-filter-dd').style.display = 'none';
+  dailyFilters = {};
   if (dailyViewProjId) {
     const tbody = document.getElementById('daily-tbody-' + dailyViewProjId);
     if (tbody) tbody.id = 'daily-fs-tbody';
