@@ -477,8 +477,13 @@
       transition: color 0.15s;
     }
     .list-item .remove-item:hover { color: var(--red); }
+    .list-item select {
+      background: transparent; border: none; outline: none;
+      color: var(--text); font-size: 13px; font-family: inherit;
+      flex: 0 0 120px;
+    }
 
-    .add-item-row { display: flex; gap: 0.5rem; }
+    .add-item-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     .add-item-row input {
       flex: 1; background: var(--surface2); border: 1px solid var(--border);
       border-radius: 3px; padding: 0.35rem 0.6rem;
@@ -487,6 +492,11 @@
     }
     .add-item-row input:focus { border-color: var(--green-dim); }
     .add-item-row input.cost-new { flex: 0 0 110px; text-align: right; }
+    .add-item-row select.cost-new {
+      flex: 0 0 120px; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 3px; padding: 0.35rem 0.5rem;
+      color: var(--text); font-size: 13px; font-family: inherit; outline: none;
+    }
 
     /* ── Home Tab ── */
     .home-wrap {
@@ -872,7 +882,10 @@
       <div class="list-panel" id="panel-employees">
         <div class="list-items" id="items-employees"></div>
         <div class="add-item-row">
-          <input type="text" id="new-employees" placeholder="Add employee name…" />
+          <input type="text"   id="new-employees"   placeholder="Employee name…" />
+          <input type="number" id="new-emp-np-rate"  placeholder="Non-PW Rate" class="cost-new" step="any" />
+          <input type="number" id="new-emp-pw-rate"  placeholder="PW Rate"     class="cost-new" step="any" />
+          <select id="new-emp-job-class" class="cost-new"><option value="">— Job Class —</option></select>
           <button class="btn btn-green" onclick="addListItem('employees')">+ Add</button>
         </div>
       </div>
@@ -1788,6 +1801,9 @@ async function loadLists() {
   lists = { ...defaultLists, ...(saved || {}) };
   // Migrate suppliers from string[] to {name,state}[]
   lists.suppliers = lists.suppliers.map(s => typeof s === 'string' ? { name: s, state: '' } : s);
+  // Migrate employees from string[] to {name,non_prevailing_rate,prevailing_rate,job_class}[]
+  lists.employees = lists.employees.map(e => typeof e === 'string'
+    ? { name: e, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' } : e);
 }
 function saveLists() { apiPut('fct_lists', lists); }
 
@@ -1875,7 +1891,7 @@ function renderPOTab() {
 
         const empOpts = `<option value="">— select —</option>` +
           lists.employees.map(e =>
-            `<option value="${esc(e)}" ${e === po.employee ? 'selected' : ''}>${esc(e)}</option>`).join('');
+            `<option value="${esc(e.name)}" ${e.name === po.employee ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
 
         const statusOpts = ['pending', 'approved', 'closed'].map(s =>
           `<option value="${s}" ${s === po.status ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
@@ -2137,7 +2153,7 @@ document.getElementById('modal-tabs').addEventListener('click', e => {
 });
 
 function renderAllListPanels() {
-  ['field_types','employees','job_classes'].forEach(key => {
+  ['field_types','job_classes'].forEach(key => {
     const container = document.getElementById('items-' + key);
     container.innerHTML = '';
     lists[key].forEach((val, idx) => {
@@ -2151,15 +2167,44 @@ function renderAllListPanels() {
     });
   });
 
-  // Equipment (has unit cost)
+  // Employees (name, non-prevailing rate, prevailing rate, job class)
+  const empContainer = document.getElementById('items-employees');
+  empContainer.innerHTML = '';
+  lists.employees.forEach((emp, idx) => {
+    const div = document.createElement('div');
+    div.className = 'list-item';
+    const jcOpts = ['', ...lists.job_classes].map(jc =>
+      `<option value="${esc(jc)}" ${jc === (emp.job_class || '') ? 'selected' : ''}>${jc || '— class —'}</option>`
+    ).join('');
+    div.innerHTML = `
+      <input type="text"   value="${esc(emp.name)}"                 data-key="employees" data-idx="${idx}" data-field="name"              placeholder="Name" style="flex:1 1 120px" />
+      <span class="list-item-label">Non-PW:</span>
+      <input type="number" value="${emp.non_prevailing_rate || ''}"  data-key="employees" data-idx="${idx}" data-field="non_prevailing_rate" class="cost-input" step="any" placeholder="0.00" />
+      <span class="list-item-label">PW:</span>
+      <input type="number" value="${emp.prevailing_rate || ''}"      data-key="employees" data-idx="${idx}" data-field="prevailing_rate"     class="cost-input" step="any" placeholder="0.00" />
+      <select data-key="employees" data-idx="${idx}" data-field="job_class">${jcOpts}</select>
+      <button class="remove-item" data-key="employees" data-idx="${idx}">&#10005;</button>
+    `;
+    empContainer.appendChild(div);
+  });
+
+  // Populate job class select in employees add-row
+  const newJcSel = document.getElementById('new-emp-job-class');
+  if (newJcSel) {
+    const cur = newJcSel.value;
+    newJcSel.innerHTML = `<option value="">— Job Class —</option>` +
+      lists.job_classes.map(jc => `<option value="${esc(jc)}" ${jc === cur ? 'selected' : ''}>${esc(jc)}</option>`).join('');
+  }
+
+  // Equipment (name + unit cost)
   const eqContainer = document.getElementById('items-equipment');
   eqContainer.innerHTML = '';
   lists.equipment.forEach((item, idx) => {
     const div = document.createElement('div');
     div.className = 'list-item';
     div.innerHTML = `
-      <input type="text"   value="${esc(item.name)}"      data-key="equipment" data-idx="${idx}" data-field="name" placeholder="Equipment name" />
-      <span class="list-item-label">Unit Cost:</span>
+      <input type="text"   value="${esc(item.name)}"      data-key="equipment" data-idx="${idx}" data-field="name"      placeholder="Equipment name" />
+      <span class="list-item-label">Cost:</span>
       <input type="number" value="${item.unit_cost || ''}" data-key="equipment" data-idx="${idx}" data-field="unit_cost" class="cost-input" step="any" placeholder="0.00" />
       <button class="remove-item" data-key="equipment" data-idx="${idx}">&#10005;</button>
     `;
@@ -2167,9 +2212,8 @@ function renderAllListPanels() {
   });
 }
 
-// Modal input change
-document.querySelector('.modal-body').addEventListener('input', e => {
-  const el = e.target;
+// Modal input/change — covers text inputs, number inputs, and selects
+function _modalFieldUpdate(el) {
   const key = el.dataset.key;
   const idx = parseInt(el.dataset.idx);
   if (!key || isNaN(idx)) return;
@@ -2179,11 +2223,21 @@ document.querySelector('.modal-body').addEventListener('input', e => {
     if (!lists.equipment[idx]) return;
     if (field === 'name')      lists.equipment[idx].name      = el.value;
     if (field === 'unit_cost') lists.equipment[idx].unit_cost = parseFloat(el.value) || 0;
+  } else if (key === 'employees') {
+    const field = el.dataset.field;
+    if (!lists.employees[idx]) return;
+    if (field === 'non_prevailing_rate' || field === 'prevailing_rate') {
+      lists.employees[idx][field] = parseFloat(el.value) || 0;
+    } else {
+      lists.employees[idx][field] = el.value;
+    }
   } else {
     lists[key][idx] = el.value;
   }
   saveLists();
-});
+}
+document.querySelector('.modal-body').addEventListener('input',  e => _modalFieldUpdate(e.target));
+document.querySelector('.modal-body').addEventListener('change', e => _modalFieldUpdate(e.target));
 
 // Modal remove item
 document.querySelector('.modal-body').addEventListener('click', e => {
@@ -2204,18 +2258,32 @@ document.querySelector('.modal-body').addEventListener('click', e => {
 });
 
 function addListItem(key) {
-  const input = document.getElementById('new-' + key);
-  const val = input.value.trim();
-  if (!val) return;
-
-  if (key === 'equipment') {
-    const costInput = document.getElementById('new-equipment-cost');
-    lists.equipment.push({ name: val, unit_cost: parseFloat(costInput.value) || 0 });
-    costInput.value = '';
+  if (key === 'employees') {
+    const name = document.getElementById('new-employees').value.trim();
+    if (!name) return;
+    const npRate   = parseFloat(document.getElementById('new-emp-np-rate').value)  || 0;
+    const pwRate   = parseFloat(document.getElementById('new-emp-pw-rate').value)  || 0;
+    const jobClass = document.getElementById('new-emp-job-class').value;
+    if (!lists.employees.find(e => e.name === name)) {
+      lists.employees.push({ name, non_prevailing_rate: npRate, prevailing_rate: pwRate, job_class: jobClass });
+    }
+    document.getElementById('new-employees').value   = '';
+    document.getElementById('new-emp-np-rate').value = '';
+    document.getElementById('new-emp-pw-rate').value = '';
+    document.getElementById('new-emp-job-class').value = '';
   } else {
-    if (!lists[key].includes(val)) lists[key].push(val);
+    const input = document.getElementById('new-' + key);
+    const val = input.value.trim();
+    if (!val) return;
+    if (key === 'equipment') {
+      const costInput = document.getElementById('new-equipment-cost');
+      lists.equipment.push({ name: val, unit_cost: parseFloat(costInput.value) || 0 });
+      costInput.value = '';
+    } else {
+      if (!lists[key].includes(val)) lists[key].push(val);
+    }
+    input.value = '';
   }
-  input.value = '';
   saveLists();
   renderAllListPanels();
 }
@@ -2497,7 +2565,7 @@ function renderDailyTable(projId) {
   const costCodes     = getCostCodes(projId);
   const subCodes      = getSubCodes(projId);
   const fieldTypeOpts = ['', ...lists.field_types];
-  const employeeOpts  = ['', ...lists.employees];
+  const employeeOpts  = ['', ...lists.employees.map(e => e.name)];
   const jobClassOpts  = ['', ...lists.job_classes];
   const equipOpts     = ['', ...lists.equipment.map(e => e.name)];
   const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean)];
@@ -2758,6 +2826,21 @@ document.addEventListener('input', e => {
     const p = getProj(projId); if (!p) return;
     if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
     p.dailyRows[i][f] = el.value;
+    // Auto-fill job class and non-prevailing rate when employee is selected
+    if (f === 'employee') {
+      const emp = lists.employees.find(e => e.name === el.value);
+      if (emp) {
+        const rowEl = document.getElementById('daily-tbody-' + projId)?.children[i];
+        if (!p.dailyRows[i].job_class && emp.job_class) {
+          p.dailyRows[i].job_class = emp.job_class;
+          if (rowEl) { const s = rowEl.querySelector('[data-f="job_class"]'); if (s) s.value = emp.job_class; }
+        }
+        if (!p.dailyRows[i].rate && emp.non_prevailing_rate) {
+          p.dailyRows[i].rate = emp.non_prevailing_rate;
+          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = emp.non_prevailing_rate; }
+        }
+      }
+    }
     // Auto-fill equip unit cost when equipment is selected
     if (f === 'equipment') {
       const eq = lists.equipment.find(e => e.name === el.value);
