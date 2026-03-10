@@ -703,8 +703,6 @@
       <button class="btn btn-green" id="daily-fs-add">+ Add Row</button>
     </div>
   </div>
-  <!-- PO summary panel — populated by renderDailyPOPanel() -->
-  <div id="daily-po-panel" style="display:none;background:var(--surface);border-bottom:1px solid var(--border);padding:0.5rem 1.25rem;overflow-x:auto;"></div>
   <div class="daily-table-wrap" style="flex:1;overflow:auto;">
     <table class="daily-inner-table">
       <thead>
@@ -1813,13 +1811,35 @@ function addPO() {
 function deletePO(id) {
   const po = purchaseOrders.find(p => p.id === id);
   const oldProj = po ? po.project_id : '';
+  if (po && po.po_row_id && oldProj) {
+    const proj = getProj(oldProj);
+    if (proj) {
+      proj.dailyRows = proj.dailyRows.filter(r => r.id !== po.po_row_id);
+      saveProjects();
+      renderDailyTable(oldProj);
+    }
+  }
   purchaseOrders = purchaseOrders.filter(p => p.id !== id);
   savePurchaseOrders();
   renderPOTab();
-  if (oldProj) {
-    renderProjectPOs(oldProj);
-    if (dailyViewProjId === oldProj) renderDailyPOPanel(oldProj);
+  if (oldProj) renderProjectPOs(oldProj);
+}
+
+function _syncPORowField(po, field) {
+  if (!po.project_id || !po.po_row_id) return;
+  const proj = getProj(po.project_id);
+  if (!proj) return;
+  const r = proj.dailyRows.find(r => r.id === po.po_row_id);
+  if (!r) return;
+  const map = { title: 'material', supplier: 'supplier', employee: 'employee',
+                date_created: 'date', qty: 'units_purchased', unit_cost: 'unit_cost' };
+  if (map[field]) r[map[field]] = po[field] || '';
+  if (['qty','unit_cost','tax'].includes(field)) {
+    const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
+    r.material_cost = String(qty * uc + tax);
   }
+  saveProjects();
+  renderDailyTable(po.project_id);
 }
 
 function renderPOTab() {
@@ -1943,10 +1963,8 @@ document.getElementById('po-root').addEventListener('input', e => {
     if (amtEl) amtEl.textContent = '$' + fmt(amt);
     if (totEl) totEl.textContent = '$' + fmt(amt + tax);
   }
-  if (po.project_id) {
-    renderProjectPOs(po.project_id);
-    if (dailyViewProjId === po.project_id) renderDailyPOPanel(po.project_id);
-  }
+  _syncPORowField(po, field);
+  if (po.project_id) renderProjectPOs(po.project_id);
 });
 
 document.getElementById('po-root').addEventListener('change', e => {
@@ -1957,14 +1975,49 @@ document.getElementById('po-root').addEventListener('change', e => {
   if (!po) return;
   const oldProj = po.project_id;
   po[field] = el.value;
-  savePurchaseOrders();
+
   if (field === 'project_id') {
-    if (oldProj)       { renderProjectPOs(oldProj);       if (dailyViewProjId === oldProj)       renderDailyPOPanel(oldProj); }
-    if (po.project_id) { renderProjectPOs(po.project_id); if (dailyViewProjId === po.project_id) renderDailyPOPanel(po.project_id); }
-  } else if (po.project_id) {
-    renderProjectPOs(po.project_id);
-    if (dailyViewProjId === po.project_id) renderDailyPOPanel(po.project_id);
+    // Remove auto-inserted row from old project
+    if (oldProj && po.po_row_id) {
+      const oldP = getProj(oldProj);
+      if (oldP) {
+        oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== po.po_row_id);
+        saveProjects();
+        renderDailyTable(oldProj);
+      }
+    }
+    po.po_row_id = null;
+
+    // Insert new row into new project
+    if (po.project_id) {
+      const newP = getProj(po.project_id);
+      if (newP) {
+        const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
+        const row = {
+          ...defaultDailyRow(),
+          id:              Date.now() + Math.random(),
+          date:            po.date_created    || '',
+          employee:        po.employee        || '',
+          material:        po.title           || '',
+          supplier:        po.supplier        || '',
+          po_num:          po.po_number       || '',
+          units_purchased: po.qty             || '',
+          unit_cost:       po.unit_cost       || '',
+          material_cost:   String(qty * uc + tax),
+        };
+        newP.dailyRows.push(row);
+        po.po_row_id = row.id;
+        saveProjects();
+        renderDailyTable(po.project_id);
+      }
+    }
+    if (oldProj)       renderProjectPOs(oldProj);
+    if (po.project_id) renderProjectPOs(po.project_id);
+  } else {
+    _syncPORowField(po, field);
+    if (po.project_id) renderProjectPOs(po.project_id);
   }
+  savePurchaseOrders();
 });
 
 /* ── Supplier Tab ── */
@@ -2664,40 +2717,6 @@ function openDailyView(projId) {
   document.getElementById('daily-fs-tbody').id = 'daily-tbody-' + projId;
   document.getElementById('daily-fullscreen').style.display = 'flex';
   renderDailyTable(projId);
-  renderDailyPOPanel(projId);
-}
-
-function renderDailyPOPanel(projId) {
-  const panel = document.getElementById('daily-po-panel');
-  if (!panel) return;
-  const linked = purchaseOrders.filter(po => po.project_id === projId);
-  if (linked.length === 0) {
-    panel.style.display = 'none';
-    return;
-  }
-  panel.style.display = 'block';
-  const cards = linked.map(po => {
-    const qty   = parseFloat(po.qty)       || 0;
-    const uc    = parseFloat(po.unit_cost)  || 0;
-    const tax   = parseFloat(po.tax)        || 0;
-    const total = qty * uc + tax;
-    const sc    = po.status === 'approved' ? '#86efac'
-                : po.status === 'closed'   ? 'var(--muted)'
-                :                            'var(--yellow)';
-    return `<div style="display:inline-flex;align-items:center;gap:0.5rem;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:0.3rem 0.75rem;font-size:0.78rem;white-space:nowrap">
-      <span style="font-family:monospace;color:var(--muted);font-size:0.72rem">${esc(po.po_number)}</span>
-      <span style="color:var(--text);font-weight:600">${esc(po.title || '—')}</span>
-      ${po.supplier ? `<span style="color:var(--muted)">${esc(po.supplier)}</span>` : ''}
-      <span style="color:var(--green)">$${fmt(uc)} /unit</span>
-      <span style="color:var(--yellow);font-weight:700">$${fmt(total)} total</span>
-      <span style="color:${sc};text-transform:capitalize;font-size:0.7rem;border:1px solid currentColor;border-radius:3px;padding:0 0.3rem">${esc(po.status || '')}</span>
-    </div>`;
-  }).join('');
-  panel.innerHTML = `
-    <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
-      <span style="font-size:0.68rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);flex-shrink:0">Linked POs</span>
-      ${cards}
-    </div>`;
 }
 
 function closeDailyView() {
