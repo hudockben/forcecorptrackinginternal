@@ -1529,7 +1529,8 @@ function renderBidFooter(projId) {
   const p = getProj(projId); if (!p) return;
   const footEl = document.getElementById('bfoot-' + projId); if (!footEl) return;
   const totalBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
-  const totalActual = (p.bidItems||[]).reduce((s,b) => s + actualForBidItem(b, projId), 0);
+  // Use all daily rows so PO-inserted costs (no cost code) are included in the footer total
+  const totalActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
   const totalProj   = (p.bidItems||[]).reduce((s,b) => {
     const bidQty = parseFloat(b.quantity) || 0;
     const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
@@ -1599,7 +1600,8 @@ function projectCardHTML(p) {
   const meta   = [p['job-number'], p['client']].filter(Boolean).join(' · ');
   const status = p['status'] || '';
   const totalBid = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
-  const totalActual = (p.bidItems||[]).reduce((s,b)=>s+actualForBidItem(b,p.id),0);
+  // Sum ALL daily rows so PO-inserted rows (no cost code) are included in the badge
+  const totalActual = (p.dailyRows||[]).reduce((s,r)=>s+calcDaily(r).total_cost,0);
   const diff = totalBid - totalActual;
   const uniqueDates = new Set((p.dailyRows||[]).map(r => r.date).filter(Boolean));
 
