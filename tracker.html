@@ -219,7 +219,8 @@
       text-transform: uppercase; color: var(--blue); margin-bottom: 0.75rem;
       display: flex; align-items: center; justify-content: space-between;
     }
-    .bid-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 0.6rem; }
+    .bid-table-wrap { overflow-x: auto; }
+    .bid-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 0.6rem; }
     .bid-table th {
       background: var(--surface2); color: #888; font-size: 0.63rem; font-weight: 700;
       letter-spacing: 0.07em; text-transform: uppercase; padding: 0.4rem 0.6rem;
@@ -1744,6 +1745,7 @@ function projectCardHTML(p) {
           <button class="btn btn-blue" onclick="addBidItem('${p.id}')">+ Add Item</button>
         </div>
       </div>
+      <div class="bid-table-wrap">
       <table class="bid-table">
         <thead><tr>
           <th>Cost Code</th><th>Sub Code</th>
@@ -1754,6 +1756,7 @@ function projectCardHTML(p) {
         <tbody id="btbody-${p.id}"></tbody>
         <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
       </table>
+      </div>
     </div>
 
     <div class="bid-section">
