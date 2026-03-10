@@ -207,6 +207,7 @@
     .daily-inner-table td select {
       width: 100%; background: transparent; border: none; outline: none;
       color: var(--text); font-size: 0.78rem; font-family: inherit; padding: 0.3rem 0.45rem;
+      appearance: auto;
     }
     .daily-inner-table td input:focus,
     .daily-inner-table td select:focus { background: #1e1e2e; }
@@ -2436,8 +2437,11 @@ function calcDaily(row) {
 
 function makeSelect(options, selected, dataTab, dataI, dataF, dataProj) {
   const proj = dataProj ? ` data-proj="${dataProj}"` : '';
+  // Always include the current saved value as an option so existing rows
+  // remain editable even if it's no longer present in the managed lists.
+  const opts = (selected && !options.includes(selected)) ? [...options, selected] : options;
   return `<select data-tab="${dataTab}" data-i="${dataI}" data-f="${dataF}"${proj}>
-    ${options.map(o => `<option value="${esc(o)}" ${o === selected ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+    ${opts.map(o => `<option value="${esc(o)}" ${o === selected ? 'selected' : ''}>${esc(o)}</option>`).join('')}
   </select>`;
 }
 
