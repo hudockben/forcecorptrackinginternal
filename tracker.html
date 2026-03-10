@@ -2096,11 +2096,15 @@ function buildOptions(arr, selected = '') {
 }
 
 // Cost codes / sub codes come from the cost tracking rows
-function getCostCodes() {
-  return [...new Set(costRows.map(r => r.cost_code).filter(Boolean))];
+function getCostCodes(projId) {
+  const p = projId ? getProj(projId) : null;
+  const src = p ? (p.bidItems || []) : costRows;
+  return [...new Set(src.map(r => r.cost_code).filter(Boolean))];
 }
-function getSubCodes() {
-  return [...new Set(costRows.map(r => r.sub_code).filter(Boolean))];
+function getSubCodes(projId) {
+  const p = projId ? getProj(projId) : null;
+  const src = p ? (p.bidItems || []) : costRows;
+  return [...new Set(src.map(r => r.sub_code).filter(Boolean))];
 }
 
 /* ── Modal ── */
@@ -2489,8 +2493,8 @@ function renderDailyTable(projId) {
     return;
   }
 
-  const costCodes     = getCostCodes();
-  const subCodes      = getSubCodes();
+  const costCodes     = getCostCodes(projId);
+  const subCodes      = getSubCodes(projId);
   const fieldTypeOpts = ['', ...lists.field_types];
   const employeeOpts  = ['', ...lists.employees];
   const jobClassOpts  = ['', ...lists.job_classes];
