@@ -2482,8 +2482,10 @@ function calcDaily(row) {
 
 function makeSelect(options, selected, dataTab, dataI, dataF, dataProj) {
   const proj = dataProj ? ` data-proj="${dataProj}"` : '';
+  // Ensure the saved value is always present as an option so existing data never goes blank
+  const opts = (selected && !options.includes(selected)) ? [...options, selected] : options;
   return `<select data-tab="${dataTab}" data-i="${dataI}" data-f="${dataF}"${proj}>
-    ${options.map(o => `<option value="${esc(o)}" ${o === selected ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+    ${opts.map(o => `<option value="${esc(o)}" ${o === selected ? 'selected' : ''}>${esc(o)}</option>`).join('')}
   </select>`;
 }
 
