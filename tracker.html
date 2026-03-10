@@ -162,6 +162,14 @@
       border-radius: 0; margin-bottom: 0;
     }
 
+    /* ── Assigned Personnel / Equipment checklist ── */
+    .assign-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 0.75rem; }
+    .assign-col-label { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #888; margin-bottom: 0.5rem; }
+    .assign-list { display: flex; flex-direction: column; gap: 0.35rem; max-height: 180px; overflow-y: auto; padding: 0.5rem 0.6rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+    .assign-check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.83rem; cursor: pointer; color: var(--text); }
+    .assign-check input[type="checkbox"] { accent-color: var(--green); width: 14px; height: 14px; flex-shrink: 0; cursor: pointer; }
+    .assign-list:empty::after { content: "None in global lists yet"; color: var(--muted); font-size: 0.78rem; font-style: italic; }
+
     /* ── Bid Items & Daily Tracking (shared section wrapper) ── */
     .bid-section { padding: 1.1rem 1.5rem; border-top: 1px solid var(--border); }
     .daily-section .bid-section-title { color: var(--green); }
@@ -1430,7 +1438,8 @@ function addProject() {
     'project-name':'','job-number':'','status':'','contract-type':'',
     'client':'','gc':'','pm':'','super':'','estimator':'','client-contact':'',
     'address':'','city-state':'','start-date':'','end-date':'','contract-days':'',
-    'contract-amount':'','revised-amount':'','retention':'','scope':'','notes':''
+    'contract-amount':'','revised-amount':'','retention':'','scope':'','notes':'',
+    prevailing_wage: false, assigned_employees: [], assigned_equipment: []
   };
   projectsList.push(p);
   saveProjects();
@@ -1462,6 +1471,17 @@ function updateProjectField(id, field, value) {
   if (nameEl)  nameEl.textContent  = p['project-name'] || 'Untitled Project';
   if (metaEl)  metaEl.textContent  = [p['job-number'], p['client']].filter(Boolean).join(' · ');
   if (badgeEl) { badgeEl.className = 'proj-badge ' + statusBadgeClass(p['status']); badgeEl.textContent = p['status'] || ''; }
+}
+
+function toggleProjectAssignment(projId, field, name, checked) {
+  const p = getProj(projId); if (!p) return;
+  if (!Array.isArray(p[field])) p[field] = [];
+  if (checked) { if (!p[field].includes(name)) p[field].push(name); }
+  else { p[field] = p[field].filter(n => n !== name); }
+  saveProjects();
+  // Re-render daily table if open so dropdown options update immediately
+  const dailyTbody = document.getElementById('daily-tbody-' + projId);
+  if (dailyTbody) renderDailyTable(projId);
 }
 
 function statusBadgeClass(s) {
@@ -1680,6 +1700,45 @@ function projectCardHTML(p) {
           <select onchange="updateProjectField('${p.id}','contract-type',this.value)">
             ${makeOpt(['','Lump Sum','Unit Price','Cost Plus','Time & Material','GMP'], p['contract-type']||'')}
           </select></div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Prevailing Wage &amp; Workforce</div>
+      <div class="info-grid">
+        <div class="info-field"><label>Prevailing Wage Project</label>
+          <select onchange="updateProjectField('${p.id}','prevailing_wage',this.value==='yes')">
+            <option value="no" ${!p.prevailing_wage ? 'selected' : ''}>No — Standard Rates</option>
+            <option value="yes" ${p.prevailing_wage ? 'selected' : ''}>Yes — Prevailing Wage Rates</option>
+          </select>
+          <span style="font-size:0.72rem;color:var(--muted);margin-top:0.3rem;display:block">
+            Selecting employees on daily rows will auto-fill the ${p.prevailing_wage ? '<strong style="color:var(--green)">prevailing wage</strong>' : 'standard'} rate for each employee.
+          </span>
+        </div>
+      </div>
+      <div class="assign-cols">
+        <div>
+          <div class="assign-col-label">Assigned Employees <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></div>
+          <div class="assign-list">
+            ${lists.employees.map(emp => `
+              <label class="assign-check">
+                <input type="checkbox" ${(p.assigned_employees||[]).includes(emp.name) ? 'checked' : ''}
+                  onchange="toggleProjectAssignment('${p.id}','assigned_employees','${esc(emp.name)}',this.checked)">
+                ${esc(emp.name)}${emp.job_class ? ` <span style="color:var(--muted);font-size:0.75rem">(${esc(emp.job_class)})</span>` : ''}
+              </label>`).join('')}
+          </div>
+        </div>
+        <div>
+          <div class="assign-col-label">Assigned Equipment <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></div>
+          <div class="assign-list">
+            ${lists.equipment.map(eq => `
+              <label class="assign-check">
+                <input type="checkbox" ${(p.assigned_equipment||[]).includes(eq.name) ? 'checked' : ''}
+                  onchange="toggleProjectAssignment('${p.id}','assigned_equipment','${esc(eq.name)}',this.checked)">
+                ${esc(eq.name)}${eq.unit_cost ? ` <span style="color:var(--muted);font-size:0.75rem">($${fmt(eq.unit_cost)}/hr)</span>` : ''}
+              </label>`).join('')}
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2607,9 +2666,17 @@ function renderDailyTable(projId) {
   const costCodes     = getCostCodes(projId);
   const subCodes      = getSubCodes(projId);
   const fieldTypeOpts = ['', ...lists.field_types];
-  const employeeOpts  = ['', ...lists.employees.map(e => e.name)];
+  const assignedEmps  = p.assigned_employees || [];
+  const assignedEquip = p.assigned_equipment || [];
+  const empNames = assignedEmps.length > 0
+    ? lists.employees.filter(e => assignedEmps.includes(e.name)).map(e => e.name)
+    : lists.employees.map(e => e.name);
+  const eqNames = assignedEquip.length > 0
+    ? lists.equipment.filter(e => assignedEquip.includes(e.name)).map(e => e.name)
+    : lists.equipment.map(e => e.name);
+  const employeeOpts  = ['', ...empNames];
   const jobClassOpts  = ['', ...lists.job_classes];
-  const equipOpts     = ['', ...lists.equipment.map(e => e.name)];
+  const equipOpts     = ['', ...eqNames];
   const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean)];
   const ccOpts        = ['', ...costCodes];
   const scOpts        = ['', ...subCodes];
@@ -2868,7 +2935,7 @@ document.addEventListener('input', e => {
     const p = getProj(projId); if (!p) return;
     if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
     p.dailyRows[i][f] = el.value;
-    // Auto-fill job class and non-prevailing rate when employee is selected
+    // Auto-fill job class and rate (prevailing or non-prevailing) when employee is selected
     if (f === 'employee') {
       const emp = lists.employees.find(e => e.name === el.value);
       if (emp) {
@@ -2877,9 +2944,10 @@ document.addEventListener('input', e => {
           p.dailyRows[i].job_class = emp.job_class;
           if (rowEl) { const s = rowEl.querySelector('[data-f="job_class"]'); if (s) s.value = emp.job_class; }
         }
-        if (!p.dailyRows[i].rate && emp.non_prevailing_rate) {
-          p.dailyRows[i].rate = emp.non_prevailing_rate;
-          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = emp.non_prevailing_rate; }
+        const autoRate = p.prevailing_wage ? emp.prevailing_rate : emp.non_prevailing_rate;
+        if (!p.dailyRows[i].rate && autoRate) {
+          p.dailyRows[i].rate = autoRate;
+          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate; }
         }
       }
     }
