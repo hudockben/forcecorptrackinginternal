@@ -1361,6 +1361,19 @@ function actualForBidItem(b, projId) {
   }, 0);
 }
 
+function runningQtyForBidItem(b, projId) {
+  if (!b.cost_code && !b.sub_code) return 0;
+  const proj = getProj(projId);
+  const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
+  return rows.reduce((s, r) => {
+    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
+        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+      return s + (parseFloat(r.quantity) || 0);
+    }
+    return s;
+  }, 0);
+}
+
 function renderBidFooter(projId) {
   const p = getProj(projId); if (!p) return;
   const footEl = document.getElementById('bfoot-' + projId); if (!footEl) return;
@@ -1373,6 +1386,8 @@ function renderBidFooter(projId) {
     <td class="foot-label" colspan="3">Totals</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
+    <td class="foot-label num" style="text-align:right">—</td>
+    <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
@@ -1383,11 +1398,14 @@ function renderBidTable(projId) {
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById('btbody-' + projId); if (!tbody) return;
   tbody.innerHTML = (p.bidItems||[]).map(b => {
-    const bidTot = (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0);
-    const actual = actualForBidItem(b, projId);
-    const diff   = bidTot - actual;
+    const bidQty  = parseFloat(b.quantity) || 0;
+    const bidTot  = bidQty * (parseFloat(b.unit_cost)||0);
+    const actual  = actualForBidItem(b, projId);
+    const rqty    = runningQtyForBidItem(b, projId);
+    const diff    = bidTot - actual;
     const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
     const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
+    const pct     = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : '—';
     return `<tr>
       <td><input type="text" class="num" value="${esc(b.cost_code)}" placeholder="Code"
         oninput="updateBidItem('${projId}','${b.id}','cost_code',this.value)"></td>
@@ -1397,6 +1415,8 @@ function renderBidTable(projId) {
         oninput="updateBidItem('${projId}','${b.id}','description',this.value)"></td>
       <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
         oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
+      <td class="bid-calc">${rqty || '—'}</td>
+      <td class="bid-calc">${pct}</td>
       <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
         oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
       <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
@@ -1404,7 +1424,7 @@ function renderBidTable(projId) {
       <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
       <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
+  }).join('') || `<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
   renderBidFooter(projId);
 }
 
@@ -1526,7 +1546,7 @@ function projectCardHTML(p) {
       <table class="bid-table">
         <thead><tr>
           <th>Cost Code</th><th>Sub Code</th><th>Description</th>
-          <th class="num">Quantity</th><th class="num">Unit Cost</th>
+          <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th>
           <th class="num">Bid Total</th><th class="num">Actual Cost</th>
           <th class="num">Variance</th><th></th>
         </tr></thead>
