@@ -1525,6 +1525,34 @@ function runningQtyForBidItem(b, projId) {
   }, 0);
 }
 
+function cumulativeHoursForBidItem(b, projId) {
+  if (!b.cost_code && !b.sub_code) return 0;
+  const proj = getProj(projId);
+  const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
+  return rows.reduce((s, r) => {
+    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
+        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+      return s + (parseFloat(r.labor_hours) || 0);
+    }
+    return s;
+  }, 0);
+}
+
+function laborerCountForBidItem(b, projId) {
+  if (!b.cost_code && !b.sub_code) return 0;
+  const proj = getProj(projId);
+  const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
+  const names = new Set();
+  rows.forEach(r => {
+    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
+        (b.sub_code  ? r.sub_code  === b.sub_code  : true) &&
+        r.employee) {
+      names.add(r.employee);
+    }
+  });
+  return names.size;
+}
+
 function renderBidFooter(projId) {
   const p = getProj(projId); if (!p) return;
   const footEl = document.getElementById('bfoot-' + projId); if (!footEl) return;
@@ -1543,6 +1571,11 @@ function renderBidFooter(projId) {
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
   const projCls = projDiff <= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
+  const totalCumHrs = (p.bidItems||[]).reduce((s,b) => s + cumulativeHoursForBidItem(b, projId), 0);
+  const totalLab    = (() => {
+    const names = new Set((p.dailyRows||[]).map(r => r.employee).filter(Boolean));
+    return names.size;
+  })();
   footEl.innerHTML = `
     <td class="foot-label" colspan="2">Totals</td>
     <td class="foot-label num" style="text-align:right">—</td>
@@ -1551,6 +1584,8 @@ function renderBidFooter(projId) {
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
+    <td class="foot-label num" style="text-align:right">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
+    <td class="foot-label num" style="text-align:right">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
     <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>
     <td></td>`;
@@ -1564,6 +1599,8 @@ function renderBidTable(projId) {
     const bidTot  = bidQty * (parseFloat(b.unit_cost)||0);
     const actual  = actualForBidItem(b, projId);
     const rqty    = runningQtyForBidItem(b, projId);
+    const cumHrs  = cumulativeHoursForBidItem(b, projId);
+    const numLab  = laborerCountForBidItem(b, projId);
     const diff    = bidTot - actual;
     const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
     const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
@@ -1587,11 +1624,13 @@ function renderBidTable(projId) {
         oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
       <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
       <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
+      <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
+      <td class="bid-calc">${numLab || '—'}</td>
       <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
       <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>
       <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
+  }).join('') || `<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
   renderBidFooter(projId);
 }
 
@@ -1720,6 +1759,7 @@ function projectCardHTML(p) {
           <th>Cost Code</th><th>Sub Code</th>
           <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th>
           <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+          <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
           <th class="num">Variance</th><th class="num">Projected Cost</th><th></th>
         </tr></thead>
         <tbody id="btbody-${p.id}"></tbody>
