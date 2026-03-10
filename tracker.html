@@ -677,6 +677,7 @@
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="project">Project Dashboard</button>
   <button class="tab-btn"        data-tab="supplier">Suppliers</button>
+  <button class="tab-btn"        data-tab="po">Purchase Orders</button>
 </nav>
 
 <!-- ══════════════ HOME TAB ══════════════ -->
@@ -783,6 +784,11 @@
 <!-- ══════════════ SUPPLIER TAB ══════════════ -->
 <div class="tab-panel" id="tab-supplier">
   <div id="supplier-root"></div>
+</div>
+
+<!-- ══════════════ PURCHASE ORDERS TAB ══════════════ -->
+<div class="tab-panel" id="tab-po">
+  <div id="po-root"></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -988,6 +994,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'project')  renderProjectDashboard();
     if (activeTab === 'info')     renderProjectInfoComputed();
     if (activeTab === 'supplier') renderSupplierTab();
+    if (activeTab === 'po')       renderPOTab();
   });
 });
 
@@ -1384,6 +1391,25 @@ function saveProjects() {
 
 function getProj(id) { return projectsList.find(p => p.id === id); }
 
+/* ── Purchase Orders store ── */
+let purchaseOrders = [];
+
+async function loadPurchaseOrders() {
+  const saved = await apiGet('fct_purchase_orders');
+  purchaseOrders = Array.isArray(saved) ? saved : [];
+}
+
+function savePurchaseOrders() { apiPut('fct_purchase_orders', purchaseOrders); }
+
+function nextPONumber() {
+  const nums = purchaseOrders.map(po => {
+    const m = (po.po_number || '').match(/^PO-(\d+)$/);
+    return m ? parseInt(m[1], 10) : 0;
+  });
+  const next = nums.length ? Math.max(...nums) + 1 : 1;
+  return 'PO-' + String(next).padStart(4, '0');
+}
+
 function addProject() {
   const p = { id: uid(), bidItems: [], dailyRows: [],
     'project-name':'','job-number':'','status':'','contract-type':'',
@@ -1684,6 +1710,19 @@ function projectCardHTML(p) {
       </table>
     </div>
 
+    <div class="bid-section">
+      <div class="bid-section-title">
+        <span>Purchase Orders</span>
+      </div>
+      <table class="bid-table">
+        <thead><tr>
+          <th>PO #</th><th>Title</th>
+          <th class="num">Unit Cost</th><th class="num">Total</th><th>Status</th>
+        </tr></thead>
+        <tbody id="po-proj-body-${p.id}"></tbody>
+      </table>
+    </div>
+
     <div class="proj-card-footer">
       <button class="btn btn-danger" onclick="deleteProject('${p.id}')">Delete Project</button>
     </div>
@@ -1715,8 +1754,8 @@ function renderProjectsTab() {
               : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`}
       </div>
     </div>`;
-  // Populate bid tables and daily tables after DOM is built
-  filtered.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); });
+  // Populate bid tables, daily tables, and PO sections after DOM is built
+  filtered.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); renderProjectPOs(p.id); });
 }
 
 function renderProjectInfoComputed() { renderProjectsTab(); }
@@ -1749,6 +1788,175 @@ async function loadLists() {
   lists.suppliers = lists.suppliers.map(s => typeof s === 'string' ? { name: s, state: '' } : s);
 }
 function saveLists() { apiPut('fct_lists', lists); }
+
+/* ── Purchase Orders Tab ── */
+function addPO() {
+  purchaseOrders.push({
+    id: uid(),
+    po_number:    nextPONumber(),
+    title:        '',
+    supplier:     '',
+    qty:          '',
+    unit_cost:    '',
+    tax:          '',
+    status:       'pending',
+    employee:     '',
+    date_created: new Date().toISOString().slice(0, 10),
+    project_id:   '',
+  });
+  savePurchaseOrders();
+  renderPOTab();
+}
+
+function deletePO(id) {
+  const po = purchaseOrders.find(p => p.id === id);
+  const oldProj = po ? po.project_id : '';
+  purchaseOrders = purchaseOrders.filter(p => p.id !== id);
+  savePurchaseOrders();
+  renderPOTab();
+  if (oldProj) renderProjectPOs(oldProj);
+}
+
+function renderPOTab() {
+  const root = document.getElementById('po-root');
+  if (!root) return;
+
+  const th = (label, right) =>
+    `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
+
+  const bodyHTML = purchaseOrders.length === 0
+    ? `<tr><td colspan="13" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
+    : purchaseOrders.map(po => {
+        const qty   = parseFloat(po.qty)       || 0;
+        const uc    = parseFloat(po.unit_cost)  || 0;
+        const tax   = parseFloat(po.tax)        || 0;
+        const amt   = qty * uc;
+        const total = amt + tax;
+
+        const inp = (field, type = 'text', extra = '') =>
+          `<input type="${type}" value="${esc(String(po[field] || ''))}"
+            data-po-id="${po.id}" data-po-field="${field}"
+            style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0" ${extra}>`;
+
+        const sel = (field, opts) =>
+          `<select data-po-id="${po.id}" data-po-field="${field}"
+            style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
+
+        const supOpts = `<option value="">— select —</option>` +
+          lists.suppliers.map(s => s.name || '').filter(Boolean)
+            .map(n => `<option value="${esc(n)}" ${n === po.supplier ? 'selected' : ''}>${esc(n)}</option>`).join('');
+
+        const empOpts = `<option value="">— select —</option>` +
+          lists.employees.map(e =>
+            `<option value="${esc(e)}" ${e === po.employee ? 'selected' : ''}>${esc(e)}</option>`).join('');
+
+        const statusOpts = ['pending', 'approved', 'closed'].map(s =>
+          `<option value="${s}" ${s === po.status ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
+
+        const projOpts = `<option value="">— none —</option>` +
+          projectsList.map(p =>
+            `<option value="${esc(p.id)}" ${p.id === po.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
+
+        const statusColor = po.status === 'approved' ? '#86efac' : po.status === 'closed' ? 'var(--muted)' : 'var(--yellow)';
+
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(po.po_number)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('title', 'text', 'placeholder="Title"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${sel('supplier', supOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('qty', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:85px">${inp('unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${po.id}">$${fmt(amt)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('tax', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">$${fmt(total)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('employee', empOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date_created', 'date')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:95px;color:${statusColor}">${sel('status', statusOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
+          <td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" onclick="deletePO('${po.id}')">&#10005;</button></td>
+        </tr>`;
+      }).join('');
+
+  root.innerHTML = `
+    <div style="padding:1.5rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Purchase Orders</span>
+        <button class="btn btn-green" onclick="addPO()">+ New PO</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1300px">
+          <thead>
+            <tr>
+              ${th('PO #')} ${th('Title')} ${th('Supplier')} ${th('Qty',1)} ${th('Unit Cost',1)}
+              ${th('Amount',1)} ${th('Tax',1)} ${th('Total',1)} ${th('Employee')}
+              ${th('Date Created')} ${th('Status')} ${th('Project')}
+              <th style="width:36px;border-bottom:1px solid var(--border)"></th>
+            </tr>
+          </thead>
+          <tbody>${bodyHTML}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderProjectPOs(projId) {
+  const body = document.getElementById('po-proj-body-' + projId);
+  if (!body) return;
+  const linked = purchaseOrders.filter(po => po.project_id === projId);
+  if (linked.length === 0) {
+    body.innerHTML = '<tr><td colspan="5" style="padding:0.75rem 0.6rem;color:var(--muted);font-size:0.82rem">No purchase orders linked to this project.</td></tr>';
+    return;
+  }
+  body.innerHTML = linked.map(po => {
+    const qty   = parseFloat(po.qty)      || 0;
+    const uc    = parseFloat(po.unit_cost) || 0;
+    const tax   = parseFloat(po.tax)       || 0;
+    const total = qty * uc + tax;
+    const sc = po.status === 'approved' ? 'color:#86efac' : po.status === 'closed' ? 'color:var(--muted)' : 'color:var(--yellow)';
+    return `<tr>
+      <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</td>
+      <td style="padding:0.35rem 0.6rem;font-size:0.82rem">${esc(po.title || '—')}</td>
+      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--green)">$${fmt(uc)}</td>
+      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--yellow);font-weight:600">$${fmt(total)}</td>
+      <td style="padding:0.35rem 0.6rem;font-size:0.78rem;text-transform:capitalize;${sc}">${esc(po.status || '')}</td>
+    </tr>`;
+  }).join('');
+}
+
+document.getElementById('po-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.poId, field = el.dataset.poField;
+  if (!id || !field) return;
+  const po = purchaseOrders.find(p => p.id === id);
+  if (!po) return;
+  po[field] = el.value;
+  savePurchaseOrders();
+  if (['qty', 'unit_cost', 'tax'].includes(field)) {
+    const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
+    const amt = qty * uc;
+    const amtEl = document.getElementById('po-amt-' + id);
+    const totEl = document.getElementById('po-tot-' + id);
+    if (amtEl) amtEl.textContent = '$' + fmt(amt);
+    if (totEl) totEl.textContent = '$' + fmt(amt + tax);
+  }
+  if (po.project_id) renderProjectPOs(po.project_id);
+});
+
+document.getElementById('po-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.poId, field = el.dataset.poField;
+  if (!id || !field) return;
+  const po = purchaseOrders.find(p => p.id === id);
+  if (!po) return;
+  const oldProj = po.project_id;
+  po[field] = el.value;
+  savePurchaseOrders();
+  if (field === 'project_id') {
+    if (oldProj)       renderProjectPOs(oldProj);
+    if (po.project_id) renderProjectPOs(po.project_id);
+  } else if (po.project_id) {
+    renderProjectPOs(po.project_id);
+  }
+});
 
 /* ── Supplier Tab ── */
 function renderSupplierTab() {
@@ -2532,6 +2740,7 @@ function downloadCSV(content, filename) {
   await loadLists();
   await loadCostRows();
   await loadProjects();
+  await loadPurchaseOrders();
   renderCostTable();
   renderHomeTab();
   renderProjectDashboard();
