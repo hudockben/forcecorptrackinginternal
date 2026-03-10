@@ -703,6 +703,8 @@
       <button class="btn btn-green" id="daily-fs-add">+ Add Row</button>
     </div>
   </div>
+  <!-- PO summary panel — populated by renderDailyPOPanel() -->
+  <div id="daily-po-panel" style="display:none;background:var(--surface);border-bottom:1px solid var(--border);padding:0.5rem 1.25rem;overflow-x:auto;"></div>
   <div class="daily-table-wrap" style="flex:1;overflow:auto;">
     <table class="daily-inner-table">
       <thead>
@@ -1814,7 +1816,10 @@ function deletePO(id) {
   purchaseOrders = purchaseOrders.filter(p => p.id !== id);
   savePurchaseOrders();
   renderPOTab();
-  if (oldProj) renderProjectPOs(oldProj);
+  if (oldProj) {
+    renderProjectPOs(oldProj);
+    if (dailyViewProjId === oldProj) renderDailyPOPanel(oldProj);
+  }
 }
 
 function renderPOTab() {
@@ -1938,7 +1943,10 @@ document.getElementById('po-root').addEventListener('input', e => {
     if (amtEl) amtEl.textContent = '$' + fmt(amt);
     if (totEl) totEl.textContent = '$' + fmt(amt + tax);
   }
-  if (po.project_id) renderProjectPOs(po.project_id);
+  if (po.project_id) {
+    renderProjectPOs(po.project_id);
+    if (dailyViewProjId === po.project_id) renderDailyPOPanel(po.project_id);
+  }
 });
 
 document.getElementById('po-root').addEventListener('change', e => {
@@ -1951,10 +1959,11 @@ document.getElementById('po-root').addEventListener('change', e => {
   po[field] = el.value;
   savePurchaseOrders();
   if (field === 'project_id') {
-    if (oldProj)       renderProjectPOs(oldProj);
-    if (po.project_id) renderProjectPOs(po.project_id);
+    if (oldProj)       { renderProjectPOs(oldProj);       if (dailyViewProjId === oldProj)       renderDailyPOPanel(oldProj); }
+    if (po.project_id) { renderProjectPOs(po.project_id); if (dailyViewProjId === po.project_id) renderDailyPOPanel(po.project_id); }
   } else if (po.project_id) {
     renderProjectPOs(po.project_id);
+    if (dailyViewProjId === po.project_id) renderDailyPOPanel(po.project_id);
   }
 });
 
@@ -2655,6 +2664,40 @@ function openDailyView(projId) {
   document.getElementById('daily-fs-tbody').id = 'daily-tbody-' + projId;
   document.getElementById('daily-fullscreen').style.display = 'flex';
   renderDailyTable(projId);
+  renderDailyPOPanel(projId);
+}
+
+function renderDailyPOPanel(projId) {
+  const panel = document.getElementById('daily-po-panel');
+  if (!panel) return;
+  const linked = purchaseOrders.filter(po => po.project_id === projId);
+  if (linked.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+  const cards = linked.map(po => {
+    const qty   = parseFloat(po.qty)       || 0;
+    const uc    = parseFloat(po.unit_cost)  || 0;
+    const tax   = parseFloat(po.tax)        || 0;
+    const total = qty * uc + tax;
+    const sc    = po.status === 'approved' ? '#86efac'
+                : po.status === 'closed'   ? 'var(--muted)'
+                :                            'var(--yellow)';
+    return `<div style="display:inline-flex;align-items:center;gap:0.5rem;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:0.3rem 0.75rem;font-size:0.78rem;white-space:nowrap">
+      <span style="font-family:monospace;color:var(--muted);font-size:0.72rem">${esc(po.po_number)}</span>
+      <span style="color:var(--text);font-weight:600">${esc(po.title || '—')}</span>
+      ${po.supplier ? `<span style="color:var(--muted)">${esc(po.supplier)}</span>` : ''}
+      <span style="color:var(--green)">$${fmt(uc)} /unit</span>
+      <span style="color:var(--yellow);font-weight:700">$${fmt(total)} total</span>
+      <span style="color:${sc};text-transform:capitalize;font-size:0.7rem;border:1px solid currentColor;border-radius:3px;padding:0 0.3rem">${esc(po.status || '')}</span>
+    </div>`;
+  }).join('');
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
+      <span style="font-size:0.68rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);flex-shrink:0">Linked POs</span>
+      ${cards}
+    </div>`;
 }
 
 function closeDailyView() {
