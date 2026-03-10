@@ -671,6 +671,14 @@
       <button class="btn btn-green" id="daily-fs-add">+ Add Row</button>
     </div>
   </div>
+  <div id="daily-fs-totals" style="display:flex;flex-wrap:wrap;gap:0.25rem 1.5rem;padding:0.45rem 1.25rem;background:var(--surface2);border-bottom:1px solid var(--border);font-size:0.78rem;color:var(--muted);">
+    <span>Labor Hrs: <strong id="dft-lhrs" style="color:var(--text)">—</strong></span>
+    <span>Labor Cost: <strong id="dft-lcost" style="color:var(--green)">—</strong></span>
+    <span>Equip Hrs: <strong id="dft-ehrs" style="color:var(--text)">—</strong></span>
+    <span>Equip Cost: <strong id="dft-ecost" style="color:var(--yellow)">—</strong></span>
+    <span>Material: <strong id="dft-mat" style="color:var(--yellow)">—</strong></span>
+    <span>Total Cost: <strong id="dft-total" style="color:var(--green)">—</strong></span>
+  </div>
   <div class="daily-table-wrap" style="flex:1;overflow:auto;">
     <table class="daily-inner-table">
       <thead>
@@ -2024,11 +2032,35 @@ function makeSelect(options, selected, dataTab, dataI, dataF, dataProj) {
   </select>`;
 }
 
+function renderDailyTotals(projId) {
+  const p = getProj(projId); if (!p) return;
+  const rows = p.dailyRows || [];
+  let lhrs = 0, lcost = 0, ehrs = 0, ecost = 0, mat = 0, total = 0;
+  rows.forEach(row => {
+    const c = calcDaily(row);
+    lhrs  += parseFloat(row.labor_hours) || 0;
+    lcost += c.labor_cost;
+    ehrs  += parseFloat(row.equip_hours) || 0;
+    ecost += c.equip_total;
+    mat   += parseFloat(row.material_cost) || 0;
+    total += c.total_cost;
+  });
+  const el = id => document.getElementById(id);
+  if (!el('dft-lhrs')) return;
+  el('dft-lhrs').textContent  = lhrs  ? fmt(lhrs)       : '—';
+  el('dft-lcost').textContent = lcost ? '$' + fmt(lcost) : '—';
+  el('dft-ehrs').textContent  = ehrs  ? fmt(ehrs)        : '—';
+  el('dft-ecost').textContent = ecost ? '$' + fmt(ecost) : '—';
+  el('dft-mat').textContent   = mat   ? '$' + fmt(mat)   : '—';
+  el('dft-total').textContent = total ? '$' + fmt(total) : '—';
+}
+
 function renderDailyTable(projId) {
   const p     = getProj(projId); if (!p) return;
   const rows  = p.dailyRows || [];
   const tbody = document.getElementById('daily-tbody-' + projId); if (!tbody) return;
   tbody.innerHTML = '';
+  renderDailyTotals(projId);
 
   if (rows.length === 0) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="23">No entries yet. Click &ldquo;+ Add Row&rdquo; to get started.</td></tr>';
@@ -2085,6 +2117,7 @@ function renderDailyCalcCells(projId, i) {
   calcs[0].textContent = '$' + fmt(c.labor_cost);
   calcs[1].textContent = '$' + fmt(c.equip_total);
   calcs[2].textContent = '$' + fmt(c.total_cost);
+  renderDailyTotals(projId);
 }
 
 function addDailyRow(projId) {
