@@ -170,6 +170,36 @@
       width: 100%; border-collapse: collapse;
       font-size: 0.78rem; white-space: nowrap;
     }
+    /* Totals row inside thead */
+    .daily-inner-table thead tr.totals-row th {
+      position: sticky; top: 0; z-index: 4;
+      background: #0d1a0d; border: 1px solid var(--border);
+      font-size: 0.72rem; font-weight: 700; padding: 0.3rem 0.5rem;
+      text-align: right;
+    }
+    .daily-inner-table thead tr.totals-row th.dft-label {
+      text-align: right; color: #888; letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    .daily-inner-table thead tr.totals-row th.dft-val  { color: var(--text); font-variant-numeric: tabular-nums; }
+    .daily-inner-table thead tr.totals-row th.dft-green  { color: var(--green); }
+    .daily-inner-table thead tr.totals-row th.dft-yellow { color: var(--yellow); }
+    .daily-inner-table thead tr.totals-row th.dft-empty  { background: var(--bg); }
+    /* Sticky offsets: group(0) → totals(28px) → col-row(58px) */
+    .daily-inner-table thead tr.group-row  th { top: 0; }
+    .daily-inner-table thead tr.totals-row th { top: 28px; }
+    .daily-inner-table thead tr.col-row    th { top: 58px; }
+    /* Column filter buttons */
+    .cfb {
+      background: none; border: none; cursor: pointer; font-size: 0.6rem;
+      color: var(--muted); padding: 0 0.1rem; line-height: 1; vertical-align: middle;
+      opacity: 0.6; transition: opacity 0.15s, color 0.15s;
+    }
+    .cfb:hover { opacity: 1; }
+    .cfb.active { color: var(--green); opacity: 1; }
+    /* Filter dropdown item */
+    .dff-item { display:flex; align-items:center; gap:0.4rem; padding:0.25rem 0.6rem; cursor:pointer; font-size:0.78rem; }
+    .dff-item:hover { background: var(--surface2); }
+    .dff-item input[type=checkbox] { accent-color: var(--green); cursor:pointer; }
     .daily-inner-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
     .daily-inner-table td.del-cell { width: 26px; text-align: center; padding: 0 0.2rem; }
     .daily-inner-table td.del-cell .del-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
@@ -646,6 +676,8 @@
   <button class="tab-btn"        data-tab="info">Project Info</button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="project">Project Dashboard</button>
+  <button class="tab-btn"        data-tab="supplier">Suppliers</button>
+  <button class="tab-btn"        data-tab="po">Purchase Orders</button>
 </nav>
 
 <!-- ══════════════ HOME TAB ══════════════ -->
@@ -660,11 +692,103 @@
   <div id="proj-root"><!-- rendered by JS --></div>
 </div>
 
+<!-- ══════════════ DAILY TRACKING FULL-SCREEN ══════════════ -->
+<div id="daily-fullscreen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
+    <button class="btn btn-ghost" onclick="closeDailyView()">&#8592; Back</button>
+    <span id="daily-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
+    <div style="margin-left:auto;display:flex;gap:0.5rem">
+      <button class="btn btn-ghost" id="daily-fs-export">Export CSV</button>
+      <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
+      <button class="btn btn-green" id="daily-fs-add">+ Add Row</button>
+    </div>
+  </div>
+  <div class="daily-table-wrap" style="flex:1;overflow:auto;">
+    <table class="daily-inner-table">
+      <thead>
+        <tr class="group-row">
+          <th class="g-base"  colspan="1"></th>
+          <th class="g-id"    colspan="3">Identification</th>
+          <th class="g-code"  colspan="2">Cost Code</th>
+          <th class="g-labor" colspan="4">Labor</th>
+          <th class="g-equip" colspan="4">Equipment</th>
+          <th class="g-mat"   colspan="6">Material</th>
+          <th class="g-sum"   colspan="2">Summary</th>
+        </tr>
+        <tr class="totals-row">
+          <th colspan="8" class="dft-label">Totals</th>
+          <th id="dft-lhrs"  class="dft-val">—</th>
+          <th id="dft-lcost" class="dft-val dft-green">—</th>
+          <th colspan="2"    class="dft-empty"></th>
+          <th id="dft-ehrs"  class="dft-val">—</th>
+          <th id="dft-ecost" class="dft-val dft-yellow">—</th>
+          <th colspan="5"    class="dft-empty"></th>
+          <th id="dft-mat"   class="dft-val dft-yellow">—</th>
+          <th id="dft-total" class="dft-val dft-green">—</th>
+          <th                class="dft-empty"></th>
+        </tr>
+        <tr class="col-row" id="daily-col-row">
+          <th></th>
+          <th>Date <button class="cfb" data-f="date">▼</button></th>
+          <th>Field Type <button class="cfb" data-f="field_type">▼</button></th>
+          <th>Employee <button class="cfb" data-f="employee">▼</button></th>
+          <th>Cost Code <button class="cfb" data-f="cost_code">▼</button></th>
+          <th>Sub Code <button class="cfb" data-f="sub_code">▼</button></th>
+          <th>Job Class <button class="cfb" data-f="job_class">▼</button></th>
+          <th>Rate <button class="cfb" data-f="rate">▼</button></th>
+          <th>Labor Hours <button class="cfb" data-f="labor_hours">▼</button></th>
+          <th class="calc-hdr">Labor Cost</th>
+          <th>Equipment <button class="cfb" data-f="equipment">▼</button></th>
+          <th>Equip Unit Cost <button class="cfb" data-f="equip_unit_cost">▼</button></th>
+          <th>Equip Hours <button class="cfb" data-f="equip_hours">▼</button></th>
+          <th class="calc-hdr">Equip Total Cost</th>
+          <th>Material <button class="cfb" data-f="material">▼</button></th>
+          <th>Supplier <button class="cfb" data-f="supplier">▼</button></th>
+          <th>PO # <button class="cfb" data-f="po_num">▼</button></th>
+          <th>Units Purchased <button class="cfb" data-f="units_purchased">▼</button></th>
+          <th>Unit Cost <button class="cfb" data-f="unit_cost">▼</button></th>
+          <th>Material Cost <button class="cfb" data-f="material_cost">▼</button></th>
+          <th class="calc-hdr">Total Cost</th>
+          <th>Quantity <button class="cfb" data-f="quantity">▼</button></th>
+        </tr>
+      </thead>
+      <tbody id="daily-fs-tbody"></tbody>
+    </table>
+  </div>
+  <!-- Column filter dropdown -->
+  <div id="daily-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;display:none;flex-direction:column;">
+    <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+      <input id="dff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+    </div>
+    <div id="dff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+    <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+      <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearDailyFilter()">Clear</button>
+      <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyDailyFilter()">Apply</button>
+    </div>
+  </div>
+  <div class="legend" style="padding:0.4rem 1.25rem;border-top:1px solid var(--border)">
+    <span><span class="dot dot-calc"></span> Calculated</span>
+    <span>Labor Cost = Rate &times; Labor Hours</span>
+    <span>Equip Total = Unit Cost &times; Equip Hours</span>
+    <span>Total = Labor + Equip + Material</span>
+  </div>
+</div>
+
 <!-- ══════════════ PROJECT DASHBOARD TAB
 <div class="tab-panel" id="tab-project">
   <div class="home-wrap" id="project-content">
     <!-- rendered by JS -->
   </div>
+</div>
+
+<!-- ══════════════ SUPPLIER TAB ══════════════ -->
+<div class="tab-panel" id="tab-supplier">
+  <div id="supplier-root"></div>
+</div>
+
+<!-- ══════════════ PURCHASE ORDERS TAB ══════════════ -->
+<div class="tab-panel" id="tab-po">
+  <div id="po-root"></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -731,7 +855,6 @@
         <button class="modal-tab-btn" data-list="employees">Employees</button>
         <button class="modal-tab-btn" data-list="job_classes">Job Classes</button>
         <button class="modal-tab-btn" data-list="equipment">Equipment</button>
-        <button class="modal-tab-btn" data-list="suppliers">Suppliers</button>
       </div>
 
       <!-- Field Types -->
@@ -771,14 +894,6 @@
         </div>
       </div>
 
-      <!-- Suppliers -->
-      <div class="list-panel" id="panel-suppliers">
-        <div class="list-items" id="items-suppliers"></div>
-        <div class="add-item-row">
-          <input type="text" id="new-suppliers" placeholder="Add supplier…" />
-          <button class="btn btn-green" onclick="addListItem('suppliers')">+ Add</button>
-        </div>
-      </div>
     </div>
   </div>
 </div>
@@ -875,9 +990,11 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p =>
       p.classList.toggle('active', p.id === 'tab-' + activeTab));
     renderHeaderActions();
-    if (activeTab === 'home')    renderHomeTab();
-    if (activeTab === 'project') renderProjectDashboard();
-    if (activeTab === 'info')    renderProjectInfoComputed();
+    if (activeTab === 'home')     renderHomeTab();
+    if (activeTab === 'project')  renderProjectDashboard();
+    if (activeTab === 'info')     renderProjectInfoComputed();
+    if (activeTab === 'supplier') renderSupplierTab();
+    if (activeTab === 'po')       renderPOTab();
   });
 });
 
@@ -1274,6 +1391,25 @@ function saveProjects() {
 
 function getProj(id) { return projectsList.find(p => p.id === id); }
 
+/* ── Purchase Orders store ── */
+let purchaseOrders = [];
+
+async function loadPurchaseOrders() {
+  const saved = await apiGet('fct_purchase_orders');
+  purchaseOrders = Array.isArray(saved) ? saved : [];
+}
+
+function savePurchaseOrders() { apiPut('fct_purchase_orders', purchaseOrders); }
+
+function nextPONumber() {
+  const nums = purchaseOrders.map(po => {
+    const m = (po.po_number || '').match(/^PO-(\d+)$/);
+    return m ? parseInt(m[1], 10) : 0;
+  });
+  const next = nums.length ? Math.max(...nums) + 1 : 1;
+  return 'PO-' + String(next).padStart(4, '0');
+}
+
 function addProject() {
   const p = { id: uid(), bidItems: [], dailyRows: [],
     'project-name':'','job-number':'','status':'','contract-type':'',
@@ -1379,11 +1515,20 @@ function renderBidFooter(projId) {
   const footEl = document.getElementById('bfoot-' + projId); if (!footEl) return;
   const totalBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
   const totalActual = (p.bidItems||[]).reduce((s,b) => s + actualForBidItem(b, projId), 0);
+  const totalProj   = (p.bidItems||[]).reduce((s,b) => {
+    const bidQty = parseFloat(b.quantity) || 0;
+    const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
+    const actual = actualForBidItem(b, projId);
+    const rqty   = runningQtyForBidItem(b, projId);
+    return s + (rqty > 0 ? (actual / rqty) * bidQty : bidTot);
+  }, 0);
   const diff = totalBid - totalActual;
+  const projDiff = totalProj - totalBid;
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
+  const projCls = projDiff <= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
   footEl.innerHTML = `
-    <td class="foot-label" colspan="3">Totals</td>
+    <td class="foot-label" colspan="2">Totals</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
@@ -1391,6 +1536,7 @@ function renderBidFooter(projId) {
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
+    <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>
     <td></td>`;
 }
 
@@ -1406,13 +1552,17 @@ function renderBidTable(projId) {
     const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
     const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
     const pct     = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : '—';
+    // Projected cost = (actual ÷ running qty) × bid qty  (actual cost-per-unit × full bid qty)
+    // Falls back to bid total when no running qty yet
+    const proj    = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+    const projDiff = proj - bidTot;
+    const projCls  = projDiff <= 0 ? 'bid-under' : 'bid-over';
+    const projTxt  = bidTot ? '$' + fmt(proj) : '—';
     return `<tr>
       <td><input type="text" class="num" value="${esc(b.cost_code)}" placeholder="Code"
         oninput="updateBidItem('${projId}','${b.id}','cost_code',this.value)"></td>
       <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub"
         oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
-      <td><input type="text" value="${esc(b.description)}" placeholder="Description"
-        oninput="updateBidItem('${projId}','${b.id}','description',this.value)"></td>
       <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
         oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
       <td class="bid-calc">${rqty || '—'}</td>
@@ -1422,6 +1572,7 @@ function renderBidTable(projId) {
       <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
       <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
       <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
+      <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>
       <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
     </tr>`;
   }).join('') || `<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
@@ -1451,6 +1602,7 @@ function projectCardHTML(p) {
       ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
       ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff)+' under':'$'+fmt(Math.abs(diff))+' over'}</span>` : ''}
     </div>
+    <button class="btn btn-green" style="font-size:0.75rem;padding:0.25rem 0.7rem;" onclick="event.stopPropagation();openDailyView('${p.id}')">Daily Tracking &#8594;</button>
     <button class="proj-card-toggle">▾</button>
   </div>
   <div class="proj-card-body">
@@ -1541,63 +1693,34 @@ function projectCardHTML(p) {
     <div class="bid-section">
       <div class="bid-section-title">
         <span>Bid Line Items vs Actuals</span>
-        <button class="btn btn-blue" onclick="addBidItem('${p.id}')">+ Add Item</button>
+        <div style="display:flex;gap:0.5rem">
+          <button class="btn btn-ghost" onclick="exportBidPDF('${p.id}')">&#8595; PDF</button>
+          <button class="btn btn-blue" onclick="addBidItem('${p.id}')">+ Add Item</button>
+        </div>
       </div>
       <table class="bid-table">
         <thead><tr>
-          <th>Cost Code</th><th>Sub Code</th><th>Description</th>
+          <th>Cost Code</th><th>Sub Code</th>
           <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th>
           <th class="num">Bid Total</th><th class="num">Actual Cost</th>
-          <th class="num">Variance</th><th></th>
+          <th class="num">Variance</th><th class="num">Projected Cost</th><th></th>
         </tr></thead>
         <tbody id="btbody-${p.id}"></tbody>
         <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
       </table>
     </div>
 
-    <div class="bid-section daily-section">
+    <div class="bid-section">
       <div class="bid-section-title">
-        <span>Daily Tracking</span>
-        <div style="display:flex;gap:0.5rem">
-          <button class="btn btn-ghost" onclick="exportDailyCSV('${p.id}')">Export CSV</button>
-          <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
-          <button class="btn btn-green" onclick="addDailyRow('${p.id}')">+ Add Row</button>
-        </div>
+        <span>Purchase Orders</span>
       </div>
-      <div class="daily-table-wrap">
-        <table class="daily-inner-table">
-          <thead>
-            <tr class="group-row">
-              <th class="g-base"  colspan="1"></th>
-              <th class="g-id"    colspan="3">Identification</th>
-              <th class="g-code"  colspan="2">Cost Code</th>
-              <th class="g-labor" colspan="4">Labor</th>
-              <th class="g-equip" colspan="4">Equipment</th>
-              <th class="g-mat"   colspan="6">Material</th>
-              <th class="g-sum"   colspan="2">Summary</th>
-            </tr>
-            <tr class="col-row">
-              <th></th>
-              <th>Date</th><th>Field Type</th><th>Employee</th>
-              <th>Cost Code</th><th>Sub Code</th>
-              <th>Job Class</th><th>Rate</th><th>Labor Hours</th>
-              <th class="calc-hdr">Labor Cost</th>
-              <th>Equipment</th><th>Equip Unit Cost</th><th>Equip Hours</th>
-              <th class="calc-hdr">Equip Total Cost</th>
-              <th>Material</th><th>Supplier</th><th>PO #</th>
-              <th>Units Purchased</th><th>Unit Cost</th><th>Material Cost</th>
-              <th class="calc-hdr">Total Cost</th><th>Quantity</th>
-            </tr>
-          </thead>
-          <tbody id="daily-tbody-${p.id}"></tbody>
-        </table>
-      </div>
-      <div class="legend" style="padding:0.4rem 0 0">
-        <span><span class="dot dot-calc"></span> Calculated</span>
-        <span>Labor Cost = Rate &times; Labor Hours</span>
-        <span>Equip Total = Unit Cost &times; Equip Hours</span>
-        <span>Total = Labor + Equip + Material</span>
-      </div>
+      <table class="bid-table">
+        <thead><tr>
+          <th>PO #</th><th>Title</th>
+          <th class="num">Unit Cost</th><th class="num">Total</th><th>Status</th>
+        </tr></thead>
+        <tbody id="po-proj-body-${p.id}"></tbody>
+      </table>
     </div>
 
     <div class="proj-card-footer">
@@ -1631,8 +1754,8 @@ function renderProjectsTab() {
               : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`}
       </div>
     </div>`;
-  // Populate bid tables and daily tables after DOM is built
-  filtered.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); });
+  // Populate bid tables, daily tables, and PO sections after DOM is built
+  filtered.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); renderProjectPOs(p.id); });
 }
 
 function renderProjectInfoComputed() { renderProjectsTab(); }
@@ -1661,8 +1784,309 @@ async function loadLists() {
     } catch {}
   }
   lists = { ...defaultLists, ...(saved || {}) };
+  // Migrate suppliers from string[] to {name,state}[]
+  lists.suppliers = lists.suppliers.map(s => typeof s === 'string' ? { name: s, state: '' } : s);
 }
 function saveLists() { apiPut('fct_lists', lists); }
+
+/* ── Purchase Orders Tab ── */
+function addPO() {
+  purchaseOrders.push({
+    id: uid(),
+    po_number:    nextPONumber(),
+    title:        '',
+    supplier:     '',
+    qty:          '',
+    unit_cost:    '',
+    tax:          '',
+    status:       'pending',
+    employee:     '',
+    date_created: new Date().toISOString().slice(0, 10),
+    project_id:   '',
+  });
+  savePurchaseOrders();
+  renderPOTab();
+}
+
+function deletePO(id) {
+  const po = purchaseOrders.find(p => p.id === id);
+  const oldProj = po ? po.project_id : '';
+  if (po && po.po_row_id && oldProj) {
+    const proj = getProj(oldProj);
+    if (proj) {
+      proj.dailyRows = proj.dailyRows.filter(r => r.id !== po.po_row_id);
+      saveProjects();
+      renderDailyTable(oldProj);
+    }
+  }
+  purchaseOrders = purchaseOrders.filter(p => p.id !== id);
+  savePurchaseOrders();
+  renderPOTab();
+  if (oldProj) renderProjectPOs(oldProj);
+}
+
+function _syncPORowField(po, field) {
+  if (!po.project_id || !po.po_row_id) return;
+  const proj = getProj(po.project_id);
+  if (!proj) return;
+  const r = proj.dailyRows.find(r => r.id === po.po_row_id);
+  if (!r) return;
+  const map = { title: 'material', supplier: 'supplier', employee: 'employee',
+                date_created: 'date', qty: 'units_purchased', unit_cost: 'unit_cost' };
+  if (map[field]) r[map[field]] = po[field] || '';
+  if (['qty','unit_cost','tax'].includes(field)) {
+    const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
+    r.material_cost = String(qty * uc + tax);
+  }
+  saveProjects();
+  renderDailyTable(po.project_id);
+}
+
+function renderPOTab() {
+  const root = document.getElementById('po-root');
+  if (!root) return;
+
+  const th = (label, right) =>
+    `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
+
+  const bodyHTML = purchaseOrders.length === 0
+    ? `<tr><td colspan="13" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
+    : purchaseOrders.map(po => {
+        const qty   = parseFloat(po.qty)       || 0;
+        const uc    = parseFloat(po.unit_cost)  || 0;
+        const tax   = parseFloat(po.tax)        || 0;
+        const amt   = qty * uc;
+        const total = amt + tax;
+
+        const inp = (field, type = 'text', extra = '') =>
+          `<input type="${type}" value="${esc(String(po[field] || ''))}"
+            data-po-id="${po.id}" data-po-field="${field}"
+            style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0" ${extra}>`;
+
+        const sel = (field, opts) =>
+          `<select data-po-id="${po.id}" data-po-field="${field}"
+            style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
+
+        const supOpts = `<option value="">— select —</option>` +
+          lists.suppliers.map(s => s.name || '').filter(Boolean)
+            .map(n => `<option value="${esc(n)}" ${n === po.supplier ? 'selected' : ''}>${esc(n)}</option>`).join('');
+
+        const empOpts = `<option value="">— select —</option>` +
+          lists.employees.map(e =>
+            `<option value="${esc(e)}" ${e === po.employee ? 'selected' : ''}>${esc(e)}</option>`).join('');
+
+        const statusOpts = ['pending', 'approved', 'closed'].map(s =>
+          `<option value="${s}" ${s === po.status ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
+
+        const projOpts = `<option value="">— none —</option>` +
+          projectsList.map(p =>
+            `<option value="${esc(p.id)}" ${p.id === po.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
+
+        const statusColor = po.status === 'approved' ? '#86efac' : po.status === 'closed' ? 'var(--muted)' : 'var(--yellow)';
+
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(po.po_number)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('title', 'text', 'placeholder="Title"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${sel('supplier', supOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('qty', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:85px">${inp('unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${po.id}">$${fmt(amt)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('tax', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">$${fmt(total)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('employee', empOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date_created', 'date')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:95px;color:${statusColor}">${sel('status', statusOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
+          <td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" onclick="deletePO('${po.id}')">&#10005;</button></td>
+        </tr>`;
+      }).join('');
+
+  root.innerHTML = `
+    <div style="padding:1.5rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Purchase Orders</span>
+        <button class="btn btn-green" onclick="addPO()">+ New PO</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1300px">
+          <thead>
+            <tr>
+              ${th('PO #')} ${th('Title')} ${th('Supplier')} ${th('Qty',1)} ${th('Unit Cost',1)}
+              ${th('Amount',1)} ${th('Tax',1)} ${th('Total',1)} ${th('Employee')}
+              ${th('Date Created')} ${th('Status')} ${th('Project')}
+              <th style="width:36px;border-bottom:1px solid var(--border)"></th>
+            </tr>
+          </thead>
+          <tbody>${bodyHTML}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderProjectPOs(projId) {
+  const body = document.getElementById('po-proj-body-' + projId);
+  if (!body) return;
+  const linked = purchaseOrders.filter(po => po.project_id === projId);
+  if (linked.length === 0) {
+    body.innerHTML = '<tr><td colspan="5" style="padding:0.75rem 0.6rem;color:var(--muted);font-size:0.82rem">No purchase orders linked to this project.</td></tr>';
+    return;
+  }
+  body.innerHTML = linked.map(po => {
+    const qty   = parseFloat(po.qty)      || 0;
+    const uc    = parseFloat(po.unit_cost) || 0;
+    const tax   = parseFloat(po.tax)       || 0;
+    const total = qty * uc + tax;
+    const sc = po.status === 'approved' ? 'color:#86efac' : po.status === 'closed' ? 'color:var(--muted)' : 'color:var(--yellow)';
+    return `<tr>
+      <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</td>
+      <td style="padding:0.35rem 0.6rem;font-size:0.82rem">${esc(po.title || '—')}</td>
+      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--green)">$${fmt(uc)}</td>
+      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--yellow);font-weight:600">$${fmt(total)}</td>
+      <td style="padding:0.35rem 0.6rem;font-size:0.78rem;text-transform:capitalize;${sc}">${esc(po.status || '')}</td>
+    </tr>`;
+  }).join('');
+}
+
+document.getElementById('po-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.poId, field = el.dataset.poField;
+  if (!id || !field) return;
+  const po = purchaseOrders.find(p => p.id === id);
+  if (!po) return;
+  po[field] = el.value;
+  savePurchaseOrders();
+  if (['qty', 'unit_cost', 'tax'].includes(field)) {
+    const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
+    const amt = qty * uc;
+    const amtEl = document.getElementById('po-amt-' + id);
+    const totEl = document.getElementById('po-tot-' + id);
+    if (amtEl) amtEl.textContent = '$' + fmt(amt);
+    if (totEl) totEl.textContent = '$' + fmt(amt + tax);
+  }
+  _syncPORowField(po, field);
+  if (po.project_id) renderProjectPOs(po.project_id);
+});
+
+document.getElementById('po-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.poId, field = el.dataset.poField;
+  if (!id || !field) return;
+  const po = purchaseOrders.find(p => p.id === id);
+  if (!po) return;
+  const oldProj = po.project_id;
+  po[field] = el.value;
+
+  if (field === 'project_id') {
+    // Remove auto-inserted row from old project
+    if (oldProj && po.po_row_id) {
+      const oldP = getProj(oldProj);
+      if (oldP) {
+        oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== po.po_row_id);
+        saveProjects();
+        renderDailyTable(oldProj);
+      }
+    }
+    po.po_row_id = null;
+
+    // Insert new row into new project
+    if (po.project_id) {
+      const newP = getProj(po.project_id);
+      if (newP) {
+        const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
+        const row = {
+          ...defaultDailyRow(),
+          id:              Date.now() + Math.random(),
+          date:            po.date_created    || '',
+          employee:        po.employee        || '',
+          material:        po.title           || '',
+          supplier:        po.supplier        || '',
+          po_num:          po.po_number       || '',
+          units_purchased: po.qty             || '',
+          unit_cost:       po.unit_cost       || '',
+          material_cost:   String(qty * uc + tax),
+        };
+        newP.dailyRows.push(row);
+        po.po_row_id = row.id;
+        saveProjects();
+        renderDailyTable(po.project_id);
+      }
+    }
+    if (oldProj)       renderProjectPOs(oldProj);
+    if (po.project_id) renderProjectPOs(po.project_id);
+  } else {
+    _syncPORowField(po, field);
+    if (po.project_id) renderProjectPOs(po.project_id);
+  }
+  savePurchaseOrders();
+});
+
+/* ── Supplier Tab ── */
+function renderSupplierTab() {
+  const root = document.getElementById('supplier-root');
+  const sups = lists.suppliers;
+  const rowsHTML = sups.length === 0
+    ? `<tr><td colspan="3" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No suppliers yet. Click + Add Supplier to begin.</td></tr>`
+    : sups.map((s, i) => `
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:0.4rem 0.6rem">
+          <input type="text" value="${esc(s.name || '')}" data-sup-idx="${i}" data-sup-field="name"
+            placeholder="Supplier name"
+            style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.875rem;outline:none;padding:0.15rem 0">
+        </td>
+        <td style="padding:0.4rem 0.6rem">
+          <input type="text" value="${esc(s.state || '')}" data-sup-idx="${i}" data-sup-field="state"
+            placeholder="e.g. TX" maxlength="2"
+            style="width:70px;background:transparent;border:none;color:var(--text);font-size:0.875rem;outline:none;padding:0.15rem 0;text-transform:uppercase">
+        </td>
+        <td style="text-align:center;padding:0.25rem">
+          <button class="del-btn" onclick="deleteSupplier(${i})">&#10005;</button>
+        </td>
+      </tr>`).join('');
+
+  root.innerHTML = `
+    <div style="padding:1.5rem;max-width:680px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Suppliers</span>
+        <button class="btn btn-green" onclick="addSupplier()">+ Add Supplier</button>
+      </div>
+      <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;overflow:hidden">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase">Supplier Name</th>
+            <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;width:100px">State</th>
+            <th style="width:40px;border-bottom:1px solid var(--border)"></th>
+          </tr>
+        </thead>
+        <tbody>${rowsHTML}</tbody>
+      </table>
+    </div>`;
+}
+
+function addSupplier() {
+  lists.suppliers.push({ name: '', state: '' });
+  saveLists();
+  renderSupplierTab();
+  // Focus the new name input
+  const inputs = document.querySelectorAll('#supplier-root [data-sup-field="name"]');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+}
+
+function deleteSupplier(idx) {
+  lists.suppliers.splice(idx, 1);
+  saveLists();
+  renderSupplierTab();
+  projectsList.forEach(p => renderDailyTable(p.id));
+}
+
+document.getElementById('supplier-root').addEventListener('input', e => {
+  const el = e.target;
+  const idx = parseInt(el.dataset.supIdx);
+  const field = el.dataset.supField;
+  if (isNaN(idx) || !field || !lists.suppliers[idx]) return;
+  lists.suppliers[idx][field] = field === 'state' ? el.value.toUpperCase() : el.value;
+  saveLists();
+  projectsList.forEach(p => renderDailyTable(p.id));
+});
 
 // Build <option> tags for a simple string list
 function buildOptions(arr, selected = '') {
@@ -1707,7 +2131,7 @@ document.getElementById('modal-tabs').addEventListener('click', e => {
 });
 
 function renderAllListPanels() {
-  ['field_types','employees','job_classes','suppliers'].forEach(key => {
+  ['field_types','employees','job_classes'].forEach(key => {
     const container = document.getElementById('items-' + key);
     container.innerHTML = '';
     lists[key].forEach((val, idx) => {
@@ -1768,7 +2192,7 @@ document.querySelector('.modal-body').addEventListener('click', e => {
 });
 
 // Add new enter key support
-['field_types','employees','job_classes','equipment','suppliers'].forEach(key => {
+['field_types','employees','job_classes','equipment'].forEach(key => {
   const input = document.getElementById('new-' + key);
   if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') addListItem(key); });
 });
@@ -2017,14 +2441,47 @@ function makeSelect(options, selected, dataTab, dataI, dataF, dataProj) {
   </select>`;
 }
 
+function renderDailyTotals(projId) {
+  const p = getProj(projId); if (!p) return;
+  const rows = p.dailyRows || [];
+  let lhrs = 0, lcost = 0, ehrs = 0, ecost = 0, mat = 0, total = 0;
+  rows.forEach(row => {
+    const c = calcDaily(row);
+    lhrs  += parseFloat(row.labor_hours) || 0;
+    lcost += c.labor_cost;
+    ehrs  += parseFloat(row.equip_hours) || 0;
+    ecost += c.equip_total;
+    mat   += parseFloat(row.material_cost) || 0;
+    total += c.total_cost;
+  });
+  const el = id => document.getElementById(id);
+  if (!el('dft-lhrs')) return;
+  el('dft-lhrs').textContent  = lhrs  ? fmt(lhrs)       : '—';
+  el('dft-lcost').textContent = lcost ? '$' + fmt(lcost) : '—';
+  el('dft-ehrs').textContent  = ehrs  ? fmt(ehrs)        : '—';
+  el('dft-ecost').textContent = ecost ? '$' + fmt(ecost) : '—';
+  el('dft-mat').textContent   = mat   ? '$' + fmt(mat)   : '—';
+  el('dft-total').textContent = total ? '$' + fmt(total) : '—';
+}
+
 function renderDailyTable(projId) {
   const p     = getProj(projId); if (!p) return;
-  const rows  = p.dailyRows || [];
+  const allRows = p.dailyRows || [];
+  // Apply column filters
+  const rows = allRows.filter(row =>
+    Object.entries(dailyFilters).every(([f, allowed]) => allowed.has(String(row[f] ?? '')))
+  );
   const tbody = document.getElementById('daily-tbody-' + projId); if (!tbody) return;
   tbody.innerHTML = '';
+  renderDailyTotals(projId);
+  _updateFilterButtons();
 
-  if (rows.length === 0) {
+  if (allRows.length === 0) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="23">No entries yet. Click &ldquo;+ Add Row&rdquo; to get started.</td></tr>';
+    return;
+  }
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="23">No rows match the active filters.</td></tr>';
     return;
   }
 
@@ -2034,7 +2491,7 @@ function renderDailyTable(projId) {
   const employeeOpts  = ['', ...lists.employees];
   const jobClassOpts  = ['', ...lists.job_classes];
   const equipOpts     = ['', ...lists.equipment.map(e => e.name)];
-  const supplierOpts  = ['', ...lists.suppliers];
+  const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean)];
   const ccOpts        = ['', ...costCodes];
   const scOpts        = ['', ...subCodes];
 
@@ -2078,6 +2535,7 @@ function renderDailyCalcCells(projId, i) {
   calcs[0].textContent = '$' + fmt(c.labor_cost);
   calcs[1].textContent = '$' + fmt(c.equip_total);
   calcs[2].textContent = '$' + fmt(c.total_cost);
+  renderDailyTotals(projId);
 }
 
 function addDailyRow(projId) {
@@ -2086,6 +2544,49 @@ function addDailyRow(projId) {
   p.dailyRows.push(defaultDailyRow());
   saveProjects();
   renderDailyTable(projId);
+}
+
+function exportBidPDF(projId) {
+  const p = getProj(projId); if (!p) return;
+  const name = p['project-name'] || 'Project';
+  const jobNo = p['job-number'] ? ` — ${p['job-number']}` : '';
+  const table = document.getElementById('btbody-' + projId)?.closest('table');
+  if (!table) return;
+  const tableHTML = table.outerHTML;
+
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>${name} — Bid Line Items vs Actuals</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; font-size: 11px; color: #000; background: #fff; padding: 24px; }
+    h2 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    p.meta { font-size: 10px; color: #555; margin-bottom: 14px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; white-space: nowrap; }
+    thead th { background: #f0f0f0; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+    thead th.num, td.num { text-align: right; }
+    td input { border: none; background: transparent; font-size: 11px; font-family: inherit; width: 100%; }
+    td.bid-calc, td.bid-actual, td.bid-under, td.bid-over { text-align: right; }
+    td.bid-under { color: #166534; }
+    td.bid-over  { color: #991b1b; }
+    tfoot td { font-weight: 700; font-size: 10px; background: #f9f9f9; border-top: 2px solid #999; }
+    tfoot .foot-bid    { color: #166534; text-align: right; }
+    tfoot .foot-actual { color: #92400e; text-align: right; }
+    tfoot .foot-under  { color: #166534; text-align: right; }
+    tfoot .foot-over   { color: #991b1b; text-align: right; }
+    tfoot .foot-label  { color: #555; }
+    td.bid-del { display: none; }
+    th:last-child { display: none; }
+    @media print { body { padding: 0; } }
+  </style>
+  </head><body>
+  <h2>Bid Line Items vs Actuals — ${esc(name)}${esc(jobNo)}</h2>
+  <p class="meta">Printed ${new Date().toLocaleDateString()}</p>
+  ${tableHTML}
+  <script>window.onload = () => { window.print(); }<\/script>
+  </body></html>`);
+  win.document.close();
 }
 
 function exportDailyCSV(projId) {
@@ -2106,6 +2607,127 @@ function exportDailyCSV(projId) {
   });
   const name = (p['project-name'] || 'project').replace(/[^a-z0-9]/gi, '_').toLowerCase();
   downloadCSV(csvRows.join('\n'), `daily_${name}.csv`);
+}
+
+/* ── Column filters ── */
+let dailyFilters = {};      // { field: Set<string> }  — absent key = no filter
+let _dffField    = null;    // field currently being filtered
+let _dffPending  = null;    // Set being edited in the dropdown
+
+function _updateFilterButtons() {
+  document.querySelectorAll('.cfb').forEach(btn => {
+    const f = btn.dataset.f;
+    btn.classList.toggle('active', !!dailyFilters[f]);
+  });
+}
+
+function openDailyFilter(field, btn) {
+  const proj = getProj(dailyViewProjId); if (!proj) return;
+  _dffField = field;
+
+  // Collect unique values for this field
+  const rows = proj.dailyRows || [];
+  const unique = [...new Set(rows.map(r => String(r[field] ?? '')))].sort();
+  const active = dailyFilters[field] || null;   // null = all shown
+  _dffPending = active ? new Set(active) : null; // null = all selected
+
+  // Build list
+  const list = document.getElementById('dff-list');
+  const allChecked = !_dffPending;
+  list.innerHTML = `<label class="dff-item" id="dff-all-label">
+    <input type="checkbox" id="dff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="dff-val-cb" value="${esc(v)}" ${(!_dffPending || _dffPending.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  // Select-all logic
+  document.getElementById('dff-all').addEventListener('change', e => {
+    document.querySelectorAll('.dff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.dff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.dff-val-cb')].every(c => c.checked);
+    document.getElementById('dff-all').checked = all;
+  }));
+
+  // Search filter within dropdown
+  document.getElementById('dff-search').value = '';
+  document.getElementById('dff-search').oninput = e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#dff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  // Position near button
+  const dd = document.getElementById('daily-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyDailyFilter() {
+  const cbs = [...document.querySelectorAll('.dff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allChecked = document.getElementById('dff-all')?.checked;
+  if (allChecked || checked.length === cbs.length) {
+    delete dailyFilters[_dffField];
+  } else {
+    dailyFilters[_dffField] = new Set(checked);
+  }
+  document.getElementById('daily-filter-dd').style.display = 'none';
+  _updateFilterButtons();
+  renderDailyTable(dailyViewProjId);
+}
+
+function clearDailyFilter() {
+  delete dailyFilters[_dffField];
+  document.getElementById('daily-filter-dd').style.display = 'none';
+  _updateFilterButtons();
+  renderDailyTable(dailyViewProjId);
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', e => {
+  const dd = document.getElementById('daily-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('cfb')) {
+    dd.style.display = 'none';
+  }
+});
+
+// Wire filter buttons via delegation
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.cfb');
+  if (!btn || !dailyViewProjId) return;
+  e.stopPropagation();
+  openDailyFilter(btn.dataset.f, btn);
+});
+
+let dailyViewProjId = null;
+
+function openDailyView(projId) {
+  const p = getProj(projId); if (!p) return;
+  dailyViewProjId = projId;
+  document.getElementById('daily-fs-title').textContent =
+    (p['project-name'] || 'Untitled Project') + ' — Daily Tracking';
+  document.getElementById('daily-fs-add').onclick    = () => addDailyRow(projId);
+  document.getElementById('daily-fs-export').onclick = () => exportDailyCSV(projId);
+  // Give the tbody the id that renderDailyTable expects
+  document.getElementById('daily-fs-tbody').id = 'daily-tbody-' + projId;
+  document.getElementById('daily-fullscreen').style.display = 'flex';
+  renderDailyTable(projId);
+}
+
+function closeDailyView() {
+  document.getElementById('daily-fullscreen').style.display = 'none';
+  document.getElementById('daily-filter-dd').style.display = 'none';
+  dailyFilters = {};
+  if (dailyViewProjId) {
+    const tbody = document.getElementById('daily-tbody-' + dailyViewProjId);
+    if (tbody) tbody.id = 'daily-fs-tbody';
+    dailyViewProjId = null;
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -2180,6 +2802,7 @@ function downloadCSV(content, filename) {
   await loadLists();
   await loadCostRows();
   await loadProjects();
+  await loadPurchaseOrders();
   renderCostTable();
   renderHomeTab();
   renderProjectDashboard();
