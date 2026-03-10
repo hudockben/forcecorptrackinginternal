@@ -1924,6 +1924,8 @@ function addPO() {
     employee:     '',
     date_created: new Date().toISOString().slice(0, 10),
     project_id:   '',
+    cost_code:    '',
+    sub_code:     '',
   });
   savePurchaseOrders();
   renderPOTab();
@@ -1953,7 +1955,8 @@ function _syncPORowField(po, field) {
   const r = proj.dailyRows.find(r => r.id === po.po_row_id);
   if (!r) return;
   const map = { title: 'material', supplier: 'supplier', employee: 'employee',
-                date_created: 'date', qty: 'units_purchased', unit_cost: 'unit_cost' };
+                date_created: 'date', qty: 'units_purchased', unit_cost: 'unit_cost',
+                cost_code: 'cost_code', sub_code: 'sub_code' };
   if (map[field]) r[map[field]] = po[field] || '';
   if (['qty','unit_cost','tax'].includes(field)) {
     const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
@@ -1961,6 +1964,23 @@ function _syncPORowField(po, field) {
   }
   saveProjects();
   renderDailyTable(po.project_id);
+}
+
+function _subCodeOpts(po) {
+  if (!po.project_id) return '<option value="">— pick project first —</option>';
+  const proj = getProj(po.project_id);
+  if (!proj || !Array.isArray(proj.bidItems) || proj.bidItems.length === 0)
+    return '<option value="">— no bid items —</option>';
+  const current = (po.cost_code || '') + '||' + (po.sub_code || '');
+  const opts = proj.bidItems
+    .filter(b => b.cost_code || b.sub_code)
+    .map(b => {
+      const v     = (b.cost_code || '') + '||' + (b.sub_code || '');
+      const label = [b.cost_code, b.sub_code].filter(Boolean).join(' / ')
+                    + (b.description ? ' — ' + b.description : '');
+      return `<option value="${esc(v)}" ${v === current ? 'selected' : ''}>${esc(label)}</option>`;
+    }).join('');
+  return `<option value="">— select —</option>` + opts;
 }
 
 function renderPOTab() {
@@ -1971,7 +1991,7 @@ function renderPOTab() {
     `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
 
   const bodyHTML = purchaseOrders.length === 0
-    ? `<tr><td colspan="13" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
+    ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
     : purchaseOrders.map(po => {
         const qty   = parseFloat(po.qty)       || 0;
         const uc    = parseFloat(po.unit_cost)  || 0;
@@ -2007,6 +2027,8 @@ function renderPOTab() {
 
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(po.po_number)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}">${sel('sub_code_sel', _subCodeOpts(po))}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('title', 'text', 'placeholder="Title"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${sel('supplier', supOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('qty', 'number', 'step="any" placeholder="0"')}</td>
@@ -2017,7 +2039,6 @@ function renderPOTab() {
           <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('employee', empOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date_created', 'date')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:95px;color:${statusColor}">${sel('status', statusOpts)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
           <td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" onclick="deletePO('${po.id}')">&#10005;</button></td>
         </tr>`;
       }).join('');
@@ -2029,12 +2050,12 @@ function renderPOTab() {
         <button class="btn btn-green" onclick="addPO()">+ New PO</button>
       </div>
       <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1300px">
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1400px">
           <thead>
             <tr>
-              ${th('PO #')} ${th('Title')} ${th('Supplier')} ${th('Qty',1)} ${th('Unit Cost',1)}
-              ${th('Amount',1)} ${th('Tax',1)} ${th('Total',1)} ${th('Employee')}
-              ${th('Date Created')} ${th('Status')} ${th('Project')}
+              ${th('PO #')} ${th('Project')} ${th('Sub Code')} ${th('Title')} ${th('Supplier')}
+              ${th('Qty',1)} ${th('Unit Cost',1)} ${th('Amount',1)} ${th('Tax',1)} ${th('Total',1)}
+              ${th('Employee')} ${th('Date Created')} ${th('Status')}
               <th style="width:36px;border-bottom:1px solid var(--border)"></th>
             </tr>
           </thead>
@@ -2095,6 +2116,19 @@ document.getElementById('po-root').addEventListener('change', e => {
   const po = purchaseOrders.find(p => p.id === id);
   if (!po) return;
   const oldProj = po.project_id;
+
+  if (field === 'sub_code_sel') {
+    // Parse combined cost_code||sub_code value
+    const [cc, sc] = el.value.split('||');
+    po.cost_code = cc || '';
+    po.sub_code  = sc || '';
+    savePurchaseOrders();
+    _syncPORowField(po, 'cost_code');
+    _syncPORowField(po, 'sub_code');
+    if (po.project_id) renderProjectPOs(po.project_id);
+    return;
+  }
+
   po[field] = el.value;
 
   if (field === 'project_id') {
@@ -2107,7 +2141,16 @@ document.getElementById('po-root').addEventListener('change', e => {
         renderDailyTable(oldProj);
       }
     }
-    po.po_row_id = null;
+    po.po_row_id  = null;
+    po.cost_code  = '';
+    po.sub_code   = '';
+
+    // Update sub_code dropdown for this row
+    const subCell = document.getElementById('po-subcode-cell-' + po.id);
+    if (subCell) {
+      const subSel = subCell.querySelector('select');
+      if (subSel) subSel.innerHTML = _subCodeOpts(po);
+    }
 
     // Insert new row into new project
     if (po.project_id) {
@@ -2125,6 +2168,8 @@ document.getElementById('po-root').addEventListener('change', e => {
           units_purchased: po.qty             || '',
           unit_cost:       po.unit_cost       || '',
           material_cost:   String(qty * uc + tax),
+          cost_code:       po.cost_code       || '',
+          sub_code:        po.sub_code        || '',
         };
         newP.dailyRows.push(row);
         po.po_row_id = row.id;
