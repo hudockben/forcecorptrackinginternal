@@ -184,9 +184,10 @@
     .daily-inner-table thead tr.totals-row th.dft-green  { color: var(--green); }
     .daily-inner-table thead tr.totals-row th.dft-yellow { color: var(--yellow); }
     .daily-inner-table thead tr.totals-row th.dft-empty  { background: var(--bg); }
-    /* Push group-row and col-row down by totals-row height (~30px) */
-    .daily-inner-table thead tr.group-row th { top: 30px; }
-    .daily-inner-table thead tr.col-row   th { top: 58px; }
+    /* Sticky offsets: group(0) → totals(28px) → col-row(58px) */
+    .daily-inner-table thead tr.group-row  th { top: 0; }
+    .daily-inner-table thead tr.totals-row th { top: 28px; }
+    .daily-inner-table thead tr.col-row    th { top: 58px; }
     /* Column filter buttons */
     .cfb {
       background: none; border: none; cursor: pointer; font-size: 0.6rem;
@@ -703,6 +704,15 @@
   <div class="daily-table-wrap" style="flex:1;overflow:auto;">
     <table class="daily-inner-table">
       <thead>
+        <tr class="group-row">
+          <th class="g-base"  colspan="1"></th>
+          <th class="g-id"    colspan="3">Identification</th>
+          <th class="g-code"  colspan="2">Cost Code</th>
+          <th class="g-labor" colspan="4">Labor</th>
+          <th class="g-equip" colspan="4">Equipment</th>
+          <th class="g-mat"   colspan="6">Material</th>
+          <th class="g-sum"   colspan="2">Summary</th>
+        </tr>
         <tr class="totals-row">
           <th colspan="8" class="dft-label">Totals</th>
           <th id="dft-lhrs"  class="dft-val">—</th>
@@ -714,15 +724,6 @@
           <th id="dft-mat"   class="dft-val dft-yellow">—</th>
           <th id="dft-total" class="dft-val dft-green">—</th>
           <th                class="dft-empty"></th>
-        </tr>
-        <tr class="group-row">
-          <th class="g-base"  colspan="1"></th>
-          <th class="g-id"    colspan="3">Identification</th>
-          <th class="g-code"  colspan="2">Cost Code</th>
-          <th class="g-labor" colspan="4">Labor</th>
-          <th class="g-equip" colspan="4">Equipment</th>
-          <th class="g-mat"   colspan="6">Material</th>
-          <th class="g-sum"   colspan="2">Summary</th>
         </tr>
         <tr class="col-row" id="daily-col-row">
           <th></th>
