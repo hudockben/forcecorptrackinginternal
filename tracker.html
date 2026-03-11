@@ -874,9 +874,9 @@
           <th>Bid Qty</th>
           <th>Bid Unit Cost</th>
           <th class="calc-hdr">Total Cost (Bid)</th>
-          <th class="calc-hdr">Running Qty</th>
+          <th class="calc-hdr">Avg Qty</th>
           <th class="calc-hdr">Running Total</th>
-          <th class="calc-hdr">Past Avg</th>
+          <th class="calc-hdr">Production Rate</th>
           <th class="calc-hdr">Total Cost %</th>
           <th class="calc-hdr">Cum. Labor Hrs</th>
           <th class="calc-hdr">Days Worked</th>
@@ -895,7 +895,7 @@
     <span><span class="dot dot-calc"></span> Computed from all daily tracking entries</span>
     <span><span class="dot dot-warn"></span> Running cost &gt;80% of bid</span>
     <span><span class="dot dot-over"></span> Over budget (&gt;100% of bid)</span>
-    <span>Past Avg = Running Total ÷ Running Qty (company average cost per unit)</span>
+    <span>Production Rate = Running Total ÷ Avg Qty (company average cost per unit across all jobs)</span>
     <span>Dim rows = cost codes found in daily tracking with no bid entry yet</span>
   </div>
 </div>
@@ -2789,7 +2789,7 @@ function renderCostTable() {
         <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
         <td class="calc ${tc}">${fmt(rqty,2)}</td>
         <td class="calc ${tc}">$${fmt(rtotal)}</td>
-        <td class="calc" title="Company average cost per unit">${rqty ? '$'+fmt(past_avg) : '—'}</td>
+        <td class="calc" title="Production Rate: company average cost per unit across all jobs">${rqty ? '$'+fmt(past_avg) : '—'}</td>
         <td class="calc ${tc}">${btotal ? fmtPct(total_pct) : '—'}</td>
         <td class="calc">${fmt(a.labor_hours,1)}</td>
         <td class="calc">${days}</td>
@@ -2842,7 +2842,7 @@ function addCostRow() {
 function exportCostCSV() {
   const agg = buildDailyAgg();
   const headers = ['Cost Code','Sub Code','Status','Bid Qty','Bid Item Cost','Total Cost (Bid)',
-    'Running Qty','Running Total','Past Avg','Total Cost %',
+    'Avg Qty','Running Total','Production Rate','Total Cost %',
     'Cum Labor Hrs','Days Worked','Avg Laborers','MU/Labor Hr',
     'Equip Total','Equip Hours','Equip Cost/Hr','MU/Equip Hr'];
   const rows = [headers.join(',')];
