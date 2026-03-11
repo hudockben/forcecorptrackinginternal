@@ -3065,12 +3065,25 @@ document.addEventListener('click', e => {
     '<button class="dc-yes">Yes</button>' +
     '<button class="dc-no">No</button>';
 
-  // Position relative to button
+  // Position relative to button, flip up if too close to bottom/right edge
   btn._confirmOpen = true;
   document.body.appendChild(popover);
   const rect = btn.getBoundingClientRect();
-  popover.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
-  popover.style.left = (rect.left  + window.scrollX - popover.offsetWidth / 2 + rect.width / 2) + 'px';
+  const pw = popover.offsetWidth;
+  const ph = popover.offsetHeight;
+
+  let top  = rect.bottom + window.scrollY + 4;
+  let left = rect.left + window.scrollX - pw / 2 + rect.width / 2;
+
+  // Flip above if it would go off the bottom
+  if (rect.bottom + ph + 4 > window.innerHeight) {
+    top = rect.top + window.scrollY - ph - 4;
+  }
+  // Clamp horizontally within viewport
+  left = Math.max(window.scrollX + 4, Math.min(left, window.scrollX + window.innerWidth - pw - 4));
+
+  popover.style.top  = top + 'px';
+  popover.style.left = left + 'px';
 
   popover.querySelector('.dc-no').addEventListener('click', e => {
     e.stopPropagation();
