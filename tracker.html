@@ -861,7 +861,7 @@
       <thead>
         <tr class="group-row">
           <th class="g-base"  colspan="1"></th>
-          <th class="g-base"  colspan="3">Identification</th>
+          <th class="g-base"  colspan="4">Identification</th>
           <th class="g-cost"  colspan="3">Bid Plan</th>
           <th class="g-sum"   colspan="4">Company Actuals (from Daily)</th>
           <th class="g-sum"   colspan="2">Progress</th>
@@ -870,6 +870,7 @@
         </tr>
         <tr class="col-row">
           <th></th>
+          <th>Cost Code</th>
           <th>Sub Code <button class="cfb cost-cfb" data-f="sub_code">▼</button></th>
           <th>Status <button class="cfb cost-cfb" data-f="status">▼</button></th>
           <th>Bid Qty</th>
@@ -2683,7 +2684,7 @@ function renderCostTable() {
   });
 
   if (filteredKeys.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="21">No data yet. Add a bid entry or log daily records.</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="22">No data yet. Add a bid entry or log daily records.</td></tr>';
     return;
   }
 
@@ -2695,7 +2696,7 @@ function renderCostTable() {
     groups[cc].push(key);
   });
 
-  const TOTAL_COLS = 21;
+  const TOTAL_COLS = 22;
 
   Object.entries(groups).forEach(([costCode, keys]) => {
     // ── Parent group row ──
@@ -2774,7 +2775,8 @@ function renderCostTable() {
 
       childTr.innerHTML = editable ? `
         <td class="del-cell"><button class="del-btn" data-tab="cost" data-i="${realIdx}">&#10005;</button></td>
-        <td><input type="text" data-tab="cost" data-i="${realIdx}" data-f="sub_code" value="${esc(sc)}" placeholder="Sub code"></td>
+        <td><input type="text" data-tab="cost" data-i="${realIdx}" data-f="cost_code" value="${esc(cc)}" placeholder="Cost code"></td>
+        <td><input type="text" data-tab="cost" data-i="${realIdx}" data-f="sub_code"  value="${esc(sc)}" placeholder="Sub code"></td>
         <td>
           <select data-tab="cost" data-i="${realIdx}" data-f="status" class="${statusClass(status)}">
             <option ${status==='Active'   ?'selected':''}>Active</option>
@@ -2788,6 +2790,7 @@ function renderCostTable() {
         <td class="calc">${total_bid ? '$'+fmt(total_bid) : '—'}</td>
       ` : `
         <td class="del-cell"></td>
+        <td style="padding:0.35rem 0.5rem;font-style:italic;color:#666">${esc(cc) || '—'}</td>
         <td style="padding:0.35rem 0.5rem;font-style:italic">${esc(sc) || '—'}</td>
         <td style="padding:0.35rem 0.5rem;font-size:0.68rem;color:#555">No bid entry</td>
         <td class="calc" style="color:#555">—</td>
