@@ -896,6 +896,15 @@
   </div>
 </div>
 
+<!-- ══════════════ DAILY PRODUCTION RATE FULL-SCREEN ══════════════ -->
+<div id="prod-fullscreen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
+    <button class="btn btn-ghost" onclick="closeProductionRateView()">&#8592; Back</button>
+    <span id="prod-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
+  </div>
+  <div id="prod-fs-body" style="flex:1;overflow:auto;padding:1.25rem;"></div>
+</div>
+
 <!-- ══════════════ PURCHASE ORDERS TAB ══════════════ -->
 <div class="tab-panel" id="tab-po">
   <div id="po-root"></div>
@@ -2090,6 +2099,7 @@ function projectCardHTML(p) {
     </div>
     <button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#1a3a2a;color:#4ade80;border:1px solid #4ade80;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>
     <button class="btn btn-green" style="font-size:0.75rem;padding:0.25rem 0.7rem;" onclick="event.stopPropagation();openDailyView('${p.id}')">Daily Tracking &#8594;</button>
+    <button class="btn btn-green" style="font-size:0.75rem;padding:0.25rem 0.7rem;" onclick="event.stopPropagation();openProductionRateView('${p.id}')">Daily Production Rate &#8594;</button>
     <button class="proj-card-toggle">▾</button>
   </div>
   <div class="proj-card-body">
@@ -3873,6 +3883,114 @@ function closeBidView() {
     if (tfoot) tfoot.id = 'bid-fs-tfoot';
     bidViewProjId = null;
   }
+}
+
+let prodViewProjId = null;
+
+function openProductionRateView(projId) {
+  const p = getProj(projId); if (!p) return;
+  prodViewProjId = projId;
+  document.getElementById('prod-fs-title').textContent =
+    (p['project-name'] || 'Untitled Project') + ' — Daily Production Rate';
+  document.getElementById('prod-fullscreen').style.display = 'flex';
+  renderProductionRateView(projId);
+}
+
+function closeProductionRateView() {
+  document.getElementById('prod-fullscreen').style.display = 'none';
+  prodViewProjId = null;
+}
+
+function renderProductionRateView(projId) {
+  const p = getProj(projId);
+  const body = document.getElementById('prod-fs-body');
+  if (!p || !body) return;
+
+  const rows = p.dailyRows || [];
+  if (!rows.length) {
+    body.innerHTML = '<div class="home-empty">No daily entries yet for this project.</div>';
+    return;
+  }
+
+  // Group by cost_code||sub_code, then aggregate by date
+  const groups = {};
+  rows.forEach(row => {
+    const key = (row.cost_code || '(No Code)') + '||' + (row.sub_code || '');
+    if (!groups[key]) groups[key] = { cost_code: row.cost_code || '', sub_code: row.sub_code || '', byDate: {} };
+    const d = row.date || '(No Date)';
+    if (!groups[key].byDate[d]) groups[key].byDate[d] = { qty: 0, total_cost: 0, labor_hours: 0 };
+    const c = calcDaily(row);
+    groups[key].byDate[d].qty         += parseFloat(row.quantity) || 0;
+    groups[key].byDate[d].total_cost  += c.total_cost;
+    groups[key].byDate[d].labor_hours += parseFloat(row.labor_hours) || 0;
+  });
+
+  // Find matching bid item for unit label
+  const bidItems = p.bidItems || [];
+  function getBidUnit(cost_code, sub_code) {
+    const b = bidItems.find(b => b.cost_code === cost_code && b.sub_code === sub_code);
+    return b ? (b.unit || '') : '';
+  }
+  function getBidRate(cost_code, sub_code) {
+    const b = bidItems.find(b => b.cost_code === cost_code && b.sub_code === sub_code);
+    return b ? (parseFloat(b.unit_cost) || 0) : 0;
+  }
+
+  let html = '';
+  Object.entries(groups).forEach(([key, g]) => {
+    const unit     = getBidUnit(g.cost_code, g.sub_code);
+    const bidRate  = getBidRate(g.cost_code, g.sub_code);
+    const label    = [g.cost_code, g.sub_code].filter(Boolean).join(' / ') || '(No Code)';
+    const dates    = Object.keys(g.byDate).filter(d => d !== '(No Date)').sort();
+
+    html += `<div style="margin-bottom:2rem;">
+      <div style="font-size:0.9rem;font-weight:700;color:var(--green);margin-bottom:0.6rem;">${esc(label)}${unit ? ' <span style="color:var(--muted);font-weight:400;font-size:0.8rem;">('+esc(unit)+')</span>' : ''}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+        <thead>
+          <tr style="background:var(--surface);">
+            <th style="text-align:left;padding:0.4rem 0.6rem;border:1px solid var(--border);">Date</th>
+            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Qty${unit ? ' ('+esc(unit)+')' : ''}</th>
+            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Total Cost</th>
+            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Unit Rate</th>
+            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Labor Hrs</th>
+            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Δ Qty</th>
+            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Δ Rate</th>
+            ${bidRate ? '<th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">vs Bid Rate</th>' : ''}
+          </tr>
+        </thead>
+        <tbody>`;
+
+    let prevQty = null, prevRate = null;
+    dates.forEach(d => {
+      const day     = g.byDate[d];
+      const rate    = day.qty > 0 ? day.total_cost / day.qty : 0;
+      const dQty    = prevQty  !== null ? day.qty - prevQty   : null;
+      const dRate   = prevRate !== null ? rate - prevRate      : null;
+      const vsBid   = bidRate  ? rate - bidRate                : null;
+
+      const rateColor = dRate === null ? '' : dRate <= 0 ? 'color:#4ade80' : 'color:#f87171';
+      const qtyColor  = dQty  === null ? '' : dQty  >= 0 ? 'color:#4ade80' : 'color:#f87171';
+      const bidColor  = vsBid === null ? '' : vsBid <= 0 ? 'color:#4ade80' : 'color:#f87171';
+
+      html += `<tr>
+        <td style="padding:0.35rem 0.6rem;border:1px solid var(--border);">${esc(d)}</td>
+        <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">${day.qty > 0 ? fmt(day.qty) : '—'}</td>
+        <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">$${fmt(day.total_cost)}</td>
+        <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">${rate > 0 ? '$'+fmt(rate) : '—'}</td>
+        <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">${day.labor_hours > 0 ? fmt(day.labor_hours) : '—'}</td>
+        <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);${qtyColor}">${dQty === null ? '—' : (dQty >= 0 ? '+' : '') + fmt(dQty)}</td>
+        <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);${rateColor}">${dRate === null ? '—' : (dRate >= 0 ? '+$' : '-$') + fmt(Math.abs(dRate))}</td>
+        ${bidRate ? `<td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);${bidColor}">${vsBid >= 0 ? '+$' : '-$'}${fmt(Math.abs(vsBid))}</td>` : ''}
+      </tr>`;
+
+      prevQty  = day.qty;
+      prevRate = rate;
+    });
+
+    html += `</tbody></table></div>`;
+  });
+
+  body.innerHTML = html;
 }
 
 let bidFilters = {};
