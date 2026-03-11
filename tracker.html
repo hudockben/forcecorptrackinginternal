@@ -3453,42 +3453,132 @@ function addDailyRow(projId) {
 
 function exportBidPDF(projId) {
   const p = getProj(projId); if (!p) return;
-  const name = p['project-name'] || 'Project';
+  const name  = p['project-name'] || 'Project';
   const jobNo = p['job-number'] ? ` — ${p['job-number']}` : '';
-  const table = document.getElementById('btbody-' + projId)?.closest('table');
-  if (!table) return;
-  const tableHTML = table.outerHTML;
+
+  const items = p.bidItems || [];
+  const groupOrder = [];
+  const groups = {};
+  items.forEach(b => {
+    const cc = b.cost_code || '';
+    if (!groups[cc]) { groups[cc] = []; groupOrder.push(cc); }
+    groups[cc].push(b);
+  });
+
+  let rowsHTML = '';
+  let grandBid = 0, grandActual = 0, grandHrs = 0, grandProj = 0;
+  let grandLab = 0;
+
+  const r = (v, cls = '') => `<td class="num${cls ? ' '+cls : ''}">${v}</td>`;
+  const dash = '—';
+
+  groupOrder.forEach(costCode => {
+    const gItems = groups[costCode];
+    rowsHTML += `<tr class="group-hdr"><td colspan="13"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
+
+    let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
+    gItems.forEach(b => {
+      const bidQty = parseFloat(b.quantity)   || 0;
+      const uc     = parseFloat(b.unit_cost)  || 0;
+      const bidTot = bidQty * uc;
+      const actual = actualForBidItem(b, projId);
+      const rqty   = runningQtyForBidItem(b, projId);
+      const cumHrs = cumulativeHoursForBidItem(b, projId);
+      const numLab = laborerCountForBidItem(b, projId);
+      const proj   = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+      const diff   = bidTot - actual;
+      const pct    = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : dash;
+      const ruc    = rqty > 0 && actual ? '$' + fmt(actual / rqty) : dash;
+      const diffCls = diff >= 0 ? 'under' : 'over';
+      const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : dash;
+      const projCls = (proj - bidTot) <= 0 ? 'under' : 'over';
+
+      gBid += bidTot; gActual += actual; gHrs += cumHrs; gProj += proj;
+
+      rowsHTML += `<tr>
+        <td class="sub">${esc(b.sub_code) || dash}</td>
+        ${r(bidQty || dash)}
+        ${r(rqty   || dash)}
+        ${r(pct)}
+        ${r(bidQty ? '$' + fmt(uc) : dash)}
+        ${r(ruc)}
+        ${r(bidTot ? '$' + fmt(bidTot) : dash)}
+        ${r(actual ? '$' + fmt(actual) : dash, 'actual')}
+        ${r(cumHrs ? fmt(cumHrs) : dash)}
+        ${r(numLab || dash)}
+        ${r(diffTxt, diffCls)}
+        ${r(bidTot ? '$' + fmt(proj) : dash, projCls)}
+      </tr>`;
+    });
+
+    const gDiff    = gBid - gActual;
+    const gDiffCls = gDiff >= 0 ? 'under' : 'over';
+    const gDiffTxt = gBid ? (gDiff >= 0 ? `$${fmt(gDiff)} under` : `$${fmt(Math.abs(gDiff))} over`) : dash;
+    const gProjCls = (gProj - gBid) <= 0 ? 'under' : 'over';
+    rowsHTML += `<tr class="subtotal">
+      <td><em>${esc(costCode) || '(No Code)'} — Total</em></td>
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(gBid ? '$' + fmt(gBid) : dash)}
+      ${r(gActual ? '$' + fmt(gActual) : dash, 'actual')}
+      ${r(gHrs ? fmt(gHrs) : dash)}
+      ${r(dash)}
+      ${r(gDiffTxt, gDiffCls)}
+      ${r(gBid ? '$' + fmt(gProj) : dash, gProjCls)}
+    </tr>`;
+
+    grandBid += gBid; grandActual += gActual; grandHrs += gHrs; grandProj += gProj;
+  });
+
+  const totDiff    = grandBid - grandActual;
+  const totDiffCls = totDiff >= 0 ? 'under' : 'over';
+  const totDiffTxt = grandBid ? (totDiff >= 0 ? `$${fmt(totDiff)} under` : `$${fmt(Math.abs(totDiff))} over`) : dash;
+  const totProjCls = (grandProj - grandBid) <= 0 ? 'under' : 'over';
 
   const win = window.open('', '_blank');
   win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>${name} — Bid Line Items vs Actuals</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; font-size: 11px; color: #000; background: #fff; padding: 24px; }
-    h2 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
-    p.meta { font-size: 10px; color: #555; margin-bottom: 14px; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; white-space: nowrap; }
-    thead th { background: #f0f0f0; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
-    thead th.num, td.num { text-align: right; }
-    td input { border: none; background: transparent; font-size: 11px; font-family: inherit; width: 100%; }
-    td.bid-calc, td.bid-actual, td.bid-under, td.bid-over { text-align: right; }
-    td.bid-under { color: #166534; }
-    td.bid-over  { color: #991b1b; }
-    tfoot td { font-weight: 700; font-size: 10px; background: #f9f9f9; border-top: 2px solid #999; }
-    tfoot .foot-bid    { color: #166534; text-align: right; }
-    tfoot .foot-actual { color: #92400e; text-align: right; }
-    tfoot .foot-under  { color: #166534; text-align: right; }
-    tfoot .foot-over   { color: #991b1b; text-align: right; }
-    tfoot .foot-label  { color: #555; }
-    td.bid-del { display: none; }
-    th:last-child { display: none; }
+    body { font-family: system-ui, sans-serif; font-size: 10px; color: #000; background: #fff; padding: 20px; }
+    h2 { font-size: 13px; font-weight: 700; margin-bottom: 3px; }
+    p.meta { font-size: 9px; color: #555; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; table-layout: auto; }
+    th, td { border: 1px solid #ccc; padding: 3px 5px; }
+    td.sub { min-width: 140px; white-space: normal; word-break: break-word; }
+    th { background: #f0f0f0; font-size: 8px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    td.under { color: #166534; text-align: right; }
+    td.over  { color: #991b1b; text-align: right; }
+    td.actual { text-align: right; color: #92400e; }
+    tr.group-hdr td { background: #e8f5e9; font-size: 9px; padding: 4px 5px; }
+    tr.subtotal td { background: #f5f5f5; font-style: italic; font-size: 9px; border-top: 1px solid #aaa; }
+    tr.totals td { font-weight: 700; font-size: 10px; background: #f9f9f9; border-top: 2px solid #999; }
     @media print { body { padding: 0; } }
   </style>
   </head><body>
   <h2>Bid Line Items vs Actuals — ${esc(name)}${esc(jobNo)}</h2>
   <p class="meta">Printed ${new Date().toLocaleDateString()}</p>
-  ${tableHTML}
+  <table>
+    <thead><tr>
+      <th>Sub Code</th>
+      <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th>
+      <th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+      <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+      <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
+      <th class="num">Variance</th><th class="num">Projected Cost</th>
+    </tr></thead>
+    <tbody>${rowsHTML}</tbody>
+    <tfoot><tr class="totals">
+      <td>Totals</td>
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(grandBid   ? '$' + fmt(grandBid)    : dash)}
+      ${r(grandActual ? '$' + fmt(grandActual) : dash, 'actual')}
+      ${r(grandHrs   ? fmt(grandHrs)          : dash)}
+      ${r(dash)}
+      ${r(totDiffTxt, totDiffCls)}
+      ${r(grandBid   ? '$' + fmt(grandProj)   : dash, totProjCls)}
+    </tr></tfoot>
+  </table>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`);
   win.document.close();
