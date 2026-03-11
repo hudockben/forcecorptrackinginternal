@@ -880,7 +880,7 @@
     <table class="bid-table" style="width:100%">
       <thead><tr>
         <th style="width:28px"></th>
-        <th>Sub Code</th>
+        <th>Cost Code <button class="cfb bfb" data-bf="cost_code">▼</button> / Sub Code <button class="cfb bfb" data-bf="sub_code">▼</button></th>
         <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
         <th class="num">Bid Total</th><th class="num">Actual Cost</th>
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
@@ -889,6 +889,17 @@
       <tbody id="bid-fs-tbody"></tbody>
       <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
     </table>
+  </div>
+  <!-- Bid column filter dropdown -->
+  <div id="bid-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;flex-direction:column;">
+    <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+      <input id="bff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+    </div>
+    <div id="bff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+    <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+      <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearBidFilter()">Clear</button>
+      <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyBidFilter()">Apply</button>
+    </div>
   </div>
 </div>
 
@@ -1937,7 +1948,12 @@ function renderBidTable(projId, opts = {}) {
     groups[cc].push(b);
   });
 
-  groupOrder.forEach(costCode => {
+  // Apply bid filters (only in fullscreen mode)
+  const ccFilter  = bidFilters.cost_code || null;
+  const scFilter  = bidFilters.sub_code  || null;
+  const visGroups = ccFilter ? groupOrder.filter(cc => ccFilter.has(cc || '')) : groupOrder;
+
+  visGroups.forEach(costCode => {
     const groupItems = groups[costCode];
     const prefix  = opts.tbodyId ? opts.tbodyId + '-' : '';
     const groupId = 'bg-' + prefix + projId + '-' + costCode.replace(/\W/g, '_') + '_' + groupItems[0].id.slice(0,4);
@@ -1977,7 +1993,8 @@ function renderBidTable(projId, opts = {}) {
 
     // ── Child rows ──
     let gBidTotal = 0, gActual = 0, gCumHrs = 0, gProj = 0;
-    groupItems.forEach(b => {
+    const visItems = scFilter ? groupItems.filter(b => scFilter.has(b.sub_code || '')) : groupItems;
+    visItems.forEach(b => {
       const bidQty  = parseFloat(b.quantity)  || 0;
       const bidTot  = bidQty * (parseFloat(b.unit_cost) || 0);
       const actual  = actualForBidItem(b, projId);
@@ -2052,6 +2069,7 @@ function renderBidTable(projId, opts = {}) {
   });
 
   renderBidFooter(projId, opts);
+  if (bidViewProjId === projId) _updateBidFilterButtons();
 }
 
 function projectCardHTML(p) {
@@ -3764,6 +3782,8 @@ function openBidView(projId) {
 
 function closeBidView() {
   document.getElementById('bid-fullscreen').style.display = 'none';
+  document.getElementById('bid-filter-dd').style.display = 'none';
+  bidFilters = {};
   if (bidViewProjId) {
     const tbody = document.getElementById('btbody-' + bidViewProjId);
     if (tbody) tbody.id = 'bid-fs-tbody';
@@ -3772,6 +3792,97 @@ function closeBidView() {
     bidViewProjId = null;
   }
 }
+
+let bidFilters = {};
+let _bffField   = null;
+let _bffPending = null;
+
+function _updateBidFilterButtons() {
+  document.querySelectorAll('.bfb').forEach(btn => {
+    btn.classList.toggle('active', !!bidFilters[btn.dataset.bf]);
+  });
+}
+
+function openBidFilter(field, btn) {
+  const proj = getProj(bidViewProjId); if (!proj) return;
+  _bffField = field;
+
+  // Collect unique values for this field
+  const items = proj.bidItems || [];
+  const unique = field === 'cost_code'
+    ? [...new Set(items.map(b => b.cost_code || ''))].sort()
+    : [...new Set(items.map(b => b.sub_code  || ''))].sort();
+  const active = bidFilters[field] || null;
+  _bffPending = active ? new Set(active) : null;
+
+  const list = document.getElementById('bff-list');
+  const allChecked = !_bffPending;
+  list.innerHTML = `<label class="dff-item" id="bff-all-label">
+    <input type="checkbox" id="bff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="bff-val-cb" value="${esc(v)}" ${(!_bffPending || _bffPending.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  document.getElementById('bff-all').addEventListener('change', e => {
+    document.querySelectorAll('.bff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.bff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.bff-val-cb')].every(c => c.checked);
+    document.getElementById('bff-all').checked = all;
+  }));
+
+  document.getElementById('bff-search').value = '';
+  document.getElementById('bff-search').oninput = e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#bff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  const dd = document.getElementById('bid-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyBidFilter() {
+  const cbs = [...document.querySelectorAll('.bff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allChecked = document.getElementById('bff-all')?.checked;
+  if (allChecked || checked.length === cbs.length) {
+    delete bidFilters[_bffField];
+  } else {
+    bidFilters[_bffField] = new Set(checked);
+  }
+  document.getElementById('bid-filter-dd').style.display = 'none';
+  _updateBidFilterButtons();
+  if (bidViewProjId) renderBidTable(bidViewProjId);
+}
+
+function clearBidFilter() {
+  delete bidFilters[_bffField];
+  document.getElementById('bid-filter-dd').style.display = 'none';
+  _updateBidFilterButtons();
+  if (bidViewProjId) renderBidTable(bidViewProjId);
+}
+
+// Close bid filter dropdown on outside click
+document.addEventListener('click', e => {
+  const dd = document.getElementById('bid-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('bfb')) {
+    dd.style.display = 'none';
+  }
+});
+
+// Wire bfb buttons via delegation
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.bfb');
+  if (!btn || !bidViewProjId) return;
+  e.stopPropagation();
+  openBidFilter(btn.dataset.bf, btn);
+});
 
 /* ═══════════════════════════════════════════
    DELEGATED EVENTS (both tables)
