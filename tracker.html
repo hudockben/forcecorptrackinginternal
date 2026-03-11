@@ -2241,21 +2241,30 @@ function renderProjectsTab() {
         (p['job-number']||'').toLowerCase().includes(q)   ||
         (p['client']||'').toLowerCase().includes(q))
     : projectsList;
-  root.innerHTML = `
-    <div class="proj-wrap">
-      <div class="proj-toolbar">
-        <input class="proj-search" type="text" placeholder="Search by project name, job number, or client…"
-          value="${esc(projSearch)}" oninput="projSearch=this.value;renderProjectsTab()">
-        <button class="btn btn-green" onclick="addProject()">+ Add Project</button>
-      </div>
-      <div class="proj-cards">
-        ${filtered.length
-          ? filtered.map(p => projectCardHTML(p)).join('')
-          : `<div class="proj-no-results">${projSearch
-              ? 'No projects match your search.'
-              : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`}
-      </div>
-    </div>`;
+
+  // First render: build the full scaffold; subsequent calls: update cards only
+  let cardsEl = root.querySelector('.proj-cards');
+  if (!cardsEl) {
+    root.innerHTML = `
+      <div class="proj-wrap">
+        <div class="proj-toolbar">
+          <input class="proj-search" type="text" placeholder="Search by project name, job number, or client…"
+            oninput="projSearch=this.value;renderProjectsTab()">
+          <button class="btn btn-green" onclick="addProject()">+ Add Project</button>
+        </div>
+        <div class="proj-cards"></div>
+      </div>`;
+    const si = root.querySelector('.proj-search');
+    si.value = projSearch;
+    cardsEl = root.querySelector('.proj-cards');
+  }
+
+  cardsEl.innerHTML = filtered.length
+    ? filtered.map(p => projectCardHTML(p)).join('')
+    : `<div class="proj-no-results">${projSearch
+        ? 'No projects match your search.'
+        : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`;
+
   // Populate bid tables, daily tables, and PO sections after DOM is built
   filtered.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); renderProjectPOs(p.id); });
 }
