@@ -82,7 +82,7 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
-    /* ── Project Info ── */
+    /* ── Project Dashboard ── */
     .info-wrap { max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; }
     .info-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
     .info-section-title { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--green); margin-bottom: 1rem; }
@@ -753,8 +753,7 @@
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="home">Home</button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
-  <button class="tab-btn"        data-tab="project">Project Dashboard</button>
-  <button class="tab-btn"        data-tab="info">Project Info</button>
+  <button class="tab-btn"        data-tab="info">Project Dashboard</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="supplier">Suppliers</button>
   <button class="tab-btn"        onclick="openModal()">&#9881; Manage Lists</button>
@@ -854,12 +853,6 @@
   </div>
 </div>
 
-<!-- ══════════════ PROJECT DASHBOARD TAB
-<div class="tab-panel" id="tab-project">
-  <div class="home-wrap" id="project-content">
-    <!-- rendered by JS -->
-  </div>
-</div>
 
 <!-- ══════════════ SUPPLIER TAB ══════════════ -->
 <div class="tab-panel" id="tab-supplier">
@@ -1139,7 +1132,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       p.classList.toggle('active', p.id === 'tab-' + activeTab));
     renderHeaderActions();
     if (activeTab === 'home')     renderHomeTab();
-    if (activeTab === 'project')  renderProjectDashboard();
     if (activeTab === 'info')     renderProjectInfoComputed();
     if (activeTab === 'supplier') renderSupplierTab();
     if (activeTab === 'po')       renderPOTab();
@@ -1152,7 +1144,7 @@ function renderHeaderActions() {
   if (activeTab === 'cost') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
-      <button class="btn btn-green" onclick="document.querySelector('.tab-btn[data-tab=info]').click()">+ Add Bid Items in Project Info</button>
+      <button class="btn btn-green" onclick="document.querySelector('.tab-btn[data-tab=info]').click()">+ Add Bid Items in Project Dashboard</button>
       ${logoutBtn}
     `;
   } else {
@@ -1252,7 +1244,7 @@ function renderHomeTab() {
 
     <p class="home-section-title">Recent Daily Entries</p>
     ${recent.length === 0
-      ? `<div class="home-empty">No daily entries yet. Open a project in Project Info to add daily records.</div>`
+      ? `<div class="home-empty">No daily entries yet. Open a project in Project Dashboard to add daily records.</div>`
       : `<table class="recent-table">
           <thead><tr>
             <th>Date</th><th>Employee</th><th>Cost Code</th><th>Sub Code</th>
@@ -1300,7 +1292,7 @@ function renderDashProjectCards() {
     : projectsList;
 
   if (filtered.length === 0) {
-    container.innerHTML = `<div class="home-empty">${q ? `No projects match "${esc(q)}"` : 'No projects yet — create one in Project Info.'}</div>`;
+    container.innerHTML = `<div class="home-empty">${q ? `No projects match "${esc(q)}"` : 'No projects yet — create one in Project Dashboard.'}</div>`;
     return;
   }
 
@@ -1504,7 +1496,7 @@ function renderProjectDashboard() {
 
     <p class="home-section-title">Breakdown by Cost Code / Sub Code</p>
     ${keys.length === 0
-      ? `<div class="home-empty">No daily tracking data yet. Open a project in Project Info to add daily entries.</div>`
+      ? `<div class="home-empty">No daily tracking data yet. Open a project in Project Dashboard to add daily entries.</div>`
       : `<div style="overflow-x:auto">
           <table class="project-table">
             <thead>
@@ -3111,7 +3103,7 @@ function renderCostTable() {
   }
 
   if (allKeys.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="18">No bid items found. Add bid items in Project Info to populate this view.</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="18">No bid items found. Add bid items in Project Dashboard to populate this view.</td></tr>';
     return;
   }
 
