@@ -211,6 +211,8 @@
     .daily-inner-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
     .daily-inner-table td.del-cell { width: 26px; text-align: center; padding: 0 0.2rem; }
     .daily-inner-table td.del-cell .del-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
+    .daily-inner-table td.del-cell .copy-row-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--accent); cursor: pointer; margin-top: 2px; }
+    .daily-inner-table td.del-cell .copy-row-btn:hover { color: #fff; background: var(--accent); }
     .daily-inner-table td input,
     .daily-inner-table td select {
       width: 100%; background: transparent; border: none; outline: none;
@@ -3665,7 +3667,10 @@ function renderDailyTable(projId) {
     const c  = calcDaily(row);
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td class="del-cell"><button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${i}">&#10005;</button></td>
+      <td class="del-cell">
+        <button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${i}">&#10005;</button>
+        <button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${i})">&#10697;</button>
+      </td>
       <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="date"           value="${esc(row.date)}"></td>
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', i, 'field_type',      projId)}</td>
       <td>${makeSelect(employeeOpts,  row.employee,         'daily', i, 'employee',         projId)}</td>
@@ -3704,6 +3709,15 @@ function renderDailyCalcCells(projId, i) {
   calcs[2].textContent = '$' + fmt(parseFloat(row?.material_cost) || 0);
   calcs[3].textContent = '$' + fmt(c.total_cost);
   renderDailyTotals(projId);
+}
+
+function copyDailyRow(projId, i) {
+  const p = getProj(projId); if (!p) return;
+  const src = (p.dailyRows || [])[i]; if (!src) return;
+  const copy = Object.assign({}, src, { id: Date.now() + Math.random(), material_cost: '' });
+  p.dailyRows.splice(i + 1, 0, copy);
+  saveProjects();
+  renderDailyTable(projId);
 }
 
 function addDailyRow(projId) {
