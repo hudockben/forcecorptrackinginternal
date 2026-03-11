@@ -2378,8 +2378,10 @@ function _subCodeOpts(po) {
 
 /* ── PO filter state ── */
 let poFilters = { po_number:'', project_id:'', sub_code:'', title:'', supplier:'', employee:'', status:'', date_created:'' };
+let poSearch = '';
 
 function applyPOFilters() {
+  const q = poSearch.trim().toLowerCase();
   return purchaseOrders.filter(po => {
     if (poFilters.po_number   && !po.po_number.toLowerCase().includes(poFilters.po_number.toLowerCase()))   return false;
     if (poFilters.project_id  && po.project_id !== poFilters.project_id)                                    return false;
@@ -2389,6 +2391,12 @@ function applyPOFilters() {
     if (poFilters.employee    && po.employee !== poFilters.employee)                                         return false;
     if (poFilters.status      && po.status !== poFilters.status)                                             return false;
     if (poFilters.date_created && !(po.date_created || '').includes(poFilters.date_created))                return false;
+    if (q) {
+      const proj = projectsList.find(p => p.id === po.project_id);
+      const projName = proj ? (proj['project-name'] || '') : '';
+      const hay = [po.po_number, projName, po.sub_code, po.title, po.supplier, po.employee, po.status, po.date_created].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 }
@@ -2420,6 +2428,16 @@ function renderPOTab() {
   const root = document.getElementById('po-root');
   if (!root) return;
 
+  // Track whether the search bar has focus so we can restore it after rebuild
+  const searchWasFocused = document.activeElement?.classList?.contains('po-global-search');
+
+  const thf = (label, key, right) => {
+    const active = poFilters[key] ? ' active' : '';
+    const align = right ? ';text-align:right' : '';
+    return `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${align}">
+      ${label} <button class="cfb pofb${active}" data-pof="${key}" title="Filter ${label}">▼</button>
+    </th>`;
+  };
   const th = (label, right) =>
     `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
 
@@ -2504,25 +2522,28 @@ function renderPOTab() {
         </tr>`;
       }).join('');
 
-  const hasFilters = Object.values(poFilters).some(v => v !== '');
+  const hasFilters = Object.values(poFilters).some(v => v !== '') || poSearch;
 
   root.innerHTML = `
     <div style="padding:1.5rem">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem">
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Purchase Orders</span>
         <div style="display:flex;gap:0.5rem;align-items:center">
-          ${hasFilters ? `<button class="btn" onclick="poFilters={po_number:'',project_id:'',sub_code:'',title:'',supplier:'',employee:'',status:'',date_created:''};renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
+          ${hasFilters ? `<button class="btn" onclick="poFilters={po_number:'',project_id:'',sub_code:'',title:'',supplier:'',employee:'',status:'',date_created:''};poSearch='';renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
           <button class="btn" onclick="exportPOCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#1d4ed8;color:#fff">&#8595; Export CSV</button>
           <button class="btn btn-green" onclick="addPO()">+ New PO</button>
         </div>
       </div>
+      <input class="po-global-search" type="text" value="${esc(poSearch)}" placeholder="&#128269; Search purchase orders…"
+        oninput="poSearch=this.value;renderPOTab()"
+        style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.82rem;padding:0.45rem 0.75rem;outline:none;box-sizing:border-box;margin-bottom:0.85rem">
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1400px">
           <thead>
             <tr>
-              ${th('PO #')} ${th('Project')} ${th('Sub Code')} ${th('Title')} ${th('Supplier')}
+              ${thf('PO #','po_number')} ${thf('Project','project_id')} ${thf('Sub Code','sub_code')} ${thf('Title','title')} ${thf('Supplier','supplier')}
               ${th('Qty',1)} ${th('Unit Cost',1)} ${th('Amount',1)} ${th('Tax',1)} ${th('Total',1)}
-              ${th('Employee')} ${th('Date Created')} ${th('Status')}
+              ${thf('Employee','employee')} ${thf('Date Created','date_created')} ${thf('Status','status')}
               <th style="width:36px;border-bottom:1px solid var(--border)"></th>
             </tr>
             <tr>
@@ -2542,6 +2563,22 @@ function renderPOTab() {
         </table>
       </div>
     </div>`;
+
+  // Restore search bar focus after rebuild
+  if (searchWasFocused) {
+    const si = root.querySelector('.po-global-search');
+    if (si) { si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
+  }
+
+  // Wire ▼ header buttons to focus the corresponding column filter input
+  root.querySelectorAll('.pofb').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const key = btn.dataset.pof;
+      const filterInput = root.querySelector(`[onchange*="poFilters['${key}']"]`);
+      if (filterInput) { filterInput.focus(); filterInput.select && filterInput.select(); }
+    });
+  });
 }
 
 function renderProjectPOs(projId, bodyIdOverride) {
