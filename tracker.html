@@ -250,6 +250,17 @@
     .bid-table td.bid-under  { background: #0d1f0d; color: var(--green); text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-over   { background: #1f0d0d; color: var(--red);   text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-del    { width: 32px; text-align: center; padding: 0 0.3rem; }
+    .bid-group-hdr td { background: #111c11; color: var(--green); font-weight: 600; font-size: 0.78rem; padding: 0.3rem 0.6rem !important; border-top: 2px solid #1e3a1e; cursor: pointer; }
+    .bid-group-hdr td:hover { background: #162216; }
+    .bid-group-hdr input.bid-grp-input { background: transparent; border: none; outline: none; color: var(--green); font-weight: 600; font-size: 0.78rem; width: 180px; cursor: text; }
+    .bid-group-hdr input.bid-grp-input:focus { background: #1a2a1a; border-radius: 3px; padding: 0 4px; }
+    .bid-group-toggle { margin-right: 0.4rem; font-size: 0.65rem; display: inline-block; transition: transform 0.15s; }
+    .bid-group-child td:first-child { padding-left: 1.6rem !important; }
+    .bid-group-child.bg-hidden { display: none; }
+    .bid-group-total td { background: #1a1800 !important; color: #d4b84a; font-weight: 600; font-size: 0.76rem; border-top: 1px solid #3a350f; }
+    .bid-group-total.bg-hidden { display: none; }
+    .bid-add-sub { background: none; border: 1px solid #2a4a2a; color: #5a9a5a; font-size: 0.68rem; padding: 0.1rem 0.4rem; border-radius: 3px; cursor: pointer; margin-left: 0.8rem; }
+    .bid-add-sub:hover { background: #1e3a1e; color: var(--green); }
     .bid-table tfoot tr td {
       background: var(--surface2); font-weight: 700; padding: 0.45rem 0.6rem;
       border: 1px solid var(--border); font-variant-numeric: tabular-nums;
@@ -1607,7 +1618,7 @@ function statusBadgeClass(s) {
 // ── Bid Items ──
 function addBidItem(projId) {
   const p = getProj(projId); if (!p) return;
-  p.bidItems.push({ id: uid(), cost_code:'', sub_code:'', description:'', quantity:'', unit_cost:'' });
+  p.bidItems.push({ id: uid(), cost_code:'New Cost Code', sub_code:'', quantity:'', unit_cost:'' });
   saveProjects();
   renderBidTable(projId);
 }
@@ -1712,7 +1723,7 @@ function renderBidFooter(projId) {
     return names.size;
   })();
   footEl.innerHTML = `
-    <td class="foot-label" colspan="2">Totals</td>
+    <td class="foot-label" colspan="1">Totals</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
@@ -1727,47 +1738,143 @@ function renderBidFooter(projId) {
     <td></td>`;
 }
 
+function updateBidGroupCode(projId, oldCode, newCode) {
+  const p = getProj(projId); if (!p) return;
+  (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) b.cost_code = newCode; });
+  saveProjects();
+  renderBidTable(projId);
+}
+
+function addBidSubCode(projId, costCode) {
+  const p = getProj(projId); if (!p) return;
+  // Insert right after last item with this cost code
+  const lastIdx = [...(p.bidItems||[])].map((b,i)=>b.cost_code===costCode?i:-1).filter(i=>i>=0).pop();
+  const newItem = { id: uid(), cost_code: costCode, sub_code: '', quantity: '', unit_cost: '' };
+  if (lastIdx != null) p.bidItems.splice(lastIdx + 1, 0, newItem);
+  else p.bidItems.push(newItem);
+  saveProjects();
+  renderBidTable(projId);
+}
+
 function renderBidTable(projId) {
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById('btbody-' + projId); if (!tbody) return;
-  tbody.innerHTML = (p.bidItems||[]).map(b => {
-    const bidQty  = parseFloat(b.quantity) || 0;
-    const bidTot  = bidQty * (parseFloat(b.unit_cost)||0);
-    const actual  = actualForBidItem(b, projId);
-    const rqty    = runningQtyForBidItem(b, projId);
-    const cumHrs  = cumulativeHoursForBidItem(b, projId);
-    const numLab  = laborerCountForBidItem(b, projId);
-    const diff    = bidTot - actual;
-    const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
-    const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
-    const pct     = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : '—';
-    // Projected cost = (actual ÷ running qty) × bid qty  (actual cost-per-unit × full bid qty)
-    // Falls back to bid total when no running qty yet
-    const proj    = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
-    const projDiff = proj - bidTot;
-    const projCls  = projDiff <= 0 ? 'bid-under' : 'bid-over';
-    const projTxt  = bidTot ? '$' + fmt(proj) : '—';
-    return `<tr>
-      <td><input type="text" class="num" value="${esc(b.cost_code)}" placeholder="Code"
-        oninput="updateBidItem('${projId}','${b.id}','cost_code',this.value)"></td>
-      <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub"
-        oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
-      <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
-        oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
-      <td class="bid-calc">${rqty || '—'}</td>
-      <td class="bid-calc">${pct}</td>
-      <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
-        oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
-      <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual / rqty) : '—'}</td>
-      <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
-      <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
-      <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
-      <td class="bid-calc">${numLab || '—'}</td>
-      <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
-      <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>
-      <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
+  tbody.innerHTML = '';
+
+  const items = p.bidItems || [];
+  if (items.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
+    renderBidFooter(projId);
+    return;
+  }
+
+  // Preserve insertion order of cost codes
+  const groupOrder = [];
+  const groups = {};
+  items.forEach(b => {
+    const cc = b.cost_code || '';
+    if (!groups[cc]) { groups[cc] = []; groupOrder.push(cc); }
+    groups[cc].push(b);
+  });
+
+  const COLS = 13;
+
+  groupOrder.forEach(costCode => {
+    const groupItems = groups[costCode];
+    const groupId = 'bg-' + projId + '-' + costCode.replace(/\W/g, '_') + '_' + groupItems[0].id.slice(0,4);
+
+    // ── Group header ──
+    const hdrTr = document.createElement('tr');
+    hdrTr.className = 'bid-group-hdr';
+    hdrTr.dataset.group = groupId;
+    hdrTr.dataset.collapsed = '0';
+    hdrTr.innerHTML = `<td colspan="${COLS}">
+      <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
+      <input class="bid-grp-input" value="${esc(costCode)}" placeholder="Cost Code"
+        onclick="event.stopPropagation()"
+        onchange="updateBidGroupCode('${projId}','${esc(costCode)}',this.value)">
+      <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${esc(costCode)}')">+ Sub Code</button>
+    </td>`;
+    hdrTr.addEventListener('click', () => {
+      const collapsed = hdrTr.dataset.collapsed === '1';
+      hdrTr.dataset.collapsed = collapsed ? '0' : '1';
+      const tog = document.getElementById('btog-' + groupId);
+      if (tog) tog.style.transform = collapsed ? '' : 'rotate(-90deg)';
+      tbody.querySelectorAll(`tr[data-group="${groupId}"]`).forEach(r => {
+        if (r === hdrTr) return;
+        r.classList.toggle('bg-hidden', !collapsed);
+      });
+    });
+    tbody.appendChild(hdrTr);
+
+    // ── Child rows ──
+    let gBidTotal = 0, gActual = 0, gCumHrs = 0, gProj = 0;
+    groupItems.forEach(b => {
+      const bidQty  = parseFloat(b.quantity)  || 0;
+      const bidTot  = bidQty * (parseFloat(b.unit_cost) || 0);
+      const actual  = actualForBidItem(b, projId);
+      const rqty    = runningQtyForBidItem(b, projId);
+      const cumHrs  = cumulativeHoursForBidItem(b, projId);
+      const numLab  = laborerCountForBidItem(b, projId);
+      const proj    = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+      const diff    = bidTot - actual;
+      const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
+      const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
+      const pct     = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : '—';
+      const projCls = (proj - bidTot) <= 0 ? 'bid-under' : 'bid-over';
+      const projTxt = bidTot ? '$' + fmt(proj) : '—';
+
+      gBidTotal += bidTot;
+      gActual   += actual;
+      gCumHrs   += cumHrs;
+      gProj     += proj;
+
+      const childTr = document.createElement('tr');
+      childTr.className = 'bid-group-child';
+      childTr.dataset.group = groupId;
+      childTr.innerHTML = `
+        <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
+          oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
+        <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
+          oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
+        <td class="bid-calc">${rqty || '—'}</td>
+        <td class="bid-calc">${pct}</td>
+        <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
+          oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
+        <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual / rqty) : '—'}</td>
+        <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
+        <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
+        <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
+        <td class="bid-calc">${numLab || '—'}</td>
+        <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
+        <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>
+        <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>`;
+      tbody.appendChild(childTr);
+    });
+
+    // ── Group subtotal row ──
+    const gDiff    = gBidTotal - gActual;
+    const gDiffCls = gDiff >= 0 ? 'bid-under' : 'bid-over';
+    const gDiffTxt = gBidTotal ? (gDiff >= 0 ? `$${fmt(gDiff)} under` : `$${fmt(Math.abs(gDiff))} over`) : '—';
+    const gProjCls = (gProj - gBidTotal) <= 0 ? 'bid-under' : 'bid-over';
+
+    const totalTr = document.createElement('tr');
+    totalTr.className = 'bid-group-total bid-group-child';
+    totalTr.dataset.group = groupId;
+    totalTr.innerHTML = `
+      <td style="padding-left:1.6rem">${esc(costCode) || '(No Code)'} — Total</td>
+      <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
+      <td class="bid-calc">—</td><td class="bid-calc">—</td>
+      <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
+      <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
+      <td class="bid-calc">${gCumHrs ? fmt(gCumHrs) : '—'}</td>
+      <td class="bid-calc">—</td>
+      <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
+      <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>
+      <td></td>`;
+    tbody.appendChild(totalTr);
+  });
+
   renderBidFooter(projId);
 }
 
@@ -1935,7 +2042,7 @@ function projectCardHTML(p) {
       </div>
       <table class="bid-table">
         <thead><tr>
-          <th>Cost Code</th><th>Sub Code</th>
+          <th>Sub Code</th>
           <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
           <th class="num">Bid Total</th><th class="num">Actual Cost</th>
           <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
