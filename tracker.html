@@ -981,6 +981,18 @@
 </div>
 
 
+<!-- Purchase Orders column filter dropdown -->
+<div id="po-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;flex-direction:column;">
+  <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+    <input id="pff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+  </div>
+  <div id="pff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+  <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+    <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearPOFilter()">Clear</button>
+    <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyPOFilter()">Apply</button>
+  </div>
+</div>
+
 <!-- ══════════════ MANAGE LISTS MODAL ══════════════ -->
 <div class="modal-overlay" id="modal-overlay">
   <div class="modal">
@@ -2399,20 +2411,26 @@ function _subCodeOpts(po) {
 }
 
 /* ── PO filter state ── */
-let poFilters = { po_number:'', project_id:'', sub_code:'', title:'', supplier:'', employee:'', status:'', date_created:'' };
+let poFilters = {};   // { field: Set<string> } — absent key = no filter
 let poSearch = '';
+let _pffField = null;
+let _pffPending = null;
+
+function _poFieldVal(po, field) {
+  if (field === 'project_id') {
+    const proj = projectsList.find(p => p.id === po.project_id);
+    return proj ? (proj['project-name'] || 'Untitled') : '';
+  }
+  return String(po[field] ?? '');
+}
 
 function applyPOFilters() {
   const q = poSearch.trim().toLowerCase();
   return purchaseOrders.filter(po => {
-    if (poFilters.po_number   && !po.po_number.toLowerCase().includes(poFilters.po_number.toLowerCase()))   return false;
-    if (poFilters.project_id  && po.project_id !== poFilters.project_id)                                    return false;
-    if (poFilters.sub_code    && !(po.sub_code || '').toLowerCase().includes(poFilters.sub_code.toLowerCase())) return false;
-    if (poFilters.title       && !(po.title || '').toLowerCase().includes(poFilters.title.toLowerCase()))   return false;
-    if (poFilters.supplier    && po.supplier !== poFilters.supplier)                                         return false;
-    if (poFilters.employee    && po.employee !== poFilters.employee)                                         return false;
-    if (poFilters.status      && po.status !== poFilters.status)                                             return false;
-    if (poFilters.date_created && !(po.date_created || '').includes(poFilters.date_created))                return false;
+    for (const [field, valueSet] of Object.entries(poFilters)) {
+      if (!valueSet || valueSet.size === 0) continue;
+      if (!valueSet.has(_poFieldVal(po, field))) return false;
+    }
     if (q) {
       const proj = projectsList.find(p => p.id === po.project_id);
       const projName = proj ? (proj['project-name'] || '') : '';
@@ -2446,13 +2464,67 @@ function exportPOCSV() {
   URL.revokeObjectURL(a.href);
 }
 
+function openPOFilter(field, btn) {
+  _pffField = field;
+  const unique = [...new Set(purchaseOrders.map(po => _poFieldVal(po, field)))].sort();
+  const active = poFilters[field] || null;
+  _pffPending = active ? new Set(active) : null;
+
+  const list = document.getElementById('pff-list');
+  const allChecked = !_pffPending;
+  list.innerHTML = `<label class="dff-item" id="pff-all-label">
+    <input type="checkbox" id="pff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="pff-val-cb" value="${esc(v)}" ${(!_pffPending || _pffPending.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  document.getElementById('pff-all').addEventListener('change', e => {
+    document.querySelectorAll('.pff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.pff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.pff-val-cb')].every(c => c.checked);
+    document.getElementById('pff-all').checked = all;
+  }));
+
+  document.getElementById('pff-search').value = '';
+  document.getElementById('pff-search').oninput = e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#pff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  const dd = document.getElementById('po-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyPOFilter() {
+  const cbs = [...document.querySelectorAll('.pff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allChecked = document.getElementById('pff-all')?.checked;
+  if (allChecked || checked.length === cbs.length) {
+    delete poFilters[_pffField];
+  } else {
+    poFilters[_pffField] = new Set(checked);
+  }
+  document.getElementById('po-filter-dd').style.display = 'none';
+  renderPOTab();
+}
+
+function clearPOFilter() {
+  delete poFilters[_pffField];
+  document.getElementById('po-filter-dd').style.display = 'none';
+  renderPOTab();
+}
+
 function renderPOTab() {
   const root = document.getElementById('po-root');
   if (!root) return;
 
-  // Track which input/select has focus so we can restore it after rebuild
   const searchWasFocused = document.activeElement?.classList?.contains('po-global-search');
-  const focusedFilterKey = document.activeElement?.dataset?.poFilterKey || null;
 
   const thf = (label, key, right) => {
     const active = poFilters[key] ? ' active' : '';
@@ -2463,31 +2535,6 @@ function renderPOTab() {
   };
   const th = (label, right) =>
     `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
-
-  const fInput = (key, placeholder) =>
-    `<input type="text" value="${esc(poFilters[key])}" placeholder="${placeholder}"
-      data-po-filter-key="${key}"
-      oninput="poFilters['${key}']=this.value;renderPOTab()"
-      style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.72rem;padding:0.2rem 0.3rem;outline:none;box-sizing:border-box">`;
-
-  const fSelect = (key, opts) =>
-    `<select onchange="poFilters['${key}']=this.value;renderPOTab()"
-      style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.72rem;padding:0.2rem 0.3rem;outline:none">${opts}</select>`;
-
-  const projFilterOpts = `<option value="">All</option>` + projectsList.map(p =>
-    `<option value="${esc(p.id)}" ${p.id === poFilters.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
-
-  const supFilterOpts = `<option value="">All</option>` + lists.suppliers.map(s => s.name || '').filter(Boolean)
-    .map(n => `<option value="${esc(n)}" ${n === poFilters.supplier ? 'selected' : ''}>${esc(n)}</option>`).join('');
-
-  const empFilterOpts = `<option value="">All</option>` + lists.employees
-    .map(e => `<option value="${esc(e.name)}" ${e.name === poFilters.employee ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
-
-  const statusFilterOpts = `<option value="">All</option>` + ['pending','approved','closed']
-    .map(s => `<option value="${s}" ${s === poFilters.status ? 'selected' : ''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('');
-
-  const tdF = (content, right) =>
-    `<td style="padding:0.25rem 0.4rem;background:rgba(0,0,0,0.15)${right?';text-align:right':''}">${content}</td>`;
 
   const filteredPOs = applyPOFilters();
 
@@ -2546,14 +2593,14 @@ function renderPOTab() {
         </tr>`;
       }).join('');
 
-  const hasFilters = Object.values(poFilters).some(v => v !== '') || poSearch;
+  const hasFilters = Object.keys(poFilters).length > 0 || poSearch;
 
   root.innerHTML = `
     <div style="padding:1.5rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem">
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Purchase Orders</span>
         <div style="display:flex;gap:0.5rem;align-items:center">
-          ${hasFilters ? `<button class="btn" onclick="poFilters={po_number:'',project_id:'',sub_code:'',title:'',supplier:'',employee:'',status:'',date_created:''};poSearch='';renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
+          ${hasFilters ? `<button class="btn" onclick="poFilters={};poSearch='';renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
           <button class="btn" onclick="exportPOCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#1d4ed8;color:#fff">&#8595; Export CSV</button>
           <button class="btn btn-green" onclick="addPO()">+ New PO</button>
         </div>
@@ -2570,42 +2617,16 @@ function renderPOTab() {
               ${thf('Employee','employee')} ${thf('Date Created','date_created')} ${thf('Status','status')}
               <th style="width:36px;border-bottom:1px solid var(--border)"></th>
             </tr>
-            <tr>
-              ${tdF(fInput('po_number','Filter...'))}
-              ${tdF(fSelect('project_id', projFilterOpts))}
-              ${tdF(fInput('sub_code','Filter...'))}
-              ${tdF(fInput('title','Filter...'))}
-              ${tdF(fSelect('supplier', supFilterOpts))}
-              ${tdF('','right')} ${tdF('','right')} ${tdF('','right')} ${tdF('','right')} ${tdF('','right')}
-              ${tdF(fSelect('employee', empFilterOpts))}
-              ${tdF(fInput('date_created','YYYY-MM-DD'))}
-              ${tdF(fSelect('status', statusFilterOpts))}
-              <td style="background:rgba(0,0,0,0.15)"></td>
-            </tr>
           </thead>
           <tbody>${bodyHTML}</tbody>
         </table>
       </div>
     </div>`;
 
-  // Restore focus after rebuild
   if (searchWasFocused) {
     const si = root.querySelector('.po-global-search');
     if (si) { si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
-  } else if (focusedFilterKey) {
-    const fi = root.querySelector(`[data-po-filter-key="${focusedFilterKey}"]`);
-    if (fi) { fi.focus(); fi.setSelectionRange && fi.setSelectionRange(fi.value.length, fi.value.length); }
   }
-
-  // Wire ▼ header buttons to focus the corresponding column filter input
-  root.querySelectorAll('.pofb').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const key = btn.dataset.pof;
-      const filterInput = root.querySelector(`[data-po-filter-key="${key}"]`) || root.querySelector(`[onchange*="poFilters['${key}']"]`);
-      if (filterInput) { filterInput.focus(); filterInput.select && filterInput.select(); }
-    });
-  });
 }
 
 function renderProjectPOs(projId, bodyIdOverride) {
@@ -3780,6 +3801,22 @@ document.addEventListener('click', e => {
   if (!btn) return;
   e.stopPropagation();
   openCostFilter(btn.dataset.f, btn);
+});
+
+// Purchase Orders column filter handlers
+document.addEventListener('click', e => {
+  const dd = document.getElementById('po-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('pofb')) {
+    dd.style.display = 'none';
+  }
+});
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.pofb');
+  if (!btn) return;
+  e.stopPropagation();
+  openPOFilter(btn.dataset.pof, btn);
 });
 
 let dailyFilters = {};      // { field: Set<string> }  — absent key = no filter
