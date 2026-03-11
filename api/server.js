@@ -1,5 +1,5 @@
 /**
- * ForceCorpTracking API Server
+ * DataWatch API Server
  * Connects to Neon (PostgreSQL) and exposes a simple key-value API
  * that the tracker.html frontend uses in place of localStorage.
  *
@@ -96,7 +96,7 @@ app.put('/api/data/:key', async (req, res) => {
 
 // ── Start ──────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`ForceCorpTracking running at http://localhost:${PORT}`);
+  console.log(`DataWatch running at http://localhost:${PORT}`);
   console.log(`  App:    http://localhost:${PORT}/tracker.html`);
   console.log(`  Health: http://localhost:${PORT}/api/health`);
 });
