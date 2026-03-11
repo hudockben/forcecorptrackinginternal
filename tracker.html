@@ -827,7 +827,7 @@
           <th>PO # <button class="cfb" data-f="po_num">▼</button></th>
           <th>Units Purchased <button class="cfb" data-f="units_purchased">▼</button></th>
           <th>Unit Cost <button class="cfb" data-f="unit_cost">▼</button></th>
-          <th>Material Cost <button class="cfb" data-f="material_cost">▼</button></th>
+          <th class="calc-hdr">Material Cost</th>
           <th class="calc-hdr">Total Cost</th>
           <th>Quantity <button class="cfb" data-f="quantity">▼</button></th>
         </tr>
@@ -3355,7 +3355,7 @@ function renderDailyTable(projId) {
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="po_num"          value="${row.po_num}"          placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="units_purchased" value="${row.units_purchased}" step="any" placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="material_cost"   value="${row.material_cost}"   step="any" placeholder="0.00"></td>
+      <td class="calc" id="daily-mat-${projId}-${i}">$${fmt(parseFloat(row.material_cost)||0)}</td>
       <td class="calc">$${fmt(c.total_cost)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
     `;
@@ -3368,10 +3368,12 @@ function renderDailyCalcCells(projId, i) {
   const c  = calcDaily((p.dailyRows || [])[i]);
   const tr = document.getElementById('daily-tbody-' + projId)?.children[i];
   if (!tr) return;
+  const row = (p.dailyRows || [])[i];
   const calcs = tr.querySelectorAll('td.calc');
   calcs[0].textContent = '$' + fmt(c.labor_cost);
   calcs[1].textContent = '$' + fmt(c.equip_total);
-  calcs[2].textContent = '$' + fmt(c.total_cost);
+  calcs[2].textContent = '$' + fmt(parseFloat(row?.material_cost) || 0);
+  calcs[3].textContent = '$' + fmt(c.total_cost);
   renderDailyTotals(projId);
 }
 
@@ -3738,8 +3740,8 @@ document.addEventListener('input', e => {
       const uc = parseFloat(row.unit_cost) || 0;
       const matCost = String(up * uc);
       row.material_cost = matCost;
-      const rowEl = document.getElementById('daily-tbody-' + projId)?.children[i];
-      if (rowEl) { const mc = rowEl.querySelector('[data-f="material_cost"]'); if (mc) mc.value = up * uc || ''; }
+      const matCell = document.getElementById('daily-mat-' + projId + '-' + i);
+      if (matCell) matCell.textContent = '$' + fmt(up * uc);
     }
     // Auto-fill equip unit cost when equipment is selected
     if (f === 'equipment') {
