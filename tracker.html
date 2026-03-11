@@ -718,16 +718,6 @@
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        onclick="openModal()">&#9881; Manage Lists</button>
 </nav>
-<script>
-if (fctUser && fctUser.role === 'admin') {
-  const adminBtn = document.createElement('button');
-  adminBtn.className = 'tab-btn';
-  adminBtn.textContent = '⚙ Admin';
-  adminBtn.style.marginLeft = 'auto';
-  adminBtn.addEventListener('click', () => window.location.href = 'admin.html');
-  document.querySelector('.tab-bar').appendChild(adminBtn);
-}
-</script>
 
 <!-- ══════════════ HOME TAB ══════════════ -->
 <div class="tab-panel active" id="tab-home">
@@ -967,11 +957,19 @@ function logout() {
   window.location.replace('index.html');
 }
 
-// Show user + company in header badge
+// Show user + company in header badge; inject Admin tab for admins
 (function () {
   const badge = document.getElementById('user-badge');
   if (badge && fctUser) {
     badge.textContent = `${fctUser.companyName || fctUser.companyCode} · ${fctUser.username}`;
+  }
+  if (fctUser && fctUser.role === 'admin') {
+    const adminBtn = document.createElement('button');
+    adminBtn.className = 'tab-btn';
+    adminBtn.textContent = '⚙ Admin';
+    adminBtn.style.marginLeft = 'auto';
+    adminBtn.addEventListener('click', () => window.location.href = 'admin.html');
+    document.querySelector('.tab-bar').appendChild(adminBtn);
   }
 })();
 
