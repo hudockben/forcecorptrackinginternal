@@ -227,7 +227,13 @@
       font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
       text-transform: uppercase; color: var(--blue); margin-bottom: 0.75rem;
       display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer; user-select: none;
     }
+    .bid-section-title:hover { color: #7dd3fc; }
+    .bid-section-caret { font-size: 0.65rem; margin-right: 0.5rem; display: inline-block; transition: transform 0.15s; }
+    .bid-section-body { overflow: hidden; }
+    .bid-section-body.bs-collapsed { display: none; }
+    .bid-table-wrap { overflow-x: auto; }
     .bid-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 0.6rem; }
     .bid-table th {
       background: var(--surface2); color: #888; font-size: 0.63rem; font-weight: 700;
@@ -1586,6 +1592,13 @@ function toggleCard(id) {
   if (card) card.classList.toggle('expanded');
 }
 
+function toggleBidSection(titleEl) {
+  const body   = titleEl.nextElementSibling;
+  const caret  = titleEl.querySelector('.bid-section-caret');
+  const collapsed = body.classList.toggle('bs-collapsed');
+  if (caret) caret.style.transform = collapsed ? 'rotate(-90deg)' : '';
+}
+
 function updateProjectField(id, field, value) {
   const p = getProj(id); if (!p) return;
   p[field] = value;
@@ -2043,38 +2056,46 @@ function projectCardHTML(p) {
     </div>
 
     <div class="bid-section">
-      <div class="bid-section-title">
-        <span>Bid Line Items vs Actuals</span>
-        <div style="display:flex;gap:0.5rem">
+      <div class="bid-section-title" onclick="toggleBidSection(this)">
+        <span><span class="bid-section-caret">▼</span>Bid Line Items vs Actuals</span>
+        <div style="display:flex;gap:0.5rem" onclick="event.stopPropagation()">
           <button class="btn btn-ghost" onclick="exportBidPDF('${p.id}')">&#8595; PDF</button>
           <button class="btn btn-blue" onclick="addBidItem('${p.id}')">+ Add Item</button>
         </div>
       </div>
-      <table class="bid-table">
-        <thead><tr>
-          <th style="width:28px"></th>
-          <th>Sub Code</th>
-          <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
-          <th class="num">Bid Total</th><th class="num">Actual Cost</th>
-          <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
-          <th class="num">Variance</th><th class="num">Projected Cost</th>
-        </tr></thead>
-        <tbody id="btbody-${p.id}"></tbody>
-        <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
-      </table>
+      <div class="bid-section-body">
+        <div class="bid-table-wrap">
+          <table class="bid-table">
+            <thead><tr>
+              <th style="width:28px"></th>
+              <th>Sub Code</th>
+              <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+              <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+              <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
+              <th class="num">Variance</th><th class="num">Projected Cost</th>
+            </tr></thead>
+            <tbody id="btbody-${p.id}"></tbody>
+            <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
+          </table>
+        </div>
+      </div>
     </div>
 
     <div class="bid-section">
-      <div class="bid-section-title">
-        <span>Purchase Orders</span>
+      <div class="bid-section-title" onclick="toggleBidSection(this)">
+        <span><span class="bid-section-caret">▼</span>Purchase Orders</span>
       </div>
-      <table class="bid-table">
-        <thead><tr>
-          <th>PO #</th><th>Title</th>
-          <th class="num">Unit Cost</th><th class="num">Total</th><th>Status</th>
-        </tr></thead>
-        <tbody id="po-proj-body-${p.id}"></tbody>
-      </table>
+      <div class="bid-section-body">
+        <div class="bid-table-wrap">
+          <table class="bid-table">
+            <thead><tr>
+              <th>PO #</th><th>Title</th>
+              <th class="num">Unit Cost</th><th class="num">Total</th><th>Status</th>
+            </tr></thead>
+            <tbody id="po-proj-body-${p.id}"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <div class="proj-card-footer">
