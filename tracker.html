@@ -3936,16 +3936,38 @@ function renderProductionRateView(projId) {
     return bidItems.find(b => b.cost_code === cc && b.sub_code === sc) || null;
   }
 
-  // Shared cell style helpers
-  const TH  = 'white-space:nowrap;padding:0.35rem 0.55rem;border:1px solid var(--border);font-size:0.75rem;';
-  const THL = TH + 'text-align:left;';
-  const THR = TH + 'text-align:right;';
-  const TD  = 'white-space:nowrap;padding:0.32rem 0.55rem;border:1px solid var(--border);font-size:0.78rem;';
-  const TDR = TD + 'text-align:right;';
+  // ── Column-group colour palette ────────────────────────────────────────────
+  // Each section (Qty / Unit Cost / Labor / Days / Equip / MU) gets its own
+  // background tint applied uniformly to both header and data cells so it is
+  // immediately obvious which column belongs to which section.
+  const BG = {
+    date: '',
+    qty:  'background:rgba(96,165,250,0.10);',   // blue
+    uc:   'background:rgba(167,139,250,0.10);',   // purple
+    lbr:  'background:rgba(251,146,60,0.10);',    // orange
+    days: 'background:rgba(234,179,8,0.10);',     // yellow
+    eq:   'background:rgba(34,211,238,0.10);',    // cyan
+    mu:   'background:rgba(244,114,182,0.10);',   // pink
+  };
+  // "Past Avg" cells get a darker overlay on top of their group colour
+  const BG_HIST = 'filter:brightness(0.72);';
 
-  // Group header style: light tinted background to separate current vs past columns
-  const GH_CUR  = 'background:rgba(74,222,128,0.08);';   // current project — green tint
-  const GH_HIST = 'background:rgba(148,163,184,0.1);';    // historical — grey tint
+  // Base cell styles (background injected per column group)
+  const TH_BASE  = 'white-space:nowrap;padding:0.38rem 0.6rem;border:1px solid var(--border);font-size:0.75rem;font-weight:600;';
+  const THL_BASE = TH_BASE + 'text-align:left;';
+  const THR_BASE = TH_BASE + 'text-align:right;';
+  const TD_BASE  = 'white-space:nowrap;padding:0.32rem 0.55rem;border:1px solid var(--border);font-size:0.78rem;';
+  const TDR_BASE = TD_BASE  + 'text-align:right;';
+
+  // Helpers that bake the group BG into the style string
+  function TH(g)       { return THR_BASE + BG[g]; }
+  function THL(g)      { return THL_BASE + BG[g]; }
+  function TH_H(g)     { return THR_BASE + BG[g] + BG_HIST; }   // "Past Avg" header
+  function TD(g, xtra) { return TDR_BASE + BG[g] + (xtra||''); }
+  function TD_H(g, xtra){ return TDR_BASE + BG[g] + BG_HIST + (xtra||''); }
+
+  // ── Separator between header-row groups ─────────────────────────────────
+  const SEP = 'border-left:2px solid rgba(255,255,255,0.12);';
 
   let html = '';
   let ccIdx = 0;
@@ -3963,25 +3985,25 @@ function renderProductionRateView(projId) {
       const rawSc      = sc === '(No Sub Code)' ? '' : sc;
       const bidItem    = getBidItem(rawCc, rawSc);
       const bidQty     = bidItem ? (parseFloat(bidItem.quantity)  || 0) : 0;
-      const bidRate    = bidItem ? (parseFloat(bidItem.unit_cost) || 0) : 0;
       const unit       = bidItem ? (bidItem.unit || '') : '';
       const dates      = Object.keys(subGroups[sc]).filter(d => d !== '(No Date)').sort();
 
       // Historical benchmark for this sub code
-      const histKey    = rawCc + '||' + rawSc;
-      const hist       = histAgg[histKey] || null;
-      const histDays   = hist ? hist.dates.size        : 0;
-      const histQty    = hist ? hist.running_qty        : 0;
-      const histCost   = hist ? hist.total_cost         : 0;
-      const histLbr    = hist ? hist.labor_hours        : 0;
-      const histEq     = hist ? hist.equip_hours        : 0;
-      const histUC     = histQty > 0 ? histCost / histQty   : 0;  // past avg unit cost
-      const histLbrPD  = histDays > 0 ? histLbr / histDays  : 0;  // past avg labor hrs/day
-      const histEqPD   = histDays > 0 ? histEq  / histDays  : 0;  // past avg equip hrs/day
-      const histMU     = histEq  > 0 ? histQty  / histEq    : 0;  // past avg MU equip (qty/equip hr)
+      const histKey   = rawCc + '||' + rawSc;
+      const hist      = histAgg[histKey] || null;
+      const histDays  = hist ? hist.dates.size        : 0;
+      const histQty   = hist ? hist.running_qty        : 0;
+      const histCost  = hist ? hist.total_cost         : 0;
+      const histLbr   = hist ? hist.labor_hours        : 0;
+      const histEq    = hist ? hist.equip_hours        : 0;
+      const histUC    = histQty  > 0 ? histCost / histQty  : 0;
+      const histLbrPD = histDays > 0 ? histLbr  / histDays : 0;
+      const histEqPD  = histDays > 0 ? histEq   / histDays : 0;
+      const histMU    = histEq   > 0 ? histQty  / histEq   : 0;
 
-      // Build cumulative state across dates
+      // Cumulative state + previous-day tracking for day-over-day colours
       let cumQty = 0, cumCost = 0, cumLbr = 0, cumEq = 0, cumDays = 0;
+      let prevDailyUC = null, prevRunUC = null, prevRunMU = null;
 
       // Tier 3: detail table rows
       let tableRows = '';
@@ -3993,87 +4015,116 @@ function renderProductionRateView(projId) {
         cumEq   += day.equip_hours;
         cumDays += 1;
 
-        const dailyUC    = day.qty > 0 ? day.total_cost / day.qty : 0;
-        const runUC      = cumQty  > 0 ? cumCost / cumQty         : 0;
-        const pctComp    = bidQty  > 0 ? (cumQty / bidQty) * 100  : null;
+        const dailyUC  = day.qty > 0  ? day.total_cost / day.qty : 0;
+        const runUC    = cumQty  > 0  ? cumCost / cumQty          : 0;
+        const pctComp  = bidQty  > 0  ? (cumQty / bidQty) * 100   : null;
+        const runMU    = cumEq   > 0  ? cumQty  / cumEq           : 0;
 
-        // Projected unit cost: (cost so far + remaining qty * running rate) / bid qty
         let projUC = 0;
         if (bidQty > 0 && cumQty > 0) {
-          const remaining = Math.max(bidQty - cumQty, 0);
-          projUC = (cumCost + remaining * runUC) / bidQty;
+          const rem = Math.max(bidQty - cumQty, 0);
+          projUC = (cumCost + rem * runUC) / bidQty;
         }
 
-        // MU Equip Hr = qty per equip hour (running)
-        const runMU  = cumEq > 0 ? cumQty / cumEq : 0;
+        // ── Colour logic ──────────────────────────────────────────────────
+        // Day-over-day: compare to previous day's running value
+        // vs-history:   compare running value to past avg
+        // Rule: lower cost = green ✓ | lower MU = red ✗  (better pace = green)
+        function clr(val, prev, lowerIsBetter) {
+          if (val === 0 || prev === null || prev === 0) return '';
+          const better = lowerIsBetter ? val < prev : val > prev;
+          return better ? 'color:#4ade80' : 'color:#f87171';
+        }
+        function clrVsHist(val, hist, lowerIsBetter) {
+          if (val === 0 || hist === 0) return '';
+          const better = lowerIsBetter ? val <= hist : val >= hist;
+          return better ? 'color:#4ade80' : 'color:#f87171';
+        }
 
-        // Color helpers: lower cost = green, higher = red; higher qty/MU = green
-        const ucColor    = histUC > 0 && runUC   > 0 ? (runUC   <= histUC  ? 'color:#4ade80' : 'color:#f87171') : '';
-        const projColor  = histUC > 0 && projUC  > 0 ? (projUC  <= histUC  ? 'color:#4ade80' : 'color:#f87171') : '';
-        const muColor    = histMU > 0 && runMU   > 0 ? (runMU   >= histMU  ? 'color:#4ade80' : 'color:#f87171') : '';
-        const pctColor   = pctComp !== null ? (pctComp >= 100 ? 'color:#4ade80' : '') : '';
+        const c_dailyUC = clr(dailyUC, prevDailyUC, true);
+        const c_runUC   = clr(runUC,   prevRunUC,   true);
+        const c_projUC  = clrVsHist(projUC, histUC, true);
+        const c_runMU   = clr(runMU, prevRunMU, false);
+        const c_pct     = pctComp !== null && pctComp >= 100 ? 'color:#4ade80' : '';
+
+        prevDailyUC = dailyUC || prevDailyUC;
+        prevRunUC   = runUC   || prevRunUC;
+        prevRunMU   = runMU   || prevRunMU;
 
         tableRows += `<tr>
-          <td style="${TD}">${esc(d)}</td>
-          <td style="${TDR}">${bidQty > 0 ? fmt(bidQty) : '—'}</td>
-          <td style="${TDR}">${fmt(cumQty)}</td>
-          <td style="${TDR}${pctColor}">${pctComp !== null ? fmt(pctComp,1)+'%' : '—'}</td>
-          <td style="${TDR}">${dailyUC > 0 ? '$'+fmt(dailyUC) : '—'}</td>
-          <td style="${TDR}${ucColor}">${runUC > 0 ? '$'+fmt(runUC) : '—'}</td>
-          <td style="${TDR}${projColor}">${projUC > 0 ? '$'+fmt(projUC) : '—'}</td>
-          <td style="${TDR}color:var(--muted);">${histUC > 0 ? '$'+fmt(histUC) : '—'}</td>
-          <td style="${TDR}">${day.labor_hours > 0 ? fmt(day.labor_hours) : '—'}</td>
-          <td style="${TDR}color:var(--muted);">${histLbrPD > 0 ? fmt(histLbrPD) : '—'}</td>
-          <td style="${TDR}">${cumDays}</td>
-          <td style="${TDR}color:var(--muted);">${histDays > 0 ? histDays : '—'}</td>
-          <td style="${TDR}">${day.equip_hours > 0 ? fmt(day.equip_hours) : '—'}</td>
-          <td style="${TDR}color:var(--muted);">${histEqPD > 0 ? fmt(histEqPD) : '—'}</td>
-          <td style="${TDR}${muColor}">${runMU > 0 ? fmt(runMU) : '—'}</td>
-          <td style="${TDR}color:var(--muted);">${histMU > 0 ? fmt(histMU) : '—'}</td>
+          <td style="${TD_BASE}${BG.date}">${esc(d)}</td>
+          <td style="${TD('qty')}">${bidQty > 0 ? fmt(bidQty) : '—'}</td>
+          <td style="${TD('qty')}">${fmt(cumQty)}</td>
+          <td style="${TD('qty')}${c_pct}">${pctComp !== null ? fmt(pctComp,1)+'%' : '—'}</td>
+          <td style="${TD('uc')}${SEP}${c_dailyUC}">${dailyUC > 0 ? '$'+fmt(dailyUC) : '—'}</td>
+          <td style="${TD('uc')}${c_runUC}">${runUC > 0 ? '$'+fmt(runUC) : '—'}</td>
+          <td style="${TD('uc')}${c_projUC}">${projUC > 0 ? '$'+fmt(projUC) : '—'}</td>
+          <td style="${TD_H('uc')}color:var(--muted);">${histUC > 0 ? '$'+fmt(histUC) : '—'}</td>
+          <td style="${TD('lbr')}${SEP}">${day.labor_hours > 0 ? fmt(day.labor_hours) : '—'}</td>
+          <td style="${TD_H('lbr')}color:var(--muted);">${histLbrPD > 0 ? fmt(histLbrPD) : '—'}</td>
+          <td style="${TD('days')}${SEP}">${cumDays}</td>
+          <td style="${TD_H('days')}color:var(--muted);">${histDays > 0 ? histDays : '—'}</td>
+          <td style="${TD('eq')}${SEP}">${day.equip_hours > 0 ? fmt(day.equip_hours) : '—'}</td>
+          <td style="${TD_H('eq')}color:var(--muted);">${histEqPD > 0 ? fmt(histEqPD) : '—'}</td>
+          <td style="${TD('mu')}${SEP}${c_runMU}">${runMU > 0 ? fmt(runMU) : '—'}</td>
+          <td style="${TD_H('mu')}color:var(--muted);">${histMU > 0 ? fmt(histMU) : '—'}</td>
         </tr>`;
       });
 
-      // Column group headers (two-row header: group label + column label)
+      // ── Two-row column group header ──────────────────────────────────────
       const colGroupHdr = `
-        <tr style="background:var(--surface);">
-          <th style="${THL}" rowspan="2">Date</th>
-          <th style="${THR}${GH_CUR}" colspan="3">Quantity${unit ? ' ('+esc(unit)+')' : ''}</th>
-          <th style="${THR}${GH_CUR}" colspan="4">Unit Cost</th>
-          <th style="${THR}${GH_CUR}" colspan="2">Labor Hrs</th>
-          <th style="${THR}${GH_CUR}" colspan="2">Days</th>
-          <th style="${THR}${GH_CUR}" colspan="2">Equip Hrs</th>
-          <th style="${THR}${GH_CUR}" colspan="2">MU Equip (qty/hr)</th>
+        <tr>
+          <th style="${THL_BASE}${BG.date}" rowspan="2">Date</th>
+          <th style="${THR_BASE}${BG.qty}" colspan="3">Quantity${unit ? ' ('+esc(unit)+')' : ''}</th>
+          <th style="${THR_BASE}${BG.uc}${SEP}" colspan="4">Unit Cost</th>
+          <th style="${THR_BASE}${BG.lbr}${SEP}" colspan="2">Labor Hrs</th>
+          <th style="${THR_BASE}${BG.days}${SEP}" colspan="2">Days</th>
+          <th style="${THR_BASE}${BG.eq}${SEP}" colspan="2">Equip Hrs</th>
+          <th style="${THR_BASE}${BG.mu}${SEP}" colspan="2">MU Equip (qty/hr)</th>
         </tr>
-        <tr style="background:var(--surface);">
-          <th style="${THR}${GH_CUR}">Bid</th>
-          <th style="${THR}${GH_CUR}">Running</th>
-          <th style="${THR}${GH_CUR}">% Complete</th>
-          <th style="${THR}${GH_CUR}">Today</th>
-          <th style="${THR}${GH_CUR}">Running</th>
-          <th style="${THR}${GH_CUR}">Projected</th>
-          <th style="${THR}${GH_HIST}">Past Avg</th>
-          <th style="${THR}${GH_CUR}">Today</th>
-          <th style="${THR}${GH_HIST}">Past Avg/Day</th>
-          <th style="${THR}${GH_CUR}">Worked</th>
-          <th style="${THR}${GH_HIST}">Past Total</th>
-          <th style="${THR}${GH_CUR}">Today</th>
-          <th style="${THR}${GH_HIST}">Past Avg/Day</th>
-          <th style="${THR}${GH_CUR}">Running</th>
-          <th style="${THR}${GH_HIST}">Past Avg</th>
+        <tr>
+          <th style="${TH('qty')}">Bid</th>
+          <th style="${TH('qty')}">Running</th>
+          <th style="${TH('qty')}">% Complete</th>
+          <th style="${TH('uc')}${SEP}">Today</th>
+          <th style="${TH('uc')}">Running</th>
+          <th style="${TH('uc')}">Projected</th>
+          <th style="${TH_H('uc')}">Past Avg</th>
+          <th style="${TH('lbr')}${SEP}">Today</th>
+          <th style="${TH_H('lbr')}">Past Avg/Day</th>
+          <th style="${TH('days')}${SEP}">Worked</th>
+          <th style="${TH_H('days')}">Past Total</th>
+          <th style="${TH('eq')}${SEP}">Today</th>
+          <th style="${TH_H('eq')}">Past Avg/Day</th>
+          <th style="${TH('mu')}${SEP}">Running</th>
+          <th style="${TH_H('mu')}">Past Avg</th>
         </tr>`;
+
+      // Safe string for use inside onclick attribute
+      const safeCc = esc(cc).replace(/'/g,"&#39;");
+      const safeSc = esc(sc).replace(/'/g,"&#39;");
+      const safePn = esc(p['project-name'] || '').replace(/'/g,"&#39;");
 
       subHtml += `
         <div style="margin:0.4rem 0.75rem 0.4rem 1.5rem;border:1px solid var(--border);border-radius:4px;overflow:hidden;">
-          <button onclick="toggleProdGroup('${scId}')"
-            style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:0.5rem 0.85rem;background:var(--bg);border:none;cursor:pointer;text-align:left;gap:1rem;">
-            <span style="font-size:0.82rem;font-weight:600;color:var(--text);">
-              ${esc(sc)}${unit ? `<span style="color:var(--muted);font-weight:400;font-size:0.75rem;margin-left:0.4rem;">(${esc(unit)})</span>` : ''}
-            </span>
-            <span style="display:flex;align-items:center;gap:0.75rem;flex-shrink:0;">
-              <span style="font-size:0.72rem;color:var(--muted);">${dates.length} day${dates.length !== 1 ? 's' : ''}</span>
-              <span id="${scId}-arrow" style="color:var(--muted);font-size:0.75rem;transition:transform 0.2s;">▶</span>
-            </span>
-          </button>
+          <div style="display:flex;align-items:stretch;">
+            <button onclick="toggleProdGroup('${scId}')"
+              style="flex:1;display:flex;align-items:center;justify-content:space-between;padding:0.5rem 0.85rem;background:var(--bg);border:none;border-right:1px solid var(--border);cursor:pointer;text-align:left;gap:1rem;">
+              <span style="font-size:0.82rem;font-weight:600;color:var(--text);">
+                ${esc(sc)}${unit ? `<span style="color:var(--muted);font-weight:400;font-size:0.75rem;margin-left:0.4rem;">(${esc(unit)})</span>` : ''}
+              </span>
+              <span style="display:flex;align-items:center;gap:0.75rem;flex-shrink:0;">
+                <span style="font-size:0.72rem;color:var(--muted);">${dates.length} day${dates.length !== 1 ? 's' : ''}</span>
+                <span id="${scId}-arrow" style="color:var(--muted);font-size:0.75rem;transition:transform 0.2s;">▶</span>
+              </span>
+            </button>
+            <button onclick="exportProdSubCodePDF('${scId}','${safePn}','${safeCc}','${safeSc}')"
+              title="Export to PDF"
+              style="padding:0 0.75rem;background:var(--bg);border:none;cursor:pointer;color:var(--muted);font-size:0.72rem;white-space:nowrap;display:flex;align-items:center;gap:0.3rem;transition:color 0.15s;"
+              onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">
+              &#8659; PDF
+            </button>
+          </div>
           <div id="${scId}" style="display:none;overflow-x:auto;padding:0.5rem 0.75rem 0.75rem;">
             <table style="border-collapse:collapse;font-size:0.78rem;min-width:100%;">
               <thead>${colGroupHdr}</thead>
@@ -4110,6 +4161,95 @@ function toggleProdGroup(id) {
   const open = panel.style.display === 'none';
   panel.style.display = open ? 'block' : 'none';
   if (arrow) arrow.style.transform = open ? 'rotate(90deg)' : '';
+}
+
+function exportProdSubCodePDF(panelId, projName, cc, sc) {
+  // Ensure the panel is open so the table exists in the DOM
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  if (panel.style.display === 'none') {
+    toggleProdGroup(panelId);
+  }
+
+  const tableEl = panel.querySelector('table');
+  if (!tableEl) { alert('No data to export.'); return; }
+
+  // Extract rows cleanly (text + inline colour only — strip dark-theme backgrounds)
+  function extractRows(section) {
+    return [...section.querySelectorAll('tr')].map(tr => {
+      const cells = [...tr.querySelectorAll('th,td')];
+      const isHead = cells.some(c => c.tagName === 'TH');
+      return { isHead, cells: cells.map(c => ({
+        text:    c.textContent.trim(),
+        colspan: c.colSpan > 1  ? c.colSpan  : null,
+        rowspan: c.rowSpan > 1  ? c.rowSpan  : null,
+        right:   c.style.textAlign === 'right' || getComputedStyle(c).textAlign === 'right',
+        color:   c.style.color || '',
+      })) };
+    });
+  }
+
+  const headRows = extractRows(tableEl.tHead);
+  const bodyRows = extractRows(tableEl.tBodies[0]);
+
+  // Map dark-theme colours to print-friendly equivalents
+  function printColor(c) {
+    if (!c) return '';
+    if (c.includes('74,222') || c.includes('4ade80') || c === 'rgb(74, 222, 128)') return '#15803d';
+    if (c.includes('248,113') || c.includes('f87171') || c === 'rgb(248, 113, 113)') return '#dc2626';
+    return '';
+  }
+
+  function renderCell(cell, tag) {
+    const align  = cell.right ? 'right' : 'left';
+    const color  = printColor(cell.color);
+    const cs     = cell.colspan ? ` colspan="${cell.colspan}"` : '';
+    const rs     = cell.rowspan ? ` rowspan="${cell.rowspan}"` : '';
+    const style  = `text-align:${align};${color ? 'color:'+color+';font-weight:700;' : ''}`;
+    return `<${tag}${cs}${rs} style="${style}">${cell.text}</${tag}>`;
+  }
+
+  let tableHtml = '<table><thead>';
+  headRows.forEach(r => {
+    tableHtml += '<tr>' + r.cells.map(c => renderCell(c, 'th')).join('') + '</tr>';
+  });
+  tableHtml += '</thead><tbody>';
+  bodyRows.forEach(r => {
+    tableHtml += '<tr>' + r.cells.map(c => renderCell(c, 'td')).join('') + '</tr>';
+  });
+  tableHtml += '</tbody></table>';
+
+  const dateStr = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html>
+<html><head>
+  <meta charset="UTF-8"/>
+  <title>${projName} — ${cc} / ${sc} Production Report</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 10px; color: #111; background: #fff; padding: 1rem 1.2rem; }
+    h1 { font-size: 14px; margin-bottom: 0.15rem; }
+    h2 { font-size: 11px; color: #444; font-weight: 400; margin-bottom: 0.1rem; }
+    .meta { font-size: 9px; color: #888; margin-bottom: 0.75rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 3px 6px; white-space: nowrap; font-size: 9.5px; }
+    th { background: #f4f4f4; font-weight: 700; }
+    tr:nth-child(even) td { background: #fafafa; }
+    @media print {
+      body { padding: 0; }
+      @page { margin: 1cm; size: landscape; }
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head><body>
+  <h1>${projName}</h1>
+  <h2>${cc} &mdash; ${sc}</h2>
+  <p class="meta">Production Rate Report &nbsp;&bull;&nbsp; Generated ${dateStr}</p>
+  ${tableHtml}
+  <script>window.onload = function(){ window.print(); }<\/script>
+</body></html>`);
+  win.document.close();
 }
 
 let bidFilters = {};
