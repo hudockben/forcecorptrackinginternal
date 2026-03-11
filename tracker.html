@@ -1468,10 +1468,65 @@ function addProject() {
 }
 
 function deleteProject(id) {
-  if (!confirm('Delete this project and all its bid items?')) return;
-  projectsList = projectsList.filter(p => p.id !== id);
-  saveProjects();
-  renderProjectsTab();
+  const p = getProj(id);
+  if (!p) return;
+  const projName = (p['project-name'] || '').trim() || 'Unnamed Project';
+
+  // Build modal
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.style.cssText = 'z-index:9999';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:420px;width:100%">
+      <div class="modal-header" style="background:var(--red)">
+        <h2>DELETE PROJECT</h2>
+        <button class="modal-close" id="dp-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 0.75rem;color:var(--text);font-size:0.85rem;line-height:1.5">
+          This will permanently delete <strong style="color:#fff">${projName}</strong>
+          and all its bid items and daily rows. This action cannot be undone.
+        </p>
+        <p style="margin:0 0 0.4rem;color:#aaa;font-size:0.78rem">
+          To confirm, type <strong style="color:#fff;letter-spacing:0.02em">${projName}</strong> below:
+        </p>
+        <input id="dp-input" type="text" autocomplete="off" spellcheck="false"
+          placeholder="${projName}"
+          style="width:100%;box-sizing:border-box;background:#111;border:1px solid #444;color:#fff;
+                 padding:0.45rem 0.6rem;border-radius:4px;font-size:0.85rem;outline:none"/>
+        <div style="margin-top:1rem;display:flex;justify-content:flex-end;gap:0.5rem">
+          <button id="dp-cancel" class="btn" style="background:#333;color:#ccc;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer">Cancel</button>
+          <button id="dp-confirm" class="btn btn-danger" disabled
+            style="opacity:0.4;transition:opacity 0.15s">Delete Project</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const input   = overlay.querySelector('#dp-input');
+  const confirm = overlay.querySelector('#dp-confirm');
+
+  input.addEventListener('input', () => {
+    const match = input.value === projName;
+    confirm.disabled = !match;
+    confirm.style.opacity = match ? '1' : '0.4';
+  });
+
+  function close() { overlay.remove(); }
+  overlay.querySelector('#dp-close').addEventListener('click', close);
+  overlay.querySelector('#dp-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  confirm.addEventListener('click', () => {
+    if (confirm.disabled) return;
+    close();
+    projectsList = projectsList.filter(pr => pr.id !== id);
+    saveProjects();
+    renderProjectsTab();
+  });
+
+  setTimeout(() => input.focus(), 50);
 }
 
 function toggleCard(id) {
