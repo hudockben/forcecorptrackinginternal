@@ -3925,7 +3925,6 @@ function renderProductionRateView(projId) {
     groups[key].byDate[d].labor_hours += parseFloat(row.labor_hours) || 0;
   });
 
-  // Find matching bid item for unit label
   const bidItems = p.bidItems || [];
   function getBidUnit(cost_code, sub_code) {
     const b = bidItems.find(b => b.cost_code === cost_code && b.sub_code === sub_code);
@@ -3937,42 +3936,28 @@ function renderProductionRateView(projId) {
   }
 
   let html = '';
-  Object.entries(groups).forEach(([key, g]) => {
-    const unit     = getBidUnit(g.cost_code, g.sub_code);
-    const bidRate  = getBidRate(g.cost_code, g.sub_code);
-    const label    = [g.cost_code, g.sub_code].filter(Boolean).join(' / ') || '(No Code)';
-    const dates    = Object.keys(g.byDate).filter(d => d !== '(No Date)').sort();
+  Object.entries(groups).forEach(([key, g], idx) => {
+    const unit    = getBidUnit(g.cost_code, g.sub_code);
+    const bidRate = getBidRate(g.cost_code, g.sub_code);
+    const label   = [g.cost_code, g.sub_code].filter(Boolean).join(' / ') || '(No Code)';
+    const dates   = Object.keys(g.byDate).filter(d => d !== '(No Date)').sort();
+    const safeId  = 'prod-group-' + idx;
 
-    html += `<div style="margin-bottom:2rem;">
-      <div style="font-size:0.9rem;font-weight:700;color:var(--green);margin-bottom:0.6rem;">${esc(label)}${unit ? ' <span style="color:var(--muted);font-weight:400;font-size:0.8rem;">('+esc(unit)+')</span>' : ''}</div>
-      <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
-        <thead>
-          <tr style="background:var(--surface);">
-            <th style="text-align:left;padding:0.4rem 0.6rem;border:1px solid var(--border);">Date</th>
-            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Qty${unit ? ' ('+esc(unit)+')' : ''}</th>
-            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Total Cost</th>
-            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Unit Rate</th>
-            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Labor Hrs</th>
-            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Δ Qty</th>
-            <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Δ Rate</th>
-            ${bidRate ? '<th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">vs Bid Rate</th>' : ''}
-          </tr>
-        </thead>
-        <tbody>`;
-
+    // Build table rows HTML
+    let tableRows = '';
     let prevQty = null, prevRate = null;
     dates.forEach(d => {
-      const day     = g.byDate[d];
-      const rate    = day.qty > 0 ? day.total_cost / day.qty : 0;
-      const dQty    = prevQty  !== null ? day.qty - prevQty   : null;
-      const dRate   = prevRate !== null ? rate - prevRate      : null;
-      const vsBid   = bidRate  ? rate - bidRate                : null;
+      const day   = g.byDate[d];
+      const rate  = day.qty > 0 ? day.total_cost / day.qty : 0;
+      const dQty  = prevQty  !== null ? day.qty - prevQty : null;
+      const dRate = prevRate !== null ? rate - prevRate   : null;
+      const vsBid = bidRate  ? rate - bidRate             : null;
 
       const rateColor = dRate === null ? '' : dRate <= 0 ? 'color:#4ade80' : 'color:#f87171';
       const qtyColor  = dQty  === null ? '' : dQty  >= 0 ? 'color:#4ade80' : 'color:#f87171';
       const bidColor  = vsBid === null ? '' : vsBid <= 0 ? 'color:#4ade80' : 'color:#f87171';
 
-      html += `<tr>
+      tableRows += `<tr>
         <td style="padding:0.35rem 0.6rem;border:1px solid var(--border);">${esc(d)}</td>
         <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">${day.qty > 0 ? fmt(day.qty) : '—'}</td>
         <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">$${fmt(day.total_cost)}</td>
@@ -3987,10 +3972,48 @@ function renderProductionRateView(projId) {
       prevRate = rate;
     });
 
-    html += `</tbody></table></div>`;
+    html += `
+    <div style="margin-bottom:0.5rem;border:1px solid var(--border);border-radius:6px;overflow:hidden;">
+      <button onclick="toggleProdGroup('${safeId}')"
+        style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;background:var(--surface);border:none;cursor:pointer;text-align:left;gap:1rem;">
+        <span style="font-size:0.88rem;font-weight:700;color:var(--green);">
+          ${esc(label)}${unit ? `<span style="color:var(--muted);font-weight:400;font-size:0.78rem;margin-left:0.4rem;">(${esc(unit)})</span>` : ''}
+        </span>
+        <span style="display:flex;align-items:center;gap:1rem;flex-shrink:0;">
+          <span style="font-size:0.75rem;color:var(--muted);">${dates.length} day${dates.length !== 1 ? 's' : ''}</span>
+          <span id="${safeId}-arrow" style="color:var(--muted);font-size:0.8rem;transition:transform 0.2s;">▶</span>
+        </span>
+      </button>
+      <div id="${safeId}" style="display:none;overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+          <thead>
+            <tr style="background:var(--surface);">
+              <th style="text-align:left;padding:0.4rem 0.6rem;border:1px solid var(--border);">Date</th>
+              <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Qty${unit ? ' ('+esc(unit)+')' : ''}</th>
+              <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Total Cost</th>
+              <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Unit Rate</th>
+              <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Labor Hrs</th>
+              <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Δ Qty</th>
+              <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Δ Rate</th>
+              ${bidRate ? '<th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">vs Bid Rate</th>' : ''}
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+    </div>`;
   });
 
   body.innerHTML = html;
+}
+
+function toggleProdGroup(id) {
+  const panel = document.getElementById(id);
+  const arrow = document.getElementById(id + '-arrow');
+  if (!panel) return;
+  const open = panel.style.display === 'none';
+  panel.style.display = open ? 'block' : 'none';
+  if (arrow) arrow.style.transform = open ? 'rotate(90deg)' : '';
 }
 
 let bidFilters = {};
