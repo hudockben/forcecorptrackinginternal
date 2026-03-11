@@ -866,7 +866,6 @@
           <th class="g-base"  colspan="1">Sub Code</th>
           <th class="g-cost"  colspan="3">Bid Plan</th>
           <th class="g-sum"   colspan="4">Company Actuals (from Daily)</th>
-          <th class="g-sum"   colspan="2">Progress</th>
           <th class="g-labor" colspan="4">Labor</th>
           <th class="g-equip" colspan="4">Equipment</th>
         </tr>
@@ -879,8 +878,6 @@
           <th class="calc-hdr">Running Total</th>
           <th class="calc-hdr">Past Avg</th>
           <th class="calc-hdr">Total Cost %</th>
-          <th class="calc-hdr">% Complete</th>
-          <th class="calc-hdr">Projected Cost</th>
           <th class="calc-hdr">Cum. Labor Hrs</th>
           <th class="calc-hdr">Days Worked</th>
           <th class="calc-hdr">Avg Laborers</th>
@@ -2709,7 +2706,7 @@ function renderCostTable() {
     groups[cc].push(key);
   });
 
-  const COLS = 18;
+  const COLS = 16;
 
   groupOrder.forEach(costCode => {
     const keys    = groups[costCode];
@@ -2773,8 +2770,6 @@ function renderCostTable() {
       const rtotal    = a.total_cost;
       const past_avg  = rqty    ? rtotal / rqty         : 0;
       const total_pct = btotal  ? (rtotal / btotal)*100  : 0;
-      const pct_comp  = bq      ? (rqty / bq)*100        : 0;
-      const projected = rtotal  + (bq - rqty) * past_avg;
       const days      = a.dates.size;
       const avg_lab   = (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
       const mu_lab    = a.labor_hours ? rqty / a.labor_hours : 0;
@@ -2796,8 +2791,6 @@ function renderCostTable() {
         <td class="calc ${tc}">$${fmt(rtotal)}</td>
         <td class="calc" title="Company average cost per unit">${rqty ? '$'+fmt(past_avg) : '—'}</td>
         <td class="calc ${tc}">${btotal ? fmtPct(total_pct) : '—'}</td>
-        <td class="calc ${tc}">${bq    ? fmtPct(pct_comp)  : '—'}</td>
-        <td class="calc ${tc}">${bq    ? '$'+fmt(projected) : '—'}</td>
         <td class="calc">${fmt(a.labor_hours,1)}</td>
         <td class="calc">${days}</td>
         <td class="calc">${avg_lab ? fmt(avg_lab,1) : '—'}</td>
@@ -2813,8 +2806,6 @@ function renderCostTable() {
     // ── Total row ──
     const gPastAvg  = gRunQty  ? gRunTotal / gRunQty  : 0;
     const gTotPct   = gBidTotal ? (gRunTotal / gBidTotal)*100 : 0;
-    const gPctComp  = gBidQty  ? (gRunQty  / gBidQty )*100  : 0;
-    const gProj     = gRunTotal + (gBidQty - gRunQty) * gPastAvg;
     const gtc       = gBidTotal ? costClass(gTotPct) : '';
 
     const totalTr = document.createElement('tr');
@@ -2829,8 +2820,6 @@ function renderCostTable() {
       <td class="calc ${gtc}">$${fmt(gRunTotal)}</td>
       <td class="calc">${gRunQty ? '$'+fmt(gPastAvg) : '—'}</td>
       <td class="calc ${gtc}">${gBidTotal ? fmtPct(gTotPct) : '—'}</td>
-      <td class="calc ${gtc}">${gBidQty  ? fmtPct(gPctComp) : '—'}</td>
-      <td class="calc ${gtc}">${gBidQty  ? '$'+fmt(gProj)   : '—'}</td>
       <td class="calc">${fmt(gLabHrs,1)}</td>
       <td class="calc">${gDates.size}</td>
       <td class="calc">—</td>
@@ -2853,7 +2842,7 @@ function addCostRow() {
 function exportCostCSV() {
   const agg = buildDailyAgg();
   const headers = ['Cost Code','Sub Code','Status','Bid Qty','Bid Item Cost','Total Cost (Bid)',
-    'Running Qty','Running Total','Past Avg','Total Cost %','% Complete','Projected Cost',
+    'Running Qty','Running Total','Past Avg','Total Cost %',
     'Cum Labor Hrs','Days Worked','Avg Laborers','MU/Labor Hr',
     'Equip Total','Equip Hours','Equip Cost/Hr','MU/Equip Hr'];
   const rows = [headers.join(',')];
