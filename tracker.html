@@ -256,6 +256,18 @@
     .bid-table td.bid-under  { background: #0d1f0d; color: var(--green); text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-over   { background: #1f0d0d; color: var(--red);   text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-del    { width: 32px; text-align: center; padding: 0 0.3rem; }
+    .dash-search-wrap { margin-bottom: 1rem; }
+    .dash-search { width: 100%; max-width: 380px; background: var(--surface2); border: 1px solid var(--border); color: #e2e8f0; padding: 0.45rem 0.75rem; border-radius: 5px; font-size: 0.88rem; }
+    .dash-search:focus { outline: none; border-color: var(--blue); }
+    .dash-proj-card { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.85rem; overflow: hidden; }
+    .dash-proj-hdr { display: flex; align-items: center; gap: 0.85rem; padding: 0.65rem 1rem; background: var(--surface2); cursor: pointer; user-select: none; }
+    .dash-proj-hdr:hover { background: #1e2535; }
+    .dash-caret { font-size: 0.65rem; transition: transform 0.15s; flex-shrink: 0; color: var(--muted); }
+    .dash-proj-info { flex: 1; min-width: 0; }
+    .dash-proj-name { font-weight: 700; font-size: 0.88rem; color: #e2e8f0; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dash-proj-meta { font-size: 0.7rem; color: var(--muted); margin-top: 0.1rem; display: block; }
+    .dash-proj-fin { display: flex; gap: 1.2rem; align-items: center; flex-shrink: 0; font-size: 0.78rem; }
+    .dash-proj-body.dc-collapsed { display: none; }
     .bid-group-hdr td { background: #111c11; color: var(--green); font-weight: 600; font-size: 0.78rem; padding: 0.3rem 0.6rem !important; border-top: 2px solid #1e3a1e; cursor: pointer; }
     .bid-group-hdr td:hover { background: #162216; }
     .bid-group-hdr input.bid-grp-input { background: transparent; border: none; outline: none; color: var(--green); font-weight: 600; font-size: 0.78rem; width: 180px; cursor: text; }
@@ -1232,6 +1244,100 @@ function renderHomeTab() {
 /* ═══════════════════════════════════════════
    PROJECT DASHBOARD
 ═══════════════════════════════════════════ */
+function toggleDashCard(hdrEl) {
+  const body   = hdrEl.nextElementSibling;
+  const caret  = hdrEl.querySelector('.dash-caret');
+  const collapsed = body.classList.toggle('dc-collapsed');
+  if (caret) caret.style.transform = collapsed ? 'rotate(-90deg)' : '';
+}
+
+function renderDashProjectCards() {
+  const container = document.getElementById('dash-proj-cards');
+  if (!container) return;
+  const q = (dashSearch || '').toLowerCase().trim();
+  const filtered = q
+    ? projectsList.filter(p =>
+        (p['project-name']||'').toLowerCase().includes(q) ||
+        (p['job-number']||'').toLowerCase().includes(q)   ||
+        (p['client']||'').toLowerCase().includes(q))
+    : projectsList;
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div class="home-empty">${q ? `No projects match "${esc(q)}"` : 'No projects yet — create one in Project Info.'}</div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(p => {
+    const totalBid    = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
+    const totalActual = (p.dailyRows||[]).reduce((s,r)=>s+calcDaily(r).total_cost,0);
+    const diff = totalBid - totalActual;
+    const diffStyle = diff >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    const diffTxt   = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '';
+    const name = p['project-name'] || 'Untitled Project';
+    const meta = [p['job-number'], p['client'], p['status']].filter(Boolean).join(' · ');
+    return `
+      <div class="dash-proj-card">
+        <div class="dash-proj-hdr" onclick="toggleDashCard(this)">
+          <span class="dash-caret">▼</span>
+          <div class="dash-proj-info">
+            <span class="dash-proj-name">${esc(name)}</span>
+            ${meta ? `<span class="dash-proj-meta">${esc(meta)}</span>` : ''}
+          </div>
+          <div class="dash-proj-fin">
+            ${totalBid    ? `<span style="color:#888">Bid: <strong style="color:#86efac">$${fmt(totalBid)}</strong></span>` : ''}
+            ${totalActual ? `<span style="color:#888">Actual: <strong style="color:var(--yellow)">$${fmt(totalActual)}</strong></span>` : ''}
+            ${diffTxt     ? `<span style="${diffStyle};font-weight:600">${diffTxt}</span>` : ''}
+          </div>
+        </div>
+        <div class="dash-proj-body">
+          <div class="bid-section">
+            <div class="bid-section-title" onclick="toggleBidSection(this)">
+              <span><span class="bid-section-caret">▼</span>Bid Line Items vs Actuals</span>
+            </div>
+            <div class="bid-section-body">
+              <div class="bid-table-wrap">
+                <table class="bid-table">
+                  <thead><tr>
+                    <th>Sub Code</th>
+                    <th class="num">Bid Qty</th><th class="num">Unit Cost</th>
+                    <th class="num">Running Qty</th><th class="num">Qty Completed</th>
+                    <th class="num">Running Unit Cost</th>
+                    <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+                    <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
+                    <th class="num">Variance</th><th class="num">Projected Cost</th>
+                  </tr></thead>
+                  <tbody id="dash-btbody-${p.id}"></tbody>
+                  <tfoot><tr id="dash-bfoot-${p.id}"></tr></tfoot>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="bid-section">
+            <div class="bid-section-title" onclick="toggleBidSection(this)">
+              <span><span class="bid-section-caret">▼</span>Purchase Orders</span>
+            </div>
+            <div class="bid-section-body">
+              <div class="bid-table-wrap">
+                <table class="bid-table">
+                  <thead><tr>
+                    <th>PO #</th><th>Title</th>
+                    <th class="num">Unit Cost</th><th class="num">Total</th><th>Status</th>
+                  </tr></thead>
+                  <tbody id="dash-po-${p.id}"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  filtered.forEach(p => {
+    renderBidTable(p.id, { tbodyId: 'dash-btbody-'+p.id, footId: 'dash-bfoot-'+p.id, readonly: true });
+    renderProjectPOs(p.id, 'dash-po-'+p.id);
+  });
+}
+
 function renderProjectDashboard() {
   // ── Aggregate daily rows by cost_code + sub_code ──
   const projects = {};
@@ -1451,7 +1557,15 @@ function renderProjectDashboard() {
           </table>
         </div>`
     }
+
+    <p class="home-section-title" style="margin-top:1.5rem">Project Summaries</p>
+    <div class="dash-search-wrap">
+      <input class="dash-search" type="text" placeholder="&#128269; Search by project name, job #, or client…"
+        value="${esc(dashSearch)}" oninput="dashSearch=this.value;renderDashProjectCards()">
+    </div>
+    <div id="dash-proj-cards"></div>
   `;
+  renderDashProjectCards();
 }
 
 renderHeaderActions();
@@ -1464,6 +1578,7 @@ const INFO_KEY_LEGACY = 'fct_project_info'; // for migration only
 
 let projectsList = [];
 let projSearch   = '';
+let dashSearch   = '';
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
@@ -1712,11 +1827,12 @@ function laborerCountForBidItem(b, projId) {
   return names.size;
 }
 
-function renderBidFooter(projId) {
+function renderBidFooter(projId, opts = {}) {
+  const footId  = opts.footId  || 'bfoot-' + projId;
+  const readonly = !!opts.readonly;
   const p = getProj(projId); if (!p) return;
-  const footEl = document.getElementById('bfoot-' + projId); if (!footEl) return;
+  const footEl = document.getElementById(footId); if (!footEl) return;
   const totalBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
-  // Use all daily rows so PO-inserted costs (no cost code) are included in the footer total
   const totalActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
   const totalProj   = (p.bidItems||[]).reduce((s,b) => {
     const bidQty = parseFloat(b.quantity) || 0;
@@ -1726,30 +1842,25 @@ function renderBidFooter(projId) {
     return s + (rqty > 0 ? (actual / rqty) * bidQty : bidTot);
   }, 0);
   const diff = totalBid - totalActual;
-  const projDiff = totalProj - totalBid;
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
-  const projCls = projDiff <= 0 ? 'foot-under' : 'foot-over';
+  const projCls = (totalProj - totalBid) <= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
   const totalCumHrs = (p.bidItems||[]).reduce((s,b) => s + cumulativeHoursForBidItem(b, projId), 0);
-  const totalLab    = (() => {
-    const names = new Set((p.dailyRows||[]).map(r => r.employee).filter(Boolean));
-    return names.size;
-  })();
-  footEl.innerHTML = `
-    <td></td>
-    <td class="foot-label" colspan="1">Totals</td>
-    <td class="foot-label num" style="text-align:right">—</td>
-    <td class="foot-label num" style="text-align:right">—</td>
-    <td class="foot-label num" style="text-align:right">—</td>
-    <td class="foot-label num" style="text-align:right">—</td>
-    <td class="foot-label num" style="text-align:right">—</td>
+  const totalLab = new Set((p.dailyRows||[]).map(r => r.employee).filter(Boolean)).size;
+  const cells = `
+    <td class="foot-label">Totals</td>
+    <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
-    <td class="foot-label num" style="text-align:right">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
-    <td class="foot-label num" style="text-align:right">${totalLab || '—'}</td>
+    <td class="foot-label num">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
+    <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
-    <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>
-    <td></td>`;
+    <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>`;
+  footEl.innerHTML = readonly ? cells : `<td></td>${cells}`;
 }
 
 function removeBidGroup(projId, costCode) {
@@ -1777,19 +1888,21 @@ function addBidSubCode(projId, costCode) {
   renderBidTable(projId);
 }
 
-function renderBidTable(projId) {
+function renderBidTable(projId, opts = {}) {
+  const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
+  const readonly = !!opts.readonly;
+  const COLS     = readonly ? 12 : 13;
   const p = getProj(projId); if (!p) return;
-  const tbody = document.getElementById('btbody-' + projId); if (!tbody) return;
+  const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
 
   const items = p.bidItems || [];
   if (items.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
-    renderBidFooter(projId);
+    tbody.innerHTML = `<tr><td colspan="${COLS}" style="text-align:center;color:var(--muted);padding:1rem 0">${readonly ? 'No bid items.' : 'No bid items yet — click <strong>+ Add Item</strong> to start.'}</td></tr>`;
+    renderBidFooter(projId, opts);
     return;
   }
 
-  // Preserve insertion order of cost codes
   const groupOrder = [];
   const groups = {};
   items.forEach(b => {
@@ -1798,26 +1911,32 @@ function renderBidTable(projId) {
     groups[cc].push(b);
   });
 
-  const COLS = 14;
-
   groupOrder.forEach(costCode => {
     const groupItems = groups[costCode];
-    const groupId = 'bg-' + projId + '-' + costCode.replace(/\W/g, '_') + '_' + groupItems[0].id.slice(0,4);
+    const prefix  = opts.tbodyId ? opts.tbodyId + '-' : '';
+    const groupId = 'bg-' + prefix + projId + '-' + costCode.replace(/\W/g, '_') + '_' + groupItems[0].id.slice(0,4);
 
     // ── Group header ──
     const hdrTr = document.createElement('tr');
     hdrTr.className = 'bid-group-hdr';
     hdrTr.dataset.group = groupId;
     hdrTr.dataset.collapsed = '0';
-    hdrTr.innerHTML = `<td colspan="${COLS}">
-      <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
-      <input class="bid-grp-input" value="${esc(costCode)}" placeholder="Cost Code"
-        onclick="event.stopPropagation()"
-        onchange="updateBidGroupCode('${projId}','${esc(costCode)}',this.value)">
-      <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${esc(costCode)}')">+ Sub Code</button>
-      <button class="del-btn" style="float:right;margin-top:0.1rem" title="Delete entire group"
-        onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${esc(costCode)}\\'?'))removeBidGroup('${projId}','${esc(costCode)}')">✕</button>
-    </td>`;
+    hdrTr.innerHTML = readonly
+      ? `<td colspan="${COLS}">
+          <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
+          <strong>${esc(costCode) || '(No Code)'}</strong>
+          <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.75rem">${groupItems.length} sub code${groupItems.length!==1?'s':''}</span>
+        </td>`
+      : `<td colspan="${COLS}">
+          <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
+          <input class="bid-grp-input" value="${esc(costCode)}" placeholder="Cost Code"
+            onclick="event.stopPropagation()"
+            onchange="updateBidGroupCode('${projId}','${esc(costCode)}',this.value)">
+          <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${esc(costCode)}')">+ Sub Code</button>
+          <button class="del-btn" style="float:right;margin-top:0.1rem" title="Delete entire group"
+            onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${esc(costCode)}\\'?'))removeBidGroup('${projId}','${esc(costCode)}')">✕</button>
+        </td>`;
+
     hdrTr.addEventListener('click', () => {
       const collapsed = hdrTr.dataset.collapsed === '1';
       hdrTr.dataset.collapsed = collapsed ? '0' : '1';
@@ -1847,31 +1966,36 @@ function renderBidTable(projId) {
       const projCls = (proj - bidTot) <= 0 ? 'bid-under' : 'bid-over';
       const projTxt = bidTot ? '$' + fmt(proj) : '—';
 
-      gBidTotal += bidTot;
-      gActual   += actual;
-      gCumHrs   += cumHrs;
-      gProj     += proj;
+      gBidTotal += bidTot; gActual += actual; gCumHrs += cumHrs; gProj += proj;
 
       const childTr = document.createElement('tr');
       childTr.className = 'bid-group-child';
       childTr.dataset.group = groupId;
-      childTr.innerHTML = `
-        <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
-        <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
-          oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
-        <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
-          oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
+
+      const calcCells = `
         <td class="bid-calc">${rqty || '—'}</td>
         <td class="bid-calc">${pct}</td>
-        <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
-          oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
-        <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual / rqty) : '—'}</td>
+        <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual/rqty) : '—'}</td>
         <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
         <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
         <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
         <td class="bid-calc">${numLab || '—'}</td>
         <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
         <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>`;
+
+      childTr.innerHTML = readonly
+        ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}</td>
+           <td class="bid-calc">${bidQty||'—'}</td>
+           <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
+           ${calcCells}`
+        : `<td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
+           <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
+             oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
+           <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
+             oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
+           <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
+             oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
+           ${calcCells}`;
       tbody.appendChild(childTr);
     });
 
@@ -1880,25 +2004,26 @@ function renderBidTable(projId) {
     const gDiffCls = gDiff >= 0 ? 'bid-under' : 'bid-over';
     const gDiffTxt = gBidTotal ? (gDiff >= 0 ? `$${fmt(gDiff)} under` : `$${fmt(Math.abs(gDiff))} over`) : '—';
     const gProjCls = (gProj - gBidTotal) <= 0 ? 'bid-under' : 'bid-over';
-
-    const totalTr = document.createElement('tr');
-    totalTr.className = 'bid-group-total bid-group-child';
-    totalTr.dataset.group = groupId;
-    totalTr.innerHTML = `
-      <td></td>
-      <td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode) || '(No Code)'} — Total</td>
+    const totalCells = `
       <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
-      <td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
       <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
       <td class="bid-calc">${gCumHrs ? fmt(gCumHrs) : '—'}</td>
       <td class="bid-calc">—</td>
       <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
       <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>`;
+    const totalLabel = `<td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode)||'(No Code)'} — Total</td>`;
+
+    const totalTr = document.createElement('tr');
+    totalTr.className = 'bid-group-total bid-group-child';
+    totalTr.dataset.group = groupId;
+    totalTr.innerHTML = readonly
+      ? totalLabel + totalCells
+      : `<td></td>${totalLabel}${totalCells}`;
     tbody.appendChild(totalTr);
   });
 
-  renderBidFooter(projId);
+  renderBidFooter(projId, opts);
 }
 
 function projectCardHTML(p) {
@@ -2322,8 +2447,8 @@ function renderPOTab() {
     </div>`;
 }
 
-function renderProjectPOs(projId) {
-  const body = document.getElementById('po-proj-body-' + projId);
+function renderProjectPOs(projId, bodyIdOverride) {
+  const body = document.getElementById(bodyIdOverride || 'po-proj-body-' + projId);
   if (!body) return;
   const linked = purchaseOrders.filter(po => po.project_id === projId);
   if (linked.length === 0) {
