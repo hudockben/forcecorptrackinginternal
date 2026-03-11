@@ -837,7 +837,7 @@
       <thead>
         <tr class="group-row">
           <th class="g-base"  colspan="1"></th>
-          <th class="g-base"  colspan="3">Identification</th>
+          <th class="g-base"  colspan="5">Identification</th>
           <th class="g-cost"  colspan="3">Bid Plan</th>
           <th class="g-sum"   colspan="4">Company Actuals (from Daily)</th>
           <th class="g-sum"   colspan="2">Progress</th>
@@ -846,9 +846,11 @@
         </tr>
         <tr class="col-row">
           <th></th>
-          <th>Cost Code</th>
-          <th>Sub Code</th>
-          <th>Status</th>
+          <th>Project Name <button class="cfb cost-cfb" data-f="project_name">▼</button></th>
+          <th>Sq Ft <button class="cfb cost-cfb" data-f="sqft">▼</button></th>
+          <th>Cost Code <button class="cfb cost-cfb" data-f="cost_code">▼</button></th>
+          <th>Sub Code <button class="cfb cost-cfb" data-f="sub_code">▼</button></th>
+          <th>Status <button class="cfb cost-cfb" data-f="status">▼</button></th>
           <th>Bid Qty</th>
           <th>Bid Item Cost</th>
           <th class="calc-hdr">Total Cost (Bid)</th>
@@ -877,6 +879,18 @@
     <span><span class="dot dot-over"></span> Over budget (&gt;100% of bid)</span>
     <span>Past Avg = Running Total ÷ Running Qty (company average cost per unit)</span>
     <span>Dim rows = cost codes found in daily tracking with no bid entry yet</span>
+  </div>
+</div>
+
+<!-- Cost table filter dropdown -->
+<div id="cost-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;flex-direction:column;">
+  <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+    <input id="cff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+  </div>
+  <div id="cff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+  <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+    <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearCostFilter()">Clear</button>
+    <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyCostFilter()">Apply</button>
   </div>
 </div>
 
@@ -2540,6 +2554,7 @@ function saveCostRows() { apiPut('fct_cost_rows', costRows); }
 // Only store bid/plan data — actuals come from daily aggregation
 const defaultCostRow = () => ({
   id: Date.now() + Math.random(),
+  project_name: '', sqft: '',
   cost_code: '', sub_code: '',
   quantity: '',      // bid quantity
   bid_item_cost: '', // bid cost per unit
@@ -2583,12 +2598,28 @@ function renderCostTable() {
   const bidKeys = costRows.map(r => (r.cost_code || '') + '||' + (r.sub_code || ''));
   const dailyOnlyKeys = Object.keys(agg).filter(k => !bidKeys.includes(k));
 
-  if (costRows.length === 0 && dailyOnlyKeys.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="21">No data yet. Add a bid entry or log daily records to populate company averages.</td></tr>';
+  // Apply cost filters
+  const filteredRows = costRows.filter(r =>
+    Object.entries(costFilters).every(([f, allowed]) => allowed.has(String(r[f] ?? '')))
+  );
+  const filteredBidKeys = filteredRows.map(r => (r.cost_code || '') + '||' + (r.sub_code || ''));
+  const filteredDailyOnlyKeys = Object.keys(costFilters).length === 0
+    ? dailyOnlyKeys
+    : dailyOnlyKeys.filter(k => {
+        const [cc, sc] = k.split('||');
+        return Object.entries(costFilters).every(([f, allowed]) => {
+          if (f === 'cost_code') return allowed.has(cc);
+          if (f === 'sub_code')  return allowed.has(sc);
+          return true;
+        });
+      });
+
+  if (filteredRows.length === 0 && filteredDailyOnlyKeys.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="23">No data yet. Add a bid entry or log daily records to populate company averages.</td></tr>';
     return;
   }
 
-  function renderRow(cost_code, sub_code, status, bid_qty, bid_ic, a, i, editable) {
+  function renderRow(project_name, sqft, cost_code, sub_code, status, bid_qty, bid_ic, a, i, editable) {
     const bq          = parseFloat(bid_qty)  || 0;
     const bic         = parseFloat(bid_ic)   || 0;
     const total_bid   = bq * bic;
@@ -2608,6 +2639,8 @@ function renderCostTable() {
     if (!editable) tr.style.opacity = '0.65';
     tr.innerHTML = editable ? `
       <td class="del-cell"><button class="del-btn" data-tab="cost" data-i="${i}">&#10005;</button></td>
+      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="project_name" value="${esc(project_name)}" placeholder="Project name"></td>
+      <td><input type="number" data-tab="cost" data-i="${i}" data-f="sqft"         value="${esc(sqft)}"         step="any" placeholder="0"></td>
       <td><input type="text"   data-tab="cost" data-i="${i}" data-f="cost_code"    value="${esc(cost_code)}"    placeholder="03-200"></td>
       <td><input type="text"   data-tab="cost" data-i="${i}" data-f="sub_code"     value="${esc(sub_code)}"     placeholder="A"></td>
       <td>
@@ -2623,6 +2656,8 @@ function renderCostTable() {
       <td class="calc">${total_bid ? '$'+fmt(total_bid) : '—'}</td>
     ` : `
       <td class="del-cell"></td>
+      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(project_name) || '—'}</td>
+      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(sqft) || '—'}</td>
       <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(cost_code) || '—'}</td>
       <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(sub_code)  || '—'}</td>
       <td style="padding:0.35rem 0.5rem; font-size:0.68rem; color:#555">No bid entry</td>
@@ -2650,16 +2685,17 @@ function renderCostTable() {
   }
 
   // Bid-tracked rows (editable)
-  costRows.forEach((row, i) => {
+  filteredRows.forEach((row, i) => {
+    const realIndex = costRows.indexOf(row);
     const key = (row.cost_code || '') + '||' + (row.sub_code || '');
     const a   = agg[key] || { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, material_cost:0, dates:new Set() };
-    renderRow(row.cost_code, row.sub_code, row.status, row.quantity, row.bid_item_cost, a, i, true);
+    renderRow(row.project_name||'', row.sqft||'', row.cost_code, row.sub_code, row.status, row.quantity, row.bid_item_cost, a, realIndex, true);
   });
 
   // Daily-only rows (read-only — no bid entry yet)
-  dailyOnlyKeys.forEach(key => {
+  filteredDailyOnlyKeys.forEach(key => {
     const [cc, sc] = key.split('||');
-    renderRow(cc, sc, '', '', '', agg[key], -1, false);
+    renderRow('', '', cc, sc, '', '', '', agg[key], -1, false);
   });
 }
 
@@ -2925,6 +2961,92 @@ function exportDailyCSV(projId) {
 }
 
 /* ── Column filters ── */
+/* ═══════════════════════════════════════════
+   COST TABLE FILTERS
+═══════════════════════════════════════════ */
+let costFilters  = {};
+let _cffField    = null;
+let _cffPending  = null;
+
+function _updateCostFilterButtons() {
+  document.querySelectorAll('.cost-cfb').forEach(btn => {
+    btn.classList.toggle('active', !!costFilters[btn.dataset.f]);
+  });
+}
+
+function openCostFilter(field, btn) {
+  _cffField = field;
+  const unique = [...new Set(costRows.map(r => String(r[field] ?? '')))].sort();
+  const active = costFilters[field] || null;
+  _cffPending = active ? new Set(active) : null;
+
+  const list = document.getElementById('cff-list');
+  const allChecked = !_cffPending;
+  list.innerHTML = `<label class="dff-item" id="cff-all-label">
+    <input type="checkbox" id="cff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="cff-val-cb" value="${esc(v)}" ${(!_cffPending || _cffPending.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  document.getElementById('cff-all').addEventListener('change', e => {
+    document.querySelectorAll('.cff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.cff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.cff-val-cb')].every(c => c.checked);
+    document.getElementById('cff-all').checked = all;
+  }));
+
+  document.getElementById('cff-search').value = '';
+  document.getElementById('cff-search').oninput = e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#cff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  const dd = document.getElementById('cost-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyCostFilter() {
+  const cbs = [...document.querySelectorAll('.cff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allChecked = document.getElementById('cff-all')?.checked;
+  if (allChecked || checked.length === cbs.length) {
+    delete costFilters[_cffField];
+  } else {
+    costFilters[_cffField] = new Set(checked);
+  }
+  document.getElementById('cost-filter-dd').style.display = 'none';
+  _updateCostFilterButtons();
+  renderCostTable();
+}
+
+function clearCostFilter() {
+  delete costFilters[_cffField];
+  document.getElementById('cost-filter-dd').style.display = 'none';
+  _updateCostFilterButtons();
+  renderCostTable();
+}
+
+document.addEventListener('click', e => {
+  const dd = document.getElementById('cost-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('cost-cfb')) {
+    dd.style.display = 'none';
+  }
+});
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.cost-cfb');
+  if (!btn) return;
+  e.stopPropagation();
+  openCostFilter(btn.dataset.f, btn);
+});
+
 let dailyFilters = {};      // { field: Set<string> }  — absent key = no filter
 let _dffField    = null;    // field currently being filtered
 let _dffPending  = null;    // Set being edited in the dropdown
