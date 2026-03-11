@@ -1723,6 +1723,7 @@ function renderBidFooter(projId) {
     return names.size;
   })();
   footEl.innerHTML = `
+    <td></td>
     <td class="foot-label" colspan="1">Totals</td>
     <td class="foot-label num" style="text-align:right">—</td>
     <td class="foot-label num" style="text-align:right">—</td>
@@ -1736,6 +1737,13 @@ function renderBidFooter(projId) {
     <td class="${diffCls}">${diffTxt}</td>
     <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>
     <td></td>`;
+}
+
+function removeBidGroup(projId, costCode) {
+  const p = getProj(projId); if (!p) return;
+  p.bidItems = (p.bidItems || []).filter(b => b.cost_code !== costCode);
+  saveProjects();
+  renderBidTable(projId);
 }
 
 function updateBidGroupCode(projId, oldCode, newCode) {
@@ -1763,7 +1771,7 @@ function renderBidTable(projId) {
 
   const items = p.bidItems || [];
   if (items.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
     renderBidFooter(projId);
     return;
   }
@@ -1777,7 +1785,7 @@ function renderBidTable(projId) {
     groups[cc].push(b);
   });
 
-  const COLS = 13;
+  const COLS = 14;
 
   groupOrder.forEach(costCode => {
     const groupItems = groups[costCode];
@@ -1794,6 +1802,8 @@ function renderBidTable(projId) {
         onclick="event.stopPropagation()"
         onchange="updateBidGroupCode('${projId}','${esc(costCode)}',this.value)">
       <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${esc(costCode)}')">+ Sub Code</button>
+      <button class="del-btn" style="float:right;margin-top:0.1rem" title="Delete entire group"
+        onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${esc(costCode)}\\'?'))removeBidGroup('${projId}','${esc(costCode)}')">✕</button>
     </td>`;
     hdrTr.addEventListener('click', () => {
       const collapsed = hdrTr.dataset.collapsed === '1';
@@ -1833,6 +1843,7 @@ function renderBidTable(projId) {
       childTr.className = 'bid-group-child';
       childTr.dataset.group = groupId;
       childTr.innerHTML = `
+        <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
         <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
           oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
         <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
@@ -1847,8 +1858,7 @@ function renderBidTable(projId) {
         <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
         <td class="bid-calc">${numLab || '—'}</td>
         <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
-        <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>
-        <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>`;
+        <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>`;
       tbody.appendChild(childTr);
     });
 
@@ -1862,7 +1872,8 @@ function renderBidTable(projId) {
     totalTr.className = 'bid-group-total bid-group-child';
     totalTr.dataset.group = groupId;
     totalTr.innerHTML = `
-      <td style="padding-left:1.6rem">${esc(costCode) || '(No Code)'} — Total</td>
+      <td></td>
+      <td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode) || '(No Code)'} — Total</td>
       <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
@@ -1870,8 +1881,7 @@ function renderBidTable(projId) {
       <td class="bid-calc">${gCumHrs ? fmt(gCumHrs) : '—'}</td>
       <td class="bid-calc">—</td>
       <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
-      <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>
-      <td></td>`;
+      <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>`;
     tbody.appendChild(totalTr);
   });
 
@@ -2042,11 +2052,12 @@ function projectCardHTML(p) {
       </div>
       <table class="bid-table">
         <thead><tr>
+          <th style="width:28px"></th>
           <th>Sub Code</th>
           <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
           <th class="num">Bid Total</th><th class="num">Actual Cost</th>
           <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
-          <th class="num">Variance</th><th class="num">Projected Cost</th><th></th>
+          <th class="num">Variance</th><th class="num">Projected Cost</th>
         </tr></thead>
         <tbody id="btbody-${p.id}"></tbody>
         <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
