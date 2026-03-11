@@ -2342,6 +2342,10 @@ function _syncPORowField(po, field) {
                 date_created: 'date', qty: 'units_purchased', unit_cost: 'unit_cost',
                 cost_code: 'cost_code', sub_code: 'sub_code' };
   if (map[field]) r[map[field]] = po[field] || '';
+  if (['qty','unit_cost','tax'].includes(field)) {
+    const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
+    r.material_cost = String(qty * uc + tax);
+  }
   saveProjects();
   renderDailyTable(po.project_id);
 }
@@ -3726,6 +3730,16 @@ document.addEventListener('input', e => {
           if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate; }
         }
       }
+    }
+    // Auto-calculate material cost when units_purchased or unit_cost changes
+    if (f === 'units_purchased' || f === 'unit_cost') {
+      const row = p.dailyRows[i];
+      const up = parseFloat(row.units_purchased) || 0;
+      const uc = parseFloat(row.unit_cost) || 0;
+      const matCost = String(up * uc);
+      row.material_cost = matCost;
+      const rowEl = document.getElementById('daily-tbody-' + projId)?.children[i];
+      if (rowEl) { const mc = rowEl.querySelector('[data-f="material_cost"]'); if (mc) mc.value = up * uc || ''; }
     }
     // Auto-fill equip unit cost when equipment is selected
     if (f === 'equipment') {
