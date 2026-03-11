@@ -2787,7 +2787,7 @@ function renderCostTable() {
         <td class="calc">${bq ? fmt(bq,2) : '—'}</td>
         <td class="calc">${buc ? '$'+fmt(buc) : isDailyOnly ? '<span style="color:#555;font-size:0.68rem">No bid entry</span>' : '—'}</td>
         <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
-        <td class="calc ${tc}">$${fmt(rqty,2)}</td>
+        <td class="calc ${tc}">${fmt(rqty,2)}</td>
         <td class="calc ${tc}">$${fmt(rtotal)}</td>
         <td class="calc" title="Company average cost per unit">${rqty ? '$'+fmt(past_avg) : '—'}</td>
         <td class="calc ${tc}">${btotal ? fmtPct(total_pct) : '—'}</td>
@@ -2816,7 +2816,7 @@ function renderCostTable() {
       <td class="calc">${gBidQty ? fmt(gBidQty,2) : '—'}</td>
       <td class="calc">—</td>
       <td class="calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
-      <td class="calc ${gtc}">$${fmt(gRunQty,2)}</td>
+      <td class="calc ${gtc}">${fmt(gRunQty,2)}</td>
       <td class="calc ${gtc}">$${fmt(gRunTotal)}</td>
       <td class="calc">${gRunQty ? '$'+fmt(gPastAvg) : '—'}</td>
       <td class="calc ${gtc}">${gBidTotal ? fmtPct(gTotPct) : '—'}</td>
