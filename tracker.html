@@ -2342,10 +2342,6 @@ function _syncPORowField(po, field) {
                 date_created: 'date', qty: 'units_purchased', unit_cost: 'unit_cost',
                 cost_code: 'cost_code', sub_code: 'sub_code' };
   if (map[field]) r[map[field]] = po[field] || '';
-  if (['qty','unit_cost','tax'].includes(field)) {
-    const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
-    r.material_cost = String(qty * uc + tax);
-  }
   saveProjects();
   renderDailyTable(po.project_id);
 }
