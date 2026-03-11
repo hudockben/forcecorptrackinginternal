@@ -681,6 +681,102 @@
       margin-bottom: 2rem;
     }
 
+    /* ── Project cards on home tab ── */
+    .proj-home-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 0.85rem;
+      margin-bottom: 2rem;
+    }
+    .proj-home-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem 1.1rem;
+    }
+    .proj-home-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .proj-home-name {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.2rem;
+    }
+    .proj-home-meta {
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+    .proj-home-bar-wrap {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      margin-bottom: 0.75rem;
+    }
+    .proj-home-bar-track {
+      flex: 1;
+      height: 6px;
+      background: var(--surface2);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .proj-home-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s ease;
+    }
+    .proj-home-bar-pct {
+      font-size: 0.7rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted);
+      min-width: 2.8rem;
+      text-align: right;
+    }
+    .proj-home-financials {
+      display: flex;
+      gap: 0;
+      border-top: 1px solid var(--border);
+      padding-top: 0.6rem;
+    }
+    .proj-home-fin-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+    .proj-home-fin-label {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .proj-home-fin-val {
+      font-size: 0.78rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+    .proj-home-alerts {
+      display: flex;
+      gap: 0.4rem;
+      margin-top: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .proj-alert-chip {
+      font-size: 0.65rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 99px;
+      letter-spacing: 0.04em;
+    }
+    .proj-alert-chip.risk { background: #ef444422; color: var(--red); border: 1px solid #ef444444; }
+    .proj-alert-chip.hold { background: #eab30822; color: var(--yellow); border: 1px solid #eab30844; }
+
     /* ── Project Dashboard ── */
     .project-table {
       width: 100%;
@@ -1174,9 +1270,12 @@ function renderHeaderActions() {
 }
 
 function renderHomeTab() {
-  // ── Aggregate using daily data for actuals ──
+  const today = new Date();
+  const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  // ── Cross-project aggregates ──
   const agg = buildDailyAgg();
-  let totalBid = 0, totalRunning = 0, totalProjected = 0;
+  let totalBid = 0, totalActual = 0, totalProjected = 0;
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
 
   costRows.forEach(row => {
@@ -1186,66 +1285,156 @@ function renderHomeTab() {
     const a   = agg[key] || { running_qty:0, total_cost:0 };
     const past_avg = a.running_qty ? a.total_cost / a.running_qty : bic;
     totalBid       += bq * bic;
-    totalRunning   += a.total_cost;
+    totalActual    += a.total_cost;
     totalProjected += a.total_cost + (bq - a.running_qty) * past_avg;
     if (row.status) statusCounts[row.status] = (statusCounts[row.status] || 0) + 1;
   });
 
-  const overallPct = totalBid ? (totalRunning / totalBid) * 100 : 0;
-  const totalItems = costRows.length;
-  const allDaily = getAllDailyRows();
-  const totalDailyEntries = allDaily.length;
+  const overallPct = totalBid ? (totalActual / totalBid) * 100 : 0;
+  const overClass  = overallPct >= 100 ? 'red' : overallPct >= 85 ? 'yellow' : 'green';
+  const allDaily   = getAllDailyRows();
+  const openPOs    = purchaseOrders.filter(p => p.status === 'pending').length;
+  const thisWeek   = allDaily.filter(r => r.date >= weekAgo).length;
+  const atRiskCt   = statusCounts['At Risk'] || 0;
 
   // ── Status bar widths ──
-  const total = Object.values(statusCounts).reduce((a, b) => a + b, 0) || 1;
-  const pActive   = (statusCounts.Active   / total * 100).toFixed(1);
-  const pComplete = (statusCounts.Complete / total * 100).toFixed(1);
-  const pHold     = (statusCounts['On Hold'] / total * 100).toFixed(1);
-  const pRisk     = (statusCounts['At Risk'] / total * 100).toFixed(1);
+  const statusTotal = Object.values(statusCounts).reduce((a, b) => a + b, 0) || 1;
+  const pActive   = (statusCounts.Active     / statusTotal * 100).toFixed(1);
+  const pComplete = (statusCounts.Complete   / statusTotal * 100).toFixed(1);
+  const pHold     = (statusCounts['On Hold'] / statusTotal * 100).toFixed(1);
+  const pRisk     = (statusCounts['At Risk'] / statusTotal * 100).toFixed(1);
 
-  // ── Recent daily entries (last 5 sorted by date desc) ──
+  // ── Per-project cards ──
+  const projectCards = projectsList.length === 0
+    ? `<div class="home-empty">No projects yet. Go to Project Dashboard to create one.</div>`
+    : projectsList.map(p => {
+        const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+        const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+        const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
+        const variance  = bid - actual;
+        const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+        const varTxt    = bid ? (variance >= 0 ? `$${fmt(Math.abs(variance))} under` : `$${fmt(Math.abs(variance))} over`) : '—';
+        const barColor  = !bid ? 'var(--muted)' : actual / bid >= 1 ? 'var(--red)' : actual / bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
+        const name      = p['project-name'] || 'Untitled Project';
+        const meta      = [p['job-number'], p['client'], p['status']].filter(Boolean).map(v => esc(v)).join(' · ');
+        const endDate   = p['end-date'];
+        const daysLeft  = endDate ? Math.ceil((new Date(endDate) - today) / (1000*60*60*24)) : null;
+        const endChip   = endDate
+          ? (daysLeft < 0
+              ? `<span style="font-size:0.68rem;color:var(--red);font-weight:600">&#9888; ${Math.abs(daysLeft)}d overdue</span>`
+              : daysLeft <= 14
+              ? `<span style="font-size:0.68rem;color:var(--yellow);font-weight:600">&#9888; ${daysLeft}d left</span>`
+              : `<span style="font-size:0.68rem;color:var(--muted)">${daysLeft}d left</span>`)
+          : '';
+        const atRisk = (p.bidItems||[]).filter(b => b.status === 'At Risk').length;
+        const onHold = (p.bidItems||[]).filter(b => b.status === 'On Hold').length;
+        return `
+          <div class="proj-home-card">
+            <div class="proj-home-card-header">
+              <div style="min-width:0">
+                <div class="proj-home-name">${esc(name)}</div>
+                ${meta ? `<div class="proj-home-meta">${meta}</div>` : ''}
+              </div>
+              <div style="text-align:right;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:0.2rem">
+                ${endChip}
+                ${p['pm'] ? `<span style="font-size:0.68rem;color:var(--muted)">PM: ${esc(p['pm'])}</span>` : ''}
+              </div>
+            </div>
+            <div class="proj-home-bar-wrap">
+              <div class="proj-home-bar-track">
+                <div class="proj-home-bar-fill" style="width:${pct.toFixed(1)}%;background:${barColor}"></div>
+              </div>
+              <span class="proj-home-bar-pct">${pct.toFixed(0)}% of bid</span>
+            </div>
+            <div class="proj-home-financials">
+              <div class="proj-home-fin-item">
+                <span class="proj-home-fin-label">Bid</span>
+                <span class="proj-home-fin-val" style="color:var(--green)">$${fmt(bid)}</span>
+              </div>
+              <div class="proj-home-fin-item">
+                <span class="proj-home-fin-label">Actual</span>
+                <span class="proj-home-fin-val" style="color:var(--yellow)">$${fmt(actual)}</span>
+              </div>
+              <div class="proj-home-fin-item">
+                <span class="proj-home-fin-label">Variance</span>
+                <span class="proj-home-fin-val" style="${varStyle}">${varTxt}</span>
+              </div>
+              <div class="proj-home-fin-item">
+                <span class="proj-home-fin-label">Entries</span>
+                <span class="proj-home-fin-val">${(p.dailyRows||[]).length}</span>
+              </div>
+            </div>
+            ${(atRisk > 0 || onHold > 0) ? `
+              <div class="proj-home-alerts">
+                ${atRisk > 0 ? `<span class="proj-alert-chip risk">&#9888; ${atRisk} At Risk</span>` : ''}
+                ${onHold > 0 ? `<span class="proj-alert-chip hold">&#9646; ${onHold} On Hold</span>` : ''}
+              </div>` : ''}
+          </div>`;
+      }).join('');
+
+  // ── At-risk / On-Hold alert rows (from global costRows) ──
+  const alertRows = costRows.filter(r => r.status === 'At Risk' || r.status === 'On Hold');
+
+  // ── Recent daily entries (last 8, with project lookup) ──
   const recent = [...allDaily]
     .filter(r => r.date)
     .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, 5);
-
-  const overClass = overallPct >= 100 ? 'red' : overallPct >= 80 ? 'yellow' : 'green';
+    .slice(0, 8);
 
   document.getElementById('home-content').innerHTML = `
     <p class="home-title">Overview</p>
 
     <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-label">Cost Items</div>
-        <div class="stat-value">${totalItems}</div>
-        <div class="stat-sub">tracked items</div>
+      <div class="stat-card blue">
+        <div class="stat-label">Projects</div>
+        <div class="stat-value">${projectsList.length}</div>
+        <div class="stat-sub">in system</div>
       </div>
       <div class="stat-card green">
-        <div class="stat-label">Total Bid Cost</div>
+        <div class="stat-label">Total Bid</div>
         <div class="stat-value">$${fmt(totalBid, 0)}</div>
-        <div class="stat-sub">across all items</div>
+        <div class="stat-sub">across all projects</div>
       </div>
       <div class="stat-card ${overClass}">
-        <div class="stat-label">Running Total Cost</div>
-        <div class="stat-value">$${fmt(totalRunning, 0)}</div>
+        <div class="stat-label">Total Actual</div>
+        <div class="stat-value">$${fmt(totalActual, 0)}</div>
         <div class="stat-sub">${fmtPct(overallPct)} of bid</div>
-      </div>
-      <div class="stat-card ${overClass}">
-        <div class="stat-label">Overall % Complete</div>
-        <div class="stat-value">${fmtPct(overallPct)}</div>
-        <div class="stat-sub">running / bid</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Projected Cost</div>
         <div class="stat-value">$${fmt(totalProjected, 0)}</div>
         <div class="stat-sub">at current rates</div>
       </div>
-      <div class="stat-card blue">
-        <div class="stat-label">Daily Entries</div>
-        <div class="stat-value">${totalDailyEntries}</div>
-        <div class="stat-sub">logged records</div>
+      <div class="stat-card ${openPOs > 0 ? 'yellow' : ''}">
+        <div class="stat-label">Open POs</div>
+        <div class="stat-value">${openPOs}</div>
+        <div class="stat-sub">pending approval</div>
+      </div>
+      <div class="stat-card ${atRiskCt > 0 ? 'red' : ''}">
+        <div class="stat-label">${atRiskCt > 0 ? 'At-Risk Items' : 'This Week'}</div>
+        <div class="stat-value">${atRiskCt > 0 ? atRiskCt : thisWeek}</div>
+        <div class="stat-sub">${atRiskCt > 0 ? 'need attention' : 'daily entries (7d)'}</div>
       </div>
     </div>
+
+    <p class="home-section-title">Projects</p>
+    <div class="proj-home-grid">${projectCards}</div>
+
+    ${alertRows.length > 0 ? `
+    <p class="home-section-title">Items Needing Attention</p>
+    <table class="recent-table" style="margin-bottom:2rem">
+      <thead><tr>
+        <th>Cost Code</th><th>Sub Code</th><th>Status</th>
+      </tr></thead>
+      <tbody>
+        ${alertRows.map(r => `
+          <tr>
+            <td>${esc(r.cost_code) || '—'}</td>
+            <td>${esc(r.sub_code) || '—'}</td>
+            <td><span style="color:${r.status === 'At Risk' ? 'var(--red)' : 'var(--yellow)'};font-weight:600">${r.status}</span></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>` : ''}
 
     <p class="home-section-title">Status Breakdown — Cost Items</p>
     <div class="status-bar-wrap">
@@ -1268,14 +1457,17 @@ function renderHomeTab() {
       ? `<div class="home-empty">No daily entries yet. Open a project in Project Dashboard to add daily records.</div>`
       : `<table class="recent-table">
           <thead><tr>
-            <th>Date</th><th>Employee</th><th>Cost Code</th><th>Sub Code</th>
+            <th>Date</th><th>Project</th><th>Employee</th><th>Cost Code</th><th>Sub Code</th>
             <th>Field Type</th><th>Labor Cost</th><th>Equip Total</th><th>Total Cost</th>
           </tr></thead>
           <tbody>
             ${recent.map(row => {
               const c = calcDaily(row);
+              const proj = projectsList.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
+              const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
               return `<tr>
                 <td>${row.date || '—'}</td>
+                <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(projName)}">${esc(projName)}</td>
                 <td>${esc(row.employee) || '—'}</td>
                 <td>${esc(row.cost_code) || '—'}</td>
                 <td>${esc(row.sub_code) || '—'}</td>
