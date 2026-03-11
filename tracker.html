@@ -2602,7 +2602,7 @@ function renderPOTab() {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       const key = btn.dataset.pof;
-      const filterInput = root.querySelector(`[onchange*="poFilters['${key}']"]`);
+      const filterInput = root.querySelector(`[data-po-filter-key="${key}"]`) || root.querySelector(`[onchange*="poFilters['${key}']"]`);
       if (filterInput) { filterInput.focus(); filterInput.select && filterInput.select(); }
     });
   });
