@@ -2365,6 +2365,46 @@ function _subCodeOpts(po) {
   return `<option value="">— select —</option>` + opts;
 }
 
+/* ── PO filter state ── */
+let poFilters = { po_number:'', project_id:'', sub_code:'', title:'', supplier:'', employee:'', status:'', date_created:'' };
+
+function applyPOFilters() {
+  return purchaseOrders.filter(po => {
+    if (poFilters.po_number   && !po.po_number.toLowerCase().includes(poFilters.po_number.toLowerCase()))   return false;
+    if (poFilters.project_id  && po.project_id !== poFilters.project_id)                                    return false;
+    if (poFilters.sub_code    && !(po.sub_code || '').toLowerCase().includes(poFilters.sub_code.toLowerCase())) return false;
+    if (poFilters.title       && !(po.title || '').toLowerCase().includes(poFilters.title.toLowerCase()))   return false;
+    if (poFilters.supplier    && po.supplier !== poFilters.supplier)                                         return false;
+    if (poFilters.employee    && po.employee !== poFilters.employee)                                         return false;
+    if (poFilters.status      && po.status !== poFilters.status)                                             return false;
+    if (poFilters.date_created && !(po.date_created || '').includes(poFilters.date_created))                return false;
+    return true;
+  });
+}
+
+function exportPOCSV() {
+  const rows = applyPOFilters();
+  const headers = ['PO #','Project','Sub Code','Title','Supplier','Qty','Unit Cost','Amount','Tax','Total','Employee','Date Created','Status'];
+  const escape = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const lines = [headers.map(escape).join(',')];
+  rows.forEach(po => {
+    const proj = projectsList.find(p => p.id === po.project_id);
+    const projName = proj ? (proj['project-name'] || '') : '';
+    const qty = parseFloat(po.qty) || 0;
+    const uc  = parseFloat(po.unit_cost) || 0;
+    const tax = parseFloat(po.tax) || 0;
+    const amt = qty * uc;
+    const total = amt + tax;
+    lines.push([po.po_number, projName, po.sub_code||'', po.title||'', po.supplier||'', qty, uc, amt.toFixed(2), tax.toFixed(2), total.toFixed(2), po.employee||'', po.date_created||'', po.status||''].map(escape).join(','));
+  });
+  const blob = new Blob([lines.join('\r\n')], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'purchase_orders.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 function renderPOTab() {
   const root = document.getElementById('po-root');
   if (!root) return;
@@ -2372,9 +2412,37 @@ function renderPOTab() {
   const th = (label, right) =>
     `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
 
+  const fInput = (key, placeholder) =>
+    `<input type="text" value="${esc(poFilters[key])}" placeholder="${placeholder}"
+      onchange="poFilters['${key}']=this.value;renderPOTab()"
+      style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.72rem;padding:0.2rem 0.3rem;outline:none;box-sizing:border-box">`;
+
+  const fSelect = (key, opts) =>
+    `<select onchange="poFilters['${key}']=this.value;renderPOTab()"
+      style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.72rem;padding:0.2rem 0.3rem;outline:none">${opts}</select>`;
+
+  const projFilterOpts = `<option value="">All</option>` + projectsList.map(p =>
+    `<option value="${esc(p.id)}" ${p.id === poFilters.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
+
+  const supFilterOpts = `<option value="">All</option>` + lists.suppliers.map(s => s.name || '').filter(Boolean)
+    .map(n => `<option value="${esc(n)}" ${n === poFilters.supplier ? 'selected' : ''}>${esc(n)}</option>`).join('');
+
+  const empFilterOpts = `<option value="">All</option>` + lists.employees
+    .map(e => `<option value="${esc(e.name)}" ${e.name === poFilters.employee ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
+
+  const statusFilterOpts = `<option value="">All</option>` + ['pending','approved','closed']
+    .map(s => `<option value="${s}" ${s === poFilters.status ? 'selected' : ''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('');
+
+  const tdF = (content, right) =>
+    `<td style="padding:0.25rem 0.4rem;background:rgba(0,0,0,0.15)${right?';text-align:right':''}">${content}</td>`;
+
+  const filteredPOs = applyPOFilters();
+
   const bodyHTML = purchaseOrders.length === 0
     ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
-    : purchaseOrders.map(po => {
+    : filteredPOs.length === 0
+    ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders match the current filters.</td></tr>`
+    : filteredPOs.map(po => {
         const qty   = parseFloat(po.qty)       || 0;
         const uc    = parseFloat(po.unit_cost)  || 0;
         const tax   = parseFloat(po.tax)        || 0;
@@ -2425,11 +2493,17 @@ function renderPOTab() {
         </tr>`;
       }).join('');
 
+  const hasFilters = Object.values(poFilters).some(v => v !== '');
+
   root.innerHTML = `
     <div style="padding:1.5rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Purchase Orders</span>
-        <button class="btn btn-green" onclick="addPO()">+ New PO</button>
+        <div style="display:flex;gap:0.5rem;align-items:center">
+          ${hasFilters ? `<button class="btn" onclick="poFilters={po_number:'',project_id:'',sub_code:'',title:'',supplier:'',employee:'',status:'',date_created:''};renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
+          <button class="btn" onclick="exportPOCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#1d4ed8;color:#fff">&#8595; Export CSV</button>
+          <button class="btn btn-green" onclick="addPO()">+ New PO</button>
+        </div>
       </div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1400px">
@@ -2439,6 +2513,18 @@ function renderPOTab() {
               ${th('Qty',1)} ${th('Unit Cost',1)} ${th('Amount',1)} ${th('Tax',1)} ${th('Total',1)}
               ${th('Employee')} ${th('Date Created')} ${th('Status')}
               <th style="width:36px;border-bottom:1px solid var(--border)"></th>
+            </tr>
+            <tr>
+              ${tdF(fInput('po_number','Filter...'))}
+              ${tdF(fSelect('project_id', projFilterOpts))}
+              ${tdF(fInput('sub_code','Filter...'))}
+              ${tdF(fInput('title','Filter...'))}
+              ${tdF(fSelect('supplier', supFilterOpts))}
+              ${tdF('','right')} ${tdF('','right')} ${tdF('','right')} ${tdF('','right')} ${tdF('','right')}
+              ${tdF(fSelect('employee', empFilterOpts))}
+              ${tdF(fInput('date_created','YYYY-MM-DD'))}
+              ${tdF(fSelect('status', statusFilterOpts))}
+              <td style="background:rgba(0,0,0,0.15)"></td>
             </tr>
           </thead>
           <tbody>${bodyHTML}</tbody>
