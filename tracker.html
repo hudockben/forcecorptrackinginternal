@@ -3912,73 +3912,155 @@ function renderProductionRateView(projId) {
     return;
   }
 
+  // Historical aggregates from Cost Tracking tab (all projects, all time)
+  const histAgg = buildDailyAgg();
+
   // Tier 1: group by cost_code → Tier 2: group by sub_code → aggregate by date
   const costGroups = {};
   rows.forEach(row => {
-    const cc  = row.cost_code || '(No Code)';
-    const sc  = row.sub_code  || '(No Sub Code)';
+    const cc = row.cost_code || '(No Code)';
+    const sc = row.sub_code  || '(No Sub Code)';
     if (!costGroups[cc]) costGroups[cc] = {};
     if (!costGroups[cc][sc]) costGroups[cc][sc] = {};
     const d = row.date || '(No Date)';
-    if (!costGroups[cc][sc][d]) costGroups[cc][sc][d] = { qty: 0, total_cost: 0, labor_hours: 0 };
+    if (!costGroups[cc][sc][d]) costGroups[cc][sc][d] = { qty: 0, total_cost: 0, labor_hours: 0, equip_hours: 0 };
     const c = calcDaily(row);
-    costGroups[cc][sc][d].qty         += parseFloat(row.quantity) || 0;
+    costGroups[cc][sc][d].qty         += parseFloat(row.quantity)    || 0;
     costGroups[cc][sc][d].total_cost  += c.total_cost;
     costGroups[cc][sc][d].labor_hours += parseFloat(row.labor_hours) || 0;
+    costGroups[cc][sc][d].equip_hours += parseFloat(row.equip_hours) || 0;
   });
 
   const bidItems = p.bidItems || [];
-  function getBidUnit(cc, sc) {
-    const b = bidItems.find(b => b.cost_code === cc && b.sub_code === sc);
-    return b ? (b.unit || '') : '';
+  function getBidItem(cc, sc) {
+    return bidItems.find(b => b.cost_code === cc && b.sub_code === sc) || null;
   }
-  function getBidRate(cc, sc) {
-    const b = bidItems.find(b => b.cost_code === cc && b.sub_code === sc);
-    return b ? (parseFloat(b.unit_cost) || 0) : 0;
-  }
+
+  // Shared cell style helpers
+  const TH  = 'white-space:nowrap;padding:0.35rem 0.55rem;border:1px solid var(--border);font-size:0.75rem;';
+  const THL = TH + 'text-align:left;';
+  const THR = TH + 'text-align:right;';
+  const TD  = 'white-space:nowrap;padding:0.32rem 0.55rem;border:1px solid var(--border);font-size:0.78rem;';
+  const TDR = TD + 'text-align:right;';
+
+  // Group header style: light tinted background to separate current vs past columns
+  const GH_CUR  = 'background:rgba(74,222,128,0.08);';   // current project — green tint
+  const GH_HIST = 'background:rgba(148,163,184,0.1);';    // historical — grey tint
 
   let html = '';
   let ccIdx = 0;
   Object.entries(costGroups).forEach(([cc, subGroups]) => {
-    const ccId       = 'prod-cc-' + ccIdx;
-    const subCodes   = Object.keys(subGroups);
-    const totalDays  = subCodes.reduce((n, sc) => n + Object.keys(subGroups[sc]).filter(d => d !== '(No Date)').length, 0);
+    const ccId      = 'prod-cc-' + ccIdx;
+    const subCodes  = Object.keys(subGroups);
+    const totalDays = subCodes.reduce((n, sc) => n + Object.keys(subGroups[sc]).filter(d => d !== '(No Date)').length, 0);
 
     // Tier 2: sub code rows
     let subHtml = '';
     let scIdx = 0;
     subCodes.forEach(sc => {
-      const scId    = ccId + '-sc-' + scIdx;
-      const unit    = getBidUnit(cc === '(No Code)' ? '' : cc, sc === '(No Sub Code)' ? '' : sc);
-      const bidRate = getBidRate(cc === '(No Code)' ? '' : cc, sc === '(No Sub Code)' ? '' : sc);
-      const dates   = Object.keys(subGroups[sc]).filter(d => d !== '(No Date)').sort();
+      const scId       = ccId + '-sc-' + scIdx;
+      const rawCc      = cc === '(No Code)'     ? '' : cc;
+      const rawSc      = sc === '(No Sub Code)' ? '' : sc;
+      const bidItem    = getBidItem(rawCc, rawSc);
+      const bidQty     = bidItem ? (parseFloat(bidItem.quantity)  || 0) : 0;
+      const bidRate    = bidItem ? (parseFloat(bidItem.unit_cost) || 0) : 0;
+      const unit       = bidItem ? (bidItem.unit || '') : '';
+      const dates      = Object.keys(subGroups[sc]).filter(d => d !== '(No Date)').sort();
+
+      // Historical benchmark for this sub code
+      const histKey    = rawCc + '||' + rawSc;
+      const hist       = histAgg[histKey] || null;
+      const histDays   = hist ? hist.dates.size        : 0;
+      const histQty    = hist ? hist.running_qty        : 0;
+      const histCost   = hist ? hist.total_cost         : 0;
+      const histLbr    = hist ? hist.labor_hours        : 0;
+      const histEq     = hist ? hist.equip_hours        : 0;
+      const histUC     = histQty > 0 ? histCost / histQty   : 0;  // past avg unit cost
+      const histLbrPD  = histDays > 0 ? histLbr / histDays  : 0;  // past avg labor hrs/day
+      const histEqPD   = histDays > 0 ? histEq  / histDays  : 0;  // past avg equip hrs/day
+      const histMU     = histEq  > 0 ? histQty  / histEq    : 0;  // past avg MU equip (qty/equip hr)
+
+      // Build cumulative state across dates
+      let cumQty = 0, cumCost = 0, cumLbr = 0, cumEq = 0, cumDays = 0;
 
       // Tier 3: detail table rows
       let tableRows = '';
-      let prevQty = null, prevRate = null;
       dates.forEach(d => {
-        const day   = subGroups[sc][d];
-        const rate  = day.qty > 0 ? day.total_cost / day.qty : 0;
-        const dQty  = prevQty  !== null ? day.qty - prevQty : null;
-        const dRate = prevRate !== null ? rate - prevRate   : null;
-        const vsBid = bidRate  ? rate - bidRate             : null;
+        const day = subGroups[sc][d];
+        cumQty  += day.qty;
+        cumCost += day.total_cost;
+        cumLbr  += day.labor_hours;
+        cumEq   += day.equip_hours;
+        cumDays += 1;
 
-        const rateColor = dRate === null ? '' : dRate <= 0 ? 'color:#4ade80' : 'color:#f87171';
-        const qtyColor  = dQty  === null ? '' : dQty  >= 0 ? 'color:#4ade80' : 'color:#f87171';
-        const bidColor  = vsBid === null ? '' : vsBid <= 0 ? 'color:#4ade80' : 'color:#f87171';
+        const dailyUC    = day.qty > 0 ? day.total_cost / day.qty : 0;
+        const runUC      = cumQty  > 0 ? cumCost / cumQty         : 0;
+        const pctComp    = bidQty  > 0 ? (cumQty / bidQty) * 100  : null;
+
+        // Projected unit cost: (cost so far + remaining qty * running rate) / bid qty
+        let projUC = 0;
+        if (bidQty > 0 && cumQty > 0) {
+          const remaining = Math.max(bidQty - cumQty, 0);
+          projUC = (cumCost + remaining * runUC) / bidQty;
+        }
+
+        // MU Equip Hr = qty per equip hour (running)
+        const runMU  = cumEq > 0 ? cumQty / cumEq : 0;
+
+        // Color helpers: lower cost = green, higher = red; higher qty/MU = green
+        const ucColor    = histUC > 0 && runUC   > 0 ? (runUC   <= histUC  ? 'color:#4ade80' : 'color:#f87171') : '';
+        const projColor  = histUC > 0 && projUC  > 0 ? (projUC  <= histUC  ? 'color:#4ade80' : 'color:#f87171') : '';
+        const muColor    = histMU > 0 && runMU   > 0 ? (runMU   >= histMU  ? 'color:#4ade80' : 'color:#f87171') : '';
+        const pctColor   = pctComp !== null ? (pctComp >= 100 ? 'color:#4ade80' : '') : '';
 
         tableRows += `<tr>
-          <td style="padding:0.35rem 0.6rem;border:1px solid var(--border);">${esc(d)}</td>
-          <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">${day.qty > 0 ? fmt(day.qty) : '—'}</td>
-          <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">$${fmt(day.total_cost)}</td>
-          <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">${rate > 0 ? '$'+fmt(rate) : '—'}</td>
-          <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);">${day.labor_hours > 0 ? fmt(day.labor_hours) : '—'}</td>
-          <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);${qtyColor}">${dQty === null ? '—' : (dQty >= 0 ? '+' : '') + fmt(dQty)}</td>
-          <td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);${rateColor}">${dRate === null ? '—' : (dRate >= 0 ? '+$' : '-$') + fmt(Math.abs(dRate))}</td>
-          ${bidRate ? `<td style="text-align:right;padding:0.35rem 0.6rem;border:1px solid var(--border);${bidColor}">${vsBid >= 0 ? '+$' : '-$'}${fmt(Math.abs(vsBid))}</td>` : ''}
+          <td style="${TD}">${esc(d)}</td>
+          <td style="${TDR}">${bidQty > 0 ? fmt(bidQty) : '—'}</td>
+          <td style="${TDR}">${fmt(cumQty)}</td>
+          <td style="${TDR}${pctColor}">${pctComp !== null ? fmt(pctComp,1)+'%' : '—'}</td>
+          <td style="${TDR}">${dailyUC > 0 ? '$'+fmt(dailyUC) : '—'}</td>
+          <td style="${TDR}${ucColor}">${runUC > 0 ? '$'+fmt(runUC) : '—'}</td>
+          <td style="${TDR}${projColor}">${projUC > 0 ? '$'+fmt(projUC) : '—'}</td>
+          <td style="${TDR}color:var(--muted);">${histUC > 0 ? '$'+fmt(histUC) : '—'}</td>
+          <td style="${TDR}">${day.labor_hours > 0 ? fmt(day.labor_hours) : '—'}</td>
+          <td style="${TDR}color:var(--muted);">${histLbrPD > 0 ? fmt(histLbrPD) : '—'}</td>
+          <td style="${TDR}">${cumDays}</td>
+          <td style="${TDR}color:var(--muted);">${histDays > 0 ? histDays : '—'}</td>
+          <td style="${TDR}">${day.equip_hours > 0 ? fmt(day.equip_hours) : '—'}</td>
+          <td style="${TDR}color:var(--muted);">${histEqPD > 0 ? fmt(histEqPD) : '—'}</td>
+          <td style="${TDR}${muColor}">${runMU > 0 ? fmt(runMU) : '—'}</td>
+          <td style="${TDR}color:var(--muted);">${histMU > 0 ? fmt(histMU) : '—'}</td>
         </tr>`;
-        prevQty = day.qty; prevRate = rate;
       });
+
+      // Column group headers (two-row header: group label + column label)
+      const colGroupHdr = `
+        <tr style="background:var(--surface);">
+          <th style="${THL}" rowspan="2">Date</th>
+          <th style="${THR}${GH_CUR}" colspan="3">Quantity${unit ? ' ('+esc(unit)+')' : ''}</th>
+          <th style="${THR}${GH_CUR}" colspan="4">Unit Cost</th>
+          <th style="${THR}${GH_CUR}" colspan="2">Labor Hrs</th>
+          <th style="${THR}${GH_CUR}" colspan="2">Days</th>
+          <th style="${THR}${GH_CUR}" colspan="2">Equip Hrs</th>
+          <th style="${THR}${GH_CUR}" colspan="2">MU Equip (qty/hr)</th>
+        </tr>
+        <tr style="background:var(--surface);">
+          <th style="${THR}${GH_CUR}">Bid</th>
+          <th style="${THR}${GH_CUR}">Running</th>
+          <th style="${THR}${GH_CUR}">% Complete</th>
+          <th style="${THR}${GH_CUR}">Today</th>
+          <th style="${THR}${GH_CUR}">Running</th>
+          <th style="${THR}${GH_CUR}">Projected</th>
+          <th style="${THR}${GH_HIST}">Past Avg</th>
+          <th style="${THR}${GH_CUR}">Today</th>
+          <th style="${THR}${GH_HIST}">Past Avg/Day</th>
+          <th style="${THR}${GH_CUR}">Worked</th>
+          <th style="${THR}${GH_HIST}">Past Total</th>
+          <th style="${THR}${GH_CUR}">Today</th>
+          <th style="${THR}${GH_HIST}">Past Avg/Day</th>
+          <th style="${THR}${GH_CUR}">Running</th>
+          <th style="${THR}${GH_HIST}">Past Avg</th>
+        </tr>`;
 
       subHtml += `
         <div style="margin:0.4rem 0.75rem 0.4rem 1.5rem;border:1px solid var(--border);border-radius:4px;overflow:hidden;">
@@ -3993,19 +4075,8 @@ function renderProductionRateView(projId) {
             </span>
           </button>
           <div id="${scId}" style="display:none;overflow-x:auto;padding:0.5rem 0.75rem 0.75rem;">
-            <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
-              <thead>
-                <tr style="background:var(--surface);">
-                  <th style="text-align:left;padding:0.4rem 0.6rem;border:1px solid var(--border);">Date</th>
-                  <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Qty${unit ? ' ('+esc(unit)+')' : ''}</th>
-                  <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Total Cost</th>
-                  <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Unit Rate</th>
-                  <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Labor Hrs</th>
-                  <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Δ Qty</th>
-                  <th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">Δ Rate</th>
-                  ${bidRate ? '<th style="text-align:right;padding:0.4rem 0.6rem;border:1px solid var(--border);">vs Bid Rate</th>' : ''}
-                </tr>
-              </thead>
+            <table style="border-collapse:collapse;font-size:0.78rem;min-width:100%;">
+              <thead>${colGroupHdr}</thead>
               <tbody>${tableRows}</tbody>
             </table>
           </div>
