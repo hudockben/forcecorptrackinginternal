@@ -399,6 +399,15 @@
     }
     .del-btn:hover { color: var(--red); }
 
+    /* Cost code group rows */
+    .cost-group-hdr { background: #161c16; cursor: pointer; user-select: none; }
+    .cost-group-hdr:hover { background: #1c231c; }
+    .cost-group-hdr td { padding: 0.45rem 0.6rem; font-weight: 700; color: var(--green);
+      font-size: 0.78rem; letter-spacing: 0.04em; border-bottom: 1px solid #2a3a2a; }
+    .cost-group-toggle { margin-right: 0.4rem; font-size: 0.65rem; display:inline-block; transition: transform 0.15s; }
+    .cost-group-child td:nth-child(2) { padding-left: 1.4rem; }
+    .cost-group-child.ct-hidden { display: none; }
+
     /* Delete confirmation popover */
     .del-confirm {
       position: absolute; z-index: 999;
@@ -832,12 +841,27 @@
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
 <div class="tab-panel" id="tab-cost">
+  <!-- Filter bar -->
+  <div id="cost-filter-bar" style="padding:0.55rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
+    <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Filters:</span>
+    <button class="cfb cost-cfb" id="cost-proj-btn" data-f="_project" style="font-size:0.75rem;padding:0.2rem 0.5rem">Project ▼</button>
+    <div style="display:flex;align-items:center;gap:0.35rem">
+      <span style="font-size:0.72rem;color:var(--muted)">Sq Ft</span>
+      <input id="cost-sqft-min" type="number" placeholder="Min" min="0" step="1"
+        style="width:72px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:0.2rem 0.35rem;font-size:0.75rem;outline:none">
+      <span style="color:var(--muted)">–</span>
+      <input id="cost-sqft-max" type="number" placeholder="Max" min="0" step="1"
+        style="width:72px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:0.2rem 0.35rem;font-size:0.75rem;outline:none">
+      <button class="btn btn-ghost" style="font-size:0.72rem;padding:0.2rem 0.5rem" onclick="applySqftFilter()">Apply</button>
+    </div>
+    <button class="btn btn-ghost" id="cost-clear-filters-btn" style="font-size:0.72rem;padding:0.2rem 0.5rem;display:none" onclick="clearAllCostFilters()">✕ Clear Filters</button>
+  </div>
   <div class="table-wrap">
     <table id="tracker">
       <thead>
         <tr class="group-row">
           <th class="g-base"  colspan="1"></th>
-          <th class="g-base"  colspan="5">Identification</th>
+          <th class="g-base"  colspan="3">Identification</th>
           <th class="g-cost"  colspan="3">Bid Plan</th>
           <th class="g-sum"   colspan="4">Company Actuals (from Daily)</th>
           <th class="g-sum"   colspan="2">Progress</th>
@@ -846,9 +870,6 @@
         </tr>
         <tr class="col-row">
           <th></th>
-          <th>Project Name <button class="cfb cost-cfb" data-f="project_name">▼</button></th>
-          <th>Sq Ft <button class="cfb cost-cfb" data-f="sqft">▼</button></th>
-          <th>Cost Code <button class="cfb cost-cfb" data-f="cost_code">▼</button></th>
           <th>Sub Code <button class="cfb cost-cfb" data-f="sub_code">▼</button></th>
           <th>Status <button class="cfb cost-cfb" data-f="status">▼</button></th>
           <th>Bid Qty</th>
@@ -1480,6 +1501,7 @@ function addProject() {
     'client':'','gc':'','pm':'','super':'','estimator':'','client-contact':'',
     'address':'','city-state':'','start-date':'','end-date':'','contract-days':'',
     'contract-amount':'','revised-amount':'','retention':'','scope':'','notes':'',
+    'sqft': '',
     prevailing_wage: false, assigned_employees: [], assigned_equipment: []
   };
   projectsList.push(p);
@@ -1787,6 +1809,9 @@ function projectCardHTML(p) {
         <div class="info-field"><label>Project Name</label>
           <input type="text" value="${esc(p['project-name']||'')}" placeholder="e.g. Route 9 Widening"
             oninput="updateProjectField('${p.id}','project-name',this.value)"></div>
+        <div class="info-field"><label>Field Sq Ft</label>
+          <input type="number" value="${esc(p['sqft']||'')}" placeholder="e.g. 75000" step="1" min="0"
+            oninput="updateProjectField('${p.id}','sqft',this.value)"></div>
         <div class="info-field"><label>Job Number</label>
           <input type="text" value="${esc(p['job-number']||'')}" placeholder="e.g. 2025-014"
             oninput="updateProjectField('${p.id}','job-number',this.value)"></div>
@@ -2554,7 +2579,6 @@ function saveCostRows() { apiPut('fct_cost_rows', costRows); }
 // Only store bid/plan data — actuals come from daily aggregation
 const defaultCostRow = () => ({
   id: Date.now() + Math.random(),
-  project_name: '', sqft: '',
   cost_code: '', sub_code: '',
   quantity: '',      // bid quantity
   bid_item_cost: '', // bid cost per unit
@@ -2589,113 +2613,206 @@ function buildDailyAgg() {
   return agg;
 }
 
+function getFilteredProjectIds() {
+  // Returns null (= all) or a Set of project IDs passing project name + sqft filters
+  const projFilter = costFilters['_project']; // Set of project names, or undefined
+  const sqftMin = costSqftMin != null ? costSqftMin : null;
+  const sqftMax = costSqftMax != null ? costSqftMax : null;
+  const noFilter = !projFilter && sqftMin == null && sqftMax == null;
+  if (noFilter) return null;
+  return new Set(
+    projectsList
+      .filter(p => {
+        if (projFilter && !projFilter.has(p['project-name'] || '')) return false;
+        const s = parseFloat(p['sqft']) || 0;
+        if (sqftMin != null && s < sqftMin) return false;
+        if (sqftMax != null && s > sqftMax) return false;
+        return true;
+      })
+      .map(p => p.id)
+  );
+}
+
+function buildFilteredDailyAgg() {
+  const projectIds = getFilteredProjectIds();
+  const agg = {};
+  projectsList.forEach(p => {
+    if (projectIds && !projectIds.has(p.id)) return;
+    (p.dailyRows || []).forEach(row => {
+      const key = (row.cost_code || '') + '||' + (row.sub_code || '');
+      if (!agg[key]) agg[key] = {
+        running_qty: 0, total_cost: 0,
+        labor_hours: 0, equip_hours: 0, equip_cost: 0,
+        material_cost: 0, dates: new Set(),
+      };
+      const a = agg[key];
+      const c = calcDaily(row);
+      a.running_qty   += parseFloat(row.quantity)    || 0;
+      a.total_cost    += c.total_cost;
+      a.labor_hours   += parseFloat(row.labor_hours) || 0;
+      a.equip_hours   += parseFloat(row.equip_hours) || 0;
+      a.equip_cost    += c.equip_total;
+      a.material_cost += parseFloat(row.material_cost) || 0;
+      if (row.date) a.dates.add(row.date);
+    });
+  });
+  return agg;
+}
+
 function renderCostTable() {
   const tbody = document.getElementById('cost-tbody');
   tbody.innerHTML = '';
-  const agg = buildDailyAgg();
 
-  // Combine: bid-tracked rows + any cost codes in daily with no bid entry
-  const bidKeys = costRows.map(r => (r.cost_code || '') + '||' + (r.sub_code || ''));
-  const dailyOnlyKeys = Object.keys(agg).filter(k => !bidKeys.includes(k));
+  const agg = buildFilteredDailyAgg();
 
-  // Apply cost filters
-  const filteredRows = costRows.filter(r =>
-    Object.entries(costFilters).every(([f, allowed]) => allowed.has(String(r[f] ?? '')))
-  );
-  const filteredBidKeys = filteredRows.map(r => (r.cost_code || '') + '||' + (r.sub_code || ''));
-  const filteredDailyOnlyKeys = Object.keys(costFilters).length === 0
-    ? dailyOnlyKeys
-    : dailyOnlyKeys.filter(k => {
-        const [cc, sc] = k.split('||');
-        return Object.entries(costFilters).every(([f, allowed]) => {
-          if (f === 'cost_code') return allowed.has(cc);
-          if (f === 'sub_code')  return allowed.has(sc);
-          return true;
-        });
-      });
+  // Collect all cost_code/sub_code combos from bid rows + daily-only
+  const bidKeys   = costRows.map(r => (r.cost_code || '') + '||' + (r.sub_code || ''));
+  const allKeys   = [
+    ...bidKeys,
+    ...Object.keys(agg).filter(k => !bidKeys.includes(k)),
+  ];
 
-  if (filteredRows.length === 0 && filteredDailyOnlyKeys.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="23">No data yet. Add a bid entry or log daily records to populate company averages.</td></tr>';
+  // Apply sub_code / status column filters
+  const filteredKeys = allKeys.filter(key => {
+    const [, sc] = key.split('||');
+    const cr = costRows.find(r => (r.cost_code||'')+'||'+(r.sub_code||'') === key);
+    const status = cr ? cr.status : '';
+    if (costFilters['sub_code'] && !costFilters['sub_code'].has(sc)) return false;
+    if (costFilters['status']   && !costFilters['status'].has(status)) return false;
+    return true;
+  });
+
+  if (filteredKeys.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="21">No data yet. Add a bid entry or log daily records.</td></tr>';
     return;
   }
 
-  function renderRow(project_name, sqft, cost_code, sub_code, status, bid_qty, bid_ic, a, i, editable) {
-    const bq          = parseFloat(bid_qty)  || 0;
-    const bic         = parseFloat(bid_ic)   || 0;
-    const total_bid   = bq * bic;
-    const rqty        = a.running_qty;
-    const rtotal      = a.total_cost;
-    const past_avg    = rqty    ? rtotal / rqty          : 0;
-    const total_pct   = total_bid ? (rtotal / total_bid) * 100 : 0;
-    const pct_comp    = bq      ? (rqty / bq) * 100      : 0;
-    const projected   = rtotal  + (bq - rqty) * past_avg;
-    const days        = a.dates.size;
-    const avg_lab     = (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
-    const mu_lab      = a.labor_hours ? rqty / a.labor_hours : 0;
-    const eq_cost_hr  = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
-    const mu_eq       = a.equip_hours ? rqty / a.equip_hours : 0;
-    const tc          = total_bid ? costClass(total_pct) : '';
-    const tr = document.createElement('tr');
-    if (!editable) tr.style.opacity = '0.65';
-    tr.innerHTML = editable ? `
-      <td class="del-cell"><button class="del-btn" data-tab="cost" data-i="${i}">&#10005;</button></td>
-      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="project_name" value="${esc(project_name)}" placeholder="Project name"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="sqft"         value="${esc(sqft)}"         step="any" placeholder="0"></td>
-      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="cost_code"    value="${esc(cost_code)}"    placeholder="03-200"></td>
-      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="sub_code"     value="${esc(sub_code)}"     placeholder="A"></td>
-      <td>
-        <select data-tab="cost" data-i="${i}" data-f="status" class="${statusClass(status)}">
-          <option ${status==='Active'   ?'selected':''}>Active</option>
-          <option ${status==='Complete' ?'selected':''}>Complete</option>
-          <option ${status==='On Hold'  ?'selected':''}>On Hold</option>
-          <option ${status==='At Risk'  ?'selected':''}>At Risk</option>
-        </select>
-      </td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="quantity"     value="${bid_qty}"     step="any" placeholder="0"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="bid_item_cost" value="${bid_ic}" step="any" placeholder="0.00"></td>
-      <td class="calc">${total_bid ? '$'+fmt(total_bid) : '—'}</td>
-    ` : `
-      <td class="del-cell"></td>
-      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(project_name) || '—'}</td>
-      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(sqft) || '—'}</td>
-      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(cost_code) || '—'}</td>
-      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(sub_code)  || '—'}</td>
-      <td style="padding:0.35rem 0.5rem; font-size:0.68rem; color:#555">No bid entry</td>
-      <td class="calc" style="color:#555">—</td>
-      <td class="calc" style="color:#555">—</td>
-      <td class="calc" style="color:#555">—</td>
-    `;
-    tr.innerHTML += `
-      <td class="calc ${tc}">$${fmt(rqty, 2)}</td>
-      <td class="calc ${tc}">$${fmt(rtotal)}</td>
-      <td class="calc" title="Company average cost per unit">${rqty ? '$'+fmt(past_avg) : '—'}</td>
-      <td class="calc ${tc}">${total_bid ? fmtPct(total_pct) : '—'}</td>
-      <td class="calc ${tc}">${bq ? fmtPct(pct_comp) : '—'}</td>
-      <td class="calc ${tc}">${bq ? '$'+fmt(projected) : '—'}</td>
-      <td class="calc">${fmt(a.labor_hours, 1)}</td>
-      <td class="calc">${days}</td>
-      <td class="calc">${avg_lab ? fmt(avg_lab, 1) : '—'}</td>
-      <td class="calc">${mu_lab ? fmt(mu_lab, 4) : '—'}</td>
-      <td class="calc">$${fmt(a.equip_cost)}</td>
-      <td class="calc">${fmt(a.equip_hours, 1)}</td>
-      <td class="calc">${eq_cost_hr ? fmt(eq_cost_hr, 4) : '—'}</td>
-      <td class="calc">${mu_eq ? fmt(mu_eq, 4) : '—'}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-
-  // Bid-tracked rows (editable)
-  filteredRows.forEach((row, i) => {
-    const realIndex = costRows.indexOf(row);
-    const key = (row.cost_code || '') + '||' + (row.sub_code || '');
-    const a   = agg[key] || { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, material_cost:0, dates:new Set() };
-    renderRow(row.project_name||'', row.sqft||'', row.cost_code, row.sub_code, row.status, row.quantity, row.bid_item_cost, a, realIndex, true);
+  // Group by cost_code
+  const groups = {};
+  filteredKeys.forEach(key => {
+    const [cc] = key.split('||');
+    if (!groups[cc]) groups[cc] = [];
+    groups[cc].push(key);
   });
 
-  // Daily-only rows (read-only — no bid entry yet)
-  filteredDailyOnlyKeys.forEach(key => {
-    const [cc, sc] = key.split('||');
-    renderRow('', '', cc, sc, '', '', '', agg[key], -1, false);
+  const TOTAL_COLS = 21;
+
+  Object.entries(groups).forEach(([costCode, keys]) => {
+    // ── Parent group row ──
+    const groupId = 'cg-' + costCode.replace(/\W/g, '_');
+    const parentTr = document.createElement('tr');
+    parentTr.className = 'cost-group-hdr';
+    parentTr.dataset.group = groupId;
+
+    // Aggregate totals across all sub codes for summary display
+    const groupAgg = { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, dates:new Set() };
+    keys.forEach(k => {
+      const a = agg[k];
+      if (!a) return;
+      groupAgg.running_qty  += a.running_qty;
+      groupAgg.total_cost   += a.total_cost;
+      groupAgg.labor_hours  += a.labor_hours;
+      groupAgg.equip_hours  += a.equip_hours;
+      groupAgg.equip_cost   += a.equip_cost;
+      a.dates.forEach(d => groupAgg.dates.add(d));
+    });
+
+    parentTr.innerHTML = `
+      <td colspan="${TOTAL_COLS}" style="padding:0.4rem 0.6rem">
+        <span class="cost-group-toggle" id="tog-${groupId}">▼</span>
+        <strong>${esc(costCode) || '(No Code)'}</strong>
+        <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.75rem">
+          ${keys.length} sub code${keys.length!==1?'s':''}
+          &nbsp;·&nbsp; Total: <span style="color:var(--green)">$${fmt(groupAgg.total_cost)}</span>
+          &nbsp;·&nbsp; Labor Hrs: ${fmt(groupAgg.labor_hours,1)}
+          &nbsp;·&nbsp; Days: ${groupAgg.dates.size}
+        </span>
+      </td>`;
+
+    parentTr.addEventListener('click', () => {
+      const collapsed = parentTr.dataset.collapsed === '1';
+      parentTr.dataset.collapsed = collapsed ? '0' : '1';
+      const tog = document.getElementById('tog-' + groupId);
+      if (tog) tog.style.transform = collapsed ? '' : 'rotate(-90deg)';
+      tbody.querySelectorAll(`tr.cost-group-child[data-group="${groupId}"]`).forEach(r => {
+        r.classList.toggle('ct-hidden', !collapsed);
+      });
+    });
+    tbody.appendChild(parentTr);
+
+    // ── Child rows (sub codes) ──
+    keys.forEach(key => {
+      const [cc, sc] = key.split('||');
+      const cr      = costRows.find(r => (r.cost_code||'')+'||'+(r.sub_code||'') === key);
+      const realIdx = cr ? costRows.indexOf(cr) : -1;
+      const editable = !!cr;
+      const status  = cr ? cr.status   : '';
+      const bid_qty = cr ? cr.quantity  : '';
+      const bid_ic  = cr ? cr.bid_item_cost : '';
+      const a       = agg[key] || { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, material_cost:0, dates:new Set() };
+
+      const bq        = parseFloat(bid_qty) || 0;
+      const bic       = parseFloat(bid_ic)  || 0;
+      const total_bid = bq * bic;
+      const rqty      = a.running_qty;
+      const rtotal    = a.total_cost;
+      const past_avg  = rqty    ? rtotal / rqty          : 0;
+      const total_pct = total_bid ? (rtotal / total_bid) * 100 : 0;
+      const pct_comp  = bq      ? (rqty / bq) * 100      : 0;
+      const projected = rtotal  + (bq - rqty) * past_avg;
+      const days      = a.dates.size;
+      const avg_lab   = (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
+      const mu_lab    = a.labor_hours ? rqty / a.labor_hours : 0;
+      const eq_cost_hr = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
+      const mu_eq     = a.equip_hours ? rqty / a.equip_hours : 0;
+      const tc        = total_bid ? costClass(total_pct) : '';
+
+      const childTr = document.createElement('tr');
+      childTr.className = 'cost-group-child';
+      childTr.dataset.group = groupId;
+      if (!editable) childTr.style.opacity = '0.65';
+
+      childTr.innerHTML = editable ? `
+        <td class="del-cell"><button class="del-btn" data-tab="cost" data-i="${realIdx}">&#10005;</button></td>
+        <td><input type="text" data-tab="cost" data-i="${realIdx}" data-f="sub_code" value="${esc(sc)}" placeholder="Sub code"></td>
+        <td>
+          <select data-tab="cost" data-i="${realIdx}" data-f="status" class="${statusClass(status)}">
+            <option ${status==='Active'   ?'selected':''}>Active</option>
+            <option ${status==='Complete' ?'selected':''}>Complete</option>
+            <option ${status==='On Hold'  ?'selected':''}>On Hold</option>
+            <option ${status==='At Risk'  ?'selected':''}>At Risk</option>
+          </select>
+        </td>
+        <td><input type="number" data-tab="cost" data-i="${realIdx}" data-f="quantity"      value="${bid_qty}" step="any" placeholder="0"></td>
+        <td><input type="number" data-tab="cost" data-i="${realIdx}" data-f="bid_item_cost" value="${bid_ic}"  step="any" placeholder="0.00"></td>
+        <td class="calc">${total_bid ? '$'+fmt(total_bid) : '—'}</td>
+      ` : `
+        <td class="del-cell"></td>
+        <td style="padding:0.35rem 0.5rem;font-style:italic">${esc(sc) || '—'}</td>
+        <td style="padding:0.35rem 0.5rem;font-size:0.68rem;color:#555">No bid entry</td>
+        <td class="calc" style="color:#555">—</td>
+        <td class="calc" style="color:#555">—</td>
+        <td class="calc" style="color:#555">—</td>
+      `;
+
+      childTr.innerHTML += `
+        <td class="calc ${tc}">$${fmt(rqty, 2)}</td>
+        <td class="calc ${tc}">$${fmt(rtotal)}</td>
+        <td class="calc" title="Company average cost per unit">${rqty ? '$'+fmt(past_avg) : '—'}</td>
+        <td class="calc ${tc}">${total_bid ? fmtPct(total_pct) : '—'}</td>
+        <td class="calc ${tc}">${bq ? fmtPct(pct_comp) : '—'}</td>
+        <td class="calc ${tc}">${bq ? '$'+fmt(projected) : '—'}</td>
+        <td class="calc">${fmt(a.labor_hours, 1)}</td>
+        <td class="calc">${days}</td>
+        <td class="calc">${avg_lab ? fmt(avg_lab, 1) : '—'}</td>
+        <td class="calc">${mu_lab ? fmt(mu_lab, 4) : '—'}</td>
+        <td class="calc">$${fmt(a.equip_cost)}</td>
+        <td class="calc">${fmt(a.equip_hours, 1)}</td>
+        <td class="calc">${eq_cost_hr ? fmt(eq_cost_hr, 4) : '—'}</td>
+        <td class="calc">${mu_eq ? fmt(mu_eq, 4) : '—'}</td>
+      `;
+      tbody.appendChild(childTr);
+    });
   });
 }
 
@@ -2964,19 +3081,62 @@ function exportDailyCSV(projId) {
 /* ═══════════════════════════════════════════
    COST TABLE FILTERS
 ═══════════════════════════════════════════ */
-let costFilters  = {};
+let costFilters  = {};   // sub_code, status, _project filters
 let _cffField    = null;
 let _cffPending  = null;
+let costSqftMin  = null;
+let costSqftMax  = null;
+
+function _updateCostClearBtn() {
+  const active = Object.keys(costFilters).length > 0 || costSqftMin != null || costSqftMax != null;
+  const btn = document.getElementById('cost-clear-filters-btn');
+  if (btn) btn.style.display = active ? '' : 'none';
+  // Update project button label
+  const projBtn = document.getElementById('cost-proj-btn');
+  if (projBtn) {
+    const pf = costFilters['_project'];
+    projBtn.textContent = pf ? `Project (${pf.size}) ▼` : 'Project ▼';
+    projBtn.classList.toggle('active', !!pf);
+  }
+}
+
+function applySqftFilter() {
+  const mn = document.getElementById('cost-sqft-min').value;
+  const mx = document.getElementById('cost-sqft-max').value;
+  costSqftMin = mn !== '' ? parseFloat(mn) : null;
+  costSqftMax = mx !== '' ? parseFloat(mx) : null;
+  _updateCostClearBtn();
+  renderCostTable();
+}
+
+function clearAllCostFilters() {
+  costFilters  = {};
+  costSqftMin  = null;
+  costSqftMax  = null;
+  const mn = document.getElementById('cost-sqft-min');
+  const mx = document.getElementById('cost-sqft-max');
+  if (mn) mn.value = '';
+  if (mx) mx.value = '';
+  _updateCostClearBtn();
+  _updateCostFilterButtons();
+  renderCostTable();
+}
 
 function _updateCostFilterButtons() {
   document.querySelectorAll('.cost-cfb').forEach(btn => {
     btn.classList.toggle('active', !!costFilters[btn.dataset.f]);
   });
+  _updateCostClearBtn();
 }
 
 function openCostFilter(field, btn) {
   _cffField = field;
-  const unique = [...new Set(costRows.map(r => String(r[field] ?? '')))].sort();
+  let unique;
+  if (field === '_project') {
+    unique = [...new Set(projectsList.map(p => p['project-name'] || ''))].sort();
+  } else {
+    unique = [...new Set(costRows.map(r => String(r[field] ?? '')))].sort();
+  }
   const active = costFilters[field] || null;
   _cffPending = active ? new Set(active) : null;
 
