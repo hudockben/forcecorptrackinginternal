@@ -1273,21 +1273,23 @@ function renderHomeTab() {
   const today = new Date();
   const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  // ── Cross-project aggregates ──
-  const agg = buildDailyAgg();
+  // ── Cross-project aggregates (sum from each project's own data) ──
   let totalBid = 0, totalActual = 0, totalProjected = 0;
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
 
-  costRows.forEach(row => {
-    const bq  = parseFloat(row.quantity)      || 0;
-    const bic = parseFloat(row.bid_item_cost) || 0;
-    const key = (row.cost_code||'')+'||'+(row.sub_code||'');
-    const a   = agg[key] || { running_qty:0, total_cost:0 };
-    const past_avg = a.running_qty ? a.total_cost / a.running_qty : bic;
-    totalBid       += bq * bic;
-    totalActual    += a.total_cost;
-    totalProjected += a.total_cost + (bq - a.running_qty) * past_avg;
-    if (row.status) statusCounts[row.status] = (statusCounts[row.status] || 0) + 1;
+  projectsList.forEach(p => {
+    const projBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+    const projActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+    // Simple projected: if we've spent X% of bid on Y% of work, project total proportionally
+    const projPct    = projBid ? projActual / projBid : 0;
+    const projected  = projPct > 0 ? projActual / projPct : projBid;
+    totalBid       += projBid;
+    totalActual    += projActual;
+    totalProjected += projected;
+    // status counts from bid items
+    (p.bidItems||[]).forEach(b => {
+      if (b.status) statusCounts[b.status] = (statusCounts[b.status] || 0) + 1;
+    });
   });
 
   const overallPct = totalBid ? (totalActual / totalBid) * 100 : 0;
