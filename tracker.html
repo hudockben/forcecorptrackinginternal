@@ -399,6 +399,25 @@
     }
     .del-btn:hover { color: var(--red); }
 
+    /* Delete confirmation popover */
+    .del-confirm {
+      position: absolute; z-index: 999;
+      background: #1e1e1e; border: 1px solid #444;
+      border-radius: 6px; padding: 8px 12px;
+      white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.8rem; color: #ccc;
+    }
+    .del-confirm span { margin-right: 2px; }
+    .del-confirm button {
+      border: none; border-radius: 4px; padding: 3px 10px;
+      cursor: pointer; font-size: 0.78rem; font-weight: 600;
+    }
+    .del-confirm .dc-yes { background: var(--red); color: #fff; }
+    .del-confirm .dc-yes:hover { background: #c0392b; }
+    .del-confirm .dc-no  { background: #333; color: #ccc; }
+    .del-confirm .dc-no:hover  { background: #444; }
+
     .empty-row td {
       text-align: center; color: var(--muted);
       padding: 2rem; font-size: 0.85rem;
@@ -3015,22 +3034,65 @@ document.addEventListener('input', e => {
   }
 });
 
+function removeDelConfirm() {
+  document.querySelectorAll('.del-confirm').forEach(el => el.remove());
+}
+
 document.addEventListener('click', e => {
+  // Close any open confirm popover when clicking outside
+  if (!e.target.closest('.del-confirm') && !e.target.closest('.del-btn')) {
+    removeDelConfirm();
+  }
+
   const btn = e.target.closest('.del-btn');
   if (!btn) return;
-  const tab = btn.dataset.tab;
-  const i   = parseInt(btn.dataset.i);
-  if (tab === 'cost') {
-    costRows.splice(i, 1);
-    saveCostRows();
-    renderCostTable();
-  } else if (tab === 'daily') {
-    const projId = btn.dataset.proj;
-    const p = getProj(projId); if (!p) return;
-    p.dailyRows.splice(i, 1);
-    saveProjects();
-    renderDailyTable(projId);
-  }
+
+  // If a confirm is already open for this button, ignore (handled by its own listeners)
+  if (btn.querySelector('.del-confirm') || btn._confirmOpen) return;
+
+  e.stopPropagation();
+  removeDelConfirm(); // close any other open confirms
+
+  const tab    = btn.dataset.tab;
+  const i      = parseInt(btn.dataset.i);
+  const projId = btn.dataset.proj;
+
+  // Build popover
+  const popover = document.createElement('div');
+  popover.className = 'del-confirm';
+  popover.innerHTML =
+    '<span>Are you sure?</span>' +
+    '<button class="dc-yes">Yes</button>' +
+    '<button class="dc-no">No</button>';
+
+  // Position relative to button
+  btn._confirmOpen = true;
+  document.body.appendChild(popover);
+  const rect = btn.getBoundingClientRect();
+  popover.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+  popover.style.left = (rect.left  + window.scrollX - popover.offsetWidth / 2 + rect.width / 2) + 'px';
+
+  popover.querySelector('.dc-no').addEventListener('click', e => {
+    e.stopPropagation();
+    removeDelConfirm();
+    btn._confirmOpen = false;
+  });
+
+  popover.querySelector('.dc-yes').addEventListener('click', e => {
+    e.stopPropagation();
+    removeDelConfirm();
+    btn._confirmOpen = false;
+    if (tab === 'cost') {
+      costRows.splice(i, 1);
+      saveCostRows();
+      renderCostTable();
+    } else if (tab === 'daily') {
+      const p = getProj(projId); if (!p) return;
+      p.dailyRows.splice(i, 1);
+      saveProjects();
+      renderDailyTable(projId);
+    }
+  });
 });
 
 /* ═══════════════════════════════════════════
