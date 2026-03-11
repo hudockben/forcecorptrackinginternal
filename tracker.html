@@ -2450,8 +2450,9 @@ function renderPOTab() {
   const root = document.getElementById('po-root');
   if (!root) return;
 
-  // Track whether the search bar has focus so we can restore it after rebuild
+  // Track which input/select has focus so we can restore it after rebuild
   const searchWasFocused = document.activeElement?.classList?.contains('po-global-search');
+  const focusedFilterKey = document.activeElement?.dataset?.poFilterKey || null;
 
   const thf = (label, key, right) => {
     const active = poFilters[key] ? ' active' : '';
@@ -2465,7 +2466,8 @@ function renderPOTab() {
 
   const fInput = (key, placeholder) =>
     `<input type="text" value="${esc(poFilters[key])}" placeholder="${placeholder}"
-      onchange="poFilters['${key}']=this.value;renderPOTab()"
+      data-po-filter-key="${key}"
+      oninput="poFilters['${key}']=this.value;renderPOTab()"
       style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.72rem;padding:0.2rem 0.3rem;outline:none;box-sizing:border-box">`;
 
   const fSelect = (key, opts) =>
@@ -2586,10 +2588,13 @@ function renderPOTab() {
       </div>
     </div>`;
 
-  // Restore search bar focus after rebuild
+  // Restore focus after rebuild
   if (searchWasFocused) {
     const si = root.querySelector('.po-global-search');
     if (si) { si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
+  } else if (focusedFilterKey) {
+    const fi = root.querySelector(`[data-po-filter-key="${focusedFilterKey}"]`);
+    if (fi) { fi.focus(); fi.setSelectionRange && fi.setSelectionRange(fi.value.length, fi.value.length); }
   }
 
   // Wire ▼ header buttons to focus the corresponding column filter input
