@@ -866,6 +866,32 @@
   <div id="supplier-root"></div>
 </div>
 
+<!-- ══════════════ BID LINE ITEMS FULL-SCREEN ══════════════ -->
+<div id="bid-fullscreen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
+    <button class="btn btn-ghost" onclick="closeBidView()">&#8592; Back</button>
+    <span id="bid-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
+    <div style="margin-left:auto;display:flex;gap:0.5rem">
+      <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
+      <button class="btn btn-green" id="bid-fs-add">+ Add Item</button>
+    </div>
+  </div>
+  <div style="flex:1;overflow:auto;padding:1.25rem;">
+    <table class="bid-table" style="width:100%">
+      <thead><tr>
+        <th style="width:28px"></th>
+        <th>Sub Code</th>
+        <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+        <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+        <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
+        <th class="num">Variance</th><th class="num">Projected Cost</th>
+      </tr></thead>
+      <tbody id="bid-fs-tbody"></tbody>
+      <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
+    </table>
+  </div>
+</div>
+
 <!-- ══════════════ PURCHASE ORDERS TAB ══════════════ -->
 <div class="tab-panel" id="tab-po">
   <div id="po-root"></div>
@@ -2052,6 +2078,7 @@ function projectCardHTML(p) {
       ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
       ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff)+' under':'$'+fmt(Math.abs(diff))+' over'}</span>` : ''}
     </div>
+    <button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#1a3a2a;color:#4ade80;border:1px solid #4ade80;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>
     <button class="btn btn-green" style="font-size:0.75rem;padding:0.25rem 0.7rem;" onclick="event.stopPropagation();openDailyView('${p.id}')">Daily Tracking &#8594;</button>
     <button class="proj-card-toggle">▾</button>
   </div>
@@ -2182,31 +2209,6 @@ function projectCardHTML(p) {
       </div>
     </div>
 
-    <div class="bid-section">
-      <div class="bid-section-title" onclick="toggleBidSection(this)">
-        <span><span class="bid-section-caret">▼</span>Bid Line Items vs Actuals</span>
-        <div style="display:flex;gap:0.5rem" onclick="event.stopPropagation()">
-          <button class="btn btn-ghost" onclick="exportBidPDF('${p.id}')">&#8595; PDF</button>
-          <button class="btn btn-blue" onclick="addBidItem('${p.id}')">+ Add Item</button>
-        </div>
-      </div>
-      <div class="bid-section-body">
-        <div class="bid-table-wrap">
-          <table class="bid-table">
-            <thead><tr>
-              <th style="width:28px"></th>
-              <th>Sub Code</th>
-              <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
-              <th class="num">Bid Total</th><th class="num">Actual Cost</th>
-              <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
-              <th class="num">Variance</th><th class="num">Projected Cost</th>
-            </tr></thead>
-            <tbody id="btbody-${p.id}"></tbody>
-            <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
-          </table>
-        </div>
-      </div>
-    </div>
 
     <div class="bid-section">
       <div class="bid-section-title" onclick="toggleBidSection(this)">
@@ -3741,6 +3743,33 @@ function closeDailyView() {
     const tbody = document.getElementById('daily-tbody-' + dailyViewProjId);
     if (tbody) tbody.id = 'daily-fs-tbody';
     dailyViewProjId = null;
+  }
+}
+
+let bidViewProjId = null;
+
+function openBidView(projId) {
+  const p = getProj(projId); if (!p) return;
+  bidViewProjId = projId;
+  document.getElementById('bid-fs-title').textContent =
+    (p['project-name'] || 'Untitled Project') + ' — Bid Line Items vs Actuals';
+  document.getElementById('bid-fs-add').onclick = () => { addBidItem(projId); };
+  document.getElementById('bid-fs-pdf').onclick = () => exportBidPDF(projId);
+  // Point the generic tbody/tfoot ids to the fullscreen elements
+  document.getElementById('bid-fs-tbody').id = 'btbody-' + projId;
+  document.getElementById('bid-fs-tfoot').id = 'bfoot-' + projId;
+  document.getElementById('bid-fullscreen').style.display = 'flex';
+  renderBidTable(projId);
+}
+
+function closeBidView() {
+  document.getElementById('bid-fullscreen').style.display = 'none';
+  if (bidViewProjId) {
+    const tbody = document.getElementById('btbody-' + bidViewProjId);
+    if (tbody) tbody.id = 'bid-fs-tbody';
+    const tfoot = document.getElementById('bfoot-' + bidViewProjId);
+    if (tfoot) tfoot.id = 'bid-fs-tfoot';
+    bidViewProjId = null;
   }
 }
 
