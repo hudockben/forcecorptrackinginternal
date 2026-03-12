@@ -3000,6 +3000,8 @@ function addSupplier() {
 }
 
 function deleteSupplier(idx) {
+  const name = lists.suppliers[idx]?.name || 'this supplier';
+  if (!confirm(`Delete "${name}"?`)) return;
   lists.suppliers.splice(idx, 1);
   saveLists();
   renderSupplierTab();
