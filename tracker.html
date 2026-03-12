@@ -3543,20 +3543,22 @@ function buildDailyAgg() {
     if (!agg[key]) agg[key] = {
       running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
       labor_hours: 0, equip_hours: 0, equip_cost: 0,
-      material_cost: 0, dates: new Set(),
+      material_cost: 0, num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
     };
     const a = agg[key];
     const c = calcDaily(row);
     const q = parseFloat(row.quantity) || 0;
     const importedCost = parseFloat(row.total_cost) || 0;
-    a.running_qty     += q;
+    const nl = parseFloat(row.num_laborers) || 0;
+    a.running_qty        += q;
     if (q) a.qty_count++;
-    a.total_cost      += importedCost > 0 ? importedCost : c.total_cost;
-    a.imported_total  += importedCost;
-    a.labor_hours     += parseFloat(row.labor_hours)   || 0;
-    a.equip_hours     += parseFloat(row.equip_hours)   || 0;
-    a.equip_cost      += c.equip_total;
-    a.material_cost   += parseFloat(row.material_cost) || 0;
+    a.total_cost         += importedCost > 0 ? importedCost : c.total_cost;
+    a.imported_total     += importedCost;
+    a.labor_hours        += parseFloat(row.labor_hours)   || 0;
+    a.equip_hours        += parseFloat(row.equip_hours)   || 0;
+    a.equip_cost         += c.equip_total;
+    a.material_cost      += parseFloat(row.material_cost) || 0;
+    if (nl) { a.num_laborers_sum += nl; a.num_laborers_count++; }
     if (row.date) a.dates.add(row.date);
   });
   return agg;
@@ -3592,20 +3594,22 @@ function buildFilteredDailyAgg() {
       if (!agg[key]) agg[key] = {
         running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
         labor_hours: 0, equip_hours: 0, equip_cost: 0,
-        material_cost: 0, dates: new Set(),
+        material_cost: 0, num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
       };
       const a = agg[key];
       const c = calcDaily(row);
       const q = parseFloat(row.quantity) || 0;
       const importedCost = parseFloat(row.total_cost) || 0;
-      a.running_qty     += q;
+      const nl = parseFloat(row.num_laborers) || 0;
+      a.running_qty        += q;
       if (q) a.qty_count++;
-      a.total_cost      += importedCost > 0 ? importedCost : c.total_cost;
-      a.imported_total  += importedCost;
-      a.labor_hours     += parseFloat(row.labor_hours)   || 0;
-      a.equip_hours     += parseFloat(row.equip_hours)   || 0;
-      a.equip_cost      += c.equip_total;
-      a.material_cost   += parseFloat(row.material_cost) || 0;
+      a.total_cost         += importedCost > 0 ? importedCost : c.total_cost;
+      a.imported_total     += importedCost;
+      a.labor_hours        += parseFloat(row.labor_hours)   || 0;
+      a.equip_hours        += parseFloat(row.equip_hours)   || 0;
+      a.equip_cost         += c.equip_total;
+      a.material_cost      += parseFloat(row.material_cost) || 0;
+      if (nl) { a.num_laborers_sum += nl; a.num_laborers_count++; }
       if (row.date) a.dates.add(row.date);
     });
   });
@@ -3729,7 +3733,8 @@ function renderCostTable() {
       const rtotal    = a.total_cost;
       const past_avg  = rqty    ? rtotal / rqty         : 0;
       const days      = a.dates.size;
-      const avg_lab   = (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
+      const avg_lab   = a.num_laborers_count ? a.num_laborers_sum / a.num_laborers_count
+                      : (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
       const mu_lab    = a.labor_hours ? rqty / a.labor_hours : 0;
       const eq_cph    = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
       const mu_eq     = a.equip_hours ? rqty / a.equip_hours : 0;
