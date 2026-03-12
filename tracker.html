@@ -3752,8 +3752,8 @@ function renderCostTable() {
         <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
         <td class="calc">${fmt(avg_qty,2)}</td>
         <td class="calc">$${fmt(rtotal)}</td>
-        <td class="calc" title="Production Rate: company average cost per unit across all jobs">${rqty ? '$'+fmt(past_avg) : '—'}</td>
-        <td class="calc">${a.imported_total ? '$'+fmt(a.imported_total) : '—'}</td>
+        <td class="calc" title="Production Rate: company average cost per unit across all jobs">${avg_qty ? '$'+fmt(past_avg) : '—'}</td>
+        <td class="calc">$${fmt(a.imported_total || rtotal)}</td>
         <td class="calc">${fmt(a.labor_hours,1)}</td>
         <td class="calc">${days}</td>
         <td class="calc">${avg_lab ? fmt(avg_lab,1) : '—'}</td>
@@ -3780,8 +3780,8 @@ function renderCostTable() {
       <td class="calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
       <td class="calc">${fmt(gAvgQty,2)}</td>
       <td class="calc">$${fmt(gRunTotal)}</td>
-      <td class="calc">${gRunQty ? '$'+fmt(gPastAvg) : '—'}</td>
-      <td class="calc">${gImportedTotal ? '$'+fmt(gImportedTotal) : '—'}</td>
+      <td class="calc">${gAvgQty ? '$'+fmt(gPastAvg) : '—'}</td>
+      <td class="calc">$${fmt(gImportedTotal || gRunTotal)}</td>
       <td class="calc">${fmt(gLabHrs,1)}</td>
       <td class="calc">${gDates.size}</td>
       <td class="calc">—</td>
