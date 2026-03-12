@@ -1051,7 +1051,7 @@
           <th class="calc-hdr">Avg Qty</th>
           <th class="calc-hdr">Running Total</th>
           <th class="calc-hdr">Production Rate</th>
-          <th class="calc-hdr">Total Cost %</th>
+          <th class="calc-hdr">Total Cost</th>
           <th class="calc-hdr">Cum. Labor Hrs</th>
           <th class="calc-hdr">Days Worked</th>
           <th class="calc-hdr">Avg Laborers</th>
@@ -1222,6 +1222,7 @@
                 <span><strong style="color:var(--text)">MU / Labor Hr</strong> → mu_per_labor_hour</span>
                 <span><strong style="color:var(--text)">Avg Laborers</strong> → num_laborers</span>
                 <span><strong style="color:var(--text)">Bid Unit Cost</strong> → unit_cost</span>
+                <span><strong style="color:var(--text)">Total Cost</strong> → total_cost</span>
               </div>
             </div>
           </details>
@@ -3540,18 +3541,21 @@ function buildDailyAgg() {
   getAllDailyRows().forEach(row => {
     const key = (row.cost_code || '') + '||' + (row.sub_code || '');
     if (!agg[key]) agg[key] = {
-      running_qty: 0, total_cost: 0,
+      running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
       labor_hours: 0, equip_hours: 0, equip_cost: 0,
       material_cost: 0, dates: new Set(),
     };
     const a = agg[key];
     const c = calcDaily(row);
-    a.running_qty   += parseFloat(row.quantity)      || 0;
-    a.total_cost    += c.total_cost;
-    a.labor_hours   += parseFloat(row.labor_hours)   || 0;
-    a.equip_hours   += parseFloat(row.equip_hours)   || 0;
-    a.equip_cost    += c.equip_total;
-    a.material_cost += parseFloat(row.material_cost) || 0;
+    const q = parseFloat(row.quantity) || 0;
+    a.running_qty     += q;
+    if (q) a.qty_count++;
+    a.total_cost      += c.total_cost;
+    a.imported_total  += parseFloat(row.total_cost)    || 0;
+    a.labor_hours     += parseFloat(row.labor_hours)   || 0;
+    a.equip_hours     += parseFloat(row.equip_hours)   || 0;
+    a.equip_cost      += c.equip_total;
+    a.material_cost   += parseFloat(row.material_cost) || 0;
     if (row.date) a.dates.add(row.date);
   });
   return agg;
@@ -3585,18 +3589,21 @@ function buildFilteredDailyAgg() {
     (p.dailyRows || []).forEach(row => {
       const key = (row.cost_code || '') + '||' + (row.sub_code || '');
       if (!agg[key]) agg[key] = {
-        running_qty: 0, total_cost: 0,
+        running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
         labor_hours: 0, equip_hours: 0, equip_cost: 0,
         material_cost: 0, dates: new Set(),
       };
       const a = agg[key];
       const c = calcDaily(row);
-      a.running_qty   += parseFloat(row.quantity)    || 0;
-      a.total_cost    += c.total_cost;
-      a.labor_hours   += parseFloat(row.labor_hours) || 0;
-      a.equip_hours   += parseFloat(row.equip_hours) || 0;
-      a.equip_cost    += c.equip_total;
-      a.material_cost += parseFloat(row.material_cost) || 0;
+      const q = parseFloat(row.quantity) || 0;
+      a.running_qty     += q;
+      if (q) a.qty_count++;
+      a.total_cost      += c.total_cost;
+      a.imported_total  += parseFloat(row.total_cost)    || 0;
+      a.labor_hours     += parseFloat(row.labor_hours)   || 0;
+      a.equip_hours     += parseFloat(row.equip_hours)   || 0;
+      a.equip_cost      += c.equip_total;
+      a.material_cost   += parseFloat(row.material_cost) || 0;
       if (row.date) a.dates.add(row.date);
     });
   });
@@ -3660,16 +3667,18 @@ function renderCostTable() {
     const groupId = 'cg-' + costCode.replace(/\W/g, '_') + '_' + Math.random().toString(36).slice(2,6);
 
     // ── Aggregate group totals ──
-    let gBidTotal = 0, gBidQty = 0, gRunQty = 0, gRunTotal = 0, gLabHrs = 0;
+    let gBidTotal = 0, gBidQty = 0, gRunQty = 0, gRunTotal = 0, gLabHrs = 0, gQtyCount = 0, gImportedTotal = 0;
     const gDates = new Set();
     keys.forEach(k => {
       const b = bidMap[k];
       const a = agg[k];
       if (b) { gBidTotal += b.total; gBidQty += b.qty; }
       if (a) {
-        gRunQty   += a.running_qty;
-        gRunTotal += a.total_cost;
-        gLabHrs   += a.labor_hours;
+        gRunQty        += a.running_qty;
+        gRunTotal      += a.total_cost;
+        gLabHrs        += a.labor_hours;
+        gQtyCount      += a.qty_count;
+        gImportedTotal += a.imported_total;
         a.dates.forEach(d => gDates.add(d));
       }
     });
@@ -3714,15 +3723,15 @@ function renderCostTable() {
       const isDailyOnly = !b;
 
       const rqty      = a.running_qty;
+      const avg_qty   = a.qty_count ? a.running_qty / a.qty_count : 0;
       const rtotal    = a.total_cost;
       const past_avg  = rqty    ? rtotal / rqty         : 0;
-      const total_pct = btotal  ? (rtotal / btotal)*100  : 0;
       const days      = a.dates.size;
       const avg_lab   = (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
       const mu_lab    = a.labor_hours ? rqty / a.labor_hours : 0;
       const eq_cph    = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
       const mu_eq     = a.equip_hours ? rqty / a.equip_hours : 0;
-      const tc        = btotal ? costClass(total_pct) : '';
+      const tc        = '';
 
       const childTr = document.createElement('tr');
       childTr.className = 'cost-group-child ct-hidden';
@@ -3741,10 +3750,10 @@ function renderCostTable() {
         <td class="calc">${bq ? fmt(bq,2) : '—'}</td>
         <td class="calc">${buc ? '$'+fmt(buc) : isDailyOnly ? '<span style="color:#555;font-size:0.68rem">No bid entry</span>' : '—'}</td>
         <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
-        <td class="calc ${tc}">${fmt(rqty,2)}</td>
-        <td class="calc ${tc}">$${fmt(rtotal)}</td>
+        <td class="calc">${fmt(avg_qty,2)}</td>
+        <td class="calc">$${fmt(rtotal)}</td>
         <td class="calc" title="Production Rate: company average cost per unit across all jobs">${rqty ? '$'+fmt(past_avg) : '—'}</td>
-        <td class="calc ${tc}">${btotal ? fmtPct(total_pct) : '—'}</td>
+        <td class="calc">${a.imported_total ? '$'+fmt(a.imported_total) : '—'}</td>
         <td class="calc">${fmt(a.labor_hours,1)}</td>
         <td class="calc">${days}</td>
         <td class="calc">${avg_lab ? fmt(avg_lab,1) : '—'}</td>
@@ -3758,9 +3767,8 @@ function renderCostTable() {
     });
 
     // ── Total row ──
+    const gAvgQty   = gQtyCount ? gRunQty / gQtyCount : 0;
     const gPastAvg  = gRunQty  ? gRunTotal / gRunQty  : 0;
-    const gTotPct   = gBidTotal ? (gRunTotal / gBidTotal)*100 : 0;
-    const gtc       = gBidTotal ? costClass(gTotPct) : '';
 
     const totalTr = document.createElement('tr');
     totalTr.className = 'cost-group-total ct-hidden';
@@ -3770,10 +3778,10 @@ function renderCostTable() {
       <td class="calc">${gBidQty ? fmt(gBidQty,2) : '—'}</td>
       <td class="calc">—</td>
       <td class="calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
-      <td class="calc ${gtc}">${fmt(gRunQty,2)}</td>
-      <td class="calc ${gtc}">$${fmt(gRunTotal)}</td>
+      <td class="calc">${fmt(gAvgQty,2)}</td>
+      <td class="calc">$${fmt(gRunTotal)}</td>
       <td class="calc">${gRunQty ? '$'+fmt(gPastAvg) : '—'}</td>
-      <td class="calc ${gtc}">${gBidTotal ? fmtPct(gTotPct) : '—'}</td>
+      <td class="calc">${gImportedTotal ? '$'+fmt(gImportedTotal) : '—'}</td>
       <td class="calc">${fmt(gLabHrs,1)}</td>
       <td class="calc">${gDates.size}</td>
       <td class="calc">—</td>
@@ -3796,7 +3804,7 @@ function addCostRow() {
 function exportCostCSV() {
   const agg = buildDailyAgg();
   const headers = ['Cost Code','Sub Code','Status','Bid Qty','Bid Item Cost','Total Cost (Bid)',
-    'Avg Qty','Running Total','Production Rate','Total Cost %',
+    'Avg Qty','Running Total','Production Rate','Total Cost',
     'Cum Labor Hrs','Days Worked','Avg Laborers','MU/Labor Hr',
     'Equip Total','Equip Hours','Equip Cost/Hr','MU/Equip Hr'];
   const rows = [headers.join(',')];
@@ -3819,8 +3827,8 @@ function exportCostCSV() {
       cr?.cost_code || key.split('||')[0], cr?.sub_code || key.split('||')[1],
       cr?.status || '',
       bq, bic, total_bid.toFixed(2),
-      rqty.toFixed(2), rtotal.toFixed(2), past_avg.toFixed(4),
-      total_bid ? ((rtotal/total_bid)*100).toFixed(2) : '',
+      (a.qty_count ? a.running_qty / a.qty_count : 0).toFixed(2), rtotal.toFixed(2), past_avg.toFixed(4),
+      a.imported_total ? a.imported_total.toFixed(2) : '',
       bq ? ((rqty/bq)*100).toFixed(2) : '',
       bq ? (rtotal + (bq-rqty)*past_avg).toFixed(2) : '',
       a.labor_hours.toFixed(1), days,
@@ -5255,6 +5263,8 @@ const CSV_COL_MAP = {
   'runningtotal': 'quantity',
   'avgqty': 'quantity',
   'bidqty': '_bid_qty',   // informational only — stored as note
+  // total cost (pre-calculated)
+  'totalcost': 'total_cost',
 };
 
 function _parseCSVLine(line) {
@@ -5301,12 +5311,12 @@ function parseImportCSV() {
       const row = { ...{ id: Date.now() + Math.random() + i, date:'', field_type:'', employee:'',
         cost_code:'', sub_code:'', job_class:'', rate:'', labor_hours:'',
         equipment:'', equip_unit_cost:'', equip_hours:'', mu_per_equip_hour:'', mu_per_labor_hour:'', material:'', supplier:'',
-        po_num:'', units_purchased:'', unit_cost:'', material_cost:'', quantity:'', num_laborers:'' } };
+        po_num:'', units_purchased:'', unit_cost:'', material_cost:'', quantity:'', num_laborers:'', total_cost:'' } };
       let projName = '';
 
       const NUMERIC_FIELDS = new Set(['rate','labor_hours','equip_unit_cost','equip_hours',
         'units_purchased','unit_cost','material_cost','quantity',
-        'mu_per_equip_hour','mu_per_labor_hour','num_laborers']);
+        'mu_per_equip_hour','mu_per_labor_hour','num_laborers','total_cost']);
 
       fieldMap.forEach((field, ci) => {
         if (!field) return;
@@ -5324,7 +5334,7 @@ function parseImportCSV() {
         skipped.push({ line: i + 1, reason: projName ? `No project found matching "${projName}"` : 'No project assigned' });
         continue;
       }
-      if (!row.cost_code && !row.sub_code && !row.labor_hours && !row.material_cost && !row.quantity && !row.mu_per_equip_hour && !row.mu_per_labor_hour && !row.num_laborers) {
+      if (!row.cost_code && !row.sub_code && !row.labor_hours && !row.material_cost && !row.quantity && !row.mu_per_equip_hour && !row.mu_per_labor_hour && !row.num_laborers && !row.total_cost) {
         skipped.push({ line: i + 1, reason: 'Row appears empty' });
         continue;
       }
