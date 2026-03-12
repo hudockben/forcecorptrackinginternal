@@ -2545,7 +2545,7 @@ function renderProjectsTab() {
   }
 
   cardsEl.innerHTML = filtered.length
-    ? filtered.map(p => projectCardHTML(p)).join('')
+    ? [...filtered].reverse().map(p => projectCardHTML(p)).join('')
     : `<div class="proj-no-results">${projSearch
         ? 'No projects match your search.'
         : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`;
