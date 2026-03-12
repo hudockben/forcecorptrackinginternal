@@ -1996,6 +1996,8 @@ const INFO_KEY_LEGACY = 'fct_project_info'; // for migration only
 
 let projectsList = [];
 let projSearch   = '';
+let projPage     = 0;
+const PROJ_PAGE_SIZE = 10;
 let dashSearch   = '';
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
@@ -2053,6 +2055,7 @@ function addProject() {
   };
   projectsList.push(p);
   saveProjects();
+  projPage = 0;
   renderProjectsTab();
   const card = document.getElementById('pcard-' + p.id);
   if (card) { card.classList.add('expanded'); card.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
@@ -2715,6 +2718,12 @@ function renderProjectsTab() {
         (p['client']||'').toLowerCase().includes(q))
     : projectsList;
 
+  // Pagination
+  const totalPages = Math.ceil(filtered.length / PROJ_PAGE_SIZE);
+  if (projPage >= totalPages) projPage = Math.max(0, totalPages - 1);
+  const reversed  = [...filtered].reverse();
+  const pageItems = reversed.slice(projPage * PROJ_PAGE_SIZE, (projPage + 1) * PROJ_PAGE_SIZE);
+
   // First render: build the full scaffold; subsequent calls: update cards only
   let cardsEl = root.querySelector('.proj-cards');
   if (!cardsEl) {
@@ -2722,7 +2731,7 @@ function renderProjectsTab() {
       <div class="proj-wrap">
         <div class="proj-toolbar">
           <input class="proj-search" type="text" placeholder="Search by project name, job number, or client…"
-            oninput="projSearch=this.value;renderProjectsTab()">
+            oninput="projSearch=this.value;projPage=0;renderProjectsTab()">
           ${perm.canDeleteProject ? `<button class="btn btn-green" onclick="addProject()">+ Add Project</button>` : ''}
         </div>
         <div class="proj-cards"></div>
@@ -2732,14 +2741,25 @@ function renderProjectsTab() {
     cardsEl = root.querySelector('.proj-cards');
   }
 
+  const paginationHTML = totalPages > 1 ? `
+    <div style="display:flex;align-items:center;gap:0.5rem;margin:0.5rem 0;justify-content:flex-end">
+      <button onclick="projPage=Math.max(0,projPage-1);renderProjectsTab()"
+        ${projPage === 0 ? 'disabled' : ''}
+        style="background:#1a1a1a;border:1px solid #333;color:${projPage===0?'#555':'#ccc'};padding:0.25rem 0.65rem;border-radius:4px;cursor:${projPage===0?'not-allowed':'pointer'};font-size:0.78rem">◀ Prev</button>
+      <span style="color:#888;font-size:0.78rem">Page ${projPage+1} of ${totalPages} &nbsp;·&nbsp; ${filtered.length} projects</span>
+      <button onclick="projPage=Math.min(${totalPages-1},projPage+1);renderProjectsTab()"
+        ${projPage === totalPages-1 ? 'disabled' : ''}
+        style="background:#1a1a1a;border:1px solid #333;color:${projPage===totalPages-1?'#555':'#ccc'};padding:0.25rem 0.65rem;border-radius:4px;cursor:${projPage===totalPages-1?'not-allowed':'pointer'};font-size:0.78rem">Next ▶</button>
+    </div>` : '';
+
   cardsEl.innerHTML = filtered.length
-    ? [...filtered].reverse().map(p => projectCardHTML(p)).join('')
+    ? paginationHTML + pageItems.map(p => projectCardHTML(p)).join('') + paginationHTML
     : `<div class="proj-no-results">${projSearch
         ? 'No projects match your search.'
         : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`;
 
   // Populate bid tables, daily tables, and PO sections after DOM is built
-  filtered.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); renderProjectPOs(p.id); });
+  pageItems.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); renderProjectPOs(p.id); });
 }
 
 function renderProjectInfoComputed() { renderProjectsTab(); }
