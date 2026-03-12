@@ -2789,7 +2789,7 @@ function renderPOTab() {
           <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('employee', empOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date_created', 'date')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:95px;color:${statusColor}">${sel('status', statusOpts)}</td>
-          <td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" onclick="deletePO('${po.id}')">&#10005;</button></td>
+          <td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>
         </tr>`;
       }).join('');
 
@@ -4772,6 +4772,8 @@ document.addEventListener('click', e => {
       p.dailyRows.splice(i, 1);
       saveProjects();
       renderDailyTable(projId);
+    } else if (tab === 'po') {
+      deletePO(btn.dataset.poId);
     }
   });
 });
