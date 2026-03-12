@@ -1209,6 +1209,8 @@
               <span><strong style="color:var(--text)">Unit Cost / Bid Unit Cost</strong> → unit_cost</span>
               <span><strong style="color:var(--text)">Material Cost</strong> → material_cost</span>
               <span><strong style="color:var(--text)">Quantity / Running Total / Avg Qty</strong> → quantity</span>
+              <span><strong style="color:var(--text)">MU per Equip Hour</strong> → mu_per_equip_hour</span>
+              <span><strong style="color:var(--text)"># of Laborers / Num Laborers</strong> → num_laborers</span>
               <span><strong style="color:var(--text)">Project</strong> → project name (auto-assign)</span>
             </div>
           </details>
@@ -5137,6 +5139,14 @@ const CSV_COL_MAP = {
   'equipcosthr': 'equip_unit_cost',
   'equiphours': 'equip_hours',
   'equiptotal': 'equip_unit_cost',   // fallback: store as unit cost
+  'muperequiphour': 'mu_per_equip_hour',
+  'muperequiphrs': 'mu_per_equip_hour',
+  'muequiphour': 'mu_per_equip_hour',
+  // laborers
+  'oflaborers': 'num_laborers',
+  'numlaborers': 'num_laborers',
+  'numberoflaborers': 'num_laborers',
+  'laborers': 'num_laborers',
   // material
   'material': 'material',
   'supplier': 'supplier',
@@ -5196,8 +5206,8 @@ function parseImportCSV() {
 
       const row = { ...{ id: Date.now() + Math.random() + i, date:'', field_type:'', employee:'',
         cost_code:'', sub_code:'', job_class:'', rate:'', labor_hours:'',
-        equipment:'', equip_unit_cost:'', equip_hours:'', material:'', supplier:'',
-        po_num:'', units_purchased:'', unit_cost:'', material_cost:'', quantity:'' } };
+        equipment:'', equip_unit_cost:'', equip_hours:'', mu_per_equip_hour:'', material:'', supplier:'',
+        po_num:'', units_purchased:'', unit_cost:'', material_cost:'', quantity:'', num_laborers:'' } };
       let projName = '';
 
       fieldMap.forEach((field, ci) => {
@@ -5214,7 +5224,7 @@ function parseImportCSV() {
         skipped.push({ line: i + 1, reason: projName ? `No project found matching "${projName}"` : 'No project assigned' });
         continue;
       }
-      if (!row.cost_code && !row.sub_code && !row.labor_hours && !row.material_cost && !row.quantity) {
+      if (!row.cost_code && !row.sub_code && !row.labor_hours && !row.material_cost && !row.quantity && !row.mu_per_equip_hour && !row.num_laborers) {
         skipped.push({ line: i + 1, reason: 'Row appears empty' });
         continue;
       }
