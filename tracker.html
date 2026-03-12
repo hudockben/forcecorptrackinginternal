@@ -1412,7 +1412,7 @@ function renderHomeTab() {
         <div class="stat-value">$${fmt(totalProjected, 0)}</div>
         <div class="stat-sub">at current rates</div>
       </div>
-      <div class="stat-card ${openPOs > 0 ? 'yellow' : ''}">
+      <div class="stat-card ${openPOs > 0 ? 'yellow' : ''}" ${openPOs > 0 ? `onclick="poFilters={status:new Set(['pending'])};document.querySelector('.tab-btn[data-tab=po]').click()" style="cursor:pointer"` : ''}>
         <div class="stat-label">Open POs</div>
         <div class="stat-value">${openPOs}</div>
         <div class="stat-sub">pending approval</div>
