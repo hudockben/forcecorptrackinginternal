@@ -3872,7 +3872,10 @@ function calcDaily(row) {
   const mat_cost     = parseFloat(row.material_cost)  || 0;
 
   const labor_cost      = rate * labor_hours;
-  const equip_total     = euc  * equip_hours;
+  // If the CSV provided a pre-computed equip total, use it directly to avoid
+  // double-multiplying (equip_total_override already = unit_cost × hours).
+  const equip_total_override = parseFloat(row.equip_total_override) || 0;
+  const equip_total     = equip_total_override || (euc * equip_hours);
   const total_cost      = labor_cost + equip_total + mat_cost;
   return { labor_cost, equip_total, total_cost };
 }
@@ -5241,7 +5244,7 @@ const CSV_COL_MAP = {
   'equipunitcost': 'equip_unit_cost',
   'equipcosthr': 'equip_unit_cost',
   'equiphours': 'equip_hours',
-  'equiptotal': 'equip_unit_cost',   // fallback: store as unit cost
+  'equiptotal': 'equip_total_override',   // pre-computed total — used directly, not multiplied again
   'muperequiphour': 'mu_per_equip_hour',
   'muperequiphrs': 'mu_per_equip_hour',
   'muequiphour': 'mu_per_equip_hour',
@@ -5317,11 +5320,11 @@ function parseImportCSV() {
 
       const row = { ...{ id: Date.now() + Math.random() + i, date:'', field_type:'', employee:'',
         cost_code:'', sub_code:'', job_class:'', rate:'', labor_hours:'',
-        equipment:'', equip_unit_cost:'', equip_hours:'', mu_per_equip_hour:'', mu_per_labor_hour:'', material:'', supplier:'',
+        equipment:'', equip_unit_cost:'', equip_hours:'', equip_total_override:'', mu_per_equip_hour:'', mu_per_labor_hour:'', material:'', supplier:'',
         po_num:'', units_purchased:'', unit_cost:'', material_cost:'', quantity:'', num_laborers:'', total_cost:'' } };
       let projName = '';
 
-      const NUMERIC_FIELDS = new Set(['rate','labor_hours','equip_unit_cost','equip_hours',
+      const NUMERIC_FIELDS = new Set(['rate','labor_hours','equip_unit_cost','equip_hours','equip_total_override',
         'units_purchased','unit_cost','material_cost','quantity',
         'mu_per_equip_hour','mu_per_labor_hour','num_laborers','total_cost']);
 
