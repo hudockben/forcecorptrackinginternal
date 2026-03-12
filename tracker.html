@@ -440,8 +440,13 @@
     .cost-group-toggle { margin-right: 0.4rem; font-size: 0.65rem; display:inline-block; transition: transform 0.15s; }
     .cost-group-child td:first-child { padding-left: 1.6rem; }
     .cost-group-child.ct-hidden { display: none; }
+    .cost-group-proj { background: #0f1a12; }
+    .cost-group-proj td { font-size: 0.74rem; color: #9dbfa3; border-bottom: 1px solid #1a2e1e; padding: 0.28rem 0.5rem; }
+    .cost-group-proj td:first-child { padding-left: 3rem; color: #b8d4bc; }
+    .cost-group-proj.ct-hidden, .cost-group-proj.sg-hidden { display: none; }
     .cost-group-total { background: #1e1c0a; }
     .cost-group-total.ct-hidden { display: none; }
+    .sc-expand-tog { cursor:pointer; margin-right:0.35rem; font-size:0.6rem; display:inline-block; transition:transform 0.15s; color:var(--muted); vertical-align:middle; }
     .cost-group-total td { color: #d4b84a; font-weight: 600; font-size: 0.78rem; border-top: 1px solid #3a350f; padding: 0.35rem 0.5rem; }
 
     /* Delete confirmation popover */
@@ -3587,8 +3592,10 @@ function getFilteredProjectIds() {
 function buildFilteredDailyAgg() {
   const projectIds = getFilteredProjectIds();
   const agg = {};
+  const projAgg = {};  // key: cost_code||sub_code||project_name
   projectsList.forEach(p => {
     if (projectIds && !projectIds.has(p.id)) return;
+    const projName = (p['project-name'] || '').trim() || '(No Project)';
     (p.dailyRows || []).forEach(row => {
       const key = (row.cost_code || '') + '||' + (row.sub_code || '');
       if (!agg[key]) agg[key] = {
@@ -3611,9 +3618,29 @@ function buildFilteredDailyAgg() {
       a.material_cost      += parseFloat(row.material_cost) || 0;
       if (nl) { a.num_laborers_sum += nl; a.num_laborers_count++; }
       if (row.date) a.dates.add(row.date);
+
+      // Per-project breakdown
+      const pkey = key + '||' + projName;
+      if (!projAgg[pkey]) projAgg[pkey] = {
+        project: projName,
+        running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
+        labor_hours: 0, equip_hours: 0, equip_cost: 0,
+        material_cost: 0, num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
+      };
+      const pa = projAgg[pkey];
+      pa.running_qty        += q;
+      if (q) pa.qty_count++;
+      pa.total_cost         += importedCost > 0 ? importedCost : c.total_cost;
+      pa.imported_total     += importedCost;
+      pa.labor_hours        += parseFloat(row.labor_hours)   || 0;
+      pa.equip_hours        += parseFloat(row.equip_hours)   || 0;
+      pa.equip_cost         += c.equip_total;
+      pa.material_cost      += parseFloat(row.material_cost) || 0;
+      if (nl) { pa.num_laborers_sum += nl; pa.num_laborers_count++; }
+      if (row.date) pa.dates.add(row.date);
     });
   });
-  return agg;
+  return { agg, projAgg };
 }
 
 function renderCostTable() {
@@ -3640,7 +3667,7 @@ function renderCostTable() {
   });
 
   // Build daily aggregation (respects project/sqft filter)
-  const agg = buildFilteredDailyAgg();
+  const { agg, projAgg } = buildFilteredDailyAgg();
 
   // Union of bid keys + daily-only keys
   const bidKeys      = Object.keys(bidMap);
@@ -3721,11 +3748,11 @@ function renderCostTable() {
     keys.forEach(key => {
       const [, sc] = key.split('||');
       const b  = bidMap[key];
-      const a  = agg[key] || { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, dates:new Set() };
+      const a  = agg[key] || { running_qty:0, qty_count:0, total_cost:0, imported_total:0, labor_hours:0, equip_hours:0, equip_cost:0, material_cost:0, num_laborers_sum:0, num_laborers_count:0, dates:new Set() };
 
       const bq        = b ? b.qty   : 0;
       const btotal    = b ? b.total : 0;
-      const buc       = (b && bq)   ? btotal / bq : 0;   // weighted avg unit cost
+      const buc       = (b && bq)   ? btotal / bq : 0;
       const isDailyOnly = !b;
 
       const rqty      = a.running_qty;
@@ -3738,15 +3765,24 @@ function renderCostTable() {
       const mu_lab    = a.labor_hours ? rqty / a.labor_hours : 0;
       const eq_cph    = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
       const mu_eq     = a.equip_hours ? rqty / a.equip_hours : 0;
-      const tc        = '';
+
+      // Sub-group id for the project-level rows under this sub code
+      const subGroupId = 'sg-' + groupId + '_' + key.replace(/\W/g,'_');
+
+      // Check whether there are any project entries to drill into
+      const projEntries = Object.keys(projAgg).filter(pk => pk.startsWith(key + '||'));
+      const hasProjects = projEntries.length > 0;
 
       const childTr = document.createElement('tr');
       childTr.className = 'cost-group-child ct-hidden';
       childTr.dataset.group = groupId;
+      childTr.dataset.subgroup = subGroupId;
+      childTr.dataset.subcollapsed = '1';
       if (isDailyOnly) childTr.style.opacity = '0.65';
 
       childTr.innerHTML = `
         <td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">
+          ${hasProjects ? `<span class="sc-expand-tog" id="stog-${subGroupId}" style="transform:rotate(-90deg)" title="Expand projects">▼</span>` : ''}
           ${esc(sc) || '—'}
           <button data-cc="${esc(costCode)}" data-sc="${esc(sc)}"
             onclick="deleteDailyRowsBySubCode(this.dataset.cc,this.dataset.sc)"
@@ -3770,7 +3806,61 @@ function renderCostTable() {
         <td class="calc">${eq_cph ? fmt(eq_cph,4) : '—'}</td>
         <td class="calc">${mu_eq  ? fmt(mu_eq,4)  : '—'}</td>
       `;
+
+      // Expand/collapse project rows on toggle click
+      if (hasProjects) {
+        const tog = childTr.querySelector('.sc-expand-tog');
+        tog.addEventListener('click', e => {
+          e.stopPropagation();
+          const isCollapsed = childTr.dataset.subcollapsed === '1';
+          childTr.dataset.subcollapsed = isCollapsed ? '0' : '1';
+          tog.style.transform = isCollapsed ? '' : 'rotate(-90deg)';
+          tbody.querySelectorAll(`tr[data-subgroup="${subGroupId}"]`).forEach(r => {
+            r.classList.toggle('sg-hidden', !isCollapsed);
+          });
+        });
+      }
+
       tbody.appendChild(childTr);
+
+      // ── Project rows (3rd level) ──
+      projEntries.sort().forEach(pkey => {
+        const pa = projAgg[pkey];
+        const p_rqty    = pa.running_qty;
+        const p_avg_qty = pa.qty_count ? pa.running_qty / pa.qty_count : 0;
+        const p_rtotal  = pa.total_cost;
+        const p_past_avg = p_rqty ? p_rtotal / p_rqty : 0;
+        const p_days    = pa.dates.size;
+        const p_avg_lab = pa.num_laborers_count ? pa.num_laborers_sum / pa.num_laborers_count
+                        : (p_days && pa.labor_hours) ? pa.labor_hours / p_days / 8 : 0;
+        const p_mu_lab  = pa.labor_hours ? p_rqty / pa.labor_hours : 0;
+        const p_eq_cph  = pa.equip_hours ? pa.equip_cost / pa.equip_hours : 0;
+        const p_mu_eq   = pa.equip_hours ? p_rqty / pa.equip_hours : 0;
+
+        const projTr = document.createElement('tr');
+        projTr.className = 'cost-group-proj ct-hidden sg-hidden';
+        projTr.dataset.group    = groupId;
+        projTr.dataset.subgroup = subGroupId;
+        projTr.innerHTML = `
+          <td>${esc(pa.project)}</td>
+          <td class="calc">—</td>
+          <td class="calc">—</td>
+          <td class="calc">—</td>
+          <td class="calc">${fmt(p_avg_qty,2)}</td>
+          <td class="calc">$${fmt(p_rtotal)}</td>
+          <td class="calc">${p_avg_qty ? '$'+fmt(p_past_avg) : '—'}</td>
+          <td class="calc">$${fmt(pa.imported_total || p_rtotal)}</td>
+          <td class="calc">${fmt(pa.labor_hours,1)}</td>
+          <td class="calc">${p_days}</td>
+          <td class="calc">${p_avg_lab ? fmt(p_avg_lab,1) : '—'}</td>
+          <td class="calc">${p_mu_lab  ? fmt(p_mu_lab,4)  : '—'}</td>
+          <td class="calc">$${fmt(pa.equip_cost)}</td>
+          <td class="calc">${fmt(pa.equip_hours,1)}</td>
+          <td class="calc">${p_eq_cph ? fmt(p_eq_cph,4) : '—'}</td>
+          <td class="calc">${p_mu_eq  ? fmt(p_mu_eq,4)  : '—'}</td>
+        `;
+        tbody.appendChild(projTr);
+      });
     });
 
     // ── Total row ──
