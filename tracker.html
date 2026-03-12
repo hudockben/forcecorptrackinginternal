@@ -3732,7 +3732,8 @@ function renderCostTable() {
       childTr.innerHTML = `
         <td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">
           ${esc(sc) || '—'}
-          <button onclick="deleteDailyRowsBySubCode(${JSON.stringify(costCode)},${JSON.stringify(sc)})"
+          <button data-cc="${esc(costCode)}" data-sc="${esc(sc)}"
+            onclick="deleteDailyRowsBySubCode(this.dataset.cc,this.dataset.sc)"
             title="Delete all daily rows for this sub code"
             style="margin-left:0.4rem;background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;padding:0;line-height:1;vertical-align:middle"
             onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#555'">🗑</button>
