@@ -5227,11 +5227,17 @@ function parseImportCSV() {
         po_num:'', units_purchased:'', unit_cost:'', material_cost:'', quantity:'', num_laborers:'' } };
       let projName = '';
 
+      const NUMERIC_FIELDS = new Set(['rate','labor_hours','equip_unit_cost','equip_hours',
+        'units_purchased','unit_cost','material_cost','quantity',
+        'mu_per_equip_hour','mu_per_labor_hour','num_laborers']);
+
       fieldMap.forEach((field, ci) => {
         if (!field) return;
-        const val = cells[ci] || '';
+        let val = cells[ci] || '';
         if (field === '_project') { projName = val; return; }
         if (field === '_bid_qty') return;   // skip
+        // Strip thousands-separator commas from numeric fields (e.g. "89,230.00" → "89230.00")
+        if (NUMERIC_FIELDS.has(field)) val = val.replace(/,(?=\d)/g, '');
         if (val !== '') row[field] = val;
       });
 
