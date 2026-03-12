@@ -1210,6 +1210,7 @@
               <span><strong style="color:var(--text)">Material Cost</strong> → material_cost</span>
               <span><strong style="color:var(--text)">Quantity / Running Total / Avg Qty</strong> → quantity</span>
               <span><strong style="color:var(--text)">MU per Equip Hour</strong> → mu_per_equip_hour</span>
+              <span><strong style="color:var(--text)">MU per Labor Hour</strong> → mu_per_labor_hour</span>
               <span><strong style="color:var(--text)"># of Laborers / Num Laborers</strong> → num_laborers</span>
               <span><strong style="color:var(--text)">Project</strong> → project name (auto-assign)</span>
             </div>
@@ -5142,6 +5143,9 @@ const CSV_COL_MAP = {
   'muperequiphour': 'mu_per_equip_hour',
   'muperequiphrs': 'mu_per_equip_hour',
   'muequiphour': 'mu_per_equip_hour',
+  'muperlaborhour': 'mu_per_labor_hour',
+  'muperlaborhrs': 'mu_per_labor_hour',
+  'mulaborhour': 'mu_per_labor_hour',
   // laborers
   'oflaborers': 'num_laborers',
   'numlaborers': 'num_laborers',
@@ -5206,7 +5210,7 @@ function parseImportCSV() {
 
       const row = { ...{ id: Date.now() + Math.random() + i, date:'', field_type:'', employee:'',
         cost_code:'', sub_code:'', job_class:'', rate:'', labor_hours:'',
-        equipment:'', equip_unit_cost:'', equip_hours:'', mu_per_equip_hour:'', material:'', supplier:'',
+        equipment:'', equip_unit_cost:'', equip_hours:'', mu_per_equip_hour:'', mu_per_labor_hour:'', material:'', supplier:'',
         po_num:'', units_purchased:'', unit_cost:'', material_cost:'', quantity:'', num_laborers:'' } };
       let projName = '';
 
@@ -5224,7 +5228,7 @@ function parseImportCSV() {
         skipped.push({ line: i + 1, reason: projName ? `No project found matching "${projName}"` : 'No project assigned' });
         continue;
       }
-      if (!row.cost_code && !row.sub_code && !row.labor_hours && !row.material_cost && !row.quantity && !row.mu_per_equip_hour && !row.num_laborers) {
+      if (!row.cost_code && !row.sub_code && !row.labor_hours && !row.material_cost && !row.quantity && !row.mu_per_equip_hour && !row.mu_per_labor_hour && !row.num_laborers) {
         skipped.push({ line: i + 1, reason: 'Row appears empty' });
         continue;
       }
