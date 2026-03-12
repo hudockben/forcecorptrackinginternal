@@ -1310,10 +1310,11 @@ function renderHomeTab() {
   const pHold     = (statusCounts['On Hold'] / statusTotal * 100).toFixed(1);
   const pRisk     = (statusCounts['At Risk'] / statusTotal * 100).toFixed(1);
 
-  // ── Per-project cards ──
+  // ── Per-project cards (most recent 6) ──
+  const recentProjects = projectsList.slice(-6).reverse();
   const projectCards = projectsList.length === 0
     ? `<div class="home-empty">No projects yet. Go to Project Dashboard to create one.</div>`
-    : projectsList.map(p => {
+    : recentProjects.map(p => {
         const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
         const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
         const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
@@ -1423,8 +1424,9 @@ function renderHomeTab() {
       </div>
     </div>
 
-    <p class="home-section-title">Projects</p>
+    <p class="home-section-title">Projects <span style="font-size:0.7rem;color:var(--muted);font-weight:400">(${recentProjects.length} most recent)</span></p>
     <div class="proj-home-grid">${projectCards}</div>
+    ${projectsList.length > 6 ? `<p style="text-align:center;margin:0.5rem 0 1.5rem;font-size:0.8rem;color:var(--muted)">${projectsList.length - 6} more — <a href="#" style="color:var(--green)" onclick="document.querySelector('.tab-btn[data-tab=info]').click();return false;">View all in Project Dashboard</a></p>` : ''}
 
     ${alertRows.length > 0 ? `
     <p class="home-section-title">Items Needing Attention</p>
