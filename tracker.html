@@ -4777,12 +4777,15 @@ document.addEventListener('click', e => {
   const i      = parseInt(btn.dataset.i);
   const projId = btn.dataset.proj;
 
-  // Build popover
+  // Build popover — for user deletions show "Yes, delete [username]"
+  const yesLabel = tab === 'company-user'
+    ? `Yes, delete ${btn.dataset.username}`
+    : 'Yes';
   const popover = document.createElement('div');
   popover.className = 'del-confirm';
   popover.innerHTML =
     '<span>Are you sure?</span>' +
-    '<button class="dc-yes">Yes</button>' +
+    `<button class="dc-yes">${yesLabel}</button>` +
     '<button class="dc-no">No</button>';
 
   // Position relative to button, flip up if too close to bottom/right edge
@@ -4826,6 +4829,8 @@ document.addEventListener('click', e => {
       renderDailyTable(projId);
     } else if (tab === 'po') {
       deletePO(btn.dataset.poId);
+    } else if (tab === 'company-user') {
+      deleteCompanyUser(parseInt(btn.dataset.userId));
     }
   });
 });
@@ -4865,7 +4870,7 @@ async function renderUsersTab() {
       <td style="padding:0.55rem 0.75rem;font-weight:600">${esc(u.username)}</td>
       <td style="padding:0.55rem 0.75rem;color:var(--muted)">${ROLE_LABELS[u.role] || u.role}</td>
       <td style="padding:0.55rem 0.75rem;text-align:center">
-        ${u.id !== fctUser.userId ? `<button class="del-btn" onclick="deleteCompanyUser(${u.id})">&#10005;</button>` : '<span style="color:var(--muted);font-size:0.75rem">(you)</span>'}
+        ${u.id !== fctUser.userId ? `<button class="del-btn" data-tab="company-user" data-user-id="${u.id}" data-username="${esc(u.username)}">&#10005;</button>` : '<span style="color:var(--muted);font-size:0.75rem">(you)</span>'}
       </td>
     </tr>`).join('');
 
@@ -4945,7 +4950,6 @@ async function createCompanyUser() {
 }
 
 async function deleteCompanyUser(id) {
-  if (!confirm('Delete this user?')) return;
   const res = await fetch('/api/company/users', {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fctToken}` },
