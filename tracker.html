@@ -1190,29 +1190,39 @@
           <!-- Column mapping hint -->
           <details style="margin-bottom:1rem">
             <summary style="font-size:0.78rem;color:var(--blue);cursor:pointer">Supported column names (click to expand)</summary>
-            <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:0.2rem 1.5rem;padding:0.5rem;background:var(--bg);border-radius:4px">
-              <span><strong style="color:var(--text)">Date</strong> → date</span>
-              <span><strong style="color:var(--text)">Field Type</strong> → field_type</span>
-              <span><strong style="color:var(--text)">Employee</strong> → employee</span>
-              <span><strong style="color:var(--text)">Cost Code</strong> → cost_code</span>
-              <span><strong style="color:var(--text)">Sub Code</strong> → sub_code</span>
-              <span><strong style="color:var(--text)">Job Class</strong> → job_class</span>
-              <span><strong style="color:var(--text)">Rate</strong> → rate</span>
-              <span><strong style="color:var(--text)">Labor Hours / Cum. Labor Hrs</strong> → labor_hours</span>
-              <span><strong style="color:var(--text)">Equipment</strong> → equipment</span>
-              <span><strong style="color:var(--text)">Equip Unit Cost / Equip Cost / Hr</strong> → equip_unit_cost</span>
-              <span><strong style="color:var(--text)">Equip Hours</strong> → equip_hours</span>
-              <span><strong style="color:var(--text)">Material</strong> → material</span>
-              <span><strong style="color:var(--text)">Supplier</strong> → supplier</span>
-              <span><strong style="color:var(--text)">PO #</strong> → po_num</span>
-              <span><strong style="color:var(--text)">Units Purchased</strong> → units_purchased</span>
-              <span><strong style="color:var(--text)">Unit Cost / Bid Unit Cost</strong> → unit_cost</span>
-              <span><strong style="color:var(--text)">Material Cost</strong> → material_cost</span>
-              <span><strong style="color:var(--text)">Quantity / Running Total / Avg Qty</strong> → quantity</span>
-              <span><strong style="color:var(--text)">MU per Equip Hour</strong> → mu_per_equip_hour</span>
-              <span><strong style="color:var(--text)">MU per Labor Hour</strong> → mu_per_labor_hour</span>
-              <span><strong style="color:var(--text)"># of Laborers / Num Laborers</strong> → num_laborers</span>
-              <span><strong style="color:var(--text)">Project</strong> → project name (auto-assign)</span>
+            <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted);padding:0.5rem;background:var(--bg);border-radius:4px">
+              <div style="margin-bottom:0.4rem;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--blue)">Daily Tracking tab — exact column names</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.2rem 1.5rem;margin-bottom:0.75rem">
+                <span><strong style="color:var(--text)">Date</strong> → date</span>
+                <span><strong style="color:var(--text)">Field Type</strong> → field_type</span>
+                <span><strong style="color:var(--text)">Employee</strong> → employee</span>
+                <span><strong style="color:var(--text)">Cost Code</strong> → cost_code</span>
+                <span><strong style="color:var(--text)">Sub Code</strong> → sub_code</span>
+                <span><strong style="color:var(--text)">Job Class</strong> → job_class</span>
+                <span><strong style="color:var(--text)">Rate</strong> → rate</span>
+                <span><strong style="color:var(--text)">Labor Hours</strong> → labor_hours</span>
+                <span><strong style="color:var(--text)">Equipment</strong> → equipment</span>
+                <span><strong style="color:var(--text)">Equip Unit Cost</strong> → equip_unit_cost</span>
+                <span><strong style="color:var(--text)">Equip Hours</strong> → equip_hours</span>
+                <span><strong style="color:var(--text)">Material</strong> → material</span>
+                <span><strong style="color:var(--text)">Supplier</strong> → supplier</span>
+                <span><strong style="color:var(--text)">PO #</strong> → po_num</span>
+                <span><strong style="color:var(--text)">Units Purchased</strong> → units_purchased</span>
+                <span><strong style="color:var(--text)">Unit Cost</strong> → unit_cost</span>
+                <span><strong style="color:var(--text)">Quantity</strong> → quantity</span>
+                <span><strong style="color:var(--text)">Project</strong> → project (auto-assign)</span>
+              </div>
+              <div style="margin-bottom:0.4rem;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--blue)">Cost Tracking tab — exact column names (also accepted)</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.2rem 1.5rem">
+                <span><strong style="color:var(--text)">Cum. Labor Hrs</strong> → labor_hours</span>
+                <span><strong style="color:var(--text)">Avg Qty</strong> → quantity</span>
+                <span><strong style="color:var(--text)">Running Total</strong> → quantity</span>
+                <span><strong style="color:var(--text)">Equip Cost / Hr</strong> → equip_unit_cost</span>
+                <span><strong style="color:var(--text)">MU / Equip Hr</strong> → mu_per_equip_hour</span>
+                <span><strong style="color:var(--text)">MU / Labor Hr</strong> → mu_per_labor_hour</span>
+                <span><strong style="color:var(--text)">Avg Laborers</strong> → num_laborers</span>
+                <span><strong style="color:var(--text)">Bid Unit Cost</strong> → unit_cost</span>
+              </div>
             </div>
           </details>
 
@@ -5143,14 +5153,17 @@ const CSV_COL_MAP = {
   'muperequiphour': 'mu_per_equip_hour',
   'muperequiphrs': 'mu_per_equip_hour',
   'muequiphour': 'mu_per_equip_hour',
+  'muequiphr': 'mu_per_equip_hour',       // exact cost tracking header: MU / Equip Hr
   'muperlaborhour': 'mu_per_labor_hour',
   'muperlaborhrs': 'mu_per_labor_hour',
   'mulaborhour': 'mu_per_labor_hour',
+  'mulaborhr': 'mu_per_labor_hour',       // exact cost tracking header: MU / Labor Hr
   // laborers
   'oflaborers': 'num_laborers',
   'numlaborers': 'num_laborers',
   'numberoflaborers': 'num_laborers',
   'laborers': 'num_laborers',
+  'avglaborers': 'num_laborers',          // exact cost tracking header: Avg Laborers
   // material
   'material': 'material',
   'supplier': 'supplier',
