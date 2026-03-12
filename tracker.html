@@ -2495,6 +2495,7 @@ function projectCardHTML(p) {
     <div class="bid-section">
       <div class="bid-section-title" onclick="toggleBidSection(this)">
         <span><span class="bid-section-caret">▼</span>Purchase Orders</span>
+        <button class="btn btn-sm" style="margin-left:auto;font-size:0.72rem;padding:0.2rem 0.6rem;background:var(--card2);border:1px solid var(--border);color:var(--text)" onclick="event.stopPropagation();exportProjectPOsCSV('${p.id}')">Download CSV</button>
       </div>
       <div class="bid-section-body">
         <div class="bid-table-wrap">
@@ -2877,6 +2878,25 @@ function renderPOTab() {
     const si = root.querySelector('.po-global-search');
     if (si) { si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
   }
+}
+
+function exportProjectPOsCSV(projId) {
+  const proj = getProj(projId);
+  const linked = purchaseOrders.filter(po => po.project_id === projId);
+  const rows = [['PO #', 'Title', 'Unit Cost', 'Qty', 'Tax', 'Total', 'Status']];
+  linked.forEach(po => {
+    const qty = parseFloat(po.qty) || 0;
+    const uc  = parseFloat(po.unit_cost) || 0;
+    const tax = parseFloat(po.tax) || 0;
+    const total = qty * uc + tax;
+    rows.push([po.po_number || '', po.title || '', uc.toFixed(2), qty, tax.toFixed(2), total.toFixed(2), po.status || '']);
+  });
+  const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  const projName = (proj && proj['project-name']) ? proj['project-name'].replace(/[^a-z0-9]/gi, '_') : projId;
+  a.download = projName + '_purchase_orders.csv';
+  a.click();
 }
 
 function renderProjectPOs(projId, bodyIdOverride) {
