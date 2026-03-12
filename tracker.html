@@ -5341,7 +5341,7 @@ function commitImportCSV() {
   });
   saveProjects();
   projectsList.forEach(p => renderDailyTable(p.id));
-  renderCostTracking();
+  renderCostTable();
   clearImportPreview();
   document.getElementById('csv-import-status').innerHTML =
     `<span style="color:var(--green)">✓ Successfully imported ${totalImported} row${totalImported !== 1 ? 's' : ''}.</span>`;
