@@ -2581,7 +2581,7 @@ async function loadLists() {
   }
   lists = { ...defaultLists, ...(saved || {}) };
   // Migrate suppliers from string[] to {name,state}[]
-  lists.suppliers = lists.suppliers.map(s => typeof s === 'string' ? { name: s, state: '', address: '', phone: '' } : { address: '', phone: '', ...s });
+  lists.suppliers = lists.suppliers.map(s => typeof s === 'string' ? { name: s, state: '', address: '', phone: '', website: '' } : { address: '', phone: '', website: '', ...s });
   // Migrate employees from string[] to {name,non_prevailing_rate,prevailing_rate,job_class}[]
   lists.employees = lists.employees.map(e => typeof e === 'string'
     ? { name: e, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' } : e);
@@ -3025,7 +3025,7 @@ function renderSupplierTab() {
   const root = document.getElementById('supplier-root');
   const sups = lists.suppliers;
   const rowsHTML = sups.length === 0
-    ? `<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No suppliers yet. Click + Add Supplier to begin.</td></tr>`
+    ? `<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No suppliers yet. Click + Add Supplier to begin.</td></tr>`
     : sups.map((s, i) => `
       <tr style="border-bottom:1px solid var(--border)">
         <td style="padding:0.4rem 0.6rem">
@@ -3048,13 +3048,23 @@ function renderSupplierTab() {
             placeholder="e.g. TX" maxlength="2"
             style="width:50px;background:transparent;border:none;color:var(--text);font-size:0.875rem;outline:none;padding:0.15rem 0;text-transform:uppercase">
         </td>
+        <td style="padding:0.4rem 0.6rem">
+          ${s.website
+            ? `<a href="${esc(s.website)}" target="_blank" rel="noopener noreferrer" style="color:var(--blue);font-size:0.875rem;white-space:nowrap" title="${esc(s.website)}">Visit ↗</a>
+               <input type="text" value="${esc(s.website)}" data-sup-idx="${i}" data-sup-field="website"
+                 placeholder="https://example.com"
+                 style="display:block;width:100%;background:transparent;border:none;color:var(--muted);font-size:0.72rem;outline:none;padding:0.1rem 0">`
+            : `<input type="text" value="" data-sup-idx="${i}" data-sup-field="website"
+                 placeholder="https://example.com"
+                 style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.875rem;outline:none;padding:0.15rem 0">`}
+        </td>
         <td style="text-align:center;padding:0.25rem">
           ${perm.canEdit ? `<button class="del-btn" onclick="deleteSupplier(${i})">&#10005;</button>` : ''}
         </td>
       </tr>`).join('');
 
   root.innerHTML = `
-    <div style="padding:1.5rem;max-width:1000px">
+    <div style="padding:1.5rem;max-width:1200px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Suppliers</span>
         ${perm.canEdit ? `<button class="btn btn-green" onclick="addSupplier()">+ Add Supplier</button>` : ''}
@@ -3066,6 +3076,7 @@ function renderSupplierTab() {
             <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase">Address</th>
             <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;width:150px">Phone</th>
             <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;width:70px">State</th>
+            <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;width:180px">Website</th>
             <th style="width:40px;border-bottom:1px solid var(--border)"></th>
           </tr>
         </thead>
@@ -3075,7 +3086,7 @@ function renderSupplierTab() {
 }
 
 function addSupplier() {
-  lists.suppliers.push({ name: '', state: '', address: '', phone: '' });
+  lists.suppliers.push({ name: '', state: '', address: '', phone: '', website: '' });
   saveLists();
   renderSupplierTab();
   // Focus the new name input
@@ -3098,6 +3109,7 @@ document.getElementById('supplier-root').addEventListener('input', e => {
   const field = el.dataset.supField;
   if (isNaN(idx) || !field || !lists.suppliers[idx]) return;
   lists.suppliers[idx][field] = field === 'state' ? el.value.toUpperCase() : el.value;
+  if (field === 'website') renderSupplierTab();
   saveLists();
   projectsList.forEach(p => renderDailyTable(p.id));
 });
