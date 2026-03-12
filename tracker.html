@@ -843,6 +843,12 @@
 </head>
 <body>
 
+<!-- Save-error banner (hidden by default) -->
+<div id="save-error-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#b91c1c;color:#fff;font-size:0.85rem;padding:0.5rem 1rem;text-align:center;">
+  ⚠ Changes could not be saved to the server. Your edits are kept locally — please refresh or log in again to re-sync.
+  <button onclick="document.getElementById('save-error-banner').style.display='none'" style="margin-left:1rem;background:rgba(255,255,255,0.2);border:none;color:#fff;cursor:pointer;padding:0.15rem 0.5rem;border-radius:3px;">Dismiss</button>
+</div>
+
 <!-- ══════════════ HEADER ══════════════ -->
 <header>
   <div style="display:flex;align-items:center;gap:1rem;">
@@ -1353,6 +1359,11 @@ async function apiGet(key) {
   }
 }
 
+function _showSaveError() {
+  const banner = document.getElementById('save-error-banner');
+  if (banner) banner.style.display = '';
+}
+
 function apiPut(key, value) {
   // Fire-and-forget — UI is already updated in memory
   fetch(`${API_BASE}/data/${key}`, {
@@ -1362,7 +1373,16 @@ function apiPut(key, value) {
       'Authorization': `Bearer ${fctToken}`,
     },
     body: JSON.stringify({ value })
-  }).catch(err => console.warn(`[DB] PUT ${key} failed:`, err.message));
+  }).then(r => {
+    if (!r.ok) {
+      console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
+      _showSaveError();
+      if (r.status === 401) logout();
+    }
+  }).catch(err => {
+    console.warn(`[DB] PUT ${key} failed:`, err.message);
+    _showSaveError();
+  });
 }
 
 /* ═══════════════════════════════════════════
@@ -2002,15 +2022,32 @@ let dashSearch   = '';
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
+// Count daily rows that have a quantity entered — used to decide which data source is more complete
+function _countFilledQty(data) {
+  if (!Array.isArray(data)) return 0;
+  return data.reduce((n, p) => n + (p.dailyRows || []).filter(r => parseFloat(r.quantity) > 0).length, 0);
+}
+
 async function loadProjects() {
   let saved = await apiGet('fct_projects');
-  // First-run migration: pull any existing localStorage data into the DB
+
+  // Read local backup saved by saveProjects()
+  let localSaved = null;
+  try {
+    const raw = JSON.parse(localStorage.getItem(PROJECTS_KEY));
+    if (Array.isArray(raw) && raw.length) localSaved = raw;
+  } catch {}
+
   if (!saved || (Array.isArray(saved) && saved.length === 0)) {
-    try {
-      const local = JSON.parse(localStorage.getItem(PROJECTS_KEY));
-      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_projects', saved); }
-    } catch {}
+    // DB empty — fall back to localStorage (first-run migration or API failure)
+    if (localSaved) { saved = localSaved; apiPut('fct_projects', saved); }
+  } else if (localSaved && _countFilledQty(localSaved) > _countFilledQty(saved)) {
+    // localStorage has more quantity data than the DB, meaning a previous save
+    // likely failed. Use local version and re-push to the DB.
+    saved = localSaved;
+    apiPut('fct_projects', saved);
   }
+
   if (Array.isArray(saved) && saved.length) {
     projectsList = saved;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
@@ -2020,6 +2057,8 @@ async function loadProjects() {
 }
 
 function saveProjects() {
+  // Keep localStorage in sync as a local backup in case the API call fails
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
   apiPut('fct_projects', projectsList);
 }
 
@@ -5110,9 +5149,10 @@ document.addEventListener('input', e => {
       const eq = lists.equipment.find(e => e.name === el.value);
       if (eq) {
         p.dailyRows[i].equip_unit_cost = eq.unit_cost;
-        const row = document.getElementById('daily-tbody-' + projId)?.children[i];
-        if (row) {
-          const ucInput = row.querySelector('[data-f="equip_unit_cost"]');
+        const _tbody2 = document.getElementById('daily-tbody-' + projId);
+        const eqRow = _tbody2 ? [..._tbody2.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
+        if (eqRow) {
+          const ucInput = eqRow.querySelector('[data-f="equip_unit_cost"]');
           if (ucInput) ucInput.value = eq.unit_cost;
         }
       }
