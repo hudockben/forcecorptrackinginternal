@@ -75,7 +75,7 @@ app.put('/api/data/:key', async (req, res) => {
   }
 
   // Only allow the three keys the app uses
-  const ALLOWED_KEYS = ['fct_projects', 'fct_lists', 'fct_cost_rows'];
+  const ALLOWED_KEYS = ['fct_projects', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders'];
   if (!ALLOWED_KEYS.includes(key)) {
     return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}` });
   }
