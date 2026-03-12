@@ -4081,35 +4081,36 @@ function renderDailyTable(projId) {
   const ccOpts        = ['', ...costCodes];
   const scOpts        = ['', ...subCodes];
 
-  rows.forEach((row, i) => {
+  rows.forEach((row, _filteredIdx) => {
+    const ai = allRows.indexOf(row); // actual index in p.dailyRows (unaffected by filters)
     const c  = calcDaily(row);
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class="del-cell">
-        ${perm.canEdit ? `<button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${i}">&#10005;</button>` : ''}
-        ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${i})">&#10697;</button>` : ''}
+        ${perm.canEdit ? `<button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${ai}">&#10005;</button>` : ''}
+        ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${ai})">&#10697;</button>` : ''}
       </td>
-      <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="date"           value="${esc(row.date)}"></td>
-      <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', i, 'field_type',      projId)}</td>
-      <td>${makeSelect(employeeOpts,  row.employee,         'daily', i, 'employee',         projId)}</td>
-      <td>${makeSelect(ccOpts,        row.cost_code,        'daily', i, 'cost_code',        projId)}</td>
-      <td>${makeSelect(scOpts,        row.sub_code,         'daily', i, 'sub_code',         projId)}</td>
-      <td>${makeSelect(jobClassOpts,  row.job_class,        'daily', i, 'job_class',        projId)}</td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="rate"            value="${row.rate}"            step="any" placeholder="0.00"></td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="labor_hours"     value="${row.labor_hours}"     step="any" placeholder="0"></td>
+      <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="date"           value="${esc(row.date)}"></td>
+      <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', ai, 'field_type',      projId)}</td>
+      <td>${makeSelect(employeeOpts,  row.employee,         'daily', ai, 'employee',         projId)}</td>
+      <td>${makeSelect(ccOpts,        row.cost_code,        'daily', ai, 'cost_code',        projId)}</td>
+      <td>${makeSelect(scOpts,        row.sub_code,         'daily', ai, 'sub_code',         projId)}</td>
+      <td>${makeSelect(jobClassOpts,  row.job_class,        'daily', ai, 'job_class',        projId)}</td>
+      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="rate"            value="${row.rate}"            step="any" placeholder="0.00"></td>
+      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="labor_hours"     value="${row.labor_hours}"     step="any" placeholder="0"></td>
       <td class="calc">$${fmt(c.labor_cost)}</td>
-      <td>${makeSelect(equipOpts, row.equipment, 'daily', i, 'equipment', projId)}</td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="equip_unit_cost" value="${row.equip_unit_cost}" step="any" placeholder="0.00"></td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="equip_hours"     value="${row.equip_hours}"     step="any" placeholder="0"></td>
+      <td>${makeSelect(equipOpts, row.equipment, 'daily', ai, 'equipment', projId)}</td>
+      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="equip_unit_cost" value="${row.equip_unit_cost}" step="any" placeholder="0.00"></td>
+      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="equip_hours"     value="${row.equip_hours}"     step="any" placeholder="0"></td>
       <td class="calc">$${fmt(c.equip_total)}</td>
-      <td><input type="text"   data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="material"        value="${esc(row.material)}"   placeholder="Description&hellip;"></td>
-      <td>${makeSelect(supplierOpts, row.supplier, 'daily', i, 'supplier', projId)}</td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="po_num"          value="${row.po_num}"          placeholder="0"></td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="units_purchased" value="${row.units_purchased}" step="any" placeholder="0"></td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
-      <td class="calc" id="daily-mat-${projId}-${i}">$${fmt(parseFloat(row.material_cost)||0)}</td>
+      <td><input type="text"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="material"        value="${esc(row.material)}"   placeholder="Description&hellip;"></td>
+      <td>${makeSelect(supplierOpts, row.supplier, 'daily', ai, 'supplier', projId)}</td>
+      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="po_num"          value="${row.po_num}"          placeholder="0"></td>
+      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="units_purchased" value="${row.units_purchased}" step="any" placeholder="0"></td>
+      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
+      <td class="calc" id="daily-mat-${projId}-${ai}">$${fmt(parseFloat(row.material_cost)||0)}</td>
       <td class="calc">$${fmt(c.total_cost)}</td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
+      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
     `;
     tbody.appendChild(tr);
   });
@@ -4118,7 +4119,9 @@ function renderDailyTable(projId) {
 function renderDailyCalcCells(projId, i) {
   const p = getProj(projId); if (!p) return;
   const c  = calcDaily((p.dailyRows || [])[i]);
-  const tr = document.getElementById('daily-tbody-' + projId)?.children[i];
+  // Use data-i attribute to find the correct TR regardless of active filters
+  const tbody = document.getElementById('daily-tbody-' + projId);
+  const tr = tbody ? [...tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
   if (!tr) return;
   const row = (p.dailyRows || [])[i];
   const calcs = tr.querySelectorAll('td.calc');
@@ -4765,6 +4768,7 @@ function renderProductionRateView(projId) {
         tableRows += `<tr>
           <td style="${TD_BASE}${BG.date}">${esc(d)}</td>
           <td style="${TD('qty')}">${bidQty > 0 ? fmt(bidQty) : '—'}</td>
+          <td style="${TD('qty')}">${day.qty > 0 ? fmt(day.qty) : '—'}</td>
           <td style="${TD('qty')}">${fmt(cumQty)}</td>
           <td style="${TD('qty')}${c_pct}">${pctComp !== null ? fmt(pctComp,1)+'%' : '—'}</td>
           <td style="${TD('uc')}${SEP}${c_dailyUC}">${dailyUC > 0 ? '$'+fmt(dailyUC) : '—'}</td>
@@ -4786,7 +4790,7 @@ function renderProductionRateView(projId) {
       const colGroupHdr = `
         <tr>
           <th style="${THL_BASE}${BG.date}" rowspan="2">Date</th>
-          <th style="${THR_BASE}${BG.qty}" colspan="3">Quantity${unit ? ' ('+esc(unit)+')' : ''}</th>
+          <th style="${THR_BASE}${BG.qty}" colspan="4">Quantity${unit ? ' ('+esc(unit)+')' : ''}</th>
           <th style="${THR_BASE}${BG.uc}${SEP}" colspan="4">Unit Cost</th>
           <th style="${THR_BASE}${BG.lbr}${SEP}" colspan="2">Labor Hrs</th>
           <th style="${THR_BASE}${BG.days}${SEP}" colspan="2">Days</th>
@@ -4795,6 +4799,7 @@ function renderProductionRateView(projId) {
         </tr>
         <tr>
           <th style="${TH('qty')}">Bid</th>
+          <th style="${TH('qty')}">Today</th>
           <th style="${TH('qty')}">Running</th>
           <th style="${TH('qty')}">% Complete</th>
           <th style="${TH('uc')}${SEP}">Today</th>
@@ -5077,7 +5082,8 @@ document.addEventListener('input', e => {
     if (f === 'employee') {
       const emp = lists.employees.find(e => e.name === el.value);
       if (emp) {
-        const rowEl = document.getElementById('daily-tbody-' + projId)?.children[i];
+        const _tbody = document.getElementById('daily-tbody-' + projId);
+        const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
         if (!p.dailyRows[i].job_class && emp.job_class) {
           p.dailyRows[i].job_class = emp.job_class;
           if (rowEl) { const s = rowEl.querySelector('[data-f="job_class"]'); if (s) s.value = emp.job_class; }
