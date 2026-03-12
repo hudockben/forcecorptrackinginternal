@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ForceCorpTracking — Tracker</title>
+  <title>DataWatch — Tracker</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -82,7 +82,7 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
-    /* ── Project Info ── */
+    /* ── Project Dashboard ── */
     .info-wrap { max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; }
     .info-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
     .info-section-title { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--green); margin-bottom: 1rem; }
@@ -162,6 +162,14 @@
       border-radius: 0; margin-bottom: 0;
     }
 
+    /* ── Assigned Personnel / Equipment checklist ── */
+    .assign-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 0.75rem; }
+    .assign-col-label { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #888; margin-bottom: 0.5rem; }
+    .assign-list { display: flex; flex-direction: column; gap: 0.35rem; max-height: 180px; overflow-y: auto; padding: 0.5rem 0.6rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+    .assign-check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.83rem; cursor: pointer; color: var(--text); }
+    .assign-check input[type="checkbox"] { accent-color: var(--green); width: 14px; height: 14px; flex-shrink: 0; cursor: pointer; }
+    .assign-list:empty::after { content: "None in global lists yet"; color: var(--muted); font-size: 0.78rem; font-style: italic; }
+
     /* ── Bid Items & Daily Tracking (shared section wrapper) ── */
     .bid-section { padding: 1.1rem 1.5rem; border-top: 1px solid var(--border); }
     .daily-section .bid-section-title { color: var(--green); }
@@ -203,6 +211,8 @@
     .daily-inner-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
     .daily-inner-table td.del-cell { width: 26px; text-align: center; padding: 0 0.2rem; }
     .daily-inner-table td.del-cell .del-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
+    .daily-inner-table td.del-cell .copy-row-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--accent); cursor: pointer; margin-top: 2px; }
+    .daily-inner-table td.del-cell .copy-row-btn:hover { color: #fff; background: var(--accent); }
     .daily-inner-table td input,
     .daily-inner-table td select {
       width: 100%; background: transparent; border: none; outline: none;
@@ -219,7 +229,13 @@
       font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
       text-transform: uppercase; color: var(--blue); margin-bottom: 0.75rem;
       display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer; user-select: none;
     }
+    .bid-section-title:hover { color: #7dd3fc; }
+    .bid-section-caret { font-size: 0.65rem; margin-right: 0.5rem; display: inline-block; transition: transform 0.15s; }
+    .bid-section-body { overflow: hidden; }
+    .bid-section-body.bs-collapsed { display: none; }
+    .bid-table-wrap { overflow-x: auto; }
     .bid-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 0.6rem; }
     .bid-table th {
       background: var(--surface2); color: #888; font-size: 0.63rem; font-weight: 700;
@@ -242,6 +258,29 @@
     .bid-table td.bid-under  { background: #0d1f0d; color: var(--green); text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-over   { background: #1f0d0d; color: var(--red);   text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-del    { width: 32px; text-align: center; padding: 0 0.3rem; }
+    .dash-search-wrap { margin-bottom: 1rem; }
+    .dash-search { width: 100%; max-width: 380px; background: var(--surface2); border: 1px solid var(--border); color: #e2e8f0; padding: 0.45rem 0.75rem; border-radius: 5px; font-size: 0.88rem; }
+    .dash-search:focus { outline: none; border-color: var(--blue); }
+    .dash-proj-card { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.85rem; overflow: hidden; }
+    .dash-proj-hdr { display: flex; align-items: center; gap: 0.85rem; padding: 0.65rem 1rem; background: var(--surface2); cursor: pointer; user-select: none; }
+    .dash-proj-hdr:hover { background: #1e2535; }
+    .dash-caret { font-size: 0.65rem; transition: transform 0.15s; flex-shrink: 0; color: var(--muted); }
+    .dash-proj-info { flex: 1; min-width: 0; }
+    .dash-proj-name { font-weight: 700; font-size: 0.88rem; color: #e2e8f0; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dash-proj-meta { font-size: 0.7rem; color: var(--muted); margin-top: 0.1rem; display: block; }
+    .dash-proj-fin { display: flex; gap: 1.2rem; align-items: center; flex-shrink: 0; font-size: 0.78rem; }
+    .dash-proj-body.dc-collapsed { display: none; }
+    .bid-group-hdr td { background: #111c11; color: var(--green); font-weight: 600; font-size: 0.78rem; padding: 0.3rem 0.6rem !important; border-top: 2px solid #1e3a1e; cursor: pointer; }
+    .bid-group-hdr td:hover { background: #162216; }
+    .bid-group-hdr input.bid-grp-input { background: transparent; border: none; outline: none; color: var(--green); font-weight: 600; font-size: 0.78rem; width: 180px; cursor: text; }
+    .bid-group-hdr input.bid-grp-input:focus { background: #1a2a1a; border-radius: 3px; padding: 0 4px; }
+    .bid-group-toggle { margin-right: 0.4rem; font-size: 0.65rem; display: inline-block; transition: transform 0.15s; }
+    .bid-group-child td:first-child { padding-left: 1.6rem !important; }
+    .bid-group-child.bg-hidden { display: none; }
+    .bid-group-total td { background: #1a1800 !important; color: #d4b84a; font-weight: 600; font-size: 0.76rem; border-top: 1px solid #3a350f; }
+    .bid-group-total.bg-hidden { display: none; }
+    .bid-add-sub { background: none; border: 1px solid #2a4a2a; color: #5a9a5a; font-size: 0.68rem; padding: 0.1rem 0.4rem; border-radius: 3px; cursor: pointer; margin-left: 0.8rem; }
+    .bid-add-sub:hover { background: #1e3a1e; color: var(--green); }
     .bid-table tfoot tr td {
       background: var(--surface2); font-weight: 700; padding: 0.45rem 0.6rem;
       border: 1px solid var(--border); font-variant-numeric: tabular-nums;
@@ -285,6 +324,8 @@
 
     /* ── Table wrapper ── */
     .table-wrap { overflow-x: auto; padding: 1rem; }
+    /* Make cost-tracking table wrap the scroll container so sticky headers work */
+    #tab-cost .table-wrap { overflow-y: auto; max-height: calc(100vh - 105px); padding: 0; }
 
     table {
       border-collapse: collapse;
@@ -390,6 +431,37 @@
       padding: 2px 4px; border-radius: 2px; transition: color 0.15s;
     }
     .del-btn:hover { color: var(--red); }
+
+    /* Cost code group rows */
+    .cost-group-hdr { background: #161c16; cursor: pointer; user-select: none; }
+    .cost-group-hdr:hover { background: #1c231c; }
+    .cost-group-hdr td { padding: 0.45rem 0.6rem; font-weight: 700; color: var(--green);
+      font-size: 0.78rem; letter-spacing: 0.04em; border-bottom: 1px solid #2a3a2a; }
+    .cost-group-toggle { margin-right: 0.4rem; font-size: 0.65rem; display:inline-block; transition: transform 0.15s; }
+    .cost-group-child td:first-child { padding-left: 1.6rem; }
+    .cost-group-child.ct-hidden { display: none; }
+    .cost-group-total { background: #1e1c0a; }
+    .cost-group-total.ct-hidden { display: none; }
+    .cost-group-total td { color: #d4b84a; font-weight: 600; font-size: 0.78rem; border-top: 1px solid #3a350f; padding: 0.35rem 0.5rem; }
+
+    /* Delete confirmation popover */
+    .del-confirm {
+      position: absolute; z-index: 999;
+      background: #1e1e1e; border: 1px solid #444;
+      border-radius: 6px; padding: 8px 12px;
+      white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.8rem; color: #ccc;
+    }
+    .del-confirm span { margin-right: 2px; }
+    .del-confirm button {
+      border: none; border-radius: 4px; padding: 3px 10px;
+      cursor: pointer; font-size: 0.78rem; font-weight: 600;
+    }
+    .del-confirm .dc-yes { background: var(--red); color: #fff; }
+    .del-confirm .dc-yes:hover { background: #c0392b; }
+    .del-confirm .dc-no  { background: #333; color: #ccc; }
+    .del-confirm .dc-no:hover  { background: #444; }
 
     .empty-row td {
       text-align: center; color: var(--muted);
@@ -613,6 +685,102 @@
       margin-bottom: 2rem;
     }
 
+    /* ── Project cards on home tab ── */
+    .proj-home-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 0.85rem;
+      margin-bottom: 2rem;
+    }
+    .proj-home-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem 1.1rem;
+    }
+    .proj-home-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .proj-home-name {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.2rem;
+    }
+    .proj-home-meta {
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+    .proj-home-bar-wrap {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      margin-bottom: 0.75rem;
+    }
+    .proj-home-bar-track {
+      flex: 1;
+      height: 6px;
+      background: var(--surface2);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .proj-home-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s ease;
+    }
+    .proj-home-bar-pct {
+      font-size: 0.7rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted);
+      min-width: 2.8rem;
+      text-align: right;
+    }
+    .proj-home-financials {
+      display: flex;
+      gap: 0;
+      border-top: 1px solid var(--border);
+      padding-top: 0.6rem;
+    }
+    .proj-home-fin-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+    .proj-home-fin-label {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .proj-home-fin-val {
+      font-size: 0.78rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+    .proj-home-alerts {
+      display: flex;
+      gap: 0.4rem;
+      margin-top: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .proj-alert-chip {
+      font-size: 0.65rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 99px;
+      letter-spacing: 0.04em;
+    }
+    .proj-alert-chip.risk { background: #ef444422; color: var(--red); border: 1px solid #ef444444; }
+    .proj-alert-chip.hold { background: #eab30822; color: var(--yellow); border: 1px solid #eab30844; }
+
     /* ── Project Dashboard ── */
     .project-table {
       width: 100%;
@@ -673,7 +841,7 @@
 <!-- ══════════════ HEADER ══════════════ -->
 <header>
   <div style="display:flex;align-items:center;gap:1rem;">
-    <span class="brand">ForceCorpTracking</span>
+    <span class="brand">DataWatch</span>
     <span id="user-badge" style="font-size:0.7rem;color:#444;letter-spacing:0.05em;"></span>
   </div>
   <div class="actions" id="header-actions">
@@ -684,12 +852,12 @@
 <!-- ══════════════ TABS ══════════════ -->
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="home">Home</button>
-  <button class="tab-btn"        data-tab="info">Project Info</button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
-  <button class="tab-btn"        data-tab="project">Project Dashboard</button>
-  <button class="tab-btn"        data-tab="supplier">Suppliers</button>
+  <button class="tab-btn"        data-tab="info">Project Dashboard</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
+  <button class="tab-btn"        data-tab="supplier">Suppliers</button>
   <button class="tab-btn"        onclick="openModal()">&#9881; Manage Lists</button>
+  <button class="tab-btn" data-tab="users" id="users-tab-btn" style="margin-left:auto;display:none">&#128100; Users</button>
 </nav>
 
 <!-- ══════════════ HOME TAB ══════════════ -->
@@ -759,7 +927,7 @@
           <th>PO # <button class="cfb" data-f="po_num">▼</button></th>
           <th>Units Purchased <button class="cfb" data-f="units_purchased">▼</button></th>
           <th>Unit Cost <button class="cfb" data-f="unit_cost">▼</button></th>
-          <th>Material Cost <button class="cfb" data-f="material_cost">▼</button></th>
+          <th class="calc-hdr">Material Cost</th>
           <th class="calc-hdr">Total Cost</th>
           <th>Quantity <button class="cfb" data-f="quantity">▼</button></th>
         </tr>
@@ -786,16 +954,56 @@
   </div>
 </div>
 
-<!-- ══════════════ PROJECT DASHBOARD TAB
-<div class="tab-panel" id="tab-project">
-  <div class="home-wrap" id="project-content">
-    <!-- rendered by JS -->
-  </div>
-</div>
 
 <!-- ══════════════ SUPPLIER TAB ══════════════ -->
 <div class="tab-panel" id="tab-supplier">
   <div id="supplier-root"></div>
+</div>
+
+<!-- ══════════════ BID LINE ITEMS FULL-SCREEN ══════════════ -->
+<div id="bid-fullscreen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
+    <button class="btn btn-ghost" onclick="closeBidView()">&#8592; Back</button>
+    <span id="bid-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
+    <div style="margin-left:auto;display:flex;gap:0.5rem">
+      <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
+      <button class="btn btn-green" id="bid-fs-add">+ Add Item</button>
+    </div>
+  </div>
+  <div style="flex:1;overflow:auto;padding:1.25rem;">
+    <table class="bid-table" style="width:100%">
+      <thead><tr>
+        <th style="width:28px"></th>
+        <th>Cost Code <button class="cfb bfb" data-bf="cost_code">▼</button> / Sub Code <button class="cfb bfb" data-bf="sub_code">▼</button></th>
+        <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+        <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+        <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
+        <th class="num">Variance</th><th class="num">Projected Cost</th>
+      </tr></thead>
+      <tbody id="bid-fs-tbody"></tbody>
+      <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
+    </table>
+  </div>
+  <!-- Bid column filter dropdown -->
+  <div id="bid-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;flex-direction:column;">
+    <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+      <input id="bff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+    </div>
+    <div id="bff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+    <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+      <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearBidFilter()">Clear</button>
+      <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyBidFilter()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════ DAILY PRODUCTION RATE FULL-SCREEN ══════════════ -->
+<div id="prod-fullscreen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
+    <button class="btn btn-ghost" onclick="closeProductionRateView()">&#8592; Back</button>
+    <span id="prod-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
+  </div>
+  <div id="prod-fs-body" style="flex:1;overflow:auto;padding:1.25rem;"></div>
 </div>
 
 <!-- ══════════════ PURCHASE ORDERS TAB ══════════════ -->
@@ -803,34 +1011,47 @@
   <div id="po-root"></div>
 </div>
 
+<!-- ══════════════ USERS TAB (admin only) ══════════════ -->
+<div class="tab-panel" id="tab-users">
+  <div id="users-root" style="padding:1.5rem;max-width:700px"></div>
+</div>
+
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
 <div class="tab-panel" id="tab-cost">
+  <!-- Filter bar -->
+  <div id="cost-filter-bar" style="padding:0.55rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
+    <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Filters:</span>
+    <button class="cfb cost-cfb" id="cost-proj-btn" data-f="_project" style="font-size:0.75rem;padding:0.2rem 0.5rem">Project ▼</button>
+    <div style="display:flex;align-items:center;gap:0.35rem">
+      <span style="font-size:0.72rem;color:var(--muted)">Sq Ft</span>
+      <input id="cost-sqft-min" type="number" placeholder="Min" min="0" step="1"
+        style="width:72px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:0.2rem 0.35rem;font-size:0.75rem;outline:none">
+      <span style="color:var(--muted)">–</span>
+      <input id="cost-sqft-max" type="number" placeholder="Max" min="0" step="1"
+        style="width:72px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:0.2rem 0.35rem;font-size:0.75rem;outline:none">
+      <button class="btn btn-ghost" style="font-size:0.72rem;padding:0.2rem 0.5rem" onclick="applySqftFilter()">Apply</button>
+    </div>
+    <button class="btn btn-ghost" id="cost-clear-filters-btn" style="font-size:0.72rem;padding:0.2rem 0.5rem;display:none" onclick="clearAllCostFilters()">✕ Clear Filters</button>
+  </div>
   <div class="table-wrap">
     <table id="tracker">
       <thead>
         <tr class="group-row">
-          <th class="g-base"  colspan="1"></th>
-          <th class="g-base"  colspan="3">Identification</th>
+          <th class="g-base"  colspan="1">Sub Code</th>
           <th class="g-cost"  colspan="3">Bid Plan</th>
           <th class="g-sum"   colspan="4">Company Actuals (from Daily)</th>
-          <th class="g-sum"   colspan="2">Progress</th>
           <th class="g-labor" colspan="4">Labor</th>
           <th class="g-equip" colspan="4">Equipment</th>
         </tr>
         <tr class="col-row">
-          <th></th>
-          <th>Cost Code</th>
-          <th>Sub Code</th>
-          <th>Status</th>
+          <th>Sub Code <button class="cfb cost-cfb" data-f="sub_code">▼</button></th>
           <th>Bid Qty</th>
-          <th>Bid Item Cost</th>
+          <th>Bid Unit Cost</th>
           <th class="calc-hdr">Total Cost (Bid)</th>
-          <th class="calc-hdr">Running Qty</th>
+          <th class="calc-hdr">Avg Qty</th>
           <th class="calc-hdr">Running Total</th>
-          <th class="calc-hdr">Past Avg</th>
+          <th class="calc-hdr">Production Rate</th>
           <th class="calc-hdr">Total Cost %</th>
-          <th class="calc-hdr">% Complete</th>
-          <th class="calc-hdr">Projected Cost</th>
           <th class="calc-hdr">Cum. Labor Hrs</th>
           <th class="calc-hdr">Days Worked</th>
           <th class="calc-hdr">Avg Laborers</th>
@@ -848,11 +1069,35 @@
     <span><span class="dot dot-calc"></span> Computed from all daily tracking entries</span>
     <span><span class="dot dot-warn"></span> Running cost &gt;80% of bid</span>
     <span><span class="dot dot-over"></span> Over budget (&gt;100% of bid)</span>
-    <span>Past Avg = Running Total ÷ Running Qty (company average cost per unit)</span>
+    <span>Production Rate = Running Total ÷ Avg Qty (company average cost per unit across all jobs)</span>
     <span>Dim rows = cost codes found in daily tracking with no bid entry yet</span>
   </div>
 </div>
 
+<!-- Cost table filter dropdown -->
+<div id="cost-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;flex-direction:column;">
+  <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+    <input id="cff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+  </div>
+  <div id="cff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+  <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+    <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearCostFilter()">Clear</button>
+    <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyCostFilter()">Apply</button>
+  </div>
+</div>
+
+
+<!-- Purchase Orders column filter dropdown -->
+<div id="po-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;flex-direction:column;">
+  <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+    <input id="pff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+  </div>
+  <div id="pff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+  <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+    <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearPOFilter()">Clear</button>
+    <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyPOFilter()">Apply</button>
+  </div>
+</div>
 
 <!-- ══════════════ MANAGE LISTS MODAL ══════════════ -->
 <div class="modal-overlay" id="modal-overlay">
@@ -939,6 +1184,56 @@ function logout() {
 })();
 
 /* ═══════════════════════════════════════════
+   PERMISSIONS
+   Roles: admin | level3 | level2 | level1
+   admin   — full access + manage company users
+   level3  — full access
+   level2  — insert/edit daily rows & POs; cannot delete projects
+   level1  — view-only: Project Dashboard & Purchase Orders
+═══════════════════════════════════════════ */
+const perm = (() => {
+  const r = fctUser ? fctUser.role : 'level1';
+  return {
+    role:             r,
+    isAdmin:          r === 'admin',
+    canEdit:          ['admin', 'level3', 'level2'].includes(r),
+    canDeleteProject: ['admin', 'level3'].includes(r),
+    // tabs visible to this role (null = all)
+    visibleTabs: (r === 'level1') ? new Set(['info', 'po'])
+               : (r === 'level2') ? new Set(['home', 'info', 'po'])
+               : null,
+  };
+})();
+
+// Apply tab visibility
+(function () {
+  // Show Users tab for admin only
+  if (perm.isAdmin) {
+    document.getElementById('users-tab-btn').style.display = '';
+  }
+
+  if (perm.visibleTabs) {
+    // Hide tabs this role cannot see
+    document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
+      if (!perm.visibleTabs.has(btn.dataset.tab)) btn.style.display = 'none';
+    });
+    // Hide Manage Lists (no data-tab, identified by onclick content)
+    document.querySelectorAll('.tab-btn:not([data-tab])').forEach(btn => {
+      btn.style.display = 'none';
+    });
+
+    // Activate the first visible tab
+    const firstTab = [...perm.visibleTabs][0];
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const firstBtn = document.querySelector(`.tab-btn[data-tab="${firstTab}"]`);
+    const firstPanel = document.getElementById(`tab-${firstTab}`);
+    if (firstBtn)  firstBtn.classList.add('active');
+    if (firstPanel) firstPanel.classList.add('active');
+  }
+})();
+
+/* ═══════════════════════════════════════════
    NEON DATABASE API LAYER
    Replaces localStorage with server-backed persistence.
 ═══════════════════════════════════════════ */
@@ -996,20 +1291,21 @@ function escT(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;
 /* ═══════════════════════════════════════════
    TABS
 ═══════════════════════════════════════════ */
-let activeTab = 'home';
+let activeTab = perm.visibleTabs ? [...perm.visibleTabs][0] : 'home';
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
+    if (!btn.dataset.tab) return; // non-tab buttons (Manage Lists)
     activeTab = btn.dataset.tab;
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.tab-panel').forEach(p =>
       p.classList.toggle('active', p.id === 'tab-' + activeTab));
     renderHeaderActions();
     if (activeTab === 'home')     renderHomeTab();
-    if (activeTab === 'project')  renderProjectDashboard();
     if (activeTab === 'info')     renderProjectInfoComputed();
     if (activeTab === 'supplier') renderSupplierTab();
     if (activeTab === 'po')       renderPOTab();
+    if (activeTab === 'users')    renderUsersTab();
   });
 });
 
@@ -1019,7 +1315,7 @@ function renderHeaderActions() {
   if (activeTab === 'cost') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
-      <button class="btn btn-green" onclick="addCostRow()">+ Add Bid Entry</button>
+      <button class="btn btn-green" onclick="document.querySelector('.tab-btn[data-tab=info]').click()">+ Add Bid Items in Project Dashboard</button>
       ${logoutBtn}
     `;
   } else {
@@ -1028,78 +1324,175 @@ function renderHeaderActions() {
 }
 
 function renderHomeTab() {
-  // ── Aggregate using daily data for actuals ──
-  const agg = buildDailyAgg();
-  let totalBid = 0, totalRunning = 0, totalProjected = 0;
+  const today = new Date();
+  const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  // ── Cross-project aggregates (sum from each project's own data) ──
+  let totalBid = 0, totalActual = 0, totalProjected = 0;
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
 
-  costRows.forEach(row => {
-    const bq  = parseFloat(row.quantity)      || 0;
-    const bic = parseFloat(row.bid_item_cost) || 0;
-    const key = (row.cost_code||'')+'||'+(row.sub_code||'');
-    const a   = agg[key] || { running_qty:0, total_cost:0 };
-    const past_avg = a.running_qty ? a.total_cost / a.running_qty : bic;
-    totalBid       += bq * bic;
-    totalRunning   += a.total_cost;
-    totalProjected += a.total_cost + (bq - a.running_qty) * past_avg;
-    if (row.status) statusCounts[row.status] = (statusCounts[row.status] || 0) + 1;
+  projectsList.forEach(p => {
+    const projBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+    const projActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+    // Simple projected: if we've spent X% of bid on Y% of work, project total proportionally
+    const projPct    = projBid ? projActual / projBid : 0;
+    const projected  = projPct > 0 ? projActual / projPct : projBid;
+    totalBid       += projBid;
+    totalActual    += projActual;
+    totalProjected += projected;
+    // status counts from bid items
+    (p.bidItems||[]).forEach(b => {
+      if (b.status) statusCounts[b.status] = (statusCounts[b.status] || 0) + 1;
+    });
   });
 
-  const overallPct = totalBid ? (totalRunning / totalBid) * 100 : 0;
-  const totalItems = costRows.length;
-  const allDaily = getAllDailyRows();
-  const totalDailyEntries = allDaily.length;
+  const overallPct = totalBid ? (totalActual / totalBid) * 100 : 0;
+  const overClass  = overallPct >= 100 ? 'red' : overallPct >= 85 ? 'yellow' : 'green';
+  const allDaily   = getAllDailyRows();
+  const openPOs    = purchaseOrders.filter(p => p.status === 'pending').length;
+  const thisWeek   = allDaily.filter(r => r.date >= weekAgo).length;
+  const atRiskCt   = statusCounts['At Risk'] || 0;
 
   // ── Status bar widths ──
-  const total = Object.values(statusCounts).reduce((a, b) => a + b, 0) || 1;
-  const pActive   = (statusCounts.Active   / total * 100).toFixed(1);
-  const pComplete = (statusCounts.Complete / total * 100).toFixed(1);
-  const pHold     = (statusCounts['On Hold'] / total * 100).toFixed(1);
-  const pRisk     = (statusCounts['At Risk'] / total * 100).toFixed(1);
+  const statusTotal = Object.values(statusCounts).reduce((a, b) => a + b, 0) || 1;
+  const pActive   = (statusCounts.Active     / statusTotal * 100).toFixed(1);
+  const pComplete = (statusCounts.Complete   / statusTotal * 100).toFixed(1);
+  const pHold     = (statusCounts['On Hold'] / statusTotal * 100).toFixed(1);
+  const pRisk     = (statusCounts['At Risk'] / statusTotal * 100).toFixed(1);
 
-  // ── Recent daily entries (last 5 sorted by date desc) ──
+  // ── Per-project cards (most recent 6) ──
+  const recentProjects = projectsList.slice(-6).reverse();
+  const projectCards = projectsList.length === 0
+    ? `<div class="home-empty">No projects yet. Go to Project Dashboard to create one.</div>`
+    : recentProjects.map(p => {
+        const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+        const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+        const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
+        const variance  = bid - actual;
+        const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+        const varTxt    = bid ? (variance >= 0 ? `$${fmt(Math.abs(variance))} under` : `$${fmt(Math.abs(variance))} over`) : '—';
+        const barColor  = !bid ? 'var(--muted)' : actual / bid >= 1 ? 'var(--red)' : actual / bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
+        const name      = p['project-name'] || 'Untitled Project';
+        const meta      = [p['job-number'], p['client'], p['status']].filter(Boolean).map(v => esc(v)).join(' · ');
+        const endDate   = p['end-date'];
+        const daysLeft  = endDate ? Math.ceil((new Date(endDate) - today) / (1000*60*60*24)) : null;
+        const endChip   = endDate
+          ? (daysLeft < 0
+              ? `<span style="font-size:0.68rem;color:var(--red);font-weight:600">&#9888; ${Math.abs(daysLeft)}d overdue</span>`
+              : daysLeft <= 14
+              ? `<span style="font-size:0.68rem;color:var(--yellow);font-weight:600">&#9888; ${daysLeft}d left</span>`
+              : `<span style="font-size:0.68rem;color:var(--muted)">${daysLeft}d left</span>`)
+          : '';
+        const atRisk = (p.bidItems||[]).filter(b => b.status === 'At Risk').length;
+        const onHold = (p.bidItems||[]).filter(b => b.status === 'On Hold').length;
+        return `
+          <div class="proj-home-card">
+            <div class="proj-home-card-header">
+              <div style="min-width:0">
+                <div class="proj-home-name">${esc(name)}</div>
+                ${meta ? `<div class="proj-home-meta">${meta}</div>` : ''}
+              </div>
+              <div style="text-align:right;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:0.2rem">
+                ${endChip}
+                ${p['pm'] ? `<span style="font-size:0.68rem;color:var(--muted)">PM: ${esc(p['pm'])}</span>` : ''}
+              </div>
+            </div>
+            <div class="proj-home-bar-wrap">
+              <div class="proj-home-bar-track">
+                <div class="proj-home-bar-fill" style="width:${pct.toFixed(1)}%;background:${barColor}"></div>
+              </div>
+              <span class="proj-home-bar-pct">${pct.toFixed(0)}% of bid</span>
+            </div>
+            <div class="proj-home-financials">
+              <div class="proj-home-fin-item">
+                <span class="proj-home-fin-label">Bid</span>
+                <span class="proj-home-fin-val" style="color:var(--green)">$${fmt(bid)}</span>
+              </div>
+              <div class="proj-home-fin-item">
+                <span class="proj-home-fin-label">Actual</span>
+                <span class="proj-home-fin-val" style="color:var(--yellow)">$${fmt(actual)}</span>
+              </div>
+              <div class="proj-home-fin-item">
+                <span class="proj-home-fin-label">Variance</span>
+                <span class="proj-home-fin-val" style="${varStyle}">${varTxt}</span>
+              </div>
+              <div class="proj-home-fin-item">
+                <span class="proj-home-fin-label">Entries</span>
+                <span class="proj-home-fin-val">${(p.dailyRows||[]).length}</span>
+              </div>
+            </div>
+            ${(atRisk > 0 || onHold > 0) ? `
+              <div class="proj-home-alerts">
+                ${atRisk > 0 ? `<span class="proj-alert-chip risk">&#9888; ${atRisk} At Risk</span>` : ''}
+                ${onHold > 0 ? `<span class="proj-alert-chip hold">&#9646; ${onHold} On Hold</span>` : ''}
+              </div>` : ''}
+          </div>`;
+      }).join('');
+
+  // ── At-risk / On-Hold alert rows (from global costRows) ──
+  const alertRows = costRows.filter(r => r.status === 'At Risk' || r.status === 'On Hold');
+
+  // ── Recent daily entries (last 8, with project lookup) ──
   const recent = [...allDaily]
     .filter(r => r.date)
     .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, 5);
-
-  const overClass = overallPct >= 100 ? 'red' : overallPct >= 80 ? 'yellow' : 'green';
+    .slice(0, 8);
 
   document.getElementById('home-content').innerHTML = `
     <p class="home-title">Overview</p>
 
     <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-label">Cost Items</div>
-        <div class="stat-value">${totalItems}</div>
-        <div class="stat-sub">tracked items</div>
+      <div class="stat-card blue">
+        <div class="stat-label">Projects</div>
+        <div class="stat-value">${projectsList.length}</div>
+        <div class="stat-sub">in system</div>
       </div>
       <div class="stat-card green">
-        <div class="stat-label">Total Bid Cost</div>
+        <div class="stat-label">Total Bid</div>
         <div class="stat-value">$${fmt(totalBid, 0)}</div>
-        <div class="stat-sub">across all items</div>
+        <div class="stat-sub">across all projects</div>
       </div>
       <div class="stat-card ${overClass}">
-        <div class="stat-label">Running Total Cost</div>
-        <div class="stat-value">$${fmt(totalRunning, 0)}</div>
+        <div class="stat-label">Total Actual</div>
+        <div class="stat-value">$${fmt(totalActual, 0)}</div>
         <div class="stat-sub">${fmtPct(overallPct)} of bid</div>
-      </div>
-      <div class="stat-card ${overClass}">
-        <div class="stat-label">Overall % Complete</div>
-        <div class="stat-value">${fmtPct(overallPct)}</div>
-        <div class="stat-sub">running / bid</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Projected Cost</div>
         <div class="stat-value">$${fmt(totalProjected, 0)}</div>
         <div class="stat-sub">at current rates</div>
       </div>
-      <div class="stat-card blue">
-        <div class="stat-label">Daily Entries</div>
-        <div class="stat-value">${totalDailyEntries}</div>
-        <div class="stat-sub">logged records</div>
+      <div class="stat-card ${openPOs > 0 ? 'yellow' : ''}" ${openPOs > 0 ? `onclick="poFilters={status:new Set(['pending'])};document.querySelector('.tab-btn[data-tab=po]').click()" style="cursor:pointer"` : ''}>
+        <div class="stat-label">Open POs</div>
+        <div class="stat-value">${openPOs}</div>
+        <div class="stat-sub">pending approval</div>
+      </div>
+      <div class="stat-card ${atRiskCt > 0 ? 'red' : ''}">
+        <div class="stat-label">${atRiskCt > 0 ? 'At-Risk Items' : 'This Week'}</div>
+        <div class="stat-value">${atRiskCt > 0 ? atRiskCt : thisWeek}</div>
+        <div class="stat-sub">${atRiskCt > 0 ? 'need attention' : 'daily entries (7d)'}</div>
       </div>
     </div>
+
+    <p class="home-section-title">Projects <span style="font-size:0.7rem;color:var(--muted);font-weight:400">(${recentProjects.length} most recent)</span></p>
+    <div class="proj-home-grid">${projectCards}</div>
+    ${projectsList.length > 6 ? `<p style="text-align:center;margin:0.5rem 0 1.5rem;font-size:0.8rem;color:var(--muted)">${projectsList.length - 6} more — <a href="#" style="color:var(--green)" onclick="document.querySelector('.tab-btn[data-tab=info]').click();return false;">View all in Project Dashboard</a></p>` : ''}
+
+    ${alertRows.length > 0 ? `
+    <p class="home-section-title">Items Needing Attention</p>
+    <table class="recent-table" style="margin-bottom:2rem">
+      <thead><tr>
+        <th>Cost Code</th><th>Sub Code</th><th>Status</th>
+      </tr></thead>
+      <tbody>
+        ${alertRows.map(r => `
+          <tr>
+            <td>${esc(r.cost_code) || '—'}</td>
+            <td>${esc(r.sub_code) || '—'}</td>
+            <td><span style="color:${r.status === 'At Risk' ? 'var(--red)' : 'var(--yellow)'};font-weight:600">${r.status}</span></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>` : ''}
 
     <p class="home-section-title">Status Breakdown — Cost Items</p>
     <div class="status-bar-wrap">
@@ -1119,17 +1512,20 @@ function renderHomeTab() {
 
     <p class="home-section-title">Recent Daily Entries</p>
     ${recent.length === 0
-      ? `<div class="home-empty">No daily entries yet. Open a project in Project Info to add daily records.</div>`
+      ? `<div class="home-empty">No daily entries yet. Open a project in Project Dashboard to add daily records.</div>`
       : `<table class="recent-table">
           <thead><tr>
-            <th>Date</th><th>Employee</th><th>Cost Code</th><th>Sub Code</th>
+            <th>Date</th><th>Project</th><th>Employee</th><th>Cost Code</th><th>Sub Code</th>
             <th>Field Type</th><th>Labor Cost</th><th>Equip Total</th><th>Total Cost</th>
           </tr></thead>
           <tbody>
             ${recent.map(row => {
               const c = calcDaily(row);
+              const proj = projectsList.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
+              const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
               return `<tr>
                 <td>${row.date || '—'}</td>
+                <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(projName)}">${esc(projName)}</td>
                 <td>${esc(row.employee) || '—'}</td>
                 <td>${esc(row.cost_code) || '—'}</td>
                 <td>${esc(row.sub_code) || '—'}</td>
@@ -1148,6 +1544,100 @@ function renderHomeTab() {
 /* ═══════════════════════════════════════════
    PROJECT DASHBOARD
 ═══════════════════════════════════════════ */
+function toggleDashCard(hdrEl) {
+  const body   = hdrEl.nextElementSibling;
+  const caret  = hdrEl.querySelector('.dash-caret');
+  const collapsed = body.classList.toggle('dc-collapsed');
+  if (caret) caret.style.transform = collapsed ? 'rotate(-90deg)' : '';
+}
+
+function renderDashProjectCards() {
+  const container = document.getElementById('dash-proj-cards');
+  if (!container) return;
+  const q = (dashSearch || '').toLowerCase().trim();
+  const filtered = q
+    ? projectsList.filter(p =>
+        (p['project-name']||'').toLowerCase().includes(q) ||
+        (p['job-number']||'').toLowerCase().includes(q)   ||
+        (p['client']||'').toLowerCase().includes(q))
+    : projectsList;
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div class="home-empty">${q ? `No projects match "${esc(q)}"` : 'No projects yet — create one in Project Dashboard.'}</div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(p => {
+    const totalBid    = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
+    const totalActual = (p.dailyRows||[]).reduce((s,r)=>s+calcDaily(r).total_cost,0);
+    const diff = totalBid - totalActual;
+    const diffStyle = diff >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    const diffTxt   = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '';
+    const name = p['project-name'] || 'Untitled Project';
+    const meta = [p['job-number'], p['client'], p['status']].filter(Boolean).join(' · ');
+    return `
+      <div class="dash-proj-card">
+        <div class="dash-proj-hdr" onclick="toggleDashCard(this)">
+          <span class="dash-caret">▼</span>
+          <div class="dash-proj-info">
+            <span class="dash-proj-name">${esc(name)}</span>
+            ${meta ? `<span class="dash-proj-meta">${esc(meta)}</span>` : ''}
+          </div>
+          <div class="dash-proj-fin">
+            ${totalBid    ? `<span style="color:#888">Bid: <strong style="color:#86efac">$${fmt(totalBid)}</strong></span>` : ''}
+            ${totalActual ? `<span style="color:#888">Actual: <strong style="color:var(--yellow)">$${fmt(totalActual)}</strong></span>` : ''}
+            ${diffTxt     ? `<span style="${diffStyle};font-weight:600">${diffTxt}</span>` : ''}
+          </div>
+        </div>
+        <div class="dash-proj-body">
+          <div class="bid-section">
+            <div class="bid-section-title" onclick="toggleBidSection(this)">
+              <span><span class="bid-section-caret">▼</span>Bid Line Items vs Actuals</span>
+            </div>
+            <div class="bid-section-body">
+              <div class="bid-table-wrap">
+                <table class="bid-table">
+                  <thead><tr>
+                    <th>Sub Code</th>
+                    <th class="num">Bid Qty</th><th class="num">Unit Cost</th>
+                    <th class="num">Running Qty</th><th class="num">Qty Completed</th>
+                    <th class="num">Running Unit Cost</th>
+                    <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+                    <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
+                    <th class="num">Variance</th><th class="num">Projected Cost</th>
+                  </tr></thead>
+                  <tbody id="dash-btbody-${p.id}"></tbody>
+                  <tfoot><tr id="dash-bfoot-${p.id}"></tr></tfoot>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="bid-section">
+            <div class="bid-section-title" onclick="toggleBidSection(this)">
+              <span><span class="bid-section-caret">▼</span>Purchase Orders</span>
+            </div>
+            <div class="bid-section-body">
+              <div class="bid-table-wrap">
+                <table class="bid-table">
+                  <thead><tr>
+                    <th>PO #</th><th>Title</th>
+                    <th class="num">Unit Cost</th><th class="num">Total</th><th>Status</th>
+                  </tr></thead>
+                  <tbody id="dash-po-${p.id}"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  filtered.forEach(p => {
+    renderBidTable(p.id, { tbodyId: 'dash-btbody-'+p.id, footId: 'dash-bfoot-'+p.id, readonly: true });
+    renderProjectPOs(p.id, 'dash-po-'+p.id);
+  });
+}
+
 function renderProjectDashboard() {
   // ── Aggregate daily rows by cost_code + sub_code ──
   const projects = {};
@@ -1277,7 +1767,7 @@ function renderProjectDashboard() {
 
     <p class="home-section-title">Breakdown by Cost Code / Sub Code</p>
     ${keys.length === 0
-      ? `<div class="home-empty">No daily tracking data yet. Open a project in Project Info to add daily entries.</div>`
+      ? `<div class="home-empty">No daily tracking data yet. Open a project in Project Dashboard to add daily entries.</div>`
       : `<div style="overflow-x:auto">
           <table class="project-table">
             <thead>
@@ -1367,7 +1857,15 @@ function renderProjectDashboard() {
           </table>
         </div>`
     }
+
+    <p class="home-section-title" style="margin-top:1.5rem">Project Summaries</p>
+    <div class="dash-search-wrap">
+      <input class="dash-search" type="text" placeholder="&#128269; Search by project name, job #, or client…"
+        value="${esc(dashSearch)}" oninput="dashSearch=this.value;renderDashProjectCards()">
+    </div>
+    <div id="dash-proj-cards"></div>
   `;
+  renderDashProjectCards();
 }
 
 renderHeaderActions();
@@ -1380,6 +1878,7 @@ const INFO_KEY_LEGACY = 'fct_project_info'; // for migration only
 
 let projectsList = [];
 let projSearch   = '';
+let dashSearch   = '';
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
@@ -1430,7 +1929,9 @@ function addProject() {
     'project-name':'','job-number':'','status':'','contract-type':'',
     'client':'','gc':'','pm':'','super':'','estimator':'','client-contact':'',
     'address':'','city-state':'','start-date':'','end-date':'','contract-days':'',
-    'contract-amount':'','revised-amount':'','retention':'','scope':'','notes':''
+    'contract-amount':'','revised-amount':'','retention':'','scope':'','notes':'',
+    'sqft': '',
+    prevailing_wage: false, assigned_employees: [], assigned_equipment: []
   };
   projectsList.push(p);
   saveProjects();
@@ -1440,15 +1941,77 @@ function addProject() {
 }
 
 function deleteProject(id) {
-  if (!confirm('Delete this project and all its bid items?')) return;
-  projectsList = projectsList.filter(p => p.id !== id);
-  saveProjects();
-  renderProjectsTab();
+  const p = getProj(id);
+  if (!p) return;
+  const projName = (p['project-name'] || '').trim() || 'Unnamed Project';
+
+  // Build modal
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.style.cssText = 'z-index:9999';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:420px;width:100%">
+      <div class="modal-header" style="background:var(--red)">
+        <h2>DELETE PROJECT</h2>
+        <button class="modal-close" id="dp-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 0.75rem;color:var(--text);font-size:0.85rem;line-height:1.5">
+          This will permanently delete <strong style="color:#fff">${projName}</strong>
+          and all its bid items and daily rows. This action cannot be undone.
+        </p>
+        <p style="margin:0 0 0.4rem;color:#aaa;font-size:0.78rem">
+          To confirm, type <strong style="color:#fff;letter-spacing:0.02em">${projName}</strong> below:
+        </p>
+        <input id="dp-input" type="text" autocomplete="off" spellcheck="false"
+          placeholder="${projName}"
+          style="width:100%;box-sizing:border-box;background:#111;border:1px solid #444;color:#fff;
+                 padding:0.45rem 0.6rem;border-radius:4px;font-size:0.85rem;outline:none"/>
+        <div style="margin-top:1rem;display:flex;justify-content:flex-end;gap:0.5rem">
+          <button id="dp-cancel" class="btn" style="background:#333;color:#ccc;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer">Cancel</button>
+          <button id="dp-confirm" class="btn btn-danger" disabled
+            style="opacity:0.4;transition:opacity 0.15s">Delete Project</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const input   = overlay.querySelector('#dp-input');
+  const confirm = overlay.querySelector('#dp-confirm');
+
+  input.addEventListener('input', () => {
+    const match = input.value === projName;
+    confirm.disabled = !match;
+    confirm.style.opacity = match ? '1' : '0.4';
+  });
+
+  function close() { overlay.remove(); }
+  overlay.querySelector('#dp-close').addEventListener('click', close);
+  overlay.querySelector('#dp-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  confirm.addEventListener('click', () => {
+    if (confirm.disabled) return;
+    close();
+    projectsList = projectsList.filter(pr => pr.id !== id);
+    saveProjects();
+    renderProjectsTab();
+  });
+
+  setTimeout(() => input.focus(), 50);
 }
 
 function toggleCard(id) {
   const card = document.getElementById('pcard-' + id);
   if (card) card.classList.toggle('expanded');
+}
+
+function toggleBidSection(titleEl) {
+  const body   = titleEl.nextElementSibling;
+  const caret  = titleEl.querySelector('.bid-section-caret');
+  const collapsed = body.classList.toggle('bs-collapsed');
+  if (caret) caret.style.transform = collapsed ? 'rotate(-90deg)' : '';
 }
 
 function updateProjectField(id, field, value) {
@@ -1464,6 +2027,17 @@ function updateProjectField(id, field, value) {
   if (badgeEl) { badgeEl.className = 'proj-badge ' + statusBadgeClass(p['status']); badgeEl.textContent = p['status'] || ''; }
 }
 
+function toggleProjectAssignment(projId, field, name, checked) {
+  const p = getProj(projId); if (!p) return;
+  if (!Array.isArray(p[field])) p[field] = [];
+  if (checked) { if (!p[field].includes(name)) p[field].push(name); }
+  else { p[field] = p[field].filter(n => n !== name); }
+  saveProjects();
+  // Re-render daily table if open so dropdown options update immediately
+  const dailyTbody = document.getElementById('daily-tbody-' + projId);
+  if (dailyTbody) renderDailyTable(projId);
+}
+
 function statusBadgeClass(s) {
   return ({ 'Bidding':'badge-bidding','Awarded':'badge-awarded','In Progress':'badge-in-progress',
     'Substantially Complete':'badge-substantially','Complete':'badge-complete','On Hold':'badge-on-hold' })[s] || 'badge-default';
@@ -1472,7 +2046,7 @@ function statusBadgeClass(s) {
 // ── Bid Items ──
 function addBidItem(projId) {
   const p = getProj(projId); if (!p) return;
-  p.bidItems.push({ id: uid(), cost_code:'', sub_code:'', description:'', quantity:'', unit_cost:'' });
+  p.bidItems.push({ id: uid(), cost_code:'New Cost Code', sub_code:'', quantity:'', unit_cost:'' });
   saveProjects();
   renderBidTable(projId);
 }
@@ -1553,11 +2127,12 @@ function laborerCountForBidItem(b, projId) {
   return names.size;
 }
 
-function renderBidFooter(projId) {
+function renderBidFooter(projId, opts = {}) {
+  const footId  = opts.footId  || 'bfoot-' + projId;
+  const readonly = !!opts.readonly;
   const p = getProj(projId); if (!p) return;
-  const footEl = document.getElementById('bfoot-' + projId); if (!footEl) return;
+  const footEl = document.getElementById(footId); if (!footEl) return;
   const totalBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
-  // Use all daily rows so PO-inserted costs (no cost code) are included in the footer total
   const totalActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
   const totalProj   = (p.bidItems||[]).reduce((s,b) => {
     const bidQty = parseFloat(b.quantity) || 0;
@@ -1567,71 +2142,197 @@ function renderBidFooter(projId) {
     return s + (rqty > 0 ? (actual / rqty) * bidQty : bidTot);
   }, 0);
   const diff = totalBid - totalActual;
-  const projDiff = totalProj - totalBid;
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
-  const projCls = projDiff <= 0 ? 'foot-under' : 'foot-over';
+  const projCls = (totalProj - totalBid) <= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
   const totalCumHrs = (p.bidItems||[]).reduce((s,b) => s + cumulativeHoursForBidItem(b, projId), 0);
-  const totalLab    = (() => {
-    const names = new Set((p.dailyRows||[]).map(r => r.employee).filter(Boolean));
-    return names.size;
-  })();
-  footEl.innerHTML = `
-    <td class="foot-label" colspan="2">Totals</td>
-    <td class="foot-label num" style="text-align:right">—</td>
-    <td class="foot-label num" style="text-align:right">—</td>
-    <td class="foot-label num" style="text-align:right">—</td>
-    <td class="foot-label num" style="text-align:right">—</td>
+  const totalLab = new Set((p.dailyRows||[]).map(r => r.employee).filter(Boolean)).size;
+  const cells = `
+    <td class="foot-label">Totals</td>
+    <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
-    <td class="foot-label num" style="text-align:right">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
-    <td class="foot-label num" style="text-align:right">${totalLab || '—'}</td>
+    <td class="foot-label num">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
+    <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
-    <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>
-    <td></td>`;
+    <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>`;
+  footEl.innerHTML = readonly ? cells : `<td></td>${cells}`;
 }
 
-function renderBidTable(projId) {
+function removeBidGroup(projId, costCode) {
   const p = getProj(projId); if (!p) return;
-  const tbody = document.getElementById('btbody-' + projId); if (!tbody) return;
-  tbody.innerHTML = (p.bidItems||[]).map(b => {
-    const bidQty  = parseFloat(b.quantity) || 0;
-    const bidTot  = bidQty * (parseFloat(b.unit_cost)||0);
-    const actual  = actualForBidItem(b, projId);
-    const rqty    = runningQtyForBidItem(b, projId);
-    const cumHrs  = cumulativeHoursForBidItem(b, projId);
-    const numLab  = laborerCountForBidItem(b, projId);
-    const diff    = bidTot - actual;
-    const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
-    const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
-    const pct     = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : '—';
-    // Projected cost = (actual ÷ running qty) × bid qty  (actual cost-per-unit × full bid qty)
-    // Falls back to bid total when no running qty yet
-    const proj    = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
-    const projDiff = proj - bidTot;
-    const projCls  = projDiff <= 0 ? 'bid-under' : 'bid-over';
-    const projTxt  = bidTot ? '$' + fmt(proj) : '—';
-    return `<tr>
-      <td><input type="text" class="num" value="${esc(b.cost_code)}" placeholder="Code"
-        oninput="updateBidItem('${projId}','${b.id}','cost_code',this.value)"></td>
-      <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub"
-        oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
-      <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
-        oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
-      <td class="bid-calc">${rqty || '—'}</td>
-      <td class="bid-calc">${pct}</td>
-      <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
-        oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
-      <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
-      <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
-      <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
-      <td class="bid-calc">${numLab || '—'}</td>
-      <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
-      <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>
-      <td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:1rem 0">No bid items yet — click <strong>+ Add Item</strong> to start.</td></tr>`;
-  renderBidFooter(projId);
+  p.bidItems = (p.bidItems || []).filter(b => b.cost_code !== costCode);
+  saveProjects();
+  renderBidTable(projId);
+}
+
+function updateBidGroupCode(projId, oldCode, newCode) {
+  const p = getProj(projId); if (!p) return;
+  (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) b.cost_code = newCode; });
+  saveProjects();
+  renderBidTable(projId);
+}
+
+function addBidSubCode(projId, costCode) {
+  const p = getProj(projId); if (!p) return;
+  // Insert right after last item with this cost code
+  const lastIdx = [...(p.bidItems||[])].map((b,i)=>b.cost_code===costCode?i:-1).filter(i=>i>=0).pop();
+  const newItem = { id: uid(), cost_code: costCode, sub_code: '', quantity: '', unit_cost: '' };
+  if (lastIdx != null) p.bidItems.splice(lastIdx + 1, 0, newItem);
+  else p.bidItems.push(newItem);
+  saveProjects();
+  renderBidTable(projId);
+}
+
+function renderBidTable(projId, opts = {}) {
+  const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
+  const readonly = !!opts.readonly;
+  const COLS     = readonly ? 12 : 13;
+  const p = getProj(projId); if (!p) return;
+  const tbody = document.getElementById(tbodyId); if (!tbody) return;
+  tbody.innerHTML = '';
+
+  const items = p.bidItems || [];
+  if (items.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="${COLS}" style="text-align:center;color:var(--muted);padding:1rem 0">${readonly ? 'No bid items.' : 'No bid items yet — click <strong>+ Add Item</strong> to start.'}</td></tr>`;
+    renderBidFooter(projId, opts);
+    return;
+  }
+
+  const groupOrder = [];
+  const groups = {};
+  items.forEach(b => {
+    const cc = b.cost_code || '';
+    if (!groups[cc]) { groups[cc] = []; groupOrder.push(cc); }
+    groups[cc].push(b);
+  });
+
+  // Apply bid filters (only in fullscreen mode)
+  const ccFilter  = bidFilters.cost_code || null;
+  const scFilter  = bidFilters.sub_code  || null;
+  const visGroups = ccFilter ? groupOrder.filter(cc => ccFilter.has(cc || '')) : groupOrder;
+
+  visGroups.forEach(costCode => {
+    const groupItems = groups[costCode];
+    const prefix  = opts.tbodyId ? opts.tbodyId + '-' : '';
+    const groupId = 'bg-' + prefix + projId + '-' + costCode.replace(/\W/g, '_') + '_' + groupItems[0].id.slice(0,4);
+
+    // ── Group header ──
+    const hdrTr = document.createElement('tr');
+    hdrTr.className = 'bid-group-hdr';
+    hdrTr.dataset.group = groupId;
+    hdrTr.dataset.collapsed = '0';
+    hdrTr.innerHTML = readonly
+      ? `<td colspan="${COLS}">
+          <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
+          <strong>${esc(costCode) || '(No Code)'}</strong>
+          <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.75rem">${groupItems.length} sub code${groupItems.length!==1?'s':''}</span>
+        </td>`
+      : `<td colspan="${COLS}">
+          <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
+          <input class="bid-grp-input" value="${esc(costCode)}" placeholder="Cost Code"
+            onclick="event.stopPropagation()"
+            onchange="updateBidGroupCode('${projId}','${esc(costCode)}',this.value)">
+          <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${esc(costCode)}')">+ Sub Code</button>
+          <button class="del-btn" style="float:right;margin-top:0.1rem" title="Delete entire group"
+            onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${esc(costCode)}\\'?'))removeBidGroup('${projId}','${esc(costCode)}')">✕</button>
+        </td>`;
+
+    hdrTr.addEventListener('click', () => {
+      const collapsed = hdrTr.dataset.collapsed === '1';
+      hdrTr.dataset.collapsed = collapsed ? '0' : '1';
+      const tog = document.getElementById('btog-' + groupId);
+      if (tog) tog.style.transform = collapsed ? '' : 'rotate(-90deg)';
+      tbody.querySelectorAll(`tr[data-group="${groupId}"]`).forEach(r => {
+        if (r === hdrTr) return;
+        r.classList.toggle('bg-hidden', !collapsed);
+      });
+    });
+    tbody.appendChild(hdrTr);
+
+    // ── Child rows ──
+    let gBidTotal = 0, gActual = 0, gCumHrs = 0, gProj = 0;
+    const visItems = scFilter ? groupItems.filter(b => scFilter.has(b.sub_code || '')) : groupItems;
+    visItems.forEach(b => {
+      const bidQty  = parseFloat(b.quantity)  || 0;
+      const bidTot  = bidQty * (parseFloat(b.unit_cost) || 0);
+      const actual  = actualForBidItem(b, projId);
+      const rqty    = runningQtyForBidItem(b, projId);
+      const cumHrs  = cumulativeHoursForBidItem(b, projId);
+      const numLab  = laborerCountForBidItem(b, projId);
+      const proj    = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+      const diff    = bidTot - actual;
+      const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
+      const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
+      const pct     = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : '—';
+      const projCls = (proj - bidTot) <= 0 ? 'bid-under' : 'bid-over';
+      const projTxt = bidTot ? '$' + fmt(proj) : '—';
+
+      gBidTotal += bidTot; gActual += actual; gCumHrs += cumHrs; gProj += proj;
+
+      const childTr = document.createElement('tr');
+      childTr.className = 'bid-group-child';
+      childTr.dataset.group = groupId;
+
+      const calcCellsA = `
+        <td class="bid-calc">${rqty || '—'}</td>
+        <td class="bid-calc">${pct}</td>`;
+      const calcCellsB = `
+        <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual/rqty) : '—'}</td>
+        <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
+        <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
+        <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
+        <td class="bid-calc">${numLab || '—'}</td>
+        <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
+        <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>`;
+
+      childTr.innerHTML = readonly
+        ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}</td>
+           <td class="bid-calc">${bidQty||'—'}</td>
+           <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
+           ${calcCellsA}${calcCellsB}`
+        : `<td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
+           <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
+             oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
+           <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
+             oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
+           ${calcCellsA}
+           <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
+             oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
+           ${calcCellsB}`;
+      tbody.appendChild(childTr);
+    });
+
+    // ── Group subtotal row ──
+    const gDiff    = gBidTotal - gActual;
+    const gDiffCls = gDiff >= 0 ? 'bid-under' : 'bid-over';
+    const gDiffTxt = gBidTotal ? (gDiff >= 0 ? `$${fmt(gDiff)} under` : `$${fmt(Math.abs(gDiff))} over`) : '—';
+    const gProjCls = (gProj - gBidTotal) <= 0 ? 'bid-under' : 'bid-over';
+    const totalCells = `
+      <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
+      <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
+      <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
+      <td class="bid-calc">${gCumHrs ? fmt(gCumHrs) : '—'}</td>
+      <td class="bid-calc">—</td>
+      <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
+      <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>`;
+    const totalLabel = `<td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode)||'(No Code)'} — Total</td>`;
+
+    const totalTr = document.createElement('tr');
+    totalTr.className = 'bid-group-total bid-group-child';
+    totalTr.dataset.group = groupId;
+    totalTr.innerHTML = readonly
+      ? totalLabel + totalCells
+      : `<td></td>${totalLabel}${totalCells}`;
+    tbody.appendChild(totalTr);
+  });
+
+  renderBidFooter(projId, opts);
+  if (bidViewProjId === projId) _updateBidFilterButtons();
 }
 
 function projectCardHTML(p) {
@@ -1658,7 +2359,9 @@ function projectCardHTML(p) {
       ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
       ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff)+' under':'$'+fmt(Math.abs(diff))+' over'}</span>` : ''}
     </div>
+    ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#1a3a2a;color:#4ade80;border:1px solid #4ade80;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>` : ''}
     <button class="btn btn-green" style="font-size:0.75rem;padding:0.25rem 0.7rem;" onclick="event.stopPropagation();openDailyView('${p.id}')">Daily Tracking &#8594;</button>
+    ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#3a1a00;color:#fb923c;border:1px solid #fb923c;" onclick="event.stopPropagation();openProductionRateView('${p.id}')">Daily Production Rate &#8594;</button>` : ''}
     <button class="proj-card-toggle">▾</button>
   </div>
   <div class="proj-card-body">
@@ -1669,6 +2372,9 @@ function projectCardHTML(p) {
         <div class="info-field"><label>Project Name</label>
           <input type="text" value="${esc(p['project-name']||'')}" placeholder="e.g. Route 9 Widening"
             oninput="updateProjectField('${p.id}','project-name',this.value)"></div>
+        <div class="info-field"><label>Field Sq Ft</label>
+          <input type="number" value="${esc(p['sqft']||'')}" placeholder="e.g. 75000" step="1" min="0"
+            oninput="updateProjectField('${p.id}','sqft',this.value)"></div>
         <div class="info-field"><label>Job Number</label>
           <input type="text" value="${esc(p['job-number']||'')}" placeholder="e.g. 2025-014"
             oninput="updateProjectField('${p.id}','job-number',this.value)"></div>
@@ -1680,6 +2386,45 @@ function projectCardHTML(p) {
           <select onchange="updateProjectField('${p.id}','contract-type',this.value)">
             ${makeOpt(['','Lump Sum','Unit Price','Cost Plus','Time & Material','GMP'], p['contract-type']||'')}
           </select></div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-section-title">Prevailing Wage &amp; Workforce</div>
+      <div class="info-grid">
+        <div class="info-field"><label>Prevailing Wage Project</label>
+          <select onchange="updateProjectField('${p.id}','prevailing_wage',this.value==='yes')">
+            <option value="no" ${!p.prevailing_wage ? 'selected' : ''}>No — Standard Rates</option>
+            <option value="yes" ${p.prevailing_wage ? 'selected' : ''}>Yes — Prevailing Wage Rates</option>
+          </select>
+          <span style="font-size:0.72rem;color:var(--muted);margin-top:0.3rem;display:block">
+            Selecting employees on daily rows will auto-fill the ${p.prevailing_wage ? '<strong style="color:var(--green)">prevailing wage</strong>' : 'standard'} rate for each employee.
+          </span>
+        </div>
+      </div>
+      <div class="assign-cols">
+        <div>
+          <div class="assign-col-label">Assigned Employees <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></div>
+          <div class="assign-list">
+            ${lists.employees.map(emp => `
+              <label class="assign-check">
+                <input type="checkbox" ${(p.assigned_employees||[]).includes(emp.name) ? 'checked' : ''}
+                  onchange="toggleProjectAssignment('${p.id}','assigned_employees','${esc(emp.name)}',this.checked)">
+                ${esc(emp.name)}${emp.job_class ? ` <span style="color:var(--muted);font-size:0.75rem">(${esc(emp.job_class)})</span>` : ''}
+              </label>`).join('')}
+          </div>
+        </div>
+        <div>
+          <div class="assign-col-label">Assigned Equipment <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></div>
+          <div class="assign-list">
+            ${lists.equipment.map(eq => `
+              <label class="assign-check">
+                <input type="checkbox" ${(p.assigned_equipment||[]).includes(eq.name) ? 'checked' : ''}
+                  onchange="toggleProjectAssignment('${p.id}','assigned_equipment','${esc(eq.name)}',this.checked)">
+                ${esc(eq.name)}${eq.unit_cost ? ` <span style="color:var(--muted);font-size:0.75rem">($${fmt(eq.unit_cost)}/hr)</span>` : ''}
+              </label>`).join('')}
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1746,42 +2491,26 @@ function projectCardHTML(p) {
       </div>
     </div>
 
-    <div class="bid-section">
-      <div class="bid-section-title">
-        <span>Bid Line Items vs Actuals</span>
-        <div style="display:flex;gap:0.5rem">
-          <button class="btn btn-ghost" onclick="exportBidPDF('${p.id}')">&#8595; PDF</button>
-          <button class="btn btn-blue" onclick="addBidItem('${p.id}')">+ Add Item</button>
-        </div>
-      </div>
-      <table class="bid-table">
-        <thead><tr>
-          <th>Cost Code</th><th>Sub Code</th>
-          <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th>
-          <th class="num">Bid Total</th><th class="num">Actual Cost</th>
-          <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
-          <th class="num">Variance</th><th class="num">Projected Cost</th><th></th>
-        </tr></thead>
-        <tbody id="btbody-${p.id}"></tbody>
-        <tfoot><tr id="bfoot-${p.id}"></tr></tfoot>
-      </table>
-    </div>
 
     <div class="bid-section">
-      <div class="bid-section-title">
-        <span>Purchase Orders</span>
+      <div class="bid-section-title" onclick="toggleBidSection(this)">
+        <span><span class="bid-section-caret">▼</span>Purchase Orders</span>
       </div>
-      <table class="bid-table">
-        <thead><tr>
-          <th>PO #</th><th>Title</th>
-          <th class="num">Unit Cost</th><th class="num">Total</th><th>Status</th>
-        </tr></thead>
-        <tbody id="po-proj-body-${p.id}"></tbody>
-      </table>
+      <div class="bid-section-body">
+        <div class="bid-table-wrap">
+          <table class="bid-table">
+            <thead><tr>
+              <th>PO #</th><th>Title</th>
+              <th class="num">Unit Cost</th><th class="num">Total</th><th>Status</th>
+            </tr></thead>
+            <tbody id="po-proj-body-${p.id}"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <div class="proj-card-footer">
-      <button class="btn btn-danger" onclick="deleteProject('${p.id}')">Delete Project</button>
+      ${perm.canDeleteProject ? `<button class="btn btn-danger" onclick="deleteProject('${p.id}')">Delete Project</button>` : ''}
     </div>
   </div>
 </div>`;
@@ -1796,21 +2525,30 @@ function renderProjectsTab() {
         (p['job-number']||'').toLowerCase().includes(q)   ||
         (p['client']||'').toLowerCase().includes(q))
     : projectsList;
-  root.innerHTML = `
-    <div class="proj-wrap">
-      <div class="proj-toolbar">
-        <input class="proj-search" type="text" placeholder="Search by project name, job number, or client…"
-          value="${esc(projSearch)}" oninput="projSearch=this.value;renderProjectsTab()">
-        <button class="btn btn-green" onclick="addProject()">+ Add Project</button>
-      </div>
-      <div class="proj-cards">
-        ${filtered.length
-          ? filtered.map(p => projectCardHTML(p)).join('')
-          : `<div class="proj-no-results">${projSearch
-              ? 'No projects match your search.'
-              : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`}
-      </div>
-    </div>`;
+
+  // First render: build the full scaffold; subsequent calls: update cards only
+  let cardsEl = root.querySelector('.proj-cards');
+  if (!cardsEl) {
+    root.innerHTML = `
+      <div class="proj-wrap">
+        <div class="proj-toolbar">
+          <input class="proj-search" type="text" placeholder="Search by project name, job number, or client…"
+            oninput="projSearch=this.value;renderProjectsTab()">
+          ${perm.canDeleteProject ? `<button class="btn btn-green" onclick="addProject()">+ Add Project</button>` : ''}
+        </div>
+        <div class="proj-cards"></div>
+      </div>`;
+    const si = root.querySelector('.proj-search');
+    si.value = projSearch;
+    cardsEl = root.querySelector('.proj-cards');
+  }
+
+  cardsEl.innerHTML = filtered.length
+    ? filtered.map(p => projectCardHTML(p)).join('')
+    : `<div class="proj-no-results">${projSearch
+        ? 'No projects match your search.'
+        : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`;
+
   // Populate bid tables, daily tables, and PO sections after DOM is built
   filtered.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); renderProjectPOs(p.id); });
 }
@@ -1863,6 +2601,8 @@ function addPO() {
     employee:     '',
     date_created: new Date().toISOString().slice(0, 10),
     project_id:   '',
+    cost_code:    '',
+    sub_code:     '',
   });
   savePurchaseOrders();
   renderPOTab();
@@ -1892,7 +2632,8 @@ function _syncPORowField(po, field) {
   const r = proj.dailyRows.find(r => r.id === po.po_row_id);
   if (!r) return;
   const map = { title: 'material', supplier: 'supplier', employee: 'employee',
-                date_created: 'date', qty: 'units_purchased', unit_cost: 'unit_cost' };
+                date_created: 'date', qty: 'units_purchased', unit_cost: 'unit_cost',
+                cost_code: 'cost_code', sub_code: 'sub_code' };
   if (map[field]) r[map[field]] = po[field] || '';
   if (['qty','unit_cost','tax'].includes(field)) {
     const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
@@ -1902,16 +2643,156 @@ function _syncPORowField(po, field) {
   renderDailyTable(po.project_id);
 }
 
+function _subCodeOpts(po) {
+  if (!po.project_id) return '<option value="">— pick project first —</option>';
+  const proj = getProj(po.project_id);
+  if (!proj || !Array.isArray(proj.bidItems) || proj.bidItems.length === 0)
+    return '<option value="">— no bid items —</option>';
+  const current = (po.cost_code || '') + '||' + (po.sub_code || '');
+  const opts = proj.bidItems
+    .filter(b => b.cost_code || b.sub_code)
+    .map(b => {
+      const v     = (b.cost_code || '') + '||' + (b.sub_code || '');
+      const label = [b.cost_code, b.sub_code].filter(Boolean).join(' / ')
+                    + (b.description ? ' — ' + b.description : '');
+      return `<option value="${esc(v)}" ${v === current ? 'selected' : ''}>${esc(label)}</option>`;
+    }).join('');
+  return `<option value="">— select —</option>` + opts;
+}
+
+/* ── PO filter state ── */
+let poFilters = {};   // { field: Set<string> } — absent key = no filter
+let poSearch = '';
+let _pffField = null;
+let _pffPending = null;
+
+function _poFieldVal(po, field) {
+  if (field === 'project_id') {
+    const proj = projectsList.find(p => p.id === po.project_id);
+    return proj ? (proj['project-name'] || 'Untitled') : '';
+  }
+  return String(po[field] ?? '');
+}
+
+function applyPOFilters() {
+  const q = poSearch.trim().toLowerCase();
+  return purchaseOrders.filter(po => {
+    for (const [field, valueSet] of Object.entries(poFilters)) {
+      if (!valueSet || valueSet.size === 0) continue;
+      if (!valueSet.has(_poFieldVal(po, field))) return false;
+    }
+    if (q) {
+      const proj = projectsList.find(p => p.id === po.project_id);
+      const projName = proj ? (proj['project-name'] || '') : '';
+      const hay = [po.po_number, projName, po.sub_code, po.title, po.supplier, po.employee, po.status, po.date_created].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function exportPOCSV() {
+  const rows = applyPOFilters();
+  const headers = ['PO #','Project','Sub Code','Title','Supplier','Qty','Unit Cost','Amount','Tax','Total','Employee','Date Created','Status'];
+  const escape = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const lines = [headers.map(escape).join(',')];
+  rows.forEach(po => {
+    const proj = projectsList.find(p => p.id === po.project_id);
+    const projName = proj ? (proj['project-name'] || '') : '';
+    const qty = parseFloat(po.qty) || 0;
+    const uc  = parseFloat(po.unit_cost) || 0;
+    const tax = parseFloat(po.tax) || 0;
+    const amt = qty * uc;
+    const total = amt + tax;
+    lines.push([po.po_number, projName, po.sub_code||'', po.title||'', po.supplier||'', qty, uc, amt.toFixed(2), tax.toFixed(2), total.toFixed(2), po.employee||'', po.date_created||'', po.status||''].map(escape).join(','));
+  });
+  const blob = new Blob([lines.join('\r\n')], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'purchase_orders.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function openPOFilter(field, btn) {
+  _pffField = field;
+  const unique = [...new Set(purchaseOrders.map(po => _poFieldVal(po, field)))].sort();
+  const active = poFilters[field] || null;
+  _pffPending = active ? new Set(active) : null;
+
+  const list = document.getElementById('pff-list');
+  const allChecked = !_pffPending;
+  list.innerHTML = `<label class="dff-item" id="pff-all-label">
+    <input type="checkbox" id="pff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="pff-val-cb" value="${esc(v)}" ${(!_pffPending || _pffPending.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  document.getElementById('pff-all').addEventListener('change', e => {
+    document.querySelectorAll('.pff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.pff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.pff-val-cb')].every(c => c.checked);
+    document.getElementById('pff-all').checked = all;
+  }));
+
+  document.getElementById('pff-search').value = '';
+  document.getElementById('pff-search').oninput = e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#pff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  const dd = document.getElementById('po-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyPOFilter() {
+  const cbs = [...document.querySelectorAll('.pff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allChecked = document.getElementById('pff-all')?.checked;
+  if (allChecked || checked.length === cbs.length) {
+    delete poFilters[_pffField];
+  } else {
+    poFilters[_pffField] = new Set(checked);
+  }
+  document.getElementById('po-filter-dd').style.display = 'none';
+  renderPOTab();
+}
+
+function clearPOFilter() {
+  delete poFilters[_pffField];
+  document.getElementById('po-filter-dd').style.display = 'none';
+  renderPOTab();
+}
+
 function renderPOTab() {
   const root = document.getElementById('po-root');
   if (!root) return;
 
+  const searchWasFocused = document.activeElement?.classList?.contains('po-global-search');
+
+  const thf = (label, key, right) => {
+    const active = poFilters[key] ? ' active' : '';
+    const align = right ? ';text-align:right' : '';
+    return `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${align}">
+      ${label} <button class="cfb pofb${active}" data-pof="${key}" title="Filter ${label}">▼</button>
+    </th>`;
+  };
   const th = (label, right) =>
     `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
 
+  const filteredPOs = applyPOFilters();
+
   const bodyHTML = purchaseOrders.length === 0
-    ? `<tr><td colspan="13" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
-    : purchaseOrders.map(po => {
+    ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
+    : filteredPOs.length === 0
+    ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders match the current filters.</td></tr>`
+    : filteredPOs.map(po => {
         const qty   = parseFloat(po.qty)       || 0;
         const uc    = parseFloat(po.unit_cost)  || 0;
         const tax   = parseFloat(po.tax)        || 0;
@@ -1946,6 +2827,8 @@ function renderPOTab() {
 
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(po.po_number)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}">${sel('sub_code_sel', _subCodeOpts(po))}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('title', 'text', 'placeholder="Title"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${sel('supplier', supOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('qty', 'number', 'step="any" placeholder="0"')}</td>
@@ -1956,24 +2839,32 @@ function renderPOTab() {
           <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('employee', empOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date_created', 'date')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:95px;color:${statusColor}">${sel('status', statusOpts)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
-          <td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" onclick="deletePO('${po.id}')">&#10005;</button></td>
+          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>` : '<td></td>'}
         </tr>`;
       }).join('');
 
+  const hasFilters = Object.keys(poFilters).length > 0 || poSearch;
+
   root.innerHTML = `
     <div style="padding:1.5rem">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem">
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Purchase Orders</span>
-        <button class="btn btn-green" onclick="addPO()">+ New PO</button>
+        <div style="display:flex;gap:0.5rem;align-items:center">
+          ${hasFilters ? `<button class="btn" onclick="poFilters={};poSearch='';renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
+          <button class="btn" onclick="exportPOCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#1d4ed8;color:#fff">&#8595; Export CSV</button>
+          ${perm.canEdit ? `<button class="btn btn-green" onclick="addPO()">+ New PO</button>` : ''}
+        </div>
       </div>
+      <input class="po-global-search" type="text" value="${esc(poSearch)}" placeholder="&#128269; Search purchase orders…"
+        oninput="poSearch=this.value;renderPOTab()"
+        style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.82rem;padding:0.45rem 0.75rem;outline:none;box-sizing:border-box;margin-bottom:0.85rem">
       <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1300px">
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1400px">
           <thead>
             <tr>
-              ${th('PO #')} ${th('Title')} ${th('Supplier')} ${th('Qty',1)} ${th('Unit Cost',1)}
-              ${th('Amount',1)} ${th('Tax',1)} ${th('Total',1)} ${th('Employee')}
-              ${th('Date Created')} ${th('Status')} ${th('Project')}
+              ${thf('PO #','po_number')} ${thf('Project','project_id')} ${thf('Sub Code','sub_code')} ${thf('Title','title')} ${thf('Supplier','supplier')}
+              ${th('Qty',1)} ${th('Unit Cost',1)} ${th('Amount',1)} ${th('Tax',1)} ${th('Total',1)}
+              ${thf('Employee','employee')} ${thf('Date Created','date_created')} ${thf('Status','status')}
               <th style="width:36px;border-bottom:1px solid var(--border)"></th>
             </tr>
           </thead>
@@ -1981,10 +2872,15 @@ function renderPOTab() {
         </table>
       </div>
     </div>`;
+
+  if (searchWasFocused) {
+    const si = root.querySelector('.po-global-search');
+    if (si) { si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
+  }
 }
 
-function renderProjectPOs(projId) {
-  const body = document.getElementById('po-proj-body-' + projId);
+function renderProjectPOs(projId, bodyIdOverride) {
+  const body = document.getElementById(bodyIdOverride || 'po-proj-body-' + projId);
   if (!body) return;
   const linked = purchaseOrders.filter(po => po.project_id === projId);
   if (linked.length === 0) {
@@ -2034,6 +2930,19 @@ document.getElementById('po-root').addEventListener('change', e => {
   const po = purchaseOrders.find(p => p.id === id);
   if (!po) return;
   const oldProj = po.project_id;
+
+  if (field === 'sub_code_sel') {
+    // Parse combined cost_code||sub_code value
+    const [cc, sc] = el.value.split('||');
+    po.cost_code = cc || '';
+    po.sub_code  = sc || '';
+    savePurchaseOrders();
+    _syncPORowField(po, 'cost_code');
+    _syncPORowField(po, 'sub_code');
+    if (po.project_id) renderProjectPOs(po.project_id);
+    return;
+  }
+
   po[field] = el.value;
 
   if (field === 'project_id') {
@@ -2046,7 +2955,16 @@ document.getElementById('po-root').addEventListener('change', e => {
         renderDailyTable(oldProj);
       }
     }
-    po.po_row_id = null;
+    po.po_row_id  = null;
+    po.cost_code  = '';
+    po.sub_code   = '';
+
+    // Update sub_code dropdown for this row
+    const subCell = document.getElementById('po-subcode-cell-' + po.id);
+    if (subCell) {
+      const subSel = subCell.querySelector('select');
+      if (subSel) subSel.innerHTML = _subCodeOpts(po);
+    }
 
     // Insert new row into new project
     if (po.project_id) {
@@ -2064,6 +2982,8 @@ document.getElementById('po-root').addEventListener('change', e => {
           units_purchased: po.qty             || '',
           unit_cost:       po.unit_cost       || '',
           material_cost:   String(qty * uc + tax),
+          cost_code:       po.cost_code       || '',
+          sub_code:        po.sub_code        || '',
         };
         newP.dailyRows.push(row);
         po.po_row_id = row.id;
@@ -2099,7 +3019,7 @@ function renderSupplierTab() {
             style="width:70px;background:transparent;border:none;color:var(--text);font-size:0.875rem;outline:none;padding:0.15rem 0;text-transform:uppercase">
         </td>
         <td style="text-align:center;padding:0.25rem">
-          <button class="del-btn" onclick="deleteSupplier(${i})">&#10005;</button>
+          ${perm.canEdit ? `<button class="del-btn" onclick="deleteSupplier(${i})">&#10005;</button>` : ''}
         </td>
       </tr>`).join('');
 
@@ -2107,7 +3027,7 @@ function renderSupplierTab() {
     <div style="padding:1.5rem;max-width:680px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Suppliers</span>
-        <button class="btn btn-green" onclick="addSupplier()">+ Add Supplier</button>
+        ${perm.canEdit ? `<button class="btn btn-green" onclick="addSupplier()">+ Add Supplier</button>` : ''}
       </div>
       <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;overflow:hidden">
         <thead>
@@ -2132,6 +3052,8 @@ function addSupplier() {
 }
 
 function deleteSupplier(idx) {
+  const name = lists.suppliers[idx]?.name || 'this supplier';
+  if (!confirm(`Delete "${name}"?`)) return;
   lists.suppliers.splice(idx, 1);
   saveLists();
   renderSupplierTab();
@@ -2281,16 +3203,57 @@ function _modalFieldUpdate(el) {
 document.querySelector('.modal-body').addEventListener('input',  e => _modalFieldUpdate(e.target));
 document.querySelector('.modal-body').addEventListener('change', e => _modalFieldUpdate(e.target));
 
-// Modal remove item
+// Modal remove item (with delete confirmation popover)
 document.querySelector('.modal-body').addEventListener('click', e => {
   const btn = e.target.closest('.remove-item');
   if (!btn) return;
+  if (btn._confirmOpen) return;
+
+  e.stopPropagation();
+  removeDelConfirm();
+
   const key = btn.dataset.key;
   const idx = parseInt(btn.dataset.idx);
-  if (key === 'equipment') lists.equipment.splice(idx, 1);
-  else lists[key].splice(idx, 1);
-  saveLists();
-  renderAllListPanels();
+
+  const popover = document.createElement('div');
+  popover.className = 'del-confirm';
+  popover.innerHTML =
+    '<span>Are you sure?</span>' +
+    '<button class="dc-yes">Yes</button>' +
+    '<button class="dc-no">No</button>';
+
+  btn._confirmOpen = true;
+  document.body.appendChild(popover);
+  const rect = btn.getBoundingClientRect();
+  const pw = popover.offsetWidth;
+  const ph = popover.offsetHeight;
+
+  let top  = rect.bottom + window.scrollY + 4;
+  let left = rect.left + window.scrollX - pw / 2 + rect.width / 2;
+
+  if (rect.bottom + ph + 4 > window.innerHeight) {
+    top = rect.top + window.scrollY - ph - 4;
+  }
+  left = Math.max(window.scrollX + 4, Math.min(left, window.scrollX + window.innerWidth - pw - 4));
+
+  popover.style.top  = top + 'px';
+  popover.style.left = left + 'px';
+
+  popover.querySelector('.dc-no').addEventListener('click', ev => {
+    ev.stopPropagation();
+    removeDelConfirm();
+    btn._confirmOpen = false;
+  });
+
+  popover.querySelector('.dc-yes').addEventListener('click', ev => {
+    ev.stopPropagation();
+    removeDelConfirm();
+    btn._confirmOpen = false;
+    if (key === 'equipment') lists.equipment.splice(idx, 1);
+    else lists[key].splice(idx, 1);
+    saveLists();
+    renderAllListPanels();
+  });
 });
 
 // Add new enter key support
@@ -2386,92 +3349,226 @@ function buildDailyAgg() {
   return agg;
 }
 
+function getFilteredProjectIds() {
+  // Returns null (= all) or a Set of project IDs passing project name + sqft filters
+  const projFilter = costFilters['_project']; // Set of project names, or undefined
+  const sqftMin = costSqftMin != null ? costSqftMin : null;
+  const sqftMax = costSqftMax != null ? costSqftMax : null;
+  const noFilter = !projFilter && sqftMin == null && sqftMax == null;
+  if (noFilter) return null;
+  return new Set(
+    projectsList
+      .filter(p => {
+        if (projFilter && !projFilter.has(p['project-name'] || '')) return false;
+        const s = parseFloat(p['sqft']) || 0;
+        if (sqftMin != null && s < sqftMin) return false;
+        if (sqftMax != null && s > sqftMax) return false;
+        return true;
+      })
+      .map(p => p.id)
+  );
+}
+
+function buildFilteredDailyAgg() {
+  const projectIds = getFilteredProjectIds();
+  const agg = {};
+  projectsList.forEach(p => {
+    if (projectIds && !projectIds.has(p.id)) return;
+    (p.dailyRows || []).forEach(row => {
+      const key = (row.cost_code || '') + '||' + (row.sub_code || '');
+      if (!agg[key]) agg[key] = {
+        running_qty: 0, total_cost: 0,
+        labor_hours: 0, equip_hours: 0, equip_cost: 0,
+        material_cost: 0, dates: new Set(),
+      };
+      const a = agg[key];
+      const c = calcDaily(row);
+      a.running_qty   += parseFloat(row.quantity)    || 0;
+      a.total_cost    += c.total_cost;
+      a.labor_hours   += parseFloat(row.labor_hours) || 0;
+      a.equip_hours   += parseFloat(row.equip_hours) || 0;
+      a.equip_cost    += c.equip_total;
+      a.material_cost += parseFloat(row.material_cost) || 0;
+      if (row.date) a.dates.add(row.date);
+    });
+  });
+  return agg;
+}
+
 function renderCostTable() {
   const tbody = document.getElementById('cost-tbody');
   tbody.innerHTML = '';
-  const agg = buildDailyAgg();
 
-  // Combine: bid-tracked rows + any cost codes in daily with no bid entry
-  const bidKeys = costRows.map(r => (r.cost_code || '') + '||' + (r.sub_code || ''));
+  // Filtered projects (by project name + sqft filter bar)
+  const projectIds = getFilteredProjectIds();
+  const filteredProjects = projectIds
+    ? projectsList.filter(p => projectIds.has(p.id))
+    : projectsList;
+
+  // Build bid map: cost_code||sub_code -> { qty_sum, total_sum, unit_cost (weighted avg) }
+  const bidMap = {};
+  filteredProjects.forEach(p => {
+    (p.bidItems || []).forEach(b => {
+      const key = (b.cost_code || '') + '||' + (b.sub_code || '');
+      if (!bidMap[key]) bidMap[key] = { cost_code: b.cost_code || '', sub_code: b.sub_code || '', qty: 0, total: 0 };
+      const bq = parseFloat(b.quantity)  || 0;
+      const uc = parseFloat(b.unit_cost) || 0;
+      bidMap[key].qty   += bq;
+      bidMap[key].total += bq * uc;
+    });
+  });
+
+  // Build daily aggregation (respects project/sqft filter)
+  const agg = buildFilteredDailyAgg();
+
+  // Union of bid keys + daily-only keys
+  const bidKeys      = Object.keys(bidMap);
   const dailyOnlyKeys = Object.keys(agg).filter(k => !bidKeys.includes(k));
+  let allKeys = [...bidKeys, ...dailyOnlyKeys];
 
-  if (costRows.length === 0 && dailyOnlyKeys.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="21">No data yet. Add a bid entry or log daily records to populate company averages.</td></tr>';
+  // Apply sub_code column filter
+  if (costFilters['sub_code']) {
+    allKeys = allKeys.filter(k => costFilters['sub_code'].has(k.split('||')[1]));
+  }
+
+  if (allKeys.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="18">No bid items found. Add bid items in Project Dashboard to populate this view.</td></tr>';
     return;
   }
 
-  function renderRow(cost_code, sub_code, status, bid_qty, bid_ic, a, i, editable) {
-    const bq          = parseFloat(bid_qty)  || 0;
-    const bic         = parseFloat(bid_ic)   || 0;
-    const total_bid   = bq * bic;
-    const rqty        = a.running_qty;
-    const rtotal      = a.total_cost;
-    const past_avg    = rqty    ? rtotal / rqty          : 0;
-    const total_pct   = total_bid ? (rtotal / total_bid) * 100 : 0;
-    const pct_comp    = bq      ? (rqty / bq) * 100      : 0;
-    const projected   = rtotal  + (bq - rqty) * past_avg;
-    const days        = a.dates.size;
-    const avg_lab     = (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
-    const mu_lab      = a.labor_hours ? rqty / a.labor_hours : 0;
-    const eq_cost_hr  = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
-    const mu_eq       = a.equip_hours ? rqty / a.equip_hours : 0;
-    const tc          = total_bid ? costClass(total_pct) : '';
-    const tr = document.createElement('tr');
-    if (!editable) tr.style.opacity = '0.65';
-    tr.innerHTML = editable ? `
-      <td class="del-cell"><button class="del-btn" data-tab="cost" data-i="${i}">&#10005;</button></td>
-      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="cost_code"    value="${esc(cost_code)}"    placeholder="03-200"></td>
-      <td><input type="text"   data-tab="cost" data-i="${i}" data-f="sub_code"     value="${esc(sub_code)}"     placeholder="A"></td>
-      <td>
-        <select data-tab="cost" data-i="${i}" data-f="status" class="${statusClass(status)}">
-          <option ${status==='Active'   ?'selected':''}>Active</option>
-          <option ${status==='Complete' ?'selected':''}>Complete</option>
-          <option ${status==='On Hold'  ?'selected':''}>On Hold</option>
-          <option ${status==='At Risk'  ?'selected':''}>At Risk</option>
-        </select>
-      </td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="quantity"     value="${bid_qty}"     step="any" placeholder="0"></td>
-      <td><input type="number" data-tab="cost" data-i="${i}" data-f="bid_item_cost" value="${bid_ic}" step="any" placeholder="0.00"></td>
-      <td class="calc">${total_bid ? '$'+fmt(total_bid) : '—'}</td>
-    ` : `
-      <td class="del-cell"></td>
-      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(cost_code) || '—'}</td>
-      <td style="padding:0.35rem 0.5rem; font-style:italic">${esc(sub_code)  || '—'}</td>
-      <td style="padding:0.35rem 0.5rem; font-size:0.68rem; color:#555">No bid entry</td>
-      <td class="calc" style="color:#555">—</td>
-      <td class="calc" style="color:#555">—</td>
-      <td class="calc" style="color:#555">—</td>
-    `;
-    tr.innerHTML += `
-      <td class="calc ${tc}">$${fmt(rqty, 2)}</td>
-      <td class="calc ${tc}">$${fmt(rtotal)}</td>
-      <td class="calc" title="Company average cost per unit">${rqty ? '$'+fmt(past_avg) : '—'}</td>
-      <td class="calc ${tc}">${total_bid ? fmtPct(total_pct) : '—'}</td>
-      <td class="calc ${tc}">${bq ? fmtPct(pct_comp) : '—'}</td>
-      <td class="calc ${tc}">${bq ? '$'+fmt(projected) : '—'}</td>
-      <td class="calc">${fmt(a.labor_hours, 1)}</td>
-      <td class="calc">${days}</td>
-      <td class="calc">${avg_lab ? fmt(avg_lab, 1) : '—'}</td>
-      <td class="calc">${mu_lab ? fmt(mu_lab, 4) : '—'}</td>
-      <td class="calc">$${fmt(a.equip_cost)}</td>
-      <td class="calc">${fmt(a.equip_hours, 1)}</td>
-      <td class="calc">${eq_cost_hr ? fmt(eq_cost_hr, 4) : '—'}</td>
-      <td class="calc">${mu_eq ? fmt(mu_eq, 4) : '—'}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-
-  // Bid-tracked rows (editable)
-  costRows.forEach((row, i) => {
-    const key = (row.cost_code || '') + '||' + (row.sub_code || '');
-    const a   = agg[key] || { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, material_cost:0, dates:new Set() };
-    renderRow(row.cost_code, row.sub_code, row.status, row.quantity, row.bid_item_cost, a, i, true);
+  // Group by cost_code, preserving insertion order
+  const groupOrder = [];
+  const groups = {};
+  allKeys.forEach(key => {
+    const [cc] = key.split('||');
+    if (!groups[cc]) { groups[cc] = []; groupOrder.push(cc); }
+    groups[cc].push(key);
   });
 
-  // Daily-only rows (read-only — no bid entry yet)
-  dailyOnlyKeys.forEach(key => {
-    const [cc, sc] = key.split('||');
-    renderRow(cc, sc, '', '', '', agg[key], -1, false);
+  const COLS = 16;
+
+  groupOrder.forEach(costCode => {
+    const keys    = groups[costCode];
+    const groupId = 'cg-' + costCode.replace(/\W/g, '_') + '_' + Math.random().toString(36).slice(2,6);
+
+    // ── Aggregate group totals ──
+    let gBidTotal = 0, gBidQty = 0, gRunQty = 0, gRunTotal = 0, gLabHrs = 0;
+    const gDates = new Set();
+    keys.forEach(k => {
+      const b = bidMap[k];
+      const a = agg[k];
+      if (b) { gBidTotal += b.total; gBidQty += b.qty; }
+      if (a) {
+        gRunQty   += a.running_qty;
+        gRunTotal += a.total_cost;
+        gLabHrs   += a.labor_hours;
+        a.dates.forEach(d => gDates.add(d));
+      }
+    });
+
+    // ── Parent group row ──
+    const parentTr = document.createElement('tr');
+    parentTr.className = 'cost-group-hdr';
+    parentTr.dataset.group  = groupId;
+    parentTr.dataset.collapsed = '1';
+    parentTr.innerHTML = `
+      <td colspan="${COLS}" style="padding:0.4rem 0.75rem">
+        <span class="cost-group-toggle" id="tog-${groupId}" style="transform:rotate(-90deg)">▼</span>
+        <strong>${esc(costCode) || '(No Code)'}</strong>
+        <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.75rem">
+          ${keys.length} sub code${keys.length!==1?'s':''}
+          &nbsp;·&nbsp; Bid: <span style="color:#aaa">$${fmt(gBidTotal)}</span>
+          &nbsp;·&nbsp; Actual: <span style="color:var(--green)">$${fmt(gRunTotal)}</span>
+          &nbsp;·&nbsp; Labor: ${fmt(gLabHrs,1)} hrs
+        </span>
+      </td>`;
+    parentTr.addEventListener('click', () => {
+      const collapsed = parentTr.dataset.collapsed === '1';
+      parentTr.dataset.collapsed = collapsed ? '0' : '1';
+      const tog = document.getElementById('tog-' + groupId);
+      if (tog) tog.style.transform = collapsed ? '' : 'rotate(-90deg)';
+      tbody.querySelectorAll(`tr[data-group="${groupId}"]`).forEach(r => {
+        if (r === parentTr) return;
+        r.classList.toggle('ct-hidden', !collapsed);
+      });
+    });
+    tbody.appendChild(parentTr);
+
+    // ── Child rows (sub codes) ──
+    keys.forEach(key => {
+      const [, sc] = key.split('||');
+      const b  = bidMap[key];
+      const a  = agg[key] || { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, dates:new Set() };
+
+      const bq        = b ? b.qty   : 0;
+      const btotal    = b ? b.total : 0;
+      const buc       = (b && bq)   ? btotal / bq : 0;   // weighted avg unit cost
+      const isDailyOnly = !b;
+
+      const rqty      = a.running_qty;
+      const rtotal    = a.total_cost;
+      const past_avg  = rqty    ? rtotal / rqty         : 0;
+      const total_pct = btotal  ? (rtotal / btotal)*100  : 0;
+      const days      = a.dates.size;
+      const avg_lab   = (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
+      const mu_lab    = a.labor_hours ? rqty / a.labor_hours : 0;
+      const eq_cph    = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
+      const mu_eq     = a.equip_hours ? rqty / a.equip_hours : 0;
+      const tc        = btotal ? costClass(total_pct) : '';
+
+      const childTr = document.createElement('tr');
+      childTr.className = 'cost-group-child ct-hidden';
+      childTr.dataset.group = groupId;
+      if (isDailyOnly) childTr.style.opacity = '0.65';
+
+      childTr.innerHTML = `
+        <td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(sc) || '—'}</td>
+        <td class="calc">${bq ? fmt(bq,2) : '—'}</td>
+        <td class="calc">${buc ? '$'+fmt(buc) : isDailyOnly ? '<span style="color:#555;font-size:0.68rem">No bid entry</span>' : '—'}</td>
+        <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
+        <td class="calc ${tc}">${fmt(rqty,2)}</td>
+        <td class="calc ${tc}">$${fmt(rtotal)}</td>
+        <td class="calc" title="Production Rate: company average cost per unit across all jobs">${rqty ? '$'+fmt(past_avg) : '—'}</td>
+        <td class="calc ${tc}">${btotal ? fmtPct(total_pct) : '—'}</td>
+        <td class="calc">${fmt(a.labor_hours,1)}</td>
+        <td class="calc">${days}</td>
+        <td class="calc">${avg_lab ? fmt(avg_lab,1) : '—'}</td>
+        <td class="calc">${mu_lab  ? fmt(mu_lab,4)  : '—'}</td>
+        <td class="calc">$${fmt(a.equip_cost)}</td>
+        <td class="calc">${fmt(a.equip_hours,1)}</td>
+        <td class="calc">${eq_cph ? fmt(eq_cph,4) : '—'}</td>
+        <td class="calc">${mu_eq  ? fmt(mu_eq,4)  : '—'}</td>
+      `;
+      tbody.appendChild(childTr);
+    });
+
+    // ── Total row ──
+    const gPastAvg  = gRunQty  ? gRunTotal / gRunQty  : 0;
+    const gTotPct   = gBidTotal ? (gRunTotal / gBidTotal)*100 : 0;
+    const gtc       = gBidTotal ? costClass(gTotPct) : '';
+
+    const totalTr = document.createElement('tr');
+    totalTr.className = 'cost-group-total ct-hidden';
+    totalTr.dataset.group = groupId;
+    totalTr.innerHTML = `
+      <td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(costCode) || '(No Code)'} — Total</td>
+      <td class="calc">${gBidQty ? fmt(gBidQty,2) : '—'}</td>
+      <td class="calc">—</td>
+      <td class="calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
+      <td class="calc ${gtc}">${fmt(gRunQty,2)}</td>
+      <td class="calc ${gtc}">$${fmt(gRunTotal)}</td>
+      <td class="calc">${gRunQty ? '$'+fmt(gPastAvg) : '—'}</td>
+      <td class="calc ${gtc}">${gBidTotal ? fmtPct(gTotPct) : '—'}</td>
+      <td class="calc">${fmt(gLabHrs,1)}</td>
+      <td class="calc">${gDates.size}</td>
+      <td class="calc">—</td>
+      <td class="calc">—</td>
+      <td class="calc">—</td>
+      <td class="calc">—</td>
+      <td class="calc">—</td>
+      <td class="calc">—</td>
+    `;
+    tbody.appendChild(totalTr);
   });
 }
 
@@ -2484,7 +3581,7 @@ function addCostRow() {
 function exportCostCSV() {
   const agg = buildDailyAgg();
   const headers = ['Cost Code','Sub Code','Status','Bid Qty','Bid Item Cost','Total Cost (Bid)',
-    'Running Qty','Running Total','Past Avg','Total Cost %','% Complete','Projected Cost',
+    'Avg Qty','Running Total','Production Rate','Total Cost %',
     'Cum Labor Hrs','Days Worked','Avg Laborers','MU/Labor Hr',
     'Equip Total','Equip Hours','Equip Cost/Hr','MU/Equip Hr'];
   const rows = [headers.join(',')];
@@ -2607,9 +3704,17 @@ function renderDailyTable(projId) {
   const costCodes     = getCostCodes(projId);
   const subCodes      = getSubCodes(projId);
   const fieldTypeOpts = ['', ...lists.field_types];
-  const employeeOpts  = ['', ...lists.employees.map(e => e.name)];
+  const assignedEmps  = p.assigned_employees || [];
+  const assignedEquip = p.assigned_equipment || [];
+  const empNames = assignedEmps.length > 0
+    ? lists.employees.filter(e => assignedEmps.includes(e.name)).map(e => e.name)
+    : lists.employees.map(e => e.name);
+  const eqNames = assignedEquip.length > 0
+    ? lists.equipment.filter(e => assignedEquip.includes(e.name)).map(e => e.name)
+    : lists.equipment.map(e => e.name);
+  const employeeOpts  = ['', ...empNames];
   const jobClassOpts  = ['', ...lists.job_classes];
-  const equipOpts     = ['', ...lists.equipment.map(e => e.name)];
+  const equipOpts     = ['', ...eqNames];
   const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean)];
   const ccOpts        = ['', ...costCodes];
   const scOpts        = ['', ...subCodes];
@@ -2618,7 +3723,10 @@ function renderDailyTable(projId) {
     const c  = calcDaily(row);
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td class="del-cell"><button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${i}">&#10005;</button></td>
+      <td class="del-cell">
+        ${perm.canEdit ? `<button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${i}">&#10005;</button>` : ''}
+        ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${i})">&#10697;</button>` : ''}
+      </td>
       <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="date"           value="${esc(row.date)}"></td>
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', i, 'field_type',      projId)}</td>
       <td>${makeSelect(employeeOpts,  row.employee,         'daily', i, 'employee',         projId)}</td>
@@ -2637,7 +3745,7 @@ function renderDailyTable(projId) {
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="po_num"          value="${row.po_num}"          placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="units_purchased" value="${row.units_purchased}" step="any" placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="material_cost"   value="${row.material_cost}"   step="any" placeholder="0.00"></td>
+      <td class="calc" id="daily-mat-${projId}-${i}">$${fmt(parseFloat(row.material_cost)||0)}</td>
       <td class="calc">$${fmt(c.total_cost)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
     `;
@@ -2650,11 +3758,22 @@ function renderDailyCalcCells(projId, i) {
   const c  = calcDaily((p.dailyRows || [])[i]);
   const tr = document.getElementById('daily-tbody-' + projId)?.children[i];
   if (!tr) return;
+  const row = (p.dailyRows || [])[i];
   const calcs = tr.querySelectorAll('td.calc');
   calcs[0].textContent = '$' + fmt(c.labor_cost);
   calcs[1].textContent = '$' + fmt(c.equip_total);
-  calcs[2].textContent = '$' + fmt(c.total_cost);
+  calcs[2].textContent = '$' + fmt(parseFloat(row?.material_cost) || 0);
+  calcs[3].textContent = '$' + fmt(c.total_cost);
   renderDailyTotals(projId);
+}
+
+function copyDailyRow(projId, i) {
+  const p = getProj(projId); if (!p) return;
+  const src = (p.dailyRows || [])[i]; if (!src) return;
+  const copy = Object.assign({}, src, { id: Date.now() + Math.random(), material_cost: '' });
+  p.dailyRows.splice(i + 1, 0, copy);
+  saveProjects();
+  renderDailyTable(projId);
 }
 
 function addDailyRow(projId) {
@@ -2667,42 +3786,132 @@ function addDailyRow(projId) {
 
 function exportBidPDF(projId) {
   const p = getProj(projId); if (!p) return;
-  const name = p['project-name'] || 'Project';
+  const name  = p['project-name'] || 'Project';
   const jobNo = p['job-number'] ? ` — ${p['job-number']}` : '';
-  const table = document.getElementById('btbody-' + projId)?.closest('table');
-  if (!table) return;
-  const tableHTML = table.outerHTML;
+
+  const items = p.bidItems || [];
+  const groupOrder = [];
+  const groups = {};
+  items.forEach(b => {
+    const cc = b.cost_code || '';
+    if (!groups[cc]) { groups[cc] = []; groupOrder.push(cc); }
+    groups[cc].push(b);
+  });
+
+  let rowsHTML = '';
+  let grandBid = 0, grandActual = 0, grandHrs = 0, grandProj = 0;
+  let grandLab = 0;
+
+  const r = (v, cls = '') => `<td class="num${cls ? ' '+cls : ''}">${v}</td>`;
+  const dash = '—';
+
+  groupOrder.forEach(costCode => {
+    const gItems = groups[costCode];
+    rowsHTML += `<tr class="group-hdr"><td colspan="13"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
+
+    let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
+    gItems.forEach(b => {
+      const bidQty = parseFloat(b.quantity)   || 0;
+      const uc     = parseFloat(b.unit_cost)  || 0;
+      const bidTot = bidQty * uc;
+      const actual = actualForBidItem(b, projId);
+      const rqty   = runningQtyForBidItem(b, projId);
+      const cumHrs = cumulativeHoursForBidItem(b, projId);
+      const numLab = laborerCountForBidItem(b, projId);
+      const proj   = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+      const diff   = bidTot - actual;
+      const pct    = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : dash;
+      const ruc    = rqty > 0 && actual ? '$' + fmt(actual / rqty) : dash;
+      const diffCls = diff >= 0 ? 'under' : 'over';
+      const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : dash;
+      const projCls = (proj - bidTot) <= 0 ? 'under' : 'over';
+
+      gBid += bidTot; gActual += actual; gHrs += cumHrs; gProj += proj;
+
+      rowsHTML += `<tr>
+        <td class="sub">${esc(b.sub_code) || dash}</td>
+        ${r(bidQty || dash)}
+        ${r(rqty   || dash)}
+        ${r(pct)}
+        ${r(bidQty ? '$' + fmt(uc) : dash)}
+        ${r(ruc)}
+        ${r(bidTot ? '$' + fmt(bidTot) : dash)}
+        ${r(actual ? '$' + fmt(actual) : dash, 'actual')}
+        ${r(cumHrs ? fmt(cumHrs) : dash)}
+        ${r(numLab || dash)}
+        ${r(diffTxt, diffCls)}
+        ${r(bidTot ? '$' + fmt(proj) : dash, projCls)}
+      </tr>`;
+    });
+
+    const gDiff    = gBid - gActual;
+    const gDiffCls = gDiff >= 0 ? 'under' : 'over';
+    const gDiffTxt = gBid ? (gDiff >= 0 ? `$${fmt(gDiff)} under` : `$${fmt(Math.abs(gDiff))} over`) : dash;
+    const gProjCls = (gProj - gBid) <= 0 ? 'under' : 'over';
+    rowsHTML += `<tr class="subtotal">
+      <td><em>${esc(costCode) || '(No Code)'} — Total</em></td>
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(gBid ? '$' + fmt(gBid) : dash)}
+      ${r(gActual ? '$' + fmt(gActual) : dash, 'actual')}
+      ${r(gHrs ? fmt(gHrs) : dash)}
+      ${r(dash)}
+      ${r(gDiffTxt, gDiffCls)}
+      ${r(gBid ? '$' + fmt(gProj) : dash, gProjCls)}
+    </tr>`;
+
+    grandBid += gBid; grandActual += gActual; grandHrs += gHrs; grandProj += gProj;
+  });
+
+  const totDiff    = grandBid - grandActual;
+  const totDiffCls = totDiff >= 0 ? 'under' : 'over';
+  const totDiffTxt = grandBid ? (totDiff >= 0 ? `$${fmt(totDiff)} under` : `$${fmt(Math.abs(totDiff))} over`) : dash;
+  const totProjCls = (grandProj - grandBid) <= 0 ? 'under' : 'over';
 
   const win = window.open('', '_blank');
   win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>${name} — Bid Line Items vs Actuals</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; font-size: 11px; color: #000; background: #fff; padding: 24px; }
-    h2 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
-    p.meta { font-size: 10px; color: #555; margin-bottom: 14px; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; white-space: nowrap; }
-    thead th { background: #f0f0f0; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
-    thead th.num, td.num { text-align: right; }
-    td input { border: none; background: transparent; font-size: 11px; font-family: inherit; width: 100%; }
-    td.bid-calc, td.bid-actual, td.bid-under, td.bid-over { text-align: right; }
-    td.bid-under { color: #166534; }
-    td.bid-over  { color: #991b1b; }
-    tfoot td { font-weight: 700; font-size: 10px; background: #f9f9f9; border-top: 2px solid #999; }
-    tfoot .foot-bid    { color: #166534; text-align: right; }
-    tfoot .foot-actual { color: #92400e; text-align: right; }
-    tfoot .foot-under  { color: #166534; text-align: right; }
-    tfoot .foot-over   { color: #991b1b; text-align: right; }
-    tfoot .foot-label  { color: #555; }
-    td.bid-del { display: none; }
-    th:last-child { display: none; }
+    body { font-family: system-ui, sans-serif; font-size: 10px; color: #000; background: #fff; padding: 20px; }
+    h2 { font-size: 13px; font-weight: 700; margin-bottom: 3px; }
+    p.meta { font-size: 9px; color: #555; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; table-layout: auto; }
+    th, td { border: 1px solid #ccc; padding: 3px 5px; }
+    td.sub { min-width: 140px; white-space: normal; word-break: break-word; }
+    th { background: #f0f0f0; font-size: 8px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    td.under { color: #166534; text-align: right; }
+    td.over  { color: #991b1b; text-align: right; }
+    td.actual { text-align: right; color: #92400e; }
+    tr.group-hdr td { background: #e8f5e9; font-size: 9px; padding: 4px 5px; }
+    tr.subtotal td { background: #f5f5f5; font-style: italic; font-size: 9px; border-top: 1px solid #aaa; }
+    tr.totals td { font-weight: 700; font-size: 10px; background: #f9f9f9; border-top: 2px solid #999; }
     @media print { body { padding: 0; } }
   </style>
   </head><body>
   <h2>Bid Line Items vs Actuals — ${esc(name)}${esc(jobNo)}</h2>
   <p class="meta">Printed ${new Date().toLocaleDateString()}</p>
-  ${tableHTML}
+  <table>
+    <thead><tr>
+      <th>Sub Code</th>
+      <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th>
+      <th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+      <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+      <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
+      <th class="num">Variance</th><th class="num">Projected Cost</th>
+    </tr></thead>
+    <tbody>${rowsHTML}</tbody>
+    <tfoot><tr class="totals">
+      <td>Totals</td>
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(grandBid   ? '$' + fmt(grandBid)    : dash)}
+      ${r(grandActual ? '$' + fmt(grandActual) : dash, 'actual')}
+      ${r(grandHrs   ? fmt(grandHrs)          : dash)}
+      ${r(dash)}
+      ${r(totDiffTxt, totDiffCls)}
+      ${r(grandBid   ? '$' + fmt(grandProj)   : dash, totProjCls)}
+    </tr></tfoot>
+  </table>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`);
   win.document.close();
@@ -2729,6 +3938,151 @@ function exportDailyCSV(projId) {
 }
 
 /* ── Column filters ── */
+/* ═══════════════════════════════════════════
+   COST TABLE FILTERS
+═══════════════════════════════════════════ */
+let costFilters  = {};   // sub_code, status, _project filters
+let _cffField    = null;
+let _cffPending  = null;
+let costSqftMin  = null;
+let costSqftMax  = null;
+
+function _updateCostClearBtn() {
+  const active = Object.keys(costFilters).length > 0 || costSqftMin != null || costSqftMax != null;
+  const btn = document.getElementById('cost-clear-filters-btn');
+  if (btn) btn.style.display = active ? '' : 'none';
+  // Update project button label
+  const projBtn = document.getElementById('cost-proj-btn');
+  if (projBtn) {
+    const pf = costFilters['_project'];
+    projBtn.textContent = pf ? `Project (${pf.size}) ▼` : 'Project ▼';
+    projBtn.classList.toggle('active', !!pf);
+  }
+}
+
+function applySqftFilter() {
+  const mn = document.getElementById('cost-sqft-min').value;
+  const mx = document.getElementById('cost-sqft-max').value;
+  costSqftMin = mn !== '' ? parseFloat(mn) : null;
+  costSqftMax = mx !== '' ? parseFloat(mx) : null;
+  _updateCostClearBtn();
+  renderCostTable();
+}
+
+function clearAllCostFilters() {
+  costFilters  = {};
+  costSqftMin  = null;
+  costSqftMax  = null;
+  const mn = document.getElementById('cost-sqft-min');
+  const mx = document.getElementById('cost-sqft-max');
+  if (mn) mn.value = '';
+  if (mx) mx.value = '';
+  _updateCostClearBtn();
+  _updateCostFilterButtons();
+  renderCostTable();
+}
+
+function _updateCostFilterButtons() {
+  document.querySelectorAll('.cost-cfb').forEach(btn => {
+    btn.classList.toggle('active', !!costFilters[btn.dataset.f]);
+  });
+  _updateCostClearBtn();
+}
+
+function openCostFilter(field, btn) {
+  _cffField = field;
+  let unique;
+  if (field === '_project') {
+    unique = [...new Set(projectsList.map(p => p['project-name'] || ''))].sort();
+  } else {
+    unique = [...new Set(costRows.map(r => String(r[field] ?? '')))].sort();
+  }
+  const active = costFilters[field] || null;
+  _cffPending = active ? new Set(active) : null;
+
+  const list = document.getElementById('cff-list');
+  const allChecked = !_cffPending;
+  list.innerHTML = `<label class="dff-item" id="cff-all-label">
+    <input type="checkbox" id="cff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="cff-val-cb" value="${esc(v)}" ${(!_cffPending || _cffPending.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  document.getElementById('cff-all').addEventListener('change', e => {
+    document.querySelectorAll('.cff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.cff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.cff-val-cb')].every(c => c.checked);
+    document.getElementById('cff-all').checked = all;
+  }));
+
+  document.getElementById('cff-search').value = '';
+  document.getElementById('cff-search').oninput = e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#cff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  const dd = document.getElementById('cost-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyCostFilter() {
+  const cbs = [...document.querySelectorAll('.cff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allChecked = document.getElementById('cff-all')?.checked;
+  if (allChecked || checked.length === cbs.length) {
+    delete costFilters[_cffField];
+  } else {
+    costFilters[_cffField] = new Set(checked);
+  }
+  document.getElementById('cost-filter-dd').style.display = 'none';
+  _updateCostFilterButtons();
+  renderCostTable();
+}
+
+function clearCostFilter() {
+  delete costFilters[_cffField];
+  document.getElementById('cost-filter-dd').style.display = 'none';
+  _updateCostFilterButtons();
+  renderCostTable();
+}
+
+document.addEventListener('click', e => {
+  const dd = document.getElementById('cost-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('cost-cfb')) {
+    dd.style.display = 'none';
+  }
+});
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.cost-cfb');
+  if (!btn) return;
+  e.stopPropagation();
+  openCostFilter(btn.dataset.f, btn);
+});
+
+// Purchase Orders column filter handlers
+document.addEventListener('click', e => {
+  const dd = document.getElementById('po-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('pofb')) {
+    dd.style.display = 'none';
+  }
+});
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.pofb');
+  if (!btn) return;
+  e.stopPropagation();
+  openPOFilter(btn.dataset.pof, btn);
+});
+
 let dailyFilters = {};      // { field: Set<string> }  — absent key = no filter
 let _dffField    = null;    // field currently being filtered
 let _dffPending  = null;    // Set being edited in the dropdown
@@ -2830,7 +4184,9 @@ function openDailyView(projId) {
   dailyViewProjId = projId;
   document.getElementById('daily-fs-title').textContent =
     (p['project-name'] || 'Untitled Project') + ' — Daily Tracking';
-  document.getElementById('daily-fs-add').onclick    = () => addDailyRow(projId);
+  const addBtn = document.getElementById('daily-fs-add');
+  addBtn.style.display = perm.canEdit ? '' : 'none';
+  addBtn.onclick = () => addDailyRow(projId);
   document.getElementById('daily-fs-export').onclick = () => exportDailyCSV(projId);
   // Give the tbody the id that renderDailyTable expects
   document.getElementById('daily-fs-tbody').id = 'daily-tbody-' + projId;
@@ -2848,6 +4204,493 @@ function closeDailyView() {
     dailyViewProjId = null;
   }
 }
+
+let bidViewProjId = null;
+
+function openBidView(projId) {
+  const p = getProj(projId); if (!p) return;
+  bidViewProjId = projId;
+  document.getElementById('bid-fs-title').textContent =
+    (p['project-name'] || 'Untitled Project') + ' — Bid Line Items vs Actuals';
+  document.getElementById('bid-fs-add').onclick = () => { addBidItem(projId); };
+  document.getElementById('bid-fs-pdf').onclick = () => exportBidPDF(projId);
+  // Point the generic tbody/tfoot ids to the fullscreen elements
+  document.getElementById('bid-fs-tbody').id = 'btbody-' + projId;
+  document.getElementById('bid-fs-tfoot').id = 'bfoot-' + projId;
+  document.getElementById('bid-fullscreen').style.display = 'flex';
+  renderBidTable(projId);
+}
+
+function closeBidView() {
+  document.getElementById('bid-fullscreen').style.display = 'none';
+  document.getElementById('bid-filter-dd').style.display = 'none';
+  bidFilters = {};
+  if (bidViewProjId) {
+    const tbody = document.getElementById('btbody-' + bidViewProjId);
+    if (tbody) tbody.id = 'bid-fs-tbody';
+    const tfoot = document.getElementById('bfoot-' + bidViewProjId);
+    if (tfoot) tfoot.id = 'bid-fs-tfoot';
+    bidViewProjId = null;
+  }
+}
+
+let prodViewProjId = null;
+
+function openProductionRateView(projId) {
+  const p = getProj(projId); if (!p) return;
+  prodViewProjId = projId;
+  document.getElementById('prod-fs-title').textContent =
+    (p['project-name'] || 'Untitled Project') + ' — Daily Production Rate';
+  document.getElementById('prod-fullscreen').style.display = 'flex';
+  renderProductionRateView(projId);
+}
+
+function closeProductionRateView() {
+  document.getElementById('prod-fullscreen').style.display = 'none';
+  prodViewProjId = null;
+}
+
+function renderProductionRateView(projId) {
+  const p = getProj(projId);
+  const body = document.getElementById('prod-fs-body');
+  if (!p || !body) return;
+
+  const rows = p.dailyRows || [];
+  if (!rows.length) {
+    body.innerHTML = '<div class="home-empty">No daily entries yet for this project.</div>';
+    return;
+  }
+
+  // Historical aggregates from Cost Tracking tab (all projects, all time)
+  const histAgg = buildDailyAgg();
+
+  // Tier 1: group by cost_code → Tier 2: group by sub_code → aggregate by date
+  const costGroups = {};
+  rows.forEach(row => {
+    const cc = row.cost_code || '(No Code)';
+    const sc = row.sub_code  || '(No Sub Code)';
+    if (!costGroups[cc]) costGroups[cc] = {};
+    if (!costGroups[cc][sc]) costGroups[cc][sc] = {};
+    const d = row.date || '(No Date)';
+    if (!costGroups[cc][sc][d]) costGroups[cc][sc][d] = { qty: 0, total_cost: 0, labor_hours: 0, equip_hours: 0 };
+    const c = calcDaily(row);
+    costGroups[cc][sc][d].qty         += parseFloat(row.quantity)    || 0;
+    costGroups[cc][sc][d].total_cost  += c.total_cost;
+    costGroups[cc][sc][d].labor_hours += parseFloat(row.labor_hours) || 0;
+    costGroups[cc][sc][d].equip_hours += parseFloat(row.equip_hours) || 0;
+  });
+
+  const bidItems = p.bidItems || [];
+  function getBidItem(cc, sc) {
+    return bidItems.find(b => b.cost_code === cc && b.sub_code === sc) || null;
+  }
+
+  // ── Column-group colour palette ────────────────────────────────────────────
+  // Each section (Qty / Unit Cost / Labor / Days / Equip / MU) gets its own
+  // background tint applied uniformly to both header and data cells so it is
+  // immediately obvious which column belongs to which section.
+  const BG = {
+    date: '',
+    qty:  'background:rgba(96,165,250,0.10);',   // blue
+    uc:   'background:rgba(167,139,250,0.10);',   // purple
+    lbr:  'background:rgba(251,146,60,0.10);',    // orange
+    days: 'background:rgba(234,179,8,0.10);',     // yellow
+    eq:   'background:rgba(34,211,238,0.10);',    // cyan
+    mu:   'background:rgba(244,114,182,0.10);',   // pink
+  };
+  // "Past Avg" cells get a darker overlay on top of their group colour
+  const BG_HIST = 'filter:brightness(0.72);';
+
+  // Base cell styles (background injected per column group)
+  const TH_BASE  = 'white-space:nowrap;padding:0.38rem 0.6rem;border:1px solid var(--border);font-size:0.75rem;font-weight:600;';
+  const THL_BASE = TH_BASE + 'text-align:left;';
+  const THR_BASE = TH_BASE + 'text-align:right;';
+  const TD_BASE  = 'white-space:nowrap;padding:0.32rem 0.55rem;border:1px solid var(--border);font-size:0.78rem;';
+  const TDR_BASE = TD_BASE  + 'text-align:right;';
+
+  // Helpers that bake the group BG into the style string
+  function TH(g)       { return THR_BASE + BG[g]; }
+  function THL(g)      { return THL_BASE + BG[g]; }
+  function TH_H(g)     { return THR_BASE + BG[g] + BG_HIST; }   // "Past Avg" header
+  function TD(g, xtra) { return TDR_BASE + BG[g] + (xtra||''); }
+  function TD_H(g, xtra){ return TDR_BASE + BG[g] + BG_HIST + (xtra||''); }
+
+  // ── Separator between header-row groups ─────────────────────────────────
+  const SEP = 'border-left:2px solid rgba(255,255,255,0.12);';
+
+  let html = '';
+  let ccIdx = 0;
+  Object.entries(costGroups).forEach(([cc, subGroups]) => {
+    const ccId      = 'prod-cc-' + ccIdx;
+    const subCodes  = Object.keys(subGroups);
+    const totalDays = subCodes.reduce((n, sc) => n + Object.keys(subGroups[sc]).filter(d => d !== '(No Date)').length, 0);
+
+    // Tier 2: sub code rows
+    let subHtml = '';
+    let scIdx = 0;
+    subCodes.forEach(sc => {
+      const scId       = ccId + '-sc-' + scIdx;
+      const rawCc      = cc === '(No Code)'     ? '' : cc;
+      const rawSc      = sc === '(No Sub Code)' ? '' : sc;
+      const bidItem    = getBidItem(rawCc, rawSc);
+      const bidQty     = bidItem ? (parseFloat(bidItem.quantity)  || 0) : 0;
+      const unit       = bidItem ? (bidItem.unit || '') : '';
+      const dates      = Object.keys(subGroups[sc]).filter(d => d !== '(No Date)').sort();
+
+      // Historical benchmark for this sub code
+      const histKey   = rawCc + '||' + rawSc;
+      const hist      = histAgg[histKey] || null;
+      const histDays  = hist ? hist.dates.size        : 0;
+      const histQty   = hist ? hist.running_qty        : 0;
+      const histCost  = hist ? hist.total_cost         : 0;
+      const histLbr   = hist ? hist.labor_hours        : 0;
+      const histEq    = hist ? hist.equip_hours        : 0;
+      const histUC    = histQty  > 0 ? histCost / histQty  : 0;
+      const histLbrPD = histDays > 0 ? histLbr  / histDays : 0;
+      const histEqPD  = histDays > 0 ? histEq   / histDays : 0;
+      const histMU    = histEq   > 0 ? histQty  / histEq   : 0;
+
+      // Cumulative state + previous-day tracking for day-over-day colours
+      let cumQty = 0, cumCost = 0, cumLbr = 0, cumEq = 0, cumDays = 0;
+      let prevDailyUC = null, prevRunUC = null, prevRunMU = null;
+
+      // Tier 3: detail table rows
+      let tableRows = '';
+      dates.forEach(d => {
+        const day = subGroups[sc][d];
+        cumQty  += day.qty;
+        cumCost += day.total_cost;
+        cumLbr  += day.labor_hours;
+        cumEq   += day.equip_hours;
+        cumDays += 1;
+
+        const dailyUC  = day.qty > 0  ? day.total_cost / day.qty : 0;
+        const runUC    = cumQty  > 0  ? cumCost / cumQty          : 0;
+        const pctComp  = bidQty  > 0  ? (cumQty / bidQty) * 100   : null;
+        const runMU    = cumEq   > 0  ? cumQty  / cumEq           : 0;
+
+        let projUC = 0;
+        if (bidQty > 0 && cumQty > 0) {
+          const rem = Math.max(bidQty - cumQty, 0);
+          projUC = (cumCost + rem * runUC) / bidQty;
+        }
+
+        // ── Colour logic ──────────────────────────────────────────────────
+        // Day-over-day: compare to previous day's running value
+        // vs-history:   compare running value to past avg
+        // Rule: lower cost = green ✓ | lower MU = red ✗  (better pace = green)
+        function clr(val, prev, lowerIsBetter) {
+          if (val === 0 || prev === null || prev === 0) return '';
+          const better = lowerIsBetter ? val < prev : val > prev;
+          return better ? 'color:#4ade80' : 'color:#f87171';
+        }
+        function clrVsHist(val, hist, lowerIsBetter) {
+          if (val === 0 || hist === 0) return '';
+          const better = lowerIsBetter ? val <= hist : val >= hist;
+          return better ? 'color:#4ade80' : 'color:#f87171';
+        }
+
+        const c_dailyUC = clr(dailyUC, prevDailyUC, true);
+        const c_runUC   = clr(runUC,   prevRunUC,   true);
+        const c_projUC  = clrVsHist(projUC, histUC, true);
+        const c_runMU   = clr(runMU, prevRunMU, false);
+        const c_pct     = pctComp !== null && pctComp >= 100 ? 'color:#4ade80' : '';
+
+        prevDailyUC = dailyUC || prevDailyUC;
+        prevRunUC   = runUC   || prevRunUC;
+        prevRunMU   = runMU   || prevRunMU;
+
+        tableRows += `<tr>
+          <td style="${TD_BASE}${BG.date}">${esc(d)}</td>
+          <td style="${TD('qty')}">${bidQty > 0 ? fmt(bidQty) : '—'}</td>
+          <td style="${TD('qty')}">${fmt(cumQty)}</td>
+          <td style="${TD('qty')}${c_pct}">${pctComp !== null ? fmt(pctComp,1)+'%' : '—'}</td>
+          <td style="${TD('uc')}${SEP}${c_dailyUC}">${dailyUC > 0 ? '$'+fmt(dailyUC) : '—'}</td>
+          <td style="${TD('uc')}${c_runUC}">${runUC > 0 ? '$'+fmt(runUC) : '—'}</td>
+          <td style="${TD('uc')}${c_projUC}">${projUC > 0 ? '$'+fmt(projUC) : '—'}</td>
+          <td style="${TD_H('uc')}color:var(--muted);">${histUC > 0 ? '$'+fmt(histUC) : '—'}</td>
+          <td style="${TD('lbr')}${SEP}">${day.labor_hours > 0 ? fmt(day.labor_hours) : '—'}</td>
+          <td style="${TD_H('lbr')}color:var(--muted);">${histLbrPD > 0 ? fmt(histLbrPD) : '—'}</td>
+          <td style="${TD('days')}${SEP}">${cumDays}</td>
+          <td style="${TD_H('days')}color:var(--muted);">${histDays > 0 ? histDays : '—'}</td>
+          <td style="${TD('eq')}${SEP}">${day.equip_hours > 0 ? fmt(day.equip_hours) : '—'}</td>
+          <td style="${TD_H('eq')}color:var(--muted);">${histEqPD > 0 ? fmt(histEqPD) : '—'}</td>
+          <td style="${TD('mu')}${SEP}${c_runMU}">${runMU > 0 ? fmt(runMU) : '—'}</td>
+          <td style="${TD_H('mu')}color:var(--muted);">${histMU > 0 ? fmt(histMU) : '—'}</td>
+        </tr>`;
+      });
+
+      // ── Two-row column group header ──────────────────────────────────────
+      const colGroupHdr = `
+        <tr>
+          <th style="${THL_BASE}${BG.date}" rowspan="2">Date</th>
+          <th style="${THR_BASE}${BG.qty}" colspan="3">Quantity${unit ? ' ('+esc(unit)+')' : ''}</th>
+          <th style="${THR_BASE}${BG.uc}${SEP}" colspan="4">Unit Cost</th>
+          <th style="${THR_BASE}${BG.lbr}${SEP}" colspan="2">Labor Hrs</th>
+          <th style="${THR_BASE}${BG.days}${SEP}" colspan="2">Days</th>
+          <th style="${THR_BASE}${BG.eq}${SEP}" colspan="2">Equip Hrs</th>
+          <th style="${THR_BASE}${BG.mu}${SEP}" colspan="2">MU Equip (qty/hr)</th>
+        </tr>
+        <tr>
+          <th style="${TH('qty')}">Bid</th>
+          <th style="${TH('qty')}">Running</th>
+          <th style="${TH('qty')}">% Complete</th>
+          <th style="${TH('uc')}${SEP}">Today</th>
+          <th style="${TH('uc')}">Running</th>
+          <th style="${TH('uc')}">Projected</th>
+          <th style="${TH_H('uc')}">Past Avg</th>
+          <th style="${TH('lbr')}${SEP}">Today</th>
+          <th style="${TH_H('lbr')}">Past Avg/Day</th>
+          <th style="${TH('days')}${SEP}">Worked</th>
+          <th style="${TH_H('days')}">Past Total</th>
+          <th style="${TH('eq')}${SEP}">Today</th>
+          <th style="${TH_H('eq')}">Past Avg/Day</th>
+          <th style="${TH('mu')}${SEP}">Running</th>
+          <th style="${TH_H('mu')}">Past Avg</th>
+        </tr>`;
+
+      // Safe string for use inside onclick attribute
+      const safeCc = esc(cc).replace(/'/g,"&#39;");
+      const safeSc = esc(sc).replace(/'/g,"&#39;");
+      const safePn = esc(p['project-name'] || '').replace(/'/g,"&#39;");
+
+      subHtml += `
+        <div style="margin:0.4rem 0.75rem 0.4rem 1.5rem;border:1px solid var(--border);border-radius:4px;overflow:hidden;">
+          <div style="display:flex;align-items:stretch;">
+            <button onclick="toggleProdGroup('${scId}')"
+              style="flex:1;display:flex;align-items:center;justify-content:space-between;padding:0.5rem 0.85rem;background:var(--bg);border:none;border-right:1px solid var(--border);cursor:pointer;text-align:left;gap:1rem;">
+              <span style="font-size:0.82rem;font-weight:600;color:var(--text);">
+                ${esc(sc)}${unit ? `<span style="color:var(--muted);font-weight:400;font-size:0.75rem;margin-left:0.4rem;">(${esc(unit)})</span>` : ''}
+              </span>
+              <span style="display:flex;align-items:center;gap:0.75rem;flex-shrink:0;">
+                <span style="font-size:0.72rem;color:var(--muted);">${dates.length} day${dates.length !== 1 ? 's' : ''}</span>
+                <span id="${scId}-arrow" style="color:var(--muted);font-size:0.75rem;transition:transform 0.2s;">▶</span>
+              </span>
+            </button>
+            <button onclick="exportProdSubCodePDF('${scId}','${safePn}','${safeCc}','${safeSc}')"
+              title="Export to PDF"
+              style="padding:0 0.75rem;background:var(--bg);border:none;cursor:pointer;color:var(--muted);font-size:0.72rem;white-space:nowrap;display:flex;align-items:center;gap:0.3rem;transition:color 0.15s;"
+              onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">
+              &#8659; PDF
+            </button>
+          </div>
+          <div id="${scId}" style="display:none;overflow-x:auto;padding:0.5rem 0.75rem 0.75rem;">
+            <table style="border-collapse:collapse;font-size:0.78rem;min-width:100%;">
+              <thead>${colGroupHdr}</thead>
+              <tbody>${tableRows}</tbody>
+            </table>
+          </div>
+        </div>`;
+      scIdx++;
+    });
+
+    // Tier 1: cost code header
+    html += `
+    <div style="margin-bottom:0.5rem;border:1px solid var(--border);border-radius:6px;overflow:hidden;">
+      <button onclick="toggleProdGroup('${ccId}')"
+        style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:0.65rem 1rem;background:var(--surface);border:none;cursor:pointer;text-align:left;gap:1rem;">
+        <span style="font-size:0.9rem;font-weight:700;color:var(--green);">${esc(cc)}</span>
+        <span style="display:flex;align-items:center;gap:1rem;flex-shrink:0;">
+          <span style="font-size:0.75rem;color:var(--muted);">${subCodes.length} sub code${subCodes.length !== 1 ? 's' : ''} &middot; ${totalDays} day${totalDays !== 1 ? 's' : ''}</span>
+          <span id="${ccId}-arrow" style="color:var(--muted);font-size:0.8rem;transition:transform 0.2s;">▶</span>
+        </span>
+      </button>
+      <div id="${ccId}" style="display:none;padding-bottom:0.5rem;">${subHtml}</div>
+    </div>`;
+    ccIdx++;
+  });
+
+  body.innerHTML = html;
+}
+
+function toggleProdGroup(id) {
+  const panel = document.getElementById(id);
+  const arrow = document.getElementById(id + '-arrow');
+  if (!panel) return;
+  const open = panel.style.display === 'none';
+  panel.style.display = open ? 'block' : 'none';
+  if (arrow) arrow.style.transform = open ? 'rotate(90deg)' : '';
+}
+
+function exportProdSubCodePDF(panelId, projName, cc, sc) {
+  // Ensure the panel is open so the table exists in the DOM
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  if (panel.style.display === 'none') {
+    toggleProdGroup(panelId);
+  }
+
+  const tableEl = panel.querySelector('table');
+  if (!tableEl) { alert('No data to export.'); return; }
+
+  // Extract rows cleanly (text + inline colour only — strip dark-theme backgrounds)
+  function extractRows(section) {
+    return [...section.querySelectorAll('tr')].map(tr => {
+      const cells = [...tr.querySelectorAll('th,td')];
+      const isHead = cells.some(c => c.tagName === 'TH');
+      return { isHead, cells: cells.map(c => ({
+        text:    c.textContent.trim(),
+        colspan: c.colSpan > 1  ? c.colSpan  : null,
+        rowspan: c.rowSpan > 1  ? c.rowSpan  : null,
+        right:   c.style.textAlign === 'right' || getComputedStyle(c).textAlign === 'right',
+        color:   c.style.color || '',
+      })) };
+    });
+  }
+
+  const headRows = extractRows(tableEl.tHead);
+  const bodyRows = extractRows(tableEl.tBodies[0]);
+
+  // Map dark-theme colours to print-friendly equivalents
+  function printColor(c) {
+    if (!c) return '';
+    if (c.includes('74,222') || c.includes('4ade80') || c === 'rgb(74, 222, 128)') return '#15803d';
+    if (c.includes('248,113') || c.includes('f87171') || c === 'rgb(248, 113, 113)') return '#dc2626';
+    return '';
+  }
+
+  function renderCell(cell, tag) {
+    const align  = cell.right ? 'right' : 'left';
+    const color  = printColor(cell.color);
+    const cs     = cell.colspan ? ` colspan="${cell.colspan}"` : '';
+    const rs     = cell.rowspan ? ` rowspan="${cell.rowspan}"` : '';
+    const style  = `text-align:${align};${color ? 'color:'+color+';font-weight:700;' : ''}`;
+    return `<${tag}${cs}${rs} style="${style}">${cell.text}</${tag}>`;
+  }
+
+  let tableHtml = '<table><thead>';
+  headRows.forEach(r => {
+    tableHtml += '<tr>' + r.cells.map(c => renderCell(c, 'th')).join('') + '</tr>';
+  });
+  tableHtml += '</thead><tbody>';
+  bodyRows.forEach(r => {
+    tableHtml += '<tr>' + r.cells.map(c => renderCell(c, 'td')).join('') + '</tr>';
+  });
+  tableHtml += '</tbody></table>';
+
+  const dateStr = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html>
+<html><head>
+  <meta charset="UTF-8"/>
+  <title>${projName} — ${cc} / ${sc} Production Report</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 10px; color: #111; background: #fff; padding: 1rem 1.2rem; }
+    h1 { font-size: 14px; margin-bottom: 0.15rem; }
+    h2 { font-size: 11px; color: #444; font-weight: 400; margin-bottom: 0.1rem; }
+    .meta { font-size: 9px; color: #888; margin-bottom: 0.75rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 3px 6px; white-space: nowrap; font-size: 9.5px; }
+    th { background: #f4f4f4; font-weight: 700; }
+    tr:nth-child(even) td { background: #fafafa; }
+    @media print {
+      body { padding: 0; }
+      @page { margin: 1cm; size: landscape; }
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head><body>
+  <h1>${projName}</h1>
+  <h2>${cc} &mdash; ${sc}</h2>
+  <p class="meta">Production Rate Report &nbsp;&bull;&nbsp; Generated ${dateStr}</p>
+  ${tableHtml}
+  <script>window.onload = function(){ window.print(); }<\/script>
+</body></html>`);
+  win.document.close();
+}
+
+let bidFilters = {};
+let _bffField   = null;
+let _bffPending = null;
+
+function _updateBidFilterButtons() {
+  document.querySelectorAll('.bfb').forEach(btn => {
+    btn.classList.toggle('active', !!bidFilters[btn.dataset.bf]);
+  });
+}
+
+function openBidFilter(field, btn) {
+  const proj = getProj(bidViewProjId); if (!proj) return;
+  _bffField = field;
+
+  // Collect unique values for this field
+  const items = proj.bidItems || [];
+  const unique = field === 'cost_code'
+    ? [...new Set(items.map(b => b.cost_code || ''))].sort()
+    : [...new Set(items.map(b => b.sub_code  || ''))].sort();
+  const active = bidFilters[field] || null;
+  _bffPending = active ? new Set(active) : null;
+
+  const list = document.getElementById('bff-list');
+  const allChecked = !_bffPending;
+  list.innerHTML = `<label class="dff-item" id="bff-all-label">
+    <input type="checkbox" id="bff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="bff-val-cb" value="${esc(v)}" ${(!_bffPending || _bffPending.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  document.getElementById('bff-all').addEventListener('change', e => {
+    document.querySelectorAll('.bff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.bff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.bff-val-cb')].every(c => c.checked);
+    document.getElementById('bff-all').checked = all;
+  }));
+
+  document.getElementById('bff-search').value = '';
+  document.getElementById('bff-search').oninput = e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#bff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  const dd = document.getElementById('bid-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyBidFilter() {
+  const cbs = [...document.querySelectorAll('.bff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allChecked = document.getElementById('bff-all')?.checked;
+  if (allChecked || checked.length === cbs.length) {
+    delete bidFilters[_bffField];
+  } else {
+    bidFilters[_bffField] = new Set(checked);
+  }
+  document.getElementById('bid-filter-dd').style.display = 'none';
+  _updateBidFilterButtons();
+  if (bidViewProjId) renderBidTable(bidViewProjId);
+}
+
+function clearBidFilter() {
+  delete bidFilters[_bffField];
+  document.getElementById('bid-filter-dd').style.display = 'none';
+  _updateBidFilterButtons();
+  if (bidViewProjId) renderBidTable(bidViewProjId);
+}
+
+// Close bid filter dropdown on outside click
+document.addEventListener('click', e => {
+  const dd = document.getElementById('bid-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('bfb')) {
+    dd.style.display = 'none';
+  }
+});
+
+// Wire bfb buttons via delegation
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.bfb');
+  if (!btn || !bidViewProjId) return;
+  e.stopPropagation();
+  openBidFilter(btn.dataset.bf, btn);
+});
 
 /* ═══════════════════════════════════════════
    DELEGATED EVENTS (both tables)
@@ -2868,7 +4711,7 @@ document.addEventListener('input', e => {
     const p = getProj(projId); if (!p) return;
     if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
     p.dailyRows[i][f] = el.value;
-    // Auto-fill job class and non-prevailing rate when employee is selected
+    // Auto-fill job class and rate (prevailing or non-prevailing) when employee is selected
     if (f === 'employee') {
       const emp = lists.employees.find(e => e.name === el.value);
       if (emp) {
@@ -2877,11 +4720,22 @@ document.addEventListener('input', e => {
           p.dailyRows[i].job_class = emp.job_class;
           if (rowEl) { const s = rowEl.querySelector('[data-f="job_class"]'); if (s) s.value = emp.job_class; }
         }
-        if (!p.dailyRows[i].rate && emp.non_prevailing_rate) {
-          p.dailyRows[i].rate = emp.non_prevailing_rate;
-          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = emp.non_prevailing_rate; }
+        const autoRate = p.prevailing_wage ? emp.prevailing_rate : emp.non_prevailing_rate;
+        if (!p.dailyRows[i].rate && autoRate) {
+          p.dailyRows[i].rate = autoRate;
+          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate; }
         }
       }
+    }
+    // Auto-calculate material cost when units_purchased or unit_cost changes
+    if (f === 'units_purchased' || f === 'unit_cost') {
+      const row = p.dailyRows[i];
+      const up = parseFloat(row.units_purchased) || 0;
+      const uc = parseFloat(row.unit_cost) || 0;
+      const matCost = String(up * uc);
+      row.material_cost = matCost;
+      const matCell = document.getElementById('daily-mat-' + projId + '-' + i);
+      if (matCell) matCell.textContent = '$' + fmt(up * uc);
     }
     // Auto-fill equip unit cost when equipment is selected
     if (f === 'equipment') {
@@ -2900,22 +4754,85 @@ document.addEventListener('input', e => {
   }
 });
 
+function removeDelConfirm() {
+  document.querySelectorAll('.del-confirm').forEach(el => el.remove());
+}
+
 document.addEventListener('click', e => {
+  // Close any open confirm popover when clicking outside
+  if (!e.target.closest('.del-confirm') && !e.target.closest('.del-btn')) {
+    removeDelConfirm();
+  }
+
   const btn = e.target.closest('.del-btn');
   if (!btn) return;
-  const tab = btn.dataset.tab;
-  const i   = parseInt(btn.dataset.i);
-  if (tab === 'cost') {
-    costRows.splice(i, 1);
-    saveCostRows();
-    renderCostTable();
-  } else if (tab === 'daily') {
-    const projId = btn.dataset.proj;
-    const p = getProj(projId); if (!p) return;
-    p.dailyRows.splice(i, 1);
-    saveProjects();
-    renderDailyTable(projId);
+
+  // If a confirm is already open for this button, ignore (handled by its own listeners)
+  if (btn.querySelector('.del-confirm') || btn._confirmOpen) return;
+
+  e.stopPropagation();
+  removeDelConfirm(); // close any other open confirms
+
+  const tab    = btn.dataset.tab;
+  const i      = parseInt(btn.dataset.i);
+  const projId = btn.dataset.proj;
+
+  // Build popover — for user deletions show "Yes, delete [username]"
+  const yesLabel = tab === 'company-user'
+    ? `Yes, delete ${btn.dataset.username}`
+    : 'Yes';
+  const popover = document.createElement('div');
+  popover.className = 'del-confirm';
+  popover.innerHTML =
+    '<span>Are you sure?</span>' +
+    `<button class="dc-yes">${yesLabel}</button>` +
+    '<button class="dc-no">No</button>';
+
+  // Position relative to button, flip up if too close to bottom/right edge
+  btn._confirmOpen = true;
+  document.body.appendChild(popover);
+  const rect = btn.getBoundingClientRect();
+  const pw = popover.offsetWidth;
+  const ph = popover.offsetHeight;
+
+  let top  = rect.bottom + window.scrollY + 4;
+  let left = rect.left + window.scrollX - pw / 2 + rect.width / 2;
+
+  // Flip above if it would go off the bottom
+  if (rect.bottom + ph + 4 > window.innerHeight) {
+    top = rect.top + window.scrollY - ph - 4;
   }
+  // Clamp horizontally within viewport
+  left = Math.max(window.scrollX + 4, Math.min(left, window.scrollX + window.innerWidth - pw - 4));
+
+  popover.style.top  = top + 'px';
+  popover.style.left = left + 'px';
+
+  popover.querySelector('.dc-no').addEventListener('click', e => {
+    e.stopPropagation();
+    removeDelConfirm();
+    btn._confirmOpen = false;
+  });
+
+  popover.querySelector('.dc-yes').addEventListener('click', e => {
+    e.stopPropagation();
+    removeDelConfirm();
+    btn._confirmOpen = false;
+    if (tab === 'cost') {
+      costRows.splice(i, 1);
+      saveCostRows();
+      renderCostTable();
+    } else if (tab === 'daily') {
+      const p = getProj(projId); if (!p) return;
+      p.dailyRows.splice(i, 1);
+      saveProjects();
+      renderDailyTable(projId);
+    } else if (tab === 'po') {
+      deletePO(btn.dataset.poId);
+    } else if (tab === 'company-user') {
+      deleteCompanyUser(parseInt(btn.dataset.userId));
+    }
+  });
 });
 
 /* ═══════════════════════════════════════════
@@ -2930,6 +4847,120 @@ function downloadCSV(content, filename) {
 }
 
 /* ═══════════════════════════════════════════
+   USER MANAGEMENT TAB (company admin only)
+═══════════════════════════════════════════ */
+const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2 (Insert)', level1: 'Level 1 (View)' };
+
+async function renderUsersTab() {
+  if (!perm.isAdmin) return;
+  const root = document.getElementById('users-root');
+  root.innerHTML = '<p style="color:var(--muted);font-size:0.82rem">Loading…</p>';
+
+  const res = await fetch('/api/company/users', {
+    headers: { Authorization: `Bearer ${fctToken}` }
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    root.innerHTML = `<p style="color:var(--red)">${data.error || 'Failed to load users'}</p>`;
+    return;
+  }
+
+  const userRows = data.users.map(u => `
+    <tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:0.55rem 0.75rem;font-weight:600">${esc(u.username)}</td>
+      <td style="padding:0.55rem 0.75rem;color:var(--muted)">${ROLE_LABELS[u.role] || u.role}</td>
+      <td style="padding:0.55rem 0.75rem;text-align:center">
+        ${u.id !== fctUser.userId ? `<button class="del-btn" data-tab="company-user" data-user-id="${u.id}" data-username="${esc(u.username)}">&#10005;</button>` : '<span style="color:var(--muted);font-size:0.75rem">(you)</span>'}
+      </td>
+    </tr>`).join('');
+
+  root.innerHTML = `
+    <h2 style="font-size:1rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:1.25rem">Manage Users</h2>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;margin-bottom:1.5rem;overflow:hidden">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:0.5rem 0.75rem;color:var(--muted);font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em">Username</th>
+            <th style="text-align:left;padding:0.5rem 0.75rem;color:var(--muted);font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em">Role</th>
+            <th style="width:50px"></th>
+          </tr>
+        </thead>
+        <tbody>${userRows || '<tr><td colspan="3" style="padding:1rem;color:var(--muted);text-align:center">No users yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
+      <div style="font-weight:700;font-size:0.82rem;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:1rem;color:var(--text)">Create / Reset User</div>
+      <div style="display:grid;gap:0.75rem">
+        <div>
+          <label style="display:block;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem">Username</label>
+          <input id="nu-username" type="text" placeholder="john"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.45rem 0.65rem;font-size:0.85rem;outline:none">
+        </div>
+        <div>
+          <label style="display:block;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem">Password <span style="color:var(--muted);font-weight:400;text-transform:none">(min 8 chars)</span></label>
+          <input id="nu-password" type="password" placeholder="••••••••"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.45rem 0.65rem;font-size:0.85rem;outline:none">
+        </div>
+        <div>
+          <label style="display:block;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem">Permission Level</label>
+          <select id="nu-role"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.45rem 0.65rem;font-size:0.85rem;outline:none">
+            <option value="level1">Level 1 — View only (Daily Tracking &amp; Purchase Orders)</option>
+            <option value="level2">Level 2 — Insert daily tracking &amp; purchase orders (no project delete)</option>
+            <option value="level3">Level 3 — Full access</option>
+            <option value="admin">Admin — Full access + manage users</option>
+          </select>
+        </div>
+        <div id="nu-result" style="font-size:0.82rem;min-height:1.2em"></div>
+        <button class="btn btn-green" onclick="createCompanyUser()" style="align-self:start">Create / Reset User</button>
+      </div>
+    </div>`;
+}
+
+async function createCompanyUser() {
+  const username = document.getElementById('nu-username').value.trim();
+  const password = document.getElementById('nu-password').value;
+  const role     = document.getElementById('nu-role').value;
+  const resultEl = document.getElementById('nu-result');
+
+  if (!username || !password) {
+    resultEl.textContent = 'Username and password are required.';
+    resultEl.style.color = 'var(--red)';
+    return;
+  }
+
+  const res = await fetch('/api/company/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fctToken}` },
+    body: JSON.stringify({ username, password, role }),
+  });
+  const data = await res.json();
+  if (data.ok) {
+    resultEl.textContent = `User "${data.username}" saved as ${ROLE_LABELS[data.role]}.`;
+    resultEl.style.color = 'var(--green)';
+    document.getElementById('nu-username').value = '';
+    document.getElementById('nu-password').value = '';
+    renderUsersTab();
+  } else {
+    resultEl.textContent = data.error || 'Error saving user.';
+    resultEl.style.color = 'var(--red)';
+  }
+}
+
+async function deleteCompanyUser(id) {
+  const res = await fetch('/api/company/users', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fctToken}` },
+    body: JSON.stringify({ id }),
+  });
+  const data = await res.json();
+  if (data.ok) renderUsersTab();
+  else alert(data.error || 'Error deleting user.');
+}
+
+/* ═══════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════ */
 (async () => {
@@ -2937,10 +4968,14 @@ function downloadCSV(content, filename) {
   await loadCostRows();
   await loadProjects();
   await loadPurchaseOrders();
-  renderCostTable();
-  renderHomeTab();
+  if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
+  if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
   renderProjectDashboard();
   renderProjectsTab();
+  if (perm.visibleTabs && !perm.visibleTabs.has('home') && perm.visibleTabs.has('info')) {
+    renderProjectInfoComputed();
+  }
+  if (activeTab === 'po') renderPOTab();
   renderHeaderActions();
 })();
 </script>

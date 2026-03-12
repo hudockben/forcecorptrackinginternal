@@ -3,7 +3,7 @@
 const { neon } = require('@neondatabase/serverless');
 const jwt      = require('jsonwebtoken');
 
-const ALLOWED_KEYS = ['fct_projects', 'fct_lists', 'fct_cost_rows'];
+const ALLOWED_KEYS = ['fct_projects', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders'];
 
 function verifyToken(req) {
   const authHeader = req.headers.authorization || '';

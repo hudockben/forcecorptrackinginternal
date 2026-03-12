@@ -208,8 +208,10 @@
       <div class="field">
         <label>Role</label>
         <select id="u-role">
-          <option value="user">User</option>
-          <option value="admin">Admin</option>
+          <option value="level1">Level 1 — View only (Daily Tracking &amp; Purchase Orders)</option>
+          <option value="level2">Level 2 — Insert daily tracking &amp; purchase orders (no project delete)</option>
+          <option value="level3">Level 3 — Full access</option>
+          <option value="admin">Admin — Full access + manage users</option>
         </select>
       </div>
       <div class="result" id="u-result"></div>
@@ -325,7 +327,7 @@ async function loadUsers() {
   el.innerHTML = data.users.map(u => `
     <div class="list-item">
       <div>
-        <div style="font-weight:600">${u.username} <span class="badge badge-${u.role}">${u.role}</span></div>
+        <div style="font-weight:600">${u.username} <span class="badge badge-${u.role === 'admin' ? 'admin' : 'user'}">${{admin:'Admin',level3:'Level 3',level2:'Level 2',level1:'Level 1'}[u.role] || u.role}</span></div>
         <div class="meta">${u.company_code}</div>
       </div>
       <button class="btn btn-red" onclick="deleteUser(${u.id}, '${u.username}')">Remove</button>

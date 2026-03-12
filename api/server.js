@@ -1,5 +1,5 @@
 /**
- * ForceCorpTracking API Server
+ * DataWatch API Server
  * Connects to Neon (PostgreSQL) and exposes a simple key-value API
  * that the tracker.html frontend uses in place of localStorage.
  *
@@ -75,7 +75,7 @@ app.put('/api/data/:key', async (req, res) => {
   }
 
   // Only allow the three keys the app uses
-  const ALLOWED_KEYS = ['fct_projects', 'fct_lists', 'fct_cost_rows'];
+  const ALLOWED_KEYS = ['fct_projects', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders'];
   if (!ALLOWED_KEYS.includes(key)) {
     return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}` });
   }
@@ -96,7 +96,7 @@ app.put('/api/data/:key', async (req, res) => {
 
 // ── Start ──────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`ForceCorpTracking running at http://localhost:${PORT}`);
+  console.log(`DataWatch running at http://localhost:${PORT}`);
   console.log(`  App:    http://localhost:${PORT}/tracker.html`);
   console.log(`  Health: http://localhost:${PORT}/api/health`);
 });
