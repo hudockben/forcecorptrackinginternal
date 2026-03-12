@@ -1650,6 +1650,9 @@ function toggleDashCard(hdrEl) {
   if (caret) caret.style.transform = collapsed ? 'rotate(-90deg)' : '';
 }
 
+let dashPage = 0;
+const DASH_PAGE_SIZE = 10;
+
 function renderDashProjectCards() {
   const container = document.getElementById('dash-proj-cards');
   if (!container) return;
@@ -1994,8 +1997,6 @@ const INFO_KEY_LEGACY = 'fct_project_info'; // for migration only
 let projectsList = [];
 let projSearch   = '';
 let dashSearch   = '';
-let dashPage     = 0;
-const DASH_PAGE_SIZE = 10;
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
