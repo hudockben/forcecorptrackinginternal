@@ -2095,6 +2095,76 @@ function deleteProject(id) {
   setTimeout(() => input.focus(), 50);
 }
 
+function deleteDailyRowsBySubCode(costCode, subCode) {
+  let totalCount = 0, projCount = 0;
+  projectsList.forEach(p => {
+    const n = (p.dailyRows || []).filter(r => r.cost_code === costCode && r.sub_code === subCode).length;
+    if (n) { totalCount += n; projCount++; }
+  });
+  if (!totalCount) { alert('No daily rows found for this sub code.'); return; }
+
+  const label = subCode || '(no sub code)';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.style.cssText = 'z-index:9999';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:440px;width:100%">
+      <div class="modal-header" style="background:var(--red)">
+        <h2>DELETE DAILY ROWS</h2>
+        <button class="modal-close" id="ddr-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 0.75rem;color:var(--text);font-size:0.85rem;line-height:1.6">
+          This will permanently delete <strong style="color:#fff">${totalCount} daily row${totalCount !== 1 ? 's' : ''}</strong>
+          across <strong style="color:#fff">${projCount} project${projCount !== 1 ? 's' : ''}</strong> for:<br>
+          <span style="color:#aaa">${esc(costCode)}</span> / <strong style="color:#fff">${esc(label)}</strong><br>
+          This action cannot be undone.
+        </p>
+        <p style="margin:0 0 0.4rem;color:#aaa;font-size:0.78rem">
+          To confirm, type <strong style="color:#fff">${esc(label)}</strong> below:
+        </p>
+        <input id="ddr-input" type="text" autocomplete="off" spellcheck="false"
+          placeholder="${esc(label)}"
+          style="width:100%;box-sizing:border-box;background:#111;border:1px solid #444;color:#fff;
+                 padding:0.45rem 0.6rem;border-radius:4px;font-size:0.85rem;outline:none"/>
+        <div style="margin-top:1rem;display:flex;justify-content:flex-end;gap:0.5rem">
+          <button id="ddr-cancel" class="btn" style="background:#333;color:#ccc;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer">Cancel</button>
+          <button id="ddr-confirm" class="btn btn-danger" disabled
+            style="opacity:0.4;transition:opacity 0.15s">Delete ${totalCount} Row${totalCount !== 1 ? 's' : ''}</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+  const input   = overlay.querySelector('#ddr-input');
+  const confirm = overlay.querySelector('#ddr-confirm');
+
+  input.addEventListener('input', () => {
+    const match = input.value === label;
+    confirm.disabled = !match;
+    confirm.style.opacity = match ? '1' : '0.4';
+  });
+
+  function close() { overlay.remove(); }
+  overlay.querySelector('#ddr-close').addEventListener('click', close);
+  overlay.querySelector('#ddr-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  confirm.addEventListener('click', () => {
+    if (confirm.disabled) return;
+    close();
+    projectsList.forEach(p => {
+      if (!Array.isArray(p.dailyRows)) return;
+      p.dailyRows = p.dailyRows.filter(r => !(r.cost_code === costCode && r.sub_code === subCode));
+    });
+    saveProjects();
+    projectsList.forEach(p => renderDailyTable(p.id));
+    renderCostTable();
+  });
+
+  setTimeout(() => input.focus(), 50);
+}
+
 function toggleCard(id) {
   const card = document.getElementById('pcard-' + id);
   if (card) card.classList.toggle('expanded');
@@ -3660,7 +3730,13 @@ function renderCostTable() {
       if (isDailyOnly) childTr.style.opacity = '0.65';
 
       childTr.innerHTML = `
-        <td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(sc) || '—'}</td>
+        <td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">
+          ${esc(sc) || '—'}
+          <button onclick="deleteDailyRowsBySubCode(${JSON.stringify(costCode)},${JSON.stringify(sc)})"
+            title="Delete all daily rows for this sub code"
+            style="margin-left:0.4rem;background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;padding:0;line-height:1;vertical-align:middle"
+            onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#555'">🗑</button>
+        </td>
         <td class="calc">${bq ? fmt(bq,2) : '—'}</td>
         <td class="calc">${buc ? '$'+fmt(buc) : isDailyOnly ? '<span style="color:#555;font-size:0.68rem">No bid entry</span>' : '—'}</td>
         <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
