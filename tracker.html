@@ -1112,6 +1112,7 @@
         <button class="modal-tab-btn" data-list="employees">Employees</button>
         <button class="modal-tab-btn" data-list="job_classes">Job Classes</button>
         <button class="modal-tab-btn" data-list="equipment">Equipment</button>
+        <button class="modal-tab-btn" data-list="import_csv" style="margin-left:auto;color:var(--green)">⬆ Import CSV</button>
       </div>
 
       <!-- Field Types -->
@@ -1151,6 +1152,76 @@
           <input type="text"   id="new-equipment"      placeholder="Equipment name…" />
           <input type="number" id="new-equipment-cost" class="cost-new" placeholder="Unit cost" step="any" />
           <button class="btn btn-green" onclick="addListItem('equipment')">+ Add</button>
+        </div>
+      </div>
+
+      <!-- Import CSV -->
+      <div class="list-panel" id="panel-import_csv">
+        <div style="padding:0.5rem 0 1rem">
+          <p style="color:var(--muted);font-size:0.82rem;margin:0 0 1rem">
+            Export your Google Sheet as <strong style="color:var(--text)">File → Download → CSV</strong>, then upload it below.
+            Each row will be imported as a daily tracking entry. Rows with no cost code or project will be skipped.
+          </p>
+
+          <!-- Step 1: pick project -->
+          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.9rem;flex-wrap:wrap">
+            <label style="font-size:0.8rem;color:var(--muted);white-space:nowrap">Assign to project:</label>
+            <select id="csv-import-project" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.6rem;font-size:0.82rem;min-width:200px">
+              <option value="">— Select a project —</option>
+            </select>
+            <label style="font-size:0.8rem;color:var(--muted);white-space:nowrap;margin-left:0.5rem">Or use a <strong style="color:var(--text)">Project</strong> column in the CSV to auto-assign</label>
+          </div>
+
+          <!-- Step 2: upload -->
+          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;flex-wrap:wrap">
+            <input type="file" id="csv-import-file" accept=".csv" style="font-size:0.82rem;color:var(--text)">
+            <button class="btn btn-green" onclick="parseImportCSV()" style="font-size:0.8rem;padding:0.3rem 0.9rem">Preview Import</button>
+          </div>
+
+          <!-- Column mapping hint -->
+          <details style="margin-bottom:1rem">
+            <summary style="font-size:0.78rem;color:var(--blue);cursor:pointer">Supported column names (click to expand)</summary>
+            <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:0.2rem 1.5rem;padding:0.5rem;background:var(--bg);border-radius:4px">
+              <span><strong style="color:var(--text)">Date</strong> → date</span>
+              <span><strong style="color:var(--text)">Field Type</strong> → field_type</span>
+              <span><strong style="color:var(--text)">Employee</strong> → employee</span>
+              <span><strong style="color:var(--text)">Cost Code</strong> → cost_code</span>
+              <span><strong style="color:var(--text)">Sub Code</strong> → sub_code</span>
+              <span><strong style="color:var(--text)">Job Class</strong> → job_class</span>
+              <span><strong style="color:var(--text)">Rate</strong> → rate</span>
+              <span><strong style="color:var(--text)">Labor Hours / Cum. Labor Hrs</strong> → labor_hours</span>
+              <span><strong style="color:var(--text)">Equipment</strong> → equipment</span>
+              <span><strong style="color:var(--text)">Equip Unit Cost / Equip Cost / Hr</strong> → equip_unit_cost</span>
+              <span><strong style="color:var(--text)">Equip Hours</strong> → equip_hours</span>
+              <span><strong style="color:var(--text)">Material</strong> → material</span>
+              <span><strong style="color:var(--text)">Supplier</strong> → supplier</span>
+              <span><strong style="color:var(--text)">PO #</strong> → po_num</span>
+              <span><strong style="color:var(--text)">Units Purchased</strong> → units_purchased</span>
+              <span><strong style="color:var(--text)">Unit Cost / Bid Unit Cost</strong> → unit_cost</span>
+              <span><strong style="color:var(--text)">Material Cost</strong> → material_cost</span>
+              <span><strong style="color:var(--text)">Quantity / Running Total / Avg Qty</strong> → quantity</span>
+              <span><strong style="color:var(--text)">Project</strong> → project name (auto-assign)</span>
+            </div>
+          </details>
+
+          <!-- Preview table -->
+          <div id="csv-import-preview" style="display:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">
+              <span id="csv-import-count" style="font-size:0.82rem;color:var(--muted)"></span>
+              <div style="display:flex;gap:0.5rem">
+                <button class="btn" style="font-size:0.78rem;padding:0.25rem 0.7rem;background:var(--surface);border:1px solid var(--border);color:var(--muted)" onclick="clearImportPreview()">Cancel</button>
+                <button class="btn btn-green" style="font-size:0.78rem;padding:0.25rem 0.9rem" onclick="commitImportCSV()">Import All</button>
+              </div>
+            </div>
+            <div style="overflow:auto;max-height:320px;border:1px solid var(--border);border-radius:4px">
+              <table style="width:100%;border-collapse:collapse;font-size:0.74rem">
+                <thead id="csv-preview-head" style="position:sticky;top:0;background:var(--surface)"></thead>
+                <tbody id="csv-preview-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="csv-import-status" style="margin-top:0.75rem;font-size:0.82rem"></div>
         </div>
       </div>
 
@@ -3158,6 +3229,7 @@ document.getElementById('modal-tabs').addEventListener('click', e => {
     b.classList.toggle('active', b === btn));
   document.querySelectorAll('.list-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'panel-' + activeListPanel));
+  if (activeListPanel === 'import_csv') _populateImportProjectSelect();
 });
 
 function renderAllListPanels() {
@@ -5022,6 +5094,213 @@ async function deleteCompanyUser(id) {
   if (activeTab === 'po') renderPOTab();
   renderHeaderActions();
 })();
+
+/* ═══════════════════════════════════════════
+   CSV IMPORT
+═══════════════════════════════════════════ */
+
+// Normalise a header string to a field key
+function _csvNorm(h) {
+  return h.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+const CSV_COL_MAP = {
+  // date
+  'date': 'date',
+  // identification
+  'fieldtype': 'field_type',
+  'employee': 'employee',
+  'project': '_project',
+  // cost code
+  'costcode': 'cost_code',
+  'subcode': 'sub_code',
+  // labor
+  'jobclass': 'job_class',
+  'rate': 'rate',
+  'laborhours': 'labor_hours',
+  'cumlaborhrs': 'labor_hours',
+  'cumlaborhours': 'labor_hours',
+  'labourhours': 'labor_hours',
+  'hours': 'labor_hours',
+  // equipment
+  'equipment': 'equipment',
+  'equipunitcost': 'equip_unit_cost',
+  'equipcosthr': 'equip_unit_cost',
+  'equiphours': 'equip_hours',
+  'equiptotal': 'equip_unit_cost',   // fallback: store as unit cost
+  // material
+  'material': 'material',
+  'supplier': 'supplier',
+  'po': 'po_num',
+  'ponum': 'po_num',
+  'unitspurchased': 'units_purchased',
+  'unitcost': 'unit_cost',
+  'bidunitcost': 'unit_cost',
+  'materialcost': 'material_cost',
+  // quantity / production
+  'quantity': 'quantity',
+  'runningtotal': 'quantity',
+  'avgqty': 'quantity',
+  'bidqty': '_bid_qty',   // informational only — stored as note
+};
+
+function _parseCSVLine(line) {
+  const result = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i+1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === ',' && !inQ) {
+      result.push(cur); cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  result.push(cur);
+  return result.map(s => s.trim());
+}
+
+let _csvParsedRows = [];   // holds rows ready to import
+
+function parseImportCSV() {
+  const file = document.getElementById('csv-import-file').files[0];
+  if (!file) { alert('Please choose a CSV file first.'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const text = e.target.result;
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) { alert('CSV appears to be empty or has only a header row.'); return; }
+
+    const rawHeaders = _parseCSVLine(lines[0]);
+    const fieldMap = rawHeaders.map(h => CSV_COL_MAP[_csvNorm(h)] || null);
+
+    // Parse data rows
+    const globalProj = document.getElementById('csv-import-project').value;
+    const parsed = [];
+    const skipped = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const cells = _parseCSVLine(lines[i]);
+      if (cells.every(c => !c)) continue;   // blank line
+
+      const row = { ...{ id: Date.now() + Math.random() + i, date:'', field_type:'', employee:'',
+        cost_code:'', sub_code:'', job_class:'', rate:'', labor_hours:'',
+        equipment:'', equip_unit_cost:'', equip_hours:'', material:'', supplier:'',
+        po_num:'', units_purchased:'', unit_cost:'', material_cost:'', quantity:'' } };
+      let projName = '';
+
+      fieldMap.forEach((field, ci) => {
+        if (!field) return;
+        const val = cells[ci] || '';
+        if (field === '_project') { projName = val; return; }
+        if (field === '_bid_qty') return;   // skip
+        if (val !== '') row[field] = val;
+      });
+
+      // Resolve project
+      const resolvedProj = _resolveImportProject(projName || '', globalProj);
+      if (!resolvedProj) {
+        skipped.push({ line: i + 1, reason: projName ? `No project found matching "${projName}"` : 'No project assigned' });
+        continue;
+      }
+      if (!row.cost_code && !row.sub_code && !row.labor_hours && !row.material_cost && !row.quantity) {
+        skipped.push({ line: i + 1, reason: 'Row appears empty' });
+        continue;
+      }
+      parsed.push({ row, projId: resolvedProj.id, projName: resolvedProj['project-name'] || resolvedProj['job-number'] });
+    }
+
+    _csvParsedRows = parsed;
+    _renderImportPreview(rawHeaders, fieldMap, parsed, skipped);
+  };
+  reader.readAsText(file);
+}
+
+function _resolveImportProject(nameFromCSV, globalProjId) {
+  if (nameFromCSV) {
+    const n = nameFromCSV.toLowerCase();
+    const match = projectsList.find(p =>
+      (p['project-name']||'').toLowerCase() === n ||
+      (p['job-number']||'').toLowerCase() === n
+    );
+    if (match) return match;
+  }
+  if (globalProjId) return projectsList.find(p => p.id === globalProjId) || null;
+  return null;
+}
+
+function _renderImportPreview(rawHeaders, fieldMap, parsed, skipped) {
+  const preview = document.getElementById('csv-import-preview');
+  const countEl = document.getElementById('csv-import-count');
+  const head    = document.getElementById('csv-preview-head');
+  const body    = document.getElementById('csv-preview-body');
+
+  const displayCols = rawHeaders.map((h, i) => ({ label: h, field: fieldMap[i] }))
+    .filter(c => c.field && c.field !== '_bid_qty');
+
+  head.innerHTML = '<tr>' + displayCols.map(c =>
+    `<th style="padding:0.3rem 0.5rem;border-bottom:1px solid var(--border);white-space:nowrap;color:var(--muted);text-align:left">${esc(c.label)}<br><span style="color:var(--green);font-size:0.68rem">${c.field === '_project' ? 'project' : c.field}</span></th>`
+  ).join('') + '<th style="padding:0.3rem 0.5rem;border-bottom:1px solid var(--border);color:var(--muted)">Project</th></tr>';
+
+  body.innerHTML = parsed.slice(0, 50).map(({ row, projName }) => {
+    const cells = displayCols.map(c => {
+      const val = c.field === '_project' ? projName : (row[c.field] || '');
+      return `<td style="padding:0.25rem 0.5rem;border-bottom:1px solid var(--border);white-space:nowrap">${esc(val)}</td>`;
+    }).join('');
+    return `<tr>${cells}<td style="padding:0.25rem 0.5rem;border-bottom:1px solid var(--border);color:var(--green);white-space:nowrap">${esc(projName)}</td></tr>`;
+  }).join('');
+
+  let msg = `<strong style="color:var(--green)">${parsed.length}</strong> rows ready to import`;
+  if (parsed.length > 50) msg += ` <span style="color:var(--muted)">(showing first 50)</span>`;
+  if (skipped.length) msg += ` &nbsp;·&nbsp; <strong style="color:var(--yellow)">${skipped.length}</strong> skipped`;
+  countEl.innerHTML = msg;
+
+  preview.style.display = '';
+  document.getElementById('csv-import-status').innerHTML =
+    skipped.length ? `<span style="color:var(--yellow)">Skipped lines: ${skipped.map(s => `#${s.line} (${s.reason})`).join(', ')}</span>` : '';
+}
+
+function clearImportPreview() {
+  _csvParsedRows = [];
+  document.getElementById('csv-import-preview').style.display = 'none';
+  document.getElementById('csv-import-file').value = '';
+  document.getElementById('csv-import-status').innerHTML = '';
+}
+
+function commitImportCSV() {
+  if (!_csvParsedRows.length) return;
+  const byProj = {};
+  _csvParsedRows.forEach(({ row, projId }) => {
+    if (!byProj[projId]) byProj[projId] = [];
+    row.id = Date.now() + Math.random();
+    byProj[projId].push(row);
+  });
+  let totalImported = 0;
+  Object.entries(byProj).forEach(([projId, rows]) => {
+    const p = getProj(projId);
+    if (!p) return;
+    if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
+    p.dailyRows.push(...rows);
+    totalImported += rows.length;
+  });
+  saveProjects();
+  projectsList.forEach(p => renderDailyTable(p.id));
+  renderCostTracking();
+  clearImportPreview();
+  document.getElementById('csv-import-status').innerHTML =
+    `<span style="color:var(--green)">✓ Successfully imported ${totalImported} row${totalImported !== 1 ? 's' : ''}.</span>`;
+}
+
+// Populate project dropdown when import tab opens
+function _populateImportProjectSelect() {
+  const sel = document.getElementById('csv-import-project');
+  sel.innerHTML = '<option value="">— Select a project (or use Project column in CSV) —</option>' +
+    [...projectsList].reverse().map(p =>
+      `<option value="${p.id}">${esc(p['project-name'] || p['job-number'] || p.id)}</option>`
+    ).join('');
+}
 </script>
 </body>
 </html>
