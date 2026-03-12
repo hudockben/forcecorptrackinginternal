@@ -857,6 +857,7 @@
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="supplier">Suppliers</button>
   <button class="tab-btn"        onclick="openModal()">&#9881; Manage Lists</button>
+  <button class="tab-btn" data-tab="users" id="users-tab-btn" style="margin-left:auto;display:none">&#128100; Users</button>
 </nav>
 
 <!-- ══════════════ HOME TAB ══════════════ -->
@@ -1008,6 +1009,11 @@
 <!-- ══════════════ PURCHASE ORDERS TAB ══════════════ -->
 <div class="tab-panel" id="tab-po">
   <div id="po-root"></div>
+</div>
+
+<!-- ══════════════ USERS TAB (admin only) ══════════════ -->
+<div class="tab-panel" id="tab-users">
+  <div id="users-root" style="padding:1.5rem;max-width:700px"></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -1169,19 +1175,61 @@ function logout() {
   window.location.replace('index.html');
 }
 
-// Show user + company in header badge; inject Admin tab for admins
+// Show user + company in header badge
 (function () {
   const badge = document.getElementById('user-badge');
   if (badge && fctUser) {
     badge.textContent = `${fctUser.companyName || fctUser.companyCode} · ${fctUser.username}`;
   }
-  if (fctUser && fctUser.role === 'admin') {
-    const adminBtn = document.createElement('button');
-    adminBtn.className = 'tab-btn';
-    adminBtn.textContent = '⚙ Admin';
-    adminBtn.style.marginLeft = 'auto';
-    adminBtn.addEventListener('click', () => window.location.href = 'admin.html');
-    document.querySelector('.tab-bar').appendChild(adminBtn);
+})();
+
+/* ═══════════════════════════════════════════
+   PERMISSIONS
+   Roles: admin | level3 | level2 | level1
+   admin   — full access + manage company users
+   level3  — full access
+   level2  — insert/edit daily rows & POs; cannot delete projects
+   level1  — view-only: Project Dashboard & Purchase Orders
+═══════════════════════════════════════════ */
+const perm = (() => {
+  const r = fctUser ? fctUser.role : 'level1';
+  return {
+    role:             r,
+    isAdmin:          r === 'admin',
+    canEdit:          ['admin', 'level3', 'level2'].includes(r),
+    canDeleteProject: ['admin', 'level3'].includes(r),
+    // tabs visible to this role (null = all)
+    visibleTabs: (r === 'level1') ? new Set(['info', 'po'])
+               : (r === 'level2') ? new Set(['home', 'info', 'po'])
+               : null,
+  };
+})();
+
+// Apply tab visibility
+(function () {
+  // Show Users tab for admin only
+  if (perm.isAdmin) {
+    document.getElementById('users-tab-btn').style.display = '';
+  }
+
+  if (perm.visibleTabs) {
+    // Hide tabs this role cannot see
+    document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
+      if (!perm.visibleTabs.has(btn.dataset.tab)) btn.style.display = 'none';
+    });
+    // Hide Manage Lists (no data-tab, identified by onclick content)
+    document.querySelectorAll('.tab-btn:not([data-tab])').forEach(btn => {
+      btn.style.display = 'none';
+    });
+
+    // Activate the first visible tab
+    const firstTab = [...perm.visibleTabs][0];
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const firstBtn = document.querySelector(`.tab-btn[data-tab="${firstTab}"]`);
+    const firstPanel = document.getElementById(`tab-${firstTab}`);
+    if (firstBtn)  firstBtn.classList.add('active');
+    if (firstPanel) firstPanel.classList.add('active');
   }
 })();
 
@@ -1243,10 +1291,11 @@ function escT(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;
 /* ═══════════════════════════════════════════
    TABS
 ═══════════════════════════════════════════ */
-let activeTab = 'home';
+let activeTab = perm.visibleTabs ? [...perm.visibleTabs][0] : 'home';
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
+    if (!btn.dataset.tab) return; // non-tab buttons (Manage Lists)
     activeTab = btn.dataset.tab;
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.tab-panel').forEach(p =>
@@ -1256,6 +1305,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'info')     renderProjectInfoComputed();
     if (activeTab === 'supplier') renderSupplierTab();
     if (activeTab === 'po')       renderPOTab();
+    if (activeTab === 'users')    renderUsersTab();
   });
 });
 
@@ -2309,9 +2359,9 @@ function projectCardHTML(p) {
       ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
       ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff)+' under':'$'+fmt(Math.abs(diff))+' over'}</span>` : ''}
     </div>
-    <button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#1a3a2a;color:#4ade80;border:1px solid #4ade80;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>
+    ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#1a3a2a;color:#4ade80;border:1px solid #4ade80;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>` : ''}
     <button class="btn btn-green" style="font-size:0.75rem;padding:0.25rem 0.7rem;" onclick="event.stopPropagation();openDailyView('${p.id}')">Daily Tracking &#8594;</button>
-    <button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#3a1a00;color:#fb923c;border:1px solid #fb923c;" onclick="event.stopPropagation();openProductionRateView('${p.id}')">Daily Production Rate &#8594;</button>
+    ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#3a1a00;color:#fb923c;border:1px solid #fb923c;" onclick="event.stopPropagation();openProductionRateView('${p.id}')">Daily Production Rate &#8594;</button>` : ''}
     <button class="proj-card-toggle">▾</button>
   </div>
   <div class="proj-card-body">
@@ -2460,7 +2510,7 @@ function projectCardHTML(p) {
     </div>
 
     <div class="proj-card-footer">
-      <button class="btn btn-danger" onclick="deleteProject('${p.id}')">Delete Project</button>
+      ${perm.canDeleteProject ? `<button class="btn btn-danger" onclick="deleteProject('${p.id}')">Delete Project</button>` : ''}
     </div>
   </div>
 </div>`;
@@ -2484,7 +2534,7 @@ function renderProjectsTab() {
         <div class="proj-toolbar">
           <input class="proj-search" type="text" placeholder="Search by project name, job number, or client…"
             oninput="projSearch=this.value;renderProjectsTab()">
-          <button class="btn btn-green" onclick="addProject()">+ Add Project</button>
+          ${perm.canDeleteProject ? `<button class="btn btn-green" onclick="addProject()">+ Add Project</button>` : ''}
         </div>
         <div class="proj-cards"></div>
       </div>`;
@@ -2789,7 +2839,7 @@ function renderPOTab() {
           <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('employee', empOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date_created', 'date')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:95px;color:${statusColor}">${sel('status', statusOpts)}</td>
-          <td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>
+          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>` : '<td></td>'}
         </tr>`;
       }).join('');
 
@@ -2802,7 +2852,7 @@ function renderPOTab() {
         <div style="display:flex;gap:0.5rem;align-items:center">
           ${hasFilters ? `<button class="btn" onclick="poFilters={};poSearch='';renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
           <button class="btn" onclick="exportPOCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#1d4ed8;color:#fff">&#8595; Export CSV</button>
-          <button class="btn btn-green" onclick="addPO()">+ New PO</button>
+          ${perm.canEdit ? `<button class="btn btn-green" onclick="addPO()">+ New PO</button>` : ''}
         </div>
       </div>
       <input class="po-global-search" type="text" value="${esc(poSearch)}" placeholder="&#128269; Search purchase orders…"
@@ -2969,7 +3019,7 @@ function renderSupplierTab() {
             style="width:70px;background:transparent;border:none;color:var(--text);font-size:0.875rem;outline:none;padding:0.15rem 0;text-transform:uppercase">
         </td>
         <td style="text-align:center;padding:0.25rem">
-          <button class="del-btn" onclick="deleteSupplier(${i})">&#10005;</button>
+          ${perm.canEdit ? `<button class="del-btn" onclick="deleteSupplier(${i})">&#10005;</button>` : ''}
         </td>
       </tr>`).join('');
 
@@ -2977,7 +3027,7 @@ function renderSupplierTab() {
     <div style="padding:1.5rem;max-width:680px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Suppliers</span>
-        <button class="btn btn-green" onclick="addSupplier()">+ Add Supplier</button>
+        ${perm.canEdit ? `<button class="btn btn-green" onclick="addSupplier()">+ Add Supplier</button>` : ''}
       </div>
       <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;overflow:hidden">
         <thead>
@@ -3674,8 +3724,8 @@ function renderDailyTable(projId) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class="del-cell">
-        <button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${i}">&#10005;</button>
-        <button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${i})">&#10697;</button>
+        ${perm.canEdit ? `<button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${i}">&#10005;</button>` : ''}
+        ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${i})">&#10697;</button>` : ''}
       </td>
       <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${i}" data-f="date"           value="${esc(row.date)}"></td>
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', i, 'field_type',      projId)}</td>
@@ -4134,7 +4184,9 @@ function openDailyView(projId) {
   dailyViewProjId = projId;
   document.getElementById('daily-fs-title').textContent =
     (p['project-name'] || 'Untitled Project') + ' — Daily Tracking';
-  document.getElementById('daily-fs-add').onclick    = () => addDailyRow(projId);
+  const addBtn = document.getElementById('daily-fs-add');
+  addBtn.style.display = perm.canEdit ? '' : 'none';
+  addBtn.onclick = () => addDailyRow(projId);
   document.getElementById('daily-fs-export').onclick = () => exportDailyCSV(projId);
   // Give the tbody the id that renderDailyTable expects
   document.getElementById('daily-fs-tbody').id = 'daily-tbody-' + projId;
@@ -4790,6 +4842,121 @@ function downloadCSV(content, filename) {
 }
 
 /* ═══════════════════════════════════════════
+   USER MANAGEMENT TAB (company admin only)
+═══════════════════════════════════════════ */
+const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2 (Insert)', level1: 'Level 1 (View)' };
+
+async function renderUsersTab() {
+  if (!perm.isAdmin) return;
+  const root = document.getElementById('users-root');
+  root.innerHTML = '<p style="color:var(--muted);font-size:0.82rem">Loading…</p>';
+
+  const res = await fetch('/api/company/users', {
+    headers: { Authorization: `Bearer ${fctToken}` }
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    root.innerHTML = `<p style="color:var(--red)">${data.error || 'Failed to load users'}</p>`;
+    return;
+  }
+
+  const userRows = data.users.map(u => `
+    <tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:0.55rem 0.75rem;font-weight:600">${esc(u.username)}</td>
+      <td style="padding:0.55rem 0.75rem;color:var(--muted)">${ROLE_LABELS[u.role] || u.role}</td>
+      <td style="padding:0.55rem 0.75rem;text-align:center">
+        ${u.id !== fctUser.userId ? `<button class="del-btn" onclick="deleteCompanyUser(${u.id})">&#10005;</button>` : '<span style="color:var(--muted);font-size:0.75rem">(you)</span>'}
+      </td>
+    </tr>`).join('');
+
+  root.innerHTML = `
+    <h2 style="font-size:1rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:1.25rem">Manage Users</h2>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;margin-bottom:1.5rem;overflow:hidden">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:0.5rem 0.75rem;color:var(--muted);font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em">Username</th>
+            <th style="text-align:left;padding:0.5rem 0.75rem;color:var(--muted);font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em">Role</th>
+            <th style="width:50px"></th>
+          </tr>
+        </thead>
+        <tbody>${userRows || '<tr><td colspan="3" style="padding:1rem;color:var(--muted);text-align:center">No users yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
+      <div style="font-weight:700;font-size:0.82rem;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:1rem;color:var(--text)">Create / Reset User</div>
+      <div style="display:grid;gap:0.75rem">
+        <div>
+          <label style="display:block;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem">Username</label>
+          <input id="nu-username" type="text" placeholder="john"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.45rem 0.65rem;font-size:0.85rem;outline:none">
+        </div>
+        <div>
+          <label style="display:block;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem">Password <span style="color:var(--muted);font-weight:400;text-transform:none">(min 8 chars)</span></label>
+          <input id="nu-password" type="password" placeholder="••••••••"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.45rem 0.65rem;font-size:0.85rem;outline:none">
+        </div>
+        <div>
+          <label style="display:block;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem">Permission Level</label>
+          <select id="nu-role"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.45rem 0.65rem;font-size:0.85rem;outline:none">
+            <option value="level1">Level 1 — View only (Daily Tracking &amp; Purchase Orders)</option>
+            <option value="level2">Level 2 — Insert daily tracking &amp; purchase orders (no project delete)</option>
+            <option value="level3">Level 3 — Full access</option>
+            <option value="admin">Admin — Full access + manage users</option>
+          </select>
+        </div>
+        <div id="nu-result" style="font-size:0.82rem;min-height:1.2em"></div>
+        <button class="btn btn-green" onclick="createCompanyUser()" style="align-self:start">Create / Reset User</button>
+      </div>
+    </div>`;
+}
+
+async function createCompanyUser() {
+  const username = document.getElementById('nu-username').value.trim();
+  const password = document.getElementById('nu-password').value;
+  const role     = document.getElementById('nu-role').value;
+  const resultEl = document.getElementById('nu-result');
+
+  if (!username || !password) {
+    resultEl.textContent = 'Username and password are required.';
+    resultEl.style.color = 'var(--red)';
+    return;
+  }
+
+  const res = await fetch('/api/company/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fctToken}` },
+    body: JSON.stringify({ username, password, role }),
+  });
+  const data = await res.json();
+  if (data.ok) {
+    resultEl.textContent = `User "${data.username}" saved as ${ROLE_LABELS[data.role]}.`;
+    resultEl.style.color = 'var(--green)';
+    document.getElementById('nu-username').value = '';
+    document.getElementById('nu-password').value = '';
+    renderUsersTab();
+  } else {
+    resultEl.textContent = data.error || 'Error saving user.';
+    resultEl.style.color = 'var(--red)';
+  }
+}
+
+async function deleteCompanyUser(id) {
+  if (!confirm('Delete this user?')) return;
+  const res = await fetch('/api/company/users', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fctToken}` },
+    body: JSON.stringify({ id }),
+  });
+  const data = await res.json();
+  if (data.ok) renderUsersTab();
+  else alert(data.error || 'Error deleting user.');
+}
+
+/* ═══════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════ */
 (async () => {
@@ -4797,10 +4964,14 @@ function downloadCSV(content, filename) {
   await loadCostRows();
   await loadProjects();
   await loadPurchaseOrders();
-  renderCostTable();
-  renderHomeTab();
+  if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
+  if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
   renderProjectDashboard();
   renderProjectsTab();
+  if (perm.visibleTabs && !perm.visibleTabs.has('home') && perm.visibleTabs.has('info')) {
+    renderProjectInfoComputed();
+  }
+  if (activeTab === 'po') renderPOTab();
   renderHeaderActions();
 })();
 </script>

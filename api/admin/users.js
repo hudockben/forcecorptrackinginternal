@@ -30,7 +30,7 @@ module.exports = async (req, res) => {
 
   // POST — create or reset a user
   if (req.method === 'POST') {
-    const { adminSecret, companyCode, username, password, role = 'user' } = req.body || {};
+    const { adminSecret, companyCode, username, password, role = 'level1' } = req.body || {};
 
     if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
       return res.status(403).json({ error: 'Forbidden' });
@@ -38,8 +38,8 @@ module.exports = async (req, res) => {
     if (!companyCode || !username || !password) {
       return res.status(400).json({ error: 'companyCode, username, and password are required' });
     }
-    if (!['admin', 'user'].includes(role)) {
-      return res.status(400).json({ error: 'role must be "admin" or "user"' });
+    if (!['admin', 'level3', 'level2', 'level1'].includes(role)) {
+      return res.status(400).json({ error: 'role must be "admin", "level3", "level2", or "level1"' });
     }
     if (password.length < 8) {
       return res.status(400).json({ error: 'password must be at least 8 characters' });
