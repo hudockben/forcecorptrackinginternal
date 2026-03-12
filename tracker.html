@@ -3416,10 +3416,10 @@ function renderCostTable() {
     const parentTr = document.createElement('tr');
     parentTr.className = 'cost-group-hdr';
     parentTr.dataset.group  = groupId;
-    parentTr.dataset.collapsed = '0';
+    parentTr.dataset.collapsed = '1';
     parentTr.innerHTML = `
       <td colspan="${COLS}" style="padding:0.4rem 0.75rem">
-        <span class="cost-group-toggle" id="tog-${groupId}">▼</span>
+        <span class="cost-group-toggle" id="tog-${groupId}" style="transform:rotate(-90deg)">▼</span>
         <strong>${esc(costCode) || '(No Code)'}</strong>
         <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.75rem">
           ${keys.length} sub code${keys.length!==1?'s':''}
@@ -3463,7 +3463,7 @@ function renderCostTable() {
       const tc        = btotal ? costClass(total_pct) : '';
 
       const childTr = document.createElement('tr');
-      childTr.className = 'cost-group-child' + (isDailyOnly ? '' : '');
+      childTr.className = 'cost-group-child ct-hidden';
       childTr.dataset.group = groupId;
       if (isDailyOnly) childTr.style.opacity = '0.65';
 
@@ -3494,7 +3494,7 @@ function renderCostTable() {
     const gtc       = gBidTotal ? costClass(gTotPct) : '';
 
     const totalTr = document.createElement('tr');
-    totalTr.className = 'cost-group-total';
+    totalTr.className = 'cost-group-total ct-hidden';
     totalTr.dataset.group = groupId;
     totalTr.innerHTML = `
       <td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(costCode) || '(No Code)'} — Total</td>
