@@ -1780,6 +1780,11 @@ function renderDashProjectCards() {
             ${totalBid    ? `<span style="color:#888">Bid: <strong style="color:#86efac">$${fmt(totalBid)}</strong></span>` : ''}
             ${totalActual ? `<span style="color:#888">Actual: <strong style="color:var(--yellow)">$${fmt(totalActual)}</strong></span>` : ''}
             ${diffTxt     ? `<span style="${diffStyle};font-weight:600">${diffTxt}</span>` : ''}
+            <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
+              title="${p.pinned ? 'Unpin from Home' : 'Pin to Home'}"
+              style="color:${p.pinned ? 'var(--green)' : 'var(--muted)'}">
+              ${p.pinned ? '★ Pinned' : '☆ Pin'}
+            </button>
           </div>
         </div>
         <div class="dash-proj-body">
@@ -2143,6 +2148,7 @@ function togglePin(projId) {
   p.pinned = !p.pinned;
   saveProjects();
   renderHomeTab();
+  renderDashProjectCards();
 }
 
 function addProject() {
