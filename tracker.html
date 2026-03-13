@@ -703,6 +703,20 @@
       border-radius: 6px;
       padding: 1rem 1.1rem;
     }
+    .proj-home-card.pinned {
+      border-top: 2px solid var(--green-dim);
+    }
+    .pin-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 0.88rem;
+      line-height: 1;
+      padding: 0.15rem 0.25rem;
+      border-radius: 3px;
+      transition: color 0.15s;
+    }
+    .pin-btn:hover { color: var(--green) !important; }
     .proj-home-card-header {
       display: flex;
       justify-content: space-between;
@@ -1489,11 +1503,20 @@ function renderHomeTab() {
   const pHold     = (statusCounts['On Hold'] / statusTotal * 100).toFixed(1);
   const pRisk     = (statusCounts['At Risk'] / statusTotal * 100).toFixed(1);
 
-  // ── Per-project cards (most recent 6) ──
-  const recentProjects = projectsList.slice(-6).reverse();
+  // ── Per-project cards: pinned first, then 6 most-recent non-pinned ──
+  const pinnedProjects    = projectsList.filter(p => p.pinned).slice().reverse();
+  const recentNotPinned   = projectsList.filter(p => !p.pinned).slice(-6).reverse();
+  const displayProjects   = [...pinnedProjects, ...recentNotPinned];
+  const hiddenNonPinned   = Math.max(0, projectsList.filter(p => !p.pinned).length - recentNotPinned.length);
+
+  const titleDetail = pinnedProjects.length > 0 && recentNotPinned.length > 0
+    ? `${pinnedProjects.length} pinned · ${recentNotPinned.length} most recent`
+    : pinnedProjects.length > 0 ? `${pinnedProjects.length} pinned`
+    : `${recentNotPinned.length} most recent`;
+
   const projectCards = projectsList.length === 0
     ? `<div class="home-empty">No projects yet. Go to Project Dashboard to create one.</div>`
-    : recentProjects.map(p => {
+    : displayProjects.map(p => {
         const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
         const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
         const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
@@ -1501,6 +1524,19 @@ function renderHomeTab() {
         const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
         const varTxt    = bid ? (variance >= 0 ? `$${fmt(Math.abs(variance))} under` : `$${fmt(Math.abs(variance))} over`) : '—';
         const barColor  = !bid ? 'var(--muted)' : actual / bid >= 1 ? 'var(--red)' : actual / bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
+
+        // Projected total cost at completion (quantity-based EAC):
+        // actual unit cost so far × total bid quantity
+        const bidQtyTotal    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0), 0);
+        const actualQtyTotal = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
+        const projCost  = (actualQtyTotal > 0 && bidQtyTotal > 0)
+          ? (actual / actualQtyTotal) * bidQtyTotal
+          : bid;
+        const projStyle = bid > 0
+          ? (projCost > bid ? 'color:var(--red)' : projCost > bid * 0.85 ? 'color:var(--yellow)' : 'color:var(--green)')
+          : 'color:var(--muted)';
+        const projTxt = bid > 0 ? '$' + fmt(projCost) : '—';
+
         const name      = p['project-name'] || 'Untitled Project';
         const meta      = [p['job-number'], p['client'], p['status']].filter(Boolean).map(v => esc(v)).join(' · ');
         const endDate   = p['end-date'];
@@ -1515,7 +1551,7 @@ function renderHomeTab() {
         const atRisk = (p.bidItems||[]).filter(b => b.status === 'At Risk').length;
         const onHold = (p.bidItems||[]).filter(b => b.status === 'On Hold').length;
         return `
-          <div class="proj-home-card">
+          <div class="proj-home-card${p.pinned ? ' pinned' : ''}">
             <div class="proj-home-card-header">
               <div style="min-width:0">
                 <div class="proj-home-name">${esc(name)}</div>
@@ -1524,6 +1560,11 @@ function renderHomeTab() {
               <div style="text-align:right;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:0.2rem">
                 ${endChip}
                 ${p['pm'] ? `<span style="font-size:0.68rem;color:var(--muted)">PM: ${esc(p['pm'])}</span>` : ''}
+                <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
+                  title="${p.pinned ? 'Unpin project' : 'Pin to Home'}"
+                  style="color:${p.pinned ? 'var(--green)' : 'var(--muted)'}">
+                  ${p.pinned ? '★ Pinned' : '☆ Pin'}
+                </button>
               </div>
             </div>
             <div class="proj-home-bar-wrap">
@@ -1540,6 +1581,10 @@ function renderHomeTab() {
               <div class="proj-home-fin-item">
                 <span class="proj-home-fin-label">Actual</span>
                 <span class="proj-home-fin-val" style="color:var(--yellow)">$${fmt(actual)}</span>
+              </div>
+              <div class="proj-home-fin-item">
+                <span class="proj-home-fin-label">Projected</span>
+                <span class="proj-home-fin-val" style="${projStyle}">${projTxt}</span>
               </div>
               <div class="proj-home-fin-item">
                 <span class="proj-home-fin-label">Variance</span>
@@ -1603,9 +1648,9 @@ function renderHomeTab() {
       </div>
     </div>
 
-    <p class="home-section-title">Projects <span style="font-size:0.7rem;color:var(--muted);font-weight:400">(${recentProjects.length} most recent)</span></p>
+    <p class="home-section-title">Projects <span style="font-size:0.7rem;color:var(--muted);font-weight:400">(${titleDetail})</span></p>
     <div class="proj-home-grid">${projectCards}</div>
-    ${projectsList.length > 6 ? `<p style="text-align:center;margin:0.5rem 0 1.5rem;font-size:0.8rem;color:var(--muted)">${projectsList.length - 6} more — <a href="#" style="color:var(--green)" onclick="document.querySelector('.tab-btn[data-tab=info]').click();return false;">View all in Project Dashboard</a></p>` : ''}
+    ${hiddenNonPinned > 0 ? `<p style="text-align:center;margin:0.5rem 0 1.5rem;font-size:0.8rem;color:var(--muted)">${hiddenNonPinned} more — <a href="#" style="color:var(--green)" onclick="document.querySelector('.tab-btn[data-tab=info]').click();return false;">View all in Project Dashboard</a></p>` : ''}
 
     ${alertRows.length > 0 ? `
     <p class="home-section-title">Items Needing Attention</p>
@@ -2091,6 +2136,13 @@ function nextPONumber() {
   });
   const next = nums.length ? Math.max(...nums) + 1 : 1;
   return 'PO-' + String(next).padStart(4, '0');
+}
+
+function togglePin(projId) {
+  const p = getProj(projId); if (!p) return;
+  p.pinned = !p.pinned;
+  saveProjects();
+  renderHomeTab();
 }
 
 function addProject() {
