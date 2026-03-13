@@ -845,7 +845,8 @@
 
 <!-- Save-error banner (hidden by default) -->
 <div id="save-error-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#b91c1c;color:#fff;font-size:0.85rem;padding:0.5rem 1rem;text-align:center;">
-  ⚠ Changes could not be saved to the server. Your edits are kept locally — please refresh or log in again to re-sync.
+  <span id="save-error-msg">⚠ Changes could not be saved to the server. Your edits are kept locally.</span>
+  &nbsp;<a href="index.html" style="color:#fff;font-weight:600;text-decoration:underline;" id="save-error-login-link" hidden>Log in again</a>
   <button onclick="document.getElementById('save-error-banner').style.display='none'" style="margin-left:1rem;background:rgba(255,255,255,0.2);border:none;color:#fff;cursor:pointer;padding:0.15rem 0.5rem;border-radius:3px;">Dismiss</button>
 </div>
 
@@ -899,15 +900,15 @@
       <thead>
         <tr class="group-row">
           <th class="g-base"  colspan="1"></th>
-          <th class="g-id"    colspan="3">Identification</th>
+          <th class="g-id"    colspan="4">Identification</th>
           <th class="g-code"  colspan="2">Cost Code</th>
           <th class="g-labor" colspan="4">Labor</th>
           <th class="g-equip" colspan="4">Equipment</th>
           <th class="g-mat"   colspan="6">Material</th>
-          <th class="g-sum"   colspan="2">Summary</th>
+          <th class="g-sum"   colspan="1">Summary</th>
         </tr>
         <tr class="totals-row">
-          <th colspan="8" class="dft-label">Totals</th>
+          <th colspan="9" class="dft-label">Totals</th>
           <th id="dft-lhrs"  class="dft-val">—</th>
           <th id="dft-lcost" class="dft-val dft-green">—</th>
           <th colspan="2"    class="dft-empty"></th>
@@ -916,11 +917,11 @@
           <th colspan="5"    class="dft-empty"></th>
           <th id="dft-mat"   class="dft-val dft-yellow">—</th>
           <th id="dft-total" class="dft-val dft-green">—</th>
-          <th                class="dft-empty"></th>
         </tr>
         <tr class="col-row" id="daily-col-row">
           <th></th>
           <th>Date <button class="cfb" data-f="date">▼</button></th>
+          <th>Quantity <button class="cfb" data-f="quantity">▼</button></th>
           <th>Field Type <button class="cfb" data-f="field_type">▼</button></th>
           <th>Employee <button class="cfb" data-f="employee">▼</button></th>
           <th>Cost Code <button class="cfb" data-f="cost_code">▼</button></th>
@@ -940,7 +941,6 @@
           <th>Unit Cost <button class="cfb" data-f="unit_cost">▼</button></th>
           <th class="calc-hdr">Material Cost</th>
           <th class="calc-hdr">Total Cost</th>
-          <th>Quantity <button class="cfb" data-f="quantity">▼</button></th>
         </tr>
       </thead>
       <tbody id="daily-fs-tbody"></tbody>
@@ -1359,13 +1359,23 @@ async function apiGet(key) {
   }
 }
 
-function _showSaveError() {
+function _showSaveError(isAuth) {
   const banner = document.getElementById('save-error-banner');
-  if (banner) banner.style.display = '';
+  if (!banner) return;
+  const msg   = document.getElementById('save-error-msg');
+  const link  = document.getElementById('save-error-login-link');
+  if (isAuth) {
+    if (msg)  msg.textContent  = '⚠ Your session has expired — changes could not be saved. Your edits are kept locally.';
+    if (link) link.hidden = false;
+  } else {
+    if (msg)  msg.textContent  = '⚠ Changes could not be saved to the server. Your edits are kept locally.';
+    if (link) link.hidden = true;
+  }
+  banner.style.display = '';
 }
 
 function apiPut(key, value) {
-  // Fire-and-forget — UI is already updated in memory
+  // Fire-and-forget — UI is already updated in memory and in localStorage
   fetch(`${API_BASE}/data/${key}`, {
     method: 'PUT',
     headers: {
@@ -1376,12 +1386,12 @@ function apiPut(key, value) {
   }).then(r => {
     if (!r.ok) {
       console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
-      _showSaveError();
-      if (r.status === 401) logout();
+      // Show banner but do NOT auto-logout — data is safe in localStorage
+      _showSaveError(r.status === 401);
     }
   }).catch(err => {
     console.warn(`[DB] PUT ${key} failed:`, err.message);
-    _showSaveError();
+    _showSaveError(false);
   });
 }
 
@@ -4130,6 +4140,7 @@ function renderDailyTable(projId) {
         ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${ai})">&#10697;</button>` : ''}
       </td>
       <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="date"           value="${esc(row.date)}"></td>
+      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', ai, 'field_type',      projId)}</td>
       <td>${makeSelect(employeeOpts,  row.employee,         'daily', ai, 'employee',         projId)}</td>
       <td>${makeSelect(ccOpts,        row.cost_code,        'daily', ai, 'cost_code',        projId)}</td>
@@ -4149,7 +4160,6 @@ function renderDailyTable(projId) {
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
       <td class="calc" id="daily-mat-${projId}-${ai}">$${fmt(parseFloat(row.material_cost)||0)}</td>
       <td class="calc">$${fmt(c.total_cost)}</td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
     `;
     tbody.appendChild(tr);
   });
@@ -5159,6 +5169,24 @@ document.addEventListener('input', e => {
     }
     saveProjects();
     renderDailyCalcCells(projId, i);
+  }
+});
+
+// 'change' fires on blur for number/text inputs — backstop for the 'input' listener
+// Ensures the value is persisted even if an 'input' event was somehow missed
+document.addEventListener('change', e => {
+  const el = e.target;
+  if (el.dataset.tab !== 'daily' || !el.dataset.f) return;
+  const i = parseInt(el.dataset.i);
+  if (isNaN(i)) return;
+  const p = getProj(el.dataset.proj); if (!p) return;
+  if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
+  // Only save if the value differs from what is already in memory
+  // (avoids a redundant API call when 'input' already handled it)
+  if (p.dailyRows[i][el.dataset.f] !== el.value) {
+    p.dailyRows[i][el.dataset.f] = el.value;
+    saveProjects();
+    renderDailyCalcCells(el.dataset.proj, i);
   }
 });
 
