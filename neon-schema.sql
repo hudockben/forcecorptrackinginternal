@@ -24,8 +24,8 @@ ON CONFLICT (key) DO NOTHING;
 -- ─────────────────────────────────────────────────
 -- NORMALIZED TABLES  (optional / future use)
 -- These mirror schema.sql but in PostgreSQL syntax.
--- The app currently uses the app_data key-value table
--- above; these are here for reporting / analytics.
+-- The app currently uses the app_data key-value table above.
+-- These tables are here for reporting / analytics.
 -- ─────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS cost_items (
@@ -101,3 +101,15 @@ ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS num_laborers         NUMERIC
 
 CREATE INDEX IF NOT EXISTS idx_dt_company_project ON daily_tracking(company_code, project_id);
 CREATE INDEX IF NOT EXISTS idx_dt_row_id          ON daily_tracking(row_id);
+
+CREATE TABLE IF NOT EXISTS company_board (
+    id           SERIAL PRIMARY KEY,
+    company_code TEXT          NOT NULL,
+    message      TEXT          NOT NULL,
+    author_user  TEXT          NOT NULL,
+    author_name  TEXT          NOT NULL DEFAULT '',
+    completed    BOOLEAN       NOT NULL DEFAULT FALSE,
+    created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_board_company ON company_board(company_code, created_at DESC);
