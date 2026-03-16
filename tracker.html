@@ -4802,9 +4802,11 @@ function exportDailySummaryPDF(dateStr) {
         const rawCc = cc === '(No Code)'     ? '' : cc;
         const rawSc = sc === '(No Sub Code)' ? '' : sc;
 
-        // Running totals for this project / sub code up to today
+        // Running totals for this project / sub code up to and including today.
+        // r.date must be non-empty — matches renderProductionRateView which excludes '(No Date)' rows.
         const allSub = (p.dailyRows || []).filter(r =>
-          (r.cost_code || '') === rawCc && (r.sub_code || '') === rawSc && r.date <= dateStr);
+          (r.cost_code || '') === rawCc && (r.sub_code || '') === rawSc &&
+          r.date && r.date <= dateStr);
         let cumQty = 0, cumCost = 0, cumLbr = 0, cumEq = 0;
         const cumDates = new Set();
         allSub.forEach(r => {
@@ -4813,7 +4815,7 @@ function exportDailySummaryPDF(dateStr) {
           cumCost += c.total_cost;
           cumLbr  += parseFloat(r.labor_hours) || 0;
           cumEq   += parseFloat(r.equip_hours) || 0;
-          if (r.date) cumDates.add(r.date);
+          cumDates.add(r.date);
         });
         const cumDays = cumDates.size;
 
@@ -4836,12 +4838,21 @@ function exportDailySummaryPDF(dateStr) {
         const unit    = bidItem ? (bidItem.unit || '') : '';
         const pctComp = bidQty > 0 ? (cumQty / bidQty) * 100 : null;
 
+        // Projected UC: when work is at/over bid qty there is no remaining work to extrapolate —
+        // project equals actual running UC. Only extrapolate when work is still in progress.
         let projUC = 0;
-        if (bidQty > 0 && cumQty > 0) {
-          projUC = (cumCost + Math.max(bidQty - cumQty, 0) * runUC) / bidQty;
+        if (cumQty > 0) {
+          if (bidQty > 0 && cumQty < bidQty) {
+            const rem = bidQty - cumQty;
+            projUC = (cumCost + rem * runUC) / bidQty;
+          } else {
+            projUC = runUC; // complete or no bid — actual rate is the projection
+          }
         }
 
-        const behindCost = histUC > 0 && projUC > histUC * 1.02;
+        // Use runUC (cost per produced unit) for behind-pace — projUC can be distorted
+        // when bid qty and tracking qty are in different units.
+        const behindCost = histUC > 0 && runUC > histUC * 1.02;
         const behindMU   = histMU > 0 && runMU  < histMU  * 0.95;
         const behind     = behindCost || behindMU;
 
@@ -4855,8 +4866,8 @@ function exportDailySummaryPDF(dateStr) {
           suggestions.push(`Improve equip utilization — MU ${fmt(runMU,2)} vs ${fmt(histMU,2)} hist (${p2}% below)`);
         }
         if (behindCost) {
-          const p2 = ((projUC - histUC) / histUC * 100).toFixed(1);
-          suggestions.push(`Reduce unit cost — ${p2}% above avg ($${fmt(projUC)} proj vs $${fmt(histUC)} hist)`);
+          const p2 = ((runUC - histUC) / histUC * 100).toFixed(1);
+          suggestions.push(`Reduce unit cost — ${p2}% above avg ($${fmt(runUC)} running vs $${fmt(histUC)} hist)`);
         }
 
         tableRows.push({ cc, sc, unit, day, cumQty, runUC, projUC, histUC, pctComp, bidQty, behind, suggestions });
@@ -4973,7 +4984,8 @@ function buildPaceSuggestions({ projUC, histUC, runUC, runMU, histMU,
     avgLbrPD, histLbrPD, avgEqPD, histEqPD,
     pctComp, bidQty, cumQty, cumDays }) {
   if (cumQty === 0) return '';
-  const behindCost = histUC > 0 && projUC > histUC * 1.02;
+  // Use runUC (cost per produced unit) — projUC can be distorted when bid/tracking units differ
+  const behindCost = histUC > 0 && runUC > histUC * 1.02;
   const behindMU   = histMU > 0 && runMU  < histMU  * 0.95;
   if (!behindCost && !behindMU) return '';
 
@@ -5000,14 +5012,14 @@ function buildPaceSuggestions({ projUC, histUC, runUC, runMU, histMU,
     });
   }
 
-  // Cost overrun projection
-  if (histUC > 0 && projUC > histUC * 1.02) {
-    const pct    = ((projUC - histUC) / histUC * 100).toFixed(1);
-    const overrun = (projUC - histUC) * bidQty;
+  // Cost overrun — compare running UC (cost per produced unit) to historical
+  if (behindCost) {
+    const pct     = ((runUC - histUC) / histUC * 100).toFixed(1);
+    const overrun = bidQty > 0 ? (runUC - histUC) * bidQty : 0;
     tips.push({
       title: `Reduce Unit Cost (${pct}% above avg)`,
-      detail: `Projected $${fmt(projUC)} vs. $${fmt(histUC)} past avg.`
-            + (bidQty > 0 ? ` Estimated overrun ~$${fmt(overrun)} over the full ${fmt(bidQty)}-unit job.` : ''),
+      detail: `Running $${fmt(runUC)} vs. $${fmt(histUC)} past avg.`
+            + (overrun > 0 ? ` Estimated overrun ~$${fmt(overrun)} over the full ${fmt(bidQty)}-unit job.` : ''),
     });
   }
 
@@ -5160,9 +5172,12 @@ function renderProductionRateView(projId) {
         const runMU    = cumEq   > 0  ? cumQty  / cumEq           : 0;
 
         let projUC = 0;
-        if (bidQty > 0 && cumQty > 0) {
-          const rem = Math.max(bidQty - cumQty, 0);
-          projUC = (cumCost + rem * runUC) / bidQty;
+        if (cumQty > 0) {
+          if (bidQty > 0 && cumQty < bidQty) {
+            projUC = (cumCost + (bidQty - cumQty) * runUC) / bidQty;
+          } else {
+            projUC = runUC; // at/over completion — actual rate is the projection
+          }
         }
 
         // ── Colour logic ──────────────────────────────────────────────────
@@ -5213,8 +5228,7 @@ function renderProductionRateView(projId) {
 
       // ── Pace suggestions (uses final cumulative values from loop above) ──
       const finalRunUC   = cumQty > 0 ? cumCost / cumQty : 0;
-      const finalProjUC  = (bidQty > 0 && cumQty > 0)
-        ? (cumCost + Math.max(bidQty - cumQty, 0) * finalRunUC) / bidQty : 0;
+      const finalProjUC  = finalRunUC; // projUC is already set correctly in loop above — mirror it
       const finalRunMU   = cumEq   > 0 ? cumQty / cumEq   : 0;
       const finalPctComp = bidQty  > 0 ? (cumQty / bidQty) * 100 : null;
       const avgLbrPD     = cumDays > 0 ? cumLbr / cumDays : 0;
