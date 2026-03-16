@@ -161,13 +161,13 @@
     .proj-card:hover { border-color: #3a3a50; }
 
     .proj-card-header {
-      display: flex; align-items: center; gap: 1rem;
+      display: flex; align-items: center; gap: 0.65rem;
       padding: 0.9rem 1.25rem; cursor: pointer;
-      transition: background 0.15s;
+      transition: background 0.15s; flex-wrap: wrap;
     }
     .proj-card-header:hover { background: var(--surface2); }
 
-    .proj-card-title { flex: 1; min-width: 0; }
+    .proj-card-title { flex: 1; min-width: 10rem; }
     .proj-card-name { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-bottom: 0.2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .proj-card-meta { font-size: 0.72rem; color: var(--muted); }
 
