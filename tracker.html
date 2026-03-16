@@ -3430,9 +3430,13 @@ document.getElementById('supplier-root').addEventListener('input', e => {
   const field = el.dataset.supField;
   if (isNaN(idx) || !field || !lists.suppliers[idx]) return;
   lists.suppliers[idx][field] = field === 'state' ? el.value.toUpperCase() : el.value;
-  if (field === 'website') renderSupplierTab();
   saveLists();
   projectsList.forEach(p => renderDailyTable(p.id));
+});
+
+document.getElementById('supplier-root').addEventListener('change', e => {
+  const el = e.target;
+  if (el.dataset.supField === 'website') renderSupplierTab();
 });
 
 // Build <option> tags for a simple string list
