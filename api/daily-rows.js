@@ -32,11 +32,21 @@ function parseFloatOrZero(v) {
   return isNaN(f) ? 0 : f;
 }
 
+// The Neon HTTP driver returns DATE columns as JavaScript Date objects, not strings.
+// String(dateObj) gives locale-dependent text like "Thu Apr 24 2025 ..." which
+// <input type="date"> cannot parse.  toISOString() always gives YYYY-MM-DDTHH:mm:ss.sssZ.
+function _isoDate(v) {
+  if (!v) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const s = String(v);
+  return s.length >= 10 ? s.slice(0, 10) : s;  // handles 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:...'
+}
+
 function dbRowToFrontend(r) {
   const row = {
     id:              r.row_id,
     _projectId:      r.project_id,
-    date:            r.date ? String(r.date).slice(0, 10) : '',
+    date:            _isoDate(r.date),
     field_type:      r.field_type      || '',
     employee:        r.employee        || '',
     cost_code:       r.cost_code       || '',
