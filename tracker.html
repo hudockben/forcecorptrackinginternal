@@ -2825,12 +2825,14 @@ function projectCardHTML(p) {
 
 function renderProjectsTab() {
   const root = document.getElementById('proj-root'); if (!root) return;
-  const q = projSearch.toLowerCase();
-  const filtered = q
-    ? projectsList.filter(p =>
-        (p['project-name']||'').toLowerCase().includes(q) ||
-        (p['job-number']||'').toLowerCase().includes(q)   ||
-        (p['client']||'').toLowerCase().includes(q))
+  const terms = projSearch.toLowerCase().split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
+  const filtered = terms.length
+    ? projectsList.filter(p => {
+        const name   = (p['project-name']||'').toLowerCase();
+        const job    = (p['job-number']||'').toLowerCase();
+        const client = (p['client']||'').toLowerCase();
+        return terms.some(t => name.includes(t) || job.includes(t) || client.includes(t));
+      })
     : projectsList;
 
   // Pagination
@@ -2845,7 +2847,7 @@ function renderProjectsTab() {
     root.innerHTML = `
       <div class="proj-wrap">
         <div class="proj-toolbar">
-          <input class="proj-search" type="text" placeholder="Search by project name, job number, or client…"
+          <input class="proj-search" type="text" placeholder="Search by name, job #, or client — separate multiple terms with commas"
             oninput="projSearch=this.value;projPage=0;renderProjectsTab()">
           ${perm.canDeleteProject ? `<button class="btn btn-green" onclick="addProject()">+ Add Project</button>` : ''}
         </div>
@@ -2869,8 +2871,8 @@ function renderProjectsTab() {
 
   cardsEl.innerHTML = filtered.length
     ? paginationHTML + pageItems.map(p => projectCardHTML(p)).join('') + paginationHTML
-    : `<div class="proj-no-results">${projSearch
-        ? 'No projects match your search.'
+    : `<div class="proj-no-results">${terms.length
+        ? 'No projects match your search terms.'
         : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`;
 
   // Populate bid tables, daily tables, and PO sections after DOM is built
