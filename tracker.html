@@ -1477,7 +1477,7 @@ function _drPutNow(rowId, row) {
   fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body: JSON.stringify({ row })
+    body: JSON.stringify({ row, projectId: row._projectId || null })
   }).then(r => { if (!r.ok) console.warn('[daily-rows] PUT failed:', r.status); })
     .catch(err => console.warn('[daily-rows] PUT error:', err.message));
 }
@@ -4800,6 +4800,7 @@ function addDailyRow(projId) {
   const p = getProj(projId); if (!p) return;
   if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
   const row = defaultDailyRow();
+  row._projectId = projId;
   p.dailyRows.push(row);
   drPost(projId, row);
   renderDailyTable(projId);

@@ -125,37 +125,82 @@ module.exports = async (req, res) => {
       return res.json({ ok: true });
     }
 
-    // ── PUT — update a single row (full row replacement) ──────────────────
+    // ── PUT — upsert a single row (insert if missing, update if exists) ──────
     if (req.method === 'PUT') {
       const { id } = req.query;
       if (!id) return res.status(400).json({ error: 'id query param required' });
 
-      const { row } = req.body;
+      const { row, projectId } = req.body;
       if (!row) return res.status(400).json({ error: 'row required in body' });
 
-      await sql`
-        UPDATE daily_tracking SET
-          date            = ${row.date || null},
-          field_type      = ${row.field_type || null},
-          employee        = ${row.employee || null},
-          cost_code       = ${row.cost_code || null},
-          sub_code        = ${row.sub_code || null},
-          job_class       = ${row.job_class || null},
-          rate            = ${parseFloatOrNull(row.rate)},
-          labor_hours     = ${parseFloatOrNull(row.labor_hours)},
-          equipment       = ${row.equipment || null},
-          equip_unit_cost = ${parseFloatOrNull(row.equip_unit_cost)},
-          equip_hours     = ${parseFloatOrNull(row.equip_hours)},
-          material        = ${row.material || null},
-          supplier        = ${row.supplier || null},
-          po_num          = ${row.po_num || null},
-          units_purchased = ${parseFloatOrNull(row.units_purchased)},
-          unit_cost       = ${parseFloatOrNull(row.unit_cost)},
-          material_cost   = ${parseFloatOrNull(row.material_cost)},
-          quantity        = ${parseFloatOrNull(row.quantity)},
-          updated_at      = NOW()
-        WHERE row_id = ${id} AND company_code = ${companyCode}
-      `;
+      if (projectId) {
+        // Upsert: if the original POST failed we still save the row on first edit
+        await sql`
+          INSERT INTO daily_tracking (
+            row_id, project_id, company_code,
+            date, field_type, employee, cost_code, sub_code, job_class,
+            rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+            material, supplier, po_num, units_purchased, unit_cost,
+            material_cost, quantity, updated_at
+          ) VALUES (
+            ${id}, ${projectId}, ${companyCode},
+            ${row.date || null}, ${row.field_type || null}, ${row.employee || null},
+            ${row.cost_code || null}, ${row.sub_code || null}, ${row.job_class || null},
+            ${parseFloatOrNull(row.rate)}, ${parseFloatOrNull(row.labor_hours)},
+            ${row.equipment || null}, ${parseFloatOrNull(row.equip_unit_cost)},
+            ${parseFloatOrNull(row.equip_hours)}, ${row.material || null},
+            ${row.supplier || null}, ${row.po_num || null},
+            ${parseFloatOrNull(row.units_purchased)}, ${parseFloatOrNull(row.unit_cost)},
+            ${parseFloatOrNull(row.material_cost)}, ${parseFloatOrNull(row.quantity)},
+            NOW()
+          )
+          ON CONFLICT (row_id) DO UPDATE SET
+            date            = EXCLUDED.date,
+            field_type      = EXCLUDED.field_type,
+            employee        = EXCLUDED.employee,
+            cost_code       = EXCLUDED.cost_code,
+            sub_code        = EXCLUDED.sub_code,
+            job_class       = EXCLUDED.job_class,
+            rate            = EXCLUDED.rate,
+            labor_hours     = EXCLUDED.labor_hours,
+            equipment       = EXCLUDED.equipment,
+            equip_unit_cost = EXCLUDED.equip_unit_cost,
+            equip_hours     = EXCLUDED.equip_hours,
+            material        = EXCLUDED.material,
+            supplier        = EXCLUDED.supplier,
+            po_num          = EXCLUDED.po_num,
+            units_purchased = EXCLUDED.units_purchased,
+            unit_cost       = EXCLUDED.unit_cost,
+            material_cost   = EXCLUDED.material_cost,
+            quantity        = EXCLUDED.quantity,
+            updated_at      = NOW()
+          WHERE daily_tracking.company_code = ${companyCode}
+        `;
+      } else {
+        await sql`
+          UPDATE daily_tracking SET
+            date            = ${row.date || null},
+            field_type      = ${row.field_type || null},
+            employee        = ${row.employee || null},
+            cost_code       = ${row.cost_code || null},
+            sub_code        = ${row.sub_code || null},
+            job_class       = ${row.job_class || null},
+            rate            = ${parseFloatOrNull(row.rate)},
+            labor_hours     = ${parseFloatOrNull(row.labor_hours)},
+            equipment       = ${row.equipment || null},
+            equip_unit_cost = ${parseFloatOrNull(row.equip_unit_cost)},
+            equip_hours     = ${parseFloatOrNull(row.equip_hours)},
+            material        = ${row.material || null},
+            supplier        = ${row.supplier || null},
+            po_num          = ${row.po_num || null},
+            units_purchased = ${parseFloatOrNull(row.units_purchased)},
+            unit_cost       = ${parseFloatOrNull(row.unit_cost)},
+            material_cost   = ${parseFloatOrNull(row.material_cost)},
+            quantity        = ${parseFloatOrNull(row.quantity)},
+            updated_at      = NOW()
+          WHERE row_id = ${id} AND company_code = ${companyCode}
+        `;
+      }
       return res.json({ ok: true });
     }
 
