@@ -2501,21 +2501,24 @@ async function loadProjects() {
     // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
     await _loadAndMigrateDailyRows();
 
-    // ── Recovery: if DB still returned nothing, attempt to pull rows from the
-    //    legacy fct_projects blob which was never deleted and may still carry
-    //    embedded dailyRows from before the per-row DB migration ran successfully.
-    if (projectsList.every(p => p.dailyRows.length === 0)) {
+    // ── Recovery: for any project still with no rows, check the legacy
+    //    fct_projects blob (never deleted, may still have embedded dailyRows
+    //    from before the per-row DB migration succeeded).  Per-project check
+    //    so projects already populated from the DB are not affected.
+    const emptyProjects = projectsList.filter(p => p.dailyRows.length === 0);
+    if (emptyProjects.length > 0) {
       try {
         const legacy = await apiGet('fct_projects');
         if (Array.isArray(legacy) && legacy.length) {
+          let found = false;
           legacy.forEach(old => {
             if (!Array.isArray(old.dailyRows) || !old.dailyRows.length) return;
-            const p = projectsList.find(proj => proj.id === old.id);
-            if (p) p.dailyRows = old.dailyRows;
+            const p = emptyProjects.find(proj => proj.id === old.id);
+            if (!p) return;
+            p.dailyRows = old.dailyRows;
+            found = true;
           });
-          // Re-run migration — now that schema columns exist this will push
-          // rows to the DB so future loads come from drGetAll instead.
-          await _loadAndMigrateDailyRows();
+          if (found) await _loadAndMigrateDailyRows();
         }
       } catch (e) {
         console.warn('[recovery] fct_projects fallback failed:', e.message);
@@ -2596,12 +2599,13 @@ async function _loadAndMigrateDailyRows() {
   }
 
   // Step 2 — load all rows from DB and distribute into p.dailyRows.
-  // Only replace in-memory rows when the DB actually returns data; if it
-  // returns empty (e.g. schema columns just added, rows not yet migrated),
-  // keep whatever embedded rows survived from the blobs as a fallback.
+  // Only clear a project's rows if the DB actually returned rows for it —
+  // projects absent from the DB keep whatever in-memory rows they have
+  // (from migration step 1 fallback or the legacy recovery path above).
   const dbRows = await drGetAll();
   if (dbRows.length > 0) {
-    projectsList.forEach(p => { p.dailyRows = []; });
+    const projectsInDb = new Set(dbRows.map(r => r._projectId));
+    projectsList.forEach(p => { if (projectsInDb.has(p.id)) p.dailyRows = []; });
     const projMap = Object.fromEntries(projectsList.map(p => [p.id, p]));
     dbRows.forEach(row => {
       const proj = projMap[row._projectId];
