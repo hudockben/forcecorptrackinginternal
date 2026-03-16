@@ -2655,10 +2655,11 @@ function projectCardHTML(p) {
   const name   = p['project-name'] || 'Untitled Project';
   const meta   = [p['job-number'], p['client']].filter(Boolean).join(' · ');
   const status = p['status'] || '';
-  const totalBid = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
+  const totalBid      = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
   // Sum ALL daily rows so PO-inserted rows (no cost code) are included in the badge
-  const totalActual = (p.dailyRows||[]).reduce((s,r)=>s+calcDaily(r).total_cost,0);
-  const diff = totalBid - totalActual;
+  const totalActual   = (p.dailyRows||[]).reduce((s,r)=>s+calcDaily(r).total_cost,0);
+  const contractValue = parseFloat(p['contract-value']) || 0;
+  const diff          = totalBid - totalActual;
   const uniqueDates = new Set((p.dailyRows||[]).map(r => r.date).filter(Boolean));
 
   const makeOpt = (vals, sel) => vals.map(v => `<option value="${v}" ${sel===v?'selected':''}>${v||'— select —'}</option>`).join('');
@@ -2671,9 +2672,10 @@ function projectCardHTML(p) {
     </div>
     <div class="proj-card-badges">
       <span class="proj-badge ${statusBadgeClass(status)}" id="pcb-${p.id}">${esc(status)}</span>
+      ${contractValue ? `<span class="proj-badge badge-awarded">Contract $${fmt(contractValue,0)}</span>` : ''}
       ${totalBid ? `<span class="proj-badge badge-default">Bid $${fmt(totalBid,0)}</span>` : ''}
-      ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
-      ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff)+' under':'$'+fmt(Math.abs(diff))+' over'}</span>` : ''}
+      ${totalActual ? `<span class="proj-badge ${(!totalBid||diff>=0)?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
+      ${contractValue && totalActual ? (()=>{ const profit=contractValue-totalActual; const pct=(profit/contractValue*100).toFixed(1); return `<span class="proj-badge ${profit>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${profit>=0?'$'+fmt(profit,0)+' profit':'$'+fmt(Math.abs(profit),0)+' loss'} (${pct}%)</span>`; })() : (totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff,0)+' under bid':'$'+fmt(Math.abs(diff),0)+' over bid'}</span>` : '')}
     </div>
     ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#1a3a2a;color:#4ade80;border:1px solid #4ade80;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>` : ''}
     <button class="btn btn-green" style="font-size:0.75rem;padding:0.25rem 0.7rem;" onclick="event.stopPropagation();openDailyView('${p.id}')">Daily Tracking &#8594;</button>
@@ -2707,6 +2709,9 @@ function projectCardHTML(p) {
           <select onchange="updateProjectField('${p.id}','contract-type',this.value)">
             ${makeOpt(['','Lump Sum','Unit Price','Cost Plus','Time & Material','GMP'], p['contract-type']||'')}
           </select></div>
+        <div class="info-field"><label>Contract Value ($)</label>
+          <input type="number" value="${esc(p['contract-value']||'')}" placeholder="e.g. 1250000" step="0.01" min="0"
+            oninput="updateProjectField('${p.id}','contract-value',this.value)"></div>
       </div>
     </div>
 
