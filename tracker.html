@@ -4683,7 +4683,7 @@ function exportCostCSV() {
 
 const defaultDailyRow = () => ({
   id: Date.now() + Math.random(),
-  date: '', field_type: '', employee: '',
+  date: new Date().toISOString().slice(0, 10), field_type: '', employee: '',
   cost_code: '', sub_code: '',
   job_class: '', rate: '', labor_hours: '',
   equipment: '', equip_unit_cost: '', equip_hours: '',

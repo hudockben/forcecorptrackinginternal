@@ -14,6 +14,11 @@ function verifyToken(req) {
   }
 }
 
+// Falls back to today when date is missing (schema: date DATE NOT NULL)
+function dateOrToday(v) {
+  return (v && String(v).trim()) || new Date().toISOString().slice(0, 10);
+}
+
 function parseFloatOrNull(v) {
   if (v === '' || v === null || v === undefined) return null;
   const f = parseFloat(v);
@@ -69,7 +74,7 @@ async function insertRows(sql, projectId, companyCode, rows) {
         equip_total_override, total_cost_override, num_laborers
       ) VALUES (
         ${String(r.id)}, ${projectId}, ${companyCode},
-        ${r.date || null}, ${r.field_type || null}, ${r.employee || null},
+        ${dateOrToday(r.date)}, ${r.field_type || null}, ${r.employee || null},
         ${r.cost_code || null}, ${r.sub_code || null}, ${r.job_class || null},
         ${parseFloatOrZero(r.rate)}, ${parseFloatOrZero(r.labor_hours)},
         ${r.equipment || null}, ${parseFloatOrZero(r.equip_unit_cost)},
@@ -151,7 +156,7 @@ module.exports = async (req, res) => {
             material_cost, quantity, updated_at
           ) VALUES (
             ${id}, ${projectId}, ${companyCode},
-            ${row.date || null}, ${row.field_type || null}, ${row.employee || null},
+            ${dateOrToday(row.date)}, ${row.field_type || null}, ${row.employee || null},
             ${row.cost_code || null}, ${row.sub_code || null}, ${row.job_class || null},
             ${parseFloatOrZero(row.rate)}, ${parseFloatOrZero(row.labor_hours)},
             ${row.equipment || null}, ${parseFloatOrZero(row.equip_unit_cost)},
@@ -186,7 +191,7 @@ module.exports = async (req, res) => {
       } else {
         await sql`
           UPDATE daily_tracking SET
-            date            = ${row.date || null},
+            date            = ${dateOrToday(row.date)},
             field_type      = ${row.field_type || null},
             employee        = ${row.employee || null},
             cost_code       = ${row.cost_code || null},
