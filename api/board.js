@@ -47,7 +47,7 @@ module.exports = async (req, res) => {
       if (!message || !message.trim()) return res.status(400).json({ error: 'message required' });
 
       const authorUser = payload.username || '';
-      const authorName = payload.name || payload.username || '';
+      const authorName = payload.username || '';
 
       const [row] = await sql`
         INSERT INTO company_board (company_code, message, author_user, author_name)
