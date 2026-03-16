@@ -4737,25 +4737,67 @@ function closeProductionRateView() {
 }
 
 /* ── Daily Summary Report ─────────────────────────────────────────── */
+let _dsrSelected = 'all'; // currently selected project value
+
+function _dsrRenderList() {
+  const search = (document.getElementById('dsr-proj-search')?.value || '').toLowerCase();
+  const terms  = search.split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
+  const list   = document.getElementById('dsr-proj-list');
+  if (!list) return;
+
+  const allItem = { val: 'all', label: 'All Projects' };
+  const projItems = projectsList.map((p, i) => ({
+    val: String(i),
+    label: p['project-name'] || p['job-number'] || 'Untitled Project',
+    sub: [p['job-number'], p['client']].filter(Boolean).join(' · ')
+  }));
+  const items = [allItem, ...projItems];
+
+  const filtered = terms.length
+    ? items.filter(it =>
+        terms.some(t =>
+          it.label.toLowerCase().includes(t) ||
+          (it.sub || '').toLowerCase().includes(t)))
+    : items;
+
+  list.innerHTML = filtered.map(it => {
+    const active = it.val === _dsrSelected;
+    return `<div onclick="_dsrSelect('${it.val}')"
+      style="padding:0.42rem 0.65rem;cursor:pointer;font-size:0.85rem;
+             background:${active ? 'rgba(34,197,94,0.15)' : 'transparent'};
+             color:${active ? 'var(--green)' : 'var(--text)'};
+             border-left:2px solid ${active ? 'var(--green)' : 'transparent'};"
+      onmouseover="this.style.background='${active ? 'rgba(34,197,94,0.2)' : 'var(--surface2)'}'"
+      onmouseout="this.style.background='${active ? 'rgba(34,197,94,0.15)' : 'transparent'}'">
+      ${esc(it.label)}
+      ${it.sub ? `<span style="font-size:0.72rem;color:var(--muted);margin-left:0.4rem">${esc(it.sub)}</span>` : ''}
+    </div>`;
+  }).join('') || `<div style="padding:0.5rem 0.65rem;font-size:0.82rem;color:var(--muted)">No matching projects</div>`;
+}
+
+function _dsrSelect(val) {
+  _dsrSelected = val;
+  _dsrRenderList();
+}
+
 function openDailySummaryReport() {
+  _dsrSelected = 'all';
   const today = new Date().toISOString().slice(0, 10);
-  const projOptions = projectsList.map((p, i) =>
-    `<option value="${i}">${esc(p['project-name'] || 'Untitled Project')}</option>`
-  ).join('');
 
   const overlay = document.createElement('div');
   overlay.id = 'daily-summary-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;';
   overlay.innerHTML = `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;width:360px;">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;width:380px;">
       <div style="font-size:0.82rem;font-weight:700;color:var(--text);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:1.1rem;">Daily Summary Report</div>
 
       <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.35rem;">Project</div>
-      <select id="dsr-project"
-        style="width:100%;padding:0.5rem 0.65rem;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.875rem;outline:none;margin-bottom:0.9rem;">
-        <option value="all">All Projects</option>
-        ${projOptions}
-      </select>
+      <input id="dsr-proj-search" type="text" placeholder="&#128269; Search by name, job #, or client…"
+        oninput="_dsrRenderList()"
+        autocomplete="off"
+        style="width:100%;padding:0.45rem 0.65rem;background:var(--bg);border:1px solid var(--border);border-radius:4px 4px 0 0;color:var(--text);font-size:0.85rem;font-family:inherit;outline:none;">
+      <div id="dsr-proj-list"
+        style="width:100%;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;background:var(--bg);margin-bottom:0.9rem;"></div>
 
       <div style="display:flex;gap:0.75rem;margin-bottom:1.1rem;">
         <div style="flex:1">
@@ -4773,19 +4815,19 @@ function openDailySummaryReport() {
       <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
         <button class="btn btn-ghost" onclick="document.getElementById('daily-summary-overlay').remove()">Cancel</button>
         <button class="btn btn-green" onclick="
-          const pv = document.getElementById('dsr-project').value;
-          const s  = document.getElementById('dsr-start').value;
-          const e  = document.getElementById('dsr-end').value;
+          const s = document.getElementById('dsr-start').value;
+          const e = document.getElementById('dsr-end').value;
           if (!s || !e) { alert('Please select both dates.'); return; }
           if (s > e)    { alert('Start date must be on or before end date.'); return; }
           document.getElementById('daily-summary-overlay').remove();
-          exportDailySummaryPDF(pv, s, e);
+          exportDailySummaryPDF(_dsrSelected, s, e);
         ">Generate PDF</button>
       </div>
     </div>`;
   overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
-  setTimeout(() => document.getElementById('dsr-project').focus(), 50);
+  _dsrRenderList();
+  setTimeout(() => document.getElementById('dsr-proj-search').focus(), 50);
 }
 
 function exportDailySummaryPDF(projVal, startDate, endDate) {
