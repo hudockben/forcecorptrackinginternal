@@ -2092,9 +2092,21 @@ function _countFilledQty(data) {
 }
 
 async function loadProjects() {
-  let saved = await apiGet('fct_projects');
+  // ── New architecture: per-project keys + a lightweight index ──
+  const index = await apiGet('fct_projects_index');
 
-  // Read local backup saved by saveProjects()
+  if (Array.isArray(index) && index.length) {
+    // Parallel-fetch every project; much faster than one giant blob
+    const results = await Promise.all(index.map(id => apiGet('fct_project_' + id)));
+    projectsList = results.filter(p => p && typeof p === 'object');
+    projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
+    // Keep localStorage in sync as offline fallback
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
+    return;
+  }
+
+  // ── Migration: first load after upgrade from single-blob storage ──
+  let saved = await apiGet('fct_projects');
   let localSaved = null;
   try {
     const raw = JSON.parse(localStorage.getItem(PROJECTS_KEY));
@@ -2102,27 +2114,41 @@ async function loadProjects() {
   } catch {}
 
   if (!saved || (Array.isArray(saved) && saved.length === 0)) {
-    // DB empty — fall back to localStorage (first-run migration or API failure)
-    if (localSaved) { saved = localSaved; apiPut('fct_projects', saved); }
+    if (localSaved) { saved = localSaved; }
   } else if (localSaved && _countFilledQty(localSaved) > _countFilledQty(saved)) {
-    // localStorage has more quantity data than the DB, meaning a previous save
-    // likely failed. Use local version and re-push to the DB.
     saved = localSaved;
-    apiPut('fct_projects', saved);
   }
 
   if (Array.isArray(saved) && saved.length) {
     projectsList = saved;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
+    // Migrate to per-project storage (fire-and-forget)
+    projectsList.forEach(p => apiPut('fct_project_' + p.id, p));
+    apiPut('fct_projects_index', projectsList.map(p => p.id));
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
     return;
   }
+
   projectsList = [];
 }
 
-function saveProjects() {
-  // Keep localStorage in sync as a local backup in case the API call fails
+// Save a single project — the normal path for any single-project mutation
+function saveProject(id) {
+  const p = getProj(id); if (!p) return;
   try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
-  apiPut('fct_projects', projectsList);
+  apiPut('fct_project_' + id, p);
+}
+
+// Save the ordered list of project IDs — called when projects are added or removed
+function saveProjectIndex() {
+  apiPut('fct_projects_index', projectsList.map(p => p.id));
+}
+
+// Save every project — only used for bulk operations that touch all projects
+function saveProjects() {
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
+  projectsList.forEach(p => apiPut('fct_project_' + p.id, p));
+  saveProjectIndex();
 }
 
 function getProj(id) { return projectsList.find(p => p.id === id); }
@@ -2149,7 +2175,7 @@ function nextPONumber() {
 function togglePin(projId) {
   const p = getProj(projId); if (!p) return;
   p.pinned = !p.pinned;
-  saveProjects();
+  saveProject(projId);
   renderHomeTab();
   renderDashProjectCards();
   renderProjectsTab();
@@ -2165,7 +2191,8 @@ function addProject() {
     prevailing_wage: false, assigned_employees: [], assigned_equipment: []
   };
   projectsList.push(p);
-  saveProjects();
+  saveProject(p.id);
+  saveProjectIndex();
   projPage = 0;
   renderProjectsTab();
   const card = document.getElementById('pcard-' + p.id);
@@ -2227,7 +2254,7 @@ function deleteProject(id) {
     if (confirm.disabled) return;
     close();
     projectsList = projectsList.filter(pr => pr.id !== id);
-    saveProjects();
+    saveProjectIndex();
     renderProjectsTab();
   });
 
@@ -2319,7 +2346,7 @@ function toggleBidSection(titleEl) {
 function updateProjectField(id, field, value) {
   const p = getProj(id); if (!p) return;
   p[field] = value;
-  saveProjects();
+  saveProject(id);
   // When a project is marked Complete, auto-complete matching cost rows
   if (field === 'status' && value === 'Complete') {
     const projCodes = new Set((p.bidItems || []).map(b => (b.cost_code || '') + '||' + (b.sub_code || '')));
@@ -2348,7 +2375,7 @@ function toggleProjectAssignment(projId, field, name, checked) {
   if (!Array.isArray(p[field])) p[field] = [];
   if (checked) { if (!p[field].includes(name)) p[field].push(name); }
   else { p[field] = p[field].filter(n => n !== name); }
-  saveProjects();
+  saveProject(projId);
   // Re-render daily table if open so dropdown options update immediately
   const dailyTbody = document.getElementById('daily-tbody-' + projId);
   if (dailyTbody) renderDailyTable(projId);
@@ -2363,14 +2390,14 @@ function statusBadgeClass(s) {
 function addBidItem(projId) {
   const p = getProj(projId); if (!p) return;
   p.bidItems.push({ id: uid(), cost_code:'New Cost Code', sub_code:'', quantity:'', unit_cost:'' });
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
 function removeBidItem(projId, itemId) {
   const p = getProj(projId); if (!p) return;
   p.bidItems = p.bidItems.filter(b => b.id !== itemId);
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
@@ -2378,7 +2405,7 @@ function updateBidItem(projId, itemId, field, value) {
   const p = getProj(projId); if (!p) return;
   const item = p.bidItems.find(b => b.id === itemId); if (!item) return;
   item[field] = value;
-  saveProjects();
+  saveProject(projId);
   // Refresh just this row's calculated cells + footer totals
   const qty = parseFloat(item.quantity) || 0;
   const uc  = parseFloat(item.unit_cost) || 0;
@@ -2482,14 +2509,14 @@ function renderBidFooter(projId, opts = {}) {
 function removeBidGroup(projId, costCode) {
   const p = getProj(projId); if (!p) return;
   p.bidItems = (p.bidItems || []).filter(b => b.cost_code !== costCode);
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
 function updateBidGroupCode(projId, oldCode, newCode) {
   const p = getProj(projId); if (!p) return;
   (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) b.cost_code = newCode; });
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
@@ -2500,7 +2527,7 @@ function addBidSubCode(projId, costCode) {
   const newItem = { id: uid(), cost_code: costCode, sub_code: '', quantity: '', unit_cost: '' };
   if (lastIdx != null) p.bidItems.splice(lastIdx + 1, 0, newItem);
   else p.bidItems.push(newItem);
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
@@ -2961,7 +2988,7 @@ function deletePO(id) {
     const proj = getProj(oldProj);
     if (proj) {
       proj.dailyRows = proj.dailyRows.filter(r => r.id !== po.po_row_id);
-      saveProjects();
+      saveProject(oldProj);
       renderDailyTable(oldProj);
     }
   }
@@ -2985,7 +3012,7 @@ function _syncPORowField(po, field) {
     const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
     r.material_cost = String(qty * uc + tax);
   }
-  saveProjects();
+  saveProject(po.project_id);
   renderDailyTable(po.project_id);
 }
 
@@ -3316,7 +3343,7 @@ document.getElementById('po-root').addEventListener('change', e => {
       const oldP = getProj(oldProj);
       if (oldP) {
         oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== po.po_row_id);
-        saveProjects();
+        saveProject(oldProj);
         renderDailyTable(oldProj);
       }
     }
@@ -3352,7 +3379,7 @@ document.getElementById('po-root').addEventListener('change', e => {
         };
         newP.dailyRows.push(row);
         po.po_row_id = row.id;
-        saveProjects();
+        saveProject(po.project_id);
         renderDailyTable(po.project_id);
       }
     }
@@ -4280,7 +4307,7 @@ function copyDailyRow(projId, i) {
   const src = (p.dailyRows || [])[i]; if (!src) return;
   const copy = Object.assign({}, src, { id: Date.now() + Math.random(), material_cost: '' });
   p.dailyRows.splice(i + 1, 0, copy);
-  saveProjects();
+  saveProject(projId);
   renderDailyTable(projId);
 }
 
@@ -4288,7 +4315,7 @@ function addDailyRow(projId) {
   const p = getProj(projId); if (!p) return;
   if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
   p.dailyRows.push(defaultDailyRow());
-  saveProjects();
+  saveProject(projId);
   renderDailyTable(projId);
 }
 
@@ -5746,7 +5773,7 @@ document.addEventListener('input', e => {
         }
       }
     }
-    saveProjects();
+    saveProject(projId);
     renderDailyCalcCells(projId, i);
   }
 });
@@ -5764,7 +5791,7 @@ document.addEventListener('change', e => {
   // (avoids a redundant API call when 'input' already handled it)
   if (p.dailyRows[i][el.dataset.f] !== el.value) {
     p.dailyRows[i][el.dataset.f] = el.value;
-    saveProjects();
+    saveProject(el.dataset.proj);
     renderDailyCalcCells(el.dataset.proj, i);
   }
 });
@@ -5840,7 +5867,7 @@ document.addEventListener('click', e => {
     } else if (tab === 'daily') {
       const p = getProj(projId); if (!p) return;
       p.dailyRows.splice(i, 1);
-      saveProjects();
+      saveProject(projId);
       renderDailyTable(projId);
     } else if (tab === 'po') {
       deletePO(btn.dataset.poId);
@@ -6224,7 +6251,7 @@ function commitImportCSV() {
     p.dailyRows.push(...rows);
     totalImported += rows.length;
   });
-  saveProjects();
+  Object.keys(byProj).forEach(id => saveProject(id));
   projectsList.forEach(p => renderDailyTable(p.id));
   renderCostTable();
   clearImportPreview();
