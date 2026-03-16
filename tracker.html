@@ -777,12 +777,13 @@
     }
     .proj-home-financials {
       display: flex;
-      gap: 0;
+      gap: 0.5rem;
       border-top: 1px solid var(--border);
       padding-top: 0.6rem;
     }
     .proj-home-fin-item {
       flex: 1;
+      min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 0.15rem;
@@ -794,10 +795,13 @@
       color: var(--muted);
     }
     .proj-home-fin-val {
-      font-size: 0.78rem;
+      font-size: 0.75rem;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
       color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .proj-home-alerts {
       display: flex;
