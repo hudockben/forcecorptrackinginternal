@@ -1386,12 +1386,23 @@ function logout() {
   for (let i = 0; i < myName.length; i++) h = (h * 31 + myName.charCodeAt(i)) & 0xffff;
   const myColor   = palette[h % palette.length];
 
+  // Silent PUT — never triggers the save-error banner
+  async function presencePut(data) {
+    try {
+      await fetch(`${API_BASE}/data/${PRESENCE_KEY}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+        body: JSON.stringify({ value: data })
+      });
+    } catch { /* ignore — presence is best-effort */ }
+  }
+
   // Read → merge self → write back
   async function heartbeat() {
     let data = {};
     try { data = (await apiGet(PRESENCE_KEY)) || {}; } catch { data = {}; }
     data[myId] = { username: myUser, initials: myInit, color: myColor, ts: Date.now() };
-    apiPut(PRESENCE_KEY, data);
+    await presencePut(data);
     renderOnline(data);
   }
 
