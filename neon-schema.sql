@@ -86,3 +86,18 @@ CREATE TABLE IF NOT EXISTS equipment_list (
     unit_cost  NUMERIC(14,4) NOT NULL DEFAULT 0,
     sort_order INTEGER       NOT NULL DEFAULT 0
 );
+
+-- ─────────────────────────────────────────────────
+-- DAILY TRACKING — per-row columns added for
+-- scalable storage (rows live here, not in JSON blobs)
+-- Safe to run on an existing DB: all use IF NOT EXISTS / DEFAULT.
+-- ─────────────────────────────────────────────────
+ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS row_id               TEXT UNIQUE;
+ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS project_id           TEXT NOT NULL DEFAULT '';
+ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS company_code         TEXT NOT NULL DEFAULT '';
+ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS equip_total_override NUMERIC(14,4);
+ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS total_cost_override  NUMERIC(14,4);
+ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS num_laborers         NUMERIC(14,4);
+
+CREATE INDEX IF NOT EXISTS idx_dt_company_project ON daily_tracking(company_code, project_id);
+CREATE INDEX IF NOT EXISTS idx_dt_row_id          ON daily_tracking(row_id);

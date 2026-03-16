@@ -1362,6 +1362,103 @@ function logout() {
 })();
 
 /* ═══════════════════════════════════════════
+   DAILY-ROWS API CLIENT
+   Scalable per-row storage in daily_tracking table.
+   All calls are fire-and-forget (except drGetAll + drPostBulk).
+   Errors are logged but never trigger the save-error banner.
+═══════════════════════════════════════════ */
+
+/** Fetch ALL daily rows for this company (returns array, never throws). */
+async function drGetAll() {
+  try {
+    const r = await fetch(`${API_BASE}/daily-rows`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (r.status === 401) { logout(); return []; }
+    if (!r.ok) { console.warn('[daily-rows] GET failed:', r.status); return []; }
+    const { rows } = await r.json();
+    return Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    console.warn('[daily-rows] GET error:', err.message);
+    return [];
+  }
+}
+
+/** Insert one row into the DB (fire-and-forget). */
+function drPost(projectId, row) {
+  fetch(`${API_BASE}/daily-rows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body: JSON.stringify({ projectId, row })
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] POST failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] POST error:', err.message));
+}
+
+/** Insert multiple rows at once (awaitable — used for migration and CSV import). */
+async function drPostBulk(projectId, rows) {
+  const r = await fetch(`${API_BASE}/daily-rows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body: JSON.stringify({ projectId, rows })
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+}
+
+// Debounce map: rowId → timer handle
+const _drSaveTimers = {};
+
+/** Debounced PUT — coalesces rapid keystrokes into one DB write per row. */
+function drPutDebounced(rowId, row) {
+  clearTimeout(_drSaveTimers[rowId]);
+  _drSaveTimers[rowId] = setTimeout(() => {
+    _drPutNow(rowId, row);
+  }, 800);
+}
+
+/** Immediate PUT — flushes any pending debounce and writes right away. */
+function drPutNow(rowId, row) {
+  clearTimeout(_drSaveTimers[rowId]);
+  delete _drSaveTimers[rowId];
+  _drPutNow(rowId, row);
+}
+
+function _drPutNow(rowId, row) {
+  fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body: JSON.stringify({ row })
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] PUT failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] PUT error:', err.message));
+}
+
+/** Delete one row by its JS id. */
+function drDelete(rowId) {
+  fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${fctToken}` }
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] DELETE error:', err.message));
+}
+
+/** Delete all rows for a project (called when deleting the project itself). */
+function drDeleteByProject(projectId) {
+  fetch(`${API_BASE}/daily-rows?projectId=${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${fctToken}` }
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by project failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] DELETE by project error:', err.message));
+}
+
+/** Delete all rows matching a cost code + sub code across all projects. */
+function drDeleteByCode(costCode, subCode) {
+  fetch(`${API_BASE}/daily-rows?costCode=${encodeURIComponent(costCode)}&subCode=${encodeURIComponent(subCode)}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${fctToken}` }
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by code failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] DELETE by code error:', err.message));
+}
+
+/* ═══════════════════════════════════════════
    WHO'S ONLINE — presence heartbeat
    Each user writes to shared key fct_presence every 30s.
    Users active within 2 min are shown as avatars in the header.
@@ -2244,12 +2341,14 @@ async function loadProjects() {
   const index = await apiGet('fct_projects_index');
 
   if (Array.isArray(index) && index.length) {
-    // Parallel-fetch every project; much faster than one giant blob
+    // Parallel-fetch every project blob; blobs no longer contain dailyRows
     const results = await Promise.all(index.map(id => apiGet('fct_project_' + id)));
     projectsList = results.filter(p => p && typeof p === 'object');
-    projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
-    // Keep localStorage in sync as offline fallback
-    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
+    projectsList.forEach(p => { p.dailyRows = []; });
+    // Load daily rows from DB (populates p.dailyRows in-memory; migrates any still-embedded rows)
+    await _loadAndMigrateDailyRows();
+    // Cache lean project metadata (no rows) in localStorage as offline fallback
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     return;
   }
 
@@ -2270,21 +2369,73 @@ async function loadProjects() {
   if (Array.isArray(saved) && saved.length) {
     projectsList = saved;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
-    // Migrate to per-project storage (fire-and-forget)
-    projectsList.forEach(p => apiPut('fct_project_' + p.id, p));
+    // Migrate to per-project blob storage; _loadAndMigrateDailyRows handles the rows
+    projectsList.forEach(p => {
+      const blob = _projBlob(p);
+      apiPut('fct_project_' + p.id, blob);
+    });
     apiPut('fct_projects_index', projectsList.map(p => p.id));
-    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
+    await _loadAndMigrateDailyRows();
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     return;
   }
 
   projectsList = [];
+  await _loadAndMigrateDailyRows();
 }
 
-// Save a single project — the normal path for any single-project mutation
+/**
+ * Returns the project object without its in-memory dailyRows array —
+ * this is what gets saved to the server blob and localStorage.
+ */
+function _projBlob(p) {
+  const { dailyRows: _dr, ...blob } = p;
+  return blob;
+}
+
+/**
+ * Loads all daily rows for this company from the DB and distributes them
+ * into each project's in-memory p.dailyRows array.
+ *
+ * One-time migration: if any project blob still has rows embedded (from
+ * before this upgrade), they are posted to the DB and the blob is
+ * re-saved without them.  ON CONFLICT DO NOTHING on the server means
+ * re-running is harmless.
+ */
+async function _loadAndMigrateDailyRows() {
+  // Step 1 — migrate any projects that still carry embedded rows
+  const toMigrate = projectsList.filter(p => Array.isArray(p.dailyRows) && p.dailyRows.length > 0);
+  for (const p of toMigrate) {
+    try {
+      await drPostBulk(p.id, p.dailyRows);
+      // Re-save the blob without the embedded rows
+      await fetch(`${API_BASE}/data/fct_project_${p.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+        body: JSON.stringify({ value: _projBlob(p) })
+      });
+      console.log(`[migrate] moved ${p.dailyRows.length} rows for project ${p.id} to DB`);
+    } catch (err) {
+      console.warn(`[migrate] project ${p.id} failed:`, err.message);
+      // Keep embedded rows in memory as fallback — they are still usable
+    }
+  }
+
+  // Step 2 — load all rows from DB and distribute into p.dailyRows
+  const dbRows = await drGetAll();
+  projectsList.forEach(p => { p.dailyRows = []; });
+  const projMap = Object.fromEntries(projectsList.map(p => [p.id, p]));
+  dbRows.forEach(row => {
+    const proj = projMap[row._projectId];
+    if (proj) proj.dailyRows.push(row);
+  });
+}
+
+// Save a single project blob (metadata only — dailyRows live in daily_tracking table)
 function saveProject(id) {
   const p = getProj(id); if (!p) return;
-  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
-  apiPut('fct_project_' + id, p);
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
+  apiPut('fct_project_' + id, _projBlob(p));
 }
 
 // Save the ordered list of project IDs — called when projects are added or removed
@@ -2292,10 +2443,10 @@ function saveProjectIndex() {
   apiPut('fct_projects_index', projectsList.map(p => p.id));
 }
 
-// Save every project — only used for bulk operations that touch all projects
+// Save every project blob — only used for bulk operations that touch all projects
 function saveProjects() {
-  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
-  projectsList.forEach(p => apiPut('fct_project_' + p.id, p));
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
+  projectsList.forEach(p => apiPut('fct_project_' + p.id, _projBlob(p)));
   saveProjectIndex();
 }
 
@@ -2401,6 +2552,7 @@ function deleteProject(id) {
   confirm.addEventListener('click', () => {
     if (confirm.disabled) return;
     close();
+    drDeleteByProject(id);
     projectsList = projectsList.filter(pr => pr.id !== id);
     saveProjectIndex();
     renderProjectsTab();
@@ -2471,7 +2623,7 @@ function deleteDailyRowsBySubCode(costCode, subCode) {
       if (!Array.isArray(p.dailyRows)) return;
       p.dailyRows = p.dailyRows.filter(r => !(r.cost_code === costCode && r.sub_code === subCode));
     });
-    saveProjects();
+    drDeleteByCode(costCode, subCode);
     projectsList.forEach(p => renderDailyTable(p.id));
     renderCostTable();
   });
@@ -3136,7 +3288,7 @@ function deletePO(id) {
     const proj = getProj(oldProj);
     if (proj) {
       proj.dailyRows = proj.dailyRows.filter(r => r.id !== po.po_row_id);
-      saveProject(oldProj);
+      drDelete(po.po_row_id);
       renderDailyTable(oldProj);
     }
   }
@@ -3160,7 +3312,7 @@ function _syncPORowField(po, field) {
     const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
     r.material_cost = String(qty * uc + tax);
   }
-  saveProject(po.project_id);
+  drPutNow(r.id, r);
   renderDailyTable(po.project_id);
 }
 
@@ -3491,7 +3643,7 @@ document.getElementById('po-root').addEventListener('change', e => {
       const oldP = getProj(oldProj);
       if (oldP) {
         oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== po.po_row_id);
-        saveProject(oldProj);
+        drDelete(po.po_row_id);
         renderDailyTable(oldProj);
       }
     }
@@ -3527,7 +3679,7 @@ document.getElementById('po-root').addEventListener('change', e => {
         };
         newP.dailyRows.push(row);
         po.po_row_id = row.id;
-        saveProject(po.project_id);
+        drPost(po.project_id, row);
         renderDailyTable(po.project_id);
       }
     }
@@ -4455,15 +4607,16 @@ function copyDailyRow(projId, i) {
   const src = (p.dailyRows || [])[i]; if (!src) return;
   const copy = Object.assign({}, src, { id: Date.now() + Math.random(), material_cost: '' });
   p.dailyRows.splice(i + 1, 0, copy);
-  saveProject(projId);
+  drPost(projId, copy);
   renderDailyTable(projId);
 }
 
 function addDailyRow(projId) {
   const p = getProj(projId); if (!p) return;
   if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
-  p.dailyRows.push(defaultDailyRow());
-  saveProject(projId);
+  const row = defaultDailyRow();
+  p.dailyRows.push(row);
+  drPost(projId, row);
   renderDailyTable(projId);
 }
 
@@ -5921,13 +6074,13 @@ document.addEventListener('input', e => {
         }
       }
     }
-    saveProject(projId);
+    // Debounced write to DB — coalesces rapid keystrokes into one request per row
+    drPutDebounced(p.dailyRows[i].id, p.dailyRows[i]);
     renderDailyCalcCells(projId, i);
   }
 });
 
-// 'change' fires on blur for number/text inputs — backstop for the 'input' listener
-// Ensures the value is persisted even if an 'input' event was somehow missed
+// 'change' fires on blur — flush any pending debounce and write immediately
 document.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset.tab !== 'daily' || !el.dataset.f) return;
@@ -5935,13 +6088,12 @@ document.addEventListener('change', e => {
   if (isNaN(i)) return;
   const p = getProj(el.dataset.proj); if (!p) return;
   if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
-  // Only save if the value differs from what is already in memory
-  // (avoids a redundant API call when 'input' already handled it)
   if (p.dailyRows[i][el.dataset.f] !== el.value) {
     p.dailyRows[i][el.dataset.f] = el.value;
-    saveProject(el.dataset.proj);
-    renderDailyCalcCells(el.dataset.proj, i);
   }
+  // Always flush on blur — cancels debounce and writes now
+  drPutNow(p.dailyRows[i].id, p.dailyRows[i]);
+  renderDailyCalcCells(el.dataset.proj, i);
 });
 
 function removeDelConfirm() {
@@ -6014,8 +6166,9 @@ document.addEventListener('click', e => {
       renderCostTable();
     } else if (tab === 'daily') {
       const p = getProj(projId); if (!p) return;
+      const deletedRow = p.dailyRows[i];
       p.dailyRows.splice(i, 1);
-      saveProject(projId);
+      if (deletedRow) drDelete(deletedRow.id);
       renderDailyTable(projId);
     } else if (tab === 'po') {
       deletePO(btn.dataset.poId);
@@ -6392,14 +6545,17 @@ function commitImportCSV() {
     byProj[projId].push(row);
   });
   let totalImported = 0;
+  const bulkPromises = [];
   Object.entries(byProj).forEach(([projId, rows]) => {
     const p = getProj(projId);
     if (!p) return;
     if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
     p.dailyRows.push(...rows);
     totalImported += rows.length;
+    bulkPromises.push(drPostBulk(projId, rows));
   });
-  Object.keys(byProj).forEach(id => saveProject(id));
+  // Persist rows to DB (fire-and-forget — UI is already updated in memory)
+  Promise.all(bulkPromises).catch(err => console.warn('[import] bulk post failed:', err.message));
   projectsList.forEach(p => renderDailyTable(p.id));
   renderCostTable();
   clearImportPreview();
