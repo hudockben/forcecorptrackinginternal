@@ -2495,10 +2495,12 @@ async function loadProjects() {
   const index = await apiGet('fct_projects_index');
 
   if (Array.isArray(index) && index.length) {
-    // Parallel-fetch every project blob; blobs no longer contain dailyRows
+    // Parallel-fetch every project blob; blobs may still carry embedded dailyRows
+    // if a previous DB migration attempt failed — leave them in place so
+    // _loadAndMigrateDailyRows can pick them up and push them to the DB.
     const results = await Promise.all(index.map(id => apiGet('fct_project_' + id)));
     projectsList = results.filter(p => p && typeof p === 'object');
-    projectsList.forEach(p => { p.dailyRows = []; });
+    projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
     // Load daily rows from DB (populates p.dailyRows in-memory; migrates any still-embedded rows)
     await _loadAndMigrateDailyRows();
     // Cache lean project metadata (no rows) in localStorage as offline fallback
@@ -2575,14 +2577,20 @@ async function _loadAndMigrateDailyRows() {
     }
   }
 
-  // Step 2 — load all rows from DB and distribute into p.dailyRows
+  // Step 2 — load all rows from DB and distribute into p.dailyRows.
+  // Only replace in-memory rows when the DB actually returns data; if it
+  // returns empty (e.g. schema columns just added, rows not yet migrated),
+  // keep whatever embedded rows survived from the blobs as a fallback.
   const dbRows = await drGetAll();
-  projectsList.forEach(p => { p.dailyRows = []; });
-  const projMap = Object.fromEntries(projectsList.map(p => [p.id, p]));
-  dbRows.forEach(row => {
-    const proj = projMap[row._projectId];
-    if (proj) proj.dailyRows.push(row);
-  });
+  if (dbRows.length > 0) {
+    projectsList.forEach(p => { p.dailyRows = []; });
+    const projMap = Object.fromEntries(projectsList.map(p => [p.id, p]));
+    dbRows.forEach(row => {
+      const proj = projMap[row._projectId];
+      if (proj) proj.dailyRows.push(row);
+    });
+  }
+  // else: keep embedded rows already in p.dailyRows (migration fallback)
 }
 
 // Save a single project blob (metadata only — dailyRows live in daily_tracking table)
