@@ -1505,32 +1505,19 @@ function renderHomeTab() {
   const pHold     = (statusCounts['On Hold'] / statusTotal * 100).toFixed(1);
   const pRisk     = (statusCounts['At Risk'] / statusTotal * 100).toFixed(1);
 
-  // ── Per-project cards: search-aware, pinned first ──
-  const homeTerms = homeSearch.toLowerCase().split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
-  const matchesHomeSearch = p => !homeTerms.length || homeTerms.some(t =>
-    (p['project-name']||'').toLowerCase().includes(t) ||
-    (p['job-number']||'').toLowerCase().includes(t)   ||
-    (p['client']||'').toLowerCase().includes(t));
+  // ── Per-project cards: pinned first, then 6 most-recent non-pinned ──
+  const pinnedProjects    = projectsList.filter(p => p.pinned).slice().reverse();
+  const recentNotPinned   = projectsList.filter(p => !p.pinned).slice(-6).reverse();
+  const displayProjects   = [...pinnedProjects, ...recentNotPinned];
+  const hiddenNonPinned   = Math.max(0, projectsList.filter(p => !p.pinned).length - recentNotPinned.length);
 
-  const pinnedProjects  = projectsList.filter(p => p.pinned && matchesHomeSearch(p)).slice().reverse();
-  const recentNotPinned = homeTerms.length
-    ? projectsList.filter(p => !p.pinned && matchesHomeSearch(p)).slice().reverse()
-    : projectsList.filter(p => !p.pinned).slice(-6).reverse();
-  const displayProjects = [...pinnedProjects, ...recentNotPinned];
-  const hiddenNonPinned = homeTerms.length ? 0
-    : Math.max(0, projectsList.filter(p => !p.pinned).length - recentNotPinned.length);
-
-  const titleDetail = homeTerms.length
-    ? `${displayProjects.length} result${displayProjects.length !== 1 ? 's' : ''}`
-    : pinnedProjects.length > 0 && recentNotPinned.length > 0
-      ? `${pinnedProjects.length} pinned · ${recentNotPinned.length} most recent`
-      : pinnedProjects.length > 0 ? `${pinnedProjects.length} pinned`
-      : `${recentNotPinned.length} most recent`;
+  const titleDetail = pinnedProjects.length > 0 && recentNotPinned.length > 0
+    ? `${pinnedProjects.length} pinned · ${recentNotPinned.length} most recent`
+    : pinnedProjects.length > 0 ? `${pinnedProjects.length} pinned`
+    : `${recentNotPinned.length} most recent`;
 
   const projectCards = projectsList.length === 0
     ? `<div class="home-empty">No projects yet. Go to Project Dashboard to create one.</div>`
-    : displayProjects.length === 0
-    ? `<div class="home-empty">No projects match your search.</div>`
     : displayProjects.map(p => {
         const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
         const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
@@ -1664,14 +1651,6 @@ function renderHomeTab() {
     </div>
 
     <p class="home-section-title">Projects <span style="font-size:0.7rem;color:var(--muted);font-weight:400">(${titleDetail})</span></p>
-    <div style="margin-bottom:0.75rem">
-      <input id="home-search-input" type="text"
-        value="${esc(homeSearch)}"
-        placeholder="&#128269; Search jobs — name, job #, or client (comma-separate multiple terms)"
-        oninput="_homeSearchFocused=true;homeSearch=this.value;renderHomeTab()"
-        style="width:100%;max-width:520px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:0.45rem 0.75rem;border-radius:5px;font-size:0.85rem;font-family:inherit;outline:none;transition:border-color 0.15s"
-        onfocus="this.style.borderColor='var(--green)';_homeSearchFocused=true" onblur="this.style.borderColor='var(--border)';_homeSearchFocused=false">
-    </div>
     <div class="proj-home-grid">${projectCards}</div>
     ${hiddenNonPinned > 0 ? `<p style="text-align:center;margin:0.5rem 0 1.5rem;font-size:0.8rem;color:var(--muted)">${hiddenNonPinned} more — <a href="#" style="color:var(--green)" onclick="document.querySelector('.tab-btn[data-tab=info]').click();return false;">View all in Project Dashboard</a></p>` : ''}
 
@@ -2087,11 +2066,6 @@ function renderProjectDashboard() {
     <div id="dash-proj-cards"></div>
   `;
   renderDashProjectCards();
-  // Restore focus to home search input after full re-render
-  if (_homeSearchFocused) {
-    const si = document.getElementById('home-search-input');
-    if (si) { si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
-  }
 }
 
 renderHeaderActions();
@@ -2107,8 +2081,6 @@ let projSearch   = '';
 let projPage     = 0;
 const PROJ_PAGE_SIZE = 10;
 let dashSearch   = '';
-let homeSearch   = '';
-let _homeSearchFocused = false;
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
