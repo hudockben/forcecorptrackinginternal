@@ -1441,8 +1441,16 @@ function drPost(projectId, row) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ projectId, row })
-  }).then(r => { if (!r.ok) console.warn('[daily-rows] POST failed:', r.status); })
-    .catch(err => console.warn('[daily-rows] POST error:', err.message));
+  }).then(r => {
+    if (!r.ok) {
+      console.warn('[daily-rows] POST failed:', r.status);
+      // Row was not saved — add it to pending so the next edit will upsert it
+      _drSavePending[String(row.id)] = row;
+    }
+  }).catch(err => {
+    console.warn('[daily-rows] POST error:', err.message);
+    _drSavePending[String(row.id)] = row;
+  });
 }
 
 /** Insert multiple rows at once (awaitable — used for migration and CSV import). */
@@ -1457,11 +1465,16 @@ async function drPostBulk(projectId, rows) {
 
 // Debounce map: rowId → timer handle
 const _drSaveTimers = {};
+// Pending map: rowId → latest row object (so beforeunload can flush them)
+const _drSavePending = {};
 
 /** Debounced PUT — coalesces rapid keystrokes into one DB write per row. */
 function drPutDebounced(rowId, row) {
   clearTimeout(_drSaveTimers[rowId]);
+  _drSavePending[rowId] = row;
   _drSaveTimers[rowId] = setTimeout(() => {
+    delete _drSavePending[rowId];
+    delete _drSaveTimers[rowId];
     _drPutNow(rowId, row);
   }, 800);
 }
@@ -1470,6 +1483,7 @@ function drPutDebounced(rowId, row) {
 function drPutNow(rowId, row) {
   clearTimeout(_drSaveTimers[rowId]);
   delete _drSaveTimers[rowId];
+  delete _drSavePending[rowId];
   _drPutNow(rowId, row);
 }
 
@@ -1478,9 +1492,39 @@ function _drPutNow(rowId, row) {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ row, projectId: row._projectId || null })
-  }).then(r => { if (!r.ok) console.warn('[daily-rows] PUT failed:', r.status); })
-    .catch(err => console.warn('[daily-rows] PUT error:', err.message));
+  }).then(r => {
+    if (!r.ok) {
+      console.warn('[daily-rows] PUT failed:', r.status);
+      _showSaveError(r.status === 401);
+    }
+  }).catch(err => {
+    console.warn('[daily-rows] PUT error:', err.message);
+    _showSaveError(false);
+  });
 }
+
+// Flush any pending debounced saves when the user navigates away or closes the tab.
+// Uses keepalive:true so the request survives page unload.
+function _drFlushPending() {
+  Object.entries(_drSavePending).forEach(([rowId, row]) => {
+    clearTimeout(_drSaveTimers[rowId]);
+    delete _drSaveTimers[rowId];
+    try {
+      fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+        body: JSON.stringify({ row, projectId: row._projectId || null }),
+        keepalive: true,
+      });
+    } catch (_) {}
+  });
+  // Clear after flushing
+  Object.keys(_drSavePending).forEach(k => delete _drSavePending[k]);
+}
+window.addEventListener('beforeunload', _drFlushPending);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _drFlushPending();
+});
 
 /** Delete one row by its JS id. */
 function drDelete(rowId) {
