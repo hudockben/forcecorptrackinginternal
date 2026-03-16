@@ -762,7 +762,7 @@
     }
     .proj-home-financials {
       display: flex;
-      gap: 0;
+      gap: 0.5rem;
       border-top: 1px solid var(--border);
       padding-top: 0.6rem;
     }
@@ -1526,12 +1526,16 @@ function renderHomeTab() {
         const barColor  = !bid ? 'var(--muted)' : actual / bid >= 1 ? 'var(--red)' : actual / bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
 
         // Projected total cost at completion (quantity-based EAC):
-        // actual unit cost so far × total bid quantity
+        // For completed projects, projected = actual (job is done).
+        // Otherwise: actual unit cost so far × total bid quantity.
+        const isComplete = (p['status'] || '').toLowerCase() === 'complete';
         const bidQtyTotal    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0), 0);
         const actualQtyTotal = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
-        const projCost  = (actualQtyTotal > 0 && bidQtyTotal > 0)
-          ? (actual / actualQtyTotal) * bidQtyTotal
-          : bid;
+        const projCost  = isComplete
+          ? actual
+          : (actualQtyTotal > 0 && bidQtyTotal > 0)
+            ? (actual / actualQtyTotal) * bidQtyTotal
+            : bid;
         const projStyle = bid > 0
           ? (projCost > bid ? 'color:var(--red)' : projCost > bid * 0.85 ? 'color:var(--yellow)' : 'color:var(--green)')
           : 'color:var(--muted)';
