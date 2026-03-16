@@ -4737,86 +4737,159 @@ function closeProductionRateView() {
 /* ── Daily Summary Report ─────────────────────────────────────────── */
 function openDailySummaryReport() {
   const today = new Date().toISOString().slice(0, 10);
+  const projOptions = projectsList.map((p, i) =>
+    `<option value="${i}">${esc(p['project-name'] || 'Untitled Project')}</option>`
+  ).join('');
+
   const overlay = document.createElement('div');
   overlay.id = 'daily-summary-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;';
   overlay.innerHTML = `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;width:300px;">
-      <div style="font-size:0.82rem;font-weight:700;color:var(--text);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:1rem;">Daily Summary Report</div>
-      <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.4rem;">Report date</div>
-      <input type="date" id="dsr-date" value="${today}"
-        style="width:100%;padding:0.5rem 0.65rem;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.875rem;outline:none;margin-bottom:1.1rem;">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;width:360px;">
+      <div style="font-size:0.82rem;font-weight:700;color:var(--text);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:1.1rem;">Daily Summary Report</div>
+
+      <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.35rem;">Project</div>
+      <select id="dsr-project"
+        style="width:100%;padding:0.5rem 0.65rem;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.875rem;outline:none;margin-bottom:0.9rem;">
+        <option value="all">All Projects</option>
+        ${projOptions}
+      </select>
+
+      <div style="display:flex;gap:0.75rem;margin-bottom:1.1rem;">
+        <div style="flex:1">
+          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.35rem;">Start Date</div>
+          <input type="date" id="dsr-start" value="${today}"
+            style="width:100%;padding:0.5rem 0.65rem;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.875rem;outline:none;">
+        </div>
+        <div style="flex:1">
+          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.35rem;">End Date</div>
+          <input type="date" id="dsr-end" value="${today}"
+            style="width:100%;padding:0.5rem 0.65rem;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.875rem;outline:none;">
+        </div>
+      </div>
+
       <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
         <button class="btn btn-ghost" onclick="document.getElementById('daily-summary-overlay').remove()">Cancel</button>
-        <button class="btn btn-green" onclick="exportDailySummaryPDF(document.getElementById('dsr-date').value);document.getElementById('daily-summary-overlay').remove();">Generate PDF</button>
+        <button class="btn btn-green" onclick="
+          const pv = document.getElementById('dsr-project').value;
+          const s  = document.getElementById('dsr-start').value;
+          const e  = document.getElementById('dsr-end').value;
+          if (!s || !e) { alert('Please select both dates.'); return; }
+          if (s > e)    { alert('Start date must be on or before end date.'); return; }
+          document.getElementById('daily-summary-overlay').remove();
+          exportDailySummaryPDF(pv, s, e);
+        ">Generate PDF</button>
       </div>
     </div>`;
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
-  setTimeout(() => document.getElementById('dsr-date').focus(), 50);
+  setTimeout(() => document.getElementById('dsr-project').focus(), 50);
 }
 
-function exportDailySummaryPDF(dateStr) {
-  if (!dateStr) return;
+function exportDailySummaryPDF(projVal, startDate, endDate) {
+  if (!startDate || !endDate) return;
   const histAgg  = buildDailyAgg();
   const user     = JSON.parse(localStorage.getItem('fct_user') || '{}');
   const userName = user.name || user.username || '';
-  const dateDisp = new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US',
-    { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const genTime  = new Date().toLocaleString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-  function money(v) { return (v > 0) ? '$' + fmt(v) : '—'; }
-  function pctStr(v) { return v !== null ? fmt(v, 1) + '%' : '—'; }
+  const fmtD = d => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const dateRangeDisp = startDate === endDate ? fmtD(startDate) : fmtD(startDate) + ' \u2013 ' + fmtD(endDate);
+
+  const targetProjects = projVal === 'all'
+    ? projectsList
+    : [projectsList[parseInt(projVal)]].filter(Boolean);
+
+  function money(v) { return v > 0 ? '$' + fmt(v) : '\u2014'; }
+  function pctStr(v) { return v !== null ? fmt(v, 1) + '%' : '\u2014'; }
+  function dval(v, decimals) { const n = parseFloat(v); return n > 0 ? fmt(n, decimals ?? 2) : '\u2014'; }
 
   let totalLbr = 0, totalEq = 0, totalCost = 0;
   const sections = [];
 
-  projectsList.forEach(p => {
-    const dayRows = (p.dailyRows || []).filter(r => r.date === dateStr);
-    if (dayRows.length === 0) return;
+  targetProjects.forEach(p => {
+    const allRows     = p.dailyRows || [];
+    const periodRows  = allRows.filter(r => r.date && r.date >= startDate && r.date <= endDate);
+    if (periodRows.length === 0) return;
 
-    // Group today's rows by cost_code → sub_code
-    const groups = {};
-    dayRows.forEach(row => {
+    // ── A. Daily tracking entries grouped by date ──────────────────────
+    const byDate = {};
+    periodRows.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
+
+    let trackLbr = 0, trackEq = 0, trackCost = 0;
+    const trackingRows = Object.keys(byDate).sort().map(d => {
+      const dateLabel = new Date(d + 'T12:00:00').toLocaleDateString('en-US',
+        { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+      let dayLbrCost = 0, dayEqCost = 0, dayMatCost = 0, dayTotal = 0, dayQty = 0, dayLbrHrs = 0, dayEqHrs = 0;
+      const entryRows = byDate[d].map(r => {
+        const c = calcDaily(r);
+        const qty = parseFloat(r.quantity) || 0;
+        const lh  = parseFloat(r.labor_hours) || 0;
+        const eh  = parseFloat(r.equip_hours) || 0;
+        const mc  = parseFloat(r.material_cost) || 0;
+        dayQty     += qty; dayLbrHrs += lh; dayEqHrs += eh;
+        dayLbrCost += c.labor_cost; dayEqCost += c.equip_total; dayMatCost += mc;
+        dayTotal   += c.total_cost;
+        return `<tr>
+          <td>${esc(r.employee||'\u2014')}</td>
+          <td>${esc(r.cost_code||'\u2014')}</td><td>${esc(r.sub_code||'\u2014')}</td>
+          <td>${esc(r.job_class||'\u2014')}</td>
+          <td>${dval(qty)}</td>
+          <td>${dval(lh,1)}</td><td>${c.labor_cost>0?'$'+fmt(c.labor_cost):'\u2014'}</td>
+          <td>${esc(r.equipment||'\u2014')}</td>
+          <td>${dval(eh,1)}</td><td>${c.equip_total>0?'$'+fmt(c.equip_total):'\u2014'}</td>
+          <td>${esc(r.material||'\u2014')}</td>
+          <td>${mc>0?'$'+fmt(mc):'\u2014'}</td>
+          <td class="tot">$${fmt(c.total_cost)}</td>
+        </tr>`;
+      }).join('');
+      trackLbr  += dayLbrHrs; trackEq += dayEqHrs; trackCost += dayTotal;
+      return `<tr class="date-hdr"><td colspan="13">${dateLabel}</td></tr>
+        ${entryRows}
+        <tr class="sub-tot">
+          <td colspan="4">Day Total</td>
+          <td>${dayQty>0?fmt(dayQty):'\u2014'}</td>
+          <td>${dayLbrHrs>0?fmt(dayLbrHrs,1):'\u2014'}</td><td>${dayLbrCost>0?'$'+fmt(dayLbrCost):'\u2014'}</td>
+          <td></td>
+          <td>${dayEqHrs>0?fmt(dayEqHrs,1):'\u2014'}</td><td>${dayEqCost>0?'$'+fmt(dayEqCost):'\u2014'}</td>
+          <td></td><td>${dayMatCost>0?'$'+fmt(dayMatCost):'\u2014'}</td>
+          <td class="tot">$${fmt(dayTotal)}</td>
+        </tr>`;
+    }).join('');
+
+    // ── B. Production summary by cost code / sub code ──────────────────
+    const periodGroups = {};
+    periodRows.forEach(row => {
       const cc = row.cost_code || '(No Code)';
       const sc = row.sub_code  || '(No Sub Code)';
-      if (!groups[cc]) groups[cc] = {};
-      if (!groups[cc][sc]) groups[cc][sc] = { qty: 0, labor_hours: 0, equip_hours: 0, total_cost: 0 };
+      if (!periodGroups[cc]) periodGroups[cc] = {};
+      if (!periodGroups[cc][sc]) periodGroups[cc][sc] = { qty:0, labor_hours:0, equip_hours:0, total_cost:0 };
       const c = calcDaily(row);
-      groups[cc][sc].qty         += parseFloat(row.quantity)    || 0;
-      groups[cc][sc].labor_hours += parseFloat(row.labor_hours) || 0;
-      groups[cc][sc].equip_hours += parseFloat(row.equip_hours) || 0;
-      groups[cc][sc].total_cost  += c.total_cost;
+      periodGroups[cc][sc].qty         += parseFloat(row.quantity)    || 0;
+      periodGroups[cc][sc].labor_hours += parseFloat(row.labor_hours) || 0;
+      periodGroups[cc][sc].equip_hours += parseFloat(row.equip_hours) || 0;
+      periodGroups[cc][sc].total_cost  += c.total_cost;
     });
 
-    let projLbr = 0, projEq = 0, projCost = 0;
-    const tableRows = [];
+    const prodTableRows = [];
+    Object.keys(periodGroups).sort().forEach(cc => {
+      Object.keys(periodGroups[cc]).sort().forEach(sc => {
+        const period = periodGroups[cc][sc];
+        const rawCc  = cc === '(No Code)'     ? '' : cc;
+        const rawSc  = sc === '(No Sub Code)' ? '' : sc;
 
-    Object.keys(groups).sort().forEach(cc => {
-      Object.keys(groups[cc]).sort().forEach(sc => {
-        const day    = groups[cc][sc];
-        projLbr     += day.labor_hours;
-        projEq      += day.equip_hours;
-        projCost    += day.total_cost;
-
-        const rawCc = cc === '(No Code)'     ? '' : cc;
-        const rawSc = sc === '(No Sub Code)' ? '' : sc;
-
-        // Running totals for this project / sub code up to and including today.
-        // r.date must be non-empty — matches renderProductionRateView which excludes '(No Date)' rows.
-        const allSub = (p.dailyRows || []).filter(r =>
-          (r.cost_code || '') === rawCc && (r.sub_code || '') === rawSc &&
-          r.date && r.date <= dateStr);
+        // Running totals up to endDate (all dated rows for this cc/sc)
         let cumQty = 0, cumCost = 0, cumLbr = 0, cumEq = 0;
         const cumDates = new Set();
-        allSub.forEach(r => {
-          const c = calcDaily(r);
-          cumQty  += parseFloat(r.quantity)    || 0;
-          cumCost += c.total_cost;
-          cumLbr  += parseFloat(r.labor_hours) || 0;
-          cumEq   += parseFloat(r.equip_hours) || 0;
-          cumDates.add(r.date);
-        });
+        allRows.filter(r => (r.cost_code||'') === rawCc && (r.sub_code||'') === rawSc && r.date && r.date <= endDate)
+          .forEach(r => {
+            const c = calcDaily(r);
+            cumQty  += parseFloat(r.quantity)    || 0;
+            cumCost += c.total_cost;
+            cumLbr  += parseFloat(r.labor_hours) || 0;
+            cumEq   += parseFloat(r.equip_hours) || 0;
+            cumDates.add(r.date);
+          });
         const cumDays = cumDates.size;
 
         const hist      = histAgg[rawCc + '||' + rawSc] || null;
@@ -4838,143 +4911,160 @@ function exportDailySummaryPDF(dateStr) {
         const unit    = bidItem ? (bidItem.unit || '') : '';
         const pctComp = bidQty > 0 ? (cumQty / bidQty) * 100 : null;
 
-        // Projected UC: when work is at/over bid qty there is no remaining work to extrapolate —
-        // project equals actual running UC. Only extrapolate when work is still in progress.
         let projUC = 0;
         if (cumQty > 0) {
-          if (bidQty > 0 && cumQty < bidQty) {
-            const rem = bidQty - cumQty;
-            projUC = (cumCost + rem * runUC) / bidQty;
-          } else {
-            projUC = runUC; // complete or no bid — actual rate is the projection
-          }
+          projUC = (bidQty > 0 && cumQty < bidQty)
+            ? (cumCost + (bidQty - cumQty) * runUC) / bidQty
+            : runUC;
         }
 
-        // Use runUC (cost per produced unit) for behind-pace — projUC can be distorted
-        // when bid qty and tracking qty are in different units.
         const behindCost = histUC > 0 && runUC > histUC * 1.02;
         const behindMU   = histMU > 0 && runMU > 0 && runMU < histMU * 0.95;
         const behind     = behindCost || behindMU;
 
-        const suggestions = [];
+        const suggs = [];
         if (histLbrPD > 0 && avgLbrPD < histLbrPD * 0.95) {
           const n = Math.max(1, Math.round((histLbrPD - avgLbrPD) / 8));
-          suggestions.push(`Add ${n} laborer${n > 1 ? 's' : ''}/day (avg ${fmt(avgLbrPD,1)} vs ${fmt(histLbrPD,1)} hist hrs/day)`);
+          suggs.push(`Add ${n} laborer${n>1?'s':''}/day (avg ${fmt(avgLbrPD,1)} vs ${fmt(histLbrPD,1)} hist)`);
         }
-        if (histMU > 0 && runMU < histMU * 0.95) {
-          const p2 = ((histMU - runMU) / histMU * 100).toFixed(0);
-          suggestions.push(`Improve equip utilization — MU ${fmt(runMU,2)} vs ${fmt(histMU,2)} hist (${p2}% below)`);
+        if (behindMU) {
+          suggs.push(`Improve equip util (MU ${fmt(runMU,2)} vs ${fmt(histMU,2)} hist)`);
         }
         if (behindCost) {
           const p2 = ((runUC - histUC) / histUC * 100).toFixed(1);
-          suggestions.push(`Reduce unit cost — ${p2}% above avg ($${fmt(runUC)} running vs $${fmt(histUC)} hist)`);
+          suggs.push(`Reduce unit cost — ${p2}% above hist ($${fmt(runUC)} vs $${fmt(histUC)})`);
         }
 
-        tableRows.push({ cc, sc, unit, day, cumQty, runUC, projUC, histUC, pctComp, bidQty, behind, suggestions });
+        prodTableRows.push({ cc, sc, unit, period, cumQty, bidQty, runUC, projUC, histUC, pctComp, behind, suggs });
       });
     });
 
-    totalLbr  += projLbr;
-    totalEq   += projEq;
-    totalCost += projCost;
-    sections.push({ name: p['project-name'] || 'Untitled', projLbr, projEq, projCost, tableRows });
+    totalLbr  += trackLbr;
+    totalEq   += trackEq;
+    totalCost += trackCost;
+    sections.push({ name: p['project-name'] || 'Untitled', trackLbr, trackEq, trackCost, trackingRows, prodTableRows });
   });
 
   if (sections.length === 0) {
-    alert('No production data found for ' + dateDisp + '.');
+    alert('No production data found for the selected range.');
     return;
   }
 
-  const behindCount = sections.filter(s => s.tableRows.some(r => r.behind)).length;
+  const behindCount = sections.filter(s => s.prodTableRows.some(r => r.behind)).length;
 
-  // ── Build per-project HTML ───────────────────────────────────────────
-  const projHtml = sections.map(({ name, projLbr, projEq, projCost, tableRows }) => {
-    const hasBehind = tableRows.some(r => r.behind);
-    const rowsHtml = tableRows.map(r => `
+  // ── Build per-project HTML ─────────────────────────────────────────────
+  const projHtml = sections.map(({ name, trackLbr, trackEq, trackCost, trackingRows, prodTableRows }) => {
+    const hasBehind = prodTableRows.some(r => r.behind);
+    const prodRows = prodTableRows.map(r => `
       <tr class="${r.behind ? 'row-behind' : ''}">
-        <td>${r.cc}</td><td>${r.sc}</td><td>${r.unit || '—'}</td>
-        <td>${r.day.qty > 0 ? fmt(r.day.qty) : '—'}</td>
+        <td>${esc(r.cc)}</td><td>${esc(r.sc)}</td><td>${r.unit||'\u2014'}</td>
+        <td>${r.period.qty>0?fmt(r.period.qty):'\u2014'}</td>
         <td>${fmt(r.cumQty)}</td>
-        <td>${r.bidQty > 0 ? fmt(r.bidQty) : '—'}</td>
+        <td>${r.bidQty>0?fmt(r.bidQty):'\u2014'}</td>
         <td>${pctStr(r.pctComp)}</td>
-        <td>${money(r.day.total_cost)}</td>
-        <td class="${r.histUC > 0 ? (r.runUC > r.histUC ? 'red' : 'grn') : ''}">${money(r.runUC)}</td>
-        <td class="${r.histUC > 0 && r.projUC > 0 ? (r.projUC > r.histUC * 1.02 ? 'red' : 'grn') : ''}">${money(r.projUC)}</td>
+        <td>${money(r.period.total_cost)}</td>
+        <td class="${r.histUC>0?(r.runUC>r.histUC?'red':'grn'):''}">${money(r.runUC)}</td>
+        <td class="${r.histUC>0&&r.projUC>0?(r.projUC>r.histUC*1.02?'red':'grn'):''}">${money(r.projUC)}</td>
         <td class="muted">${money(r.histUC)}</td>
-        <td>${r.day.labor_hours > 0 ? fmt(r.day.labor_hours, 1) : '—'}</td>
-        <td>${r.day.equip_hours  > 0 ? fmt(r.day.equip_hours,  1) : '—'}</td>
-        <td>${r.behind ? '<span class="b-behind">Behind</span>' : '<span class="b-ok">On Pace</span>'}</td>
+        <td>${r.period.labor_hours>0?fmt(r.period.labor_hours,1):'\u2014'}</td>
+        <td>${r.period.equip_hours>0?fmt(r.period.equip_hours,1):'\u2014'}</td>
+        <td>${r.behind?'<span class="b-behind">Behind</span>':'<span class="b-ok">On Pace</span>'}</td>
       </tr>
-      ${r.suggestions.length > 0 ? `<tr class="sug-row"><td colspan="14"><b>Suggestions:</b> ${r.suggestions.join(' &nbsp;&middot;&nbsp; ')}</td></tr>` : ''}`
+      ${r.suggs.length>0?`<tr class="sug-row"><td colspan="14"><b>Suggestions:</b> ${r.suggs.join(' &nbsp;&middot;&nbsp; ')}</td></tr>`:''}`
     ).join('');
+
     return `
-    <div class="proj-block${hasBehind ? ' has-behind' : ''}">
+    <div class="proj-block${hasBehind?' has-behind':''}">
       <div class="proj-hdr">
-        <span class="pname">${name}</span>
-        <span class="psumm">Labor: ${fmt(projLbr,1)} hrs &nbsp;|&nbsp; Equip: ${fmt(projEq,1)} hrs &nbsp;|&nbsp; Cost: ${money(projCost)}${hasBehind ? ' &nbsp;<span class="b-behind">⚠ BEHIND PACE</span>' : ''}</span>
+        <span class="pname">${esc(name)}</span>
+        <span class="psumm">Period: Labor ${fmt(trackLbr,1)} hrs &nbsp;|&nbsp; Equip ${fmt(trackEq,1)} hrs &nbsp;|&nbsp; Cost ${money(trackCost)}${hasBehind?' &nbsp;<span class="b-behind">\u26a0 BEHIND PACE</span>':''}</span>
       </div>
-      <table><thead><tr>
-        <th>Cost Code</th><th>Sub Code</th><th>Unit</th>
-        <th>Qty Today</th><th>Running Qty</th><th>Bid Qty</th><th>% Complete</th>
-        <th>Cost Today</th><th>Running UC</th><th>Proj UC</th><th>Hist Avg UC</th>
-        <th>Lbr Hrs</th><th>Equip Hrs</th><th>Status</th>
-      </tr></thead><tbody>${rowsHtml}</tbody></table>
+
+      <div class="sec-lbl">A &mdash; Daily Tracking Entries</div>
+      <table>
+        <thead><tr>
+          <th>Employee</th><th>Cost Code</th><th>Sub Code</th><th>Job Class</th>
+          <th>Qty</th><th>Lbr Hrs</th><th>Labor $</th>
+          <th>Equipment</th><th>Eq Hrs</th><th>Equip $</th>
+          <th>Material</th><th>Mat $</th><th>Total $</th>
+        </tr></thead>
+        <tbody>${trackingRows}</tbody>
+      </table>
+
+      <div class="sec-lbl" style="margin-top:0.6rem">B &mdash; Production Rate Summary</div>
+      <table>
+        <thead><tr>
+          <th>Cost Code</th><th>Sub Code</th><th>Unit</th>
+          <th>Qty (Period)</th><th>Running Qty</th><th>Bid Qty</th><th>% Complete</th>
+          <th>Cost (Period)</th><th>Running UC</th><th>Proj UC</th><th>Hist Avg UC</th>
+          <th>Lbr Hrs</th><th>Equip Hrs</th><th>Status</th>
+        </tr></thead>
+        <tbody>${prodRows}</tbody>
+      </table>
     </div>`;
   }).join('');
+
+  const titleStr = targetProjects.length === 1
+    ? (targetProjects[0]['project-name'] || 'Project') + ' \u2014 Production Summary'
+    : 'Daily Production Summary';
 
   const win = window.open('', '_blank');
   win.document.write(`<!DOCTYPE html>
 <html><head>
   <meta charset="UTF-8"/>
-  <title>Daily Summary — ${dateStr}</title>
+  <title>${titleStr}</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:Arial,sans-serif;font-size:10px;color:#111;background:#fff;padding:1rem 1.2rem}
-    .rpt-hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:0.6rem;margin-bottom:0.9rem}
+    .rpt-hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:0.55rem;margin-bottom:0.8rem}
     .rpt-title{font-size:15px;font-weight:700}
     .rpt-sub{font-size:10px;color:#555;margin-top:0.2rem}
     .rpt-meta{text-align:right;font-size:8.5px;color:#888;line-height:1.7}
-    .strip{display:flex;gap:2rem;background:#f5f5f5;border-radius:4px;padding:0.5rem 0.8rem;margin-bottom:0.9rem}
+    .strip{display:flex;gap:2rem;background:#f5f5f5;border-radius:4px;padding:0.45rem 0.8rem;margin-bottom:0.8rem}
     .si-label{font-size:7.5px;color:#888;text-transform:uppercase;letter-spacing:0.06em}
-    .si-val{font-size:13px;font-weight:700;color:#111}
+    .si-val{font-size:12px;font-weight:700;color:#111}
     .si-val.red{color:#dc2626}
-    .proj-block{margin-bottom:1rem;border:1px solid #ddd;border-radius:4px;overflow:hidden;page-break-inside:avoid}
+    .proj-block{margin-bottom:1.2rem;border:1px solid #ddd;border-radius:4px;overflow:hidden;page-break-inside:avoid}
     .proj-block.has-behind{border-left:3px solid #dc2626}
-    .proj-hdr{display:flex;justify-content:space-between;align-items:center;padding:0.35rem 0.6rem;background:#f0f0f0;flex-wrap:wrap;gap:0.3rem}
+    .proj-hdr{display:flex;justify-content:space-between;align-items:center;padding:0.35rem 0.65rem;background:#f0f0f0;flex-wrap:wrap;gap:0.3rem}
     .proj-block.has-behind .proj-hdr{background:#fff5f5}
     .pname{font-size:11px;font-weight:700}
     .psumm{font-size:8.5px;color:#555}
+    .sec-lbl{font-size:8px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#555;padding:0.3rem 0.65rem;background:#fafafa;border-top:1px solid #e5e5e5}
     table{border-collapse:collapse;width:100%}
     th,td{border:1px solid #ddd;padding:2px 5px;white-space:nowrap;font-size:8.5px;text-align:left}
-    th{background:#f8f8f8;font-weight:700;color:#333}
+    th{background:#f4f4f4;font-weight:700;color:#333}
+    tr.date-hdr td{background:#e8f0fe;font-weight:700;font-size:8px;letter-spacing:0.04em;color:#1a3a6b;padding:3px 5px}
+    tr.sub-tot td{background:#f0f4ff;font-weight:700;border-top:1px solid #b0c0e0}
     tr.row-behind td{background:#fff8f8}
     tr.sug-row td{background:#fffbeb;color:#92400e;font-size:8px;border-top:none}
+    .tot{font-weight:700}
     .grn{color:#15803d;font-weight:700}
     .red{color:#dc2626;font-weight:700}
     .muted{color:#888}
     .b-behind{background:#dc2626;color:#fff;font-size:7px;font-weight:700;padding:1px 4px;border-radius:2px;white-space:nowrap}
     .b-ok{background:#15803d;color:#fff;font-size:7px;font-weight:700;padding:1px 4px;border-radius:2px}
     .rpt-footer{margin-top:0.8rem;padding-top:0.4rem;border-top:1px solid #ddd;font-size:8px;color:#aaa;display:flex;justify-content:space-between}
-    @media print{body{padding:0}@page{margin:1cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    @media print{body{padding:0}@page{margin:1cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.proj-block{page-break-inside:avoid}}
   </style>
 </head><body>
   <div class="rpt-hdr">
     <div>
-      <div class="rpt-title">Daily Production Summary</div>
-      <div class="rpt-sub">${dateDisp}</div>
+      <div class="rpt-title">${titleStr}</div>
+      <div class="rpt-sub">${dateRangeDisp}</div>
       ${userName ? `<div class="rpt-sub" style="color:#888;font-size:8.5px">Prepared by: ${userName}</div>` : ''}
     </div>
-    <div class="rpt-meta">Generated: ${genTime}<br>${sections.length} project${sections.length !== 1 ? 's' : ''} with activity<br>DataWatch</div>
+    <div class="rpt-meta">Generated: ${genTime}<br>${sections.length} project${sections.length!==1?'s':''} with activity<br>DataWatch</div>
   </div>
   <div class="strip">
-    <div><div class="si-label">Total Cost Today</div><div class="si-val">${money(totalCost)}</div></div>
+    <div><div class="si-label">Total Cost (Period)</div><div class="si-val">${money(totalCost)}</div></div>
     <div><div class="si-label">Total Labor Hours</div><div class="si-val">${fmt(totalLbr,1)}</div></div>
     <div><div class="si-label">Total Equip Hours</div><div class="si-val">${fmt(totalEq,1)}</div></div>
-    <div><div class="si-label">Projects Active</div><div class="si-val">${sections.length}</div></div>
-    <div><div class="si-label">Behind Pace</div><div class="si-val ${behindCount > 0 ? 'red' : ''}">${behindCount}</div></div>
+    <div><div class="si-label">Projects</div><div class="si-val">${sections.length}</div></div>
+    <div><div class="si-label">Behind Pace</div><div class="si-val ${behindCount>0?'red':''}">${behindCount}</div></div>
   </div>
   ${projHtml}
-  <div class="rpt-footer"><span>DataWatch — Daily Production Summary</span><span>${dateStr}</span></div>
+  <div class="rpt-footer"><span>DataWatch &mdash; Production Summary</span><span>${startDate === endDate ? startDate : startDate + ' to ' + endDate}</span></div>
   <script>window.onload=function(){window.print()}<\/script>
 </body></html>`);
   win.document.close();
