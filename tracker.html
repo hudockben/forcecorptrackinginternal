@@ -4831,7 +4831,7 @@ function exportDailySummaryPDF(dateStr) {
         const runMU    = cumEq  > 0 ? cumQty  / cumEq  : 0;
         const avgLbrPD = cumDays > 0 ? cumLbr / cumDays : 0;
 
-        const bidItem = getBidItem(rawCc, rawSc);
+        const bidItem = (p.bidItems || []).find(b => b.cost_code === rawCc && b.sub_code === rawSc) || null;
         const bidQty  = bidItem ? (parseFloat(bidItem.quantity) || 0) : 0;
         const unit    = bidItem ? (bidItem.unit || '') : '';
         const pctComp = bidQty > 0 ? (cumQty / bidQty) * 100 : null;
