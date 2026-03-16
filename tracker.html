@@ -5823,7 +5823,12 @@ function renderProductionRateView(projId) {
       const bidItem    = getBidItem(rawCc, rawSc);
       const bidQty     = bidItem ? (parseFloat(bidItem.quantity)  || 0) : 0;
       const unit       = bidItem ? (bidItem.unit || '') : '';
-      const dates      = Object.keys(subGroups[sc]).filter(d => d !== '(No Date)').sort();
+      const dates      = Object.keys(subGroups[sc]).sort((a, b) => {
+        // Put '(No Date)' last so dated rows sort naturally first
+        if (a === '(No Date)') return 1;
+        if (b === '(No Date)') return -1;
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
 
       // Historical benchmark for this sub code
       const histKey   = rawCc + '||' + rawSc;
@@ -5850,7 +5855,7 @@ function renderProductionRateView(projId) {
         cumCost += day.total_cost;
         cumLbr  += day.labor_hours;
         cumEq   += day.equip_hours;
-        cumDays += 1;
+        if (d !== '(No Date)') cumDays += 1;
 
         const dailyUC  = day.qty > 0  ? day.total_cost / day.qty : 0;
         const runUC    = cumQty  > 0  ? cumCost / cumQty          : 0;
