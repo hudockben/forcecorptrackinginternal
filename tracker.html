@@ -3371,7 +3371,7 @@ function renderSupplierTab() {
         </td>
         <td style="padding:0.4rem 0.6rem">
           ${s.website
-            ? `<a href="${esc(s.website)}" target="_blank" rel="noopener noreferrer" style="color:var(--blue);font-size:0.875rem;white-space:nowrap" title="${esc(s.website)}">Visit ↗</a>
+            ? `<a href="${esc(/^https?:\/\//i.test(s.website) ? s.website : 'https://' + s.website)}" target="_blank" rel="noopener noreferrer" style="color:var(--blue);font-size:0.875rem;white-space:nowrap" title="${esc(s.website)}">Visit ↗</a>
                <input type="text" value="${esc(s.website)}" data-sup-idx="${i}" data-sup-field="website"
                  placeholder="https://example.com"
                  style="display:block;width:100%;background:transparent;border:none;color:var(--muted);font-size:0.72rem;outline:none;padding:0.1rem 0">`
