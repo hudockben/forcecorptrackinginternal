@@ -50,6 +50,29 @@
       font-weight: 600;
     }
     header .actions { display: flex; gap: 0.5rem; align-items: center; }
+    .online-avatar-wrap {
+      position: relative;
+      display: inline-flex;
+    }
+    .online-avatar-wrap .user-avatar {
+      opacity: 0.9;
+    }
+    .online-dot {
+      position: absolute;
+      bottom: -1px;
+      right: -1px;
+      width: 8px;
+      height: 8px;
+      background: #22c55e;
+      border-radius: 50%;
+      border: 1.5px solid #0a0a0a;
+    }
+    .online-users-label {
+      font-size: 0.65rem;
+      color: #555;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
     .user-avatar {
       width: 30px;
       height: 30px;
@@ -671,6 +694,57 @@
     .status-legend span { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); }
     .status-legend .dot { width: 8px; height: 8px; border-radius: 50%; }
 
+    /* ── Company Board ── */
+    .board-wrap { margin-bottom: 2rem; }
+    .board-post {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 0.7rem 0.9rem;
+      margin-bottom: 0.5rem;
+      transition: opacity 0.2s;
+    }
+    .board-post.completed { opacity: 0.5; }
+    .board-check {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      border: 2px solid var(--border);
+      background: transparent;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 2px;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .board-check.checked { background: var(--green); border-color: var(--green); }
+    .board-check.checked::after { content: '✓'; font-size: 11px; color: #fff; line-height: 1; }
+    .board-body { flex: 1; min-width: 0; }
+    .board-msg { font-size: 0.85rem; color: var(--text); margin-bottom: 0.25rem; word-wrap: break-word; }
+    .board-meta { font-size: 0.68rem; color: var(--muted); }
+    .board-compose {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .board-compose textarea {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 0.45rem 0.65rem;
+      font-size: 0.82rem;
+      resize: vertical;
+      min-height: 38px;
+      font-family: inherit;
+    }
+    .board-compose textarea:focus { outline: none; border-color: var(--green); }
     .recent-table {
       width: 100%;
       border-collapse: collapse;
@@ -888,6 +962,7 @@
   <div style="display:flex;align-items:center;gap:1rem;">
     <span class="brand">DataWatch</span>
     <span id="user-badge" style="font-size:0.7rem;color:#444;letter-spacing:0.05em;"></span>
+    <span id="online-users" style="display:flex;align-items:center;gap:0.3rem;margin-left:0.25rem;"></span>
   </div>
   <div class="actions" id="header-actions">
     <!-- injected by JS based on active tab -->
@@ -1309,9 +1384,12 @@ if (!fctToken || !fctUser) {
 }
 
 function logout() {
-  localStorage.removeItem('fct_token');
-  localStorage.removeItem('fct_user');
-  window.location.replace('index.html');
+  // Remove self from presence before leaving
+  _presenceRemoveSelf().finally(() => {
+    localStorage.removeItem('fct_token');
+    localStorage.removeItem('fct_user');
+    window.location.replace('index.html');
+  });
 }
 
 // Show user avatar bubble + company label in header
@@ -1332,6 +1410,192 @@ function logout() {
     <span class="user-avatar" style="background:${color}" title="${name}">${initials}</span>
     <span style="font-size:0.7rem;color:#888;letter-spacing:0.05em;">${fctUser.companyName || fctUser.companyCode} &middot; ${fctUser.username}</span>
   `;
+})();
+
+/* ═══════════════════════════════════════════
+   DAILY-ROWS API CLIENT
+   Scalable per-row storage in daily_tracking table.
+   All calls are fire-and-forget (except drGetAll + drPostBulk).
+   Errors are logged but never trigger the save-error banner.
+═══════════════════════════════════════════ */
+
+/** Fetch ALL daily rows for this company (returns array, never throws). */
+async function drGetAll() {
+  try {
+    const r = await fetch(`${API_BASE}/daily-rows`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (r.status === 401) { logout(); return []; }
+    if (!r.ok) { console.warn('[daily-rows] GET failed:', r.status); return []; }
+    const { rows } = await r.json();
+    return Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    console.warn('[daily-rows] GET error:', err.message);
+    return [];
+  }
+}
+
+/** Insert one row into the DB (fire-and-forget). */
+function drPost(projectId, row) {
+  fetch(`${API_BASE}/daily-rows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body: JSON.stringify({ projectId, row })
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] POST failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] POST error:', err.message));
+}
+
+/** Insert multiple rows at once (awaitable — used for migration and CSV import). */
+async function drPostBulk(projectId, rows) {
+  const r = await fetch(`${API_BASE}/daily-rows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body: JSON.stringify({ projectId, rows })
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+}
+
+// Debounce map: rowId → timer handle
+const _drSaveTimers = {};
+
+/** Debounced PUT — coalesces rapid keystrokes into one DB write per row. */
+function drPutDebounced(rowId, row) {
+  clearTimeout(_drSaveTimers[rowId]);
+  _drSaveTimers[rowId] = setTimeout(() => {
+    _drPutNow(rowId, row);
+  }, 800);
+}
+
+/** Immediate PUT — flushes any pending debounce and writes right away. */
+function drPutNow(rowId, row) {
+  clearTimeout(_drSaveTimers[rowId]);
+  delete _drSaveTimers[rowId];
+  _drPutNow(rowId, row);
+}
+
+function _drPutNow(rowId, row) {
+  fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body: JSON.stringify({ row })
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] PUT failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] PUT error:', err.message));
+}
+
+/** Delete one row by its JS id. */
+function drDelete(rowId) {
+  fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${fctToken}` }
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] DELETE error:', err.message));
+}
+
+/** Delete all rows for a project (called when deleting the project itself). */
+function drDeleteByProject(projectId) {
+  fetch(`${API_BASE}/daily-rows?projectId=${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${fctToken}` }
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by project failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] DELETE by project error:', err.message));
+}
+
+/** Delete all rows matching a cost code + sub code across all projects. */
+function drDeleteByCode(costCode, subCode) {
+  fetch(`${API_BASE}/daily-rows?costCode=${encodeURIComponent(costCode)}&subCode=${encodeURIComponent(subCode)}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${fctToken}` }
+  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by code failed:', r.status); })
+    .catch(err => console.warn('[daily-rows] DELETE by code error:', err.message));
+}
+
+/* ═══════════════════════════════════════════
+   WHO'S ONLINE — presence heartbeat
+   Each user writes to shared key fct_presence every 30s.
+   Users active within 2 min are shown as avatars in the header.
+═══════════════════════════════════════════ */
+(function () {
+  if (!fctUser) return;
+
+  const PRESENCE_KEY  = 'fct_presence';
+  const HEARTBEAT_MS  = 30_000;   // write own ping every 30s
+  const POLL_MS       = 30_000;   // re-read others every 30s
+  const STALE_MS      = 120_000;  // consider offline after 2 min
+
+  const myId      = String(fctUser.userId || fctUser.username);
+  const myName    = fctUser.name || fctUser.username || '';
+  const myUser    = fctUser.username || '';
+  const parts     = myName.trim().split(/\s+/);
+  const myInit    = parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : myName.slice(0, 2).toUpperCase() || '?';
+  const palette   = ['#2ecc71','#3498db','#9b59b6','#e67e22','#e74c3c','#1abc9c','#f39c12','#16a085'];
+  let h = 0;
+  for (let i = 0; i < myName.length; i++) h = (h * 31 + myName.charCodeAt(i)) & 0xffff;
+  const myColor   = palette[h % palette.length];
+
+  // Silent PUT — never triggers the save-error banner
+  async function presencePut(data) {
+    try {
+      await fetch(`${API_BASE}/data/${PRESENCE_KEY}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+        body: JSON.stringify({ value: data })
+      });
+    } catch { /* ignore — presence is best-effort */ }
+  }
+
+  // Read → merge self → write back
+  async function heartbeat() {
+    let data = {};
+    try { data = (await apiGet(PRESENCE_KEY)) || {}; } catch { data = {}; }
+    data[myId] = { username: myUser, initials: myInit, color: myColor, ts: Date.now() };
+    await presencePut(data);
+    renderOnline(data);
+  }
+
+  // Remove self and write back (used on logout)
+  window._presenceRemoveSelf = async function () {
+    try {
+      let data = (await apiGet(PRESENCE_KEY)) || {};
+      delete data[myId];
+      await fetch(`${API_BASE}/data/${PRESENCE_KEY}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+        body: JSON.stringify({ value: data })
+      });
+    } catch { /* ignore */ }
+  };
+
+  function renderOnline(data) {
+    const el = document.getElementById('online-users');
+    if (!el) return;
+    const now    = Date.now();
+    const others = Object.entries(data)
+      .filter(([id, u]) => id !== myId && (now - (u.ts || 0)) < STALE_MS)
+      .sort((a, b) => (a[1].username || '').localeCompare(b[1].username || ''));
+    if (!others.length) { el.innerHTML = ''; return; }
+    el.innerHTML =
+      '<span class="online-users-label">Online:</span>' +
+      others.map(([, u]) =>
+        `<span class="online-avatar-wrap">` +
+          `<span class="user-avatar" style="background:${u.color||'#555'};width:26px;height:26px;font-size:0.62rem;" title="${u.username||''}">${u.initials||'?'}</span>` +
+          `<span class="online-dot"></span>` +
+        `</span>`
+      ).join('');
+  }
+
+  // Kick off immediately then poll
+  heartbeat();
+  setInterval(heartbeat, HEARTBEAT_MS);
+
+  // Also refresh display more frequently so stale users disappear promptly
+  setInterval(async () => {
+    try {
+      const data = (await apiGet(PRESENCE_KEY)) || {};
+      renderOnline(data);
+    } catch { /* ignore */ }
+  }, POLL_MS);
 })();
 
 /* ═══════════════════════════════════════════
@@ -1723,6 +1987,16 @@ function renderHomeTab() {
       </div>
     </div>
 
+    <p class="home-section-title">Company Board</p>
+    <div class="board-wrap" id="board-wrap">
+      ${perm.isAdmin ? `
+      <div class="board-compose">
+        <textarea id="board-input" placeholder="Write a note for your team…" rows="2"></textarea>
+        <button class="btn btn-green" style="align-self:flex-end;white-space:nowrap" onclick="boardPost()">Post</button>
+      </div>` : ''}
+      <div id="board-posts"><div class="home-empty" style="font-size:0.78rem">Loading board…</div></div>
+    </div>
+
     <p class="home-section-title">Recent Daily Entries</p>
     ${recent.length === 0
       ? `<div class="home-empty">No daily entries yet. Open a project in Project Dashboard to add daily records.</div>`
@@ -1752,6 +2026,99 @@ function renderHomeTab() {
         </table>`
     }
   `;
+  // Load board posts asynchronously after DOM is set
+  loadBoard();
+}
+
+/* ═══════════════════════════════════════════
+   COMPANY BOARD
+═══════════════════════════════════════════ */
+async function loadBoard() {
+  const el = document.getElementById('board-posts');
+  if (!el) return;
+  try {
+    const res = await fetch('/api/board', {
+      headers: { 'Authorization': 'Bearer ' + fctToken }
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    renderBoardPosts(data.posts || []);
+  } catch (e) {
+    if (document.getElementById('board-posts'))
+      document.getElementById('board-posts').innerHTML =
+        `<div class="home-empty" style="font-size:0.78rem">Could not load board.</div>`;
+  }
+}
+
+function renderBoardPosts(posts) {
+  const el = document.getElementById('board-posts');
+  if (!el) return;
+  if (!posts.length) {
+    el.innerHTML = '<div class="home-empty" style="font-size:0.78rem">No posts yet.</div>';
+    return;
+  }
+  el.innerHTML = posts.map(p => {
+    const dt = new Date(p.created_at);
+    const dateStr = dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    const timeStr = dt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const author  = esc(p.author_name || p.author_user);
+    const checkCls = p.completed ? 'board-check checked' : 'board-check';
+    const postCls  = p.completed ? 'board-post completed' : 'board-post';
+    const canCheck = perm.isAdmin;
+    return `<div class="${postCls}" id="bpost-${p.id}">
+      ${canCheck
+        ? `<div class="${checkCls}" title="${p.completed ? 'Mark incomplete' : 'Mark complete'}" onclick="boardToggle(${p.id},${!p.completed})"></div>`
+        : `<div class="${checkCls}" style="cursor:default;pointer-events:none"></div>`}
+      <div class="board-body">
+        <div class="board-msg">${esc(p.message)}</div>
+        <div class="board-meta">${author} &middot; ${dateStr} ${timeStr}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function boardPost() {
+  const input = document.getElementById('board-input');
+  if (!input) return;
+  const msg = input.value.trim();
+  if (!msg) return;
+  try {
+    const res = await fetch('/api/board', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
+      body: JSON.stringify({ message: msg })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    input.value = '';
+    await loadBoard();
+  } catch (e) {
+    alert('Could not post: ' + e.message);
+  }
+}
+
+async function boardToggle(id, completed) {
+  try {
+    const res = await fetch('/api/board?id=' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
+      body: JSON.stringify({ completed })
+    });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed'); }
+    // Update locally without full reload
+    const el = document.getElementById('bpost-' + id);
+    if (el) {
+      el.className = completed ? 'board-post completed' : 'board-post';
+      const chk = el.querySelector('.board-check');
+      if (chk) {
+        chk.className = completed ? 'board-check checked' : 'board-check';
+        chk.title = completed ? 'Mark incomplete' : 'Mark complete';
+        chk.setAttribute('onclick', `boardToggle(${id},${!completed})`);
+      }
+    }
+  } catch (e) {
+    alert('Could not update: ' + e.message);
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -2132,12 +2499,37 @@ async function loadProjects() {
   const index = await apiGet('fct_projects_index');
 
   if (Array.isArray(index) && index.length) {
-    // Parallel-fetch every project; much faster than one giant blob
     const results = await Promise.all(index.map(id => apiGet('fct_project_' + id)));
     projectsList = results.filter(p => p && typeof p === 'object');
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
-    // Keep localStorage in sync as offline fallback
-    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
+    // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
+    await _loadAndMigrateDailyRows();
+
+    // ── Recovery: for any project still with no rows, check the legacy
+    //    fct_projects blob (never deleted, may still have embedded dailyRows
+    //    from before the per-row DB migration succeeded).  Per-project check
+    //    so projects already populated from the DB are not affected.
+    const emptyProjects = projectsList.filter(p => p.dailyRows.length === 0);
+    if (emptyProjects.length > 0) {
+      try {
+        const legacy = await apiGet('fct_projects');
+        if (Array.isArray(legacy) && legacy.length) {
+          let found = false;
+          legacy.forEach(old => {
+            if (!Array.isArray(old.dailyRows) || !old.dailyRows.length) return;
+            const p = emptyProjects.find(proj => proj.id === old.id);
+            if (!p) return;
+            p.dailyRows = old.dailyRows;
+            found = true;
+          });
+          if (found) await _loadAndMigrateDailyRows();
+        }
+      } catch (e) {
+        console.warn('[recovery] fct_projects fallback failed:', e.message);
+      }
+    }
+
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     return;
   }
 
@@ -2158,21 +2550,80 @@ async function loadProjects() {
   if (Array.isArray(saved) && saved.length) {
     projectsList = saved;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
-    // Migrate to per-project storage (fire-and-forget)
-    projectsList.forEach(p => apiPut('fct_project_' + p.id, p));
+    // Migrate to per-project blob storage; _loadAndMigrateDailyRows handles the rows
+    projectsList.forEach(p => {
+      const blob = _projBlob(p);
+      apiPut('fct_project_' + p.id, blob);
+    });
     apiPut('fct_projects_index', projectsList.map(p => p.id));
-    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
+    await _loadAndMigrateDailyRows();
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     return;
   }
 
   projectsList = [];
+  await _loadAndMigrateDailyRows();
 }
 
-// Save a single project — the normal path for any single-project mutation
+/**
+ * Returns the project object without its in-memory dailyRows array —
+ * this is what gets saved to the server blob and localStorage.
+ */
+function _projBlob(p) {
+  const { dailyRows: _dr, ...blob } = p;
+  return blob;
+}
+
+/**
+ * Loads all daily rows for this company from the DB and distributes them
+ * into each project's in-memory p.dailyRows array.
+ *
+ * One-time migration: if any project blob still has rows embedded (from
+ * before this upgrade), they are posted to the DB and the blob is
+ * re-saved without them.  ON CONFLICT DO NOTHING on the server means
+ * re-running is harmless.
+ */
+async function _loadAndMigrateDailyRows() {
+  // Step 1 — migrate any projects that still carry embedded rows
+  const toMigrate = projectsList.filter(p => Array.isArray(p.dailyRows) && p.dailyRows.length > 0);
+  for (const p of toMigrate) {
+    try {
+      await drPostBulk(p.id, p.dailyRows);
+      // Re-save the blob without the embedded rows
+      await fetch(`${API_BASE}/data/fct_project_${p.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+        body: JSON.stringify({ value: _projBlob(p) })
+      });
+      console.log(`[migrate] moved ${p.dailyRows.length} rows for project ${p.id} to DB`);
+    } catch (err) {
+      console.warn(`[migrate] project ${p.id} failed:`, err.message);
+      // Keep embedded rows in memory as fallback — they are still usable
+    }
+  }
+
+  // Step 2 — load all rows from DB and distribute into p.dailyRows.
+  // Only clear a project's rows if the DB actually returned rows for it —
+  // projects absent from the DB keep whatever in-memory rows they have
+  // (from migration step 1 fallback or the legacy recovery path above).
+  const dbRows = await drGetAll();
+  if (dbRows.length > 0) {
+    const projectsInDb = new Set(dbRows.map(r => r._projectId));
+    projectsList.forEach(p => { if (projectsInDb.has(p.id)) p.dailyRows = []; });
+    const projMap = Object.fromEntries(projectsList.map(p => [p.id, p]));
+    dbRows.forEach(row => {
+      const proj = projMap[row._projectId];
+      if (proj) proj.dailyRows.push(row);
+    });
+  }
+  // else: keep embedded rows already in p.dailyRows (migration fallback)
+}
+
+// Save a single project blob (metadata only — dailyRows live in daily_tracking table)
 function saveProject(id) {
   const p = getProj(id); if (!p) return;
-  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
-  apiPut('fct_project_' + id, p);
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
+  apiPut('fct_project_' + id, _projBlob(p));
 }
 
 // Save the ordered list of project IDs — called when projects are added or removed
@@ -2180,10 +2631,10 @@ function saveProjectIndex() {
   apiPut('fct_projects_index', projectsList.map(p => p.id));
 }
 
-// Save every project — only used for bulk operations that touch all projects
+// Save every project blob — only used for bulk operations that touch all projects
 function saveProjects() {
-  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
-  projectsList.forEach(p => apiPut('fct_project_' + p.id, p));
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
+  projectsList.forEach(p => apiPut('fct_project_' + p.id, _projBlob(p)));
   saveProjectIndex();
 }
 
@@ -2289,6 +2740,7 @@ function deleteProject(id) {
   confirm.addEventListener('click', () => {
     if (confirm.disabled) return;
     close();
+    drDeleteByProject(id);
     projectsList = projectsList.filter(pr => pr.id !== id);
     saveProjectIndex();
     renderProjectsTab();
@@ -2359,7 +2811,7 @@ function deleteDailyRowsBySubCode(costCode, subCode) {
       if (!Array.isArray(p.dailyRows)) return;
       p.dailyRows = p.dailyRows.filter(r => !(r.cost_code === costCode && r.sub_code === subCode));
     });
-    saveProjects();
+    drDeleteByCode(costCode, subCode);
     projectsList.forEach(p => renderDailyTable(p.id));
     renderCostTable();
   });
@@ -3024,7 +3476,7 @@ function deletePO(id) {
     const proj = getProj(oldProj);
     if (proj) {
       proj.dailyRows = proj.dailyRows.filter(r => r.id !== po.po_row_id);
-      saveProject(oldProj);
+      drDelete(po.po_row_id);
       renderDailyTable(oldProj);
     }
   }
@@ -3048,7 +3500,7 @@ function _syncPORowField(po, field) {
     const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
     r.material_cost = String(qty * uc + tax);
   }
-  saveProject(po.project_id);
+  drPutNow(r.id, r);
   renderDailyTable(po.project_id);
 }
 
@@ -3379,7 +3831,7 @@ document.getElementById('po-root').addEventListener('change', e => {
       const oldP = getProj(oldProj);
       if (oldP) {
         oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== po.po_row_id);
-        saveProject(oldProj);
+        drDelete(po.po_row_id);
         renderDailyTable(oldProj);
       }
     }
@@ -3415,7 +3867,7 @@ document.getElementById('po-root').addEventListener('change', e => {
         };
         newP.dailyRows.push(row);
         po.po_row_id = row.id;
-        saveProject(po.project_id);
+        drPost(po.project_id, row);
         renderDailyTable(po.project_id);
       }
     }
@@ -3538,10 +3990,11 @@ function getCostCodes(projId) {
   const src = p ? (p.bidItems || []) : costRows;
   return [...new Set(src.map(r => r.cost_code).filter(Boolean))];
 }
-function getSubCodes(projId) {
+function getSubCodes(projId, costCode) {
   const p = projId ? getProj(projId) : null;
   const src = p ? (p.bidItems || []) : costRows;
-  return [...new Set(src.map(r => r.sub_code).filter(Boolean))];
+  const filtered = costCode ? src.filter(r => r.cost_code === costCode) : src;
+  return [...new Set(filtered.map(r => r.sub_code).filter(Boolean))];
 }
 
 /* ── Modal ── */
@@ -4301,7 +4754,7 @@ function renderDailyTable(projId) {
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', ai, 'field_type',      projId)}</td>
       <td>${makeSelect(employeeOpts,  row.employee,         'daily', ai, 'employee',         projId)}</td>
       <td>${makeSelect(ccOpts,        row.cost_code,        'daily', ai, 'cost_code',        projId)}</td>
-      <td>${makeSelect(scOpts,        row.sub_code,         'daily', ai, 'sub_code',         projId)}</td>
+      <td>${makeSelect(row.cost_code ? ['', ...getSubCodes(projId, row.cost_code)] : scOpts, row.sub_code, 'daily', ai, 'sub_code', projId)}</td>
       <td>${makeSelect(jobClassOpts,  row.job_class,        'daily', ai, 'job_class',        projId)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="rate"            value="${row.rate}"            step="any" placeholder="0.00"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="labor_hours"     value="${row.labor_hours}"     step="any" placeholder="0"></td>
@@ -4343,15 +4796,16 @@ function copyDailyRow(projId, i) {
   const src = (p.dailyRows || [])[i]; if (!src) return;
   const copy = Object.assign({}, src, { id: Date.now() + Math.random(), material_cost: '' });
   p.dailyRows.splice(i + 1, 0, copy);
-  saveProject(projId);
+  drPost(projId, copy);
   renderDailyTable(projId);
 }
 
 function addDailyRow(projId) {
   const p = getProj(projId); if (!p) return;
   if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
-  p.dailyRows.push(defaultDailyRow());
-  saveProject(projId);
+  const row = defaultDailyRow();
+  p.dailyRows.push(row);
+  drPost(projId, row);
   renderDailyTable(projId);
 }
 
@@ -5769,6 +6223,26 @@ document.addEventListener('input', e => {
     const p = getProj(projId); if (!p) return;
     if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
     p.dailyRows[i][f] = el.value;
+    // Filter sub_code dropdown to only show sub codes for the selected cost code
+    if (f === 'cost_code') {
+      const newSubCodes = getSubCodes(projId, el.value);
+      const _tbody = document.getElementById('daily-tbody-' + projId);
+      const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
+      if (rowEl) {
+        const scSelect = rowEl.querySelector('[data-f="sub_code"]');
+        if (scSelect) {
+          const cur = p.dailyRows[i].sub_code;
+          const opts = el.value ? ['', ...newSubCodes] : ['', ...getSubCodes(projId)];
+          scSelect.innerHTML = opts.map(o =>
+            `<option value="${esc(o)}"${o === cur && opts.includes(cur) ? ' selected' : ''}>${esc(o)}</option>`
+          ).join('');
+          if (cur && !newSubCodes.includes(cur)) {
+            scSelect.value = '';
+            p.dailyRows[i].sub_code = '';
+          }
+        }
+      }
+    }
     // Auto-fill job class and rate (prevailing or non-prevailing) when employee is selected
     if (f === 'employee') {
       const emp = lists.employees.find(e => e.name === el.value);
@@ -5809,13 +6283,13 @@ document.addEventListener('input', e => {
         }
       }
     }
-    saveProject(projId);
+    // Debounced write to DB — coalesces rapid keystrokes into one request per row
+    drPutDebounced(p.dailyRows[i].id, p.dailyRows[i]);
     renderDailyCalcCells(projId, i);
   }
 });
 
-// 'change' fires on blur for number/text inputs — backstop for the 'input' listener
-// Ensures the value is persisted even if an 'input' event was somehow missed
+// 'change' fires on blur — flush any pending debounce and write immediately
 document.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset.tab !== 'daily' || !el.dataset.f) return;
@@ -5823,13 +6297,12 @@ document.addEventListener('change', e => {
   if (isNaN(i)) return;
   const p = getProj(el.dataset.proj); if (!p) return;
   if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
-  // Only save if the value differs from what is already in memory
-  // (avoids a redundant API call when 'input' already handled it)
   if (p.dailyRows[i][el.dataset.f] !== el.value) {
     p.dailyRows[i][el.dataset.f] = el.value;
-    saveProject(el.dataset.proj);
-    renderDailyCalcCells(el.dataset.proj, i);
   }
+  // Always flush on blur — cancels debounce and writes now
+  drPutNow(p.dailyRows[i].id, p.dailyRows[i]);
+  renderDailyCalcCells(el.dataset.proj, i);
 });
 
 function removeDelConfirm() {
@@ -5902,8 +6375,9 @@ document.addEventListener('click', e => {
       renderCostTable();
     } else if (tab === 'daily') {
       const p = getProj(projId); if (!p) return;
+      const deletedRow = p.dailyRows[i];
       p.dailyRows.splice(i, 1);
-      saveProject(projId);
+      if (deletedRow) drDelete(deletedRow.id);
       renderDailyTable(projId);
     } else if (tab === 'po') {
       deletePO(btn.dataset.poId);
@@ -6280,14 +6754,17 @@ function commitImportCSV() {
     byProj[projId].push(row);
   });
   let totalImported = 0;
+  const bulkPromises = [];
   Object.entries(byProj).forEach(([projId, rows]) => {
     const p = getProj(projId);
     if (!p) return;
     if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
     p.dailyRows.push(...rows);
     totalImported += rows.length;
+    bulkPromises.push(drPostBulk(projId, rows));
   });
-  Object.keys(byProj).forEach(id => saveProject(id));
+  // Persist rows to DB (fire-and-forget — UI is already updated in memory)
+  Promise.all(bulkPromises).catch(err => console.warn('[import] bulk post failed:', err.message));
   projectsList.forEach(p => renderDailyTable(p.id));
   renderCostTable();
   clearImportPreview();

@@ -12,11 +12,16 @@ const path = require('path');
   const sql = neon(process.env.DATABASE_URL);
   const schema = fs.readFileSync(path.join(__dirname, '../neon-schema.sql'), 'utf8');
 
-  // Split on semicolons, filter blanks/comments-only chunks
-  const statements = schema
+  // Strip -- line comments first so semicolons inside comments don't cause
+  // false splits, then split on semicolons and filter blank chunks.
+  const stripped = schema
+    .split('\n')
+    .filter(line => !line.trim().startsWith('--'))
+    .join('\n');
+  const statements = stripped
     .split(';')
     .map(s => s.trim())
-    .filter(s => s && !s.startsWith('--'));
+    .filter(s => s.length > 0);
 
   for (const stmt of statements) {
     await sql([stmt]);

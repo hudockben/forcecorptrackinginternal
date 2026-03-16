@@ -66,12 +66,23 @@
       text-align: center;
     }
 
-    .logo {
-      font-size: 0.8rem;
-      letter-spacing: 0.4em;
+    .logo-img {
+      display: block;
+      margin: 0 auto 0.5rem;
+      height: 110px;
+      width: auto;
+    }
+
+    .logo-name {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: 0.25em;
       text-transform: uppercase;
-      color: #2ecc71;
-      font-weight: 600;
+      background: linear-gradient(135deg, #ffffff 0%, #a0ffcc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 0.5rem;
     }
 
     .logo-title {
@@ -196,7 +207,8 @@
 
   <main class="container">
     <div class="logo-wrap">
-      <div class="logo">DataWatch</div>
+      <img src="datawatch-helmet.png" alt="DataWatch" class="logo-img" />
+      <div class="logo-name">DataWatch</div>
       <div class="logo-title">Track. Analyze.<br>Optimize.</div>
     </div>
 

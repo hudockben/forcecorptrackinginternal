@@ -37,6 +37,9 @@ app.use(express.static(path.join(__dirname, '..')));
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 
+/** Daily rows — scalable per-row storage */
+app.all('/api/daily-rows', require('./daily-rows'));
+
 /** Liveness / health check */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
@@ -75,7 +78,7 @@ app.put('/api/data/:key', async (req, res) => {
   }
 
   // Only allow the keys the app uses
-  const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders'];
+  const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence'];
   const isAllowed = ALLOWED_KEYS.includes(key) || /^fct_project_[a-zA-Z0-9_-]+$/.test(key);
   if (!isAllowed) {
     return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}, fct_project_*` });
