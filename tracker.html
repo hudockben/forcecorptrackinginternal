@@ -4777,6 +4777,8 @@ function _dsrRenderList() {
 
 function _dsrSelect(val) {
   _dsrSelected = val;
+  const h = document.getElementById('dsr-project-val');
+  if (h) h.value = val;
   _dsrRenderList();
 }
 
@@ -4798,6 +4800,7 @@ function openDailySummaryReport() {
         style="width:100%;padding:0.45rem 0.65rem;background:var(--bg);border:1px solid var(--border);border-radius:4px 4px 0 0;color:var(--text);font-size:0.85rem;font-family:inherit;outline:none;">
       <div id="dsr-proj-list"
         style="width:100%;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;background:var(--bg);margin-bottom:0.9rem;"></div>
+      <input type="hidden" id="dsr-project-val" value="all">
 
       <div style="display:flex;gap:0.75rem;margin-bottom:1.1rem;">
         <div style="flex:1">
@@ -4819,8 +4822,9 @@ function openDailySummaryReport() {
           const e = document.getElementById('dsr-end').value;
           if (!s || !e) { alert('Please select both dates.'); return; }
           if (s > e)    { alert('Start date must be on or before end date.'); return; }
+          const pv = document.getElementById('dsr-project-val').value;
           document.getElementById('daily-summary-overlay').remove();
-          exportDailySummaryPDF(_dsrSelected, s, e);
+          exportDailySummaryPDF(pv, s, e);
         ">Generate PDF</button>
       </div>
     </div>`;
