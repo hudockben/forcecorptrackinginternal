@@ -3986,10 +3986,11 @@ function getCostCodes(projId) {
   const src = p ? (p.bidItems || []) : costRows;
   return [...new Set(src.map(r => r.cost_code).filter(Boolean))];
 }
-function getSubCodes(projId) {
+function getSubCodes(projId, costCode) {
   const p = projId ? getProj(projId) : null;
   const src = p ? (p.bidItems || []) : costRows;
-  return [...new Set(src.map(r => r.sub_code).filter(Boolean))];
+  const filtered = costCode ? src.filter(r => r.cost_code === costCode) : src;
+  return [...new Set(filtered.map(r => r.sub_code).filter(Boolean))];
 }
 
 /* ── Modal ── */
@@ -4749,7 +4750,7 @@ function renderDailyTable(projId) {
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', ai, 'field_type',      projId)}</td>
       <td>${makeSelect(employeeOpts,  row.employee,         'daily', ai, 'employee',         projId)}</td>
       <td>${makeSelect(ccOpts,        row.cost_code,        'daily', ai, 'cost_code',        projId)}</td>
-      <td>${makeSelect(scOpts,        row.sub_code,         'daily', ai, 'sub_code',         projId)}</td>
+      <td>${makeSelect(row.cost_code ? ['', ...getSubCodes(projId, row.cost_code)] : scOpts, row.sub_code, 'daily', ai, 'sub_code', projId)}</td>
       <td>${makeSelect(jobClassOpts,  row.job_class,        'daily', ai, 'job_class',        projId)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="rate"            value="${row.rate}"            step="any" placeholder="0.00"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="labor_hours"     value="${row.labor_hours}"     step="any" placeholder="0"></td>
@@ -6218,6 +6219,26 @@ document.addEventListener('input', e => {
     const p = getProj(projId); if (!p) return;
     if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
     p.dailyRows[i][f] = el.value;
+    // Filter sub_code dropdown to only show sub codes for the selected cost code
+    if (f === 'cost_code') {
+      const newSubCodes = getSubCodes(projId, el.value);
+      const _tbody = document.getElementById('daily-tbody-' + projId);
+      const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
+      if (rowEl) {
+        const scSelect = rowEl.querySelector('[data-f="sub_code"]');
+        if (scSelect) {
+          const cur = p.dailyRows[i].sub_code;
+          const opts = el.value ? ['', ...newSubCodes] : ['', ...getSubCodes(projId)];
+          scSelect.innerHTML = opts.map(o =>
+            `<option value="${esc(o)}"${o === cur && opts.includes(cur) ? ' selected' : ''}>${esc(o)}</option>`
+          ).join('');
+          if (cur && !newSubCodes.includes(cur)) {
+            scSelect.value = '';
+            p.dailyRows[i].sub_code = '';
+          }
+        }
+      }
+    }
     // Auto-fill job class and rate (prevailing or non-prevailing) when employee is selected
     if (f === 'employee') {
       const emp = lists.employees.find(e => e.name === el.value);
