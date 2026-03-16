@@ -998,6 +998,7 @@
     <button class="btn btn-ghost" onclick="closeDailyView()">&#8592; Back</button>
     <span id="daily-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
     <div style="margin-left:auto;display:flex;gap:0.5rem">
+      <button class="btn btn-ghost" id="daily-fs-reload" title="Reload entries from server">&#8635; Reload</button>
       <button class="btn btn-ghost" id="daily-fs-export">Export CSV</button>
       <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
       <button class="btn btn-green" id="daily-fs-add">+ Add Row</button>
@@ -1441,8 +1442,16 @@ function drPost(projectId, row) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ projectId, row })
-  }).then(r => { if (!r.ok) console.warn('[daily-rows] POST failed:', r.status); })
-    .catch(err => console.warn('[daily-rows] POST error:', err.message));
+  }).then(r => {
+    if (!r.ok) {
+      console.warn('[daily-rows] POST failed:', r.status);
+      // Row was not saved — add it to pending so the next edit will upsert it
+      _drSavePending[String(row.id)] = row;
+    }
+  }).catch(err => {
+    console.warn('[daily-rows] POST error:', err.message);
+    _drSavePending[String(row.id)] = row;
+  });
 }
 
 /** Insert multiple rows at once (awaitable — used for migration and CSV import). */
@@ -1457,11 +1466,16 @@ async function drPostBulk(projectId, rows) {
 
 // Debounce map: rowId → timer handle
 const _drSaveTimers = {};
+// Pending map: rowId → latest row object (so beforeunload can flush them)
+const _drSavePending = {};
 
 /** Debounced PUT — coalesces rapid keystrokes into one DB write per row. */
 function drPutDebounced(rowId, row) {
   clearTimeout(_drSaveTimers[rowId]);
+  _drSavePending[rowId] = row;
   _drSaveTimers[rowId] = setTimeout(() => {
+    delete _drSavePending[rowId];
+    delete _drSaveTimers[rowId];
     _drPutNow(rowId, row);
   }, 800);
 }
@@ -1470,6 +1484,7 @@ function drPutDebounced(rowId, row) {
 function drPutNow(rowId, row) {
   clearTimeout(_drSaveTimers[rowId]);
   delete _drSaveTimers[rowId];
+  delete _drSavePending[rowId];
   _drPutNow(rowId, row);
 }
 
@@ -1477,10 +1492,40 @@ function _drPutNow(rowId, row) {
   fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body: JSON.stringify({ row })
-  }).then(r => { if (!r.ok) console.warn('[daily-rows] PUT failed:', r.status); })
-    .catch(err => console.warn('[daily-rows] PUT error:', err.message));
+    body: JSON.stringify({ row, projectId: row._projectId || null })
+  }).then(r => {
+    if (!r.ok) {
+      console.warn('[daily-rows] PUT failed:', r.status);
+      _showSaveError(r.status === 401);
+    }
+  }).catch(err => {
+    console.warn('[daily-rows] PUT error:', err.message);
+    _showSaveError(false);
+  });
 }
+
+// Flush any pending debounced saves when the user navigates away or closes the tab.
+// Uses keepalive:true so the request survives page unload.
+function _drFlushPending() {
+  Object.entries(_drSavePending).forEach(([rowId, row]) => {
+    clearTimeout(_drSaveTimers[rowId]);
+    delete _drSaveTimers[rowId];
+    try {
+      fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+        body: JSON.stringify({ row, projectId: row._projectId || null }),
+        keepalive: true,
+      });
+    } catch (_) {}
+  });
+  // Clear after flushing
+  Object.keys(_drSavePending).forEach(k => delete _drSavePending[k]);
+}
+window.addEventListener('beforeunload', _drFlushPending);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _drFlushPending();
+});
 
 /** Delete one row by its JS id. */
 function drDelete(rowId) {
@@ -4643,7 +4688,7 @@ function exportCostCSV() {
 
 const defaultDailyRow = () => ({
   id: Date.now() + Math.random(),
-  date: '', field_type: '', employee: '',
+  date: new Date().toISOString().slice(0, 10), field_type: '', employee: '',
   cost_code: '', sub_code: '',
   job_class: '', rate: '', labor_hours: '',
   equipment: '', equip_unit_cost: '', equip_hours: '',
@@ -4804,6 +4849,7 @@ function addDailyRow(projId) {
   const p = getProj(projId); if (!p) return;
   if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
   const row = defaultDailyRow();
+  row._projectId = projId;
   p.dailyRows.push(row);
   drPost(projId, row);
   renderDailyTable(projId);
@@ -5225,10 +5271,19 @@ function openDailyView(projId) {
   addBtn.style.display = perm.canEdit ? '' : 'none';
   addBtn.onclick = () => addDailyRow(projId);
   document.getElementById('daily-fs-export').onclick = () => exportDailyCSV(projId);
-  // Give the tbody the id that renderDailyTable expects
-  document.getElementById('daily-fs-tbody').id = 'daily-tbody-' + projId;
+  document.getElementById('daily-fs-reload').onclick  = () => reloadDailyRows(projId);
+  // Robustly find the tbody regardless of its current id.
+  // If closeDailyView() was skipped (browser back, tab switch, etc.) the tbody
+  // retains its old 'daily-tbody-X' id instead of 'daily-fs-tbody', so
+  // getElementById('daily-fs-tbody') would return null and the render would silently fail.
+  const tbody = document.getElementById('daily-tbody-' + projId)   // already correct
+             || document.getElementById('daily-fs-tbody')           // normal reset state
+             || document.querySelector('tbody[id^="daily-tbody-"]'); // stale rename
+  if (tbody) tbody.id = 'daily-tbody-' + projId;
   document.getElementById('daily-fullscreen').style.display = 'flex';
   renderDailyTable(projId);
+  // Auto-reload from server when the table appears empty
+  if (!p.dailyRows || p.dailyRows.length === 0) reloadDailyRows(projId);
 }
 
 function closeDailyView() {
@@ -5239,6 +5294,54 @@ function closeDailyView() {
     const tbody = document.getElementById('daily-tbody-' + dailyViewProjId);
     if (tbody) tbody.id = 'daily-fs-tbody';
     dailyViewProjId = null;
+  }
+}
+
+/**
+ * Re-fetch daily rows for a project from the server, then re-render.
+ * Falls back to the legacy fct_projects blob if the DB has no rows —
+ * this recovers entries that were entered before the NOT NULL save bugs
+ * were fixed (they lived in the blob but never made it to the DB).
+ */
+async function reloadDailyRows(projId) {
+  const p = getProj(projId); if (!p) return;
+  const btn = document.getElementById('daily-fs-reload');
+  if (btn) { btn.textContent = '↻ Loading…'; btn.disabled = true; }
+  try {
+    // 1. Try DB first (project-scoped fetch)
+    const r = await fetch(`${API_BASE}/daily-rows?projectId=${encodeURIComponent(projId)}`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (r.status === 401) { logout(); return; }
+    if (r.ok) {
+      const { rows } = await r.json();
+      if (Array.isArray(rows) && rows.length > 0) {
+        p.dailyRows = rows;
+        if (dailyViewProjId === projId) renderDailyTable(projId);
+        return;
+      }
+    }
+    // 2. DB empty — check the legacy fct_projects blob for embedded rows
+    try {
+      const legacy = await apiGet('fct_projects');
+      if (Array.isArray(legacy)) {
+        const old = legacy.find(lp => lp && lp.id === projId);
+        if (old && Array.isArray(old.dailyRows) && old.dailyRows.length > 0) {
+          p.dailyRows = old.dailyRows;
+          if (dailyViewProjId === projId) renderDailyTable(projId);
+          // Persist to DB now that the NOT NULL bugs are fixed
+          drPostBulk(projId, old.dailyRows);
+          return;
+        }
+      }
+    } catch (_) {}
+    // 3. Nothing found anywhere — just re-render whatever is in memory
+    if (dailyViewProjId === projId) renderDailyTable(projId);
+  } catch (e) {
+    console.warn('[reloadDailyRows]', e.message);
+    if (dailyViewProjId === projId) renderDailyTable(projId);
+  } finally {
+    if (btn) { btn.textContent = '↻ Reload'; btn.disabled = false; }
   }
 }
 
@@ -5826,7 +5929,12 @@ function renderProductionRateView(projId) {
       const bidItem    = getBidItem(rawCc, rawSc);
       const bidQty     = bidItem ? (parseFloat(bidItem.quantity)  || 0) : 0;
       const unit       = bidItem ? (bidItem.unit || '') : '';
-      const dates      = Object.keys(subGroups[sc]).filter(d => d !== '(No Date)').sort();
+      const dates      = Object.keys(subGroups[sc]).sort((a, b) => {
+        // Put '(No Date)' last so dated rows sort naturally first
+        if (a === '(No Date)') return 1;
+        if (b === '(No Date)') return -1;
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
 
       // Historical benchmark for this sub code
       const histKey   = rawCc + '||' + rawSc;
@@ -5853,7 +5961,7 @@ function renderProductionRateView(projId) {
         cumCost += day.total_cost;
         cumLbr  += day.labor_hours;
         cumEq   += day.equip_hours;
-        cumDays += 1;
+        if (d !== '(No Date)') cumDays += 1;
 
         const dailyUC  = day.qty > 0  ? day.total_cost / day.qty : 0;
         const runUC    = cumQty  > 0  ? cumCost / cumQty          : 0;

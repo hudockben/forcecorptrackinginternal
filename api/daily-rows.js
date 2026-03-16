@@ -14,17 +14,39 @@ function verifyToken(req) {
   }
 }
 
+// Falls back to today when date is missing (schema: date DATE NOT NULL)
+function dateOrToday(v) {
+  return (v && String(v).trim()) || new Date().toISOString().slice(0, 10);
+}
+
 function parseFloatOrNull(v) {
   if (v === '' || v === null || v === undefined) return null;
   const f = parseFloat(v);
   return isNaN(f) ? null : f;
 }
 
+// For columns declared NOT NULL DEFAULT 0 — never sends a null to the DB
+function parseFloatOrZero(v) {
+  if (v === '' || v === null || v === undefined) return 0;
+  const f = parseFloat(v);
+  return isNaN(f) ? 0 : f;
+}
+
+// The Neon HTTP driver returns DATE columns as JavaScript Date objects, not strings.
+// String(dateObj) gives locale-dependent text like "Thu Apr 24 2025 ..." which
+// <input type="date"> cannot parse.  toISOString() always gives YYYY-MM-DDTHH:mm:ss.sssZ.
+function _isoDate(v) {
+  if (!v) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const s = String(v);
+  return s.length >= 10 ? s.slice(0, 10) : s;  // handles 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:...'
+}
+
 function dbRowToFrontend(r) {
   const row = {
     id:              r.row_id,
     _projectId:      r.project_id,
-    date:            r.date ? String(r.date).slice(0, 10) : '',
+    date:            _isoDate(r.date),
     field_type:      r.field_type      || '',
     employee:        r.employee        || '',
     cost_code:       r.cost_code       || '',
@@ -62,14 +84,14 @@ async function insertRows(sql, projectId, companyCode, rows) {
         equip_total_override, total_cost_override, num_laborers
       ) VALUES (
         ${String(r.id)}, ${projectId}, ${companyCode},
-        ${r.date || null}, ${r.field_type || null}, ${r.employee || null},
+        ${dateOrToday(r.date)}, ${r.field_type || null}, ${r.employee || null},
         ${r.cost_code || null}, ${r.sub_code || null}, ${r.job_class || null},
-        ${parseFloatOrNull(r.rate)}, ${parseFloatOrNull(r.labor_hours)},
-        ${r.equipment || null}, ${parseFloatOrNull(r.equip_unit_cost)},
-        ${parseFloatOrNull(r.equip_hours)}, ${r.material || null},
+        ${parseFloatOrZero(r.rate)}, ${parseFloatOrZero(r.labor_hours)},
+        ${r.equipment || null}, ${parseFloatOrZero(r.equip_unit_cost)},
+        ${parseFloatOrZero(r.equip_hours)}, ${r.material || null},
         ${r.supplier || null}, ${r.po_num || null},
-        ${parseFloatOrNull(r.units_purchased)}, ${parseFloatOrNull(r.unit_cost)},
-        ${parseFloatOrNull(r.material_cost)}, ${parseFloatOrNull(r.quantity)},
+        ${parseFloatOrZero(r.units_purchased)}, ${parseFloatOrZero(r.unit_cost)},
+        ${parseFloatOrZero(r.material_cost)}, ${parseFloatOrZero(r.quantity)},
         ${parseFloatOrNull(r.equip_total_override)},
         ${parseFloatOrNull(r.total_cost)},
         ${parseFloatOrNull(r.num_laborers)}
@@ -125,37 +147,82 @@ module.exports = async (req, res) => {
       return res.json({ ok: true });
     }
 
-    // ── PUT — update a single row (full row replacement) ──────────────────
+    // ── PUT — upsert a single row (insert if missing, update if exists) ──────
     if (req.method === 'PUT') {
       const { id } = req.query;
       if (!id) return res.status(400).json({ error: 'id query param required' });
 
-      const { row } = req.body;
+      const { row, projectId } = req.body;
       if (!row) return res.status(400).json({ error: 'row required in body' });
 
-      await sql`
-        UPDATE daily_tracking SET
-          date            = ${row.date || null},
-          field_type      = ${row.field_type || null},
-          employee        = ${row.employee || null},
-          cost_code       = ${row.cost_code || null},
-          sub_code        = ${row.sub_code || null},
-          job_class       = ${row.job_class || null},
-          rate            = ${parseFloatOrNull(row.rate)},
-          labor_hours     = ${parseFloatOrNull(row.labor_hours)},
-          equipment       = ${row.equipment || null},
-          equip_unit_cost = ${parseFloatOrNull(row.equip_unit_cost)},
-          equip_hours     = ${parseFloatOrNull(row.equip_hours)},
-          material        = ${row.material || null},
-          supplier        = ${row.supplier || null},
-          po_num          = ${row.po_num || null},
-          units_purchased = ${parseFloatOrNull(row.units_purchased)},
-          unit_cost       = ${parseFloatOrNull(row.unit_cost)},
-          material_cost   = ${parseFloatOrNull(row.material_cost)},
-          quantity        = ${parseFloatOrNull(row.quantity)},
-          updated_at      = NOW()
-        WHERE row_id = ${id} AND company_code = ${companyCode}
-      `;
+      if (projectId) {
+        // Upsert: if the original POST failed we still save the row on first edit
+        await sql`
+          INSERT INTO daily_tracking (
+            row_id, project_id, company_code,
+            date, field_type, employee, cost_code, sub_code, job_class,
+            rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+            material, supplier, po_num, units_purchased, unit_cost,
+            material_cost, quantity, updated_at
+          ) VALUES (
+            ${id}, ${projectId}, ${companyCode},
+            ${dateOrToday(row.date)}, ${row.field_type || null}, ${row.employee || null},
+            ${row.cost_code || null}, ${row.sub_code || null}, ${row.job_class || null},
+            ${parseFloatOrZero(row.rate)}, ${parseFloatOrZero(row.labor_hours)},
+            ${row.equipment || null}, ${parseFloatOrZero(row.equip_unit_cost)},
+            ${parseFloatOrZero(row.equip_hours)}, ${row.material || null},
+            ${row.supplier || null}, ${row.po_num || null},
+            ${parseFloatOrZero(row.units_purchased)}, ${parseFloatOrZero(row.unit_cost)},
+            ${parseFloatOrZero(row.material_cost)}, ${parseFloatOrZero(row.quantity)},
+            NOW()
+          )
+          ON CONFLICT (row_id) DO UPDATE SET
+            date            = EXCLUDED.date,
+            field_type      = EXCLUDED.field_type,
+            employee        = EXCLUDED.employee,
+            cost_code       = EXCLUDED.cost_code,
+            sub_code        = EXCLUDED.sub_code,
+            job_class       = EXCLUDED.job_class,
+            rate            = EXCLUDED.rate,
+            labor_hours     = EXCLUDED.labor_hours,
+            equipment       = EXCLUDED.equipment,
+            equip_unit_cost = EXCLUDED.equip_unit_cost,
+            equip_hours     = EXCLUDED.equip_hours,
+            material        = EXCLUDED.material,
+            supplier        = EXCLUDED.supplier,
+            po_num          = EXCLUDED.po_num,
+            units_purchased = EXCLUDED.units_purchased,
+            unit_cost       = EXCLUDED.unit_cost,
+            material_cost   = EXCLUDED.material_cost,
+            quantity        = EXCLUDED.quantity,
+            updated_at      = NOW()
+          WHERE daily_tracking.company_code = ${companyCode}
+        `;
+      } else {
+        await sql`
+          UPDATE daily_tracking SET
+            date            = ${dateOrToday(row.date)},
+            field_type      = ${row.field_type || null},
+            employee        = ${row.employee || null},
+            cost_code       = ${row.cost_code || null},
+            sub_code        = ${row.sub_code || null},
+            job_class       = ${row.job_class || null},
+            rate            = ${parseFloatOrZero(row.rate)},
+            labor_hours     = ${parseFloatOrZero(row.labor_hours)},
+            equipment       = ${row.equipment || null},
+            equip_unit_cost = ${parseFloatOrZero(row.equip_unit_cost)},
+            equip_hours     = ${parseFloatOrZero(row.equip_hours)},
+            material        = ${row.material || null},
+            supplier        = ${row.supplier || null},
+            po_num          = ${row.po_num || null},
+            units_purchased = ${parseFloatOrZero(row.units_purchased)},
+            unit_cost       = ${parseFloatOrZero(row.unit_cost)},
+            material_cost   = ${parseFloatOrZero(row.material_cost)},
+            quantity        = ${parseFloatOrZero(row.quantity)},
+            updated_at      = NOW()
+          WHERE row_id = ${id} AND company_code = ${companyCode}
+        `;
+      }
       return res.json({ ok: true });
     }
 
