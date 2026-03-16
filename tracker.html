@@ -50,6 +50,29 @@
       font-weight: 600;
     }
     header .actions { display: flex; gap: 0.5rem; align-items: center; }
+    .online-avatar-wrap {
+      position: relative;
+      display: inline-flex;
+    }
+    .online-avatar-wrap .user-avatar {
+      opacity: 0.9;
+    }
+    .online-dot {
+      position: absolute;
+      bottom: -1px;
+      right: -1px;
+      width: 8px;
+      height: 8px;
+      background: #22c55e;
+      border-radius: 50%;
+      border: 1.5px solid #0a0a0a;
+    }
+    .online-users-label {
+      font-size: 0.65rem;
+      color: #555;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
     .user-avatar {
       width: 30px;
       height: 30px;
@@ -888,6 +911,7 @@
   <div style="display:flex;align-items:center;gap:1rem;">
     <span class="brand">DataWatch</span>
     <span id="user-badge" style="font-size:0.7rem;color:#444;letter-spacing:0.05em;"></span>
+    <span id="online-users" style="display:flex;align-items:center;gap:0.3rem;margin-left:0.25rem;"></span>
   </div>
   <div class="actions" id="header-actions">
     <!-- injected by JS based on active tab -->
@@ -1309,9 +1333,12 @@ if (!fctToken || !fctUser) {
 }
 
 function logout() {
-  localStorage.removeItem('fct_token');
-  localStorage.removeItem('fct_user');
-  window.location.replace('index.html');
+  // Remove self from presence before leaving
+  _presenceRemoveSelf().finally(() => {
+    localStorage.removeItem('fct_token');
+    localStorage.removeItem('fct_user');
+    window.location.replace('index.html');
+  });
 }
 
 // Show user avatar bubble + company label in header
@@ -1332,6 +1359,84 @@ function logout() {
     <span class="user-avatar" style="background:${color}" title="${name}">${initials}</span>
     <span style="font-size:0.7rem;color:#888;letter-spacing:0.05em;">${fctUser.companyName || fctUser.companyCode} &middot; ${fctUser.username}</span>
   `;
+})();
+
+/* ═══════════════════════════════════════════
+   WHO'S ONLINE — presence heartbeat
+   Each user writes to shared key fct_presence every 30s.
+   Users active within 2 min are shown as avatars in the header.
+═══════════════════════════════════════════ */
+(function () {
+  if (!fctUser) return;
+
+  const PRESENCE_KEY  = 'fct_presence';
+  const HEARTBEAT_MS  = 30_000;   // write own ping every 30s
+  const POLL_MS       = 30_000;   // re-read others every 30s
+  const STALE_MS      = 120_000;  // consider offline after 2 min
+
+  const myId      = String(fctUser.userId || fctUser.username);
+  const myName    = fctUser.name || fctUser.username || '';
+  const myUser    = fctUser.username || '';
+  const parts     = myName.trim().split(/\s+/);
+  const myInit    = parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : myName.slice(0, 2).toUpperCase() || '?';
+  const palette   = ['#2ecc71','#3498db','#9b59b6','#e67e22','#e74c3c','#1abc9c','#f39c12','#16a085'];
+  let h = 0;
+  for (let i = 0; i < myName.length; i++) h = (h * 31 + myName.charCodeAt(i)) & 0xffff;
+  const myColor   = palette[h % palette.length];
+
+  // Read → merge self → write back
+  async function heartbeat() {
+    let data = {};
+    try { data = (await apiGet(PRESENCE_KEY)) || {}; } catch { data = {}; }
+    data[myId] = { username: myUser, initials: myInit, color: myColor, ts: Date.now() };
+    apiPut(PRESENCE_KEY, data);
+    renderOnline(data);
+  }
+
+  // Remove self and write back (used on logout)
+  window._presenceRemoveSelf = async function () {
+    try {
+      let data = (await apiGet(PRESENCE_KEY)) || {};
+      delete data[myId];
+      await fetch(`${API_BASE}/data/${PRESENCE_KEY}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+        body: JSON.stringify({ value: data })
+      });
+    } catch { /* ignore */ }
+  };
+
+  function renderOnline(data) {
+    const el = document.getElementById('online-users');
+    if (!el) return;
+    const now    = Date.now();
+    const others = Object.entries(data)
+      .filter(([id, u]) => id !== myId && (now - (u.ts || 0)) < STALE_MS)
+      .sort((a, b) => (a[1].username || '').localeCompare(b[1].username || ''));
+    if (!others.length) { el.innerHTML = ''; return; }
+    el.innerHTML =
+      '<span class="online-users-label">Online:</span>' +
+      others.map(([, u]) =>
+        `<span class="online-avatar-wrap">` +
+          `<span class="user-avatar" style="background:${u.color||'#555'};width:26px;height:26px;font-size:0.62rem;" title="${u.username||''}">${u.initials||'?'}</span>` +
+          `<span class="online-dot"></span>` +
+        `</span>`
+      ).join('');
+  }
+
+  // Kick off immediately then poll
+  heartbeat();
+  setInterval(heartbeat, HEARTBEAT_MS);
+
+  // Also refresh display more frequently so stale users disappear promptly
+  setInterval(async () => {
+    try {
+      const data = (await apiGet(PRESENCE_KEY)) || {};
+      renderOnline(data);
+    } catch { /* ignore */ }
+  }, POLL_MS);
 })();
 
 /* ═══════════════════════════════════════════
