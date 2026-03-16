@@ -2495,15 +2495,33 @@ async function loadProjects() {
   const index = await apiGet('fct_projects_index');
 
   if (Array.isArray(index) && index.length) {
-    // Parallel-fetch every project blob; blobs may still carry embedded dailyRows
-    // if a previous DB migration attempt failed — leave them in place so
-    // _loadAndMigrateDailyRows can pick them up and push them to the DB.
     const results = await Promise.all(index.map(id => apiGet('fct_project_' + id)));
     projectsList = results.filter(p => p && typeof p === 'object');
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
-    // Load daily rows from DB (populates p.dailyRows in-memory; migrates any still-embedded rows)
+    // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
     await _loadAndMigrateDailyRows();
-    // Cache lean project metadata (no rows) in localStorage as offline fallback
+
+    // ── Recovery: if DB still returned nothing, attempt to pull rows from the
+    //    legacy fct_projects blob which was never deleted and may still carry
+    //    embedded dailyRows from before the per-row DB migration ran successfully.
+    if (projectsList.every(p => p.dailyRows.length === 0)) {
+      try {
+        const legacy = await apiGet('fct_projects');
+        if (Array.isArray(legacy) && legacy.length) {
+          legacy.forEach(old => {
+            if (!Array.isArray(old.dailyRows) || !old.dailyRows.length) return;
+            const p = projectsList.find(proj => proj.id === old.id);
+            if (p) p.dailyRows = old.dailyRows;
+          });
+          // Re-run migration — now that schema columns exist this will push
+          // rows to the DB so future loads come from drGetAll instead.
+          await _loadAndMigrateDailyRows();
+        }
+      } catch (e) {
+        console.warn('[recovery] fct_projects fallback failed:', e.message);
+      }
+    }
+
     try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     return;
   }
