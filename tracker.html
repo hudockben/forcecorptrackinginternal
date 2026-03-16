@@ -1047,6 +1047,7 @@
   <div id="cost-filter-bar" style="padding:0.55rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
     <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Filters:</span>
     <button class="cfb cost-cfb" id="cost-proj-btn" data-f="_project" style="font-size:0.75rem;padding:0.2rem 0.5rem">Project ▼</button>
+    <button class="cfb cost-cfb" id="cost-status-btn" data-f="_proj_status" style="font-size:0.75rem;padding:0.2rem 0.5rem">Status ▼</button>
     <div style="display:flex;align-items:center;gap:0.35rem">
       <span style="font-size:0.72rem;color:var(--muted)">Sq Ft</span>
       <input id="cost-sqft-min" type="number" placeholder="Min" min="0" step="1"
@@ -2319,6 +2320,20 @@ function updateProjectField(id, field, value) {
   const p = getProj(id); if (!p) return;
   p[field] = value;
   saveProjects();
+  // When a project is marked Complete, auto-complete matching cost rows
+  if (field === 'status' && value === 'Complete') {
+    const projCodes = new Set((p.bidItems || []).map(b => (b.cost_code || '') + '||' + (b.sub_code || '')));
+    if (projCodes.size) {
+      let changed = false;
+      costRows.forEach(r => {
+        if (projCodes.has((r.cost_code || '') + '||' + (r.sub_code || '')) && r.status !== 'Complete') {
+          r.status = 'Complete';
+          changed = true;
+        }
+      });
+      if (changed) saveCostRows();
+    }
+  }
   // Live-update header without full re-render
   const nameEl  = document.getElementById('pcn-' + id);
   const metaEl  = document.getElementById('pcm-' + id);
@@ -3730,16 +3745,18 @@ function buildDailyAgg() {
 }
 
 function getFilteredProjectIds() {
-  // Returns null (= all) or a Set of project IDs passing project name + sqft filters
-  const projFilter = costFilters['_project']; // Set of project names, or undefined
+  // Returns null (= all) or a Set of project IDs passing project name + sqft + status filters
+  const projFilter   = costFilters['_project'];     // Set of project names, or undefined
+  const statusFilter = costFilters['_proj_status']; // Set of project statuses, or undefined
   const sqftMin = costSqftMin != null ? costSqftMin : null;
   const sqftMax = costSqftMax != null ? costSqftMax : null;
-  const noFilter = !projFilter && sqftMin == null && sqftMax == null;
+  const noFilter = !projFilter && !statusFilter && sqftMin == null && sqftMax == null;
   if (noFilter) return null;
   return new Set(
     projectsList
       .filter(p => {
-        if (projFilter && !projFilter.has(p['project-name'] || '')) return false;
+        if (projFilter   && !projFilter.has(p['project-name'] || ''))  return false;
+        if (statusFilter && !statusFilter.has(p['status'] || ''))       return false;
         const s = parseFloat(p['sqft']) || 0;
         if (sqftMin != null && s < sqftMin) return false;
         if (sqftMax != null && s > sqftMax) return false;
@@ -4444,6 +4461,13 @@ function _updateCostClearBtn() {
     projBtn.textContent = pf ? `Project (${pf.size}) ▼` : 'Project ▼';
     projBtn.classList.toggle('active', !!pf);
   }
+  // Update status button label
+  const statusBtn = document.getElementById('cost-status-btn');
+  if (statusBtn) {
+    const sf = costFilters['_proj_status'];
+    statusBtn.textContent = sf ? `Status (${sf.size}) ▼` : 'Status ▼';
+    statusBtn.classList.toggle('active', !!sf);
+  }
 }
 
 function applySqftFilter() {
@@ -4480,6 +4504,11 @@ function openCostFilter(field, btn) {
   let unique;
   if (field === '_project') {
     unique = [...new Set(projectsList.map(p => p['project-name'] || ''))].sort();
+  } else if (field === '_proj_status') {
+    const order = ['Bidding','Awarded','In Progress','Substantially Complete','Complete','On Hold'];
+    const present = new Set(projectsList.map(p => p['status'] || ''));
+    unique = order.filter(s => present.has(s));
+    if (present.has('')) unique.unshift('');
   } else {
     unique = [...new Set(costRows.map(r => String(r[field] ?? '')))].sort();
   }
