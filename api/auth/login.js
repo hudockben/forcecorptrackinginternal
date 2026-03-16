@@ -26,8 +26,8 @@ module.exports = async (req, res) => {
       SELECT u.id, u.username, u.password_hash, u.role, c.name AS company_name
       FROM users u
       JOIN companies c ON c.code = u.company_code
-      WHERE u.username = ${username.trim()}
-        AND u.company_code = ${companyCode.trim().toUpperCase()}
+      WHERE LOWER(u.username) = LOWER(${username.trim()})
+        AND LOWER(u.company_code) = LOWER(${companyCode.trim()})
     `;
 
     if (!rows.length) {

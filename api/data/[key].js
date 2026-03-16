@@ -3,7 +3,10 @@
 const { neon } = require('@neondatabase/serverless');
 const jwt      = require('jsonwebtoken');
 
-const ALLOWED_KEYS = ['fct_projects', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders'];
+const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders'];
+function isAllowedKey(k) {
+  return ALLOWED_KEYS.includes(k) || /^fct_project_[a-zA-Z0-9_-]+$/.test(k);
+}
 
 function verifyToken(req) {
   const authHeader = req.headers.authorization || '';
@@ -30,8 +33,8 @@ module.exports = async (req, res) => {
 
   const key = req.query.key;
 
-  if (!ALLOWED_KEYS.includes(key)) {
-    return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}` });
+  if (!isAllowedKey(key)) {
+    return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}, fct_project_*` });
   }
 
   // Namespace the DB key by company so each company's data is isolated

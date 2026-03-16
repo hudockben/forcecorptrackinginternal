@@ -74,10 +74,11 @@ app.put('/api/data/:key', async (req, res) => {
     return res.status(400).json({ error: '`value` field is required in request body' });
   }
 
-  // Only allow the three keys the app uses
-  const ALLOWED_KEYS = ['fct_projects', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders'];
-  if (!ALLOWED_KEYS.includes(key)) {
-    return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}` });
+  // Only allow the keys the app uses
+  const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders'];
+  const isAllowed = ALLOWED_KEYS.includes(key) || /^fct_project_[a-zA-Z0-9_-]+$/.test(key);
+  if (!isAllowed) {
+    return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}, fct_project_*` });
   }
 
   try {

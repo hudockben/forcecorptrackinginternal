@@ -50,6 +50,21 @@
       font-weight: 600;
     }
     header .actions { display: flex; gap: 0.5rem; align-items: center; }
+    .user-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      color: #fff;
+      font-size: 0.65rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      cursor: default;
+      user-select: none;
+      letter-spacing: 0.02em;
+    }
 
     /* ── Tabs ── */
     .tab-bar {
@@ -768,6 +783,7 @@
     }
     .proj-home-fin-item {
       flex: 1;
+      min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 0.15rem;
@@ -779,10 +795,13 @@
       color: var(--muted);
     }
     .proj-home-fin-val {
-      font-size: 0.78rem;
+      font-size: 0.75rem;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
       color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .proj-home-alerts {
       display: flex;
@@ -1047,6 +1066,7 @@
   <div id="cost-filter-bar" style="padding:0.55rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
     <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Filters:</span>
     <button class="cfb cost-cfb" id="cost-proj-btn" data-f="_project" style="font-size:0.75rem;padding:0.2rem 0.5rem">Project ▼</button>
+    <button class="cfb cost-cfb" id="cost-status-btn" data-f="_proj_status" style="font-size:0.75rem;padding:0.2rem 0.5rem">Status ▼</button>
     <div style="display:flex;align-items:center;gap:0.35rem">
       <span style="font-size:0.72rem;color:var(--muted)">Sq Ft</span>
       <input id="cost-sqft-min" type="number" placeholder="Min" min="0" step="1"
@@ -1294,12 +1314,24 @@ function logout() {
   window.location.replace('index.html');
 }
 
-// Show user + company in header badge
+// Show user avatar bubble + company label in header
 (function () {
   const badge = document.getElementById('user-badge');
-  if (badge && fctUser) {
-    badge.textContent = `${fctUser.companyName || fctUser.companyCode} · ${fctUser.username}`;
-  }
+  if (!badge || !fctUser) return;
+  const name = fctUser.name || fctUser.username || '';
+  const parts = name.trim().split(/\s+/);
+  const initials = parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : name.slice(0, 2).toUpperCase() || '?';
+  const palette = ['#2ecc71','#3498db','#9b59b6','#e67e22','#e74c3c','#1abc9c','#f39c12','#16a085'];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+  const color = palette[h % palette.length];
+  badge.style.cssText = 'display:flex;align-items:center;gap:0.5rem;';
+  badge.innerHTML = `
+    <span class="user-avatar" style="background:${color}" title="${name}">${initials}</span>
+    <span style="font-size:0.7rem;color:#888;letter-spacing:0.05em;">${fctUser.companyName || fctUser.companyCode} &middot; ${fctUser.username}</span>
+  `;
 })();
 
 /* ═══════════════════════════════════════════
@@ -1505,9 +1537,10 @@ function renderHomeTab() {
   const pHold     = (statusCounts['On Hold'] / statusTotal * 100).toFixed(1);
   const pRisk     = (statusCounts['At Risk'] / statusTotal * 100).toFixed(1);
 
-  // ── Per-project cards: pinned first, then 6 most-recent non-pinned ──
-  const pinnedProjects    = projectsList.filter(p => p.pinned).slice().reverse();
-  const recentNotPinned   = projectsList.filter(p => !p.pinned).slice(-6).reverse();
+  // ── Per-project cards: always exactly 6 total (pinned first, fill rest with recent) ──
+  const MAX_CARDS         = 6;
+  const pinnedProjects    = projectsList.filter(p => p.pinned).slice().reverse().slice(0, MAX_CARDS);
+  const recentNotPinned   = projectsList.filter(p => !p.pinned).slice().reverse().slice(0, MAX_CARDS - pinnedProjects.length);
   const displayProjects   = [...pinnedProjects, ...recentNotPinned];
   const hiddenNonPinned   = Math.max(0, projectsList.filter(p => !p.pinned).length - recentNotPinned.length);
 
@@ -2095,9 +2128,21 @@ function _countFilledQty(data) {
 }
 
 async function loadProjects() {
-  let saved = await apiGet('fct_projects');
+  // ── New architecture: per-project keys + a lightweight index ──
+  const index = await apiGet('fct_projects_index');
 
-  // Read local backup saved by saveProjects()
+  if (Array.isArray(index) && index.length) {
+    // Parallel-fetch every project; much faster than one giant blob
+    const results = await Promise.all(index.map(id => apiGet('fct_project_' + id)));
+    projectsList = results.filter(p => p && typeof p === 'object');
+    projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
+    // Keep localStorage in sync as offline fallback
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
+    return;
+  }
+
+  // ── Migration: first load after upgrade from single-blob storage ──
+  let saved = await apiGet('fct_projects');
   let localSaved = null;
   try {
     const raw = JSON.parse(localStorage.getItem(PROJECTS_KEY));
@@ -2105,27 +2150,41 @@ async function loadProjects() {
   } catch {}
 
   if (!saved || (Array.isArray(saved) && saved.length === 0)) {
-    // DB empty — fall back to localStorage (first-run migration or API failure)
-    if (localSaved) { saved = localSaved; apiPut('fct_projects', saved); }
+    if (localSaved) { saved = localSaved; }
   } else if (localSaved && _countFilledQty(localSaved) > _countFilledQty(saved)) {
-    // localStorage has more quantity data than the DB, meaning a previous save
-    // likely failed. Use local version and re-push to the DB.
     saved = localSaved;
-    apiPut('fct_projects', saved);
   }
 
   if (Array.isArray(saved) && saved.length) {
     projectsList = saved;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
+    // Migrate to per-project storage (fire-and-forget)
+    projectsList.forEach(p => apiPut('fct_project_' + p.id, p));
+    apiPut('fct_projects_index', projectsList.map(p => p.id));
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
     return;
   }
+
   projectsList = [];
 }
 
-function saveProjects() {
-  // Keep localStorage in sync as a local backup in case the API call fails
+// Save a single project — the normal path for any single-project mutation
+function saveProject(id) {
+  const p = getProj(id); if (!p) return;
   try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
-  apiPut('fct_projects', projectsList);
+  apiPut('fct_project_' + id, p);
+}
+
+// Save the ordered list of project IDs — called when projects are added or removed
+function saveProjectIndex() {
+  apiPut('fct_projects_index', projectsList.map(p => p.id));
+}
+
+// Save every project — only used for bulk operations that touch all projects
+function saveProjects() {
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList)); } catch {}
+  projectsList.forEach(p => apiPut('fct_project_' + p.id, p));
+  saveProjectIndex();
 }
 
 function getProj(id) { return projectsList.find(p => p.id === id); }
@@ -2152,7 +2211,7 @@ function nextPONumber() {
 function togglePin(projId) {
   const p = getProj(projId); if (!p) return;
   p.pinned = !p.pinned;
-  saveProjects();
+  saveProject(projId);
   renderHomeTab();
   renderDashProjectCards();
   renderProjectsTab();
@@ -2168,7 +2227,8 @@ function addProject() {
     prevailing_wage: false, assigned_employees: [], assigned_equipment: []
   };
   projectsList.push(p);
-  saveProjects();
+  saveProject(p.id);
+  saveProjectIndex();
   projPage = 0;
   renderProjectsTab();
   const card = document.getElementById('pcard-' + p.id);
@@ -2230,7 +2290,7 @@ function deleteProject(id) {
     if (confirm.disabled) return;
     close();
     projectsList = projectsList.filter(pr => pr.id !== id);
-    saveProjects();
+    saveProjectIndex();
     renderProjectsTab();
   });
 
@@ -2322,7 +2382,21 @@ function toggleBidSection(titleEl) {
 function updateProjectField(id, field, value) {
   const p = getProj(id); if (!p) return;
   p[field] = value;
-  saveProjects();
+  saveProject(id);
+  // When a project is marked Complete, auto-complete matching cost rows
+  if (field === 'status' && value === 'Complete') {
+    const projCodes = new Set((p.bidItems || []).map(b => (b.cost_code || '') + '||' + (b.sub_code || '')));
+    if (projCodes.size) {
+      let changed = false;
+      costRows.forEach(r => {
+        if (projCodes.has((r.cost_code || '') + '||' + (r.sub_code || '')) && r.status !== 'Complete') {
+          r.status = 'Complete';
+          changed = true;
+        }
+      });
+      if (changed) saveCostRows();
+    }
+  }
   // Live-update header without full re-render
   const nameEl  = document.getElementById('pcn-' + id);
   const metaEl  = document.getElementById('pcm-' + id);
@@ -2337,7 +2411,7 @@ function toggleProjectAssignment(projId, field, name, checked) {
   if (!Array.isArray(p[field])) p[field] = [];
   if (checked) { if (!p[field].includes(name)) p[field].push(name); }
   else { p[field] = p[field].filter(n => n !== name); }
-  saveProjects();
+  saveProject(projId);
   // Re-render daily table if open so dropdown options update immediately
   const dailyTbody = document.getElementById('daily-tbody-' + projId);
   if (dailyTbody) renderDailyTable(projId);
@@ -2352,14 +2426,14 @@ function statusBadgeClass(s) {
 function addBidItem(projId) {
   const p = getProj(projId); if (!p) return;
   p.bidItems.push({ id: uid(), cost_code:'New Cost Code', sub_code:'', quantity:'', unit_cost:'' });
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
 function removeBidItem(projId, itemId) {
   const p = getProj(projId); if (!p) return;
   p.bidItems = p.bidItems.filter(b => b.id !== itemId);
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
@@ -2367,7 +2441,7 @@ function updateBidItem(projId, itemId, field, value) {
   const p = getProj(projId); if (!p) return;
   const item = p.bidItems.find(b => b.id === itemId); if (!item) return;
   item[field] = value;
-  saveProjects();
+  saveProject(projId);
   // Refresh just this row's calculated cells + footer totals
   const qty = parseFloat(item.quantity) || 0;
   const uc  = parseFloat(item.unit_cost) || 0;
@@ -2471,14 +2545,14 @@ function renderBidFooter(projId, opts = {}) {
 function removeBidGroup(projId, costCode) {
   const p = getProj(projId); if (!p) return;
   p.bidItems = (p.bidItems || []).filter(b => b.cost_code !== costCode);
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
 function updateBidGroupCode(projId, oldCode, newCode) {
   const p = getProj(projId); if (!p) return;
   (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) b.cost_code = newCode; });
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
@@ -2489,7 +2563,7 @@ function addBidSubCode(projId, costCode) {
   const newItem = { id: uid(), cost_code: costCode, sub_code: '', quantity: '', unit_cost: '' };
   if (lastIdx != null) p.bidItems.splice(lastIdx + 1, 0, newItem);
   else p.bidItems.push(newItem);
-  saveProjects();
+  saveProject(projId);
   renderBidTable(projId);
 }
 
@@ -2644,10 +2718,11 @@ function projectCardHTML(p) {
   const name   = p['project-name'] || 'Untitled Project';
   const meta   = [p['job-number'], p['client']].filter(Boolean).join(' · ');
   const status = p['status'] || '';
-  const totalBid = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
+  const totalBid      = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
   // Sum ALL daily rows so PO-inserted rows (no cost code) are included in the badge
-  const totalActual = (p.dailyRows||[]).reduce((s,r)=>s+calcDaily(r).total_cost,0);
-  const diff = totalBid - totalActual;
+  const totalActual   = (p.dailyRows||[]).reduce((s,r)=>s+calcDaily(r).total_cost,0);
+  const contractValue = parseFloat(p['contract-value']) || 0;
+  const diff          = totalBid - totalActual;
   const uniqueDates = new Set((p.dailyRows||[]).map(r => r.date).filter(Boolean));
 
   const makeOpt = (vals, sel) => vals.map(v => `<option value="${v}" ${sel===v?'selected':''}>${v||'— select —'}</option>`).join('');
@@ -2660,9 +2735,10 @@ function projectCardHTML(p) {
     </div>
     <div class="proj-card-badges">
       <span class="proj-badge ${statusBadgeClass(status)}" id="pcb-${p.id}">${esc(status)}</span>
+      ${contractValue ? `<span class="proj-badge badge-awarded">Contract $${fmt(contractValue,0)}</span>` : ''}
       ${totalBid ? `<span class="proj-badge badge-default">Bid $${fmt(totalBid,0)}</span>` : ''}
-      ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
-      ${totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff)+' under':'$'+fmt(Math.abs(diff))+' over'}</span>` : ''}
+      ${totalActual ? `<span class="proj-badge ${(!totalBid||diff>=0)?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
+      ${contractValue && totalActual ? (()=>{ const profit=contractValue-totalActual; const pct=(profit/contractValue*100).toFixed(1); return `<span class="proj-badge ${profit>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${profit>=0?'$'+fmt(profit,0)+' profit':'$'+fmt(Math.abs(profit),0)+' loss'} (${pct}%)</span>`; })() : (totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff,0)+' under bid':'$'+fmt(Math.abs(diff),0)+' over bid'}</span>` : '')}
     </div>
     ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.25rem 0.7rem;background:#1a3a2a;color:#4ade80;border:1px solid #4ade80;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>` : ''}
     <button class="btn btn-green" style="font-size:0.75rem;padding:0.25rem 0.7rem;" onclick="event.stopPropagation();openDailyView('${p.id}')">Daily Tracking &#8594;</button>
@@ -2696,6 +2772,9 @@ function projectCardHTML(p) {
           <select onchange="updateProjectField('${p.id}','contract-type',this.value)">
             ${makeOpt(['','Lump Sum','Unit Price','Cost Plus','Time & Material','GMP'], p['contract-type']||'')}
           </select></div>
+        <div class="info-field"><label>Contract Value ($)</label>
+          <input type="number" value="${esc(p['contract-value']||'')}" placeholder="e.g. 1250000" step="0.01" min="0"
+            oninput="updateProjectField('${p.id}','contract-value',this.value)"></div>
       </div>
     </div>
 
@@ -2945,7 +3024,7 @@ function deletePO(id) {
     const proj = getProj(oldProj);
     if (proj) {
       proj.dailyRows = proj.dailyRows.filter(r => r.id !== po.po_row_id);
-      saveProjects();
+      saveProject(oldProj);
       renderDailyTable(oldProj);
     }
   }
@@ -2969,7 +3048,7 @@ function _syncPORowField(po, field) {
     const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
     r.material_cost = String(qty * uc + tax);
   }
-  saveProjects();
+  saveProject(po.project_id);
   renderDailyTable(po.project_id);
 }
 
@@ -3300,7 +3379,7 @@ document.getElementById('po-root').addEventListener('change', e => {
       const oldP = getProj(oldProj);
       if (oldP) {
         oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== po.po_row_id);
-        saveProjects();
+        saveProject(oldProj);
         renderDailyTable(oldProj);
       }
     }
@@ -3336,7 +3415,7 @@ document.getElementById('po-root').addEventListener('change', e => {
         };
         newP.dailyRows.push(row);
         po.po_row_id = row.id;
-        saveProjects();
+        saveProject(po.project_id);
         renderDailyTable(po.project_id);
       }
     }
@@ -3734,16 +3813,18 @@ function buildDailyAgg() {
 }
 
 function getFilteredProjectIds() {
-  // Returns null (= all) or a Set of project IDs passing project name + sqft filters
-  const projFilter = costFilters['_project']; // Set of project names, or undefined
+  // Returns null (= all) or a Set of project IDs passing project name + sqft + status filters
+  const projFilter   = costFilters['_project'];     // Set of project names, or undefined
+  const statusFilter = costFilters['_proj_status']; // Set of project statuses, or undefined
   const sqftMin = costSqftMin != null ? costSqftMin : null;
   const sqftMax = costSqftMax != null ? costSqftMax : null;
-  const noFilter = !projFilter && sqftMin == null && sqftMax == null;
+  const noFilter = !projFilter && !statusFilter && sqftMin == null && sqftMax == null;
   if (noFilter) return null;
   return new Set(
     projectsList
       .filter(p => {
-        if (projFilter && !projFilter.has(p['project-name'] || '')) return false;
+        if (projFilter   && !projFilter.has(p['project-name'] || ''))  return false;
+        if (statusFilter && !statusFilter.has(p['status'] || ''))       return false;
         const s = parseFloat(p['sqft']) || 0;
         if (sqftMin != null && s < sqftMin) return false;
         if (sqftMax != null && s > sqftMax) return false;
@@ -4262,7 +4343,7 @@ function copyDailyRow(projId, i) {
   const src = (p.dailyRows || [])[i]; if (!src) return;
   const copy = Object.assign({}, src, { id: Date.now() + Math.random(), material_cost: '' });
   p.dailyRows.splice(i + 1, 0, copy);
-  saveProjects();
+  saveProject(projId);
   renderDailyTable(projId);
 }
 
@@ -4270,7 +4351,7 @@ function addDailyRow(projId) {
   const p = getProj(projId); if (!p) return;
   if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
   p.dailyRows.push(defaultDailyRow());
-  saveProjects();
+  saveProject(projId);
   renderDailyTable(projId);
 }
 
@@ -4448,6 +4529,13 @@ function _updateCostClearBtn() {
     projBtn.textContent = pf ? `Project (${pf.size}) ▼` : 'Project ▼';
     projBtn.classList.toggle('active', !!pf);
   }
+  // Update status button label
+  const statusBtn = document.getElementById('cost-status-btn');
+  if (statusBtn) {
+    const sf = costFilters['_proj_status'];
+    statusBtn.textContent = sf ? `Status (${sf.size}) ▼` : 'Status ▼';
+    statusBtn.classList.toggle('active', !!sf);
+  }
 }
 
 function applySqftFilter() {
@@ -4484,6 +4572,11 @@ function openCostFilter(field, btn) {
   let unique;
   if (field === '_project') {
     unique = [...new Set(projectsList.map(p => p['project-name'] || ''))].sort();
+  } else if (field === '_proj_status') {
+    const order = ['Bidding','Awarded','In Progress','Substantially Complete','Complete','On Hold'];
+    const present = new Set(projectsList.map(p => p['status'] || ''));
+    unique = order.filter(s => present.has(s));
+    if (present.has('')) unique.unshift('');
   } else {
     unique = [...new Set(costRows.map(r => String(r[field] ?? '')))].sort();
   }
@@ -5716,7 +5809,7 @@ document.addEventListener('input', e => {
         }
       }
     }
-    saveProjects();
+    saveProject(projId);
     renderDailyCalcCells(projId, i);
   }
 });
@@ -5734,7 +5827,7 @@ document.addEventListener('change', e => {
   // (avoids a redundant API call when 'input' already handled it)
   if (p.dailyRows[i][el.dataset.f] !== el.value) {
     p.dailyRows[i][el.dataset.f] = el.value;
-    saveProjects();
+    saveProject(el.dataset.proj);
     renderDailyCalcCells(el.dataset.proj, i);
   }
 });
@@ -5810,7 +5903,7 @@ document.addEventListener('click', e => {
     } else if (tab === 'daily') {
       const p = getProj(projId); if (!p) return;
       p.dailyRows.splice(i, 1);
-      saveProjects();
+      saveProject(projId);
       renderDailyTable(projId);
     } else if (tab === 'po') {
       deletePO(btn.dataset.poId);
@@ -6194,7 +6287,7 @@ function commitImportCSV() {
     p.dailyRows.push(...rows);
     totalImported += rows.length;
   });
-  saveProjects();
+  Object.keys(byProj).forEach(id => saveProject(id));
   projectsList.forEach(p => renderDailyTable(p.id));
   renderCostTable();
   clearImportPreview();
