@@ -20,6 +20,13 @@ function parseFloatOrNull(v) {
   return isNaN(f) ? null : f;
 }
 
+// For columns declared NOT NULL DEFAULT 0 — never sends a null to the DB
+function parseFloatOrZero(v) {
+  if (v === '' || v === null || v === undefined) return 0;
+  const f = parseFloat(v);
+  return isNaN(f) ? 0 : f;
+}
+
 function dbRowToFrontend(r) {
   const row = {
     id:              r.row_id,
@@ -64,12 +71,12 @@ async function insertRows(sql, projectId, companyCode, rows) {
         ${String(r.id)}, ${projectId}, ${companyCode},
         ${r.date || null}, ${r.field_type || null}, ${r.employee || null},
         ${r.cost_code || null}, ${r.sub_code || null}, ${r.job_class || null},
-        ${parseFloatOrNull(r.rate)}, ${parseFloatOrNull(r.labor_hours)},
-        ${r.equipment || null}, ${parseFloatOrNull(r.equip_unit_cost)},
-        ${parseFloatOrNull(r.equip_hours)}, ${r.material || null},
+        ${parseFloatOrZero(r.rate)}, ${parseFloatOrZero(r.labor_hours)},
+        ${r.equipment || null}, ${parseFloatOrZero(r.equip_unit_cost)},
+        ${parseFloatOrZero(r.equip_hours)}, ${r.material || null},
         ${r.supplier || null}, ${r.po_num || null},
-        ${parseFloatOrNull(r.units_purchased)}, ${parseFloatOrNull(r.unit_cost)},
-        ${parseFloatOrNull(r.material_cost)}, ${parseFloatOrNull(r.quantity)},
+        ${parseFloatOrZero(r.units_purchased)}, ${parseFloatOrZero(r.unit_cost)},
+        ${parseFloatOrZero(r.material_cost)}, ${parseFloatOrZero(r.quantity)},
         ${parseFloatOrNull(r.equip_total_override)},
         ${parseFloatOrNull(r.total_cost)},
         ${parseFloatOrNull(r.num_laborers)}
@@ -146,12 +153,12 @@ module.exports = async (req, res) => {
             ${id}, ${projectId}, ${companyCode},
             ${row.date || null}, ${row.field_type || null}, ${row.employee || null},
             ${row.cost_code || null}, ${row.sub_code || null}, ${row.job_class || null},
-            ${parseFloatOrNull(row.rate)}, ${parseFloatOrNull(row.labor_hours)},
-            ${row.equipment || null}, ${parseFloatOrNull(row.equip_unit_cost)},
-            ${parseFloatOrNull(row.equip_hours)}, ${row.material || null},
+            ${parseFloatOrZero(row.rate)}, ${parseFloatOrZero(row.labor_hours)},
+            ${row.equipment || null}, ${parseFloatOrZero(row.equip_unit_cost)},
+            ${parseFloatOrZero(row.equip_hours)}, ${row.material || null},
             ${row.supplier || null}, ${row.po_num || null},
-            ${parseFloatOrNull(row.units_purchased)}, ${parseFloatOrNull(row.unit_cost)},
-            ${parseFloatOrNull(row.material_cost)}, ${parseFloatOrNull(row.quantity)},
+            ${parseFloatOrZero(row.units_purchased)}, ${parseFloatOrZero(row.unit_cost)},
+            ${parseFloatOrZero(row.material_cost)}, ${parseFloatOrZero(row.quantity)},
             NOW()
           )
           ON CONFLICT (row_id) DO UPDATE SET
@@ -185,18 +192,18 @@ module.exports = async (req, res) => {
             cost_code       = ${row.cost_code || null},
             sub_code        = ${row.sub_code || null},
             job_class       = ${row.job_class || null},
-            rate            = ${parseFloatOrNull(row.rate)},
-            labor_hours     = ${parseFloatOrNull(row.labor_hours)},
+            rate            = ${parseFloatOrZero(row.rate)},
+            labor_hours     = ${parseFloatOrZero(row.labor_hours)},
             equipment       = ${row.equipment || null},
-            equip_unit_cost = ${parseFloatOrNull(row.equip_unit_cost)},
-            equip_hours     = ${parseFloatOrNull(row.equip_hours)},
+            equip_unit_cost = ${parseFloatOrZero(row.equip_unit_cost)},
+            equip_hours     = ${parseFloatOrZero(row.equip_hours)},
             material        = ${row.material || null},
             supplier        = ${row.supplier || null},
             po_num          = ${row.po_num || null},
-            units_purchased = ${parseFloatOrNull(row.units_purchased)},
-            unit_cost       = ${parseFloatOrNull(row.unit_cost)},
-            material_cost   = ${parseFloatOrNull(row.material_cost)},
-            quantity        = ${parseFloatOrNull(row.quantity)},
+            units_purchased = ${parseFloatOrZero(row.units_purchased)},
+            unit_cost       = ${parseFloatOrZero(row.unit_cost)},
+            material_cost   = ${parseFloatOrZero(row.material_cost)},
+            quantity        = ${parseFloatOrZero(row.quantity)},
             updated_at      = NOW()
           WHERE row_id = ${id} AND company_code = ${companyCode}
         `;
