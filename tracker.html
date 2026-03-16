@@ -4853,7 +4853,7 @@ function exportDailySummaryPDF(dateStr) {
         // Use runUC (cost per produced unit) for behind-pace — projUC can be distorted
         // when bid qty and tracking qty are in different units.
         const behindCost = histUC > 0 && runUC > histUC * 1.02;
-        const behindMU   = histMU > 0 && runMU  < histMU  * 0.95;
+        const behindMU   = histMU > 0 && runMU > 0 && runMU < histMU * 0.95;
         const behind     = behindCost || behindMU;
 
         const suggestions = [];
@@ -4986,7 +4986,7 @@ function buildPaceSuggestions({ projUC, histUC, runUC, runMU, histMU,
   if (cumQty === 0) return '';
   // Use runUC (cost per produced unit) — projUC can be distorted when bid/tracking units differ
   const behindCost = histUC > 0 && runUC > histUC * 1.02;
-  const behindMU   = histMU > 0 && runMU  < histMU  * 0.95;
+  const behindMU   = histMU > 0 && runMU > 0 && runMU < histMU * 0.95;
   if (!behindCost && !behindMU) return '';
 
   const tips = [];
