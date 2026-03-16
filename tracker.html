@@ -50,6 +50,21 @@
       font-weight: 600;
     }
     header .actions { display: flex; gap: 0.5rem; align-items: center; }
+    .user-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      color: #fff;
+      font-size: 0.65rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      cursor: default;
+      user-select: none;
+      letter-spacing: 0.02em;
+    }
 
     /* ── Tabs ── */
     .tab-bar {
@@ -1295,12 +1310,24 @@ function logout() {
   window.location.replace('index.html');
 }
 
-// Show user + company in header badge
+// Show user avatar bubble + company label in header
 (function () {
   const badge = document.getElementById('user-badge');
-  if (badge && fctUser) {
-    badge.textContent = `${fctUser.companyName || fctUser.companyCode} · ${fctUser.username}`;
-  }
+  if (!badge || !fctUser) return;
+  const name = fctUser.name || fctUser.username || '';
+  const parts = name.trim().split(/\s+/);
+  const initials = parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : name.slice(0, 2).toUpperCase() || '?';
+  const palette = ['#2ecc71','#3498db','#9b59b6','#e67e22','#e74c3c','#1abc9c','#f39c12','#16a085'];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+  const color = palette[h % palette.length];
+  badge.style.cssText = 'display:flex;align-items:center;gap:0.5rem;';
+  badge.innerHTML = `
+    <span class="user-avatar" style="background:${color}" title="${name}">${initials}</span>
+    <span style="font-size:0.7rem;color:#888;letter-spacing:0.05em;">${fctUser.companyName || fctUser.companyCode} &middot; ${fctUser.username}</span>
+  `;
 })();
 
 /* ═══════════════════════════════════════════
