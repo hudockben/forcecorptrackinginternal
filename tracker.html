@@ -1537,9 +1537,10 @@ function renderHomeTab() {
   const pHold     = (statusCounts['On Hold'] / statusTotal * 100).toFixed(1);
   const pRisk     = (statusCounts['At Risk'] / statusTotal * 100).toFixed(1);
 
-  // ── Per-project cards: pinned first, then 6 most-recent non-pinned ──
-  const pinnedProjects    = projectsList.filter(p => p.pinned).slice().reverse();
-  const recentNotPinned   = projectsList.filter(p => !p.pinned).slice(-6).reverse();
+  // ── Per-project cards: always exactly 6 total (pinned first, fill rest with recent) ──
+  const MAX_CARDS         = 6;
+  const pinnedProjects    = projectsList.filter(p => p.pinned).slice().reverse().slice(0, MAX_CARDS);
+  const recentNotPinned   = projectsList.filter(p => !p.pinned).slice().reverse().slice(0, MAX_CARDS - pinnedProjects.length);
   const displayProjects   = [...pinnedProjects, ...recentNotPinned];
   const hiddenNonPinned   = Math.max(0, projectsList.filter(p => !p.pinned).length - recentNotPinned.length);
 
