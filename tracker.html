@@ -5609,14 +5609,18 @@ function exportDailySummaryPDF(projVal, startDate, endDate) {
         const unit    = bidItem ? (bidItem.unit || '') : '';
         const pctComp = bidQty > 0 ? (cumQty / bidQty) * 100 : null;
 
-        let projUC = 0;
-        if (cumQty > 0) {
-          projUC = (bidQty > 0 && cumQty < bidQty)
-            ? (cumCost + (bidQty - cumQty) * runUC) / bidQty
-            : runUC;
-        }
+        // Project UC Avg: avg UC from all project days outside the current period
+        let projUCQty = 0, projUCCost = 0;
+        allRows.filter(r => (r.cost_code||'') === rawCc && (r.sub_code||'') === rawSc && r.date && (r.date < startDate || r.date > endDate))
+          .forEach(r => {
+            const c = calcDaily(r);
+            projUCQty  += parseFloat(r.quantity) || 0;
+            projUCCost += c.total_cost;
+          });
+        const projUC = projUCQty > 0 ? projUCCost / projUCQty : 0;
 
-        const behindCost = histUC > 0 && runUC > histUC * 1.02;
+        const benchUC    = projUC > 0 ? projUC : histUC;
+        const behindCost = benchUC > 0 && runUC > benchUC * 1.02;
         const behindMU   = histMU > 0 && runMU > 0 && runMU < histMU * 0.95;
         const behind     = behindCost || behindMU;
 
@@ -5629,8 +5633,9 @@ function exportDailySummaryPDF(projVal, startDate, endDate) {
           suggs.push(`Improve equip util (MU ${fmt(runMU,2)} vs ${fmt(histMU,2)} hist)`);
         }
         if (behindCost) {
-          const p2 = ((runUC - histUC) / histUC * 100).toFixed(1);
-          suggs.push(`Reduce unit cost — ${p2}% above hist ($${fmt(runUC)} vs $${fmt(histUC)})`);
+          const benchLabel = projUC > 0 ? 'proj avg' : 'hist';
+          const p2 = ((runUC - benchUC) / benchUC * 100).toFixed(1);
+          suggs.push(`Reduce unit cost — ${p2}% above ${benchLabel} ($${fmt(runUC)} vs $${fmt(benchUC)})`);
         }
 
         prodTableRows.push({ cc, sc, unit, period, cumQty, bidQty, runUC, projUC, histUC, pctComp, behind, suggs });
@@ -5661,8 +5666,8 @@ function exportDailySummaryPDF(projVal, startDate, endDate) {
         <td>${r.bidQty>0?fmt(r.bidQty):'\u2014'}</td>
         <td>${pctStr(r.pctComp)}</td>
         <td>${money(r.period.total_cost)}</td>
-        <td class="${r.histUC>0?(r.runUC>r.histUC?'red':'grn'):''}">${money(r.runUC)}</td>
-        <td class="${r.histUC>0&&r.projUC>0?(r.projUC>r.histUC*1.02?'red':'grn'):''}">${money(r.projUC)}</td>
+        <td class="${(r.projUC>0||(r.histUC>0))?(r.runUC>(r.projUC||r.histUC)?'red':'grn'):''}">${money(r.runUC)}</td>
+        <td class="muted">${r.projUC>0?money(r.projUC):'\u2014'}</td>
         <td class="muted">${money(r.histUC)}</td>
         <td>${r.period.labor_hours>0?fmt(r.period.labor_hours,1):'\u2014'}</td>
         <td>${r.period.equip_hours>0?fmt(r.period.equip_hours,1):'\u2014'}</td>
@@ -5694,7 +5699,7 @@ function exportDailySummaryPDF(projVal, startDate, endDate) {
         <thead><tr>
           <th>Cost Code</th><th>Sub Code</th><th>Unit</th>
           <th>Qty (Period)</th><th>Running Qty</th><th>Bid Qty</th><th>% Complete</th>
-          <th>Cost (Period)</th><th>Running UC</th><th>Proj UC</th><th>Hist Avg UC</th>
+          <th>Cost (Period)</th><th>Running UC</th><th>Proj UC Avg</th><th>Hist Avg UC</th>
           <th>Lbr Hrs</th><th>Equip Hrs</th><th>Status</th>
         </tr></thead>
         <tbody>${prodRows}</tbody>
