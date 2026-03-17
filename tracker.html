@@ -2925,6 +2925,9 @@ function addBidItem(projId) {
 
 function removeBidItem(projId, itemId) {
   const p = getProj(projId); if (!p) return;
+  const item = p.bidItems.find(b => b.id === itemId);
+  const label = item ? (item.sub_code || 'this line') : 'this line';
+  if (!confirm(`Are you sure you want to delete "${label}"?`)) return;
   p.bidItems = p.bidItems.filter(b => b.id !== itemId);
   saveProject(projId);
   renderBidTable(projId);
