@@ -3186,6 +3186,7 @@ function renderBidTable(projId, opts = {}) {
     const gProjCls = (gProj - gBidTotal) <= 0 ? 'bid-under' : 'bid-over';
     const totalCells = `
       <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
+      <td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
       <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
       <td class="bid-calc">${gCumHrs ? fmt(gCumHrs) : '—'}</td>
