@@ -3170,7 +3170,7 @@ function renderBidTable(projId, opts = {}) {
            <td class="bid-calc">${bidQty||'—'}</td>
            <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
            ${calcCellsA}${calcCellsB}`
-        : `<td class="bid-del"><button class="del-btn" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
+        : `<td class="bid-del"><button class="del-btn" data-tab="bid-item" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
            <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
              oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
            <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
@@ -6433,6 +6433,9 @@ document.addEventListener('click', e => {
 
   // If a confirm is already open for this button, ignore (handled by its own listeners)
   if (btn.querySelector('.del-confirm') || btn._confirmOpen) return;
+
+  // Bid item rows use a JS confirm dialog instead of the inline popover
+  if (btn.dataset.tab === 'bid-item') return;
 
   e.stopPropagation();
   removeDelConfirm(); // close any other open confirms
