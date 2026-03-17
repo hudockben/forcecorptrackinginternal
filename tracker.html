@@ -6398,15 +6398,13 @@ document.addEventListener('input', e => {
       if (emp) {
         const _tbody = document.getElementById('daily-tbody-' + projId);
         const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
-        if (!p.dailyRows[i].job_class && emp.job_class) {
+        if (emp.job_class) {
           p.dailyRows[i].job_class = emp.job_class;
           if (rowEl) { const s = rowEl.querySelector('[data-f="job_class"]'); if (s) s.value = emp.job_class; }
         }
-        const autoRate = p.prevailing_wage ? emp.prevailing_rate : emp.non_prevailing_rate;
-        if (!p.dailyRows[i].rate && autoRate) {
-          p.dailyRows[i].rate = autoRate;
-          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate; }
-        }
+        const autoRate = p.prevailing_wage ? (emp.prevailing_rate || 0) : (emp.non_prevailing_rate || 0);
+        p.dailyRows[i].rate = autoRate || '';
+        if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate || ''; }
       }
     }
     // Auto-calculate material cost when units_purchased or unit_cost changes
