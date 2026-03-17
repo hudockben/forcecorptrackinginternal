@@ -296,8 +296,11 @@
     (function () {
       const canvas = document.getElementById('bgCanvas');
       const ctx    = canvas.getContext('2d');
-      const LINK_DIST  = 200;
-      const NODE_COUNT = 110;
+      const LINK_DIST    = 200;
+      const NODE_COUNT   = 110;
+      const REPEL_DIST   = 120;   // mouse repulsion radius
+      const REPEL_FORCE  = 2.2;   // repulsion strength
+      const MAX_SPEED    = 3.5;   // cap after repulsion
 
       // Multi-color palette: green, cyan, blue-purple, amber
       const COLORS = [
@@ -308,6 +311,19 @@
       ];
 
       let W, H, nodes;
+      const mouse = { x: -9999, y: -9999 };
+
+      // Active data pulses: { ni, nj, t } where t goes 0→1
+      const pulses = [];
+      const PULSE_SPEED = 0.018;
+
+      // Per-node flash brightness (0–1, decays each frame)
+      // stored on each node as node.flash
+
+      window.addEventListener('mousemove', e => {
+        mouse.x = e.clientX;
+        mouse.y = e.clientY;
+      });
 
       function makeNode() {
         const c = COLORS[Math.floor(Math.random() * COLORS.length)];
@@ -318,6 +334,7 @@
           vy: (Math.random() - 0.5) * 0.65,
           r:  2 + Math.random() * 3,
           c,
+          flash: 0,
         };
       }
 
@@ -327,25 +344,91 @@
         nodes = Array.from({ length: NODE_COUNT }, makeNode);
       }
 
+      // Spawn a pulse travelling from node ni → nj
+      function spawnPulse(ni, nj) {
+        // Limit total active pulses to keep it tasteful
+        if (pulses.length < 18) pulses.push({ ni, nj, t: 0 });
+      }
+
+      // Periodically seed new pulses from random connected pairs
+      let pulseTimer = 0;
+
       function draw() {
         ctx.clearRect(0, 0, W, H);
 
-        // Update positions
+        // ── Update node positions + mouse repulsion ──────────────────────
         for (const n of nodes) {
+          // Mouse repulsion
+          const mdx = n.x - mouse.x;
+          const mdy = n.y - mouse.y;
+          const md  = Math.sqrt(mdx * mdx + mdy * mdy);
+          if (md < REPEL_DIST && md > 0) {
+            const force = (1 - md / REPEL_DIST) * REPEL_FORCE;
+            n.vx += (mdx / md) * force;
+            n.vy += (mdy / md) * force;
+          }
+
+          // Dampen back toward base speed
+          const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+          if (speed > MAX_SPEED) {
+            n.vx = (n.vx / speed) * MAX_SPEED;
+            n.vy = (n.vy / speed) * MAX_SPEED;
+          }
+          // Soft drag so nodes drift back to normal when mouse leaves
+          n.vx *= 0.995;
+          n.vy *= 0.995;
+
           n.x += n.vx;
           n.y += n.vy;
           if (n.x < 0 || n.x > W) n.vx *= -1;
           if (n.y < 0 || n.y > H) n.vy *= -1;
+
+          // Decay flash
+          if (n.flash > 0) n.flash = Math.max(0, n.flash - 0.04);
         }
 
-        // Draw connections — blend the two endpoint colors
+        // ── Seed pulses periodically ──────────────────────────────────────
+        pulseTimer++;
+        if (pulseTimer >= 40) {
+          pulseTimer = 0;
+          // Pick a random connected pair to send a pulse along
+          const candidates = [];
+          for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+              const dx = nodes[i].x - nodes[j].x;
+              const dy = nodes[i].y - nodes[j].y;
+              if (dx * dx + dy * dy < LINK_DIST * LINK_DIST) candidates.push([i, j]);
+            }
+          }
+          if (candidates.length) {
+            const [ni, nj] = candidates[Math.floor(Math.random() * candidates.length)];
+            spawnPulse(ni, nj);
+          }
+        }
+
+        // ── Advance pulses ────────────────────────────────────────────────
+        for (let p = pulses.length - 1; p >= 0; p--) {
+          pulses[p].t += PULSE_SPEED;
+          if (pulses[p].t >= 1) pulses.splice(p, 1);
+        }
+
+        // ── Draw connections — blend endpoint colors ──────────────────────
         for (let i = 0; i < nodes.length; i++) {
           for (let j = i + 1; j < nodes.length; j++) {
             const dx   = nodes[i].x - nodes[j].x;
             const dy   = nodes[i].y - nodes[j].y;
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist < LINK_DIST) {
-              const alpha = (1 - dist / LINK_DIST) * 0.55;
+              const proximity = 1 - dist / LINK_DIST;
+
+              // Flash nodes that just came into connection range
+              if (proximity > 0.85 && nodes[i].flash === 0 && nodes[j].flash === 0) {
+                nodes[i].flash = 0.9;
+                nodes[j].flash = 0.9;
+                spawnPulse(i, j);
+              }
+
+              const alpha = proximity * 0.55;
               const ci = nodes[i].c, cj = nodes[j].c;
               const mr = Math.round((ci.r + cj.r) / 2);
               const mg = Math.round((ci.g + cj.g) / 2);
@@ -360,23 +443,53 @@
           }
         }
 
-        // Draw nodes with glow
+        // ── Draw pulses travelling along edges ────────────────────────────
+        for (const p of pulses) {
+          const a = nodes[p.ni], b = nodes[p.nj];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist >= LINK_DIST) continue; // edge dissolved mid-pulse
+
+          const px = a.x + dx * p.t;
+          const py = a.y + dy * p.t;
+
+          // Fade in at start, fade out at end
+          const fade = Math.sin(p.t * Math.PI);
+          const ca = a.c, cb2 = b.c;
+          const pr = Math.round(ca.r + (cb2.r - ca.r) * p.t);
+          const pg = Math.round(ca.g + (cb2.g - ca.g) * p.t);
+          const pb = Math.round(ca.b + (cb2.b - ca.b) * p.t);
+
+          // Glow halo
+          ctx.beginPath();
+          ctx.arc(px, py, 7, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${pr},${pg},${pb},${(fade * 0.18).toFixed(3)})`;
+          ctx.fill();
+          // Bright core
+          ctx.beginPath();
+          ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${pr},${pg},${pb},${(fade * 0.95).toFixed(3)})`;
+          ctx.fill();
+        }
+
+        // ── Draw nodes with glow + flash ──────────────────────────────────
         for (const n of nodes) {
           const { r: cr, g: cg, b: cb } = n.c;
-          // outer glow
+          const f = n.flash;
+          // outer glow (boosted when flashing)
           ctx.beginPath();
-          ctx.arc(n.x, n.y, n.r * 3, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${cr},${cg},${cb},0.12)`;
+          ctx.arc(n.x, n.y, n.r * (3 + f * 4), 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${cr},${cg},${cb},${(0.12 + f * 0.35).toFixed(3)})`;
           ctx.fill();
           // inner glow
           ctx.beginPath();
-          ctx.arc(n.x, n.y, n.r * 1.6, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${cr},${cg},${cb},0.30)`;
+          ctx.arc(n.x, n.y, n.r * (1.6 + f * 2), 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${cr},${cg},${cb},${(0.30 + f * 0.45).toFixed(3)})`;
           ctx.fill();
           // solid core
           ctx.beginPath();
           ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${cr},${cg},${cb},0.90)`;
+          ctx.fillStyle = `rgba(${cr},${cg},${cb},${(0.90 + f * 0.10).toFixed(3)})`;
           ctx.fill();
         }
 
