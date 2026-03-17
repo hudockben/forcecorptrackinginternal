@@ -2191,17 +2191,21 @@ function renderDashProjectCards() {
     return;
   }
 
-  const totalPages = Math.ceil(filtered.length / DASH_PAGE_SIZE);
+  const sortedFiltered = [
+    ...filtered.filter(p => p.pinned),
+    ...filtered.filter(p => !p.pinned)
+  ];
+  const totalPages = Math.ceil(sortedFiltered.length / DASH_PAGE_SIZE);
   if (dashPage >= totalPages) dashPage = totalPages - 1;
   if (dashPage < 0) dashPage = 0;
-  const pageItems = filtered.slice(dashPage * DASH_PAGE_SIZE, (dashPage + 1) * DASH_PAGE_SIZE);
+  const pageItems = sortedFiltered.slice(dashPage * DASH_PAGE_SIZE, (dashPage + 1) * DASH_PAGE_SIZE);
 
   const paginationHTML = totalPages > 1 ? `
     <div style="display:flex;align-items:center;gap:0.5rem;margin:0.75rem 0 0.25rem;justify-content:flex-end">
       <button onclick="dashPage=Math.max(0,dashPage-1);renderDashProjectCards()"
         style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:0.25rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.78rem"
         ${dashPage === 0 ? 'disabled style="background:#1a1a1a;border:1px solid #333;color:#555;padding:0.25rem 0.65rem;border-radius:4px;cursor:not-allowed;font-size:0.78rem"' : ''}>◀ Prev</button>
-      <span style="color:#888;font-size:0.78rem">Page ${dashPage+1} of ${totalPages} &nbsp;·&nbsp; ${filtered.length} projects</span>
+      <span style="color:#888;font-size:0.78rem">Page ${dashPage+1} of ${totalPages} &nbsp;·&nbsp; ${sortedFiltered.length} projects</span>
       <button onclick="dashPage=Math.min(${totalPages-1},dashPage+1);renderDashProjectCards()"
         style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:0.25rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.78rem"
         ${dashPage === totalPages-1 ? 'disabled style="background:#1a1a1a;border:1px solid #333;color:#555;padding:0.25rem 0.65rem;border-radius:4px;cursor:not-allowed;font-size:0.78rem"' : ''}>Next ▶</button>
@@ -3454,7 +3458,11 @@ function renderProjectsTab() {
   // Pagination
   const totalPages = Math.ceil(filtered.length / PROJ_PAGE_SIZE);
   if (projPage >= totalPages) projPage = Math.max(0, totalPages - 1);
-  const reversed  = [...filtered].reverse();
+  const reversedAll = [...filtered].reverse();
+  const reversed = [
+    ...reversedAll.filter(p => p.pinned),
+    ...reversedAll.filter(p => !p.pinned)
+  ];
   const pageItems = reversed.slice(projPage * PROJ_PAGE_SIZE, (projPage + 1) * PROJ_PAGE_SIZE);
 
   // First render: build the full scaffold; subsequent calls: update cards only
