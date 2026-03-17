@@ -26,27 +26,14 @@
     .background {
       position: fixed;
       inset: 0;
-      background: radial-gradient(ellipse at 50% 50%, #1a1a2e 0%, #0a0a0f 70%);
+      background: radial-gradient(ellipse at 50% 40%, #0d1a14 0%, #080c0a 70%);
       z-index: 0;
     }
 
-    .background::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background:
-        radial-gradient(circle at 20% 80%, rgba(0, 200, 100, 0.08) 0%, transparent 50%),
-        radial-gradient(circle at 80% 20%, rgba(0, 180, 80, 0.08) 0%, transparent 50%);
-    }
-
-    .grid-lines {
+    #bgCanvas {
       position: fixed;
       inset: 0;
       z-index: 0;
-      background-image:
-        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
-      background-size: 60px 60px;
       pointer-events: none;
     }
 
@@ -64,13 +51,6 @@
 
     .logo-wrap {
       text-align: center;
-    }
-
-    .logo-img {
-      display: block;
-      margin: 0 auto 0.5rem;
-      height: 110px;
-      width: auto;
     }
 
     .logo-name {
@@ -203,11 +183,10 @@
 </head>
 <body>
   <div class="background"></div>
-  <div class="grid-lines"></div>
+  <canvas id="bgCanvas"></canvas>
 
   <main class="container">
     <div class="logo-wrap">
-      <img src="datawatch-helmet.png" alt="DataWatch" class="logo-img" />
       <div class="logo-name">DataWatch</div>
       <div class="logo-title">Track. Analyze.<br>Optimize.</div>
     </div>
@@ -262,6 +241,63 @@
 
     <div class="tagline">Real-time workforce intelligence for the modern enterprise.</div>
   </main>
+
+  <script>
+    // ── Data-stream canvas background ──────────────────────────────────────
+    (function () {
+      const canvas = document.getElementById('bgCanvas');
+      const ctx    = canvas.getContext('2d');
+      const COLS   = [];
+      const FONT_H = 14;
+      const CHARS  = '01アイウエオカキクケコサシスセソタチツテトナニヌネノ$%#@&';
+      let W, H, numCols;
+
+      function resize() {
+        W = canvas.width  = window.innerWidth;
+        H = canvas.height = window.innerHeight;
+        numCols = Math.floor(W / FONT_H);
+        COLS.length = 0;
+        for (let i = 0; i < numCols; i++) {
+          COLS.push({ y: Math.random() * -H, speed: 0.4 + Math.random() * 0.8 });
+        }
+      }
+
+      function draw() {
+        // Fade trail
+        ctx.fillStyle = 'rgba(8, 12, 10, 0.18)';
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.font = `${FONT_H}px monospace`;
+
+        for (let i = 0; i < COLS.length; i++) {
+          const col = COLS[i];
+          const x   = i * FONT_H;
+          const ch  = CHARS[Math.floor(Math.random() * CHARS.length)];
+
+          // Bright head
+          ctx.fillStyle = 'rgba(34, 197, 94, 0.9)';
+          ctx.fillText(ch, x, col.y);
+
+          // Dimmer body char slightly behind
+          ctx.fillStyle = 'rgba(22, 163, 74, 0.35)';
+          ctx.fillText(CHARS[Math.floor(Math.random() * CHARS.length)], x, col.y - FONT_H * 2);
+
+          col.y += FONT_H * col.speed;
+
+          if (col.y > H + FONT_H * 10) {
+            col.y = -FONT_H * (5 + Math.random() * 15);
+            col.speed = 0.4 + Math.random() * 0.8;
+          }
+        }
+
+        requestAnimationFrame(draw);
+      }
+
+      window.addEventListener('resize', resize);
+      resize();
+      draw();
+    })();
+  </script>
 
   <script>
     // Redirect if already logged in
