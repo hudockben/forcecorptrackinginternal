@@ -3728,7 +3728,7 @@ function renderPOTab() {
   const th = (label, right) =>
     `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
 
-  const filteredPOs = applyPOFilters();
+  const filteredPOs = applyPOFilters().slice().reverse();
 
   const bodyHTML = purchaseOrders.length === 0
     ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
