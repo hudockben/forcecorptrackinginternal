@@ -4814,21 +4814,21 @@ function renderDailyTable(projId) {
 
   const costCodes     = getCostCodes(projId);
   const subCodes      = getSubCodes(projId);
-  const fieldTypeOpts = ['', ...lists.field_types];
+  const fieldTypeOpts = ['', ...[...lists.field_types].sort((a,b) => a.localeCompare(b))];
   const assignedEmps  = p.assigned_employees || [];
   const assignedEquip = p.assigned_equipment || [];
-  const empNames = assignedEmps.length > 0
+  const empNames = (assignedEmps.length > 0
     ? lists.employees.filter(e => assignedEmps.includes(e.name)).map(e => e.name)
-    : lists.employees.map(e => e.name);
-  const eqNames = assignedEquip.length > 0
+    : lists.employees.map(e => e.name)).slice().sort((a,b) => a.localeCompare(b));
+  const eqNames = (assignedEquip.length > 0
     ? lists.equipment.filter(e => assignedEquip.includes(e.name)).map(e => e.name)
-    : lists.equipment.map(e => e.name);
+    : lists.equipment.map(e => e.name)).slice().sort((a,b) => a.localeCompare(b));
   const employeeOpts  = ['', ...empNames];
-  const jobClassOpts  = ['', ...lists.job_classes];
+  const jobClassOpts  = ['', ...[...lists.job_classes].sort((a,b) => a.localeCompare(b))];
   const equipOpts     = ['', ...eqNames];
-  const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean)];
-  const ccOpts        = ['', ...costCodes];
-  const scOpts        = ['', ...subCodes];
+  const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean).sort((a,b) => a.localeCompare(b))];
+  const ccOpts        = ['', ...costCodes.slice().sort((a,b) => a.localeCompare(b))];
+  const scOpts        = ['', ...subCodes.slice().sort((a,b) => a.localeCompare(b))];
 
   rows.forEach((row, _filteredIdx) => {
     const ai = allRows.indexOf(row); // actual index in p.dailyRows (unaffected by filters)
@@ -4844,7 +4844,7 @@ function renderDailyTable(projId) {
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', ai, 'field_type',      projId)}</td>
       <td>${makeSelect(employeeOpts,  row.employee,         'daily', ai, 'employee',         projId)}</td>
       <td>${makeSelect(ccOpts,        row.cost_code,        'daily', ai, 'cost_code',        projId)}</td>
-      <td>${makeSelect(row.cost_code ? ['', ...getSubCodes(projId, row.cost_code)] : scOpts, row.sub_code, 'daily', ai, 'sub_code', projId)}</td>
+      <td>${makeSelect(row.cost_code ? ['', ...getSubCodes(projId, row.cost_code).slice().sort((a,b) => a.localeCompare(b))] : scOpts, row.sub_code, 'daily', ai, 'sub_code', projId)}</td>
       <td>${makeSelect(jobClassOpts,  row.job_class,        'daily', ai, 'job_class',        projId)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="rate"            value="${row.rate}"            step="any" placeholder="0.00"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="labor_hours"     value="${row.labor_hours}"     step="any" placeholder="0"></td>
