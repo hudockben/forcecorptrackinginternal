@@ -180,6 +180,39 @@
       color: #444;
       text-align: center;
     }
+
+    .pw-wrap {
+      position: relative;
+    }
+
+    .pw-wrap input {
+      padding-right: 2.6rem;
+    }
+
+    .pw-toggle {
+      position: absolute;
+      right: 0.65rem;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      color: #555;
+      display: flex;
+      align-items: center;
+      transition: color 0.15s;
+    }
+
+    .pw-toggle:hover {
+      color: #22c55e;
+    }
+
+    .pw-toggle svg {
+      width: 18px;
+      height: 18px;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -224,13 +257,28 @@
 
           <div class="field">
             <label for="password">Password</label>
-            <input
-              id="password"
-              type="password"
-              placeholder="••••••••"
-              autocomplete="current-password"
-              required
-            />
+            <div class="pw-wrap">
+              <input
+                id="password"
+                type="password"
+                placeholder="••••••••"
+                autocomplete="current-password"
+                required
+              />
+              <button type="button" class="pw-toggle" id="pwToggle" aria-label="Toggle password visibility">
+                <!-- eye icon (visible) -->
+                <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12S5 5 12 5s11 7 11 7-4 7-11 7S1 12 1 12z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+                <!-- eye-off icon (hidden) -->
+                <svg id="eyeClosed" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94"/>
+                  <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                  <line x1="1" y1="1" x2="23" y2="23"/>
+                </svg>
+              </button>
+            </div>
           </div>
 
           <div class="error-msg" id="errorMsg"></div>
@@ -360,6 +408,19 @@
     function clearError() {
       errorMsg.classList.remove('visible');
     }
+
+    // Password show/hide toggle
+    const pwToggle  = document.getElementById('pwToggle');
+    const pwInput   = document.getElementById('password');
+    const eyeOpen   = document.getElementById('eyeOpen');
+    const eyeClosed = document.getElementById('eyeClosed');
+
+    pwToggle.addEventListener('click', () => {
+      const show = pwInput.type === 'password';
+      pwInput.type       = show ? 'text' : 'password';
+      eyeOpen.style.display   = show ? 'none'  : '';
+      eyeClosed.style.display = show ? ''      : 'none';
+    });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
