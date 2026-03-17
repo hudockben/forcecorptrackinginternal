@@ -2195,17 +2195,21 @@ function renderDashProjectCards() {
     return;
   }
 
-  const totalPages = Math.ceil(filtered.length / DASH_PAGE_SIZE);
+  const sortedFiltered = [
+    ...filtered.filter(p => p.pinned),
+    ...filtered.filter(p => !p.pinned)
+  ];
+  const totalPages = Math.ceil(sortedFiltered.length / DASH_PAGE_SIZE);
   if (dashPage >= totalPages) dashPage = totalPages - 1;
   if (dashPage < 0) dashPage = 0;
-  const pageItems = filtered.slice(dashPage * DASH_PAGE_SIZE, (dashPage + 1) * DASH_PAGE_SIZE);
+  const pageItems = sortedFiltered.slice(dashPage * DASH_PAGE_SIZE, (dashPage + 1) * DASH_PAGE_SIZE);
 
   const paginationHTML = totalPages > 1 ? `
     <div style="display:flex;align-items:center;gap:0.5rem;margin:0.75rem 0 0.25rem;justify-content:flex-end">
       <button onclick="dashPage=Math.max(0,dashPage-1);renderDashProjectCards()"
         style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:0.25rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.78rem"
         ${dashPage === 0 ? 'disabled style="background:#1a1a1a;border:1px solid #333;color:#555;padding:0.25rem 0.65rem;border-radius:4px;cursor:not-allowed;font-size:0.78rem"' : ''}>◀ Prev</button>
-      <span style="color:#888;font-size:0.78rem">Page ${dashPage+1} of ${totalPages} &nbsp;·&nbsp; ${filtered.length} projects</span>
+      <span style="color:#888;font-size:0.78rem">Page ${dashPage+1} of ${totalPages} &nbsp;·&nbsp; ${sortedFiltered.length} projects</span>
       <button onclick="dashPage=Math.min(${totalPages-1},dashPage+1);renderDashProjectCards()"
         style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:0.25rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.78rem"
         ${dashPage === totalPages-1 ? 'disabled style="background:#1a1a1a;border:1px solid #333;color:#555;padding:0.25rem 0.65rem;border-radius:4px;cursor:not-allowed;font-size:0.78rem"' : ''}>Next ▶</button>
@@ -3458,7 +3462,11 @@ function renderProjectsTab() {
   // Pagination
   const totalPages = Math.ceil(filtered.length / PROJ_PAGE_SIZE);
   if (projPage >= totalPages) projPage = Math.max(0, totalPages - 1);
-  const reversed  = [...filtered].reverse();
+  const reversedAll = [...filtered].reverse();
+  const reversed = [
+    ...reversedAll.filter(p => p.pinned),
+    ...reversedAll.filter(p => !p.pinned)
+  ];
   const pageItems = reversed.slice(projPage * PROJ_PAGE_SIZE, (projPage + 1) * PROJ_PAGE_SIZE);
 
   // First render: build the full scaffold; subsequent calls: update cards only
@@ -3597,6 +3605,7 @@ function _subCodeOpts(po) {
   const current = (po.cost_code || '') + '||' + (po.sub_code || '');
   const opts = proj.bidItems
     .filter(b => b.cost_code || b.sub_code)
+    .slice().sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||'')))
     .map(b => {
       const v     = (b.cost_code || '') + '||' + (b.sub_code || '');
       const label = [b.cost_code, b.sub_code].filter(Boolean).join(' / ')
@@ -3755,18 +3764,18 @@ function renderPOTab() {
             style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
 
         const supOpts = `<option value="">— select —</option>` +
-          lists.suppliers.map(s => s.name || '').filter(Boolean)
+          lists.suppliers.map(s => s.name || '').filter(Boolean).sort((a,b) => a.localeCompare(b))
             .map(n => `<option value="${esc(n)}" ${n === po.supplier ? 'selected' : ''}>${esc(n)}</option>`).join('');
 
         const empOpts = `<option value="">— select —</option>` +
-          lists.employees.map(e =>
+          lists.employees.slice().sort((a,b) => a.name.localeCompare(b.name)).map(e =>
             `<option value="${esc(e.name)}" ${e.name === po.employee ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
 
         const statusOpts = ['pending', 'approved', 'closed'].map(s =>
           `<option value="${s}" ${s === po.status ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
 
         const projOpts = `<option value="">— none —</option>` +
-          projectsList.map(p =>
+          projectsList.slice().sort((a,b) => (a['project-name']||'').localeCompare(b['project-name']||'')).map(p =>
             `<option value="${esc(p.id)}" ${p.id === po.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
 
         const statusColor = po.status === 'approved' ? '#86efac' : po.status === 'closed' ? 'var(--muted)' : 'var(--yellow)';
