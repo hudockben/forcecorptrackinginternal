@@ -2899,6 +2899,30 @@ function updateProjectField(id, field, value) {
   if (badgeEl) { badgeEl.className = 'proj-badge ' + statusBadgeClass(p['status']); badgeEl.textContent = p['status'] || ''; }
 }
 
+function selectAllProjectAssignment(projId, field, names, btn) {
+  const p = getProj(projId); if (!p) return;
+  if (!Array.isArray(p[field])) p[field] = [];
+  const allSelected = names.every(n => p[field].includes(n));
+  if (allSelected) {
+    p[field] = p[field].filter(n => !names.includes(n));
+    btn.textContent = 'Select All';
+  } else {
+    names.forEach(n => { if (!p[field].includes(n)) p[field].push(n); });
+    btn.textContent = 'Deselect All';
+  }
+  saveProject(projId);
+  // update checkboxes in the DOM
+  const list = btn.closest('.assign-col-wrap').querySelector('.assign-list');
+  list.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    const label = cb.parentElement.textContent.trim().split('(')[0].trim();
+    // match by name stored in onchange attr via names array index
+    const idx = names.findIndex(n => n === label || cb.getAttribute('onchange').includes(`'${n}'`));
+    if (idx !== -1) cb.checked = !allSelected;
+  });
+  const dailyTbody = document.getElementById('daily-tbody-' + projId);
+  if (dailyTbody) renderDailyTable(projId);
+}
+
 function toggleProjectAssignment(projId, field, name, checked) {
   const p = getProj(projId); if (!p) return;
   if (!Array.isArray(p[field])) p[field] = [];
@@ -3289,8 +3313,14 @@ function projectCardHTML(p) {
         </div>
       </div>
       <div class="assign-cols">
-        <div>
-          <div class="assign-col-label">Assigned Employees <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></div>
+        <div class="assign-col-wrap">
+          <div class="assign-col-label" style="display:flex;align-items:center;justify-content:space-between">
+            <span>Assigned Employees <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></span>
+            <button class="btn" style="font-size:0.7rem;padding:0.15rem 0.55rem;margin-left:0.5rem;flex-shrink:0"
+              onclick="selectAllProjectAssignment('${p.id}','assigned_employees',[${lists.employees.map(e=>`'${esc(e.name)}'`).join(',')}],this)">
+              ${lists.employees.length && lists.employees.every(e=>(p.assigned_employees||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
+            </button>
+          </div>
           <div class="assign-list">
             ${lists.employees.map(emp => `
               <label class="assign-check">
@@ -3300,8 +3330,14 @@ function projectCardHTML(p) {
               </label>`).join('')}
           </div>
         </div>
-        <div>
-          <div class="assign-col-label">Assigned Equipment <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></div>
+        <div class="assign-col-wrap">
+          <div class="assign-col-label" style="display:flex;align-items:center;justify-content:space-between">
+            <span>Assigned Equipment <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></span>
+            <button class="btn" style="font-size:0.7rem;padding:0.15rem 0.55rem;margin-left:0.5rem;flex-shrink:0"
+              onclick="selectAllProjectAssignment('${p.id}','assigned_equipment',[${lists.equipment.map(e=>`'${esc(e.name)}'`).join(',')}],this)">
+              ${lists.equipment.length && lists.equipment.every(e=>(p.assigned_equipment||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
+            </button>
+          </div>
           <div class="assign-list">
             ${lists.equipment.map(eq => `
               <label class="assign-check">
