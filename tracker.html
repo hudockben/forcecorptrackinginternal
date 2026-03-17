@@ -5514,23 +5514,6 @@ function exportDailySummaryPDF(projVal, startDate, endDate) {
     const byDate = {};
     periodRows.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
 
-    // Pre-compute running totals per cc/sc by date (all project rows, sorted)
-    const _runLive = {}, runAccumMap = {};
-    [...allRows].filter(r => r.date).sort((a, b) => a.date.localeCompare(b.date))
-      .forEach(r => {
-        const key = (r.cost_code || '') + '||' + (r.sub_code || '');
-        if (!_runLive[key]) _runLive[key] = { qty: 0, cost: 0 };
-        const _c = calcDaily(r);
-        _runLive[key].qty  += parseFloat(r.quantity) || 0;
-        _runLive[key].cost += _c.total_cost;
-        if (!runAccumMap[r.date]) runAccumMap[r.date] = {};
-        runAccumMap[r.date][key] = { qty: _runLive[key].qty, cost: _runLive[key].cost };
-      });
-    const getRunUC = (date, cc, sc) => {
-      const snap = runAccumMap[date] && runAccumMap[date][cc + '||' + sc];
-      return (snap && snap.qty > 0) ? snap.cost / snap.qty : 0;
-    };
-
     let trackLbr = 0, trackEq = 0, trackCost = 0;
     const trackingRows = Object.keys(byDate).sort().map(d => {
       const dateLabel = new Date(d + 'T12:00:00').toLocaleDateString('en-US',
@@ -5545,10 +5528,6 @@ function exportDailySummaryPDF(projVal, startDate, endDate) {
         dayQty     += qty; dayLbrHrs += lh; dayEqHrs += eh;
         dayLbrCost += c.labor_cost; dayEqCost += c.equip_total; dayMatCost += mc;
         dayTotal   += c.total_cost;
-        const rowUC  = qty > 0 ? c.total_cost / qty : 0;
-        const runUC  = getRunUC(r.date, r.cost_code || '', r.sub_code || '');
-        const hAgg   = histAgg[(r.cost_code || '') + '||' + (r.sub_code || '')] || null;
-        const histUC = (hAgg && hAgg.running_qty > 0) ? hAgg.total_cost / hAgg.running_qty : 0;
         return `<tr>
           <td>${esc(r.employee||'\u2014')}</td>
           <td>${esc(r.cost_code||'\u2014')}</td><td>${esc(r.sub_code||'\u2014')}</td>
@@ -5560,13 +5539,10 @@ function exportDailySummaryPDF(projVal, startDate, endDate) {
           <td>${esc(r.material||'\u2014')}</td>
           <td>${mc>0?'$'+fmt(mc):'\u2014'}</td>
           <td class="tot">$${fmt(c.total_cost)}</td>
-          <td class="${histUC>0?(rowUC>histUC?'red':'grn'):''}">${rowUC>0?'$'+fmt(rowUC):'\u2014'}</td>
-          <td class="${histUC>0?(runUC>histUC?'red':'grn'):''}">${runUC>0?'$'+fmt(runUC):'\u2014'}</td>
-          <td class="muted">${histUC>0?'$'+fmt(histUC):'\u2014'}</td>
         </tr>`;
       }).join('');
       trackLbr  += dayLbrHrs; trackEq += dayEqHrs; trackCost += dayTotal;
-      return `<tr class="date-hdr"><td colspan="16">${dateLabel}</td></tr>
+      return `<tr class="date-hdr"><td colspan="13">${dateLabel}</td></tr>
         ${entryRows}
         <tr class="sub-tot">
           <td colspan="4">Day Total</td>
@@ -5576,8 +5552,6 @@ function exportDailySummaryPDF(projVal, startDate, endDate) {
           <td>${dayEqHrs>0?fmt(dayEqHrs,1):'\u2014'}</td><td>${dayEqCost>0?'$'+fmt(dayEqCost):'\u2014'}</td>
           <td></td><td>${dayMatCost>0?'$'+fmt(dayMatCost):'\u2014'}</td>
           <td class="tot">$${fmt(dayTotal)}</td>
-          <td class="tot">${dayQty>0?'$'+fmt(dayTotal/dayQty):'\u2014'}</td>
-          <td></td><td></td>
         </tr>`;
     }).join('');
 
@@ -5711,7 +5685,6 @@ function exportDailySummaryPDF(projVal, startDate, endDate) {
           <th>Qty</th><th>Lbr Hrs</th><th>Labor $</th>
           <th>Equipment</th><th>Eq Hrs</th><th>Equip $</th>
           <th>Material</th><th>Mat $</th><th>Total $</th>
-          <th>UC (Day)</th><th>Run UC</th><th>Hist UC</th>
         </tr></thead>
         <tbody>${trackingRows}</tbody>
       </table>
