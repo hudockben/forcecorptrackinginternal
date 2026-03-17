@@ -3593,6 +3593,7 @@ function _subCodeOpts(po) {
   const current = (po.cost_code || '') + '||' + (po.sub_code || '');
   const opts = proj.bidItems
     .filter(b => b.cost_code || b.sub_code)
+    .slice().sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||'')))
     .map(b => {
       const v     = (b.cost_code || '') + '||' + (b.sub_code || '');
       const label = [b.cost_code, b.sub_code].filter(Boolean).join(' / ')
@@ -3751,18 +3752,18 @@ function renderPOTab() {
             style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
 
         const supOpts = `<option value="">— select —</option>` +
-          lists.suppliers.map(s => s.name || '').filter(Boolean)
+          lists.suppliers.map(s => s.name || '').filter(Boolean).sort((a,b) => a.localeCompare(b))
             .map(n => `<option value="${esc(n)}" ${n === po.supplier ? 'selected' : ''}>${esc(n)}</option>`).join('');
 
         const empOpts = `<option value="">— select —</option>` +
-          lists.employees.map(e =>
+          lists.employees.slice().sort((a,b) => a.name.localeCompare(b.name)).map(e =>
             `<option value="${esc(e.name)}" ${e.name === po.employee ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
 
         const statusOpts = ['pending', 'approved', 'closed'].map(s =>
           `<option value="${s}" ${s === po.status ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
 
         const projOpts = `<option value="">— none —</option>` +
-          projectsList.map(p =>
+          projectsList.slice().sort((a,b) => (a['project-name']||'').localeCompare(b['project-name']||'')).map(p =>
             `<option value="${esc(p.id)}" ${p.id === po.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
 
         const statusColor = po.status === 'approved' ? '#86efac' : po.status === 'closed' ? 'var(--muted)' : 'var(--yellow)';
