@@ -616,7 +616,18 @@
     /* ── Home Tab ── */
     .home-wrap {
       padding: 1.5rem 1.25rem;
-      max-width: 1100px;
+      max-width: 1600px;
+    }
+    .home-layout {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 1.5rem;
+      align-items: start;
+    }
+    .home-main { min-width: 0; }
+    .home-sidebar {
+      position: sticky;
+      top: 1rem;
     }
     .home-title {
       font-size: 0.7rem;
@@ -1968,6 +1979,8 @@ function renderHomeTab() {
     .slice(0, 8);
 
   document.getElementById('home-content').innerHTML = `
+  <div class="home-layout">
+  <div class="home-main">
     <p class="home-title">Overview</p>
 
     <div class="stat-grid">
@@ -2039,16 +2052,6 @@ function renderHomeTab() {
       </div>
     </div>
 
-    <p class="home-section-title">Company Board</p>
-    <div class="board-wrap" id="board-wrap">
-      ${perm.isAdmin ? `
-      <div class="board-compose">
-        <textarea id="board-input" placeholder="Write a note for your team…" rows="2"></textarea>
-        <button class="btn btn-green" style="align-self:flex-end;white-space:nowrap" onclick="boardPost()">Post</button>
-      </div>` : ''}
-      <div id="board-posts"><div class="home-empty" style="font-size:0.78rem">Loading board…</div></div>
-    </div>
-
     <p class="home-section-title">Recent Daily Entries</p>
     ${recent.length === 0
       ? `<div class="home-empty">No daily entries yet. Open a project in Project Dashboard to add daily records.</div>`
@@ -2077,6 +2080,21 @@ function renderHomeTab() {
           </tbody>
         </table>`
     }
+  </div><!-- /.home-main -->
+
+  <div class="home-sidebar">
+    <p class="home-section-title">Company Board</p>
+    <div class="board-wrap" id="board-wrap">
+      ${perm.isAdmin ? `
+      <div class="board-compose">
+        <textarea id="board-input" placeholder="Write a note for your team…" rows="2"></textarea>
+        <button class="btn btn-green" style="align-self:flex-end;white-space:nowrap" onclick="boardPost()">Post</button>
+      </div>` : ''}
+      <div id="board-posts"><div class="home-empty" style="font-size:0.78rem">Loading board…</div></div>
+    </div>
+  </div><!-- /.home-sidebar -->
+
+  </div><!-- /.home-layout -->
   `;
   // Load board posts asynchronously after DOM is set
   loadBoard();
