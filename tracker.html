@@ -8100,6 +8100,33 @@ function _ppDayData(biKey, dateStr) {
   return _pp.schedule[biKey][dateStr];
 }
 
+function _ppAutoFill(proj, biKey) {
+  // Pre-populate Mon–Fri future days with the current historical crew & equipment
+  // so the calendar immediately shows a current-pace projection on open.
+  // Only fills days that haven't been manually touched yet.
+  const agg  = _schedPaceForProject(proj);
+  const a    = agg[biKey] || {};
+  const crew  = [...(a.employees || new Set())];
+  const equip = [...(a.equipment  || new Set())];
+  if (!crew.length) return; // no history — nothing to fill
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  // Fill 90 days ahead
+  for (let i = 0; i < 90; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    const dow = d.getDay();
+    if (dow === 0 || dow === 6) continue; // skip weekends
+    const ds = d.toISOString().slice(0, 10);
+    if (!_pp.schedule[biKey]) _pp.schedule[biKey] = {};
+    if (!_pp.schedule[biKey][ds]) {
+      // Only auto-fill — don't overwrite manual edits
+      _pp.schedule[biKey][ds] = { employees: [...crew], equipment: [...equip], halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+    }
+  }
+}
+
 function _ppOpen() {
   const proj = getProj(_pp.projId);
   if (!proj) return;
@@ -8112,6 +8139,7 @@ function _ppOpen() {
     const first = withData || (proj.bidItems || [])[0];
     _pp.biKey = first ? (first.cost_code || '') + '||' + (first.sub_code || '') : null;
   }
+  if (_pp.biKey) _ppAutoFill(proj, _pp.biKey);
   _pp.open = true;
   _ppRender();
 }
@@ -8125,6 +8153,8 @@ function _ppClose() {
 function _ppSetBi(biKey) {
   _pp.biKey = biKey;
   _pp.selectedDay = null;
+  const proj = getProj(_pp.projId);
+  if (proj) _ppAutoFill(proj, biKey);
   _ppRender();
 }
 
@@ -8437,10 +8467,41 @@ function _ppRender() {
 }
 
 function _ppRenderSideDefault(a, prod, remaining, allEmp, allEquip) {
+  // "At current pace" projection: remaining ÷ (crew size × productivity)
+  let paceStat = '';
+  const crewSize = (a.employees || new Set()).size || 1;
+  if (prod !== null && remaining > 0) {
+    const unitsPerDay = crewSize * prod; // current crew working at historical rate
+    const workdaysLeft = Math.ceil(remaining / unitsPerDay);
+    // Walk forward from today skipping weekends to find finish date
+    const finish = new Date();
+    finish.setHours(0, 0, 0, 0);
+    let wd = 0;
+    while (wd < workdaysLeft) {
+      finish.setDate(finish.getDate() + 1);
+      if (finish.getDay() !== 0 && finish.getDay() !== 6) wd++;
+    }
+    const finFmt = finish.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    const proj2  = getProj(_pp.projId);
+    const dl     = _schedGetDeadline(proj2);
+    const dlDate = dl ? new Date(dl + 'T12:00:00') : null;
+    const onTime = dlDate ? finish <= dlDate : null;
+    const color  = onTime === false ? 'var(--red)' : onTime === true ? 'var(--green)' : 'var(--text)';
+    paceStat = `
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:0.6rem 0.75rem;margin-bottom:1rem">
+        <div style="font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:0.25rem">At Current Pace</div>
+        <div style="font-size:0.88rem;color:${color};font-weight:700">${finFmt}${onTime===true?' ✓':onTime===false?' ⚠ past deadline':''}</div>
+        <div style="font-size:0.72rem;color:var(--muted);margin-top:0.15rem">${workdaysLeft} workday${workdaysLeft!==1?'s':''} · ${crewSize} person${crewSize!==1?'s':''} · ${fmt(unitsPerDay,1)} units/day</div>
+      </div>`;
+  } else if (remaining === 0) {
+    paceStat = `<div style="font-size:0.82rem;color:var(--green);margin-bottom:1rem;font-weight:600">✓ Complete</div>`;
+  }
+
   return `
     <div class="pp-section-lbl">📊 Stats</div>
     <div style="font-size:0.82rem;margin-bottom:0.3rem">Productivity: <strong>${prod !== null ? fmt(prod,1)+' units/laborer-day' : '—'}</strong></div>
-    <div style="font-size:0.82rem;margin-bottom:1rem">Remaining: <strong>${fmt(remaining,1)} units</strong></div>
+    <div style="font-size:0.82rem;margin-bottom:0.75rem">Remaining: <strong>${fmt(remaining,1)} units</strong></div>
+    ${paceStat}
     ${allEmp.length ? `
     <div class="pp-section-lbl">👷 Crew (history)</div>
     <div style="display:flex;flex-wrap:wrap;gap:0.25rem;margin-bottom:0.75rem">
@@ -8451,7 +8512,7 @@ function _ppRenderSideDefault(a, prod, remaining, allEmp, allEquip) {
     <div style="display:flex;flex-wrap:wrap;gap:0.25rem;margin-bottom:0.75rem">
       ${allEquip.map(e => `<span class="pp-chip equip" style="font-size:0.72rem">${esc(e)}</span>`).join('')}
     </div>` : ''}
-    <div style="font-size:0.72rem;color:var(--muted);margin-top:0.5rem">Click any day to assign crew, equipment, and notes</div>`;
+    <div style="font-size:0.72rem;color:var(--muted);margin-top:0.5rem">Click any day to adjust crew, mark no-work days, or add notes</div>`;
 }
 
 function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
