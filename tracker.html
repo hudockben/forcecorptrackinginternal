@@ -8440,12 +8440,29 @@ function _ppRender() {
       <div class="pp-main">
         <div class="pp-cal-section">
           ${_pp.multiCode ? _ppRenderMultiCode(proj, agg, MONTHS, NW_ICONS) : `
-            ${prod !== null
-              ? `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
-                  Historical productivity: <strong style="color:var(--text)">${fmt(prod,1)} units/laborer-day</strong>
+            ${prod !== null ? (() => {
+                const crewSz = (a.employees || new Set()).size || 1;
+                const uPerDay = crewSz * prod;
+                let paceHtml = '';
+                if (remaining > 0) {
+                  const wdLeft = Math.ceil(remaining / uPerDay);
+                  const fin = new Date(); fin.setHours(0,0,0,0);
+                  let wd2 = 0;
+                  while (wd2 < wdLeft) { fin.setDate(fin.getDate()+1); if (fin.getDay()!==0&&fin.getDay()!==6) wd2++; }
+                  const finFmt = fin.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+                  const dl2 = _schedGetDeadline(proj); const dlD = dl2 ? new Date(dl2+'T12:00:00') : null;
+                  const ot = dlD ? fin <= dlD : null;
+                  const col = ot===false?'var(--red)':ot===true?'var(--green)':'var(--text)';
+                  paceHtml = `· At current pace: <strong style="color:${col}">${finFmt}${ot===true?' ✓':ot===false?' ⚠':''}</strong> (${wdLeft}wd)`;
+                } else if (remaining === 0) {
+                  paceHtml = `· <strong style="color:var(--green)">✓ Complete</strong>`;
+                }
+                return `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
+                  Productivity: <strong style="color:var(--text)">${fmt(prod,1)} units/laborer-day</strong>
                   · Remaining: <strong style="color:var(--text)">${fmt(remaining,1)} units</strong>
-                  · <span style="color:var(--muted)">Click a day to assign crew</span>
-                </div>`
+                  ${paceHtml}
+                </div>`;
+              })()
               : `<div style="font-size:0.78rem;color:var(--yellow);margin-bottom:0.5rem">⚠ No productivity data yet — log quantities + labor hours in daily rows first</div>`}
             ${conflictBanner}
             <div class="pp-cal-grid">${headers}${cells}</div>`}
