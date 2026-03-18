@@ -1342,6 +1342,60 @@
       animation: spin 0.7s linear infinite; flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Projection Planner ── */
+    .pp-panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; margin-top: 1.5rem; overflow: hidden;
+    }
+    .pp-header {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.75rem 1rem; border-bottom: 1px solid var(--border);
+      background: var(--surface2); flex-wrap: wrap;
+    }
+    .pp-body { padding: 1rem; }
+    .pp-cal-grid {
+      display: grid; grid-template-columns: repeat(7, 1fr);
+      gap: 4px; margin-top: 0.75rem;
+    }
+    .pp-col-hdr {
+      text-align: center; font-size: 0.65rem; font-weight: 600;
+      color: var(--muted); padding: 0.2rem 0;
+    }
+    .pp-day {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.35rem 0.4rem;
+      min-height: 100px; display: flex; flex-direction: column; gap: 0.15rem;
+      position: relative;
+    }
+    .pp-day.empty { background: transparent; border-color: transparent; min-height: 0; }
+    .pp-day.past  { opacity: 0.45; pointer-events: none; }
+    .pp-day-num   { font-size: 0.68rem; font-weight: 700; color: var(--muted); }
+    .pp-day.today .pp-day-num { color: var(--blue); }
+    .pp-day.goal-day { border-color: var(--green); box-shadow: 0 0 0 2px rgba(34,197,94,0.2); }
+    .pp-stepper {
+      display: flex; align-items: center; gap: 2px; margin-top: 0.15rem;
+    }
+    .pp-stepper label { font-size: 0.58rem; color: var(--muted); width: 13px; flex-shrink: 0; }
+    .pp-stepper button {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      border-radius: 3px; width: 15px; height: 15px; font-size: 0.6rem;
+      cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; line-height: 1;
+    }
+    .pp-stepper button:hover { background: var(--border); }
+    .pp-stepper span { font-size: 0.7rem; min-width: 12px; text-align: center; }
+    .pp-day-out {
+      margin-top: auto; font-size: 0.65rem; font-weight: 700;
+      text-align: center; padding: 0.12rem 0.15rem; border-radius: 3px;
+    }
+    .pp-day-out.has-work { color: var(--green); background: rgba(34,197,94,0.1); }
+    .pp-day-out.no-work  { color: var(--muted); }
+    .pp-day-cumul { font-size: 0.58rem; color: var(--muted); text-align: center; }
+    .pp-summary {
+      margin-top: 1rem; padding: 0.75rem 1rem;
+      background: var(--surface2); border-radius: 6px; border: 1px solid var(--border);
+      display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: center;
+    }
   </style>
 </head>
 <body>
@@ -1369,8 +1423,8 @@
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="home">Home</button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
-  <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
   <button class="tab-btn"        data-tab="info">Project Dashboard</button>
+  <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="supplier">Suppliers</button>
   <button class="tab-btn"        onclick="openModal()">&#9881; Manage Lists</button>
@@ -7724,6 +7778,7 @@ function renderScheduleProjectDetail(proj) {
     ${daysLeft === null
       ? `<div style="margin-top:1rem;font-size:0.75rem;color:var(--muted)">⚠ Set an <strong>End Date</strong> in the Project Dashboard to enable pace projections and required pace calculations.</div>`
       : ''}
+    <div id="pp-container" style="margin-top:1.5rem"></div>
   `;
 }
 
@@ -7812,6 +7867,7 @@ async function renderScheduleTab() {
     const proj = getProj(projId);
     if (proj) {
       body.innerHTML = renderScheduleProjectDetail(proj);
+      _ppInit(proj);
       // Show AI button only when a specific project is selected and has bid items
       if (aiBtn) aiBtn.style.display = (proj.bidItems || []).length ? '' : 'none';
     } else {
@@ -7860,6 +7916,8 @@ async function runSchedAI() {
       costCode:     bi.cost_code || '',
       subCode:      bi.sub_code  || '',
       bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status,
+      laborHours: a.labor_hours || 0,
+      equipHours: a.equip_hours || 0,
       employees: [...(a.employees || new Set())].filter(Boolean),
       equipment: [...(a.equipment || new Set())].filter(Boolean),
     };
@@ -7884,7 +7942,7 @@ async function runSchedAI() {
 
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      _schedShowAIError(err.error || `Server error ${r.status}`);
+      _schedShowAIError((err.error || `Server error ${r.status}`) + (err.detail ? ': ' + err.detail : ''));
       return;
     }
 
@@ -7967,6 +8025,237 @@ function _schedRenderAIPanel(result, fromCache) {
       <div class="sched-ai-footer">
         <span>Powered by Claude AI · Results are advisory only</span>
         <span>${fromCache ? 'Cached result · ' : ''}Click Refresh to re-analyze</span>
+      </div>
+    </div>`;
+}
+
+/* ── Projection Planner ──────────────────────────────────────────────────── */
+
+let _pp = {
+  projId: null,
+  biKey:  null,
+  month:  new Date().getMonth(),
+  year:   new Date().getFullYear(),
+  days:   {},   // dateStr → { laborers: N, equipment: N }
+  open:   false,
+};
+
+function _ppInit(proj) {
+  // Reset per-project state but keep month navigation
+  if (_pp.projId !== proj.id) {
+    _pp.projId = proj.id;
+    _pp.days   = {};
+    _pp.open   = false;
+    // Default to first bid item that has activity, else first item
+    const agg  = _schedPaceForProject(proj);
+    const withData = (proj.bidItems || []).find(bi => {
+      const key = (bi.cost_code || '') + '||' + (bi.sub_code || '');
+      const a   = agg[key];
+      return a && a.running_qty > 0;
+    });
+    const first = withData || (proj.bidItems || [])[0];
+    _pp.biKey = first ? (first.cost_code || '') + '||' + (first.sub_code || '') : null;
+  }
+  _ppRender();
+}
+
+function _ppToggle() {
+  _pp.open = !_pp.open;
+  _ppRender();
+}
+
+function _ppSetBi(biKey) {
+  _pp.biKey = biKey;
+  _pp.days  = {};
+  _ppRender();
+}
+
+function _ppNav(delta) {
+  _pp.month += delta;
+  if (_pp.month < 0)  { _pp.month = 11; _pp.year--; }
+  if (_pp.month > 11) { _pp.month = 0;  _pp.year++; }
+  _ppRender();
+}
+
+function _ppSetDay(dateStr, field, delta) {
+  if (!_pp.days[dateStr]) _pp.days[dateStr] = { laborers: 0, equipment: 0 };
+  _pp.days[dateStr][field] = Math.max(0, (_pp.days[dateStr][field] || 0) + delta);
+  _ppRender();
+}
+
+function _ppRender() {
+  const container = document.getElementById('pp-container');
+  if (!container) return;
+
+  const proj = getProj(_pp.projId);
+  if (!proj || !(proj.bidItems || []).length) { container.innerHTML = ''; return; }
+
+  // Collapsed state — just show toggle button
+  if (!_pp.open) {
+    container.innerHTML = `
+      <button class="btn btn-ghost" style="font-size:0.75rem" onclick="_ppToggle()">
+        📅 Projection Planner
+      </button>`;
+    return;
+  }
+
+  const agg      = _schedPaceForProject(proj);
+  const a        = agg[_pp.biKey] || {};
+  const bi       = (proj.bidItems || []).find(b =>
+    ((b.cost_code || '') + '||' + (b.sub_code || '')) === _pp.biKey);
+  const bidQty   = bi ? parseFloat(bi.quantity) || 0 : 0;
+  const doneQty  = a.running_qty || 0;
+  const remaining = Math.max(bidQty - doneQty, 0);
+  const deadline = _schedGetDeadline(proj);
+
+  // Productivity: units per laborer-day (8-hr day)
+  const laborHours = a.labor_hours || 0;
+  const daysWorked = a.dates ? a.dates.size : 0;
+  let productivityPerLaborerDay = null;
+  if (laborHours > 0 && doneQty > 0) {
+    productivityPerLaborerDay = (doneQty / laborHours) * 8;
+  } else if (doneQty > 0 && daysWorked > 0 && (a.employees || new Set()).size > 0) {
+    // Fallback: pace / unique crew size
+    productivityPerLaborerDay = (doneQty / daysWorked) / (a.employees.size);
+  }
+
+  const employees = [...(a.employees || new Set())];
+  const equipment = [...(a.equipment  || new Set())];
+
+  // Build bid item dropdown
+  const biOptions = (proj.bidItems || []).map(b => {
+    const key   = (b.cost_code || '') + '||' + (b.sub_code || '');
+    const label = (b.cost_code || '') + (b.sub_code ? ' · ' + b.sub_code : '');
+    return `<option value="${esc(key)}" ${key === _pp.biKey ? 'selected' : ''}>${esc(label)}</option>`;
+  }).join('');
+
+  // Month / calendar setup
+  const MONTHS   = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const firstDow = new Date(_pp.year, _pp.month, 1).getDay();
+  const daysInMo = new Date(_pp.year, _pp.month + 1, 0).getDate();
+  const todayObj = new Date();
+  const todayStr = todayObj.toISOString().slice(0, 10);
+
+  // Pre-calculate daily outputs & running cumulative
+  let runCumul = doneQty;
+  let goalDay  = null;
+  const dayOut = {};
+  for (let d = 1; d <= daysInMo; d++) {
+    const ds = `${_pp.year}-${String(_pp.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const plan = _pp.days[ds] || {};
+    const lab  = plan.laborers || 0;
+    const out  = (lab > 0 && productivityPerLaborerDay !== null)
+      ? lab * productivityPerLaborerDay : 0;
+    dayOut[ds] = out;
+    if (out > 0) {
+      runCumul += out;
+      if (!goalDay && bidQty > 0 && runCumul >= bidQty) goalDay = ds;
+    }
+  }
+
+  // Calendar cells
+  const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const headers = DAYS.map(d => `<div class="pp-col-hdr">${d}</div>`).join('');
+  let cells = '';
+  for (let i = 0; i < firstDow; i++) cells += `<div class="pp-day empty"></div>`;
+
+  let cellCumul = doneQty;
+  for (let d = 1; d <= daysInMo; d++) {
+    const ds    = `${_pp.year}-${String(_pp.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const plan  = _pp.days[ds] || {};
+    const lab   = plan.laborers  || 0;
+    const eq    = plan.equipment || 0;
+    const out   = dayOut[ds] || 0;
+    if (out > 0) cellCumul += out;
+
+    const isToday  = ds === todayStr;
+    const isPast   = new Date(ds + 'T12:00:00') < new Date(todayObj.getFullYear(), todayObj.getMonth(), todayObj.getDate());
+    const isGoal   = ds === goalDay;
+    const classes  = ['pp-day', isToday ? 'today' : '', isPast ? 'past' : '', isGoal ? 'goal-day' : ''].filter(Boolean).join(' ');
+
+    cells += `<div class="${classes}">
+      <div class="pp-day-num">${d}${isGoal ? ' ✓' : ''}</div>
+      <div class="pp-stepper">
+        <label title="Laborers">👷</label>
+        <button onclick="_ppSetDay('${ds}','laborers',-1)">−</button>
+        <span>${lab}</span>
+        <button onclick="_ppSetDay('${ds}','laborers',1)">+</button>
+      </div>
+      <div class="pp-stepper">
+        <label title="Equipment">🚜</label>
+        <button onclick="_ppSetDay('${ds}','equipment',-1)">−</button>
+        <span>${eq}</span>
+        <button onclick="_ppSetDay('${ds}','equipment',1)">+</button>
+      </div>
+      ${out > 0
+        ? `<div class="pp-day-out has-work">+${fmt(out, 0)}</div>
+           <div class="pp-day-cumul">${fmt(Math.min(cellCumul, bidQty > 0 ? bidQty : cellCumul), 0)}${bidQty > 0 ? ' / ' + fmt(bidQty, 0) : ''}</div>`
+        : `<div class="pp-day-out no-work">—</div>`}
+    </div>`;
+  }
+
+  // Summary bar
+  const totalPlanned = Object.values(dayOut).reduce((s, v) => s + v, 0);
+  const endCumul     = doneQty + totalPlanned;
+  const pctEnd       = bidQty > 0 ? Math.min((endCumul / bidQty) * 100, 100) : 0;
+
+  let completionHtml = '';
+  if (goalDay) {
+    const gd   = new Date(goalDay + 'T12:00:00');
+    const gdFmt = gd.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    const dl    = deadline ? new Date(deadline + 'T12:00:00') : null;
+    const onTime = dl ? gd <= dl : null;
+    completionHtml = `<span style="font-size:0.82rem;color:${onTime === false ? 'var(--red)' : 'var(--green)'}">
+      Projected completion: <strong>${gdFmt}</strong>
+      ${onTime === true ? ' ✓ before deadline' : onTime === false ? ' — past deadline' : ''}
+    </span>`;
+  } else if (bidQty > 0 && remaining > 0) {
+    completionHtml = `<span style="font-size:0.78rem;color:var(--muted)">Add staffing days to project a completion date</span>`;
+  }
+
+  const prodNote = productivityPerLaborerDay !== null
+    ? `${fmt(productivityPerLaborerDay, 1)} units/laborer-day
+       <span style="color:var(--muted);font-weight:400">(${daysWorked}d of history${laborHours > 0 ? ', labor-hr based' : ', headcount based'})</span>`
+    : `<span style="color:var(--yellow)">⚠ No productivity data yet — log quantities + labor hours in daily rows</span>`;
+
+  container.innerHTML = `
+    <div class="pp-panel">
+      <div class="pp-header">
+        <span>📅</span>
+        <span style="font-weight:700;font-size:0.85rem">Projection Planner</span>
+        <select onchange="_ppSetBi(this.value)"
+          style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.2rem 0.4rem;font-size:0.78rem">
+          ${biOptions}
+        </select>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:0.4rem">
+          <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem" onclick="_ppNav(-1)">◀</button>
+          <span style="font-size:0.8rem;font-weight:600;min-width:120px;text-align:center">${MONTHS[_pp.month]} ${_pp.year}</span>
+          <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem" onclick="_ppNav(1)">▶</button>
+          <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;margin-left:0.25rem" onclick="_ppToggle()">✕</button>
+        </div>
+      </div>
+      <div class="pp-body">
+        <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;font-size:0.75rem">
+          <span>Productivity: <strong style="color:var(--text)">${prodNote}</strong></span>
+          <span style="color:var(--muted)">Remaining: <strong style="color:var(--text)">${fmt(remaining, 1)} units</strong></span>
+          ${employees.length ? `<span style="color:var(--muted)">Crew history: ${employees.join(', ')}</span>` : ''}
+          ${equipment.length  ? `<span style="color:var(--muted)">Equip history: ${equipment.join(', ')}</span>` : ''}
+        </div>
+        <div class="pp-cal-grid">
+          ${headers}
+          ${cells}
+        </div>
+        ${bidQty > 0 ? `
+        <div class="pp-summary">
+          ${completionHtml}
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:0.7rem;color:var(--muted);margin-bottom:0.3rem">Projected progress after ${MONTHS[_pp.month]}</div>
+            <div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden">
+              <div style="height:100%;width:${pctEnd.toFixed(1)}%;background:${pctEnd >= 100 ? 'var(--green)' : 'var(--blue)'};border-radius:4px;transition:width 0.2s"></div>
+            </div>
+            <div style="font-size:0.7rem;color:var(--muted);margin-top:0.25rem">${fmt(endCumul,1)} / ${fmt(bidQty,1)} (${pctEnd.toFixed(1)}%)</div>
+          </div>
+        </div>` : ''}
       </div>
     </div>`;
 }
