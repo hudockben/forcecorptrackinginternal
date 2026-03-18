@@ -46,6 +46,9 @@ app.all('/api/board', require('./board'));
 /** Deadlines */
 app.all('/api/deadlines', require('./deadlines'));
 
+/** AI schedule analysis */
+app.post('/api/ai/schedule-analysis', require('./ai/schedule-analysis'));
+
 /** Liveness / health check */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
