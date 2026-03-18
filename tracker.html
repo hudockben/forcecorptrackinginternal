@@ -7884,7 +7884,7 @@ async function runSchedAI() {
 
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      _schedShowAIError(err.error || `Server error ${r.status}`);
+      _schedShowAIError((err.error || `Server error ${r.status}`) + (err.detail ? ': ' + err.detail : ''));
       return;
     }
 
