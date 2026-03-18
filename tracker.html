@@ -739,60 +739,99 @@
     .board-msg { font-size: 0.85rem; color: var(--text); margin-bottom: 0.25rem; word-wrap: break-word; }
     .board-meta { font-size: 0.68rem; color: var(--muted); }
     /* ── Upcoming Deadlines ── */
-    .deadline-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.5rem;
-      padding: 0.35rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .deadline-row:last-child { border-bottom: none; }
-    .deadline-name {
-      font-size: 0.78rem;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      min-width: 0;
-    }
-    .deadline-right {
-      display: flex;
-      align-items: center;
-      gap: 0.3rem;
-      flex-shrink: 0;
-    }
     .deadline-chip {
       font-size: 0.65rem;
       font-weight: 700;
       padding: 0.15rem 0.45rem;
       border-radius: 3px;
       white-space: nowrap;
+      flex-shrink: 0;
     }
-    .deadline-edit-btn {
-      background: none;
-      border: none;
-      color: var(--muted);
-      font-size: 0.78rem;
-      cursor: pointer;
-      padding: 0.1rem 0.2rem;
-      border-radius: 3px;
-      opacity: 0;
-      transition: opacity 0.15s, color 0.15s;
-      line-height: 1;
+    .dl-compose {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      margin-bottom: 0.85rem;
     }
-    .deadline-row:hover .deadline-edit-btn { opacity: 1; }
-    .deadline-edit-btn:hover { color: var(--green); }
-    .deadline-date-input {
+    .dl-compose-row {
+      display: flex;
+      gap: 0.4rem;
+    }
+    .dl-input {
       background: var(--surface2);
-      border: 1px solid var(--green);
+      border: 1px solid var(--border);
       border-radius: 4px;
       color: var(--text);
       font-family: inherit;
-      font-size: 0.72rem;
-      padding: 0.15rem 0.3rem;
+      font-size: 0.82rem;
+      padding: 0.4rem 0.6rem;
       outline: none;
-      width: 118px;
+      transition: border-color 0.15s;
+      width: 100%;
+    }
+    .dl-input:focus { border-color: var(--green); }
+    .dl-date-input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.75rem;
+      padding: 0.35rem 0.4rem;
+      outline: none;
+      flex: 1;
+      min-width: 0;
+      transition: border-color 0.15s;
+    }
+    .dl-date-input:focus { border-color: var(--green); }
+    .dl-proj-select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.75rem;
+      padding: 0.35rem 0.4rem;
+      outline: none;
+      flex: 1;
+      min-width: 0;
+      transition: border-color 0.15s;
+    }
+    .dl-proj-select:focus { border-color: var(--green); }
+    .dl-post-btn { align-self: flex-end; }
+    .dl-post {
+      border-bottom: 1px solid var(--border);
+      padding: 0.55rem 0;
+    }
+    .dl-post:last-child { border-bottom: none; }
+    .dl-post-header {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      margin-bottom: 0.25rem;
+      flex-wrap: wrap;
+    }
+    .dl-project-tag {
+      font-size: 0.65rem;
+      font-weight: 700;
+      background: #0a1f2a;
+      color: var(--blue);
+      padding: 0.12rem 0.4rem;
+      border-radius: 3px;
+      white-space: nowrap;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .dl-post-msg {
+      font-size: 0.82rem;
+      color: var(--text);
+      margin-bottom: 0.2rem;
+      word-wrap: break-word;
+    }
+    .dl-post-meta {
+      font-size: 0.67rem;
+      color: var(--muted);
     }
     /* ── Top Cost Codes ── */
     .cost-code-bar-row { margin-bottom: 0.55rem; }
@@ -2188,35 +2227,18 @@ function renderHomeTab() {
 
   <div class="home-sidebar">
     <p class="home-section-title">Upcoming Deadlines</p>
-    ${(() => {
-      const now = new Date();
-      const upcoming = projectsList
-        .filter(p => p['status'] !== 'Complete')
-        .map(p => {
-          const d = p['end-date'] ? new Date(p['end-date']) : null;
-          const days = d ? Math.ceil((d - now) / (1000 * 60 * 60 * 24)) : null;
-          return { id: p.id, name: p['project-name'] || 'Untitled', days, endDate: p['end-date'] || '' };
-        })
-        .filter(p => p.days === null || p.days <= 60)
-        .sort((a, b) => {
-          if (a.days === null) return 1;
-          if (b.days === null) return -1;
-          return a.days - b.days;
-        });
-      if (!upcoming.length) return `<div class="home-empty" style="font-size:0.78rem">No active projects.</div>`;
-      return upcoming.map(p => {
-        const chipColor = p.days === null ? 'var(--muted)' : p.days < 0 ? 'var(--red)' : p.days <= 7 ? 'var(--yellow)' : 'var(--green)';
-        const chipBg    = p.days === null ? 'transparent' : p.days < 0 ? '#2a0a0a' : p.days <= 7 ? '#2a1f00' : '#0a2a0a';
-        const label     = p.days === null ? 'No date' : p.days < 0 ? `${Math.abs(p.days)}d overdue` : p.days === 0 ? 'Today' : `${p.days}d left`;
-        return `<div class="deadline-row" id="drow-${p.id}">
-          <span class="deadline-name" title="${esc(p.name)}">${esc(p.name)}</span>
-          <div class="deadline-right">
-            <span class="deadline-chip" style="color:${chipColor};background:${chipBg}">${label}</span>
-            <button class="deadline-edit-btn" title="Edit end date" onclick="deadlineEdit('${p.id}','${p.endDate}')">✎</button>
-          </div>
-        </div>`;
-      }).join('');
-    })()}
+    <div class="dl-compose">
+      <input  id="dl-input"   class="dl-input"  type="text"  placeholder="Note or description…">
+      <div class="dl-compose-row">
+        <input  id="dl-date"  class="dl-date-input" type="date" title="Deadline date">
+        <select id="dl-proj"  class="dl-proj-select">
+          <option value="">— Project —</option>
+          ${projectsList.map(p => `<option value="${esc(p['project-name']||'')}">${esc(p['project-name']||'Untitled')}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn btn-green dl-post-btn" onclick="deadlinePost()">Post</button>
+    </div>
+    <div id="deadline-posts"><div class="home-empty" style="font-size:0.78rem">Loading…</div></div>
 
     <p class="home-section-title" style="margin-top:1.75rem">Top Cost Codes — This Week</p>
     ${(() => {
@@ -2247,6 +2269,7 @@ function renderHomeTab() {
 
   </div><!-- /.home-layout -->
   `;
+  loadDeadlines();
 }
 
 /* ═══════════════════════════════════════════
@@ -2341,27 +2364,89 @@ async function boardToggle(id, completed) {
   }
 }
 
-function deadlineEdit(projId, currentDate) {
-  const row = document.getElementById('drow-' + projId);
-  if (!row) return;
-  // Replace row content with an inline date input
-  const orig = row.innerHTML;
-  const p = projectsList.find(x => x.id === projId);
-  const name = p ? (p['project-name'] || 'Untitled') : '';
-  row.innerHTML = `
-    <span class="deadline-name" title="${esc(name)}">${esc(name)}</span>
-    <div class="deadline-right">
-      <input type="date" class="deadline-date-input" value="${currentDate}"
-        onkeydown="if(event.key==='Escape'){renderHomeTab()}"
-        onchange="deadlineSave('${projId}',this.value)">
-      <button class="deadline-edit-btn" style="opacity:1;color:var(--muted)" title="Cancel" onclick="renderHomeTab()">✕</button>
-    </div>`;
-  row.querySelector('input').focus();
+async function loadDeadlines() {
+  const el = document.getElementById('deadline-posts');
+  if (!el) return;
+  try {
+    const res = await fetch('/api/deadlines', { headers: { 'Authorization': 'Bearer ' + fctToken } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    renderDeadlinePosts(data.deadlines || []);
+  } catch (e) {
+    const el2 = document.getElementById('deadline-posts');
+    if (el2) el2.innerHTML = `<div class="home-empty" style="font-size:0.78rem">Could not load deadlines.</div>`;
+  }
 }
 
-function deadlineSave(projId, value) {
-  updateProjectField(projId, 'end-date', value);
-  renderHomeTab();
+function renderDeadlinePosts(posts) {
+  const el = document.getElementById('deadline-posts');
+  if (!el) return;
+  if (!posts.length) {
+    el.innerHTML = '<div class="home-empty" style="font-size:0.78rem">No deadlines yet.</div>';
+    return;
+  }
+  el.innerHTML = posts.map(p => {
+    const now = new Date();
+    const deadlineDate = p.deadline_date ? new Date(p.deadline_date + 'T12:00:00') : null;
+    const days = deadlineDate ? Math.ceil((deadlineDate - now) / (1000 * 60 * 60 * 24)) : null;
+    const chipColor = days === null ? 'var(--muted)' : days < 0 ? 'var(--red)' : days <= 7 ? 'var(--yellow)' : 'var(--green)';
+    const chipBg    = days === null ? 'transparent' : days < 0 ? '#2a0a0a' : days <= 7 ? '#2a1f00' : '#0a2a0a';
+    const chipLabel = days === null ? '' : days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? 'Today' : `${days}d left`;
+    const dateStr   = deadlineDate ? deadlineDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    const created   = new Date(p.created_at);
+    const createdStr = created.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + created.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    return `<div class="dl-post" id="dlpost-${p.id}">
+      <div class="dl-post-header">
+        ${p.project_name ? `<span class="dl-project-tag">${esc(p.project_name)}</span>` : ''}
+        ${chipLabel ? `<span class="deadline-chip" style="color:${chipColor};background:${chipBg}">${chipLabel}</span>` : ''}
+        ${perm.isAdmin ? `<button class="board-delete-btn" title="Delete" onclick="deadlineDelete(${p.id})">✕</button>` : ''}
+      </div>
+      <div class="dl-post-msg">${esc(p.message)}</div>
+      <div class="dl-post-meta">
+        ${dateStr ? `<span style="color:${chipColor};font-weight:600">${dateStr}</span> · ` : ''}${esc(p.author_user)} · ${createdStr}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function deadlinePost() {
+  const msg     = document.getElementById('dl-input')?.value.trim();
+  const date    = document.getElementById('dl-date')?.value;
+  const project = document.getElementById('dl-proj')?.value;
+  if (!msg) { document.getElementById('dl-input')?.focus(); return; }
+  try {
+    const res = await fetch('/api/deadlines', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
+      body: JSON.stringify({ message: msg, deadline_date: date || null, project_name: project || '' })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    document.getElementById('dl-input').value = '';
+    document.getElementById('dl-date').value  = '';
+    document.getElementById('dl-proj').value  = '';
+    await loadDeadlines();
+  } catch (e) {
+    alert('Could not post: ' + e.message);
+  }
+}
+
+async function deadlineDelete(id) {
+  if (!confirm('Delete this deadline?')) return;
+  try {
+    const res = await fetch('/api/deadlines?id=' + id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + fctToken }
+    });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed'); }
+    const el = document.getElementById('dlpost-' + id);
+    if (el) el.remove();
+    const postsEl = document.getElementById('deadline-posts');
+    if (postsEl && !postsEl.querySelector('.dl-post'))
+      postsEl.innerHTML = '<div class="home-empty" style="font-size:0.78rem">No deadlines yet.</div>';
+  } catch (e) {
+    alert('Could not delete: ' + e.message);
+  }
 }
 
 async function boardDelete(id) {

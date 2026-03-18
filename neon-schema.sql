@@ -113,3 +113,15 @@ CREATE TABLE IF NOT EXISTS company_board (
 );
 
 CREATE INDEX IF NOT EXISTS idx_board_company ON company_board(company_code, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS deadlines (
+    id            SERIAL PRIMARY KEY,
+    company_code  TEXT          NOT NULL,
+    message       TEXT          NOT NULL,
+    deadline_date DATE,
+    project_name  TEXT          NOT NULL DEFAULT '',
+    author_user   TEXT          NOT NULL,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_deadlines_company ON deadlines(company_code, deadline_date ASC);
