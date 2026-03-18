@@ -850,22 +850,33 @@
       text-align: right;
     }
     .proj-home-financials {
-      display: flex;
-      gap: 0.5rem;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: auto auto;
+      gap: 0.5rem 0;
       border-top: 1px solid var(--border);
       padding-top: 0.6rem;
     }
+    /* VARIANCE and ENTRIES sit on the second row, left-aligned */
+    .proj-home-fin-item:nth-child(4),
+    .proj-home-fin-item:nth-child(5) {
+      grid-row: 2;
+    }
     .proj-home-fin-item {
-      flex: 1;
       min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 0.15rem;
+      padding-right: 0.25rem;
+    }
+    .proj-home-fin-item:nth-child(3),
+    .proj-home-fin-item:nth-child(5) {
+      padding-right: 0;
     }
     .proj-home-fin-label {
       font-size: 0.6rem;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.07em;
       color: var(--muted);
     }
     .proj-home-fin-val {
