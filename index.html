@@ -27,7 +27,7 @@
     .background {
       position: fixed;
       inset: 0;
-      background: radial-gradient(ellipse at 50% 40%, #0b1512 0%, #080a09 70%);
+      background: radial-gradient(ellipse at 50% 50%, #091410 0%, #06090a 60%, #05060a 100%);
       z-index: 0;
     }
 
@@ -293,206 +293,265 @@
   </main>
 
   <script>
-    // ── Floating nodes + connection lines background ───────────────────────
+    // ── Microchip animated background ─────────────────────────────────────
     (function () {
       const canvas = document.getElementById('bgCanvas');
       const ctx    = canvas.getContext('2d');
-      const LINK_DIST    = 200;
-      const NODE_COUNT   = 110;
-      const REPEL_DIST   = 120;   // mouse repulsion radius
-      const REPEL_FORCE  = 2.2;   // repulsion strength
-      const MAX_SPEED    = 3.5;   // cap after repulsion
+      let W, H, cx, cy;
 
-      // Multi-color palette: green, cyan, blue-purple, amber
-      const COLORS = [
-        { r: 34,  g: 197, b: 94  },  // green
-        { r: 0,   g: 220, b: 255 },  // cyan
-        { r: 139, g: 92,  b: 246 },  // violet
-        { r: 251, g: 191, b: 36  },  // amber
+      // Color palette [r, g, b]
+      const COLS = [
+        [34,  197, 94 ],  // green
+        [0,   220, 255],  // cyan
+        [139, 92,  246],  // violet
+        [251, 191, 36 ],  // amber
       ];
 
-      let W, H, nodes;
-      const mouse = { x: -9999, y: -9999 };
+      const CW   = 160;  // chip width  px
+      const CH   = 160;  // chip height px
+      const PINS = 5;    // pins per side
+      const STUB = 14;   // pin stub length px
 
-      // Active data pulses: { ni, nj, t } where t goes 0→1
-      const pulses = [];
-      const PULSE_SPEED = 0.018;
+      let traces = [];   // { pts:[[x,y],...], col:[r,g,b], lens:[], total }
+      let pulses = [];   // { ti, t, speed, dir }
+      let frame  = 0;
 
-      // Per-node flash brightness (0–1, decays each frame)
-      // stored on each node as node.flash
+      /* ── Build trace paths ──────────────────────────────────────────── */
+      function buildTraces() {
+        traces = [];
+        const L = cx - CW/2, R = cx + CW/2;
+        const T = cy - CH/2, B = cy + CH/2;
+        const hgap = CW / (PINS + 1);
+        const vgap = CH / (PINS + 1);
 
-      window.addEventListener('mousemove', e => {
-        mouse.x = e.clientX;
-        mouse.y = e.clientY;
-      });
+        function add(pts, ci) {
+          const lens = [0];
+          let total = 0;
+          for (let i = 1; i < pts.length; i++) {
+            const dx = pts[i][0] - pts[i-1][0], dy = pts[i][1] - pts[i-1][1];
+            total += Math.hypot(dx, dy);
+            lens.push(total);
+          }
+          traces.push({ pts, col: COLS[ci % 4], lens, total });
+        }
 
-      function makeNode() {
-        const c = COLORS[Math.floor(Math.random() * COLORS.length)];
-        return {
-          x:  Math.random() * W,
-          y:  Math.random() * H,
-          vx: (Math.random() - 0.5) * 0.65,
-          vy: (Math.random() - 0.5) * 0.65,
-          r:  2 + Math.random() * 3,
-          c,
-          flash: 0,
-        };
+        // Top pins → screen top
+        for (let i = 0; i < PINS; i++) {
+          const px = L + hgap * (i + 1);
+          const ky = T - STUB - 22 - i * 15;
+          const ex = px + (i - 2) * 78;
+          add([[px, T - STUB], [px, ky], [ex, ky], [ex, -10]], i % 4);
+        }
+        // Bottom pins → screen bottom
+        for (let i = 0; i < PINS; i++) {
+          const px = L + hgap * (i + 1);
+          const ky = B + STUB + 22 + i * 15;
+          const ex = px - (i - 2) * 78;
+          add([[px, B + STUB], [px, ky], [ex, ky], [ex, H + 10]], (i + 1) % 4);
+        }
+        // Left pins → screen left
+        for (let i = 0; i < PINS; i++) {
+          const py = T + vgap * (i + 1);
+          const kx = L - STUB - 22 - i * 15;
+          const ey = py + (i - 2) * 68;
+          add([[L - STUB, py], [kx, py], [kx, ey], [-10, ey]], (i + 2) % 4);
+        }
+        // Right pins → screen right
+        for (let i = 0; i < PINS; i++) {
+          const py = T + vgap * (i + 1);
+          const kx = R + STUB + 22 + i * 15;
+          const ey = py - (i - 2) * 68;
+          add([[R + STUB, py], [kx, py], [kx, ey], [W + 10, ey]], (i + 3) % 4);
+        }
       }
 
+      /* ── Interpolate position along trace at t ∈ [0,1] ─────────────── */
+      function ptOn(tr, t) {
+        const d = t * tr.total;
+        for (let i = 1; i < tr.pts.length; i++) {
+          if (tr.lens[i] >= d) {
+            const seg = tr.lens[i] - tr.lens[i-1];
+            const f   = seg > 0 ? (d - tr.lens[i-1]) / seg : 0;
+            const a   = tr.pts[i-1], b = tr.pts[i];
+            return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+          }
+        }
+        return [...tr.pts[tr.pts.length - 1]];
+      }
+
+      /* ── Spawn a new light pulse ─────────────────────────────────────── */
+      function spawn() {
+        if (pulses.length >= 24) return;
+        const ti  = Math.floor(Math.random() * traces.length);
+        const dir = Math.random() > 0.5 ? 1 : -1;
+        pulses.push({ ti, t: dir > 0 ? 0 : 1, speed: 0.0025 + Math.random() * 0.004, dir });
+      }
+
+      /* ── Resize handler ─────────────────────────────────────────────── */
       function resize() {
         W = canvas.width  = window.innerWidth;
         H = canvas.height = window.innerHeight;
-        nodes = Array.from({ length: NODE_COUNT }, makeNode);
+        cx = W / 2;
+        cy = H / 2;
+        buildTraces();
+        pulses = [];
+        for (let i = 0; i < 18; i++) spawn();
       }
 
-      // Spawn a pulse travelling from node ni → nj
-      function spawnPulse(ni, nj) {
-        // Limit total active pulses to keep it tasteful
-        if (pulses.length < 18) pulses.push({ ni, nj, t: 0 });
-      }
-
-      // Periodically seed new pulses from random connected pairs
-      let pulseTimer = 0;
-
+      /* ── Main draw loop ─────────────────────────────────────────────── */
       function draw() {
         ctx.clearRect(0, 0, W, H);
+        frame++;
 
-        // ── Update node positions + mouse repulsion ──────────────────────
-        for (const n of nodes) {
-          // Mouse repulsion
-          const mdx = n.x - mouse.x;
-          const mdy = n.y - mouse.y;
-          const md  = Math.sqrt(mdx * mdx + mdy * mdy);
-          if (md < REPEL_DIST && md > 0) {
-            const force = (1 - md / REPEL_DIST) * REPEL_FORCE;
-            n.vx += (mdx / md) * force;
-            n.vy += (mdy / md) * force;
-          }
+        const breathe = (Math.sin(frame * 0.025) + 1) / 2;  // 0 → 1 oscillation
+        const L = cx - CW / 2, R = cx + CW / 2;
+        const T = cy - CH / 2, B = cy + CH / 2;
+        const hgap = CW / (PINS + 1);
+        const vgap = CH / (PINS + 1);
 
-          // Dampen back toward base speed
-          const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
-          if (speed > MAX_SPEED) {
-            n.vx = (n.vx / speed) * MAX_SPEED;
-            n.vy = (n.vy / speed) * MAX_SPEED;
-          }
-          // Soft drag so nodes drift back to normal when mouse leaves
-          n.vx *= 0.995;
-          n.vy *= 0.995;
+        // ── PCB grid ──────────────────────────────────────────────────────
+        ctx.strokeStyle = 'rgba(34,197,94,0.035)';
+        ctx.lineWidth   = 1;
+        for (let x = 0; x <= W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+        for (let y = 0; y <= H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
 
-          n.x += n.vx;
-          n.y += n.vy;
-          if (n.x < 0 || n.x > W) n.vx *= -1;
-          if (n.y < 0 || n.y > H) n.vy *= -1;
-
-          // Decay flash
-          if (n.flash > 0) n.flash = Math.max(0, n.flash - 0.04);
-        }
-
-        // ── Seed pulses periodically ──────────────────────────────────────
-        pulseTimer++;
-        if (pulseTimer >= 40) {
-          pulseTimer = 0;
-          // Pick a random connected pair to send a pulse along
-          const candidates = [];
-          for (let i = 0; i < nodes.length; i++) {
-            for (let j = i + 1; j < nodes.length; j++) {
-              const dx = nodes[i].x - nodes[j].x;
-              const dy = nodes[i].y - nodes[j].y;
-              if (dx * dx + dy * dy < LINK_DIST * LINK_DIST) candidates.push([i, j]);
-            }
-          }
-          if (candidates.length) {
-            const [ni, nj] = candidates[Math.floor(Math.random() * candidates.length)];
-            spawnPulse(ni, nj);
+        // ── Circuit traces ────────────────────────────────────────────────
+        for (const tr of traces) {
+          const [r, g, b] = tr.col;
+          ctx.strokeStyle = `rgba(${r},${g},${b},0.22)`;
+          ctx.lineWidth   = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(tr.pts[0][0], tr.pts[0][1]);
+          for (let i = 1; i < tr.pts.length; i++) ctx.lineTo(tr.pts[i][0], tr.pts[i][1]);
+          ctx.stroke();
+          // Waypoint solder pads
+          for (let i = 1; i < tr.pts.length - 1; i++) {
+            ctx.beginPath();
+            ctx.arc(tr.pts[i][0], tr.pts[i][1], 3, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${r},${g},${b},0.55)`;
+            ctx.fill();
           }
         }
 
-        // ── Advance pulses ────────────────────────────────────────────────
-        for (let p = pulses.length - 1; p >= 0; p--) {
-          pulses[p].t += PULSE_SPEED;
-          if (pulses[p].t >= 1) pulses.splice(p, 1);
+        // ── Chip outer ambient glow ────────────────────────────────────────
+        const og = ctx.createRadialGradient(cx, cy, 10, cx, cy, CW * 0.9);
+        og.addColorStop(0, `rgba(34,197,94,${(0.06 + breathe * 0.05).toFixed(3)})`);
+        og.addColorStop(1, 'rgba(34,197,94,0)');
+        ctx.fillStyle = og;
+        ctx.fillRect(L - CW, T - CH, CW * 3, CH * 3);
+
+        // ── Chip body ──────────────────────────────────────────────────────
+        ctx.fillStyle = 'rgba(7,13,9,0.93)';
+        ctx.fillRect(L, T, CW, CH);
+
+        // Border (sharp + soft glow)
+        ctx.lineWidth   = 1.8;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.38 + breathe * 0.25).toFixed(3)})`;
+        ctx.strokeRect(L, T, CW, CH);
+        ctx.lineWidth   = 8;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.04 + breathe * 0.04).toFixed(3)})`;
+        ctx.strokeRect(L, T, CW, CH);
+
+        // Internal circuit grid lines
+        const CELL = CW / 5;
+        ctx.lineWidth   = 0.8;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.1 + breathe * 0.07).toFixed(3)})`;
+        for (let i = 1; i < 5; i++) {
+          ctx.beginPath(); ctx.moveTo(L + CELL * i, T + 6); ctx.lineTo(L + CELL * i, B - 6); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(L + 6, T + CELL * i); ctx.lineTo(R - 6, T + CELL * i); ctx.stroke();
         }
-
-        // ── Draw connections — blend endpoint colors ──────────────────────
-        for (let i = 0; i < nodes.length; i++) {
-          for (let j = i + 1; j < nodes.length; j++) {
-            const dx   = nodes[i].x - nodes[j].x;
-            const dy   = nodes[i].y - nodes[j].y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < LINK_DIST) {
-              const proximity = 1 - dist / LINK_DIST;
-
-              // Flash nodes that just came into connection range
-              if (proximity > 0.85 && nodes[i].flash === 0 && nodes[j].flash === 0) {
-                nodes[i].flash = 0.9;
-                nodes[j].flash = 0.9;
-                spawnPulse(i, j);
-              }
-
-              const alpha = proximity * 0.55;
-              const ci = nodes[i].c, cj = nodes[j].c;
-              const mr = Math.round((ci.r + cj.r) / 2);
-              const mg = Math.round((ci.g + cj.g) / 2);
-              const mb = Math.round((ci.b + cj.b) / 2);
-              ctx.strokeStyle = `rgba(${mr},${mg},${mb},${alpha.toFixed(2)})`;
-              ctx.lineWidth = 1.2;
-              ctx.beginPath();
-              ctx.moveTo(nodes[i].x, nodes[i].y);
-              ctx.lineTo(nodes[j].x, nodes[j].y);
-              ctx.stroke();
-            }
+        // Grid intersection dots
+        for (let i = 1; i < 5; i++) {
+          for (let j = 1; j < 5; j++) {
+            ctx.beginPath();
+            ctx.arc(L + CELL * i, T + CELL * j, 1.8, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(34,197,94,${(0.28 + breathe * 0.22).toFixed(3)})`;
+            ctx.fill();
           }
         }
 
-        // ── Draw pulses travelling along edges ────────────────────────────
-        for (const p of pulses) {
-          const a = nodes[p.ni], b = nodes[p.nj];
-          const dx = b.x - a.x, dy = b.y - a.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist >= LINK_DIST) continue; // edge dissolved mid-pulse
+        // ── Centre processor core ─────────────────────────────────────────
+        ctx.beginPath();
+        ctx.arc(cx, cy, 22 + breathe * 4, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(34,197,94,${(0.28 + breathe * 0.22).toFixed(3)})`;
+        ctx.lineWidth   = 1.5;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(34,197,94,${(0.25 + breathe * 0.25).toFixed(3)})`;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(34,197,94,0.97)';
+        ctx.fill();
 
-          const px = a.x + dx * p.t;
-          const py = a.y + dy * p.t;
+        // ── Corner notch ──────────────────────────────────────────────────
+        ctx.beginPath();
+        ctx.arc(L + 14, T + 14, 7, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(34,197,94,0.7)';
+        ctx.lineWidth   = 1.5;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(L + 14, T + 14, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(34,197,94,0.9)';
+        ctx.fill();
 
-          // Fade in at start, fade out at end
-          const fade = Math.sin(p.t * Math.PI);
-          const ca = a.c, cb2 = b.c;
-          const pr = Math.round(ca.r + (cb2.r - ca.r) * p.t);
-          const pg = Math.round(ca.g + (cb2.g - ca.g) * p.t);
-          const pb = Math.round(ca.b + (cb2.b - ca.b) * p.t);
+        // ── Chip label ────────────────────────────────────────────────────
+        ctx.fillStyle = `rgba(34,197,94,${(0.32 + breathe * 0.15).toFixed(3)})`;
+        ctx.font      = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('DW-1', cx, B - 10);
 
-          // Glow halo
+        // ── Pin stubs ─────────────────────────────────────────────────────
+        ctx.lineWidth   = 1.8;
+        ctx.strokeStyle = 'rgba(34,197,94,0.5)';
+        for (let i = 0; i < PINS; i++) {
+          const px = L + hgap * (i + 1);
+          const py = T + vgap * (i + 1);
+          ctx.beginPath(); ctx.moveTo(px, T); ctx.lineTo(px, T - STUB); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(px, B); ctx.lineTo(px, B + STUB); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(L, py); ctx.lineTo(L - STUB, py); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(R, py); ctx.lineTo(R + STUB, py); ctx.stroke();
+          for (const [nx, ny] of [[px, T-STUB], [px, B+STUB], [L-STUB, py], [R+STUB, py]]) {
+            ctx.beginPath();
+            ctx.arc(nx, ny, 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(34,197,94,0.7)';
+            ctx.fill();
+          }
+        }
+
+        // ── Update & draw light pulses ────────────────────────────────────
+        for (let i = pulses.length - 1; i >= 0; i--) {
+          const p = pulses[i];
+          p.t += p.speed * p.dir;
+          if (p.t < 0 || p.t > 1) { pulses.splice(i, 1); continue; }
+
+          const [px, py]  = ptOn(traces[p.ti], p.t);
+          const [r, g, b] = traces[p.ti].col;
+          const fade       = Math.sin(p.t * Math.PI);
+
+          // Outer glow halo
+          const grd = ctx.createRadialGradient(px, py, 0, px, py, 14);
+          grd.addColorStop(0, `rgba(${r},${g},${b},${(fade * 0.55).toFixed(3)})`);
+          grd.addColorStop(1, `rgba(${r},${g},${b},0)`);
           ctx.beginPath();
-          ctx.arc(px, py, 7, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${pr},${pg},${pb},${(fade * 0.18).toFixed(3)})`;
+          ctx.arc(px, py, 14, 0, Math.PI * 2);
+          ctx.fillStyle = grd;
           ctx.fill();
-          // Bright core
+          // Mid glow
           ctx.beginPath();
-          ctx.arc(px, py, 2.5, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${pr},${pg},${pb},${(fade * 0.95).toFixed(3)})`;
+          ctx.arc(px, py, 4, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${r},${g},${b},${(fade * 0.9).toFixed(3)})`;
+          ctx.fill();
+          // White-hot core
+          ctx.beginPath();
+          ctx.arc(px, py, 1.8, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255,255,255,${(fade * 0.88).toFixed(3)})`;
           ctx.fill();
         }
 
-        // ── Draw nodes with glow + flash ──────────────────────────────────
-        for (const n of nodes) {
-          const { r: cr, g: cg, b: cb } = n.c;
-          const f = n.flash;
-          // outer glow (boosted when flashing)
-          ctx.beginPath();
-          ctx.arc(n.x, n.y, n.r * (3 + f * 4), 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${cr},${cg},${cb},${(0.12 + f * 0.35).toFixed(3)})`;
-          ctx.fill();
-          // inner glow
-          ctx.beginPath();
-          ctx.arc(n.x, n.y, n.r * (1.6 + f * 2), 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${cr},${cg},${cb},${(0.30 + f * 0.45).toFixed(3)})`;
-          ctx.fill();
-          // solid core
-          ctx.beginPath();
-          ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${cr},${cg},${cb},${(0.90 + f * 0.10).toFixed(3)})`;
-          ctx.fill();
-        }
+        // Periodically spawn new pulses
+        if (frame % 45 === 0 && pulses.length < 24) spawn();
 
         requestAnimationFrame(draw);
       }
