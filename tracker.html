@@ -922,6 +922,112 @@
       color: var(--text);
     }
     .recent-table tr:hover td { background: #16161f; }
+
+    /* ── Audit Log ── */
+    .audit-log { margin-bottom: 2rem; }
+    .audit-row {
+      display: flex;
+      gap: 0;
+      position: relative;
+    }
+    .audit-dot-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 22px;
+      flex-shrink: 0;
+      padding-top: 3px;
+    }
+    .audit-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      z-index: 1;
+      box-shadow: 0 0 4px currentColor;
+    }
+    .audit-line {
+      flex: 1;
+      width: 1px;
+      background: var(--border);
+      margin-top: 3px;
+    }
+    .audit-row:last-child .audit-line { display: none; }
+    .audit-body {
+      flex: 1;
+      min-width: 0;
+      padding: 0 0 1rem 0.5rem;
+    }
+    .audit-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.1rem;
+    }
+    .audit-proj {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .audit-date {
+      font-size: 0.65rem;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .audit-code {
+      font-size: 0.78rem;
+      color: #bbb;
+      margin-bottom: 0.2rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .audit-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      margin-bottom: 0.25rem;
+    }
+    .audit-tag {
+      font-size: 0.62rem;
+      color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 0.1rem 0.35rem;
+      white-space: nowrap;
+    }
+    .audit-tag-emp {
+      color: #a0cfff;
+      border-color: #1a2f44;
+      background: #0a1a2a;
+    }
+    .audit-costs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+    }
+    .audit-cost-pill {
+      font-size: 0.62rem;
+      font-weight: 600;
+      padding: 0.1rem 0.4rem;
+      border-radius: 3px;
+    }
+    .audit-pill-labor { background: #0a2a0a; color: var(--green); }
+    .audit-pill-equip { background: #0a1a2a; color: var(--blue); }
+    .audit-pill-mat   { background: #2a1f00; color: var(--yellow); }
+    .audit-pill-total {
+      background: #1e1e2a;
+      color: #ddd;
+      font-weight: 700;
+      margin-left: 0.1rem;
+    }
+
     .home-empty {
       color: var(--muted);
       font-size: 0.82rem;
@@ -2195,33 +2301,44 @@ function renderHomeTab() {
       </div>
     </div>
 
-    <p class="home-section-title">Recent Daily Entries</p>
+    <p class="home-section-title">Activity Log</p>
     ${recent.length === 0
       ? `<div class="home-empty">No daily entries yet. Open a project in Project Dashboard to add daily records.</div>`
-      : `<table class="recent-table">
-          <thead><tr>
-            <th>Date</th><th>Project</th><th>Employee</th><th>Cost Code</th><th>Sub Code</th>
-            <th>Field Type</th><th>Labor Cost</th><th>Equip Total</th><th>Total Cost</th>
-          </tr></thead>
-          <tbody>
-            ${recent.map(row => {
-              const c = calcDaily(row);
-              const proj = projectsList.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
-              const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
-              return `<tr>
-                <td>${row.date || '—'}</td>
-                <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(projName)}">${esc(projName)}</td>
-                <td>${esc(row.employee) || '—'}</td>
-                <td>${esc(row.cost_code) || '—'}</td>
-                <td>${esc(row.sub_code) || '—'}</td>
-                <td>${esc(row.field_type) || '—'}</td>
-                <td>$${fmt(c.labor_cost)}</td>
-                <td>$${fmt(c.equip_total)}</td>
-                <td>$${fmt(c.total_cost)}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>`
+      : `<div class="audit-log">
+          ${recent.map(row => {
+            const c = calcDaily(row);
+            const proj = projectsList.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
+            const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
+            const hasLabor = c.labor_cost > 0;
+            const hasEquip = c.equip_total > 0;
+            const hasMat   = (c.material_cost || 0) > 0;
+            const dotColor = hasLabor ? 'var(--green)' : hasEquip ? 'var(--blue)' : hasMat ? 'var(--yellow)' : '#555';
+            const tags = [row.sub_code, row.field_type].filter(Boolean);
+            return `<div class="audit-row">
+              <div class="audit-dot-col">
+                <div class="audit-dot" style="background:${dotColor}"></div>
+                <div class="audit-line"></div>
+              </div>
+              <div class="audit-body">
+                <div class="audit-header">
+                  <span class="audit-proj">${esc(projName)}</span>
+                  <span class="audit-date">${row.date || '—'}</span>
+                </div>
+                <div class="audit-code">${esc(row.cost_code) || '(no cost code)'}</div>
+                ${(tags.length || row.employee) ? `<div class="audit-tags">
+                  ${row.employee ? `<span class="audit-tag audit-tag-emp">${esc(row.employee)}</span>` : ''}
+                  ${tags.map(t => `<span class="audit-tag">${esc(t)}</span>`).join('')}
+                </div>` : ''}
+                <div class="audit-costs">
+                  ${hasLabor ? `<span class="audit-cost-pill audit-pill-labor">Labor $${fmt(c.labor_cost)}</span>` : ''}
+                  ${hasEquip ? `<span class="audit-cost-pill audit-pill-equip">Equip $${fmt(c.equip_total)}</span>` : ''}
+                  ${hasMat   ? `<span class="audit-cost-pill audit-pill-mat">Mat $${fmt(c.material_cost)}</span>` : ''}
+                  ${c.total_cost > 0 ? `<span class="audit-cost-pill audit-pill-total">$${fmt(c.total_cost)}</span>` : ''}
+                </div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>`
     }
   </div><!-- /.home-main -->
 
