@@ -110,9 +110,12 @@ Only include recommendations where there is a real issue or insight. Do not pad 
     });
 
     const raw  = message.content[0].text.trim();
-    // Strip markdown code fences if the model wrapped the JSON
-    const jsonStr = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/,'').trim();
-    const result  = JSON.parse(jsonStr);
+    // Strip markdown code fences if the model wrapped the JSON, then extract the JSON object
+    const stripped = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/,'').trim();
+    const jsonStart = stripped.indexOf('{');
+    const jsonEnd   = stripped.lastIndexOf('}');
+    if (jsonStart === -1 || jsonEnd === -1) throw new Error('No JSON object found in model response');
+    const result  = JSON.parse(stripped.slice(jsonStart, jsonEnd + 1));
 
     // ── Cache result ──────────────────────────────────────────────────────────
     try {
