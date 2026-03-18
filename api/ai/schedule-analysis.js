@@ -60,6 +60,17 @@ module.exports = async (req, res) => {
     : 'No deadline set';
 
   const codeLines = costCodes.map(c => {
+    // Pre-compute labor productivity so AI can give specific crew recommendations
+    const unitsPerLaborHour = (c.laborHours > 0 && c.runningQty > 0)
+      ? c.runningQty / c.laborHours : null;
+    const laborHoursPerDay = (c.laborHours > 0 && c.daysWorked > 0)
+      ? c.laborHours / c.daysWorked : null;
+    // Estimate additional laborers needed to close gap (assuming 8hr day)
+    let additionalLaborers = null;
+    if (c.gap > 0 && unitsPerLaborHour !== null && unitsPerLaborHour > 0) {
+      additionalLaborers = Math.ceil(c.gap / (unitsPerLaborHour * 8));
+    }
+
     const parts = [
       `  • ${c.costCode}${c.subCode ? ' / ' + c.subCode : ''}`,
       `    Status: ${c.status}`,
@@ -68,8 +79,11 @@ module.exports = async (req, res) => {
       `    Days Worked: ${c.daysWorked} | Current Pace: ${c.currentPace > 0 ? c.currentPace.toFixed(2) + ' units/day' : 'no activity'}`,
       c.requiredPace != null ? `    Required Pace: ${c.requiredPace.toFixed(2)} units/day` : '    Required Pace: N/A (no deadline)',
       c.gap != null ? `    Gap: ${c.gap > 0 ? '+' + c.gap.toFixed(2) + ' units/day NEEDED' : Math.abs(c.gap).toFixed(2) + ' units/day ahead'}` : '    Gap: N/A',
-      c.employees && c.employees.length ? `    Crew: ${c.employees.join(', ')}` : '',
-      c.equipment && c.equipment.length ? `    Equipment: ${c.equipment.join(', ')}` : '',
+      unitsPerLaborHour !== null ? `    Labor Productivity: ${unitsPerLaborHour.toFixed(3)} units/labor-hr` : '',
+      laborHoursPerDay !== null ? `    Labor Hrs/Day: ${laborHoursPerDay.toFixed(1)} hrs/day across ${c.employees ? c.employees.length : 0} laborer(s)` : '',
+      additionalLaborers !== null ? `    Est. Additional Laborers Needed (8hr day): ${additionalLaborers}` : '',
+      c.employees && c.employees.length ? `    Current Crew: ${c.employees.join(', ')}` : '',
+      c.equipment && c.equipment.length ? `    Equipment Used: ${c.equipment.join(', ')}` : '',
     ].filter(Boolean).join('\n');
     return parts;
   }).join('\n\n');
@@ -82,7 +96,10 @@ DEADLINE: ${deadlineStr}
 COST CODE PACING DATA:
 ${codeLines}
 
-Based on this data, provide actionable scheduling recommendations. Be direct and specific — name the cost codes, suggest actual resources (add a laborer, add equipment), and quantify the impact where possible.
+Based on this data, provide actionable scheduling recommendations. Use the labor productivity and estimated additional laborers figures to make specific, quantified recommendations — e.g. "Add 2 laborers from the existing crew" or "Add 1 laborer and an additional [specific equipment already used on this code]". When a cost code is behind:
+- State how many additional laborers are needed based on the Est. Additional Laborers Needed figure
+- Recommend by name from the Current Crew if they could be reallocated, or suggest adding a laborer
+- If equipment is a bottleneck (low labor hours but still behind), recommend adding a specific machine from the Equipment Used list
 
 Respond with a JSON object in this exact format:
 {
@@ -92,7 +109,7 @@ Respond with a JSON object in this exact format:
       "priority": "high" | "medium" | "low",
       "costCode": "the cost code this applies to, or 'Overall' for project-level",
       "issue": "what the problem is (1 sentence)",
-      "action": "what to do about it (1-2 sentences, be specific)"
+      "action": "what to do about it (1-2 sentences, be specific with numbers and names)"
     }
   ],
   "outlook": "on-track" | "at-risk" | "behind"

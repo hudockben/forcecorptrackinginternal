@@ -7860,6 +7860,8 @@ async function runSchedAI() {
       costCode:     bi.cost_code || '',
       subCode:      bi.sub_code  || '',
       bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status,
+      laborHours: a.labor_hours || 0,
+      equipHours: a.equip_hours || 0,
       employees: [...(a.employees || new Set())].filter(Boolean),
       equipment: [...(a.equipment || new Set())].filter(Boolean),
     };
