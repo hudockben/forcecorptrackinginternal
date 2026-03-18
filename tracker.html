@@ -620,14 +620,26 @@
     }
     .home-layout {
       display: grid;
-      grid-template-columns: 1fr 380px;
-      gap: 1.5rem;
+      grid-template-columns: 1fr 400px;
+      gap: 2rem;
       align-items: start;
     }
     .home-main { min-width: 0; }
     .home-sidebar {
       position: sticky;
       top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .widget-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+    }
+    .widget-card .home-section-title {
+      margin-top: 0;
     }
     .home-title {
       font-size: 0.7rem;
@@ -2343,45 +2355,49 @@ function renderHomeTab() {
   </div><!-- /.home-main -->
 
   <div class="home-sidebar">
-    <p class="home-section-title">Upcoming Deadlines</p>
-    <div class="dl-compose">
-      <input  id="dl-input"   class="dl-input"  type="text"  placeholder="Note or description…">
-      <div class="dl-compose-row">
-        <input  id="dl-date"  class="dl-date-input" type="date" title="Deadline date">
-        <select id="dl-proj"  class="dl-proj-select">
-          <option value="">— Project —</option>
-          ${projectsList.map(p => `<option value="${esc(p['project-name']||'')}">${esc(p['project-name']||'Untitled')}</option>`).join('')}
-        </select>
+    <div class="widget-card">
+      <p class="home-section-title">Upcoming Deadlines</p>
+      <div class="dl-compose">
+        <input  id="dl-input"   class="dl-input"  type="text"  placeholder="Note or description…">
+        <div class="dl-compose-row">
+          <input  id="dl-date"  class="dl-date-input" type="date" title="Deadline date">
+          <select id="dl-proj"  class="dl-proj-select">
+            <option value="">— Project —</option>
+            ${projectsList.map(p => `<option value="${esc(p['project-name']||'')}">${esc(p['project-name']||'Untitled')}</option>`).join('')}
+          </select>
+        </div>
+        <button class="btn btn-green dl-post-btn" onclick="deadlinePost()">Post</button>
       </div>
-      <button class="btn btn-green dl-post-btn" onclick="deadlinePost()">Post</button>
+      <div id="deadline-posts"><div class="home-empty" style="font-size:0.78rem">Loading…</div></div>
     </div>
-    <div id="deadline-posts"><div class="home-empty" style="font-size:0.78rem">Loading…</div></div>
 
-    <p class="home-section-title" style="margin-top:1.75rem">Top Cost Codes — This Week</p>
-    ${(() => {
-      const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-      const totals = {};
-      allDaily.forEach(r => {
-        if (!r.date || r.date < weekAgo) return;
-        const key = r.cost_code ? esc(r.cost_code) : '(none)';
-        totals[key] = (totals[key] || 0) + calcDaily(r).total_cost;
-      });
-      const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 6);
-      if (!sorted.length) return `<div class="home-empty" style="font-size:0.78rem">No entries this week.</div>`;
-      const max = sorted[0][1];
-      return sorted.map(([code, amt]) => {
-        const pct = max > 0 ? (amt / max) * 100 : 0;
-        return `<div class="cost-code-bar-row">
-          <div class="cost-code-bar-label">
-            <span class="cost-code-bar-name" title="${code}">${code}</span>
-            <span class="cost-code-bar-val">$${fmt(amt)}</span>
-          </div>
-          <div class="cost-code-bar-track">
-            <div class="cost-code-bar-fill" style="width:${pct.toFixed(1)}%"></div>
-          </div>
-        </div>`;
-      }).join('');
-    })()}
+    <div class="widget-card">
+      <p class="home-section-title">Top Cost Codes — This Week</p>
+      ${(() => {
+        const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const totals = {};
+        allDaily.forEach(r => {
+          if (!r.date || r.date < weekAgo) return;
+          const key = r.cost_code ? esc(r.cost_code) : '(none)';
+          totals[key] = (totals[key] || 0) + calcDaily(r).total_cost;
+        });
+        const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 6);
+        if (!sorted.length) return `<div class="home-empty" style="font-size:0.78rem">No entries this week.</div>`;
+        const max = sorted[0][1];
+        return sorted.map(([code, amt]) => {
+          const pct = max > 0 ? (amt / max) * 100 : 0;
+          return `<div class="cost-code-bar-row">
+            <div class="cost-code-bar-label">
+              <span class="cost-code-bar-name" title="${code}">${code}</span>
+              <span class="cost-code-bar-val">$${fmt(amt)}</span>
+            </div>
+            <div class="cost-code-bar-track">
+              <div class="cost-code-bar-fill" style="width:${pct.toFixed(1)}%"></div>
+            </div>
+          </div>`;
+        }).join('');
+      })()}
+    </div>
   </div><!-- /.home-sidebar -->
 
   </div><!-- /.home-layout -->
