@@ -738,6 +738,21 @@
     .board-body { flex: 1; min-width: 0; }
     .board-msg { font-size: 0.85rem; color: var(--text); margin-bottom: 0.25rem; word-wrap: break-word; }
     .board-meta { font-size: 0.68rem; color: var(--muted); }
+    .board-delete-btn {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      line-height: 1;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s;
+    }
+    .board-post:hover .board-delete-btn { opacity: 1; }
+    .board-delete-btn:hover { color: var(--red); }
     .board-compose {
       display: flex;
       gap: 0.5rem;
@@ -2143,6 +2158,7 @@ function renderBoardPosts(posts) {
         <div class="board-msg">${esc(p.message)}</div>
         <div class="board-meta">${author} &middot; ${dateStr} ${timeStr}</div>
       </div>
+      ${perm.isAdmin ? `<button class="board-delete-btn" title="Delete post" onclick="boardDelete(${p.id})">✕</button>` : ''}
     </div>`;
   }).join('');
 }
@@ -2188,6 +2204,25 @@ async function boardToggle(id, completed) {
     }
   } catch (e) {
     alert('Could not update: ' + e.message);
+  }
+}
+
+async function boardDelete(id) {
+  if (!confirm('Delete this post?')) return;
+  try {
+    const res = await fetch('/api/board?id=' + id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + fctToken }
+    });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed'); }
+    const el = document.getElementById('bpost-' + id);
+    if (el) el.remove();
+    // Show "no posts" message if board is now empty
+    const postsEl = document.getElementById('board-posts');
+    if (postsEl && !postsEl.querySelector('.board-post'))
+      postsEl.innerHTML = '<div class="home-empty" style="font-size:0.78rem">No posts yet.</div>';
+  } catch (e) {
+    alert('Could not delete: ' + e.message);
   }
 }
 
