@@ -40,6 +40,12 @@ app.use(express.static(path.join(__dirname, '..')));
 /** Daily rows — scalable per-row storage */
 app.all('/api/daily-rows', require('./daily-rows'));
 
+/** Company board */
+app.all('/api/board', require('./board'));
+
+/** Deadlines */
+app.all('/api/deadlines', require('./deadlines'));
+
 /** Liveness / health check */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });

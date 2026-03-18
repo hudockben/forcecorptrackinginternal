@@ -616,7 +616,30 @@
     /* ── Home Tab ── */
     .home-wrap {
       padding: 1.5rem 1.25rem;
-      max-width: 1100px;
+      max-width: 1600px;
+    }
+    .home-layout {
+      display: grid;
+      grid-template-columns: 1fr 400px;
+      gap: 2rem;
+      align-items: start;
+    }
+    .home-main { min-width: 0; }
+    .home-sidebar {
+      position: sticky;
+      top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .widget-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+    }
+    .widget-card .home-section-title {
+      margin-top: 0;
     }
     .home-title {
       font-size: 0.7rem;
@@ -727,6 +750,149 @@
     .board-body { flex: 1; min-width: 0; }
     .board-msg { font-size: 0.85rem; color: var(--text); margin-bottom: 0.25rem; word-wrap: break-word; }
     .board-meta { font-size: 0.68rem; color: var(--muted); }
+    /* ── Upcoming Deadlines ── */
+    .deadline-chip {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.15rem 0.45rem;
+      border-radius: 3px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .dl-compose {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      margin-bottom: 0.85rem;
+    }
+    .dl-compose-row {
+      display: flex;
+      gap: 0.4rem;
+    }
+    .dl-input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.82rem;
+      padding: 0.4rem 0.6rem;
+      outline: none;
+      transition: border-color 0.15s;
+      width: 100%;
+    }
+    .dl-input:focus { border-color: var(--green); }
+    .dl-date-input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.75rem;
+      padding: 0.35rem 0.4rem;
+      outline: none;
+      flex: 1;
+      min-width: 0;
+      transition: border-color 0.15s;
+    }
+    .dl-date-input:focus { border-color: var(--green); }
+    .dl-proj-select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.75rem;
+      padding: 0.35rem 0.4rem;
+      outline: none;
+      flex: 1;
+      min-width: 0;
+      transition: border-color 0.15s;
+    }
+    .dl-proj-select:focus { border-color: var(--green); }
+    .dl-post-btn { align-self: flex-end; }
+    .dl-post {
+      border-bottom: 1px solid var(--border);
+      padding: 0.55rem 0;
+    }
+    .dl-post:last-child { border-bottom: none; }
+    .dl-post-header {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      margin-bottom: 0.25rem;
+      flex-wrap: wrap;
+    }
+    .dl-project-tag {
+      font-size: 0.65rem;
+      font-weight: 700;
+      background: #0a1f2a;
+      color: var(--blue);
+      padding: 0.12rem 0.4rem;
+      border-radius: 3px;
+      white-space: nowrap;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .dl-post-msg {
+      font-size: 0.82rem;
+      color: var(--text);
+      margin-bottom: 0.2rem;
+      word-wrap: break-word;
+    }
+    .dl-post-meta {
+      font-size: 0.67rem;
+      color: var(--muted);
+    }
+    /* ── Top Cost Codes ── */
+    .cost-code-bar-row { margin-bottom: 0.55rem; }
+    .cost-code-bar-label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 0.2rem;
+    }
+    .cost-code-bar-name {
+      font-size: 0.72rem;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 70%;
+    }
+    .cost-code-bar-val {
+      font-size: 0.7rem;
+      color: var(--green);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .cost-code-bar-track {
+      height: 5px;
+      background: var(--surface2);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .cost-code-bar-fill {
+      height: 100%;
+      background: var(--green);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+    .board-delete-btn {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      line-height: 1;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s;
+    }
+    .board-post:hover .board-delete-btn { opacity: 1; }
+    .board-delete-btn:hover { color: var(--red); }
     .board-compose {
       display: flex;
       gap: 0.5rem;
@@ -768,6 +934,112 @@
       color: var(--text);
     }
     .recent-table tr:hover td { background: #16161f; }
+
+    /* ── Audit Log ── */
+    .audit-log { margin-bottom: 2rem; }
+    .audit-row {
+      display: flex;
+      gap: 0;
+      position: relative;
+    }
+    .audit-dot-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 22px;
+      flex-shrink: 0;
+      padding-top: 3px;
+    }
+    .audit-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      z-index: 1;
+      box-shadow: 0 0 4px currentColor;
+    }
+    .audit-line {
+      flex: 1;
+      width: 1px;
+      background: var(--border);
+      margin-top: 3px;
+    }
+    .audit-row:last-child .audit-line { display: none; }
+    .audit-body {
+      flex: 1;
+      min-width: 0;
+      padding: 0 0 1rem 0.5rem;
+    }
+    .audit-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.1rem;
+    }
+    .audit-proj {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .audit-date {
+      font-size: 0.65rem;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .audit-code {
+      font-size: 0.78rem;
+      color: #bbb;
+      margin-bottom: 0.2rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .audit-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      margin-bottom: 0.25rem;
+    }
+    .audit-tag {
+      font-size: 0.62rem;
+      color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 0.1rem 0.35rem;
+      white-space: nowrap;
+    }
+    .audit-tag-emp {
+      color: #a0cfff;
+      border-color: #1a2f44;
+      background: #0a1a2a;
+    }
+    .audit-costs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+    }
+    .audit-cost-pill {
+      font-size: 0.62rem;
+      font-weight: 600;
+      padding: 0.1rem 0.4rem;
+      border-radius: 3px;
+    }
+    .audit-pill-labor { background: #0a2a0a; color: var(--green); }
+    .audit-pill-equip { background: #0a1a2a; color: var(--blue); }
+    .audit-pill-mat   { background: #2a1f00; color: var(--yellow); }
+    .audit-pill-total {
+      background: #1e1e2a;
+      color: #ddd;
+      font-weight: 700;
+      margin-left: 0.1rem;
+    }
+
     .home-empty {
       color: var(--muted);
       font-size: 0.82rem;
@@ -791,6 +1063,11 @@
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 1rem 1.1rem;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .proj-home-card:hover {
+      border-color: #3a3a50;
+      background: var(--surface2);
     }
     .proj-home-card.pinned {
       border-top: 2px solid var(--green-dim);
@@ -850,22 +1127,33 @@
       text-align: right;
     }
     .proj-home-financials {
-      display: flex;
-      gap: 0.5rem;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: auto auto;
+      gap: 0.5rem 0;
       border-top: 1px solid var(--border);
       padding-top: 0.6rem;
     }
+    /* VARIANCE and ENTRIES sit on the second row, left-aligned */
+    .proj-home-fin-item:nth-child(4),
+    .proj-home-fin-item:nth-child(5) {
+      grid-row: 2;
+    }
     .proj-home-fin-item {
-      flex: 1;
       min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 0.15rem;
+      padding-right: 0.25rem;
+    }
+    .proj-home-fin-item:nth-child(3),
+    .proj-home-fin-item:nth-child(5) {
+      padding-right: 0;
     }
     .proj-home-fin-label {
       font-size: 0.6rem;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.07em;
       color: var(--muted);
     }
     .proj-home-fin-val {
@@ -1899,7 +2187,7 @@ function renderHomeTab() {
         const atRisk = (p.bidItems||[]).filter(b => b.status === 'At Risk').length;
         const onHold = (p.bidItems||[]).filter(b => b.status === 'On Hold').length;
         return `
-          <div class="proj-home-card${p.pinned ? ' pinned' : ''}">
+          <div class="proj-home-card${p.pinned ? ' pinned' : ''}" onclick="goToProject('${p.id}')" style="cursor:pointer">
             <div class="proj-home-card-header">
               <div style="min-width:0">
                 <div class="proj-home-name">${esc(name)}</div>
@@ -1961,6 +2249,8 @@ function renderHomeTab() {
     .slice(0, 8);
 
   document.getElementById('home-content').innerHTML = `
+  <div class="home-layout">
+  <div class="home-main">
     <p class="home-title">Overview</p>
 
     <div class="stat-grid">
@@ -2032,47 +2322,96 @@ function renderHomeTab() {
       </div>
     </div>
 
-    <p class="home-section-title">Company Board</p>
-    <div class="board-wrap" id="board-wrap">
-      ${perm.isAdmin ? `
-      <div class="board-compose">
-        <textarea id="board-input" placeholder="Write a note for your team…" rows="2"></textarea>
-        <button class="btn btn-green" style="align-self:flex-end;white-space:nowrap" onclick="boardPost()">Post</button>
-      </div>` : ''}
-      <div id="board-posts"><div class="home-empty" style="font-size:0.78rem">Loading board…</div></div>
-    </div>
-
-    <p class="home-section-title">Recent Daily Entries</p>
+    <p class="home-section-title">Activity Log</p>
     ${recent.length === 0
       ? `<div class="home-empty">No daily entries yet. Open a project in Project Dashboard to add daily records.</div>`
-      : `<table class="recent-table">
-          <thead><tr>
-            <th>Date</th><th>Project</th><th>Employee</th><th>Cost Code</th><th>Sub Code</th>
-            <th>Field Type</th><th>Labor Cost</th><th>Equip Total</th><th>Total Cost</th>
-          </tr></thead>
-          <tbody>
-            ${recent.map(row => {
-              const c = calcDaily(row);
-              const proj = projectsList.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
-              const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
-              return `<tr>
-                <td>${row.date || '—'}</td>
-                <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(projName)}">${esc(projName)}</td>
-                <td>${esc(row.employee) || '—'}</td>
-                <td>${esc(row.cost_code) || '—'}</td>
-                <td>${esc(row.sub_code) || '—'}</td>
-                <td>${esc(row.field_type) || '—'}</td>
-                <td>$${fmt(c.labor_cost)}</td>
-                <td>$${fmt(c.equip_total)}</td>
-                <td>$${fmt(c.total_cost)}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>`
+      : `<div class="audit-log">
+          ${recent.map(row => {
+            const c = calcDaily(row);
+            const proj = projectsList.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
+            const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
+            const hasLabor = c.labor_cost > 0;
+            const hasEquip = c.equip_total > 0;
+            const hasMat   = (c.material_cost || 0) > 0;
+            const dotColor = hasLabor ? 'var(--green)' : hasEquip ? 'var(--blue)' : hasMat ? 'var(--yellow)' : '#555';
+            const tags = [row.sub_code, row.field_type].filter(Boolean);
+            return `<div class="audit-row">
+              <div class="audit-dot-col">
+                <div class="audit-dot" style="background:${dotColor}"></div>
+                <div class="audit-line"></div>
+              </div>
+              <div class="audit-body">
+                <div class="audit-header">
+                  <span class="audit-proj">${esc(projName)}</span>
+                  <span class="audit-date">${row.date || '—'}</span>
+                </div>
+                <div class="audit-code">${esc(row.cost_code) || '(no cost code)'}</div>
+                ${(tags.length || row.employee) ? `<div class="audit-tags">
+                  ${row.employee ? `<span class="audit-tag audit-tag-emp">${esc(row.employee)}</span>` : ''}
+                  ${tags.map(t => `<span class="audit-tag">${esc(t)}</span>`).join('')}
+                </div>` : ''}
+                <div class="audit-costs">
+                  ${hasLabor ? `<span class="audit-cost-pill audit-pill-labor">Labor $${fmt(c.labor_cost)}</span>` : ''}
+                  ${hasEquip ? `<span class="audit-cost-pill audit-pill-equip">Equip $${fmt(c.equip_total)}</span>` : ''}
+                  ${hasMat   ? `<span class="audit-cost-pill audit-pill-mat">Mat $${fmt(c.material_cost)}</span>` : ''}
+                  ${c.total_cost > 0 ? `<span class="audit-cost-pill audit-pill-total">$${fmt(c.total_cost)}</span>` : ''}
+                </div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>`
     }
+  </div><!-- /.home-main -->
+
+  <div class="home-sidebar">
+    <div class="widget-card">
+      <p class="home-section-title">Upcoming Deadlines</p>
+      <div class="dl-compose">
+        <input  id="dl-input"   class="dl-input"  type="text"  placeholder="Note or description…">
+        <div class="dl-compose-row">
+          <input  id="dl-date"  class="dl-date-input" type="date" title="Deadline date">
+          <select id="dl-proj"  class="dl-proj-select">
+            <option value="">— Project —</option>
+            ${projectsList.map(p => `<option value="${esc(p['project-name']||'')}">${esc(p['project-name']||'Untitled')}</option>`).join('')}
+          </select>
+        </div>
+        <button class="btn btn-green dl-post-btn" onclick="deadlinePost()">Post</button>
+      </div>
+      <div id="deadline-posts"><div class="home-empty" style="font-size:0.78rem">Loading…</div></div>
+    </div>
+
+    <div class="widget-card">
+      <p class="home-section-title">Top Cost Codes — This Week</p>
+      ${(() => {
+        const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const totals = {};
+        allDaily.forEach(r => {
+          if (!r.date || r.date < weekAgo) return;
+          const key = r.cost_code ? esc(r.cost_code) : '(none)';
+          totals[key] = (totals[key] || 0) + calcDaily(r).total_cost;
+        });
+        const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 6);
+        if (!sorted.length) return `<div class="home-empty" style="font-size:0.78rem">No entries this week.</div>`;
+        const max = sorted[0][1];
+        return sorted.map(([code, amt]) => {
+          const pct = max > 0 ? (amt / max) * 100 : 0;
+          return `<div class="cost-code-bar-row">
+            <div class="cost-code-bar-label">
+              <span class="cost-code-bar-name" title="${code}">${code}</span>
+              <span class="cost-code-bar-val">$${fmt(amt)}</span>
+            </div>
+            <div class="cost-code-bar-track">
+              <div class="cost-code-bar-fill" style="width:${pct.toFixed(1)}%"></div>
+            </div>
+          </div>`;
+        }).join('');
+      })()}
+    </div>
+  </div><!-- /.home-sidebar -->
+
+  </div><!-- /.home-layout -->
   `;
-  // Load board posts asynchronously after DOM is set
-  loadBoard();
+  loadDeadlines();
 }
 
 /* ═══════════════════════════════════════════
@@ -2118,6 +2457,7 @@ function renderBoardPosts(posts) {
         <div class="board-msg">${esc(p.message)}</div>
         <div class="board-meta">${author} &middot; ${dateStr} ${timeStr}</div>
       </div>
+      ${perm.isAdmin ? `<button class="board-delete-btn" title="Delete post" onclick="boardDelete(${p.id})">✕</button>` : ''}
     </div>`;
   }).join('');
 }
@@ -2163,6 +2503,110 @@ async function boardToggle(id, completed) {
     }
   } catch (e) {
     alert('Could not update: ' + e.message);
+  }
+}
+
+async function loadDeadlines() {
+  const el = document.getElementById('deadline-posts');
+  if (!el) return;
+  try {
+    const res = await fetch('/api/deadlines', { headers: { 'Authorization': 'Bearer ' + fctToken } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    renderDeadlinePosts(data.deadlines || []);
+  } catch (e) {
+    const el2 = document.getElementById('deadline-posts');
+    if (el2) el2.innerHTML = `<div class="home-empty" style="font-size:0.78rem">Could not load deadlines.</div>`;
+  }
+}
+
+function renderDeadlinePosts(posts) {
+  const el = document.getElementById('deadline-posts');
+  if (!el) return;
+  if (!posts.length) {
+    el.innerHTML = '<div class="home-empty" style="font-size:0.78rem">No deadlines yet.</div>';
+    return;
+  }
+  el.innerHTML = posts.map(p => {
+    const now = new Date();
+    const deadlineDate = p.deadline_date ? new Date(p.deadline_date + 'T12:00:00') : null;
+    const days = deadlineDate ? Math.ceil((deadlineDate - now) / (1000 * 60 * 60 * 24)) : null;
+    const chipColor = days === null ? 'var(--muted)' : days < 0 ? 'var(--red)' : days <= 7 ? 'var(--yellow)' : 'var(--green)';
+    const chipBg    = days === null ? 'transparent' : days < 0 ? '#2a0a0a' : days <= 7 ? '#2a1f00' : '#0a2a0a';
+    const chipLabel = days === null ? '' : days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? 'Today' : `${days}d left`;
+    const dateStr   = deadlineDate ? deadlineDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    const created   = new Date(p.created_at);
+    const createdStr = created.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + created.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    return `<div class="dl-post" id="dlpost-${p.id}">
+      <div class="dl-post-header">
+        ${p.project_name ? `<span class="dl-project-tag">${esc(p.project_name)}</span>` : ''}
+        ${chipLabel ? `<span class="deadline-chip" style="color:${chipColor};background:${chipBg}">${chipLabel}</span>` : ''}
+        ${perm.isAdmin ? `<button class="board-delete-btn" title="Delete" onclick="deadlineDelete(${p.id})">✕</button>` : ''}
+      </div>
+      <div class="dl-post-msg">${esc(p.message)}</div>
+      <div class="dl-post-meta">
+        ${dateStr ? `<span style="color:${chipColor};font-weight:600">${dateStr}</span> · ` : ''}${esc(p.author_user)} · ${createdStr}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function deadlinePost() {
+  const msg     = document.getElementById('dl-input')?.value.trim();
+  const date    = document.getElementById('dl-date')?.value;
+  const project = document.getElementById('dl-proj')?.value;
+  if (!msg) { document.getElementById('dl-input')?.focus(); return; }
+  try {
+    const res = await fetch('/api/deadlines', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
+      body: JSON.stringify({ message: msg, deadline_date: date || null, project_name: project || '' })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    document.getElementById('dl-input').value = '';
+    document.getElementById('dl-date').value  = '';
+    document.getElementById('dl-proj').value  = '';
+    await loadDeadlines();
+  } catch (e) {
+    alert('Could not post: ' + e.message);
+  }
+}
+
+async function deadlineDelete(id) {
+  if (!confirm('Delete this deadline?')) return;
+  try {
+    const res = await fetch('/api/deadlines?id=' + id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + fctToken }
+    });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed'); }
+    const el = document.getElementById('dlpost-' + id);
+    if (el) el.remove();
+    const postsEl = document.getElementById('deadline-posts');
+    if (postsEl && !postsEl.querySelector('.dl-post'))
+      postsEl.innerHTML = '<div class="home-empty" style="font-size:0.78rem">No deadlines yet.</div>';
+  } catch (e) {
+    alert('Could not delete: ' + e.message);
+  }
+}
+
+async function boardDelete(id) {
+  if (!confirm('Delete this post?')) return;
+  try {
+    const res = await fetch('/api/board?id=' + id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + fctToken }
+    });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed'); }
+    const el = document.getElementById('bpost-' + id);
+    if (el) el.remove();
+    // Show "no posts" message if board is now empty
+    const postsEl = document.getElementById('board-posts');
+    if (postsEl && !postsEl.querySelector('.board-post'))
+      postsEl.innerHTML = '<div class="home-empty" style="font-size:0.78rem">No posts yet.</div>';
+  } catch (e) {
+    alert('Could not delete: ' + e.message);
   }
 }
 
@@ -2871,6 +3315,31 @@ function deleteDailyRowsBySubCode(costCode, subCode) {
 function toggleCard(id) {
   const card = document.getElementById('pcard-' + id);
   if (card) card.classList.toggle('expanded');
+}
+
+function goToProject(id) {
+  // Switch to Project Dashboard tab
+  const infoBtn = document.querySelector('.tab-btn[data-tab=info]');
+  if (!infoBtn) return;
+  infoBtn.click();
+
+  // Find which page the project is on (pinned first, then reversed)
+  const reversed = [
+    ...[...projectsList].reverse().filter(p => p.pinned),
+    ...[...projectsList].reverse().filter(p => !p.pinned)
+  ];
+  const idx = reversed.findIndex(p => p.id === id);
+  if (idx >= 0) projPage = Math.floor(idx / PROJ_PAGE_SIZE);
+  projSearch = '';
+  renderProjectsTab();
+
+  // Expand and scroll after DOM settles
+  requestAnimationFrame(() => {
+    const card = document.getElementById('pcard-' + id);
+    if (!card) return;
+    if (!card.classList.contains('expanded')) card.classList.add('expanded');
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 function toggleBidSection(titleEl) {

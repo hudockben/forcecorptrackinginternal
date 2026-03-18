@@ -16,7 +16,7 @@ function verifyToken(req) {
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -68,6 +68,19 @@ module.exports = async (req, res) => {
       await sql`
         UPDATE company_board
         SET completed = ${completed}
+        WHERE id = ${parseInt(id, 10)} AND company_code = ${companyCode}
+      `;
+      return res.json({ ok: true });
+    }
+
+    // DELETE — remove a post (admin only)
+    if (req.method === 'DELETE') {
+      if (payload.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+      const { id } = req.query;
+      if (!id) return res.status(400).json({ error: 'id required' });
+
+      await sql`
+        DELETE FROM company_board
         WHERE id = ${parseInt(id, 10)} AND company_code = ${companyCode}
       `;
       return res.json({ ok: true });
