@@ -1346,7 +1346,7 @@
     /* ── Projection Planner modal ── */
     .pp-overlay {
       position: fixed; inset: 0; z-index: 1200;
-      background: rgba(0,0,0,0.65); display: flex; align-items: stretch;
+      background: rgba(0,0,0,0.75); display: flex; align-items: stretch;
     }
     .pp-modal {
       background: var(--bg); display: flex; flex-direction: column;
@@ -1357,48 +1357,89 @@
       padding: 0.75rem 1rem; border-bottom: 1px solid var(--border);
       background: var(--surface2); flex-wrap: wrap; flex-shrink: 0;
     }
-    .pp-body { padding: 1rem; overflow-y: auto; flex: 1; }
+    .pp-main { display: flex; flex: 1; overflow: hidden; min-height: 0; }
+    .pp-cal-section { flex: 1; overflow-y: auto; padding: 1rem; }
+    .pp-side-panel {
+      width: 300px; flex-shrink: 0; border-left: 1px solid var(--border);
+      overflow-y: auto; padding: 1rem; background: var(--surface);
+    }
+    .pp-footer {
+      display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;
+      padding: 0.65rem 1rem; border-top: 1px solid var(--border);
+      background: var(--surface2); flex-shrink: 0;
+    }
     .pp-cal-grid {
       display: grid; grid-template-columns: repeat(7, 1fr);
-      gap: 4px; margin-top: 0.75rem;
+      gap: 5px; margin-top: 0.75rem;
     }
     .pp-col-hdr {
-      text-align: center; font-size: 0.65rem; font-weight: 600;
-      color: var(--muted); padding: 0.2rem 0;
+      text-align: center; font-size: 0.68rem; font-weight: 600;
+      color: var(--muted); padding: 0.25rem 0;
     }
     .pp-day {
       background: var(--surface2); border: 1px solid var(--border);
-      border-radius: 6px; padding: 0.5rem 0.6rem;
-      min-height: 130px; display: flex; flex-direction: column; gap: 0.2rem;
-      position: relative;
+      border-radius: 6px; padding: 0.5rem 0.55rem;
+      min-height: 120px; display: flex; flex-direction: column; gap: 0.15rem;
+      position: relative; cursor: pointer; transition: border-color 0.12s;
     }
-    .pp-day.empty { background: transparent; border-color: transparent; min-height: 0; }
-    .pp-day.past  { opacity: 0.45; pointer-events: none; }
-    .pp-day-num   { font-size: 0.8rem; font-weight: 700; color: var(--muted); }
-    .pp-day.today .pp-day-num { color: var(--blue); }
+    .pp-day:hover { border-color: var(--blue); }
+    .pp-day.empty { background: transparent; border-color: transparent; min-height: 0; cursor: default; }
+    .pp-day.past  { opacity: 0.4; pointer-events: none; }
+    .pp-day.selected { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(96,165,250,0.3); }
     .pp-day.goal-day { border-color: var(--green); box-shadow: 0 0 0 2px rgba(34,197,94,0.2); }
-    .pp-stepper {
-      display: flex; align-items: center; gap: 2px; margin-top: 0.15rem;
+    .pp-day.nowork { opacity: 0.7; background: repeating-linear-gradient(45deg,var(--surface2),var(--surface2) 5px,var(--bg) 5px,var(--bg) 10px); }
+    .pp-day.conflict-day { border-color: var(--red); }
+    .pp-day-num { font-size: 0.8rem; font-weight: 700; color: var(--muted); }
+    .pp-day.today .pp-day-num { color: var(--blue); }
+    .pp-chip {
+      display: inline-block; font-size: 0.62rem; padding: 0.08rem 0.3rem;
+      border-radius: 10px; background: rgba(96,165,250,0.15); color: var(--blue);
+      margin: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 72px;
     }
-    .pp-stepper label { font-size: 0.7rem; color: var(--muted); width: 16px; flex-shrink: 0; }
-    .pp-stepper button {
-      background: var(--surface); border: 1px solid var(--border); color: var(--text);
-      border-radius: 3px; width: 22px; height: 22px; font-size: 0.8rem;
-      cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; line-height: 1;
-    }
-    .pp-stepper button:hover { background: var(--border); }
-    .pp-stepper span { font-size: 0.85rem; min-width: 20px; text-align: center; font-weight: 600; }
+    .pp-chip.equip { background: rgba(167,139,250,0.15); color: #a78bfa; }
     .pp-day-out {
-      margin-top: auto; font-size: 0.8rem; font-weight: 700;
-      text-align: center; padding: 0.15rem 0.2rem; border-radius: 3px;
+      margin-top: auto; font-size: 0.78rem; font-weight: 700;
+      text-align: center; padding: 0.12rem 0.2rem; border-radius: 3px;
     }
     .pp-day-out.has-work { color: var(--green); background: rgba(34,197,94,0.1); }
     .pp-day-out.no-work  { color: var(--muted); }
-    .pp-day-cumul { font-size: 0.7rem; color: var(--muted); text-align: center; }
-    .pp-summary {
-      margin-top: 1rem; padding: 0.75rem 1rem;
-      background: var(--surface2); border-radius: 6px; border: 1px solid var(--border);
-      display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: center;
+    .pp-day-cumul { font-size: 0.65rem; color: var(--muted); text-align: center; }
+    .pp-copy-btn {
+      position: absolute; bottom: 3px; right: 3px;
+      font-size: 0.55rem; padding: 0.08rem 0.2rem; background: var(--surface);
+      border: 1px solid var(--border); color: var(--muted); border-radius: 2px;
+      cursor: pointer; opacity: 0; transition: opacity 0.15s; line-height: 1.2;
+    }
+    .pp-day:hover .pp-copy-btn { opacity: 1; }
+    .pp-section-lbl {
+      font-size: 0.7rem; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.4rem; margin-top: 0.85rem;
+    }
+    .pp-section-lbl:first-child { margin-top: 0; }
+    .pp-check-row {
+      display: flex; align-items: center; gap: 0.4rem;
+      padding: 0.3rem 0; border-bottom: 1px solid var(--border); font-size: 0.82rem; cursor: pointer;
+    }
+    .pp-check-row:last-child { border-bottom: none; }
+    .pp-tag-btn {
+      font-size: 0.72rem; padding: 0.2rem 0.5rem; border-radius: 4px;
+      border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+      cursor: pointer; transition: all 0.1s;
+    }
+    .pp-tag-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .pp-tag-btn.active.rain { background: #3b82f6; border-color: #3b82f6; }
+    .pp-tag-btn.active.holiday { background: #f59e0b; border-color: #f59e0b; color: #000; }
+    .pp-tag-btn.active.inspect { background: #8b5cf6; border-color: #8b5cf6; }
+    .pp-tag-btn.active.other { background: #6b7280; border-color: #6b7280; }
+    .pp-tag-btn.active.half { background: var(--yellow); border-color: var(--yellow); color: #000; }
+    @media print {
+      body > *:not(#pp-overlay) { display: none !important; }
+      #pp-overlay { position: static !important; background: none !important; }
+      .pp-modal { box-shadow: none !important; height: auto !important; }
+      .pp-header button, .pp-side-panel, .pp-footer, .pp-copy-btn { display: none !important; }
+      .pp-cal-section { overflow: visible !important; }
+      .pp-day { break-inside: avoid; min-height: 80px !important; }
+      .pp-main { overflow: visible !important; height: auto !important; }
     }
   </style>
 </head>
@@ -8042,19 +8083,26 @@ function _schedRenderAIPanel(result, fromCache) {
 /* ── Projection Planner ──────────────────────────────────────────────────── */
 
 let _pp = {
-  projId: null,
-  biKey:  null,
-  month:  new Date().getMonth(),
-  year:   new Date().getFullYear(),
-  days:   {},   // dateStr → { laborers: N, equipment: N }
-  open:   false,
+  projId:     null,
+  biKey:      null,
+  month:      new Date().getMonth(),
+  year:       new Date().getFullYear(),
+  open:       false,
+  multiCode:  false,
+  selectedDay: null,
+  schedule:   {}, // biKey → { dateStr → { employees[], equipment[], halfDay, noWork, noWorkReason, notes } }
 };
+
+function _ppDayData(biKey, dateStr) {
+  if (!_pp.schedule[biKey]) _pp.schedule[biKey] = {};
+  if (!_pp.schedule[biKey][dateStr])
+    _pp.schedule[biKey][dateStr] = { employees: [], equipment: [], halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+  return _pp.schedule[biKey][dateStr];
+}
 
 function _ppOpen() {
   const proj = getProj(_pp.projId);
   if (!proj) return;
-
-  // Pick default biKey if not set or project changed
   if (!_pp.biKey) {
     const agg = _schedPaceForProject(proj);
     const withData = (proj.bidItems || []).find(bi => {
@@ -8076,7 +8124,7 @@ function _ppClose() {
 
 function _ppSetBi(biKey) {
   _pp.biKey = biKey;
-  _pp.days  = {};
+  _pp.selectedDay = null;
   _ppRender();
 }
 
@@ -8084,22 +8132,124 @@ function _ppNav(delta) {
   _pp.month += delta;
   if (_pp.month < 0)  { _pp.month = 11; _pp.year--; }
   if (_pp.month > 11) { _pp.month = 0;  _pp.year++; }
+  _pp.selectedDay = null;
   _ppRender();
 }
 
-function _ppSetDay(dateStr, field, delta) {
-  if (!_pp.days[dateStr]) _pp.days[dateStr] = { laborers: 0, equipment: 0 };
-  _pp.days[dateStr][field] = Math.max(0, (_pp.days[dateStr][field] || 0) + delta);
+function _ppToggleMulti() {
+  _pp.multiCode = !_pp.multiCode;
+  _pp.selectedDay = null;
   _ppRender();
+}
+
+function _ppSelectDay(dateStr) {
+  _pp.selectedDay = _pp.selectedDay === dateStr ? null : dateStr;
+  _ppRender();
+}
+
+function _ppToggleEmployee(dateStr, name) {
+  const d = _ppDayData(_pp.biKey, dateStr);
+  const i = d.employees.indexOf(name);
+  if (i === -1) d.employees.push(name); else d.employees.splice(i, 1);
+  _ppRender();
+}
+
+function _ppToggleEquipment(dateStr, name) {
+  const d = _ppDayData(_pp.biKey, dateStr);
+  const i = d.equipment.indexOf(name);
+  if (i === -1) d.equipment.push(name); else d.equipment.splice(i, 1);
+  _ppRender();
+}
+
+function _ppAddCustomEmployee(dateStr) {
+  const inp = document.getElementById('pp-new-emp');
+  const name = inp ? inp.value.trim() : '';
+  if (!name) return;
+  const d = _ppDayData(_pp.biKey, dateStr);
+  if (!d.employees.includes(name)) d.employees.push(name);
+  _ppRender();
+}
+
+function _ppAddCustomEquipment(dateStr) {
+  const inp = document.getElementById('pp-new-equip');
+  const name = inp ? inp.value.trim() : '';
+  if (!name) return;
+  const d = _ppDayData(_pp.biKey, dateStr);
+  if (!d.equipment.includes(name)) d.equipment.push(name);
+  _ppRender();
+}
+
+function _ppSetNoWork(dateStr, reason) {
+  const d = _ppDayData(_pp.biKey, dateStr);
+  if (d.noWork && d.noWorkReason === reason) { d.noWork = false; d.noWorkReason = ''; }
+  else { d.noWork = true; d.noWorkReason = reason; }
+  _ppRender();
+}
+
+function _ppSetHalfDay(dateStr) {
+  const d = _ppDayData(_pp.biKey, dateStr);
+  d.halfDay = !d.halfDay;
+  _ppRender();
+}
+
+function _ppSetNotes(dateStr, notes) {
+  const d = _ppDayData(_pp.biKey, dateStr);
+  d.notes = notes;
+}
+
+function _ppCopyWeek(sundayDay) {
+  for (let i = 0; i < 7; i++) {
+    const srcDate = new Date(_pp.year, _pp.month, sundayDay + i);
+    const dstDate = new Date(_pp.year, _pp.month, sundayDay + 7 + i);
+    const srcDs = srcDate.toISOString().slice(0, 10);
+    const dstDs = dstDate.toISOString().slice(0, 10);
+    const srcDay = (_pp.schedule[_pp.biKey] || {})[srcDs];
+    if (!srcDay) continue;
+    _ppDayData(_pp.biKey, dstDs); // init
+    _pp.schedule[_pp.biKey][dstDs] = {
+      ...srcDay, employees: [...srcDay.employees], equipment: [...srcDay.equipment]
+    };
+  }
+  _ppRender();
+}
+
+function _ppPrint() { window.print(); }
+
+function _ppGetConflicts() {
+  const conflicts = {};
+  const daysInMo = new Date(_pp.year, _pp.month + 1, 0).getDate();
+  for (let d = 1; d <= daysInMo; d++) {
+    const ds = `${_pp.year}-${String(_pp.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const empToCodes = {};
+    Object.entries(_pp.schedule).forEach(([biKey, days]) => {
+      const day = days[ds];
+      if (!day || day.noWork) return;
+      (day.employees || []).forEach(emp => {
+        if (!empToCodes[emp]) empToCodes[emp] = [];
+        empToCodes[emp].push(biKey);
+      });
+    });
+    const conflicted = new Set(Object.entries(empToCodes).filter(([, codes]) => codes.length > 1).map(([e]) => e));
+    if (conflicted.size > 0) conflicts[ds] = conflicted;
+  }
+  return conflicts;
+}
+
+function _ppProd(a) {
+  const laborHours = a.labor_hours || 0;
+  const doneQty = a.running_qty || 0;
+  const daysWorked = a.dates ? a.dates.size : 0;
+  if (laborHours > 0 && doneQty > 0) return (doneQty / laborHours) * 8;
+  if (doneQty > 0 && daysWorked > 0 && (a.employees || new Set()).size > 0)
+    return (doneQty / daysWorked) / a.employees.size;
+  return null;
 }
 
 function _ppRender() {
   if (!_pp.open) return;
-
   const proj = getProj(_pp.projId);
   if (!proj || !(proj.bidItems || []).length) return;
 
-  // Get or create overlay
   let overlay = document.getElementById('pp-overlay');
   if (!overlay) {
     overlay = document.createElement('div');
@@ -8108,165 +8258,332 @@ function _ppRender() {
     document.body.appendChild(overlay);
   }
 
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const NW_ICONS = { 'Rain Day': '🌧️', 'Holiday': '🏖️', 'Inspection': '🔍', 'Other': '🚫' };
+
   const agg      = _schedPaceForProject(proj);
   const a        = agg[_pp.biKey] || {};
-  const bi       = (proj.bidItems || []).find(b =>
-    ((b.cost_code || '') + '||' + (b.sub_code || '')) === _pp.biKey);
+  const bi       = (proj.bidItems || []).find(b => ((b.cost_code||'')+'||'+(b.sub_code||'')) === _pp.biKey);
   const bidQty   = bi ? parseFloat(bi.quantity) || 0 : 0;
   const doneQty  = a.running_qty || 0;
   const remaining = Math.max(bidQty - doneQty, 0);
   const deadline = _schedGetDeadline(proj);
+  const prod     = _ppProd(a);
+  const allEmp   = [...(a.employees || new Set())];
+  const allEquip = [...(a.equipment  || new Set())];
 
-  // Productivity: units per laborer-day (8-hr day)
-  const laborHours = a.labor_hours || 0;
-  const daysWorked = a.dates ? a.dates.size : 0;
-  let productivityPerLaborerDay = null;
-  if (laborHours > 0 && doneQty > 0) {
-    productivityPerLaborerDay = (doneQty / laborHours) * 8;
-  } else if (doneQty > 0 && daysWorked > 0 && (a.employees || new Set()).size > 0) {
-    // Fallback: pace / unique crew size
-    productivityPerLaborerDay = (doneQty / daysWorked) / (a.employees.size);
-  }
-
-  const employees = [...(a.employees || new Set())];
-  const equipment = [...(a.equipment  || new Set())];
-
-  // Build bid item dropdown
-  const biOptions = (proj.bidItems || []).map(b => {
-    const key   = (b.cost_code || '') + '||' + (b.sub_code || '');
-    const label = (b.cost_code || '') + (b.sub_code ? ' · ' + b.sub_code : '');
-    return `<option value="${esc(key)}" ${key === _pp.biKey ? 'selected' : ''}>${esc(label)}</option>`;
-  }).join('');
-
-  // Month / calendar setup
-  const MONTHS   = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  // Also collect any custom (not in history) names already scheduled this month
   const firstDow = new Date(_pp.year, _pp.month, 1).getDay();
   const daysInMo = new Date(_pp.year, _pp.month + 1, 0).getDate();
   const todayObj = new Date();
   const todayStr = todayObj.toISOString().slice(0, 10);
+  const conflicts = _ppGetConflicts();
 
-  // Pre-calculate daily outputs & running cumulative
-  let runCumul = doneQty;
-  let goalDay  = null;
-  const dayOut = {};
+  const sched = _pp.schedule[_pp.biKey] || {};
+  const customEmp = new Set(); const customEquip = new Set();
+  Object.values(sched).forEach(d => {
+    d.employees.forEach(e => { if (!allEmp.includes(e)) customEmp.add(e); });
+    d.equipment.forEach(e => { if (!allEquip.includes(e)) customEquip.add(e); });
+  });
+  const fullEmpList   = [...allEmp, ...customEmp];
+  const fullEquipList = [...allEquip, ...customEquip];
+
+  // Daily outputs
+  let runCumul = doneQty; let goalDay = null; const dayOut = {};
   for (let d = 1; d <= daysInMo; d++) {
-    const ds = `${_pp.year}-${String(_pp.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const plan = _pp.days[ds] || {};
-    const lab  = plan.laborers || 0;
-    const out  = (lab > 0 && productivityPerLaborerDay !== null)
-      ? lab * productivityPerLaborerDay : 0;
+    const ds   = `${_pp.year}-${String(_pp.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const plan = sched[ds] || {};
+    const out  = (!plan.noWork && plan.employees && plan.employees.length > 0 && prod !== null)
+      ? plan.employees.length * prod * (plan.halfDay ? 0.5 : 1) : 0;
     dayOut[ds] = out;
-    if (out > 0) {
-      runCumul += out;
-      if (!goalDay && bidQty > 0 && runCumul >= bidQty) goalDay = ds;
-    }
+    if (out > 0) { runCumul += out; if (!goalDay && bidQty > 0 && runCumul >= bidQty) goalDay = ds; }
   }
 
   // Calendar cells
-  const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const headers = DAYS.map(d => `<div class="pp-col-hdr">${d}</div>`).join('');
   let cells = '';
   for (let i = 0; i < firstDow; i++) cells += `<div class="pp-day empty"></div>`;
-
   let cellCumul = doneQty;
   for (let d = 1; d <= daysInMo; d++) {
-    const ds    = `${_pp.year}-${String(_pp.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const plan  = _pp.days[ds] || {};
-    const lab   = plan.laborers  || 0;
-    const eq    = plan.equipment || 0;
-    const out   = dayOut[ds] || 0;
+    const ds   = `${_pp.year}-${String(_pp.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const plan = sched[ds] || {};
+    const out  = dayOut[ds] || 0;
     if (out > 0) cellCumul += out;
+    const dow = (firstDow + d - 1) % 7;
+    const isToday   = ds === todayStr;
+    const isPast    = new Date(ds+'T12:00:00') < new Date(todayObj.getFullYear(), todayObj.getMonth(), todayObj.getDate());
+    const isGoal    = ds === goalDay;
+    const isSelected = ds === _pp.selectedDay;
+    const hasConflict = !!(conflicts[ds] && conflicts[ds].size > 0);
+    const cls = ['pp-day', isToday?'today':'', isPast?'past':'', isGoal?'goal-day':'',
+                 isSelected?'selected':'', plan.noWork?'nowork':'', hasConflict?'conflict-day':''].filter(Boolean).join(' ');
 
-    const isToday  = ds === todayStr;
-    const isPast   = new Date(ds + 'T12:00:00') < new Date(todayObj.getFullYear(), todayObj.getMonth(), todayObj.getDate());
-    const isGoal   = ds === goalDay;
-    const classes  = ['pp-day', isToday ? 'today' : '', isPast ? 'past' : '', isGoal ? 'goal-day' : ''].filter(Boolean).join(' ');
+    const empChips = !plan.noWork && plan.employees && plan.employees.length
+      ? plan.employees.slice(0,3).map(e => `<span class="pp-chip">${esc(e.split(' ')[0])}</span>`).join('')
+        + (plan.employees.length > 3 ? `<span class="pp-chip">+${plan.employees.length-3}</span>` : '') : '';
+    const eqChips = !plan.noWork && plan.equipment && plan.equipment.length
+      ? plan.equipment.slice(0,2).map(e => `<span class="pp-chip equip">${esc(e.split(' ')[0])}</span>`).join('')
+        + (plan.equipment.length > 2 ? `<span class="pp-chip equip">+${plan.equipment.length-2}</span>` : '') : '';
 
-    cells += `<div class="${classes}">
-      <div class="pp-day-num">${d}${isGoal ? ' ✓' : ''}</div>
-      <div class="pp-stepper">
-        <label title="Laborers">👷</label>
-        <button onclick="_ppSetDay('${ds}','laborers',-1)">−</button>
-        <span>${lab}</span>
-        <button onclick="_ppSetDay('${ds}','laborers',1)">+</button>
+    // Copy-week button on Saturdays
+    const copyBtn = dow === 6
+      ? `<button class="pp-copy-btn" onclick="event.stopPropagation();_ppCopyWeek(${d-6})" title="Copy this week to next week">⬇ copy wk</button>`
+      : '';
+
+    cells += `<div class="${cls}" onclick="_ppSelectDay('${ds}')">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.2rem">
+        <div class="pp-day-num">${d}${isGoal?' ✓':''}</div>
+        <div style="display:flex;gap:0.2rem;align-items:center">
+          ${plan.halfDay && !plan.noWork ? '<span style="font-size:0.6rem;background:rgba(234,179,8,0.2);color:var(--yellow);padding:0.05rem 0.2rem;border-radius:2px">½</span>' : ''}
+          ${hasConflict ? `<span title="Double-booked: ${esc([...conflicts[ds]].join(', '))}" style="font-size:0.7rem">⚠️</span>` : ''}
+          ${plan.notes ? '<span style="font-size:0.65rem;color:var(--muted)">📝</span>' : ''}
+        </div>
       </div>
-      <div class="pp-stepper">
-        <label title="Equipment">🚜</label>
-        <button onclick="_ppSetDay('${ds}','equipment',-1)">−</button>
-        <span>${eq}</span>
-        <button onclick="_ppSetDay('${ds}','equipment',1)">+</button>
-      </div>
+      ${plan.noWork
+        ? `<div style="text-align:center;font-size:0.9rem;margin:0.3rem 0">${NW_ICONS[plan.noWorkReason]||'🚫'}</div>
+           <div style="font-size:0.65rem;color:var(--muted);text-align:center">${esc(plan.noWorkReason||'No Work')}</div>`
+        : `<div style="margin-top:0.15rem;line-height:1.4">${empChips}</div><div>${eqChips}</div>`}
       ${out > 0
-        ? `<div class="pp-day-out has-work">+${fmt(out, 0)}</div>
-           <div class="pp-day-cumul">${fmt(Math.min(cellCumul, bidQty > 0 ? bidQty : cellCumul), 0)}${bidQty > 0 ? ' / ' + fmt(bidQty, 0) : ''}</div>`
-        : `<div class="pp-day-out no-work">—</div>`}
+        ? `<div class="pp-day-out has-work" style="margin-top:auto">+${fmt(out,0)}</div>
+           <div class="pp-day-cumul">${fmt(Math.min(cellCumul,bidQty||cellCumul),0)}${bidQty>0?' / '+fmt(bidQty,0):''}</div>`
+        : !plan.noWork ? `<div class="pp-day-out no-work" style="margin-top:auto">—</div>` : ''}
+      ${copyBtn}
     </div>`;
   }
 
-  // Summary bar
-  const totalPlanned = Object.values(dayOut).reduce((s, v) => s + v, 0);
-  const endCumul     = doneQty + totalPlanned;
-  const pctEnd       = bidQty > 0 ? Math.min((endCumul / bidQty) * 100, 100) : 0;
-
+  // Summary footer
+  const totalPlanned = Object.values(dayOut).reduce((s,v) => s+v, 0);
+  const endCumul = doneQty + totalPlanned;
+  const pctEnd   = bidQty > 0 ? Math.min((endCumul/bidQty)*100, 100) : 0;
   let completionHtml = '';
   if (goalDay) {
-    const gd   = new Date(goalDay + 'T12:00:00');
-    const gdFmt = gd.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-    const dl    = deadline ? new Date(deadline + 'T12:00:00') : null;
+    const gd = new Date(goalDay+'T12:00:00');
+    const gdFmt = gd.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric'});
+    const dl = deadline ? new Date(deadline+'T12:00:00') : null;
     const onTime = dl ? gd <= dl : null;
-    completionHtml = `<span style="font-size:0.82rem;color:${onTime === false ? 'var(--red)' : 'var(--green)'}">
-      Projected completion: <strong>${gdFmt}</strong>
-      ${onTime === true ? ' ✓ before deadline' : onTime === false ? ' — past deadline' : ''}
+    completionHtml = `<span style="font-size:0.85rem;color:${onTime===false?'var(--red)':'var(--green)'}">
+      Projected completion: <strong>${gdFmt}</strong>${onTime===true?' ✓ before deadline':onTime===false?' — past deadline':''}
     </span>`;
   } else if (bidQty > 0 && remaining > 0) {
-    completionHtml = `<span style="font-size:0.78rem;color:var(--muted)">Add staffing days to project a completion date</span>`;
+    completionHtml = `<span style="font-size:0.8rem;color:var(--muted)">Click days to assign crew and project completion</span>`;
   }
 
-  const prodNote = productivityPerLaborerDay !== null
-    ? `${fmt(productivityPerLaborerDay, 1)} units/laborer-day
-       <span style="color:var(--muted);font-weight:400">(${daysWorked}d of history${laborHours > 0 ? ', labor-hr based' : ', headcount based'})</span>`
-    : `<span style="color:var(--yellow)">⚠ No productivity data yet — log quantities + labor hours in daily rows</span>`;
+  // Conflict banner
+  const conflictDays = Object.entries(conflicts).filter(([ds]) => {
+    const d = new Date(ds+'T12:00:00'); return d.getMonth()===_pp.month && d.getFullYear()===_pp.year;
+  });
+  const conflictBanner = conflictDays.length
+    ? `<div style="background:rgba(239,68,68,0.1);border:1px solid var(--red);border-radius:6px;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.78rem;color:var(--red)">
+        ⚠️ <strong>${conflictDays.length} scheduling conflict${conflictDays.length>1?'s':''}</strong> —
+        ${conflictDays.map(([ds,emps]) => `${new Date(ds+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}: ${[...emps].join(', ')}`).join(' · ')}
+      </div>` : '';
+
+  // Side panel
+  const sidePanel = _pp.selectedDay
+    ? _ppRenderDayPanel(_pp.selectedDay, fullEmpList, fullEquipList)
+    : _ppRenderSideDefault(a, prod, remaining, allEmp, allEquip);
+
+  // Bid item options
+  const biOptions = (proj.bidItems||[]).map(b => {
+    const key = (b.cost_code||'')+'||'+(b.sub_code||'');
+    const lbl = (b.cost_code||'') + (b.sub_code ? ' · '+b.sub_code : '');
+    return `<option value="${esc(key)}" ${key===_pp.biKey?'selected':''}>${esc(lbl)}</option>`;
+  }).join('');
 
   overlay.innerHTML = `
     <div class="pp-modal">
       <div class="pp-header">
         <span>📅</span>
         <span style="font-weight:700;font-size:0.95rem">Projection Planner</span>
-        <select onchange="_ppSetBi(this.value)"
-          style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.5rem;font-size:0.82rem">
-          ${biOptions}
-        </select>
+        ${!_pp.multiCode ? `<select onchange="_ppSetBi(this.value)"
+          style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.5rem;font-size:0.82rem">${biOptions}</select>` : ''}
+        <button class="btn ${_pp.multiCode?'btn-blue':'btn-ghost'}" style="font-size:0.75rem" onclick="_ppToggleMulti()">⊞ Multi-Code${_pp.multiCode?' ON':''}</button>
         <div style="margin-left:auto;display:flex;align-items:center;gap:0.5rem">
           <button class="btn btn-ghost" style="font-size:0.8rem;padding:0.25rem 0.6rem" onclick="_ppNav(-1)">◀</button>
           <span style="font-size:0.9rem;font-weight:600;min-width:130px;text-align:center">${MONTHS[_pp.month]} ${_pp.year}</span>
           <button class="btn btn-ghost" style="font-size:0.8rem;padding:0.25rem 0.6rem" onclick="_ppNav(1)">▶</button>
-          <button class="btn btn-ghost" style="font-size:0.82rem;padding:0.25rem 0.75rem;margin-left:0.5rem" onclick="_ppClose()">✕ Close</button>
+          <button class="btn btn-ghost" style="font-size:0.8rem" onclick="_ppPrint()" title="Print schedule">🖨️</button>
+          <button class="btn btn-ghost" style="font-size:0.82rem;padding:0.25rem 0.75rem" onclick="_ppClose()">✕ Close</button>
         </div>
       </div>
-      <div class="pp-body">
-        <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;font-size:0.75rem">
-          <span>Productivity: <strong style="color:var(--text)">${prodNote}</strong></span>
-          <span style="color:var(--muted)">Remaining: <strong style="color:var(--text)">${fmt(remaining, 1)} units</strong></span>
-          ${employees.length ? `<span style="color:var(--muted)">Crew history: ${employees.join(', ')}</span>` : ''}
-          ${equipment.length  ? `<span style="color:var(--muted)">Equip history: ${equipment.join(', ')}</span>` : ''}
+      <div class="pp-main">
+        <div class="pp-cal-section">
+          ${_pp.multiCode ? _ppRenderMultiCode(proj, agg, MONTHS, NW_ICONS) : `
+            ${prod !== null
+              ? `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
+                  Historical productivity: <strong style="color:var(--text)">${fmt(prod,1)} units/laborer-day</strong>
+                  · Remaining: <strong style="color:var(--text)">${fmt(remaining,1)} units</strong>
+                  · <span style="color:var(--muted)">Click a day to assign crew</span>
+                </div>`
+              : `<div style="font-size:0.78rem;color:var(--yellow);margin-bottom:0.5rem">⚠ No productivity data yet — log quantities + labor hours in daily rows first</div>`}
+            ${conflictBanner}
+            <div class="pp-cal-grid">${headers}${cells}</div>`}
         </div>
-        <div class="pp-cal-grid">
-          ${headers}
-          ${cells}
-        </div>
-        ${bidQty > 0 ? `
-        <div class="pp-summary">
-          ${completionHtml}
-          <div style="flex:1;min-width:200px">
-            <div style="font-size:0.7rem;color:var(--muted);margin-bottom:0.3rem">Projected progress after ${MONTHS[_pp.month]}</div>
-            <div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden">
-              <div style="height:100%;width:${pctEnd.toFixed(1)}%;background:${pctEnd >= 100 ? 'var(--green)' : 'var(--blue)'};border-radius:4px;transition:width 0.2s"></div>
-            </div>
-            <div style="font-size:0.7rem;color:var(--muted);margin-top:0.25rem">${fmt(endCumul,1)} / ${fmt(bidQty,1)} (${pctEnd.toFixed(1)}%)</div>
+        <div class="pp-side-panel">${sidePanel}</div>
+      </div>
+      ${!_pp.multiCode && bidQty > 0 ? `
+      <div class="pp-footer">
+        ${completionHtml}
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:0.7rem;color:var(--muted);margin-bottom:0.3rem">Progress after ${MONTHS[_pp.month]}</div>
+          <div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden">
+            <div style="height:100%;width:${pctEnd.toFixed(1)}%;background:${pctEnd>=100?'var(--green)':'var(--blue)'};border-radius:4px;transition:width 0.2s"></div>
           </div>
-        </div>` : ''}
-      </div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${fmt(endCumul,1)} / ${fmt(bidQty,1)} (${pctEnd.toFixed(1)}%)</div>
+        </div>
+      </div>` : ''}
     </div>`;
+}
+
+function _ppRenderSideDefault(a, prod, remaining, allEmp, allEquip) {
+  return `
+    <div class="pp-section-lbl">📊 Stats</div>
+    <div style="font-size:0.82rem;margin-bottom:0.3rem">Productivity: <strong>${prod !== null ? fmt(prod,1)+' units/laborer-day' : '—'}</strong></div>
+    <div style="font-size:0.82rem;margin-bottom:1rem">Remaining: <strong>${fmt(remaining,1)} units</strong></div>
+    ${allEmp.length ? `
+    <div class="pp-section-lbl">👷 Crew (history)</div>
+    <div style="display:flex;flex-wrap:wrap;gap:0.25rem;margin-bottom:0.75rem">
+      ${allEmp.map(e => `<span class="pp-chip" style="font-size:0.72rem">${esc(e)}</span>`).join('')}
+    </div>` : ''}
+    ${allEquip.length ? `
+    <div class="pp-section-lbl">🚜 Equipment (history)</div>
+    <div style="display:flex;flex-wrap:wrap;gap:0.25rem;margin-bottom:0.75rem">
+      ${allEquip.map(e => `<span class="pp-chip equip" style="font-size:0.72rem">${esc(e)}</span>`).join('')}
+    </div>` : ''}
+    <div style="font-size:0.72rem;color:var(--muted);margin-top:0.5rem">Click any day to assign crew, equipment, and notes</div>`;
+}
+
+function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
+  const plan = ((_pp.schedule[_pp.biKey] || {})[dateStr]) || {};
+  const d    = new Date(dateStr+'T12:00:00');
+  const dayFmt = d.toLocaleDateString(undefined, {weekday:'long', month:'long', day:'numeric'});
+  const NW = ['Rain Day','Holiday','Inspection','Other'];
+  const NW_ICONS = { 'Rain Day':'🌧️', 'Holiday':'🏖️', 'Inspection':'🔍', 'Other':'🚫' };
+  const NW_CLS   = { 'Rain Day':'rain', 'Holiday':'holiday', 'Inspection':'inspect', 'Other':'other' };
+
+  const empRows = fullEmpList.map(e => {
+    const checked = (plan.employees||[]).includes(e);
+    return `<label class="pp-check-row" style="${plan.noWork?'opacity:0.4;pointer-events:none':''}">
+      <input type="checkbox" ${checked?'checked':''} onchange="_ppToggleEmployee('${dateStr}','${esc(e)}')" ${plan.noWork?'disabled':''}>
+      <span class="pp-chip" style="font-size:0.75rem">${esc(e)}</span>
+    </label>`;
+  }).join('');
+
+  const eqRows = fullEquipList.map(e => {
+    const checked = (plan.equipment||[]).includes(e);
+    return `<label class="pp-check-row" style="${plan.noWork?'opacity:0.4;pointer-events:none':''}">
+      <input type="checkbox" ${checked?'checked':''} onchange="_ppToggleEquipment('${dateStr}','${esc(e)}')" ${plan.noWork?'disabled':''}>
+      <span class="pp-chip equip" style="font-size:0.75rem">${esc(e)}</span>
+    </label>`;
+  }).join('');
+
+  return `
+    <div style="font-weight:700;font-size:0.9rem;margin-bottom:0.85rem;padding-bottom:0.5rem;border-bottom:1px solid var(--border)">${dayFmt}</div>
+    <div class="pp-section-lbl">Day Type</div>
+    <div style="display:flex;flex-wrap:wrap;gap:0.3rem;margin-bottom:1rem">
+      ${NW.map(r => `<button class="pp-tag-btn ${plan.noWork && plan.noWorkReason===r ? 'active '+NW_CLS[r] : ''}"
+        onclick="_ppSetNoWork('${dateStr}','${r}')">${NW_ICONS[r]} ${r}</button>`).join('')}
+      <button class="pp-tag-btn ${plan.halfDay && !plan.noWork ? 'active half' : ''}"
+        onclick="_ppSetHalfDay('${dateStr}')" ${plan.noWork?'disabled':''}>½ Half Day</button>
+    </div>
+    <div class="pp-section-lbl">👷 Crew</div>
+    <div style="margin-bottom:0.5rem">${empRows || '<div style="font-size:0.75rem;color:var(--muted)">No crew history for this code yet</div>'}</div>
+    <div style="display:flex;gap:0.3rem;margin-bottom:1rem">
+      <input id="pp-new-emp" type="text" placeholder="Add person…"
+        style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.78rem"
+        onkeydown="if(event.key==='Enter')_ppAddCustomEmployee('${dateStr}')">
+      <button class="btn btn-ghost" style="font-size:0.75rem" onclick="_ppAddCustomEmployee('${dateStr}')">+</button>
+    </div>
+    <div class="pp-section-lbl">🚜 Equipment</div>
+    <div style="margin-bottom:0.5rem">${eqRows || '<div style="font-size:0.75rem;color:var(--muted)">No equipment history for this code yet</div>'}</div>
+    <div style="display:flex;gap:0.3rem;margin-bottom:1rem">
+      <input id="pp-new-equip" type="text" placeholder="Add equipment…"
+        style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.78rem"
+        onkeydown="if(event.key==='Enter')_ppAddCustomEquipment('${dateStr}')">
+      <button class="btn btn-ghost" style="font-size:0.75rem" onclick="_ppAddCustomEquipment('${dateStr}')">+</button>
+    </div>
+    <div class="pp-section-lbl">📝 Notes</div>
+    <textarea style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.4rem;font-size:0.8rem;resize:vertical;min-height:70px;box-sizing:border-box"
+      placeholder="Notes for this day…"
+      onblur="_ppSetNotes('${dateStr}',this.value)">${esc(plan.notes||'')}</textarea>`;
+}
+
+function _ppRenderMultiCode(proj, agg, MONTHS, NW_ICONS) {
+  const deadline = _schedGetDeadline(proj);
+  const daysInMo = new Date(_pp.year, _pp.month+1, 0).getDate();
+  const todayStr = new Date().toISOString().slice(0,10);
+  const conflicts = _ppGetConflicts();
+
+  const dayNums = Array.from({length:daysInMo},(_,i)=>i+1);
+  const dayHdrs = dayNums.map(d => {
+    const ds  = `${_pp.year}-${String(_pp.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const dow = new Date(ds+'T12:00:00').getDay();
+    const isT = ds===todayStr; const isW = dow===0||dow===6;
+    return `<th style="font-size:0.6rem;text-align:center;padding:0.12rem;color:${isT?'var(--blue)':isW?'var(--muted)':'var(--text)'};font-weight:${isT?700:400};min-width:22px">${d}</th>`;
+  }).join('');
+
+  const conflictDays = Object.entries(conflicts).filter(([ds]) => {
+    const dd = new Date(ds+'T12:00:00'); return dd.getMonth()===_pp.month && dd.getFullYear()===_pp.year;
+  });
+
+  const rows = (proj.bidItems||[]).map(bi => {
+    const key = (bi.cost_code||'')+'||'+(bi.sub_code||'');
+    const a   = agg[key]||{};
+    const bidQ = parseFloat(bi.quantity)||0;
+    const done = a.running_qty||0;
+    const prod = _ppProd(a);
+    let monthOut = 0;
+    const dayCells = dayNums.map(d => {
+      const ds   = `${_pp.year}-${String(_pp.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      const plan = (_pp.schedule[key]||{})[ds]||{};
+      const hasWork = !plan.noWork && plan.employees && plan.employees.length > 0;
+      const out = hasWork && prod ? plan.employees.length * prod * (plan.halfDay?0.5:1) : 0;
+      if (out > 0) monthOut += out;
+      const hasConflict = conflicts[ds] && plan.employees && plan.employees.some(e => conflicts[ds].has(e));
+      let bg = 'transparent';
+      if (plan.noWork) bg = 'rgba(100,100,100,0.15)';
+      else if (hasConflict) bg = 'rgba(239,68,68,0.25)';
+      else if (hasWork) bg = 'rgba(34,197,94,0.2)';
+      const isT = ds===todayStr;
+      return `<td style="text-align:center;padding:0.1rem;background:${bg};${isT?'outline:1px solid var(--blue)':''}border-radius:2px;cursor:pointer"
+        onclick="_ppSetBi('${key}');_ppSelectDay('${ds}');_pp.multiCode=false;_ppRender()"
+        title="${esc((bi.cost_code||'')+(bi.sub_code?' · '+bi.sub_code:''))} · ${ds}">
+        <span style="font-size:0.65rem">${hasWork?plan.employees.length:plan.noWork?(NW_ICONS[plan.noWorkReason]||'🚫'):'·'}</span>
+      </td>`;
+    }).join('');
+    const pct = bidQ > 0 ? Math.min(((done+monthOut)/bidQ)*100,100) : 0;
+    return `<tr>
+      <td style="padding:0.25rem 0.5rem;font-size:0.75rem;font-weight:600;white-space:nowrap;cursor:pointer"
+        onclick="_ppSetBi('${key}');_pp.multiCode=false;_ppRender()">
+        ${esc((bi.cost_code||'')+(bi.sub_code?' · '+bi.sub_code:''))}
+      </td>
+      <td style="padding:0.25rem 0.5rem;min-width:90px">
+        <div style="background:var(--border);border-radius:3px;height:5px;overflow:hidden">
+          <div style="height:100%;width:${pct.toFixed(1)}%;background:${pct>=100?'var(--green)':'var(--blue)'}"></div>
+        </div>
+        <div style="font-size:0.6rem;color:var(--muted)">${pct.toFixed(0)}% after month</div>
+      </td>
+      ${dayCells}
+    </tr>`;
+  }).join('');
+
+  return `
+    ${conflictDays.length ? `<div style="background:rgba(239,68,68,0.1);border:1px solid var(--red);border-radius:6px;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.78rem;color:var(--red)">
+      ⚠️ <strong>${conflictDays.length} conflict${conflictDays.length>1?'s':''}</strong> —
+      ${conflictDays.map(([ds,emps])=>`${new Date(ds+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}: ${[...emps].join(', ')}`).join(' · ')}
+    </div>` : ''}
+    <div style="overflow-x:auto">
+      <table style="border-collapse:collapse;width:100%">
+        <thead><tr>
+          <th style="text-align:left;padding:0.25rem 0.5rem;font-size:0.72rem;color:var(--muted)">Cost Code</th>
+          <th style="text-align:left;padding:0.25rem 0.5rem;font-size:0.72rem;color:var(--muted)">Month %</th>
+          ${dayHdrs}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="font-size:0.7rem;color:var(--muted);margin-top:0.5rem">🟢 crew assigned · ⚠️ conflict · click any cell to edit that day</div>`;
 }
 
 // Populate project dropdown when import tab opens
