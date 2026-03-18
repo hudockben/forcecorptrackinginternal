@@ -1063,6 +1063,11 @@
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 1rem 1.1rem;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .proj-home-card:hover {
+      border-color: #3a3a50;
+      background: var(--surface2);
     }
     .proj-home-card.pinned {
       border-top: 2px solid var(--green-dim);
@@ -2178,7 +2183,7 @@ function renderHomeTab() {
         const atRisk = (p.bidItems||[]).filter(b => b.status === 'At Risk').length;
         const onHold = (p.bidItems||[]).filter(b => b.status === 'On Hold').length;
         return `
-          <div class="proj-home-card${p.pinned ? ' pinned' : ''}">
+          <div class="proj-home-card${p.pinned ? ' pinned' : ''}" onclick="goToProject('${p.id}')" style="cursor:pointer">
             <div class="proj-home-card-header">
               <div style="min-width:0">
                 <div class="proj-home-name">${esc(name)}</div>
@@ -3306,6 +3311,31 @@ function deleteDailyRowsBySubCode(costCode, subCode) {
 function toggleCard(id) {
   const card = document.getElementById('pcard-' + id);
   if (card) card.classList.toggle('expanded');
+}
+
+function goToProject(id) {
+  // Switch to Project Dashboard tab
+  const infoBtn = document.querySelector('.tab-btn[data-tab=info]');
+  if (!infoBtn) return;
+  infoBtn.click();
+
+  // Find which page the project is on (pinned first, then reversed)
+  const reversed = [
+    ...[...projectsList].reverse().filter(p => p.pinned),
+    ...[...projectsList].reverse().filter(p => !p.pinned)
+  ];
+  const idx = reversed.findIndex(p => p.id === id);
+  if (idx >= 0) projPage = Math.floor(idx / PROJ_PAGE_SIZE);
+  projSearch = '';
+  renderProjectsTab();
+
+  // Expand and scroll after DOM settles
+  requestAnimationFrame(() => {
+    const card = document.getElementById('pcard-' + id);
+    if (!card) return;
+    if (!card.classList.contains('expanded')) card.classList.add('expanded');
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 function toggleBidSection(titleEl) {
