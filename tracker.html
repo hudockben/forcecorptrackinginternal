@@ -1234,6 +1234,114 @@
       color: var(--muted); flex-wrap: wrap; margin-bottom: 2rem;
     }
     .cost-mix-legend span { display: flex; align-items: center; gap: 0.3rem; }
+
+    /* ── Scheduling Tab ── */
+    #tab-schedule { padding: 0; }
+    .sched-proj-bar {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.55rem 1rem; border-bottom: 1px solid var(--border);
+      background: var(--surface); flex-wrap: wrap;
+    }
+    .sched-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+      gap: 1rem; margin-bottom: 1.5rem;
+    }
+    .sched-proj-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1rem; transition: border-color 0.15s;
+    }
+    .sched-proj-card:hover { border-color: #444; }
+    .sched-proj-card.at-risk  { border-color: var(--yellow); }
+    .sched-proj-card.behind   { border-color: var(--red); }
+    .sched-proj-card.on-track { border-color: var(--green-dim); }
+    .sched-pace-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .sched-pace-table th {
+      text-align: left; padding: 0.4rem 0.75rem;
+      background: var(--surface); color: var(--muted);
+      font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em;
+      border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 2;
+    }
+    .sched-pace-table th.num { text-align: right; }
+    .sched-pace-table td { padding: 0.4rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .sched-pace-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .sched-pace-table tr:hover td { background: var(--surface2); }
+    .sched-status-pill {
+      display: inline-block; padding: 0.15rem 0.5rem;
+      border-radius: 20px; font-size: 0.7rem; font-weight: 600; white-space: nowrap;
+    }
+    .sched-status-pill.on-track  { background: rgba(34,197,94,0.15);  color: var(--green); }
+    .sched-status-pill.at-risk   { background: rgba(234,179,8,0.15);  color: var(--yellow); }
+    .sched-status-pill.behind    { background: rgba(239,68,68,0.15);  color: var(--red); }
+    .sched-status-pill.complete  { background: rgba(96,165,250,0.15); color: var(--blue); }
+    .sched-status-pill.no-data   { background: rgba(102,102,102,0.1); color: var(--muted); }
+    .sched-progress-bar {
+      height: 6px; background: var(--surface2); border-radius: 3px;
+      overflow: hidden; min-width: 70px; flex-shrink: 0;
+    }
+    .sched-progress-fill { height: 100%; border-radius: 3px; }
+    .sched-deadline-chip {
+      font-size: 0.72rem; padding: 0.15rem 0.5rem;
+      border-radius: 12px; font-weight: 600; white-space: nowrap;
+    }
+    .sched-section-hdr {
+      font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); font-weight: 700; margin: 0 0 0.75rem;
+    }
+    .sched-no-data { color: var(--muted); font-size: 0.85rem; text-align: center; padding: 3rem 1rem; }
+
+    /* ── AI Insights panel ── */
+    .sched-ai-panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 1.5rem; overflow: hidden;
+    }
+    .sched-ai-header {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.75rem 1rem; border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+    }
+    .sched-ai-header .ai-icon { font-size: 1rem; }
+    .sched-ai-header .ai-title { font-weight: 700; font-size: 0.85rem; }
+    .sched-ai-header .ai-badge {
+      font-size: 0.65rem; padding: 0.1rem 0.45rem; border-radius: 10px;
+      background: rgba(96,165,250,0.15); color: var(--blue); font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .sched-ai-body { padding: 1rem; }
+    .sched-ai-summary {
+      font-size: 0.85rem; line-height: 1.6; margin-bottom: 1rem;
+      color: var(--text);
+    }
+    .sched-ai-rec {
+      display: flex; gap: 0.75rem; padding: 0.6rem 0;
+      border-top: 1px solid var(--border);
+    }
+    .sched-ai-rec:first-child { border-top: none; }
+    .sched-ai-priority {
+      width: 6px; flex-shrink: 0; border-radius: 3px; align-self: stretch; min-height: 36px;
+    }
+    .sched-ai-priority.high   { background: var(--red); }
+    .sched-ai-priority.medium { background: var(--yellow); }
+    .sched-ai-priority.low    { background: var(--green); }
+    .sched-ai-rec-body { flex: 1; }
+    .sched-ai-rec-code { font-size: 0.72rem; color: var(--blue); font-weight: 600; margin-bottom: 0.15rem; }
+    .sched-ai-rec-issue { font-size: 0.8rem; font-weight: 600; margin-bottom: 0.2rem; }
+    .sched-ai-rec-action { font-size: 0.8rem; color: var(--muted); line-height: 1.5; }
+    .sched-ai-footer {
+      padding: 0.5rem 1rem; border-top: 1px solid var(--border);
+      font-size: 0.68rem; color: var(--muted); display: flex;
+      align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;
+    }
+    .sched-ai-loading {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 1.25rem 1rem; font-size: 0.82rem; color: var(--muted);
+    }
+    .sched-ai-spinner {
+      width: 16px; height: 16px; border: 2px solid var(--border);
+      border-top-color: var(--blue); border-radius: 50%;
+      animation: spin 0.7s linear infinite; flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -1261,6 +1369,7 @@
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="home">Home</button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
+  <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
   <button class="tab-btn"        data-tab="info">Project Dashboard</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="supplier">Suppliers</button>
@@ -1505,6 +1614,23 @@
   <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
     <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearPOFilter()">Clear</button>
     <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyPOFilter()">Apply</button>
+  </div>
+</div>
+
+<!-- ══════════════ SCHEDULING TAB ══════════════ -->
+<div class="tab-panel" id="tab-schedule">
+  <div class="sched-proj-bar">
+    <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Project:</span>
+    <select id="sched-proj-select" onchange="renderScheduleTab()"
+      style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.5rem;font-size:0.8rem;outline:none;min-width:200px;">
+      <option value="">All Projects</option>
+    </select>
+    <button class="btn btn-ghost" onclick="loadScheduleDeadlines().then(renderScheduleTab)" style="font-size:0.75rem">&#8635; Refresh</button>
+    <button class="btn btn-blue" id="sched-ai-btn" onclick="runSchedAI()" style="font-size:0.75rem;display:none">&#9889; AI Insights</button>
+    <span id="sched-last-updated" style="font-size:0.7rem;color:var(--muted);margin-left:auto"></span>
+  </div>
+  <div id="sched-body" style="padding:1.25rem;overflow:auto;max-height:calc(100vh - 110px)">
+    <!-- rendered by JS -->
   </div>
 </div>
 
@@ -1948,7 +2074,7 @@ const perm = (() => {
     canDeleteProject: ['admin', 'level3'].includes(r),
     // tabs visible to this role (null = all)
     visibleTabs: (r === 'level1') ? new Set(['info', 'po'])
-               : (r === 'level2') ? new Set(['home', 'info', 'po'])
+               : (r === 'level2') ? new Set(['home', 'schedule', 'info', 'po'])
                : null,
   };
 })();
@@ -2078,6 +2204,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'supplier') renderSupplierTab();
     if (activeTab === 'po')       renderPOTab();
     if (activeTab === 'users')    renderUsersTab();
+    if (activeTab === 'schedule') renderScheduleTab();
   });
 });
 
@@ -7402,6 +7529,446 @@ function commitImportCSV() {
   clearImportPreview();
   document.getElementById('csv-import-status').innerHTML =
     `<span style="color:var(--green)">✓ Successfully imported ${totalImported} row${totalImported !== 1 ? 's' : ''}.</span>`;
+}
+
+/* ═══════════════════════════════════════════
+   SCHEDULING TAB — Phase 1 Pacing Dashboard
+   No AI calls — pure math from existing data.
+═══════════════════════════════════════════ */
+
+let _schedDeadlines = [];
+
+async function loadScheduleDeadlines() {
+  try {
+    const r = await fetch('/api/deadlines', { headers: { 'Authorization': 'Bearer ' + fctToken } });
+    if (!r.ok) return;
+    const d = await r.json();
+    _schedDeadlines = d.deadlines || [];
+  } catch { _schedDeadlines = []; }
+}
+
+/** Resolve a project's deadline: prefer end-date field, fall back to deadlines API match. */
+function _schedGetDeadline(proj) {
+  if (proj['end-date']) return proj['end-date'];
+  const name = (proj['project-name'] || '').toLowerCase().trim();
+  if (!name) return null;
+  const match = _schedDeadlines.find(d =>
+    d.project_name && d.project_name.toLowerCase().trim() === name && d.deadline_date
+  );
+  return match ? match.deadline_date : null;
+}
+
+function _schedDaysRemaining(deadlineStr) {
+  if (!deadlineStr) return null;
+  const dl = new Date(deadlineStr + 'T12:00:00');
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  return Math.ceil((dl - now) / (1000 * 60 * 60 * 24));
+}
+
+function _schedDeadlineChip(days) {
+  if (days === null)
+    return '<span style="font-size:0.72rem;color:var(--muted)">No deadline</span>';
+  if (days < 0)
+    return `<span class="sched-deadline-chip" style="background:rgba(239,68,68,0.15);color:var(--red)">${Math.abs(days)}d overdue</span>`;
+  if (days === 0)
+    return `<span class="sched-deadline-chip" style="background:rgba(239,68,68,0.15);color:var(--red)">Due today</span>`;
+  if (days <= 7)
+    return `<span class="sched-deadline-chip" style="background:rgba(234,179,8,0.2);color:var(--yellow)">${days}d left</span>`;
+  if (days <= 21)
+    return `<span class="sched-deadline-chip" style="background:rgba(234,179,8,0.1);color:var(--yellow)">${days}d left</span>`;
+  return `<span class="sched-deadline-chip" style="background:rgba(34,197,94,0.12);color:var(--green)">${days}d left</span>`;
+}
+
+/** Aggregate a project's daily rows by cost_code+sub_code. */
+function _schedPaceForProject(proj) {
+  const agg = {};
+  (proj.dailyRows || []).forEach(row => {
+    const key = (row.cost_code || '') + '||' + (row.sub_code || '');
+    if (!agg[key]) agg[key] = {
+      running_qty: 0, labor_hours: 0, equip_hours: 0,
+      dates: new Set(), employees: new Set(), equipment: new Set()
+    };
+    const a = agg[key];
+    a.running_qty  += parseFloat(row.quantity)    || 0;
+    a.labor_hours  += parseFloat(row.labor_hours) || 0;
+    a.equip_hours  += parseFloat(row.equip_hours) || 0;
+    if (row.date)      a.dates.add(row.date);
+    if (row.employee && row.employee.trim())  a.employees.add(row.employee.trim());
+    if (row.equipment && row.equipment.trim()) a.equipment.add(row.equipment.trim());
+  });
+  return agg;
+}
+
+function _schedStatus(pct, gap, daysLeft, bidQty) {
+  if (bidQty <= 0)   return 'no-data';
+  if (pct >= 100)    return 'complete';
+  if (daysLeft === null) return 'no-data';
+  if (daysLeft < 0)  return 'behind';
+  if (gap === null || gap <= 0) return 'on-track';
+  return (gap / bidQty) > 0.05 ? 'behind' : 'at-risk';
+}
+
+function _schedStatusPill(status) {
+  const labels = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind', 'complete': 'Complete', 'no-data': 'No Data' };
+  return `<span class="sched-status-pill ${status}">${labels[status] || status}</span>`;
+}
+
+function _schedBar(pct, status) {
+  const colors = {
+    'on-track': 'var(--green)', 'at-risk': 'var(--yellow)',
+    'behind': 'var(--red)',     'complete': 'var(--blue)', 'no-data': 'var(--muted)'
+  };
+  return `<div class="sched-progress-bar"><div class="sched-progress-fill" style="width:${Math.min(Math.max(pct,0),100)}%;background:${colors[status]||'var(--muted)'}"></div></div>`;
+}
+
+function _schedCalcRow(bi, agg, daysLeft) {
+  const key         = (bi.cost_code || '') + '||' + (bi.sub_code || '');
+  const a           = agg[key] || { running_qty: 0, labor_hours: 0, equip_hours: 0, dates: new Set(), employees: new Set(), equipment: new Set() };
+  const bidQty      = parseFloat(bi.quantity) || 0;
+  const runningQty  = a.running_qty;
+  const daysWorked  = a.dates.size;
+  const currentPace = daysWorked > 0 ? runningQty / daysWorked : 0;
+  const pct         = bidQty > 0 ? (runningQty / bidQty) * 100 : 0;
+  const unitsLeft   = Math.max(bidQty - runningQty, 0);
+  const requiredPace = (daysLeft !== null && daysLeft > 0) ? unitsLeft / daysLeft : null;
+  const gap         = requiredPace !== null ? requiredPace - currentPace : null;
+  const status      = _schedStatus(pct, gap, daysLeft, bidQty);
+  return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, requiredPace, gap, status };
+}
+
+function renderScheduleProjectDetail(proj) {
+  const deadline   = _schedGetDeadline(proj);
+  const daysLeft   = _schedDaysRemaining(deadline);
+  const agg        = _schedPaceForProject(proj);
+  const bidItems   = proj.bidItems || [];
+
+  if (!bidItems.length) {
+    return `<div class="sched-no-data">No bid items found for this project.<br>
+      <span style="font-size:0.75rem;color:var(--muted)">Add bid items in the Project Dashboard tab to enable pacing analysis.</span></div>`;
+  }
+
+  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
+
+  const rows = bidItems.map(bi => {
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status } = _schedCalcRow(bi, agg, daysLeft);
+    counts[status]++;
+
+    const employees  = [...a.employees].slice(0, 3).join(', ') || '—';
+    const equipment  = [...a.equipment].slice(0, 2).join(', ') || '—';
+
+    const gapHtml = gap === null ? '<span style="color:var(--muted)">—</span>'
+      : gap <= 0
+        ? `<span style="color:var(--green)">▲ ${fmt(Math.abs(gap),2)}/d ahead</span>`
+        : `<span style="color:${(gap / (bidQty||1)) > 0.05 ? 'var(--red)' : 'var(--yellow)'}">▼ ${fmt(gap,2)}/d needed</span>`;
+
+    return `<tr>
+      <td>
+        <div style="font-weight:600">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}</div>
+        <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">${esc(employees)}</div>
+        ${equipment !== '—' ? `<div style="font-size:0.7rem;color:var(--muted)">${esc(equipment)}</div>` : ''}
+      </td>
+      <td class="num">${bidQty > 0 ? fmt(bidQty, 1) : '—'}</td>
+      <td class="num">${runningQty > 0 ? fmt(runningQty, 1) : '—'}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:0.5rem">
+          ${_schedBar(pct, status)}
+          <span style="font-size:0.75rem;color:var(--muted);white-space:nowrap">${bidQty > 0 ? fmtPct(pct) : '—'}</span>
+        </div>
+      </td>
+      <td class="num">${daysWorked > 0 ? daysWorked : '—'}</td>
+      <td class="num">${currentPace > 0 ? fmt(currentPace, 2) + '/d' : '—'}</td>
+      <td class="num">${requiredPace !== null ? fmt(requiredPace, 2) + '/d' : '—'}</td>
+      <td class="num">${gapHtml}</td>
+      <td>${_schedStatusPill(status)}</td>
+    </tr>`;
+  }).join('');
+
+  const deadlineFmt = deadline
+    ? new Date(deadline + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    : null;
+
+  return `
+    <div style="display:flex;align-items:flex-start;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
+      <div>
+        <div style="font-size:1.05rem;font-weight:700">${esc(proj['project-name'] || 'Untitled Project')}</div>
+        ${proj['job-number'] ? `<div style="font-size:0.75rem;color:var(--muted)">Job #${esc(proj['job-number'])}</div>` : ''}
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+        ${deadlineFmt ? `<span style="font-size:0.75rem;color:var(--muted)">Deadline: <strong style="color:var(--text)">${deadlineFmt}</strong></span>` : ''}
+        ${_schedDeadlineChip(daysLeft)}
+      </div>
+    </div>
+    <div style="display:flex;gap:0.6rem;margin-bottom:1.25rem;flex-wrap:wrap">
+      ${counts['behind']   ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:var(--red)"><div class="stat-val" style="color:var(--red)">${counts['behind']}</div><div class="stat-lbl">Behind</div></div>` : ''}
+      ${counts['at-risk']  ? `<div class="stat-card yellow" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem"><div class="stat-val">${counts['at-risk']}</div><div class="stat-lbl">At Risk</div></div>` : ''}
+      ${counts['on-track'] ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:var(--green-dim)"><div class="stat-val" style="color:var(--green)">${counts['on-track']}</div><div class="stat-lbl">On Track</div></div>` : ''}
+      ${counts['complete'] ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:var(--blue)"><div class="stat-val" style="color:var(--blue)">${counts['complete']}</div><div class="stat-lbl">Complete</div></div>` : ''}
+      ${counts['no-data']  ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem"><div class="stat-val" style="color:var(--muted)">${counts['no-data']}</div><div class="stat-lbl">No Data</div></div>` : ''}
+    </div>
+    <div style="overflow-x:auto">
+      <table class="sched-pace-table">
+        <thead><tr>
+          <th>Cost Code</th>
+          <th class="num">Bid Qty</th>
+          <th class="num">Running Qty</th>
+          <th style="min-width:120px">Progress</th>
+          <th class="num">Days Worked</th>
+          <th class="num">Current Pace</th>
+          <th class="num">Required Pace</th>
+          <th class="num">Gap</th>
+          <th>Status</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${daysLeft === null
+      ? `<div style="margin-top:1rem;font-size:0.75rem;color:var(--muted)">⚠ Set an <strong>End Date</strong> in the Project Dashboard to enable pace projections and required pace calculations.</div>`
+      : ''}
+  `;
+}
+
+function renderScheduleAllProjects() {
+  const active = projectsList.filter(p => {
+    const s = (p.status || '').toLowerCase();
+    return s !== 'complete' && s !== 'closed';
+  });
+
+  if (!active.length) {
+    return `<div class="sched-no-data">No active projects. Add projects in the Project Dashboard tab.</div>`;
+  }
+
+  const cards = active.map(proj => {
+    const deadline = _schedGetDeadline(proj);
+    const daysLeft = _schedDaysRemaining(deadline);
+    const agg      = _schedPaceForProject(proj);
+    const counts   = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
+
+    (proj.bidItems || []).forEach(bi => {
+      const { bidQty, gap, pct, status } = _schedCalcRow(bi, agg, daysLeft);
+      counts[status]++;
+    });
+
+    const cardBorder = counts['behind'] > 0 ? 'behind' : counts['at-risk'] > 0 ? 'at-risk' : 'on-track';
+    const totalRows  = (proj.dailyRows || []).length;
+    const deadlineFmt = deadline
+      ? new Date(deadline + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : null;
+    const totalBidItems = (proj.bidItems || []).length;
+
+    return `
+      <div class="sched-proj-card ${cardBorder}" style="cursor:pointer"
+        onclick="document.getElementById('sched-proj-select').value='${proj.id}';renderScheduleTab()">
+        <div style="font-weight:700;font-size:0.9rem;margin-bottom:0.1rem">${esc(proj['project-name'] || 'Untitled')}</div>
+        ${proj['job-number'] ? `<div style="font-size:0.7rem;color:var(--muted);margin-bottom:0.5rem">Job #${esc(proj['job-number'])}</div>` : `<div style="margin-bottom:0.5rem"></div>`}
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.65rem">
+          ${deadlineFmt ? `<span style="font-size:0.7rem;color:var(--muted)">${deadlineFmt}</span>` : `<span></span>`}
+          ${_schedDeadlineChip(daysLeft)}
+        </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;font-size:0.72rem;margin-bottom:0.6rem;min-height:1.1rem">
+          ${counts['behind']   > 0 ? `<span style="color:var(--red)">● ${counts['behind']} behind</span>` : ''}
+          ${counts['at-risk']  > 0 ? `<span style="color:var(--yellow)">● ${counts['at-risk']} at risk</span>` : ''}
+          ${counts['on-track'] > 0 ? `<span style="color:var(--green)">● ${counts['on-track']} on track</span>` : ''}
+          ${counts['complete'] > 0 ? `<span style="color:var(--blue)">● ${counts['complete']} complete</span>` : ''}
+          ${totalBidItems === 0    ? `<span style="color:var(--muted)">No bid items</span>` : ''}
+        </div>
+        <div style="font-size:0.7rem;color:var(--muted)">${totalRows} daily entr${totalRows === 1 ? 'y' : 'ies'} logged · ${totalBidItems} cost code${totalBidItems === 1 ? '' : 's'}</div>
+        <div style="margin-top:0.6rem;font-size:0.7rem;color:var(--green);opacity:0.65">View pacing detail →</div>
+      </div>
+    `;
+  });
+
+  return `
+    <div class="sched-section-hdr">Active Projects — Pacing Overview</div>
+    <div class="sched-summary-grid">${cards.join('')}</div>
+    <div style="font-size:0.72rem;color:var(--muted)">
+      Pacing calculated from daily entries vs. bid quantities. Set an <strong>End Date</strong> on each project to enable gap analysis.
+    </div>
+  `;
+}
+
+async function renderScheduleTab() {
+  const body = document.getElementById('sched-body');
+  if (!body) return;
+
+  // Populate project selector
+  const sel = document.getElementById('sched-proj-select');
+  if (sel) {
+    const currentVal = sel.value;
+    sel.innerHTML = '<option value="">All Projects</option>' +
+      projectsList.map(p =>
+        `<option value="${p.id}">${esc(p['project-name'] || p['job-number'] || p.id)}</option>`
+      ).join('');
+    sel.value = currentVal;
+  }
+
+  body.innerHTML = '<div class="sched-no-data" style="padding:2rem">Loading…</div>';
+
+  if (!_schedDeadlines.length) await loadScheduleDeadlines();
+
+  const projId = sel ? sel.value : '';
+  const aiBtn  = document.getElementById('sched-ai-btn');
+
+  if (projId) {
+    const proj = getProj(projId);
+    if (proj) {
+      body.innerHTML = renderScheduleProjectDetail(proj);
+      // Show AI button only when a specific project is selected and has bid items
+      if (aiBtn) aiBtn.style.display = (proj.bidItems || []).length ? '' : 'none';
+    } else {
+      body.innerHTML = '<div class="sched-no-data">Project not found.</div>';
+      if (aiBtn) aiBtn.style.display = 'none';
+    }
+  } else {
+    body.innerHTML = renderScheduleAllProjects();
+    if (aiBtn) aiBtn.style.display = 'none';
+  }
+
+  const ts = document.getElementById('sched-last-updated');
+  if (ts) ts.textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+/* ── AI Insights ─────────────────────────────────────────────────────────── */
+
+let _schedAICache = {}; // in-memory cache: projectId → { result, ts }
+
+async function runSchedAI() {
+  const sel    = document.getElementById('sched-proj-select');
+  const projId = sel ? sel.value : '';
+  if (!projId) return;
+
+  const proj = getProj(projId);
+  if (!proj) return;
+
+  // Insert loading panel at top of sched-body
+  _schedShowAILoading();
+
+  // Check in-memory cache (5 min)
+  const cached = _schedAICache[projId];
+  if (cached && (Date.now() - cached.ts) < 5 * 60 * 1000) {
+    _schedRenderAIPanel(cached.result, true);
+    return;
+  }
+
+  const deadline = _schedGetDeadline(proj);
+  const daysLeft = _schedDaysRemaining(deadline);
+  const agg      = _schedPaceForProject(proj);
+
+  // Build cost code payload
+  const costCodes = (proj.bidItems || []).map(bi => {
+    const { bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, a } = _schedCalcRow(bi, agg, daysLeft);
+    return {
+      costCode:     bi.cost_code || '',
+      subCode:      bi.sub_code  || '',
+      bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status,
+      employees: [...(a.employees || new Set())].filter(Boolean),
+      equipment: [...(a.equipment || new Set())].filter(Boolean),
+    };
+  });
+
+  try {
+    const r = await fetch('/api/ai/schedule-analysis', {
+      method: 'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': 'Bearer ' + fctToken,
+      },
+      body: JSON.stringify({
+        projectId: projId,
+        projectName: proj['project-name'] || 'Unnamed Project',
+        jobNumber:   proj['job-number']   || '',
+        deadline,
+        daysLeft,
+        costCodes,
+      }),
+    });
+
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      _schedShowAIError(err.error || `Server error ${r.status}`);
+      return;
+    }
+
+    const result = await r.json();
+    _schedAICache[projId] = { result, ts: Date.now() };
+    _schedRenderAIPanel(result, result.cached || false);
+
+  } catch (err) {
+    _schedShowAIError('Network error — could not reach AI service.');
+  }
+}
+
+function _schedAIPanelEl() {
+  let el = document.getElementById('sched-ai-panel');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'sched-ai-panel';
+    const body = document.getElementById('sched-body');
+    if (body) body.insertBefore(el, body.firstChild);
+  }
+  return el;
+}
+
+function _schedShowAILoading() {
+  _schedAIPanelEl().innerHTML = `
+    <div class="sched-ai-panel">
+      <div class="sched-ai-header">
+        <span class="ai-icon">&#9889;</span>
+        <span class="ai-title">AI Insights</span>
+        <span class="ai-badge">Analyzing…</span>
+      </div>
+      <div class="sched-ai-loading">
+        <div class="sched-ai-spinner"></div>
+        Analyzing production data and generating recommendations…
+      </div>
+    </div>`;
+}
+
+function _schedShowAIError(msg) {
+  _schedAIPanelEl().innerHTML = `
+    <div class="sched-ai-panel" style="border-color:var(--red)">
+      <div class="sched-ai-header">
+        <span class="ai-icon">&#9889;</span>
+        <span class="ai-title">AI Insights</span>
+        <span class="ai-badge" style="background:rgba(239,68,68,0.15);color:var(--red)">Error</span>
+        <button class="btn btn-ghost" style="margin-left:auto;font-size:0.7rem" onclick="document.getElementById('sched-ai-panel').remove()">Dismiss</button>
+      </div>
+      <div style="padding:1rem;font-size:0.82rem;color:var(--red)">${esc(msg)}</div>
+    </div>`;
+}
+
+function _schedRenderAIPanel(result, fromCache) {
+  const outlookColor = { 'on-track': 'var(--green)', 'at-risk': 'var(--yellow)', 'behind': 'var(--red)' }[result.outlook] || 'var(--muted)';
+  const outlookLabel = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind Schedule' }[result.outlook] || result.outlook;
+
+  const recs = (result.recommendations || []).map(r => `
+    <div class="sched-ai-rec">
+      <div class="sched-ai-priority ${r.priority || 'medium'}"></div>
+      <div class="sched-ai-rec-body">
+        <div class="sched-ai-rec-code">${esc(r.costCode || 'Overall')} · ${(r.priority||'medium').toUpperCase()}</div>
+        <div class="sched-ai-rec-issue">${esc(r.issue || '')}</div>
+        <div class="sched-ai-rec-action">${esc(r.action || '')}</div>
+      </div>
+    </div>`).join('');
+
+  _schedAIPanelEl().innerHTML = `
+    <div class="sched-ai-panel">
+      <div class="sched-ai-header">
+        <span class="ai-icon">&#9889;</span>
+        <span class="ai-title">AI Insights</span>
+        <span class="ai-badge" style="background:rgba(96,165,250,0.15);color:var(--blue)">claude haiku</span>
+        <span style="margin-left:0.5rem;font-size:0.72rem;font-weight:600;color:${outlookColor}">${outlookLabel}</span>
+        <button class="btn btn-ghost" style="margin-left:auto;font-size:0.7rem" onclick="runSchedAI()">&#8635; Refresh</button>
+        <button class="btn btn-ghost" style="font-size:0.7rem" onclick="document.getElementById('sched-ai-panel').remove()">✕</button>
+      </div>
+      <div class="sched-ai-body">
+        <div class="sched-ai-summary">${esc(result.summary || '')}</div>
+        ${recs || '<div style="color:var(--muted);font-size:0.8rem">No specific recommendations — project looks healthy.</div>'}
+      </div>
+      <div class="sched-ai-footer">
+        <span>Powered by Claude AI · Results are advisory only</span>
+        <span>${fromCache ? 'Cached result · ' : ''}Click Refresh to re-analyze</span>
+      </div>
+    </div>`;
 }
 
 // Populate project dropdown when import tab opens
