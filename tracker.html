@@ -620,7 +620,7 @@
     }
     .home-layout {
       display: grid;
-      grid-template-columns: 1fr 420px;
+      grid-template-columns: 1fr 400px;
       gap: 2rem;
       align-items: start;
     }
@@ -2097,47 +2097,6 @@ function renderHeaderActions() {
   }
 }
 
-function buildAuditLogHTML(rows, projects) {
-  if (!rows.length) return '<div class="home-empty" style="font-size:0.78rem">No daily entries yet.</div>';
-  const items = rows.map(row => {
-    const c        = calcDaily(row);
-    const proj     = projects.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
-    const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
-    const hasLabor = c.labor_cost > 0;
-    const hasEquip = c.equip_total > 0;
-    const hasMat   = (c.material_cost || 0) > 0;
-    const dotColor = hasLabor ? 'var(--green)' : hasEquip ? 'var(--blue)' : hasMat ? 'var(--yellow)' : '#555';
-    const tags     = [row.sub_code, row.field_type].filter(Boolean);
-    const tagHTML  = (tags.length || row.employee)
-      ? '<div class="audit-tags">'
-          + (row.employee ? '<span class="audit-tag audit-tag-emp">' + esc(row.employee) + '</span>' : '')
-          + tags.map(t => '<span class="audit-tag">' + esc(t) + '</span>').join('')
-        + '</div>'
-      : '';
-    const pillHTML = ''
-      + (hasLabor ? '<span class="audit-cost-pill audit-pill-labor">Labor $' + fmt(c.labor_cost) + '</span>' : '')
-      + (hasEquip ? '<span class="audit-cost-pill audit-pill-equip">Equip $' + fmt(c.equip_total) + '</span>' : '')
-      + (hasMat   ? '<span class="audit-cost-pill audit-pill-mat">Mat $'   + fmt(c.material_cost) + '</span>' : '')
-      + (c.total_cost > 0 ? '<span class="audit-cost-pill audit-pill-total">$' + fmt(c.total_cost) + '</span>' : '');
-    return '<div class="audit-row">'
-      + '<div class="audit-dot-col">'
-        + '<div class="audit-dot" style="background:' + dotColor + '"></div>'
-        + '<div class="audit-line"></div>'
-      + '</div>'
-      + '<div class="audit-body">'
-        + '<div class="audit-header">'
-          + '<span class="audit-proj">' + esc(projName) + '</span>'
-          + '<span class="audit-date">' + (row.date || '—') + '</span>'
-        + '</div>'
-        + '<div class="audit-code">' + (esc(row.cost_code) || '(no cost code)') + '</div>'
-        + tagHTML
-        + '<div class="audit-costs">' + pillHTML + '</div>'
-      + '</div>'
-    + '</div>';
-  });
-  return '<div class="audit-log">' + items.join('') + '</div>';
-}
-
 function renderHomeTab() {
   const today = new Date();
   const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -2359,6 +2318,45 @@ function renderHomeTab() {
       </div>
     </div>
 
+    <p class="home-section-title">Activity Log</p>
+    ${recent.length === 0
+      ? `<div class="home-empty">No daily entries yet. Open a project in Project Dashboard to add daily records.</div>`
+      : `<div class="audit-log">
+          ${recent.map(row => {
+            const c = calcDaily(row);
+            const proj = projectsList.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
+            const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
+            const hasLabor = c.labor_cost > 0;
+            const hasEquip = c.equip_total > 0;
+            const hasMat   = (c.material_cost || 0) > 0;
+            const dotColor = hasLabor ? 'var(--green)' : hasEquip ? 'var(--blue)' : hasMat ? 'var(--yellow)' : '#555';
+            const tags = [row.sub_code, row.field_type].filter(Boolean);
+            return `<div class="audit-row">
+              <div class="audit-dot-col">
+                <div class="audit-dot" style="background:${dotColor}"></div>
+                <div class="audit-line"></div>
+              </div>
+              <div class="audit-body">
+                <div class="audit-header">
+                  <span class="audit-proj">${esc(projName)}</span>
+                  <span class="audit-date">${row.date || '—'}</span>
+                </div>
+                <div class="audit-code">${esc(row.cost_code) || '(no cost code)'}</div>
+                ${(tags.length || row.employee) ? `<div class="audit-tags">
+                  ${row.employee ? `<span class="audit-tag audit-tag-emp">${esc(row.employee)}</span>` : ''}
+                  ${tags.map(t => `<span class="audit-tag">${esc(t)}</span>`).join('')}
+                </div>` : ''}
+                <div class="audit-costs">
+                  ${hasLabor ? `<span class="audit-cost-pill audit-pill-labor">Labor $${fmt(c.labor_cost)}</span>` : ''}
+                  ${hasEquip ? `<span class="audit-cost-pill audit-pill-equip">Equip $${fmt(c.equip_total)}</span>` : ''}
+                  ${hasMat   ? `<span class="audit-cost-pill audit-pill-mat">Mat $${fmt(c.material_cost)}</span>` : ''}
+                  ${c.total_cost > 0 ? `<span class="audit-cost-pill audit-pill-total">$${fmt(c.total_cost)}</span>` : ''}
+                </div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>`
+    }
   </div><!-- /.home-main -->
 
   <div class="home-sidebar">
@@ -2376,11 +2374,6 @@ function renderHomeTab() {
         <button class="btn btn-green dl-post-btn" onclick="deadlinePost()">Post</button>
       </div>
       <div id="deadline-posts"><div class="home-empty" style="font-size:0.78rem">Loading…</div></div>
-    </div>
-
-    <div class="widget-card">
-      <p class="home-section-title">Activity Log</p>
-      ${buildAuditLogHTML(recent, projectsList)}
     </div>
 
     <div class="widget-card">
