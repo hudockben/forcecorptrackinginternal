@@ -8090,13 +8090,13 @@ let _pp = {
   open:       false,
   multiCode:  false,
   selectedDay: null,
-  schedule:   {}, // biKey → { dateStr → { employees[], equipment[], halfDay, noWork, noWorkReason, notes } }
+  schedule:   {}, // biKey → { dateStr → { employees[], equipment[], crew{name→equip}, halfDay, noWork, noWorkReason, notes } }
 };
 
 function _ppDayData(biKey, dateStr) {
   if (!_pp.schedule[biKey]) _pp.schedule[biKey] = {};
   if (!_pp.schedule[biKey][dateStr])
-    _pp.schedule[biKey][dateStr] = { employees: [], equipment: [], halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+    _pp.schedule[biKey][dateStr] = { employees: [], equipment: [], crew: {}, halfDay: false, noWork: false, noWorkReason: '', notes: '' };
   return _pp.schedule[biKey][dateStr];
 }
 
@@ -8122,7 +8122,7 @@ function _ppAutoFill(proj, biKey) {
     if (!_pp.schedule[biKey]) _pp.schedule[biKey] = {};
     if (!_pp.schedule[biKey][ds]) {
       // Only auto-fill — don't overwrite manual edits
-      _pp.schedule[biKey][ds] = { employees: [...crew], equipment: [...equip], halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+      _pp.schedule[biKey][ds] = { employees: [...crew], equipment: [...equip], crew: {}, halfDay: false, noWork: false, noWorkReason: '', notes: '' };
     }
   }
 }
@@ -8180,7 +8180,20 @@ function _ppSelectDay(dateStr) {
 function _ppToggleEmployee(dateStr, name) {
   const d = _ppDayData(_pp.biKey, dateStr);
   const i = d.employees.indexOf(name);
-  if (i === -1) d.employees.push(name); else d.employees.splice(i, 1);
+  if (i === -1) {
+    d.employees.push(name);
+  } else {
+    d.employees.splice(i, 1);
+    if (d.crew) delete d.crew[name];
+  }
+  _ppRender();
+}
+
+function _ppSetCrewEquip(dateStr, empName, equipName) {
+  const d = _ppDayData(_pp.biKey, dateStr);
+  if (!d.crew) d.crew = {};
+  if (equipName) d.crew[empName] = equipName;
+  else delete d.crew[empName];
   _ppRender();
 }
 
@@ -8237,7 +8250,8 @@ function _ppCopyWeek(sundayDay) {
     if (!srcDay) continue;
     _ppDayData(_pp.biKey, dstDs); // init
     _pp.schedule[_pp.biKey][dstDs] = {
-      ...srcDay, employees: [...srcDay.employees], equipment: [...srcDay.equipment]
+      ...srcDay, employees: [...srcDay.employees], equipment: [...srcDay.equipment],
+      crew: srcDay.crew ? { ...srcDay.crew } : {}
     };
   }
   _ppRender();
@@ -8349,9 +8363,23 @@ function _ppRender() {
     const cls = ['pp-day', isToday?'today':'', isPast?'past':'', isGoal?'goal-day':'',
                  isSelected?'selected':'', plan.noWork?'nowork':'', hasConflict?'conflict-day':''].filter(Boolean).join(' ');
 
-    const empChips = !plan.noWork && plan.employees && plan.employees.length
-      ? plan.employees.slice(0,3).map(e => `<span class="pp-chip">${esc(e.split(' ')[0])}</span>`).join('')
-        + (plan.employees.length > 3 ? `<span class="pp-chip">+${plan.employees.length-3}</span>` : '') : '';
+    let empChips = '';
+    if (!plan.noWork && plan.employees && plan.employees.length) {
+      const crew = plan.crew || {};
+      const anyAssigned = plan.employees.some(e => crew[e]);
+      if (anyAssigned) {
+        // Show equipment:count breakdown
+        const byEquip = {};
+        plan.employees.forEach(e => { const eq = crew[e] || '?'; byEquip[eq] = (byEquip[eq]||0) + 1; });
+        const entries = Object.entries(byEquip);
+        empChips = entries.slice(0,3).map(([eq, n]) =>
+          `<span class="pp-chip" title="${esc(eq)}" style="font-size:0.65rem">${esc(eq.split(' ')[0])}:${n}</span>`
+        ).join('') + (entries.length > 3 ? `<span class="pp-chip" style="font-size:0.65rem">+${entries.length-3}</span>` : '');
+      } else {
+        empChips = plan.employees.slice(0,3).map(e => `<span class="pp-chip">${esc(e.split(' ')[0])}</span>`).join('')
+          + (plan.employees.length > 3 ? `<span class="pp-chip">+${plan.employees.length-3}</span>` : '');
+      }
+    }
     const eqChips = !plan.noWork && plan.equipment && plan.equipment.length
       ? plan.equipment.slice(0,2).map(e => `<span class="pp-chip equip">${esc(e.split(' ')[0])}</span>`).join('')
         + (plan.equipment.length > 2 ? `<span class="pp-chip equip">+${plan.equipment.length-2}</span>` : '') : '';
@@ -8542,10 +8570,19 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
 
   const empRows = fullEmpList.map(e => {
     const checked = (plan.employees||[]).includes(e);
-    return `<label class="pp-check-row" style="${plan.noWork?'opacity:0.4;pointer-events:none':''}">
-      <input type="checkbox" ${checked?'checked':''} onchange="_ppToggleEmployee('${dateStr}','${esc(e)}')" ${plan.noWork?'disabled':''}>
-      <span class="pp-chip" style="font-size:0.75rem">${esc(e)}</span>
-    </label>`;
+    const assignedEquip = (plan.crew||{})[e] || '';
+    const dis = plan.noWork ? 'disabled' : '';
+    const opac = plan.noWork ? 'opacity:0.4;pointer-events:none' : '';
+    const eqOpts = ['', ...fullEquipList].map(eq =>
+      `<option value="${esc(eq)}" ${eq === assignedEquip ? 'selected' : ''}>${esc(eq) || 'no equip'}</option>`
+    ).join('');
+    return `<div style="display:flex;align-items:center;gap:0.35rem;margin-bottom:0.2rem;${opac}">
+      <label style="display:flex;align-items:center;gap:0.3rem;flex:1;min-width:0">
+        <input type="checkbox" ${checked?'checked':''} onchange="_ppToggleEmployee('${dateStr}','${esc(e)}')" ${dis}>
+        <span class="pp-chip" style="font-size:0.75rem">${esc(e)}</span>
+      </label>
+      ${checked ? `<select style="font-size:0.7rem;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.1rem 0.25rem;max-width:120px;flex-shrink:0" onchange="_ppSetCrewEquip('${dateStr}','${esc(e)}',this.value)" ${dis}>${eqOpts}</select>` : ''}
+    </div>`;
   }).join('');
 
   const eqRows = fullEquipList.map(e => {
