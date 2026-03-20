@@ -1471,6 +1471,7 @@
   <button class="tab-btn"        data-tab="info">Project Dashboard</button>
   <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
+  <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
   <button class="tab-btn"        data-tab="supplier">Suppliers</button>
   <button class="tab-btn"        onclick="openModal()">&#9881; Manage Lists</button>
   <button class="tab-btn" data-tab="users" id="users-tab-btn" style="margin-left:auto;display:none">&#128100; Users</button>
@@ -1627,6 +1628,11 @@
   <div id="po-root"></div>
 </div>
 
+<!-- ══════════════ TRUCKING TAB ══════════════ -->
+<div class="tab-panel" id="tab-trucking">
+  <div id="trucking-root"></div>
+</div>
+
 <!-- ══════════════ USERS TAB (admin only) ══════════════ -->
 <div class="tab-panel" id="tab-users">
   <div id="users-root" style="padding:1.5rem;max-width:700px"></div>
@@ -1713,6 +1719,18 @@
   <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
     <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearPOFilter()">Clear</button>
     <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyPOFilter()">Apply</button>
+  </div>
+</div>
+
+<!-- Trucking column filter dropdown -->
+<div id="tr-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;flex-direction:column;">
+  <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+    <input id="trff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+  </div>
+  <div id="trff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+  <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+    <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearTRFilter()">Clear</button>
+    <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyTRFilter()">Apply</button>
   </div>
 </div>
 
@@ -2173,8 +2191,8 @@ const perm = (() => {
     canEdit:          ['admin', 'level3', 'level2'].includes(r),
     canDeleteProject: ['admin', 'level3'].includes(r),
     // tabs visible to this role (null = all)
-    visibleTabs: (r === 'level1') ? new Set(['info', 'po'])
-               : (r === 'level2') ? new Set(['home', 'schedule', 'info', 'po'])
+    visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'trucking'])
+               : (r === 'level2') ? new Set(['home', 'schedule', 'info', 'po', 'trucking'])
                : null,
   };
 })();
@@ -2303,6 +2321,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'info')     renderProjectInfoComputed();
     if (activeTab === 'supplier') renderSupplierTab();
     if (activeTab === 'po')       renderPOTab();
+    if (activeTab === 'trucking') renderTruckingTab();
     if (activeTab === 'users')    renderUsersTab();
     if (activeTab === 'schedule') renderScheduleTab();
   });
@@ -3377,6 +3396,25 @@ function nextPONumber() {
   });
   const next = nums.length ? Math.max(...nums) + 1 : 1;
   return 'PO-' + String(next).padStart(4, '0');
+}
+
+/* ── Trucking store ── */
+let truckingEntries = [];
+
+async function loadTruckingEntries() {
+  const saved = await apiGet('fct_trucking');
+  truckingEntries = Array.isArray(saved) ? saved : [];
+}
+
+function saveTruckingEntries() { apiPut('fct_trucking', truckingEntries); }
+
+function nextTRNumber() {
+  const nums = truckingEntries.map(tr => {
+    const m = (tr.tr_number || '').match(/^TR-(\d+)$/);
+    return m ? parseInt(m[1], 10) : 0;
+  });
+  const next = nums.length ? Math.max(...nums) + 1 : 1;
+  return 'TR-' + String(next).padStart(4, '0');
 }
 
 function togglePin(projId) {
@@ -4670,6 +4708,388 @@ document.getElementById('po-root').addEventListener('change', e => {
   savePurchaseOrders();
 });
 
+/* ── Trucking Tab ── */
+function addTR() {
+  truckingEntries.push({
+    id:              uid(),
+    tr_number:       nextTRNumber(),
+    driver:          '',
+    truck_type:      '',
+    project_id:      '',
+    date:            new Date().toISOString().slice(0, 10),
+    material_hauled: '',
+    loads:           '',
+    rate:            '',
+    status:          'pending',
+    notes:           '',
+    cost_code:       '',
+    sub_code:        '',
+  });
+  saveTruckingEntries();
+  renderTruckingTab();
+}
+
+function deleteTR(id) {
+  const tr = truckingEntries.find(t => t.id === id);
+  const oldProj = tr ? tr.project_id : '';
+  if (tr && tr.tr_row_id && oldProj) {
+    const proj = getProj(oldProj);
+    if (proj) {
+      proj.dailyRows = proj.dailyRows.filter(r => r.id !== tr.tr_row_id);
+      drDelete(tr.tr_row_id);
+      renderDailyTable(oldProj);
+    }
+  }
+  truckingEntries = truckingEntries.filter(t => t.id !== id);
+  saveTruckingEntries();
+  renderTruckingTab();
+}
+
+function _syncTRRowField(tr, field) {
+  if (!tr.project_id || !tr.tr_row_id) return;
+  const proj = getProj(tr.project_id);
+  if (!proj) return;
+  const r = proj.dailyRows.find(r => r.id === tr.tr_row_id);
+  if (!r) return;
+  const map = {
+    driver:          'employee',
+    truck_type:      'equipment',
+    date:            'date',
+    material_hauled: 'material',
+    rate:            'equip_unit_cost',
+    loads:           'equip_hours',
+    cost_code:       'cost_code',
+    sub_code:        'sub_code',
+  };
+  if (map[field]) r[map[field]] = tr[field] || '';
+  if (['loads', 'rate'].includes(field)) {
+    r.equip_unit_cost = String(parseFloat(tr.rate)  || 0);
+    r.equip_hours     = String(parseFloat(tr.loads) || 0);
+  }
+  drPutNow(r.id, r);
+  renderDailyTable(tr.project_id);
+}
+
+function _trSubCodeOpts(tr) {
+  if (!tr.project_id) return '<option value="">— pick project first —</option>';
+  const proj = getProj(tr.project_id);
+  if (!proj || !Array.isArray(proj.bidItems) || proj.bidItems.length === 0)
+    return '<option value="">— no bid items —</option>';
+  const current = (tr.cost_code || '') + '||' + (tr.sub_code || '');
+  const opts = proj.bidItems
+    .filter(b => b.cost_code || b.sub_code)
+    .slice().sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||'')))
+    .map(b => {
+      const v     = (b.cost_code || '') + '||' + (b.sub_code || '');
+      const label = [b.cost_code, b.sub_code].filter(Boolean).join(' / ')
+                    + (b.description ? ' — ' + b.description : '');
+      return `<option value="${esc(v)}" ${v === current ? 'selected' : ''}>${esc(label)}</option>`;
+    }).join('');
+  return `<option value="">— select —</option>` + opts;
+}
+
+/* ── Trucking filter state ── */
+let trFilters  = {};
+let trSearch   = '';
+let _trffField   = null;
+let _trffPending = null;
+
+function _trFieldVal(tr, field) {
+  if (field === 'project_id') {
+    const proj = projectsList.find(p => p.id === tr.project_id);
+    return proj ? (proj['project-name'] || 'Untitled') : '';
+  }
+  return String(tr[field] ?? '');
+}
+
+function applyTRFilters() {
+  const q = trSearch.trim().toLowerCase();
+  return truckingEntries.filter(tr => {
+    for (const [field, valueSet] of Object.entries(trFilters)) {
+      if (!valueSet || valueSet.size === 0) continue;
+      if (!valueSet.has(_trFieldVal(tr, field))) return false;
+    }
+    if (q) {
+      const proj = projectsList.find(p => p.id === tr.project_id);
+      const projName = proj ? (proj['project-name'] || '') : '';
+      const hay = [tr.tr_number, projName, tr.driver, tr.truck_type, tr.material_hauled, tr.status, tr.date].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function exportTRCSV() {
+  const rows = applyTRFilters();
+  const headers = ['TR #','Project','Driver','Truck Type','Material Hauled','Loads','Rate','Total','Date','Sub Code','Status','Notes'];
+  const escape = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const lines = [headers.map(escape).join(',')];
+  rows.forEach(tr => {
+    const proj = projectsList.find(p => p.id === tr.project_id);
+    const projName = proj ? (proj['project-name'] || '') : '';
+    const loads = parseFloat(tr.loads) || 0;
+    const rate  = parseFloat(tr.rate)  || 0;
+    lines.push([tr.tr_number, projName, tr.driver||'', tr.truck_type||'', tr.material_hauled||'', loads, rate.toFixed(2), (loads * rate).toFixed(2), tr.date||'', tr.sub_code||'', tr.status||'', tr.notes||''].map(escape).join(','));
+  });
+  const blob = new Blob([lines.join('\r\n')], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'trucking.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function openTRFilter(field, btn) {
+  _trffField = field;
+  const unique = [...new Set(truckingEntries.map(tr => _trFieldVal(tr, field)))].sort();
+  const active = trFilters[field] || null;
+  _trffPending = active ? new Set(active) : null;
+
+  const list = document.getElementById('trff-list');
+  const allChecked = !_trffPending;
+  list.innerHTML = `<label class="dff-item" id="trff-all-label">
+    <input type="checkbox" id="trff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="trff-val-cb" value="${esc(v)}" ${(!_trffPending || _trffPending.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  document.getElementById('trff-all').addEventListener('change', e => {
+    document.querySelectorAll('.trff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.trff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.trff-val-cb')].every(c => c.checked);
+    document.getElementById('trff-all').checked = all;
+  }));
+
+  document.getElementById('trff-search').value = '';
+  document.getElementById('trff-search').oninput = e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#trff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  const dd = document.getElementById('tr-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyTRFilter() {
+  const cbs = [...document.querySelectorAll('.trff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allChecked = document.getElementById('trff-all')?.checked;
+  if (allChecked || checked.length === cbs.length) {
+    delete trFilters[_trffField];
+  } else {
+    trFilters[_trffField] = new Set(checked);
+  }
+  document.getElementById('tr-filter-dd').style.display = 'none';
+  renderTruckingTab();
+}
+
+function clearTRFilter() {
+  delete trFilters[_trffField];
+  document.getElementById('tr-filter-dd').style.display = 'none';
+  renderTruckingTab();
+}
+
+function renderTruckingTab() {
+  const root = document.getElementById('trucking-root');
+  if (!root) return;
+
+  const searchWasFocused = document.activeElement?.classList?.contains('tr-global-search');
+
+  const thf = (label, key, right) => {
+    const active = trFilters[key] ? ' active' : '';
+    const align = right ? ';text-align:right' : '';
+    return `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${align}">
+      ${label} <button class="cfb trfb${active}" data-trf="${key}" title="Filter ${label}">▼</button>
+    </th>`;
+  };
+  const th = (label, right) =>
+    `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
+
+  const filteredTRs = applyTRFilters().slice().reverse();
+
+  const bodyHTML = truckingEntries.length === 0
+    ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No trucking entries yet. Click + New Entry to begin.</td></tr>`
+    : filteredTRs.length === 0
+    ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No trucking entries match the current filters.</td></tr>`
+    : filteredTRs.map(tr => {
+        const loads = parseFloat(tr.loads) || 0;
+        const rate  = parseFloat(tr.rate)  || 0;
+        const total = loads * rate;
+
+        const inp = (field, type = 'text', extra = '') =>
+          `<input type="${type}" value="${esc(String(tr[field] || ''))}"
+            data-tr-id="${tr.id}" data-tr-field="${field}"
+            style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0" ${extra}>`;
+
+        const sel = (field, opts) =>
+          `<select data-tr-id="${tr.id}" data-tr-field="${field}"
+            style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
+
+        const driverOpts = `<option value="">— select —</option>` +
+          lists.employees.slice().sort((a,b) => a.name.localeCompare(b.name)).map(e =>
+            `<option value="${esc(e.name)}" ${e.name === tr.driver ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
+
+        const truckOpts = `<option value="">— select —</option>` +
+          (lists.equipment || []).slice().sort((a,b) => (a.name||'').localeCompare(b.name||'')).map(eq =>
+            `<option value="${esc(eq.name)}" ${eq.name === tr.truck_type ? 'selected' : ''}>${esc(eq.name)}</option>`).join('');
+
+        const projOpts = `<option value="">— none —</option>` +
+          projectsList.slice().sort((a,b) => (a['project-name']||'').localeCompare(b['project-name']||'')).map(p =>
+            `<option value="${esc(p.id)}" ${p.id === tr.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
+
+        const statusOpts = ['pending', 'approved', 'invoiced'].map(s =>
+          `<option value="${s}" ${s === tr.status ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
+
+        const statusColor = tr.status === 'approved' ? '#86efac' : tr.status === 'invoiced' ? 'var(--muted)' : 'var(--yellow)';
+
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(tr.tr_number)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${sel('sub_code_sel', _trSubCodeOpts(tr))}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('driver', driverOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('truck_type', truckOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:150px">${inp('material_hauled', 'text', 'placeholder="Material hauled"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('loads', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:85px">${inp('rate', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="tr-tot-${tr.id}">$${fmt(total)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date', 'date')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('notes', 'text', 'placeholder="Notes"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:95px;color:${statusColor}">${sel('status', statusOpts)}</td>
+          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="trucking" data-tr-id="${tr.id}">&#10005;</button></td>` : '<td></td>'}
+        </tr>`;
+      }).join('');
+
+  const hasFilters = Object.keys(trFilters).length > 0 || trSearch;
+
+  root.innerHTML = `
+    <div style="padding:1.5rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem">
+        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Trucking</span>
+        <div style="display:flex;gap:0.5rem;align-items:center">
+          ${hasFilters ? `<button class="btn" onclick="trFilters={};trSearch='';renderTruckingTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
+          <button class="btn" onclick="exportTRCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#1d4ed8;color:#fff">&#8595; Export CSV</button>
+          ${perm.canEdit ? `<button class="btn btn-green" onclick="addTR()">+ New Entry</button>` : ''}
+        </div>
+      </div>
+      <input class="tr-global-search" type="text" value="${esc(trSearch)}" placeholder="&#128269; Search trucking entries…"
+        oninput="trSearch=this.value;renderTruckingTab()"
+        style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.82rem;padding:0.45rem 0.75rem;outline:none;box-sizing:border-box;margin-bottom:0.85rem">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1400px">
+          <thead>
+            <tr>
+              ${thf('TR #','tr_number')} ${thf('Project','project_id')} ${thf('Sub Code','sub_code')}
+              ${thf('Driver','driver')} ${thf('Truck Type','truck_type')} ${thf('Material Hauled','material_hauled')}
+              ${th('Loads',1)} ${th('Rate',1)} ${th('Total',1)}
+              ${thf('Date','date')} ${th('Notes')} ${thf('Status','status')}
+              <th style="width:36px;border-bottom:1px solid var(--border)"></th>
+            </tr>
+          </thead>
+          <tbody>${bodyHTML}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  if (searchWasFocused) {
+    const si = root.querySelector('.tr-global-search');
+    if (si) { si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
+  }
+}
+
+document.getElementById('trucking-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.trId, field = el.dataset.trField;
+  if (!id || !field) return;
+  const tr = truckingEntries.find(t => t.id === id);
+  if (!tr) return;
+  tr[field] = el.value;
+  saveTruckingEntries();
+  if (['loads', 'rate'].includes(field)) {
+    const loads = parseFloat(tr.loads) || 0;
+    const rate  = parseFloat(tr.rate)  || 0;
+    const totEl = document.getElementById('tr-tot-' + id);
+    if (totEl) totEl.textContent = '$' + fmt(loads * rate);
+  }
+  _syncTRRowField(tr, field);
+});
+
+document.getElementById('trucking-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.trId, field = el.dataset.trField;
+  if (!id || !field) return;
+  const tr = truckingEntries.find(t => t.id === id);
+  if (!tr) return;
+  const oldProj = tr.project_id;
+
+  if (field === 'sub_code_sel') {
+    const [cc, sc] = el.value.split('||');
+    tr.cost_code = cc || '';
+    tr.sub_code  = sc || '';
+    saveTruckingEntries();
+    _syncTRRowField(tr, 'cost_code');
+    _syncTRRowField(tr, 'sub_code');
+    return;
+  }
+
+  tr[field] = el.value;
+
+  if (field === 'project_id') {
+    // Remove auto-inserted row from old project
+    if (oldProj && tr.tr_row_id) {
+      const oldP = getProj(oldProj);
+      if (oldP) {
+        oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== tr.tr_row_id);
+        drDelete(tr.tr_row_id);
+        renderDailyTable(oldProj);
+      }
+    }
+    tr.tr_row_id = null;
+    tr.cost_code = '';
+    tr.sub_code  = '';
+
+    // Update sub_code dropdown for this row
+    const subCell = document.getElementById('tr-subcode-cell-' + tr.id);
+    if (subCell) {
+      const subSel = subCell.querySelector('select');
+      if (subSel) subSel.innerHTML = _trSubCodeOpts(tr);
+    }
+
+    // Insert new row into new project
+    if (tr.project_id) {
+      const newP = getProj(tr.project_id);
+      if (newP) {
+        const loads = parseFloat(tr.loads) || 0;
+        const rate  = parseFloat(tr.rate)  || 0;
+        const row = {
+          ...defaultDailyRow(),
+          id:              Date.now() + Math.random(),
+          date:            tr.date            || '',
+          employee:        tr.driver          || '',
+          equipment:       tr.truck_type      || '',
+          equip_unit_cost: String(rate),
+          equip_hours:     String(loads),
+          material:        tr.material_hauled || '',
+          cost_code:       tr.cost_code       || '',
+          sub_code:        tr.sub_code        || '',
+        };
+        newP.dailyRows.push(row);
+        tr.tr_row_id = row.id;
+        drPost(tr.project_id, row);
+        renderDailyTable(tr.project_id);
+      }
+    }
+  } else {
+    _syncTRRowField(tr, field);
+  }
+  saveTruckingEntries();
+});
+
 /* ── Supplier Tab ── */
 function renderSupplierTab() {
   const root = document.getElementById('supplier-root');
@@ -5909,6 +6329,22 @@ document.addEventListener('click', e => {
   if (!btn) return;
   e.stopPropagation();
   openPOFilter(btn.dataset.pof, btn);
+});
+
+// Trucking column filter handlers
+document.addEventListener('click', e => {
+  const dd = document.getElementById('tr-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('trfb')) {
+    dd.style.display = 'none';
+  }
+});
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.trfb');
+  if (!btn) return;
+  e.stopPropagation();
+  openTRFilter(btn.dataset.trf, btn);
 });
 
 let dailyFilters = {};      // { field: Set<string> }  — absent key = no filter
@@ -7240,6 +7676,8 @@ document.addEventListener('click', e => {
       renderDailyTable(projId);
     } else if (tab === 'po') {
       deletePO(btn.dataset.poId);
+    } else if (tab === 'trucking') {
+      deleteTR(btn.dataset.trId);
     } else if (tab === 'company-user') {
       deleteCompanyUser(parseInt(btn.dataset.userId));
     }
@@ -7379,6 +7817,7 @@ async function deleteCompanyUser(id) {
   await loadCostRows();
   await loadProjects();
   await loadPurchaseOrders();
+  await loadTruckingEntries();
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
   if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
   renderProjectDashboard();
@@ -7387,6 +7826,7 @@ async function deleteCompanyUser(id) {
     renderProjectInfoComputed();
   }
   if (activeTab === 'po') renderPOTab();
+  if (activeTab === 'trucking') renderTruckingTab();
   renderHeaderActions();
 })();
 
