@@ -49,6 +49,12 @@ app.all('/api/deadlines', require('./deadlines'));
 /** AI schedule analysis */
 app.post('/api/ai/schedule-analysis', require('./ai/schedule-analysis'));
 
+/** AI conflict resolution suggestions */
+app.post('/api/ai/conflict-resolve', require('./ai/conflict-resolve'));
+
+/** Weekly report — POST (UI-triggered) or GET (Vercel Cron) */
+app.all('/api/reports/weekly', require('./reports/weekly'));
+
 /** Liveness / health check */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
