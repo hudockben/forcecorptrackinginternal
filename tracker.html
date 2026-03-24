@@ -2373,6 +2373,19 @@ function renderHomeTab() {
   const thisWeek   = allDaily.filter(r => r.date >= weekAgo).length;
   const atRiskCt   = statusCounts['At Risk'] || 0;
 
+  // ── Budget variance alerts — projects where actual > bid * 1.10 ──
+  const overBudgetProjects = projectsList
+    .filter(p => {
+      const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+      const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+      return bid > 0 && actual > bid * 1.10;
+    })
+    .map(p => {
+      const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+      const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+      return { id: p.id, name: p['project-name'] || 'Untitled', pct: ((actual / bid - 1) * 100).toFixed(1), over: actual - bid };
+    });
+
   // ── Status bar widths ──
   const statusTotal = Object.values(statusCounts).reduce((a, b) => a + b, 0) || 1;
   const pActive   = (statusCounts.Active     / statusTotal * 100).toFixed(1);
@@ -2498,6 +2511,19 @@ function renderHomeTab() {
   <div class="home-layout">
   <div class="home-main">
     <p class="home-title">Overview</p>
+
+    ${overBudgetProjects.length ? `
+    <div style="background:rgba(239,68,68,0.08);border:1px solid var(--red);border-radius:6px;padding:0.65rem 0.9rem;margin-bottom:1rem">
+      <div style="font-weight:600;color:var(--red);margin-bottom:0.35rem;font-size:0.83rem">⚠ Budget Alert — ${overBudgetProjects.length} project${overBudgetProjects.length>1?'s':''} over budget by more than 10%</div>
+      ${overBudgetProjects.map(p => `
+        <div style="display:flex;align-items:center;gap:0.5rem;margin:0.18rem 0;font-size:0.81rem">
+          <span style="flex:1;color:var(--text)">${esc(p.name)}</span>
+          <span style="color:var(--red);font-weight:600">${p.pct}% over</span>
+          <span style="color:var(--muted);font-size:0.74rem">($${fmt(p.over)} excess)</span>
+          <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.15rem 0.5rem"
+            onclick="goToProject('${p.id}');document.querySelector('.tab-btn[data-tab=schedule]').click()">View Analysis ›</button>
+        </div>`).join('')}
+    </div>` : ''}
 
     <div class="stat-grid">
       <div class="stat-card blue">
@@ -8719,6 +8745,70 @@ function _ppGetConflicts() {
   return conflicts;
 }
 
+async function _ppAIResolveConflicts() {
+  const btn = document.querySelector('#pp-conflict-banner .btn');
+  const box = document.getElementById('pp-conflict-suggestions');
+  if (!btn || !box) return;
+
+  btn.disabled = true;
+  btn.textContent = '⚡ Analyzing…';
+  box.style.display = 'block';
+  box.innerHTML = '<div style="color:var(--muted);font-size:0.76rem">Getting AI suggestions…</div>';
+
+  const conflicts = _ppGetConflicts();
+  const proj      = getProj(_pp.projId);
+  const projName  = proj ? (proj['project-name'] || 'Project') : 'Project';
+
+  // Build payload: for each conflict day, list which cost code each double-booked employee is on
+  const conflictData = Object.entries(conflicts).map(([ds, emps]) => {
+    const assignments = [];
+    Object.entries(_pp.schedule).forEach(([biKey, days]) => {
+      const day = days[ds];
+      if (!day || day.noWork) return;
+      (day.employees || []).forEach(emp => {
+        if (emps.has(emp)) {
+          const [cc, sc] = biKey.split('||');
+          assignments.push({ employee: emp, costCode: cc, subCode: sc || '' });
+        }
+      });
+    });
+    return { date: ds, employees: [...emps], assignments };
+  });
+
+  try {
+    const r = await fetch('/api/ai/conflict-resolve', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
+      body:    JSON.stringify({ conflicts: conflictData, projectName: projName }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error((data.error || `Error ${r.status}`) + (data.detail ? ': ' + data.detail : ''));
+
+    const suggestions = data.suggestions || [];
+    if (!suggestions.length) {
+      box.innerHTML = '<div style="color:var(--muted);font-size:0.76rem">No suggestions returned.</div>';
+    } else {
+      box.innerHTML = suggestions.map(s => {
+        const dateLabel = new Date(s.date+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'});
+        const rows = (s.resolutions||[]).map(r =>
+          `<div style="margin:0.25rem 0;padding:0.3rem 0.5rem;background:rgba(0,0,0,0.2);border-radius:4px;font-size:0.76rem">
+            <strong style="color:var(--text)">${esc(r.employee)}</strong>
+            <span style="color:var(--green)"> → keep on ${esc(r.keepOn)}</span>
+            <span style="color:var(--muted)">, remove from ${esc(r.removeFrom)}</span>
+            ${r.reason ? `<div style="color:var(--muted);font-size:0.72rem;margin-top:0.15rem">${esc(r.reason)}</div>` : ''}
+          </div>`
+        ).join('');
+        return `<div style="margin-bottom:0.4rem"><span style="font-weight:600;font-size:0.76rem;color:var(--yellow)">${dateLabel}</span>${rows}</div>`;
+      }).join('');
+    }
+  } catch (err) {
+    box.innerHTML = `<div style="color:var(--red);font-size:0.76rem">AI error: ${esc(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⚡ AI Resolve';
+  }
+}
+
 function _ppProd(a) {
   const laborHours = a.labor_hours || 0;
   const doneQty = a.running_qty || 0;
@@ -8872,9 +8962,12 @@ function _ppRender() {
     const d = new Date(ds+'T12:00:00'); return d.getMonth()===_pp.month && d.getFullYear()===_pp.year;
   });
   const conflictBanner = conflictDays.length
-    ? `<div style="background:rgba(239,68,68,0.1);border:1px solid var(--red);border-radius:6px;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.78rem;color:var(--red)">
-        ⚠️ <strong>${conflictDays.length} scheduling conflict${conflictDays.length>1?'s':''}</strong> —
-        ${conflictDays.map(([ds,emps]) => `${new Date(ds+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}: ${[...emps].join(', ')}`).join(' · ')}
+    ? `<div id="pp-conflict-banner" style="background:rgba(239,68,68,0.1);border:1px solid var(--red);border-radius:6px;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.78rem;color:var(--red)">
+        <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
+          <span>⚠️ <strong>${conflictDays.length} scheduling conflict${conflictDays.length>1?'s':''}</strong> — ${conflictDays.map(([ds,emps]) => `${new Date(ds+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}: ${[...emps].join(', ')}`).join(' · ')}</span>
+          <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.55rem;margin-left:auto;white-space:nowrap;color:var(--text)" onclick="_ppAIResolveConflicts()">⚡ AI Resolve</button>
+        </div>
+        <div id="pp-conflict-suggestions" style="display:none;margin-top:0.55rem;color:var(--text)"></div>
       </div>` : '';
 
   // Side panel
