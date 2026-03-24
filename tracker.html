@@ -2680,47 +2680,11 @@ function renderHomeTab() {
       })()}
     </div>
 
-    <div class="widget-card">
-      <p class="home-section-title">Weekly Report</p>
-      <p style="font-size:0.78rem;color:var(--muted);margin:0 0 0.65rem">Email a weekly summary of costs, pacing, and deadlines to your team.</p>
-      <div style="display:flex;gap:0.4rem;align-items:center">
-        <input id="weekly-report-email" type="email" class="dl-input"
-          placeholder="Recipient email…"
-          style="flex:1;font-size:0.78rem"
-          onkeydown="if(event.key==='Enter')sendWeeklyReport()">
-        <button class="btn btn-blue" onclick="sendWeeklyReport()" style="font-size:0.78rem;white-space:nowrap">Send</button>
-      </div>
-      <div id="weekly-report-status" style="font-size:0.75rem;margin-top:0.4rem;min-height:1.1em"></div>
-    </div>
   </div><!-- /.home-sidebar -->
 
   </div><!-- /.home-layout -->
   `;
   loadDeadlines();
-}
-
-async function sendWeeklyReport() {
-  const emailInput  = document.getElementById('weekly-report-email');
-  const statusEl    = document.getElementById('weekly-report-status');
-  const email       = emailInput ? emailInput.value.trim() : '';
-  if (!email) {
-    if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = 'Enter a recipient email.'; }
-    return;
-  }
-  if (statusEl) { statusEl.style.color = 'var(--muted)'; statusEl.textContent = 'Sending…'; }
-  try {
-    const r = await fetch('/api/reports/weekly', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
-      body:    JSON.stringify({ email }),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || (data.detail ? data.error + ': ' + data.detail : `Error ${r.status}`));
-    if (statusEl) { statusEl.style.color = 'var(--green)'; statusEl.textContent = `Sent to ${data.sent}`; }
-    if (emailInput) emailInput.value = '';
-  } catch (err) {
-    if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = err.message; }
-  }
 }
 
 /* ═══════════════════════════════════════════
@@ -8819,7 +8783,7 @@ async function _ppAIResolveConflicts() {
       body:    JSON.stringify({ conflicts: conflictData, projectName: projName }),
     });
     const data = await r.json();
-    if (!r.ok) throw new Error(data.error || `Server error ${r.status}`);
+    if (!r.ok) throw new Error((data.error || `Server error ${r.status}`) + (data.detail ? ': ' + data.detail : ''));
 
     const suggestions = data.suggestions || [];
     if (!suggestions.length) {

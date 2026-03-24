@@ -6,11 +6,5 @@
     "api/**/*.js": {
       "includeFiles": "api/**"
     }
-  },
-  "crons": [
-    {
-      "path": "/api/reports/weekly",
-      "schedule": "0 7 * * 1"
-    }
-  ]
+  }
 }
