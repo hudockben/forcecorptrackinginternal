@@ -4,7 +4,7 @@
   "outputDirectory": ".",
   "functions": {
     "api/**/*.js": {
-      "includeFiles": "api/auth/**,api/admin/**,api/company/**,api/ai/**"
+      "includeFiles": "api/**"
     }
   }
 }
