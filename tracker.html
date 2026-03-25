@@ -616,30 +616,7 @@
     /* ── Home Tab ── */
     .home-wrap {
       padding: 1.5rem 1.25rem;
-      max-width: 1600px;
-    }
-    .home-layout {
-      display: grid;
-      grid-template-columns: 1fr 400px;
-      gap: 2rem;
-      align-items: start;
-    }
-    .home-main { min-width: 0; }
-    .home-sidebar {
-      position: sticky;
-      top: 1rem;
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-    }
-    .widget-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1rem 1.1rem;
-    }
-    .widget-card .home-section-title {
-      margin-top: 0;
+      max-width: 1400px;
     }
     .home-title {
       font-size: 0.7rem;
@@ -648,60 +625,218 @@
       color: var(--muted);
       margin-bottom: 1rem;
     }
-    .stat-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: 0.75rem;
-      margin-bottom: 2rem;
-    }
-    .stat-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 1rem 1.1rem;
-    }
-    .stat-card .stat-label {
-      font-size: 0.65rem;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 0.4rem;
-    }
-    .stat-card .stat-value {
-      font-size: 1.45rem;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-      color: var(--text);
-      line-height: 1.1;
-    }
-    .stat-card .stat-sub {
-      font-size: 0.7rem;
-      color: var(--muted);
-      margin-top: 0.2rem;
-    }
-    .stat-card.green  { border-color: #16a34a44; }
-    .stat-card.green .stat-value { color: var(--green); }
-    .stat-card.yellow { border-color: #eab30844; }
-    .stat-card.yellow .stat-value { color: var(--yellow); }
-    .stat-card.red    { border-color: #ef444444; }
-    .stat-card.red .stat-value { color: var(--red); }
-    .stat-card.blue   { border-color: #60a5fa44; }
-    .stat-card.blue .stat-value { color: var(--blue); }
-
     .home-section-title {
-      font-size: 0.7rem;
-      letter-spacing: 0.2em;
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
       text-transform: uppercase;
       color: var(--muted);
       margin-bottom: 0.75rem;
-      padding-bottom: 0.4rem;
+      padding-bottom: 0.35rem;
       border-bottom: 1px solid var(--border);
     }
+
+    /* ── Metric strip ── */
+    .home-metric-strip {
+      display: flex;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 2rem;
+      background: var(--surface);
+    }
+    .home-metric-item {
+      flex: 1;
+      padding: 1rem 1.25rem;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      min-width: 0;
+    }
+    .home-metric-item:last-child { border-right: none; }
+    .home-metric-item.clickable:hover { background: var(--surface2); cursor: pointer; }
+    .home-metric-label {
+      font-size: 0.58rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .home-metric-value {
+      font-size: 1.3rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      line-height: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .home-metric-sub {
+      font-size: 0.63rem;
+      color: var(--muted);
+    }
+
+    /* ── Project table ── */
+    .proj-table-wrap { overflow-x: auto; margin-bottom: 2rem; }
+    .proj-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+    .proj-table thead th {
+      font-size: 0.58rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-align: left;
+      padding: 0 0.75rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+      font-weight: 400;
+      white-space: nowrap;
+    }
+    .proj-table tbody tr {
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .proj-table tbody tr:last-child { border-bottom: none; }
+    .proj-table tbody tr:hover { background: var(--surface2); }
+    .proj-table td {
+      padding: 0.6rem 0.75rem;
+      vertical-align: middle;
+    }
+    .pt-name {
+      font-weight: 600;
+      color: var(--text);
+      font-size: 0.83rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 260px;
+    }
+    .pt-meta {
+      font-size: 0.63rem;
+      color: var(--muted);
+      margin-top: 0.1rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 260px;
+    }
+    .pt-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+    }
+    .pt-bar-track {
+      width: 72px;
+      height: 4px;
+      background: var(--surface2);
+      border-radius: 2px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .pt-bar-fill { height: 100%; border-radius: 2px; }
+    .pt-bar-pct {
+      font-size: 0.67rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      min-width: 2.4rem;
+    }
+    .pt-num {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+    .pin-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 0.9rem;
+      line-height: 1;
+      padding: 0.15rem 0.25rem;
+      border-radius: 3px;
+      transition: color 0.15s;
+    }
+    .pin-btn:hover { color: var(--green) !important; }
+
+    /* ── Activity feed ── */
+    .activity-feed { margin-bottom: 2rem; }
+    .activity-row {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.42rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.76rem;
+      min-width: 0;
+    }
+    .activity-row:last-child { border-bottom: none; }
+    .activity-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .activity-proj {
+      font-weight: 600;
+      color: var(--text);
+      flex-shrink: 0;
+      max-width: 170px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .activity-sep { color: var(--border); padding: 0 0.05rem; flex-shrink: 0; }
+    .activity-code {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 120px;
+      flex-shrink: 1;
+    }
+    .activity-emp {
+      color: #8ab8e0;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .activity-cost {
+      color: var(--green);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    .activity-date {
+      color: var(--muted);
+      font-size: 0.63rem;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    /* ── Bottom widget row ── */
+    .home-widgets-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    .widget-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem 1.1rem;
+    }
+    .widget-card .home-section-title { margin-top: 0; }
+
+    /* ── Status bar ── */
     .status-bar-wrap { margin-bottom: 2rem; }
     .status-bar {
       display: flex;
-      height: 8px;
-      border-radius: 4px;
+      height: 6px;
+      border-radius: 3px;
       overflow: hidden;
       background: var(--surface2);
       margin-bottom: 0.5rem;
@@ -712,10 +847,10 @@
     .sb-hold     { background: var(--yellow); }
     .sb-risk     { background: var(--red); }
     .status-legend {
-      display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: 0.72rem;
+      display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: 0.7rem;
     }
     .status-legend span { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); }
-    .status-legend .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .status-legend .dot { width: 7px; height: 7px; border-radius: 50%; }
 
     /* ── Company Board ── */
     .board-wrap { margin-bottom: 2rem; }
@@ -2507,78 +2642,194 @@ function renderHomeTab() {
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 8);
 
+  // ── Pre-compute project table rows ──
+  const projectTableRows = displayProjects.map(p => {
+    const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+    const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+    const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
+    const variance  = bid - actual;
+    const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    const varTxt    = !bid ? '—' : variance >= 0 ? `−$${fmt(Math.abs(variance))}` : `+$${fmt(Math.abs(variance))}`;
+    const barColor  = !bid ? 'var(--muted)' : actual/bid >= 1 ? 'var(--red)' : actual/bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
+    const name      = p['project-name'] || 'Untitled Project';
+    const meta      = [p['job-number'], p['client']].filter(Boolean).map(v => esc(v)).join(' · ');
+    const pmNote    = p['pm'] ? (meta ? ` · PM: ${esc(p['pm'])}` : `PM: ${esc(p['pm'])}`) : '';
+    const endDate   = p['end-date'];
+    const daysLeft  = endDate ? Math.ceil((new Date(endDate) - today) / (1000*60*60*24)) : null;
+    const atRisk    = (p.bidItems||[]).filter(b => b.status === 'At Risk').length;
+    const onHold    = (p.bidItems||[]).filter(b => b.status === 'On Hold').length;
+    const status    = p['status'] || '';
+    let statusCell;
+    if (atRisk > 0)       statusCell = `<span style="color:var(--red);font-size:0.7rem;font-weight:600">⚠ ${atRisk} At Risk</span>`;
+    else if (onHold > 0)  statusCell = `<span style="color:var(--yellow);font-size:0.7rem;font-weight:600">◼ ${onHold} On Hold</span>`;
+    else if (status === 'Active')   statusCell = `<span style="color:var(--green);font-size:0.7rem">Active</span>`;
+    else if (status === 'Complete') statusCell = `<span style="color:var(--blue);font-size:0.7rem">Complete</span>`;
+    else if (status)                statusCell = `<span style="color:var(--muted);font-size:0.7rem">${esc(status)}</span>`;
+    else                            statusCell = `<span style="color:var(--muted)">—</span>`;
+    let deadlineNote = '';
+    if (daysLeft !== null) {
+      if (daysLeft < 0)        deadlineNote = `<div style="font-size:0.61rem;color:var(--red);margin-top:0.1rem">${Math.abs(daysLeft)}d overdue</div>`;
+      else if (daysLeft <= 14) deadlineNote = `<div style="font-size:0.61rem;color:var(--yellow);margin-top:0.1rem">${daysLeft}d left</div>`;
+    }
+    return `<tr onclick="goToProject('${p.id}')">
+      <td>
+        <div class="pt-name">${esc(name)}</div>
+        ${(meta || pmNote) ? `<div class="pt-meta">${meta}${pmNote}</div>` : ''}
+      </td>
+      <td>${statusCell}${deadlineNote}</td>
+      <td>
+        <div class="pt-bar">
+          <div class="pt-bar-track"><div class="pt-bar-fill" style="width:${pct.toFixed(1)}%;background:${barColor}"></div></div>
+          <span class="pt-bar-pct">${pct.toFixed(0)}%</span>
+        </div>
+      </td>
+      <td class="pt-num" style="color:var(--green)">${bid ? '$'+fmt(bid) : '—'}</td>
+      <td class="pt-num">${actual ? '$'+fmt(actual) : '—'}</td>
+      <td class="pt-num" style="${varStyle}">${varTxt}</td>
+      <td>
+        <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
+          title="${p.pinned ? 'Unpin' : 'Pin to Home'}"
+          style="color:${p.pinned ? 'var(--green)' : 'var(--muted)'}">
+          ${p.pinned ? '★' : '☆'}
+        </button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  // ── Pre-compute activity feed rows ──
+  const activityRows = recent.map(row => {
+    const c        = calcDaily(row);
+    const proj     = projectsList.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
+    const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
+    const hasLabor = c.labor_cost > 0;
+    const hasEquip = c.equip_total > 0;
+    const hasMat   = (c.material_cost || 0) > 0;
+    const dotColor = hasLabor ? 'var(--green)' : hasEquip ? 'var(--blue)' : hasMat ? 'var(--yellow)' : '#555';
+    const hrs      = parseFloat(row.labor_hours) || 0;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const yest     = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const dateLabel = row.date === todayStr ? 'today' : row.date === yest ? 'yesterday' : (row.date || '—');
+    const parts = [
+      row.cost_code ? `<span class="activity-code">${esc(row.cost_code)}</span>` : '',
+      row.employee  ? `<span class="activity-emp">${esc(row.employee)}</span>` : '',
+      (row.sub_code && row.sub_code !== row.cost_code) ? `<span style="color:var(--muted);font-size:0.68rem">${esc(row.sub_code)}</span>` : '',
+      hrs > 0       ? `<span style="color:var(--muted);font-size:0.7rem">${hrs}h</span>` : '',
+    ].filter(Boolean).join('<span class="activity-sep">·</span>');
+    return `<div class="activity-row">
+      <span class="activity-dot" style="background:${dotColor}"></span>
+      <span class="activity-proj">${esc(projName)}</span>
+      ${parts}
+      ${c.total_cost > 0 ? `<span class="activity-cost">$${fmt(c.total_cost)}</span>` : ''}
+      <span class="activity-date">${dateLabel}</span>
+    </div>`;
+  }).join('');
+
+  // ── Pre-compute top cost codes ──
+  const costTotals = {};
+  allDaily.forEach(r => {
+    if (!r.date || r.date < weekAgo) return;
+    const key = r.cost_code ? esc(r.cost_code) : '(none)';
+    costTotals[key] = (costTotals[key] || 0) + calcDaily(r).total_cost;
+  });
+  const costSorted = Object.entries(costTotals).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const costMax    = costSorted.length ? costSorted[0][1] : 1;
+  const costBarsHtml = costSorted.length === 0
+    ? `<div class="home-empty" style="font-size:0.78rem">No entries this week.</div>`
+    : costSorted.map(([code, amt]) => {
+        const pct = costMax > 0 ? (amt / costMax) * 100 : 0;
+        return `<div class="cost-code-bar-row">
+          <div class="cost-code-bar-label">
+            <span class="cost-code-bar-name" title="${code}">${code}</span>
+            <span class="cost-code-bar-val">$${fmt(amt)}</span>
+          </div>
+          <div class="cost-code-bar-track">
+            <div class="cost-code-bar-fill" style="width:${pct.toFixed(1)}%"></div>
+          </div>
+        </div>`;
+      }).join('');
+
+  // ── Pre-compute deadline project options ──
+  const dlProjOptions = projectsList.map(p =>
+    `<option value="${esc(p['project-name']||'')}">${esc(p['project-name']||'Untitled')}</option>`
+  ).join('');
+
   document.getElementById('home-content').innerHTML = `
-  <div class="home-layout">
-  <div class="home-main">
-    <p class="home-title">Overview</p>
+  <div class="home-wrap">
 
     ${overBudgetProjects.length ? `
-    <div style="background:rgba(239,68,68,0.08);border:1px solid var(--red);border-radius:6px;padding:0.65rem 0.9rem;margin-bottom:1rem">
-      <div style="font-weight:600;color:var(--red);margin-bottom:0.35rem;font-size:0.83rem">⚠ Budget Alert — ${overBudgetProjects.length} project${overBudgetProjects.length>1?'s':''} over budget by more than 10%</div>
-      ${overBudgetProjects.map(p => `
-        <div style="display:flex;align-items:center;gap:0.5rem;margin:0.18rem 0;font-size:0.81rem">
-          <span style="flex:1;color:var(--text)">${esc(p.name)}</span>
-          <span style="color:var(--red);font-weight:600">${p.pct}% over</span>
-          <span style="color:var(--muted);font-size:0.74rem">($${fmt(p.over)} excess)</span>
-          <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.15rem 0.5rem"
-            onclick="goToProject('${p.id}');document.querySelector('.tab-btn[data-tab=schedule]').click()">View Analysis ›</button>
-        </div>`).join('')}
+    <div style="display:flex;align-items:center;gap:0.6rem;padding:0.45rem 0.9rem;background:rgba(239,68,68,0.06);border-left:3px solid var(--red);border-radius:0 4px 4px 0;margin-bottom:1.25rem;font-size:0.77rem;flex-wrap:wrap">
+      <span style="color:var(--red);font-weight:600;flex-shrink:0">⚠ Budget Alert</span>
+      <span style="color:var(--muted);flex:1">${overBudgetProjects.map(p => `${esc(p.name)} <strong style="color:var(--red)">+${p.pct}%</strong> <span style="font-size:0.68rem">($${fmt(p.over)} over)</span>`).join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</span>
     </div>` : ''}
 
-    <div class="stat-grid">
-      <div class="stat-card blue">
-        <div class="stat-label">Projects</div>
-        <div class="stat-value">${projectsList.length}</div>
-        <div class="stat-sub">in system</div>
+    <div class="home-metric-strip">
+      <div class="home-metric-item">
+        <span class="home-metric-label">Projects</span>
+        <span class="home-metric-value" style="color:var(--blue)">${projectsList.length}</span>
+        <span class="home-metric-sub">${statusCounts.Active || 0} active</span>
       </div>
-      <div class="stat-card green">
-        <div class="stat-label">Total Bid</div>
-        <div class="stat-value">$${fmt(totalBid, 0)}</div>
-        <div class="stat-sub">across all projects</div>
+      <div class="home-metric-item">
+        <span class="home-metric-label">Total Bid</span>
+        <span class="home-metric-value" style="color:var(--green)">$${fmt(totalBid, 0)}</span>
+        <span class="home-metric-sub">across all projects</span>
       </div>
-      <div class="stat-card ${overClass}">
-        <div class="stat-label">Total Actual</div>
-        <div class="stat-value">$${fmt(totalActual, 0)}</div>
-        <div class="stat-sub">${fmtPct(overallPct)} of bid</div>
+      <div class="home-metric-item">
+        <span class="home-metric-label">Actual Spend</span>
+        <span class="home-metric-value" style="color:var(--${overClass})">$${fmt(totalActual, 0)}</span>
+        <span class="home-metric-sub">${fmtPct(overallPct)} of bid</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-label">Projected Cost</div>
-        <div class="stat-value">$${fmt(totalProjected, 0)}</div>
-        <div class="stat-sub">at current rates</div>
+      <div class="home-metric-item">
+        <span class="home-metric-label">Projected</span>
+        <span class="home-metric-value">$${fmt(totalProjected, 0)}</span>
+        <span class="home-metric-sub">at current rates</span>
       </div>
-      <div class="stat-card ${openPOs > 0 ? 'yellow' : ''}" ${openPOs > 0 ? `onclick="poFilters={status:new Set(['pending'])};document.querySelector('.tab-btn[data-tab=po]').click()" style="cursor:pointer"` : ''}>
-        <div class="stat-label">Open POs</div>
-        <div class="stat-value">${openPOs}</div>
-        <div class="stat-sub">pending approval</div>
+      <div class="home-metric-item${openPOs > 0 ? ' clickable' : ''}"
+        ${openPOs > 0 ? `onclick="poFilters={status:new Set(['pending'])};document.querySelector('.tab-btn[data-tab=po]').click()"` : ''}>
+        <span class="home-metric-label">Open POs</span>
+        <span class="home-metric-value"${openPOs > 0 ? ' style="color:var(--yellow)"' : ''}>${openPOs}</span>
+        <span class="home-metric-sub">pending approval</span>
       </div>
-      <div class="stat-card ${atRiskCt > 0 ? 'red' : ''}">
-        <div class="stat-label">${atRiskCt > 0 ? 'At-Risk Items' : 'This Week'}</div>
-        <div class="stat-value">${atRiskCt > 0 ? atRiskCt : thisWeek}</div>
-        <div class="stat-sub">${atRiskCt > 0 ? 'need attention' : 'daily entries (7d)'}</div>
+      <div class="home-metric-item">
+        <span class="home-metric-label">${atRiskCt > 0 ? 'At Risk' : 'This Week'}</span>
+        <span class="home-metric-value"${atRiskCt > 0 ? ' style="color:var(--red)"' : ''}>${atRiskCt > 0 ? atRiskCt : thisWeek}</span>
+        <span class="home-metric-sub">${atRiskCt > 0 ? 'items need attention' : 'daily entries'}</span>
       </div>
     </div>
 
-    <p class="home-section-title">Projects <span style="font-size:0.7rem;color:var(--muted);font-weight:400">(${titleDetail})</span></p>
-    <div class="proj-home-grid">${projectCards}</div>
-    ${hiddenNonPinned > 0 ? `<p style="text-align:center;margin:0.5rem 0 1.5rem;font-size:0.8rem;color:var(--muted)">${hiddenNonPinned} more — <a href="#" style="color:var(--green)" onclick="document.querySelector('.tab-btn[data-tab=info]').click();return false;">View all in Project Dashboard</a></p>` : ''}
+    <p class="home-section-title">Projects <span style="font-weight:400">(${titleDetail})</span></p>
+    ${projectsList.length === 0
+      ? `<div class="home-empty">No projects yet. Go to Project Dashboard to create one.</div>`
+      : `<div class="proj-table-wrap">
+          <table class="proj-table">
+            <thead><tr>
+              <th>Project</th>
+              <th>Status</th>
+              <th>Progress</th>
+              <th>Bid</th>
+              <th>Actual</th>
+              <th>Variance</th>
+              <th></th>
+            </tr></thead>
+            <tbody>${projectTableRows}</tbody>
+          </table>
+        </div>`
+    }
+    ${hiddenNonPinned > 0 ? `<p style="text-align:center;margin:-0.75rem 0 1.75rem;font-size:0.78rem;color:var(--muted)">${hiddenNonPinned} more — <a href="#" style="color:var(--green)" onclick="document.querySelector('.tab-btn[data-tab=info]').click();return false;">View all in Project Dashboard</a></p>` : ''}
 
     ${alertRows.length > 0 ? `
     <p class="home-section-title">Items Needing Attention</p>
     <table class="recent-table" style="margin-bottom:2rem">
-      <thead><tr>
-        <th>Cost Code</th><th>Sub Code</th><th>Status</th>
-      </tr></thead>
+      <thead><tr><th>Cost Code</th><th>Sub Code</th><th>Status</th></tr></thead>
       <tbody>
-        ${alertRows.map(r => `
-          <tr>
-            <td>${esc(r.cost_code) || '—'}</td>
-            <td>${esc(r.sub_code) || '—'}</td>
-            <td><span style="color:${r.status === 'At Risk' ? 'var(--red)' : 'var(--yellow)'};font-weight:600">${r.status}</span></td>
-          </tr>`).join('')}
+        ${alertRows.map(r => `<tr>
+          <td>${esc(r.cost_code) || '—'}</td>
+          <td>${esc(r.sub_code) || '—'}</td>
+          <td><span style="color:${r.status === 'At Risk' ? 'var(--red)' : 'var(--yellow)'};font-weight:600">${r.status}</span></td>
+        </tr>`).join('')}
       </tbody>
     </table>` : ''}
 
-    <p class="home-section-title">Status Breakdown — Cost Items</p>
+    <p class="home-section-title">Status Breakdown</p>
     <div class="status-bar-wrap">
       <div class="status-bar">
         <div class="status-bar-seg sb-active"   style="width:${pActive}%"></div>
@@ -2597,91 +2848,32 @@ function renderHomeTab() {
     <p class="home-section-title">Activity Log</p>
     ${recent.length === 0
       ? `<div class="home-empty">No daily entries yet. Open a project in Project Dashboard to add daily records.</div>`
-      : `<div class="audit-log">
-          ${recent.map(row => {
-            const c = calcDaily(row);
-            const proj = projectsList.find(p => (p.dailyRows||[]).some(r => r.id === row.id));
-            const projName = proj ? (proj['project-name'] || 'Untitled') : '—';
-            const hasLabor = c.labor_cost > 0;
-            const hasEquip = c.equip_total > 0;
-            const hasMat   = (c.material_cost || 0) > 0;
-            const dotColor = hasLabor ? 'var(--green)' : hasEquip ? 'var(--blue)' : hasMat ? 'var(--yellow)' : '#555';
-            const tags = [row.sub_code, row.field_type].filter(Boolean);
-            return `<div class="audit-row">
-              <div class="audit-dot-col">
-                <div class="audit-dot" style="background:${dotColor}"></div>
-                <div class="audit-line"></div>
-              </div>
-              <div class="audit-body">
-                <div class="audit-header">
-                  <span class="audit-proj">${esc(projName)}</span>
-                  <span class="audit-date">${row.date || '—'}</span>
-                </div>
-                <div class="audit-code">${esc(row.cost_code) || '(no cost code)'}</div>
-                ${(tags.length || row.employee) ? `<div class="audit-tags">
-                  ${row.employee ? `<span class="audit-tag audit-tag-emp">${esc(row.employee)}</span>` : ''}
-                  ${tags.map(t => `<span class="audit-tag">${esc(t)}</span>`).join('')}
-                </div>` : ''}
-                <div class="audit-costs">
-                  ${hasLabor ? `<span class="audit-cost-pill audit-pill-labor">Labor $${fmt(c.labor_cost)}</span>` : ''}
-                  ${hasEquip ? `<span class="audit-cost-pill audit-pill-equip">Equip $${fmt(c.equip_total)}</span>` : ''}
-                  ${hasMat   ? `<span class="audit-cost-pill audit-pill-mat">Mat $${fmt(c.material_cost)}</span>` : ''}
-                  ${c.total_cost > 0 ? `<span class="audit-cost-pill audit-pill-total">$${fmt(c.total_cost)}</span>` : ''}
-                </div>
-              </div>
-            </div>`;
-          }).join('')}
-        </div>`
+      : `<div class="activity-feed">${activityRows}</div>`
     }
-  </div><!-- /.home-main -->
 
-  <div class="home-sidebar">
-    <div class="widget-card">
-      <p class="home-section-title">Upcoming Deadlines</p>
-      <div class="dl-compose">
-        <input  id="dl-input"   class="dl-input"  type="text"  placeholder="Note or description…">
-        <div class="dl-compose-row">
-          <input  id="dl-date"  class="dl-date-input" type="date" title="Deadline date">
-          <select id="dl-proj"  class="dl-proj-select">
-            <option value="">— Project —</option>
-            ${projectsList.map(p => `<option value="${esc(p['project-name']||'')}">${esc(p['project-name']||'Untitled')}</option>`).join('')}
-          </select>
+    <div class="home-widgets-row">
+      <div class="widget-card">
+        <p class="home-section-title">Upcoming Deadlines</p>
+        <div class="dl-compose">
+          <input id="dl-input" class="dl-input" type="text" placeholder="Note or description…">
+          <div class="dl-compose-row">
+            <input id="dl-date" class="dl-date-input" type="date" title="Deadline date">
+            <select id="dl-proj" class="dl-proj-select">
+              <option value="">— Project —</option>
+              ${dlProjOptions}
+            </select>
+          </div>
+          <button class="btn btn-green dl-post-btn" onclick="deadlinePost()">Post</button>
         </div>
-        <button class="btn btn-green dl-post-btn" onclick="deadlinePost()">Post</button>
+        <div id="deadline-posts"><div class="home-empty" style="font-size:0.78rem">Loading…</div></div>
       </div>
-      <div id="deadline-posts"><div class="home-empty" style="font-size:0.78rem">Loading…</div></div>
+      <div class="widget-card">
+        <p class="home-section-title">Top Cost Codes — This Week</p>
+        ${costBarsHtml}
+      </div>
     </div>
 
-    <div class="widget-card">
-      <p class="home-section-title">Top Cost Codes — This Week</p>
-      ${(() => {
-        const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        const totals = {};
-        allDaily.forEach(r => {
-          if (!r.date || r.date < weekAgo) return;
-          const key = r.cost_code ? esc(r.cost_code) : '(none)';
-          totals[key] = (totals[key] || 0) + calcDaily(r).total_cost;
-        });
-        const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 6);
-        if (!sorted.length) return `<div class="home-empty" style="font-size:0.78rem">No entries this week.</div>`;
-        const max = sorted[0][1];
-        return sorted.map(([code, amt]) => {
-          const pct = max > 0 ? (amt / max) * 100 : 0;
-          return `<div class="cost-code-bar-row">
-            <div class="cost-code-bar-label">
-              <span class="cost-code-bar-name" title="${code}">${code}</span>
-              <span class="cost-code-bar-val">$${fmt(amt)}</span>
-            </div>
-            <div class="cost-code-bar-track">
-              <div class="cost-code-bar-fill" style="width:${pct.toFixed(1)}%"></div>
-            </div>
-          </div>`;
-        }).join('');
-      })()}
-    </div>
-  </div><!-- /.home-sidebar -->
-
-  </div><!-- /.home-layout -->
+  </div><!-- /.home-wrap -->
   `;
   loadDeadlines();
 }
