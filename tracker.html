@@ -2650,6 +2650,16 @@ function renderHomeTab() {
     const variance  = bid - actual;
     const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
     const varTxt    = !bid ? '—' : variance >= 0 ? `−$${fmt(Math.abs(variance))}` : `+$${fmt(Math.abs(variance))}`;
+    const isComplete    = (p['status'] || '').toLowerCase() === 'complete';
+    const bidQtyTotal   = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0), 0);
+    const actQtyTotal   = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
+    const projCost      = isComplete ? actual
+      : (actQtyTotal > 0 && bidQtyTotal > 0) ? (actual / actQtyTotal) * bidQtyTotal : bid;
+    const projTxt       = bid > 0 ? '$' + fmt(projCost) : '—';
+    const projStyle     = !bid ? 'color:var(--muted)'
+      : projCost > bid ? 'color:var(--red)'
+      : projCost > bid * 0.85 ? 'color:var(--yellow)'
+      : 'color:var(--green)';
     const barColor  = !bid ? 'var(--muted)' : actual/bid >= 1 ? 'var(--red)' : actual/bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
     const name      = p['project-name'] || 'Untitled Project';
     const meta      = [p['job-number'], p['client']].filter(Boolean).map(v => esc(v)).join(' · ');
@@ -2685,6 +2695,7 @@ function renderHomeTab() {
       </td>
       <td class="pt-num" style="color:var(--green)">${bid ? '$'+fmt(bid) : '—'}</td>
       <td class="pt-num">${actual ? '$'+fmt(actual) : '—'}</td>
+      <td class="pt-num" style="${projStyle}">${projTxt}</td>
       <td class="pt-num" style="${varStyle}">${varTxt}</td>
       <td>
         <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
@@ -2807,6 +2818,7 @@ function renderHomeTab() {
               <th>Progress</th>
               <th>Bid</th>
               <th>Actual</th>
+              <th>Projected</th>
               <th>Variance</th>
               <th></th>
             </tr></thead>
