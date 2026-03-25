@@ -6,28 +6,21 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='%230a0f1e' stroke='%2322c55e' stroke-width='6'/><circle cx='50' cy='50' r='12' fill='%2322c55e'/><line x1='50' y1='12' x2='50' y2='38' stroke='%2300dcff' stroke-width='4' stroke-linecap='round'/><line x1='50' y1='62' x2='50' y2='88' stroke='%2300dcff' stroke-width='4' stroke-linecap='round'/><line x1='12' y1='50' x2='38' y2='50' stroke='%238b5cf6' stroke-width='4' stroke-linecap='round'/><line x1='62' y1='50' x2='88' y2='50' stroke='%238b5cf6' stroke-width='4' stroke-linecap='round'/></svg>">
   <title>DataWatch — Sign In</title>
   <style>
-    *, *::before, *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       min-height: 100vh;
       display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      background: #2d3436;
+      background: #080a0e;
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      color: #1a1a1a;
+      color: #e2e8f0;
       overflow: hidden;
     }
 
-    .background {
+    .bg-base {
       position: fixed;
       inset: 0;
-      background: radial-gradient(ellipse at 50% 50%, #3a3f42 0%, #2d3436 55%, #22282a 100%);
+      background: radial-gradient(ellipse at 32% 50%, #0b160d 0%, #080a0e 65%);
       z-index: 0;
     }
 
@@ -38,161 +31,155 @@
       pointer-events: none;
     }
 
-    .container {
+    /* ── Split layout ── */
+    .page {
       position: relative;
       z-index: 1;
+      display: flex;
       width: 100%;
-      max-width: 400px;
-      padding: 0 1.5rem;
+      min-height: 100vh;
+    }
+
+    /* ── Left brand panel ── */
+    .brand-panel {
+      flex: 1;
       display: flex;
       flex-direction: column;
+      justify-content: center;
+      padding: 3rem 4rem 3rem 5rem;
+      background: linear-gradient(to right, rgba(8,10,14,0.65) 0%, rgba(8,10,14,0.15) 100%);
+      min-width: 0;
+    }
+
+    .brand-mark {
+      display: flex;
       align-items: center;
-      gap: 2rem;
+      gap: 0.65rem;
+      margin-bottom: 3rem;
     }
 
-    .logo-wrap {
-      text-align: center;
+    .brand-mark svg {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
     }
 
-    .logo-name {
-      font-size: 2rem;
-      font-weight: 800;
-      letter-spacing: 0.3em;
+    .brand-mark-name {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.22em;
       text-transform: uppercase;
-      background: linear-gradient(135deg, #22c55e 0%, #4ade80 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-      filter: drop-shadow(0 0 6px rgba(34, 197, 94, 0.4));
+      color: #22c55e;
+    }
+
+    .brand-headline {
+      font-size: clamp(2rem, 3.5vw, 3rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.15;
+      color: #f1f5f9;
+      margin-bottom: 1.25rem;
+    }
+
+    .brand-sub {
+      font-size: 0.9rem;
+      color: #475569;
+      line-height: 1.6;
+      max-width: 360px;
+      margin-bottom: 2.5rem;
+    }
+
+    .brand-features {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+
+    .brand-features li {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      font-size: 0.8rem;
+      color: #334155;
+      letter-spacing: 0.01em;
+    }
+
+    .brand-features li .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #22c55e;
+      flex-shrink: 0;
+      opacity: 0.7;
+    }
+
+    /* ── Right form panel ── */
+    .form-panel {
+      width: 400px;
+      flex-shrink: 0;
+      background: rgba(9, 11, 16, 0.94);
+      border-left: 1px solid #141720;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 3.5rem 2.75rem;
+      backdrop-filter: blur(10px);
+    }
+
+    .form-eyebrow {
+      font-size: 0.58rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: #2d3550;
       margin-bottom: 0.5rem;
     }
 
-    .logo-title {
-      font-size: clamp(1.8rem, 5vw, 2.6rem);
+    .form-heading {
+      font-size: 1.25rem;
       font-weight: 700;
-      letter-spacing: -0.02em;
-      line-height: 1.15;
-      background: linear-gradient(135deg, #e2e8f0 0%, #ffffff 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-      margin-top: 0.4rem;
-    }
-
-    .card {
-      width: 100%;
-      background: #0b1f0d;
-      border: 1px solid #1e4a23;
-      border-radius: 8px;
-      padding: 2rem;
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
-      box-shadow:
-        0 0 40px rgba(34, 197, 94, 0.18),
-        0 0 90px rgba(34, 197, 94, 0.08),
-        0 8px 32px rgba(0, 0, 0, 0.5);
-    }
-
-    .card-title {
-      font-size: 0.7rem;
-      letter-spacing: 0.2em;
-      text-transform: uppercase;
-      color: #94a3b8;
-      text-align: center;
+      color: #e2e8f0;
+      margin-bottom: 2.25rem;
+      letter-spacing: -0.01em;
     }
 
     .field {
       display: flex;
       flex-direction: column;
-      gap: 0.4rem;
+      gap: 0.35rem;
+      margin-bottom: 1rem;
     }
 
     label {
-      font-size: 0.75rem;
+      font-size: 0.65rem;
       font-weight: 600;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.09em;
       text-transform: uppercase;
-      color: #888;
+      color: #3d4f6a;
     }
 
     input {
       width: 100%;
-      padding: 0.65rem 0.85rem;
-      background: #081408;
-      border: 1px solid #1a3d1e;
+      padding: 0.65rem 0.8rem;
+      background: #0c0e14;
+      border: 1px solid #1a1e2b;
       border-radius: 4px;
-      color: #e0e0e0;
-      font-size: 0.9rem;
+      color: #d1d5db;
+      font-size: 0.875rem;
       font-family: inherit;
-      transition: border-color 0.15s;
+      transition: border-color 0.15s, background 0.15s;
       outline: none;
     }
 
     input:focus {
       border-color: #22c55e;
+      background: #0e1016;
     }
 
-    input::placeholder {
-      color: #444;
-    }
+    input::placeholder { color: #222736; }
 
-    .submit-btn {
-      width: 100%;
-      padding: 0.75rem;
-      font-size: 0.85rem;
-      font-weight: 600;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: #fff;
-      background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s;
-      box-shadow: 0 0 20px rgba(22, 163, 74, 0.3);
-      margin-top: 0.25rem;
-    }
-
-    .submit-btn:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 24px rgba(22, 163, 74, 0.5);
-    }
-
-    .submit-btn:active:not(:disabled) {
-      transform: translateY(0);
-    }
-
-    .submit-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    .error-msg {
-      font-size: 0.8rem;
-      color: #ef4444;
-      text-align: center;
-      min-height: 1.2em;
-      display: none;
-    }
-
-    .error-msg.visible {
-      display: block;
-    }
-
-    .tagline {
-      font-size: 0.8rem;
-      color: #94a3b8;
-      text-align: center;
-    }
-
-    .pw-wrap {
-      position: relative;
-    }
-
-    .pw-wrap input {
-      padding-right: 2.6rem;
-    }
+    .pw-wrap { position: relative; }
+    .pw-wrap input { padding-right: 2.5rem; }
 
     .pw-toggle {
       position: absolute;
@@ -203,124 +190,170 @@
       border: none;
       padding: 0;
       cursor: pointer;
-      color: #555;
+      color: #2d3550;
       display: flex;
       align-items: center;
       transition: color 0.15s;
     }
+    .pw-toggle:hover { color: #22c55e; }
+    .pw-toggle svg { width: 16px; height: 16px; pointer-events: none; }
 
-    .pw-toggle:hover {
-      color: #22c55e;
+    .error-msg {
+      font-size: 0.75rem;
+      color: #ef4444;
+      min-height: 1em;
+      display: none;
+      margin-bottom: 0.25rem;
+    }
+    .error-msg.visible { display: block; }
+
+    .submit-btn {
+      width: 100%;
+      padding: 0.72rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #fff;
+      background: #16a34a;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      margin-top: 0.5rem;
+    }
+    .submit-btn:hover:not(:disabled) { background: #15803d; transform: translateY(-1px); }
+    .submit-btn:active:not(:disabled) { transform: translateY(0); }
+    .submit-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .form-footer {
+      margin-top: 2.5rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid #0f1118;
+      font-size: 0.65rem;
+      color: #1e2435;
+      letter-spacing: 0.04em;
     }
 
-    .pw-toggle svg {
-      width: 18px;
-      height: 18px;
-      pointer-events: none;
+    /* ── Mobile: stack, hide brand panel ── */
+    @media (max-width: 680px) {
+      .page { flex-direction: column; }
+      .brand-panel { display: none; }
+      .form-panel {
+        width: 100%;
+        border-left: none;
+        padding: 2.5rem 1.75rem;
+        justify-content: center;
+        min-height: 100vh;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="background"></div>
+  <div class="bg-base"></div>
   <canvas id="bgCanvas"></canvas>
 
-  <main class="container">
-    <div class="logo-wrap">
-      <div class="logo-name">DataWatch</div>
-      <div class="logo-title">Track. Analyze.<br>Optimize.</div>
+  <div class="page">
+
+    <!-- ── Left: Brand ── -->
+    <div class="brand-panel">
+      <div class="brand-mark">
+        <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="20" cy="20" r="16" stroke="#22c55e" stroke-width="1.5" opacity="0.6"/>
+          <circle cx="20" cy="20" r="5" fill="#22c55e" opacity="0.9"/>
+          <line x1="20" y1="4"  x2="20" y2="15" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="20" y1="25" x2="20" y2="36" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="4"  y1="20" x2="15" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="25" y1="20" x2="36" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+        </svg>
+        <span class="brand-mark-name">DataWatch</span>
+      </div>
+
+      <div class="brand-headline">Track. Analyze.<br>Optimize.</div>
+      <div class="brand-sub">Real-time workforce cost tracking and analysis for modern construction operations.</div>
+
+      <ul class="brand-features">
+        <li><span class="dot"></span>Daily cost entry across all projects</li>
+        <li><span class="dot"></span>Budget vs. actual variance analysis</li>
+        <li><span class="dot"></span>AI-powered scheduling & conflict resolution</li>
+        <li><span class="dot"></span>Purchase order management</li>
+        <li><span class="dot"></span>Projection planner & EAC forecasting</li>
+      </ul>
     </div>
 
-    <div class="card">
-      <div class="card-title">Sign In to Your Account</div>
+    <!-- ── Right: Form ── -->
+    <div class="form-panel">
+      <div class="form-eyebrow">Workforce Intelligence Platform</div>
+      <div class="form-heading">Sign in</div>
 
       <form id="loginForm" novalidate>
-        <div style="display:flex;flex-direction:column;gap:1rem;">
-          <div class="field">
-            <label for="companyCode">Company Code</label>
-            <input
-              id="companyCode"
-              type="text"
-              placeholder="e.g. ACME"
-              autocomplete="organization"
-              autocapitalize="characters"
-              spellcheck="false"
-              required
-            />
-          </div>
-
-          <div class="field">
-            <label for="username">Username</label>
-            <input
-              id="username"
-              type="text"
-              placeholder="your username"
-              autocomplete="username"
-              spellcheck="false"
-              required
-            />
-          </div>
-
-          <div class="field">
-            <label for="password">Password</label>
-            <div class="pw-wrap">
-              <input
-                id="password"
-                type="password"
-                placeholder="••••••••"
-                autocomplete="current-password"
-                required
-              />
-              <button type="button" class="pw-toggle" id="pwToggle" aria-label="Toggle password visibility">
-                <!-- eye icon (visible) -->
-                <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M1 12S5 5 12 5s11 7 11 7-4 7-11 7S1 12 1 12z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </svg>
-                <!-- eye-off icon (hidden) -->
-                <svg id="eyeClosed" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
-                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94"/>
-                  <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-                  <line x1="1" y1="1" x2="23" y2="23"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          <div class="error-msg" id="errorMsg"></div>
-
-          <button type="submit" class="submit-btn" id="submitBtn">Sign In</button>
+        <div class="field">
+          <label for="companyCode">Company Code</label>
+          <input id="companyCode" type="text" placeholder="e.g. ACME"
+            autocomplete="organization" autocapitalize="characters" spellcheck="false" required />
         </div>
+
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" type="text" placeholder="your username"
+            autocomplete="username" spellcheck="false" required />
+        </div>
+
+        <div class="field">
+          <label for="password">Password</label>
+          <div class="pw-wrap">
+            <input id="password" type="password" placeholder="••••••••"
+              autocomplete="current-password" required />
+            <button type="button" class="pw-toggle" id="pwToggle" aria-label="Toggle password visibility">
+              <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12S5 5 12 5s11 7 11 7-4 7-11 7S1 12 1 12z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              <svg id="eyeClosed" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                style="display:none">
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94"/>
+                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                <line x1="1" y1="1" x2="23" y2="23"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="error-msg" id="errorMsg"></div>
+
+        <button type="submit" class="submit-btn" id="submitBtn">Sign In</button>
       </form>
+
+      <div class="form-footer">© DataWatch · Secure access · All rights reserved</div>
     </div>
 
-    <div class="tagline">Real-time workforce intelligence for the modern enterprise.</div>
-  </main>
+  </div>
 
   <script>
-    // ── Microchip animated background ─────────────────────────────────────
+    // ── PCB animated background ────────────────────────────────────────────
     (function () {
       const canvas = document.getElementById('bgCanvas');
       const ctx    = canvas.getContext('2d');
       let W, H, cx, cy;
 
-      // Color palette [r, g, b]
       const COLS = [
-        [34,  197, 94 ],  // green
-        [0,   220, 255],  // cyan
-        [139, 92,  246],  // violet
-        [251, 191, 36 ],  // amber
+        [34,  197, 94 ],
+        [0,   220, 255],
+        [139, 92,  246],
+        [251, 191, 36 ],
       ];
 
-      const CW   = 160;  // chip width  px
-      const CH   = 160;  // chip height px
-      const PINS = 5;    // pins per side
-      const STUB = 14;   // pin stub length px
+      const CW   = 140;
+      const CH   = 140;
+      const PINS = 5;
+      const STUB = 12;
 
-      let traces = [];   // { pts:[[x,y],...], col:[r,g,b], lens:[], total }
-      let pulses = [];   // { ti, t, speed, dir }
+      let traces = [];
+      let pulses = [];
       let frame  = 0;
 
-      /* ── Build trace paths ──────────────────────────────────────────── */
       function buildTraces() {
         traces = [];
         const L = cx - CW/2, R = cx + CW/2;
@@ -339,37 +372,32 @@
           traces.push({ pts, col: COLS[ci % 4], lens, total });
         }
 
-        // Top pins → screen top
         for (let i = 0; i < PINS; i++) {
           const px = L + hgap * (i + 1);
-          const ky = T - STUB - 22 - i * 15;
-          const ex = px + (i - 2) * 78;
+          const ky = T - STUB - 18 - i * 14;
+          const ex = px + (i - 2) * 72;
           add([[px, T - STUB], [px, ky], [ex, ky], [ex, -10]], i % 4);
         }
-        // Bottom pins → screen bottom
         for (let i = 0; i < PINS; i++) {
           const px = L + hgap * (i + 1);
-          const ky = B + STUB + 22 + i * 15;
-          const ex = px - (i - 2) * 78;
+          const ky = B + STUB + 18 + i * 14;
+          const ex = px - (i - 2) * 72;
           add([[px, B + STUB], [px, ky], [ex, ky], [ex, H + 10]], (i + 1) % 4);
         }
-        // Left pins → screen left
         for (let i = 0; i < PINS; i++) {
           const py = T + vgap * (i + 1);
-          const kx = L - STUB - 22 - i * 15;
-          const ey = py + (i - 2) * 68;
+          const kx = L - STUB - 18 - i * 14;
+          const ey = py + (i - 2) * 62;
           add([[L - STUB, py], [kx, py], [kx, ey], [-10, ey]], (i + 2) % 4);
         }
-        // Right pins → screen right
         for (let i = 0; i < PINS; i++) {
           const py = T + vgap * (i + 1);
-          const kx = R + STUB + 22 + i * 15;
-          const ey = py - (i - 2) * 68;
+          const kx = R + STUB + 18 + i * 14;
+          const ey = py - (i - 2) * 62;
           add([[R + STUB, py], [kx, py], [kx, ey], [W + 10, ey]], (i + 3) % 4);
         }
       }
 
-      /* ── Interpolate position along trace at t ∈ [0,1] ─────────────── */
       function ptOn(tr, t) {
         const d = t * tr.total;
         for (let i = 1; i < tr.pts.length; i++) {
@@ -383,132 +411,127 @@
         return [...tr.pts[tr.pts.length - 1]];
       }
 
-      /* ── Spawn a new light pulse ─────────────────────────────────────── */
       function spawn() {
-        if (pulses.length >= 24) return;
+        if (pulses.length >= 16) return;
         const ti  = Math.floor(Math.random() * traces.length);
         const dir = Math.random() > 0.5 ? 1 : -1;
-        pulses.push({ ti, t: dir > 0 ? 0 : 1, speed: 0.0025 + Math.random() * 0.004, dir });
+        pulses.push({ ti, t: dir > 0 ? 0 : 1, speed: 0.002 + Math.random() * 0.003, dir });
       }
 
-      /* ── Resize handler ─────────────────────────────────────────────── */
       function resize() {
         W = canvas.width  = window.innerWidth;
         H = canvas.height = window.innerHeight;
-        cx = W / 2;
+        // Shift chip to ~35% across so it sits in the brand panel
+        cx = W * 0.35;
         cy = H / 2;
         buildTraces();
         pulses = [];
-        for (let i = 0; i < 18; i++) spawn();
+        for (let i = 0; i < 14; i++) spawn();
       }
 
-      /* ── Main draw loop ─────────────────────────────────────────────── */
       function draw() {
         ctx.clearRect(0, 0, W, H);
         frame++;
 
-        const breathe = (Math.sin(frame * 0.025) + 1) / 2;  // 0 → 1 oscillation
+        const breathe = (Math.sin(frame * 0.022) + 1) / 2;
         const L = cx - CW / 2, R = cx + CW / 2;
         const T = cy - CH / 2, B = cy + CH / 2;
         const hgap = CW / (PINS + 1);
         const vgap = CH / (PINS + 1);
 
-        // ── PCB grid ──────────────────────────────────────────────────────
-        ctx.strokeStyle = 'rgba(34,197,94,0.12)';
+        // Grid
+        ctx.strokeStyle = 'rgba(34,197,94,0.07)';
         ctx.lineWidth   = 1;
         for (let x = 0; x <= W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
         for (let y = 0; y <= H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
 
-        // ── Circuit traces ────────────────────────────────────────────────
+        // Traces
         for (const tr of traces) {
           const [r, g, b] = tr.col;
-          ctx.strokeStyle = `rgba(${r},${g},${b},0.45)`;
+          ctx.strokeStyle = `rgba(${r},${g},${b},0.28)`;
           ctx.lineWidth   = 1.5;
           ctx.beginPath();
           ctx.moveTo(tr.pts[0][0], tr.pts[0][1]);
           for (let i = 1; i < tr.pts.length; i++) ctx.lineTo(tr.pts[i][0], tr.pts[i][1]);
           ctx.stroke();
-          // Waypoint solder pads
           for (let i = 1; i < tr.pts.length - 1; i++) {
             ctx.beginPath();
-            ctx.arc(tr.pts[i][0], tr.pts[i][1], 3, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(${r},${g},${b},0.75)`;
+            ctx.arc(tr.pts[i][0], tr.pts[i][1], 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${r},${g},${b},0.55)`;
             ctx.fill();
           }
         }
 
-        // ── Chip outer ambient glow ────────────────────────────────────────
-        const og = ctx.createRadialGradient(cx, cy, 10, cx, cy, CW * 0.9);
-        og.addColorStop(0, `rgba(34,197,94,${(0.06 + breathe * 0.05).toFixed(3)})`);
+        // Chip ambient glow
+        const og = ctx.createRadialGradient(cx, cy, 10, cx, cy, CW * 0.85);
+        og.addColorStop(0, `rgba(34,197,94,${(0.04 + breathe * 0.04).toFixed(3)})`);
         og.addColorStop(1, 'rgba(34,197,94,0)');
         ctx.fillStyle = og;
         ctx.fillRect(L - CW, T - CH, CW * 3, CH * 3);
 
-        // ── Chip body ──────────────────────────────────────────────────────
-        ctx.fillStyle = 'rgba(7,13,9,0.93)';
+        // Chip body
+        ctx.fillStyle = 'rgba(6,10,7,0.88)';
         ctx.fillRect(L, T, CW, CH);
 
-        // Border (sharp + soft glow)
-        ctx.lineWidth   = 1.8;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.38 + breathe * 0.25).toFixed(3)})`;
+        ctx.lineWidth   = 1.5;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.28 + breathe * 0.2).toFixed(3)})`;
         ctx.strokeRect(L, T, CW, CH);
-        ctx.lineWidth   = 8;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.04 + breathe * 0.04).toFixed(3)})`;
+        ctx.lineWidth   = 7;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.03 + breathe * 0.03).toFixed(3)})`;
         ctx.strokeRect(L, T, CW, CH);
 
-        // Internal circuit grid lines
+        // Internal grid
         const CELL = CW / 5;
-        ctx.lineWidth   = 0.8;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.1 + breathe * 0.07).toFixed(3)})`;
+        ctx.lineWidth   = 0.7;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.08 + breathe * 0.06).toFixed(3)})`;
         for (let i = 1; i < 5; i++) {
-          ctx.beginPath(); ctx.moveTo(L + CELL * i, T + 6); ctx.lineTo(L + CELL * i, B - 6); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(L + 6, T + CELL * i); ctx.lineTo(R - 6, T + CELL * i); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(L + CELL * i, T + 5); ctx.lineTo(L + CELL * i, B - 5); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(L + 5, T + CELL * i); ctx.lineTo(R - 5, T + CELL * i); ctx.stroke();
         }
-        // Grid intersection dots
         for (let i = 1; i < 5; i++) {
           for (let j = 1; j < 5; j++) {
             ctx.beginPath();
-            ctx.arc(L + CELL * i, T + CELL * j, 1.8, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(34,197,94,${(0.28 + breathe * 0.22).toFixed(3)})`;
+            ctx.arc(L + CELL * i, T + CELL * j, 1.5, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(34,197,94,${(0.22 + breathe * 0.18).toFixed(3)})`;
             ctx.fill();
           }
         }
 
-        // ── Centre processor core ─────────────────────────────────────────
+        // Processor core
         ctx.beginPath();
-        ctx.arc(cx, cy, 22 + breathe * 4, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(34,197,94,${(0.28 + breathe * 0.22).toFixed(3)})`;
+        ctx.arc(cx, cy, 18 + breathe * 3, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(34,197,94,${(0.22 + breathe * 0.18).toFixed(3)})`;
         ctx.lineWidth   = 1.5;
         ctx.stroke();
         ctx.beginPath();
-        ctx.arc(cx, cy, 10, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(34,197,94,${(0.25 + breathe * 0.25).toFixed(3)})`;
+        ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(34,197,94,${(0.2 + breathe * 0.2).toFixed(3)})`;
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34,197,94,0.97)';
+        ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(34,197,94,0.95)';
         ctx.fill();
 
-        // ── Corner notch ──────────────────────────────────────────────────
+        // Corner notch
         ctx.beginPath();
-        ctx.arc(L + 14, T + 14, 7, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(34,197,94,0.7)';
+        ctx.arc(L + 12, T + 12, 6, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(34,197,94,0.55)';
         ctx.lineWidth   = 1.5;
         ctx.stroke();
         ctx.beginPath();
-        ctx.arc(L + 14, T + 14, 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34,197,94,0.9)';
+        ctx.arc(L + 12, T + 12, 2, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(34,197,94,0.85)';
         ctx.fill();
 
-        // ── Chip label ────────────────────────────────────────────────────
-        ctx.fillStyle = `rgba(34,197,94,${(0.32 + breathe * 0.15).toFixed(3)})`;
-        ctx.font      = '10px monospace';
+        // Chip label
+        ctx.fillStyle = `rgba(34,197,94,${(0.25 + breathe * 0.12).toFixed(3)})`;
+        ctx.font      = '9px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('DW-1', cx, B - 10);
+        ctx.fillText('DW-1', cx, B - 8);
 
-        // ── Pin stubs ─────────────────────────────────────────────────────
-        ctx.lineWidth   = 1.8;
-        ctx.strokeStyle = 'rgba(34,197,94,0.5)';
+        // Pin stubs
+        ctx.lineWidth   = 1.5;
+        ctx.strokeStyle = 'rgba(34,197,94,0.4)';
         for (let i = 0; i < PINS; i++) {
           const px = L + hgap * (i + 1);
           const py = T + vgap * (i + 1);
@@ -518,13 +541,13 @@
           ctx.beginPath(); ctx.moveTo(R, py); ctx.lineTo(R + STUB, py); ctx.stroke();
           for (const [nx, ny] of [[px, T-STUB], [px, B+STUB], [L-STUB, py], [R+STUB, py]]) {
             ctx.beginPath();
-            ctx.arc(nx, ny, 2.5, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(34,197,94,0.7)';
+            ctx.arc(nx, ny, 2, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(34,197,94,0.6)';
             ctx.fill();
           }
         }
 
-        // ── Update & draw light pulses ────────────────────────────────────
+        // Light pulses
         for (let i = pulses.length - 1; i >= 0; i--) {
           const p = pulses[i];
           p.t += p.speed * p.dir;
@@ -532,31 +555,28 @@
 
           const [px, py]  = ptOn(traces[p.ti], p.t);
           const [r, g, b] = traces[p.ti].col;
-          const fade       = Math.sin(p.t * Math.PI);
+          const fade      = Math.sin(p.t * Math.PI);
 
-          // Outer glow halo
-          const grd = ctx.createRadialGradient(px, py, 0, px, py, 14);
-          grd.addColorStop(0, `rgba(${r},${g},${b},${(fade * 0.55).toFixed(3)})`);
+          const grd = ctx.createRadialGradient(px, py, 0, px, py, 12);
+          grd.addColorStop(0, `rgba(${r},${g},${b},${(fade * 0.5).toFixed(3)})`);
           grd.addColorStop(1, `rgba(${r},${g},${b},0)`);
           ctx.beginPath();
-          ctx.arc(px, py, 14, 0, Math.PI * 2);
+          ctx.arc(px, py, 12, 0, Math.PI * 2);
           ctx.fillStyle = grd;
           ctx.fill();
-          // Mid glow
+
           ctx.beginPath();
-          ctx.arc(px, py, 4, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${r},${g},${b},${(fade * 0.9).toFixed(3)})`;
+          ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${r},${g},${b},${(fade * 0.85).toFixed(3)})`;
           ctx.fill();
-          // White-hot core
+
           ctx.beginPath();
-          ctx.arc(px, py, 1.8, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(255,255,255,${(fade * 0.88).toFixed(3)})`;
+          ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255,255,255,${(fade * 0.85).toFixed(3)})`;
           ctx.fill();
         }
 
-        // Periodically spawn new pulses
-        if (frame % 45 === 0 && pulses.length < 24) spawn();
-
+        if (frame % 50 === 0 && pulses.length < 16) spawn();
         requestAnimationFrame(draw);
       }
 
@@ -586,7 +606,6 @@
       errorMsg.classList.remove('visible');
     }
 
-    // Password show/hide toggle
     const pwToggle  = document.getElementById('pwToggle');
     const pwInput   = document.getElementById('password');
     const eyeOpen   = document.getElementById('eyeOpen');
@@ -594,9 +613,9 @@
 
     pwToggle.addEventListener('click', () => {
       const show = pwInput.type === 'password';
-      pwInput.type       = show ? 'text' : 'password';
-      eyeOpen.style.display   = show ? 'none'  : '';
-      eyeClosed.style.display = show ? ''      : 'none';
+      pwInput.type            = show ? 'text' : 'password';
+      eyeOpen.style.display   = show ? 'none' : '';
+      eyeClosed.style.display = show ? ''     : 'none';
     });
 
     form.addEventListener('submit', async (e) => {
@@ -612,14 +631,14 @@
         return;
       }
 
-      submitBtn.disabled = true;
+      submitBtn.disabled    = true;
       submitBtn.textContent = 'Signing in…';
 
       try {
         const res = await fetch('/api/auth/login', {
-          method: 'POST',
+          method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ companyCode, username, password }),
+          body:    JSON.stringify({ companyCode, username, password }),
         });
 
         const data = await res.json();
@@ -629,15 +648,13 @@
           return;
         }
 
-        // Persist token + user info
         localStorage.setItem('fct_token', data.token);
         localStorage.setItem('fct_user',  JSON.stringify(data.user));
-
         window.location.replace('tracker.html');
       } catch {
         showError('Network error — please check your connection.');
       } finally {
-        submitBtn.disabled = false;
+        submitBtn.disabled    = false;
         submitBtn.textContent = 'Sign In';
       }
     });
