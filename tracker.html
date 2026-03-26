@@ -233,7 +233,7 @@
     /* Sticky offsets: group(0) → totals(28px) → col-row(58px) */
     .daily-inner-table thead tr.group-row  th { top: 0; }
     .daily-inner-table thead tr.totals-row th { top: 28px; }
-    .daily-inner-table thead tr.col-row    th { top: 58px; }
+    .daily-inner-table thead tr.col-row    th { top: 58px; background: var(--surface2); z-index: 3; }
     /* Column filter buttons */
     .cfb {
       background: none; border: none; cursor: pointer; font-size: 0.6rem;
@@ -414,6 +414,7 @@
       text-align: center;
       position: sticky;
       top: 28px;
+      z-index: 3;
     }
     thead tr.col-row th.calc-hdr { background: #0f1f0f; color: #4ade80; }
 
