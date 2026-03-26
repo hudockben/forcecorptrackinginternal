@@ -1507,11 +1507,41 @@
     .pm-rpt-prog-bar { height: 7px; background: var(--surface2); border-radius: 4px; overflow: hidden; flex: 1; min-width: 80px; }
     .pm-rpt-prog-fill { height: 100%; border-radius: 4px; }
     @media print {
+      @page { margin: 1.2cm; size: portrait; }
       body > *:not(#pm-report-overlay) { display: none !important; }
-      #pm-report-overlay { position: static !important; background: none !important; }
-      .pm-report-modal { box-shadow: none !important; height: auto !important; }
+      #pm-report-overlay {
+        position: static !important; background: #fff !important;
+        display: block !important;
+      }
+      .pm-report-modal { background: #fff !important; height: auto !important; box-shadow: none !important; color: #111 !important; }
+      .pm-report-hdr {
+        background: #f4f4f4 !important; border-color: #ccc !important;
+        color: #111 !important;
+      }
       .pm-report-hdr button { display: none !important; }
-      .pm-report-body { overflow: visible !important; }
+      .pm-rpt-title, .pm-rpt-sub { color: #111 !important; }
+      .pm-report-body { overflow: visible !important; background: #fff !important; padding: 0.5rem 0 !important; }
+      .pm-rpt-summary { margin-bottom: 0.75rem !important; }
+      .pm-rpt-stat { background: #f4f4f4 !important; border-color: #ccc !important; }
+      .pm-rpt-stat .lbl { color: #555 !important; }
+      .pm-rpt-card { background: #fff !important; border-color: #ccc !important; break-inside: avoid; }
+      .pm-rpt-card-hdr { background: #f4f4f4 !important; border-color: #ccc !important; color: #111 !important; }
+      .pm-rpt-card-hdr .cc-label { color: #111 !important; }
+      .pm-rpt-card-body { background: #fff !important; }
+      .pm-rpt-target-block { background: #f9f9f9 !important; border-color: #ccc !important; }
+      .pm-rpt-target-block .target-lbl  { color: #666 !important; }
+      .pm-rpt-target-block .target-unit { color: #666 !important; }
+      .pm-rpt-target-block.behind   .target-val { color: #dc2626 !important; }
+      .pm-rpt-target-block.at-risk  .target-val { color: #b45309 !important; }
+      .pm-rpt-target-block.on-track .target-val { color: #15803d !important; }
+      .pm-rpt-target-block.complete .target-val { color: #1d4ed8 !important; }
+      .pm-rpt-target-block.no-data  .target-val { color: #555 !important; }
+      .pm-rpt-detail .det-lbl { color: #666 !important; }
+      .pm-rpt-detail .det-row { color: #111 !important; }
+      .pm-rpt-prog-bar { background: #e5e5e5 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .pm-rpt-prog-fill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .sched-status-pill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .sched-deadline-chip { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     }
 
     /* ── AI Insights panel ── */
