@@ -1437,6 +1437,83 @@
     }
     .sched-no-data { color: var(--muted); font-size: 0.85rem; text-align: center; padding: 3rem 1rem; }
 
+    /* ── Today's Goal pill (pace table) ── */
+    .sched-goal-pill {
+      display: inline-flex; align-items: center; gap: 0.25rem;
+      padding: 0.18rem 0.55rem; border-radius: 20px;
+      font-size: 0.75rem; font-weight: 700; white-space: nowrap;
+    }
+    .sched-goal-pill.behind   { background: rgba(239,68,68,0.15);  color: var(--red);    border: 1px solid rgba(239,68,68,0.3); }
+    .sched-goal-pill.at-risk  { background: rgba(234,179,8,0.15);  color: var(--yellow); border: 1px solid rgba(234,179,8,0.3); }
+    .sched-goal-pill.on-track { background: rgba(34,197,94,0.12);  color: var(--green);  border: 1px solid rgba(34,197,94,0.25); }
+    .sched-goal-pill.complete { background: rgba(96,165,250,0.12); color: var(--blue);   border: 1px solid rgba(96,165,250,0.25); }
+    .sched-goal-pill.no-data  { background: transparent; color: var(--muted); border: none; }
+
+    /* ── Daily PM Report overlay ── */
+    .pm-report-overlay {
+      position: fixed; inset: 0; z-index: 1300;
+      background: rgba(0,0,0,0.82); display: flex; align-items: stretch;
+    }
+    .pm-report-modal {
+      background: var(--bg); display: flex; flex-direction: column;
+      width: 100%; height: 100%; overflow: hidden;
+    }
+    .pm-report-hdr {
+      display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0;
+      padding: 0.7rem 1.25rem; border-bottom: 1px solid var(--border);
+      background: var(--surface); flex-wrap: wrap;
+    }
+    .pm-report-hdr .pm-rpt-title { font-weight: 700; font-size: 0.95rem; }
+    .pm-report-hdr .pm-rpt-sub   { font-size: 0.75rem; color: var(--muted); }
+    .pm-report-body { flex: 1; overflow-y: auto; padding: 1.25rem 1.5rem; }
+    .pm-rpt-summary {
+      display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1.25rem;
+    }
+    .pm-rpt-stat {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.5rem 0.9rem; min-width: 90px;
+    }
+    .pm-rpt-stat .val { font-size: 1.2rem; font-weight: 700; line-height: 1.2; }
+    .pm-rpt-stat .lbl { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .pm-rpt-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 0.85rem; overflow: hidden;
+    }
+    .pm-rpt-card-hdr {
+      display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap;
+      padding: 0.6rem 1rem; border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+    }
+    .pm-rpt-card-hdr .cc-label { font-weight: 700; font-size: 0.88rem; }
+    .pm-rpt-card-body {
+      display: grid; grid-template-columns: auto 1fr; gap: 0.5rem 1.5rem;
+      padding: 0.85rem 1rem; align-items: start;
+    }
+    .pm-rpt-target-block {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.75rem 1.25rem; min-width: 120px; text-align: center;
+    }
+    .pm-rpt-target-block .target-lbl  { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.2rem; }
+    .pm-rpt-target-block .target-val  { font-size: 1.6rem; font-weight: 800; line-height: 1.1; }
+    .pm-rpt-target-block .target-unit { font-size: 0.68rem; color: var(--muted); margin-top: 0.15rem; }
+    .pm-rpt-target-block.behind   .target-val { color: var(--red); }
+    .pm-rpt-target-block.at-risk  .target-val { color: var(--yellow); }
+    .pm-rpt-target-block.on-track .target-val { color: var(--green); }
+    .pm-rpt-target-block.complete .target-val { color: var(--blue); }
+    .pm-rpt-detail { display: flex; flex-direction: column; gap: 0.4rem; justify-content: center; }
+    .pm-rpt-detail .det-row { display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.8rem; }
+    .pm-rpt-detail .det-lbl { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; min-width: 60px; }
+    .pm-rpt-prog-bar { height: 7px; background: var(--surface2); border-radius: 4px; overflow: hidden; flex: 1; min-width: 80px; }
+    .pm-rpt-prog-fill { height: 100%; border-radius: 4px; }
+    @media print {
+      body > *:not(#pm-report-overlay) { display: none !important; }
+      #pm-report-overlay { position: static !important; background: none !important; }
+      .pm-report-modal { box-shadow: none !important; height: auto !important; }
+      .pm-report-hdr button { display: none !important; }
+      .pm-report-body { overflow: visible !important; }
+    }
+
     /* ── AI Insights panel ── */
     .sched-ai-panel {
       background: var(--surface); border: 1px solid var(--border);
@@ -1899,10 +1976,28 @@
     <button class="btn btn-ghost" onclick="loadScheduleDeadlines().then(renderScheduleTab)" style="font-size:0.75rem">&#8635; Refresh</button>
     <button class="btn btn-blue" id="sched-ai-btn" onclick="runSchedAI()" style="font-size:0.75rem;display:none">&#9889; AI Insights</button>
     <button class="btn btn-ghost" id="sched-pp-btn" onclick="_ppOpen()" style="font-size:0.75rem;display:none">&#128197; Projection Planner</button>
+    <button class="btn btn-ghost" id="sched-pm-btn" onclick="openDailyPMReport()" style="font-size:0.75rem;display:none">&#128203; Daily PM Report</button>
     <span id="sched-last-updated" style="font-size:0.7rem;color:var(--muted);margin-left:auto"></span>
   </div>
   <div id="sched-body" style="padding:1.25rem;overflow:auto;max-height:calc(100vh - 110px)">
     <!-- rendered by JS -->
+  </div>
+</div>
+
+<!-- ══════════════ DAILY PM REPORT OVERLAY ══════════════ -->
+<div class="pm-report-overlay" id="pm-report-overlay" style="display:none">
+  <div class="pm-report-modal">
+    <div class="pm-report-hdr">
+      <div>
+        <div class="pm-rpt-title" id="pm-rpt-title">Daily Field Plan</div>
+        <div class="pm-rpt-sub" id="pm-rpt-sub"></div>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:0.6rem">
+        <button class="btn btn-ghost" onclick="window.print()" style="font-size:0.75rem">&#128438; Print / Save PDF</button>
+        <button class="btn btn-ghost" onclick="closeDailyPMReport()" style="font-size:0.75rem">&#10005; Close</button>
+      </div>
+    </div>
+    <div class="pm-report-body" id="pm-report-body"><!-- rendered by JS --></div>
   </div>
 </div>
 
@@ -8586,6 +8681,11 @@ function renderScheduleProjectDetail(proj) {
       <td class="num">${daysWorked > 0 ? daysWorked : '—'}</td>
       <td class="num">${currentPace > 0 ? fmt(currentPace, 2) + '/d' : '—'}</td>
       <td class="num">${requiredPace !== null ? fmt(requiredPace, 2) + '/d' : '—'}</td>
+      <td class="num" style="white-space:nowrap">${
+        status === 'complete' ? '<span class="sched-goal-pill complete">✓ Done</span>'
+        : requiredPace === null || status === 'no-data' ? '<span class="sched-goal-pill no-data">—</span>'
+        : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}/day</span>`
+      }</td>
       <td class="num">${gapHtml}</td>
       <td>${_schedStatusPill(status)}</td>
     </tr>`;
@@ -8623,6 +8723,7 @@ function renderScheduleProjectDetail(proj) {
           <th class="num">Days Worked</th>
           <th class="num">Current Pace</th>
           <th class="num">Required Pace</th>
+          <th class="num">Today's Goal</th>
           <th class="num">Gap</th>
           <th>Status</th>
         </tr></thead>
@@ -8716,6 +8817,7 @@ async function renderScheduleTab() {
   const projId = sel ? sel.value : '';
   const aiBtn  = document.getElementById('sched-ai-btn');
   const ppBtn  = document.getElementById('sched-pp-btn');
+  const pmBtn  = document.getElementById('sched-pm-btn');
 
   if (projId) {
     const proj = getProj(projId);
@@ -8724,6 +8826,7 @@ async function renderScheduleTab() {
       const hasBidItems = (proj.bidItems || []).length > 0;
       if (aiBtn) aiBtn.style.display = hasBidItems ? '' : 'none';
       if (ppBtn) ppBtn.style.display = hasBidItems ? '' : 'none';
+      if (pmBtn) pmBtn.style.display = hasBidItems ? '' : 'none';
       // Store current projId for the PP button
       _pp.projId = proj.id;
       if (_pp.projId !== proj.id) { _pp.days = {}; _pp.biKey = null; }
@@ -8731,15 +8834,128 @@ async function renderScheduleTab() {
       body.innerHTML = '<div class="sched-no-data">Project not found.</div>';
       if (aiBtn) aiBtn.style.display = 'none';
       if (ppBtn) ppBtn.style.display = 'none';
+      if (pmBtn) pmBtn.style.display = 'none';
     }
   } else {
     body.innerHTML = renderScheduleAllProjects();
     if (aiBtn) aiBtn.style.display = 'none';
     if (ppBtn) ppBtn.style.display = 'none';
+    if (pmBtn) pmBtn.style.display = 'none';
   }
 
   const ts = document.getElementById('sched-last-updated');
   if (ts) ts.textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+/* ── Daily PM Report ─────────────────────────────────────────────────────── */
+
+function openDailyPMReport() {
+  const sel    = document.getElementById('sched-proj-select');
+  const projId = sel ? sel.value : '';
+  if (!projId) return;
+  const proj = getProj(projId);
+  if (!proj) return;
+
+  const overlay = document.getElementById('pm-report-overlay');
+  const titleEl = document.getElementById('pm-rpt-title');
+  const subEl   = document.getElementById('pm-rpt-sub');
+  const bodyEl  = document.getElementById('pm-report-body');
+
+  const dateStr = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  if (titleEl) titleEl.textContent = 'Daily Field Plan — ' + (proj['project-name'] || 'Untitled');
+  if (subEl)   subEl.textContent   = (proj['job-number'] ? 'Job #' + proj['job-number'] + ' · ' : '') + dateStr;
+  if (bodyEl)  bodyEl.innerHTML    = _buildDailyPMReport(proj);
+  if (overlay) overlay.style.display = 'flex';
+}
+
+function closeDailyPMReport() {
+  const overlay = document.getElementById('pm-report-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function _buildDailyPMReport(proj) {
+  const deadline  = _schedGetDeadline(proj);
+  const daysLeft  = _schedDaysRemaining(deadline);
+  const agg       = _schedPaceForProject(proj);
+  const bidItems  = proj.bidItems || [];
+  const counts    = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
+  const progColors = { 'on-track': 'var(--green)', 'at-risk': 'var(--yellow)', 'behind': 'var(--red)', 'complete': 'var(--blue)', 'no-data': 'var(--muted)' };
+
+  const cards = bidItems.map(bi => {
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status } = _schedCalcRow(bi, agg, daysLeft);
+    counts[status]++;
+
+    const employees = [...a.employees].join(', ') || '—';
+    const equipment = [...a.equipment].join(', ') || '—';
+    const desc      = bi.description ? esc(bi.description) : '';
+    const progColor = progColors[status] || 'var(--muted)';
+
+    let targetVal, targetUnit;
+    if (status === 'complete') {
+      targetVal = '✓'; targetUnit = 'Complete';
+    } else if (requiredPace === null || status === 'no-data') {
+      targetVal = '—'; targetUnit = 'No deadline set';
+    } else {
+      targetVal = fmt(requiredPace, 1); targetUnit = 'units needed today';
+    }
+
+    const behindNote = (status === 'behind' && gap !== null && gap > 0)
+      ? `<div style="font-size:0.72rem;color:var(--red);margin-top:0.3rem">⚠ ${fmt(gap,1)} units/day behind current pace</div>`
+      : '';
+
+    return `
+      <div class="pm-rpt-card">
+        <div class="pm-rpt-card-hdr">
+          <span class="cc-label">${esc(bi.cost_code || '—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}</span>
+          ${desc ? `<span style="font-size:0.75rem;color:var(--muted)">${desc}</span>` : ''}
+          <span style="margin-left:auto">${_schedStatusPill(status)}</span>
+        </div>
+        <div class="pm-rpt-card-body">
+          <div class="pm-rpt-target-block ${status}">
+            <div class="target-lbl">Today's Target</div>
+            <div class="target-val">${targetVal}</div>
+            <div class="target-unit">${targetUnit}</div>
+          </div>
+          <div class="pm-rpt-detail">
+            <div class="det-row">
+              <span class="det-lbl">Progress</span>
+              <div class="pm-rpt-prog-bar" style="flex:1;min-width:80px">
+                <div class="pm-rpt-prog-fill" style="width:${Math.min(Math.max(pct,0),100)}%;background:${progColor}"></div>
+              </div>
+              <span style="font-size:0.78rem;white-space:nowrap">${bidQty > 0 ? fmt(runningQty,1) + ' / ' + fmt(bidQty,1) + ' (' + fmtPct(pct) + ')' : '—'}</span>
+            </div>
+            <div class="det-row">
+              <span class="det-lbl">Curr. Pace</span>
+              <span>${currentPace > 0 ? fmt(currentPace,2) + '/day avg (' + daysWorked + ' days worked)' : 'No entries yet'}</span>
+            </div>
+            <div class="det-row">
+              <span class="det-lbl">Crew</span>
+              <span>${esc(employees)}</span>
+            </div>
+            <div class="det-row">
+              <span class="det-lbl">Equipment</span>
+              <span>${esc(equipment)}</span>
+            </div>
+            ${behindNote}
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  const deadlineFmt = deadline
+    ? new Date(deadline + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    : null;
+
+  const summaryStats = `
+    <div class="pm-rpt-summary">
+      ${deadlineFmt ? `<div class="pm-rpt-stat">${_schedDeadlineChip(daysLeft)}<div class="lbl" style="margin-top:0.25rem">Deadline: ${deadlineFmt}</div></div>` : ''}
+      ${counts['behind']   ? `<div class="pm-rpt-stat" style="border-color:var(--red)"><div class="val" style="color:var(--red)">${counts['behind']}</div><div class="lbl">Behind</div></div>` : ''}
+      ${counts['at-risk']  ? `<div class="pm-rpt-stat" style="border-color:var(--yellow)"><div class="val" style="color:var(--yellow)">${counts['at-risk']}</div><div class="lbl">At Risk</div></div>` : ''}
+      ${counts['on-track'] ? `<div class="pm-rpt-stat" style="border-color:var(--green-dim)"><div class="val" style="color:var(--green)">${counts['on-track']}</div><div class="lbl">On Track</div></div>` : ''}
+      ${counts['complete'] ? `<div class="pm-rpt-stat" style="border-color:var(--blue)"><div class="val" style="color:var(--blue)">${counts['complete']}</div><div class="lbl">Complete</div></div>` : ''}
+    </div>`;
+
+  return summaryStats + (cards || '<div class="sched-no-data">No bid items found for this project.</div>');
 }
 
 /* ── AI Insights ─────────────────────────────────────────────────────────── */
