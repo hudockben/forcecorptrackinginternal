@@ -5820,6 +5820,11 @@ function renderCostTable() {
     allKeys = allKeys.filter(k => costFilters['sub_code'].has(k.split('||')[1]));
   }
 
+  // When field type filter is active, only show cost codes that have matching daily rows
+  if (costFilters['_field_type']) {
+    allKeys = allKeys.filter(k => agg[k]);
+  }
+
   if (allKeys.length === 0) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="18">No bid items found. Add bid items in Project Dashboard to populate this view.</td></tr>';
     return;
