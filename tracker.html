@@ -263,6 +263,17 @@
       background: var(--calc); color: #86efac; text-align: right;
       padding: 0 0.5rem; font-variant-numeric: tabular-nums; white-space: nowrap;
     }
+    /* Fill-handle (drag-to-fill) */
+    .fill-handle {
+      position: absolute; bottom: 1px; right: 1px;
+      width: 7px; height: 7px;
+      background: var(--green); border: 1px solid var(--bg);
+      cursor: crosshair; display: none; z-index: 10; border-radius: 1px;
+    }
+    td:hover > .fill-handle { display: block; }
+    tr.fill-drag-target td:not(.calc):not(.del-cell) { background: rgba(74,222,128,0.08); }
+    tr.fill-drag-target td:not(.calc):not(.del-cell) input,
+    tr.fill-drag-target td:not(.calc):not(.del-cell) select { outline: 1px solid var(--green); }
     .bid-section-title {
       font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
       text-transform: uppercase; color: var(--blue); margin-bottom: 0.75rem;
@@ -6225,6 +6236,19 @@ function renderDailyTable(projId) {
       <td class="calc">$${fmt(c.total_cost)}</td>
     `;
     tbody.appendChild(tr);
+    if (perm.canEdit) {
+      tr.querySelectorAll('td').forEach(td => {
+        const el = td.querySelector('input[data-f], select[data-f]');
+        if (!el) return;
+        td.style.position = 'relative';
+        const h = document.createElement('div');
+        h.className = 'fill-handle';
+        h.dataset.proj = el.dataset.proj;
+        h.dataset.i    = el.dataset.i;
+        h.dataset.f    = el.dataset.f;
+        td.appendChild(h);
+      });
+    }
   });
 }
 
@@ -6279,6 +6303,73 @@ function massAddDailyRows(projId) {
   input.value = '';
   renderDailyTable(projId);
 }
+
+/* ══════════════════════════════════════════════
+   FILL-HANDLE DRAG-TO-FILL
+══════════════════════════════════════════════ */
+let _fillDrag = null;
+
+document.addEventListener('mousedown', e => {
+  const handle = e.target.closest('.fill-handle');
+  if (!handle) return;
+  e.preventDefault();
+  const projId = handle.dataset.proj;
+  const field  = handle.dataset.f;
+  const srcIdx = parseInt(handle.dataset.i, 10);
+  const td     = handle.closest('td');
+  const el     = td ? td.querySelector('input[data-f], select[data-f]') : null;
+  if (!el) return;
+  _fillDrag = { projId, field, srcIdx, endIdx: srcIdx, value: el.value };
+  document.body.style.userSelect = 'none';
+  document.body.style.cursor     = 'crosshair';
+});
+
+document.addEventListener('mousemove', e => {
+  if (!_fillDrag) return;
+  const target = document.elementFromPoint(e.clientX, e.clientY);
+  if (!target) return;
+  const tr = target.closest('tr');
+  if (!tr) return;
+  const marker = tr.querySelector(`[data-proj="${_fillDrag.projId}"][data-f]`);
+  if (!marker) return;
+  const idx = parseInt(marker.dataset.i, 10);
+  if (idx === _fillDrag.endIdx) return;
+  _fillDrag.endIdx = idx;
+  const tbody = tr.closest('tbody');
+  if (!tbody) return;
+  tbody.querySelectorAll('tr').forEach(row => {
+    const m = row.querySelector(`[data-proj="${_fillDrag.projId}"][data-f]`);
+    if (!m) return;
+    const ri = parseInt(m.dataset.i, 10);
+    row.classList.toggle('fill-drag-target', ri > _fillDrag.srcIdx && ri <= _fillDrag.endIdx);
+  });
+});
+
+document.addEventListener('mouseup', () => {
+  if (!_fillDrag) return;
+  const { projId, field, srcIdx, endIdx, value } = _fillDrag;
+  _fillDrag = null;
+  document.body.style.userSelect = '';
+  document.body.style.cursor     = '';
+  document.querySelectorAll('.fill-drag-target').forEach(r => r.classList.remove('fill-drag-target'));
+  if (endIdx <= srcIdx) return;
+  const p = getProj(projId); if (!p) return;
+  const tbody = document.getElementById('daily-tbody-' + projId);
+  for (let i = srcIdx + 1; i <= endIdx; i++) {
+    const row = (p.dailyRows || [])[i];
+    if (!row) continue;
+    row[field] = value;
+    drPutNow(row.id, row);
+    if (tbody) {
+      const tr = [...tbody.children].find(r => r.querySelector(`[data-i="${i}"]`));
+      if (tr) {
+        const el = tr.querySelector(`[data-f="${field}"]`);
+        if (el) el.value = value;
+        renderDailyCalcCells(projId, i);
+      }
+    }
+  }
+});
 
 function exportBidPDF(projId) {
   const p = getProj(projId); if (!p) return;
