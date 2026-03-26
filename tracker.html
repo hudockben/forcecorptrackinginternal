@@ -2023,7 +2023,7 @@
         <div class="pm-rpt-sub" id="pm-rpt-sub"></div>
       </div>
       <div style="margin-left:auto;display:flex;gap:0.6rem">
-        <button class="btn btn-ghost" onclick="window.print()" style="font-size:0.75rem">&#128438; Print / Save PDF</button>
+        <button class="btn btn-ghost" onclick="printDailyPMReport()" style="font-size:0.75rem">&#128438; Print / Save PDF</button>
         <button class="btn btn-ghost" onclick="closeDailyPMReport()" style="font-size:0.75rem">&#10005; Close</button>
       </div>
     </div>
@@ -8986,6 +8986,127 @@ function _buildDailyPMReport(proj) {
     </div>`;
 
   return summaryStats + (cards || '<div class="sched-no-data">No bid items found for this project.</div>');
+}
+
+function printDailyPMReport() {
+  const sel    = document.getElementById('sched-proj-select');
+  const projId = sel ? sel.value : '';
+  if (!projId) return;
+  const proj = getProj(projId);
+  if (!proj) return;
+
+  const deadline  = _schedGetDeadline(proj);
+  const daysLeft  = _schedDaysRemaining(proj ? _schedGetDeadline(proj) : null);
+  const agg       = _schedPaceForProject(proj);
+  const bidItems  = proj.bidItems || [];
+  const dateStr   = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const projName  = proj['project-name'] || 'Untitled Project';
+  const jobNum    = proj['job-number'] ? 'Job #' + proj['job-number'] : '';
+  const deadlineFmt = deadline
+    ? new Date(deadline + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    : null;
+
+  const statusColors = { 'on-track': '#15803d', 'at-risk': '#b45309', 'behind': '#dc2626', 'complete': '#1d4ed8', 'no-data': '#888' };
+  const statusLabels = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind', 'complete': 'Complete', 'no-data': 'No Data' };
+  const statusBg     = { 'on-track': '#dcfce7', 'at-risk': '#fef9c3', 'behind': '#fee2e2', 'complete': '#dbeafe', 'no-data': '#f3f4f6' };
+
+  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
+  const cardRows = bidItems.map(bi => {
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status } = _schedCalcRow(bi, agg, daysLeft);
+    counts[status]++;
+    const employees = [...a.employees].join(', ') || '—';
+    const equipment = [...a.equipment].join(', ') || '—';
+    const desc      = bi.description ? esc(bi.description) : '';
+    const sColor    = statusColors[status] || '#888';
+    const sBg       = statusBg[status]     || '#f3f4f6';
+    const sLabel    = statusLabels[status] || status;
+    const progPct   = Math.min(Math.max(pct, 0), 100).toFixed(1);
+
+    let targetBig, targetSub;
+    if (status === 'complete')                         { targetBig = '✓';                      targetSub = 'Complete'; }
+    else if (requiredPace === null || status === 'no-data') { targetBig = '—';                 targetSub = 'No deadline set'; }
+    else                                               { targetBig = fmt(requiredPace, 1);     targetSub = 'units needed today'; }
+
+    const behindNote = (status === 'behind' && gap !== null && gap > 0)
+      ? `<div style="font-size:10px;color:#dc2626;margin-top:4px">⚠ ${fmt(gap,1)} units/day behind pace</div>` : '';
+
+    return `
+      <div style="border:1px solid #ddd;border-radius:6px;margin-bottom:10px;overflow:hidden;page-break-inside:avoid">
+        <div style="background:#f4f4f4;padding:7px 12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #ddd">
+          <span style="font-weight:700;font-size:12px">${esc(bi.cost_code || '—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}</span>
+          ${desc ? `<span style="font-size:10px;color:#555">${desc}</span>` : ''}
+          <span style="margin-left:auto;background:${sBg};color:${sColor};font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;border:1px solid ${sColor}33">${sLabel}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:10px 16px;padding:10px 12px;align-items:start">
+          <div style="background:#f9f9f9;border:1px solid #e0e0e0;border-radius:6px;padding:8px 10px;text-align:center">
+            <div style="font-size:9px;color:#777;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px">Today's Target</div>
+            <div style="font-size:22px;font-weight:800;color:${sColor};line-height:1.1">${targetBig}</div>
+            <div style="font-size:9px;color:#777;margin-top:2px">${targetSub}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;justify-content:center">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:9px;color:#777;text-transform:uppercase;min-width:58px">Progress</span>
+              <div style="flex:1;background:#e5e5e5;border-radius:3px;height:7px;overflow:hidden">
+                <div style="width:${progPct}%;background:${sColor};height:100%"></div>
+              </div>
+              <span style="font-size:10px;white-space:nowrap">${bidQty > 0 ? fmt(runningQty,1) + ' / ' + fmt(bidQty,1) + ' (' + fmtPct(pct) + ')' : '—'}</span>
+            </div>
+            <div style="display:flex;gap:8px">
+              <span style="font-size:9px;color:#777;text-transform:uppercase;min-width:58px">Curr. Pace</span>
+              <span style="font-size:10px">${currentPace > 0 ? fmt(currentPace,2) + '/day avg (' + daysWorked + ' day' + (daysWorked !== 1 ? 's' : '') + ' worked)' : 'No entries yet'}</span>
+            </div>
+            <div style="display:flex;gap:8px">
+              <span style="font-size:9px;color:#777;text-transform:uppercase;min-width:58px">Crew</span>
+              <span style="font-size:10px">${esc(employees)}</span>
+            </div>
+            <div style="display:flex;gap:8px">
+              <span style="font-size:9px;color:#777;text-transform:uppercase;min-width:58px">Equipment</span>
+              <span style="font-size:10px">${esc(equipment)}</span>
+            </div>
+            ${behindNote}
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  const summaryChips = [
+    counts['behind']   ? `<span style="background:#fee2e2;color:#dc2626;font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px;border:1px solid #fca5a5">${counts['behind']} Behind</span>`   : '',
+    counts['at-risk']  ? `<span style="background:#fef9c3;color:#b45309;font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px;border:1px solid #fde68a">${counts['at-risk']} At Risk</span>`  : '',
+    counts['on-track'] ? `<span style="background:#dcfce7;color:#15803d;font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px;border:1px solid #86efac">${counts['on-track']} On Track</span>` : '',
+    counts['complete'] ? `<span style="background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px;border:1px solid #93c5fd">${counts['complete']} Complete</span>` : '',
+  ].filter(Boolean).join(' ');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Daily Field Plan — ${esc(projName)}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 20px; }
+    @page { margin: 1.2cm; size: portrait; }
+    @media print { body { padding: 0; } * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style>
+  </head><body>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;padding-bottom:10px;border-bottom:2px solid #111">
+    <div>
+      <div style="font-size:16px;font-weight:800">${esc(projName)}</div>
+      <div style="font-size:10px;color:#555;margin-top:2px">${jobNum ? jobNum + ' · ' : ''}${dateStr}</div>
+    </div>
+    <div style="text-align:right;font-size:10px;color:#555">
+      ${deadlineFmt ? `Deadline: <strong>${deadlineFmt}</strong>` : ''}
+      ${daysLeft !== null ? `<br>${daysLeft > 0 ? daysLeft + ' days remaining' : daysLeft === 0 ? 'Due today' : Math.abs(daysLeft) + ' days overdue'}` : ''}
+    </div>
+  </div>
+  ${summaryChips ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${summaryChips}</div>` : ''}
+  ${cardRows || '<p style="color:#888;text-align:center;padding:2rem">No bid items found.</p>'}
+  <div style="margin-top:14px;padding-top:8px;border-top:1px solid #ddd;font-size:9px;color:#aaa;display:flex;justify-content:space-between">
+    <span>DataWatch — Daily Field Plan</span>
+    <span>Generated ${new Date().toLocaleString()}</span>
+  </div>
+  <script>window.onload = () => { window.print(); }<\/script>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
 }
 
 /* ── AI Insights ─────────────────────────────────────────────────────────── */
