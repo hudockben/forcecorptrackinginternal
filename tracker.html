@@ -8654,7 +8654,26 @@ function _schedBar(pct, status) {
   return `<div class="sched-progress-bar"><div class="sched-progress-fill" style="width:${Math.min(Math.max(pct,0),100)}%;background:${colors[status]||'var(--muted)'}"></div></div>`;
 }
 
-function _schedCalcRow(bi, agg, daysLeft) {
+/** Count planned working days remaining in the Projection Planner for a cost code key.
+ *  Half-days count as 0.5. noWork days are skipped. Days beyond the deadline are excluded.
+ *  Returns null if the PP has no data for this key (caller falls back to calendar days). */
+function _ppWorkingDaysRemaining(biKey, deadlineStr) {
+  const sched = _pp && _pp.schedule && _pp.schedule[biKey];
+  if (!sched) return null;
+  const todayStr  = new Date().toISOString().slice(0, 10);
+  const deadlineD = deadlineStr ? new Date(deadlineStr + 'T23:59:59') : null;
+  let workDays = 0, hasFuture = false;
+  Object.entries(sched).forEach(([ds, day]) => {
+    if (ds < todayStr) return;
+    if (deadlineD && new Date(ds + 'T12:00:00') > deadlineD) return;
+    hasFuture = true;
+    if (day.noWork) return;
+    workDays += day.halfDay ? 0.5 : 1;
+  });
+  return hasFuture ? Math.max(workDays, 0) : null;
+}
+
+function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const key         = (bi.cost_code || '') + '||' + (bi.sub_code || '');
   const a           = agg[key] || { running_qty: 0, labor_hours: 0, equip_hours: 0, dates: new Set(), employees: new Set(), equipment: new Set() };
   const bidQty      = parseFloat(bi.quantity) || 0;
@@ -8663,10 +8682,14 @@ function _schedCalcRow(bi, agg, daysLeft) {
   const currentPace = daysWorked > 0 ? runningQty / daysWorked : 0;
   const pct         = bidQty > 0 ? (runningQty / bidQty) * 100 : 0;
   const unitsLeft   = Math.max(bidQty - runningQty, 0);
-  const requiredPace = (daysLeft !== null && daysLeft > 0) ? unitsLeft / daysLeft : null;
+  // Use Projection Planner working days when available, else fall back to calendar days
+  const ppDays      = _ppWorkingDaysRemaining(key, deadline);
+  const effectiveDaysLeft = ppDays !== null ? ppDays : daysLeft;
+  const usingPPDays = ppDays !== null;
+  const requiredPace = (effectiveDaysLeft !== null && effectiveDaysLeft > 0) ? unitsLeft / effectiveDaysLeft : null;
   const gap         = requiredPace !== null ? requiredPace - currentPace : null;
-  const status      = _schedStatus(pct, gap, daysLeft, bidQty);
-  return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, requiredPace, gap, status };
+  const status      = _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
+  return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft };
 }
 
 function renderScheduleProjectDetail(proj) {
@@ -8683,7 +8706,7 @@ function renderScheduleProjectDetail(proj) {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
 
   const rows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status } = _schedCalcRow(bi, agg, daysLeft);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     const employees  = [...a.employees].slice(0, 3).join(', ') || '—';
@@ -8710,11 +8733,11 @@ function renderScheduleProjectDetail(proj) {
       </td>
       <td class="num">${daysWorked > 0 ? daysWorked : '—'}</td>
       <td class="num">${currentPace > 0 ? fmt(currentPace, 2) + '/d' : '—'}</td>
-      <td class="num">${requiredPace !== null ? fmt(requiredPace, 2) + '/d' : '—'}</td>
+      <td class="num">${requiredPace !== null ? fmt(requiredPace, 2) + '/d' + (usingPPDays ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} PP days)</span>` : '') : '—'}</td>
       <td class="num" style="white-space:nowrap">${
         status === 'complete' ? '<span class="sched-goal-pill complete">✓ Done</span>'
         : requiredPace === null || status === 'no-data' ? '<span class="sched-goal-pill no-data">—</span>'
-        : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}/day</span>`
+        : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}/day${usingPPDays ? ' 📅' : ''}</span>`
       }</td>
       <td class="num">${gapHtml}</td>
       <td>${_schedStatusPill(status)}</td>
@@ -8783,7 +8806,7 @@ function renderScheduleAllProjects() {
     const counts   = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
 
     (proj.bidItems || []).forEach(bi => {
-      const { bidQty, gap, pct, status } = _schedCalcRow(bi, agg, daysLeft);
+      const { bidQty, gap, pct, status } = _schedCalcRow(bi, agg, daysLeft, deadline);
       counts[status]++;
     });
 
@@ -8912,7 +8935,7 @@ function _buildDailyPMReport(proj) {
   const progColors = { 'on-track': 'var(--green)', 'at-risk': 'var(--yellow)', 'behind': 'var(--red)', 'complete': 'var(--blue)', 'no-data': 'var(--muted)' };
 
   const cards = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status } = _schedCalcRow(bi, agg, daysLeft);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     const employees = [...a.employees].join(', ') || '—';
@@ -8926,9 +8949,15 @@ function _buildDailyPMReport(proj) {
     } else if (requiredPace === null || status === 'no-data') {
       targetVal = '—'; targetUnit = 'No deadline set';
     } else {
-      targetVal = fmt(requiredPace, 1); targetUnit = 'units needed today';
+      targetVal = fmt(requiredPace, 1);
+      targetUnit = usingPPDays
+        ? `units / ${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} planned days`
+        : 'units needed today';
     }
 
+    const ppNote = usingPPDays
+      ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.2rem">📅 Based on ${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} planned working days</div>`
+      : '';
     const behindNote = (status === 'behind' && gap !== null && gap > 0)
       ? `<div style="font-size:0.72rem;color:var(--red);margin-top:0.3rem">⚠ ${fmt(gap,1)} units/day behind current pace</div>`
       : '';
@@ -8966,6 +8995,7 @@ function _buildDailyPMReport(proj) {
               <span class="det-lbl">Equipment</span>
               <span>${esc(equipment)}</span>
             </div>
+            ${ppNote}
             ${behindNote}
           </div>
         </div>
@@ -9012,7 +9042,7 @@ function printDailyPMReport() {
 
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
   const cardRows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status } = _schedCalcRow(bi, agg, daysLeft);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
     const employees = [...a.employees].join(', ') || '—';
     const equipment = [...a.equipment].join(', ') || '—';
@@ -9021,12 +9051,15 @@ function printDailyPMReport() {
     const sBg       = statusBg[status]     || '#f3f4f6';
     const sLabel    = statusLabels[status] || status;
     const progPct   = Math.min(Math.max(pct, 0), 100).toFixed(1);
+    const ppDaysFmt = effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft;
 
     let targetBig, targetSub;
-    if (status === 'complete')                         { targetBig = '✓';                      targetSub = 'Complete'; }
-    else if (requiredPace === null || status === 'no-data') { targetBig = '—';                 targetSub = 'No deadline set'; }
-    else                                               { targetBig = fmt(requiredPace, 1);     targetSub = 'units needed today'; }
+    if (status === 'complete')                              { targetBig = '✓'; targetSub = 'Complete'; }
+    else if (requiredPace === null || status === 'no-data') { targetBig = '—'; targetSub = 'No deadline set'; }
+    else { targetBig = fmt(requiredPace, 1); targetSub = usingPPDays ? `units / ${ppDaysFmt} planned days` : 'units needed today'; }
 
+    const ppNote    = usingPPDays
+      ? `<div style="font-size:9px;color:#1d4ed8;margin-top:3px">📅 Based on ${ppDaysFmt} planned working days (Projection Planner)</div>` : '';
     const behindNote = (status === 'behind' && gap !== null && gap > 0)
       ? `<div style="font-size:10px;color:#dc2626;margin-top:4px">⚠ ${fmt(gap,1)} units/day behind pace</div>` : '';
 
@@ -9063,6 +9096,7 @@ function printDailyPMReport() {
               <span style="font-size:9px;color:#777;text-transform:uppercase;min-width:58px">Equipment</span>
               <span style="font-size:10px">${esc(equipment)}</span>
             </div>
+            ${ppNote}
             ${behindNote}
           </div>
         </div>
@@ -9137,7 +9171,7 @@ async function runSchedAI() {
 
   // Build cost code payload
   const costCodes = (proj.bidItems || []).map(bi => {
-    const { bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, a } = _schedCalcRow(bi, agg, daysLeft);
+    const { bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, a } = _schedCalcRow(bi, agg, daysLeft, deadline);
     return {
       costCode:     bi.cost_code || '',
       subCode:      bi.sub_code  || '',
