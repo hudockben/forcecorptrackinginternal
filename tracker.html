@@ -1780,6 +1780,7 @@
     <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Filters:</span>
     <button class="cfb cost-cfb" id="cost-proj-btn" data-f="_project" style="font-size:0.75rem;padding:0.2rem 0.5rem">Project ▼</button>
     <button class="cfb cost-cfb" id="cost-status-btn" data-f="_proj_status" style="font-size:0.75rem;padding:0.2rem 0.5rem">Status ▼</button>
+    <button class="cfb cost-cfb" id="cost-fieldtype-btn" data-f="_field_type" style="font-size:0.75rem;padding:0.2rem 0.5rem">Field Type ▼</button>
     <div style="display:flex;align-items:center;gap:0.35rem">
       <span style="font-size:0.72rem;color:var(--muted)">Sq Ft</span>
       <input id="cost-sqft-min" type="number" placeholder="Min" min="0" step="1"
@@ -5729,12 +5730,14 @@ function getFilteredProjectIds() {
 
 function buildFilteredDailyAgg() {
   const projectIds = getFilteredProjectIds();
+  const ftFilter = costFilters['_field_type'];
   const agg = {};
   const projAgg = {};  // key: cost_code||sub_code||project_name
   projectsList.forEach(p => {
     if (projectIds && !projectIds.has(p.id)) return;
     const projName = (p['project-name'] || '').trim() || '(No Project)';
     (p.dailyRows || []).forEach(row => {
+      if (ftFilter && !ftFilter.has(row.field_type || '')) return;
       const key = (row.cost_code || '') + '||' + (row.sub_code || '');
       if (!agg[key]) agg[key] = {
         running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
@@ -5815,6 +5818,11 @@ function renderCostTable() {
   // Apply sub_code column filter
   if (costFilters['sub_code']) {
     allKeys = allKeys.filter(k => costFilters['sub_code'].has(k.split('||')[1]));
+  }
+
+  // When field type filter is active, only show cost codes that have matching daily rows
+  if (costFilters['_field_type']) {
+    allKeys = allKeys.filter(k => agg[k]);
   }
 
   if (allKeys.length === 0) {
@@ -6431,6 +6439,13 @@ function _updateCostClearBtn() {
     statusBtn.textContent = sf ? `Status (${sf.size}) ▼` : 'Status ▼';
     statusBtn.classList.toggle('active', !!sf);
   }
+  // Update field type button label
+  const ftBtn = document.getElementById('cost-fieldtype-btn');
+  if (ftBtn) {
+    const ff = costFilters['_field_type'];
+    ftBtn.textContent = ff ? `Field Type (${ff.size}) ▼` : 'Field Type ▼';
+    ftBtn.classList.toggle('active', !!ff);
+  }
 }
 
 function applySqftFilter() {
@@ -6472,6 +6487,8 @@ function openCostFilter(field, btn) {
     const present = new Set(projectsList.map(p => p['status'] || ''));
     unique = order.filter(s => present.has(s));
     if (present.has('')) unique.unshift('');
+  } else if (field === '_field_type') {
+    unique = [...new Set(getAllDailyRows().map(r => r.field_type || ''))].sort();
   } else {
     unique = [...new Set(costRows.map(r => String(r[field] ?? '')))].sort();
   }
