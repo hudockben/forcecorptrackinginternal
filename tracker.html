@@ -1856,6 +1856,7 @@
         <th class="num">Bid Total</th><th class="num">Actual Cost</th>
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
+        <th>Target Date</th>
       </tr></thead>
       <tbody id="bid-fs-tbody"></tbody>
       <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
@@ -4206,7 +4207,7 @@ function addBidSubCode(projId, costCode) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 12 : 13;
+  const COLS     = readonly ? 12 : 14;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
@@ -4318,7 +4319,10 @@ function renderBidTable(projId, opts = {}) {
            ${calcCellsA}
            <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
              oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
-           ${calcCellsB}`;
+           ${calcCellsB}
+           <td><input type="date" value="${esc(b.target_date||'')}" title="Target completion date for this sub code"
+             style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.target_date ? 'var(--blue)' : 'var(--muted)'}"
+             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>`;
       tbody.appendChild(childTr);
     });
 
@@ -8682,9 +8686,12 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const currentPace = daysWorked > 0 ? runningQty / daysWorked : 0;
   const pct         = bidQty > 0 ? (runningQty / bidQty) * 100 : 0;
   const unitsLeft   = Math.max(bidQty - runningQty, 0);
-  // Use Projection Planner working days when available, else fall back to calendar days
-  const ppDays      = _ppWorkingDaysRemaining(key, deadline);
-  const effectiveDaysLeft = ppDays !== null ? ppDays : daysLeft;
+  // Per-item target date overrides project deadline for this sub code
+  const biDeadline  = bi.target_date || deadline;
+  const biDaysLeft  = biDeadline ? _schedDaysRemaining(biDeadline) : daysLeft;
+  // Use Projection Planner working days when available, else fall back to per-item calendar days
+  const ppDays      = _ppWorkingDaysRemaining(key, biDeadline);
+  const effectiveDaysLeft = ppDays !== null ? ppDays : biDaysLeft;
   const usingPPDays = ppDays !== null;
   const requiredPace = (effectiveDaysLeft !== null && effectiveDaysLeft > 0) ? unitsLeft / effectiveDaysLeft : null;
   const gap         = requiredPace !== null ? requiredPace - currentPace : null;
@@ -8717,9 +8724,14 @@ function renderScheduleProjectDetail(proj) {
         ? `<span style="color:var(--green)">▲ ${fmt(Math.abs(gap),2)}/d ahead</span>`
         : `<span style="color:${(gap / (bidQty||1)) > 0.05 ? 'var(--red)' : 'var(--yellow)'}">▼ ${fmt(gap,2)}/d needed</span>`;
 
+    const targetDateFmt = bi.target_date
+      ? new Date(bi.target_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : null;
+
     return `<tr>
       <td>
         <div style="font-weight:600">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}</div>
+        ${targetDateFmt ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.1rem">📅 Target: ${targetDateFmt}</div>` : ''}
         <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">${esc(employees)}</div>
         ${equipment !== '—' ? `<div style="font-size:0.7rem;color:var(--muted)">${esc(equipment)}</div>` : ''}
       </td>
