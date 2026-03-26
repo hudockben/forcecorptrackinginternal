@@ -71,9 +71,25 @@ module.exports = async (req, res) => {
       additionalLaborers = Math.ceil(c.gap / (unitsPerLaborHour * 8));
     }
 
+    // Describe the deadline window source for this cost code
+    let windowDesc = 'no deadline set';
+    if (c.effectiveDaysLeft !== null && c.effectiveDaysLeft !== undefined) {
+      const daysStr = c.effectiveDaysLeft % 1 !== 0
+        ? c.effectiveDaysLeft.toFixed(1) : String(c.effectiveDaysLeft);
+      if (c.usingPPDays) {
+        windowDesc = `${daysStr} planned working days remaining (Projection Planner schedule)`;
+      } else if (c.targetDate) {
+        windowDesc = `${daysStr} calendar days remaining to sub-code target date ${c.targetDate}`;
+      } else {
+        windowDesc = `${daysStr} calendar days remaining to project deadline`;
+      }
+    }
+
     const parts = [
       `  • ${c.costCode}${c.subCode ? ' / ' + c.subCode : ''}`,
       `    Status: ${c.status}`,
+      `    Scheduling Window: ${windowDesc}`,
+      c.targetDate ? `    Sub-Code Target Date: ${c.targetDate}` : '',
       `    Bid Qty: ${c.bidQty > 0 ? c.bidQty : 'not set'} | Running Qty: ${c.runningQty}`,
       `    % Complete: ${c.bidQty > 0 ? Math.round((c.runningQty / c.bidQty) * 100) + '%' : 'unknown'}`,
       `    Days Worked: ${c.daysWorked} | Current Pace: ${c.currentPace > 0 ? c.currentPace.toFixed(2) + ' units/day' : 'no activity'}`,
@@ -96,10 +112,14 @@ DEADLINE: ${deadlineStr}
 COST CODE PACING DATA:
 ${codeLines}
 
-Based on this data, provide actionable scheduling recommendations. Use the labor productivity and estimated additional laborers figures to make specific, quantified recommendations — e.g. "Add 2 laborers from the existing crew" or "Add 1 laborer and an additional [specific equipment already used on this code]". When a cost code is behind:
+Based on this data, provide actionable scheduling recommendations. Each cost code shows its Scheduling Window — this tells you whether the deadline is based on Projection Planner planned working days, a sub-code-specific target date, or the overall project deadline. Use this context to frame urgency correctly: a code with only 3 planned working days left is far more urgent than one with 30 calendar days left.
+
+Use the labor productivity and estimated additional laborers figures to make specific, quantified recommendations. When a cost code is behind:
+- Reference the Scheduling Window to explain the urgency (e.g. "with only 4 planned working days remaining on the Projection Planner schedule...")
 - State how many additional laborers are needed based on the Est. Additional Laborers Needed figure
 - Recommend by name from the Current Crew if they could be reallocated, or suggest adding a laborer
 - If equipment is a bottleneck (low labor hours but still behind), recommend adding a specific machine from the Equipment Used list
+- If a sub-code target date is set and being missed, flag that the downstream schedule may be impacted
 
 Respond with a JSON object in this exact format:
 {

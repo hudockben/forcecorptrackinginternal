@@ -9183,11 +9183,13 @@ async function runSchedAI() {
 
   // Build cost code payload
   const costCodes = (proj.bidItems || []).map(bi => {
-    const { bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, a } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, a, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
     return {
-      costCode:     bi.cost_code || '',
-      subCode:      bi.sub_code  || '',
+      costCode:     bi.cost_code   || '',
+      subCode:      bi.sub_code    || '',
+      targetDate:   bi.target_date || null,
       bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status,
+      effectiveDaysLeft, usingPPDays,
       laborHours: a.labor_hours || 0,
       equipHours: a.equip_hours || 0,
       employees: [...(a.employees || new Set())].filter(Boolean),
