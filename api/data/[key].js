@@ -5,7 +5,9 @@ const jwt      = require('jsonwebtoken');
 
 const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence'];
 function isAllowedKey(k) {
-  return ALLOWED_KEYS.includes(k) || /^fct_project_[a-zA-Z0-9_-]+$/.test(k);
+  return ALLOWED_KEYS.includes(k)
+    || /^fct_project_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_trend_[a-zA-Z0-9_-]+$/.test(k);
 }
 
 function verifyToken(req) {
@@ -34,7 +36,7 @@ module.exports = async (req, res) => {
   const key = req.query.key;
 
   if (!isAllowedKey(key)) {
-    return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}, fct_project_*` });
+    return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}, fct_project_*, fct_trend_*` });
   }
 
   // Namespace the DB key by company so each company's data is isolated

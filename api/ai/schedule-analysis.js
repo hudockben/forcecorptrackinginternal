@@ -85,6 +85,13 @@ module.exports = async (req, res) => {
       }
     }
 
+    const trendDirLabel = c.trendDirection
+      ? ({ up: 'Improving (↑)', flat: 'Stable (→)', down: 'Declining (↓)' }[c.trendDirection] || c.trendDirection)
+      : null;
+    const streakLabel = (c.consecutiveDays >= 2 && c.consecutiveStatus)
+      ? `${c.consecutiveDays} consecutive working days ${c.consecutiveStatus.replace('-', ' ')}`
+      : null;
+
     const parts = [
       `  • ${c.costCode}${c.subCode ? ' / ' + c.subCode : ''}`,
       `    Status: ${c.status}`,
@@ -98,6 +105,8 @@ module.exports = async (req, res) => {
       unitsPerLaborHour !== null ? `    Labor Productivity: ${unitsPerLaborHour.toFixed(3)} units/labor-hr` : '',
       laborHoursPerDay !== null ? `    Labor Hrs/Day: ${laborHoursPerDay.toFixed(1)} hrs/day across ${c.employees ? c.employees.length : 0} laborer(s)` : '',
       additionalLaborers !== null ? `    Est. Additional Laborers Needed (8hr day): ${additionalLaborers}` : '',
+      trendDirLabel ? `    Pace Trend (last 7 working days): ${trendDirLabel}${c.avg3DayPace != null ? ' · 3-day avg: ' + c.avg3DayPace.toFixed(2) + '/day' : ''}${c.avg7DayPace != null ? ' · 7-day avg: ' + c.avg7DayPace.toFixed(2) + '/day' : ''}` : '',
+      streakLabel ? `    Status Streak: ${streakLabel}` : '',
       c.employees && c.employees.length ? `    Current Crew: ${c.employees.join(', ')}` : '',
       c.equipment && c.equipment.length ? `    Equipment Used: ${c.equipment.join(', ')}` : '',
     ].filter(Boolean).join('\n');
@@ -120,6 +129,9 @@ Use the labor productivity and estimated additional laborers figures to make spe
 - Recommend by name from the Current Crew if they could be reallocated, or suggest adding a laborer
 - If equipment is a bottleneck (low labor hours but still behind), recommend adding a specific machine from the Equipment Used list
 - If a sub-code target date is set and being missed, flag that the downstream schedule may be impacted
+- If a cost code shows a declining pace trend for 2+ consecutive working days, flag it as an early warning even if not yet "behind"
+- When a status streak is 3+ days, reference it explicitly (e.g. "behind for the 4th consecutive working day")
+- A code that is "behind" but shows an improving trend should be acknowledged as recovering — recommend continuing the current approach
 
 Respond with a JSON object in this exact format:
 {
