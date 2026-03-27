@@ -8914,7 +8914,7 @@ async function renderScheduleTab() {
 
 /* ── Daily PM Report ─────────────────────────────────────────────────────── */
 
-function openDailyPMReport() {
+async function openDailyPMReport() {
   const sel    = document.getElementById('sched-proj-select');
   const projId = sel ? sel.value : '';
   if (!projId) return;
@@ -8929,8 +8929,14 @@ function openDailyPMReport() {
   const dateStr = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   if (titleEl) titleEl.textContent = 'Daily Field Plan — ' + (proj['project-name'] || 'Untitled');
   if (subEl)   subEl.textContent   = (proj['job-number'] ? 'Job #' + proj['job-number'] + ' · ' : '') + dateStr;
-  if (bodyEl)  bodyEl.innerHTML    = _buildDailyPMReport(proj);
+
+  // Show overlay immediately with a loading state while AI fetches
+  if (bodyEl)  bodyEl.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--muted);font-size:0.85rem">
+    <div style="margin-bottom:0.5rem;font-size:1.2rem">⚡</div>Loading AI insights…</div>`;
   if (overlay) overlay.style.display = 'flex';
+
+  const aiResult = await _fetchSchedAI(proj).catch(() => null);
+  if (bodyEl) bodyEl.innerHTML = _buildDailyPMReport(proj, aiResult);
 }
 
 function closeDailyPMReport() {
@@ -8938,7 +8944,37 @@ function closeDailyPMReport() {
   if (overlay) overlay.style.display = 'none';
 }
 
-function _buildDailyPMReport(proj) {
+function _buildAISection(aiResult) {
+  if (!aiResult) return '';
+  const outlookColor = { 'on-track': 'var(--green)', 'at-risk': 'var(--yellow)', 'behind': 'var(--red)' }[aiResult.outlook] || 'var(--muted)';
+  const outlookLabel = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind Schedule' }[aiResult.outlook] || aiResult.outlook || '';
+  const priorityColor = { high: 'var(--red)', medium: 'var(--yellow)', low: 'var(--green)' };
+  const recs = (aiResult.recommendations || []).map(r => `
+    <div style="display:flex;gap:0.6rem;padding:0.55rem 0;border-top:1px solid var(--border);align-items:flex-start">
+      <div style="width:8px;height:8px;border-radius:50%;background:${priorityColor[r.priority]||'var(--muted)'};margin-top:0.3rem;flex-shrink:0"></div>
+      <div>
+        <div style="font-size:0.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.15rem">${esc(r.costCode||'Overall')} · ${(r.priority||'medium').toUpperCase()}</div>
+        <div style="font-size:0.8rem;font-weight:600;margin-bottom:0.1rem">${esc(r.issue||'')}</div>
+        <div style="font-size:0.78rem;color:var(--muted)">${esc(r.action||'')}</div>
+      </div>
+    </div>`).join('');
+
+  return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:1.25rem;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:0.6rem;padding:0.65rem 1rem;background:var(--surface2);border-bottom:1px solid var(--border)">
+        <span style="font-size:0.95rem">⚡</span>
+        <span style="font-weight:700;font-size:0.85rem">AI Insights</span>
+        <span style="font-size:0.65rem;padding:0.1rem 0.45rem;border-radius:10px;background:rgba(96,165,250,0.15);color:var(--blue);font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Claude Haiku</span>
+        ${outlookLabel ? `<span style="margin-left:0.25rem;font-size:0.78rem;font-weight:700;color:${outlookColor}">${esc(outlookLabel)}</span>` : ''}
+      </div>
+      <div style="padding:0.85rem 1rem">
+        <div style="font-size:0.82rem;line-height:1.6;margin-bottom:${recs ? '0.25rem' : '0'}">${esc(aiResult.summary||'')}</div>
+        ${recs}
+      </div>
+    </div>`;
+}
+
+function _buildDailyPMReport(proj, aiResult) {
   const deadline  = _schedGetDeadline(proj);
   const daysLeft  = _schedDaysRemaining(deadline);
   const agg       = _schedPaceForProject(proj);
@@ -9027,15 +9063,18 @@ function _buildDailyPMReport(proj) {
       ${counts['complete'] ? `<div class="pm-rpt-stat" style="border-color:var(--blue)"><div class="val" style="color:var(--blue)">${counts['complete']}</div><div class="lbl">Complete</div></div>` : ''}
     </div>`;
 
-  return summaryStats + (cards || '<div class="sched-no-data">No bid items found for this project.</div>');
+  const aiSection = _buildAISection(aiResult);
+  return aiSection + summaryStats + (cards || '<div class="sched-no-data">No bid items found for this project.</div>');
 }
 
-function printDailyPMReport() {
+async function printDailyPMReport() {
   const sel    = document.getElementById('sched-proj-select');
   const projId = sel ? sel.value : '';
   if (!projId) return;
   const proj = getProj(projId);
   if (!proj) return;
+
+  const aiResult = await _fetchSchedAI(proj).catch(() => null);
 
   const deadline  = _schedGetDeadline(proj);
   const daysLeft  = _schedDaysRemaining(proj ? _schedGetDeadline(proj) : null);
@@ -9142,6 +9181,33 @@ function printDailyPMReport() {
     </div>
   </div>
   ${summaryChips ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${summaryChips}</div>` : ''}
+  ${(() => {
+    if (!aiResult) return '';
+    const outlookColor = { 'on-track': '#15803d', 'at-risk': '#b45309', 'behind': '#dc2626' }[aiResult.outlook] || '#888';
+    const outlookBg    = { 'on-track': '#dcfce7', 'at-risk': '#fef9c3', 'behind': '#fee2e2' }[aiResult.outlook] || '#f3f4f6';
+    const outlookLabel = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind Schedule' }[aiResult.outlook] || (aiResult.outlook || '');
+    const priorityDot  = p => ({ high: '#dc2626', medium: '#b45309', low: '#15803d' }[p] || '#888');
+    const recs = (aiResult.recommendations || []).map(r => `
+      <div style="display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border-radius:4px;background:#f9f9f9;border:1px solid #e5e5e5;margin-bottom:6px;page-break-inside:avoid">
+        <div style="width:8px;height:8px;border-radius:50%;background:${priorityDot(r.priority)};flex-shrink:0;margin-top:3px"></div>
+        <div>
+          <div style="font-size:9px;font-weight:700;color:#333">${esc(r.costCode || '')}</div>
+          <div style="font-size:9px;color:#555;margin-top:1px"><strong>Issue:</strong> ${esc(r.issue || '')}</div>
+          <div style="font-size:9px;color:#333;margin-top:1px"><strong>Action:</strong> ${esc(r.action || '')}</div>
+        </div>
+      </div>`).join('');
+    return `
+      <div style="border:1px solid #e0e0e0;border-radius:6px;margin-bottom:14px;overflow:hidden;page-break-inside:avoid">
+        <div style="background:#f4f4f4;padding:7px 12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #e0e0e0">
+          <span style="font-weight:700;font-size:11px">⚡ AI Scheduling Insights</span>
+          <span style="margin-left:auto;background:${outlookBg};color:${outlookColor};font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;border:1px solid ${outlookColor}55">${outlookLabel}</span>
+        </div>
+        <div style="padding:10px 12px">
+          ${aiResult.summary ? `<div style="font-size:10px;color:#333;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #eee">${esc(aiResult.summary)}</div>` : ''}
+          ${recs || ''}
+        </div>
+      </div>`;
+  })()}
   ${cardRows || '<p style="color:#888;text-align:center;padding:2rem">No bid items found.</p>'}
   <div style="margin-top:14px;padding-top:8px;border-top:1px solid #ddd;font-size:9px;color:#aaa;display:flex;justify-content:space-between">
     <span>DataWatch — Daily Field Plan</span>
@@ -9159,73 +9225,57 @@ function printDailyPMReport() {
 
 let _schedAICache = {}; // in-memory cache: projectId → { result, ts }
 
-async function runSchedAI() {
-  const sel    = document.getElementById('sched-proj-select');
-  const projId = sel ? sel.value : '';
-  if (!projId) return;
-
-  const proj = getProj(projId);
-  if (!proj) return;
-
-  // Insert loading panel at top of sched-body
-  _schedShowAILoading();
-
-  // Check in-memory cache (5 min)
-  const cached = _schedAICache[projId];
-  if (cached && (Date.now() - cached.ts) < 5 * 60 * 1000) {
-    _schedRenderAIPanel(cached.result, true);
-    return;
-  }
-
+/** Build the costCodes payload for the AI API from a project. */
+function _buildAIPayload(proj) {
   const deadline = _schedGetDeadline(proj);
   const daysLeft = _schedDaysRemaining(deadline);
   const agg      = _schedPaceForProject(proj);
-
-  // Build cost code payload
   const costCodes = (proj.bidItems || []).map(bi => {
     const { bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, a, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
     return {
-      costCode:     bi.cost_code   || '',
-      subCode:      bi.sub_code    || '',
-      targetDate:   bi.target_date || null,
+      costCode: bi.cost_code || '', subCode: bi.sub_code || '', targetDate: bi.target_date || null,
       bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status,
       effectiveDaysLeft, usingPPDays,
-      laborHours: a.labor_hours || 0,
-      equipHours: a.equip_hours || 0,
+      laborHours: a.labor_hours || 0, equipHours: a.equip_hours || 0,
       employees: [...(a.employees || new Set())].filter(Boolean),
       equipment: [...(a.equipment || new Set())].filter(Boolean),
     };
   });
+  return { deadline, daysLeft, costCodes };
+}
 
+/** Fetch AI schedule insights for a project. Uses 5-min in-memory cache. Returns null on failure. */
+async function _fetchSchedAI(proj) {
+  const projId = proj.id;
+  const cached = _schedAICache[projId];
+  if (cached && (Date.now() - cached.ts) < 5 * 60 * 1000) return cached.result;
+  const { deadline, daysLeft, costCodes } = _buildAIPayload(proj);
   try {
     const r = await fetch('/api/ai/schedule-analysis', {
       method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': 'Bearer ' + fctToken,
-      },
-      body: JSON.stringify({
-        projectId: projId,
-        projectName: proj['project-name'] || 'Unnamed Project',
-        jobNumber:   proj['job-number']   || '',
-        deadline,
-        daysLeft,
-        costCodes,
-      }),
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
+      body: JSON.stringify({ projectId: projId, projectName: proj['project-name'] || '', jobNumber: proj['job-number'] || '', deadline, daysLeft, costCodes }),
     });
-
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      _schedShowAIError((err.error || `Server error ${r.status}`) + (err.detail ? ': ' + err.detail : ''));
-      return;
-    }
-
+    if (!r.ok) return null;
     const result = await r.json();
     _schedAICache[projId] = { result, ts: Date.now() };
-    _schedRenderAIPanel(result, result.cached || false);
+    return result;
+  } catch { return null; }
+}
 
-  } catch (err) {
-    _schedShowAIError('Network error — could not reach AI service.');
+async function runSchedAI() {
+  const sel    = document.getElementById('sched-proj-select');
+  const projId = sel ? sel.value : '';
+  if (!projId) return;
+  const proj = getProj(projId);
+  if (!proj) return;
+
+  _schedShowAILoading();
+  const result = await _fetchSchedAI(proj);
+  if (result) {
+    _schedRenderAIPanel(result, result.cached || false);
+  } else {
+    _schedShowAIError('Could not load AI insights. Check your connection and try again.');
   }
 }
 
