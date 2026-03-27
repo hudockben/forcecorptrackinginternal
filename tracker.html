@@ -1413,6 +1413,7 @@
     .sched-pace-table td { padding: 0.4rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
     .sched-pace-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .sched-pace-table tr:hover td { background: var(--surface2); }
+    .sched-trend-cell { display:flex; flex-direction:column; align-items:flex-end; gap:0.15rem; }
     .sched-status-pill {
       display: inline-block; padding: 0.15rem 0.5rem;
       border-radius: 20px; font-size: 0.7rem; font-weight: 600; white-space: nowrap;
@@ -8699,6 +8700,84 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft };
 }
 
+/** Build sorted [{date, qty}] for one cost code from the project's daily rows. */
+function _schedDailyBreakdown(proj, biKey) {
+  const byDate = {};
+  (proj.dailyRows || []).forEach(row => {
+    const k = (row.cost_code || '') + '||' + (row.sub_code || '');
+    if (k !== biKey) return;
+    byDate[row.date] = (byDate[row.date] || 0) + (parseFloat(row.quantity) || 0);
+  });
+  return Object.entries(byDate).sort(([a],[b]) => a.localeCompare(b)).map(([date, qty]) => ({ date, qty }));
+}
+
+/** Compute pace trend metrics from a daily breakdown. */
+function _schedTrendMetrics(breakdown) {
+  if (!breakdown || breakdown.length < 2) return null;
+  const qtys  = breakdown.map(d => d.qty);
+  const last3  = qtys.slice(-3);
+  const last7  = qtys.slice(-7);
+  const avg3   = last3.reduce((a, b) => a + b, 0) / last3.length;
+  const avg7   = last7.reduce((a, b) => a + b, 0) / last7.length;
+  let direction = 'flat';
+  if (avg7 > 0.001) {
+    const delta = (avg3 - avg7) / avg7;
+    if (delta > 0.10)       direction = 'up';
+    else if (delta < -0.10) direction = 'down';
+  }
+  return { avg3, avg7, direction, totalDays: breakdown.length };
+}
+
+/** Replay per-day status to build a history array [{date, status, gap, pace}]. */
+function _schedStatusHistory(bi, breakdown, deadline) {
+  const bidQty     = parseFloat(bi.quantity) || 0;
+  const biDeadline = bi.target_date || deadline;
+  const history    = [];
+  let cumQty = 0;
+  (breakdown || []).forEach(({ date, qty }) => {
+    cumQty += qty;
+    const daysWorked  = history.length + 1;
+    const currentPace = cumQty / daysWorked;
+    let dl = null;
+    if (biDeadline) {
+      dl = Math.ceil((new Date(biDeadline + 'T12:00:00') - new Date(date + 'T12:00:00')) / 86400000);
+    }
+    const unitsLeft = Math.max(0, bidQty - cumQty);
+    const rp  = (dl !== null && dl > 0) ? unitsLeft / dl : null;
+    const gap = rp !== null ? rp - currentPace : null;
+    const pct = bidQty > 0 ? (cumQty / bidQty) * 100 : 0;
+    history.push({ date, status: _schedStatus(pct, gap, dl, bidQty), gap, pace: currentPace });
+  });
+  return history;
+}
+
+/** Count consecutive working days at the same status at the tail of history. */
+function _trendConsecutive(history) {
+  if (!history.length) return { status: null, days: 0 };
+  const last = history[history.length - 1];
+  let days = 1;
+  for (let i = history.length - 2; i >= 0; i--) {
+    if (history[i].status === last.status) days++;
+    else break;
+  }
+  return { status: last.status, days };
+}
+
+/** Mini SVG sparkline for the last 7 days of breakdown. */
+function _sparklineSvg(breakdown, color) {
+  const pts = breakdown.slice(-7);
+  if (pts.length < 2) return '';
+  const max  = Math.max(...pts.map(d => d.qty), 0.01);
+  const W = 52, H = 18;
+  const coords = pts.map((d, i) => {
+    const x = (i / (pts.length - 1)) * W;
+    const y = H - (d.qty / max) * (H - 2) - 1;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const lx = W, ly = H - (pts[pts.length - 1].qty / max) * (H - 2) - 1;
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;overflow:visible"><polyline points="${coords}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.5" fill="${color}"/></svg>`;
+}
+
 function renderScheduleProjectDetail(proj) {
   const deadline   = _schedGetDeadline(proj);
   const daysLeft   = _schedDaysRemaining(deadline);
@@ -8715,6 +8794,23 @@ function renderScheduleProjectDetail(proj) {
   const rows = bidItems.map(bi => {
     const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
+
+    // Trend
+    const biKey    = (bi.cost_code || '') + '||' + (bi.sub_code || '');
+    const breakdown = _schedDailyBreakdown(proj, biKey);
+    const trend     = _schedTrendMetrics(breakdown);
+    const history   = _schedStatusHistory(bi, breakdown, deadline);
+    const { status: csStatus, days: csDays } = _trendConsecutive(history);
+    const trendColor = trend ? ({ up: 'var(--green)', flat: 'var(--muted)', down: 'var(--red)' }[trend.direction]) : 'var(--muted)';
+    const trendArrow = trend ? ({ up: '▲', flat: '→', down: '▼' }[trend.direction]) : null;
+    const trendWord  = trend ? ({ up: 'Improving', flat: 'Stable', down: 'Declining' }[trend.direction]) : null;
+    const csColor    = { 'behind': 'var(--red)', 'at-risk': 'var(--yellow)', 'on-track': 'var(--green)', 'complete': 'var(--blue)' }[csStatus] || 'var(--muted)';
+    const csLabel    = { 'behind': 'behind', 'at-risk': 'at-risk', 'on-track': 'on track', 'complete': 'complete' }[csStatus] || (csStatus || '');
+    const trendCell  = `<td class="num"><div class="sched-trend-cell">
+      ${trend && breakdown.length >= 2 ? _sparklineSvg(breakdown, trendColor) : '<span style="color:var(--muted);font-size:0.72rem">—</span>'}
+      ${trendArrow ? `<div class="sched-trend-arrow" style="color:${trendColor};font-size:0.75rem;font-weight:700">${trendArrow} <span style="font-size:0.65rem">${trendWord}</span></div>` : ''}
+      ${csDays >= 2 ? `<div class="sched-trend-label" style="color:${csColor}">${csDays}d ${csLabel}</div>` : ''}
+    </div></td>`;
 
     const employees  = [...a.employees].slice(0, 3).join(', ') || '—';
     const equipment  = [...a.equipment].slice(0, 2).join(', ') || '—';
@@ -8745,6 +8841,7 @@ function renderScheduleProjectDetail(proj) {
       </td>
       <td class="num">${daysWorked > 0 ? daysWorked : '—'}</td>
       <td class="num">${currentPace > 0 ? fmt(currentPace, 2) + '/d' : '—'}</td>
+      ${trendCell}
       <td class="num">${requiredPace !== null ? fmt(requiredPace, 2) + '/d' + (usingPPDays ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} PP days)</span>` : '') : '—'}</td>
       <td class="num" style="white-space:nowrap">${
         status === 'complete' ? '<span class="sched-goal-pill complete">✓ Done</span>'
@@ -8787,6 +8884,7 @@ function renderScheduleProjectDetail(proj) {
           <th style="min-width:120px">Progress</th>
           <th class="num">Days Worked</th>
           <th class="num">Current Pace</th>
+          <th class="num" style="min-width:80px">7d Trend</th>
           <th class="num">Required Pace</th>
           <th class="num">Today's Goal</th>
           <th class="num">Gap</th>
@@ -8985,6 +9083,20 @@ function _buildDailyPMReport(proj, aiResult) {
   const cards = bidItems.map(bi => {
     const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
+
+    // Trend
+    const _biKey     = (bi.cost_code || '') + '||' + (bi.sub_code || '');
+    const _breakdown = _schedDailyBreakdown(proj, _biKey);
+    const _trend     = _schedTrendMetrics(_breakdown);
+    const _history   = _schedStatusHistory(bi, _breakdown, deadline);
+    const { status: _csStatus, days: _csDays } = _trendConsecutive(_history);
+    const _trendColor = _trend ? ({ up: 'var(--green)', flat: 'var(--muted)', down: 'var(--red)' }[_trend.direction]) : null;
+    const _trendArrow = _trend ? ({ up: '▲', flat: '→', down: '▼' }[_trend.direction]) : null;
+    const _trendWord  = _trend ? ({ up: 'Improving', flat: 'Stable', down: 'Declining' }[_trend.direction]) : null;
+    const _csLabel    = { 'behind': 'behind', 'at-risk': 'at-risk', 'on-track': 'on track', 'complete': 'complete' }[_csStatus] || '';
+    const trendBadge  = _trendArrow
+      ? `<div style="font-size:0.7rem;color:${_trendColor};font-weight:600;margin-top:0.3rem">${_trendArrow} ${_trendWord}${_csDays >= 2 ? ` · ${_csDays}d ${_csLabel}` : ''}</div>`
+      : '';
 
     const employees = [...a.employees].join(', ') || '—';
     const equipment = [...a.equipment].join(', ') || '—';
