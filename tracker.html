@@ -2009,6 +2009,7 @@
     <button class="btn btn-blue" id="sched-ai-btn" onclick="runSchedAI()" style="font-size:0.75rem;display:none">&#9889; AI Insights</button>
     <button class="btn btn-ghost" id="sched-pp-btn" onclick="_ppOpen()" style="font-size:0.75rem;display:none">&#128197; Projection Planner</button>
     <button class="btn btn-ghost" id="sched-pm-btn" onclick="openDailyPMReport()" style="font-size:0.75rem;display:none">&#128203; Daily PM Report</button>
+    <button class="btn btn-ghost" id="sched-pdf-btn" onclick="printSchedulePDF()" style="font-size:0.75rem;display:none">&#128438; Export PDF</button>
     <span id="sched-last-updated" style="font-size:0.7rem;color:var(--muted);margin-left:auto"></span>
   </div>
   <div id="sched-body" style="padding:1.25rem;overflow:auto;max-height:calc(100vh - 110px)">
@@ -8981,29 +8982,33 @@ async function renderScheduleTab() {
   const aiBtn  = document.getElementById('sched-ai-btn');
   const ppBtn  = document.getElementById('sched-pp-btn');
   const pmBtn  = document.getElementById('sched-pm-btn');
+  const pdfBtn = document.getElementById('sched-pdf-btn');
 
   if (projId) {
     const proj = getProj(projId);
     if (proj) {
       body.innerHTML = renderScheduleProjectDetail(proj);
       const hasBidItems = (proj.bidItems || []).length > 0;
-      if (aiBtn) aiBtn.style.display = hasBidItems ? '' : 'none';
-      if (ppBtn) ppBtn.style.display = hasBidItems ? '' : 'none';
-      if (pmBtn) pmBtn.style.display = hasBidItems ? '' : 'none';
+      if (aiBtn)  aiBtn.style.display  = hasBidItems ? '' : 'none';
+      if (ppBtn)  ppBtn.style.display  = hasBidItems ? '' : 'none';
+      if (pmBtn)  pmBtn.style.display  = hasBidItems ? '' : 'none';
+      if (pdfBtn) pdfBtn.style.display = hasBidItems ? '' : 'none';
       // Store current projId for the PP button
       _pp.projId = proj.id;
       if (_pp.projId !== proj.id) { _pp.days = {}; _pp.biKey = null; }
     } else {
       body.innerHTML = '<div class="sched-no-data">Project not found.</div>';
-      if (aiBtn) aiBtn.style.display = 'none';
-      if (ppBtn) ppBtn.style.display = 'none';
-      if (pmBtn) pmBtn.style.display = 'none';
+      if (aiBtn)  aiBtn.style.display  = 'none';
+      if (ppBtn)  ppBtn.style.display  = 'none';
+      if (pmBtn)  pmBtn.style.display  = 'none';
+      if (pdfBtn) pdfBtn.style.display = 'none';
     }
   } else {
     body.innerHTML = renderScheduleAllProjects();
-    if (aiBtn) aiBtn.style.display = 'none';
-    if (ppBtn) ppBtn.style.display = 'none';
-    if (pmBtn) pmBtn.style.display = 'none';
+    if (aiBtn)  aiBtn.style.display  = 'none';
+    if (ppBtn)  ppBtn.style.display  = 'none';
+    if (pmBtn)  pmBtn.style.display  = 'none';
+    if (pdfBtn) pdfBtn.style.display = 'none';
   }
 
   const ts = document.getElementById('sched-last-updated');
@@ -9341,6 +9346,181 @@ async function printDailyPMReport() {
   ${cardRows || '<p style="color:#888;text-align:center;padding:2rem">No bid items found.</p>'}
   <div style="margin-top:14px;padding-top:8px;border-top:1px solid #ddd;font-size:9px;color:#aaa;display:flex;justify-content:space-between">
     <span>DataWatch — Daily Field Plan</span>
+    <span>Generated ${new Date().toLocaleString()}</span>
+  </div>
+  <script>window.onload = () => { window.print(); }<\/script>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+}
+
+/* ── Schedule PDF Export ─────────────────────────────────────────────────── */
+
+async function printSchedulePDF() {
+  const sel    = document.getElementById('sched-proj-select');
+  const projId = sel ? sel.value : '';
+  if (!projId) return;
+  const proj = getProj(projId);
+  if (!proj) return;
+
+  const aiResult  = await _fetchSchedAI(proj).catch(() => null);
+  const deadline  = _schedGetDeadline(proj);
+  const daysLeft  = _schedDaysRemaining(deadline);
+  const agg       = _schedPaceForProject(proj);
+  const bidItems  = proj.bidItems || [];
+  const dateStr   = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const projName  = proj['project-name'] || 'Untitled Project';
+  const jobNum    = proj['job-number'] ? 'Job #' + proj['job-number'] : '';
+  const deadlineFmt = deadline
+    ? new Date(deadline + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    : null;
+
+  const sColors = { 'on-track': '#15803d', 'at-risk': '#b45309', 'behind': '#dc2626', 'complete': '#1d4ed8', 'no-data': '#888' };
+  const sLabels = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind', 'complete': 'Complete', 'no-data': 'No Data' };
+  const sBg     = { 'on-track': '#dcfce7', 'at-risk': '#fef9c3', 'behind': '#fee2e2', 'complete': '#dbeafe', 'no-data': '#f3f4f6' };
+  const tColorMap = { up: '#15803d', flat: '#888', down: '#dc2626' };
+  const tArrowMap = { up: '▲', flat: '→', down: '▼' };
+  const tWordMap  = { up: 'Improving', flat: 'Stable', down: 'Declining' };
+  const csColorMap = { 'behind': '#dc2626', 'at-risk': '#b45309', 'on-track': '#15803d', 'complete': '#1d4ed8' };
+  const csLabelMap = { 'behind': 'behind', 'at-risk': 'at-risk', 'on-track': 'on track', 'complete': 'complete' };
+
+  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
+
+  const tableRows = bidItems.map(bi => {
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    counts[status]++;
+
+    const biKey     = (bi.cost_code || '') + '||' + (bi.sub_code || '');
+    const breakdown = _schedDailyBreakdown(proj, biKey);
+    const trend     = _schedTrendMetrics(breakdown);
+    const history   = _schedStatusHistory(bi, breakdown, deadline);
+    const { status: csStatus, days: csDays } = _trendConsecutive(history);
+
+    const tColor  = trend ? (tColorMap[trend.direction] || '#888') : '#888';
+    const tArrow  = trend ? (tArrowMap[trend.direction] || '—') : '—';
+    const tWord   = trend ? (tWordMap[trend.direction]  || '')   : '';
+    const csColor = csColorMap[csStatus] || '#888';
+    const csLbl   = csLabelMap[csStatus] || '';
+
+    const sparkSvg = trend && breakdown.length >= 2 ? _sparklineSvg(breakdown, tColor) : '';
+    const trendCell = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+      ${sparkSvg}
+      ${tArrow !== '—' ? `<span style="font-size:9px;font-weight:700;color:${tColor}">${tArrow} ${tWord}</span>` : '<span style="color:#aaa;font-size:9px">—</span>'}
+      ${csDays >= 2 ? `<span style="font-size:8px;color:${csColor}">${csDays}d ${csLbl}</span>` : ''}
+    </div>`;
+
+    const progPct  = Math.min(Math.max(pct, 0), 100).toFixed(1);
+    const sc       = sColors[status] || '#888';
+    const gapTxt   = gap === null ? '—' : gap <= 0
+      ? `<span style="color:#15803d">+${fmt(Math.abs(gap),2)}</span>`
+      : `<span style="color:${(gap/(bidQty||1))>0.05?'#dc2626':'#b45309'}">-${fmt(gap,2)}</span>`;
+    const ppDaysFmt = effectiveDaysLeft !== null && effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft;
+    const goalTxt  = status === 'complete' ? '✓'
+      : requiredPace === null || status === 'no-data' ? '—'
+      : fmt(requiredPace, 1) + (usingPPDays ? `<br><span style="font-size:8px;color:#555">/${ppDaysFmt}d PP</span>` : '');
+
+    return `<tr>
+      <td style="font-weight:600;white-space:nowrap">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}
+        ${bi.target_date ? `<div style="font-size:8px;color:#1d4ed8">📅 ${bi.target_date}</div>` : ''}
+      </td>
+      <td style="text-align:right">${bidQty > 0 ? fmt(bidQty,1) : '—'}</td>
+      <td style="text-align:right">${runningQty > 0 ? fmt(runningQty,1) : '—'}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:4px">
+          <div style="flex:1;background:#e5e5e5;border-radius:2px;height:6px;min-width:40px;overflow:hidden">
+            <div style="width:${progPct}%;background:${sc};height:100%"></div>
+          </div>
+          <span style="font-size:9px;white-space:nowrap">${bidQty>0?fmtPct(pct):'—'}</span>
+        </div>
+      </td>
+      <td style="text-align:right">${daysWorked > 0 ? daysWorked : '—'}</td>
+      <td style="text-align:right">${currentPace > 0 ? fmt(currentPace,2)+'/d' : '—'}</td>
+      <td style="text-align:right">${trendCell}</td>
+      <td style="text-align:right">${requiredPace !== null ? fmt(requiredPace,2)+'/d' + (usingPPDays ? `<br><span style="font-size:8px;color:#555">${ppDaysFmt}d PP</span>` : '') : '—'}</td>
+      <td style="text-align:right;font-weight:700;color:${sc}">${goalTxt}</td>
+      <td style="text-align:right">${gapTxt}</td>
+      <td style="text-align:center"><span style="background:${sBg[status]||'#f3f4f6'};color:${sc};font-size:8px;font-weight:700;padding:2px 6px;border-radius:8px;border:1px solid ${sc}33;white-space:nowrap">${sLabels[status]||status}</span></td>
+    </tr>`;
+  }).join('');
+
+  const summaryChips = [
+    counts['behind']   ? `<span style="background:#fee2e2;color:#dc2626;font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px;border:1px solid #fca5a5">${counts['behind']} Behind</span>`   : '',
+    counts['at-risk']  ? `<span style="background:#fef9c3;color:#b45309;font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px;border:1px solid #fde68a">${counts['at-risk']} At Risk</span>`  : '',
+    counts['on-track'] ? `<span style="background:#dcfce7;color:#15803d;font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px;border:1px solid #86efac">${counts['on-track']} On Track</span>` : '',
+    counts['complete'] ? `<span style="background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:700;padding:3px 10px;border-radius:10px;border:1px solid #93c5fd">${counts['complete']} Complete</span>` : '',
+  ].filter(Boolean).join(' ');
+
+  // AI section (inline styled)
+  const aiHtml = (() => {
+    if (!aiResult) return '';
+    const oColor = { 'on-track': '#15803d', 'at-risk': '#b45309', 'behind': '#dc2626' }[aiResult.outlook] || '#888';
+    const oBg    = { 'on-track': '#dcfce7', 'at-risk': '#fef9c3', 'behind': '#fee2e2' }[aiResult.outlook] || '#f3f4f6';
+    const oLabel = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind Schedule' }[aiResult.outlook] || (aiResult.outlook || '');
+    const pDot   = p => ({ high: '#dc2626', medium: '#b45309', low: '#15803d' }[p] || '#888');
+    const recs   = (aiResult.recommendations || []).map(r => `
+      <div style="display:flex;gap:8px;align-items:flex-start;padding:5px 8px;border-radius:4px;background:#f9f9f9;border:1px solid #e5e5e5;margin-bottom:5px">
+        <div style="width:7px;height:7px;border-radius:50%;background:${pDot(r.priority)};flex-shrink:0;margin-top:3px"></div>
+        <div style="font-size:9px"><strong>${esc(r.costCode||'')}</strong> — ${esc(r.issue||'')} <span style="color:#333">${esc(r.action||'')}</span></div>
+      </div>`).join('');
+    return `<div style="border:1px solid #e0e0e0;border-radius:6px;margin-bottom:12px;overflow:hidden;page-break-inside:avoid">
+      <div style="background:#f4f4f4;padding:6px 12px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #e0e0e0">
+        <span style="font-weight:700;font-size:11px">⚡ AI Scheduling Insights</span>
+        <span style="margin-left:auto;background:${oBg};color:${oColor};font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px">${oLabel}</span>
+      </div>
+      <div style="padding:8px 12px">
+        ${aiResult.summary ? `<div style="font-size:9px;color:#333;margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid #eee">${esc(aiResult.summary)}</div>` : ''}
+        ${recs}
+      </div>
+    </div>`;
+  })();
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Schedule Report — ${esc(projName)}</title>
+  <style>
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:system-ui,-apple-system,sans-serif; font-size:10px; color:#111; background:#fff; padding:16px; }
+    @page { margin:1cm; size:landscape; }
+    @media print { body { padding:0; } * { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
+    table { width:100%; border-collapse:collapse; }
+    th { background:#f4f4f4; color:#555; font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:5px 8px; border:1px solid #ddd; text-align:left; white-space:nowrap; }
+    td { padding:5px 8px; border:1px solid #e5e5e5; vertical-align:middle; }
+    tr:nth-child(even) td { background:#fafafa; }
+    tr:hover td { background:#f0f7ff; }
+  </style>
+  </head><body>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #111">
+    <div>
+      <div style="font-size:15px;font-weight:800">${esc(projName)}</div>
+      <div style="font-size:9px;color:#555;margin-top:2px">${jobNum ? jobNum + ' · ' : ''}${dateStr}</div>
+    </div>
+    <div style="text-align:right;font-size:9px;color:#555">
+      ${deadlineFmt ? `Deadline: <strong>${deadlineFmt}</strong>` : ''}
+      ${daysLeft !== null ? `<br>${daysLeft > 0 ? daysLeft + ' days remaining' : daysLeft === 0 ? 'Due today' : Math.abs(daysLeft) + ' days overdue'}` : ''}
+      <br><span style="color:#aaa">Schedule Pacing Report</span>
+    </div>
+  </div>
+  ${summaryChips ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${summaryChips}</div>` : ''}
+  ${aiHtml}
+  <table>
+    <thead><tr>
+      <th>Cost Code</th>
+      <th style="text-align:right">Bid Qty</th>
+      <th style="text-align:right">Running Qty</th>
+      <th style="min-width:80px">Progress</th>
+      <th style="text-align:right">Days Worked</th>
+      <th style="text-align:right">Curr. Pace</th>
+      <th style="text-align:right;min-width:70px">7d Trend</th>
+      <th style="text-align:right">Req. Pace</th>
+      <th style="text-align:right">Today's Goal</th>
+      <th style="text-align:right">Gap</th>
+      <th style="text-align:center">Status</th>
+    </tr></thead>
+    <tbody>${tableRows || '<tr><td colspan="11" style="text-align:center;color:#888;padding:1rem">No bid items found.</td></tr>'}</tbody>
+  </table>
+  <div style="margin-top:10px;padding-top:6px;border-top:1px solid #ddd;font-size:8px;color:#aaa;display:flex;justify-content:space-between">
+    <span>DataWatch — Schedule Pacing Report</span>
     <span>Generated ${new Date().toLocaleString()}</span>
   </div>
   <script>window.onload = () => { window.print(); }<\/script>
