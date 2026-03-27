@@ -9157,6 +9157,7 @@ function _buildDailyPMReport(proj, aiResult) {
             </div>
             ${ppNote}
             ${behindNote}
+            ${trendBadge}
           </div>
         </div>
       </div>`;
@@ -9207,6 +9208,22 @@ async function printDailyPMReport() {
   const cardRows = bidItems.map(bi => {
     const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
+
+    // Trend (print)
+    const _pBiKey     = (bi.cost_code || '') + '||' + (bi.sub_code || '');
+    const _pBreakdown = _schedDailyBreakdown(proj, _pBiKey);
+    const _pTrend     = _schedTrendMetrics(_pBreakdown);
+    const _pHistory   = _schedStatusHistory(bi, _pBreakdown, deadline);
+    const { status: _pCsStatus, days: _pCsDays } = _trendConsecutive(_pHistory);
+    const _pTrendColorMap = { up: '#15803d', flat: '#888', down: '#dc2626' };
+    const _pTrendColor = _pTrend ? (_pTrendColorMap[_pTrend.direction] || '#888') : null;
+    const _pTrendArrow = _pTrend ? ({ up: '▲', flat: '→', down: '▼' }[_pTrend.direction]) : null;
+    const _pTrendWord  = _pTrend ? ({ up: 'Improving', flat: 'Stable', down: 'Declining' }[_pTrend.direction]) : null;
+    const _pCsLabel    = { 'behind': 'behind', 'at-risk': 'at-risk', 'on-track': 'on track', 'complete': 'complete' }[_pCsStatus] || '';
+    const printTrendNote = _pTrendArrow
+      ? `<div style="font-size:9px;color:${_pTrendColor};margin-top:4px;font-weight:600">${_pTrendArrow} ${_pTrendWord}${_pCsDays >= 2 ? ` · ${_pCsDays}d ${_pCsLabel}` : ''}</div>`
+      : '';
+
     const employees = [...a.employees].join(', ') || '—';
     const equipment = [...a.equipment].join(', ') || '—';
     const desc      = bi.description ? esc(bi.description) : '';
@@ -9261,6 +9278,7 @@ async function printDailyPMReport() {
             </div>
             ${ppNote}
             ${behindNote}
+            ${printTrendNote}
           </div>
         </div>
       </div>`;
@@ -9344,6 +9362,11 @@ function _buildAIPayload(proj) {
   const agg      = _schedPaceForProject(proj);
   const costCodes = (proj.bidItems || []).map(bi => {
     const { bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, a, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const _aiKey       = (bi.cost_code || '') + '||' + (bi.sub_code || '');
+    const _aiBreakdown = _schedDailyBreakdown(proj, _aiKey);
+    const _aiTrend     = _schedTrendMetrics(_aiBreakdown);
+    const _aiHistory   = _schedStatusHistory(bi, _aiBreakdown, deadline);
+    const _aiConsec    = _trendConsecutive(_aiHistory);
     return {
       costCode: bi.cost_code || '', subCode: bi.sub_code || '', targetDate: bi.target_date || null,
       bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status,
@@ -9351,6 +9374,11 @@ function _buildAIPayload(proj) {
       laborHours: a.labor_hours || 0, equipHours: a.equip_hours || 0,
       employees: [...(a.employees || new Set())].filter(Boolean),
       equipment: [...(a.equipment || new Set())].filter(Boolean),
+      trendDirection:   _aiTrend ? _aiTrend.direction : null,
+      avg3DayPace:      _aiTrend ? Math.round(_aiTrend.avg3 * 100) / 100 : null,
+      avg7DayPace:      _aiTrend ? Math.round(_aiTrend.avg7 * 100) / 100 : null,
+      consecutiveDays:   _aiConsec.days,
+      consecutiveStatus: _aiConsec.status,
     };
   });
   return { deadline, daysLeft, costCodes };
