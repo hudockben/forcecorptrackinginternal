@@ -8698,7 +8698,12 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const requiredPace = (effectiveDaysLeft !== null && effectiveDaysLeft > 0) ? unitsLeft / effectiveDaysLeft : null;
   const gap         = requiredPace !== null ? requiredPace - currentPace : null;
   const status      = _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
-  return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft };
+  // Est. hours remaining: divide units left by historical units-per-labor-hour rate
+  const laborHours      = a.labor_hours || 0;
+  const unitsPerHour    = (laborHours > 0 && runningQty > 0) ? runningQty / laborHours : null;
+  const hoursLeft       = (unitsPerHour !== null && unitsLeft > 0) ? unitsLeft / unitsPerHour : (unitsLeft === 0 && pct >= 100 ? 0 : null);
+  const laborHoursPerDay = (laborHours > 0 && daysWorked > 0) ? laborHours / daysWorked : null;
+  return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay };
 }
 
 /** Build sorted [{date, qty}] for one cost code from the project's daily rows. */
@@ -8793,7 +8798,7 @@ function renderScheduleProjectDetail(proj) {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
 
   const rows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     // Trend
@@ -8844,6 +8849,15 @@ function renderScheduleProjectDetail(proj) {
       <td class="num">${currentPace > 0 ? fmt(currentPace, 2) + '/d' : '—'}</td>
       ${trendCell}
       <td class="num">${requiredPace !== null ? fmt(requiredPace, 2) + '/d' + (usingPPDays ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} PP days)</span>` : '') : '—'}</td>
+      <td class="num">${
+        status === 'complete' ? '<span style="color:var(--green);font-size:0.78rem">✓ Done</span>'
+        : hoursLeft === null ? '<span style="color:var(--muted)">—</span>'
+        : (() => {
+            const hrs = Math.round(hoursLeft);
+            const rateNote = unitsPerHour !== null ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(unitsPerHour,2)}/hr avg</span>` : '';
+            return `<span style="font-weight:600">${hrs} hr${hrs !== 1 ? 's' : ''}</span>${rateNote}`;
+          })()
+      }</td>
       <td class="num" style="white-space:nowrap">${
         status === 'complete' ? '<span class="sched-goal-pill complete">✓ Done</span>'
         : requiredPace === null || status === 'no-data' ? '<span class="sched-goal-pill no-data">—</span>'
@@ -8887,6 +8901,7 @@ function renderScheduleProjectDetail(proj) {
           <th class="num">Current Pace</th>
           <th class="num" style="min-width:80px">7d Trend</th>
           <th class="num">Required Pace</th>
+          <th class="num">Est. Hours Left</th>
           <th class="num">Today's Goal</th>
           <th class="num">Gap</th>
           <th>Status</th>
@@ -9086,7 +9101,7 @@ function _buildDailyPMReport(proj, aiResult) {
   const progColors = { 'on-track': 'var(--green)', 'at-risk': 'var(--yellow)', 'behind': 'var(--red)', 'complete': 'var(--blue)', 'no-data': 'var(--muted)' };
 
   const cards = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     // Trend
@@ -9151,6 +9166,18 @@ function _buildDailyPMReport(proj, aiResult) {
             <div class="det-row">
               <span class="det-lbl">Curr. Pace</span>
               <span>${currentPace > 0 ? fmt(currentPace,2) + '/day avg (' + daysWorked + ' days worked)' : 'No entries yet'}</span>
+            </div>
+            <div class="det-row">
+              <span class="det-lbl">Est. Hrs Left</span>
+              <span>${
+                status === 'complete' ? '✓ Complete'
+                : hoursLeft === null ? '—'
+                : (() => {
+                    const hrs = Math.round(hoursLeft);
+                    const rateStr = unitsPerHour !== null ? ` · ${fmt(unitsPerHour,2)}/hr historical rate` : '';
+                    return `~${hrs} hr${hrs !== 1 ? 's' : ''}${rateStr}`;
+                  })()
+              }</span>
             </div>
             <div class="det-row">
               <span class="det-lbl">Crew</span>
