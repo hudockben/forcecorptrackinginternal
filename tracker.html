@@ -6759,8 +6759,7 @@ function renderMobileEntryForm(successMsg) {
       <div id="mob-equip-body" style="display:none;margin-top:0.65rem">
         <label class="mob-form-label">Equipment / Truck</label>
         <select id="mob-equip" class="mob-input" onchange="mobEquipUCFill()">${equipOpts}</select>
-        <label class="mob-form-label">Unit Cost</label>
-        <input  id="mob-equip-uc" type="number" class="mob-input" placeholder="0.00" step="0.01" min="0">
+        <input  id="mob-equip-uc" type="hidden" value="0">
         <label class="mob-form-label">Hours</label>
         <input  id="mob-equip-hrs" type="number" class="mob-input" placeholder="0.0" step="0.25" min="0">
         <label class="mob-form-label">Operator <span style="font-weight:400;color:var(--muted)">(optional — assigns equipment to this employee)</span></label>
@@ -6803,10 +6802,8 @@ function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
       <select class="mob-input mob-sc-sel" data-block="${idx}"><option value="">— Select Cost Code First —</option></select>
       <label class="mob-form-label">Hours (per employee)</label>
       <input type="number" class="mob-input mob-hrs-inp" data-block="${idx}" placeholder="0.0" step="0.25" min="0">
-      <label class="mob-form-label">Job Class</label>
-      <select class="mob-input mob-jc-sel" data-block="${idx}">${jobClassOpts}</select>
-      <label class="mob-form-label">Rate (per hour)</label>
-      <input type="number" class="mob-input mob-rate-inp" data-block="${idx}" placeholder="0.00" step="0.01" min="0">
+      <input type="hidden" class="mob-jc-sel"   data-block="${idx}" value="">
+      <input type="hidden" class="mob-rate-inp" data-block="${idx}" value="0">
       <label class="mob-form-label">Quantity <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
       <input type="number" class="mob-input mob-qty-inp" data-block="${idx}" placeholder="0" step="any" min="0">
     </div>`;
@@ -6945,28 +6942,46 @@ async function submitMobileEntry() {
   const proj = getProj(projId);
   if (!proj) { alert('Project not found.'); return; }
 
+  // Build per-employee rate/job_class lookup from stored employee list
+  const isPW = proj.prevailing_wage || false;
+  const empRateMap = {};
+  (lists.employees || []).forEach(e => {
+    empRateMap[e.name] = {
+      job_class: e.job_class || '',
+      rate: isPW ? (parseFloat(e.prevailing_rate) || 0) : (parseFloat(e.non_prevailing_rate) || 0),
+    };
+  });
+
   const newRows = [];
 
-  // One labor row per employee per code block
-  codeBlocks.forEach(b => {
-    if (b.hours <= 0 && checkedEmps.length > 0) return; // skip empty blocks
+  // One labor row per employee per code block.
+  // If an equipment operator is set and matches this employee on the first
+  // code block, merge equipment onto that row instead of a separate row.
+  const equipMerged = equipName && equipHrs > 0 && equipOperator;
+  codeBlocks.forEach((b, bi) => {
+    if (b.hours <= 0 && checkedEmps.length > 0) return;
     checkedEmps.forEach(emp => {
+      const empData = empRateMap[emp] || {};
+      const isOperator = equipMerged && bi === 0 && emp === equipOperator;
       newRows.push({
         id: uid(), date, field_type: fieldType, employee: emp,
-        cost_code: b.cc, sub_code: b.sc, job_class: b.jobClass,
-        rate: b.rate, labor_hours: b.hours,
-        equipment: '', equip_unit_cost: 0, equip_hours: 0,
+        cost_code: b.cc, sub_code: b.sc,
+        job_class: empData.job_class || '',
+        rate: empData.rate || 0, labor_hours: b.hours,
+        equipment:       isOperator ? equipName : '',
+        equip_unit_cost: isOperator ? equipUC   : 0,
+        equip_hours:     isOperator ? equipHrs  : 0,
         material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
         quantity: b.quantity, num_laborers: 0,
       });
     });
   });
 
-  // One equipment row if filled in (uses first code block's code)
-  if (equipName && equipHrs > 0) {
+  // Standalone equipment row only if no operator was selected (shared equipment)
+  if (equipName && equipHrs > 0 && !equipOperator) {
     const firstBlock = codeBlocks[0] || {};
     newRows.push({
-      id: uid(), date, field_type: fieldType, employee: equipOperator,
+      id: uid(), date, field_type: fieldType, employee: '',
       cost_code: firstBlock.cc || '', sub_code: firstBlock.sc || '', job_class: '',
       rate: 0, labor_hours: 0,
       equipment: equipName, equip_unit_cost: equipUC, equip_hours: equipHrs,
