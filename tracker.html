@@ -6759,8 +6759,7 @@ function renderMobileEntryForm(successMsg) {
       <div id="mob-equip-body" style="display:none;margin-top:0.65rem">
         <label class="mob-form-label">Equipment / Truck</label>
         <select id="mob-equip" class="mob-input" onchange="mobEquipUCFill()">${equipOpts}</select>
-        <label class="mob-form-label">Unit Cost</label>
-        <input  id="mob-equip-uc" type="number" class="mob-input" placeholder="0.00" step="0.01" min="0">
+        <input  id="mob-equip-uc" type="hidden" value="0">
         <label class="mob-form-label">Hours</label>
         <input  id="mob-equip-hrs" type="number" class="mob-input" placeholder="0.0" step="0.25" min="0">
         <label class="mob-form-label">Operator <span style="font-weight:400;color:var(--muted)">(optional — assigns equipment to this employee)</span></label>
@@ -6803,10 +6802,8 @@ function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
       <select class="mob-input mob-sc-sel" data-block="${idx}"><option value="">— Select Cost Code First —</option></select>
       <label class="mob-form-label">Hours (per employee)</label>
       <input type="number" class="mob-input mob-hrs-inp" data-block="${idx}" placeholder="0.0" step="0.25" min="0">
-      <label class="mob-form-label">Job Class</label>
-      <select class="mob-input mob-jc-sel" data-block="${idx}">${jobClassOpts}</select>
-      <label class="mob-form-label">Rate (per hour)</label>
-      <input type="number" class="mob-input mob-rate-inp" data-block="${idx}" placeholder="0.00" step="0.01" min="0">
+      <input type="hidden" class="mob-jc-sel"   data-block="${idx}" value="">
+      <input type="hidden" class="mob-rate-inp" data-block="${idx}" value="0">
       <label class="mob-form-label">Quantity <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
       <input type="number" class="mob-input mob-qty-inp" data-block="${idx}" placeholder="0" step="any" min="0">
     </div>`;
