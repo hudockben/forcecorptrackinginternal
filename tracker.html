@@ -1422,7 +1422,8 @@
     .sched-status-pill.at-risk   { background: rgba(234,179,8,0.15);  color: var(--yellow); }
     .sched-status-pill.behind    { background: rgba(239,68,68,0.15);  color: var(--red); }
     .sched-status-pill.complete  { background: rgba(96,165,250,0.15); color: var(--blue); }
-    .sched-status-pill.no-data   { background: rgba(102,102,102,0.1); color: var(--muted); }
+    .sched-status-pill.no-data       { background: rgba(102,102,102,0.1); color: var(--muted); }
+    .sched-status-pill.not-started   { background: rgba(99,102,241,0.15); color: #818cf8; }
     .sched-progress-bar {
       height: 6px; background: var(--surface2); border-radius: 3px;
       overflow: hidden; min-width: 70px; flex-shrink: 0;
@@ -1448,7 +1449,8 @@
     .sched-goal-pill.at-risk  { background: rgba(234,179,8,0.15);  color: var(--yellow); border: 1px solid rgba(234,179,8,0.3); }
     .sched-goal-pill.on-track { background: rgba(34,197,94,0.12);  color: var(--green);  border: 1px solid rgba(34,197,94,0.25); }
     .sched-goal-pill.complete { background: rgba(96,165,250,0.12); color: var(--blue);   border: 1px solid rgba(96,165,250,0.25); }
-    .sched-goal-pill.no-data  { background: transparent; color: var(--muted); border: none; }
+    .sched-goal-pill.no-data      { background: transparent; color: var(--muted); border: none; }
+    .sched-goal-pill.not-started  { background: rgba(99,102,241,0.12); color: #818cf8; border: 1px solid rgba(99,102,241,0.25); }
 
     /* ── Daily PM Report overlay ── */
     .pm-report-overlay {
@@ -1857,7 +1859,7 @@
         <th class="num">Bid Total</th><th class="num">Actual Cost</th>
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
-        <th>Target Date</th>
+        <th>Start Date</th><th>Target Date</th>
       </tr></thead>
       <tbody id="bid-fs-tbody"></tbody>
       <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
@@ -4209,7 +4211,7 @@ function addBidSubCode(projId, costCode) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 12 : 14;
+  const COLS     = readonly ? 13 : 15;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
@@ -4322,6 +4324,9 @@ function renderBidTable(projId, opts = {}) {
            <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
              oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
            ${calcCellsB}
+           <td><input type="date" value="${esc(b.start_date||'')}" title="Start date for this sub code"
+             style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.start_date ? 'var(--green)' : 'var(--muted)'}"
+             onchange="updateBidItem('${projId}','${b.id}','start_date',this.value);this.style.color=this.value?'var(--green)':'var(--muted)'"></td>
            <td><input type="date" value="${esc(b.target_date||'')}" title="Target completion date for this sub code"
              style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.target_date ? 'var(--blue)' : 'var(--muted)'}"
              onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>`;
@@ -6527,7 +6532,7 @@ function exportBidPDF(projId) {
 
   groupOrder.forEach(costCode => {
     const gItems = groups[costCode];
-    rowsHTML += `<tr class="group-hdr"><td colspan="14"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
+    rowsHTML += `<tr class="group-hdr"><td colspan="15"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
     gItems.forEach(b => {
@@ -6561,6 +6566,7 @@ function exportBidPDF(projId) {
         ${r(numLab || dash)}
         ${r(diffTxt, diffCls)}
         ${r(bidTot ? '$' + fmt(proj) : dash, projCls)}
+        ${r(b.start_date  ? new Date(b.start_date  + 'T12:00:00').toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : dash)}
         ${r(b.target_date ? new Date(b.target_date + 'T12:00:00').toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : dash)}
       </tr>`;
     });
@@ -6578,7 +6584,7 @@ function exportBidPDF(projId) {
       ${r(dash)}
       ${r(gDiffTxt, gDiffCls)}
       ${r(gBid ? '$' + fmt(gProj) : dash, gProjCls)}
-      ${r(dash)}
+      ${r(dash)}${r(dash)}
     </tr>`;
 
     grandBid += gBid; grandActual += gActual; grandHrs += gHrs; grandProj += gProj;
@@ -6622,7 +6628,7 @@ function exportBidPDF(projId) {
       <th class="num">Bid Total</th><th class="num">Actual Cost</th>
       <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
       <th class="num">Variance</th><th class="num">Projected Cost</th>
-      <th class="num">Target Date</th>
+      <th class="num">Start Date</th><th class="num">Target Date</th>
     </tr></thead>
     <tbody>${rowsHTML}</tbody>
     <tfoot><tr class="totals">
@@ -6634,7 +6640,7 @@ function exportBidPDF(projId) {
       ${r(dash)}
       ${r(totDiffTxt, totDiffCls)}
       ${r(grandBid   ? '$' + fmt(grandProj)   : dash, totProjCls)}
-      ${r(dash)}
+      ${r(dash)}${r(dash)}
     </tr></tfoot>
   </table>
   <script>window.onload = () => { window.print(); }<\/script>
@@ -8653,7 +8659,7 @@ function _schedStatus(pct, gap, daysLeft, bidQty) {
 }
 
 function _schedStatusPill(status) {
-  const labels = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind', 'complete': 'Complete', 'no-data': 'No Data' };
+  const labels = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind', 'complete': 'Complete', 'no-data': 'No Data', 'not-started': 'Not Started' };
   return `<span class="sched-status-pill ${status}">${labels[status] || status}</span>`;
 }
 
@@ -8693,22 +8699,41 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const currentPace = daysWorked > 0 ? runningQty / daysWorked : 0;
   const pct         = bidQty > 0 ? (runningQty / bidQty) * 100 : 0;
   const unitsLeft   = Math.max(bidQty - runningQty, 0);
+
   // Per-item target date overrides project deadline for this sub code
   const biDeadline  = bi.target_date || deadline;
   const biDaysLeft  = biDeadline ? _schedDaysRemaining(biDeadline) : daysLeft;
+
+  // Start date: if start_date is in the future and no work logged yet → not started
+  const todayStr      = new Date().toISOString().slice(0, 10);
+  const notStartedYet = !!(bi.start_date && bi.start_date > todayStr && daysWorked === 0);
+
+  // Planned pace: bidQty spread over the full start→target window (pre-start planning figure)
+  let plannedPace = null;
+  if (bi.start_date && biDeadline) {
+    const totalDays = Math.ceil((new Date(biDeadline + 'T12:00:00') - new Date(bi.start_date + 'T12:00:00')) / (1000 * 60 * 60 * 24));
+    if (totalDays > 0) plannedPace = bidQty / totalDays;
+  }
+
   // Use Projection Planner working days when available, else fall back to per-item calendar days
-  const ppDays      = _ppWorkingDaysRemaining(key, biDeadline);
+  const ppDays            = _ppWorkingDaysRemaining(key, biDeadline);
   const effectiveDaysLeft = ppDays !== null ? ppDays : biDaysLeft;
-  const usingPPDays = ppDays !== null;
-  const requiredPace = (effectiveDaysLeft !== null && effectiveDaysLeft > 0) ? unitsLeft / effectiveDaysLeft : null;
-  const gap         = requiredPace !== null ? requiredPace - currentPace : null;
-  const status      = _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
+  const usingPPDays       = ppDays !== null;
+
+  // Required pace: pre-start shows planned rate so PMs can plan crew; active shows units-left/days-left
+  const requiredPace = notStartedYet
+    ? plannedPace
+    : (effectiveDaysLeft !== null && effectiveDaysLeft > 0) ? unitsLeft / effectiveDaysLeft : null;
+
+  const gap    = (!notStartedYet && requiredPace !== null) ? requiredPace - currentPace : null;
+  const status = notStartedYet ? 'not-started' : _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
+
   // Est. hours remaining: divide units left by historical units-per-labor-hour rate
-  const laborHours      = a.labor_hours || 0;
-  const unitsPerHour    = (laborHours > 0 && runningQty > 0) ? runningQty / laborHours : null;
-  const hoursLeft       = (unitsPerHour !== null && unitsLeft > 0) ? unitsLeft / unitsPerHour : (unitsLeft === 0 && pct >= 100 ? 0 : null);
+  const laborHours       = a.labor_hours || 0;
+  const unitsPerHour     = (laborHours > 0 && runningQty > 0) ? runningQty / laborHours : null;
+  const hoursLeft        = (unitsPerHour !== null && unitsLeft > 0) ? unitsLeft / unitsPerHour : (unitsLeft === 0 && pct >= 100 ? 0 : null);
   const laborHoursPerDay = (laborHours > 0 && daysWorked > 0) ? laborHours / daysWorked : null;
-  return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay };
+  return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, plannedPace, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet };
 }
 
 /** Build sorted [{date, qty}] for one cost code from the project's daily rows. */
@@ -8831,14 +8856,32 @@ function renderScheduleProjectDetail(proj) {
         ? `<span style="color:var(--green)">▲ ${fmt(Math.abs(gap),2)}/d ahead</span>`
         : `<span style="color:${(gap / (bidQty||1)) > 0.05 ? 'var(--red)' : 'var(--yellow)'}">▼ ${fmt(gap,2)}/d needed</span>`;
 
+    const startDateFmt = bi.start_date
+      ? new Date(bi.start_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : null;
     const targetDateFmt = bi.target_date
       ? new Date(bi.target_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
       : null;
 
+    const reqPaceCell = notStartedYet && requiredPace !== null
+      ? `${fmt(requiredPace, 2)}/d<br><span style="font-size:0.62rem;color:#818cf8">(planned)</span>`
+      : requiredPace !== null
+        ? fmt(requiredPace, 2) + '/d' + (usingPPDays ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} PP days)</span>` : '')
+        : '—';
+
+    const goalCell = status === 'complete'
+      ? '<span class="sched-goal-pill complete">✓ Done</span>'
+      : status === 'not-started'
+        ? `<span class="sched-goal-pill not-started">Starts ${startDateFmt || '?'}</span>`
+        : requiredPace === null || status === 'no-data'
+          ? '<span class="sched-goal-pill no-data">—</span>'
+          : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}/day${usingPPDays ? ' 📅' : ''}</span>`;
+
     return `<tr>
       <td>
         <div style="font-weight:600">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}</div>
-        ${targetDateFmt ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.1rem">📅 Target: ${targetDateFmt}</div>` : ''}
+        ${startDateFmt ? `<div style="font-size:0.68rem;color:var(--green);margin-top:0.1rem">▶ Start: ${startDateFmt}</div>` : ''}
+        ${targetDateFmt ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.1rem">◼ Target: ${targetDateFmt}</div>` : ''}
         <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">${esc(employees)}</div>
         ${equipment !== '—' ? `<div style="font-size:0.7rem;color:var(--muted)">${esc(equipment)}</div>` : ''}
       </td>
@@ -8853,21 +8896,17 @@ function renderScheduleProjectDetail(proj) {
       <td class="num">${daysWorked > 0 ? daysWorked : '—'}</td>
       <td class="num">${currentPace > 0 ? fmt(currentPace, 2) + '/d' : '—'}</td>
       ${trendCell}
-      <td class="num">${requiredPace !== null ? fmt(requiredPace, 2) + '/d' + (usingPPDays ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} PP days)</span>` : '') : '—'}</td>
+      <td class="num">${reqPaceCell}</td>
       <td class="num">${
         status === 'complete' ? '<span style="color:var(--green);font-size:0.78rem">✓ Done</span>'
-        : hoursLeft === null ? '<span style="color:var(--muted)">—</span>'
+        : notStartedYet || hoursLeft === null ? '<span style="color:var(--muted)">—</span>'
         : (() => {
             const hrs = Math.round(hoursLeft);
             const rateNote = unitsPerHour !== null ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(unitsPerHour,2)}/hr avg</span>` : '';
             return `<span style="font-weight:600">${hrs} hr${hrs !== 1 ? 's' : ''}</span>${rateNote}`;
           })()
       }</td>
-      <td class="num" style="white-space:nowrap">${
-        status === 'complete' ? '<span class="sched-goal-pill complete">✓ Done</span>'
-        : requiredPace === null || status === 'no-data' ? '<span class="sched-goal-pill no-data">—</span>'
-        : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}/day${usingPPDays ? ' 📅' : ''}</span>`
-      }</td>
+      <td class="num" style="white-space:nowrap">${goalCell}</td>
       <td class="num">${gapHtml}</td>
       <td>${_schedStatusPill(status)}</td>
     </tr>`;
@@ -9102,11 +9141,11 @@ function _buildDailyPMReport(proj, aiResult) {
   const daysLeft  = _schedDaysRemaining(deadline);
   const agg       = _schedPaceForProject(proj);
   const bidItems  = proj.bidItems || [];
-  const counts    = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
-  const progColors = { 'on-track': 'var(--green)', 'at-risk': 'var(--yellow)', 'behind': 'var(--red)', 'complete': 'var(--blue)', 'no-data': 'var(--muted)' };
+  const counts    = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
+  const progColors = { 'on-track': 'var(--green)', 'at-risk': 'var(--yellow)', 'behind': 'var(--red)', 'complete': 'var(--blue)', 'no-data': 'var(--muted)', 'not-started': '#818cf8' };
 
   const cards = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     // Trend
@@ -9128,9 +9167,15 @@ function _buildDailyPMReport(proj, aiResult) {
     const desc      = bi.description ? esc(bi.description) : '';
     const progColor = progColors[status] || 'var(--muted)';
 
+    const startDateFmtPM = bi.start_date
+      ? new Date(bi.start_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : null;
+
     let targetVal, targetUnit;
     if (status === 'complete') {
       targetVal = '✓'; targetUnit = 'Complete';
+    } else if (status === 'not-started') {
+      targetVal = startDateFmtPM || '?'; targetUnit = 'Starts';
     } else if (requiredPace === null || status === 'no-data') {
       targetVal = '—'; targetUnit = 'No deadline set';
     } else {
@@ -9418,10 +9463,10 @@ async function printSchedulePDF() {
   const csColorMap = { 'behind': '#dc2626', 'at-risk': '#b45309', 'on-track': '#15803d', 'complete': '#1d4ed8' };
   const csLabelMap = { 'behind': 'behind', 'at-risk': 'at-risk', 'on-track': 'on track', 'complete': 'complete' };
 
-  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
+  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
 
   const tableRows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, notStartedYet } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     const biKey     = (bi.cost_code || '') + '||' + (bi.sub_code || '');
@@ -9444,18 +9489,20 @@ async function printSchedulePDF() {
     </div>`;
 
     const progPct  = Math.min(Math.max(pct, 0), 100).toFixed(1);
-    const sc       = sColors[status] || '#888';
+    const sc       = status === 'not-started' ? '#818cf8' : (sColors[status] || '#888');
     const gapTxt   = gap === null ? '—' : gap <= 0
       ? `<span style="color:#15803d">+${fmt(Math.abs(gap),2)}</span>`
       : `<span style="color:${(gap/(bidQty||1))>0.05?'#dc2626':'#b45309'}">-${fmt(gap,2)}</span>`;
     const ppDaysFmt = effectiveDaysLeft !== null && effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft;
     const goalTxt  = status === 'complete' ? '✓'
+      : status === 'not-started' ? `Starts ${bi.start_date || '?'}`
       : requiredPace === null || status === 'no-data' ? '—'
       : fmt(requiredPace, 1) + (usingPPDays ? `<br><span style="font-size:8px;color:#555">/${ppDaysFmt}d PP</span>` : '');
 
     return `<tr>
       <td style="font-weight:600;white-space:nowrap">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}
-        ${bi.target_date ? `<div style="font-size:8px;color:#1d4ed8">📅 ${bi.target_date}</div>` : ''}
+        ${bi.start_date ? `<div style="font-size:8px;color:#15803d">▶ ${bi.start_date}</div>` : ''}
+        ${bi.target_date ? `<div style="font-size:8px;color:#1d4ed8">◼ ${bi.target_date}</div>` : ''}
       </td>
       <td style="text-align:right">${bidQty > 0 ? fmt(bidQty,1) : '—'}</td>
       <td style="text-align:right">${runningQty > 0 ? fmt(runningQty,1) : '—'}</td>
@@ -9580,8 +9627,8 @@ function _buildAIPayload(proj) {
     const _aiHistory   = _schedStatusHistory(bi, _aiBreakdown, deadline);
     const _aiConsec    = _trendConsecutive(_aiHistory);
     return {
-      costCode: bi.cost_code || '', subCode: bi.sub_code || '', targetDate: bi.target_date || null,
-      bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status,
+      costCode: bi.cost_code || '', subCode: bi.sub_code || '', startDate: bi.start_date || null, targetDate: bi.target_date || null,
+      bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, notStartedYet,
       effectiveDaysLeft, usingPPDays,
       laborHours: a.labor_hours || 0, equipHours: a.equip_hours || 0,
       employees: [...(a.employees || new Set())].filter(Boolean),
