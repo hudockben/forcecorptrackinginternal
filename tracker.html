@@ -4092,6 +4092,88 @@ function updateBidItem(projId, itemId, field, value) {
   renderBidFooter(projId);
 }
 
+/* ── Change Order modal ── */
+function showCOModal(projId, biId) {
+  const p = getProj(projId); if (!p) return;
+  const bi = (p.bidItems || []).find(b => b.id === biId); if (!bi) return;
+  if (!bi.change_orders) bi.change_orders = [];
+  const cos = bi.change_orders;
+  const baseQty    = parseFloat(bi.quantity) || 0;
+  const totalDelta = cos.reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+  const unit       = bi.unit ? ` ${bi.unit}` : '';
+  const coRows = cos.length
+    ? cos.map(co => `<tr>
+        <td style="font-size:0.8rem;padding:0.25rem 0.4rem">${esc(co.date || '')}</td>
+        <td style="font-size:0.8rem;text-align:right;padding:0.25rem 0.4rem;font-weight:600;color:${(co.qty_delta||0)>=0?'var(--green)':'var(--red)'}">${(co.qty_delta||0)>=0?'+':''}${fmt(co.qty_delta,1)}${unit}</td>
+        <td style="font-size:0.8rem;padding:0.25rem 0.4rem;color:var(--muted)">${esc(co.note || '')}</td>
+        <td style="padding:0.25rem 0.4rem"><button class="del-btn" onclick="_removeCO('${projId}','${biId}','${co.id}')">✕</button></td>
+      </tr>`).join('')
+    : `<tr><td colspan="4" style="color:var(--muted);font-size:0.8rem;text-align:center;padding:0.75rem">No change orders yet</td></tr>`;
+  const existing = document.getElementById('co-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'co-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.5rem;min-width:400px;max-width:520px;width:90%">
+      <div style="font-weight:700;font-size:1rem;margin-bottom:0.2rem">Change Orders — ${esc(bi.cost_code||'')} ${esc(bi.sub_code||'')}</div>
+      <div style="font-size:0.75rem;color:var(--muted);margin-bottom:1rem">
+        Base: <strong>${fmt(baseQty,1)}${unit}</strong> &nbsp;+&nbsp; CO: <strong style="color:${totalDelta>=0?'var(--green)':'var(--red)'}">${totalDelta>=0?'+':''}${fmt(totalDelta,1)}${unit}</strong> &nbsp;=&nbsp; Effective: <strong style="color:var(--text)">${fmt(baseQty+totalDelta,1)}${unit}</strong>
+      </div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:1rem;background:var(--surface2);border-radius:6px;overflow:hidden">
+        <thead><tr style="font-size:0.7rem;color:var(--muted);border-bottom:1px solid var(--border)">
+          <th style="text-align:left;padding:0.3rem 0.4rem">Date</th>
+          <th style="text-align:right;padding:0.3rem 0.4rem">Qty Δ</th>
+          <th style="text-align:left;padding:0.3rem 0.4rem">Note</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="co-rows-${biId}">${coRows}</tbody>
+      </table>
+      <div style="display:grid;grid-template-columns:130px 90px 1fr auto;gap:0.4rem;margin-bottom:1rem;align-items:center">
+        <input id="co-date-${biId}" type="date" value="${new Date().toISOString().slice(0,10)}"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.4rem;font-size:0.8rem">
+        <input id="co-qty-${biId}" type="number" placeholder="±qty"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.4rem;font-size:0.8rem">
+        <input id="co-note-${biId}" type="text" placeholder="Reason / note"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.4rem;font-size:0.8rem">
+        <button class="btn btn-primary" style="font-size:0.8rem;white-space:nowrap" onclick="_addCO('${projId}','${biId}')">+ Add</button>
+      </div>
+      <div style="display:flex;justify-content:flex-end">
+        <button class="btn btn-ghost" onclick="document.getElementById('co-modal').remove()">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+function _addCO(projId, biId) {
+  const p = getProj(projId); if (!p) return;
+  const bi = (p.bidItems || []).find(b => b.id === biId); if (!bi) return;
+  const date = document.getElementById('co-date-' + biId).value;
+  const qty  = parseFloat(document.getElementById('co-qty-' + biId).value);
+  const note = document.getElementById('co-note-' + biId).value.trim();
+  if (!date || isNaN(qty)) { alert('Enter a valid date and qty change (use negative to remove scope).'); return; }
+  if (!bi.change_orders) bi.change_orders = [];
+  bi.change_orders.push({ id: uid(), date, qty_delta: qty, note });
+  saveProject(projId);
+  showCOModal(projId, biId);
+  renderBidTable(projId);
+}
+function _removeCO(projId, biId, coId) {
+  const p = getProj(projId); if (!p) return;
+  const bi = (p.bidItems || []).find(b => b.id === biId); if (!bi) return;
+  bi.change_orders = (bi.change_orders || []).filter(co => co.id !== coId);
+  saveProject(projId);
+  showCOModal(projId, biId);
+  renderBidTable(projId);
+}
+function toggleBidItemComplete(projId, biId) {
+  const p = getProj(projId); if (!p) return;
+  const bi = (p.bidItems || []).find(b => b.id === biId); if (!bi) return;
+  bi.is_complete = !bi.is_complete;
+  saveProject(projId);
+  renderScheduleTab();
+}
+
 function actualForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
@@ -4278,7 +4360,9 @@ function renderBidTable(projId, opts = {}) {
     let gBidTotal = 0, gActual = 0, gCumHrs = 0, gProj = 0;
     const visItems = scFilter ? groupItems.filter(b => scFilter.has(b.sub_code || '')) : groupItems;
     visItems.forEach(b => {
-      const bidQty  = parseFloat(b.quantity)  || 0;
+      const baseBidQty = parseFloat(b.quantity) || 0;
+      const coQtyDelta = (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+      const bidQty  = baseBidQty + coQtyDelta;
       const bidTot  = bidQty * (parseFloat(b.unit_cost) || 0);
       const actual  = actualForBidItem(b, projId);
       const rqty    = runningQtyForBidItem(b, projId);
@@ -4322,8 +4406,12 @@ function renderBidTable(projId, opts = {}) {
              oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
            <td><select style="font-size:0.75rem;padding:0.15rem 0.3rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;width:60px"
              onchange="updateBidItem('${projId}','${b.id}','unit',this.value)">${UNIT_OPTS.map(u=>`<option value="${u}"${b.unit===u?' selected':''}>${u||'—'}</option>`).join('')}</select></td>
-           <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
-             oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
+           <td>
+             <input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
+               oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)">
+             ${coQtyDelta !== 0 ? `<div style="font-size:0.65rem;color:${coQtyDelta>0?'var(--green)':'var(--red)'};margin-top:0.1rem">CO: ${coQtyDelta>0?'+':''}${fmt(coQtyDelta,1)} = ${fmt(bidQty,1)}</div>` : ''}
+             <button style="font-size:0.62rem;padding:0.1rem 0.3rem;margin-top:0.15rem;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:3px;cursor:pointer" onclick="showCOModal('${projId}','${b.id}')">${(b.change_orders||[]).length ? `CO ×${(b.change_orders||[]).length}` : 'CO'}</button>
+           </td>
            ${calcCellsA}
            <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
              oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
@@ -8733,15 +8821,21 @@ function _schedPaceForProject(proj) {
   (proj.dailyRows || []).forEach(row => {
     const key = (row.cost_code || '') + '||' + (row.sub_code || '');
     if (!agg[key]) agg[key] = {
-      running_qty: 0, labor_hours: 0, equip_hours: 0,
+      running_qty: 0, labor_hours: 0, equip_hours: 0, total_cost: 0,
       dates: new Set(), employees: new Set(), equipment: new Set(),
-      crewDays: new Set()  // unique date+employee pairs → crew-day count
+      crewDays: new Set(),  // unique date+employee pairs → crew-day count
+      dailyByDate: {}       // date → qty, for recent-pace sliding window
     };
     const a = agg[key];
-    a.running_qty  += parseFloat(row.quantity)    || 0;
+    const qty = parseFloat(row.quantity) || 0;
+    a.running_qty  += qty;
     a.labor_hours  += parseFloat(row.labor_hours) || 0;
     a.equip_hours  += parseFloat(row.equip_hours) || 0;
-    if (row.date)      a.dates.add(row.date);
+    a.total_cost   += calcDaily(row).total_cost;
+    if (row.date) {
+      a.dates.add(row.date);
+      a.dailyByDate[row.date] = (a.dailyByDate[row.date] || 0) + qty;
+    }
     if (row.employee && row.employee.trim()) {
       a.employees.add(row.employee.trim());
       a.crewDays.add(row.date + '||' + row.employee.trim());
@@ -8794,11 +8888,24 @@ function _ppWorkingDaysRemaining(biKey, deadlineStr) {
 
 function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const key         = (bi.cost_code || '') + '||' + (bi.sub_code || '');
-  const a           = agg[key] || { running_qty: 0, labor_hours: 0, equip_hours: 0, dates: new Set(), employees: new Set(), equipment: new Set() };
-  const bidQty      = parseFloat(bi.quantity) || 0;
+  const a           = agg[key] || { running_qty: 0, labor_hours: 0, equip_hours: 0, total_cost: 0, dates: new Set(), employees: new Set(), equipment: new Set(), crewDays: new Set(), dailyByDate: {} };
+
+  // Effective bid qty incorporates any change orders
+  const baseBidQty  = parseFloat(bi.quantity) || 0;
+  const coQtyDelta  = (bi.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+  const bidQty      = baseBidQty + coQtyDelta;
+
   const runningQty  = a.running_qty;
   const daysWorked  = a.dates.size;
   const currentPace = daysWorked > 0 ? runningQty / daysWorked : 0;
+
+  // Recent pace: 7-day sliding average (more predictive than all-time when trending)
+  const dailySorted = Object.entries(a.dailyByDate || {}).sort(([da], [db]) => da.localeCompare(db));
+  const last7Qtys   = dailySorted.slice(-7).map(([, q]) => q);
+  const recentPace  = last7Qtys.length >= 3
+    ? last7Qtys.reduce((s, q) => s + q, 0) / last7Qtys.length
+    : currentPace;
+
   const pct         = bidQty > 0 ? (runningQty / bidQty) * 100 : 0;
   const unitsLeft   = Math.max(bidQty - runningQty, 0);
 
@@ -8825,13 +8932,18 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   // Lump Sum items have no meaningful pace — status is pct + deadline based only
   const isLumpSum = (bi.unit || '').toUpperCase() === 'LS';
 
-  // Required pace: LS items suppress pace; pre-start shows planned rate; active shows units-left/days-left
-  const requiredPace = (isLumpSum || notStartedYet)
+  // Manual complete override — PM can mark a sub-code done regardless of qty
+  const forcedComplete = !!bi.is_complete;
+
+  // Required pace: forced-complete / LS suppress pace; pre-start shows planned rate
+  const requiredPace = (forcedComplete || isLumpSum || notStartedYet)
     ? (notStartedYet ? plannedPace : null)
     : (effectiveDaysLeft !== null && effectiveDaysLeft > 0) ? unitsLeft / effectiveDaysLeft : null;
 
-  const gap = (!notStartedYet && !isLumpSum && requiredPace !== null) ? requiredPace - currentPace : null;
-  const status = notStartedYet ? 'not-started'
+  // Gap uses recentPace — reflects current momentum, not all-time average
+  const gap = (!forcedComplete && !notStartedYet && !isLumpSum && requiredPace !== null) ? requiredPace - recentPace : null;
+  const status = forcedComplete ? 'complete'
+    : notStartedYet ? 'not-started'
     : isLumpSum
       ? (pct >= 100 ? 'complete' : effectiveDaysLeft !== null && effectiveDaysLeft < 0 ? 'behind' : pct > 0 ? 'on-track' : 'no-data')
       : _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
@@ -8843,9 +8955,18 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   // Est. hours remaining: divide units left by historical units-per-labor-hour rate
   const laborHours       = a.labor_hours || 0;
   const unitsPerHour     = (laborHours > 0 && runningQty > 0) ? runningQty / laborHours : null;
-  const hoursLeft        = (unitsPerHour !== null && unitsLeft > 0) ? unitsLeft / unitsPerHour : (unitsLeft === 0 && pct >= 100 ? 0 : null);
+  const hoursLeft        = forcedComplete ? 0
+    : (unitsPerHour !== null && unitsLeft > 0) ? unitsLeft / unitsPerHour
+    : (unitsLeft === 0 && pct >= 100 ? 0 : null);
   const laborHoursPerDay = (laborHours > 0 && daysWorked > 0) ? laborHours / daysWorked : null;
-  return { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, unitsLeft, plannedPace, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum };
+
+  // Est. cost to complete: historical cost-per-unit × units remaining
+  const totalCost      = a.total_cost || 0;
+  const costPerUnit    = (totalCost > 0 && runningQty > 0) ? totalCost / runningQty : null;
+  const costToComplete = forcedComplete ? 0
+    : (costPerUnit !== null && unitsLeft > 0) ? costPerUnit * unitsLeft : null;
+
+  return { a, bidQty, baseBidQty, coQtyDelta, runningQty, daysWorked, currentPace, recentPace, avgCrewPerDay, pct, unitsLeft, plannedPace, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum, forcedComplete, costToComplete, costPerUnit };
 }
 
 /** Build sorted [{date, qty}] for one cost code from the project's daily rows. */
@@ -8940,7 +9061,7 @@ function renderScheduleProjectDetail(proj) {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
 
   const rows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, baseBidQty, coQtyDelta, runningQty, daysWorked, currentPace, recentPace, avgCrewPerDay, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum, forcedComplete, costToComplete, costPerUnit } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
     const unit = (bi.unit || '').toUpperCase();
     const uLabel = unit ? ` ${unit}` : '';
@@ -8998,6 +9119,7 @@ function renderScheduleProjectDetail(proj) {
             ? '<span class="sched-goal-pill no-data">—</span>'
             : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}${uLabel}/day${usingPPDays ? ' 📅' : ''}</span>`;
 
+    const projId = proj.id;
     return `<tr>
       <td>
         <div style="font-weight:600">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}${unit ? `<span style="font-size:0.65rem;color:var(--muted);font-weight:400;margin-left:0.35rem">${unit}</span>` : ''}</div>
@@ -9005,8 +9127,14 @@ function renderScheduleProjectDetail(proj) {
         ${targetDateFmt ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.1rem">◼ Target: ${targetDateFmt}</div>` : ''}
         <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">${esc(employees)}</div>
         ${equipment !== '—' ? `<div style="font-size:0.7rem;color:var(--muted)">${esc(equipment)}</div>` : ''}
+        <button onclick="toggleBidItemComplete('${projId}','${bi.id}')"
+          style="margin-top:0.3rem;font-size:0.62rem;padding:0.1rem 0.35rem;border-radius:3px;cursor:pointer;border:1px solid ${forcedComplete?'var(--green)':'var(--border)'};background:${forcedComplete?'rgba(34,197,94,0.12)':'var(--surface2)'};color:${forcedComplete?'var(--green)':'var(--muted)'}"
+          title="${forcedComplete?'Unmark complete':'Mark as complete'}">${forcedComplete ? '✓ Marked Complete' : '○ Mark Complete'}</button>
       </td>
-      <td class="num">${bidQty > 0 ? fmt(bidQty, 1) + (uLabel ? `<span style="font-size:0.65rem;color:var(--muted)">${uLabel}</span>` : '') : '—'}</td>
+      <td class="num">${bidQty > 0
+        ? fmt(bidQty, 1) + (uLabel ? `<span style="font-size:0.65rem;color:var(--muted)">${uLabel}</span>` : '')
+          + (coQtyDelta !== 0 ? `<br><span style="font-size:0.62rem;color:${coQtyDelta>0?'var(--green)':'var(--red)'}">CO ${coQtyDelta>0?'+':''}${fmt(coQtyDelta,1)}</span>` : '')
+        : '—'}</td>
       <td class="num">${runningQty > 0 ? fmt(runningQty, 1) + (uLabel ? `<span style="font-size:0.65rem;color:var(--muted)">${uLabel}</span>` : '') : '—'}</td>
       <td>
         <div style="display:flex;align-items:center;gap:0.5rem">
@@ -9016,20 +9144,28 @@ function renderScheduleProjectDetail(proj) {
       </td>
       <td class="num">${daysWorked > 0 ? daysWorked : '—'}</td>
       <td class="num">${isLumpSum ? '<span style="color:var(--muted);font-size:0.72rem">LS</span>'
-        : currentPace > 0
-          ? fmt(currentPace, 2) + `${uLabel}/d` + (avgCrewPerDay !== null && avgCrewPerDay > 1.05
-              ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(avgCrewPerDay, 1)} avg crew</span>`
-              : '')
+        : recentPace > 0 || currentPace > 0
+          ? (() => {
+              const showRecent = recentPace > 0 && Math.abs(recentPace - currentPace) > 0.01;
+              const display    = showRecent ? recentPace : currentPace;
+              const subLabel   = showRecent
+                ? `<span style="font-size:0.62rem;color:var(--muted)">7d avg${avgCrewPerDay !== null && avgCrewPerDay > 1.05 ? ` · ${fmt(avgCrewPerDay,1)} crew` : ''}</span>`
+                : avgCrewPerDay !== null && avgCrewPerDay > 1.05
+                  ? `<span style="font-size:0.62rem;color:var(--muted)">${fmt(avgCrewPerDay,1)} avg crew</span>`
+                  : '';
+              return `${fmt(display, 2)}${uLabel}/d${subLabel ? '<br>' + subLabel : ''}`;
+            })()
           : '—'}</td>
       ${trendCell}
       <td class="num">${reqPaceCell}</td>
       <td class="num">${
-        status === 'complete' ? '<span style="color:var(--green);font-size:0.78rem">✓ Done</span>'
+        status === 'complete' || forcedComplete ? '<span style="color:var(--green);font-size:0.78rem">✓ Done</span>'
         : notStartedYet || hoursLeft === null ? '<span style="color:var(--muted)">—</span>'
         : (() => {
             const hrs = Math.round(hoursLeft);
             const rateNote = unitsPerHour !== null ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(unitsPerHour,2)}/hr avg</span>` : '';
-            return `<span style="font-weight:600">${hrs} hr${hrs !== 1 ? 's' : ''}</span>${rateNote}`;
+            const costNote = costToComplete !== null ? `<br><span style="font-size:0.62rem;color:var(--yellow)">$${fmt(costToComplete)} est. cost</span>` : '';
+            return `<span style="font-weight:600">${hrs} hr${hrs !== 1 ? 's' : ''}</span>${rateNote}${costNote}`;
           })()
       }</td>
       <td class="num" style="white-space:nowrap">${goalCell}</td>
@@ -9071,7 +9207,7 @@ function renderScheduleProjectDetail(proj) {
           <th class="num">Current Pace</th>
           <th class="num" style="min-width:80px">Pace Trend</th>
           <th class="num">Required Pace</th>
-          <th class="num">Est. Hours Left</th>
+          <th class="num">Est. Left</th>
           <th class="num">Today's Goal</th>
           <th class="num">Gap</th>
           <th>Status</th>
@@ -10178,8 +10314,13 @@ function _ppProd(a) {
   const doneQty = a.running_qty || 0;
   const daysWorked = a.dates ? a.dates.size : 0;
   if (laborHours > 0 && doneQty > 0) return (doneQty / laborHours) * 8;
-  if (doneQty > 0 && daysWorked > 0 && (a.employees || new Set()).size > 0)
-    return (doneQty / daysWorked) / a.employees.size;
+  // Use avg crew per day (crewDays ÷ dates) — more accurate than unique employee count
+  const crewDaysTotal = a.crewDays ? a.crewDays.size : 0;
+  const avgCrew = (daysWorked > 0 && crewDaysTotal > 0)
+    ? crewDaysTotal / daysWorked
+    : (a.employees || new Set()).size;
+  if (doneQty > 0 && daysWorked > 0 && avgCrew > 0)
+    return (doneQty / daysWorked) / avgCrew;
   return null;
 }
 
