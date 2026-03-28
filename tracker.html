@@ -1785,8 +1785,14 @@
         cursor: pointer;
         margin-top: 1rem;
         letter-spacing: 0.02em;
+        position: sticky;
+        bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+        z-index: 10;
+        box-shadow: 0 -2px 12px rgba(0,0,0,0.4);
       }
       .mob-submit-btn:active { opacity: 0.85; }
+      /* iOS safe area for tab bar */
+      .tab-bar { padding-bottom: env(safe-area-inset-bottom, 0px); }
       .mob-proj-card {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -1837,7 +1843,7 @@
 <!-- ══════════════ TABS ══════════════ -->
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="home">Home</button>
-  <button class="tab-btn"        data-tab="mob-entry" style="display:none">&#128221; Daily Entry</button>
+  <button class="tab-btn"        data-tab="mob-entry" style="display:none">&#128221; Daily Entry<span id="mob-entry-badge" style="display:none;background:var(--green-dim);color:#fff;border-radius:10px;font-size:0.62rem;padding:0.05rem 0.38rem;margin-left:0.35rem;font-weight:700;vertical-align:middle"></span></button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="info">Project Dashboard</button>
   <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
@@ -2815,8 +2821,18 @@ function renderMobileProjCards() {
   }).join('');
 }
 
+function updateMobEntryBadge() {
+  const badge = document.getElementById('mob-entry-badge');
+  if (!badge) return;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const count = getAllDailyRows().filter(r => r.date === todayStr).length;
+  if (count > 0) { badge.textContent = count; badge.style.display = 'inline-block'; }
+  else           { badge.style.display = 'none'; }
+}
+
 function renderHomeTab() {
   if (window.innerWidth <= 768) renderMobileProjCards();
+  updateMobEntryBadge();
   const today = new Date();
   const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
@@ -6649,18 +6665,22 @@ function exportCostCSV() {
    MOBILE DAILY ENTRY
 ═══════════════════════════════════════════ */
 
+let _mobLastEntry = null;
+
 function renderMobileEntryForm(successMsg) {
   const el = document.getElementById('mob-entry-root');
   if (!el) return;
 
+  // #4 — Remember last project
+  const lastProjId = localStorage.getItem('mob_last_proj') || '';
+
   const projOpts = `<option value="">— Select Project —</option>` +
     [...projectsList].sort((a,b)=>(a['project-name']||'').localeCompare(b['project-name']||'')).map(p =>
-      `<option value="${p.id}">${esc(p['project-name']||'Untitled')}</option>`).join('');
+      `<option value="${p.id}" ${p.id === lastProjId ? 'selected' : ''}>${esc(p['project-name']||'Untitled')}</option>`).join('');
 
   const fieldTypeOpts = `<option value="">— none —</option>` +
     (lists.field_types||[]).map(ft => `<option value="${esc(ft.value||ft)}">${esc(ft.value||ft)}</option>`).join('');
 
-  // Build cost code list from all project bid items + dropdown lists
   const ccSet = new Set();
   projectsList.forEach(p => (p.bidItems||[]).forEach(b => { if (b.cost_code) ccSet.add(b.cost_code); }));
   (lists.cost_codes||[]).forEach(c => ccSet.add(c.value||c));
@@ -6683,8 +6703,17 @@ function renderMobileEntryForm(successMsg) {
 
   const today = new Date().toISOString().slice(0,10);
 
+  // #1 — Repeat Last Entry button
+  const repeatBtn = _mobLastEntry ? `
+    <button type="button" onclick="mobRepeatLastEntry()"
+      style="width:100%;padding:0.6rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.82rem;cursor:pointer;margin-bottom:0.75rem;text-align:left">
+      &#8635; Repeat Last Entry
+      <span style="color:var(--muted);font-size:0.72rem;margin-left:0.4rem">${esc(_mobLastEntry.cc)}${_mobLastEntry.sc ? ' / '+esc(_mobLastEntry.sc) : ''} · ${_mobLastEntry.hours}h · ${_mobLastEntry.checkedEmps.length} emp</span>
+    </button>` : '';
+
   el.innerHTML = `
     ${successMsg ? `<div class="mob-success-banner">&#10003; ${esc(successMsg)}</div>` : ''}
+    ${repeatBtn}
 
     <div class="mob-form-card">
       <div class="mob-section-title">Job Info</div>
@@ -6719,6 +6748,8 @@ function renderMobileEntryForm(successMsg) {
       <select id="mob-job-class" class="mob-input">${jobClassOpts}</select>
       <label class="mob-form-label">Rate (per hour)</label>
       <input  id="mob-rate" type="number" class="mob-input" placeholder="0.00" step="0.01" min="0">
+      <label class="mob-form-label">Quantity <span style="font-weight:400;color:var(--muted)">(optional — LF, SY, tons, etc.)</span></label>
+      <input  id="mob-qty" type="number" class="mob-input" placeholder="0" step="any" min="0">
     </div>
 
     <div class="mob-form-card">
@@ -6733,6 +6764,31 @@ function renderMobileEntryForm(successMsg) {
 
     ${perm.canEdit ? `<button class="mob-submit-btn" onclick="submitMobileEntry()">Submit Daily Entry</button>` : ''}
   `;
+}
+
+// #1 — Pre-fill form from last submission
+function mobRepeatLastEntry() {
+  if (!_mobLastEntry) return;
+  const le = _mobLastEntry;
+  document.getElementById('mob-project').value   = le.projId;
+  document.getElementById('mob-date').value       = new Date().toISOString().slice(0,10);
+  document.getElementById('mob-field-type').value = le.fieldType || '';
+  document.getElementById('mob-cc').value         = le.cc || '';
+  mobUpdateSubCodes();
+  setTimeout(() => {
+    document.getElementById('mob-sc').value       = le.sc || '';
+  }, 30);
+  document.getElementById('mob-hours').value      = le.hours || '';
+  document.getElementById('mob-job-class').value  = le.jobClass || '';
+  document.getElementById('mob-rate').value       = le.rate || '';
+  document.getElementById('mob-qty').value        = le.quantity || '';
+  document.getElementById('mob-equip').value      = le.equipName || '';
+  mobEquipUCFill();
+  document.getElementById('mob-equip-hrs').value  = le.equipHrs || '';
+  (le.checkedEmps || []).forEach(emp => {
+    const cb = document.getElementById('mob-emp-' + emp);
+    if (cb) cb.checked = true;
+  });
 }
 
 function mobUpdateSubCodes() {
@@ -6763,6 +6819,7 @@ async function submitMobileEntry() {
   const hours     = parseFloat(document.getElementById('mob-hours').value) || 0;
   const jobClass  = document.getElementById('mob-job-class').value;
   const rate      = parseFloat(document.getElementById('mob-rate').value) || 0;
+  const quantity  = parseFloat(document.getElementById('mob-qty').value)  || 0;
   const equipName = document.getElementById('mob-equip').value;
   const equipUC   = parseFloat(document.getElementById('mob-equip-uc').value) || 0;
   const equipHrs  = parseFloat(document.getElementById('mob-equip-hrs').value) || 0;
@@ -6787,7 +6844,7 @@ async function submitMobileEntry() {
       rate, labor_hours: hours,
       equipment: '', equip_unit_cost: 0, equip_hours: 0,
       material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
-      quantity: 0, num_laborers: 0,
+      quantity, num_laborers: 0,
     });
   });
 
@@ -6805,6 +6862,12 @@ async function submitMobileEntry() {
 
   if (newRows.length === 0) { alert('Nothing to submit.'); return; }
 
+  // #4 — Persist last project
+  localStorage.setItem('mob_last_proj', projId);
+
+  // #1 — Save state for Repeat Last Entry
+  _mobLastEntry = { projId, fieldType, cc, sc, hours, jobClass, rate, quantity, checkedEmps, equipName, equipUC, equipHrs };
+
   // Add to project and save
   if (!proj.dailyRows) proj.dailyRows = [];
   proj.dailyRows.push(...newRows);
@@ -6812,6 +6875,9 @@ async function submitMobileEntry() {
 
   // Sync to DB row-by-row table
   try { await drPostBulk(projId, newRows); } catch(e) { console.warn('drPostBulk failed:', e.message); }
+
+  // #3 — Update badge
+  updateMobEntryBadge();
 
   const empCount   = checkedEmps.length;
   const equipLabel = equipName && equipHrs > 0 ? ` + ${equipName} (${equipHrs}h)` : '';
