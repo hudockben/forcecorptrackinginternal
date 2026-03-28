@@ -1698,6 +1698,124 @@
       .pp-day { break-inside: avoid; min-height: 80px !important; }
       .pp-main { overflow: visible !important; height: auto !important; }
     }
+
+    /* ════════════════════════════════════════
+       MOBILE RESPONSIVE (≤768px)
+    ════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      /* Hide desktop-only tabs */
+      .tab-btn[data-tab="cost"],
+      .tab-btn[data-tab="info"],
+      .tab-btn[data-tab="po"],
+      .tab-btn[data-tab="trucking"],
+      .tab-btn[data-tab="equip"],
+      .tab-btn[data-tab="supplier"],
+      .tab-btn[data-tab="users"],
+      .tab-btn:not([data-tab]) { display: none !important; }
+      /* Show mobile-only tab */
+      .tab-btn[data-tab="mob-entry"] { display: flex !important; }
+
+      .tab-bar { overflow-x: auto; -webkit-overflow-scrolling: touch; gap: 0; padding: 0; }
+      .tab-btn { flex-shrink: 0; padding: 0.65rem 1.1rem; font-size: 0.8rem; }
+
+      /* Header */
+      .hdr-right { gap: 0.3rem; }
+      #header-actions .btn { font-size: 0.7rem; padding: 0.28rem 0.45rem; }
+
+      /* Allow tables to scroll horizontally on tabs that remain */
+      .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+      /* Mobile home */
+      .home-wrap { padding: 0.6rem; gap: 0.75rem; }
+      #mob-proj-cards { display: flex !important; flex-direction: column; gap: 0.6rem; }
+      #home-proj-table-section { display: none !important; }
+      #home-kpi-row { display: none !important; }
+      #home-bottom-grid { display: none !important; }
+
+      /* Mobile entry form */
+      .mob-form-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 0.75rem;
+      }
+      .mob-form-label {
+        display: block;
+        font-size: 0.72rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.3rem;
+        margin-top: 0.75rem;
+      }
+      .mob-form-label:first-child { margin-top: 0; }
+      .mob-input {
+        width: 100%;
+        box-sizing: border-box;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        color: var(--text);
+        font-size: 0.9rem;
+        padding: 0.55rem 0.75rem;
+        outline: none;
+        -webkit-appearance: none;
+      }
+      .mob-emp-row {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.5rem 0.6rem;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+      .mob-emp-row:active { background: var(--surface2); }
+      .mob-emp-cb { width: 18px; height: 18px; cursor: pointer; accent-color: var(--green); flex-shrink: 0; }
+      .mob-emp-name { font-size: 0.88rem; color: var(--text); }
+      .mob-submit-btn {
+        width: 100%;
+        padding: 0.85rem;
+        background: var(--green-dim);
+        color: #fff;
+        font-weight: 700;
+        font-size: 1rem;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        margin-top: 1rem;
+        letter-spacing: 0.02em;
+        position: sticky;
+        bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+        z-index: 10;
+        box-shadow: 0 -2px 12px rgba(0,0,0,0.4);
+      }
+      .mob-submit-btn:active { opacity: 0.85; }
+      /* iOS safe area for tab bar */
+      .tab-bar { padding-bottom: env(safe-area-inset-bottom, 0px); }
+      .mob-proj-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.85rem 1rem;
+      }
+      .mob-proj-card-name { font-weight: 700; font-size: 0.95rem; color: var(--text); margin-bottom: 0.15rem; }
+      .mob-proj-card-meta { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.55rem; }
+      .mob-proj-bar-track { width: 100%; height: 7px; background: var(--surface2); border-radius: 4px; overflow: hidden; margin-bottom: 0.6rem; }
+      .mob-proj-bar-fill  { height: 100%; border-radius: 4px; transition: width 0.3s; }
+      .mob-proj-cost-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.4rem; }
+      .mob-proj-cost-cell { text-align: center; }
+      .mob-proj-cost-val  { font-size: 0.8rem; font-weight: 600; }
+      .mob-proj-cost-lbl  { font-size: 0.65rem; color: var(--muted); }
+      .mob-section-title  { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.5rem; font-weight: 600; }
+      .mob-success-banner { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); border-radius: 6px; padding: 0.75rem 1rem; font-size: 0.85rem; color: var(--green); margin-bottom: 1rem; }
+    }
+
+    /* Desktop: hide mobile-only elements */
+    @media (min-width: 769px) {
+      .tab-btn[data-tab="mob-entry"] { display: none !important; }
+      #mob-proj-cards { display: none !important; }
+    }
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
 </head>
@@ -1725,11 +1843,13 @@
 <!-- ══════════════ TABS ══════════════ -->
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="home">Home</button>
+  <button class="tab-btn"        data-tab="mob-entry" style="display:none">&#128221; Daily Entry<span id="mob-entry-badge" style="display:none;background:var(--green-dim);color:#fff;border-radius:10px;font-size:0.62rem;padding:0.05rem 0.38rem;margin-left:0.35rem;font-weight:700;vertical-align:middle"></span></button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="info">Project Dashboard</button>
   <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
+  <button class="tab-btn"        data-tab="equip">&#128295; Equipment Utilization</button>
   <button class="tab-btn"        data-tab="supplier">Suppliers</button>
   <button class="tab-btn"        onclick="openModal()">&#9881; Manage Lists</button>
   <button class="tab-btn" data-tab="users" id="users-tab-btn" style="margin-left:auto;display:none">&#128100; Users</button>
@@ -1737,6 +1857,8 @@
 
 <!-- ══════════════ HOME TAB ══════════════ -->
 <div class="tab-panel active" id="tab-home">
+  <!-- Mobile project cards (hidden on desktop via CSS) -->
+  <div id="mob-proj-cards" style="padding:0.75rem;display:none"></div>
   <div class="home-wrap" id="home-content">
     <!-- rendered by JS -->
   </div>
@@ -1897,13 +2019,25 @@
   <div id="trucking-root"></div>
 </div>
 
+<!-- ══════════════ MOBILE DAILY ENTRY TAB ══════════════ -->
+<div class="tab-panel" id="tab-mob-entry">
+  <div id="mob-entry-root" style="padding:0.75rem;max-width:520px;margin:0 auto"></div>
+</div>
+
 <!-- ══════════════ USERS TAB (admin only) ══════════════ -->
 <div class="tab-panel" id="tab-users">
   <div id="users-root" style="padding:1.5rem;max-width:700px"></div>
 </div>
 
+<!-- ══════════════ EQUIPMENT UTILIZATION TAB ══════════════ -->
+<div class="tab-panel" id="tab-equip">
+  <div id="equip-content" style="padding:1rem"><!-- rendered by JS --></div>
+</div>
+
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
 <div class="tab-panel" id="tab-cost">
+  <!-- Alert banner -->
+  <div id="cost-alert-banner" style="display:none;padding:0.5rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:1rem;flex-wrap:wrap;align-items:center"></div>
   <!-- Filter bar -->
   <div id="cost-filter-bar" style="padding:0.55rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
     <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Filters:</span>
@@ -2607,14 +2741,16 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'po')       renderPOTab();
     if (activeTab === 'trucking') renderTruckingTab();
     if (activeTab === 'users')    renderUsersTab();
-    if (activeTab === 'schedule') renderScheduleTab();
+    if (activeTab === 'schedule')   renderScheduleTab();
+    if (activeTab === 'equip')      renderEquipTable();
+    if (activeTab === 'mob-entry')  renderMobileEntryForm();
   });
 });
 
 function renderHeaderActions() {
   const el = document.getElementById('header-actions');
   const logoutBtn = `<button class="btn btn-ghost" onclick="logout()">Sign Out</button>`;
-  const summaryBtn = `<button class="btn btn-ghost" onclick="openDailySummaryReport()" title="Download a PDF summary of today's production across all projects">&#8659; Daily Summary</button>`;
+  const summaryBtn = `<button class="btn btn-ghost" onclick="openDailySummaryReport()" title="Download a PDF summary of today's production across all projects">&#8659; Daily Summary</button><button class="btn btn-ghost" onclick="openCrewSignInOverlay()" title="Print crew sign-in sheet for a given day">&#128221; Sign-In Sheet</button>`;
   if (activeTab === 'cost') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
@@ -2622,12 +2758,81 @@ function renderHeaderActions() {
       ${summaryBtn}
       ${logoutBtn}
     `;
+  } else if (activeTab === 'equip') {
+    el.innerHTML = `
+      <button class="btn btn-ghost" onclick="exportEquipCSV()">Export CSV</button>
+      <button class="btn btn-ghost" onclick="exportEquipPDF()">&#128438; Export PDF</button>
+      ${summaryBtn}
+      ${logoutBtn}
+    `;
+  } else if (activeTab === 'mob-entry') {
+    el.innerHTML = logoutBtn;
   } else {
     el.innerHTML = `${summaryBtn}${logoutBtn}`;
   }
 }
 
+function renderMobileProjCards() {
+  const el = document.getElementById('mob-proj-cards');
+  if (!el) return;
+  if (projectsList.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:2rem;font-size:0.85rem">No projects yet.</div>`;
+    return;
+  }
+  const sorted = [...projectsList].sort((a, b) => {
+    const aPin = a.pinned ? 1 : 0, bPin = b.pinned ? 1 : 0;
+    return bPin - aPin || (a['project-name']||'').localeCompare(b['project-name']||'');
+  });
+  el.innerHTML = `<div class="mob-section-title">Projects</div>` + sorted.map(p => {
+    const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
+    const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+    const variance = bid - actual;
+    const pct    = bid ? Math.min(actual / bid * 100, 100) : 0;
+    const barColor = !bid ? 'var(--muted)' : actual/bid >= 1 ? 'var(--red)' : actual/bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
+    const varColor = variance >= 0 ? 'var(--green)' : 'var(--red)';
+    const varTxt   = !bid ? '—' : (variance >= 0 ? '−' : '+') + '$' + fmt(Math.abs(variance));
+    const status   = p['status'] || '';
+    const statusColor = status === 'Complete' ? 'var(--blue)' : status === 'Active' ? 'var(--green)' : status === 'At Risk' ? 'var(--red)' : 'var(--muted)';
+    const meta = [p['job-number'], p['client']].filter(Boolean).join(' · ');
+    return `<div class="mob-proj-card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div class="mob-proj-card-name">${esc(p['project-name']||'Untitled')}</div>
+        <span style="font-size:0.7rem;color:${statusColor};font-weight:600;flex-shrink:0;margin-left:0.5rem">${esc(status)||'—'}</span>
+      </div>
+      ${meta ? `<div class="mob-proj-card-meta">${esc(meta)}</div>` : ''}
+      <div class="mob-proj-bar-track">
+        <div class="mob-proj-bar-fill" style="width:${pct.toFixed(1)}%;background:${barColor}"></div>
+      </div>
+      <div class="mob-proj-cost-grid">
+        <div class="mob-proj-cost-cell">
+          <div class="mob-proj-cost-val" style="color:var(--muted)">${bid ? '$'+fmt(bid) : '—'}</div>
+          <div class="mob-proj-cost-lbl">Bid</div>
+        </div>
+        <div class="mob-proj-cost-cell">
+          <div class="mob-proj-cost-val" style="color:var(--green)">${actual ? '$'+fmt(actual) : '$0'}</div>
+          <div class="mob-proj-cost-lbl">Actual</div>
+        </div>
+        <div class="mob-proj-cost-cell">
+          <div class="mob-proj-cost-val" style="color:${varColor}">${varTxt}</div>
+          <div class="mob-proj-cost-lbl">Remaining</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function updateMobEntryBadge() {
+  const badge = document.getElementById('mob-entry-badge');
+  if (!badge) return;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const count = getAllDailyRows().filter(r => r.date === todayStr).length;
+  if (count > 0) { badge.textContent = count; badge.style.display = 'inline-block'; }
+  else           { badge.style.display = 'none'; }
+}
+
 function renderHomeTab() {
+  if (window.innerWidth <= 768) renderMobileProjCards();
+  updateMobEntryBadge();
   const today = new Date();
   const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
@@ -5198,6 +5403,7 @@ function addTR() {
     material_hauled: '',
     loads:           '',
     rate:            '',
+    hours:           '',
     status:          'pending',
     notes:           '',
     cost_code:       '',
@@ -5435,6 +5641,7 @@ function renderTruckingTab() {
           <td style="padding:0.35rem 0.6rem;min-width:150px">${inp('material_hauled', 'text', 'placeholder="Material hauled"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('loads', 'number', 'step="any" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:85px">${inp('rate', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('hours', 'number', 'step="any" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="tr-tot-${tr.id}">$${fmt(total)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date', 'date')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('notes', 'text', 'placeholder="Notes"')}</td>
@@ -5464,7 +5671,7 @@ function renderTruckingTab() {
             <tr>
               ${thf('TR #','tr_number')} ${thf('Project','project_id')} ${thf('Sub Code','sub_code')}
               ${thf('Driver','driver')} ${thf('Truck Type','truck_type')} ${thf('Material Hauled','material_hauled')}
-              ${th('Loads',1)} ${th('Rate',1)} ${th('Total',1)}
+              ${th('Loads',1)} ${th('Rate',1)} ${th('Hours',1)} ${th('Total',1)}
               ${thf('Date','date')} ${th('Notes')} ${thf('Status','status')}
               <th style="width:36px;border-bottom:1px solid var(--border)"></th>
             </tr>
@@ -6149,6 +6356,7 @@ function renderCostTable() {
   });
 
   const COLS = 16;
+  const alertItems = [];  // { cc, sc, pct, level }
 
   groupOrder.forEach(costCode => {
     const keys    = groups[costCode];
@@ -6171,6 +6379,14 @@ function renderCostTable() {
       }
     });
 
+    // ── Budget alert for this group ──
+    const gPct = gBidTotal > 0 ? gRunTotal / gBidTotal : null;
+    const gAlertBadge = gPct !== null && gPct >= 1.0
+      ? `<span style="margin-left:0.6rem;background:rgba(239,68,68,0.15);color:var(--red);border:1px solid rgba(239,68,68,0.35);border-radius:3px;font-size:0.68rem;padding:0.1rem 0.35rem;font-weight:600">⚠ Over Budget ${Math.round(gPct*100)}%</span>`
+      : gPct !== null && gPct >= 0.8
+      ? `<span style="margin-left:0.6rem;background:rgba(234,179,8,0.12);color:var(--yellow);border:1px solid rgba(234,179,8,0.3);border-radius:3px;font-size:0.68rem;padding:0.1rem 0.35rem;font-weight:600">⚠ ${Math.round(gPct*100)}% of Budget</span>`
+      : '';
+
     // ── Parent group row ──
     const parentTr = document.createElement('tr');
     parentTr.className = 'cost-group-hdr';
@@ -6186,6 +6402,7 @@ function renderCostTable() {
           &nbsp;·&nbsp; Actual: <span style="color:var(--green)">$${fmt(gRunTotal)}</span>
           &nbsp;·&nbsp; Labor: ${fmt(gLabHrs,1)} hrs
         </span>
+        ${gAlertBadge}
       </td>`;
     parentTr.addEventListener('click', () => {
       const collapsed = parentTr.dataset.collapsed === '1';
@@ -6228,6 +6445,13 @@ function renderCostTable() {
       const projEntries = Object.keys(projAgg).filter(pk => pk.startsWith(key + '||'));
       const hasProjects = projEntries.length > 0;
 
+      // ── Budget alert for this sub-code ──
+      const actualTotal = a.imported_total || rtotal;
+      const scPct = btotal > 0 ? actualTotal / btotal : null;
+      const scAlertCls = scPct !== null && scPct >= 1.0 ? ' over'
+                       : scPct !== null && scPct >= 0.8 ? ' warn' : '';
+      if (scAlertCls) alertItems.push({ cc: costCode, sc: sc || '—', pct: Math.round(scPct * 100), level: scAlertCls.trim() });
+
       const childTr = document.createElement('tr');
       childTr.className = 'cost-group-child ct-hidden';
       childTr.dataset.group = groupId;
@@ -6251,7 +6475,7 @@ function renderCostTable() {
         <td class="calc">${fmt(avg_qty,2)}</td>
         <td class="calc">$${fmt(rtotal)}</td>
         <td class="calc" title="Production Rate: company average cost per unit across all jobs">${avg_qty ? '$'+fmt(past_avg) : '—'}</td>
-        <td class="calc">$${fmt(a.imported_total || rtotal)}</td>
+        <td class="calc${scAlertCls}">$${fmt(actualTotal)}</td>
         <td class="calc">${fmt(a.labor_hours,1)}</td>
         <td class="calc">${days}</td>
         <td class="calc">${avg_lab ? fmt(avg_lab,1) : '—'}</td>
@@ -6345,6 +6569,49 @@ function renderCostTable() {
     `;
     tbody.appendChild(totalTr);
   });
+
+  // ── Populate alert banner ──
+  const banner = document.getElementById('cost-alert-banner');
+  if (banner) {
+    const overItems = alertItems.filter(x => x.level === 'over');
+    const warnItems = alertItems.filter(x => x.level === 'warn');
+    if (alertItems.length === 0) {
+      banner.style.display = 'none';
+      banner.innerHTML = '';
+    } else {
+      banner.style.display = 'block';
+      const wasExpanded = banner.dataset.expanded === '1';
+      const overHtml = overItems.length
+        ? `<span style="display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.7rem;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:4px;font-size:0.75rem">
+             <span style="color:var(--red);font-weight:700">&#9888; ${overItems.length} Over Budget</span>
+             <span style="color:var(--muted)">${overItems.map(x=>`${x.cc} / ${x.sc} (${x.pct}%)`).join(' · ')}</span>
+           </span>` : '';
+      const warnHtml = warnItems.length
+        ? `<span style="display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.7rem;background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.25);border-radius:4px;font-size:0.75rem">
+             <span style="color:var(--yellow);font-weight:700">&#9888; ${warnItems.length} Approaching Budget</span>
+             <span style="color:var(--muted)">${warnItems.map(x=>`${x.cc} / ${x.sc} (${x.pct}%)`).join(' · ')}</span>
+           </span>` : '';
+      const summaryColor = overItems.length ? 'var(--red)' : 'var(--yellow)';
+      const summaryText  = [
+        overItems.length ? `${overItems.length} over budget` : '',
+        warnItems.length ? `${warnItems.length} approaching` : '',
+      ].filter(Boolean).join(', ');
+      banner.innerHTML = `
+        <div style="display:flex;align-items:center;gap:0.6rem;padding:0.35rem 0.75rem;cursor:pointer;user-select:none" onclick="
+          const exp = this.parentElement.dataset.expanded==='1';
+          this.parentElement.dataset.expanded = exp ? '0' : '1';
+          this.parentElement.querySelector('#cost-alert-detail').style.display = exp ? 'none' : 'flex';
+          this.querySelector('.alert-chevron').style.transform = exp ? 'rotate(-90deg)' : 'rotate(0deg)';
+        ">
+          <span style="color:${summaryColor};font-weight:700;font-size:0.78rem">&#9888; Budget Alerts: ${summaryText}</span>
+          <span class="alert-chevron" style="color:var(--muted);font-size:0.65rem;transition:transform 0.15s;transform:${wasExpanded ? 'rotate(0deg)' : 'rotate(-90deg)'}">▼</span>
+        </div>
+        <div id="cost-alert-detail" style="display:${wasExpanded ? 'flex' : 'none'};gap:0.75rem;flex-wrap:wrap;padding:0 0.75rem 0.5rem">
+          ${overHtml}${warnHtml}
+        </div>`;
+      if (!wasExpanded) banner.dataset.expanded = '0';
+    }
+  }
 }
 
 function addCostRow() {
@@ -6392,6 +6659,540 @@ function exportCostCSV() {
     ].map(v => `"${v}"`).join(','));
   });
   downloadCSV(rows.join('\n'), 'cost_tracking.csv');
+}
+
+/* ═══════════════════════════════════════════
+   MOBILE DAILY ENTRY
+═══════════════════════════════════════════ */
+
+let _mobLastEntry = null;
+
+function renderMobileEntryForm(successMsg) {
+  const el = document.getElementById('mob-entry-root');
+  if (!el) return;
+
+  // #4 — Remember last project
+  const lastProjId = localStorage.getItem('mob_last_proj') || '';
+
+  const projOpts = `<option value="">— Select Project —</option>` +
+    [...projectsList].sort((a,b)=>(a['project-name']||'').localeCompare(b['project-name']||'')).map(p =>
+      `<option value="${p.id}" ${p.id === lastProjId ? 'selected' : ''}>${esc(p['project-name']||'Untitled')}</option>`).join('');
+
+  const fieldTypeOpts = `<option value="">— none —</option>` +
+    (lists.field_types||[]).map(ft => `<option value="${esc(ft.value||ft)}">${esc(ft.value||ft)}</option>`).join('');
+
+  const ccSet = new Set();
+  projectsList.forEach(p => (p.bidItems||[]).forEach(b => { if (b.cost_code) ccSet.add(b.cost_code); }));
+  (lists.cost_codes||[]).forEach(c => ccSet.add(c.value||c));
+  const ccOpts = `<option value="">— Cost Code —</option>` +
+    [...ccSet].sort().map(cc => `<option value="${esc(cc)}">${esc(cc)}</option>`).join('');
+
+  const jobClassOpts = `<option value="">— none —</option>` +
+    (lists.job_classes||[]).map(jc => `<option value="${esc(jc.value||jc)}">${esc(jc.value||jc)}</option>`).join('');
+
+  const equipOpts = `<option value="">— none —</option>` +
+    (lists.equipment||[]).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(eq =>
+      `<option value="${esc(eq.name)}" data-uc="${eq.unit_cost||0}">${esc(eq.name)}</option>`).join('');
+
+  const empList = (lists.employees||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  const empCheckboxes = empList.map(e => `
+    <label class="mob-emp-row">
+      <input type="checkbox" class="mob-emp-cb" value="${esc(e.name)}" id="mob-emp-${esc(e.name)}">
+      <span class="mob-emp-name">${esc(e.name)}</span>
+    </label>`).join('');
+
+  const today = new Date().toISOString().slice(0,10);
+
+  // #1 — Repeat Last Entry button
+  const repeatBtn = _mobLastEntry ? `
+    <button type="button" onclick="mobRepeatLastEntry()"
+      style="width:100%;padding:0.6rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.82rem;cursor:pointer;margin-bottom:0.75rem;text-align:left">
+      &#8635; Repeat Last Entry
+      <span style="color:var(--muted);font-size:0.72rem;margin-left:0.4rem">${esc(_mobLastEntry.cc)}${_mobLastEntry.sc ? ' / '+esc(_mobLastEntry.sc) : ''} · ${_mobLastEntry.hours}h · ${_mobLastEntry.checkedEmps.length} emp</span>
+    </button>` : '';
+
+  el.innerHTML = `
+    ${successMsg ? `<div class="mob-success-banner">&#10003; ${esc(successMsg)}</div>` : ''}
+    ${repeatBtn}
+
+    <div class="mob-form-card">
+      <div class="mob-section-title">Job Info</div>
+      <label class="mob-form-label">Project</label>
+      <select id="mob-project" class="mob-input">${projOpts}</select>
+      <label class="mob-form-label">Date</label>
+      <input  id="mob-date" type="date" class="mob-input" value="${today}">
+      <label class="mob-form-label">Field Type</label>
+      <select id="mob-field-type" class="mob-input">${fieldTypeOpts}</select>
+    </div>
+
+    <div class="mob-form-card">
+      <div class="mob-section-title">Crew</div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:0.5rem">
+        <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=true)"
+          style="background:none;border:none;color:var(--green);font-size:0.78rem;cursor:pointer;padding:0">Select All</button>
+        <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=false)"
+          style="background:none;border:none;color:var(--muted);font-size:0.78rem;cursor:pointer;padding:0">Clear</button>
+      </div>
+      ${empCheckboxes || '<span style="color:var(--muted);font-size:0.82rem">No employees in list. Add via Manage Lists.</span>'}
+    </div>
+
+    <!-- Code blocks container -->
+    <div id="mob-code-blocks">
+      ${_mobCodeBlockHTML(0, ccOpts, jobClassOpts, false)}
+    </div>
+
+    <button type="button" onclick="mobAddCodeBlock()"
+      style="width:100%;padding:0.6rem;background:var(--surface);border:1px dashed var(--border);border-radius:6px;color:var(--green);font-size:0.85rem;cursor:pointer;margin-bottom:0.75rem">
+      + Add Another Code
+    </button>
+
+    <div class="mob-form-card">
+      <div class="mob-section-title">Equipment <span style="font-weight:400;color:var(--muted)">(optional)</span></div>
+      <label class="mob-form-label">Equipment / Truck</label>
+      <select id="mob-equip" class="mob-input" onchange="mobEquipUCFill()">${equipOpts}</select>
+      <label class="mob-form-label">Unit Cost</label>
+      <input  id="mob-equip-uc" type="number" class="mob-input" placeholder="0.00" step="0.01" min="0">
+      <label class="mob-form-label">Hours</label>
+      <input  id="mob-equip-hrs" type="number" class="mob-input" placeholder="0.0" step="0.25" min="0">
+    </div>
+
+    ${perm.canEdit ? `
+      <button class="mob-submit-btn" onclick="submitMobileEntry()">Submit Daily Entry</button>
+      <button type="button" onclick="openCrewSignInOverlay()"
+        style="width:100%;padding:0.65rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.85rem;cursor:pointer;margin-top:0.5rem">
+        &#128221; Crew Sign-In Sheet PDF
+      </button>` : ''}
+  `;
+}
+
+function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
+  // ccOpts / jobClassOpts may be passed in or rebuilt here
+  if (!ccOpts) {
+    const ccSet = new Set();
+    projectsList.forEach(p => (p.bidItems||[]).forEach(b => { if (b.cost_code) ccSet.add(b.cost_code); }));
+    (lists.cost_codes||[]).forEach(c => ccSet.add(c.value||c));
+    ccOpts = `<option value="">— Cost Code —</option>` + [...ccSet].sort().map(cc => `<option value="${esc(cc)}">${esc(cc)}</option>`).join('');
+  }
+  if (!jobClassOpts) {
+    jobClassOpts = `<option value="">— none —</option>` + (lists.job_classes||[]).map(jc => `<option value="${esc(jc.value||jc)}">${esc(jc.value||jc)}</option>`).join('');
+  }
+  return `
+    <div class="mob-form-card mob-code-block" data-block-idx="${idx}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
+        <div class="mob-section-title" style="margin:0">Code Block ${idx + 1}</div>
+        ${removable ? `<button type="button" onclick="mobRemoveCodeBlock(this)" style="background:none;border:none;color:var(--red);font-size:0.8rem;cursor:pointer;padding:0">✕ Remove</button>` : ''}
+      </div>
+      <label class="mob-form-label">Cost Code</label>
+      <select class="mob-input mob-cc-sel" data-block="${idx}" onchange="mobUpdateSubCodesFor(this)">${ccOpts}</select>
+      <label class="mob-form-label">Sub Code</label>
+      <select class="mob-input mob-sc-sel" data-block="${idx}"><option value="">— Select Cost Code First —</option></select>
+      <label class="mob-form-label">Hours (per employee)</label>
+      <input type="number" class="mob-input mob-hrs-inp" data-block="${idx}" placeholder="0.0" step="0.25" min="0">
+      <label class="mob-form-label">Job Class</label>
+      <select class="mob-input mob-jc-sel" data-block="${idx}">${jobClassOpts}</select>
+      <label class="mob-form-label">Rate (per hour)</label>
+      <input type="number" class="mob-input mob-rate-inp" data-block="${idx}" placeholder="0.00" step="0.01" min="0">
+      <label class="mob-form-label">Quantity <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+      <input type="number" class="mob-input mob-qty-inp" data-block="${idx}" placeholder="0" step="any" min="0">
+    </div>`;
+}
+
+function mobAddCodeBlock() {
+  const container = document.getElementById('mob-code-blocks');
+  if (!container) return;
+  const existing = container.querySelectorAll('.mob-code-block').length;
+  const div = document.createElement('div');
+  div.innerHTML = _mobCodeBlockHTML(existing, null, null, true);
+  container.appendChild(div.firstElementChild);
+}
+
+function mobRemoveCodeBlock(btn) {
+  const block = btn.closest('.mob-code-block');
+  if (!block) return;
+  // Re-index remaining blocks
+  block.remove();
+  document.querySelectorAll('#mob-code-blocks .mob-code-block').forEach((el, i) => {
+    el.dataset.blockIdx = i;
+    el.querySelector('.mob-section-title').textContent = `Code Block ${i + 1}`;
+    el.querySelectorAll('[data-block]').forEach(inp => inp.dataset.block = i);
+    // Only show remove button if more than one block remains
+    const removeBtn = el.querySelector('button');
+    if (removeBtn) removeBtn.style.display = document.querySelectorAll('#mob-code-blocks .mob-code-block').length > 1 ? '' : 'none';
+  });
+}
+
+// #1 — Pre-fill form from last submission
+function mobRepeatLastEntry() {
+  if (!_mobLastEntry) return;
+  const le = _mobLastEntry;
+  document.getElementById('mob-project').value   = le.projId;
+  document.getElementById('mob-date').value       = new Date().toISOString().slice(0,10);
+  document.getElementById('mob-field-type').value = le.fieldType || '';
+  // Restore code blocks
+  const blocks = le.codeBlocks || [{ cc: le.cc, sc: le.sc, hours: le.hours, jobClass: le.jobClass, rate: le.rate, quantity: le.quantity }];
+  blocks.forEach((b, i) => {
+    if (i > 0) mobAddCodeBlock();
+    setTimeout(() => {
+      const ccSel = document.querySelector(`.mob-cc-sel[data-block="${i}"]`);
+      if (ccSel) { ccSel.value = b.cc || ''; mobUpdateSubCodesFor(ccSel); }
+      setTimeout(() => {
+        const scSel = document.querySelector(`.mob-sc-sel[data-block="${i}"]`);
+        if (scSel) scSel.value = b.sc || '';
+      }, 40);
+      const hrsInp = document.querySelector(`.mob-hrs-inp[data-block="${i}"]`);
+      if (hrsInp) hrsInp.value = b.hours || '';
+      const jcSel = document.querySelector(`.mob-jc-sel[data-block="${i}"]`);
+      if (jcSel) jcSel.value = b.jobClass || '';
+      const rateInp = document.querySelector(`.mob-rate-inp[data-block="${i}"]`);
+      if (rateInp) rateInp.value = b.rate || '';
+      const qtyInp = document.querySelector(`.mob-qty-inp[data-block="${i}"]`);
+      if (qtyInp) qtyInp.value = b.quantity || '';
+    }, i * 20);
+  });
+  document.getElementById('mob-equip').value      = le.equipName || '';
+  mobEquipUCFill();
+  document.getElementById('mob-equip-hrs').value  = le.equipHrs || '';
+  (le.checkedEmps || []).forEach(emp => {
+    const cb = document.getElementById('mob-emp-' + emp);
+    if (cb) cb.checked = true;
+  });
+}
+
+function mobUpdateSubCodesFor(ccSel) {
+  const cc  = ccSel.value;
+  const idx = ccSel.dataset.block;
+  const sel = document.querySelector(`.mob-sc-sel[data-block="${idx}"]`);
+  if (!sel) return;
+  if (!cc) { sel.innerHTML = '<option value="">— Select Cost Code First —</option>'; return; }
+  const scSet = new Set();
+  projectsList.forEach(p => (p.bidItems||[]).forEach(b => { if (b.cost_code === cc && b.sub_code) scSet.add(b.sub_code); }));
+  (lists.sub_codes||[]).filter(s => (s.cost_code||'') === cc).forEach(s => scSet.add(s.value||s));
+  sel.innerHTML = `<option value="">— Sub Code —</option>` +
+    [...scSet].sort().map(sc => `<option value="${esc(sc)}">${esc(sc)}</option>`).join('');
+}
+
+function mobEquipUCFill() {
+  const sel = document.getElementById('mob-equip');
+  const opt = sel.selectedOptions[0];
+  const uc  = opt ? (parseFloat(opt.dataset.uc) || 0) : 0;
+  const ucEl = document.getElementById('mob-equip-uc');
+  if (ucEl && uc > 0) ucEl.value = uc;
+}
+
+async function submitMobileEntry() {
+  const projId    = document.getElementById('mob-project').value;
+  const date      = document.getElementById('mob-date').value;
+  const fieldType = document.getElementById('mob-field-type').value;
+  const equipName = document.getElementById('mob-equip').value;
+  const equipUC   = parseFloat(document.getElementById('mob-equip-uc').value) || 0;
+  const equipHrs  = parseFloat(document.getElementById('mob-equip-hrs').value) || 0;
+  const checkedEmps = [...document.querySelectorAll('.mob-emp-cb:checked')].map(cb => cb.value);
+
+  // Collect all code blocks
+  const codeBlocks = [...document.querySelectorAll('#mob-code-blocks .mob-code-block')].map(el => {
+    const idx = el.dataset.blockIdx;
+    return {
+      cc:       el.querySelector(`.mob-cc-sel[data-block="${idx}"]`)?.value   || '',
+      sc:       el.querySelector(`.mob-sc-sel[data-block="${idx}"]`)?.value   || '',
+      hours:    parseFloat(el.querySelector(`.mob-hrs-inp[data-block="${idx}"]`)?.value)  || 0,
+      jobClass: el.querySelector(`.mob-jc-sel[data-block="${idx}"]`)?.value   || '',
+      rate:     parseFloat(el.querySelector(`.mob-rate-inp[data-block="${idx}"]`)?.value) || 0,
+      quantity: parseFloat(el.querySelector(`.mob-qty-inp[data-block="${idx}"]`)?.value)  || 0,
+    };
+  });
+
+  if (!projId)              { alert('Please select a project.'); return; }
+  if (!date)                { alert('Please select a date.'); return; }
+  if (checkedEmps.length === 0 && !equipName) { alert('Select at least one employee or add equipment.'); return; }
+  if (checkedEmps.length > 0 && codeBlocks.every(b => b.hours <= 0)) { alert('Enter hours in at least one code block.'); return; }
+
+  const proj = getProj(projId);
+  if (!proj) { alert('Project not found.'); return; }
+
+  const newRows = [];
+
+  // One labor row per employee per code block
+  codeBlocks.forEach(b => {
+    if (b.hours <= 0 && checkedEmps.length > 0) return; // skip empty blocks
+    checkedEmps.forEach(emp => {
+      newRows.push({
+        id: uid(), date, field_type: fieldType, employee: emp,
+        cost_code: b.cc, sub_code: b.sc, job_class: b.jobClass,
+        rate: b.rate, labor_hours: b.hours,
+        equipment: '', equip_unit_cost: 0, equip_hours: 0,
+        material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
+        quantity: b.quantity, num_laborers: 0,
+      });
+    });
+  });
+
+  // One equipment row if filled in (uses first code block's code)
+  if (equipName && equipHrs > 0) {
+    const firstBlock = codeBlocks[0] || {};
+    newRows.push({
+      id: uid(), date, field_type: fieldType, employee: '',
+      cost_code: firstBlock.cc || '', sub_code: firstBlock.sc || '', job_class: '',
+      rate: 0, labor_hours: 0,
+      equipment: equipName, equip_unit_cost: equipUC, equip_hours: equipHrs,
+      material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
+      quantity: 0, num_laborers: 0,
+    });
+  }
+
+  if (newRows.length === 0) { alert('Nothing to submit.'); return; }
+
+  // Persist last project
+  localStorage.setItem('mob_last_proj', projId);
+
+  // Save state for Repeat Last Entry
+  _mobLastEntry = { projId, fieldType, codeBlocks, checkedEmps, equipName, equipUC, equipHrs,
+    // legacy fields for badge summary
+    cc: codeBlocks[0]?.cc, sc: codeBlocks[0]?.sc, hours: codeBlocks[0]?.hours };
+
+  // Add to project and save
+  if (!proj.dailyRows) proj.dailyRows = [];
+  proj.dailyRows.push(...newRows);
+  saveProject(proj.id);
+
+  // Sync to DB row-by-row table
+  try { await drPostBulk(projId, newRows); } catch(e) { console.warn('drPostBulk failed:', e.message); }
+
+  // #3 — Update badge
+  updateMobEntryBadge();
+
+  const empCount   = checkedEmps.length;
+  const blockSummary = codeBlocks.filter(b=>b.hours>0).map(b=>`${b.cc||'?'} ${b.hours}h`).join(' · ');
+  const equipLabel = equipName && equipHrs > 0 ? ` + ${equipName} (${equipHrs}h)` : '';
+  const msg = `${newRows.length} row${newRows.length!==1?'s':''} added — ${empCount} emp · ${blockSummary}${equipLabel}`;
+
+  renderMobileEntryForm(msg);
+}
+
+/* ═══════════════════════════════════════════
+   EQUIPMENT UTILIZATION
+═══════════════════════════════════════════ */
+
+function _buildEquipAgg() {
+  // Aggregate all daily rows by equipment name
+  const agg = {};  // equipName → { hours, cost, projects: Set, dates: Set, costCodes: Set, unitCosts: [], source }
+  projectsList.forEach(p => {
+    const pname = p['project-name'] || p.id || '';
+    (p.dailyRows || []).forEach(row => {
+      const name = (row.equipment || '').trim();
+      if (!name) return;
+      if (!agg[name]) agg[name] = { hours: 0, cost: 0, projects: new Set(), dates: new Set(), costCodes: new Set(), unitCosts: [], source: 'daily' };
+      const a = agg[name];
+      const hrs  = parseFloat(row.equip_hours)    || 0;
+      const uc   = parseFloat(row.equip_unit_cost) || 0;
+      a.hours += hrs;
+      a.cost  += uc * hrs;
+      if (uc > 0) a.unitCosts.push(uc);
+      if (row.date)      a.dates.add(row.date);
+      if (row.cost_code) a.costCodes.add(row.cost_code);
+      a.projects.add(pname);
+    });
+  });
+
+  // Also pull from trucking entries (truck_type as equipment name, hours field)
+  const projMap = {};
+  projectsList.forEach(p => { projMap[p.id] = p['project-name'] || p.id || ''; });
+  truckingEntries.forEach(tr => {
+    const name = (tr.truck_type || '').trim();
+    if (!name) return;
+    const hrs  = parseFloat(tr.hours) || 0;
+    const cost = (parseFloat(tr.loads) || 0) * (parseFloat(tr.rate) || 0);
+    if (!agg[name]) agg[name] = { hours: 0, cost: 0, projects: new Set(), dates: new Set(), costCodes: new Set(), unitCosts: [], source: 'trucking' };
+    else if (agg[name].source === 'daily') agg[name].source = 'both';
+    const a = agg[name];
+    a.hours += hrs;
+    a.cost  += cost;
+    if (tr.date)      a.dates.add(tr.date);
+    if (tr.cost_code) a.costCodes.add(tr.cost_code);
+    if (tr.project_id && projMap[tr.project_id]) a.projects.add(projMap[tr.project_id]);
+  });
+
+  return agg;
+}
+
+function renderEquipTable() {
+  const el = document.getElementById('equip-content');
+  if (!el) return;
+
+  const agg = _buildEquipAgg();
+  const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
+
+  if (names.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted);padding:2rem;text-align:center">No equipment entries found in daily tracking.</div>`;
+    return;
+  }
+
+  const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
+  const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
+
+  const rows = names.map(name => {
+    const a = agg[name];
+    const avgUC  = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0) / a.unitCosts.length : 0;
+    const cph    = a.hours ? a.cost / a.hours : 0;
+    const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
+    const bar    = `<div style="width:100%;background:var(--surface2);border-radius:2px;height:6px;margin-top:3px"><div style="width:${utilPct.toFixed(1)}%;background:var(--green);height:6px;border-radius:2px"></div></div>`;
+    const srcBadge = a.source === 'trucking' ? `<span style="font-size:0.62rem;padding:0.05rem 0.3rem;background:rgba(96,165,250,0.12);color:var(--blue);border-radius:2px;margin-left:0.4rem;vertical-align:middle">Trucking</span>`
+                   : a.source === 'both'     ? `<span style="font-size:0.62rem;padding:0.05rem 0.3rem;background:rgba(34,197,94,0.12);color:var(--green);border-radius:2px;margin-left:0.4rem;vertical-align:middle">Daily+Trucking</span>`
+                   : '';
+    return `
+      <tr>
+        <td style="padding:0.45rem 0.75rem;font-weight:600;color:var(--text)">${esc(name)}${srcBadge}</td>
+        <td class="calc">${avgUC ? '$'+fmt(avgUC) : '—'}</td>
+        <td class="calc">${fmt(a.hours,1)}</td>
+        <td class="calc">$${fmt(a.cost)}</td>
+        <td class="calc">${cph ? '$'+fmt(cph) : '—'}</td>
+        <td class="calc">${a.dates.size}</td>
+        <td class="calc">${a.projects.size}</td>
+        <td class="calc" style="min-width:90px">
+          <span style="font-size:0.75rem">${utilPct.toFixed(1)}%</span>
+          ${bar}
+        </td>
+        <td style="padding:0.45rem 0.75rem;font-size:0.72rem;color:var(--muted);max-width:200px">${[...a.costCodes].sort().join(', ') || '—'}</td>
+      </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem">
+      <div>
+        <h2 style="margin:0;font-size:1rem;font-weight:700;color:var(--text)">Equipment Utilization</h2>
+        <span style="font-size:0.75rem;color:var(--muted)">${names.length} pieces tracked &nbsp;·&nbsp; ${fmt(totalHours,1)} total hours &nbsp;·&nbsp; $${fmt(totalCost)} total cost</span>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="equip-table" style="width:100%">
+        <thead>
+          <tr class="col-row">
+            <th style="text-align:left;padding:0.4rem 0.75rem">Equipment</th>
+            <th class="calc-hdr">Avg Unit Cost</th>
+            <th class="calc-hdr">Total Hours</th>
+            <th class="calc-hdr">Total Cost</th>
+            <th class="calc-hdr">Cost / Hr</th>
+            <th class="calc-hdr">Days Active</th>
+            <th class="calc-hdr">Projects</th>
+            <th class="calc-hdr">% of All Hours</th>
+            <th style="text-align:left;padding:0.4rem 0.75rem">Cost Codes</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr style="border-top:2px solid var(--border);font-weight:600">
+            <td style="padding:0.45rem 0.75rem">Total</td>
+            <td class="calc">—</td>
+            <td class="calc">${fmt(totalHours,1)}</td>
+            <td class="calc">$${fmt(totalCost)}</td>
+            <td class="calc">${totalHours ? '$'+fmt(totalCost/totalHours) : '—'}</td>
+            <td class="calc">—</td>
+            <td class="calc">—</td>
+            <td class="calc">100%</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div class="legend" style="margin-top:0.75rem">
+      <span>% of All Hours = this equipment's hours as a share of total tracked equipment hours</span>
+      <span>Avg Unit Cost = average rate entered for this equipment across daily rows</span>
+    </div>`;
+}
+
+function exportEquipCSV() {
+  const agg = _buildEquipAgg();
+  const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
+  if (names.length === 0) { alert('No equipment data to export.'); return; }
+  const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
+  const headers = ['Equipment','Source','Avg Unit Cost','Total Hours','Total Cost','Cost/Hr','Days Active','Projects','% of All Hours','Cost Codes'];
+  const rows = [headers.join(',')];
+  names.forEach(name => {
+    const a = agg[name];
+    const avgUC   = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0)/a.unitCosts.length : 0;
+    const cph     = a.hours ? a.cost / a.hours : 0;
+    const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
+    const src     = a.source === 'trucking' ? 'Trucking' : a.source === 'both' ? 'Daily+Trucking' : 'Daily';
+    rows.push([
+      name, src,
+      avgUC   ? avgUC.toFixed(2)   : '',
+      a.hours.toFixed(1),
+      a.cost.toFixed(2),
+      cph     ? cph.toFixed(2)     : '',
+      a.dates.size,
+      a.projects.size,
+      utilPct.toFixed(1) + '%',
+      [...a.costCodes].sort().join('; '),
+    ].map(v => `"${v}"`).join(','));
+  });
+  downloadCSV(rows.join('\n'), 'equipment_utilization.csv');
+}
+
+function exportEquipPDF() {
+  const agg = _buildEquipAgg();
+  const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
+  if (names.length === 0) { alert('No equipment data to export.'); return; }
+
+  const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
+  const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
+  const dateStr    = new Date().toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+
+  const rows = names.map(name => {
+    const a = agg[name];
+    const avgUC = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0)/a.unitCosts.length : 0;
+    const cph   = a.hours ? a.cost / a.hours : 0;
+    const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
+    const r = v => `<td style="padding:0.3rem 0.5rem;text-align:right;border-bottom:1px solid #e5e7eb">${v}</td>`;
+    const srcLabel = a.source === 'trucking' ? ' [Trucking]' : a.source === 'both' ? ' [Daily+Trucking]' : '';
+    return `<tr>
+      <td style="padding:0.3rem 0.5rem;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(name)}${srcLabel}</td>
+      ${r(avgUC ? '$'+fmt(avgUC) : '—')}
+      ${r(fmt(a.hours,1))}
+      ${r('$'+fmt(a.cost))}
+      ${r(cph ? '$'+fmt(cph) : '—')}
+      ${r(a.dates.size)}
+      ${r(a.projects.size)}
+      ${r(utilPct.toFixed(1)+'%')}
+      <td style="padding:0.3rem 0.5rem;border-bottom:1px solid #e5e7eb;font-size:0.7rem;color:#6b7280">${[...a.costCodes].sort().join(', ')||'—'}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Equipment Utilization</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; margin: 0; padding: 1.5rem; }
+    h1 { font-size: 16px; margin: 0 0 0.25rem; }
+    .sub { font-size: 10px; color: #6b7280; margin-bottom: 1.25rem; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th { background: #f3f4f6; padding: 0.35rem 0.5rem; text-align: right; font-size: 10px; font-weight: 600; color: #374151; border-bottom: 2px solid #d1d5db; }
+    thead th:first-child, thead th:last-child { text-align: left; }
+    tfoot td { padding: 0.3rem 0.5rem; font-weight: 700; border-top: 2px solid #d1d5db; text-align: right; }
+    tfoot td:first-child { text-align: left; }
+    @media print { body { padding: 0.5rem; } }
+  </style></head><body>
+  <h1>Equipment Utilization Report</h1>
+  <div class="sub">${dateStr} &nbsp;·&nbsp; ${names.length} pieces &nbsp;·&nbsp; ${fmt(totalHours,1)} total hrs &nbsp;·&nbsp; $${fmt(totalCost)} total cost</div>
+  <table>
+    <thead><tr>
+      <th style="text-align:left">Equipment</th>
+      <th>Avg Unit Cost</th><th>Total Hrs</th><th>Total Cost</th>
+      <th>Cost/Hr</th><th>Days Active</th><th>Projects</th><th>% of Hrs</th>
+      <th style="text-align:left">Cost Codes</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr>
+      <td>Total</td><td></td>
+      <td style="text-align:right">${fmt(totalHours,1)}</td>
+      <td style="text-align:right">$${fmt(totalCost)}</td>
+      <td style="text-align:right">${totalHours?'$'+fmt(totalCost/totalHours):'—'}</td>
+      <td></td><td></td><td style="text-align:right">100%</td><td></td>
+    </tr></tfoot>
+  </table>
+  <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
 }
 
 /* ═══════════════════════════════════════════
@@ -7283,6 +8084,130 @@ function _dsrSelect(val) {
   const h = document.getElementById('dsr-project-val');
   if (h) h.value = val;
   _dsrRenderList();
+}
+
+/* ── Crew Sign-In Sheet ── */
+function openCrewSignInOverlay() {
+  const today = new Date().toISOString().slice(0, 10);
+  const overlay = document.createElement('div');
+  overlay.id = 'crew-signin-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
+  overlay.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;width:100%;max-width:380px;">
+      <div style="font-size:0.82rem;font-weight:700;color:var(--text);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:1.1rem;">Crew Sign-In Sheet</div>
+      <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.35rem;">Date</div>
+      <input type="date" id="csi-date" value="${today}"
+        style="width:100%;box-sizing:border-box;padding:0.5rem 0.65rem;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.875rem;outline:none;margin-bottom:1rem;">
+      <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+        <button class="btn btn-ghost" onclick="document.getElementById('crew-signin-overlay').remove()">Cancel</button>
+        <button class="btn btn-green" onclick="
+          const d = document.getElementById('csi-date').value;
+          if (!d) { alert('Select a date.'); return; }
+          document.getElementById('crew-signin-overlay').remove();
+          exportCrewSignInPDF(d);
+        ">Generate PDF</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  setTimeout(() => document.getElementById('csi-date').focus(), 50);
+}
+
+function exportCrewSignInPDF(date) {
+  const fmtD = d => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+  // Collect all entries for the date across all projects
+  let grandLaborHrs = 0, grandEquipHrs = 0, grandCost = 0;
+  const sections = [];
+
+  projectsList.forEach(p => {
+    const rows = (p.dailyRows || []).filter(r => r.date === date);
+    if (!rows.length) return;
+    const projName = p['project-name'] || 'Untitled';
+
+    // Group: labor rows by employee, equipment rows separate
+    const laborRows  = rows.filter(r => (parseFloat(r.labor_hours) || 0) > 0 || r.employee);
+    const equipRows  = rows.filter(r => (parseFloat(r.equip_hours) || 0) > 0 && !r.employee);
+
+    let projLaborHrs = 0, projEquipHrs = 0, projCost = 0;
+    const tbl = (rws, isEquip) => rws.map(r => {
+      const c = calcDaily(r);
+      if (!isEquip) projLaborHrs += parseFloat(r.labor_hours) || 0;
+      else          projEquipHrs += parseFloat(r.equip_hours) || 0;
+      projCost += c.total_cost;
+      const td = v => `<td style="padding:0.25rem 0.4rem;border-bottom:1px solid #e5e7eb;font-size:10px">${v||'—'}</td>`;
+      const tdr = v => `<td style="padding:0.25rem 0.4rem;border-bottom:1px solid #e5e7eb;font-size:10px;text-align:right">${v||'—'}</td>`;
+      if (!isEquip) return `<tr>${td(r.employee)}${td(r.cost_code+(r.sub_code?' / '+r.sub_code:''))}${td(r.field_type)}${td(r.job_class)}${tdr(r.labor_hours||'—')}${tdr(c.labor_cost>0?'$'+fmt(c.labor_cost):'—')}${tdr(c.total_cost>0?'$'+fmt(c.total_cost):'—')}</tr>`;
+      return `<tr>${td(r.equipment)}${td(r.cost_code+(r.sub_code?' / '+r.sub_code:''))}${td(r.field_type)}${td('')}${tdr(r.equip_hours||'—')}${tdr(c.equip_total>0?'$'+fmt(c.equip_total):'—')}${tdr(c.total_cost>0?'$'+fmt(c.total_cost):'—')}</tr>`;
+    }).join('');
+
+    grandLaborHrs += projLaborHrs;
+    grandEquipHrs += projEquipHrs;
+    grandCost     += projCost;
+
+    const thStyle = 'padding:0.25rem 0.4rem;background:#f3f4f6;font-size:9px;font-weight:600;color:#6b7280;text-align:left;border-bottom:2px solid #d1d5db;';
+    const thrStyle = thStyle + 'text-align:right;';
+    sections.push(`
+      <div style="margin-bottom:1.25rem;page-break-inside:avoid">
+        <div style="font-weight:700;font-size:11px;margin-bottom:0.4rem;color:#111">${esc(projName)}</div>
+        ${laborRows.length ? `
+        <table style="width:100%;border-collapse:collapse;margin-bottom:0.5rem">
+          <thead><tr>
+            <th style="${thStyle}">Employee</th><th style="${thStyle}">Code / Sub</th>
+            <th style="${thStyle}">Type</th><th style="${thStyle}">Class</th>
+            <th style="${thrStyle}">Hrs</th><th style="${thrStyle}">Labor $</th><th style="${thrStyle}">Total $</th>
+          </tr></thead>
+          <tbody>${tbl(laborRows, false)}</tbody>
+          <tfoot><tr>
+            <td colspan="4" style="padding:0.2rem 0.4rem;font-size:9px;color:#6b7280">Labor subtotal</td>
+            <td style="padding:0.2rem 0.4rem;text-align:right;font-size:10px;font-weight:600">${fmt(projLaborHrs,1)}</td>
+            <td></td>
+            <td style="padding:0.2rem 0.4rem;text-align:right;font-size:10px;font-weight:600"></td>
+          </tr></tfoot>
+        </table>` : ''}
+        ${equipRows.length ? `
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr>
+            <th style="${thStyle}">Equipment</th><th style="${thStyle}">Code / Sub</th>
+            <th style="${thStyle}">Type</th><th style="${thStyle}"></th>
+            <th style="${thrStyle}">Hrs</th><th style="${thrStyle}">Equip $</th><th style="${thrStyle}">Total $</th>
+          </tr></thead>
+          <tbody>${tbl(equipRows, true)}</tbody>
+        </table>` : ''}
+        <div style="text-align:right;font-size:10px;font-weight:700;margin-top:0.3rem;color:#111">
+          Project Total: $${fmt(projCost)}
+        </div>
+      </div>`);
+  });
+
+  if (!sections.length) { alert('No entries found for ' + fmtD(date)); return; }
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Crew Sign-In Sheet — ${date}</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; margin: 0; padding: 1rem 1.5rem; }
+    h1   { font-size: 15px; margin: 0 0 0.1rem; }
+    .sub { font-size: 10px; color: #6b7280; margin-bottom: 1.25rem; }
+    .totals { display:flex; gap: 2rem; padding: 0.5rem 0; border-top: 2px solid #111; border-bottom: 1px solid #d1d5db; margin-bottom: 1.25rem; }
+    .tot-lbl { font-size: 9px; color: #6b7280; }
+    .tot-val { font-size: 12px; font-weight: 700; }
+    @media print { body { padding: 0.5rem; } @page { margin: 1cm; } }
+  </style></head><body>
+  <h1>Crew Sign-In Sheet</h1>
+  <div class="sub">${fmtD(date)}</div>
+  <div class="totals">
+    <div><div class="tot-lbl">Labor Hours</div><div class="tot-val">${fmt(grandLaborHrs,1)}</div></div>
+    <div><div class="tot-lbl">Equipment Hours</div><div class="tot-val">${fmt(grandEquipHrs,1)}</div></div>
+    <div><div class="tot-lbl">Total Cost</div><div class="tot-val">$${fmt(grandCost)}</div></div>
+    <div><div class="tot-lbl">Projects</div><div class="tot-val">${sections.length}</div></div>
+  </div>
+  ${sections.join('')}
+  <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
 }
 
 function openDailySummaryReport() {
