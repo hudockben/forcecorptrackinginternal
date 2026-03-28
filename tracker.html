@@ -8977,12 +8977,15 @@ function renderScheduleProjectDetail(proj) {
       ? new Date(bi.target_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
       : null;
 
+    const ppDaysFmtSched = effectiveDaysLeft !== null && effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft;
     const reqPaceCell = isLumpSum
       ? '<span style="color:var(--muted);font-size:0.72rem">LS</span>'
       : notStartedYet && requiredPace !== null
         ? `${fmt(requiredPace, 2)}${uLabel}/d<br><span style="font-size:0.62rem;color:#818cf8">(planned)</span>`
         : requiredPace !== null
-          ? fmt(requiredPace, 2) + `${uLabel}/d` + (usingPPDays ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} PP days)</span>` : '')
+          ? fmt(requiredPace, 2) + `${uLabel}/d` + (usingPPDays
+              ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${ppDaysFmtSched} PP days)</span>`
+              : `<br><span style="font-size:0.62rem;color:var(--muted);opacity:0.7">cal. est.</span>`)
           : '—';
 
     const goalCell = status === 'complete'
@@ -9441,10 +9444,13 @@ async function printDailyPMReport() {
     let targetBig, targetSub;
     if (status === 'complete')                              { targetBig = '✓'; targetSub = 'Complete'; }
     else if (requiredPace === null || status === 'no-data') { targetBig = '—'; targetSub = 'No deadline set'; }
-    else { targetBig = fmt(requiredPace, 1); targetSub = usingPPDays ? `units / ${ppDaysFmt} planned days` : 'units needed today'; }
+    else { targetBig = fmt(requiredPace, 1); targetSub = usingPPDays ? `units / ${ppDaysFmt} planned days` : 'units needed today (cal. est.)'; }
 
     const ppNote    = usingPPDays
-      ? `<div style="font-size:9px;color:#1d4ed8;margin-top:3px">📅 Based on ${ppDaysFmt} planned working days (Projection Planner)</div>` : '';
+      ? `<div style="font-size:9px;color:#1d4ed8;margin-top:3px">📅 Based on ${ppDaysFmt} planned working days (Projection Planner)</div>`
+      : (requiredPace !== null && !isLumpSum && !notStartedYet)
+        ? `<div style="font-size:9px;color:var(--muted);margin-top:3px">Calendar estimate — add to Projection Planner for precise pacing</div>`
+        : '';
     const behindNote = (status === 'behind' && gap !== null && gap > 0)
       ? `<div style="font-size:10px;color:#dc2626;margin-top:4px">⚠ ${fmt(gap,1)} units/day behind pace</div>` : '';
 
@@ -9643,7 +9649,7 @@ async function printSchedulePDF() {
       <td style="text-align:right">${daysWorked > 0 ? daysWorked : '—'}</td>
       <td style="text-align:right">${currentPace > 0 ? fmt(currentPace,2)+'/d' : '—'}</td>
       <td style="text-align:right">${trendCell}</td>
-      <td style="text-align:right">${requiredPace !== null ? fmt(requiredPace,2)+'/d' + (usingPPDays ? `<br><span style="font-size:8px;color:#555">${ppDaysFmt}d PP</span>` : '') : '—'}</td>
+      <td style="text-align:right">${requiredPace !== null ? fmt(requiredPace,2)+pdfULabel+'/d' + (usingPPDays ? `<br><span style="font-size:8px;color:#555">${ppDaysFmt}d PP</span>` : `<br><span style="font-size:7px;color:#aaa">cal. est.</span>`) : '—'}</td>
       <td style="text-align:right;font-weight:700;color:${sc}">${goalTxt}</td>
       <td style="text-align:right">${gapTxt}</td>
       <td style="text-align:center"><span style="background:${sBg[status]||'#f3f4f6'};color:${sc};font-size:8px;font-weight:700;padding:2px 6px;border-radius:8px;border:1px solid ${sc}33;white-space:nowrap">${sLabels[status]||status}</span></td>
