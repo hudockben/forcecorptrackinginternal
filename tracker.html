@@ -6942,6 +6942,16 @@ async function submitMobileEntry() {
   const proj = getProj(projId);
   if (!proj) { alert('Project not found.'); return; }
 
+  // Build per-employee rate/job_class lookup from stored employee list
+  const isPW = proj.prevailing_wage || false;
+  const empRateMap = {};
+  (lists.employees || []).forEach(e => {
+    empRateMap[e.name] = {
+      job_class: e.job_class || '',
+      rate: isPW ? (parseFloat(e.prevailing_rate) || 0) : (parseFloat(e.non_prevailing_rate) || 0),
+    };
+  });
+
   const newRows = [];
 
   // One labor row per employee per code block.
@@ -6951,11 +6961,13 @@ async function submitMobileEntry() {
   codeBlocks.forEach((b, bi) => {
     if (b.hours <= 0 && checkedEmps.length > 0) return;
     checkedEmps.forEach(emp => {
+      const empData = empRateMap[emp] || {};
       const isOperator = equipMerged && bi === 0 && emp === equipOperator;
       newRows.push({
         id: uid(), date, field_type: fieldType, employee: emp,
-        cost_code: b.cc, sub_code: b.sc, job_class: b.jobClass,
-        rate: b.rate, labor_hours: b.hours,
+        cost_code: b.cc, sub_code: b.sc,
+        job_class: empData.job_class || '',
+        rate: empData.rate || 0, labor_hours: b.hours,
         equipment:       isOperator ? equipName : '',
         equip_unit_cost: isOperator ? equipUC   : 0,
         equip_hours:     isOperator ? equipHrs  : 0,
