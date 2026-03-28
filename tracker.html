@@ -8608,11 +8608,82 @@ function _schedGetDeadline(proj) {
   return match ? match.deadline_date : null;
 }
 
+/** US federal holidays for a given year (observed dates, Mon–Fri only). */
+function _usHolidays(year) {
+  const h = new Set();
+  const ymd = (y, m, d) => `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  // Fixed-date holidays — shift to nearest weekday if on weekend
+  const fixedObs = (m, d) => {
+    const dt = new Date(year, m - 1, d);
+    const dow = dt.getDay();
+    if (dow === 0) dt.setDate(d + 1);       // Sunday → Monday
+    else if (dow === 6) dt.setDate(d - 1);  // Saturday → Friday
+    return ymd(year, dt.getMonth() + 1, dt.getDate());
+  };
+  h.add(fixedObs(1,  1));   // New Year's Day
+  h.add(fixedObs(7,  4));   // Independence Day
+  h.add(fixedObs(11, 11));  // Veterans Day
+  h.add(fixedObs(12, 25));  // Christmas Day
+  // Floating holidays
+  const nthWeekday = (m, wd, n) => {
+    const dt = new Date(year, m - 1, 1); let cnt = 0;
+    while (true) { if (dt.getDay() === wd && ++cnt === n) break; dt.setDate(dt.getDate() + 1); }
+    return ymd(year, m, dt.getDate());
+  };
+  const lastWeekday = (m, wd) => {
+    const dt = new Date(year, m, 0);
+    while (dt.getDay() !== wd) dt.setDate(dt.getDate() - 1);
+    return ymd(year, m, dt.getDate());
+  };
+  h.add(nthWeekday(1,  1, 3));  // MLK Day: 3rd Mon Jan
+  h.add(nthWeekday(2,  1, 3));  // Presidents Day: 3rd Mon Feb
+  h.add(lastWeekday(5, 1));     // Memorial Day: last Mon May
+  h.add(nthWeekday(9,  1, 1));  // Labor Day: 1st Mon Sep
+  h.add(nthWeekday(10, 1, 2));  // Columbus Day: 2nd Mon Oct
+  h.add(nthWeekday(11, 4, 4));  // Thanksgiving: 4th Thu Nov
+  return h;
+}
+const _holidayCache = {};
+function _isHoliday(dateStr) {
+  const y = parseInt(dateStr);
+  if (!_holidayCache[y]) _holidayCache[y] = _usHolidays(y);
+  return _holidayCache[y].has(dateStr);
+}
+
+/** Count Mon–Fri non-holiday working days from today through deadlineStr (inclusive).
+ *  Returns negative if overdue. Replaces the old calendar-day _schedDaysRemaining. */
 function _schedDaysRemaining(deadlineStr) {
   if (!deadlineStr) return null;
-  const dl = new Date(deadlineStr + 'T12:00:00');
-  const now = new Date(); now.setHours(0, 0, 0, 0);
-  return Math.ceil((dl - now) / (1000 * 60 * 60 * 24));
+  const end = new Date(deadlineStr + 'T12:00:00');
+  const now = new Date(); now.setHours(12, 0, 0, 0);
+  const sign = end < now ? -1 : 1;
+  const [lo, hi] = sign === 1 ? [now, end] : [end, now];
+  let count = 0;
+  const cur = new Date(lo);
+  while (cur <= hi) {
+    const dow = cur.getDay();
+    const ds  = cur.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !_isHoliday(ds)) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return sign * count;
+}
+
+/** Count Mon–Fri non-holiday working days between two date strings (inclusive of both ends). */
+function _workingDaysBetween(fromStr, toStr) {
+  if (!fromStr || !toStr) return null;
+  const start = new Date(fromStr + 'T12:00:00');
+  const end   = new Date(toStr   + 'T12:00:00');
+  if (end <= start) return 0;
+  let count = 0;
+  const cur = new Date(start);
+  while (cur <= end) {
+    const dow = cur.getDay();
+    const ds  = cur.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !_isHoliday(ds)) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
 }
 
 function _schedDeadlineChip(days) {
@@ -8636,14 +8707,18 @@ function _schedPaceForProject(proj) {
     const key = (row.cost_code || '') + '||' + (row.sub_code || '');
     if (!agg[key]) agg[key] = {
       running_qty: 0, labor_hours: 0, equip_hours: 0,
-      dates: new Set(), employees: new Set(), equipment: new Set()
+      dates: new Set(), employees: new Set(), equipment: new Set(),
+      crewDays: new Set()  // unique date+employee pairs → crew-day count
     };
     const a = agg[key];
     a.running_qty  += parseFloat(row.quantity)    || 0;
     a.labor_hours  += parseFloat(row.labor_hours) || 0;
     a.equip_hours  += parseFloat(row.equip_hours) || 0;
     if (row.date)      a.dates.add(row.date);
-    if (row.employee && row.employee.trim())  a.employees.add(row.employee.trim());
+    if (row.employee && row.employee.trim()) {
+      a.employees.add(row.employee.trim());
+      a.crewDays.add(row.date + '||' + row.employee.trim());
+    }
     if (row.equipment && row.equipment.trim()) a.equipment.add(row.equipment.trim());
   });
   return agg;
@@ -8708,11 +8783,11 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const todayStr      = new Date().toISOString().slice(0, 10);
   const notStartedYet = !!(bi.start_date && bi.start_date > todayStr && daysWorked === 0);
 
-  // Planned pace: bidQty spread over the full start→target window (pre-start planning figure)
+  // Planned pace: bidQty spread over working days in start→target window (pre-start planning figure)
   let plannedPace = null;
   if (bi.start_date && biDeadline) {
-    const totalDays = Math.ceil((new Date(biDeadline + 'T12:00:00') - new Date(bi.start_date + 'T12:00:00')) / (1000 * 60 * 60 * 24));
-    if (totalDays > 0) plannedPace = bidQty / totalDays;
+    const totalWorkDays = _workingDaysBetween(bi.start_date, biDeadline);
+    if (totalWorkDays > 0) plannedPace = bidQty / totalWorkDays;
   }
 
   // Use Projection Planner working days when available, else fall back to per-item calendar days
@@ -8728,12 +8803,16 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const gap    = (!notStartedYet && requiredPace !== null) ? requiredPace - currentPace : null;
   const status = notStartedYet ? 'not-started' : _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
 
+  // Crew-day normalization: unique (date+employee) pairs vs unique work dates
+  const crewDaysTotal = a.crewDays ? a.crewDays.size : 0;
+  const avgCrewPerDay = (daysWorked > 0 && crewDaysTotal > 0) ? crewDaysTotal / daysWorked : null;
+
   // Est. hours remaining: divide units left by historical units-per-labor-hour rate
   const laborHours       = a.labor_hours || 0;
   const unitsPerHour     = (laborHours > 0 && runningQty > 0) ? runningQty / laborHours : null;
   const hoursLeft        = (unitsPerHour !== null && unitsLeft > 0) ? unitsLeft / unitsPerHour : (unitsLeft === 0 && pct >= 100 ? 0 : null);
   const laborHoursPerDay = (laborHours > 0 && daysWorked > 0) ? laborHours / daysWorked : null;
-  return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, plannedPace, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet };
+  return { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, unitsLeft, plannedPace, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet };
 }
 
 /** Build sorted [{date, qty}] for one cost code from the project's daily rows. */
@@ -8764,7 +8843,9 @@ function _schedTrendMetrics(breakdown) {
   return { avg3, avg7, direction, totalDays: breakdown.length };
 }
 
-/** Replay per-day status to build a history array [{date, status, gap, pace}]. */
+/** Replay per-day status to build a history array [{date, status, gap, pace}].
+ *  Uses working-day counts (Mon–Fri, excluding holidays) for consistency with
+ *  the live required-pace calculation in _schedCalcRow. */
 function _schedStatusHistory(bi, breakdown, deadline) {
   const bidQty     = parseFloat(bi.quantity) || 0;
   const biDeadline = bi.target_date || deadline;
@@ -8774,10 +8855,8 @@ function _schedStatusHistory(bi, breakdown, deadline) {
     cumQty += qty;
     const daysWorked  = history.length + 1;
     const currentPace = cumQty / daysWorked;
-    let dl = null;
-    if (biDeadline) {
-      dl = Math.ceil((new Date(biDeadline + 'T12:00:00') - new Date(date + 'T12:00:00')) / 86400000);
-    }
+    // Use working days remaining from this historical date to the deadline
+    const dl = biDeadline ? _workingDaysBetween(date, biDeadline) : null;
     const unitsLeft = Math.max(0, bidQty - cumQty);
     const rp  = (dl !== null && dl > 0) ? unitsLeft / dl : null;
     const gap = rp !== null ? rp - currentPace : null;
@@ -8828,7 +8907,7 @@ function renderScheduleProjectDetail(proj) {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
 
   const rows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     // Trend
@@ -8894,7 +8973,11 @@ function renderScheduleProjectDetail(proj) {
         </div>
       </td>
       <td class="num">${daysWorked > 0 ? daysWorked : '—'}</td>
-      <td class="num">${currentPace > 0 ? fmt(currentPace, 2) + '/d' : '—'}</td>
+      <td class="num">${currentPace > 0
+        ? fmt(currentPace, 2) + '/d' + (avgCrewPerDay !== null && avgCrewPerDay > 1.05
+            ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(avgCrewPerDay, 1)} avg crew</span>`
+            : '')
+        : '—'}</td>
       ${trendCell}
       <td class="num">${reqPaceCell}</td>
       <td class="num">${
@@ -8943,7 +9026,7 @@ function renderScheduleProjectDetail(proj) {
           <th style="min-width:120px">Progress</th>
           <th class="num">Days Worked</th>
           <th class="num">Current Pace</th>
-          <th class="num" style="min-width:80px">7d Trend</th>
+          <th class="num" style="min-width:80px">Pace Trend</th>
           <th class="num">Required Pace</th>
           <th class="num">Est. Hours Left</th>
           <th class="num">Today's Goal</th>
@@ -9590,7 +9673,7 @@ async function printSchedulePDF() {
       <th style="min-width:80px">Progress</th>
       <th style="text-align:right">Days Worked</th>
       <th style="text-align:right">Curr. Pace</th>
-      <th style="text-align:right;min-width:70px">7d Trend</th>
+      <th style="text-align:right;min-width:70px">Pace Trend</th>
       <th style="text-align:right">Req. Pace</th>
       <th style="text-align:right">Today's Goal</th>
       <th style="text-align:right">Gap</th>
@@ -9784,7 +9867,7 @@ function _ppAutoFill(proj, biKey) {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  // Fill 90 days ahead
+  // Fill 90 days ahead (Mon–Fri only; auto-mark US federal holidays as no-work)
   for (let i = 0; i < 90; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
@@ -9794,7 +9877,11 @@ function _ppAutoFill(proj, biKey) {
     if (!_pp.schedule[biKey]) _pp.schedule[biKey] = {};
     if (!_pp.schedule[biKey][ds]) {
       // Only auto-fill — don't overwrite manual edits
-      _pp.schedule[biKey][ds] = { employees: [...crew], equipment: [...equip], crew: {}, halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+      if (_isHoliday(ds)) {
+        _pp.schedule[biKey][ds] = { employees: [], equipment: [], crew: {}, halfDay: false, noWork: true, noWorkReason: 'Holiday', notes: '' };
+      } else {
+        _pp.schedule[biKey][ds] = { employees: [...crew], equipment: [...equip], crew: {}, halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+      }
     }
   }
 }
