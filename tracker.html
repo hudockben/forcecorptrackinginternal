@@ -1731,6 +1731,7 @@
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
   <button class="tab-btn"        data-tab="supplier">Suppliers</button>
+  <button class="tab-btn"        data-tab="equip">&#128295; Equipment</button>
   <button class="tab-btn"        onclick="openModal()">&#9881; Manage Lists</button>
   <button class="tab-btn" data-tab="users" id="users-tab-btn" style="margin-left:auto;display:none">&#128100; Users</button>
 </nav>
@@ -1902,8 +1903,15 @@
   <div id="users-root" style="padding:1.5rem;max-width:700px"></div>
 </div>
 
+<!-- ══════════════ EQUIPMENT UTILIZATION TAB ══════════════ -->
+<div class="tab-panel" id="tab-equip">
+  <div id="equip-content" style="padding:1rem"><!-- rendered by JS --></div>
+</div>
+
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
 <div class="tab-panel" id="tab-cost">
+  <!-- Alert banner -->
+  <div id="cost-alert-banner" style="display:none;padding:0.5rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:1rem;flex-wrap:wrap;align-items:center"></div>
   <!-- Filter bar -->
   <div id="cost-filter-bar" style="padding:0.55rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
     <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Filters:</span>
@@ -2608,6 +2616,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'trucking') renderTruckingTab();
     if (activeTab === 'users')    renderUsersTab();
     if (activeTab === 'schedule') renderScheduleTab();
+    if (activeTab === 'equip')    renderEquipTable();
   });
 });
 
@@ -2619,6 +2628,12 @@ function renderHeaderActions() {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
       <button class="btn btn-green" onclick="document.querySelector('.tab-btn[data-tab=info]').click()">+ Add Bid Items in Project Dashboard</button>
+      ${summaryBtn}
+      ${logoutBtn}
+    `;
+  } else if (activeTab === 'equip') {
+    el.innerHTML = `
+      <button class="btn btn-ghost" onclick="exportEquipPDF()">&#128438; Export PDF</button>
       ${summaryBtn}
       ${logoutBtn}
     `;
@@ -6149,6 +6164,7 @@ function renderCostTable() {
   });
 
   const COLS = 16;
+  const alertItems = [];  // { cc, sc, pct, level }
 
   groupOrder.forEach(costCode => {
     const keys    = groups[costCode];
@@ -6171,6 +6187,14 @@ function renderCostTable() {
       }
     });
 
+    // ── Budget alert for this group ──
+    const gPct = gBidTotal > 0 ? gRunTotal / gBidTotal : null;
+    const gAlertBadge = gPct !== null && gPct >= 1.0
+      ? `<span style="margin-left:0.6rem;background:rgba(239,68,68,0.15);color:var(--red);border:1px solid rgba(239,68,68,0.35);border-radius:3px;font-size:0.68rem;padding:0.1rem 0.35rem;font-weight:600">⚠ Over Budget ${Math.round(gPct*100)}%</span>`
+      : gPct !== null && gPct >= 0.8
+      ? `<span style="margin-left:0.6rem;background:rgba(234,179,8,0.12);color:var(--yellow);border:1px solid rgba(234,179,8,0.3);border-radius:3px;font-size:0.68rem;padding:0.1rem 0.35rem;font-weight:600">⚠ ${Math.round(gPct*100)}% of Budget</span>`
+      : '';
+
     // ── Parent group row ──
     const parentTr = document.createElement('tr');
     parentTr.className = 'cost-group-hdr';
@@ -6186,6 +6210,7 @@ function renderCostTable() {
           &nbsp;·&nbsp; Actual: <span style="color:var(--green)">$${fmt(gRunTotal)}</span>
           &nbsp;·&nbsp; Labor: ${fmt(gLabHrs,1)} hrs
         </span>
+        ${gAlertBadge}
       </td>`;
     parentTr.addEventListener('click', () => {
       const collapsed = parentTr.dataset.collapsed === '1';
@@ -6228,6 +6253,13 @@ function renderCostTable() {
       const projEntries = Object.keys(projAgg).filter(pk => pk.startsWith(key + '||'));
       const hasProjects = projEntries.length > 0;
 
+      // ── Budget alert for this sub-code ──
+      const actualTotal = a.imported_total || rtotal;
+      const scPct = btotal > 0 ? actualTotal / btotal : null;
+      const scAlertCls = scPct !== null && scPct >= 1.0 ? ' over'
+                       : scPct !== null && scPct >= 0.8 ? ' warn' : '';
+      if (scAlertCls) alertItems.push({ cc: costCode, sc: sc || '—', pct: Math.round(scPct * 100), level: scAlertCls.trim() });
+
       const childTr = document.createElement('tr');
       childTr.className = 'cost-group-child ct-hidden';
       childTr.dataset.group = groupId;
@@ -6251,7 +6283,7 @@ function renderCostTable() {
         <td class="calc">${fmt(avg_qty,2)}</td>
         <td class="calc">$${fmt(rtotal)}</td>
         <td class="calc" title="Production Rate: company average cost per unit across all jobs">${avg_qty ? '$'+fmt(past_avg) : '—'}</td>
-        <td class="calc">$${fmt(a.imported_total || rtotal)}</td>
+        <td class="calc${scAlertCls}">$${fmt(actualTotal)}</td>
         <td class="calc">${fmt(a.labor_hours,1)}</td>
         <td class="calc">${days}</td>
         <td class="calc">${avg_lab ? fmt(avg_lab,1) : '—'}</td>
@@ -6345,6 +6377,30 @@ function renderCostTable() {
     `;
     tbody.appendChild(totalTr);
   });
+
+  // ── Populate alert banner ──
+  const banner = document.getElementById('cost-alert-banner');
+  if (banner) {
+    const overItems = alertItems.filter(x => x.level === 'over');
+    const warnItems = alertItems.filter(x => x.level === 'warn');
+    if (alertItems.length === 0) {
+      banner.style.display = 'none';
+      banner.innerHTML = '';
+    } else {
+      banner.style.display = 'flex';
+      const overHtml = overItems.length
+        ? `<span style="display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.7rem;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:4px;font-size:0.75rem">
+             <span style="color:var(--red);font-weight:700">&#9888; ${overItems.length} Over Budget</span>
+             <span style="color:var(--muted)">${overItems.map(x=>`${x.cc} / ${x.sc} (${x.pct}%)`).join(' · ')}</span>
+           </span>` : '';
+      const warnHtml = warnItems.length
+        ? `<span style="display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.7rem;background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.25);border-radius:4px;font-size:0.75rem">
+             <span style="color:var(--yellow);font-weight:700">&#9888; ${warnItems.length} Approaching Budget</span>
+             <span style="color:var(--muted)">${warnItems.map(x=>`${x.cc} / ${x.sc} (${x.pct}%)`).join(' · ')}</span>
+           </span>` : '';
+      banner.innerHTML = overHtml + warnHtml;
+    }
+  }
 }
 
 function addCostRow() {
@@ -6392,6 +6448,192 @@ function exportCostCSV() {
     ].map(v => `"${v}"`).join(','));
   });
   downloadCSV(rows.join('\n'), 'cost_tracking.csv');
+}
+
+/* ═══════════════════════════════════════════
+   EQUIPMENT UTILIZATION
+═══════════════════════════════════════════ */
+
+function _buildEquipAgg() {
+  // Aggregate all daily rows by equipment name
+  const agg = {};  // equipName → { hours, cost, projects: Set, dates: Set, costCodes: Set, unitCosts: [] }
+  getAllDailyRows().forEach(row => {
+    const name = (row.equipment || '').trim();
+    if (!name) return;
+    if (!agg[name]) agg[name] = { hours: 0, cost: 0, projects: new Set(), dates: new Set(), costCodes: new Set(), unitCosts: [] };
+    const a = agg[name];
+    const hrs  = parseFloat(row.equip_hours)    || 0;
+    const uc   = parseFloat(row.equip_unit_cost) || 0;
+    const cost = uc * hrs;
+    a.hours += hrs;
+    a.cost  += cost;
+    if (uc > 0) a.unitCosts.push(uc);
+    if (row.date)      a.dates.add(row.date);
+    if (row.cost_code) a.costCodes.add(row.cost_code);
+    // Find project name
+    projectsList.forEach(p => {
+      if ((p.dailyRows || []).some(r => r === row)) a.projects.add(p['project-name'] || p.id);
+    });
+  });
+  // Faster project lookup: iterate projects once
+  projectsList.forEach(p => {
+    const pname = p['project-name'] || p.id || '';
+    (p.dailyRows || []).forEach(row => {
+      const name = (row.equipment || '').trim();
+      if (!name || !agg[name]) return;
+      agg[name].projects.add(pname);
+    });
+  });
+  return agg;
+}
+
+function renderEquipTable() {
+  const el = document.getElementById('equip-content');
+  if (!el) return;
+
+  const agg = _buildEquipAgg();
+  const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
+
+  if (names.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted);padding:2rem;text-align:center">No equipment entries found in daily tracking.</div>`;
+    return;
+  }
+
+  const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
+  const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
+
+  const rows = names.map(name => {
+    const a = agg[name];
+    const avgUC  = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0) / a.unitCosts.length : 0;
+    const cph    = a.hours ? a.cost / a.hours : 0;
+    const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
+    const bar    = `<div style="width:100%;background:var(--surface2);border-radius:2px;height:6px;margin-top:3px"><div style="width:${utilPct.toFixed(1)}%;background:var(--green);height:6px;border-radius:2px"></div></div>`;
+    return `
+      <tr>
+        <td style="padding:0.45rem 0.75rem;font-weight:600;color:var(--text)">${esc(name)}</td>
+        <td class="calc">${avgUC ? '$'+fmt(avgUC) : '—'}</td>
+        <td class="calc">${fmt(a.hours,1)}</td>
+        <td class="calc">$${fmt(a.cost)}</td>
+        <td class="calc">${cph ? '$'+fmt(cph) : '—'}</td>
+        <td class="calc">${a.dates.size}</td>
+        <td class="calc">${a.projects.size}</td>
+        <td class="calc" style="min-width:90px">
+          <span style="font-size:0.75rem">${utilPct.toFixed(1)}%</span>
+          ${bar}
+        </td>
+        <td style="padding:0.45rem 0.75rem;font-size:0.72rem;color:var(--muted);max-width:200px">${[...a.costCodes].sort().join(', ') || '—'}</td>
+      </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem">
+      <div>
+        <h2 style="margin:0;font-size:1rem;font-weight:700;color:var(--text)">Equipment Utilization</h2>
+        <span style="font-size:0.75rem;color:var(--muted)">${names.length} pieces tracked &nbsp;·&nbsp; ${fmt(totalHours,1)} total hours &nbsp;·&nbsp; $${fmt(totalCost)} total cost</span>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="equip-table" style="width:100%">
+        <thead>
+          <tr class="col-row">
+            <th style="text-align:left;padding:0.4rem 0.75rem">Equipment</th>
+            <th class="calc-hdr">Avg Unit Cost</th>
+            <th class="calc-hdr">Total Hours</th>
+            <th class="calc-hdr">Total Cost</th>
+            <th class="calc-hdr">Cost / Hr</th>
+            <th class="calc-hdr">Days Active</th>
+            <th class="calc-hdr">Projects</th>
+            <th class="calc-hdr">% of All Hours</th>
+            <th style="text-align:left;padding:0.4rem 0.75rem">Cost Codes</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr style="border-top:2px solid var(--border);font-weight:600">
+            <td style="padding:0.45rem 0.75rem">Total</td>
+            <td class="calc">—</td>
+            <td class="calc">${fmt(totalHours,1)}</td>
+            <td class="calc">$${fmt(totalCost)}</td>
+            <td class="calc">${totalHours ? '$'+fmt(totalCost/totalHours) : '—'}</td>
+            <td class="calc">—</td>
+            <td class="calc">—</td>
+            <td class="calc">100%</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div class="legend" style="margin-top:0.75rem">
+      <span>% of All Hours = this equipment's hours as a share of total tracked equipment hours</span>
+      <span>Avg Unit Cost = average rate entered for this equipment across daily rows</span>
+    </div>`;
+}
+
+function exportEquipPDF() {
+  const agg = _buildEquipAgg();
+  const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
+  if (names.length === 0) { alert('No equipment data to export.'); return; }
+
+  const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
+  const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
+  const dateStr    = new Date().toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+
+  const rows = names.map(name => {
+    const a = agg[name];
+    const avgUC = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0)/a.unitCosts.length : 0;
+    const cph   = a.hours ? a.cost / a.hours : 0;
+    const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
+    const r = v => `<td style="padding:0.3rem 0.5rem;text-align:right;border-bottom:1px solid #e5e7eb">${v}</td>`;
+    return `<tr>
+      <td style="padding:0.3rem 0.5rem;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(name)}</td>
+      ${r(avgUC ? '$'+fmt(avgUC) : '—')}
+      ${r(fmt(a.hours,1))}
+      ${r('$'+fmt(a.cost))}
+      ${r(cph ? '$'+fmt(cph) : '—')}
+      ${r(a.dates.size)}
+      ${r(a.projects.size)}
+      ${r(utilPct.toFixed(1)+'%')}
+      <td style="padding:0.3rem 0.5rem;border-bottom:1px solid #e5e7eb;font-size:0.7rem;color:#6b7280">${[...a.costCodes].sort().join(', ')||'—'}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Equipment Utilization</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; margin: 0; padding: 1.5rem; }
+    h1 { font-size: 16px; margin: 0 0 0.25rem; }
+    .sub { font-size: 10px; color: #6b7280; margin-bottom: 1.25rem; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th { background: #f3f4f6; padding: 0.35rem 0.5rem; text-align: right; font-size: 10px; font-weight: 600; color: #374151; border-bottom: 2px solid #d1d5db; }
+    thead th:first-child, thead th:last-child { text-align: left; }
+    tfoot td { padding: 0.3rem 0.5rem; font-weight: 700; border-top: 2px solid #d1d5db; text-align: right; }
+    tfoot td:first-child { text-align: left; }
+    @media print { body { padding: 0.5rem; } }
+  </style></head><body>
+  <h1>Equipment Utilization Report</h1>
+  <div class="sub">${dateStr} &nbsp;·&nbsp; ${names.length} pieces &nbsp;·&nbsp; ${fmt(totalHours,1)} total hrs &nbsp;·&nbsp; $${fmt(totalCost)} total cost</div>
+  <table>
+    <thead><tr>
+      <th style="text-align:left">Equipment</th>
+      <th>Avg Unit Cost</th><th>Total Hrs</th><th>Total Cost</th>
+      <th>Cost/Hr</th><th>Days Active</th><th>Projects</th><th>% of Hrs</th>
+      <th style="text-align:left">Cost Codes</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr>
+      <td>Total</td><td></td>
+      <td style="text-align:right">${fmt(totalHours,1)}</td>
+      <td style="text-align:right">$${fmt(totalCost)}</td>
+      <td style="text-align:right">${totalHours?'$'+fmt(totalCost/totalHours):'—'}</td>
+      <td></td><td></td><td style="text-align:right">100%</td><td></td>
+    </tr></tfoot>
+  </table>
+  <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
 }
 
 /* ═══════════════════════════════════════════
