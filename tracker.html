@@ -6390,7 +6390,8 @@ function renderCostTable() {
       banner.style.display = 'none';
       banner.innerHTML = '';
     } else {
-      banner.style.display = 'flex';
+      banner.style.display = 'block';
+      const wasExpanded = banner.dataset.expanded === '1';
       const overHtml = overItems.length
         ? `<span style="display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.7rem;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:4px;font-size:0.75rem">
              <span style="color:var(--red);font-weight:700">&#9888; ${overItems.length} Over Budget</span>
@@ -6401,7 +6402,25 @@ function renderCostTable() {
              <span style="color:var(--yellow);font-weight:700">&#9888; ${warnItems.length} Approaching Budget</span>
              <span style="color:var(--muted)">${warnItems.map(x=>`${x.cc} / ${x.sc} (${x.pct}%)`).join(' · ')}</span>
            </span>` : '';
-      banner.innerHTML = overHtml + warnHtml;
+      const summaryColor = overItems.length ? 'var(--red)' : 'var(--yellow)';
+      const summaryText  = [
+        overItems.length ? `${overItems.length} over budget` : '',
+        warnItems.length ? `${warnItems.length} approaching` : '',
+      ].filter(Boolean).join(', ');
+      banner.innerHTML = `
+        <div style="display:flex;align-items:center;gap:0.6rem;padding:0.35rem 0.75rem;cursor:pointer;user-select:none" onclick="
+          const exp = this.parentElement.dataset.expanded==='1';
+          this.parentElement.dataset.expanded = exp ? '0' : '1';
+          this.parentElement.querySelector('#cost-alert-detail').style.display = exp ? 'none' : 'flex';
+          this.querySelector('.alert-chevron').style.transform = exp ? 'rotate(-90deg)' : 'rotate(0deg)';
+        ">
+          <span style="color:${summaryColor};font-weight:700;font-size:0.78rem">&#9888; Budget Alerts: ${summaryText}</span>
+          <span class="alert-chevron" style="color:var(--muted);font-size:0.65rem;transition:transform 0.15s;transform:${wasExpanded ? 'rotate(0deg)' : 'rotate(-90deg)'}">▼</span>
+        </div>
+        <div id="cost-alert-detail" style="display:${wasExpanded ? 'flex' : 'none'};gap:0.75rem;flex-wrap:wrap;padding:0 0.75rem 0.5rem">
+          ${overHtml}${warnHtml}
+        </div>`;
+      if (!wasExpanded) banner.dataset.expanded = '0';
     }
   }
 }
