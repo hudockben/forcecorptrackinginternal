@@ -18,6 +18,7 @@ Based on git history (2026-03-06 through 2026-03-27):
 |------|-------|-----|----------|-------|
 | — | — | — | — | Sessions before this log are estimated above |
 | 2026-03-28 | ~23:30 UTC | 01:28 UTC | ~2 hrs | Bid item landscape PDF fix · Start date per sub-code · Working-day pace counting · US holiday detection · Lump Sum unit suppression · Unit types (SF/LF/SY/etc + TON) · Avg crew per day · Status history consistency · Fuzzy deadline matching · PP cal. est. transparency · not-started status · PP dropdown fix (project-assigned crew) · _ppProd crew divisor fix · 7d recent pace · Change orders modal · Mark Complete flag · Cost-to-complete projection |
+| 2026-03-28 | 16:12 UTC | — | IN PROGRESS | |
 
 ---
 
@@ -27,6 +28,7 @@ Based on git history (2026-03-06 through 2026-03-27):
 |--------|-------|
 | Pre-log estimate (Mar 6 – Mar 27) | ~80–150 hrs |
 | 2026-03-28 session | ~2 hrs |
+| 2026-03-28 session 2 | in progress |
 | **Total estimate** | **~82–152 hrs** |
 
 ---
