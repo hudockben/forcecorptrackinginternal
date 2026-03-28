@@ -1855,7 +1855,7 @@
       <thead><tr>
         <th style="width:28px"></th>
         <th>Cost Code <button class="cfb bfb" data-bf="cost_code">▼</button> / Sub Code <button class="cfb bfb" data-bf="sub_code">▼</button></th>
-        <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+        <th>Unit</th><th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
         <th class="num">Bid Total</th><th class="num">Actual Cost</th>
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
@@ -4201,7 +4201,7 @@ function addBidSubCode(projId, costCode) {
   const p = getProj(projId); if (!p) return;
   // Insert right after last item with this cost code
   const lastIdx = [...(p.bidItems||[])].map((b,i)=>b.cost_code===costCode?i:-1).filter(i=>i>=0).pop();
-  const newItem = { id: uid(), cost_code: costCode, sub_code: '', quantity: '', unit_cost: '' };
+  const newItem = { id: uid(), cost_code: costCode, sub_code: '', unit: '', quantity: '', unit_cost: '' };
   if (lastIdx != null) p.bidItems.splice(lastIdx + 1, 0, newItem);
   else p.bidItems.push(newItem);
   saveProject(projId);
@@ -4211,7 +4211,7 @@ function addBidSubCode(projId, costCode) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 13 : 15;
+  const COLS     = readonly ? 14 : 16;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
@@ -4310,14 +4310,18 @@ function renderBidTable(projId, opts = {}) {
         <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
         <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>`;
 
+      const UNIT_OPTS = ['','SF','LF','SY','CY','TN','EA','LS','HR','GAL','LB','AC'];
       childTr.innerHTML = readonly
         ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}</td>
+           <td class="bid-calc" style="font-size:0.72rem;color:var(--muted)">${esc(b.unit)||'—'}</td>
            <td class="bid-calc">${bidQty||'—'}</td>
            <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
            ${calcCellsA}${calcCellsB}`
         : `<td class="bid-del"><button class="del-btn" data-tab="bid-item" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
            <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
              oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
+           <td><select style="font-size:0.75rem;padding:0.15rem 0.3rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;width:60px"
+             onchange="updateBidItem('${projId}','${b.id}','unit',this.value)">${UNIT_OPTS.map(u=>`<option value="${u}"${b.unit===u?' selected':''}>${u||'—'}</option>`).join('')}</select></td>
            <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
              oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
            ${calcCellsA}
@@ -6532,7 +6536,7 @@ function exportBidPDF(projId) {
 
   groupOrder.forEach(costCode => {
     const gItems = groups[costCode];
-    rowsHTML += `<tr class="group-hdr"><td colspan="15"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
+    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
     gItems.forEach(b => {
@@ -6555,6 +6559,7 @@ function exportBidPDF(projId) {
 
       rowsHTML += `<tr>
         <td class="sub">${esc(b.sub_code) || dash}</td>
+        <td style="font-size:8px;color:#555;text-align:center">${esc(b.unit||'')}</td>
         ${r(bidQty || dash)}
         ${r(rqty   || dash)}
         ${r(pct)}
@@ -6577,7 +6582,7 @@ function exportBidPDF(projId) {
     const gProjCls = (gProj - gBid) <= 0 ? 'under' : 'over';
     rowsHTML += `<tr class="subtotal">
       <td><em>${esc(costCode) || '(No Code)'} — Total</em></td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(gBid ? '$' + fmt(gBid) : dash)}
       ${r(gActual ? '$' + fmt(gActual) : dash, 'actual')}
       ${r(gHrs ? fmt(gHrs) : dash)}
@@ -6622,7 +6627,7 @@ function exportBidPDF(projId) {
   <p class="meta">Printed ${new Date().toLocaleDateString()}</p>
   <table>
     <thead><tr>
-      <th>Sub Code</th>
+      <th>Sub Code</th><th>Unit</th>
       <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th>
       <th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
       <th class="num">Bid Total</th><th class="num">Actual Cost</th>
@@ -6633,7 +6638,7 @@ function exportBidPDF(projId) {
     <tbody>${rowsHTML}</tbody>
     <tfoot><tr class="totals">
       <td>Totals</td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(grandBid   ? '$' + fmt(grandBid)    : dash)}
       ${r(grandActual ? '$' + fmt(grandActual) : dash, 'actual')}
       ${r(grandHrs   ? fmt(grandHrs)          : dash)}
@@ -8795,13 +8800,19 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const effectiveDaysLeft = ppDays !== null ? ppDays : biDaysLeft;
   const usingPPDays       = ppDays !== null;
 
-  // Required pace: pre-start shows planned rate so PMs can plan crew; active shows units-left/days-left
-  const requiredPace = notStartedYet
-    ? plannedPace
+  // Lump Sum items have no meaningful pace — status is pct + deadline based only
+  const isLumpSum = (bi.unit || '').toUpperCase() === 'LS';
+
+  // Required pace: LS items suppress pace; pre-start shows planned rate; active shows units-left/days-left
+  const requiredPace = (isLumpSum || notStartedYet)
+    ? (notStartedYet ? plannedPace : null)
     : (effectiveDaysLeft !== null && effectiveDaysLeft > 0) ? unitsLeft / effectiveDaysLeft : null;
 
-  const gap    = (!notStartedYet && requiredPace !== null) ? requiredPace - currentPace : null;
-  const status = notStartedYet ? 'not-started' : _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
+  const gap = (!notStartedYet && !isLumpSum && requiredPace !== null) ? requiredPace - currentPace : null;
+  const status = notStartedYet ? 'not-started'
+    : isLumpSum
+      ? (pct >= 100 ? 'complete' : effectiveDaysLeft !== null && effectiveDaysLeft < 0 ? 'behind' : pct > 0 ? 'on-track' : 'no-data')
+      : _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
 
   // Crew-day normalization: unique (date+employee) pairs vs unique work dates
   const crewDaysTotal = a.crewDays ? a.crewDays.size : 0;
@@ -8812,7 +8823,7 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const unitsPerHour     = (laborHours > 0 && runningQty > 0) ? runningQty / laborHours : null;
   const hoursLeft        = (unitsPerHour !== null && unitsLeft > 0) ? unitsLeft / unitsPerHour : (unitsLeft === 0 && pct >= 100 ? 0 : null);
   const laborHoursPerDay = (laborHours > 0 && daysWorked > 0) ? laborHours / daysWorked : null;
-  return { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, unitsLeft, plannedPace, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet };
+  return { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, unitsLeft, plannedPace, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum };
 }
 
 /** Build sorted [{date, qty}] for one cost code from the project's daily rows. */
@@ -8907,8 +8918,10 @@ function renderScheduleProjectDetail(proj) {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
 
   const rows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
+    const unit = (bi.unit || '').toUpperCase();
+    const uLabel = unit ? ` ${unit}` : '';
 
     // Trend
     const biKey    = (bi.cost_code || '') + '||' + (bi.sub_code || '');
@@ -8942,30 +8955,34 @@ function renderScheduleProjectDetail(proj) {
       ? new Date(bi.target_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
       : null;
 
-    const reqPaceCell = notStartedYet && requiredPace !== null
-      ? `${fmt(requiredPace, 2)}/d<br><span style="font-size:0.62rem;color:#818cf8">(planned)</span>`
-      : requiredPace !== null
-        ? fmt(requiredPace, 2) + '/d' + (usingPPDays ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} PP days)</span>` : '')
-        : '—';
+    const reqPaceCell = isLumpSum
+      ? '<span style="color:var(--muted);font-size:0.72rem">LS</span>'
+      : notStartedYet && requiredPace !== null
+        ? `${fmt(requiredPace, 2)}${uLabel}/d<br><span style="font-size:0.62rem;color:#818cf8">(planned)</span>`
+        : requiredPace !== null
+          ? fmt(requiredPace, 2) + `${uLabel}/d` + (usingPPDays ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} PP days)</span>` : '')
+          : '—';
 
     const goalCell = status === 'complete'
       ? '<span class="sched-goal-pill complete">✓ Done</span>'
       : status === 'not-started'
         ? `<span class="sched-goal-pill not-started">Starts ${startDateFmt || '?'}</span>`
-        : requiredPace === null || status === 'no-data'
-          ? '<span class="sched-goal-pill no-data">—</span>'
-          : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}/day${usingPPDays ? ' 📅' : ''}</span>`;
+        : isLumpSum
+          ? `<span class="sched-goal-pill ${status}">${fmtPct(pct)} done</span>`
+          : requiredPace === null || status === 'no-data'
+            ? '<span class="sched-goal-pill no-data">—</span>'
+            : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}${uLabel}/day${usingPPDays ? ' 📅' : ''}</span>`;
 
     return `<tr>
       <td>
-        <div style="font-weight:600">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}</div>
+        <div style="font-weight:600">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}${unit ? `<span style="font-size:0.65rem;color:var(--muted);font-weight:400;margin-left:0.35rem">${unit}</span>` : ''}</div>
         ${startDateFmt ? `<div style="font-size:0.68rem;color:var(--green);margin-top:0.1rem">▶ Start: ${startDateFmt}</div>` : ''}
         ${targetDateFmt ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.1rem">◼ Target: ${targetDateFmt}</div>` : ''}
         <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">${esc(employees)}</div>
         ${equipment !== '—' ? `<div style="font-size:0.7rem;color:var(--muted)">${esc(equipment)}</div>` : ''}
       </td>
-      <td class="num">${bidQty > 0 ? fmt(bidQty, 1) : '—'}</td>
-      <td class="num">${runningQty > 0 ? fmt(runningQty, 1) : '—'}</td>
+      <td class="num">${bidQty > 0 ? fmt(bidQty, 1) + (uLabel ? `<span style="font-size:0.65rem;color:var(--muted)">${uLabel}</span>` : '') : '—'}</td>
+      <td class="num">${runningQty > 0 ? fmt(runningQty, 1) + (uLabel ? `<span style="font-size:0.65rem;color:var(--muted)">${uLabel}</span>` : '') : '—'}</td>
       <td>
         <div style="display:flex;align-items:center;gap:0.5rem">
           ${_schedBar(pct, status)}
@@ -8973,11 +8990,12 @@ function renderScheduleProjectDetail(proj) {
         </div>
       </td>
       <td class="num">${daysWorked > 0 ? daysWorked : '—'}</td>
-      <td class="num">${currentPace > 0
-        ? fmt(currentPace, 2) + '/d' + (avgCrewPerDay !== null && avgCrewPerDay > 1.05
-            ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(avgCrewPerDay, 1)} avg crew</span>`
-            : '')
-        : '—'}</td>
+      <td class="num">${isLumpSum ? '<span style="color:var(--muted);font-size:0.72rem">LS</span>'
+        : currentPace > 0
+          ? fmt(currentPace, 2) + `${uLabel}/d` + (avgCrewPerDay !== null && avgCrewPerDay > 1.05
+              ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(avgCrewPerDay, 1)} avg crew</span>`
+              : '')
+          : '—'}</td>
       ${trendCell}
       <td class="num">${reqPaceCell}</td>
       <td class="num">${
@@ -9549,8 +9567,10 @@ async function printSchedulePDF() {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
 
   const tableRows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, notStartedYet } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, notStartedYet, isLumpSum } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
+    const pdfUnit   = (bi.unit || '').toUpperCase();
+    const pdfULabel = pdfUnit ? ` ${pdfUnit}` : '';
 
     const biKey     = (bi.cost_code || '') + '||' + (bi.sub_code || '');
     const breakdown = _schedDailyBreakdown(proj, biKey);
@@ -9579,11 +9599,12 @@ async function printSchedulePDF() {
     const ppDaysFmt = effectiveDaysLeft !== null && effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft;
     const goalTxt  = status === 'complete' ? '✓'
       : status === 'not-started' ? `Starts ${bi.start_date || '?'}`
+      : isLumpSum ? `${fmtPct(pct)} done`
       : requiredPace === null || status === 'no-data' ? '—'
-      : fmt(requiredPace, 1) + (usingPPDays ? `<br><span style="font-size:8px;color:#555">/${ppDaysFmt}d PP</span>` : '');
+      : fmt(requiredPace, 1) + pdfULabel + (usingPPDays ? `<br><span style="font-size:8px;color:#555">/${ppDaysFmt}d PP</span>` : '');
 
     return `<tr>
-      <td style="font-weight:600;white-space:nowrap">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}
+      <td style="font-weight:600;white-space:nowrap">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}${pdfUnit ? `<span style="font-size:7px;color:#888;font-weight:400;margin-left:4px">${pdfUnit}</span>` : ''}
         ${bi.start_date ? `<div style="font-size:8px;color:#15803d">▶ ${bi.start_date}</div>` : ''}
         ${bi.target_date ? `<div style="font-size:8px;color:#1d4ed8">◼ ${bi.target_date}</div>` : ''}
       </td>
@@ -9710,8 +9731,8 @@ function _buildAIPayload(proj) {
     const _aiHistory   = _schedStatusHistory(bi, _aiBreakdown, deadline);
     const _aiConsec    = _trendConsecutive(_aiHistory);
     return {
-      costCode: bi.cost_code || '', subCode: bi.sub_code || '', startDate: bi.start_date || null, targetDate: bi.target_date || null,
-      bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, notStartedYet,
+      costCode: bi.cost_code || '', subCode: bi.sub_code || '', unit: bi.unit || '', startDate: bi.start_date || null, targetDate: bi.target_date || null,
+      bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, notStartedYet, isLumpSum,
       effectiveDaysLeft, usingPPDays,
       laborHours: a.labor_hours || 0, equipHours: a.equip_hours || 0,
       employees: [...(a.employees || new Set())].filter(Boolean),
