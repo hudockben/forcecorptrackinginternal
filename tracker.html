@@ -6947,26 +6947,32 @@ async function submitMobileEntry() {
 
   const newRows = [];
 
-  // One labor row per employee per code block
-  codeBlocks.forEach(b => {
-    if (b.hours <= 0 && checkedEmps.length > 0) return; // skip empty blocks
+  // One labor row per employee per code block.
+  // If an equipment operator is set and matches this employee on the first
+  // code block, merge equipment onto that row instead of a separate row.
+  const equipMerged = equipName && equipHrs > 0 && equipOperator;
+  codeBlocks.forEach((b, bi) => {
+    if (b.hours <= 0 && checkedEmps.length > 0) return;
     checkedEmps.forEach(emp => {
+      const isOperator = equipMerged && bi === 0 && emp === equipOperator;
       newRows.push({
         id: uid(), date, field_type: fieldType, employee: emp,
         cost_code: b.cc, sub_code: b.sc, job_class: b.jobClass,
         rate: b.rate, labor_hours: b.hours,
-        equipment: '', equip_unit_cost: 0, equip_hours: 0,
+        equipment:       isOperator ? equipName : '',
+        equip_unit_cost: isOperator ? equipUC   : 0,
+        equip_hours:     isOperator ? equipHrs  : 0,
         material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
         quantity: b.quantity, num_laborers: 0,
       });
     });
   });
 
-  // One equipment row if filled in (uses first code block's code)
-  if (equipName && equipHrs > 0) {
+  // Standalone equipment row only if no operator was selected (shared equipment)
+  if (equipName && equipHrs > 0 && !equipOperator) {
     const firstBlock = codeBlocks[0] || {};
     newRows.push({
-      id: uid(), date, field_type: fieldType, employee: equipOperator,
+      id: uid(), date, field_type: fieldType, employee: '',
       cost_code: firstBlock.cc || '', sub_code: firstBlock.sc || '', job_class: '',
       rate: 0, labor_hours: 0,
       equipment: equipName, equip_unit_cost: equipUC, equip_hours: equipHrs,
