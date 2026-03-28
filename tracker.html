@@ -2633,6 +2633,7 @@ function renderHeaderActions() {
     `;
   } else if (activeTab === 'equip') {
     el.innerHTML = `
+      <button class="btn btn-ghost" onclick="exportEquipCSV()">Export CSV</button>
       <button class="btn btn-ghost" onclick="exportEquipPDF()">&#128438; Export PDF</button>
       ${summaryBtn}
       ${logoutBtn}
@@ -6581,6 +6582,34 @@ function renderEquipTable() {
       <span>% of All Hours = this equipment's hours as a share of total tracked equipment hours</span>
       <span>Avg Unit Cost = average rate entered for this equipment across daily rows</span>
     </div>`;
+}
+
+function exportEquipCSV() {
+  const agg = _buildEquipAgg();
+  const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
+  if (names.length === 0) { alert('No equipment data to export.'); return; }
+  const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
+  const headers = ['Equipment','Source','Avg Unit Cost','Total Hours','Total Cost','Cost/Hr','Days Active','Projects','% of All Hours','Cost Codes'];
+  const rows = [headers.join(',')];
+  names.forEach(name => {
+    const a = agg[name];
+    const avgUC   = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0)/a.unitCosts.length : 0;
+    const cph     = a.hours ? a.cost / a.hours : 0;
+    const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
+    const src     = a.source === 'trucking' ? 'Trucking' : a.source === 'both' ? 'Daily+Trucking' : 'Daily';
+    rows.push([
+      name, src,
+      avgUC   ? avgUC.toFixed(2)   : '',
+      a.hours.toFixed(1),
+      a.cost.toFixed(2),
+      cph     ? cph.toFixed(2)     : '',
+      a.dates.size,
+      a.projects.size,
+      utilPct.toFixed(1) + '%',
+      [...a.costCodes].sort().join('; '),
+    ].map(v => `"${v}"`).join(','));
+  });
+  downloadCSV(rows.join('\n'), 'equipment_utilization.csv');
 }
 
 function exportEquipPDF() {
