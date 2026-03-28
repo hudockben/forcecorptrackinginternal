@@ -1422,7 +1422,8 @@
     .sched-status-pill.at-risk   { background: rgba(234,179,8,0.15);  color: var(--yellow); }
     .sched-status-pill.behind    { background: rgba(239,68,68,0.15);  color: var(--red); }
     .sched-status-pill.complete  { background: rgba(96,165,250,0.15); color: var(--blue); }
-    .sched-status-pill.no-data   { background: rgba(102,102,102,0.1); color: var(--muted); }
+    .sched-status-pill.no-data       { background: rgba(102,102,102,0.1); color: var(--muted); }
+    .sched-status-pill.not-started   { background: rgba(99,102,241,0.15); color: #818cf8; }
     .sched-progress-bar {
       height: 6px; background: var(--surface2); border-radius: 3px;
       overflow: hidden; min-width: 70px; flex-shrink: 0;
@@ -1448,7 +1449,8 @@
     .sched-goal-pill.at-risk  { background: rgba(234,179,8,0.15);  color: var(--yellow); border: 1px solid rgba(234,179,8,0.3); }
     .sched-goal-pill.on-track { background: rgba(34,197,94,0.12);  color: var(--green);  border: 1px solid rgba(34,197,94,0.25); }
     .sched-goal-pill.complete { background: rgba(96,165,250,0.12); color: var(--blue);   border: 1px solid rgba(96,165,250,0.25); }
-    .sched-goal-pill.no-data  { background: transparent; color: var(--muted); border: none; }
+    .sched-goal-pill.no-data      { background: transparent; color: var(--muted); border: none; }
+    .sched-goal-pill.not-started  { background: rgba(99,102,241,0.12); color: #818cf8; border: 1px solid rgba(99,102,241,0.25); }
 
     /* ── Daily PM Report overlay ── */
     .pm-report-overlay {
@@ -1853,11 +1855,11 @@
       <thead><tr>
         <th style="width:28px"></th>
         <th>Cost Code <button class="cfb bfb" data-bf="cost_code">▼</button> / Sub Code <button class="cfb bfb" data-bf="sub_code">▼</button></th>
-        <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+        <th>Unit</th><th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
         <th class="num">Bid Total</th><th class="num">Actual Cost</th>
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
-        <th>Target Date</th>
+        <th>Start Date</th><th>Target Date</th>
       </tr></thead>
       <tbody id="bid-fs-tbody"></tbody>
       <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
@@ -4199,7 +4201,7 @@ function addBidSubCode(projId, costCode) {
   const p = getProj(projId); if (!p) return;
   // Insert right after last item with this cost code
   const lastIdx = [...(p.bidItems||[])].map((b,i)=>b.cost_code===costCode?i:-1).filter(i=>i>=0).pop();
-  const newItem = { id: uid(), cost_code: costCode, sub_code: '', quantity: '', unit_cost: '' };
+  const newItem = { id: uid(), cost_code: costCode, sub_code: '', unit: '', quantity: '', unit_cost: '' };
   if (lastIdx != null) p.bidItems.splice(lastIdx + 1, 0, newItem);
   else p.bidItems.push(newItem);
   saveProject(projId);
@@ -4209,7 +4211,7 @@ function addBidSubCode(projId, costCode) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 12 : 14;
+  const COLS     = readonly ? 14 : 16;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
@@ -4308,20 +4310,27 @@ function renderBidTable(projId, opts = {}) {
         <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
         <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>`;
 
+      const UNIT_OPTS = ['','SF','LF','SY','CY','TN','TON','EA','LS','HR','GAL','LB','AC'];
       childTr.innerHTML = readonly
         ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}</td>
+           <td class="bid-calc" style="font-size:0.72rem;color:var(--muted)">${esc(b.unit)||'—'}</td>
            <td class="bid-calc">${bidQty||'—'}</td>
            <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
            ${calcCellsA}${calcCellsB}`
         : `<td class="bid-del"><button class="del-btn" data-tab="bid-item" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
            <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
              oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
+           <td><select style="font-size:0.75rem;padding:0.15rem 0.3rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;width:60px"
+             onchange="updateBidItem('${projId}','${b.id}','unit',this.value)">${UNIT_OPTS.map(u=>`<option value="${u}"${b.unit===u?' selected':''}>${u||'—'}</option>`).join('')}</select></td>
            <td><input type="number" class="num" value="${esc(b.quantity)}" placeholder="0"
              oninput="updateBidItem('${projId}','${b.id}','quantity',this.value)"></td>
            ${calcCellsA}
            <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
              oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
            ${calcCellsB}
+           <td><input type="date" value="${esc(b.start_date||'')}" title="Start date for this sub code"
+             style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.start_date ? 'var(--green)' : 'var(--muted)'}"
+             onchange="updateBidItem('${projId}','${b.id}','start_date',this.value);this.style.color=this.value?'var(--green)':'var(--muted)'"></td>
            <td><input type="date" value="${esc(b.target_date||'')}" title="Target completion date for this sub code"
              style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.target_date ? 'var(--blue)' : 'var(--muted)'}"
              onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>`;
@@ -6527,7 +6536,7 @@ function exportBidPDF(projId) {
 
   groupOrder.forEach(costCode => {
     const gItems = groups[costCode];
-    rowsHTML += `<tr class="group-hdr"><td colspan="13"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
+    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
     gItems.forEach(b => {
@@ -6550,6 +6559,7 @@ function exportBidPDF(projId) {
 
       rowsHTML += `<tr>
         <td class="sub">${esc(b.sub_code) || dash}</td>
+        <td style="font-size:8px;color:#555;text-align:center">${esc(b.unit||'')}</td>
         ${r(bidQty || dash)}
         ${r(rqty   || dash)}
         ${r(pct)}
@@ -6561,6 +6571,8 @@ function exportBidPDF(projId) {
         ${r(numLab || dash)}
         ${r(diffTxt, diffCls)}
         ${r(bidTot ? '$' + fmt(proj) : dash, projCls)}
+        ${r(b.start_date  ? new Date(b.start_date  + 'T12:00:00').toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : dash)}
+        ${r(b.target_date ? new Date(b.target_date + 'T12:00:00').toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : dash)}
       </tr>`;
     });
 
@@ -6570,13 +6582,14 @@ function exportBidPDF(projId) {
     const gProjCls = (gProj - gBid) <= 0 ? 'under' : 'over';
     rowsHTML += `<tr class="subtotal">
       <td><em>${esc(costCode) || '(No Code)'} — Total</em></td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(gBid ? '$' + fmt(gBid) : dash)}
       ${r(gActual ? '$' + fmt(gActual) : dash, 'actual')}
       ${r(gHrs ? fmt(gHrs) : dash)}
       ${r(dash)}
       ${r(gDiffTxt, gDiffCls)}
       ${r(gBid ? '$' + fmt(gProj) : dash, gProjCls)}
+      ${r(dash)}${r(dash)}
     </tr>`;
 
     grandBid += gBid; grandActual += gActual; grandHrs += gHrs; grandProj += gProj;
@@ -6606,6 +6619,7 @@ function exportBidPDF(projId) {
     tr.group-hdr td { background: #e8f5e9; font-size: 9px; padding: 4px 5px; }
     tr.subtotal td { background: #f5f5f5; font-style: italic; font-size: 9px; border-top: 1px solid #aaa; }
     tr.totals td { font-weight: 700; font-size: 10px; background: #f9f9f9; border-top: 2px solid #999; }
+    @page { size: landscape; margin: 1cm; }
     @media print { body { padding: 0; } }
   </style>
   </head><body>
@@ -6613,23 +6627,25 @@ function exportBidPDF(projId) {
   <p class="meta">Printed ${new Date().toLocaleDateString()}</p>
   <table>
     <thead><tr>
-      <th>Sub Code</th>
+      <th>Sub Code</th><th>Unit</th>
       <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th>
       <th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
       <th class="num">Bid Total</th><th class="num">Actual Cost</th>
       <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
       <th class="num">Variance</th><th class="num">Projected Cost</th>
+      <th class="num">Start Date</th><th class="num">Target Date</th>
     </tr></thead>
     <tbody>${rowsHTML}</tbody>
     <tfoot><tr class="totals">
       <td>Totals</td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(grandBid   ? '$' + fmt(grandBid)    : dash)}
       ${r(grandActual ? '$' + fmt(grandActual) : dash, 'actual')}
       ${r(grandHrs   ? fmt(grandHrs)          : dash)}
       ${r(dash)}
       ${r(totDiffTxt, totDiffCls)}
       ${r(grandBid   ? '$' + fmt(grandProj)   : dash, totProjCls)}
+      ${r(dash)}${r(dash)}
     </tr></tfoot>
   </table>
   <script>window.onload = () => { window.print(); }<\/script>
@@ -8586,22 +8602,115 @@ async function loadScheduleDeadlines() {
   } catch { _schedDeadlines = []; }
 }
 
-/** Resolve a project's deadline: prefer end-date field, fall back to deadlines API match. */
+/** Resolve a project's deadline: prefer end-date field, fall back to deadlines API match.
+ *  Matching order: exact → one contains the other → highest word overlap (≥50% shared words). */
 function _schedGetDeadline(proj) {
   if (proj['end-date']) return proj['end-date'];
   const name = (proj['project-name'] || '').toLowerCase().trim();
   if (!name) return null;
-  const match = _schedDeadlines.find(d =>
-    d.project_name && d.project_name.toLowerCase().trim() === name && d.deadline_date
-  );
-  return match ? match.deadline_date : null;
+
+  const candidates = _schedDeadlines.filter(d => d.project_name && d.deadline_date);
+
+  // 1. Exact match
+  const exact = candidates.find(d => d.project_name.toLowerCase().trim() === name);
+  if (exact) return exact.deadline_date;
+
+  // 2. One name contains the other
+  const contains = candidates.find(d => {
+    const dn = d.project_name.toLowerCase().trim();
+    return dn.includes(name) || name.includes(dn);
+  });
+  if (contains) return contains.deadline_date;
+
+  // 3. Word-overlap: pick best match with ≥50% shared words
+  const nameWords = new Set(name.split(/\s+/).filter(w => w.length > 2));
+  if (!nameWords.size) return null;
+  let bestMatch = null, bestScore = 0;
+  candidates.forEach(d => {
+    const dWords = d.project_name.toLowerCase().trim().split(/\s+/).filter(w => w.length > 2);
+    const shared = dWords.filter(w => nameWords.has(w)).length;
+    const score  = shared / Math.max(nameWords.size, dWords.length);
+    if (score > bestScore) { bestScore = score; bestMatch = d; }
+  });
+  return (bestScore >= 0.5 && bestMatch) ? bestMatch.deadline_date : null;
 }
 
+/** US federal holidays for a given year (observed dates, Mon–Fri only). */
+function _usHolidays(year) {
+  const h = new Set();
+  const ymd = (y, m, d) => `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  // Fixed-date holidays — shift to nearest weekday if on weekend
+  const fixedObs = (m, d) => {
+    const dt = new Date(year, m - 1, d);
+    const dow = dt.getDay();
+    if (dow === 0) dt.setDate(d + 1);       // Sunday → Monday
+    else if (dow === 6) dt.setDate(d - 1);  // Saturday → Friday
+    return ymd(year, dt.getMonth() + 1, dt.getDate());
+  };
+  h.add(fixedObs(1,  1));   // New Year's Day
+  h.add(fixedObs(7,  4));   // Independence Day
+  h.add(fixedObs(11, 11));  // Veterans Day
+  h.add(fixedObs(12, 25));  // Christmas Day
+  // Floating holidays
+  const nthWeekday = (m, wd, n) => {
+    const dt = new Date(year, m - 1, 1); let cnt = 0;
+    while (true) { if (dt.getDay() === wd && ++cnt === n) break; dt.setDate(dt.getDate() + 1); }
+    return ymd(year, m, dt.getDate());
+  };
+  const lastWeekday = (m, wd) => {
+    const dt = new Date(year, m, 0);
+    while (dt.getDay() !== wd) dt.setDate(dt.getDate() - 1);
+    return ymd(year, m, dt.getDate());
+  };
+  h.add(nthWeekday(1,  1, 3));  // MLK Day: 3rd Mon Jan
+  h.add(nthWeekday(2,  1, 3));  // Presidents Day: 3rd Mon Feb
+  h.add(lastWeekday(5, 1));     // Memorial Day: last Mon May
+  h.add(nthWeekday(9,  1, 1));  // Labor Day: 1st Mon Sep
+  h.add(nthWeekday(10, 1, 2));  // Columbus Day: 2nd Mon Oct
+  h.add(nthWeekday(11, 4, 4));  // Thanksgiving: 4th Thu Nov
+  return h;
+}
+const _holidayCache = {};
+function _isHoliday(dateStr) {
+  const y = parseInt(dateStr);
+  if (!_holidayCache[y]) _holidayCache[y] = _usHolidays(y);
+  return _holidayCache[y].has(dateStr);
+}
+
+/** Count Mon–Fri non-holiday working days from today through deadlineStr (inclusive).
+ *  Returns negative if overdue. Replaces the old calendar-day _schedDaysRemaining. */
 function _schedDaysRemaining(deadlineStr) {
   if (!deadlineStr) return null;
-  const dl = new Date(deadlineStr + 'T12:00:00');
-  const now = new Date(); now.setHours(0, 0, 0, 0);
-  return Math.ceil((dl - now) / (1000 * 60 * 60 * 24));
+  const end = new Date(deadlineStr + 'T12:00:00');
+  const now = new Date(); now.setHours(12, 0, 0, 0);
+  const sign = end < now ? -1 : 1;
+  const [lo, hi] = sign === 1 ? [now, end] : [end, now];
+  let count = 0;
+  const cur = new Date(lo);
+  while (cur <= hi) {
+    const dow = cur.getDay();
+    const ds  = cur.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !_isHoliday(ds)) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return sign * count;
+}
+
+/** Count Mon–Fri non-holiday working days between two date strings (inclusive of both ends). */
+function _workingDaysBetween(fromStr, toStr) {
+  if (!fromStr || !toStr) return null;
+  const start = new Date(fromStr + 'T12:00:00');
+  const end   = new Date(toStr   + 'T12:00:00');
+  if (end <= start) return 0;
+  let count = 0;
+  const cur = new Date(start);
+  while (cur <= end) {
+    const dow = cur.getDay();
+    const ds  = cur.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !_isHoliday(ds)) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
 }
 
 function _schedDeadlineChip(days) {
@@ -8625,14 +8734,18 @@ function _schedPaceForProject(proj) {
     const key = (row.cost_code || '') + '||' + (row.sub_code || '');
     if (!agg[key]) agg[key] = {
       running_qty: 0, labor_hours: 0, equip_hours: 0,
-      dates: new Set(), employees: new Set(), equipment: new Set()
+      dates: new Set(), employees: new Set(), equipment: new Set(),
+      crewDays: new Set()  // unique date+employee pairs → crew-day count
     };
     const a = agg[key];
     a.running_qty  += parseFloat(row.quantity)    || 0;
     a.labor_hours  += parseFloat(row.labor_hours) || 0;
     a.equip_hours  += parseFloat(row.equip_hours) || 0;
     if (row.date)      a.dates.add(row.date);
-    if (row.employee && row.employee.trim())  a.employees.add(row.employee.trim());
+    if (row.employee && row.employee.trim()) {
+      a.employees.add(row.employee.trim());
+      a.crewDays.add(row.date + '||' + row.employee.trim());
+    }
     if (row.equipment && row.equipment.trim()) a.equipment.add(row.equipment.trim());
   });
   return agg;
@@ -8648,7 +8761,7 @@ function _schedStatus(pct, gap, daysLeft, bidQty) {
 }
 
 function _schedStatusPill(status) {
-  const labels = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind', 'complete': 'Complete', 'no-data': 'No Data' };
+  const labels = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind', 'complete': 'Complete', 'no-data': 'No Data', 'not-started': 'Not Started' };
   return `<span class="sched-status-pill ${status}">${labels[status] || status}</span>`;
 }
 
@@ -8688,22 +8801,51 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const currentPace = daysWorked > 0 ? runningQty / daysWorked : 0;
   const pct         = bidQty > 0 ? (runningQty / bidQty) * 100 : 0;
   const unitsLeft   = Math.max(bidQty - runningQty, 0);
+
   // Per-item target date overrides project deadline for this sub code
   const biDeadline  = bi.target_date || deadline;
   const biDaysLeft  = biDeadline ? _schedDaysRemaining(biDeadline) : daysLeft;
+
+  // Start date: if start_date is in the future and no work logged yet → not started
+  const todayStr      = new Date().toISOString().slice(0, 10);
+  const notStartedYet = !!(bi.start_date && bi.start_date > todayStr && daysWorked === 0);
+
+  // Planned pace: bidQty spread over working days in start→target window (pre-start planning figure)
+  let plannedPace = null;
+  if (bi.start_date && biDeadline) {
+    const totalWorkDays = _workingDaysBetween(bi.start_date, biDeadline);
+    if (totalWorkDays > 0) plannedPace = bidQty / totalWorkDays;
+  }
+
   // Use Projection Planner working days when available, else fall back to per-item calendar days
-  const ppDays      = _ppWorkingDaysRemaining(key, biDeadline);
+  const ppDays            = _ppWorkingDaysRemaining(key, biDeadline);
   const effectiveDaysLeft = ppDays !== null ? ppDays : biDaysLeft;
-  const usingPPDays = ppDays !== null;
-  const requiredPace = (effectiveDaysLeft !== null && effectiveDaysLeft > 0) ? unitsLeft / effectiveDaysLeft : null;
-  const gap         = requiredPace !== null ? requiredPace - currentPace : null;
-  const status      = _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
+  const usingPPDays       = ppDays !== null;
+
+  // Lump Sum items have no meaningful pace — status is pct + deadline based only
+  const isLumpSum = (bi.unit || '').toUpperCase() === 'LS';
+
+  // Required pace: LS items suppress pace; pre-start shows planned rate; active shows units-left/days-left
+  const requiredPace = (isLumpSum || notStartedYet)
+    ? (notStartedYet ? plannedPace : null)
+    : (effectiveDaysLeft !== null && effectiveDaysLeft > 0) ? unitsLeft / effectiveDaysLeft : null;
+
+  const gap = (!notStartedYet && !isLumpSum && requiredPace !== null) ? requiredPace - currentPace : null;
+  const status = notStartedYet ? 'not-started'
+    : isLumpSum
+      ? (pct >= 100 ? 'complete' : effectiveDaysLeft !== null && effectiveDaysLeft < 0 ? 'behind' : pct > 0 ? 'on-track' : 'no-data')
+      : _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
+
+  // Crew-day normalization: unique (date+employee) pairs vs unique work dates
+  const crewDaysTotal = a.crewDays ? a.crewDays.size : 0;
+  const avgCrewPerDay = (daysWorked > 0 && crewDaysTotal > 0) ? crewDaysTotal / daysWorked : null;
+
   // Est. hours remaining: divide units left by historical units-per-labor-hour rate
-  const laborHours      = a.labor_hours || 0;
-  const unitsPerHour    = (laborHours > 0 && runningQty > 0) ? runningQty / laborHours : null;
-  const hoursLeft       = (unitsPerHour !== null && unitsLeft > 0) ? unitsLeft / unitsPerHour : (unitsLeft === 0 && pct >= 100 ? 0 : null);
+  const laborHours       = a.labor_hours || 0;
+  const unitsPerHour     = (laborHours > 0 && runningQty > 0) ? runningQty / laborHours : null;
+  const hoursLeft        = (unitsPerHour !== null && unitsLeft > 0) ? unitsLeft / unitsPerHour : (unitsLeft === 0 && pct >= 100 ? 0 : null);
   const laborHoursPerDay = (laborHours > 0 && daysWorked > 0) ? laborHours / daysWorked : null;
-  return { a, bidQty, runningQty, daysWorked, currentPace, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay };
+  return { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, unitsLeft, plannedPace, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum };
 }
 
 /** Build sorted [{date, qty}] for one cost code from the project's daily rows. */
@@ -8734,7 +8876,9 @@ function _schedTrendMetrics(breakdown) {
   return { avg3, avg7, direction, totalDays: breakdown.length };
 }
 
-/** Replay per-day status to build a history array [{date, status, gap, pace}]. */
+/** Replay per-day status to build a history array [{date, status, gap, pace}].
+ *  Uses working-day counts (Mon–Fri, excluding holidays) for consistency with
+ *  the live required-pace calculation in _schedCalcRow. */
 function _schedStatusHistory(bi, breakdown, deadline) {
   const bidQty     = parseFloat(bi.quantity) || 0;
   const biDeadline = bi.target_date || deadline;
@@ -8744,10 +8888,8 @@ function _schedStatusHistory(bi, breakdown, deadline) {
     cumQty += qty;
     const daysWorked  = history.length + 1;
     const currentPace = cumQty / daysWorked;
-    let dl = null;
-    if (biDeadline) {
-      dl = Math.ceil((new Date(biDeadline + 'T12:00:00') - new Date(date + 'T12:00:00')) / 86400000);
-    }
+    // Use working days remaining from this historical date to the deadline
+    const dl = biDeadline ? _workingDaysBetween(date, biDeadline) : null;
     const unitsLeft = Math.max(0, bidQty - cumQty);
     const rp  = (dl !== null && dl > 0) ? unitsLeft / dl : null;
     const gap = rp !== null ? rp - currentPace : null;
@@ -8798,8 +8940,10 @@ function renderScheduleProjectDetail(proj) {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
 
   const rows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, avgCrewPerDay, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
+    const unit = (bi.unit || '').toUpperCase();
+    const uLabel = unit ? ` ${unit}` : '';
 
     // Trend
     const biKey    = (bi.cost_code || '') + '||' + (bi.sub_code || '');
@@ -8826,19 +8970,44 @@ function renderScheduleProjectDetail(proj) {
         ? `<span style="color:var(--green)">▲ ${fmt(Math.abs(gap),2)}/d ahead</span>`
         : `<span style="color:${(gap / (bidQty||1)) > 0.05 ? 'var(--red)' : 'var(--yellow)'}">▼ ${fmt(gap,2)}/d needed</span>`;
 
+    const startDateFmt = bi.start_date
+      ? new Date(bi.start_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : null;
     const targetDateFmt = bi.target_date
       ? new Date(bi.target_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
       : null;
 
+    const ppDaysFmtSched = effectiveDaysLeft !== null && effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft;
+    const reqPaceCell = isLumpSum
+      ? '<span style="color:var(--muted);font-size:0.72rem">LS</span>'
+      : notStartedYet && requiredPace !== null
+        ? `${fmt(requiredPace, 2)}${uLabel}/d<br><span style="font-size:0.62rem;color:#818cf8">(planned)</span>`
+        : requiredPace !== null
+          ? fmt(requiredPace, 2) + `${uLabel}/d` + (usingPPDays
+              ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${ppDaysFmtSched} PP days)</span>`
+              : `<br><span style="font-size:0.62rem;color:var(--muted);opacity:0.7">cal. est.</span>`)
+          : '—';
+
+    const goalCell = status === 'complete'
+      ? '<span class="sched-goal-pill complete">✓ Done</span>'
+      : status === 'not-started'
+        ? `<span class="sched-goal-pill not-started">Starts ${startDateFmt || '?'}</span>`
+        : isLumpSum
+          ? `<span class="sched-goal-pill ${status}">${fmtPct(pct)} done</span>`
+          : requiredPace === null || status === 'no-data'
+            ? '<span class="sched-goal-pill no-data">—</span>'
+            : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}${uLabel}/day${usingPPDays ? ' 📅' : ''}</span>`;
+
     return `<tr>
       <td>
-        <div style="font-weight:600">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}</div>
-        ${targetDateFmt ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.1rem">📅 Target: ${targetDateFmt}</div>` : ''}
+        <div style="font-weight:600">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}${unit ? `<span style="font-size:0.65rem;color:var(--muted);font-weight:400;margin-left:0.35rem">${unit}</span>` : ''}</div>
+        ${startDateFmt ? `<div style="font-size:0.68rem;color:var(--green);margin-top:0.1rem">▶ Start: ${startDateFmt}</div>` : ''}
+        ${targetDateFmt ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.1rem">◼ Target: ${targetDateFmt}</div>` : ''}
         <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">${esc(employees)}</div>
         ${equipment !== '—' ? `<div style="font-size:0.7rem;color:var(--muted)">${esc(equipment)}</div>` : ''}
       </td>
-      <td class="num">${bidQty > 0 ? fmt(bidQty, 1) : '—'}</td>
-      <td class="num">${runningQty > 0 ? fmt(runningQty, 1) : '—'}</td>
+      <td class="num">${bidQty > 0 ? fmt(bidQty, 1) + (uLabel ? `<span style="font-size:0.65rem;color:var(--muted)">${uLabel}</span>` : '') : '—'}</td>
+      <td class="num">${runningQty > 0 ? fmt(runningQty, 1) + (uLabel ? `<span style="font-size:0.65rem;color:var(--muted)">${uLabel}</span>` : '') : '—'}</td>
       <td>
         <div style="display:flex;align-items:center;gap:0.5rem">
           ${_schedBar(pct, status)}
@@ -8846,23 +9015,24 @@ function renderScheduleProjectDetail(proj) {
         </div>
       </td>
       <td class="num">${daysWorked > 0 ? daysWorked : '—'}</td>
-      <td class="num">${currentPace > 0 ? fmt(currentPace, 2) + '/d' : '—'}</td>
+      <td class="num">${isLumpSum ? '<span style="color:var(--muted);font-size:0.72rem">LS</span>'
+        : currentPace > 0
+          ? fmt(currentPace, 2) + `${uLabel}/d` + (avgCrewPerDay !== null && avgCrewPerDay > 1.05
+              ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(avgCrewPerDay, 1)} avg crew</span>`
+              : '')
+          : '—'}</td>
       ${trendCell}
-      <td class="num">${requiredPace !== null ? fmt(requiredPace, 2) + '/d' + (usingPPDays ? `<br><span style="font-size:0.62rem;color:var(--muted)">(${effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft} PP days)</span>` : '') : '—'}</td>
+      <td class="num">${reqPaceCell}</td>
       <td class="num">${
         status === 'complete' ? '<span style="color:var(--green);font-size:0.78rem">✓ Done</span>'
-        : hoursLeft === null ? '<span style="color:var(--muted)">—</span>'
+        : notStartedYet || hoursLeft === null ? '<span style="color:var(--muted)">—</span>'
         : (() => {
             const hrs = Math.round(hoursLeft);
             const rateNote = unitsPerHour !== null ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(unitsPerHour,2)}/hr avg</span>` : '';
             return `<span style="font-weight:600">${hrs} hr${hrs !== 1 ? 's' : ''}</span>${rateNote}`;
           })()
       }</td>
-      <td class="num" style="white-space:nowrap">${
-        status === 'complete' ? '<span class="sched-goal-pill complete">✓ Done</span>'
-        : requiredPace === null || status === 'no-data' ? '<span class="sched-goal-pill no-data">—</span>'
-        : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}/day${usingPPDays ? ' 📅' : ''}</span>`
-      }</td>
+      <td class="num" style="white-space:nowrap">${goalCell}</td>
       <td class="num">${gapHtml}</td>
       <td>${_schedStatusPill(status)}</td>
     </tr>`;
@@ -8899,7 +9069,7 @@ function renderScheduleProjectDetail(proj) {
           <th style="min-width:120px">Progress</th>
           <th class="num">Days Worked</th>
           <th class="num">Current Pace</th>
-          <th class="num" style="min-width:80px">7d Trend</th>
+          <th class="num" style="min-width:80px">Pace Trend</th>
           <th class="num">Required Pace</th>
           <th class="num">Est. Hours Left</th>
           <th class="num">Today's Goal</th>
@@ -9097,11 +9267,11 @@ function _buildDailyPMReport(proj, aiResult) {
   const daysLeft  = _schedDaysRemaining(deadline);
   const agg       = _schedPaceForProject(proj);
   const bidItems  = proj.bidItems || [];
-  const counts    = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
-  const progColors = { 'on-track': 'var(--green)', 'at-risk': 'var(--yellow)', 'behind': 'var(--red)', 'complete': 'var(--blue)', 'no-data': 'var(--muted)' };
+  const counts    = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
+  const progColors = { 'on-track': 'var(--green)', 'at-risk': 'var(--yellow)', 'behind': 'var(--red)', 'complete': 'var(--blue)', 'no-data': 'var(--muted)', 'not-started': '#818cf8' };
 
   const cards = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     // Trend
@@ -9123,9 +9293,15 @@ function _buildDailyPMReport(proj, aiResult) {
     const desc      = bi.description ? esc(bi.description) : '';
     const progColor = progColors[status] || 'var(--muted)';
 
+    const startDateFmtPM = bi.start_date
+      ? new Date(bi.start_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : null;
+
     let targetVal, targetUnit;
     if (status === 'complete') {
       targetVal = '✓'; targetUnit = 'Complete';
+    } else if (status === 'not-started') {
+      targetVal = startDateFmtPM || '?'; targetUnit = 'Starts';
     } else if (requiredPace === null || status === 'no-data') {
       targetVal = '—'; targetUnit = 'No deadline set';
     } else {
@@ -9268,10 +9444,13 @@ async function printDailyPMReport() {
     let targetBig, targetSub;
     if (status === 'complete')                              { targetBig = '✓'; targetSub = 'Complete'; }
     else if (requiredPace === null || status === 'no-data') { targetBig = '—'; targetSub = 'No deadline set'; }
-    else { targetBig = fmt(requiredPace, 1); targetSub = usingPPDays ? `units / ${ppDaysFmt} planned days` : 'units needed today'; }
+    else { targetBig = fmt(requiredPace, 1); targetSub = usingPPDays ? `units / ${ppDaysFmt} planned days` : 'units needed today (cal. est.)'; }
 
     const ppNote    = usingPPDays
-      ? `<div style="font-size:9px;color:#1d4ed8;margin-top:3px">📅 Based on ${ppDaysFmt} planned working days (Projection Planner)</div>` : '';
+      ? `<div style="font-size:9px;color:#1d4ed8;margin-top:3px">📅 Based on ${ppDaysFmt} planned working days (Projection Planner)</div>`
+      : (requiredPace !== null && !isLumpSum && !notStartedYet)
+        ? `<div style="font-size:9px;color:var(--muted);margin-top:3px">Calendar estimate — add to Projection Planner for precise pacing</div>`
+        : '';
     const behindNote = (status === 'behind' && gap !== null && gap > 0)
       ? `<div style="font-size:10px;color:#dc2626;margin-top:4px">⚠ ${fmt(gap,1)} units/day behind pace</div>` : '';
 
@@ -9413,11 +9592,13 @@ async function printSchedulePDF() {
   const csColorMap = { 'behind': '#dc2626', 'at-risk': '#b45309', 'on-track': '#15803d', 'complete': '#1d4ed8' };
   const csLabelMap = { 'behind': 'behind', 'at-risk': 'at-risk', 'on-track': 'on track', 'complete': 'complete' };
 
-  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
+  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
 
   const tableRows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, notStartedYet, isLumpSum } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
+    const pdfUnit   = (bi.unit || '').toUpperCase();
+    const pdfULabel = pdfUnit ? ` ${pdfUnit}` : '';
 
     const biKey     = (bi.cost_code || '') + '||' + (bi.sub_code || '');
     const breakdown = _schedDailyBreakdown(proj, biKey);
@@ -9439,18 +9620,21 @@ async function printSchedulePDF() {
     </div>`;
 
     const progPct  = Math.min(Math.max(pct, 0), 100).toFixed(1);
-    const sc       = sColors[status] || '#888';
+    const sc       = status === 'not-started' ? '#818cf8' : (sColors[status] || '#888');
     const gapTxt   = gap === null ? '—' : gap <= 0
       ? `<span style="color:#15803d">+${fmt(Math.abs(gap),2)}</span>`
       : `<span style="color:${(gap/(bidQty||1))>0.05?'#dc2626':'#b45309'}">-${fmt(gap,2)}</span>`;
     const ppDaysFmt = effectiveDaysLeft !== null && effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft;
     const goalTxt  = status === 'complete' ? '✓'
+      : status === 'not-started' ? `Starts ${bi.start_date || '?'}`
+      : isLumpSum ? `${fmtPct(pct)} done`
       : requiredPace === null || status === 'no-data' ? '—'
-      : fmt(requiredPace, 1) + (usingPPDays ? `<br><span style="font-size:8px;color:#555">/${ppDaysFmt}d PP</span>` : '');
+      : fmt(requiredPace, 1) + pdfULabel + (usingPPDays ? `<br><span style="font-size:8px;color:#555">/${ppDaysFmt}d PP</span>` : '');
 
     return `<tr>
-      <td style="font-weight:600;white-space:nowrap">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}
-        ${bi.target_date ? `<div style="font-size:8px;color:#1d4ed8">📅 ${bi.target_date}</div>` : ''}
+      <td style="font-weight:600;white-space:nowrap">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}${pdfUnit ? `<span style="font-size:7px;color:#888;font-weight:400;margin-left:4px">${pdfUnit}</span>` : ''}
+        ${bi.start_date ? `<div style="font-size:8px;color:#15803d">▶ ${bi.start_date}</div>` : ''}
+        ${bi.target_date ? `<div style="font-size:8px;color:#1d4ed8">◼ ${bi.target_date}</div>` : ''}
       </td>
       <td style="text-align:right">${bidQty > 0 ? fmt(bidQty,1) : '—'}</td>
       <td style="text-align:right">${runningQty > 0 ? fmt(runningQty,1) : '—'}</td>
@@ -9465,7 +9649,7 @@ async function printSchedulePDF() {
       <td style="text-align:right">${daysWorked > 0 ? daysWorked : '—'}</td>
       <td style="text-align:right">${currentPace > 0 ? fmt(currentPace,2)+'/d' : '—'}</td>
       <td style="text-align:right">${trendCell}</td>
-      <td style="text-align:right">${requiredPace !== null ? fmt(requiredPace,2)+'/d' + (usingPPDays ? `<br><span style="font-size:8px;color:#555">${ppDaysFmt}d PP</span>` : '') : '—'}</td>
+      <td style="text-align:right">${requiredPace !== null ? fmt(requiredPace,2)+pdfULabel+'/d' + (usingPPDays ? `<br><span style="font-size:8px;color:#555">${ppDaysFmt}d PP</span>` : `<br><span style="font-size:7px;color:#aaa">cal. est.</span>`) : '—'}</td>
       <td style="text-align:right;font-weight:700;color:${sc}">${goalTxt}</td>
       <td style="text-align:right">${gapTxt}</td>
       <td style="text-align:center"><span style="background:${sBg[status]||'#f3f4f6'};color:${sc};font-size:8px;font-weight:700;padding:2px 6px;border-radius:8px;border:1px solid ${sc}33;white-space:nowrap">${sLabels[status]||status}</span></td>
@@ -9538,7 +9722,7 @@ async function printSchedulePDF() {
       <th style="min-width:80px">Progress</th>
       <th style="text-align:right">Days Worked</th>
       <th style="text-align:right">Curr. Pace</th>
-      <th style="text-align:right;min-width:70px">7d Trend</th>
+      <th style="text-align:right;min-width:70px">Pace Trend</th>
       <th style="text-align:right">Req. Pace</th>
       <th style="text-align:right">Today's Goal</th>
       <th style="text-align:right">Gap</th>
@@ -9575,8 +9759,8 @@ function _buildAIPayload(proj) {
     const _aiHistory   = _schedStatusHistory(bi, _aiBreakdown, deadline);
     const _aiConsec    = _trendConsecutive(_aiHistory);
     return {
-      costCode: bi.cost_code || '', subCode: bi.sub_code || '', targetDate: bi.target_date || null,
-      bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status,
+      costCode: bi.cost_code || '', subCode: bi.sub_code || '', unit: bi.unit || '', startDate: bi.start_date || null, targetDate: bi.target_date || null,
+      bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, notStartedYet, isLumpSum,
       effectiveDaysLeft, usingPPDays,
       laborHours: a.labor_hours || 0, equipHours: a.equip_hours || 0,
       employees: [...(a.employees || new Set())].filter(Boolean),
@@ -9732,7 +9916,7 @@ function _ppAutoFill(proj, biKey) {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  // Fill 90 days ahead
+  // Fill 90 days ahead (Mon–Fri only; auto-mark US federal holidays as no-work)
   for (let i = 0; i < 90; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
@@ -9742,7 +9926,11 @@ function _ppAutoFill(proj, biKey) {
     if (!_pp.schedule[biKey]) _pp.schedule[biKey] = {};
     if (!_pp.schedule[biKey][ds]) {
       // Only auto-fill — don't overwrite manual edits
-      _pp.schedule[biKey][ds] = { employees: [...crew], equipment: [...equip], crew: {}, halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+      if (_isHoliday(ds)) {
+        _pp.schedule[biKey][ds] = { employees: [], equipment: [], crew: {}, halfDay: false, noWork: true, noWorkReason: 'Holiday', notes: '' };
+      } else {
+        _pp.schedule[biKey][ds] = { employees: [...crew], equipment: [...equip], crew: {}, halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+      }
     }
   }
 }
@@ -10036,6 +10224,12 @@ function _ppRender() {
     d.employees.forEach(e => { if (!allEmp.includes(e)) customEmp.add(e); });
     d.equipment.forEach(e => { if (!allEquip.includes(e)) customEquip.add(e); });
   });
+  // Merge project-assigned crew/equipment so new sub-codes with no history still show available names
+  const projObj = getProj(_pp.projId);
+  const projEmpNames   = (projObj && projObj.assigned_employees  || []);
+  const projEquipNames = (projObj && projObj.assigned_equipment  || []);
+  projEmpNames.forEach(n   => { if (!allEmp.includes(n))   customEmp.add(n); });
+  projEquipNames.forEach(n => { if (!allEquip.includes(n)) customEquip.add(n); });
   const fullEmpList   = [...allEmp, ...customEmp];
   const fullEquipList = [...allEquip, ...customEquip];
 
