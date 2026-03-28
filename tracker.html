@@ -2750,7 +2750,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 function renderHeaderActions() {
   const el = document.getElementById('header-actions');
   const logoutBtn = `<button class="btn btn-ghost" onclick="logout()">Sign Out</button>`;
-  const summaryBtn = `<button class="btn btn-ghost" onclick="openDailySummaryReport()" title="Download a PDF summary of today's production across all projects">&#8659; Daily Summary</button>`;
+  const summaryBtn = `<button class="btn btn-ghost" onclick="openDailySummaryReport()" title="Download a PDF summary of today's production across all projects">&#8659; Daily Summary</button><button class="btn btn-ghost" onclick="openCrewSignInOverlay()" title="Print crew sign-in sheet for a given day">&#128221; Sign-In Sheet</button>`;
   if (activeTab === 'cost') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
@@ -6726,15 +6726,7 @@ function renderMobileEntryForm(successMsg) {
     </div>
 
     <div class="mob-form-card">
-      <div class="mob-section-title">Cost Code</div>
-      <label class="mob-form-label">Cost Code</label>
-      <select id="mob-cc" class="mob-input" onchange="mobUpdateSubCodes()">${ccOpts}</select>
-      <label class="mob-form-label">Sub Code</label>
-      <select id="mob-sc" class="mob-input"><option value="">— Select Cost Code First —</option></select>
-    </div>
-
-    <div class="mob-form-card">
-      <div class="mob-section-title">Employees</div>
+      <div class="mob-section-title">Crew</div>
       <div style="display:flex;justify-content:space-between;margin-bottom:0.5rem">
         <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=true)"
           style="background:none;border:none;color:var(--green);font-size:0.78rem;cursor:pointer;padding:0">Select All</button>
@@ -6742,15 +6734,17 @@ function renderMobileEntryForm(successMsg) {
           style="background:none;border:none;color:var(--muted);font-size:0.78rem;cursor:pointer;padding:0">Clear</button>
       </div>
       ${empCheckboxes || '<span style="color:var(--muted);font-size:0.82rem">No employees in list. Add via Manage Lists.</span>'}
-      <label class="mob-form-label">Group Hours (applied to each employee)</label>
-      <input  id="mob-hours" type="number" class="mob-input" placeholder="0.0" step="0.25" min="0">
-      <label class="mob-form-label">Job Class</label>
-      <select id="mob-job-class" class="mob-input">${jobClassOpts}</select>
-      <label class="mob-form-label">Rate (per hour)</label>
-      <input  id="mob-rate" type="number" class="mob-input" placeholder="0.00" step="0.01" min="0">
-      <label class="mob-form-label">Quantity <span style="font-weight:400;color:var(--muted)">(optional — LF, SY, tons, etc.)</span></label>
-      <input  id="mob-qty" type="number" class="mob-input" placeholder="0" step="any" min="0">
     </div>
+
+    <!-- Code blocks container -->
+    <div id="mob-code-blocks">
+      ${_mobCodeBlockHTML(0, ccOpts, jobClassOpts, false)}
+    </div>
+
+    <button type="button" onclick="mobAddCodeBlock()"
+      style="width:100%;padding:0.6rem;background:var(--surface);border:1px dashed var(--border);border-radius:6px;color:var(--green);font-size:0.85rem;cursor:pointer;margin-bottom:0.75rem">
+      + Add Another Code
+    </button>
 
     <div class="mob-form-card">
       <div class="mob-section-title">Equipment <span style="font-weight:400;color:var(--muted)">(optional)</span></div>
@@ -6762,8 +6756,69 @@ function renderMobileEntryForm(successMsg) {
       <input  id="mob-equip-hrs" type="number" class="mob-input" placeholder="0.0" step="0.25" min="0">
     </div>
 
-    ${perm.canEdit ? `<button class="mob-submit-btn" onclick="submitMobileEntry()">Submit Daily Entry</button>` : ''}
+    ${perm.canEdit ? `
+      <button class="mob-submit-btn" onclick="submitMobileEntry()">Submit Daily Entry</button>
+      <button type="button" onclick="openCrewSignInOverlay()"
+        style="width:100%;padding:0.65rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.85rem;cursor:pointer;margin-top:0.5rem">
+        &#128221; Crew Sign-In Sheet PDF
+      </button>` : ''}
   `;
+}
+
+function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
+  // ccOpts / jobClassOpts may be passed in or rebuilt here
+  if (!ccOpts) {
+    const ccSet = new Set();
+    projectsList.forEach(p => (p.bidItems||[]).forEach(b => { if (b.cost_code) ccSet.add(b.cost_code); }));
+    (lists.cost_codes||[]).forEach(c => ccSet.add(c.value||c));
+    ccOpts = `<option value="">— Cost Code —</option>` + [...ccSet].sort().map(cc => `<option value="${esc(cc)}">${esc(cc)}</option>`).join('');
+  }
+  if (!jobClassOpts) {
+    jobClassOpts = `<option value="">— none —</option>` + (lists.job_classes||[]).map(jc => `<option value="${esc(jc.value||jc)}">${esc(jc.value||jc)}</option>`).join('');
+  }
+  return `
+    <div class="mob-form-card mob-code-block" data-block-idx="${idx}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
+        <div class="mob-section-title" style="margin:0">Code Block ${idx + 1}</div>
+        ${removable ? `<button type="button" onclick="mobRemoveCodeBlock(this)" style="background:none;border:none;color:var(--red);font-size:0.8rem;cursor:pointer;padding:0">✕ Remove</button>` : ''}
+      </div>
+      <label class="mob-form-label">Cost Code</label>
+      <select class="mob-input mob-cc-sel" data-block="${idx}" onchange="mobUpdateSubCodesFor(this)">${ccOpts}</select>
+      <label class="mob-form-label">Sub Code</label>
+      <select class="mob-input mob-sc-sel" data-block="${idx}"><option value="">— Select Cost Code First —</option></select>
+      <label class="mob-form-label">Hours (per employee)</label>
+      <input type="number" class="mob-input mob-hrs-inp" data-block="${idx}" placeholder="0.0" step="0.25" min="0">
+      <label class="mob-form-label">Job Class</label>
+      <select class="mob-input mob-jc-sel" data-block="${idx}">${jobClassOpts}</select>
+      <label class="mob-form-label">Rate (per hour)</label>
+      <input type="number" class="mob-input mob-rate-inp" data-block="${idx}" placeholder="0.00" step="0.01" min="0">
+      <label class="mob-form-label">Quantity <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+      <input type="number" class="mob-input mob-qty-inp" data-block="${idx}" placeholder="0" step="any" min="0">
+    </div>`;
+}
+
+function mobAddCodeBlock() {
+  const container = document.getElementById('mob-code-blocks');
+  if (!container) return;
+  const existing = container.querySelectorAll('.mob-code-block').length;
+  const div = document.createElement('div');
+  div.innerHTML = _mobCodeBlockHTML(existing, null, null, true);
+  container.appendChild(div.firstElementChild);
+}
+
+function mobRemoveCodeBlock(btn) {
+  const block = btn.closest('.mob-code-block');
+  if (!block) return;
+  // Re-index remaining blocks
+  block.remove();
+  document.querySelectorAll('#mob-code-blocks .mob-code-block').forEach((el, i) => {
+    el.dataset.blockIdx = i;
+    el.querySelector('.mob-section-title').textContent = `Code Block ${i + 1}`;
+    el.querySelectorAll('[data-block]').forEach(inp => inp.dataset.block = i);
+    // Only show remove button if more than one block remains
+    const removeBtn = el.querySelector('button');
+    if (removeBtn) removeBtn.style.display = document.querySelectorAll('#mob-code-blocks .mob-code-block').length > 1 ? '' : 'none';
+  });
 }
 
 // #1 — Pre-fill form from last submission
@@ -6773,15 +6828,27 @@ function mobRepeatLastEntry() {
   document.getElementById('mob-project').value   = le.projId;
   document.getElementById('mob-date').value       = new Date().toISOString().slice(0,10);
   document.getElementById('mob-field-type').value = le.fieldType || '';
-  document.getElementById('mob-cc').value         = le.cc || '';
-  mobUpdateSubCodes();
-  setTimeout(() => {
-    document.getElementById('mob-sc').value       = le.sc || '';
-  }, 30);
-  document.getElementById('mob-hours').value      = le.hours || '';
-  document.getElementById('mob-job-class').value  = le.jobClass || '';
-  document.getElementById('mob-rate').value       = le.rate || '';
-  document.getElementById('mob-qty').value        = le.quantity || '';
+  // Restore code blocks
+  const blocks = le.codeBlocks || [{ cc: le.cc, sc: le.sc, hours: le.hours, jobClass: le.jobClass, rate: le.rate, quantity: le.quantity }];
+  blocks.forEach((b, i) => {
+    if (i > 0) mobAddCodeBlock();
+    setTimeout(() => {
+      const ccSel = document.querySelector(`.mob-cc-sel[data-block="${i}"]`);
+      if (ccSel) { ccSel.value = b.cc || ''; mobUpdateSubCodesFor(ccSel); }
+      setTimeout(() => {
+        const scSel = document.querySelector(`.mob-sc-sel[data-block="${i}"]`);
+        if (scSel) scSel.value = b.sc || '';
+      }, 40);
+      const hrsInp = document.querySelector(`.mob-hrs-inp[data-block="${i}"]`);
+      if (hrsInp) hrsInp.value = b.hours || '';
+      const jcSel = document.querySelector(`.mob-jc-sel[data-block="${i}"]`);
+      if (jcSel) jcSel.value = b.jobClass || '';
+      const rateInp = document.querySelector(`.mob-rate-inp[data-block="${i}"]`);
+      if (rateInp) rateInp.value = b.rate || '';
+      const qtyInp = document.querySelector(`.mob-qty-inp[data-block="${i}"]`);
+      if (qtyInp) qtyInp.value = b.quantity || '';
+    }, i * 20);
+  });
   document.getElementById('mob-equip').value      = le.equipName || '';
   mobEquipUCFill();
   document.getElementById('mob-equip-hrs').value  = le.equipHrs || '';
@@ -6791,9 +6858,11 @@ function mobRepeatLastEntry() {
   });
 }
 
-function mobUpdateSubCodes() {
-  const cc  = document.getElementById('mob-cc').value;
-  const sel = document.getElementById('mob-sc');
+function mobUpdateSubCodesFor(ccSel) {
+  const cc  = ccSel.value;
+  const idx = ccSel.dataset.block;
+  const sel = document.querySelector(`.mob-sc-sel[data-block="${idx}"]`);
+  if (!sel) return;
   if (!cc) { sel.innerHTML = '<option value="">— Select Cost Code First —</option>'; return; }
   const scSet = new Set();
   projectsList.forEach(p => (p.bidItems||[]).forEach(b => { if (b.cost_code === cc && b.sub_code) scSet.add(b.sub_code); }));
@@ -6814,45 +6883,55 @@ async function submitMobileEntry() {
   const projId    = document.getElementById('mob-project').value;
   const date      = document.getElementById('mob-date').value;
   const fieldType = document.getElementById('mob-field-type').value;
-  const cc        = document.getElementById('mob-cc').value;
-  const sc        = document.getElementById('mob-sc').value;
-  const hours     = parseFloat(document.getElementById('mob-hours').value) || 0;
-  const jobClass  = document.getElementById('mob-job-class').value;
-  const rate      = parseFloat(document.getElementById('mob-rate').value) || 0;
-  const quantity  = parseFloat(document.getElementById('mob-qty').value)  || 0;
   const equipName = document.getElementById('mob-equip').value;
   const equipUC   = parseFloat(document.getElementById('mob-equip-uc').value) || 0;
   const equipHrs  = parseFloat(document.getElementById('mob-equip-hrs').value) || 0;
-
   const checkedEmps = [...document.querySelectorAll('.mob-emp-cb:checked')].map(cb => cb.value);
+
+  // Collect all code blocks
+  const codeBlocks = [...document.querySelectorAll('#mob-code-blocks .mob-code-block')].map(el => {
+    const idx = el.dataset.blockIdx;
+    return {
+      cc:       el.querySelector(`.mob-cc-sel[data-block="${idx}"]`)?.value   || '',
+      sc:       el.querySelector(`.mob-sc-sel[data-block="${idx}"]`)?.value   || '',
+      hours:    parseFloat(el.querySelector(`.mob-hrs-inp[data-block="${idx}"]`)?.value)  || 0,
+      jobClass: el.querySelector(`.mob-jc-sel[data-block="${idx}"]`)?.value   || '',
+      rate:     parseFloat(el.querySelector(`.mob-rate-inp[data-block="${idx}"]`)?.value) || 0,
+      quantity: parseFloat(el.querySelector(`.mob-qty-inp[data-block="${idx}"]`)?.value)  || 0,
+    };
+  });
 
   if (!projId)              { alert('Please select a project.'); return; }
   if (!date)                { alert('Please select a date.'); return; }
   if (checkedEmps.length === 0 && !equipName) { alert('Select at least one employee or add equipment.'); return; }
-  if (checkedEmps.length > 0 && hours <= 0)   { alert('Enter group hours for employees.'); return; }
+  if (checkedEmps.length > 0 && codeBlocks.every(b => b.hours <= 0)) { alert('Enter hours in at least one code block.'); return; }
 
   const proj = getProj(projId);
   if (!proj) { alert('Project not found.'); return; }
 
   const newRows = [];
 
-  // One labor row per employee
-  checkedEmps.forEach(emp => {
-    newRows.push({
-      id: uid(), date, field_type: fieldType, employee: emp,
-      cost_code: cc, sub_code: sc, job_class: jobClass,
-      rate, labor_hours: hours,
-      equipment: '', equip_unit_cost: 0, equip_hours: 0,
-      material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
-      quantity, num_laborers: 0,
+  // One labor row per employee per code block
+  codeBlocks.forEach(b => {
+    if (b.hours <= 0 && checkedEmps.length > 0) return; // skip empty blocks
+    checkedEmps.forEach(emp => {
+      newRows.push({
+        id: uid(), date, field_type: fieldType, employee: emp,
+        cost_code: b.cc, sub_code: b.sc, job_class: b.jobClass,
+        rate: b.rate, labor_hours: b.hours,
+        equipment: '', equip_unit_cost: 0, equip_hours: 0,
+        material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
+        quantity: b.quantity, num_laborers: 0,
+      });
     });
   });
 
-  // One equipment row if filled in
+  // One equipment row if filled in (uses first code block's code)
   if (equipName && equipHrs > 0) {
+    const firstBlock = codeBlocks[0] || {};
     newRows.push({
       id: uid(), date, field_type: fieldType, employee: '',
-      cost_code: cc, sub_code: sc, job_class: '',
+      cost_code: firstBlock.cc || '', sub_code: firstBlock.sc || '', job_class: '',
       rate: 0, labor_hours: 0,
       equipment: equipName, equip_unit_cost: equipUC, equip_hours: equipHrs,
       material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
@@ -6862,11 +6941,13 @@ async function submitMobileEntry() {
 
   if (newRows.length === 0) { alert('Nothing to submit.'); return; }
 
-  // #4 — Persist last project
+  // Persist last project
   localStorage.setItem('mob_last_proj', projId);
 
-  // #1 — Save state for Repeat Last Entry
-  _mobLastEntry = { projId, fieldType, cc, sc, hours, jobClass, rate, quantity, checkedEmps, equipName, equipUC, equipHrs };
+  // Save state for Repeat Last Entry
+  _mobLastEntry = { projId, fieldType, codeBlocks, checkedEmps, equipName, equipUC, equipHrs,
+    // legacy fields for badge summary
+    cc: codeBlocks[0]?.cc, sc: codeBlocks[0]?.sc, hours: codeBlocks[0]?.hours };
 
   // Add to project and save
   if (!proj.dailyRows) proj.dailyRows = [];
@@ -6880,8 +6961,9 @@ async function submitMobileEntry() {
   updateMobEntryBadge();
 
   const empCount   = checkedEmps.length;
+  const blockSummary = codeBlocks.filter(b=>b.hours>0).map(b=>`${b.cc||'?'} ${b.hours}h`).join(' · ');
   const equipLabel = equipName && equipHrs > 0 ? ` + ${equipName} (${equipHrs}h)` : '';
-  const msg = `${newRows.length} row${newRows.length!==1?'s':''} added — ${empCount > 0 ? `${empCount} employee${empCount!==1?'s':''} × ${hours}h${equipLabel}` : equipLabel.trim()}`;
+  const msg = `${newRows.length} row${newRows.length!==1?'s':''} added — ${empCount} emp · ${blockSummary}${equipLabel}`;
 
   renderMobileEntryForm(msg);
 }
@@ -8002,6 +8084,130 @@ function _dsrSelect(val) {
   const h = document.getElementById('dsr-project-val');
   if (h) h.value = val;
   _dsrRenderList();
+}
+
+/* ── Crew Sign-In Sheet ── */
+function openCrewSignInOverlay() {
+  const today = new Date().toISOString().slice(0, 10);
+  const overlay = document.createElement('div');
+  overlay.id = 'crew-signin-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
+  overlay.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;width:100%;max-width:380px;">
+      <div style="font-size:0.82rem;font-weight:700;color:var(--text);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:1.1rem;">Crew Sign-In Sheet</div>
+      <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.35rem;">Date</div>
+      <input type="date" id="csi-date" value="${today}"
+        style="width:100%;box-sizing:border-box;padding:0.5rem 0.65rem;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.875rem;outline:none;margin-bottom:1rem;">
+      <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+        <button class="btn btn-ghost" onclick="document.getElementById('crew-signin-overlay').remove()">Cancel</button>
+        <button class="btn btn-green" onclick="
+          const d = document.getElementById('csi-date').value;
+          if (!d) { alert('Select a date.'); return; }
+          document.getElementById('crew-signin-overlay').remove();
+          exportCrewSignInPDF(d);
+        ">Generate PDF</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  setTimeout(() => document.getElementById('csi-date').focus(), 50);
+}
+
+function exportCrewSignInPDF(date) {
+  const fmtD = d => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+  // Collect all entries for the date across all projects
+  let grandLaborHrs = 0, grandEquipHrs = 0, grandCost = 0;
+  const sections = [];
+
+  projectsList.forEach(p => {
+    const rows = (p.dailyRows || []).filter(r => r.date === date);
+    if (!rows.length) return;
+    const projName = p['project-name'] || 'Untitled';
+
+    // Group: labor rows by employee, equipment rows separate
+    const laborRows  = rows.filter(r => (parseFloat(r.labor_hours) || 0) > 0 || r.employee);
+    const equipRows  = rows.filter(r => (parseFloat(r.equip_hours) || 0) > 0 && !r.employee);
+
+    let projLaborHrs = 0, projEquipHrs = 0, projCost = 0;
+    const tbl = (rws, isEquip) => rws.map(r => {
+      const c = calcDaily(r);
+      if (!isEquip) projLaborHrs += parseFloat(r.labor_hours) || 0;
+      else          projEquipHrs += parseFloat(r.equip_hours) || 0;
+      projCost += c.total_cost;
+      const td = v => `<td style="padding:0.25rem 0.4rem;border-bottom:1px solid #e5e7eb;font-size:10px">${v||'—'}</td>`;
+      const tdr = v => `<td style="padding:0.25rem 0.4rem;border-bottom:1px solid #e5e7eb;font-size:10px;text-align:right">${v||'—'}</td>`;
+      if (!isEquip) return `<tr>${td(r.employee)}${td(r.cost_code+(r.sub_code?' / '+r.sub_code:''))}${td(r.field_type)}${td(r.job_class)}${tdr(r.labor_hours||'—')}${tdr(c.labor_cost>0?'$'+fmt(c.labor_cost):'—')}${tdr(c.total_cost>0?'$'+fmt(c.total_cost):'—')}</tr>`;
+      return `<tr>${td(r.equipment)}${td(r.cost_code+(r.sub_code?' / '+r.sub_code:''))}${td(r.field_type)}${td('')}${tdr(r.equip_hours||'—')}${tdr(c.equip_total>0?'$'+fmt(c.equip_total):'—')}${tdr(c.total_cost>0?'$'+fmt(c.total_cost):'—')}</tr>`;
+    }).join('');
+
+    grandLaborHrs += projLaborHrs;
+    grandEquipHrs += projEquipHrs;
+    grandCost     += projCost;
+
+    const thStyle = 'padding:0.25rem 0.4rem;background:#f3f4f6;font-size:9px;font-weight:600;color:#6b7280;text-align:left;border-bottom:2px solid #d1d5db;';
+    const thrStyle = thStyle + 'text-align:right;';
+    sections.push(`
+      <div style="margin-bottom:1.25rem;page-break-inside:avoid">
+        <div style="font-weight:700;font-size:11px;margin-bottom:0.4rem;color:#111">${esc(projName)}</div>
+        ${laborRows.length ? `
+        <table style="width:100%;border-collapse:collapse;margin-bottom:0.5rem">
+          <thead><tr>
+            <th style="${thStyle}">Employee</th><th style="${thStyle}">Code / Sub</th>
+            <th style="${thStyle}">Type</th><th style="${thStyle}">Class</th>
+            <th style="${thrStyle}">Hrs</th><th style="${thrStyle}">Labor $</th><th style="${thrStyle}">Total $</th>
+          </tr></thead>
+          <tbody>${tbl(laborRows, false)}</tbody>
+          <tfoot><tr>
+            <td colspan="4" style="padding:0.2rem 0.4rem;font-size:9px;color:#6b7280">Labor subtotal</td>
+            <td style="padding:0.2rem 0.4rem;text-align:right;font-size:10px;font-weight:600">${fmt(projLaborHrs,1)}</td>
+            <td></td>
+            <td style="padding:0.2rem 0.4rem;text-align:right;font-size:10px;font-weight:600"></td>
+          </tr></tfoot>
+        </table>` : ''}
+        ${equipRows.length ? `
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr>
+            <th style="${thStyle}">Equipment</th><th style="${thStyle}">Code / Sub</th>
+            <th style="${thStyle}">Type</th><th style="${thStyle}"></th>
+            <th style="${thrStyle}">Hrs</th><th style="${thrStyle}">Equip $</th><th style="${thrStyle}">Total $</th>
+          </tr></thead>
+          <tbody>${tbl(equipRows, true)}</tbody>
+        </table>` : ''}
+        <div style="text-align:right;font-size:10px;font-weight:700;margin-top:0.3rem;color:#111">
+          Project Total: $${fmt(projCost)}
+        </div>
+      </div>`);
+  });
+
+  if (!sections.length) { alert('No entries found for ' + fmtD(date)); return; }
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Crew Sign-In Sheet — ${date}</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; margin: 0; padding: 1rem 1.5rem; }
+    h1   { font-size: 15px; margin: 0 0 0.1rem; }
+    .sub { font-size: 10px; color: #6b7280; margin-bottom: 1.25rem; }
+    .totals { display:flex; gap: 2rem; padding: 0.5rem 0; border-top: 2px solid #111; border-bottom: 1px solid #d1d5db; margin-bottom: 1.25rem; }
+    .tot-lbl { font-size: 9px; color: #6b7280; }
+    .tot-val { font-size: 12px; font-weight: 700; }
+    @media print { body { padding: 0.5rem; } @page { margin: 1cm; } }
+  </style></head><body>
+  <h1>Crew Sign-In Sheet</h1>
+  <div class="sub">${fmtD(date)}</div>
+  <div class="totals">
+    <div><div class="tot-lbl">Labor Hours</div><div class="tot-val">${fmt(grandLaborHrs,1)}</div></div>
+    <div><div class="tot-lbl">Equipment Hours</div><div class="tot-val">${fmt(grandEquipHrs,1)}</div></div>
+    <div><div class="tot-lbl">Total Cost</div><div class="tot-val">$${fmt(grandCost)}</div></div>
+    <div><div class="tot-lbl">Projects</div><div class="tot-val">${sections.length}</div></div>
+  </div>
+  ${sections.join('')}
+  <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
 }
 
 function openDailySummaryReport() {
