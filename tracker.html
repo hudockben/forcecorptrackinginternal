@@ -5213,6 +5213,7 @@ function addTR() {
     material_hauled: '',
     loads:           '',
     rate:            '',
+    hours:           '',
     status:          'pending',
     notes:           '',
     cost_code:       '',
@@ -5450,6 +5451,7 @@ function renderTruckingTab() {
           <td style="padding:0.35rem 0.6rem;min-width:150px">${inp('material_hauled', 'text', 'placeholder="Material hauled"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('loads', 'number', 'step="any" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:85px">${inp('rate', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('hours', 'number', 'step="any" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="tr-tot-${tr.id}">$${fmt(total)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date', 'date')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('notes', 'text', 'placeholder="Notes"')}</td>
@@ -5479,7 +5481,7 @@ function renderTruckingTab() {
             <tr>
               ${thf('TR #','tr_number')} ${thf('Project','project_id')} ${thf('Sub Code','sub_code')}
               ${thf('Driver','driver')} ${thf('Truck Type','truck_type')} ${thf('Material Hauled','material_hauled')}
-              ${th('Loads',1)} ${th('Rate',1)} ${th('Total',1)}
+              ${th('Loads',1)} ${th('Rate',1)} ${th('Hours',1)} ${th('Total',1)}
               ${thf('Date','date')} ${th('Notes')} ${thf('Status','status')}
               <th style="width:36px;border-bottom:1px solid var(--border)"></th>
             </tr>
@@ -6456,34 +6458,43 @@ function exportCostCSV() {
 
 function _buildEquipAgg() {
   // Aggregate all daily rows by equipment name
-  const agg = {};  // equipName → { hours, cost, projects: Set, dates: Set, costCodes: Set, unitCosts: [] }
-  getAllDailyRows().forEach(row => {
-    const name = (row.equipment || '').trim();
-    if (!name) return;
-    if (!agg[name]) agg[name] = { hours: 0, cost: 0, projects: new Set(), dates: new Set(), costCodes: new Set(), unitCosts: [] };
-    const a = agg[name];
-    const hrs  = parseFloat(row.equip_hours)    || 0;
-    const uc   = parseFloat(row.equip_unit_cost) || 0;
-    const cost = uc * hrs;
-    a.hours += hrs;
-    a.cost  += cost;
-    if (uc > 0) a.unitCosts.push(uc);
-    if (row.date)      a.dates.add(row.date);
-    if (row.cost_code) a.costCodes.add(row.cost_code);
-    // Find project name
-    projectsList.forEach(p => {
-      if ((p.dailyRows || []).some(r => r === row)) a.projects.add(p['project-name'] || p.id);
-    });
-  });
-  // Faster project lookup: iterate projects once
+  const agg = {};  // equipName → { hours, cost, projects: Set, dates: Set, costCodes: Set, unitCosts: [], source }
   projectsList.forEach(p => {
     const pname = p['project-name'] || p.id || '';
     (p.dailyRows || []).forEach(row => {
       const name = (row.equipment || '').trim();
-      if (!name || !agg[name]) return;
-      agg[name].projects.add(pname);
+      if (!name) return;
+      if (!agg[name]) agg[name] = { hours: 0, cost: 0, projects: new Set(), dates: new Set(), costCodes: new Set(), unitCosts: [], source: 'daily' };
+      const a = agg[name];
+      const hrs  = parseFloat(row.equip_hours)    || 0;
+      const uc   = parseFloat(row.equip_unit_cost) || 0;
+      a.hours += hrs;
+      a.cost  += uc * hrs;
+      if (uc > 0) a.unitCosts.push(uc);
+      if (row.date)      a.dates.add(row.date);
+      if (row.cost_code) a.costCodes.add(row.cost_code);
+      a.projects.add(pname);
     });
   });
+
+  // Also pull from trucking entries (truck_type as equipment name, hours field)
+  const projMap = {};
+  projectsList.forEach(p => { projMap[p.id] = p['project-name'] || p.id || ''; });
+  truckingEntries.forEach(tr => {
+    const name = (tr.truck_type || '').trim();
+    if (!name) return;
+    const hrs  = parseFloat(tr.hours) || 0;
+    const cost = (parseFloat(tr.loads) || 0) * (parseFloat(tr.rate) || 0);
+    if (!agg[name]) agg[name] = { hours: 0, cost: 0, projects: new Set(), dates: new Set(), costCodes: new Set(), unitCosts: [], source: 'trucking' };
+    else if (agg[name].source === 'daily') agg[name].source = 'both';
+    const a = agg[name];
+    a.hours += hrs;
+    a.cost  += cost;
+    if (tr.date)      a.dates.add(tr.date);
+    if (tr.cost_code) a.costCodes.add(tr.cost_code);
+    if (tr.project_id && projMap[tr.project_id]) a.projects.add(projMap[tr.project_id]);
+  });
+
   return agg;
 }
 
@@ -6508,9 +6519,12 @@ function renderEquipTable() {
     const cph    = a.hours ? a.cost / a.hours : 0;
     const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
     const bar    = `<div style="width:100%;background:var(--surface2);border-radius:2px;height:6px;margin-top:3px"><div style="width:${utilPct.toFixed(1)}%;background:var(--green);height:6px;border-radius:2px"></div></div>`;
+    const srcBadge = a.source === 'trucking' ? `<span style="font-size:0.62rem;padding:0.05rem 0.3rem;background:rgba(96,165,250,0.12);color:var(--blue);border-radius:2px;margin-left:0.4rem;vertical-align:middle">Trucking</span>`
+                   : a.source === 'both'     ? `<span style="font-size:0.62rem;padding:0.05rem 0.3rem;background:rgba(34,197,94,0.12);color:var(--green);border-radius:2px;margin-left:0.4rem;vertical-align:middle">Daily+Trucking</span>`
+                   : '';
     return `
       <tr>
-        <td style="padding:0.45rem 0.75rem;font-weight:600;color:var(--text)">${esc(name)}</td>
+        <td style="padding:0.45rem 0.75rem;font-weight:600;color:var(--text)">${esc(name)}${srcBadge}</td>
         <td class="calc">${avgUC ? '$'+fmt(avgUC) : '—'}</td>
         <td class="calc">${fmt(a.hours,1)}</td>
         <td class="calc">$${fmt(a.cost)}</td>
@@ -6584,8 +6598,9 @@ function exportEquipPDF() {
     const cph   = a.hours ? a.cost / a.hours : 0;
     const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
     const r = v => `<td style="padding:0.3rem 0.5rem;text-align:right;border-bottom:1px solid #e5e7eb">${v}</td>`;
+    const srcLabel = a.source === 'trucking' ? ' [Trucking]' : a.source === 'both' ? ' [Daily+Trucking]' : '';
     return `<tr>
-      <td style="padding:0.3rem 0.5rem;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(name)}</td>
+      <td style="padding:0.3rem 0.5rem;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(name)}${srcLabel}</td>
       ${r(avgUC ? '$'+fmt(avgUC) : '—')}
       ${r(fmt(a.hours,1))}
       ${r('$'+fmt(a.cost))}
