@@ -4234,10 +4234,11 @@ function renderBidFooter(projId, opts = {}) {
   const readonly = !!opts.readonly;
   const p = getProj(projId); if (!p) return;
   const footEl = document.getElementById(footId); if (!footEl) return;
-  const totalBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
+  const _effQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+  const totalBid    = (p.bidItems||[]).reduce((s,b) => s + _effQty(b)*(parseFloat(b.unit_cost)||0), 0);
   const totalActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
   const totalProj   = (p.bidItems||[]).reduce((s,b) => {
-    const bidQty = parseFloat(b.quantity) || 0;
+    const bidQty = _effQty(b);
     const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
     const actual = actualForBidItem(b, projId);
     const rqty   = runningQtyForBidItem(b, projId);
@@ -6628,7 +6629,9 @@ function exportBidPDF(projId) {
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
     gItems.forEach(b => {
-      const bidQty = parseFloat(b.quantity)   || 0;
+      const baseBidQty = parseFloat(b.quantity) || 0;
+      const coQtyDelta = (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+      const bidQty = baseBidQty + coQtyDelta;
       const uc     = parseFloat(b.unit_cost)  || 0;
       const bidTot = bidQty * uc;
       const actual = actualForBidItem(b, projId);
@@ -9001,7 +9004,9 @@ function _schedTrendMetrics(breakdown) {
  *  Uses working-day counts (Mon–Fri, excluding holidays) for consistency with
  *  the live required-pace calculation in _schedCalcRow. */
 function _schedStatusHistory(bi, breakdown, deadline) {
-  const bidQty     = parseFloat(bi.quantity) || 0;
+  const baseBidQty = parseFloat(bi.quantity) || 0;
+  const coQtyDelta = (bi.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+  const bidQty     = baseBidQty + coQtyDelta;
   const biDeadline = bi.target_date || deadline;
   const history    = [];
   let cumQty = 0;
@@ -9058,7 +9063,7 @@ function renderScheduleProjectDetail(proj) {
       <span style="font-size:0.75rem;color:var(--muted)">Add bid items in the Project Dashboard tab to enable pacing analysis.</span></div>`;
   }
 
-  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
+  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
 
   const rows = bidItems.map(bi => {
     const { a, bidQty, baseBidQty, coQtyDelta, runningQty, daysWorked, currentPace, recentPace, avgCrewPerDay, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum, forcedComplete, costToComplete, costPerUnit } = _schedCalcRow(bi, agg, daysLeft, deadline);
@@ -9190,11 +9195,12 @@ function renderScheduleProjectDetail(proj) {
       </div>
     </div>
     <div style="display:flex;gap:0.6rem;margin-bottom:1.25rem;flex-wrap:wrap">
-      ${counts['behind']   ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:var(--red)"><div class="stat-val" style="color:var(--red)">${counts['behind']}</div><div class="stat-lbl">Behind</div></div>` : ''}
-      ${counts['at-risk']  ? `<div class="stat-card yellow" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem"><div class="stat-val">${counts['at-risk']}</div><div class="stat-lbl">At Risk</div></div>` : ''}
-      ${counts['on-track'] ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:var(--green-dim)"><div class="stat-val" style="color:var(--green)">${counts['on-track']}</div><div class="stat-lbl">On Track</div></div>` : ''}
-      ${counts['complete'] ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:var(--blue)"><div class="stat-val" style="color:var(--blue)">${counts['complete']}</div><div class="stat-lbl">Complete</div></div>` : ''}
-      ${counts['no-data']  ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem"><div class="stat-val" style="color:var(--muted)">${counts['no-data']}</div><div class="stat-lbl">No Data</div></div>` : ''}
+      ${counts['behind']      ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:var(--red)"><div class="stat-val" style="color:var(--red)">${counts['behind']}</div><div class="stat-lbl">Behind</div></div>` : ''}
+      ${counts['at-risk']     ? `<div class="stat-card yellow" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem"><div class="stat-val">${counts['at-risk']}</div><div class="stat-lbl">At Risk</div></div>` : ''}
+      ${counts['on-track']    ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:var(--green-dim)"><div class="stat-val" style="color:var(--green)">${counts['on-track']}</div><div class="stat-lbl">On Track</div></div>` : ''}
+      ${counts['complete']    ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:var(--blue)"><div class="stat-val" style="color:var(--blue)">${counts['complete']}</div><div class="stat-lbl">Complete</div></div>` : ''}
+      ${counts['not-started'] ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem;border-color:rgba(99,102,241,0.4)"><div class="stat-val" style="color:#818cf8">${counts['not-started']}</div><div class="stat-lbl">Not Started</div></div>` : ''}
+      ${counts['no-data']     ? `<div class="stat-card" style="flex:0 0 auto;min-width:100px;padding:0.5rem 0.85rem"><div class="stat-val" style="color:var(--muted)">${counts['no-data']}</div><div class="stat-lbl">No Data</div></div>` : ''}
     </div>
     <div style="overflow-x:auto">
       <table class="sched-pace-table">
@@ -9548,7 +9554,7 @@ async function printDailyPMReport() {
   const statusLabels = { 'on-track': 'On Track', 'at-risk': 'At Risk', 'behind': 'Behind', 'complete': 'Complete', 'no-data': 'No Data' };
   const statusBg     = { 'on-track': '#dcfce7', 'at-risk': '#fef9c3', 'behind': '#fee2e2', 'complete': '#dbeafe', 'no-data': '#f3f4f6' };
 
-  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0 };
+  const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
   const cardRows = bidItems.map(bi => {
     const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
@@ -9888,7 +9894,7 @@ function _buildAIPayload(proj) {
   const daysLeft = _schedDaysRemaining(deadline);
   const agg      = _schedPaceForProject(proj);
   const costCodes = (proj.bidItems || []).map(bi => {
-    const { bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, a, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { bidQty, runningQty, daysWorked, currentPace, requiredPace, gap, status, a, usingPPDays, effectiveDaysLeft, notStartedYet, isLumpSum } = _schedCalcRow(bi, agg, daysLeft, deadline);
     const _aiKey       = (bi.cost_code || '') + '||' + (bi.sub_code || '');
     const _aiBreakdown = _schedDailyBreakdown(proj, _aiKey);
     const _aiTrend     = _schedTrendMetrics(_aiBreakdown);
@@ -10344,7 +10350,7 @@ function _ppRender() {
   const agg      = _schedPaceForProject(proj);
   const a        = agg[_pp.biKey] || {};
   const bi       = (proj.bidItems || []).find(b => ((b.cost_code||'')+'||'+(b.sub_code||'')) === _pp.biKey);
-  const bidQty   = bi ? parseFloat(bi.quantity) || 0 : 0;
+  const bidQty   = bi ? (parseFloat(bi.quantity)||0) + (bi.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0) : 0;
   const doneQty  = a.running_qty || 0;
   const remaining = Math.max(bidQty - doneQty, 0);
   const deadline = _schedGetDeadline(proj);
