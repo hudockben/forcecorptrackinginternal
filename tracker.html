@@ -8602,15 +8602,37 @@ async function loadScheduleDeadlines() {
   } catch { _schedDeadlines = []; }
 }
 
-/** Resolve a project's deadline: prefer end-date field, fall back to deadlines API match. */
+/** Resolve a project's deadline: prefer end-date field, fall back to deadlines API match.
+ *  Matching order: exact → one contains the other → highest word overlap (≥50% shared words). */
 function _schedGetDeadline(proj) {
   if (proj['end-date']) return proj['end-date'];
   const name = (proj['project-name'] || '').toLowerCase().trim();
   if (!name) return null;
-  const match = _schedDeadlines.find(d =>
-    d.project_name && d.project_name.toLowerCase().trim() === name && d.deadline_date
-  );
-  return match ? match.deadline_date : null;
+
+  const candidates = _schedDeadlines.filter(d => d.project_name && d.deadline_date);
+
+  // 1. Exact match
+  const exact = candidates.find(d => d.project_name.toLowerCase().trim() === name);
+  if (exact) return exact.deadline_date;
+
+  // 2. One name contains the other
+  const contains = candidates.find(d => {
+    const dn = d.project_name.toLowerCase().trim();
+    return dn.includes(name) || name.includes(dn);
+  });
+  if (contains) return contains.deadline_date;
+
+  // 3. Word-overlap: pick best match with ≥50% shared words
+  const nameWords = new Set(name.split(/\s+/).filter(w => w.length > 2));
+  if (!nameWords.size) return null;
+  let bestMatch = null, bestScore = 0;
+  candidates.forEach(d => {
+    const dWords = d.project_name.toLowerCase().trim().split(/\s+/).filter(w => w.length > 2);
+    const shared = dWords.filter(w => nameWords.has(w)).length;
+    const score  = shared / Math.max(nameWords.size, dWords.length);
+    if (score > bestScore) { bestScore = score; bestMatch = d; }
+  });
+  return (bestScore >= 0.5 && bestMatch) ? bestMatch.deadline_date : null;
 }
 
 /** US federal holidays for a given year (observed dates, Mon–Fri only). */
