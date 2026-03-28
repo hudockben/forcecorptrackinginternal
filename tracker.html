@@ -4310,7 +4310,7 @@ function renderBidTable(projId, opts = {}) {
         <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
         <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>`;
 
-      const UNIT_OPTS = ['','SF','LF','SY','CY','TN','EA','LS','HR','GAL','LB','AC'];
+      const UNIT_OPTS = ['','SF','LF','SY','CY','TN','TON','EA','LS','HR','GAL','LB','AC'];
       childTr.innerHTML = readonly
         ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}</td>
            <td class="bid-calc" style="font-size:0.72rem;color:var(--muted)">${esc(b.unit)||'—'}</td>
