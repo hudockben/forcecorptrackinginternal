@@ -10224,6 +10224,11 @@ function _ppRender() {
     d.employees.forEach(e => { if (!allEmp.includes(e)) customEmp.add(e); });
     d.equipment.forEach(e => { if (!allEquip.includes(e)) customEquip.add(e); });
   });
+  // Merge master lists so new sub-codes with no history still show available crew/equipment
+  const masterEmpNames   = (lists.employees || []).map(e => typeof e === 'string' ? e : e.name).filter(Boolean);
+  const masterEquipNames = (lists.equipment  || []).map(e => typeof e === 'string' ? e : e.name).filter(Boolean);
+  masterEmpNames.forEach(n   => { if (!allEmp.includes(n))   customEmp.add(n); });
+  masterEquipNames.forEach(n => { if (!allEquip.includes(n)) customEquip.add(n); });
   const fullEmpList   = [...allEmp, ...customEmp];
   const fullEquipList = [...allEquip, ...customEquip];
 
