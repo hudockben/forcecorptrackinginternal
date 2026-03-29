@@ -6300,6 +6300,106 @@ function buildFilteredDailyAgg() {
   return { agg, projAgg };
 }
 
+let _ctProjAgg = {}; // kept current so showBidQuickEdit can read it without re-querying
+
+function showBidQuickEdit(costCode, subCode) {
+  const key = costCode + '||' + subCode;
+  const projEntries = Object.keys(_ctProjAgg).filter(pk => pk.startsWith(key + '||'));
+  if (!projEntries.length) { alert('No project entries found for this sub code.'); return; }
+
+  const existing = document.getElementById('bid-quick-edit-modal');
+  if (existing) existing.remove();
+
+  const rows = projEntries.map((pkey, i) => {
+    const projName = _ctProjAgg[pkey].project;
+    const proj = projectsList.find(p => ((p['project-name']||'').trim()||'(No Project)') === projName);
+    const bi = proj ? (proj.bidItems||[]).find(b => b.cost_code === costCode && b.sub_code === subCode) : null;
+    const qty = bi ? (bi.quantity || '') : '';
+    const uc  = bi ? (bi.unit_cost || '') : '';
+    const tot = (qty !== '' && uc !== '') ? '$' + fmt(parseFloat(qty) * parseFloat(uc)) : '—';
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:0.4rem 0.5rem;font-size:0.82rem">${esc(projName)}</td>
+      <td style="padding:0.3rem 0.5rem">
+        <input type="number" id="bqe-qty-${i}" value="${esc(String(qty))}" placeholder="0"
+          style="width:90px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.8rem">
+      </td>
+      <td style="padding:0.3rem 0.5rem">
+        <input type="number" id="bqe-uc-${i}" value="${esc(String(uc))}" placeholder="0.00"
+          style="width:110px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.8rem">
+      </td>
+      <td id="bqe-tot-${i}" style="padding:0.3rem 0.5rem;font-size:0.8rem;color:var(--muted);min-width:80px">${tot}</td>
+    </tr>`;
+  }).join('');
+
+  const modal = document.createElement('div');
+  modal.id = 'bid-quick-edit-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.5rem;min-width:520px;max-width:700px;width:92%;max-height:82vh;display:flex;flex-direction:column">
+      <div style="font-weight:700;font-size:1rem;margin-bottom:0.2rem">Edit Bid — ${esc(costCode)} / ${esc(subCode)||'—'}</div>
+      <div style="font-size:0.73rem;color:var(--muted);margin-bottom:1rem">Set Quantity and Unit Cost per project. Saves to each project's bid items.</div>
+      <div style="overflow-y:auto;flex:1;margin-bottom:1rem">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="font-size:0.71rem;color:var(--muted);border-bottom:2px solid var(--border)">
+            <th style="text-align:left;padding:0.3rem 0.5rem">Project</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem">Qty</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem">Unit Cost ($)</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem">Bid Total</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:0.5rem;justify-content:flex-end;border-top:1px solid var(--border);padding-top:0.75rem">
+        <button class="btn btn-ghost" onclick="document.getElementById('bid-quick-edit-modal').remove()">Cancel</button>
+        <button class="btn btn-primary" data-cc="${esc(costCode)}" data-sc="${esc(subCode)}" onclick="_saveBidQuickEdit(this)">Save All</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+  // Live totals
+  projEntries.forEach((_, i) => {
+    const qEl = document.getElementById('bqe-qty-' + i);
+    const uEl = document.getElementById('bqe-uc-' + i);
+    const tEl = document.getElementById('bqe-tot-' + i);
+    const upd = () => {
+      const q = parseFloat(qEl.value) || 0;
+      const u = parseFloat(uEl.value) || 0;
+      tEl.textContent = (q && u) ? '$' + fmt(q * u) : '—';
+    };
+    qEl.addEventListener('input', upd);
+    uEl.addEventListener('input', upd);
+  });
+}
+
+function _saveBidQuickEdit(btn) {
+  const costCode = btn.dataset.cc;
+  const subCode  = btn.dataset.sc;
+  const key = costCode + '||' + subCode;
+  const projEntries = Object.keys(_ctProjAgg).filter(pk => pk.startsWith(key + '||'));
+  let saved = 0;
+  projEntries.forEach((pkey, i) => {
+    const projName = _ctProjAgg[pkey].project;
+    const proj = projectsList.find(p => ((p['project-name']||'').trim()||'(No Project)') === projName);
+    if (!proj) return;
+    const qty = document.getElementById('bqe-qty-' + i)?.value?.trim();
+    const uc  = document.getElementById('bqe-uc-' + i)?.value?.trim();
+    if (qty === '' && uc === '') return; // nothing entered — skip
+    if (!proj.bidItems) proj.bidItems = [];
+    let bi = proj.bidItems.find(b => b.cost_code === costCode && b.sub_code === subCode);
+    if (!bi) {
+      bi = { id: uid(), cost_code: costCode, sub_code: subCode, quantity: '', unit_cost: '' };
+      proj.bidItems.push(bi);
+    }
+    if (qty !== '') bi.quantity  = qty;
+    if (uc  !== '') bi.unit_cost = uc;
+    saveProject(proj.id);
+    saved++;
+  });
+  document.getElementById('bid-quick-edit-modal').remove();
+  if (saved) renderCostTable();
+}
+
 function renderCostTable() {
   const tbody = document.getElementById('cost-tbody');
   tbody.innerHTML = '';
@@ -6325,6 +6425,7 @@ function renderCostTable() {
 
   // Build daily aggregation (respects project/sqft filter)
   const { agg, projAgg } = buildFilteredDailyAgg();
+  _ctProjAgg = projAgg;
 
   // Union of bid keys + daily-only keys
   const bidKeys      = Object.keys(bidMap);
@@ -6470,6 +6571,11 @@ function renderCostTable() {
             title="Delete all daily rows for this sub code"
             style="margin-left:0.4rem;background:none;border:none;color:#ef4444;cursor:pointer;font-size:0.9rem;padding:0;line-height:1;vertical-align:middle;opacity:0.7"
             onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">🗑</button>
+          <button data-cc="${esc(costCode)}" data-sc="${esc(sc)}"
+            onclick="showBidQuickEdit(this.dataset.cc,this.dataset.sc)"
+            title="Edit bid amounts per project"
+            style="margin-left:0.25rem;background:none;border:none;color:#60a5fa;cursor:pointer;font-size:0.82rem;padding:0;line-height:1;vertical-align:middle;opacity:0.7"
+            onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">✏️</button>
         </td>
         <td class="calc">${bq ? fmt(bq,2) : '—'}</td>
         <td class="calc">${buc ? '$'+fmt(buc) : isDailyOnly ? '<span style="color:#555;font-size:0.68rem">No bid entry</span>' : '—'}</td>
