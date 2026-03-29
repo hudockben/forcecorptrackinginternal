@@ -6380,7 +6380,9 @@ function renderCostTable() {
     });
 
     // ── Budget alert for this group ──
-    const gPct = gBidTotal > 0 ? gRunTotal / gBidTotal : null;
+    // Only compare if every sub-code has a bid — partial uploads skew the ratio badly
+    const gAllHaveBid = keys.every(k => bidMap[k] && bidMap[k].total > 0);
+    const gPct = (gAllHaveBid && gBidTotal > 0) ? gRunTotal / gBidTotal : null;
     const gAlertBadge = gPct !== null && gPct >= 1.0
       ? `<span style="margin-left:0.6rem;background:rgba(239,68,68,0.15);color:var(--red);border:1px solid rgba(239,68,68,0.35);border-radius:3px;font-size:0.68rem;padding:0.1rem 0.35rem;font-weight:600">⚠ Over Budget ${Math.round(gPct*100)}%</span>`
       : gPct !== null && gPct >= 0.8
