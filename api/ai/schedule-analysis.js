@@ -4,7 +4,9 @@ const Anthropic      = require('@anthropic-ai/sdk');
 const { neon }       = require('@neondatabase/serverless');
 const jwt            = require('jsonwebtoken');
 
-const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const CACHE_TTL_MS   = 30 * 60 * 1000; // 30 minutes
+const RATE_LIMIT_MS  = 30 * 1000;     // 30 seconds per project
+const _rateLimitMap  = new Map();      // projectKey → timestamp of last AI call
 
 function verifyToken(req) {
   const authHeader = req.headers.authorization || '';
@@ -32,9 +34,9 @@ module.exports = async (req, res) => {
     return res.status(503).json({ error: 'AI analysis not configured — ANTHROPIC_API_KEY missing.' });
   }
 
-  const { projectId, projectName, jobNumber, today, deadline, daysLeft, costCodes } = req.body || {};
+  const { projectId, projectName, jobNumber, today, deadline, daysLeft, costCodes, onTrackSummary } = req.body || {};
 
-  if (!projectId || !Array.isArray(costCodes) || costCodes.length === 0) {
+  if (!projectId || !Array.isArray(costCodes)) {
     return res.status(400).json({ error: 'projectId and costCodes array required' });
   }
 
@@ -43,6 +45,15 @@ module.exports = async (req, res) => {
   const sql         = neon(process.env.DATABASE_URL);
   // Include date in cache key so each day gets a fresh AI result (avoids stale date reasoning)
   const cacheKey    = `${payload.companyCode}:fct_ai_sched_${projectId}_${todayStr}`;
+
+  // If all codes are on-track (no priority codes), skip AI call entirely
+  if (costCodes.length === 0) {
+    const allOnTrack = { summary: 'All cost codes are on track with no issues requiring attention.', recommendations: [], outlook: 'on-track', cached: false };
+    try {
+      await sql`INSERT INTO app_data (key, value, updated_at) VALUES (${cacheKey}, ${JSON.stringify(allOnTrack)}, NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`;
+    } catch {}
+    return res.json(allOnTrack);
+  }
 
   // ── Check cache ────────────────────────────────────────────────────────────
   try {
@@ -56,6 +67,14 @@ module.exports = async (req, res) => {
   } catch (err) {
     console.warn('[ai/schedule] cache read failed:', err.message);
   }
+
+  // ── Rate limit (per project, 30s cooldown between AI calls) ─────────────────
+  const rateKey = `${payload.companyCode}:${projectId}`;
+  const lastCall = _rateLimitMap.get(rateKey);
+  if (lastCall && (Date.now() - lastCall) < RATE_LIMIT_MS) {
+    return res.status(429).json({ error: 'Rate limited — try again in a few seconds' });
+  }
+  _rateLimitMap.set(rateKey, Date.now());
 
   // ── Build prompt ───────────────────────────────────────────────────────────
   const deadlineStr = deadline
@@ -124,6 +143,11 @@ module.exports = async (req, res) => {
     return parts;
   }).join('\n\n');
 
+  // Compact summary of on-track codes so AI knows the full picture without burning tokens
+  const onTrackLines = Array.isArray(onTrackSummary) && onTrackSummary.length > 0
+    ? onTrackSummary.map(c => `  • ${c.costCode}${c.subCode ? ' / ' + c.subCode : ''} — ${c.status}${c.pct !== null ? ` (${c.pct}%)` : ''}`).join('\n')
+    : '';
+
   const prompt = `You are a construction project scheduling advisor analyzing production data.
 
 TODAY'S DATE: ${todayStr} — use this as the current date for all date comparisons.
@@ -135,8 +159,9 @@ CRITICAL DATE RULES:
 PROJECT: ${projectName || 'Unnamed Project'}${jobNumber ? ` (Job #${jobNumber})` : ''}
 DEADLINE: ${deadlineStr}
 
-COST CODE PACING DATA:
-${codeLines}
+COST CODES NEEDING ATTENTION (full detail):
+${codeLines || '  (none — all codes are on track)'}
+${onTrackLines ? `\nON-TRACK COST CODES (summary only — no action needed):\n${onTrackLines}` : ''}
 
 Based on this data, provide actionable scheduling recommendations. Each cost code shows its Scheduling Window — this tells you whether the deadline is based on Projection Planner planned working days, a sub-code-specific target date, or the overall project deadline. Use this context to frame urgency correctly: a code with only 3 planned working days left is far more urgent than one with 30 calendar days left.
 

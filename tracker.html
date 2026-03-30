@@ -11142,7 +11142,24 @@ function _buildAIPayload(proj) {
       consecutiveStatus: _aiConsec.status,
     };
   });
-  return { deadline, daysLeft, costCodes };
+  // ── Trim payload for efficiency: send full detail only for codes needing attention ──
+  const priorityCodes = [];
+  const onTrackSummary = [];
+  for (const c of costCodes) {
+    const needsDetail = c.status === 'behind' || c.status === 'at-risk'
+      || c.status === 'critical' || c.status === 'overdue'
+      || (c.effectiveDaysLeft !== null && c.effectiveDaysLeft <= 3)
+      || c.trendDirection === 'down'
+      || (c.consecutiveDays >= 2 && c.consecutiveStatus === 'behind')
+      || (c.gap !== null && c.gap > 0)
+      || c.notStartedYet;
+    if (needsDetail) {
+      priorityCodes.push(c);
+    } else {
+      onTrackSummary.push({ costCode: c.costCode, subCode: c.subCode, status: c.status, pct: c.bidQty > 0 ? Math.round((c.runningQty / c.bidQty) * 100) : null });
+    }
+  }
+  return { deadline, daysLeft, costCodes: priorityCodes, onTrackSummary };
 }
 
 /** Fetch AI schedule insights for a project. Uses 5-min in-memory cache. Returns null on failure. */
@@ -11150,13 +11167,14 @@ async function _fetchSchedAI(proj) {
   const projId = proj.id;
   const cached = _schedAICache[projId];
   if (cached && (Date.now() - cached.ts) < 5 * 60 * 1000) return cached.result;
-  const { deadline, daysLeft, costCodes } = _buildAIPayload(proj);
+  const { deadline, daysLeft, costCodes, onTrackSummary } = _buildAIPayload(proj);
   try {
     const r = await fetch('/api/ai/schedule-analysis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
-      body: JSON.stringify({ projectId: projId, projectName: proj['project-name'] || '', jobNumber: proj['job-number'] || '', today: _localDateStr(), deadline, daysLeft, costCodes }),
+      body: JSON.stringify({ projectId: projId, projectName: proj['project-name'] || '', jobNumber: proj['job-number'] || '', today: _localDateStr(), deadline, daysLeft, costCodes, onTrackSummary }),
     });
+    if (r.status === 429) { const cached = _schedAICache[projId]; return cached ? cached.result : null; }
     if (!r.ok) return null;
     const result = await r.json();
     _schedAICache[projId] = { result, ts: Date.now() };
