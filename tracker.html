@@ -6505,13 +6505,8 @@ function renderCostTable() {
 
     // ── Budget alert for this group ──
     // Only compare if every sub-code has a bid — partial uploads skew the ratio badly
-    const gAllHaveBid = keys.every(k => bidMap[k] && bidMap[k].total > 0);
-    const gPct = (gAllHaveBid && gBidTotal > 0) ? gRunTotal / gBidTotal : null;
-    const gAlertBadge = gPct !== null && gPct >= 1.0
-      ? `<span style="margin-left:0.6rem;background:rgba(239,68,68,0.15);color:var(--red);border:1px solid rgba(239,68,68,0.35);border-radius:3px;font-size:0.68rem;padding:0.1rem 0.35rem;font-weight:600">⚠ Over Budget ${Math.round(gPct*100)}%</span>`
-      : gPct !== null && gPct >= 0.8
-      ? `<span style="margin-left:0.6rem;background:rgba(234,179,8,0.12);color:var(--yellow);border:1px solid rgba(234,179,8,0.3);border-radius:3px;font-size:0.68rem;padding:0.1rem 0.35rem;font-weight:600">⚠ ${Math.round(gPct*100)}% of Budget</span>`
-      : '';
+    // Group-level badge removed — budget alerts shown per-project in drill-down rows
+    const gAlertBadge = '';
 
     // ── Parent group row ──
     const parentTr = document.createElement('tr');
