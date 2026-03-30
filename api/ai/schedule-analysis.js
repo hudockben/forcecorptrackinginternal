@@ -59,7 +59,7 @@ module.exports = async (req, res) => {
 
   // ── Build prompt ───────────────────────────────────────────────────────────
   const deadlineStr = deadline
-    ? `${deadline} (${daysLeft !== null && daysLeft !== undefined ? (daysLeft < 0 ? `${Math.abs(daysLeft)} days overdue` : `${daysLeft} days remaining`) : 'no days calculated'})`
+    ? `${deadline} (${daysLeft !== null && daysLeft !== undefined ? (daysLeft < 0 ? `${Math.abs(daysLeft)} working days overdue` : daysLeft === 0 ? 'due today' : `${daysLeft} working days remaining`) : 'no days calculated'})`
     : 'No deadline set';
 
   const codeLines = costCodes.map(c => {
@@ -77,14 +77,22 @@ module.exports = async (req, res) => {
     // Describe the deadline window source for this cost code
     let windowDesc = 'no deadline set';
     if (c.effectiveDaysLeft !== null && c.effectiveDaysLeft !== undefined) {
-      const daysStr = c.effectiveDaysLeft % 1 !== 0
-        ? c.effectiveDaysLeft.toFixed(1) : String(c.effectiveDaysLeft);
+      const absDays = Math.abs(c.effectiveDaysLeft);
+      const daysStr = absDays % 1 !== 0 ? absDays.toFixed(1) : String(absDays);
+      const isOverdue = c.effectiveDaysLeft < 0;
+      const isDueToday = c.effectiveDaysLeft === 0;
       if (c.usingPPDays) {
-        windowDesc = `${daysStr} planned working days remaining (Projection Planner schedule)`;
+        windowDesc = isOverdue ? `${daysStr} planned working days overdue (Projection Planner schedule)`
+          : isDueToday ? 'due today (Projection Planner schedule)'
+          : `${daysStr} planned working days remaining (Projection Planner schedule)`;
       } else if (c.targetDate) {
-        windowDesc = `${daysStr} calendar days remaining to sub-code target date ${c.targetDate}`;
+        windowDesc = isOverdue ? `${daysStr} working days overdue past sub-code target date ${c.targetDate}`
+          : isDueToday ? `due today — sub-code target date ${c.targetDate}`
+          : `${daysStr} working days remaining to sub-code target date ${c.targetDate}`;
       } else {
-        windowDesc = `${daysStr} calendar days remaining to project deadline`;
+        windowDesc = isOverdue ? `${daysStr} working days overdue past project deadline`
+          : isDueToday ? 'due today — project deadline'
+          : `${daysStr} working days remaining to project deadline`;
       }
     }
 
@@ -118,7 +126,12 @@ module.exports = async (req, res) => {
 
   const prompt = `You are a construction project scheduling advisor analyzing production data.
 
-TODAY'S DATE: ${todayStr} — use this as the current date for all date comparisons. Do NOT say a date has passed unless it is strictly before ${todayStr}.
+TODAY'S DATE: ${todayStr} — use this as the current date for all date comparisons.
+CRITICAL DATE RULES:
+- A deadline is "past due" or "overdue" ONLY if today's date is AFTER (strictly greater than) the deadline date.
+- If today's date EQUALS the deadline date, say it is "due today" — do NOT say it has "passed" or is "overdue."
+- If today's date is before the deadline, say the deadline is "upcoming" with X days remaining.
+- Never say a deadline "has already passed" when today is the deadline date itself.
 PROJECT: ${projectName || 'Unnamed Project'}${jobNumber ? ` (Job #${jobNumber})` : ''}
 DEADLINE: ${deadlineStr}
 
