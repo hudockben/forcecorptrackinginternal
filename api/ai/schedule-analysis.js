@@ -32,7 +32,7 @@ module.exports = async (req, res) => {
     return res.status(503).json({ error: 'AI analysis not configured — ANTHROPIC_API_KEY missing.' });
   }
 
-  const { projectId, projectName, jobNumber, deadline, daysLeft, costCodes } = req.body || {};
+  const { projectId, projectName, jobNumber, today, deadline, daysLeft, costCodes } = req.body || {};
 
   if (!projectId || !Array.isArray(costCodes) || costCodes.length === 0) {
     return res.status(400).json({ error: 'projectId and costCodes array required' });
@@ -113,8 +113,11 @@ module.exports = async (req, res) => {
     return parts;
   }).join('\n\n');
 
+  const todayStr = today || new Date().toISOString().slice(0, 10);
+
   const prompt = `You are a construction project scheduling advisor analyzing production data.
 
+TODAY'S DATE: ${todayStr} — use this as the current date for all date comparisons. Do NOT say a date has passed unless it is strictly before ${todayStr}.
 PROJECT: ${projectName || 'Unnamed Project'}${jobNumber ? ` (Job #${jobNumber})` : ''}
 DEADLINE: ${deadlineStr}
 
