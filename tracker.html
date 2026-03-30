@@ -6280,6 +6280,7 @@ function buildFilteredDailyAgg() {
       const pkey = key + '||' + projName;
       if (!projAgg[pkey]) projAgg[pkey] = {
         project: projName,
+        projectId: p.id,
         running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
         labor_hours: 0, equip_hours: 0, equip_cost: 0,
         material_cost: 0, num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
@@ -6298,6 +6299,128 @@ function buildFilteredDailyAgg() {
     });
   });
   return { agg, projAgg };
+}
+
+let _ctProjAgg = {}; // kept current so showBidQuickEdit can read it without re-querying
+
+function showBidQuickEdit(costCode, subCode) {
+  const existing = document.getElementById('bid-quick-edit-modal');
+  if (existing) existing.remove();
+
+  const key = costCode + '||' + subCode;
+
+  // 1) Projects with daily-tracking rows for this sub-code — keyed by project ID
+  const activeIdSet = new Set();
+  const activeProjects = [];
+  Object.keys(_ctProjAgg)
+    .filter(pk => pk.startsWith(key + '||'))
+    .forEach(pk => {
+      const { projectId } = _ctProjAgg[pk];
+      if (!projectId || activeIdSet.has(projectId)) return;
+      const proj = getProj(projectId);
+      if (!proj) return;
+      activeIdSet.add(projectId);
+      activeProjects.push(proj);
+    });
+  activeProjects.sort((a, b) => (a['project-name']||'').localeCompare(b['project-name']||''));
+
+  // 2) Projects with an existing bid item but no daily rows for this sub-code
+  const bidOnlyProjects = projectsList.filter(p => {
+    if (activeIdSet.has(p.id)) return false;
+    return (p.bidItems||[]).some(b => b.cost_code === costCode && b.sub_code === subCode);
+  });
+
+  const allProjects = [...activeProjects, ...bidOnlyProjects];
+
+  if (!allProjects.length) {
+    alert('No projects found for this sub code. Add a bid item via Project Dashboard first.');
+    return;
+  }
+
+  const rows = allProjects.map(proj => {
+    const name = (proj['project-name']||'').trim() || '(No Project)';
+    const hasActivity = activeIdSet.has(proj.id);
+    const bi = (proj.bidItems||[]).find(b => b.cost_code === costCode && b.sub_code === subCode);
+    const qty = bi ? String(bi.quantity ?? '') : '';
+    const uc  = bi ? String(bi.unit_cost ?? '') : '';
+    const tot = (qty && uc && parseFloat(qty) && parseFloat(uc))
+      ? '$' + fmt(parseFloat(qty) * parseFloat(uc)) : '—';
+    const dimStyle = hasActivity ? '' : 'opacity:0.6';
+    const tag = hasActivity ? '' : '<span style="font-size:0.65rem;color:var(--muted);margin-left:0.3rem">(no activity)</span>';
+    return `<tr data-proj-id="${esc(proj.id)}" style="border-bottom:1px solid var(--border);${dimStyle}">
+      <td style="padding:0.4rem 0.5rem;font-size:0.82rem">${esc(name)}${tag}</td>
+      <td style="padding:0.3rem 0.5rem">
+        <input type="number" class="bqe-qty" value="${qty}" placeholder="—"
+          style="width:90px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.8rem">
+      </td>
+      <td style="padding:0.3rem 0.5rem">
+        <input type="number" class="bqe-uc" value="${uc}" placeholder="—"
+          style="width:110px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.8rem">
+      </td>
+      <td class="bqe-tot" style="padding:0.3rem 0.5rem;font-size:0.8rem;color:var(--muted);min-width:80px">${tot}</td>
+    </tr>`;
+  }).join('');
+
+  const modal = document.createElement('div');
+  modal.id = 'bid-quick-edit-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.5rem;min-width:520px;max-width:700px;width:92%;max-height:82vh;display:flex;flex-direction:column">
+      <div style="font-weight:700;font-size:1rem;margin-bottom:0.2rem">Edit Bid — ${esc(costCode)} / ${esc(subCode)||'—'}</div>
+      <div style="font-size:0.73rem;color:var(--muted);margin-bottom:1rem">Set Quantity and Unit Cost per project. Saves to each project's bid items.</div>
+      <div style="overflow-y:auto;flex:1;margin-bottom:1rem">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="font-size:0.71rem;color:var(--muted);border-bottom:2px solid var(--border)">
+            <th style="text-align:left;padding:0.3rem 0.5rem">Project</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem">Qty</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem">Unit Cost ($)</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem">Bid Total</th>
+          </tr></thead>
+          <tbody id="bqe-tbody">${rows}</tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:0.5rem;justify-content:flex-end;border-top:1px solid var(--border);padding-top:0.75rem">
+        <button class="btn btn-ghost" onclick="document.getElementById('bid-quick-edit-modal').remove()">Cancel</button>
+        <button class="btn btn-primary" data-cc="${esc(costCode)}" data-sc="${esc(subCode)}" onclick="_saveBidQuickEdit(this)">Save All</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+  // Live totals via event delegation
+  document.getElementById('bqe-tbody').addEventListener('input', e => {
+    const tr = e.target.closest('tr[data-proj-id]');
+    if (!tr) return;
+    const q = parseFloat(tr.querySelector('.bqe-qty').value) || 0;
+    const u = parseFloat(tr.querySelector('.bqe-uc').value) || 0;
+    tr.querySelector('.bqe-tot').textContent = (q && u) ? '$' + fmt(q * u) : '—';
+  });
+}
+
+function _saveBidQuickEdit(btn) {
+  const costCode = btn.dataset.cc;
+  const subCode  = btn.dataset.sc;
+  let saved = 0;
+  document.querySelectorAll('#bqe-tbody tr[data-proj-id]').forEach(tr => {
+    const projId = tr.dataset.projId;
+    const qty = tr.querySelector('.bqe-qty').value.trim();
+    const uc  = tr.querySelector('.bqe-uc').value.trim();
+    if (qty === '' && uc === '') return; // nothing entered for this row — skip
+    const proj = getProj(projId);
+    if (!proj) return;
+    if (!proj.bidItems) proj.bidItems = [];
+    let bi = proj.bidItems.find(b => b.cost_code === costCode && b.sub_code === subCode);
+    if (!bi) {
+      bi = { id: uid(), cost_code: costCode, sub_code: subCode, quantity: '', unit_cost: '' };
+      proj.bidItems.push(bi);
+    }
+    if (qty !== '') bi.quantity  = qty;
+    if (uc  !== '') bi.unit_cost = uc;
+    saveProject(projId);
+    saved++;
+  });
+  document.getElementById('bid-quick-edit-modal').remove();
+  if (saved) renderCostTable();
 }
 
 function renderCostTable() {
@@ -6325,6 +6448,7 @@ function renderCostTable() {
 
   // Build daily aggregation (respects project/sqft filter)
   const { agg, projAgg } = buildFilteredDailyAgg();
+  _ctProjAgg = projAgg;
 
   // Union of bid keys + daily-only keys
   const bidKeys      = Object.keys(bidMap);
@@ -6380,12 +6504,9 @@ function renderCostTable() {
     });
 
     // ── Budget alert for this group ──
-    const gPct = gBidTotal > 0 ? gRunTotal / gBidTotal : null;
-    const gAlertBadge = gPct !== null && gPct >= 1.0
-      ? `<span style="margin-left:0.6rem;background:rgba(239,68,68,0.15);color:var(--red);border:1px solid rgba(239,68,68,0.35);border-radius:3px;font-size:0.68rem;padding:0.1rem 0.35rem;font-weight:600">⚠ Over Budget ${Math.round(gPct*100)}%</span>`
-      : gPct !== null && gPct >= 0.8
-      ? `<span style="margin-left:0.6rem;background:rgba(234,179,8,0.12);color:var(--yellow);border:1px solid rgba(234,179,8,0.3);border-radius:3px;font-size:0.68rem;padding:0.1rem 0.35rem;font-weight:600">⚠ ${Math.round(gPct*100)}% of Budget</span>`
-      : '';
+    // Only compare if every sub-code has a bid — partial uploads skew the ratio badly
+    // Group-level badge removed — budget alerts shown per-project in drill-down rows
+    const gAlertBadge = '';
 
     // ── Parent group row ──
     const parentTr = document.createElement('tr');
@@ -6445,12 +6566,11 @@ function renderCostTable() {
       const projEntries = Object.keys(projAgg).filter(pk => pk.startsWith(key + '||'));
       const hasProjects = projEntries.length > 0;
 
-      // ── Budget alert for this sub-code ──
+      // ── Budget alert for this sub-code (aggregate, shown on sub-code row) ──
       const actualTotal = a.imported_total || rtotal;
       const scPct = btotal > 0 ? actualTotal / btotal : null;
-      const scAlertCls = scPct !== null && scPct >= 1.0 ? ' over'
-                       : scPct !== null && scPct >= 0.8 ? ' warn' : '';
-      if (scAlertCls) alertItems.push({ cc: costCode, sc: sc || '—', pct: Math.round(scPct * 100), level: scAlertCls.trim() });
+      // Sub-code alert suppressed — per-project highlighting used instead
+      const scAlertCls = '';
 
       const childTr = document.createElement('tr');
       childTr.className = 'cost-group-child ct-hidden';
@@ -6468,6 +6588,11 @@ function renderCostTable() {
             title="Delete all daily rows for this sub code"
             style="margin-left:0.4rem;background:none;border:none;color:#ef4444;cursor:pointer;font-size:0.9rem;padding:0;line-height:1;vertical-align:middle;opacity:0.7"
             onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">🗑</button>
+          <button data-cc="${esc(costCode)}" data-sc="${esc(sc)}"
+            onclick="showBidQuickEdit(this.dataset.cc,this.dataset.sc)"
+            title="Edit bid amounts per project"
+            style="margin-left:0.25rem;background:none;border:none;color:#60a5fa;cursor:pointer;font-size:0.82rem;padding:0;line-height:1;vertical-align:middle;opacity:0.7"
+            onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">✏️</button>
         </td>
         <td class="calc">${bq ? fmt(bq,2) : '—'}</td>
         <td class="calc">${buc ? '$'+fmt(buc) : isDailyOnly ? '<span style="color:#555;font-size:0.68rem">No bid entry</span>' : '—'}</td>
@@ -6516,19 +6641,30 @@ function renderCostTable() {
         const p_eq_cph  = pa.equip_hours ? pa.equip_cost / pa.equip_hours : 0;
         const p_mu_eq   = pa.equip_hours ? p_rqty / pa.equip_hours : 0;
 
+        // Per-project bid lookup
+        const pProj      = pa.projectId ? getProj(pa.projectId) : null;
+        const pBi        = pProj ? (pProj.bidItems||[]).find(b => b.cost_code === costCode && b.sub_code === sc) : null;
+        const p_bq       = pBi ? (parseFloat(pBi.quantity)  || 0) : 0;
+        const p_buc      = pBi ? (parseFloat(pBi.unit_cost) || 0) : 0;
+        const p_btot     = p_bq * p_buc;
+        const p_actual   = pa.imported_total || p_rtotal;
+        const p_alertCls = (p_btot > 0 && p_actual > p_btot)           ? ' over'
+                         : (p_btot > 0 && p_actual >= p_btot * 0.8)    ? ' warn' : '';
+        if (p_alertCls) alertItems.push({ cc: costCode, sc: pa.project, pct: Math.round(p_actual / p_btot * 100), level: p_alertCls.trim() });
+
         const projTr = document.createElement('tr');
         projTr.className = 'cost-group-proj ct-hidden sg-hidden';
         projTr.dataset.group    = groupId;
         projTr.dataset.subgroup = subGroupId;
         projTr.innerHTML = `
           <td>${esc(pa.project)}</td>
-          <td class="calc">—</td>
-          <td class="calc">—</td>
-          <td class="calc">—</td>
+          <td class="calc">${p_bq   ? fmt(p_bq,2)        : '—'}</td>
+          <td class="calc">${p_buc  ? '$'+fmt(p_buc)      : '—'}</td>
+          <td class="calc">${p_btot ? '$'+fmt(p_btot)     : '—'}</td>
           <td class="calc">${fmt(p_avg_qty,2)}</td>
           <td class="calc">$${fmt(p_rtotal)}</td>
           <td class="calc">${p_avg_qty ? '$'+fmt(p_past_avg) : '—'}</td>
-          <td class="calc">$${fmt(pa.imported_total || p_rtotal)}</td>
+          <td class="calc${p_alertCls}">$${fmt(p_actual)}</td>
           <td class="calc">${fmt(pa.labor_hours,1)}</td>
           <td class="calc">${p_days}</td>
           <td class="calc">${p_avg_lab ? fmt(p_avg_lab,1) : '—'}</td>
@@ -10281,12 +10417,18 @@ function renderScheduleAllProjects() {
     return `<div class="sched-no-data">No active projects. Add projects in the Project Dashboard tab.</div>`;
   }
 
-  // Sort by most recent daily entry date descending
+  // Sort: most recently added project first (insertion order desc),
+  // tiebreak by most recent daily entry date desc
   const lastDate = p => {
     const dates = (p.dailyRows || []).map(r => r.date).filter(Boolean);
     return dates.length ? dates.reduce((a, b) => a > b ? a : b) : '0000-00-00';
   };
-  active.sort((a, b) => lastDate(b).localeCompare(lastDate(a)));
+  active.sort((a, b) => {
+    const idxA = projectsList.indexOf(a);
+    const idxB = projectsList.indexOf(b);
+    if (idxB !== idxA) return idxB - idxA;            // newer-added first
+    return lastDate(b).localeCompare(lastDate(a));    // tiebreak: recent activity
+  });
 
   const PAGE_SIZE  = 8;
   const totalPages = Math.ceil(active.length / PAGE_SIZE);
@@ -10349,7 +10491,7 @@ function renderScheduleAllProjects() {
   return `
     <div class="sched-section-hdr" style="display:flex;align-items:center;justify-content:space-between">
       <span>Active Projects — Pacing Overview</span>
-      <span style="font-size:0.72rem;color:var(--muted);font-weight:400">${active.length} project${active.length !== 1 ? 's' : ''} · sorted by recent activity</span>
+      <span style="font-size:0.72rem;color:var(--muted);font-weight:400">${active.length} project${active.length !== 1 ? 's' : ''} · newest first</span>
     </div>
     <div class="sched-summary-grid">${cards.join('')}</div>
     ${paginationBar}
@@ -10418,9 +10560,12 @@ async function renderScheduleTab() {
 
 /* ── Daily PM Report ─────────────────────────────────────────────────────── */
 
+let _pmrProjId = ''; // set when overlay opens so printDailyPMReport always has it
+
 async function openDailyPMReport() {
   const sel    = document.getElementById('sched-proj-select');
   const projId = sel ? sel.value : '';
+  _pmrProjId   = projId;
   if (!projId) return;
   const proj = getProj(projId);
   if (!proj) return;
@@ -10604,14 +10749,16 @@ function _buildDailyPMReport(proj, aiResult) {
   return aiSection + summaryStats + (cards || '<div class="sched-no-data">No bid items found for this project.</div>');
 }
 
-async function printDailyPMReport() {
-  const sel    = document.getElementById('sched-proj-select');
-  const projId = sel ? sel.value : '';
-  if (!projId) return;
+function printDailyPMReport() {
+  // Use stored project ID (set when overlay opened) — don't rely on dropdown state
+  const projId = _pmrProjId || (document.getElementById('sched-proj-select') || {}).value || '';
+  if (!projId) { alert('No project selected.'); return; }
   const proj = getProj(projId);
-  if (!proj) return;
+  if (!proj) { alert('Project not found.'); return; }
 
-  const aiResult = await _fetchSchedAI(proj).catch(() => null);
+  // Read from cache synchronously — AI was already fetched when the overlay opened
+  const cached   = _schedAICache[projId];
+  const aiResult = cached ? cached.result : null;
 
   const deadline  = _schedGetDeadline(proj);
   const daysLeft  = _schedDaysRemaining(proj ? _schedGetDeadline(proj) : null);
@@ -10630,7 +10777,7 @@ async function printDailyPMReport() {
 
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
   const cardRows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, isLumpSum, notStartedYet } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     // Trend (print)
@@ -10770,7 +10917,7 @@ async function printDailyPMReport() {
     <span>DataWatch — Daily Field Plan</span>
     <span>Generated ${new Date().toLocaleString()}</span>
   </div>
-  <script>window.onload = () => { window.print(); }<\/script>
+  <script>window.onload=()=>{window.print();}<\/script>
   </body></html>`;
 
   const win = window.open('', '_blank');
@@ -11002,7 +11149,7 @@ async function _fetchSchedAI(proj) {
     const r = await fetch('/api/ai/schedule-analysis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
-      body: JSON.stringify({ projectId: projId, projectName: proj['project-name'] || '', jobNumber: proj['job-number'] || '', deadline, daysLeft, costCodes }),
+      body: JSON.stringify({ projectId: projId, projectName: proj['project-name'] || '', jobNumber: proj['job-number'] || '', today: new Date().toISOString().slice(0, 10), deadline, daysLeft, costCodes }),
     });
     if (!r.ok) return null;
     const result = await r.json();
@@ -11320,7 +11467,7 @@ function _ppGetConflicts() {
         empToCodes[emp].push(biKey);
       });
     });
-    const conflicted = new Set(Object.entries(empToCodes).filter(([, codes]) => codes.length > 1).map(([e]) => e));
+    const conflicted = new Set(Object.entries(empToCodes).filter(([, codes]) => codes.length > 2).map(([e]) => e));
     if (conflicted.size > 0) conflicts[ds] = conflicted;
   }
   return conflicts;
