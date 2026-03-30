@@ -11462,7 +11462,7 @@ function _ppGetConflicts() {
         empToCodes[emp].push(biKey);
       });
     });
-    const conflicted = new Set(Object.entries(empToCodes).filter(([, codes]) => codes.length > 1).map(([e]) => e));
+    const conflicted = new Set(Object.entries(empToCodes).filter(([, codes]) => codes.length > 2).map(([e]) => e));
     if (conflicted.size > 0) conflicts[ds] = conflicted;
   }
   return conflicts;
