@@ -10753,6 +10753,13 @@ async function printDailyPMReport() {
   const proj = getProj(projId);
   if (!proj) return;
 
+  // Open window immediately (synchronous, before any await) so the browser
+  // recognises it as a direct user action and doesn't block it as a pop-up.
+  const win = window.open('', '_blank');
+  if (!win) { alert('Pop-ups are blocked. Please allow pop-ups for this site and try again.'); return; }
+  win.document.write('<html><body style="font-family:system-ui,sans-serif;padding:2rem;color:#333"><p>Generating report…</p></body></html>');
+  win.document.close();
+
   const aiResult = await _fetchSchedAI(proj).catch(() => null);
 
   const deadline  = _schedGetDeadline(proj);
@@ -10915,7 +10922,7 @@ async function printDailyPMReport() {
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
-  const win = window.open('', '_blank');
+  win.document.open();
   win.document.write(html);
   win.document.close();
 }
