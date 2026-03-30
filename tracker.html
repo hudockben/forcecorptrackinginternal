@@ -6647,15 +6647,22 @@ function renderCostTable() {
         const p_eq_cph  = pa.equip_hours ? pa.equip_cost / pa.equip_hours : 0;
         const p_mu_eq   = pa.equip_hours ? p_rqty / pa.equip_hours : 0;
 
+        // Per-project bid lookup
+        const pProj   = pa.projectId ? getProj(pa.projectId) : null;
+        const pBi     = pProj ? (pProj.bidItems||[]).find(b => b.cost_code === costCode && b.sub_code === sc) : null;
+        const p_bq    = pBi ? (parseFloat(pBi.quantity)  || 0) : 0;
+        const p_buc   = pBi ? (parseFloat(pBi.unit_cost) || 0) : 0;
+        const p_btot  = p_bq * p_buc;
+
         const projTr = document.createElement('tr');
         projTr.className = 'cost-group-proj ct-hidden sg-hidden';
         projTr.dataset.group    = groupId;
         projTr.dataset.subgroup = subGroupId;
         projTr.innerHTML = `
           <td>${esc(pa.project)}</td>
-          <td class="calc">—</td>
-          <td class="calc">—</td>
-          <td class="calc">—</td>
+          <td class="calc">${p_bq   ? fmt(p_bq,2)        : '—'}</td>
+          <td class="calc">${p_buc  ? '$'+fmt(p_buc)      : '—'}</td>
+          <td class="calc">${p_btot ? '$'+fmt(p_btot)     : '—'}</td>
           <td class="calc">${fmt(p_avg_qty,2)}</td>
           <td class="calc">$${fmt(p_rtotal)}</td>
           <td class="calc">${p_avg_qty ? '$'+fmt(p_past_avg) : '—'}</td>
