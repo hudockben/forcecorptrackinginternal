@@ -11149,7 +11149,7 @@ async function _fetchSchedAI(proj) {
     const r = await fetch('/api/ai/schedule-analysis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
-      body: JSON.stringify({ projectId: projId, projectName: proj['project-name'] || '', jobNumber: proj['job-number'] || '', deadline, daysLeft, costCodes }),
+      body: JSON.stringify({ projectId: projId, projectName: proj['project-name'] || '', jobNumber: proj['job-number'] || '', today: new Date().toISOString().slice(0, 10), deadline, daysLeft, costCodes }),
     });
     if (!r.ok) return null;
     const result = await r.json();
