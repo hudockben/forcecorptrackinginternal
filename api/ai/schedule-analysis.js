@@ -170,7 +170,7 @@ Only include recommendations where there is a real issue or insight. Do not pad 
   try {
     const client   = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const message  = await client.messages.create({
-      model:      'claude-haiku-4-5-20251001',
+      model:      'claude-sonnet-4-6',
       max_tokens: 1024,
       messages:   [{ role: 'user', content: prompt }],
     });
