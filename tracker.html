@@ -2824,7 +2824,7 @@ function renderMobileProjCards() {
 function updateMobEntryBadge() {
   const badge = document.getElementById('mob-entry-badge');
   if (!badge) return;
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = _localDateStr();
   const count = getAllDailyRows().filter(r => r.date === todayStr).length;
   if (count > 0) { badge.textContent = count; badge.style.display = 'inline-block'; }
   else           { badge.style.display = 'none'; }
@@ -2834,7 +2834,7 @@ function renderHomeTab() {
   if (window.innerWidth <= 768) renderMobileProjCards();
   updateMobEntryBadge();
   const today = new Date();
-  const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const weekAgo = _localDateStr(new Date(today - 7 * 24 * 60 * 60 * 1000));
 
   // ── Cross-project aggregates (sum from each project's own data) ──
   let totalBid = 0, totalActual = 0, totalProjected = 0;
@@ -3071,8 +3071,8 @@ function renderHomeTab() {
     const hasMat   = (c.material_cost || 0) > 0;
     const dotColor = hasLabor ? 'var(--green)' : hasEquip ? 'var(--blue)' : hasMat ? 'var(--yellow)' : '#555';
     const hrs      = parseFloat(row.labor_hours) || 0;
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const yest     = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const todayStr = _localDateStr();
+    const yest     = _localDateStr(new Date(Date.now() - 86400000));
     const dateLabel = row.date === todayStr ? 'today' : row.date === yest ? 'yesterday' : (row.date || '—');
     const parts = [
       row.cost_code ? `<span class="activity-code">${esc(row.cost_code)}</span>` : '',
@@ -4335,7 +4335,7 @@ function showCOModal(projId, biId) {
         <tbody id="co-rows-${biId}">${coRows}</tbody>
       </table>
       <div style="display:grid;grid-template-columns:130px 90px 1fr auto;gap:0.4rem;margin-bottom:1rem;align-items:center">
-        <input id="co-date-${biId}" type="date" value="${new Date().toISOString().slice(0,10)}"
+        <input id="co-date-${biId}" type="date" value="${_localDateStr()}"
           style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.4rem;font-size:0.8rem">
         <input id="co-qty-${biId}" type="number" placeholder="±qty"
           style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.4rem;font-size:0.8rem">
@@ -4970,7 +4970,7 @@ function addPO() {
     tax:          '',
     status:       'pending',
     employee:     '',
-    date_created: new Date().toISOString().slice(0, 10),
+    date_created: _localDateStr(),
     project_id:   '',
     cost_code:    '',
     sub_code:     '',
@@ -5399,7 +5399,7 @@ function addTR() {
     driver:          '',
     truck_type:      '',
     project_id:      '',
-    date:            new Date().toISOString().slice(0, 10),
+    date:            _localDateStr(),
     material_hauled: '',
     loads:           '',
     rate:            '',
@@ -6837,7 +6837,7 @@ function renderMobileEntryForm(successMsg) {
       <span class="mob-emp-name">${esc(e.name)}</span>
     </label>`).join('');
 
-  const today = new Date().toISOString().slice(0,10);
+  const today = _localDateStr();
 
   // #1 — Repeat Last Entry button
   const repeatBtn = _mobLastEntry ? `
@@ -6974,7 +6974,7 @@ function mobRepeatLastEntry() {
   if (!_mobLastEntry) return;
   const le = _mobLastEntry;
   document.getElementById('mob-project').value   = le.projId;
-  document.getElementById('mob-date').value       = new Date().toISOString().slice(0,10);
+  document.getElementById('mob-date').value       = _localDateStr();
   document.getElementById('mob-field-type').value = le.fieldType || '';
   // Restore code blocks
   const blocks = le.codeBlocks || [{ cc: le.cc, sc: le.sc, hours: le.hours, jobClass: le.jobClass, rate: le.rate, quantity: le.quantity }];
@@ -7388,7 +7388,7 @@ function exportEquipPDF() {
 
 const defaultDailyRow = () => ({
   id: Date.now() + Math.random(),
-  date: new Date().toISOString().slice(0, 10), field_type: '', employee: '',
+  date: _localDateStr(), field_type: '', employee: '',
   cost_code: '', sub_code: '',
   job_class: '', rate: '', labor_hours: '',
   equipment: '', equip_unit_cost: '', equip_hours: '',
@@ -8275,7 +8275,7 @@ function _dsrSelect(val) {
 
 /* ── Crew Sign-In Sheet ── */
 function openCrewSignInOverlay() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = _localDateStr();
   const overlay = document.createElement('div');
   overlay.id = 'crew-signin-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
@@ -8399,7 +8399,7 @@ function exportCrewSignInPDF(date) {
 
 function openDailySummaryReport() {
   _dsrSelected = 'all';
-  const today = new Date().toISOString().slice(0, 10);
+  const today = _localDateStr();
 
   const overlay = document.createElement('div');
   overlay.id = 'daily-summary-overlay';
@@ -9900,6 +9900,12 @@ function _schedGetDeadline(proj) {
   return (bestScore >= 0.5 && bestMatch) ? bestMatch.deadline_date : null;
 }
 
+/** Return 'YYYY-MM-DD' in the browser's local timezone (avoids UTC off-by-one at night). */
+function _localDateStr(d) {
+  if (!d) d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
 /** US federal holidays for a given year (observed dates, Mon–Fri only). */
 function _usHolidays(year) {
   const h = new Set();
@@ -9954,7 +9960,7 @@ function _schedDaysRemaining(deadlineStr) {
   const cur = new Date(lo);
   while (cur <= hi) {
     const dow = cur.getDay();
-    const ds  = cur.toISOString().slice(0, 10);
+    const ds  = _localDateStr(cur);
     if (dow !== 0 && dow !== 6 && !_isHoliday(ds)) count++;
     cur.setDate(cur.getDate() + 1);
   }
@@ -9971,7 +9977,7 @@ function _workingDaysBetween(fromStr, toStr) {
   const cur = new Date(start);
   while (cur <= end) {
     const dow = cur.getDay();
-    const ds  = cur.toISOString().slice(0, 10);
+    const ds  = _localDateStr(cur);
     if (dow !== 0 && dow !== 6 && !_isHoliday(ds)) count++;
     cur.setDate(cur.getDate() + 1);
   }
@@ -10050,7 +10056,7 @@ function _schedBar(pct, status) {
 function _ppWorkingDaysRemaining(biKey, deadlineStr) {
   const sched = _pp && _pp.schedule && _pp.schedule[biKey];
   if (!sched) return null;
-  const todayStr  = new Date().toISOString().slice(0, 10);
+  const todayStr  = _localDateStr();
   const deadlineD = deadlineStr ? new Date(deadlineStr + 'T23:59:59') : null;
   let workDays = 0, hasFuture = false;
   Object.entries(sched).forEach(([ds, day]) => {
@@ -10091,7 +10097,7 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   const biDaysLeft  = biDeadline ? _schedDaysRemaining(biDeadline) : daysLeft;
 
   // Start date: if start_date is in the future and no work logged yet → not started
-  const todayStr      = new Date().toISOString().slice(0, 10);
+  const todayStr      = _localDateStr();
   const notStartedYet = !!(bi.start_date && bi.start_date > todayStr && daysWorked === 0);
 
   // Planned pace: bidQty spread over working days in start→target window (pre-start planning figure)
@@ -11149,7 +11155,7 @@ async function _fetchSchedAI(proj) {
     const r = await fetch('/api/ai/schedule-analysis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
-      body: JSON.stringify({ projectId: projId, projectName: proj['project-name'] || '', jobNumber: proj['job-number'] || '', today: new Date().toISOString().slice(0, 10), deadline, daysLeft, costCodes }),
+      body: JSON.stringify({ projectId: projId, projectName: proj['project-name'] || '', jobNumber: proj['job-number'] || '', today: _localDateStr(), deadline, daysLeft, costCodes }),
     });
     if (!r.ok) return null;
     const result = await r.json();
@@ -11286,7 +11292,7 @@ function _ppAutoFill(proj, biKey) {
     d.setDate(today.getDate() + i);
     const dow = d.getDay();
     if (dow === 0 || dow === 6) continue; // skip weekends
-    const ds = d.toISOString().slice(0, 10);
+    const ds = _localDateStr(d);
     if (!_pp.schedule[biKey]) _pp.schedule[biKey] = {};
     if (!_pp.schedule[biKey][ds]) {
       // Only auto-fill — don't overwrite manual edits
@@ -11438,8 +11444,8 @@ function _ppCopyWeek(sundayDay) {
   for (let i = 0; i < 7; i++) {
     const srcDate = new Date(_pp.year, _pp.month, sundayDay + i);
     const dstDate = new Date(_pp.year, _pp.month, sundayDay + 7 + i);
-    const srcDs = srcDate.toISOString().slice(0, 10);
-    const dstDs = dstDate.toISOString().slice(0, 10);
+    const srcDs = _localDateStr(srcDate);
+    const dstDs = _localDateStr(dstDate);
     const srcDay = (_pp.schedule[_pp.biKey] || {})[srcDs];
     if (!srcDay) continue;
     _ppDayData(_pp.biKey, dstDs); // init
@@ -11584,7 +11590,7 @@ function _ppRender() {
   const firstDow = new Date(_pp.year, _pp.month, 1).getDay();
   const daysInMo = new Date(_pp.year, _pp.month + 1, 0).getDate();
   const todayObj = new Date();
-  const todayStr = todayObj.toISOString().slice(0, 10);
+  const todayStr = _localDateStr(todayObj);
   const conflicts = _ppGetConflicts();
 
   const sched = _pp.schedule[_pp.biKey] || {};
@@ -11899,7 +11905,7 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
 function _ppRenderMultiCode(proj, agg, MONTHS, NW_ICONS) {
   const deadline = _schedGetDeadline(proj);
   const daysInMo = new Date(_pp.year, _pp.month+1, 0).getDate();
-  const todayStr = new Date().toISOString().slice(0,10);
+  const todayStr = _localDateStr();
   const conflicts = _ppGetConflicts();
 
   const dayNums = Array.from({length:daysInMo},(_,i)=>i+1);

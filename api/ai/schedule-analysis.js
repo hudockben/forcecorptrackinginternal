@@ -38,6 +38,7 @@ module.exports = async (req, res) => {
     return res.status(400).json({ error: 'projectId and costCodes array required' });
   }
 
+  // Frontend sends local-timezone date; fallback to UTC only if not provided
   const todayStr    = today || new Date().toISOString().slice(0, 10);
   const sql         = neon(process.env.DATABASE_URL);
   // Include date in cache key so each day gets a fresh AI result (avoids stale date reasoning)
