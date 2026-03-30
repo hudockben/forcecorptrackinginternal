@@ -6280,6 +6280,7 @@ function buildFilteredDailyAgg() {
       const pkey = key + '||' + projName;
       if (!projAgg[pkey]) projAgg[pkey] = {
         project: projName,
+        projectId: p.id,
         running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
         labor_hours: 0, equip_hours: 0, equip_cost: 0,
         material_cost: 0, num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
@@ -6308,24 +6309,26 @@ function showBidQuickEdit(costCode, subCode) {
 
   const key = costCode + '||' + subCode;
 
-  // 1) Projects with daily-tracking rows for this sub-code
-  const activeNames = new Set(
-    Object.keys(_ctProjAgg)
-      .filter(pk => pk.startsWith(key + '||'))
-      .map(pk => _ctProjAgg[pk].project)
-  );
+  // 1) Projects with daily-tracking rows for this sub-code — keyed by project ID
+  const activeIdSet = new Set();
+  const activeProjects = [];
+  Object.keys(_ctProjAgg)
+    .filter(pk => pk.startsWith(key + '||'))
+    .forEach(pk => {
+      const { projectId } = _ctProjAgg[pk];
+      if (!projectId || activeIdSet.has(projectId)) return;
+      const proj = getProj(projectId);
+      if (!proj) return;
+      activeIdSet.add(projectId);
+      activeProjects.push(proj);
+    });
+  activeProjects.sort((a, b) => (a['project-name']||'').localeCompare(b['project-name']||''));
 
-  // 2) Projects with an existing bid item for this sub-code (even if no daily rows)
+  // 2) Projects with an existing bid item but no daily rows for this sub-code
   const bidOnlyProjects = projectsList.filter(p => {
-    const name = (p['project-name']||'').trim() || '(No Project)';
-    if (activeNames.has(name)) return false; // already included above
+    if (activeIdSet.has(p.id)) return false;
     return (p.bidItems||[]).some(b => b.cost_code === costCode && b.sub_code === subCode);
   });
-
-  // Build unified list: active projects first (sorted), then bid-only
-  const activeProjects = [...activeNames].sort().map(name =>
-    projectsList.find(p => ((p['project-name']||'').trim()||'(No Project)') === name)
-  ).filter(Boolean);
 
   const allProjects = [...activeProjects, ...bidOnlyProjects];
 
@@ -6336,21 +6339,22 @@ function showBidQuickEdit(costCode, subCode) {
 
   const rows = allProjects.map(proj => {
     const name = (proj['project-name']||'').trim() || '(No Project)';
-    const hasActivity = activeNames.has(name);
+    const hasActivity = activeIdSet.has(proj.id);
     const bi = (proj.bidItems||[]).find(b => b.cost_code === costCode && b.sub_code === subCode);
-    const qty = bi ? (bi.quantity || '') : '';
-    const uc  = bi ? (bi.unit_cost || '') : '';
-    const tot = (qty !== '' && uc !== '') ? '$' + fmt(parseFloat(qty) * parseFloat(uc)) : '—';
+    const qty = bi ? String(bi.quantity ?? '') : '';
+    const uc  = bi ? String(bi.unit_cost ?? '') : '';
+    const tot = (qty && uc && parseFloat(qty) && parseFloat(uc))
+      ? '$' + fmt(parseFloat(qty) * parseFloat(uc)) : '—';
     const dimStyle = hasActivity ? '' : 'opacity:0.6';
     const tag = hasActivity ? '' : '<span style="font-size:0.65rem;color:var(--muted);margin-left:0.3rem">(no activity)</span>';
-    return `<tr data-proj="${esc(name)}" style="border-bottom:1px solid var(--border);${dimStyle}">
+    return `<tr data-proj-id="${esc(proj.id)}" style="border-bottom:1px solid var(--border);${dimStyle}">
       <td style="padding:0.4rem 0.5rem;font-size:0.82rem">${esc(name)}${tag}</td>
       <td style="padding:0.3rem 0.5rem">
-        <input type="number" class="bqe-qty" value="${esc(String(qty))}" placeholder="0"
+        <input type="number" class="bqe-qty" value="${qty}" placeholder="—"
           style="width:90px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.8rem">
       </td>
       <td style="padding:0.3rem 0.5rem">
-        <input type="number" class="bqe-uc" value="${esc(String(uc))}" placeholder="0.00"
+        <input type="number" class="bqe-uc" value="${uc}" placeholder="—"
           style="width:110px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.8rem">
       </td>
       <td class="bqe-tot" style="padding:0.3rem 0.5rem;font-size:0.8rem;color:var(--muted);min-width:80px">${tot}</td>
@@ -6385,7 +6389,7 @@ function showBidQuickEdit(costCode, subCode) {
 
   // Live totals via event delegation
   document.getElementById('bqe-tbody').addEventListener('input', e => {
-    const tr = e.target.closest('tr[data-proj]');
+    const tr = e.target.closest('tr[data-proj-id]');
     if (!tr) return;
     const q = parseFloat(tr.querySelector('.bqe-qty').value) || 0;
     const u = parseFloat(tr.querySelector('.bqe-uc').value) || 0;
@@ -6397,12 +6401,12 @@ function _saveBidQuickEdit(btn) {
   const costCode = btn.dataset.cc;
   const subCode  = btn.dataset.sc;
   let saved = 0;
-  document.querySelectorAll('#bqe-tbody tr[data-proj]').forEach(tr => {
-    const projName = tr.dataset.proj;
+  document.querySelectorAll('#bqe-tbody tr[data-proj-id]').forEach(tr => {
+    const projId = tr.dataset.projId;
     const qty = tr.querySelector('.bqe-qty').value.trim();
     const uc  = tr.querySelector('.bqe-uc').value.trim();
     if (qty === '' && uc === '') return; // nothing entered for this row — skip
-    const proj = projectsList.find(p => ((p['project-name']||'').trim()||'(No Project)') === projName);
+    const proj = getProj(projId);
     if (!proj) return;
     if (!proj.bidItems) proj.bidItems = [];
     let bi = proj.bidItems.find(b => b.cost_code === costCode && b.sub_code === subCode);
@@ -6412,7 +6416,7 @@ function _saveBidQuickEdit(btn) {
     }
     if (qty !== '') bi.quantity  = qty;
     if (uc  !== '') bi.unit_cost = uc;
-    saveProject(proj.id);
+    saveProject(projId);
     saved++;
   });
   document.getElementById('bid-quick-edit-modal').remove();
