@@ -10749,14 +10749,16 @@ function _buildDailyPMReport(proj, aiResult) {
   return aiSection + summaryStats + (cards || '<div class="sched-no-data">No bid items found for this project.</div>');
 }
 
-async function printDailyPMReport() {
+function printDailyPMReport() {
   // Use stored project ID (set when overlay opened) — don't rely on dropdown state
   const projId = _pmrProjId || (document.getElementById('sched-proj-select') || {}).value || '';
   if (!projId) { alert('No project selected.'); return; }
   const proj = getProj(projId);
   if (!proj) { alert('Project not found.'); return; }
 
-  const aiResult = await _fetchSchedAI(proj).catch(() => null);
+  // Read from cache synchronously — AI was already fetched when the overlay opened
+  const cached   = _schedAICache[projId];
+  const aiResult = cached ? cached.result : null;
 
   const deadline  = _schedGetDeadline(proj);
   const daysLeft  = _schedDaysRemaining(proj ? _schedGetDeadline(proj) : null);
@@ -10915,24 +10917,12 @@ async function printDailyPMReport() {
     <span>DataWatch — Daily Field Plan</span>
     <span>Generated ${new Date().toLocaleString()}</span>
   </div>
+  <script>window.onload=()=>{window.print();}<\/script>
   </body></html>`;
 
-  // Use a hidden iframe — avoids all popup-blocker issues entirely.
-  // The iframe loads the blob URL, then we call print() on it.
-  const blob    = new Blob([html], { type: 'text/html' });
-  const blobUrl = URL.createObjectURL(blob);
-  const iframe  = document.createElement('iframe');
-  iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none';
-  iframe.src = blobUrl;
-  iframe.onload = () => {
-    iframe.contentWindow.focus();
-    iframe.contentWindow.print();
-    setTimeout(() => {
-      document.body.removeChild(iframe);
-      URL.revokeObjectURL(blobUrl);
-    }, 2000);
-  };
-  document.body.appendChild(iframe);
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
 }
 
 /* ── Schedule PDF Export ─────────────────────────────────────────────────── */
