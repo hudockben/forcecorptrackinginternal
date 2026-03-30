@@ -10417,16 +10417,17 @@ function renderScheduleAllProjects() {
     return `<div class="sched-no-data">No active projects. Add projects in the Project Dashboard tab.</div>`;
   }
 
-  // Sort by most recent daily entry date descending; tiebreak by insertion order
-  // so newly added projects (end of projectsList) appear before older no-entry projects
+  // Sort: most recently added project first (insertion order desc),
+  // tiebreak by most recent daily entry date desc
   const lastDate = p => {
     const dates = (p.dailyRows || []).map(r => r.date).filter(Boolean);
     return dates.length ? dates.reduce((a, b) => a > b ? a : b) : '0000-00-00';
   };
   active.sort((a, b) => {
-    const da = lastDate(a), db = lastDate(b);
-    if (db !== da) return db.localeCompare(da);
-    return projectsList.indexOf(b) - projectsList.indexOf(a); // newer-added first
+    const idxA = projectsList.indexOf(a);
+    const idxB = projectsList.indexOf(b);
+    if (idxB !== idxA) return idxB - idxA;            // newer-added first
+    return lastDate(b).localeCompare(lastDate(a));    // tiebreak: recent activity
   });
 
   const PAGE_SIZE  = 8;
@@ -10490,7 +10491,7 @@ function renderScheduleAllProjects() {
   return `
     <div class="sched-section-hdr" style="display:flex;align-items:center;justify-content:space-between">
       <span>Active Projects — Pacing Overview</span>
-      <span style="font-size:0.72rem;color:var(--muted);font-weight:400">${active.length} project${active.length !== 1 ? 's' : ''} · sorted by recent activity</span>
+      <span style="font-size:0.72rem;color:var(--muted);font-weight:400">${active.length} project${active.length !== 1 ? 's' : ''} · newest first</span>
     </div>
     <div class="sched-summary-grid">${cards.join('')}</div>
     ${paginationBar}
