@@ -10756,13 +10756,6 @@ async function printDailyPMReport() {
   const proj = getProj(projId);
   if (!proj) { alert('Project not found.'); return; }
 
-  // Open the window synchronously (direct user-action context) before any await,
-  // otherwise browsers block the popup. Navigate it to a loading page first.
-  const win = window.open('about:blank', '_blank');
-  if (!win) { alert('Pop-ups are blocked. Please allow pop-ups for this site and try again.'); return; }
-  win.document.write('<html><body style="font-family:system-ui,sans-serif;padding:2rem;color:#333"><p>Generating report\u2026</p></body></html>');
-  win.document.close();
-
   const aiResult = await _fetchSchedAI(proj).catch(() => null);
 
   const deadline  = _schedGetDeadline(proj);
@@ -10922,15 +10915,24 @@ async function printDailyPMReport() {
     <span>DataWatch — Daily Field Plan</span>
     <span>Generated ${new Date().toLocaleString()}</span>
   </div>
-  <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
-  // Use a blob URL to load the HTML into the already-open window.
-  // Re-writing via document.open/write after an await is unreliable in some browsers.
-  const blob   = new Blob([html], { type: 'text/html' });
+  // Use a hidden iframe — avoids all popup-blocker issues entirely.
+  // The iframe loads the blob URL, then we call print() on it.
+  const blob    = new Blob([html], { type: 'text/html' });
   const blobUrl = URL.createObjectURL(blob);
-  win.location.href = blobUrl;
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  const iframe  = document.createElement('iframe');
+  iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none';
+  iframe.src = blobUrl;
+  iframe.onload = () => {
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print();
+    setTimeout(() => {
+      document.body.removeChild(iframe);
+      URL.revokeObjectURL(blobUrl);
+    }, 2000);
+  };
+  document.body.appendChild(iframe);
 }
 
 /* ── Schedule PDF Export ─────────────────────────────────────────────────── */
