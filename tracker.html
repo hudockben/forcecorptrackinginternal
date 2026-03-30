@@ -10560,9 +10560,12 @@ async function renderScheduleTab() {
 
 /* ── Daily PM Report ─────────────────────────────────────────────────────── */
 
+let _pmrProjId = ''; // set when overlay opens so printDailyPMReport always has it
+
 async function openDailyPMReport() {
   const sel    = document.getElementById('sched-proj-select');
   const projId = sel ? sel.value : '';
+  _pmrProjId   = projId;
   if (!projId) return;
   const proj = getProj(projId);
   if (!proj) return;
@@ -10747,17 +10750,17 @@ function _buildDailyPMReport(proj, aiResult) {
 }
 
 async function printDailyPMReport() {
-  const sel    = document.getElementById('sched-proj-select');
-  const projId = sel ? sel.value : '';
-  if (!projId) return;
+  // Use stored project ID (set when overlay opened) — don't rely on dropdown state
+  const projId = _pmrProjId || (document.getElementById('sched-proj-select') || {}).value || '';
+  if (!projId) { alert('No project selected.'); return; }
   const proj = getProj(projId);
-  if (!proj) return;
+  if (!proj) { alert('Project not found.'); return; }
 
-  // Open window immediately (synchronous, before any await) so the browser
-  // recognises it as a direct user action and doesn't block it as a pop-up.
-  const win = window.open('', '_blank');
+  // Open the window synchronously (direct user-action context) before any await,
+  // otherwise browsers block the popup. Navigate it to a loading page first.
+  const win = window.open('about:blank', '_blank');
   if (!win) { alert('Pop-ups are blocked. Please allow pop-ups for this site and try again.'); return; }
-  win.document.write('<html><body style="font-family:system-ui,sans-serif;padding:2rem;color:#333"><p>Generating report…</p></body></html>');
+  win.document.write('<html><body style="font-family:system-ui,sans-serif;padding:2rem;color:#333"><p>Generating report\u2026</p></body></html>');
   win.document.close();
 
   const aiResult = await _fetchSchedAI(proj).catch(() => null);
@@ -10922,9 +10925,12 @@ async function printDailyPMReport() {
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+  // Use a blob URL to load the HTML into the already-open window.
+  // Re-writing via document.open/write after an await is unreliable in some browsers.
+  const blob   = new Blob([html], { type: 'text/html' });
+  const blobUrl = URL.createObjectURL(blob);
+  win.location.href = blobUrl;
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
 }
 
 /* ── Schedule PDF Export ─────────────────────────────────────────────────── */
