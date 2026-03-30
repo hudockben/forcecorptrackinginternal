@@ -10417,12 +10417,17 @@ function renderScheduleAllProjects() {
     return `<div class="sched-no-data">No active projects. Add projects in the Project Dashboard tab.</div>`;
   }
 
-  // Sort by most recent daily entry date descending
+  // Sort by most recent daily entry date descending; tiebreak by insertion order
+  // so newly added projects (end of projectsList) appear before older no-entry projects
   const lastDate = p => {
     const dates = (p.dailyRows || []).map(r => r.date).filter(Boolean);
     return dates.length ? dates.reduce((a, b) => a > b ? a : b) : '0000-00-00';
   };
-  active.sort((a, b) => lastDate(b).localeCompare(lastDate(a)));
+  active.sort((a, b) => {
+    const da = lastDate(a), db = lastDate(b);
+    if (db !== da) return db.localeCompare(da);
+    return projectsList.indexOf(b) - projectsList.indexOf(a); // newer-added first
+  });
 
   const PAGE_SIZE  = 8;
   const totalPages = Math.ceil(active.length / PAGE_SIZE);
