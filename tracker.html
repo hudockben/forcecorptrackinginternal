@@ -11456,20 +11456,47 @@ function _ppAutoFill(proj, biKey) {
   // Pre-populate Mon–Fri future days with the current historical crew & equipment
   // so the calendar immediately shows a current-pace projection on open.
   // Only fills days that haven't been manually touched yet.
+  // Stops at the bid item's target_date (or project end-date), and stops
+  // once projected cumulative output covers the remaining quantity.
   const agg  = _schedPaceForProject(proj);
   const a    = agg[biKey] || {};
   const crew  = [...(a.employees || new Set())];
   const equip = [...(a.equipment  || new Set())];
   if (!crew.length) return; // no history — nothing to fill
 
+  // Determine the hard stop date (bid item target_date → project end-date → 90 days)
+  const bi = (proj.bidItems || []).find(b => ((b.cost_code||'')+'||'+(b.sub_code||'')) === biKey);
+  const deadlineStr = (bi && bi.target_date) || _schedGetDeadline(proj) || null;
+  const deadlineD   = deadlineStr ? new Date(deadlineStr + 'T23:59:59') : null;
+
+  // Determine how many units still need to be scheduled
+  const bidQty  = bi ? (parseFloat(bi.quantity)||0) + (bi.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0) : 0;
+  const doneQty = a.running_qty || 0;
+  const prod    = _ppProd(a);
+
+  // Sum up output already scheduled in existing auto-fill days
+  let scheduledCumul = 0;
+  if (prod !== null && bidQty > 0) {
+    const existing = _pp.schedule[biKey] || {};
+    Object.entries(existing).forEach(([ds, plan]) => {
+      if (!plan.noWork && plan.employees && plan.employees.length > 0) {
+        scheduledCumul += plan.employees.length * prod * (plan.halfDay ? 0.5 : 1);
+      }
+    });
+  }
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  // Fill 90 days ahead (Mon–Fri only; auto-mark US federal holidays as no-work)
+
   for (let i = 0; i < 90; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
     const dow = d.getDay();
     if (dow === 0 || dow === 6) continue; // skip weekends
+
+    // Stop if we've passed the deadline
+    if (deadlineD && d > deadlineD) break;
+
     const ds = _localDateStr(d);
     if (!_pp.schedule[biKey]) _pp.schedule[biKey] = {};
     if (!_pp.schedule[biKey][ds]) {
@@ -11477,7 +11504,16 @@ function _ppAutoFill(proj, biKey) {
       if (_isHoliday(ds)) {
         _pp.schedule[biKey][ds] = { employees: [], equipment: [], crew: {}, halfDay: false, noWork: true, noWorkReason: 'Holiday', notes: '' };
       } else {
+        // Stop scheduling if remaining work is already covered
+        if (prod !== null && bidQty > 0 && (doneQty + scheduledCumul) >= bidQty) break;
         _pp.schedule[biKey][ds] = { employees: [...crew], equipment: [...equip], crew: {}, halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+        if (prod !== null) scheduledCumul += crew.length * prod;
+      }
+    } else {
+      // Day already exists — still count its output toward the cumul check
+      const plan = _pp.schedule[biKey][ds];
+      if (!plan.noWork && plan.employees && plan.employees.length > 0 && prod !== null) {
+        scheduledCumul += plan.employees.length * prod * (plan.halfDay ? 0.5 : 1);
       }
     }
   }
