@@ -9816,11 +9816,25 @@ async function deleteCompanyUser(id) {
    INIT
 ═══════════════════════════════════════════ */
 (async () => {
-  await loadLists();
-  await loadCostRows();
-  await loadProjects();
-  await loadPurchaseOrders();
-  await loadTruckingEntries();
+  // ── Instant render from localStorage cache so home tab is visible immediately ──
+  try {
+    const cached = JSON.parse(localStorage.getItem(PROJECTS_KEY));
+    if (Array.isArray(cached) && cached.length) {
+      projectsList = cached;
+      projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
+      if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
+    }
+  } catch {}
+
+  // ── Load all data sources in parallel (none depend on each other) ──
+  await Promise.all([
+    loadLists(),
+    loadCostRows(),
+    loadProjects(),
+    loadPurchaseOrders(),
+    loadTruckingEntries(),
+  ]);
+
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
   if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
   renderProjectDashboard();
