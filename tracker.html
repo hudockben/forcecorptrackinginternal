@@ -5518,14 +5518,14 @@ function _syncTRRowField(tr, field) {
     date:            'date',
     material_hauled: 'material',
     rate:            'equip_unit_cost',
-    loads:           'equip_hours',
+    hours:           'equip_hours',
     cost_code:       'cost_code',
     sub_code:        'sub_code',
   };
   if (map[field]) r[map[field]] = tr[field] || '';
-  if (['loads', 'rate'].includes(field)) {
+  if (['hours', 'rate'].includes(field)) {
     r.equip_unit_cost = String(parseFloat(tr.rate)  || 0);
-    r.equip_hours     = String(parseFloat(tr.loads) || 0);
+    r.equip_hours     = String(parseFloat(tr.hours) || 0);
   }
   drPutNow(r.id, r);
   renderDailyTable(tr.project_id);
@@ -5841,8 +5841,8 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     if (tr.project_id) {
       const newP = getProj(tr.project_id);
       if (newP) {
-        const loads = parseFloat(tr.loads) || 0;
         const rate  = parseFloat(tr.rate)  || 0;
+        const hours = parseFloat(tr.hours) || 0;
         const row = {
           ...defaultDailyRow(),
           id:              Date.now() + Math.random(),
@@ -5850,7 +5850,7 @@ document.getElementById('trucking-root').addEventListener('change', e => {
           employee:        tr.driver          || '',
           equipment:       tr.truck_type      || '',
           equip_unit_cost: String(rate),
-          equip_hours:     String(loads),
+          equip_hours:     String(hours),
           material:        tr.material_hauled || '',
           cost_code:       tr.cost_code       || '',
           sub_code:        tr.sub_code        || '',
