@@ -72,32 +72,70 @@ function dbRowToFrontend(r) {
   return row;
 }
 
+function _rowToValues(r, projectId, companyCode) {
+  return [
+    String(r.id), projectId, companyCode,
+    dateOrToday(r.date), r.field_type || null, r.employee || null,
+    r.cost_code || null, r.sub_code || null, r.job_class || null,
+    parseFloatOrZero(r.rate), parseFloatOrZero(r.labor_hours),
+    r.equipment || null, parseFloatOrZero(r.equip_unit_cost),
+    parseFloatOrZero(r.equip_hours), r.material || null,
+    r.supplier || null, r.po_num || null,
+    parseFloatOrZero(r.units_purchased), parseFloatOrZero(r.unit_cost),
+    parseFloatOrZero(r.material_cost), parseFloatOrZero(r.quantity),
+    parseFloatOrNull(r.equip_total_override),
+    parseFloatOrNull(r.total_cost),
+    parseFloatOrNull(r.num_laborers)
+  ];
+}
+
+const BATCH_SIZE = 50; // rows per INSERT statement
+
 async function insertRows(sql, projectId, companyCode, rows) {
-  for (const r of rows) {
-    await sql`
-      INSERT INTO daily_tracking (
-        row_id, project_id, company_code,
-        date, field_type, employee, cost_code, sub_code, job_class,
-        rate, labor_hours, equipment, equip_unit_cost, equip_hours,
-        material, supplier, po_num, units_purchased, unit_cost,
-        material_cost, quantity,
-        equip_total_override, total_cost_override, num_laborers
-      ) VALUES (
-        ${String(r.id)}, ${projectId}, ${companyCode},
-        ${dateOrToday(r.date)}, ${r.field_type || null}, ${r.employee || null},
-        ${r.cost_code || null}, ${r.sub_code || null}, ${r.job_class || null},
-        ${parseFloatOrZero(r.rate)}, ${parseFloatOrZero(r.labor_hours)},
-        ${r.equipment || null}, ${parseFloatOrZero(r.equip_unit_cost)},
-        ${parseFloatOrZero(r.equip_hours)}, ${r.material || null},
-        ${r.supplier || null}, ${r.po_num || null},
-        ${parseFloatOrZero(r.units_purchased)}, ${parseFloatOrZero(r.unit_cost)},
-        ${parseFloatOrZero(r.material_cost)}, ${parseFloatOrZero(r.quantity)},
-        ${parseFloatOrNull(r.equip_total_override)},
-        ${parseFloatOrNull(r.total_cost)},
-        ${parseFloatOrNull(r.num_laborers)}
-      )
-      ON CONFLICT (row_id) DO NOTHING
-    `;
+  // Batch inserts: group rows into chunks and build multi-row INSERT statements
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    if (batch.length === 1) {
+      const v = _rowToValues(batch[0], projectId, companyCode);
+      await sql`
+        INSERT INTO daily_tracking (
+          row_id, project_id, company_code,
+          date, field_type, employee, cost_code, sub_code, job_class,
+          rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+          material, supplier, po_num, units_purchased, unit_cost,
+          material_cost, quantity,
+          equip_total_override, total_cost_override, num_laborers
+        ) VALUES (
+          ${v[0]}, ${v[1]}, ${v[2]}, ${v[3]}, ${v[4]}, ${v[5]},
+          ${v[6]}, ${v[7]}, ${v[8]}, ${v[9]}, ${v[10]}, ${v[11]},
+          ${v[12]}, ${v[13]}, ${v[14]}, ${v[15]}, ${v[16]}, ${v[17]},
+          ${v[18]}, ${v[19]}, ${v[20]}, ${v[21]}, ${v[22]}, ${v[23]}
+        )
+        ON CONFLICT (row_id) DO NOTHING
+      `;
+    } else {
+      // Build batched VALUES via raw SQL for multi-row insert
+      const params = [];
+      const valueClauses = [];
+      batch.forEach(r => {
+        const v = _rowToValues(r, projectId, companyCode);
+        const offset = params.length;
+        valueClauses.push(`(${v.map((_, j) => `$${offset + j + 1}`).join(',')})`);
+        params.push(...v);
+      });
+      const query = `
+        INSERT INTO daily_tracking (
+          row_id, project_id, company_code,
+          date, field_type, employee, cost_code, sub_code, job_class,
+          rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+          material, supplier, po_num, units_purchased, unit_cost,
+          material_cost, quantity,
+          equip_total_override, total_cost_override, num_laborers
+        ) VALUES ${valueClauses.join(',')}
+        ON CONFLICT (row_id) DO NOTHING
+      `;
+      await sql(query, params);
+    }
   }
 }
 
