@@ -2370,19 +2370,31 @@ function logout() {
    Errors are logged but never trigger the save-error banner.
 ═══════════════════════════════════════════ */
 
-/** Fetch ALL daily rows for this company (returns array, never throws). */
-async function drGetAll() {
+/** Fetch daily rows for this company.
+ *  @param {Object} opts — optional { since: 'YYYY-MM-DD', projectId, limit, offset }
+ *  @returns {{ rows: Array, hasMore: boolean }}
+ */
+async function drGetAll(opts) {
   try {
-    const r = await fetch(`${API_BASE}/daily-rows`, {
+    const params = new URLSearchParams();
+    if (opts) {
+      if (opts.since)     params.set('since',     opts.since);
+      if (opts.projectId) params.set('projectId', opts.projectId);
+      if (opts.limit)     params.set('limit',     opts.limit);
+      if (opts.offset)    params.set('offset',    opts.offset);
+    }
+    const qs = params.toString();
+    const r = await fetch(`${API_BASE}/daily-rows${qs ? '?' + qs : ''}`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
     if (r.status === 401) { logout(); return []; }
     if (!r.ok) { console.warn('[daily-rows] GET failed:', r.status); return []; }
-    const { rows } = await r.json();
-    return Array.isArray(rows) ? rows : [];
+    const data = await r.json();
+    if (opts) return data; // return { rows, hasMore } for paginated callers
+    return Array.isArray(data.rows) ? data.rows : [];
   } catch (err) {
     console.warn('[daily-rows] GET error:', err.message);
-    return [];
+    return opts ? { rows: [], hasMore: false } : [];
   }
 }
 
@@ -3925,21 +3937,43 @@ async function _loadAndMigrateDailyRows() {
     }
   }
 
-  // Step 2 — load all rows from DB and distribute into p.dailyRows.
-  // Only clear a project's rows if the DB actually returned rows for it —
-  // projects absent from the DB keep whatever in-memory rows they have
-  // (from migration step 1 fallback or the legacy recovery path above).
-  const dbRows = await drGetAll();
-  if (dbRows.length > 0) {
-    const projectsInDb = new Set(dbRows.map(r => r._projectId));
-    projectsList.forEach(p => { if (projectsInDb.has(p.id)) p.dailyRows = []; });
+  // Step 2 — load recent rows first (last 90 days) for fast startup,
+  // then backfill older data in the background.
+  const since90 = _localDateStr(new Date(Date.now() - 90 * 24 * 60 * 60 * 1000));
+  const dbRows = await drGetAll({ since: since90 });
+  const recentRows = Array.isArray(dbRows.rows) ? dbRows.rows : (Array.isArray(dbRows) ? dbRows : []);
+
+  function _distributeRows(rows) {
+    if (!rows.length) return;
+    const projectsInDb = new Set(rows.map(r => r._projectId));
     const projMap = Object.fromEntries(projectsList.map(p => [p.id, p]));
-    dbRows.forEach(row => {
+    projectsList.forEach(p => { if (projectsInDb.has(p.id) && !p._drFullLoaded) p.dailyRows = []; });
+    rows.forEach(row => {
       const proj = projMap[row._projectId];
-      if (proj) proj.dailyRows.push(row);
+      if (proj) {
+        // Avoid duplicates when backfill merges with recent data
+        if (!proj.dailyRows.some(r => r.id === row.id)) proj.dailyRows.push(row);
+      }
     });
   }
-  // else: keep embedded rows already in p.dailyRows (migration fallback)
+
+  _distributeRows(recentRows);
+
+  // Backfill older rows in the background (non-blocking)
+  setTimeout(async () => {
+    try {
+      const older = await drGetAll();
+      const olderRows = Array.isArray(older) ? older : [];
+      if (olderRows.length > recentRows.length) {
+        _distributeRows(olderRows);
+        projectsList.forEach(p => p._drFullLoaded = true);
+        // Re-render if user is viewing schedule or a project
+        if (typeof renderCurrentTab === 'function') renderCurrentTab();
+      }
+    } catch (err) {
+      console.warn('[daily-rows] backfill error:', err.message);
+    }
+  }, 2000);
 }
 
 // Save a single project blob (metadata only — dailyRows live in daily_tracking table)

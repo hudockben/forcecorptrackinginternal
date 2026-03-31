@@ -101,6 +101,8 @@ ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS num_laborers         NUMERIC
 
 CREATE INDEX IF NOT EXISTS idx_dt_company_project ON daily_tracking(company_code, project_id);
 CREATE INDEX IF NOT EXISTS idx_dt_row_id          ON daily_tracking(row_id);
+CREATE INDEX IF NOT EXISTS idx_dt_company_date    ON daily_tracking(company_code, date);
+CREATE INDEX IF NOT EXISTS idx_dt_company_cc      ON daily_tracking(company_code, cost_code, sub_code);
 
 CREATE TABLE IF NOT EXISTS company_board (
     id           SERIAL PRIMARY KEY,
