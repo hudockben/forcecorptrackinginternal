@@ -4063,11 +4063,20 @@ function nextPONumber() {
 let truckingEntries = [];
 
 async function loadTruckingEntries() {
-  const saved = await apiGet('fct_trucking');
+  let saved = await apiGet('fct_trucking');
+  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
+    try {
+      const local = JSON.parse(localStorage.getItem('fct_trucking'));
+      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_trucking', saved); }
+    } catch {}
+  }
   truckingEntries = Array.isArray(saved) ? saved : [];
 }
 
-function saveTruckingEntries() { apiPut('fct_trucking', truckingEntries); }
+function saveTruckingEntries() {
+  localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
+  apiPut('fct_trucking', truckingEntries);
+}
 
 function nextTRNumber() {
   const nums = truckingEntries.map(tr => {
