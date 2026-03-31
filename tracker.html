@@ -6227,8 +6227,14 @@ function getAllDailyRows() {
   return projectsList.reduce((all, p) => all.concat(p.dailyRows || []), []);
 }
 
-// Aggregate all daily rows by cost_code + sub_code key
+// ── Aggregate cache: auto-invalidated when row count changes ──
+let _aggCache = null;
+let _aggCacheRowCount = -1;
+
+// Aggregate all daily rows by cost_code + sub_code key (memoized — busts when row count changes)
 function buildDailyAgg() {
+  const totalRows = projectsList.reduce((s, p) => s + (p.dailyRows ? p.dailyRows.length : 0), 0);
+  if (_aggCache && _aggCacheRowCount === totalRows) return _aggCache;
   const agg = {};
   getAllDailyRows().forEach(row => {
     const key = (row.cost_code || '') + '||' + (row.sub_code || '');
@@ -6253,6 +6259,8 @@ function buildDailyAgg() {
     if (nl) { a.num_laborers_sum += nl; a.num_laborers_count++; }
     if (row.date) a.dates.add(row.date);
   });
+  _aggCache = agg;
+  _aggCacheRowCount = totalRows;
   return agg;
 }
 
@@ -10033,9 +10041,15 @@ function _schedDeadlineChip(days) {
 }
 
 /** Aggregate a project's daily rows by cost_code+sub_code. */
+const _schedPaceCache = new WeakMap(); // proj → { agg, rowCount }
+
 function _schedPaceForProject(proj) {
+  const rows = proj.dailyRows || [];
+  const cached = _schedPaceCache.get(proj);
+  if (cached && cached.rowCount === rows.length) return cached.agg;
+
   const agg = {};
-  (proj.dailyRows || []).forEach(row => {
+  rows.forEach(row => {
     const key = (row.cost_code || '') + '||' + (row.sub_code || '');
     if (!agg[key]) agg[key] = {
       running_qty: 0, labor_hours: 0, equip_hours: 0, total_cost: 0,
@@ -10059,6 +10073,7 @@ function _schedPaceForProject(proj) {
     }
     if (row.equipment && row.equipment.trim()) a.equipment.add(row.equipment.trim());
   });
+  _schedPaceCache.set(proj, { agg, rowCount: rows.length });
   return agg;
 }
 
