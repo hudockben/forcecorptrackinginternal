@@ -117,22 +117,59 @@ module.exports = async (req, res) => {
   try {
     // ── GET — fetch rows ───────────────────────────────────────────────────
     if (req.method === 'GET') {
-      const { projectId } = req.query;
+      const { projectId, since, limit: qLimit, offset: qOffset } = req.query;
+
+      // Parse pagination params (safe defaults, max 50k rows per request)
+      const limitVal  = Math.min(Math.max(parseInt(qLimit)  || 10000, 1), 50000);
+      const offsetVal = Math.max(parseInt(qOffset) || 0, 0);
+
       let rows;
-      if (projectId) {
+      if (projectId && since) {
         rows = await sql`
-          SELECT * FROM daily_tracking
+          SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
+                 job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+                 material, supplier, po_num, units_purchased, unit_cost, material_cost,
+                 quantity, equip_total_override, total_cost_override, num_laborers
+          FROM daily_tracking
+          WHERE company_code = ${companyCode} AND project_id = ${projectId} AND date >= ${since}
+          ORDER BY date ASC NULLS LAST, created_at ASC
+          LIMIT ${limitVal} OFFSET ${offsetVal}
+        `;
+      } else if (projectId) {
+        rows = await sql`
+          SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
+                 job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+                 material, supplier, po_num, units_purchased, unit_cost, material_cost,
+                 quantity, equip_total_override, total_cost_override, num_laborers
+          FROM daily_tracking
           WHERE company_code = ${companyCode} AND project_id = ${projectId}
           ORDER BY date ASC NULLS LAST, created_at ASC
+          LIMIT ${limitVal} OFFSET ${offsetVal}
+        `;
+      } else if (since) {
+        rows = await sql`
+          SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
+                 job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+                 material, supplier, po_num, units_purchased, unit_cost, material_cost,
+                 quantity, equip_total_override, total_cost_override, num_laborers
+          FROM daily_tracking
+          WHERE company_code = ${companyCode} AND date >= ${since}
+          ORDER BY project_id, date ASC NULLS LAST, created_at ASC
+          LIMIT ${limitVal} OFFSET ${offsetVal}
         `;
       } else {
         rows = await sql`
-          SELECT * FROM daily_tracking
+          SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
+                 job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+                 material, supplier, po_num, units_purchased, unit_cost, material_cost,
+                 quantity, equip_total_override, total_cost_override, num_laborers
+          FROM daily_tracking
           WHERE company_code = ${companyCode}
           ORDER BY project_id, date ASC NULLS LAST, created_at ASC
+          LIMIT ${limitVal} OFFSET ${offsetVal}
         `;
       }
-      return res.json({ rows: rows.map(dbRowToFrontend) });
+      return res.json({ rows: rows.map(dbRowToFrontend), hasMore: rows.length === limitVal });
     }
 
     // ── POST — insert one or many rows ────────────────────────────────────
