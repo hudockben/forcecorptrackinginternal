@@ -3095,8 +3095,8 @@ function renderHomeTab() {
       </td>
       <td class="pt-num" style="color:var(--green)">${bid ? '$'+fmt(bid) : '—'}</td>
       <td class="pt-num">${actual ? '$'+fmt(actual) : '—'}</td>
-      <td class="pt-num" style="${projStyle}">${projTxt}</td>
       <td class="pt-num" style="${varStyle}">${varTxt}</td>
+      <td class="pt-num" style="${projStyle}">${projTxt}</td>
       <td>
         <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
           title="${p.pinned ? 'Unpin' : 'Pin to Home'}"
@@ -3218,8 +3218,8 @@ function renderHomeTab() {
               <th>Progress</th>
               <th>Bid</th>
               <th>Actual</th>
-              <th>Projected</th>
               <th>Variance</th>
+              <th>Projected</th>
               <th></th>
             </tr></thead>
             <tbody>${projectTableRows}</tbody>
