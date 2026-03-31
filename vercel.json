@@ -9,13 +9,19 @@
   },
   "headers": [
     {
-      "source": "/(.*)\\.html",
+      "source": "/:path*.html",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=300, stale-while-revalidate=600" }
       ]
     },
     {
-      "source": "/(.*)\\.(?:png|jpg|jpeg|svg|ico)",
+      "source": "/:path*.png",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=86400, immutable" }
+      ]
+    },
+    {
+      "source": "/:path*.jpg",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=86400, immutable" }
       ]
