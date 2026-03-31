@@ -5582,7 +5582,7 @@ function applyTRFilters() {
 
 function exportTRCSV() {
   const rows = applyTRFilters();
-  const headers = ['TR #','Project','Driver','Truck Type','Material Hauled','Loads','Rate','Total','Date','Sub Code','Status','Notes'];
+  const headers = ['TR #','Project','Driver','Truck Type','Material Hauled','Loads','Rate','Hours','Total','Date','Sub Code','Status','Notes'];
   const escape = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
   const lines = [headers.map(escape).join(',')];
   rows.forEach(tr => {
@@ -5590,7 +5590,8 @@ function exportTRCSV() {
     const projName = proj ? (proj['project-name'] || '') : '';
     const loads = parseFloat(tr.loads) || 0;
     const rate  = parseFloat(tr.rate)  || 0;
-    lines.push([tr.tr_number, projName, tr.driver||'', tr.truck_type||'', tr.material_hauled||'', loads, rate.toFixed(2), (loads * rate).toFixed(2), tr.date||'', tr.sub_code||'', tr.status||'', tr.notes||''].map(escape).join(','));
+    const hours = parseFloat(tr.hours) || 0;
+    lines.push([tr.tr_number, projName, tr.driver||'', tr.truck_type||'', tr.material_hauled||'', loads, rate.toFixed(2), hours, (rate * hours).toFixed(2), tr.date||'', tr.sub_code||'', tr.status||'', tr.notes||''].map(escape).join(','));
   });
   const blob = new Blob([lines.join('\r\n')], {type:'text/csv'});
   const a = document.createElement('a');
@@ -5681,7 +5682,8 @@ function renderTruckingTab() {
     : filteredTRs.map(tr => {
         const loads = parseFloat(tr.loads) || 0;
         const rate  = parseFloat(tr.rate)  || 0;
-        const total = loads * rate;
+        const hours = parseFloat(tr.hours) || 0;
+        const total = rate * hours;
 
         const inp = (field, type = 'text', extra = '') =>
           `<input type="${type}" value="${esc(String(tr[field] || ''))}"
@@ -5772,11 +5774,11 @@ document.getElementById('trucking-root').addEventListener('input', e => {
   if (!tr) return;
   tr[field] = el.value;
   saveTruckingEntries();
-  if (['loads', 'rate'].includes(field)) {
-    const loads = parseFloat(tr.loads) || 0;
+  if (['loads', 'rate', 'hours'].includes(field)) {
     const rate  = parseFloat(tr.rate)  || 0;
+    const hours = parseFloat(tr.hours) || 0;
     const totEl = document.getElementById('tr-tot-' + id);
-    if (totEl) totEl.textContent = '$' + fmt(loads * rate);
+    if (totEl) totEl.textContent = '$' + fmt(rate * hours);
   }
   _syncTRRowField(tr, field);
 });
@@ -5800,6 +5802,19 @@ document.getElementById('trucking-root').addEventListener('change', e => {
   }
 
   tr[field] = el.value;
+
+  if (field === 'truck_type') {
+    const eq = (lists.equipment || []).find(e => e.name === el.value);
+    if (eq && eq.unit_cost) {
+      tr.rate = String(eq.unit_cost);
+      const rateInput = el.closest('tr').querySelector('[data-tr-field="rate"]');
+      if (rateInput) rateInput.value = eq.unit_cost;
+      const rate  = parseFloat(tr.rate)  || 0;
+      const hours = parseFloat(tr.hours) || 0;
+      const totEl = document.getElementById('tr-tot-' + tr.id);
+      if (totEl) totEl.textContent = '$' + fmt(rate * hours);
+    }
+  }
 
   if (field === 'project_id') {
     // Remove auto-inserted row from old project
