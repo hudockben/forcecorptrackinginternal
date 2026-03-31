@@ -8287,7 +8287,7 @@ function _pvUpdateBanner() {
   }
 }
 
-
+function openDailyView(projId) {
   const p = getProj(projId); if (!p) return;
   dailyViewProjId = projId;
   document.getElementById('daily-fs-title').textContent =
