@@ -2048,6 +2048,7 @@
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
 <div class="tab-panel" id="tab-cost">
+  <div id="pv-cost-banner" style="display:none;background:#854d0e;color:#fef9c3;font-size:0.78rem;padding:0.35rem 1rem;font-weight:500;letter-spacing:0.01em"></div>
   <!-- Alert banner -->
   <div id="cost-alert-banner" style="display:none;padding:0.5rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:1rem;flex-wrap:wrap;align-items:center"></div>
   <!-- Filter bar -->
@@ -2788,6 +2789,9 @@ let activeTab = perm.visibleTabs ? [...perm.visibleTabs][0] : 'home';
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     if (!btn.dataset.tab) return; // non-tab buttons (Manage Lists)
+    if (activeTab === 'cost' && btn.dataset.tab !== 'cost') {
+      pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner();
+    }
     activeTab = btn.dataset.tab;
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.tab-panel').forEach(p =>
@@ -2813,6 +2817,17 @@ function renderHeaderActions() {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
       <button class="btn btn-green" onclick="document.querySelector('.tab-btn[data-tab=info]').click()">+ Add Bid Items in Project Dashboard</button>
+      <div style="display:flex;align-items:center;gap:0.4rem;padding:0.2rem 0.55rem;background:var(--surface);border:1px solid var(--border);border-radius:5px;" title="Simulate all labor costs at a prevailing wage rate without changing any data">
+        <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;white-space:nowrap;font-size:0.75rem;color:var(--muted);user-select:none">
+          <input type="checkbox" id="pv-toggle" ${pvPreview.active ? 'checked' : ''} onchange="pvPreviewToggle(this.checked)" style="cursor:pointer;accent-color:var(--yellow)">
+          PV Preview
+        </label>
+        <span style="color:var(--muted);font-size:0.78rem">$</span>
+        <input type="number" id="pv-rate-input" placeholder="0.00" step="0.01" min="0" ${!pvPreview.active ? 'disabled' : ''} value="${pvPreview.rate || ''}"
+          oninput="pvPreviewRateChange(this.value)"
+          style="width:58px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--yellow);font-size:0.8rem;outline:none;text-align:right;padding:0.1rem 0">
+        <span style="font-size:0.72rem;color:var(--muted)">/hr</span>
+      </div>
       ${summaryBtn}
       ${logoutBtn}
     `;
@@ -8264,27 +8279,29 @@ function pvPreviewToggle(on) {
   const rateInput = document.getElementById('pv-rate-input');
   if (rateInput) { rateInput.disabled = !on; if (on) rateInput.focus(); }
   _pvUpdateBanner();
+  renderCostTable();
   if (dailyViewProjId) renderDailyTable(dailyViewProjId);
 }
 
 function pvPreviewRateChange(val) {
   pvPreview.rate = parseFloat(val) || 0;
   _pvUpdateBanner();
-  if (pvPreview.active && dailyViewProjId) renderDailyTable(dailyViewProjId);
+  if (pvPreview.active) {
+    renderCostTable();
+    if (dailyViewProjId) renderDailyTable(dailyViewProjId);
+  }
 }
 
 function _pvUpdateBanner() {
-  const banner = document.getElementById('pv-banner');
-  if (!banner) return;
-  if (pvPreview.active && pvPreview.rate > 0) {
-    banner.style.display = '';
-    banner.textContent = `⚡ PV Rate Preview active — $${pvPreview.rate.toFixed(2)}/hr applied to all labor. This is a read-only simulation, no data is changed.`;
-  } else if (pvPreview.active) {
-    banner.style.display = '';
-    banner.textContent = '⚡ PV Rate Preview active — enter a rate above to simulate.';
-  } else {
-    banner.style.display = 'none';
-  }
+  const msg = pvPreview.active && pvPreview.rate > 0
+    ? `⚡ PV Rate Preview active — $${pvPreview.rate.toFixed(2)}/hr applied to all labor. Read-only simulation, no data is changed.`
+    : pvPreview.active ? '⚡ PV Rate Preview active — enter a rate above to simulate.' : null;
+  ['pv-banner', 'pv-cost-banner'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.display = msg ? '' : 'none';
+    if (msg) el.textContent = msg;
+  });
 }
 
 function openDailyView(projId) {
