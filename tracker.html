@@ -2691,6 +2691,40 @@ function _showSaveError(isAuth) {
   banner.style.display = '';
 }
 
+/** Fetch multiple keys in one request. Returns { key1: value1, key2: value2, ... } */
+async function apiBatchGet(keys) {
+  if (!keys.length) return {};
+  try {
+    const r = await fetch(`${API_BASE}/data/_batch?keys=${keys.join(',')}`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (r.status === 401) { logout(); return {}; }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const { values } = await r.json();
+    return values || {};
+  } catch (err) {
+    console.warn('[DB] batch GET failed:', err.message);
+    return {};
+  }
+}
+
+/** Partially update fields in an existing JSONB blob (no full rewrite needed). */
+function apiPatch(key, fields) {
+  fetch(`${API_BASE}/data/${key}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body: JSON.stringify({ fields })
+  }).then(r => {
+    if (!r.ok) {
+      console.warn(`[DB] PATCH ${key} failed: HTTP ${r.status}`);
+      _showSaveError(r.status === 401);
+    }
+  }).catch(err => {
+    console.warn(`[DB] PATCH ${key} failed:`, err.message);
+    _showSaveError(false);
+  });
+}
+
 function apiPut(key, value) {
   // Fire-and-forget — UI is already updated in memory and in localStorage
   fetch(`${API_BASE}/data/${key}`, {
@@ -3834,8 +3868,11 @@ async function loadProjects() {
   const index = await apiGet('fct_projects_index');
 
   if (Array.isArray(index) && index.length) {
-    const results = await Promise.all(index.map(id => apiGet('fct_project_' + id)));
-    projectsList = results.filter(p => p && typeof p === 'object');
+    // Batch-load all project blobs in one request instead of N individual fetches
+    const projKeys = index.map(id => 'fct_project_' + id);
+    const batchResult = await apiBatchGet(projKeys);
+    const results = index.map(id => batchResult['fct_project_' + id]).filter(p => p && typeof p === 'object');
+    projectsList = results;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
     // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
     await _loadAndMigrateDailyRows();
@@ -3977,10 +4014,16 @@ async function _loadAndMigrateDailyRows() {
 }
 
 // Save a single project blob (metadata only — dailyRows live in daily_tracking table)
+const _saveProjTimers = {};
 function saveProject(id) {
   const p = getProj(id); if (!p) return;
   try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
-  apiPut('fct_project_' + id, _projBlob(p));
+  // Debounce server writes — coalesces rapid field edits into one PUT per project
+  clearTimeout(_saveProjTimers[id]);
+  _saveProjTimers[id] = setTimeout(() => {
+    delete _saveProjTimers[id];
+    apiPut('fct_project_' + id, _projBlob(p));
+  }, 600);
 }
 
 // Save the ordered list of project IDs — called when projects are added or removed
