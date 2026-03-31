@@ -1877,6 +1877,17 @@
     <div style="margin-left:auto;display:flex;gap:0.5rem">
       <button class="btn btn-ghost" id="daily-fs-reload" title="Reload entries from server">&#8635; Reload</button>
       <button class="btn btn-ghost" id="daily-fs-export">Export CSV</button>
+      <div style="display:flex;align-items:center;gap:0.4rem;padding:0.2rem 0.55rem;background:var(--surface);border:1px solid var(--border);border-radius:5px;" title="Simulate all labor costs at a prevailing wage rate without changing any data">
+        <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;white-space:nowrap;font-size:0.75rem;color:var(--muted);user-select:none">
+          <input type="checkbox" id="pv-toggle" onchange="pvPreviewToggle(this.checked)" style="cursor:pointer;accent-color:var(--yellow)">
+          PV Preview
+        </label>
+        <span style="color:var(--muted);font-size:0.78rem">$</span>
+        <input type="number" id="pv-rate-input" placeholder="0.00" step="0.01" min="0" disabled
+          oninput="pvPreviewRateChange(this.value)"
+          style="width:58px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--yellow);font-size:0.8rem;outline:none;text-align:right;padding:0.1rem 0">
+        <span style="font-size:0.72rem;color:var(--muted)">/hr</span>
+      </div>
       <button class="btn btn-blue"  onclick="openModal()">&#9881; Manage Lists</button>
       <button class="btn btn-green" id="daily-fs-add">+ Add Row</button>
       <div style="display:flex;align-items:center;gap:0.3rem" id="daily-mass-add-wrap">
@@ -1886,6 +1897,7 @@
       </div>
     </div>
   </div>
+  <div id="pv-banner" style="display:none;background:#854d0e;color:#fef9c3;font-size:0.78rem;padding:0.35rem 1rem;font-weight:500;letter-spacing:0.01em;flex-shrink:0"></div>
   <div class="daily-table-wrap" style="flex:1;overflow:auto;">
     <table class="daily-inner-table">
       <thead>
@@ -2036,6 +2048,7 @@
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
 <div class="tab-panel" id="tab-cost">
+  <div id="pv-cost-banner" style="display:none;background:#854d0e;color:#fef9c3;font-size:0.78rem;padding:0.35rem 1rem;font-weight:500;letter-spacing:0.01em"></div>
   <!-- Alert banner -->
   <div id="cost-alert-banner" style="display:none;padding:0.5rem 1rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:1rem;flex-wrap:wrap;align-items:center"></div>
   <!-- Filter bar -->
@@ -2776,6 +2789,9 @@ let activeTab = perm.visibleTabs ? [...perm.visibleTabs][0] : 'home';
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     if (!btn.dataset.tab) return; // non-tab buttons (Manage Lists)
+    if (activeTab === 'cost' && btn.dataset.tab !== 'cost') {
+      pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner();
+    }
     activeTab = btn.dataset.tab;
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.tab-panel').forEach(p =>
@@ -2801,6 +2817,17 @@ function renderHeaderActions() {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
       <button class="btn btn-green" onclick="document.querySelector('.tab-btn[data-tab=info]').click()">+ Add Bid Items in Project Dashboard</button>
+      <div style="display:flex;align-items:center;gap:0.4rem;padding:0.2rem 0.55rem;background:var(--surface);border:1px solid var(--border);border-radius:5px;" title="Simulate all labor costs at a prevailing wage rate without changing any data">
+        <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;white-space:nowrap;font-size:0.75rem;color:var(--muted);user-select:none">
+          <input type="checkbox" id="pv-toggle" ${pvPreview.active ? 'checked' : ''} onchange="pvPreviewToggle(this.checked)" style="cursor:pointer;accent-color:var(--yellow)">
+          PV Preview
+        </label>
+        <span style="color:var(--muted);font-size:0.78rem">$</span>
+        <input type="number" id="pv-rate-input" placeholder="0.00" step="0.01" min="0" ${!pvPreview.active ? 'disabled' : ''} value="${pvPreview.rate || ''}"
+          oninput="pvPreviewRateChange(this.value)"
+          style="width:58px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--yellow);font-size:0.8rem;outline:none;text-align:right;padding:0.1rem 0">
+        <span style="font-size:0.72rem;color:var(--muted)">/hr</span>
+      </div>
       ${summaryBtn}
       ${logoutBtn}
     `;
@@ -5282,6 +5309,16 @@ function renderPOTab() {
             `<option value="${esc(p.id)}" ${p.id === po.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
 
         const statusColor = po.status === 'approved' ? '#86efac' : po.status === 'closed' ? 'var(--muted)' : 'var(--yellow)';
+        let statusMetaHtml = '';
+        if (po.status_changed_at) {
+          const d  = new Date(po.status_changed_at);
+          const ds = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+          const ts = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+          const who = po.status_changed_by ? esc(po.status_changed_by) + ' &middot; ' : '';
+          statusMetaHtml = `<div id="po-status-meta-${po.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap;line-height:1.3">${who}${ds} ${ts}</div>`;
+        } else {
+          statusMetaHtml = `<div id="po-status-meta-${po.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem"></div>`;
+        }
 
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(po.po_number)}</td>
@@ -5296,7 +5333,7 @@ function renderPOTab() {
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">$${fmt(total)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('employee', empOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date_created', 'date')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:95px;color:${statusColor}">${sel('status', statusOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}">${sel('status', statusOpts)}${statusMetaHtml}</td>
           ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>` : '<td></td>'}
         </tr>`;
       }).join('');
@@ -5421,6 +5458,18 @@ document.getElementById('po-root').addEventListener('change', e => {
   }
 
   po[field] = el.value;
+
+  if (field === 'status') {
+    po.status_changed_at = new Date().toISOString();
+    po.status_changed_by = fctUser ? (fctUser.name || fctUser.username || '') : '';
+    const metaEl = document.getElementById('po-status-meta-' + id);
+    if (metaEl) {
+      const d = new Date(po.status_changed_at);
+      const ds = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const ts = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      metaEl.textContent = (po.status_changed_by ? po.status_changed_by + ' · ' : '') + ds + ' ' + ts;
+    }
+  }
 
   if (field === 'project_id') {
     // Remove auto-inserted row from old project
@@ -5719,6 +5768,16 @@ function renderTruckingTab() {
           `<option value="${s}" ${s === tr.status ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
 
         const statusColor = tr.status === 'approved' ? '#86efac' : tr.status === 'invoiced' ? 'var(--muted)' : 'var(--yellow)';
+        let statusMetaHtml = '';
+        if (tr.status_changed_at) {
+          const d  = new Date(tr.status_changed_at);
+          const ds = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+          const ts = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+          const who = tr.status_changed_by ? esc(tr.status_changed_by) + ' &middot; ' : '';
+          statusMetaHtml = `<div id="tr-status-meta-${tr.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap;line-height:1.3">${who}${ds} ${ts}</div>`;
+        } else {
+          statusMetaHtml = `<div id="tr-status-meta-${tr.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem"></div>`;
+        }
 
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(tr.tr_number)}</td>
@@ -5733,7 +5792,7 @@ function renderTruckingTab() {
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="tr-tot-${tr.id}">$${fmt(total)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date', 'date')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('notes', 'text', 'placeholder="Notes"')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:95px;color:${statusColor}">${sel('status', statusOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}">${sel('status', statusOpts)}${statusMetaHtml}</td>
           ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="trucking" data-tr-id="${tr.id}">&#10005;</button></td>` : '<td></td>'}
         </tr>`;
       }).join('');
@@ -5811,6 +5870,18 @@ document.getElementById('trucking-root').addEventListener('change', e => {
   }
 
   tr[field] = el.value;
+
+  if (field === 'status') {
+    tr.status_changed_at = new Date().toISOString();
+    tr.status_changed_by = fctUser ? (fctUser.name || fctUser.username || '') : '';
+    const metaEl = document.getElementById('tr-status-meta-' + id);
+    if (metaEl) {
+      const d = new Date(tr.status_changed_at);
+      const ds = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const ts = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      metaEl.textContent = (tr.status_changed_by ? tr.status_changed_by + ' · ' : '') + ds + ' ' + ts;
+    }
+  }
 
   if (field === 'truck_type') {
     const eq = (lists.equipment || []).find(e => e.name === el.value);
@@ -7507,7 +7578,7 @@ const defaultDailyRow = () => ({
 });
 
 function calcDaily(row) {
-  const rate         = parseFloat(row.rate)           || 0;
+  const rate         = (pvPreview.active && pvPreview.rate > 0) ? pvPreview.rate : (parseFloat(row.rate) || 0);
   const labor_hours  = parseFloat(row.labor_hours)    || 0;
   const euc          = parseFloat(row.equip_unit_cost) || 0;
   const equip_hours  = parseFloat(row.equip_hours)    || 0;
@@ -8201,6 +8272,37 @@ document.addEventListener('click', e => {
 });
 
 let dailyViewProjId = null;
+let pvPreview = { active: false, rate: 0 };
+
+function pvPreviewToggle(on) {
+  pvPreview.active = on;
+  const rateInput = document.getElementById('pv-rate-input');
+  if (rateInput) { rateInput.disabled = !on; if (on) rateInput.focus(); }
+  _pvUpdateBanner();
+  renderCostTable();
+  if (dailyViewProjId) renderDailyTable(dailyViewProjId);
+}
+
+function pvPreviewRateChange(val) {
+  pvPreview.rate = parseFloat(val) || 0;
+  _pvUpdateBanner();
+  if (pvPreview.active) {
+    renderCostTable();
+    if (dailyViewProjId) renderDailyTable(dailyViewProjId);
+  }
+}
+
+function _pvUpdateBanner() {
+  const msg = pvPreview.active && pvPreview.rate > 0
+    ? `⚡ PV Rate Preview active — $${pvPreview.rate.toFixed(2)}/hr applied to all labor. Read-only simulation, no data is changed.`
+    : pvPreview.active ? '⚡ PV Rate Preview active — enter a rate above to simulate.' : null;
+  ['pv-banner', 'pv-cost-banner'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.display = msg ? '' : 'none';
+    if (msg) el.textContent = msg;
+  });
+}
 
 function openDailyView(projId) {
   const p = getProj(projId); if (!p) return;
@@ -8236,6 +8338,15 @@ function closeDailyView() {
   document.getElementById('daily-fullscreen').style.display = 'none';
   document.getElementById('daily-filter-dd').style.display = 'none';
   dailyFilters = {};
+  // Reset PV preview state
+  pvPreview.active = false;
+  pvPreview.rate   = 0;
+  const pvToggle = document.getElementById('pv-toggle');
+  const pvInput  = document.getElementById('pv-rate-input');
+  if (pvToggle) pvToggle.checked = false;
+  if (pvInput)  { pvInput.value = ''; pvInput.disabled = true; }
+  const banner = document.getElementById('pv-banner');
+  if (banner) banner.style.display = 'none';
   if (dailyViewProjId) {
     const tbody = document.getElementById('daily-tbody-' + dailyViewProjId);
     if (tbody) tbody.id = 'daily-fs-tbody';
@@ -11412,20 +11523,47 @@ function _ppAutoFill(proj, biKey) {
   // Pre-populate Mon–Fri future days with the current historical crew & equipment
   // so the calendar immediately shows a current-pace projection on open.
   // Only fills days that haven't been manually touched yet.
+  // Stops at the bid item's target_date (or project end-date), and stops
+  // once projected cumulative output covers the remaining quantity.
   const agg  = _schedPaceForProject(proj);
   const a    = agg[biKey] || {};
   const crew  = [...(a.employees || new Set())];
   const equip = [...(a.equipment  || new Set())];
   if (!crew.length) return; // no history — nothing to fill
 
+  // Determine the hard stop date (bid item target_date → project end-date → 90 days)
+  const bi = (proj.bidItems || []).find(b => ((b.cost_code||'')+'||'+(b.sub_code||'')) === biKey);
+  const deadlineStr = (bi && bi.target_date) || _schedGetDeadline(proj) || null;
+  const deadlineD   = deadlineStr ? new Date(deadlineStr + 'T23:59:59') : null;
+
+  // Determine how many units still need to be scheduled
+  const bidQty  = bi ? (parseFloat(bi.quantity)||0) + (bi.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0) : 0;
+  const doneQty = a.running_qty || 0;
+  const prod    = _ppProd(a);
+
+  // Sum up output already scheduled in existing auto-fill days
+  let scheduledCumul = 0;
+  if (prod !== null && bidQty > 0) {
+    const existing = _pp.schedule[biKey] || {};
+    Object.entries(existing).forEach(([ds, plan]) => {
+      if (!plan.noWork && plan.employees && plan.employees.length > 0) {
+        scheduledCumul += plan.employees.length * prod * (plan.halfDay ? 0.5 : 1);
+      }
+    });
+  }
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  // Fill 90 days ahead (Mon–Fri only; auto-mark US federal holidays as no-work)
+
   for (let i = 0; i < 90; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
     const dow = d.getDay();
     if (dow === 0 || dow === 6) continue; // skip weekends
+
+    // Stop if we've passed the deadline
+    if (deadlineD && d > deadlineD) break;
+
     const ds = _localDateStr(d);
     if (!_pp.schedule[biKey]) _pp.schedule[biKey] = {};
     if (!_pp.schedule[biKey][ds]) {
@@ -11433,7 +11571,16 @@ function _ppAutoFill(proj, biKey) {
       if (_isHoliday(ds)) {
         _pp.schedule[biKey][ds] = { employees: [], equipment: [], crew: {}, halfDay: false, noWork: true, noWorkReason: 'Holiday', notes: '' };
       } else {
+        // Stop scheduling if remaining work is already covered
+        if (prod !== null && bidQty > 0 && (doneQty + scheduledCumul) >= bidQty) break;
         _pp.schedule[biKey][ds] = { employees: [...crew], equipment: [...equip], crew: {}, halfDay: false, noWork: false, noWorkReason: '', notes: '' };
+        if (prod !== null) scheduledCumul += crew.length * prod;
+      }
+    } else {
+      // Day already exists — still count its output toward the cumul check
+      const plan = _pp.schedule[biKey][ds];
+      if (!plan.noWork && plan.employees && plan.employees.length > 0 && prod !== null) {
+        scheduledCumul += plan.employees.length * prod * (plan.halfDay ? 0.5 : 1);
       }
     }
   }
