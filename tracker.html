@@ -6445,20 +6445,12 @@ function buildFilteredDailyAgg() {
       const q = parseFloat(row.quantity) || 0;
       const importedCost = parseFloat(row.total_cost) || 0;
       const nl = parseFloat(row.num_laborers) || 0;
-      // When PV preview is active and a row has a pre-computed total_cost, substitute
-      // just the labor portion (old rate → PV rate) so equipment/material are preserved.
-      const _pvRowCost = (() => {
-        if (!pvPreview.active || pvPreview.rate <= 0) return importedCost > 0 ? importedCost : c.total_cost;
-        if (importedCost > 0) {
-          const oldLabor = (parseFloat(row.rate) || 0) * (parseFloat(row.labor_hours) || 0);
-          const pvLabor  = pvPreview.rate * (parseFloat(row.labor_hours) || 0);
-          return importedCost - oldLabor + pvLabor;
-        }
-        return c.total_cost;
-      })();
+      // When PV preview is active use calcDaily directly (PV rate already substituted).
+      // When inactive, prefer the pre-computed importedCost if present (CSV imports).
+      const _rowCost = (pvPreview.active && pvPreview.rate > 0) ? c.total_cost : (importedCost > 0 ? importedCost : c.total_cost);
       a.running_qty        += q;
       if (q) a.qty_count++;
-      a.total_cost         += _pvRowCost;
+      a.total_cost         += _rowCost;
       a.imported_total     += importedCost;
       a.labor_hours        += parseFloat(row.labor_hours)   || 0;
       a.equip_hours        += parseFloat(row.equip_hours)   || 0;
@@ -6479,7 +6471,7 @@ function buildFilteredDailyAgg() {
       const pa = projAgg[pkey];
       pa.running_qty        += q;
       if (q) pa.qty_count++;
-      pa.total_cost         += _pvRowCost;
+      pa.total_cost         += _rowCost;
       pa.imported_total     += importedCost;
       pa.labor_hours        += parseFloat(row.labor_hours)   || 0;
       pa.equip_hours        += parseFloat(row.equip_hours)   || 0;
