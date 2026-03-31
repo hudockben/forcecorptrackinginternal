@@ -6445,9 +6445,12 @@ function buildFilteredDailyAgg() {
       const q = parseFloat(row.quantity) || 0;
       const importedCost = parseFloat(row.total_cost) || 0;
       const nl = parseFloat(row.num_laborers) || 0;
+      // When PV preview is active use calcDaily directly (PV rate already substituted).
+      // When inactive, prefer the pre-computed importedCost if present (CSV imports).
+      const _rowCost = (pvPreview.active && pvPreview.rate > 0) ? c.total_cost : (importedCost > 0 ? importedCost : c.total_cost);
       a.running_qty        += q;
       if (q) a.qty_count++;
-      a.total_cost         += importedCost > 0 ? importedCost : c.total_cost;
+      a.total_cost         += _rowCost;
       a.imported_total     += importedCost;
       a.labor_hours        += parseFloat(row.labor_hours)   || 0;
       a.equip_hours        += parseFloat(row.equip_hours)   || 0;
@@ -6468,7 +6471,7 @@ function buildFilteredDailyAgg() {
       const pa = projAgg[pkey];
       pa.running_qty        += q;
       if (q) pa.qty_count++;
-      pa.total_cost         += importedCost > 0 ? importedCost : c.total_cost;
+      pa.total_cost         += _rowCost;
       pa.imported_total     += importedCost;
       pa.labor_hours        += parseFloat(row.labor_hours)   || 0;
       pa.equip_hours        += parseFloat(row.equip_hours)   || 0;
@@ -6747,7 +6750,7 @@ function renderCostTable() {
       const hasProjects = projEntries.length > 0;
 
       // ── Budget alert for this sub-code (aggregate, shown on sub-code row) ──
-      const actualTotal = a.imported_total || rtotal;
+      const actualTotal = (pvPreview.active && pvPreview.rate > 0) ? rtotal : (a.imported_total || rtotal);
       const scPct = btotal > 0 ? actualTotal / btotal : null;
       // Sub-code alert suppressed — per-project highlighting used instead
       const scAlertCls = '';
