@@ -1904,10 +1904,10 @@
   <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
+  <button class="tab-btn"        data-tab="equip">&#128200; Analytics</button>
   <div class="admin-dropdown-wrap">
     <button class="tab-btn" id="admin-tab-btn">&#9881; Admin ▾</button>
     <div class="admin-dropdown-menu">
-      <button class="admin-dropdown-item" id="admin-item-equip" onclick="adminSwitchTab('equip')">&#128295; Equipment Utilization</button>
       <button class="admin-dropdown-item" id="admin-item-supplier" onclick="adminSwitchTab('supplier')">Suppliers</button>
       <button class="admin-dropdown-item" onclick="openModal()">Manage Lists</button>
       <button class="admin-dropdown-item" id="admin-item-users" style="display:none" onclick="adminSwitchTab('users')">&#128100; Users</button>
@@ -2878,7 +2878,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
-const _adminTabs = new Set(['equip', 'supplier', 'users']);
+const _adminTabs = new Set(['supplier', 'users']);
 
 function adminSwitchTab(tab) {
   if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
@@ -2894,7 +2894,6 @@ function adminSwitchTab(tab) {
   document.querySelectorAll('.tab-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'tab-' + tab));
   renderHeaderActions();
-  if (tab === 'equip')    renderEquipTable();
   if (tab === 'supplier') renderSupplierTab();
   if (tab === 'users')    renderUsersTab();
 }
