@@ -7584,108 +7584,345 @@ async function submitMobileEntry() {
    EQUIPMENT UTILIZATION
 ═══════════════════════════════════════════ */
 
-function _buildEquipAgg() {
-  // Aggregate all daily rows by equipment name
-  const agg = {};  // equipName → { hours, cost, projects: Set, dates: Set, costCodes: Set, unitCosts: [], source }
+let equipFilters  = { project: '', dateFrom: '', dateTo: '', sortCol: 'hours', sortDir: 'desc', idleOnly: false };
+let equipExpanded = new Set();
+
+function _buildEquipAgg(filters = {}) {
+  const { dateFrom, dateTo, project } = filters;
+  const passDate = d => (!dateFrom || d >= dateFrom) && (!dateTo || d <= dateTo);
+  const agg = {};
+
   projectsList.forEach(p => {
     const pname = p['project-name'] || p.id || '';
+    if (project && pname !== project) return;
     (p.dailyRows || []).forEach(row => {
       const name = (row.equipment || '').trim();
       if (!name) return;
-      if (!agg[name]) agg[name] = { hours: 0, cost: 0, projects: new Set(), dates: new Set(), costCodes: new Set(), unitCosts: [], source: 'daily' };
-      const a = agg[name];
-      const hrs  = parseFloat(row.equip_hours)    || 0;
-      const uc   = parseFloat(row.equip_unit_cost) || 0;
+      if (row.date && !passDate(row.date)) return;
+      if (!agg[name]) agg[name] = {
+        hours: 0, cost: 0, projects: new Set(), dates: new Set(),
+        costCodes: new Set(), unitCosts: [], source: 'daily',
+        employees: {}, projectDetail: {}, lastUsed: null
+      };
+      const a   = agg[name];
+      const hrs = parseFloat(row.equip_hours)    || 0;
+      const uc  = parseFloat(row.equip_unit_cost) || 0;
       a.hours += hrs;
       a.cost  += uc * hrs;
       if (uc > 0) a.unitCosts.push(uc);
-      if (row.date)      a.dates.add(row.date);
+      if (row.date) {
+        a.dates.add(row.date);
+        if (!a.lastUsed || row.date > a.lastUsed) a.lastUsed = row.date;
+      }
       if (row.cost_code) a.costCodes.add(row.cost_code);
       a.projects.add(pname);
+      const emp = (row.employee || '').trim();
+      if (emp) {
+        if (!a.employees[emp]) a.employees[emp] = { hours: 0, entries: 0 };
+        a.employees[emp].hours   += hrs;
+        a.employees[emp].entries += 1;
+      }
+      if (!a.projectDetail[pname]) a.projectDetail[pname] = { hours: 0, cost: 0 };
+      a.projectDetail[pname].hours += hrs;
+      a.projectDetail[pname].cost  += uc * hrs;
     });
   });
 
-  // Also pull from trucking entries (truck_type as equipment name, hours field)
   const projMap = {};
   projectsList.forEach(p => { projMap[p.id] = p['project-name'] || p.id || ''; });
   truckingEntries.forEach(tr => {
-    const name = (tr.truck_type || '').trim();
+    const name  = (tr.truck_type || '').trim();
     if (!name) return;
+    if (tr.date && !passDate(tr.date)) return;
+    const pname = tr.project_id ? (projMap[tr.project_id] || '') : '';
+    if (project && pname !== project) return;
     const hrs  = parseFloat(tr.hours) || 0;
     const cost = (parseFloat(tr.loads) || 0) * (parseFloat(tr.rate) || 0);
-    if (!agg[name]) agg[name] = { hours: 0, cost: 0, projects: new Set(), dates: new Set(), costCodes: new Set(), unitCosts: [], source: 'trucking' };
+    if (!agg[name]) agg[name] = {
+      hours: 0, cost: 0, projects: new Set(), dates: new Set(),
+      costCodes: new Set(), unitCosts: [], source: 'trucking',
+      employees: {}, projectDetail: {}, lastUsed: null
+    };
     else if (agg[name].source === 'daily') agg[name].source = 'both';
     const a = agg[name];
     a.hours += hrs;
     a.cost  += cost;
-    if (tr.date)      a.dates.add(tr.date);
+    if (tr.date) {
+      a.dates.add(tr.date);
+      if (!a.lastUsed || tr.date > a.lastUsed) a.lastUsed = tr.date;
+    }
     if (tr.cost_code) a.costCodes.add(tr.cost_code);
-    if (tr.project_id && projMap[tr.project_id]) a.projects.add(projMap[tr.project_id]);
+    if (pname) {
+      a.projects.add(pname);
+      if (!a.projectDetail[pname]) a.projectDetail[pname] = { hours: 0, cost: 0 };
+      a.projectDetail[pname].hours += hrs;
+      a.projectDetail[pname].cost  += cost;
+    }
   });
 
   return agg;
+}
+
+function _equipSetSort(col) {
+  if (equipFilters.sortCol === col) equipFilters.sortDir = equipFilters.sortDir === 'desc' ? 'asc' : 'desc';
+  else { equipFilters.sortCol = col; equipFilters.sortDir = 'desc'; }
+  renderEquipTable();
+}
+
+function _equipToggle(name) {
+  if (equipExpanded.has(name)) equipExpanded.delete(name);
+  else equipExpanded.add(name);
+  renderEquipTable();
 }
 
 function renderEquipTable() {
   const el = document.getElementById('equip-content');
   if (!el) return;
 
-  const agg = _buildEquipAgg();
-  const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
+  const agg        = _buildEquipAgg(equipFilters);
+  const todayStr   = _localDateStr();
+  const idleDays   = n => { if (!agg[n] || !agg[n].lastUsed) return 999; return Math.floor((new Date(todayStr) - new Date(agg[n].lastUsed)) / 86400000); };
 
-  if (names.length === 0) {
+  // Full list for totals/cards (unfiltered by idle)
+  let names = Object.keys(agg);
+  const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
+  const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
+
+  // Apply idle filter after totals are computed
+  if (equipFilters.idleOnly) names = names.filter(n => idleDays(n) >= 14);
+
+  if (names.length === 0 && Object.keys(agg).length === 0) {
     el.innerHTML = `<div style="color:var(--muted);padding:2rem;text-align:center">No equipment entries found in daily tracking.</div>`;
     return;
   }
 
-  const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
-  const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
+  // ── Sort ──
+  const { sortCol, sortDir } = equipFilters;
+  const sortVal = n => {
+    const a = agg[n];
+    switch (sortCol) {
+      case 'name':     return n.toLowerCase();
+      case 'avgUC':    return a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0)/a.unitCosts.length : 0;
+      case 'minRate':  return a.unitCosts.length ? Math.min(...a.unitCosts) : 0;
+      case 'maxRate':  return a.unitCosts.length ? Math.max(...a.unitCosts) : 0;
+      case 'hours':    return a.hours;
+      case 'cost':     return a.cost;
+      case 'cph':      return a.hours ? a.cost / a.hours : 0;
+      case 'days':     return a.dates.size;
+      case 'lastUsed': return a.lastUsed || '';
+      case 'projects': return a.projects.size;
+      default:         return a.hours;
+    }
+  };
+  names.sort((a, b) => {
+    const av = sortVal(a), bv = sortVal(b);
+    if (sortCol === 'name' || sortCol === 'lastUsed')
+      return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    return sortDir === 'asc' ? av - bv : bv - av;
+  });
 
+  // ── Summary cards ──
+  const allNames   = Object.keys(agg);
+  const topHours   = allNames.length ? [...allNames].sort((a,b) => agg[b].hours        - agg[a].hours)[0]        : null;
+  const topCost    = allNames.length ? [...allNames].sort((a,b) => agg[b].cost         - agg[a].cost)[0]         : null;
+  const topProj    = allNames.length ? [...allNames].sort((a,b) => agg[b].projects.size - agg[a].projects.size)[0] : null;
+  const avgCPH     = totalHours ? totalCost / totalHours : 0;
+  const idleCount  = allNames.filter(n => idleDays(n) >= 14).length;
+
+  const card = (label, value, sub, color='var(--green)') =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.85rem 1.1rem;min-width:148px;flex:1">
+      <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.3rem">${label}</div>
+      <div style="font-size:1rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${value}</div>
+      ${sub ? `<div style="font-size:0.68rem;color:var(--muted);margin-top:0.15rem">${sub}</div>` : ''}
+    </div>`;
+
+  const cards = `<div style="display:flex;gap:0.65rem;flex-wrap:wrap;margin-bottom:1.1rem">
+    ${topHours ? card('Most Hours',    esc(topHours), fmt(agg[topHours].hours,1)+' hrs') : ''}
+    ${topCost  ? card('Highest Cost',  esc(topCost),  '$'+fmt(agg[topCost].cost)) : ''}
+    ${topProj  ? card('Most Projects', esc(topProj),  agg[topProj].projects.size+' project'+(agg[topProj].projects.size!==1?'s':'')) : ''}
+    ${card('Fleet Avg Cost / Hr', avgCPH ? '$'+fmt(avgCPH) : '—', allNames.length+' pieces tracked')}
+    ${idleCount > 0 ? card('Idle 14+ Days', idleCount+' piece'+(idleCount!==1?'s':''), 'not used recently', 'var(--yellow)') : ''}
+  </div>`;
+
+  // ── Project list for filter dropdown ──
+  const allProjects = [...new Set(allNames.flatMap(n => [...agg[n].projects]))].sort();
+
+  // ── Sortable header helpers ──
+  const shC = (col, lbl) => {
+    const active = sortCol === col;
+    const arrow  = active ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th class="calc-hdr" style="cursor:pointer;user-select:none${active?';color:var(--green)':''}" onclick="_equipSetSort('${col}')">${lbl}${arrow}</th>`;
+  };
+  const shL = (col, lbl) => {
+    const active = sortCol === col;
+    const arrow  = active ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th style="text-align:left;padding:0.4rem 0.75rem;cursor:pointer;user-select:none${active?';color:var(--green)':''}" onclick="_equipSetSort('${col}')">${lbl}${arrow}</th>`;
+  };
+
+  // ── Table rows ──
   const rows = names.map(name => {
-    const a = agg[name];
-    const avgUC  = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0) / a.unitCosts.length : 0;
-    const cph    = a.hours ? a.cost / a.hours : 0;
-    const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
-    const bar    = `<div style="width:100%;background:var(--surface2);border-radius:2px;height:6px;margin-top:3px"><div style="width:${utilPct.toFixed(1)}%;background:var(--green);height:6px;border-radius:2px"></div></div>`;
-    const srcBadge = a.source === 'trucking' ? `<span style="font-size:0.62rem;padding:0.05rem 0.3rem;background:rgba(96,165,250,0.12);color:var(--blue);border-radius:2px;margin-left:0.4rem;vertical-align:middle">Trucking</span>`
-                   : a.source === 'both'     ? `<span style="font-size:0.62rem;padding:0.05rem 0.3rem;background:rgba(34,197,94,0.12);color:var(--green);border-radius:2px;margin-left:0.4rem;vertical-align:middle">Daily+Trucking</span>`
-                   : '';
-    return `
-      <tr>
-        <td style="padding:0.45rem 0.75rem;font-weight:600;color:var(--text)">${esc(name)}${srcBadge}</td>
+    const a        = agg[name];
+    const avgUC    = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0)/a.unitCosts.length : 0;
+    const minRate  = a.unitCosts.length ? Math.min(...a.unitCosts) : 0;
+    const maxRate  = a.unitCosts.length ? Math.max(...a.unitCosts) : 0;
+    const cph      = a.hours ? a.cost / a.hours : 0;
+    const pctHrs   = totalHours ? (a.hours / totalHours * 100) : 0;
+    const pctCost  = totalCost  ? (a.cost  / totalCost  * 100) : 0;
+    const idle     = idleDays(name);
+    const expanded = equipExpanded.has(name);
+
+    const srcBadge  = a.source === 'trucking'
+      ? `<span style="font-size:0.6rem;padding:0.05rem 0.28rem;background:rgba(96,165,250,0.12);color:var(--blue);border-radius:2px;margin-left:0.35rem">Trucking</span>`
+      : a.source === 'both'
+      ? `<span style="font-size:0.6rem;padding:0.05rem 0.28rem;background:rgba(34,197,94,0.12);color:var(--green);border-radius:2px;margin-left:0.35rem">Daily+Trucking</span>`
+      : '';
+    const idleBadge = idle >= 14 && idle < 999
+      ? `<span style="font-size:0.6rem;padding:0.05rem 0.28rem;background:rgba(234,179,8,0.15);color:var(--yellow);border-radius:2px;margin-left:0.35rem">${idle}d idle</span>`
+      : idle >= 999 ? `<span style="font-size:0.6rem;padding:0.05rem 0.28rem;background:rgba(239,68,68,0.12);color:var(--red);border-radius:2px;margin-left:0.35rem">never logged</span>` : '';
+
+    const miniBar = (pct, color) =>
+      `<div style="display:flex;align-items:center;gap:0.35rem">
+        <span style="font-size:0.73rem;min-width:2.8rem;text-align:right">${pct.toFixed(1)}%</span>
+        <div style="width:52px;background:var(--surface2);border-radius:2px;height:5px;flex-shrink:0">
+          <div style="width:${Math.min(pct,100).toFixed(1)}%;background:${color};height:5px;border-radius:2px"></div>
+        </div>
+      </div>`;
+
+    const rateRange = minRate && maxRate && minRate !== maxRate
+      ? `$${fmt(minRate)} – $${fmt(maxRate)}`
+      : minRate ? `$${fmt(minRate)}` : '—';
+
+    // ── Expanded detail panel ──
+    let detailRow = '';
+    if (expanded) {
+      const thStyle  = `padding:0.25rem 0.6rem;color:var(--muted);font-weight:600;font-size:0.63rem;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid var(--border);text-align:right`;
+      const thStyleL = `padding:0.25rem 0.6rem;color:var(--muted);font-weight:600;font-size:0.63rem;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid var(--border);text-align:left`;
+      const tdR      = v => `<td style="padding:0.3rem 0.6rem;text-align:right;border-bottom:1px solid var(--border);font-size:0.78rem">${v}</td>`;
+      const tdL      = v => `<td style="padding:0.3rem 0.6rem;border-bottom:1px solid var(--border);font-size:0.78rem">${v}</td>`;
+
+      // Top employees table
+      const topEmps = Object.entries(a.employees).sort((x,y) => y[1].hours - x[1].hours).slice(0, 6);
+      const empRows = topEmps.map(([emp, d], i) => `<tr>
+        ${tdL(`<span style="color:${i===0?'var(--green)':'var(--text)'};font-weight:${i===0?'700':'400'}">${esc(emp)}</span>`)}
+        ${tdR(`<span style="color:#86efac">${fmt(d.hours,1)} hrs</span>`)}
+        ${tdR(d.entries+' entr'+(d.entries===1?'y':'ies'))}
+        ${tdR(a.hours ? (d.hours/a.hours*100).toFixed(1)+'%' : '—')}
+      </tr>`).join('');
+      const empTable = topEmps.length
+        ? `<table style="border-collapse:collapse;width:100%">
+            <thead><tr>
+              <th style="${thStyleL}">Employee</th>
+              <th style="${thStyle}">Hours</th>
+              <th style="${thStyle}">Entries</th>
+              <th style="${thStyle}">% of Equip Hrs</th>
+            </tr></thead>
+            <tbody>${empRows}</tbody>
+          </table>`
+        : `<div style="color:var(--muted);font-size:0.78rem;padding:0.4rem 0">No employee data logged with this equipment.</div>`;
+
+      // Per-project breakdown table
+      const projRows = Object.entries(a.projectDetail)
+        .filter(([,d]) => d.hours > 0)
+        .sort((x,y) => y[1].hours - x[1].hours)
+        .map(([proj, d]) => `<tr>
+          ${tdL(`<span style="color:var(--text)">${esc(proj)}</span>`)}
+          ${tdR(`<span style="color:#86efac">${fmt(d.hours,1)} hrs</span>`)}
+          ${tdR(`<span style="color:#86efac">$${fmt(d.cost)}</span>`)}
+          ${tdR(a.hours ? (d.hours/a.hours*100).toFixed(1)+'%' : '—')}
+        </tr>`).join('');
+      const projTable = projRows
+        ? `<table style="border-collapse:collapse;width:100%">
+            <thead><tr>
+              <th style="${thStyleL}">Project</th>
+              <th style="${thStyle}">Hours</th>
+              <th style="${thStyle}">Cost</th>
+              <th style="${thStyle}">% of Equip Hrs</th>
+            </tr></thead>
+            <tbody>${projRows}</tbody>
+          </table>`
+        : `<div style="color:var(--muted);font-size:0.78rem;padding:0.4rem 0">No project breakdown available.</div>`;
+
+      detailRow = `<tr>
+        <td colspan="12" style="padding:0;background:var(--bg);border-bottom:2px solid var(--border)">
+          <div style="padding:1rem 1.5rem;display:grid;grid-template-columns:1fr 1fr;gap:1.75rem">
+            <div>
+              <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--green);margin-bottom:0.6rem">&#128100; Top Operators / Employees</div>
+              ${empTable}
+            </div>
+            <div>
+              <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--blue);margin-bottom:0.6rem">&#128196; Project Breakdown</div>
+              ${projTable}
+            </div>
+          </div>
+        </td>
+      </tr>`;
+    }
+
+    return `<tr style="cursor:pointer" data-equip="${esc(name)}" onclick="_equipToggle(this.dataset.equip)">
+        <td style="padding:0.45rem 0.75rem;font-weight:600;color:var(--text)">
+          <span style="font-size:0.62rem;color:var(--muted);margin-right:0.35rem">${expanded ? '▼' : '▶'}</span>${esc(name)}${srcBadge}${idleBadge}
+        </td>
         <td class="calc">${avgUC ? '$'+fmt(avgUC) : '—'}</td>
+        <td class="calc" style="font-size:0.72rem;color:var(--muted)">${rateRange}</td>
         <td class="calc">${fmt(a.hours,1)}</td>
         <td class="calc">$${fmt(a.cost)}</td>
         <td class="calc">${cph ? '$'+fmt(cph) : '—'}</td>
+        <td class="calc">${miniBar(pctHrs,'var(--green)')}</td>
+        <td class="calc">${miniBar(pctCost,'var(--blue)')}</td>
         <td class="calc">${a.dates.size}</td>
+        <td class="calc">${a.lastUsed || '—'}</td>
         <td class="calc">${a.projects.size}</td>
-        <td class="calc" style="min-width:90px">
-          <span style="font-size:0.75rem">${utilPct.toFixed(1)}%</span>
-          ${bar}
-        </td>
-        <td style="padding:0.45rem 0.75rem;font-size:0.72rem;color:var(--muted);max-width:200px">${[...a.costCodes].sort().join(', ') || '—'}</td>
-      </tr>`;
+        <td style="padding:0.45rem 0.75rem;font-size:0.7rem;color:var(--muted);max-width:180px">${[...a.costCodes].sort().join(', ') || '—'}</td>
+      </tr>${detailRow}`;
   }).join('');
 
+  const hasFilters = equipFilters.project || equipFilters.dateFrom || equipFilters.dateTo || equipFilters.idleOnly;
+
   el.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem">
-      <div>
-        <h2 style="margin:0;font-size:1rem;font-weight:700;color:var(--text)">Equipment Utilization</h2>
-        <span style="font-size:0.75rem;color:var(--muted)">${names.length} pieces tracked &nbsp;·&nbsp; ${fmt(totalHours,1)} total hours &nbsp;·&nbsp; $${fmt(totalCost)} total cost</span>
-      </div>
+    <div style="margin-bottom:0.85rem">
+      <h2 style="margin:0 0 0.1rem;font-size:1rem;font-weight:700;color:var(--text)">Equipment Utilization</h2>
+      <span style="font-size:0.75rem;color:var(--muted)">${allNames.length} pieces tracked &nbsp;·&nbsp; ${fmt(totalHours,1)} total hours &nbsp;·&nbsp; $${fmt(totalCost)} total cost</span>
     </div>
+
+    ${cards}
+
+    <div style="display:flex;gap:0.55rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem;padding:0.55rem 0.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px">
+      <span style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);flex-shrink:0">Filters</span>
+      <select style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.22rem 0.45rem;font-size:0.78rem;outline:none"
+        onchange="equipFilters.project=this.value;equipExpanded.clear();renderEquipTable()">
+        <option value="">All Projects</option>
+        ${allProjects.map(p=>`<option value="${esc(p)}"${equipFilters.project===p?' selected':''}>${esc(p)}</option>`).join('')}
+      </select>
+      <input type="date" value="${equipFilters.dateFrom}" title="From"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.22rem 0.45rem;font-size:0.78rem;outline:none"
+        onchange="equipFilters.dateFrom=this.value;equipExpanded.clear();renderEquipTable()">
+      <span style="color:var(--muted);font-size:0.75rem">–</span>
+      <input type="date" value="${equipFilters.dateTo}" title="To"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.22rem 0.45rem;font-size:0.78rem;outline:none"
+        onchange="equipFilters.dateTo=this.value;equipExpanded.clear();renderEquipTable()">
+      <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.78rem;color:var(--muted);cursor:pointer;flex-shrink:0">
+        <input type="checkbox" ${equipFilters.idleOnly?'checked':''} onchange="equipFilters.idleOnly=this.checked;equipExpanded.clear();renderEquipTable()">
+        Idle only (14+ days)
+      </label>
+      ${hasFilters ? `<button class="btn btn-ghost" style="font-size:0.72rem;padding:0.18rem 0.5rem" onclick="equipFilters={project:'',dateFrom:'',dateTo:'',sortCol:'hours',sortDir:'desc',idleOnly:false};equipExpanded.clear();renderEquipTable()">✕ Clear</button>` : ''}
+    </div>
+
+    ${names.length === 0 ? `<div style="color:var(--muted);padding:1.5rem;text-align:center;font-size:0.85rem">No equipment matches the current filters.</div>` : `
     <div class="table-wrap">
       <table id="equip-table" style="width:100%">
         <thead>
           <tr class="col-row">
-            <th style="text-align:left;padding:0.4rem 0.75rem">Equipment</th>
-            <th class="calc-hdr">Avg Unit Cost</th>
-            <th class="calc-hdr">Total Hours</th>
-            <th class="calc-hdr">Total Cost</th>
-            <th class="calc-hdr">Cost / Hr</th>
-            <th class="calc-hdr">Days Active</th>
-            <th class="calc-hdr">Projects</th>
-            <th class="calc-hdr">% of All Hours</th>
+            ${shL('name','Equipment')}
+            ${shC('avgUC','Avg Unit Cost')}
+            ${shC('minRate','Rate Range')}
+            ${shC('hours','Total Hours')}
+            ${shC('cost','Total Cost')}
+            ${shC('cph','Cost / Hr')}
+            ${shC('hours','% of Hours')}
+            ${shC('cost','% of Cost')}
+            ${shC('days','Days Active')}
+            ${shC('lastUsed','Last Used')}
+            ${shC('projects','Projects')}
             <th style="text-align:left;padding:0.4rem 0.75rem">Cost Codes</th>
           </tr>
         </thead>
@@ -7694,45 +7931,61 @@ function renderEquipTable() {
           <tr style="border-top:2px solid var(--border);font-weight:600">
             <td style="padding:0.45rem 0.75rem">Total</td>
             <td class="calc">—</td>
+            <td class="calc">—</td>
             <td class="calc">${fmt(totalHours,1)}</td>
             <td class="calc">$${fmt(totalCost)}</td>
             <td class="calc">${totalHours ? '$'+fmt(totalCost/totalHours) : '—'}</td>
-            <td class="calc">—</td>
-            <td class="calc">—</td>
             <td class="calc">100%</td>
+            <td class="calc">100%</td>
+            <td class="calc">—</td>
+            <td class="calc">—</td>
+            <td class="calc">—</td>
             <td></td>
           </tr>
         </tfoot>
       </table>
-    </div>
+    </div>`}
     <div class="legend" style="margin-top:0.75rem">
-      <span>% of All Hours = this equipment's hours as a share of total tracked equipment hours</span>
-      <span>Avg Unit Cost = average rate entered for this equipment across daily rows</span>
+      <span>&#9654; Click any row to expand operator &amp; project breakdown</span>
+      <span>% of Hours / Cost = share of fleet totals for the current filter</span>
+      <span>Rate Range = min – max unit cost entered across all entries</span>
+      <span>Idle badge = equipment not logged in 14+ days</span>
     </div>`;
 }
 
 function exportEquipCSV() {
-  const agg = _buildEquipAgg();
+  const agg = _buildEquipAgg(equipFilters);
   const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
   if (names.length === 0) { alert('No equipment data to export.'); return; }
   const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
-  const headers = ['Equipment','Source','Avg Unit Cost','Total Hours','Total Cost','Cost/Hr','Days Active','Projects','% of All Hours','Cost Codes'];
+  const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
+  const headers = ['Equipment','Source','Avg Unit Cost','Min Rate','Max Rate','Total Hours','Total Cost','Cost/Hr','% of Hours','% of Cost','Days Active','Last Used','Projects','Top Employee','Top Employee Hrs','Cost Codes'];
   const rows = [headers.join(',')];
   names.forEach(name => {
-    const a = agg[name];
+    const a       = agg[name];
     const avgUC   = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0)/a.unitCosts.length : 0;
+    const minRate = a.unitCosts.length ? Math.min(...a.unitCosts) : 0;
+    const maxRate = a.unitCosts.length ? Math.max(...a.unitCosts) : 0;
     const cph     = a.hours ? a.cost / a.hours : 0;
-    const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
+    const pctHrs  = totalHours ? (a.hours / totalHours * 100) : 0;
+    const pctCost = totalCost  ? (a.cost  / totalCost  * 100) : 0;
     const src     = a.source === 'trucking' ? 'Trucking' : a.source === 'both' ? 'Daily+Trucking' : 'Daily';
+    const topEmp  = Object.entries(a.employees).sort((x,y)=>y[1].hours-x[1].hours)[0];
     rows.push([
       name, src,
       avgUC   ? avgUC.toFixed(2)   : '',
+      minRate ? minRate.toFixed(2)  : '',
+      maxRate ? maxRate.toFixed(2)  : '',
       a.hours.toFixed(1),
       a.cost.toFixed(2),
       cph     ? cph.toFixed(2)     : '',
+      pctHrs.toFixed(1)  + '%',
+      pctCost.toFixed(1) + '%',
       a.dates.size,
+      a.lastUsed || '',
       a.projects.size,
-      utilPct.toFixed(1) + '%',
+      topEmp ? topEmp[0] : '',
+      topEmp ? topEmp[1].hours.toFixed(1) : '',
       [...a.costCodes].sort().join('; '),
     ].map(v => `"${v}"`).join(','));
   });
@@ -7740,63 +7993,80 @@ function exportEquipCSV() {
 }
 
 function exportEquipPDF() {
-  const agg = _buildEquipAgg();
+  const agg = _buildEquipAgg(equipFilters);
   const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
   if (names.length === 0) { alert('No equipment data to export.'); return; }
 
   const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
   const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
   const dateStr    = new Date().toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+  const filterNote = [
+    equipFilters.project  ? 'Project: ' + equipFilters.project : '',
+    equipFilters.dateFrom ? 'From: ' + equipFilters.dateFrom   : '',
+    equipFilters.dateTo   ? 'To: '   + equipFilters.dateTo     : '',
+  ].filter(Boolean).join('  ·  ');
 
-  const rows = names.map(name => {
-    const a = agg[name];
-    const avgUC = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0)/a.unitCosts.length : 0;
-    const cph   = a.hours ? a.cost / a.hours : 0;
-    const utilPct = totalHours ? (a.hours / totalHours * 100) : 0;
-    const r = v => `<td style="padding:0.3rem 0.5rem;text-align:right;border-bottom:1px solid #e5e7eb">${v}</td>`;
-    const srcLabel = a.source === 'trucking' ? ' [Trucking]' : a.source === 'both' ? ' [Daily+Trucking]' : '';
+  const r  = v => `<td style="padding:0.28rem 0.45rem;text-align:right;border-bottom:1px solid #e5e7eb">${v}</td>`;
+  const rL = v => `<td style="padding:0.28rem 0.45rem;border-bottom:1px solid #e5e7eb">${v}</td>`;
+
+  const mainRows = names.map(name => {
+    const a       = agg[name];
+    const avgUC   = a.unitCosts.length ? a.unitCosts.reduce((s,v)=>s+v,0)/a.unitCosts.length : 0;
+    const minRate = a.unitCosts.length ? Math.min(...a.unitCosts) : 0;
+    const maxRate = a.unitCosts.length ? Math.max(...a.unitCosts) : 0;
+    const cph     = a.hours ? a.cost / a.hours : 0;
+    const pctHrs  = totalHours ? (a.hours / totalHours * 100) : 0;
+    const pctCost = totalCost  ? (a.cost  / totalCost  * 100) : 0;
+    const srcLabel = a.source === 'trucking' ? ' [T]' : a.source === 'both' ? ' [D+T]' : '';
+    const topEmp  = Object.entries(a.employees).sort((x,y)=>y[1].hours-x[1].hours)[0];
+    const rateRange = minRate && maxRate && minRate !== maxRate ? `$${fmt(minRate)}–$${fmt(maxRate)}` : minRate ? `$${fmt(minRate)}` : '—';
     return `<tr>
-      <td style="padding:0.3rem 0.5rem;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(name)}${srcLabel}</td>
+      ${rL(`<strong>${esc(name)}</strong>${srcLabel}`)}
       ${r(avgUC ? '$'+fmt(avgUC) : '—')}
+      ${r(rateRange)}
       ${r(fmt(a.hours,1))}
       ${r('$'+fmt(a.cost))}
       ${r(cph ? '$'+fmt(cph) : '—')}
+      ${r(pctHrs.toFixed(1)+'%')}
+      ${r(pctCost.toFixed(1)+'%')}
       ${r(a.dates.size)}
-      ${r(a.projects.size)}
-      ${r(utilPct.toFixed(1)+'%')}
-      <td style="padding:0.3rem 0.5rem;border-bottom:1px solid #e5e7eb;font-size:0.7rem;color:#6b7280">${[...a.costCodes].sort().join(', ')||'—'}</td>
+      ${r(a.lastUsed || '—')}
+      ${rL(topEmp ? `${esc(topEmp[0])} (${fmt(topEmp[1].hours,1)}h)` : '—')}
     </tr>`;
   }).join('');
 
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>Equipment Utilization</title>
   <style>
-    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; margin: 0; padding: 1.5rem; }
-    h1 { font-size: 16px; margin: 0 0 0.25rem; }
-    .sub { font-size: 10px; color: #6b7280; margin-bottom: 1.25rem; }
+    body { font-family: Arial, sans-serif; font-size: 10.5px; color: #111; margin: 0; padding: 1.25rem; }
+    h1 { font-size: 15px; margin: 0 0 0.2rem; }
+    .sub { font-size: 9.5px; color: #6b7280; margin-bottom: 0.2rem; }
+    .filter-note { font-size: 9px; color: #9ca3af; margin-bottom: 1rem; font-style: italic; }
     table { width: 100%; border-collapse: collapse; }
-    thead th { background: #f3f4f6; padding: 0.35rem 0.5rem; text-align: right; font-size: 10px; font-weight: 600; color: #374151; border-bottom: 2px solid #d1d5db; }
-    thead th:first-child, thead th:last-child { text-align: left; }
-    tfoot td { padding: 0.3rem 0.5rem; font-weight: 700; border-top: 2px solid #d1d5db; text-align: right; }
+    thead th { background: #f3f4f6; padding: 0.3rem 0.45rem; text-align: right; font-size: 9px; font-weight: 600; color: #374151; border-bottom: 2px solid #d1d5db; white-space: nowrap; }
+    thead th:first-child, thead th.left { text-align: left; }
+    tfoot td { padding: 0.28rem 0.45rem; font-weight: 700; border-top: 2px solid #d1d5db; text-align: right; font-size: 10px; }
     tfoot td:first-child { text-align: left; }
-    @media print { body { padding: 0.5rem; } }
+    @media print { body { padding: 0.4rem; } }
   </style></head><body>
   <h1>Equipment Utilization Report</h1>
   <div class="sub">${dateStr} &nbsp;·&nbsp; ${names.length} pieces &nbsp;·&nbsp; ${fmt(totalHours,1)} total hrs &nbsp;·&nbsp; $${fmt(totalCost)} total cost</div>
+  ${filterNote ? `<div class="filter-note">Filtered by: ${filterNote}</div>` : '<div style="margin-bottom:1rem"></div>'}
   <table>
     <thead><tr>
-      <th style="text-align:left">Equipment</th>
-      <th>Avg Unit Cost</th><th>Total Hrs</th><th>Total Cost</th>
-      <th>Cost/Hr</th><th>Days Active</th><th>Projects</th><th>% of Hrs</th>
-      <th style="text-align:left">Cost Codes</th>
+      <th class="left">Equipment</th>
+      <th>Avg Unit Cost</th><th>Rate Range</th><th>Total Hrs</th><th>Total Cost</th>
+      <th>Cost/Hr</th><th>% Hrs</th><th>% Cost</th><th>Days Active</th><th>Last Used</th>
+      <th class="left">Top Operator</th>
     </tr></thead>
-    <tbody>${rows}</tbody>
+    <tbody>${mainRows}</tbody>
     <tfoot><tr>
-      <td>Total</td><td></td>
+      <td>Total</td><td></td><td></td>
       <td style="text-align:right">${fmt(totalHours,1)}</td>
       <td style="text-align:right">$${fmt(totalCost)}</td>
-      <td style="text-align:right">${totalHours?'$'+fmt(totalCost/totalHours):'—'}</td>
-      <td></td><td></td><td style="text-align:right">100%</td><td></td>
+      <td style="text-align:right">${totalHours ? '$'+fmt(totalCost/totalHours) : '—'}</td>
+      <td style="text-align:right">100%</td><td style="text-align:right">100%</td>
+      <td></td><td></td><td></td>
     </tr></tfoot>
   </table>
   <script>window.onload=()=>{window.print();}<\/script>
