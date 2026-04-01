@@ -7584,7 +7584,7 @@ async function submitMobileEntry() {
    EQUIPMENT UTILIZATION
 ═══════════════════════════════════════════ */
 
-let equipFilters  = { project: '', dateFrom: '', dateTo: '', sortCol: 'hours', sortDir: 'desc', idleOnly: false };
+let equipFilters  = { project: '', dateFrom: '', dateTo: '', sortCol: 'hours', sortDir: 'desc' };
 let equipExpanded = new Set();
 
 function _buildEquipAgg(filters = {}) {
@@ -7680,16 +7680,10 @@ function renderEquipTable() {
   if (!el) return;
 
   const agg        = _buildEquipAgg(equipFilters);
-  const todayStr   = _localDateStr();
-  const idleDays   = n => { if (!agg[n] || !agg[n].lastUsed) return 999; return Math.floor((new Date(todayStr) - new Date(agg[n].lastUsed)) / 86400000); };
 
-  // Full list for totals/cards (unfiltered by idle)
   let names = Object.keys(agg);
   const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
   const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
-
-  // Apply idle filter after totals are computed
-  if (equipFilters.idleOnly) names = names.filter(n => idleDays(n) >= 14);
 
   if (names.length === 0 && Object.keys(agg).length === 0) {
     el.innerHTML = `<div style="color:var(--muted);padding:2rem;text-align:center">No equipment entries found in daily tracking.</div>`;
@@ -7727,7 +7721,6 @@ function renderEquipTable() {
   const topCost    = allNames.length ? [...allNames].sort((a,b) => agg[b].cost         - agg[a].cost)[0]         : null;
   const topProj    = allNames.length ? [...allNames].sort((a,b) => agg[b].projects.size - agg[a].projects.size)[0] : null;
   const avgCPH     = totalHours ? totalCost / totalHours : 0;
-  const idleCount  = allNames.filter(n => idleDays(n) >= 14).length;
 
   const card = (label, value, sub, color='var(--green)') =>
     `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.85rem 1.1rem;min-width:148px;flex:1">
@@ -7741,7 +7734,6 @@ function renderEquipTable() {
     ${topCost  ? card('Highest Cost',  esc(topCost),  '$'+fmt(agg[topCost].cost)) : ''}
     ${topProj  ? card('Most Projects', esc(topProj),  agg[topProj].projects.size+' project'+(agg[topProj].projects.size!==1?'s':'')) : ''}
     ${card('Fleet Avg Cost / Hr', avgCPH ? '$'+fmt(avgCPH) : '—', allNames.length+' pieces tracked')}
-    ${idleCount > 0 ? card('Idle 14+ Days', idleCount+' piece'+(idleCount!==1?'s':''), 'not used recently', 'var(--yellow)') : ''}
   </div>`;
 
   // ── Project list for filter dropdown ──
@@ -7768,7 +7760,6 @@ function renderEquipTable() {
     const cph      = a.hours ? a.cost / a.hours : 0;
     const pctHrs   = totalHours ? (a.hours / totalHours * 100) : 0;
     const pctCost  = totalCost  ? (a.cost  / totalCost  * 100) : 0;
-    const idle     = idleDays(name);
     const expanded = equipExpanded.has(name);
 
     const srcBadge  = a.source === 'trucking'
@@ -7776,10 +7767,6 @@ function renderEquipTable() {
       : a.source === 'both'
       ? `<span style="font-size:0.6rem;padding:0.05rem 0.28rem;background:rgba(34,197,94,0.12);color:var(--green);border-radius:2px;margin-left:0.35rem">Daily+Trucking</span>`
       : '';
-    const idleBadge = idle >= 14 && idle < 999
-      ? `<span style="font-size:0.6rem;padding:0.05rem 0.28rem;background:rgba(234,179,8,0.15);color:var(--yellow);border-radius:2px;margin-left:0.35rem">${idle}d idle</span>`
-      : idle >= 999 ? `<span style="font-size:0.6rem;padding:0.05rem 0.28rem;background:rgba(239,68,68,0.12);color:var(--red);border-radius:2px;margin-left:0.35rem">never logged</span>` : '';
-
     const miniBar = (pct, color) =>
       `<div style="display:flex;align-items:center;gap:0.35rem">
         <span style="font-size:0.73rem;min-width:2.8rem;text-align:right">${pct.toFixed(1)}%</span>
@@ -7860,7 +7847,7 @@ function renderEquipTable() {
 
     return `<tr style="cursor:pointer" data-equip="${esc(name)}" onclick="_equipToggle(this.dataset.equip)">
         <td style="padding:0.45rem 0.75rem;font-weight:600;color:var(--text)">
-          <span style="font-size:0.62rem;color:var(--muted);margin-right:0.35rem">${expanded ? '▼' : '▶'}</span>${esc(name)}${srcBadge}${idleBadge}
+          <span style="font-size:0.62rem;color:var(--muted);margin-right:0.35rem">${expanded ? '▼' : '▶'}</span>${esc(name)}${srcBadge}
         </td>
         <td class="calc">${avgUC ? '$'+fmt(avgUC) : '—'}</td>
         <td class="calc" style="font-size:0.72rem;color:var(--muted)">${rateRange}</td>
@@ -7876,7 +7863,7 @@ function renderEquipTable() {
       </tr>${detailRow}`;
   }).join('');
 
-  const hasFilters = equipFilters.project || equipFilters.dateFrom || equipFilters.dateTo || equipFilters.idleOnly;
+  const hasFilters = equipFilters.project || equipFilters.dateFrom || equipFilters.dateTo;
 
   el.innerHTML = `
     <div style="margin-bottom:0.85rem">
@@ -7900,11 +7887,7 @@ function renderEquipTable() {
       <input type="date" value="${equipFilters.dateTo}" title="To"
         style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.22rem 0.45rem;font-size:0.78rem;outline:none"
         onchange="equipFilters.dateTo=this.value;equipExpanded.clear();renderEquipTable()">
-      <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.78rem;color:var(--muted);cursor:pointer;flex-shrink:0">
-        <input type="checkbox" ${equipFilters.idleOnly?'checked':''} onchange="equipFilters.idleOnly=this.checked;equipExpanded.clear();renderEquipTable()">
-        Idle only (14+ days)
-      </label>
-      ${hasFilters ? `<button class="btn btn-ghost" style="font-size:0.72rem;padding:0.18rem 0.5rem" onclick="equipFilters={project:'',dateFrom:'',dateTo:'',sortCol:'hours',sortDir:'desc',idleOnly:false};equipExpanded.clear();renderEquipTable()">✕ Clear</button>` : ''}
+      ${hasFilters ? `<button class="btn btn-ghost" style="font-size:0.72rem;padding:0.18rem 0.5rem" onclick="equipFilters={project:'',dateFrom:'',dateTo:'',sortCol:'hours',sortDir:'desc'};equipExpanded.clear();renderEquipTable()">✕ Clear</button>` : ''}
     </div>
 
     ${names.length === 0 ? `<div style="color:var(--muted);padding:1.5rem;text-align:center;font-size:0.85rem">No equipment matches the current filters.</div>` : `
@@ -7949,7 +7932,6 @@ function renderEquipTable() {
       <span>&#9654; Click any row to expand operator &amp; project breakdown</span>
       <span>% of Hours / Cost = share of fleet totals for the current filter</span>
       <span>Rate Range = min – max unit cost entered across all entries</span>
-      <span>Idle badge = equipment not logged in 14+ days</span>
     </div>`;
 }
 
