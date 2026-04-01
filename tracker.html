@@ -2873,13 +2873,14 @@ function renderMobileProjCards() {
     return bPin - aPin || (a['project-name']||'').localeCompare(b['project-name']||'');
   });
   el.innerHTML = `<div class="mob-section-title">Projects</div>` + sorted.map(p => {
-    const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
+    const _eb = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+    const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b)*(parseFloat(b.unit_cost)||0), 0);
     const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
     const variance = bid - actual;
     const pct    = bid ? Math.min(actual / bid * 100, 100) : 0;
     const barColor = !bid ? 'var(--muted)' : actual/bid >= 1 ? 'var(--red)' : actual/bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
     const varColor = variance >= 0 ? 'var(--green)' : 'var(--red)';
-    const varTxt   = !bid ? '—' : (variance >= 0 ? '−' : '+') + '$' + fmt(Math.abs(variance));
+    const varTxt   = !bid ? '—' : (variance >= 0 ? '' : '−') + '$' + fmt(Math.abs(variance));
     const status   = p['status'] || '';
     const statusColor = status === 'Complete' ? 'var(--blue)' : status === 'Active' ? 'var(--green)' : status === 'At Risk' ? 'var(--red)' : 'var(--muted)';
     const meta = [p['job-number'], p['client']].filter(Boolean).join(' · ');
@@ -2930,11 +2931,13 @@ function renderHomeTab() {
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
 
   projectsList.forEach(p => {
-    const projBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+    const _effBidQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+    const projBid    = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b) * (parseFloat(b.unit_cost)||0), 0);
     const projActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
-    // Simple projected: if we've spent X% of bid on Y% of work, project total proportionally
-    const projPct    = projBid ? projActual / projBid : 0;
-    const projected  = projPct > 0 ? projActual / projPct : projBid;
+    // Quantity-based EAC: actual unit cost so far × total bid quantity
+    const projBidQty  = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b), 0);
+    const projDoneQty = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
+    const projected   = (projDoneQty > 0 && projBidQty > 0) ? (projActual / projDoneQty) * projBidQty : projBid;
     totalBid       += projBid;
     totalActual    += projActual;
     totalProjected += projected;
@@ -2954,12 +2957,14 @@ function renderHomeTab() {
   // ── Budget variance alerts — projects where actual > bid * 1.10 ──
   const overBudgetProjects = projectsList
     .filter(p => {
-      const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+      const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+      const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
       const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
       return bid > 0 && actual > bid * 1.10;
     })
     .map(p => {
-      const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+      const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+      const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
       const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
       return { id: p.id, name: p['project-name'] || 'Untitled', pct: ((actual / bid - 1) * 100).toFixed(1), over: actual - bid };
     });
@@ -2986,7 +2991,8 @@ function renderHomeTab() {
   const projectCards = projectsList.length === 0
     ? `<div class="home-empty">No projects yet. Go to Project Dashboard to create one.</div>`
     : displayProjects.map(p => {
-        const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+        const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+        const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
         const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
         const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
         const variance  = bid - actual;
@@ -3087,14 +3093,15 @@ function renderHomeTab() {
 
   // ── Pre-compute project table rows ──
   const projectTableRows = displayProjects.map(p => {
-    const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+    const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+    const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
     const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
     const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
     const variance  = bid - actual;
     const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
-    const varTxt    = !bid ? '—' : variance >= 0 ? `−$${fmt(Math.abs(variance))}` : `+$${fmt(Math.abs(variance))}`;
+    const varTxt    = !bid ? '—' : variance >= 0 ? `$${fmt(Math.abs(variance))} under` : `$${fmt(Math.abs(variance))} over`;
     const isComplete    = (p['status'] || '').toLowerCase() === 'complete';
-    const bidQtyTotal   = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0), 0);
+    const bidQtyTotal   = (p.bidItems||[]).reduce((s,b) => s + _eb(b), 0);
     const actQtyTotal   = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
     const projCost      = isComplete ? actual
       : (actQtyTotal > 0 && bidQtyTotal > 0) ? (actual / actQtyTotal) * bidQtyTotal : bid;
@@ -6638,7 +6645,7 @@ function renderCostTable() {
     (p.bidItems || []).forEach(b => {
       const key = (b.cost_code || '') + '||' + (b.sub_code || '');
       if (!bidMap[key]) bidMap[key] = { cost_code: b.cost_code || '', sub_code: b.sub_code || '', qty: 0, total: 0 };
-      const bq = parseFloat(b.quantity)  || 0;
+      const bq = (parseFloat(b.quantity) || 0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
       const uc = parseFloat(b.unit_cost) || 0;
       bidMap[key].qty   += bq;
       bidMap[key].total += bq * uc;
