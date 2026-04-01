@@ -1758,10 +1758,26 @@
         border-radius: 5px;
         color: var(--text);
         font-size: 0.9rem;
+        font-family: inherit;
         padding: 0.55rem 0.75rem;
         outline: none;
         -webkit-appearance: none;
+        transition: border-color 0.15s;
       }
+      .mob-input:focus { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(99,179,237,0.15); }
+      select.mob-input {
+        padding-right: 2rem;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 0.65rem center;
+      }
+      .mob-collapsible-body {
+        overflow: hidden;
+        transition: max-height 0.22s ease, opacity 0.18s ease;
+        max-height: 2000px;
+        opacity: 1;
+      }
+      .mob-collapsible-body.mob-collapsed { max-height: 0; opacity: 0; }
       .mob-emp-row {
         display: flex;
         align-items: center;
@@ -2857,13 +2873,14 @@ function renderMobileProjCards() {
     return bPin - aPin || (a['project-name']||'').localeCompare(b['project-name']||'');
   });
   el.innerHTML = `<div class="mob-section-title">Projects</div>` + sorted.map(p => {
-    const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0), 0);
+    const _eb = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+    const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b)*(parseFloat(b.unit_cost)||0), 0);
     const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
     const variance = bid - actual;
     const pct    = bid ? Math.min(actual / bid * 100, 100) : 0;
     const barColor = !bid ? 'var(--muted)' : actual/bid >= 1 ? 'var(--red)' : actual/bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
     const varColor = variance >= 0 ? 'var(--green)' : 'var(--red)';
-    const varTxt   = !bid ? '—' : (variance >= 0 ? '−' : '+') + '$' + fmt(Math.abs(variance));
+    const varTxt   = !bid ? '—' : (variance >= 0 ? '' : '−') + '$' + fmt(Math.abs(variance));
     const status   = p['status'] || '';
     const statusColor = status === 'Complete' ? 'var(--blue)' : status === 'Active' ? 'var(--green)' : status === 'At Risk' ? 'var(--red)' : 'var(--muted)';
     const meta = [p['job-number'], p['client']].filter(Boolean).join(' · ');
@@ -2914,11 +2931,13 @@ function renderHomeTab() {
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
 
   projectsList.forEach(p => {
-    const projBid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+    const _effBidQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+    const projBid    = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b) * (parseFloat(b.unit_cost)||0), 0);
     const projActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
-    // Simple projected: if we've spent X% of bid on Y% of work, project total proportionally
-    const projPct    = projBid ? projActual / projBid : 0;
-    const projected  = projPct > 0 ? projActual / projPct : projBid;
+    // Quantity-based EAC: actual unit cost so far × total bid quantity
+    const projBidQty  = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b), 0);
+    const projDoneQty = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
+    const projected   = (projDoneQty > 0 && projBidQty > 0) ? (projActual / projDoneQty) * projBidQty : projBid;
     totalBid       += projBid;
     totalActual    += projActual;
     totalProjected += projected;
@@ -2938,12 +2957,14 @@ function renderHomeTab() {
   // ── Budget variance alerts — projects where actual > bid * 1.10 ──
   const overBudgetProjects = projectsList
     .filter(p => {
-      const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+      const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+      const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
       const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
       return bid > 0 && actual > bid * 1.10;
     })
     .map(p => {
-      const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+      const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+      const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
       const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
       return { id: p.id, name: p['project-name'] || 'Untitled', pct: ((actual / bid - 1) * 100).toFixed(1), over: actual - bid };
     });
@@ -2970,7 +2991,8 @@ function renderHomeTab() {
   const projectCards = projectsList.length === 0
     ? `<div class="home-empty">No projects yet. Go to Project Dashboard to create one.</div>`
     : displayProjects.map(p => {
-        const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+        const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+        const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
         const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
         const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
         const variance  = bid - actual;
@@ -3071,14 +3093,15 @@ function renderHomeTab() {
 
   // ── Pre-compute project table rows ──
   const projectTableRows = displayProjects.map(p => {
-    const bid    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0) * (parseFloat(b.unit_cost)||0), 0);
+    const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+    const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
     const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
     const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
     const variance  = bid - actual;
     const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
-    const varTxt    = !bid ? '—' : variance >= 0 ? `−$${fmt(Math.abs(variance))}` : `+$${fmt(Math.abs(variance))}`;
+    const varTxt    = !bid ? '—' : variance >= 0 ? `$${fmt(Math.abs(variance))} under` : `$${fmt(Math.abs(variance))} over`;
     const isComplete    = (p['status'] || '').toLowerCase() === 'complete';
-    const bidQtyTotal   = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0), 0);
+    const bidQtyTotal   = (p.bidItems||[]).reduce((s,b) => s + _eb(b), 0);
     const actQtyTotal   = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
     const projCost      = isComplete ? actual
       : (actQtyTotal > 0 && bidQtyTotal > 0) ? (actual / actQtyTotal) * bidQtyTotal : bid;
@@ -6622,7 +6645,7 @@ function renderCostTable() {
     (p.bidItems || []).forEach(b => {
       const key = (b.cost_code || '') + '||' + (b.sub_code || '');
       if (!bidMap[key]) bidMap[key] = { cost_code: b.cost_code || '', sub_code: b.sub_code || '', qty: 0, total: 0 };
-      const bq = parseFloat(b.quantity)  || 0;
+      const bq = (parseFloat(b.quantity) || 0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
       const uc = parseFloat(b.unit_cost) || 0;
       bidMap[key].qty   += bq;
       bidMap[key].total += bq * uc;
@@ -7016,7 +7039,7 @@ function renderMobileEntryForm(successMsg) {
   const empList = (lists.employees||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   const empCheckboxes = empList.map(e => `
     <label class="mob-emp-row">
-      <input type="checkbox" class="mob-emp-cb" value="${esc(e.name)}" id="mob-emp-${esc(e.name)}">
+      <input type="checkbox" class="mob-emp-cb" value="${esc(e.name)}" id="mob-emp-${esc(e.name)}" onchange="mobUpdateCrewCount()">
       <span class="mob-emp-name">${esc(e.name)}</span>
     </label>`).join('');
 
@@ -7037,23 +7060,28 @@ function renderMobileEntryForm(successMsg) {
     <div class="mob-form-card">
       <div class="mob-section-title">Job Info</div>
       <label class="mob-form-label">Project</label>
-      <select id="mob-project" class="mob-input">${projOpts}</select>
+      <select id="mob-project" class="mob-input" onchange="renderMobTodayEntries(this.value)">${projOpts}</select>
       <label class="mob-form-label">Date</label>
-      <input  id="mob-date" type="date" class="mob-input" value="${today}">
+      <input  id="mob-date" type="date" class="mob-input" value="${today}" onchange="renderMobTodayEntries(document.getElementById('mob-project').value)">
       <label class="mob-form-label">Field Type</label>
       <select id="mob-field-type" class="mob-input">${fieldTypeOpts}</select>
+      <label class="mob-form-label">Notes <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+      <textarea id="mob-notes" class="mob-input" rows="2" placeholder="Any notes for this entry…" style="resize:vertical;min-height:2.5rem"></textarea>
     </div>
 
     <div class="mob-form-card">
       <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="mobToggleSection('mob-crew-body',this)">
-        <div class="mob-section-title" style="margin:0">Crew</div>
-        <span class="mob-chevron" style="color:var(--muted);font-size:0.7rem;transition:transform 0.15s;transform:rotate(-90deg)">▼</span>
+        <div style="display:flex;align-items:center;gap:0.5rem">
+          <div class="mob-section-title" style="margin:0">Crew</div>
+          <span id="mob-crew-count" style="font-size:0.7rem;color:var(--green);font-weight:600;display:none"></span>
+        </div>
+        <span class="mob-chevron" style="color:var(--muted);font-size:0.7rem;transition:transform 0.15s;transform:rotate(0deg)">▼</span>
       </div>
-      <div id="mob-crew-body" style="display:none;margin-top:0.65rem">
+      <div id="mob-crew-body" class="mob-collapsible-body" style="margin-top:0.65rem">
         <div style="display:flex;justify-content:space-between;margin-bottom:0.5rem">
-          <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=true)"
+          <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=true);mobUpdateCrewCount()"
             style="background:none;border:none;color:var(--green);font-size:0.78rem;cursor:pointer;padding:0">Select All</button>
-          <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=false)"
+          <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=false);mobUpdateCrewCount()"
             style="background:none;border:none;color:var(--muted);font-size:0.78rem;cursor:pointer;padding:0">Clear</button>
         </div>
         ${empCheckboxes || '<span style="color:var(--muted);font-size:0.82rem">No employees in list. Add via Manage Lists.</span>'}
@@ -7075,7 +7103,7 @@ function renderMobileEntryForm(successMsg) {
         <div class="mob-section-title" style="margin:0">Equipment <span style="font-weight:400;color:var(--muted);font-size:0.7rem">(optional)</span></div>
         <span class="mob-chevron" style="color:var(--muted);font-size:0.7rem;transition:transform 0.15s;transform:rotate(-90deg)">▼</span>
       </div>
-      <div id="mob-equip-body" style="display:none;margin-top:0.65rem">
+      <div id="mob-equip-body" class="mob-collapsible-body mob-collapsed" style="margin-top:0.65rem">
         <label class="mob-form-label">Equipment / Truck</label>
         <select id="mob-equip" class="mob-input" onchange="mobEquipUCFill()">${equipOpts}</select>
         <input  id="mob-equip-uc" type="hidden" value="0">
@@ -7095,7 +7123,17 @@ function renderMobileEntryForm(successMsg) {
         style="width:100%;padding:0.65rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.85rem;cursor:pointer;margin-top:0.5rem">
         &#128221; Crew Sign-In Sheet PDF
       </button>` : ''}
+    <div id="mob-today-entries" style="margin-top:1rem"></div>
   `;
+  // Populate today's entries for the initially selected project
+  setTimeout(() => renderMobTodayEntries(lastProjId), 0);
+  // Auto-dismiss success banner
+  if (successMsg) {
+    setTimeout(() => {
+      const banner = el.querySelector('.mob-success-banner');
+      if (banner) { banner.style.transition = 'opacity 0.4s'; banner.style.opacity = '0'; setTimeout(() => banner.remove(), 400); }
+    }, 4000);
+  }
 }
 
 function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
@@ -7119,9 +7157,10 @@ function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
       <select class="mob-input mob-cc-sel" data-block="${idx}" onchange="mobUpdateSubCodesFor(this)">${ccOpts}</select>
       <label class="mob-form-label">Sub Code</label>
       <select class="mob-input mob-sc-sel" data-block="${idx}"><option value="">— Select Cost Code First —</option></select>
+      <label class="mob-form-label">Job Class <span style="font-weight:400;color:var(--muted)">(optional override)</span></label>
+      <select class="mob-input mob-jc-sel" data-block="${idx}">${jobClassOpts}</select>
       <label class="mob-form-label">Hours (per employee)</label>
       <input type="number" class="mob-input mob-hrs-inp" data-block="${idx}" placeholder="0.0" step="0.25" min="0">
-      <input type="hidden" class="mob-jc-sel"   data-block="${idx}" value="">
       <input type="hidden" class="mob-rate-inp" data-block="${idx}" value="0">
       <label class="mob-form-label">Quantity <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
       <input type="number" class="mob-input mob-qty-inp" data-block="${idx}" placeholder="0" step="any" min="0">
@@ -7159,6 +7198,9 @@ function mobRepeatLastEntry() {
   document.getElementById('mob-project').value   = le.projId;
   document.getElementById('mob-date').value       = _localDateStr();
   document.getElementById('mob-field-type').value = le.fieldType || '';
+  const notesEl = document.getElementById('mob-notes');
+  if (notesEl) notesEl.value = le.notes || '';
+  renderMobTodayEntries(le.projId);
   // Restore code blocks
   const blocks = le.codeBlocks || [{ cc: le.cc, sc: le.sc, hours: le.hours, jobClass: le.jobClass, rate: le.rate, quantity: le.quantity }];
   blocks.forEach((b, i) => {
@@ -7181,30 +7223,36 @@ function mobRepeatLastEntry() {
     }, i * 20);
   });
   if (le.equipName) {
-    // Expand equipment section before restoring values
     const equipBody = document.getElementById('mob-equip-body');
-    if (equipBody) equipBody.style.display = 'block';
+    if (equipBody) equipBody.classList.remove('mob-collapsed');
+    const equipHeader = equipBody?.closest('.mob-form-card')?.querySelector('.mob-chevron');
+    if (equipHeader) equipHeader.style.transform = 'rotate(0deg)';
   }
   document.getElementById('mob-equip').value      = le.equipName || '';
   mobEquipUCFill();
   document.getElementById('mob-equip-hrs').value  = le.equipHrs || '';
   const opSel = document.getElementById('mob-equip-operator');
   if (opSel) opSel.value = le.equipOperator || '';
-  if ((le.checkedEmps || []).length > 0) {
-    const crewBody = document.getElementById('mob-crew-body');
-    if (crewBody) crewBody.style.display = 'block';
-  }
   (le.checkedEmps || []).forEach(emp => {
     const cb = document.getElementById('mob-emp-' + emp);
     if (cb) cb.checked = true;
   });
+  mobUpdateCrewCount();
+}
+
+function mobUpdateCrewCount() {
+  const n = document.querySelectorAll('.mob-emp-cb:checked').length;
+  const badge = document.getElementById('mob-crew-count');
+  if (!badge) return;
+  if (n > 0) { badge.textContent = `${n} selected`; badge.style.display = 'inline'; }
+  else        { badge.style.display = 'none'; }
 }
 
 function mobToggleSection(bodyId, header) {
   const body = document.getElementById(bodyId);
   if (!body) return;
-  const open = body.style.display !== 'none';
-  body.style.display = open ? 'none' : 'block';
+  const open = !body.classList.contains('mob-collapsed');
+  body.classList.toggle('mob-collapsed', open);
   const chevron = header.querySelector('.mob-chevron');
   if (chevron) chevron.style.transform = open ? 'rotate(-90deg)' : 'rotate(0deg)';
 }
@@ -7230,6 +7278,69 @@ function mobEquipUCFill() {
   if (ucEl && uc > 0) ucEl.value = uc;
 }
 
+function renderMobTodayEntries(projId) {
+  const el = document.getElementById('mob-today-entries');
+  if (!el) return;
+  const dateEl = document.getElementById('mob-date');
+  const date = dateEl ? dateEl.value : _localDateStr();
+  if (!projId) { el.innerHTML = ''; return; }
+  const proj = getProj(projId);
+  if (!proj) { el.innerHTML = ''; return; }
+  const rows = (proj.dailyRows || []).filter(r => r.date === date);
+  if (!rows.length) {
+    el.innerHTML = `<div style="font-size:0.75rem;color:var(--muted);text-align:center;padding:0.75rem 0">No entries for this date yet.</div>`;
+    return;
+  }
+
+  // Group labor rows by cost_code+sub_code, list equip rows separately
+  const laborRows = rows.filter(r => r.employee);
+  const equipRows = rows.filter(r => !r.employee && r.equipment);
+
+  const fmtRow = r => {
+    const code = [r.cost_code, r.sub_code].filter(Boolean).join(' / ');
+    const hrs  = r.labor_hours > 0 ? `${r.labor_hours}h` : '';
+    const qty  = r.quantity > 0 ? `${fmt(r.quantity,1)} units` : '';
+    const jc   = r.job_class ? `<span style="color:var(--muted)">${esc(r.job_class)}</span>` : '';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.3rem 0;border-bottom:1px solid var(--border)">
+      <div>
+        <span style="font-size:0.82rem;color:var(--text)">${esc(r.employee)}</span>
+        ${jc ? ' · ' + jc : ''}
+        ${r.notes ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">📝 ${esc(r.notes)}</div>` : ''}
+      </div>
+      <div style="text-align:right;font-size:0.78rem;color:var(--muted);flex-shrink:0;margin-left:0.5rem">
+        ${[code, hrs, qty].filter(Boolean).join(' · ')}
+      </div>
+    </div>`;
+  };
+
+  const fmtEquip = r => {
+    const code = [r.cost_code, r.sub_code].filter(Boolean).join(' / ');
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.3rem 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:0.82rem;color:var(--text)">&#128663; ${esc(r.equipment)}</span>
+      <span style="font-size:0.78rem;color:var(--muted)">${[code, r.equip_hours > 0 ? r.equip_hours+'h' : ''].filter(Boolean).join(' · ')}</span>
+    </div>`;
+  };
+
+  const totalLaborHrs = laborRows.reduce((s, r) => s + (parseFloat(r.labor_hours) || 0), 0);
+  const uniqueEmps    = new Set(laborRows.map(r => r.employee)).size;
+  const summaryParts  = [];
+  if (uniqueEmps > 0)    summaryParts.push(`${uniqueEmps} emp`);
+  if (totalLaborHrs > 0) summaryParts.push(`${fmt(totalLaborHrs,1)} hrs`);
+  if (equipRows.length)  summaryParts.push(`${equipRows.length} equip`);
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:0.4rem">
+      <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;font-weight:600">
+        Entries for this date
+      </div>
+      ${summaryParts.length ? `<div style="font-size:0.72rem;color:var(--green);font-weight:600">${summaryParts.join(' · ')}</div>` : ''}
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.5rem 0.75rem">
+      ${laborRows.map(fmtRow).join('')}
+      ${equipRows.map(fmtEquip).join('')}
+    </div>`;
+}
+
 async function submitMobileEntry() {
   const projId    = document.getElementById('mob-project').value;
   const date      = document.getElementById('mob-date').value;
@@ -7239,6 +7350,7 @@ async function submitMobileEntry() {
   const equipHrs      = parseFloat(document.getElementById('mob-equip-hrs').value) || 0;
   const equipOperator = document.getElementById('mob-equip-operator')?.value || '';
   const checkedEmps = [...document.querySelectorAll('.mob-emp-cb:checked')].map(cb => cb.value);
+  const entryNotes  = (document.getElementById('mob-notes')?.value || '').trim();
 
   // Collect all code blocks
   const codeBlocks = [...document.querySelectorAll('#mob-code-blocks .mob-code-block')].map(el => {
@@ -7285,13 +7397,13 @@ async function submitMobileEntry() {
       newRows.push({
         id: uid(), date, field_type: fieldType, employee: emp,
         cost_code: b.cc, sub_code: b.sc,
-        job_class: empData.job_class || '',
+        job_class: b.jobClass || empData.job_class || '',
         rate: empData.rate || 0, labor_hours: b.hours,
         equipment:       isOperator ? equipName : '',
         equip_unit_cost: isOperator ? equipUC   : 0,
         equip_hours:     isOperator ? equipHrs  : 0,
         material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
-        quantity: b.quantity, num_laborers: 0,
+        quantity: b.quantity, num_laborers: 0, notes: entryNotes,
       });
     });
   });
@@ -7305,7 +7417,7 @@ async function submitMobileEntry() {
       rate: 0, labor_hours: 0,
       equipment: equipName, equip_unit_cost: equipUC, equip_hours: equipHrs,
       material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
-      quantity: 0, num_laborers: 0,
+      quantity: 0, num_laborers: 0, notes: entryNotes,
     });
   }
 
@@ -7316,6 +7428,7 @@ async function submitMobileEntry() {
 
   // Save state for Repeat Last Entry
   _mobLastEntry = { projId, fieldType, codeBlocks, checkedEmps, equipName, equipUC, equipHrs, equipOperator,
+    notes: entryNotes,
     // legacy fields for badge summary
     cc: codeBlocks[0]?.cc, sc: codeBlocks[0]?.sc, hours: codeBlocks[0]?.hours };
 
@@ -12081,7 +12194,7 @@ function _ppRender() {
           <div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden">
             <div style="height:100%;width:${pctEnd.toFixed(1)}%;background:${pctEnd>=100?'var(--green)':'var(--blue)'};border-radius:4px;transition:width 0.2s"></div>
           </div>
-          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${fmt(endCumul,1)} / ${fmt(bidQty,1)} (${pctEnd.toFixed(1)}%)</div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${fmt(Math.min(endCumul,bidQty),1)} / ${fmt(bidQty,1)} (${pctEnd.toFixed(1)}%)</div>
         </div>
       </div>` : ''}
     </div>`;
