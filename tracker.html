@@ -7037,11 +7037,13 @@ function renderMobileEntryForm(successMsg) {
     <div class="mob-form-card">
       <div class="mob-section-title">Job Info</div>
       <label class="mob-form-label">Project</label>
-      <select id="mob-project" class="mob-input">${projOpts}</select>
+      <select id="mob-project" class="mob-input" onchange="renderMobTodayEntries(this.value)">${projOpts}</select>
       <label class="mob-form-label">Date</label>
-      <input  id="mob-date" type="date" class="mob-input" value="${today}">
+      <input  id="mob-date" type="date" class="mob-input" value="${today}" onchange="renderMobTodayEntries(document.getElementById('mob-project').value)">
       <label class="mob-form-label">Field Type</label>
       <select id="mob-field-type" class="mob-input">${fieldTypeOpts}</select>
+      <label class="mob-form-label">Notes <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+      <textarea id="mob-notes" class="mob-input" rows="2" placeholder="Any notes for this entry…" style="resize:vertical;min-height:2.5rem"></textarea>
     </div>
 
     <div class="mob-form-card">
@@ -7095,7 +7097,10 @@ function renderMobileEntryForm(successMsg) {
         style="width:100%;padding:0.65rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.85rem;cursor:pointer;margin-top:0.5rem">
         &#128221; Crew Sign-In Sheet PDF
       </button>` : ''}
+    <div id="mob-today-entries" style="margin-top:1rem"></div>
   `;
+  // Populate today's entries for the initially selected project
+  setTimeout(() => renderMobTodayEntries(lastProjId), 0);
 }
 
 function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
@@ -7119,9 +7124,10 @@ function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
       <select class="mob-input mob-cc-sel" data-block="${idx}" onchange="mobUpdateSubCodesFor(this)">${ccOpts}</select>
       <label class="mob-form-label">Sub Code</label>
       <select class="mob-input mob-sc-sel" data-block="${idx}"><option value="">— Select Cost Code First —</option></select>
+      <label class="mob-form-label">Job Class <span style="font-weight:400;color:var(--muted)">(optional override)</span></label>
+      <select class="mob-input mob-jc-sel" data-block="${idx}">${jobClassOpts}</select>
       <label class="mob-form-label">Hours (per employee)</label>
       <input type="number" class="mob-input mob-hrs-inp" data-block="${idx}" placeholder="0.0" step="0.25" min="0">
-      <input type="hidden" class="mob-jc-sel"   data-block="${idx}" value="">
       <input type="hidden" class="mob-rate-inp" data-block="${idx}" value="0">
       <label class="mob-form-label">Quantity <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
       <input type="number" class="mob-input mob-qty-inp" data-block="${idx}" placeholder="0" step="any" min="0">
@@ -7159,6 +7165,9 @@ function mobRepeatLastEntry() {
   document.getElementById('mob-project').value   = le.projId;
   document.getElementById('mob-date').value       = _localDateStr();
   document.getElementById('mob-field-type').value = le.fieldType || '';
+  const notesEl = document.getElementById('mob-notes');
+  if (notesEl) notesEl.value = le.notes || '';
+  renderMobTodayEntries(le.projId);
   // Restore code blocks
   const blocks = le.codeBlocks || [{ cc: le.cc, sc: le.sc, hours: le.hours, jobClass: le.jobClass, rate: le.rate, quantity: le.quantity }];
   blocks.forEach((b, i) => {
@@ -7230,6 +7239,59 @@ function mobEquipUCFill() {
   if (ucEl && uc > 0) ucEl.value = uc;
 }
 
+function renderMobTodayEntries(projId) {
+  const el = document.getElementById('mob-today-entries');
+  if (!el) return;
+  const dateEl = document.getElementById('mob-date');
+  const date = dateEl ? dateEl.value : _localDateStr();
+  if (!projId) { el.innerHTML = ''; return; }
+  const proj = getProj(projId);
+  if (!proj) { el.innerHTML = ''; return; }
+  const rows = (proj.dailyRows || []).filter(r => r.date === date);
+  if (!rows.length) {
+    el.innerHTML = `<div style="font-size:0.75rem;color:var(--muted);text-align:center;padding:0.75rem 0">No entries for this date yet.</div>`;
+    return;
+  }
+
+  // Group labor rows by cost_code+sub_code, list equip rows separately
+  const laborRows = rows.filter(r => r.employee);
+  const equipRows = rows.filter(r => !r.employee && r.equipment);
+
+  const fmtRow = r => {
+    const code = [r.cost_code, r.sub_code].filter(Boolean).join(' / ');
+    const hrs  = r.labor_hours > 0 ? `${r.labor_hours}h` : '';
+    const qty  = r.quantity > 0 ? `${fmt(r.quantity,1)} units` : '';
+    const jc   = r.job_class ? `<span style="color:var(--muted)">${esc(r.job_class)}</span>` : '';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.3rem 0;border-bottom:1px solid var(--border)">
+      <div>
+        <span style="font-size:0.82rem;color:var(--text)">${esc(r.employee)}</span>
+        ${jc ? ' · ' + jc : ''}
+        ${r.notes ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">📝 ${esc(r.notes)}</div>` : ''}
+      </div>
+      <div style="text-align:right;font-size:0.78rem;color:var(--muted);flex-shrink:0;margin-left:0.5rem">
+        ${[code, hrs, qty].filter(Boolean).join(' · ')}
+      </div>
+    </div>`;
+  };
+
+  const fmtEquip = r => {
+    const code = [r.cost_code, r.sub_code].filter(Boolean).join(' / ');
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.3rem 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:0.82rem;color:var(--text)">&#128663; ${esc(r.equipment)}</span>
+      <span style="font-size:0.78rem;color:var(--muted)">${[code, r.equip_hours > 0 ? r.equip_hours+'h' : ''].filter(Boolean).join(' · ')}</span>
+    </div>`;
+  };
+
+  el.innerHTML = `
+    <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;font-weight:600;margin-bottom:0.4rem">
+      Today's Entries <span style="font-weight:400">(${rows.length})</span>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.5rem 0.75rem">
+      ${laborRows.map(fmtRow).join('')}
+      ${equipRows.map(fmtEquip).join('')}
+    </div>`;
+}
+
 async function submitMobileEntry() {
   const projId    = document.getElementById('mob-project').value;
   const date      = document.getElementById('mob-date').value;
@@ -7239,6 +7301,7 @@ async function submitMobileEntry() {
   const equipHrs      = parseFloat(document.getElementById('mob-equip-hrs').value) || 0;
   const equipOperator = document.getElementById('mob-equip-operator')?.value || '';
   const checkedEmps = [...document.querySelectorAll('.mob-emp-cb:checked')].map(cb => cb.value);
+  const entryNotes  = (document.getElementById('mob-notes')?.value || '').trim();
 
   // Collect all code blocks
   const codeBlocks = [...document.querySelectorAll('#mob-code-blocks .mob-code-block')].map(el => {
@@ -7285,13 +7348,13 @@ async function submitMobileEntry() {
       newRows.push({
         id: uid(), date, field_type: fieldType, employee: emp,
         cost_code: b.cc, sub_code: b.sc,
-        job_class: empData.job_class || '',
+        job_class: b.jobClass || empData.job_class || '',
         rate: empData.rate || 0, labor_hours: b.hours,
         equipment:       isOperator ? equipName : '',
         equip_unit_cost: isOperator ? equipUC   : 0,
         equip_hours:     isOperator ? equipHrs  : 0,
         material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
-        quantity: b.quantity, num_laborers: 0,
+        quantity: b.quantity, num_laborers: 0, notes: entryNotes,
       });
     });
   });
@@ -7305,7 +7368,7 @@ async function submitMobileEntry() {
       rate: 0, labor_hours: 0,
       equipment: equipName, equip_unit_cost: equipUC, equip_hours: equipHrs,
       material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
-      quantity: 0, num_laborers: 0,
+      quantity: 0, num_laborers: 0, notes: entryNotes,
     });
   }
 
@@ -7316,6 +7379,7 @@ async function submitMobileEntry() {
 
   // Save state for Repeat Last Entry
   _mobLastEntry = { projId, fieldType, codeBlocks, checkedEmps, equipName, equipUC, equipHrs, equipOperator,
+    notes: entryNotes,
     // legacy fields for badge summary
     cc: codeBlocks[0]?.cc, sc: codeBlocks[0]?.sc, hours: codeBlocks[0]?.hours };
 
