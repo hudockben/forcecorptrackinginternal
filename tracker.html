@@ -1758,10 +1758,26 @@
         border-radius: 5px;
         color: var(--text);
         font-size: 0.9rem;
+        font-family: inherit;
         padding: 0.55rem 0.75rem;
         outline: none;
         -webkit-appearance: none;
+        transition: border-color 0.15s;
       }
+      .mob-input:focus { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(99,179,237,0.15); }
+      select.mob-input {
+        padding-right: 2rem;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 0.65rem center;
+      }
+      .mob-collapsible-body {
+        overflow: hidden;
+        transition: max-height 0.22s ease, opacity 0.18s ease;
+        max-height: 2000px;
+        opacity: 1;
+      }
+      .mob-collapsible-body.mob-collapsed { max-height: 0; opacity: 0; }
       .mob-emp-row {
         display: flex;
         align-items: center;
@@ -7016,7 +7032,7 @@ function renderMobileEntryForm(successMsg) {
   const empList = (lists.employees||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   const empCheckboxes = empList.map(e => `
     <label class="mob-emp-row">
-      <input type="checkbox" class="mob-emp-cb" value="${esc(e.name)}" id="mob-emp-${esc(e.name)}">
+      <input type="checkbox" class="mob-emp-cb" value="${esc(e.name)}" id="mob-emp-${esc(e.name)}" onchange="mobUpdateCrewCount()">
       <span class="mob-emp-name">${esc(e.name)}</span>
     </label>`).join('');
 
@@ -7048,14 +7064,17 @@ function renderMobileEntryForm(successMsg) {
 
     <div class="mob-form-card">
       <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="mobToggleSection('mob-crew-body',this)">
-        <div class="mob-section-title" style="margin:0">Crew</div>
-        <span class="mob-chevron" style="color:var(--muted);font-size:0.7rem;transition:transform 0.15s;transform:rotate(-90deg)">▼</span>
+        <div style="display:flex;align-items:center;gap:0.5rem">
+          <div class="mob-section-title" style="margin:0">Crew</div>
+          <span id="mob-crew-count" style="font-size:0.7rem;color:var(--green);font-weight:600;display:none"></span>
+        </div>
+        <span class="mob-chevron" style="color:var(--muted);font-size:0.7rem;transition:transform 0.15s;transform:rotate(0deg)">▼</span>
       </div>
-      <div id="mob-crew-body" style="display:none;margin-top:0.65rem">
+      <div id="mob-crew-body" class="mob-collapsible-body" style="margin-top:0.65rem">
         <div style="display:flex;justify-content:space-between;margin-bottom:0.5rem">
-          <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=true)"
+          <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=true);mobUpdateCrewCount()"
             style="background:none;border:none;color:var(--green);font-size:0.78rem;cursor:pointer;padding:0">Select All</button>
-          <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=false)"
+          <button type="button" onclick="document.querySelectorAll('.mob-emp-cb').forEach(c=>c.checked=false);mobUpdateCrewCount()"
             style="background:none;border:none;color:var(--muted);font-size:0.78rem;cursor:pointer;padding:0">Clear</button>
         </div>
         ${empCheckboxes || '<span style="color:var(--muted);font-size:0.82rem">No employees in list. Add via Manage Lists.</span>'}
@@ -7077,7 +7096,7 @@ function renderMobileEntryForm(successMsg) {
         <div class="mob-section-title" style="margin:0">Equipment <span style="font-weight:400;color:var(--muted);font-size:0.7rem">(optional)</span></div>
         <span class="mob-chevron" style="color:var(--muted);font-size:0.7rem;transition:transform 0.15s;transform:rotate(-90deg)">▼</span>
       </div>
-      <div id="mob-equip-body" style="display:none;margin-top:0.65rem">
+      <div id="mob-equip-body" class="mob-collapsible-body mob-collapsed" style="margin-top:0.65rem">
         <label class="mob-form-label">Equipment / Truck</label>
         <select id="mob-equip" class="mob-input" onchange="mobEquipUCFill()">${equipOpts}</select>
         <input  id="mob-equip-uc" type="hidden" value="0">
@@ -7101,6 +7120,13 @@ function renderMobileEntryForm(successMsg) {
   `;
   // Populate today's entries for the initially selected project
   setTimeout(() => renderMobTodayEntries(lastProjId), 0);
+  // Auto-dismiss success banner
+  if (successMsg) {
+    setTimeout(() => {
+      const banner = el.querySelector('.mob-success-banner');
+      if (banner) { banner.style.transition = 'opacity 0.4s'; banner.style.opacity = '0'; setTimeout(() => banner.remove(), 400); }
+    }, 4000);
+  }
 }
 
 function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
@@ -7190,30 +7216,36 @@ function mobRepeatLastEntry() {
     }, i * 20);
   });
   if (le.equipName) {
-    // Expand equipment section before restoring values
     const equipBody = document.getElementById('mob-equip-body');
-    if (equipBody) equipBody.style.display = 'block';
+    if (equipBody) equipBody.classList.remove('mob-collapsed');
+    const equipHeader = equipBody?.closest('.mob-form-card')?.querySelector('.mob-chevron');
+    if (equipHeader) equipHeader.style.transform = 'rotate(0deg)';
   }
   document.getElementById('mob-equip').value      = le.equipName || '';
   mobEquipUCFill();
   document.getElementById('mob-equip-hrs').value  = le.equipHrs || '';
   const opSel = document.getElementById('mob-equip-operator');
   if (opSel) opSel.value = le.equipOperator || '';
-  if ((le.checkedEmps || []).length > 0) {
-    const crewBody = document.getElementById('mob-crew-body');
-    if (crewBody) crewBody.style.display = 'block';
-  }
   (le.checkedEmps || []).forEach(emp => {
     const cb = document.getElementById('mob-emp-' + emp);
     if (cb) cb.checked = true;
   });
+  mobUpdateCrewCount();
+}
+
+function mobUpdateCrewCount() {
+  const n = document.querySelectorAll('.mob-emp-cb:checked').length;
+  const badge = document.getElementById('mob-crew-count');
+  if (!badge) return;
+  if (n > 0) { badge.textContent = `${n} selected`; badge.style.display = 'inline'; }
+  else        { badge.style.display = 'none'; }
 }
 
 function mobToggleSection(bodyId, header) {
   const body = document.getElementById(bodyId);
   if (!body) return;
-  const open = body.style.display !== 'none';
-  body.style.display = open ? 'none' : 'block';
+  const open = !body.classList.contains('mob-collapsed');
+  body.classList.toggle('mob-collapsed', open);
   const chevron = header.querySelector('.mob-chevron');
   if (chevron) chevron.style.transform = open ? 'rotate(-90deg)' : 'rotate(0deg)';
 }
@@ -7282,9 +7314,19 @@ function renderMobTodayEntries(projId) {
     </div>`;
   };
 
+  const totalLaborHrs = laborRows.reduce((s, r) => s + (parseFloat(r.labor_hours) || 0), 0);
+  const uniqueEmps    = new Set(laborRows.map(r => r.employee)).size;
+  const summaryParts  = [];
+  if (uniqueEmps > 0)    summaryParts.push(`${uniqueEmps} emp`);
+  if (totalLaborHrs > 0) summaryParts.push(`${fmt(totalLaborHrs,1)} hrs`);
+  if (equipRows.length)  summaryParts.push(`${equipRows.length} equip`);
+
   el.innerHTML = `
-    <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;font-weight:600;margin-bottom:0.4rem">
-      Today's Entries <span style="font-weight:400">(${rows.length})</span>
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:0.4rem">
+      <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;font-weight:600">
+        Entries for this date
+      </div>
+      ${summaryParts.length ? `<div style="font-size:0.72rem;color:var(--green);font-weight:600">${summaryParts.join(' · ')}</div>` : ''}
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.5rem 0.75rem">
       ${laborRows.map(fmtRow).join('')}
