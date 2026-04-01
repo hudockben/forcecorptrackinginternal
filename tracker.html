@@ -370,6 +370,8 @@
     .bid-table td.bid-under  { background: #0d1f0d; color: var(--green); text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-over   { background: #1f0d0d; color: var(--red);   text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-del    { width: 32px; text-align: center; padding: 0 0.3rem; }
+    .bid-curr-wrap { display: flex; align-items: center; gap: 0.15rem; }
+    .bid-curr-wrap::before { content: '$'; color: var(--muted); font-size: 0.75rem; flex-shrink: 0; }
     .dash-search-wrap { margin-bottom: 1rem; }
     .dash-search { width: 100%; max-width: 380px; background: var(--surface2); border: 1px solid var(--border); color: #e2e8f0; padding: 0.45rem 0.75rem; border-radius: 5px; font-size: 0.88rem; }
     .dash-search:focus { outline: none; border-color: var(--blue); }
@@ -4879,8 +4881,8 @@ function renderBidTable(projId, opts = {}) {
              <button style="font-size:0.62rem;padding:0.1rem 0.3rem;margin-top:0.15rem;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:3px;cursor:pointer" onclick="showCOModal('${projId}','${b.id}')">${(b.change_orders||[]).length ? `CO ×${(b.change_orders||[]).length}` : 'CO'}</button>
            </td>
            ${calcCellsA}
-           <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
-             oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
+           <td><div class="bid-curr-wrap"><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
+             oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></div></td>
            ${calcCellsB}
            <td><input type="date" value="${esc(b.start_date||'')}" title="Start date for this sub code"
              style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.start_date ? 'var(--green)' : 'var(--muted)'}"
