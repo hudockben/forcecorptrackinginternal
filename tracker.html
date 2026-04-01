@@ -12081,7 +12081,7 @@ function _ppRender() {
           <div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden">
             <div style="height:100%;width:${pctEnd.toFixed(1)}%;background:${pctEnd>=100?'var(--green)':'var(--blue)'};border-radius:4px;transition:width 0.2s"></div>
           </div>
-          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${fmt(endCumul,1)} / ${fmt(bidQty,1)} (${pctEnd.toFixed(1)}%)</div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${fmt(Math.min(endCumul,bidQty),1)} / ${fmt(bidQty,1)} (${pctEnd.toFixed(1)}%)</div>
         </div>
       </div>` : ''}
     </div>`;
