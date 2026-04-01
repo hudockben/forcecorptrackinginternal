@@ -2010,6 +2010,7 @@
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
         <th>Start Date</th><th>Target Date</th>
+        <th title="Under OK: check if being under on quantity for this item is acceptable (e.g. Travel)">Under OK</th>
       </tr></thead>
       <tbody id="bid-fs-tbody"></tbody>
       <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
@@ -4742,7 +4743,7 @@ function renderBidTable(projId, opts = {}) {
            <td class="bid-calc" style="font-size:0.72rem;color:var(--muted)">${esc(b.unit)||'—'}</td>
            <td class="bid-calc">${bidQty||'—'}</td>
            <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
-           ${calcCellsA}${calcCellsB}`
+           ${calcCellsA}${calcCellsB}<td></td>`
         : `<td class="bid-del"><button class="del-btn" data-tab="bid-item" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
            <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
              oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
@@ -4763,7 +4764,11 @@ function renderBidTable(projId, opts = {}) {
              onchange="updateBidItem('${projId}','${b.id}','start_date',this.value);this.style.color=this.value?'var(--green)':'var(--muted)'"></td>
            <td><input type="date" value="${esc(b.target_date||'')}" title="Target completion date for this sub code"
              style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.target_date ? 'var(--blue)' : 'var(--muted)'}"
-             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>`;
+             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>
+           <td style="text-align:center"><input type="checkbox" title="Under OK: being under on quantity is acceptable (e.g. Travel)"
+             ${b.under_ok ? 'checked' : ''}
+             onchange="updateBidItem('${projId}','${b.id}','under_ok',this.checked)"
+             style="width:16px;height:16px;accent-color:var(--blue);cursor:pointer"></td>`;
       tbody.appendChild(childTr);
     });
 
@@ -8071,6 +8076,7 @@ function exportBidPDF(projId) {
       <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
       <th class="num">Variance</th><th class="num">Projected Cost</th>
       <th class="num">Start Date</th><th class="num">Target Date</th>
+      <th title="Under OK: being under on quantity is acceptable">Under OK</th>
     </tr></thead>
     <tbody>${rowsHTML}</tbody>
     <tfoot><tr class="totals">
@@ -10385,9 +10391,11 @@ function _schedPaceForProject(proj) {
   return agg;
 }
 
-function _schedStatus(pct, gap, daysLeft, bidQty) {
+function _schedStatus(pct, gap, daysLeft, bidQty, underOk = false) {
   if (bidQty <= 0)   return 'no-data';
   if (pct >= 100)    return 'complete';
+  // "Under OK" items (e.g. Travel): being under on quantity is fine — never flag as behind/at-risk
+  if (underOk)       return pct > 0 ? 'on-track' : 'no-data';
   if (daysLeft === null) return 'no-data';
   if (daysLeft < 0)  return 'behind';
   if (gap === null || gap <= 0) return 'on-track';
@@ -10472,6 +10480,9 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   // Lump Sum items have no meaningful pace — status is pct + deadline based only
   const isLumpSum = (bi.unit || '').toUpperCase() === 'LS';
 
+  // "Under OK" — being below bid quantity is acceptable (e.g. Travel sub codes)
+  const underOk = !!bi.under_ok;
+
   // Manual complete override — PM can mark a sub-code done regardless of qty
   const forcedComplete = !!bi.is_complete;
 
@@ -10486,7 +10497,7 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
     : notStartedYet ? 'not-started'
     : isLumpSum
       ? (pct >= 100 ? 'complete' : effectiveDaysLeft !== null && effectiveDaysLeft < 0 ? 'behind' : pct > 0 ? 'on-track' : 'no-data')
-      : _schedStatus(pct, gap, effectiveDaysLeft, bidQty);
+      : _schedStatus(pct, gap, effectiveDaysLeft, bidQty, underOk);
 
   // Crew-day normalization: unique (date+employee) pairs vs unique work dates
   const crewDaysTotal = a.crewDays ? a.crewDays.size : 0;
@@ -10557,7 +10568,7 @@ function _schedStatusHistory(bi, breakdown, deadline) {
     const rp  = (dl !== null && dl > 0) ? unitsLeft / dl : null;
     const gap = rp !== null ? rp - currentPace : null;
     const pct = bidQty > 0 ? (cumQty / bidQty) * 100 : 0;
-    history.push({ date, status: _schedStatus(pct, gap, dl, bidQty), gap, pace: currentPace });
+    history.push({ date, status: _schedStatus(pct, gap, dl, bidQty, !!bi.under_ok), gap, pace: currentPace });
   });
   return history;
 }
