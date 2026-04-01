@@ -158,6 +158,28 @@
     .admin-dropdown-item:hover { background: var(--surface2); color: var(--text); }
     .admin-dropdown-item.active { color: var(--green); }
 
+    /* ── Analytics dropdown ── */
+    .analytics-dropdown-wrap {
+      position: relative;
+      display: flex;
+      align-items: stretch;
+    }
+    .analytics-dropdown-wrap .tab-btn { margin-left: 0; }
+    .analytics-dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 6px 6px;
+      min-width: 200px;
+      z-index: 300;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    }
+    .analytics-dropdown-wrap:hover .analytics-dropdown-menu { display: block; }
+
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
@@ -1904,7 +1926,12 @@
   <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
-  <button class="tab-btn"        data-tab="equip">&#128200; Analytics</button>
+  <div class="analytics-dropdown-wrap">
+    <button class="tab-btn" id="analytics-tab-btn">&#128200; Analytics ▾</button>
+    <div class="analytics-dropdown-menu">
+      <button class="admin-dropdown-item" id="analytics-item-equip" onclick="analyticsSwitchTab('equip')">&#128295; Equipment Utilization</button>
+    </div>
+  </div>
   <div class="admin-dropdown-wrap">
     <button class="tab-btn" id="admin-tab-btn">&#9881; Admin ▾</button>
     <div class="admin-dropdown-menu">
@@ -2873,12 +2900,26 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'trucking') renderTruckingTab();
     if (activeTab === 'users')    renderUsersTab();
     if (activeTab === 'schedule')   renderScheduleTab();
-    if (activeTab === 'equip')      renderEquipTable();
     if (activeTab === 'mob-entry')  renderMobileEntryForm();
   });
 });
 
 const _adminTabs = new Set(['supplier', 'users']);
+
+function analyticsSwitchTab(tab) {
+  if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const analyticsBtn = document.getElementById('analytics-tab-btn');
+  if (analyticsBtn) analyticsBtn.classList.add('active');
+  document.querySelectorAll('.admin-dropdown-item').forEach(item => {
+    item.classList.toggle('active', item.id === 'analytics-item-' + tab);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-' + tab));
+  renderHeaderActions();
+  if (tab === 'equip') renderEquipTable();
+}
 
 function adminSwitchTab(tab) {
   if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
