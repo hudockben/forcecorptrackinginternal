@@ -158,6 +158,28 @@
     .admin-dropdown-item:hover { background: var(--surface2); color: var(--text); }
     .admin-dropdown-item.active { color: var(--green); }
 
+    /* ── Analytics dropdown ── */
+    .analytics-dropdown-wrap {
+      position: relative;
+      display: flex;
+      align-items: stretch;
+    }
+    .analytics-dropdown-wrap .tab-btn { margin-left: 0; }
+    .analytics-dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 6px 6px;
+      min-width: 200px;
+      z-index: 300;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    }
+    .analytics-dropdown-wrap:hover .analytics-dropdown-menu { display: block; }
+
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
@@ -348,6 +370,10 @@
     .bid-table td.bid-under  { background: #0d1f0d; color: var(--green); text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-over   { background: #1f0d0d; color: var(--red);   text-align: right; padding: 0 0.6rem; font-variant-numeric: tabular-nums; }
     .bid-table td.bid-del    { width: 32px; text-align: center; padding: 0 0.3rem; }
+    .bid-table td.bid-uc { background: var(--calc); padding: 0; }
+    .bid-curr-wrap { display: flex; align-items: center; padding: 0 0.2rem 0 0.4rem; }
+    .bid-curr-wrap .curr-sym { color: #86efac; font-size: 0.78rem; flex-shrink: 0; opacity: 0.7; }
+    .bid-curr-wrap input { color: #86efac !important; font-variant-numeric: tabular-nums; padding: 0.35rem 0.4rem 0.35rem 0.1rem !important; }
     .dash-search-wrap { margin-bottom: 1rem; }
     .dash-search { width: 100%; max-width: 380px; background: var(--surface2); border: 1px solid var(--border); color: #e2e8f0; padding: 0.45rem 0.75rem; border-radius: 5px; font-size: 0.88rem; }
     .dash-search:focus { outline: none; border-color: var(--blue); }
@@ -1904,10 +1930,15 @@
   <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
+  <div class="analytics-dropdown-wrap">
+    <button class="tab-btn" id="analytics-tab-btn">&#128200; Analytics ▾</button>
+    <div class="analytics-dropdown-menu">
+      <button class="admin-dropdown-item" id="analytics-item-equip" onclick="analyticsSwitchTab('equip')">&#128295; Equipment Utilization</button>
+    </div>
+  </div>
   <div class="admin-dropdown-wrap">
     <button class="tab-btn" id="admin-tab-btn">&#9881; Admin ▾</button>
     <div class="admin-dropdown-menu">
-      <button class="admin-dropdown-item" id="admin-item-equip" onclick="adminSwitchTab('equip')">&#128295; Equipment Utilization</button>
       <button class="admin-dropdown-item" id="admin-item-supplier" onclick="adminSwitchTab('supplier')">Suppliers</button>
       <button class="admin-dropdown-item" onclick="openModal()">Manage Lists</button>
       <button class="admin-dropdown-item" id="admin-item-users" style="display:none" onclick="adminSwitchTab('users')">&#128100; Users</button>
@@ -2873,12 +2904,26 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'trucking') renderTruckingTab();
     if (activeTab === 'users')    renderUsersTab();
     if (activeTab === 'schedule')   renderScheduleTab();
-    if (activeTab === 'equip')      renderEquipTable();
     if (activeTab === 'mob-entry')  renderMobileEntryForm();
   });
 });
 
-const _adminTabs = new Set(['equip', 'supplier', 'users']);
+const _adminTabs = new Set(['supplier', 'users']);
+
+function analyticsSwitchTab(tab) {
+  if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const analyticsBtn = document.getElementById('analytics-tab-btn');
+  if (analyticsBtn) analyticsBtn.classList.add('active');
+  document.querySelectorAll('.admin-dropdown-item').forEach(item => {
+    item.classList.toggle('active', item.id === 'analytics-item-' + tab);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-' + tab));
+  renderHeaderActions();
+  if (tab === 'equip') renderEquipTable();
+}
 
 function adminSwitchTab(tab) {
   if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
@@ -2894,7 +2939,6 @@ function adminSwitchTab(tab) {
   document.querySelectorAll('.tab-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'tab-' + tab));
   renderHeaderActions();
-  if (tab === 'equip')    renderEquipTable();
   if (tab === 'supplier') renderSupplierTab();
   if (tab === 'users')    renderUsersTab();
 }
@@ -3184,6 +3228,12 @@ function renderHomeTab() {
       : projCost > bid ? 'color:var(--red)'
       : projCost > bid * 0.85 ? 'color:var(--yellow)'
       : 'color:var(--green)';
+    const contractVal   = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+    const contractTxt   = contractVal ? '$' + fmt(contractVal) : '—';
+    const profit        = contractVal ? contractVal - projCost : null;
+    const profitTxt     = profit !== null ? (profit >= 0 ? '$' + fmt(profit) : '-$' + fmt(Math.abs(profit))) : '—';
+    const profitStyle   = profit === null ? 'color:var(--muted)' : profit >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    const profitPct     = (profit !== null && contractVal) ? ` (${(profit / contractVal * 100).toFixed(1)}%)` : '';
     const barColor  = !bid ? 'var(--muted)' : actual/bid >= 1 ? 'var(--red)' : actual/bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
     const name      = p['project-name'] || 'Untitled Project';
     const meta      = [p['job-number'], p['client']].filter(Boolean).map(v => esc(v)).join(' · ');
@@ -3217,10 +3267,12 @@ function renderHomeTab() {
           <span class="pt-bar-pct">${pct.toFixed(0)}%</span>
         </div>
       </td>
+      <td class="pt-num" style="color:var(--blue)">${contractTxt}</td>
       <td class="pt-num" style="color:var(--green)">${bid ? '$'+fmt(bid) : '—'}</td>
       <td class="pt-num">${actual ? '$'+fmt(actual) : '—'}</td>
       <td class="pt-num" style="${varStyle}">${varTxt}</td>
       <td class="pt-num" style="${projStyle}">${projTxt}</td>
+      <td class="pt-num" style="${profitStyle}">${profitTxt}<span style="font-size:0.7em;opacity:0.8">${profitPct}</span></td>
       <td>
         <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
           title="${p.pinned ? 'Unpin' : 'Pin to Home'}"
@@ -3340,10 +3392,12 @@ function renderHomeTab() {
               <th>Project</th>
               <th>Status</th>
               <th>Progress</th>
+              <th>Contract</th>
               <th>Bid</th>
               <th>Actual</th>
               <th>Variance</th>
               <th>Projected</th>
+              <th>Profit</th>
               <th></th>
             </tr></thead>
             <tbody>${projectTableRows}</tbody>
@@ -4829,8 +4883,8 @@ function renderBidTable(projId, opts = {}) {
              <button style="font-size:0.62rem;padding:0.1rem 0.3rem;margin-top:0.15rem;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:3px;cursor:pointer" onclick="showCOModal('${projId}','${b.id}')">${(b.change_orders||[]).length ? `CO ×${(b.change_orders||[]).length}` : 'CO'}</button>
            </td>
            ${calcCellsA}
-           <td><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
-             oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></td>
+           <td class="bid-uc"><div class="bid-curr-wrap"><span class="curr-sym">$</span><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
+             oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></div></td>
            ${calcCellsB}
            <td><input type="date" value="${esc(b.start_date||'')}" title="Start date for this sub code"
              style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.start_date ? 'var(--green)' : 'var(--muted)'}"
