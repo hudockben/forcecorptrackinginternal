@@ -117,6 +117,47 @@
     .tab-btn:hover { color: var(--text); }
     .tab-btn.active { color: var(--green); border-bottom-color: var(--green); }
 
+    /* ── Admin dropdown ── */
+    .admin-dropdown-wrap {
+      position: relative;
+      display: flex;
+      align-items: stretch;
+      margin-left: auto;
+    }
+    .admin-dropdown-wrap .tab-btn { margin-left: 0; }
+    .admin-dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 6px 6px;
+      min-width: 160px;
+      z-index: 300;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    }
+    .admin-dropdown-wrap:hover .admin-dropdown-menu { display: block; }
+    .admin-dropdown-item {
+      display: block;
+      width: 100%;
+      padding: 0.6rem 1rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: none;
+      border: none;
+      cursor: pointer;
+      text-align: left;
+      white-space: nowrap;
+      transition: background 0.1s, color 0.1s;
+    }
+    .admin-dropdown-item:hover { background: var(--surface2); color: var(--text); }
+    .admin-dropdown-item.active { color: var(--green); }
+
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
@@ -1709,9 +1750,8 @@
       .tab-btn[data-tab="po"],
       .tab-btn[data-tab="trucking"],
       .tab-btn[data-tab="equip"],
-      .tab-btn[data-tab="supplier"],
-      .tab-btn[data-tab="users"],
-      .tab-btn:not([data-tab]) { display: none !important; }
+      .admin-dropdown-wrap,
+      .tab-btn:not([data-tab]):not(#admin-tab-btn) { display: none !important; }
       /* Show mobile-only tab */
       .tab-btn[data-tab="mob-entry"] { display: flex !important; }
 
@@ -1866,9 +1906,14 @@
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
   <button class="tab-btn"        data-tab="equip">&#128295; Equipment Utilization</button>
-  <button class="tab-btn"        data-tab="supplier">Suppliers</button>
-  <button class="tab-btn"        onclick="openModal()">&#9881; Manage Lists</button>
-  <button class="tab-btn" data-tab="users" id="users-tab-btn" style="margin-left:auto;display:none">&#128100; Users</button>
+  <div class="admin-dropdown-wrap">
+    <button class="tab-btn" id="admin-tab-btn">&#9881; Admin ▾</button>
+    <div class="admin-dropdown-menu">
+      <button class="admin-dropdown-item" id="admin-item-supplier" onclick="adminSwitchTab('supplier')">Suppliers</button>
+      <button class="admin-dropdown-item" onclick="openModal()">Manage Lists</button>
+      <button class="admin-dropdown-item" id="admin-item-users" style="display:none" onclick="adminSwitchTab('users')">&#128100; Users</button>
+    </div>
+  </div>
 </nav>
 
 <!-- ══════════════ HOME TAB ══════════════ -->
@@ -2658,9 +2703,10 @@ const perm = (() => {
 
 // Apply tab visibility
 (function () {
-  // Show Users tab for admin only
+  // Show Users item in Admin dropdown for admin only
   if (perm.isAdmin) {
-    document.getElementById('users-tab-btn').style.display = '';
+    const usersItem = document.getElementById('admin-item-users');
+    if (usersItem) usersItem.style.display = '';
   }
 
   if (perm.visibleTabs) {
@@ -2668,10 +2714,16 @@ const perm = (() => {
     document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
       if (!perm.visibleTabs.has(btn.dataset.tab)) btn.style.display = 'none';
     });
-    // Hide Manage Lists (no data-tab, identified by onclick content)
-    document.querySelectorAll('.tab-btn:not([data-tab])').forEach(btn => {
-      btn.style.display = 'none';
-    });
+    // Hide admin dropdown items this role cannot see
+    const supplierItem = document.getElementById('admin-item-supplier');
+    if (supplierItem && !perm.visibleTabs.has('supplier')) supplierItem.style.display = 'none';
+    // (Users item visibility is already controlled by perm.isAdmin above)
+    // Hide the entire Admin dropdown if no items are accessible
+    const anyAdminVisible = perm.visibleTabs.has('supplier') || perm.isAdmin;
+    if (!anyAdminVisible) {
+      const wrap = document.querySelector('.admin-dropdown-wrap');
+      if (wrap) wrap.style.display = 'none';
+    }
 
     // Activate the first visible tab
     const firstTab = [...perm.visibleTabs][0];
@@ -2824,6 +2876,26 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'mob-entry')  renderMobileEntryForm();
   });
 });
+
+const _adminTabs = new Set(['supplier', 'users']);
+
+function adminSwitchTab(tab) {
+  if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
+  activeTab = tab;
+  // Deactivate all regular tab buttons, activate the Admin button
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const adminBtn = document.getElementById('admin-tab-btn');
+  if (adminBtn) adminBtn.classList.add('active');
+  // Mark the clicked dropdown item active, clear others
+  document.querySelectorAll('.admin-dropdown-item').forEach(item => {
+    item.classList.toggle('active', item.id === 'admin-item-' + tab);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-' + tab));
+  renderHeaderActions();
+  if (tab === 'supplier') renderSupplierTab();
+  if (tab === 'users')    renderUsersTab();
+}
 
 function renderHeaderActions() {
   const el = document.getElementById('header-actions');
