@@ -6436,9 +6436,9 @@ function renderInventoryTab() {
   const hasFilters = Object.keys(invFilters).length > 0 || invSearch;
   const entries = [...applyINVFilters()].reverse();
 
-  // ── Totals ──
+  // ── Totals (scoped to filtered entries) ──
   let totHours = 0, totEE = 0, totBags = 0, totLbs = 0, totEquipH = 0, totEquip = 0, totMat = 0, totJob = 0;
-  inventoryEntries.forEach(e => {
+  entries.forEach(e => {
     const rate = parseFloat(e.rate) || 0, hrs = parseFloat(e.hours) || 0;
     const ee   = rate * hrs;
     const bags = parseFloat(e.bags_produced)   || 0;
