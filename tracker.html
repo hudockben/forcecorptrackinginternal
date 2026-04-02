@@ -10909,9 +10909,10 @@ function _workingDaysBetween(fromStr, toStr) {
   return count;
 }
 
-/** Add N working days (Mon–Fri, non-holiday) to a date string. Fractional days round up. */
+/** Add N working days (Mon–Fri, non-holiday) to a date string. Fractional days round up.
+ *  Returns null if n is not finite or exceeds 3650 days (~10 years). */
 function _addWorkingDays(fromStr, n) {
-  if (!fromStr || n === null || n === undefined) return null;
+  if (!fromStr || n === null || n === undefined || !isFinite(n) || n > 3650) return null;
   const days = Math.ceil(Math.max(0, n));
   const d = new Date(fromStr + 'T12:00:00');
   let remaining = days;
@@ -11527,7 +11528,12 @@ async function renderScheduleTab() {
   if (projId) {
     const proj = getProj(projId);
     if (proj) {
-      body.innerHTML = renderScheduleProjectDetail(proj);
+      try {
+        body.innerHTML = renderScheduleProjectDetail(proj);
+      } catch(e) {
+        console.error('renderScheduleProjectDetail error:', e);
+        body.innerHTML = `<div class="sched-no-data">Error rendering schedule detail.<br><span style="font-size:0.72rem;color:var(--muted)">${e.message || e}</span></div>`;
+      }
       const hasBidItems = (proj.bidItems || []).length > 0;
       if (aiBtn)  aiBtn.style.display  = hasBidItems ? '' : 'none';
       if (ppBtn)  ppBtn.style.display  = hasBidItems ? '' : 'none';
