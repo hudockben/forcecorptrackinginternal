@@ -11,16 +11,16 @@
     body {
       min-height: 100vh;
       display: flex;
-      background: #080a0e;
+      background: #f0f4ff;
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      color: #e2e8f0;
+      color: #0f172a;
       overflow: hidden;
     }
 
     .bg-base {
       position: fixed;
       inset: 0;
-      background: radial-gradient(ellipse at 32% 50%, #0b160d 0%, #080a0e 65%);
+      background: radial-gradient(ellipse at 28% 50%, #dbeafe 0%, #e0f2fe 35%, #f0f9ff 70%, #f8fafc 100%);
       z-index: 0;
     }
 
@@ -47,7 +47,7 @@
       flex-direction: column;
       justify-content: center;
       padding: 3rem 4rem 3rem 5rem;
-      background: linear-gradient(to right, rgba(8,10,14,0.65) 0%, rgba(8,10,14,0.15) 100%);
+      background: linear-gradient(to right, rgba(240,249,255,0.7) 0%, rgba(240,249,255,0.1) 100%);
       min-width: 0;
     }
 
@@ -69,7 +69,7 @@
       font-weight: 700;
       letter-spacing: 0.22em;
       text-transform: uppercase;
-      color: #22c55e;
+      color: #16a34a;
     }
 
     .brand-headline {
@@ -77,7 +77,7 @@
       font-weight: 700;
       letter-spacing: -0.025em;
       line-height: 1.15;
-      color: #f1f5f9;
+      color: #0f172a;
       margin-bottom: 1.25rem;
     }
 
@@ -101,7 +101,7 @@
       align-items: center;
       gap: 0.65rem;
       font-size: 0.8rem;
-      color: #334155;
+      color: #64748b;
       letter-spacing: 0.01em;
     }
 
@@ -111,36 +111,36 @@
       border-radius: 50%;
       background: #22c55e;
       flex-shrink: 0;
-      opacity: 0.7;
+      opacity: 0.85;
     }
 
     /* ── Right form panel ── */
     .form-panel {
       width: 460px;
       flex-shrink: 0;
-      background: rgba(13, 16, 24, 0.97);
-      border-left: 1px solid #22c55e26;
+      background: rgba(255, 255, 255, 0.97);
+      border-left: 1px solid rgba(34, 197, 94, 0.18);
       display: flex;
       flex-direction: column;
       justify-content: center;
       padding: 3.5rem 3.25rem;
-      backdrop-filter: blur(16px);
-      box-shadow: -8px 0 48px rgba(0,0,0,0.5);
+      backdrop-filter: blur(20px);
+      box-shadow: -8px 0 48px rgba(15, 23, 42, 0.08);
     }
 
     .form-eyebrow {
       font-size: 0.6rem;
       letter-spacing: 0.22em;
       text-transform: uppercase;
-      color: #22c55e;
+      color: #16a34a;
       margin-bottom: 0.6rem;
-      opacity: 0.7;
+      opacity: 0.85;
     }
 
     .form-heading {
       font-size: 1.65rem;
       font-weight: 700;
-      color: #f1f5f9;
+      color: #0f172a;
       margin-bottom: 2.5rem;
       letter-spacing: -0.02em;
     }
@@ -163,22 +163,23 @@
     input {
       width: 100%;
       padding: 0.72rem 0.9rem;
-      background: #090b11;
-      border: 1px solid #1e2335;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
       border-radius: 4px;
-      color: #e2e8f0;
+      color: #0f172a;
       font-size: 0.9rem;
       font-family: inherit;
-      transition: border-color 0.15s, background 0.15s;
+      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
       outline: none;
     }
 
     input:focus {
       border-color: #22c55e;
-      background: #0e1016;
+      background: #fff;
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12);
     }
 
-    input::placeholder { color: #222736; }
+    input::placeholder { color: #b0bec5; }
 
     .pw-wrap { position: relative; }
     .pw-wrap input { padding-right: 2.5rem; }
@@ -192,7 +193,7 @@
       border: none;
       padding: 0;
       cursor: pointer;
-      color: #2d3550;
+      color: #94a3b8;
       display: flex;
       align-items: center;
       transition: color 0.15s;
@@ -221,19 +222,20 @@
       border: none;
       border-radius: 4px;
       cursor: pointer;
-      transition: background 0.15s, transform 0.1s;
+      transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
       margin-top: 0.5rem;
+      box-shadow: 0 2px 12px rgba(22, 163, 74, 0.35);
     }
-    .submit-btn:hover:not(:disabled) { background: #15803d; transform: translateY(-1px); }
+    .submit-btn:hover:not(:disabled) { background: #15803d; transform: translateY(-1px); box-shadow: 0 4px 18px rgba(22,163,74,0.45); }
     .submit-btn:active:not(:disabled) { transform: translateY(0); }
     .submit-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
     .form-footer {
       margin-top: 2.5rem;
       padding-top: 1.5rem;
-      border-top: 1px solid #151820;
+      border-top: 1px solid #e2e8f0;
       font-size: 0.65rem;
-      color: #2d3a50;
+      color: #94a3b8;
       letter-spacing: 0.04em;
     }
 
@@ -262,12 +264,12 @@
     <div class="brand-panel">
       <div class="brand-mark">
         <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="20" cy="20" r="16" stroke="#22c55e" stroke-width="1.5" opacity="0.6"/>
-          <circle cx="20" cy="20" r="5" fill="#22c55e" opacity="0.9"/>
-          <line x1="20" y1="4"  x2="20" y2="15" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-          <line x1="20" y1="25" x2="20" y2="36" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-          <line x1="4"  y1="20" x2="15" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-          <line x1="25" y1="20" x2="36" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <circle cx="20" cy="20" r="16" stroke="#16a34a" stroke-width="1.5" opacity="0.7"/>
+          <circle cx="20" cy="20" r="5" fill="#16a34a" opacity="1"/>
+          <line x1="20" y1="4"  x2="20" y2="15" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+          <line x1="20" y1="25" x2="20" y2="36" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+          <line x1="4"  y1="20" x2="15" y2="20" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+          <line x1="25" y1="20" x2="36" y2="20" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
         </svg>
         <span class="brand-mark-name">DataWatch</span>
       </div>
@@ -443,7 +445,7 @@
         const vgap = CH / (PINS + 1);
 
         // Grid
-        ctx.strokeStyle = 'rgba(34,197,94,0.07)';
+        ctx.strokeStyle = 'rgba(15,23,42,0.055)';
         ctx.lineWidth   = 1;
         for (let x = 0; x <= W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
         for (let y = 0; y <= H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
@@ -451,7 +453,7 @@
         // Traces
         for (const tr of traces) {
           const [r, g, b] = tr.col;
-          ctx.strokeStyle = `rgba(${r},${g},${b},0.28)`;
+          ctx.strokeStyle = `rgba(${r},${g},${b},0.45)`;
           ctx.lineWidth   = 1.5;
           ctx.beginPath();
           ctx.moveTo(tr.pts[0][0], tr.pts[0][1]);
@@ -460,33 +462,33 @@
           for (let i = 1; i < tr.pts.length - 1; i++) {
             ctx.beginPath();
             ctx.arc(tr.pts[i][0], tr.pts[i][1], 2.5, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(${r},${g},${b},0.55)`;
+            ctx.fillStyle = `rgba(${r},${g},${b},0.75)`;
             ctx.fill();
           }
         }
 
         // Chip ambient glow
         const og = ctx.createRadialGradient(cx, cy, 10, cx, cy, CW * 0.85);
-        og.addColorStop(0, `rgba(34,197,94,${(0.04 + breathe * 0.04).toFixed(3)})`);
+        og.addColorStop(0, `rgba(34,197,94,${(0.1 + breathe * 0.08).toFixed(3)})`);
         og.addColorStop(1, 'rgba(34,197,94,0)');
         ctx.fillStyle = og;
         ctx.fillRect(L - CW, T - CH, CW * 3, CH * 3);
 
         // Chip body
-        ctx.fillStyle = 'rgba(6,10,7,0.88)';
+        ctx.fillStyle = 'rgba(10,16,28,0.92)';
         ctx.fillRect(L, T, CW, CH);
 
         ctx.lineWidth   = 1.5;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.28 + breathe * 0.2).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.55 + breathe * 0.25).toFixed(3)})`;
         ctx.strokeRect(L, T, CW, CH);
         ctx.lineWidth   = 7;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.03 + breathe * 0.03).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.06 + breathe * 0.05).toFixed(3)})`;
         ctx.strokeRect(L, T, CW, CH);
 
         // Internal grid
         const CELL = CW / 5;
         ctx.lineWidth   = 0.7;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.08 + breathe * 0.06).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.15 + breathe * 0.1).toFixed(3)})`;
         for (let i = 1; i < 5; i++) {
           ctx.beginPath(); ctx.moveTo(L + CELL * i, T + 5); ctx.lineTo(L + CELL * i, B - 5); ctx.stroke();
           ctx.beginPath(); ctx.moveTo(L + 5, T + CELL * i); ctx.lineTo(R - 5, T + CELL * i); ctx.stroke();
@@ -495,7 +497,7 @@
           for (let j = 1; j < 5; j++) {
             ctx.beginPath();
             ctx.arc(L + CELL * i, T + CELL * j, 1.5, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(34,197,94,${(0.22 + breathe * 0.18).toFixed(3)})`;
+            ctx.fillStyle = `rgba(34,197,94,${(0.35 + breathe * 0.25).toFixed(3)})`;
             ctx.fill();
           }
         }
@@ -503,38 +505,38 @@
         // Processor core
         ctx.beginPath();
         ctx.arc(cx, cy, 18 + breathe * 3, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(34,197,94,${(0.22 + breathe * 0.18).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.4 + breathe * 0.3).toFixed(3)})`;
         ctx.lineWidth   = 1.5;
         ctx.stroke();
         ctx.beginPath();
         ctx.arc(cx, cy, 8, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(34,197,94,${(0.2 + breathe * 0.2).toFixed(3)})`;
+        ctx.fillStyle = `rgba(34,197,94,${(0.3 + breathe * 0.25).toFixed(3)})`;
         ctx.fill();
         ctx.beginPath();
         ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34,197,94,0.95)';
+        ctx.fillStyle = 'rgba(34,197,94,1)';
         ctx.fill();
 
         // Corner notch
         ctx.beginPath();
         ctx.arc(L + 12, T + 12, 6, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(34,197,94,0.55)';
+        ctx.strokeStyle = 'rgba(34,197,94,0.8)';
         ctx.lineWidth   = 1.5;
         ctx.stroke();
         ctx.beginPath();
         ctx.arc(L + 12, T + 12, 2, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34,197,94,0.85)';
+        ctx.fillStyle = 'rgba(34,197,94,1)';
         ctx.fill();
 
         // Chip label
-        ctx.fillStyle = `rgba(34,197,94,${(0.25 + breathe * 0.12).toFixed(3)})`;
+        ctx.fillStyle = `rgba(34,197,94,${(0.45 + breathe * 0.2).toFixed(3)})`;
         ctx.font      = '9px monospace';
         ctx.textAlign = 'center';
         ctx.fillText('DW-1', cx, B - 8);
 
         // Pin stubs
         ctx.lineWidth   = 1.5;
-        ctx.strokeStyle = 'rgba(34,197,94,0.4)';
+        ctx.strokeStyle = 'rgba(34,197,94,0.6)';
         for (let i = 0; i < PINS; i++) {
           const px = L + hgap * (i + 1);
           const py = T + vgap * (i + 1);
@@ -545,7 +547,7 @@
           for (const [nx, ny] of [[px, T-STUB], [px, B+STUB], [L-STUB, py], [R+STUB, py]]) {
             ctx.beginPath();
             ctx.arc(nx, ny, 2, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(34,197,94,0.6)';
+            ctx.fillStyle = 'rgba(34,197,94,0.85)';
             ctx.fill();
           }
         }
