@@ -4285,6 +4285,7 @@ function nextTRNumber() {
 /* ── Inventory store ── */
 let inventoryEntries = [];
 let _invYear = new Date().getFullYear();
+let _invBreakdownOpen = false;
 
 async function loadInventoryEntries() {
   let saved = await apiGet('fct_inventory');
@@ -4351,6 +4352,48 @@ function deleteINV(id) {
   inventoryEntries = inventoryEntries.filter(e => e.id !== id);
   saveInventoryEntries();
   renderInventoryTab();
+}
+
+function copyINV(id) {
+  const src = inventoryEntries.find(e => e.id === id);
+  if (!src) return;
+  const copy = Object.assign({}, src, {
+    id:         uid(),
+    inv_number: nextINVNumber(),
+    inv_row_id: null,
+    project_id: '',
+  });
+  const idx = inventoryEntries.findIndex(e => e.id === id);
+  inventoryEntries.splice(idx + 1, 0, copy);
+  saveInventoryEntries();
+  renderInventoryTab();
+}
+
+function downloadInvPDF(year) {
+  const breakdownHTML = _invBreakdownHTML(year);
+  const doc = window.open('', '_blank', 'width=1100,height=800');
+  if (!doc) return;
+  doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Rubber Infill Inventory — ${year}</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.5rem; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
+    th, td { border: 1px solid #ccc; padding: 4px 7px; text-align: right; white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    thead tr th { background: #f0f0f0; font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+    tr:nth-child(even) { background: #fafafa; }
+    .total-row td { font-weight: 700; background: #e8f5e9; border-top: 2px solid #aaa; }
+    .year-section table { border-color: #4caf50; }
+    .year-section thead tr th { background: #e8f5e9; }
+    h1 { font-size: 15px; margin: 0 0 1rem; }
+    h2 { font-size: 12px; margin: 0.5rem 0 0.25rem; }
+    @media print { body { padding: 0.5rem; } }
+  </style></head><body>
+  <h1>Track Rubber Infill — Monthly &amp; Annual Breakdown &mdash; ${year}</h1>
+  ${breakdownHTML}
+  <script>window.onload=function(){window.print();}<\/script>
+  </body></html>`);
+  doc.document.close();
 }
 
 function _syncINVRowField(entry, field) {
@@ -6273,8 +6316,42 @@ function renderInventoryTab() {
 
   const entries = [...inventoryEntries].reverse();
 
+  // ── Totals ──
+  let totHours = 0, totEE = 0, totBags = 0, totLbs = 0, totEquipH = 0, totEquip = 0, totMat = 0, totJob = 0;
+  inventoryEntries.forEach(e => {
+    const rate = parseFloat(e.rate) || 0, hrs = parseFloat(e.hours) || 0;
+    const ee   = rate * hrs;
+    const bags = parseFloat(e.bags_produced)   || 0;
+    const lbs  = parseFloat(e.total_poundage)  || 0;
+    const euc  = parseFloat(e.equip_unit_cost) || 0, eh = parseFloat(e.equip_hours) || 0;
+    const eq   = euc * eh;
+    const uc   = parseFloat(e.unit_cost) || 0, up = parseFloat(e.units_purchased) || 0;
+    const mat  = uc * up;
+    totHours  += hrs;  totEE    += ee;
+    totBags   += bags; totLbs   += lbs;
+    totEquipH += eh;   totEquip += eq;
+    totMat    += mat;  totJob   += ee + eq + mat;
+  });
+  const totRow = `<tr style="background:#0d1a0d;position:sticky;top:0;z-index:4">
+    <th colspan="3" style="padding:0.3rem 0.6rem;text-align:right;color:#888;font-size:0.72rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;border:1px solid var(--border)">Totals</th>
+    <th colspan="2" style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totHours ? fmt(totHours) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--green);border:1px solid var(--border)">${totEE ? '$'+fmt(totEE) : '—'}</th>
+    <th style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totBags ? totBags.toLocaleString() : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totLbs ? fmt(totLbs) : '—'}</th>
+    <th style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totEquipH ? fmt(totEquipH) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--yellow);border:1px solid var(--border)">${totEquip ? '$'+fmt(totEquip) : '—'}</th>
+    <th colspan="5" style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--yellow);border:1px solid var(--border)">${totMat ? '$'+fmt(totMat) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--green);border:1px solid var(--border)">${totJob ? '$'+fmt(totJob) : '—'}</th>
+    <th style="border:1px solid var(--border);background:var(--bg)"></th>
+  </tr>`;
+
   const bodyHTML = inventoryEntries.length === 0
-    ? `<tr><td colspan="23" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries yet. Click + New Entry to begin.</td></tr>`
+    ? `<tr><td colspan="24" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries yet. Click + New Entry to begin.</td></tr>`
     : entries.map(e => {
         const rate       = parseFloat(e.rate)            || 0;
         const hours      = parseFloat(e.hours)           || 0;
@@ -6327,7 +6404,7 @@ function renderInventoryTab() {
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:600;white-space:nowrap" id="inv-ee-${e.id}">$${fmt(eeCost)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${sel('rubber_type', `<option value="">— select —</option>` + (lists.infill_types || []).map(it => `<option value="${esc(it)}" ${it === e.rubber_type ? 'selected' : ''}>${esc(it)}</option>`).join(''))}</td>
           <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('bags_produced', 'number', 'step="1" placeholder="0"')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:90px">${inp('total_poundage', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:90px;text-align:right;color:var(--muted);font-size:0.8rem" id="inv-lbs-${e.id}">${(parseFloat(e.bags_produced)||0)*2000 ? fmt((parseFloat(e.bags_produced)||0)*2000,0) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('equipment', equipOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('equip_unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('equip_hours', 'number', 'step="any" placeholder="0"')}</td>
@@ -6339,7 +6416,9 @@ function renderInventoryTab() {
           <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--muted);font-size:0.8rem;white-space:nowrap" id="inv-mat-${e.id}">$${fmt(matCost)}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:700;white-space:nowrap" id="inv-job-${e.id}">$${fmt(jobCost)}</td>
-          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="inventory" data-inv-id="${e.id}">&#10005;</button></td>` : '<td></td>'}
+          <td style="padding:0.25rem 0.4rem;text-align:center;white-space:nowrap">
+            ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyINV('${e.id}')" style="font-size:0.65rem;padding:0.15rem 0.3rem;background:none;border:1px solid var(--border);border-radius:3px;color:var(--accent);cursor:pointer;margin-right:2px">&#10697;</button><button class="del-btn" data-tab="inventory" data-inv-id="${e.id}">&#10005;</button>` : ''}
+          </td>
         </tr>`;
       }).join('');
 
@@ -6356,19 +6435,25 @@ function renderInventoryTab() {
       </div>
 
       <div style="margin-bottom:1.75rem">
-        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem">
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
+          <button onclick="_invBreakdownOpen=!_invBreakdownOpen;renderInventoryTab()"
+            style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.85rem;padding:0;line-height:1">${_invBreakdownOpen ? '▼' : '▶'}</button>
           <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Monthly &amp; Annual Breakdown</span>
+          ${_invBreakdownOpen ? `
           <button onclick="_invYear--;renderInventoryTab()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;padding:0.15rem 0.5rem;font-size:0.8rem">&#8249;</button>
-          <span id="inv-year-label" style="font-size:0.85rem;font-weight:600;color:var(--text);min-width:40px;text-align:center">${_invYear}</span>
+          <span style="font-size:0.85rem;font-weight:600;color:var(--text);min-width:40px;text-align:center">${_invYear}</span>
           <button onclick="_invYear++;renderInventoryTab()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;padding:0.15rem 0.5rem;font-size:0.8rem">&#8250;</button>
+          <button onclick="downloadInvPDF(${_invYear})" style="margin-left:0.25rem;background:#1d4ed8;border:none;border-radius:4px;color:#fff;cursor:pointer;padding:0.2rem 0.65rem;font-size:0.75rem;font-weight:600">&#8595; PDF</button>
+          ` : ''}
         </div>
-        <div style="overflow-x:auto">${_invBreakdownHTML(_invYear)}</div>
+        ${_invBreakdownOpen ? `<div style="overflow-x:auto">${_invBreakdownHTML(_invYear)}</div>` : ''}
       </div>
 
       <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.6rem;font-weight:600">Daily Entries</div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:2600px">
           <thead>
+            ${totRow}
             <tr>
               ${th('#')} ${th('Job')} ${th('Date')}
               ${th('Employee')} ${th('Job Class')} ${th('Rate', 1)} ${th('Hours', 1)} ${th('EE $', 1)}
@@ -6376,7 +6461,7 @@ function renderInventoryTab() {
               ${th('Equipment')} ${th('Unit Cost', 1)} ${th('Equip Hours', 1)} ${th('Equip $', 1)}
               ${th('Material')} ${th('Supplier')} ${th('Po #')} ${th('Units Purchased', 1)} ${th('Unit Cost', 1)} ${th('Material $', 1)}
               ${th('Job $', 1)}
-              <th style="width:36px;border-bottom:1px solid var(--border)"></th>
+              <th style="width:60px;border-bottom:1px solid var(--border)"></th>
             </tr>
           </thead>
           <tbody>${bodyHTML}</tbody>
@@ -6518,6 +6603,14 @@ document.getElementById('inventory-root').addEventListener('input', e => {
   const unitsPurch = parseFloat(entry.units_purchased) || 0;
   const matCost    = unitsPurch * unitCost;
   const jobCost    = eeCost + equipCost + matCost;
+
+  // Auto-compute total poundage (1 bag = 2,000 lbs)
+  if (field === 'bags_produced') {
+    const autoPounds = (parseFloat(entry.bags_produced) || 0) * 2000;
+    entry.total_poundage = autoPounds ? String(autoPounds) : '';
+    const lbsEl = document.getElementById('inv-lbs-' + id);
+    if (lbsEl) lbsEl.textContent = autoPounds ? fmt(autoPounds, 0) : '—';
+  }
 
   const eeEl  = document.getElementById('inv-ee-'  + id);
   const eqEl  = document.getElementById('inv-eq-'  + id);
