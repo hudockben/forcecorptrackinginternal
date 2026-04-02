@@ -3083,10 +3083,7 @@ function renderHomeTab() {
     const _effBidQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
     const projBid    = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b) * (parseFloat(b.unit_cost)||0), 0);
     const projActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
-    // Quantity-based EAC: actual unit cost so far × total bid quantity
-    const projBidQty  = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b), 0);
-    const projDoneQty = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
-    const projected   = (projDoneQty > 0 && projBidQty > 0) ? (projActual / projDoneQty) * projBidQty : projBid;
+    const projected  = projectedCostForProject(p);
     totalBid       += projBid;
     totalActual    += projActual;
     totalProjected += projected;
@@ -3149,17 +3146,7 @@ function renderHomeTab() {
         const varTxt    = bid ? (variance >= 0 ? `$${fmt(Math.abs(variance))} under` : `$${fmt(Math.abs(variance))} over`) : '—';
         const barColor  = !bid ? 'var(--muted)' : actual / bid >= 1 ? 'var(--red)' : actual / bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
 
-        // Projected total cost at completion (quantity-based EAC):
-        // For completed projects, projected = actual (job is done).
-        // Otherwise: actual unit cost so far × total bid quantity.
-        const isComplete = (p['status'] || '').toLowerCase() === 'complete';
-        const bidQtyTotal    = (p.bidItems||[]).reduce((s,b) => s + (parseFloat(b.quantity)||0), 0);
-        const actualQtyTotal = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
-        const projCost  = isComplete
-          ? actual
-          : (actualQtyTotal > 0 && bidQtyTotal > 0)
-            ? (actual / actualQtyTotal) * bidQtyTotal
-            : bid;
+        const projCost  = projectedCostForProject(p);
         const projStyle = bid > 0
           ? (projCost > bid ? 'color:var(--red)' : projCost > bid * 0.85 ? 'color:var(--yellow)' : 'color:var(--green)')
           : 'color:var(--muted)';
@@ -3249,11 +3236,7 @@ function renderHomeTab() {
     const variance  = bid - actual;
     const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
     const varTxt    = !bid ? '—' : variance >= 0 ? `$${fmt(Math.abs(variance))} under` : `$${fmt(Math.abs(variance))} over`;
-    const isComplete    = (p['status'] || '').toLowerCase() === 'complete';
-    const bidQtyTotal   = (p.bidItems||[]).reduce((s,b) => s + _eb(b), 0);
-    const actQtyTotal   = (p.dailyRows||[]).reduce((s,r) => s + (parseFloat(r.quantity)||0), 0);
-    const projCost      = isComplete ? actual
-      : (actQtyTotal > 0 && bidQtyTotal > 0) ? (actual / actQtyTotal) * bidQtyTotal : bid;
+    const projCost      = projectedCostForProject(p);
     const projTxt       = bid > 0 ? '$' + fmt(projCost) : '—';
     const projStyle     = !bid ? 'color:var(--muted)'
       : projCost > bid ? 'color:var(--red)'
@@ -4894,6 +4877,17 @@ function projForBidItem(b, actual, rqty, bidQty, bidTot) {
   return rqty > 0 ? (actual / rqty) * bidQty : bidTot;
 }
 
+function projectedCostForProject(p) {
+  const _effQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+  return (p.bidItems||[]).reduce((s,b) => {
+    const bidQty = _effQty(b);
+    const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
+    const actual = actualForBidItem(b, p.id);
+    const rqty   = runningQtyForBidItem(b, p.id);
+    return s + projForBidItem(b, actual, rqty, bidQty, bidTot);
+  }, 0);
+}
+
 function renderBidFooter(projId, opts = {}) {
   const footId  = opts.footId  || 'bfoot-' + projId;
   const readonly = !!opts.readonly;
@@ -4902,13 +4896,7 @@ function renderBidFooter(projId, opts = {}) {
   const _effQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
   const totalBid    = (p.bidItems||[]).reduce((s,b) => s + _effQty(b)*(parseFloat(b.unit_cost)||0), 0);
   const totalActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
-  const totalProj   = (p.bidItems||[]).reduce((s,b) => {
-    const bidQty = _effQty(b);
-    const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
-    const actual = actualForBidItem(b, projId);
-    const rqty   = runningQtyForBidItem(b, projId);
-    return s + projForBidItem(b, actual, rqty, bidQty, bidTot);
-  }, 0);
+  const totalProj   = projectedCostForProject(p);
   const diff = totalBid - totalActual;
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
   const projCls = (totalProj - totalBid) <= 0 ? 'foot-under' : 'foot-over';
@@ -9320,7 +9308,7 @@ function exportBidPDF(projId) {
       const rqty   = runningQtyForBidItem(b, projId);
       const cumHrs = cumulativeHoursForBidItem(b, projId);
       const numLab = laborerCountForBidItem(b, projId);
-      const proj   = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+      const proj   = projForBidItem(b, actual, rqty, bidQty, bidTot);
       const diff   = bidTot - actual;
       const pct    = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : dash;
       const ruc    = rqty > 0 && actual ? '$' + fmt(actual / rqty) : dash;
