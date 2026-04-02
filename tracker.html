@@ -4908,13 +4908,14 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">—</td>
     <td class="foot-label num">—</td>
     <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
     <td class="foot-label num">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
     <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
     <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>`;
-  footEl.innerHTML = readonly ? cells : `<td></td>${cells}`;
+  footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td>`;
 }
 
 function removeBidGroup(projId, costCode) {
@@ -5085,12 +5086,14 @@ function renderBidTable(projId, opts = {}) {
     const totalCells = `
       <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">—</td><td class="bid-calc">—</td>
+      <td class="bid-calc">—</td>
       <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
       <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
       <td class="bid-calc">${gCumHrs ? fmt(gCumHrs) : '—'}</td>
       <td class="bid-calc">—</td>
       <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
-      <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>`;
+      <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>
+      ${readonly ? '' : '<td></td><td></td>'}` ;
     const totalLabel = `<td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode)||'(No Code)'} — Total</td>`;
 
     const totalTr = document.createElement('tr');
