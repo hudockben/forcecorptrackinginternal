@@ -10776,14 +10776,20 @@ function commitImportCSV() {
 ═══════════════════════════════════════════ */
 
 let _schedDeadlines = [];
+let _schedDeadlinesLoaded = false;
 
 async function loadScheduleDeadlines() {
   try {
-    const r = await fetch('/api/deadlines', { headers: { 'Authorization': 'Bearer ' + fctToken } });
-    if (!r.ok) return;
-    const d = await r.json();
-    _schedDeadlines = d.deadlines || [];
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 5000);
+    const r    = await fetch('/api/deadlines', { headers: { 'Authorization': 'Bearer ' + fctToken }, signal: ctrl.signal });
+    clearTimeout(tid);
+    if (r.ok) {
+      const d = await r.json();
+      _schedDeadlines = d.deadlines || [];
+    }
   } catch { _schedDeadlines = []; }
+  _schedDeadlinesLoaded = true;
 }
 
 /** Resolve a project's deadline: prefer end-date field, fall back to deadlines API match.
@@ -11510,7 +11516,7 @@ async function renderScheduleTab() {
 
   body.innerHTML = '<div class="sched-no-data" style="padding:2rem">Loading…</div>';
 
-  if (!_schedDeadlines.length) await loadScheduleDeadlines();
+  if (!_schedDeadlinesLoaded) await loadScheduleDeadlines();
 
   const projId = sel ? sel.value : '';
   const aiBtn  = document.getElementById('sched-ai-btn');
