@@ -11,7 +11,7 @@
     body {
       min-height: 100vh;
       display: flex;
-      background: #f0f4ff;
+      background: #ffffff;
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
       color: #0f172a;
       overflow: hidden;
@@ -20,7 +20,7 @@
     .bg-base {
       position: fixed;
       inset: 0;
-      background: radial-gradient(ellipse at 28% 50%, #dbeafe 0%, #e0f2fe 35%, #f0f9ff 70%, #f8fafc 100%);
+      background: #ffffff;
       z-index: 0;
     }
 
@@ -47,7 +47,7 @@
       flex-direction: column;
       justify-content: center;
       padding: 3rem 4rem 3rem 5rem;
-      background: linear-gradient(to right, rgba(240,249,255,0.7) 0%, rgba(240,249,255,0.1) 100%);
+      background: none;
       min-width: 0;
     }
 
@@ -444,16 +444,10 @@
         const hgap = CW / (PINS + 1);
         const vgap = CH / (PINS + 1);
 
-        // Grid
-        ctx.strokeStyle = 'rgba(15,23,42,0.055)';
-        ctx.lineWidth   = 1;
-        for (let x = 0; x <= W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-        for (let y = 0; y <= H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-
         // Traces
         for (const tr of traces) {
           const [r, g, b] = tr.col;
-          ctx.strokeStyle = `rgba(${r},${g},${b},0.45)`;
+          ctx.strokeStyle = `rgba(${r},${g},${b},0.55)`;
           ctx.lineWidth   = 1.5;
           ctx.beginPath();
           ctx.moveTo(tr.pts[0][0], tr.pts[0][1]);
