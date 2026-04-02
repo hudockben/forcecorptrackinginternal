@@ -4274,6 +4274,7 @@ function nextTRNumber() {
 
 /* ── Inventory store ── */
 let inventoryEntries = [];
+let _invYear = new Date().getFullYear();
 
 async function loadInventoryEntries() {
   let saved = await apiGet('fct_inventory');
@@ -4314,7 +4315,7 @@ function addINV() {
     rubber_type:     '',
     bags_produced:   '',
     total_poundage:  '',
-    equipment:       '',
+    equipment:       'Turf Machine',
     equip_unit_cost: '',
     equip_hours:     '',
     material:        '',
@@ -6101,6 +6102,129 @@ function renderTruckingTab() {
 }
 
 /* ── Inventory Tab ── */
+function _invBreakdownHTML(year) {
+  const MONTHS = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December'];
+
+  // All distinct rubber types used in ANY entry (sorted)
+  const allTypes = [...new Set(
+    inventoryEntries.filter(e => (e.rubber_type || '').trim()).map(e => e.rubber_type.trim())
+  )].sort();
+
+  const bth = (label, right) =>
+    `<th style="padding:0.45rem 0.6rem;font-size:0.7rem;color:var(--muted);letter-spacing:0.07em;text-transform:uppercase;border-bottom:2px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
+
+  const dash = (n, decimals = 2) => (n === null || isNaN(n)) ? '<span style="color:var(--muted)">—</span>' : fmt(n, decimals);
+
+  function aggZero() {
+    return { cnt: 0, laborHrs: 0, laborDol: 0, bags: 0, poundage: 0, equipHrs: 0, utilityDol: 0 };
+  }
+  function addEntry(acc, e) {
+    const lh = parseFloat(e.hours)           || 0;
+    const ld = lh * (parseFloat(e.rate)      || 0);
+    const bg = parseFloat(e.bags_produced)   || 0;
+    const lb = parseFloat(e.total_poundage)  || 0;
+    const eh = parseFloat(e.equip_hours)     || 0;
+    const ud = eh * (parseFloat(e.equip_unit_cost) || 0);
+    acc.cnt++;
+    acc.laborHrs   += lh;
+    acc.laborDol   += ld;
+    acc.bags       += bg;
+    acc.poundage   += lb;
+    acc.equipHrs   += eh;
+    acc.utilityDol += ud;
+  }
+
+  // Yearly totals keyed by rubber type
+  const yrByType = {};
+  allTypes.forEach(rt => { yrByType[rt] = aggZero(); });
+  const yrTotal = aggZero();
+
+  function typeRow(rt, v, isTotalRow, label) {
+    const total       = v.laborDol + v.utilityDol;
+    const bagsMachine = v.equipHrs > 0  ? v.bags / v.equipHrs  : null;
+    const bagsLabor   = v.laborHrs > 0  ? v.bags / v.laborHrs  : null;
+    const perPound    = v.poundage > 0  ? total  / v.poundage  : null;
+    const bg = isTotalRow ? 'rgba(255,255,255,0.04)' : 'transparent';
+    const fw = isTotalRow ? '700' : '400';
+    const bdr = isTotalRow ? 'border-top:2px solid var(--border);' : '';
+    const td = (content, right, color) =>
+      `<td style="padding:0.35rem 0.6rem;font-size:0.82rem;${right?'text-align:right;':''}${color?'color:'+color+';':''}${bdr}font-weight:${fw}">${content}</td>`;
+    return `<tr style="border-bottom:1px solid var(--border);background:${bg}">
+      ${td(escT(label || rt))}
+      ${td(v.cnt, true)}
+      ${td(dash(v.laborHrs), true)}
+      ${td('$' + dash(v.laborDol), true, 'var(--green)')}
+      ${td(v.cnt, true)}
+      ${td(v.bags, true)}
+      ${td(dash(v.poundage), true)}
+      ${td(dash(v.equipHrs), true)}
+      ${td('$' + dash(v.utilityDol), true, 'var(--yellow)')}
+      ${td('$' + dash(total), true, 'var(--yellow)')}
+      ${td(v.cnt, true)}
+      ${td(dash(bagsMachine), true)}
+      ${td(dash(bagsLabor), true)}
+      ${td(dash(perPound), true)}
+    </tr>`;
+  }
+
+  const monthBlocks = MONTHS.map((monthName, mi) => {
+    const byType = {};
+    allTypes.forEach(rt => { byType[rt] = aggZero(); });
+    const mTotal = aggZero();
+
+    inventoryEntries.forEach(e => {
+      if (!e.date) return;
+      const d = new Date(e.date + 'T12:00:00');
+      if (d.getFullYear() !== year || d.getMonth() !== mi) return;
+      const rt = (e.rubber_type || '').trim();
+      if (rt && byType[rt]) { addEntry(byType[rt], e); addEntry(yrByType[rt], e); }
+      addEntry(mTotal, e);
+      addEntry(yrTotal, e);
+    });
+
+    const typeRows = allTypes.map(rt => typeRow(rt, byType[rt], false)).join('');
+    const totRow   = typeRow(null, mTotal, true, `${monthName} Total`);
+
+    return `<div style="margin-bottom:1rem">
+      <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px">
+        <thead>
+          <tr style="background:rgba(255,255,255,0.05)">
+            <th style="padding:0.5rem 0.75rem;text-align:left;font-size:0.85rem;font-weight:700;color:var(--text);border-bottom:2px solid var(--border);min-width:110px">${monthName}</th>
+            ${bth('#',1)} ${bth('Labor Hours',1)} ${bth('Labor $',1)}
+            ${bth('#',1)} ${bth('Bags Produced',1)} ${bth('Total Poundage',1)} ${bth('Equip Hours',1)} ${bth('Utility $',1)} ${bth('Total $',1)}
+            ${bth('#',1)} ${bth('Bags/Hr — Machine',1)} ${bth('Bags/Hr — Laborer',1)} ${bth('$ Per Pound',1)}
+          </tr>
+        </thead>
+        <tbody>${typeRows}${totRow}</tbody>
+      </table>
+    </div>`;
+  }).join('');
+
+  // Year total block
+  const yrTypeRows = allTypes.map(rt => typeRow(rt, yrByType[rt], false)).join('');
+  const yrTotRow   = typeRow(null, yrTotal, true, `${year} Total`);
+  const yearBlock  = `<div style="margin-bottom:1rem">
+    <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;border:1px solid var(--green)">
+      <thead>
+        <tr style="background:rgba(34,197,94,0.08)">
+          <th style="padding:0.5rem 0.75rem;text-align:left;font-size:0.85rem;font-weight:700;color:var(--green);border-bottom:2px solid var(--green);min-width:110px">${year} — Full Year</th>
+          ${bth('#',1)} ${bth('Labor Hours',1)} ${bth('Labor $',1)}
+          ${bth('#',1)} ${bth('Bags Produced',1)} ${bth('Total Poundage',1)} ${bth('Equip Hours',1)} ${bth('Utility $',1)} ${bth('Total $',1)}
+          ${bth('#',1)} ${bth('Bags/Hr — Machine',1)} ${bth('Bags/Hr — Laborer',1)} ${bth('$ Per Pound',1)}
+        </tr>
+      </thead>
+      <tbody>${yrTypeRows}${yrTotRow}</tbody>
+    </table>
+  </div>`;
+
+  if (allTypes.length === 0) {
+    return `<p style="color:var(--muted);font-size:0.85rem">No entries with rubber type data yet.</p>`;
+  }
+
+  return monthBlocks + yearBlock;
+}
+
 function renderInventoryTab() {
   const root = document.getElementById('inventory-root');
   if (!root) return;
@@ -6110,11 +6234,9 @@ function renderInventoryTab() {
   inventoryEntries.forEach(e => {
     const rt = (e.rubber_type || '').trim() || '(unspecified)';
     if (!invByType[rt]) invByType[rt] = { produced: 0, used: 0, poundage: 0 };
-    const bags = parseFloat(e.bags_produced)   || 0;
-    const lbs  = parseFloat(e.total_poundage)  || 0;
-    invByType[rt].produced += bags;
-    invByType[rt].poundage += lbs;
-    if (e.project_id) invByType[rt].used += bags;
+    invByType[rt].produced += parseFloat(e.bags_produced)  || 0;
+    invByType[rt].poundage += parseFloat(e.total_poundage) || 0;
+    if (e.project_id) invByType[rt].used += parseFloat(e.bags_produced) || 0;
   });
 
   const summaryHTML = Object.keys(invByType).length === 0
@@ -6134,14 +6256,14 @@ function renderInventoryTab() {
         </div>`;
       }).join('');
 
-  // ── Table helpers ──
+  // ── Daily entry table helpers ──
   const th = (label, right) =>
     `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right ? ';text-align:right' : ''}">${label}</th>`;
 
   const entries = [...inventoryEntries].reverse();
 
   const bodyHTML = inventoryEntries.length === 0
-    ? `<tr><td colspan="24" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries yet. Click + New Entry to begin.</td></tr>`
+    ? `<tr><td colspan="23" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries yet. Click + New Entry to begin.</td></tr>`
     : entries.map(e => {
         const rate       = parseFloat(e.rate)            || 0;
         const hours      = parseFloat(e.hours)           || 0;
@@ -6153,11 +6275,6 @@ function renderInventoryTab() {
         const unitsPurch = parseFloat(e.units_purchased) || 0;
         const matCost    = unitsPurch * unitCost;
         const jobCost    = eeCost + equipCost + matCost;
-
-        const month = e.date ? (() => {
-          const d = new Date(e.date + 'T12:00:00');
-          return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-        })() : '—';
 
         const inp = (field, type = 'text', extra = '') =>
           `<input type="${type}" value="${esc(String(e[field] || ''))}"
@@ -6176,8 +6293,8 @@ function renderInventoryTab() {
           (lists.job_classes || []).map(jc =>
             `<option value="${esc(jc)}" ${jc === e.job_class ? 'selected' : ''}>${esc(jc)}</option>`).join('');
 
-        const equipOpts = `<option value="">— select —</option>` +
-          (lists.equipment || []).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(eq =>
+        const equipOpts = `<option value="Turf Machine" ${e.equipment === 'Turf Machine' || !e.equipment ? 'selected' : ''}>Turf Machine</option>` +
+          (lists.equipment || []).filter(eq => eq.name !== 'Turf Machine').slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(eq =>
             `<option value="${esc(eq.name)}" ${eq.name === e.equipment ? 'selected' : ''}>${esc(eq.name)}</option>`).join('');
 
         const suppOpts = `<option value="">— select —</option>` +
@@ -6192,13 +6309,12 @@ function renderInventoryTab() {
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(e.inv_number)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date', 'date')}</td>
-          <td style="padding:0.35rem 0.6rem;font-size:0.8rem;color:var(--muted);white-space:nowrap;min-width:120px">${month}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('employee', empOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('job_class', jcOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('rate', 'number', 'step="any" placeholder="0.00"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:70px">${inp('hours', 'number', 'step="any" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:600;white-space:nowrap" id="inv-ee-${e.id}">$${fmt(eeCost)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('rubber_type', 'text', 'placeholder="e.g. Crumb, TPE…"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:120px">${inp('rubber_type', 'text', 'placeholder="e.g. 100-R, 5050-R…"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('bags_produced', 'number', 'step="1" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:90px">${inp('total_poundage', 'number', 'step="any" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('equipment', equipOpts)}</td>
@@ -6228,11 +6344,22 @@ function renderInventoryTab() {
         <div style="display:flex;flex-wrap:wrap;gap:0.75rem">${summaryHTML}</div>
       </div>
 
+      <div style="margin-bottom:1.75rem">
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem">
+          <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Monthly &amp; Annual Breakdown</span>
+          <button onclick="_invYear--;renderInventoryTab()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;padding:0.15rem 0.5rem;font-size:0.8rem">&#8249;</button>
+          <span id="inv-year-label" style="font-size:0.85rem;font-weight:600;color:var(--text);min-width:40px;text-align:center">${_invYear}</span>
+          <button onclick="_invYear++;renderInventoryTab()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;padding:0.15rem 0.5rem;font-size:0.8rem">&#8250;</button>
+        </div>
+        <div style="overflow-x:auto">${_invBreakdownHTML(_invYear)}</div>
+      </div>
+
+      <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.6rem;font-weight:600">Daily Entries</div>
       <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:2800px">
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:2600px">
           <thead>
             <tr>
-              ${th('#')} ${th('Job')} ${th('Date')} ${th('Month')}
+              ${th('#')} ${th('Job')} ${th('Date')}
               ${th('Employee')} ${th('Job Class')} ${th('Rate', 1)} ${th('Hours', 1)} ${th('EE $', 1)}
               ${th('Rubber Type')} ${th('Bags Produced', 1)} ${th('Total Poundage', 1)}
               ${th('Equipment')} ${th('Unit Cost', 1)} ${th('Equip Hours', 1)} ${th('Equip $', 1)}
