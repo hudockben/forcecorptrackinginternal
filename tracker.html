@@ -11193,7 +11193,7 @@ function renderScheduleProjectDetail(proj) {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
 
   const rows = bidItems.map(bi => {
-    const { a, bidQty, baseBidQty, coQtyDelta, runningQty, daysWorked, currentPace, recentPace, avgCrewPerDay, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum, forcedComplete, costToComplete, costPerUnit } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, baseBidQty, coQtyDelta, runningQty, daysWorked, currentPace, recentPace, avgCrewPerDay, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum, forcedComplete, costToComplete, costPerUnit } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
     const unit = (bi.unit || '').toUpperCase();
     const uLabel = unit ? ` ${unit}` : '';
