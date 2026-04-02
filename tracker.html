@@ -314,6 +314,8 @@
     .daily-inner-table td.del-cell .del-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
     .daily-inner-table td.del-cell .copy-row-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--accent); cursor: pointer; margin-top: 2px; }
     .daily-inner-table td.del-cell .copy-row-btn:hover { color: #fff; background: var(--accent); }
+    .inv-cc-cell:hover .inv-cc-btn { opacity: 0.7 !important; }
+    .inv-cc-btn:hover { opacity: 1 !important; color: var(--green) !important; }
     .daily-inner-table td input,
     .daily-inner-table td select {
       width: 100%; background: transparent; border: none; outline: none;
@@ -1930,6 +1932,7 @@
   <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
+  <button class="tab-btn"        data-tab="inventory">Inventory</button>
   <div class="analytics-dropdown-wrap">
     <button class="tab-btn" id="analytics-tab-btn">&#128200; Analytics ▾</button>
     <div class="analytics-dropdown-menu">
@@ -2122,6 +2125,11 @@
   <div id="trucking-root"></div>
 </div>
 
+<!-- ══════════════ INVENTORY TAB ══════════════ -->
+<div class="tab-panel" id="tab-inventory">
+  <div id="inventory-root"></div>
+</div>
+
 <!-- ══════════════ MOBILE DAILY ENTRY TAB ══════════════ -->
 <div class="tab-panel" id="tab-mob-entry">
   <div id="mob-entry-root" style="padding:0.75rem;max-width:520px;margin:0 auto"></div>
@@ -2225,6 +2233,18 @@
   </div>
 </div>
 
+<!-- Inventory column filter dropdown -->
+<div id="inv-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;flex-direction:column;">
+  <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
+    <input id="invff-search" type="text" placeholder="Search…" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.75rem;padding:0.25rem 0.4rem;outline:none;">
+  </div>
+  <div id="invff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
+  <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
+    <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearINVFilter()">Clear</button>
+    <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyINVFilter()">Apply</button>
+  </div>
+</div>
+
 <!-- Trucking column filter dropdown -->
 <div id="tr-filter-dd" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;max-height:280px;flex-direction:column;">
   <div style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--border);display:flex;gap:0.4rem;">
@@ -2287,6 +2307,7 @@
         <button class="modal-tab-btn" data-list="employees">Employees</button>
         <button class="modal-tab-btn" data-list="job_classes">Job Classes</button>
         <button class="modal-tab-btn" data-list="equipment">Equipment</button>
+        <button class="modal-tab-btn" data-list="infill_types">Infill Type</button>
         <button class="modal-tab-btn" data-list="import_csv" style="margin-left:auto;color:var(--green)">⬆ Import CSV</button>
       </div>
 
@@ -2327,6 +2348,15 @@
           <input type="text"   id="new-equipment"      placeholder="Equipment name…" />
           <input type="number" id="new-equipment-cost" class="cost-new" placeholder="Unit cost" step="any" />
           <button class="btn btn-green" onclick="addListItem('equipment')">+ Add</button>
+        </div>
+      </div>
+
+      <!-- Infill Types -->
+      <div class="list-panel" id="panel-infill_types">
+        <div class="list-items" id="items-infill_types"></div>
+        <div class="add-item-row">
+          <input type="text" id="new-infill_types" placeholder="Add infill type… (e.g. 100-R, 5050-R)" />
+          <button class="btn btn-green" onclick="addListItem('infill_types')">+ Add</button>
         </div>
       </div>
 
@@ -2901,7 +2931,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'info')     renderProjectInfoComputed();
     if (activeTab === 'supplier') renderSupplierTab();
     if (activeTab === 'po')       renderPOTab();
-    if (activeTab === 'trucking') renderTruckingTab();
+    if (activeTab === 'trucking')  renderTruckingTab();
+    if (activeTab === 'inventory') renderInventoryTab();
     if (activeTab === 'users')    renderUsersTab();
     if (activeTab === 'schedule')   renderScheduleTab();
     if (activeTab === 'mob-entry')  renderMobileEntryForm();
@@ -4265,6 +4296,157 @@ function nextTRNumber() {
   return 'TR-' + String(next).padStart(4, '0');
 }
 
+/* ── Inventory store ── */
+let inventoryEntries = [];
+let _invYear = new Date().getFullYear();
+let _invBreakdownOpen = false;
+
+async function loadInventoryEntries() {
+  let saved = await apiGet('fct_inventory');
+  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
+    try {
+      const local = JSON.parse(localStorage.getItem('fct_inventory'));
+      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_inventory', saved); }
+    } catch {}
+  }
+  inventoryEntries = Array.isArray(saved) ? saved : [];
+}
+
+function saveInventoryEntries() {
+  localStorage.setItem('fct_inventory', JSON.stringify(inventoryEntries));
+  apiPut('fct_inventory', inventoryEntries);
+}
+
+function nextINVNumber() {
+  const nums = inventoryEntries.map(e => {
+    const m = (e.inv_number || '').match(/^INV-(\d+)$/);
+    return m ? parseInt(m[1], 10) : 0;
+  });
+  const next = nums.length ? Math.max(...nums) + 1 : 1;
+  return 'INV-' + String(next).padStart(4, '0');
+}
+
+function addINV() {
+  inventoryEntries.push({
+    id:              uid(),
+    inv_number:      nextINVNumber(),
+    project_id:      '',
+    inv_row_id:      null,
+    date:            _localDateStr(),
+    employee:        '',
+    job_class:       '',
+    rate:            '',
+    hours:           '',
+    rubber_type:     '',
+    bags_produced:   '',
+    total_poundage:  '',
+    equipment:       'Turf Machine',
+    equip_unit_cost: '',
+    equip_hours:     '',
+    material:        '',
+    supplier:        '',
+    po_num:          '',
+    units_purchased: '',
+    unit_cost:       '',
+  });
+  saveInventoryEntries();
+  renderInventoryTab();
+}
+
+function deleteINV(id) {
+  const entry = inventoryEntries.find(e => e.id === id);
+  if (entry && entry.inv_row_id && entry.project_id) {
+    const proj = getProj(entry.project_id);
+    if (proj) {
+      proj.dailyRows = proj.dailyRows.filter(r => r.id !== entry.inv_row_id);
+      drDelete(entry.inv_row_id);
+      renderDailyTable(entry.project_id);
+    }
+  }
+  inventoryEntries = inventoryEntries.filter(e => e.id !== id);
+  saveInventoryEntries();
+  renderInventoryTab();
+}
+
+function copyINV(id) {
+  const src = inventoryEntries.find(e => e.id === id);
+  if (!src) return;
+  const copy = Object.assign({}, src, {
+    id:         uid(),
+    inv_number: nextINVNumber(),
+    inv_row_id: null,
+    project_id: '',
+  });
+  const idx = inventoryEntries.findIndex(e => e.id === id);
+  inventoryEntries.splice(idx + 1, 0, copy);
+  saveInventoryEntries();
+  renderInventoryTab();
+}
+
+function downloadInvPDF(year) {
+  const breakdownHTML = _invBreakdownHTML(year);
+  const doc = window.open('', '_blank', 'width=1100,height=800');
+  if (!doc) return;
+  doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Rubber Infill Inventory — ${year}</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.5rem; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
+    th, td { border: 1px solid #ccc; padding: 4px 7px; text-align: right; white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    thead tr th { background: #f0f0f0; font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+    tr:nth-child(even) { background: #fafafa; }
+    .total-row td { font-weight: 700; background: #e8f5e9; border-top: 2px solid #aaa; }
+    .year-section table { border-color: #4caf50; }
+    .year-section thead tr th { background: #e8f5e9; }
+    h1 { font-size: 15px; margin: 0 0 1rem; }
+    h2 { font-size: 12px; margin: 0.5rem 0 0.25rem; }
+    @media print { body { padding: 0.5rem; } }
+  </style></head><body>
+  <h1>Track Rubber Infill — Monthly &amp; Annual Breakdown &mdash; ${year}</h1>
+  ${breakdownHTML}
+  <script>window.onload=function(){window.print();}<\/script>
+  </body></html>`);
+  doc.document.close();
+}
+
+function _syncINVRowField(entry, field) {
+  if (!entry.project_id || !entry.inv_row_id) return;
+  const proj = getProj(entry.project_id);
+  if (!proj) return;
+  const r = proj.dailyRows.find(r => r.id === entry.inv_row_id);
+  if (!r) return;
+  const map = {
+    employee:        'employee',
+    job_class:       'job_class',
+    rate:            'rate',
+    hours:           'labor_hours',
+    equipment:       'equipment',
+    equip_unit_cost: 'equip_unit_cost',
+    equip_hours:     'equip_hours',
+    material:        'material',
+    supplier:        'supplier',
+    po_num:          'po_num',
+    units_purchased: 'units_purchased',
+    unit_cost:       'unit_cost',
+    date:            'date',
+  };
+  if (map[field]) r[map[field]] = entry[field] || '';
+  if (field === 'rubber_type') {
+    r.material = entry.rubber_type ? `${entry.rubber_type} Rubber Infill` : (entry.material || '');
+  }
+  if (['units_purchased', 'unit_cost'].includes(field)) {
+    r.material_cost = String((parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0));
+  }
+  if (field === 'bags_produced') {
+    r.units_purchased = entry.bags_produced || '';
+    r.quantity        = entry.bags_produced || '';
+    r.material_cost   = String((parseFloat(entry.bags_produced) || 0) * (parseFloat(entry.unit_cost) || 0));
+  }
+  drPutNow(entry.inv_row_id, r);
+  saveProject(entry.project_id);
+}
+
 function togglePin(projId) {
   const p = getProj(projId); if (!p) return;
   p.pinned = !p.pinned;
@@ -5197,11 +5379,12 @@ function renderProjectInfoComputed() { renderProjectsTab(); }
 const LISTS_KEY = 'fct_lists';
 
 const defaultLists = {
-  field_types: [],
-  employees:   [],
-  job_classes: [],
-  equipment:   [],   // [{name, unit_cost}]
-  suppliers:   [],
+  field_types:  [],
+  employees:    [],
+  job_classes:  [],
+  equipment:    [],   // [{name, unit_cost}]
+  suppliers:    [],
+  infill_types: [],
 };
 
 let lists = {};
@@ -5986,6 +6169,430 @@ function renderTruckingTab() {
   }
 }
 
+/* ── Inventory filter state ── */
+let invFilters  = {};
+let invSearch   = '';
+let _invffField   = null;
+
+function _invFieldVal(e, field) {
+  if (field === 'project_id') {
+    const proj = projectsList.find(p => p.id === e.project_id);
+    return proj ? (proj['project-name'] || 'Untitled') : '— none —';
+  }
+  return String(e[field] ?? '');
+}
+
+function applyINVFilters() {
+  const q = invSearch.trim().toLowerCase();
+  return inventoryEntries.filter(e => {
+    for (const [field, valueSet] of Object.entries(invFilters)) {
+      if (!valueSet || valueSet.size === 0) continue;
+      if (!valueSet.has(_invFieldVal(e, field))) return false;
+    }
+    if (q) {
+      const proj = projectsList.find(p => p.id === e.project_id);
+      const hay  = [e.inv_number, proj ? (proj['project-name']||'') : '', e.employee, e.job_class, e.rubber_type, e.equipment, e.date, e.supplier].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function openINVFilter(field, btn) {
+  _invffField = field;
+  const unique = [...new Set(inventoryEntries.map(e => _invFieldVal(e, field)))].sort();
+  const active = invFilters[field] || null;
+
+  const list = document.getElementById('invff-list');
+  const allChecked = !active;
+  list.innerHTML = `<label class="dff-item" id="invff-all-label">
+    <input type="checkbox" id="invff-all" ${allChecked ? 'checked' : ''}> <span>(Select All)</span>
+  </label>` + unique.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="invff-val-cb" value="${esc(v)}" ${(!active || active.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:#888">(blank)</em>' : esc(v)}</span></label>`
+  ).join('');
+
+  document.getElementById('invff-all').addEventListener('change', e => {
+    document.querySelectorAll('.invff-val-cb').forEach(cb => cb.checked = e.target.checked);
+  });
+  list.querySelectorAll('.invff-val-cb').forEach(cb => cb.addEventListener('change', () => {
+    const all = [...list.querySelectorAll('.invff-val-cb')].every(c => c.checked);
+    document.getElementById('invff-all').checked = all;
+  }));
+
+  document.getElementById('invff-search').value = '';
+  document.getElementById('invff-search').oninput = ev => {
+    const q = ev.target.value.toLowerCase();
+    list.querySelectorAll('.dff-item:not(#invff-all-label)').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+
+  const dd   = document.getElementById('inv-filter-dd');
+  const rect = btn.getBoundingClientRect();
+  dd.style.display = 'flex';
+  dd.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  dd.style.top  = (rect.bottom + 4) + 'px';
+}
+
+function applyINVFilter() {
+  const cbs     = [...document.querySelectorAll('.invff-val-cb')];
+  const checked = cbs.filter(c => c.checked).map(c => c.value);
+  const allCkd  = document.getElementById('invff-all')?.checked;
+  if (allCkd || checked.length === cbs.length) {
+    delete invFilters[_invffField];
+  } else {
+    invFilters[_invffField] = new Set(checked);
+  }
+  document.getElementById('inv-filter-dd').style.display = 'none';
+  renderInventoryTab();
+}
+
+function clearINVFilter() {
+  delete invFilters[_invffField];
+  document.getElementById('inv-filter-dd').style.display = 'none';
+  renderInventoryTab();
+}
+
+function _invCopyCell(text) {
+  navigator.clipboard.writeText(text).catch(() => {});
+  // brief flash feedback on the button
+  const el = event.currentTarget;
+  const orig = el.textContent;
+  el.textContent = '✓';
+  el.style.color = 'var(--green)';
+  setTimeout(() => { el.textContent = orig; el.style.color = ''; }, 900);
+}
+
+/* ── Inventory Tab ── */
+function _invBreakdownHTML(year) {
+  const MONTHS = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December'];
+
+  // All distinct rubber types used in ANY entry (sorted)
+  const allTypes = [...new Set(
+    inventoryEntries.filter(e => (e.rubber_type || '').trim()).map(e => e.rubber_type.trim())
+  )].sort();
+
+  const bth = (label, right) =>
+    `<th style="padding:0.45rem 0.6rem;font-size:0.7rem;color:var(--muted);letter-spacing:0.07em;text-transform:uppercase;border-bottom:2px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
+
+  const dash = (n, decimals = 2) => (n === null || isNaN(n)) ? '<span style="color:var(--muted)">—</span>' : fmt(n, decimals);
+
+  function aggZero() {
+    return { cnt: 0, laborHrs: 0, laborDol: 0, bags: 0, poundage: 0, equipHrs: 0, utilityDol: 0 };
+  }
+  function addEntry(acc, e) {
+    const lh = parseFloat(e.hours)           || 0;
+    const ld = lh * (parseFloat(e.rate)      || 0);
+    const bg = parseFloat(e.bags_produced)   || 0;
+    const lb = parseFloat(e.total_poundage)  || 0;
+    const eh = parseFloat(e.equip_hours)     || 0;
+    const ud = eh * (parseFloat(e.equip_unit_cost) || 0);
+    acc.cnt++;
+    acc.laborHrs   += lh;
+    acc.laborDol   += ld;
+    acc.bags       += bg;
+    acc.poundage   += lb;
+    acc.equipHrs   += eh;
+    acc.utilityDol += ud;
+  }
+
+  // Yearly totals keyed by rubber type
+  const yrByType = {};
+  allTypes.forEach(rt => { yrByType[rt] = aggZero(); });
+  const yrTotal = aggZero();
+
+  function typeRow(rt, v, isTotalRow, label) {
+    const total       = v.laborDol + v.utilityDol;
+    const bagsMachine = v.equipHrs > 0  ? v.bags / v.equipHrs  : null;
+    const bagsLabor   = v.laborHrs > 0  ? v.bags / v.laborHrs  : null;
+    const perPound    = v.poundage > 0  ? total  / v.poundage  : null;
+    const bg = isTotalRow ? 'rgba(255,255,255,0.04)' : 'transparent';
+    const fw = isTotalRow ? '700' : '400';
+    const bdr = isTotalRow ? 'border-top:2px solid var(--border);' : '';
+    const td = (content, right, color) =>
+      `<td style="padding:0.35rem 0.6rem;font-size:0.82rem;${right?'text-align:right;':''}${color?'color:'+color+';':''}${bdr}font-weight:${fw}">${content}</td>`;
+    return `<tr style="border-bottom:1px solid var(--border);background:${bg}">
+      ${td(escT(label || rt))}
+      ${td(v.cnt, true)}
+      ${td(dash(v.laborHrs), true)}
+      ${td('$' + dash(v.laborDol), true, 'var(--green)')}
+      ${td(v.cnt, true)}
+      ${td(v.bags, true)}
+      ${td(dash(v.poundage), true)}
+      ${td(dash(v.equipHrs), true)}
+      ${td('$' + dash(v.utilityDol), true, 'var(--yellow)')}
+      ${td('$' + dash(total), true, 'var(--yellow)')}
+      ${td(v.cnt, true)}
+      ${td(dash(bagsMachine), true)}
+      ${td(dash(bagsLabor), true)}
+      ${td(dash(perPound), true)}
+    </tr>`;
+  }
+
+  const monthBlocks = MONTHS.map((monthName, mi) => {
+    const byType = {};
+    allTypes.forEach(rt => { byType[rt] = aggZero(); });
+    const mTotal = aggZero();
+
+    inventoryEntries.forEach(e => {
+      if (!e.date) return;
+      const d = new Date(e.date + 'T12:00:00');
+      if (d.getFullYear() !== year || d.getMonth() !== mi) return;
+      const rt = (e.rubber_type || '').trim();
+      if (rt && byType[rt]) { addEntry(byType[rt], e); addEntry(yrByType[rt], e); }
+      addEntry(mTotal, e);
+      addEntry(yrTotal, e);
+    });
+
+    const typeRows = allTypes.map(rt => typeRow(rt, byType[rt], false)).join('');
+    const totRow   = typeRow(null, mTotal, true, `${monthName} Total`);
+
+    return `<div style="margin-bottom:1rem">
+      <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px">
+        <thead>
+          <tr style="background:rgba(255,255,255,0.05)">
+            <th style="padding:0.5rem 0.75rem;text-align:left;font-size:0.85rem;font-weight:700;color:var(--text);border-bottom:2px solid var(--border);min-width:110px">${monthName}</th>
+            ${bth('#',1)} ${bth('Labor Hours',1)} ${bth('Labor $',1)}
+            ${bth('#',1)} ${bth('Bags Produced',1)} ${bth('Total Poundage',1)} ${bth('Equip Hours',1)} ${bth('Utility $',1)} ${bth('Total $',1)}
+            ${bth('#',1)} ${bth('Bags/Hr — Machine',1)} ${bth('Bags/Hr — Laborer',1)} ${bth('$ Per Pound',1)}
+          </tr>
+        </thead>
+        <tbody>${typeRows}${totRow}</tbody>
+      </table>
+    </div>`;
+  }).join('');
+
+  // Year total block
+  const yrTypeRows = allTypes.map(rt => typeRow(rt, yrByType[rt], false)).join('');
+  const yrTotRow   = typeRow(null, yrTotal, true, `${year} Total`);
+  const yearBlock  = `<div style="margin-bottom:1rem">
+    <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;border:1px solid var(--green)">
+      <thead>
+        <tr style="background:rgba(34,197,94,0.08)">
+          <th style="padding:0.5rem 0.75rem;text-align:left;font-size:0.85rem;font-weight:700;color:var(--green);border-bottom:2px solid var(--green);min-width:110px">${year} — Full Year</th>
+          ${bth('#',1)} ${bth('Labor Hours',1)} ${bth('Labor $',1)}
+          ${bth('#',1)} ${bth('Bags Produced',1)} ${bth('Total Poundage',1)} ${bth('Equip Hours',1)} ${bth('Utility $',1)} ${bth('Total $',1)}
+          ${bth('#',1)} ${bth('Bags/Hr — Machine',1)} ${bth('Bags/Hr — Laborer',1)} ${bth('$ Per Pound',1)}
+        </tr>
+      </thead>
+      <tbody>${yrTypeRows}${yrTotRow}</tbody>
+    </table>
+  </div>`;
+
+  if (allTypes.length === 0) {
+    return `<p style="color:var(--muted);font-size:0.85rem">No entries with rubber type data yet.</p>`;
+  }
+
+  return monthBlocks + yearBlock;
+}
+
+function renderInventoryTab() {
+  const root = document.getElementById('inventory-root');
+  if (!root) return;
+
+  // ── Running inventory summary by rubber type ──
+  const invByType = {};
+  inventoryEntries.forEach(e => {
+    const rt = (e.rubber_type || '').trim() || '(unspecified)';
+    if (!invByType[rt]) invByType[rt] = { produced: 0, used: 0, poundage: 0 };
+    invByType[rt].produced += parseFloat(e.bags_produced)  || 0;
+    invByType[rt].poundage += parseFloat(e.total_poundage) || 0;
+    if (e.project_id) invByType[rt].used += parseFloat(e.bags_produced) || 0;
+  });
+
+  const summaryHTML = Object.keys(invByType).length === 0
+    ? `<p style="color:var(--muted);font-size:0.85rem;margin:0">No entries yet — add your first entry below.</p>`
+    : Object.entries(invByType).map(([rt, v]) => {
+        const inStock    = v.produced - v.used;
+        const stockColor = inStock <= 0 ? 'var(--red)' : inStock < 50 ? 'var(--yellow)' : 'var(--green)';
+        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.9rem 1.1rem;min-width:175px">
+          <div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.35rem;font-weight:600">${escT(rt)}</div>
+          <div style="font-size:1.55rem;font-weight:700;color:${stockColor};line-height:1">${inStock.toLocaleString()}</div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">bags in stock</div>
+          <div style="display:flex;gap:0.75rem;margin-top:0.5rem;font-size:0.72rem;color:var(--muted)">
+            <span>&#8679; ${v.produced.toLocaleString()} produced</span>
+            <span>&#8681; ${v.used.toLocaleString()} used</span>
+          </div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${v.poundage.toLocaleString()} lbs total</div>
+        </div>`;
+      }).join('');
+
+  // ── Daily entry table helpers ──
+  const th = (label, right) =>
+    `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right ? ';text-align:right' : ''}">${label}</th>`;
+  const thf = (label, key, right) => {
+    const active = invFilters[key] ? ' active' : '';
+    return `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">
+      ${label} <button class="cfb invfb${active}" data-invf="${key}" title="Filter ${label}">▼</button>
+    </th>`;
+  };
+
+  const hasFilters = Object.keys(invFilters).length > 0 || invSearch;
+  const entries = [...applyINVFilters()].reverse();
+
+  // ── Totals ──
+  let totHours = 0, totEE = 0, totBags = 0, totLbs = 0, totEquipH = 0, totEquip = 0, totMat = 0, totJob = 0;
+  inventoryEntries.forEach(e => {
+    const rate = parseFloat(e.rate) || 0, hrs = parseFloat(e.hours) || 0;
+    const ee   = rate * hrs;
+    const bags = parseFloat(e.bags_produced)   || 0;
+    const lbs  = parseFloat(e.total_poundage)  || 0;
+    const euc  = parseFloat(e.equip_unit_cost) || 0, eh = parseFloat(e.equip_hours) || 0;
+    const eq   = euc * eh;
+    const uc   = parseFloat(e.unit_cost) || 0, up = parseFloat(e.units_purchased) || 0;
+    const mat  = uc * up;
+    totHours  += hrs;  totEE    += ee;
+    totBags   += bags; totLbs   += lbs;
+    totEquipH += eh;   totEquip += eq;
+    totMat    += mat;  totJob   += ee + eq + mat;
+  });
+  const totRow = `<tr style="background:#0d1a0d;position:sticky;top:0;z-index:4">
+    <th colspan="3" style="padding:0.3rem 0.6rem;text-align:right;color:#888;font-size:0.72rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;border:1px solid var(--border)">Totals</th>
+    <th colspan="2" style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totHours ? fmt(totHours) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--green);border:1px solid var(--border)">${totEE ? '$'+fmt(totEE) : '—'}</th>
+    <th style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totBags ? totBags.toLocaleString() : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totLbs ? fmt(totLbs) : '—'}</th>
+    <th style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totEquipH ? fmt(totEquipH) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--yellow);border:1px solid var(--border)">${totEquip ? '$'+fmt(totEquip) : '—'}</th>
+    <th colspan="5" style="border:1px solid var(--border);background:var(--bg)"></th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--yellow);border:1px solid var(--border)">${totMat ? '$'+fmt(totMat) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--green);border:1px solid var(--border)">${totJob ? '$'+fmt(totJob) : '—'}</th>
+    <th style="border:1px solid var(--border);background:var(--bg)"></th>
+  </tr>`;
+
+  const bodyHTML = inventoryEntries.length === 0
+    ? `<tr><td colspan="24" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries yet. Click + New Entry to begin.</td></tr>`
+    : entries.map(e => {
+        const rate       = parseFloat(e.rate)            || 0;
+        const hours      = parseFloat(e.hours)           || 0;
+        const eeCost     = rate * hours;
+        const equipUC    = parseFloat(e.equip_unit_cost) || 0;
+        const equipH     = parseFloat(e.equip_hours)     || 0;
+        const equipCost  = equipUC * equipH;
+        const unitCost   = parseFloat(e.unit_cost)       || 0;
+        const unitsPurch = parseFloat(e.units_purchased) || 0;
+        const matCost    = unitsPurch * unitCost;
+        const jobCost    = eeCost + equipCost + matCost;
+
+        const inp = (field, type = 'text', extra = '') =>
+          `<input type="${type}" value="${esc(String(e[field] || ''))}"
+            data-inv-id="${e.id}" data-inv-field="${field}"
+            style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0" ${extra}>`;
+        // copy-cell button: copies text to clipboard on click
+        const ccb = (val) =>
+          `<button onclick="_invCopyCell('${esc(String(val))}')" title="Copy value"
+            style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:0.6rem;padding:0 0.2rem;opacity:0;transition:opacity 0.15s;vertical-align:middle"
+            class="inv-cc-btn">&#128203;</button>`;
+
+        const sel = (field, opts) =>
+          `<select data-inv-id="${e.id}" data-inv-field="${field}"
+            style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
+
+        const empOpts = `<option value="">— select —</option>` +
+          (lists.employees || []).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(em =>
+            `<option value="${esc(em.name)}" ${em.name === e.employee ? 'selected' : ''}>${esc(em.name)}</option>`).join('');
+
+        const jcOpts = `<option value="">— select —</option>` +
+          (lists.job_classes || []).map(jc =>
+            `<option value="${esc(jc)}" ${jc === e.job_class ? 'selected' : ''}>${esc(jc)}</option>`).join('');
+
+        const equipOpts = `<option value="Turf Machine" ${e.equipment === 'Turf Machine' || !e.equipment ? 'selected' : ''}>Turf Machine</option>` +
+          (lists.equipment || []).filter(eq => eq.name !== 'Turf Machine').slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(eq =>
+            `<option value="${esc(eq.name)}" ${eq.name === e.equipment ? 'selected' : ''}>${esc(eq.name)}</option>`).join('');
+
+        const suppOpts = `<option value="">— select —</option>` +
+          (lists.suppliers || []).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(s =>
+            `<option value="${esc(s.name)}" ${s.name === e.supplier ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+
+        const projOpts = `<option value="">— none —</option>` +
+          projectsList.slice().sort((a,b)=>(a['project-name']||'').localeCompare(b['project-name']||'')).map(p =>
+            `<option value="${esc(p.id)}" ${p.id === e.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
+
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap" class="inv-cc-cell">${esc(e.inv_number)}${ccb(e.inv_number)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date', 'date')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('employee', empOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('job_class', jcOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('rate', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:70px">${inp('hours', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:600;white-space:nowrap" id="inv-ee-${e.id}" class="inv-cc-cell">$${fmt(eeCost)}${ccb(fmt(eeCost))}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${sel('rubber_type', `<option value="">— select —</option>` + (lists.infill_types || []).map(it => `<option value="${esc(it)}" ${it === e.rubber_type ? 'selected' : ''}>${esc(it)}</option>`).join(''))}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('bags_produced', 'number', 'step="1" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:90px;text-align:right;color:var(--muted);font-size:0.8rem" id="inv-lbs-${e.id}" class="inv-cc-cell">${(parseFloat(e.bags_produced)||0)*2000 ? fmt((parseFloat(e.bags_produced)||0)*2000,0) : '—'}${ccb((parseFloat(e.bags_produced)||0)*2000)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('equipment', equipOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('equip_unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('equip_hours', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="inv-eq-${e.id}" class="inv-cc-cell">$${fmt(equipCost)}${ccb(fmt(equipCost))}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('material', 'text', 'placeholder="Material"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('supplier', suppOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:90px">${inp('po_num', 'text', 'placeholder="PO #"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('units_purchased', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--muted);font-size:0.8rem;white-space:nowrap" id="inv-mat-${e.id}" class="inv-cc-cell">$${fmt(matCost)}${ccb(fmt(matCost))}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:700;white-space:nowrap" id="inv-job-${e.id}" class="inv-cc-cell">$${fmt(jobCost)}${ccb(fmt(jobCost))}</td>
+          <td style="padding:0.25rem 0.4rem;text-align:center;white-space:nowrap">
+            ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyINV('${e.id}')" style="font-size:0.65rem;padding:0.15rem 0.3rem;background:none;border:1px solid var(--border);border-radius:3px;color:var(--accent);cursor:pointer;margin-right:2px">&#10697;</button><button class="del-btn" data-tab="inventory" data-inv-id="${e.id}">&#10005;</button>` : ''}
+          </td>
+        </tr>`;
+      }).join('');
+
+  root.innerHTML = `
+    <div style="padding:1.5rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Track Rubber Infill — Inventory</span>
+        ${perm.canEdit ? `<button class="btn btn-green" onclick="addINV()">+ New Entry</button>` : ''}
+      </div>
+
+      <div style="margin-bottom:1.5rem">
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.6rem;font-weight:600">Running Inventory by Rubber Type</div>
+        <div style="display:flex;flex-wrap:wrap;gap:0.75rem">${summaryHTML}</div>
+      </div>
+
+      <div style="margin-bottom:1.75rem">
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
+          <button onclick="_invBreakdownOpen=!_invBreakdownOpen;renderInventoryTab()"
+            style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.85rem;padding:0;line-height:1">${_invBreakdownOpen ? '▼' : '▶'}</button>
+          <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Monthly &amp; Annual Breakdown</span>
+          ${_invBreakdownOpen ? `
+          <button onclick="_invYear--;renderInventoryTab()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;padding:0.15rem 0.5rem;font-size:0.8rem">&#8249;</button>
+          <span style="font-size:0.85rem;font-weight:600;color:var(--text);min-width:40px;text-align:center">${_invYear}</span>
+          <button onclick="_invYear++;renderInventoryTab()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;padding:0.15rem 0.5rem;font-size:0.8rem">&#8250;</button>
+          <button onclick="downloadInvPDF(${_invYear})" style="margin-left:0.25rem;background:#1d4ed8;border:none;border-radius:4px;color:#fff;cursor:pointer;padding:0.2rem 0.65rem;font-size:0.75rem;font-weight:600">&#8595; PDF</button>
+          ` : ''}
+        </div>
+        ${_invBreakdownOpen ? `<div style="overflow-x:auto">${_invBreakdownHTML(_invYear)}</div>` : ''}
+      </div>
+
+      <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem">
+        <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Daily Entries</span>
+        ${hasFilters ? `<button onclick="invFilters={};invSearch='';renderInventoryTab()" style="font-size:0.72rem;padding:0.2rem 0.55rem;background:var(--border);color:var(--muted);border:none;border-radius:3px;cursor:pointer">Clear Filters</button>` : ''}
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:2600px">
+          <thead>
+            ${totRow}
+            <tr>
+              ${th('#')} ${thf('Job','project_id')} ${thf('Date','date')}
+              ${thf('Employee','employee')} ${thf('Job Class','job_class')} ${th('Rate', 1)} ${th('Hours', 1)} ${th('EE $', 1)}
+              ${thf('Rubber Type','rubber_type')} ${th('Bags Produced', 1)} ${th('Total Poundage', 1)}
+              ${thf('Equipment','equipment')} ${th('Unit Cost', 1)} ${th('Equip Hours', 1)} ${th('Equip $', 1)}
+              ${th('Material')} ${thf('Supplier','supplier')} ${th('Po #')} ${th('Units Purchased', 1)} ${th('Unit Cost', 1)} ${th('Material $', 1)}
+              ${th('Job $', 1)}
+              <th style="width:60px;border-bottom:1px solid var(--border)"></th>
+            </tr>
+          </thead>
+          <tbody>${bodyHTML}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
 document.getElementById('trucking-root').addEventListener('input', e => {
   const el = e.target;
   const id = el.dataset.trId, field = el.dataset.trField;
@@ -6097,6 +6704,149 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     _syncTRRowField(tr, field);
   }
   saveTruckingEntries();
+});
+
+/* ── Inventory Tab events ── */
+document.getElementById('inventory-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.invId, field = el.dataset.invField;
+  if (!id || !field) return;
+  const entry = inventoryEntries.find(x => x.id === id);
+  if (!entry) return;
+  entry[field] = el.value;
+
+  // Update calculated cost cells inline (no full re-render)
+  const rate       = parseFloat(entry.rate)            || 0;
+  const hours      = parseFloat(entry.hours)           || 0;
+  const eeCost     = rate * hours;
+  const equipUC    = parseFloat(entry.equip_unit_cost) || 0;
+  const equipH     = parseFloat(entry.equip_hours)     || 0;
+  const equipCost  = equipUC * equipH;
+  const unitCost   = parseFloat(entry.unit_cost)       || 0;
+  const unitsPurch = parseFloat(entry.units_purchased) || 0;
+  const matCost    = unitsPurch * unitCost;
+  const jobCost    = eeCost + equipCost + matCost;
+
+  // Auto-compute total poundage (1 bag = 2,000 lbs)
+  if (field === 'bags_produced') {
+    const autoPounds = (parseFloat(entry.bags_produced) || 0) * 2000;
+    entry.total_poundage = autoPounds ? String(autoPounds) : '';
+    const lbsEl = document.getElementById('inv-lbs-' + id);
+    if (lbsEl) lbsEl.textContent = autoPounds ? fmt(autoPounds, 0) : '—';
+  }
+
+  const eeEl  = document.getElementById('inv-ee-'  + id);
+  const eqEl  = document.getElementById('inv-eq-'  + id);
+  const matEl = document.getElementById('inv-mat-' + id);
+  const jobEl = document.getElementById('inv-job-' + id);
+  if (eeEl)  eeEl.textContent  = '$' + fmt(eeCost);
+  if (eqEl)  eqEl.textContent  = '$' + fmt(equipCost);
+  if (matEl) matEl.textContent = '$' + fmt(matCost);
+  if (jobEl) jobEl.textContent = '$' + fmt(jobCost);
+
+  _syncINVRowField(entry, field);
+  saveInventoryEntries();
+});
+
+document.getElementById('inventory-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.invId, field = el.dataset.invField;
+  if (!id || !field) return;
+  const entry = inventoryEntries.find(x => x.id === id);
+  if (!entry) return;
+  const oldProj = entry.project_id;
+
+  entry[field] = el.value;
+
+  if (field === 'employee') {
+    const emp = (lists.employees || []).find(e => e.name === el.value);
+    if (emp) {
+      const row = el.closest('tr');
+      if (emp.job_class) {
+        entry.job_class = emp.job_class;
+        const jcSel = row ? row.querySelector('[data-inv-field="job_class"]') : null;
+        if (jcSel) jcSel.value = emp.job_class;
+      }
+      const autoRate = emp.non_prevailing_rate || 0;
+      entry.rate = autoRate ? String(autoRate) : '';
+      const rateInp = row ? row.querySelector('[data-inv-field="rate"]') : null;
+      if (rateInp) rateInp.value = autoRate || '';
+      // Update EE $ and Job $ cells
+      const hours  = parseFloat(entry.hours) || 0;
+      const eeCost = autoRate * hours;
+      const equipCost = (parseFloat(entry.equip_unit_cost) || 0) * (parseFloat(entry.equip_hours) || 0);
+      const matCost   = (parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0);
+      const eeEl  = document.getElementById('inv-ee-'  + id);
+      const jobEl = document.getElementById('inv-job-' + id);
+      if (eeEl)  eeEl.textContent  = '$' + fmt(eeCost);
+      if (jobEl) jobEl.textContent = '$' + fmt(eeCost + equipCost + matCost);
+    }
+  }
+
+  if (field === 'equipment') {
+    const eq = (lists.equipment || []).find(eq => eq.name === el.value);
+    if (eq && eq.unit_cost) {
+      entry.equip_unit_cost = String(eq.unit_cost);
+      const ucInput = el.closest('tr').querySelector('[data-inv-field="equip_unit_cost"]');
+      if (ucInput) ucInput.value = eq.unit_cost;
+      const equipH    = parseFloat(entry.equip_hours) || 0;
+      const eqEl      = document.getElementById('inv-eq-'  + id);
+      const jobEl     = document.getElementById('inv-job-' + id);
+      const eeCost    = (parseFloat(entry.rate) || 0) * (parseFloat(entry.hours) || 0);
+      const matCost   = (parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0);
+      const equipCost = parseFloat(eq.unit_cost) * equipH;
+      if (eqEl)  eqEl.textContent  = '$' + fmt(equipCost);
+      if (jobEl) jobEl.textContent = '$' + fmt(eeCost + equipCost + matCost);
+    }
+  }
+
+  if (field === 'project_id') {
+    // Remove old linked daily row
+    if (oldProj && entry.inv_row_id) {
+      const oldP = getProj(oldProj);
+      if (oldP) {
+        oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== entry.inv_row_id);
+        drDelete(entry.inv_row_id);
+        renderDailyTable(oldProj);
+      }
+    }
+    entry.inv_row_id = null;
+
+    // Create new daily row in the new project
+    if (entry.project_id) {
+      const newP = getProj(entry.project_id);
+      if (newP) {
+        const matCost = (parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0);
+        const row = {
+          ...defaultDailyRow(),
+          id:              Date.now() + Math.random(),
+          date:            entry.date             || '',
+          employee:        entry.employee         || '',
+          job_class:       entry.job_class        || '',
+          rate:            entry.rate             || '',
+          labor_hours:     entry.hours            || '',
+          equipment:       entry.equipment        || '',
+          equip_unit_cost: entry.equip_unit_cost  || '',
+          equip_hours:     entry.equip_hours      || '',
+          material:        entry.rubber_type ? `${entry.rubber_type} Rubber Infill` : (entry.material || ''),
+          supplier:        entry.supplier         || '',
+          po_num:          entry.po_num           || '',
+          units_purchased: entry.bags_produced    || '',
+          unit_cost:       entry.unit_cost        || '',
+          material_cost:   String(matCost),
+          quantity:        entry.bags_produced    || '',
+        };
+        newP.dailyRows.push(row);
+        entry.inv_row_id = row.id;
+        drPost(entry.project_id, row);
+        renderDailyTable(entry.project_id);
+      }
+    }
+    renderInventoryTab(); // Re-render to update summary
+  } else {
+    _syncINVRowField(entry, field);
+  }
+  saveInventoryEntries();
 });
 
 /* ── Supplier Tab ── */
@@ -6308,7 +7058,7 @@ document.getElementById('modal-tabs').addEventListener('click', e => {
 });
 
 function renderAllListPanels() {
-  ['field_types','job_classes'].forEach(key => {
+  ['field_types','job_classes','infill_types'].forEach(key => {
     const container = document.getElementById('items-' + key);
     container.innerHTML = '';
     lists[key].forEach((val, idx) => {
@@ -6448,7 +7198,7 @@ document.querySelector('.modal-body').addEventListener('click', e => {
 });
 
 // Add new enter key support
-['field_types','employees','job_classes','equipment'].forEach(key => {
+['field_types','employees','job_classes','equipment','infill_types'].forEach(key => {
   const input = document.getElementById('new-' + key);
   if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') addListItem(key); });
 });
@@ -8862,6 +9612,21 @@ document.addEventListener('click', e => {
   openTRFilter(btn.dataset.trf, btn);
 });
 
+// Inventory column filter handlers
+document.addEventListener('click', e => {
+  const dd = document.getElementById('inv-filter-dd');
+  if (!dd || dd.style.display === 'none') return;
+  if (!dd.contains(e.target) && !e.target.classList.contains('invfb')) {
+    dd.style.display = 'none';
+  }
+});
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.invfb');
+  if (!btn) return;
+  e.stopPropagation();
+  openINVFilter(btn.dataset.invf, btn);
+});
+
 let dailyFilters = {};      // { field: Set<string> }  — absent key = no filter
 let _dffField    = null;    // field currently being filtered
 let _dffPending  = null;    // Set being edited in the dropdown
@@ -10363,6 +11128,8 @@ document.addEventListener('click', e => {
       deletePO(btn.dataset.poId);
     } else if (tab === 'trucking') {
       deleteTR(btn.dataset.trId);
+    } else if (tab === 'inventory') {
+      deleteINV(btn.dataset.invId);
     } else if (tab === 'company-user') {
       deleteCompanyUser(parseInt(btn.dataset.userId));
     }
@@ -10515,6 +11282,7 @@ async function deleteCompanyUser(id) {
     loadProjects(),
     loadPurchaseOrders(),
     loadTruckingEntries(),
+    loadInventoryEntries(),
   ]);
 
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
@@ -10526,6 +11294,7 @@ async function deleteCompanyUser(id) {
   }
   if (activeTab === 'po') renderPOTab();
   if (activeTab === 'trucking') renderTruckingTab();
+  if (activeTab === 'inventory') renderInventoryTab();
   renderHeaderActions();
 })();
 
