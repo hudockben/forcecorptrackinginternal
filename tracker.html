@@ -2293,6 +2293,7 @@
         <button class="modal-tab-btn" data-list="employees">Employees</button>
         <button class="modal-tab-btn" data-list="job_classes">Job Classes</button>
         <button class="modal-tab-btn" data-list="equipment">Equipment</button>
+        <button class="modal-tab-btn" data-list="infill_types">Infill Type</button>
         <button class="modal-tab-btn" data-list="import_csv" style="margin-left:auto;color:var(--green)">⬆ Import CSV</button>
       </div>
 
@@ -2333,6 +2334,15 @@
           <input type="text"   id="new-equipment"      placeholder="Equipment name…" />
           <input type="number" id="new-equipment-cost" class="cost-new" placeholder="Unit cost" step="any" />
           <button class="btn btn-green" onclick="addListItem('equipment')">+ Add</button>
+        </div>
+      </div>
+
+      <!-- Infill Types -->
+      <div class="list-panel" id="panel-infill_types">
+        <div class="list-items" id="items-infill_types"></div>
+        <div class="add-item-row">
+          <input type="text" id="new-infill_types" placeholder="Add infill type… (e.g. 100-R, 5050-R)" />
+          <button class="btn btn-green" onclick="addListItem('infill_types')">+ Add</button>
         </div>
       </div>
 
@@ -5312,11 +5322,12 @@ function renderProjectInfoComputed() { renderProjectsTab(); }
 const LISTS_KEY = 'fct_lists';
 
 const defaultLists = {
-  field_types: [],
-  employees:   [],
-  job_classes: [],
-  equipment:   [],   // [{name, unit_cost}]
-  suppliers:   [],
+  field_types:  [],
+  employees:    [],
+  job_classes:  [],
+  equipment:    [],   // [{name, unit_cost}]
+  suppliers:    [],
+  infill_types: [],
 };
 
 let lists = {};
@@ -6314,7 +6325,7 @@ function renderInventoryTab() {
           <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('rate', 'number', 'step="any" placeholder="0.00"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:70px">${inp('hours', 'number', 'step="any" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:600;white-space:nowrap" id="inv-ee-${e.id}">$${fmt(eeCost)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:120px">${inp('rubber_type', 'text', 'placeholder="e.g. 100-R, 5050-R…"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${sel('rubber_type', `<option value="">— select —</option>` + (lists.infill_types || []).map(it => `<option value="${esc(it)}" ${it === e.rubber_type ? 'selected' : ''}>${esc(it)}</option>`).join(''))}</td>
           <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('bags_produced', 'number', 'step="1" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:90px">${inp('total_poundage', 'number', 'step="any" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('equipment', equipOpts)}</td>
@@ -6531,17 +6542,42 @@ document.getElementById('inventory-root').addEventListener('change', e => {
 
   entry[field] = el.value;
 
+  if (field === 'employee') {
+    const emp = (lists.employees || []).find(e => e.name === el.value);
+    if (emp) {
+      const row = el.closest('tr');
+      if (emp.job_class) {
+        entry.job_class = emp.job_class;
+        const jcSel = row ? row.querySelector('[data-inv-field="job_class"]') : null;
+        if (jcSel) jcSel.value = emp.job_class;
+      }
+      const autoRate = emp.non_prevailing_rate || 0;
+      entry.rate = autoRate ? String(autoRate) : '';
+      const rateInp = row ? row.querySelector('[data-inv-field="rate"]') : null;
+      if (rateInp) rateInp.value = autoRate || '';
+      // Update EE $ and Job $ cells
+      const hours  = parseFloat(entry.hours) || 0;
+      const eeCost = autoRate * hours;
+      const equipCost = (parseFloat(entry.equip_unit_cost) || 0) * (parseFloat(entry.equip_hours) || 0);
+      const matCost   = (parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0);
+      const eeEl  = document.getElementById('inv-ee-'  + id);
+      const jobEl = document.getElementById('inv-job-' + id);
+      if (eeEl)  eeEl.textContent  = '$' + fmt(eeCost);
+      if (jobEl) jobEl.textContent = '$' + fmt(eeCost + equipCost + matCost);
+    }
+  }
+
   if (field === 'equipment') {
     const eq = (lists.equipment || []).find(eq => eq.name === el.value);
     if (eq && eq.unit_cost) {
       entry.equip_unit_cost = String(eq.unit_cost);
       const ucInput = el.closest('tr').querySelector('[data-inv-field="equip_unit_cost"]');
       if (ucInput) ucInput.value = eq.unit_cost;
-      const equipH   = parseFloat(entry.equip_hours) || 0;
-      const eqEl     = document.getElementById('inv-eq-' + id);
-      const jobEl    = document.getElementById('inv-job-' + id);
-      const eeCost   = (parseFloat(entry.rate) || 0) * (parseFloat(entry.hours) || 0);
-      const matCost  = (parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0);
+      const equipH    = parseFloat(entry.equip_hours) || 0;
+      const eqEl      = document.getElementById('inv-eq-'  + id);
+      const jobEl     = document.getElementById('inv-job-' + id);
+      const eeCost    = (parseFloat(entry.rate) || 0) * (parseFloat(entry.hours) || 0);
+      const matCost   = (parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0);
       const equipCost = parseFloat(eq.unit_cost) * equipH;
       if (eqEl)  eqEl.textContent  = '$' + fmt(equipCost);
       if (jobEl) jobEl.textContent = '$' + fmt(eeCost + equipCost + matCost);
@@ -6806,7 +6842,7 @@ document.getElementById('modal-tabs').addEventListener('click', e => {
 });
 
 function renderAllListPanels() {
-  ['field_types','job_classes'].forEach(key => {
+  ['field_types','job_classes','infill_types'].forEach(key => {
     const container = document.getElementById('items-' + key);
     container.innerHTML = '';
     lists[key].forEach((val, idx) => {
@@ -6946,7 +6982,7 @@ document.querySelector('.modal-body').addEventListener('click', e => {
 });
 
 // Add new enter key support
-['field_types','employees','job_classes','equipment'].forEach(key => {
+['field_types','employees','job_classes','equipment','infill_types'].forEach(key => {
   const input = document.getElementById('new-' + key);
   if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') addListItem(key); });
 });
