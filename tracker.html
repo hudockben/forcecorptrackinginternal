@@ -10776,14 +10776,20 @@ function commitImportCSV() {
 ═══════════════════════════════════════════ */
 
 let _schedDeadlines = [];
+let _schedDeadlinesLoaded = false;
 
 async function loadScheduleDeadlines() {
   try {
-    const r = await fetch('/api/deadlines', { headers: { 'Authorization': 'Bearer ' + fctToken } });
-    if (!r.ok) return;
-    const d = await r.json();
-    _schedDeadlines = d.deadlines || [];
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 5000);
+    const r    = await fetch('/api/deadlines', { headers: { 'Authorization': 'Bearer ' + fctToken }, signal: ctrl.signal });
+    clearTimeout(tid);
+    if (r.ok) {
+      const d = await r.json();
+      _schedDeadlines = d.deadlines || [];
+    }
   } catch { _schedDeadlines = []; }
+  _schedDeadlinesLoaded = true;
 }
 
 /** Resolve a project's deadline: prefer end-date field, fall back to deadlines API match.
@@ -10901,6 +10907,21 @@ function _workingDaysBetween(fromStr, toStr) {
     cur.setDate(cur.getDate() + 1);
   }
   return count;
+}
+
+/** Add N working days (Mon–Fri, non-holiday) to a date string. Fractional days round up.
+ *  Returns null if n is not finite or exceeds 3650 days (~10 years). */
+function _addWorkingDays(fromStr, n) {
+  if (!fromStr || n === null || n === undefined || !isFinite(n) || n > 3650) return null;
+  const days = Math.ceil(Math.max(0, n));
+  const d = new Date(fromStr + 'T12:00:00');
+  let remaining = days;
+  while (remaining > 0) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6 && !_isHoliday(_localDateStr(d))) remaining--;
+  }
+  return _localDateStr(d);
 }
 
 function _schedDeadlineChip(days) {
@@ -11172,7 +11193,7 @@ function renderScheduleProjectDetail(proj) {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
 
   const rows = bidItems.map(bi => {
-    const { a, bidQty, baseBidQty, coQtyDelta, runningQty, daysWorked, currentPace, recentPace, avgCrewPerDay, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum, forcedComplete, costToComplete, costPerUnit } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, baseBidQty, coQtyDelta, runningQty, daysWorked, currentPace, recentPace, avgCrewPerDay, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum, forcedComplete, costToComplete, costPerUnit } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
     const unit = (bi.unit || '').toUpperCase();
     const uLabel = unit ? ` ${unit}` : '';
@@ -11230,6 +11251,50 @@ function renderScheduleProjectDetail(proj) {
             ? '<span class="sched-goal-pill no-data">—</span>'
             : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}${uLabel}/day${usingPPDays ? ' 📅' : ''}</span>`;
 
+    // ── Projected finish date ─────────────────────────────────────────
+    let projFinishCell;
+    const deadlineToCompare = bi.target_date || deadline;
+    if (forcedComplete || pct >= 100) {
+      projFinishCell = '<span style="color:var(--green);font-size:0.78rem">✓ Done</span>';
+    } else if (notStartedYet) {
+      projFinishCell = '<span style="color:var(--muted);font-size:0.75rem">Not started</span>';
+    } else if (isLumpSum) {
+      projFinishCell = '<span style="color:var(--muted)">—</span>';
+    } else {
+      const pace = recentPace > 0 ? recentPace : currentPace;
+      if (pace > 0 && unitsLeft > 0) {
+        const daysNeeded   = unitsLeft / pace;
+        const projFinish   = _addWorkingDays(_localDateStr(), daysNeeded);
+        const projFinishFmt = projFinish
+          ? new Date(projFinish + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+          : null;
+        if (projFinishFmt) {
+          let color = 'var(--text)', note = '';
+          if (deadlineToCompare) {
+            if (projFinish < deadlineToCompare) {
+              const buffer = _workingDaysBetween(projFinish, deadlineToCompare);
+              color = buffer <= 3 ? 'var(--yellow)' : 'var(--green)';
+              note  = `<br><span style="font-size:0.65rem;color:${color};opacity:0.85">${buffer}d early</span>`;
+            } else if (projFinish === deadlineToCompare) {
+              color = 'var(--yellow)';
+              note  = `<br><span style="font-size:0.65rem;color:var(--yellow)">On deadline</span>`;
+            } else {
+              const late = _workingDaysBetween(deadlineToCompare, projFinish);
+              color = 'var(--red)';
+              note  = `<br><span style="font-size:0.65rem;color:var(--red)">${late}d late</span>`;
+            }
+          }
+          projFinishCell = `<span style="font-weight:600;color:${color};white-space:nowrap">${projFinishFmt}</span>${note}`;
+        } else {
+          projFinishCell = '<span style="color:var(--muted)">—</span>';
+        }
+      } else if (unitsLeft === 0) {
+        projFinishCell = '<span style="color:var(--green);font-size:0.78rem">✓ Done</span>';
+      } else {
+        projFinishCell = '<span style="color:var(--muted);font-size:0.75rem">No data</span>';
+      }
+    }
+
     const projId = proj.id;
     return `<tr>
       <td>
@@ -11281,6 +11346,7 @@ function renderScheduleProjectDetail(proj) {
       }</td>
       <td class="num" style="white-space:nowrap">${goalCell}</td>
       <td class="num">${gapHtml}</td>
+      <td class="num">${projFinishCell}</td>
       <td>${_schedStatusPill(status)}</td>
     </tr>`;
   }).join('');
@@ -11322,6 +11388,7 @@ function renderScheduleProjectDetail(proj) {
           <th class="num">Est. Left</th>
           <th class="num">Today's Goal</th>
           <th class="num">Gap</th>
+          <th class="num">Proj. Finish</th>
           <th>Status</th>
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -11450,7 +11517,7 @@ async function renderScheduleTab() {
 
   body.innerHTML = '<div class="sched-no-data" style="padding:2rem">Loading…</div>';
 
-  if (!_schedDeadlines.length) await loadScheduleDeadlines();
+  if (!_schedDeadlinesLoaded) await loadScheduleDeadlines();
 
   const projId = sel ? sel.value : '';
   const aiBtn  = document.getElementById('sched-ai-btn');
@@ -11461,7 +11528,12 @@ async function renderScheduleTab() {
   if (projId) {
     const proj = getProj(projId);
     if (proj) {
-      body.innerHTML = renderScheduleProjectDetail(proj);
+      try {
+        body.innerHTML = renderScheduleProjectDetail(proj);
+      } catch(e) {
+        console.error('renderScheduleProjectDetail error:', e);
+        body.innerHTML = `<div class="sched-no-data">Error rendering schedule detail.<br><span style="font-size:0.72rem;color:var(--muted)">${e.message || e}</span></div>`;
+      }
       const hasBidItems = (proj.bidItems || []).length > 0;
       if (aiBtn)  aiBtn.style.display  = hasBidItems ? '' : 'none';
       if (ppBtn)  ppBtn.style.display  = hasBidItems ? '' : 'none';
@@ -11890,7 +11962,7 @@ async function printSchedulePDF() {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
 
   const tableRows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, notStartedYet, isLumpSum } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, recentPace, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, notStartedYet, isLumpSum, forcedComplete } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
     const pdfUnit   = (bi.unit || '').toUpperCase();
     const pdfULabel = pdfUnit ? ` ${pdfUnit}` : '';
@@ -11913,6 +11985,37 @@ async function printSchedulePDF() {
       ${tArrow !== '—' ? `<span style="font-size:9px;font-weight:700;color:${tColor}">${tArrow} ${tWord}</span>` : '<span style="color:#aaa;font-size:9px">—</span>'}
       ${csDays >= 2 ? `<span style="font-size:8px;color:${csColor}">${csDays}d ${csLbl}</span>` : ''}
     </div>`;
+
+    // Projected finish
+    const pdfDeadlineCompare = bi.target_date || deadline;
+    let projFinishTxt = '—';
+    if (forcedComplete || pct >= 100) {
+      projFinishTxt = '<span style="color:#15803d">✓ Done</span>';
+    } else if (notStartedYet) {
+      projFinishTxt = '<span style="color:#888">Not started</span>';
+    } else if (!isLumpSum) {
+      const pdfPace = recentPace > 0 ? recentPace : currentPace;
+      if (pdfPace > 0 && unitsLeft > 0) {
+        const projFinish = _addWorkingDays(_localDateStr(), unitsLeft / pdfPace);
+        if (projFinish) {
+          const projFinishFmt = new Date(projFinish + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+          if (pdfDeadlineCompare) {
+            if (projFinish < pdfDeadlineCompare) {
+              const buf = _workingDaysBetween(projFinish, pdfDeadlineCompare);
+              const c   = buf <= 3 ? '#b45309' : '#15803d';
+              projFinishTxt = `<span style="color:${c};font-weight:700">${projFinishFmt}</span><br><span style="font-size:8px;color:${c}">${buf}d early</span>`;
+            } else if (projFinish === pdfDeadlineCompare) {
+              projFinishTxt = `<span style="color:#b45309;font-weight:700">${projFinishFmt}</span><br><span style="font-size:8px;color:#b45309">On deadline</span>`;
+            } else {
+              const late = _workingDaysBetween(pdfDeadlineCompare, projFinish);
+              projFinishTxt = `<span style="color:#dc2626;font-weight:700">${projFinishFmt}</span><br><span style="font-size:8px;color:#dc2626">${late}d late</span>`;
+            }
+          } else {
+            projFinishTxt = `<span style="font-weight:700">${projFinishFmt}</span>`;
+          }
+        }
+      }
+    }
 
     const progPct  = Math.min(Math.max(pct, 0), 100).toFixed(1);
     const sc       = status === 'not-started' ? '#818cf8' : (sColors[status] || '#888');
@@ -11947,6 +12050,7 @@ async function printSchedulePDF() {
       <td style="text-align:right">${requiredPace !== null ? fmt(requiredPace,2)+pdfULabel+'/d' + (usingPPDays ? `<br><span style="font-size:8px;color:#555">${ppDaysFmt}d PP</span>` : `<br><span style="font-size:7px;color:#aaa">cal. est.</span>`) : '—'}</td>
       <td style="text-align:right;font-weight:700;color:${sc}">${goalTxt}</td>
       <td style="text-align:right">${gapTxt}</td>
+      <td style="text-align:right">${projFinishTxt}</td>
       <td style="text-align:center"><span style="background:${sBg[status]||'#f3f4f6'};color:${sc};font-size:8px;font-weight:700;padding:2px 6px;border-radius:8px;border:1px solid ${sc}33;white-space:nowrap">${sLabels[status]||status}</span></td>
     </tr>`;
   }).join('');
@@ -12021,9 +12125,10 @@ async function printSchedulePDF() {
       <th style="text-align:right">Req. Pace</th>
       <th style="text-align:right">Today's Goal</th>
       <th style="text-align:right">Gap</th>
+      <th style="text-align:right">Proj. Finish</th>
       <th style="text-align:center">Status</th>
     </tr></thead>
-    <tbody>${tableRows || '<tr><td colspan="11" style="text-align:center;color:#888;padding:1rem">No bid items found.</td></tr>'}</tbody>
+    <tbody>${tableRows || '<tr><td colspan="12" style="text-align:center;color:#888;padding:1rem">No bid items found.</td></tr>'}</tbody>
   </table>
   <div style="margin-top:10px;padding-top:6px;border-top:1px solid #ddd;font-size:8px;color:#aaa;display:flex;justify-content:space-between">
     <span>DataWatch — Schedule Pacing Report</span>
