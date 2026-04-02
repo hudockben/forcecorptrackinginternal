@@ -4880,6 +4880,20 @@ function laborerCountForBidItem(b, projId) {
   return names.size;
 }
 
+function projForBidItem(b, actual, rqty, bidQty, bidTot) {
+  if (b.start_date && b.target_date && actual > 0) {
+    const now   = new Date();
+    const start = new Date(b.start_date + 'T00:00:00');
+    const end   = new Date(b.target_date + 'T00:00:00');
+    const elapsed  = (now - start) / 86400000;
+    const totalDays = (end - start) / 86400000;
+    if (elapsed > 0 && totalDays > 0) {
+      return Math.max(actual, (actual / elapsed) * totalDays);
+    }
+  }
+  return rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+}
+
 function renderBidFooter(projId, opts = {}) {
   const footId  = opts.footId  || 'bfoot-' + projId;
   const readonly = !!opts.readonly;
@@ -4893,7 +4907,7 @@ function renderBidFooter(projId, opts = {}) {
     const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
     const actual = actualForBidItem(b, projId);
     const rqty   = runningQtyForBidItem(b, projId);
-    return s + (rqty > 0 ? (actual / rqty) * bidQty : bidTot);
+    return s + projForBidItem(b, actual, rqty, bidQty, bidTot);
   }, 0);
   const diff = totalBid - totalActual;
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
@@ -5021,7 +5035,7 @@ function renderBidTable(projId, opts = {}) {
       const rqty    = runningQtyForBidItem(b, projId);
       const cumHrs  = cumulativeHoursForBidItem(b, projId);
       const numLab  = laborerCountForBidItem(b, projId);
-      const proj    = rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+      const proj    = projForBidItem(b, actual, rqty, bidQty, bidTot);
       const diff    = bidTot - actual;
       const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
       const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
