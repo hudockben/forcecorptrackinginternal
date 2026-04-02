@@ -10903,6 +10903,20 @@ function _workingDaysBetween(fromStr, toStr) {
   return count;
 }
 
+/** Add N working days (Mon–Fri, non-holiday) to a date string. Fractional days round up. */
+function _addWorkingDays(fromStr, n) {
+  if (!fromStr || n === null || n === undefined) return null;
+  const days = Math.ceil(Math.max(0, n));
+  const d = new Date(fromStr + 'T12:00:00');
+  let remaining = days;
+  while (remaining > 0) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6 && !_isHoliday(_localDateStr(d))) remaining--;
+  }
+  return _localDateStr(d);
+}
+
 function _schedDeadlineChip(days) {
   if (days === null)
     return '<span style="font-size:0.72rem;color:var(--muted)">No deadline</span>';
@@ -11230,6 +11244,50 @@ function renderScheduleProjectDetail(proj) {
             ? '<span class="sched-goal-pill no-data">—</span>'
             : `<span class="sched-goal-pill ${status}">${status === 'behind' ? '⚠ ' : ''}${fmt(requiredPace, 1)}${uLabel}/day${usingPPDays ? ' 📅' : ''}</span>`;
 
+    // ── Projected finish date ─────────────────────────────────────────
+    let projFinishCell;
+    const deadlineToCompare = bi.target_date || deadline;
+    if (forcedComplete || pct >= 100) {
+      projFinishCell = '<span style="color:var(--green);font-size:0.78rem">✓ Done</span>';
+    } else if (notStartedYet) {
+      projFinishCell = '<span style="color:var(--muted);font-size:0.75rem">Not started</span>';
+    } else if (isLumpSum) {
+      projFinishCell = '<span style="color:var(--muted)">—</span>';
+    } else {
+      const pace = recentPace > 0 ? recentPace : currentPace;
+      if (pace > 0 && unitsLeft > 0) {
+        const daysNeeded   = unitsLeft / pace;
+        const projFinish   = _addWorkingDays(_localDateStr(), daysNeeded);
+        const projFinishFmt = projFinish
+          ? new Date(projFinish + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+          : null;
+        if (projFinishFmt) {
+          let color = 'var(--text)', note = '';
+          if (deadlineToCompare) {
+            if (projFinish < deadlineToCompare) {
+              const buffer = _workingDaysBetween(projFinish, deadlineToCompare);
+              color = buffer <= 3 ? 'var(--yellow)' : 'var(--green)';
+              note  = `<br><span style="font-size:0.65rem;color:${color};opacity:0.85">${buffer}d early</span>`;
+            } else if (projFinish === deadlineToCompare) {
+              color = 'var(--yellow)';
+              note  = `<br><span style="font-size:0.65rem;color:var(--yellow)">On deadline</span>`;
+            } else {
+              const late = _workingDaysBetween(deadlineToCompare, projFinish);
+              color = 'var(--red)';
+              note  = `<br><span style="font-size:0.65rem;color:var(--red)">${late}d late</span>`;
+            }
+          }
+          projFinishCell = `<span style="font-weight:600;color:${color};white-space:nowrap">${projFinishFmt}</span>${note}`;
+        } else {
+          projFinishCell = '<span style="color:var(--muted)">—</span>';
+        }
+      } else if (unitsLeft === 0) {
+        projFinishCell = '<span style="color:var(--green);font-size:0.78rem">✓ Done</span>';
+      } else {
+        projFinishCell = '<span style="color:var(--muted);font-size:0.75rem">No data</span>';
+      }
+    }
+
     const projId = proj.id;
     return `<tr>
       <td>
@@ -11281,6 +11339,7 @@ function renderScheduleProjectDetail(proj) {
       }</td>
       <td class="num" style="white-space:nowrap">${goalCell}</td>
       <td class="num">${gapHtml}</td>
+      <td class="num">${projFinishCell}</td>
       <td>${_schedStatusPill(status)}</td>
     </tr>`;
   }).join('');
@@ -11322,6 +11381,7 @@ function renderScheduleProjectDetail(proj) {
           <th class="num">Est. Left</th>
           <th class="num">Today's Goal</th>
           <th class="num">Gap</th>
+          <th class="num">Proj. Finish</th>
           <th>Status</th>
         </tr></thead>
         <tbody>${rows}</tbody>
