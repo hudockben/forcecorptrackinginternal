@@ -7633,6 +7633,8 @@ function _buildEquipAgg(filters = {}) {
   truckingEntries.forEach(tr => {
     const name  = (tr.truck_type || '').trim();
     if (!name) return;
+    // Skip entries that already have a linked daily row — those are already captured above
+    if (tr.tr_row_id) return;
     if (tr.date && !passDate(tr.date)) return;
     const pname = tr.project_id ? (projMap[tr.project_id] || '') : '';
     if (project && pname !== project) return;
