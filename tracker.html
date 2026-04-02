@@ -7704,6 +7704,8 @@ function renderEquipTable() {
       case 'hours':    return a.hours;
       case 'cost':     return a.cost;
       case 'cph':      return a.hours ? a.cost / a.hours : 0;
+      case 'pctHours': return a.hours;
+      case 'pctCost':  return a.cost;
       case 'days':     return a.dates.size;
       case 'lastUsed': return a.lastUsed || '';
       case 'projects': return a.projects.size;
@@ -7903,8 +7905,8 @@ function renderEquipTable() {
             ${shC('hours','Total Hours')}
             ${shC('cost','Total Cost')}
             ${shC('cph','Cost / Hr')}
-            ${shC('hours','% of Hours')}
-            ${shC('cost','% of Cost')}
+            ${shC('pctHours','% of Hours')}
+            ${shC('pctCost','% of Cost')}
             ${shC('days','Days Active')}
             ${shC('lastUsed','Last Used')}
             ${shC('projects','Projects')}
