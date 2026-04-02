@@ -3122,6 +3122,36 @@ function renderHomeTab() {
   const pHold     = (statusCounts['On Hold'] / statusTotal * 100).toFixed(1);
   const pRisk     = (statusCounts['At Risk'] / statusTotal * 100).toFixed(1);
 
+  // ── Rubber inventory summary ──
+  const invByType = {};
+  inventoryEntries.forEach(e => {
+    const rt = (e.rubber_type || '').trim() || '(unspecified)';
+    if (!invByType[rt]) invByType[rt] = { produced: 0, used: 0, poundage: 0 };
+    invByType[rt].produced += parseFloat(e.bags_produced)  || 0;
+    invByType[rt].poundage += parseFloat(e.total_poundage) || 0;
+    if (e.project_id) invByType[rt].used += parseFloat(e.bags_produced) || 0;
+  });
+  const invSectionHTML = Object.keys(invByType).length === 0 ? '' : `
+    <p class="home-section-title">Rubber Inventory</p>
+    <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-bottom:2rem">
+      ${Object.entries(invByType).map(([rt, v]) => {
+        const inStock    = v.produced - v.used;
+        const stockColor = inStock <= 0 ? 'var(--red)' : inStock < 50 ? 'var(--yellow)' : 'var(--green)';
+        return `<div onclick="document.querySelector('.tab-btn[data-tab=inventory]').click()"
+          style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.9rem 1.1rem;min-width:175px;cursor:pointer;transition:border-color 0.15s"
+          onmouseover="this.style.borderColor='var(--green)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.35rem;font-weight:600">${escT(rt)}</div>
+          <div style="font-size:1.55rem;font-weight:700;color:${stockColor};line-height:1">${inStock.toLocaleString()}</div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">bags in stock</div>
+          <div style="display:flex;gap:0.75rem;margin-top:0.5rem;font-size:0.72rem;color:var(--muted)">
+            <span>&#8679; ${v.produced.toLocaleString()} produced</span>
+            <span>&#8681; ${v.used.toLocaleString()} used</span>
+          </div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${v.poundage.toLocaleString()} lbs total</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+
   // ── Per-project cards: always exactly 6 total (pinned first, fill rest with recent) ──
   const MAX_CARDS         = 6;
   const pinnedProjects    = projectsList.filter(p => p.pinned).slice().reverse().slice(0, MAX_CARDS);
@@ -3397,6 +3427,7 @@ function renderHomeTab() {
       </div>
     </div>
 
+    ${invSectionHTML}
     <p class="home-section-title">Projects <span style="font-weight:400">(${titleDetail})</span></p>
     ${projectsList.length === 0
       ? `<div class="home-empty">No projects yet. Go to Project Dashboard to create one.</div>`
