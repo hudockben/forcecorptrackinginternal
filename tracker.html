@@ -9045,7 +9045,9 @@ function makeSelect(options, selected, dataTab, dataI, dataF, dataProj) {
 
 function renderDailyTotals(projId) {
   const p = getProj(projId); if (!p) return;
-  const rows = p.dailyRows || [];
+  const rows = (p.dailyRows || []).filter(row =>
+    Object.entries(dailyFilters).every(([f, allowed]) => allowed.has(String(row[f] ?? '')))
+  );
   let lhrs = 0, lcost = 0, ehrs = 0, ecost = 0, mat = 0, total = 0;
   rows.forEach(row => {
     const c = calcDaily(row);
