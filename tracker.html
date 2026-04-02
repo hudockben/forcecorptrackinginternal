@@ -2125,6 +2125,7 @@
 
 <!-- ══════════════ INVENTORY TAB ══════════════ -->
 <div class="tab-panel" id="tab-inventory">
+  <div id="inventory-root"></div>
 </div>
 
 <!-- ══════════════ MOBILE DAILY ENTRY TAB ══════════════ -->
@@ -2906,7 +2907,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'info')     renderProjectInfoComputed();
     if (activeTab === 'supplier') renderSupplierTab();
     if (activeTab === 'po')       renderPOTab();
-    if (activeTab === 'trucking') renderTruckingTab();
+    if (activeTab === 'trucking')  renderTruckingTab();
+    if (activeTab === 'inventory') renderInventoryTab();
     if (activeTab === 'users')    renderUsersTab();
     if (activeTab === 'schedule')   renderScheduleTab();
     if (activeTab === 'mob-entry')  renderMobileEntryForm();
@@ -4268,6 +4270,113 @@ function nextTRNumber() {
   });
   const next = nums.length ? Math.max(...nums) + 1 : 1;
   return 'TR-' + String(next).padStart(4, '0');
+}
+
+/* ── Inventory store ── */
+let inventoryEntries = [];
+
+async function loadInventoryEntries() {
+  let saved = await apiGet('fct_inventory');
+  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
+    try {
+      const local = JSON.parse(localStorage.getItem('fct_inventory'));
+      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_inventory', saved); }
+    } catch {}
+  }
+  inventoryEntries = Array.isArray(saved) ? saved : [];
+}
+
+function saveInventoryEntries() {
+  localStorage.setItem('fct_inventory', JSON.stringify(inventoryEntries));
+  apiPut('fct_inventory', inventoryEntries);
+}
+
+function nextINVNumber() {
+  const nums = inventoryEntries.map(e => {
+    const m = (e.inv_number || '').match(/^INV-(\d+)$/);
+    return m ? parseInt(m[1], 10) : 0;
+  });
+  const next = nums.length ? Math.max(...nums) + 1 : 1;
+  return 'INV-' + String(next).padStart(4, '0');
+}
+
+function addINV() {
+  inventoryEntries.push({
+    id:              uid(),
+    inv_number:      nextINVNumber(),
+    project_id:      '',
+    inv_row_id:      null,
+    date:            _localDateStr(),
+    employee:        '',
+    job_class:       '',
+    rate:            '',
+    hours:           '',
+    rubber_type:     '',
+    bags_produced:   '',
+    total_poundage:  '',
+    equipment:       '',
+    equip_unit_cost: '',
+    equip_hours:     '',
+    material:        '',
+    supplier:        '',
+    po_num:          '',
+    units_purchased: '',
+    unit_cost:       '',
+  });
+  saveInventoryEntries();
+  renderInventoryTab();
+}
+
+function deleteINV(id) {
+  const entry = inventoryEntries.find(e => e.id === id);
+  if (entry && entry.inv_row_id && entry.project_id) {
+    const proj = getProj(entry.project_id);
+    if (proj) {
+      proj.dailyRows = proj.dailyRows.filter(r => r.id !== entry.inv_row_id);
+      drDelete(entry.inv_row_id);
+      renderDailyTable(entry.project_id);
+    }
+  }
+  inventoryEntries = inventoryEntries.filter(e => e.id !== id);
+  saveInventoryEntries();
+  renderInventoryTab();
+}
+
+function _syncINVRowField(entry, field) {
+  if (!entry.project_id || !entry.inv_row_id) return;
+  const proj = getProj(entry.project_id);
+  if (!proj) return;
+  const r = proj.dailyRows.find(r => r.id === entry.inv_row_id);
+  if (!r) return;
+  const map = {
+    employee:        'employee',
+    job_class:       'job_class',
+    rate:            'rate',
+    hours:           'labor_hours',
+    equipment:       'equipment',
+    equip_unit_cost: 'equip_unit_cost',
+    equip_hours:     'equip_hours',
+    material:        'material',
+    supplier:        'supplier',
+    po_num:          'po_num',
+    units_purchased: 'units_purchased',
+    unit_cost:       'unit_cost',
+    date:            'date',
+  };
+  if (map[field]) r[map[field]] = entry[field] || '';
+  if (field === 'rubber_type') {
+    r.material = entry.rubber_type ? `${entry.rubber_type} Rubber Infill` : (entry.material || '');
+  }
+  if (['units_purchased', 'unit_cost'].includes(field)) {
+    r.material_cost = String((parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0));
+  }
+  if (field === 'bags_produced') {
+    r.units_purchased = entry.bags_produced || '';
+    r.quantity        = entry.bags_produced || '';
+    r.material_cost   = String((parseFloat(entry.bags_produced) || 0) * (parseFloat(entry.unit_cost) || 0));
+  }
+  drPutNow(entry.inv_row_id, r);
+  saveProject(entry.project_id);
 }
 
 function togglePin(projId) {
@@ -5991,6 +6100,153 @@ function renderTruckingTab() {
   }
 }
 
+/* ── Inventory Tab ── */
+function renderInventoryTab() {
+  const root = document.getElementById('inventory-root');
+  if (!root) return;
+
+  // ── Running inventory summary by rubber type ──
+  const invByType = {};
+  inventoryEntries.forEach(e => {
+    const rt = (e.rubber_type || '').trim() || '(unspecified)';
+    if (!invByType[rt]) invByType[rt] = { produced: 0, used: 0, poundage: 0 };
+    const bags = parseFloat(e.bags_produced)   || 0;
+    const lbs  = parseFloat(e.total_poundage)  || 0;
+    invByType[rt].produced += bags;
+    invByType[rt].poundage += lbs;
+    if (e.project_id) invByType[rt].used += bags;
+  });
+
+  const summaryHTML = Object.keys(invByType).length === 0
+    ? `<p style="color:var(--muted);font-size:0.85rem;margin:0">No entries yet — add your first entry below.</p>`
+    : Object.entries(invByType).map(([rt, v]) => {
+        const inStock    = v.produced - v.used;
+        const stockColor = inStock <= 0 ? 'var(--red)' : inStock < 50 ? 'var(--yellow)' : 'var(--green)';
+        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.9rem 1.1rem;min-width:175px">
+          <div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.35rem;font-weight:600">${escT(rt)}</div>
+          <div style="font-size:1.55rem;font-weight:700;color:${stockColor};line-height:1">${inStock.toLocaleString()}</div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">bags in stock</div>
+          <div style="display:flex;gap:0.75rem;margin-top:0.5rem;font-size:0.72rem;color:var(--muted)">
+            <span>&#8679; ${v.produced.toLocaleString()} produced</span>
+            <span>&#8681; ${v.used.toLocaleString()} used</span>
+          </div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${v.poundage.toLocaleString()} lbs total</div>
+        </div>`;
+      }).join('');
+
+  // ── Table helpers ──
+  const th = (label, right) =>
+    `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right ? ';text-align:right' : ''}">${label}</th>`;
+
+  const entries = [...inventoryEntries].reverse();
+
+  const bodyHTML = inventoryEntries.length === 0
+    ? `<tr><td colspan="24" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries yet. Click + New Entry to begin.</td></tr>`
+    : entries.map(e => {
+        const rate       = parseFloat(e.rate)            || 0;
+        const hours      = parseFloat(e.hours)           || 0;
+        const eeCost     = rate * hours;
+        const equipUC    = parseFloat(e.equip_unit_cost) || 0;
+        const equipH     = parseFloat(e.equip_hours)     || 0;
+        const equipCost  = equipUC * equipH;
+        const unitCost   = parseFloat(e.unit_cost)       || 0;
+        const unitsPurch = parseFloat(e.units_purchased) || 0;
+        const matCost    = unitsPurch * unitCost;
+        const jobCost    = eeCost + equipCost + matCost;
+
+        const month = e.date ? (() => {
+          const d = new Date(e.date + 'T12:00:00');
+          return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+        })() : '—';
+
+        const inp = (field, type = 'text', extra = '') =>
+          `<input type="${type}" value="${esc(String(e[field] || ''))}"
+            data-inv-id="${e.id}" data-inv-field="${field}"
+            style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0" ${extra}>`;
+
+        const sel = (field, opts) =>
+          `<select data-inv-id="${e.id}" data-inv-field="${field}"
+            style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
+
+        const empOpts = `<option value="">— select —</option>` +
+          (lists.employees || []).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(em =>
+            `<option value="${esc(em.name)}" ${em.name === e.employee ? 'selected' : ''}>${esc(em.name)}</option>`).join('');
+
+        const jcOpts = `<option value="">— select —</option>` +
+          (lists.job_classes || []).map(jc =>
+            `<option value="${esc(jc)}" ${jc === e.job_class ? 'selected' : ''}>${esc(jc)}</option>`).join('');
+
+        const equipOpts = `<option value="">— select —</option>` +
+          (lists.equipment || []).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(eq =>
+            `<option value="${esc(eq.name)}" ${eq.name === e.equipment ? 'selected' : ''}>${esc(eq.name)}</option>`).join('');
+
+        const suppOpts = `<option value="">— select —</option>` +
+          (lists.suppliers || []).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(s =>
+            `<option value="${esc(s.name)}" ${s.name === e.supplier ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+
+        const projOpts = `<option value="">— none —</option>` +
+          projectsList.slice().sort((a,b)=>(a['project-name']||'').localeCompare(b['project-name']||'')).map(p =>
+            `<option value="${esc(p.id)}" ${p.id === e.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
+
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(e.inv_number)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date', 'date')}</td>
+          <td style="padding:0.35rem 0.6rem;font-size:0.8rem;color:var(--muted);white-space:nowrap;min-width:120px">${month}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('employee', empOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('job_class', jcOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('rate', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:70px">${inp('hours', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:600;white-space:nowrap" id="inv-ee-${e.id}">$${fmt(eeCost)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('rubber_type', 'text', 'placeholder="e.g. Crumb, TPE…"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('bags_produced', 'number', 'step="1" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:90px">${inp('total_poundage', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('equipment', equipOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('equip_unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('equip_hours', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="inv-eq-${e.id}">$${fmt(equipCost)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('material', 'text', 'placeholder="Material"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('supplier', suppOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:90px">${inp('po_num', 'text', 'placeholder="PO #"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('units_purchased', 'number', 'step="any" placeholder="0"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:80px">${inp('unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--muted);font-size:0.8rem;white-space:nowrap" id="inv-mat-${e.id}">$${fmt(matCost)}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:700;white-space:nowrap" id="inv-job-${e.id}">$${fmt(jobCost)}</td>
+          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="inventory" data-inv-id="${e.id}">&#10005;</button></td>` : '<td></td>'}
+        </tr>`;
+      }).join('');
+
+  root.innerHTML = `
+    <div style="padding:1.5rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Track Rubber Infill — Inventory</span>
+        ${perm.canEdit ? `<button class="btn btn-green" onclick="addINV()">+ New Entry</button>` : ''}
+      </div>
+
+      <div style="margin-bottom:1.5rem">
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.6rem;font-weight:600">Running Inventory by Rubber Type</div>
+        <div style="display:flex;flex-wrap:wrap;gap:0.75rem">${summaryHTML}</div>
+      </div>
+
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:2800px">
+          <thead>
+            <tr>
+              ${th('#')} ${th('Job')} ${th('Date')} ${th('Month')}
+              ${th('Employee')} ${th('Job Class')} ${th('Rate', 1)} ${th('Hours', 1)} ${th('EE $', 1)}
+              ${th('Rubber Type')} ${th('Bags Produced', 1)} ${th('Total Poundage', 1)}
+              ${th('Equipment')} ${th('Unit Cost', 1)} ${th('Equip Hours', 1)} ${th('Equip $', 1)}
+              ${th('Material')} ${th('Supplier')} ${th('Po #')} ${th('Units Purchased', 1)} ${th('Unit Cost', 1)} ${th('Material $', 1)}
+              ${th('Job $', 1)}
+              <th style="width:36px;border-bottom:1px solid var(--border)"></th>
+            </tr>
+          </thead>
+          <tbody>${bodyHTML}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
 document.getElementById('trucking-root').addEventListener('input', e => {
   const el = e.target;
   const id = el.dataset.trId, field = el.dataset.trField;
@@ -6102,6 +6358,116 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     _syncTRRowField(tr, field);
   }
   saveTruckingEntries();
+});
+
+/* ── Inventory Tab events ── */
+document.getElementById('inventory-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.invId, field = el.dataset.invField;
+  if (!id || !field) return;
+  const entry = inventoryEntries.find(x => x.id === id);
+  if (!entry) return;
+  entry[field] = el.value;
+
+  // Update calculated cost cells inline (no full re-render)
+  const rate       = parseFloat(entry.rate)            || 0;
+  const hours      = parseFloat(entry.hours)           || 0;
+  const eeCost     = rate * hours;
+  const equipUC    = parseFloat(entry.equip_unit_cost) || 0;
+  const equipH     = parseFloat(entry.equip_hours)     || 0;
+  const equipCost  = equipUC * equipH;
+  const unitCost   = parseFloat(entry.unit_cost)       || 0;
+  const unitsPurch = parseFloat(entry.units_purchased) || 0;
+  const matCost    = unitsPurch * unitCost;
+  const jobCost    = eeCost + equipCost + matCost;
+
+  const eeEl  = document.getElementById('inv-ee-'  + id);
+  const eqEl  = document.getElementById('inv-eq-'  + id);
+  const matEl = document.getElementById('inv-mat-' + id);
+  const jobEl = document.getElementById('inv-job-' + id);
+  if (eeEl)  eeEl.textContent  = '$' + fmt(eeCost);
+  if (eqEl)  eqEl.textContent  = '$' + fmt(equipCost);
+  if (matEl) matEl.textContent = '$' + fmt(matCost);
+  if (jobEl) jobEl.textContent = '$' + fmt(jobCost);
+
+  _syncINVRowField(entry, field);
+  saveInventoryEntries();
+});
+
+document.getElementById('inventory-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.invId, field = el.dataset.invField;
+  if (!id || !field) return;
+  const entry = inventoryEntries.find(x => x.id === id);
+  if (!entry) return;
+  const oldProj = entry.project_id;
+
+  entry[field] = el.value;
+
+  if (field === 'equipment') {
+    const eq = (lists.equipment || []).find(eq => eq.name === el.value);
+    if (eq && eq.unit_cost) {
+      entry.equip_unit_cost = String(eq.unit_cost);
+      const ucInput = el.closest('tr').querySelector('[data-inv-field="equip_unit_cost"]');
+      if (ucInput) ucInput.value = eq.unit_cost;
+      const equipH   = parseFloat(entry.equip_hours) || 0;
+      const eqEl     = document.getElementById('inv-eq-' + id);
+      const jobEl    = document.getElementById('inv-job-' + id);
+      const eeCost   = (parseFloat(entry.rate) || 0) * (parseFloat(entry.hours) || 0);
+      const matCost  = (parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0);
+      const equipCost = parseFloat(eq.unit_cost) * equipH;
+      if (eqEl)  eqEl.textContent  = '$' + fmt(equipCost);
+      if (jobEl) jobEl.textContent = '$' + fmt(eeCost + equipCost + matCost);
+    }
+  }
+
+  if (field === 'project_id') {
+    // Remove old linked daily row
+    if (oldProj && entry.inv_row_id) {
+      const oldP = getProj(oldProj);
+      if (oldP) {
+        oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== entry.inv_row_id);
+        drDelete(entry.inv_row_id);
+        renderDailyTable(oldProj);
+      }
+    }
+    entry.inv_row_id = null;
+
+    // Create new daily row in the new project
+    if (entry.project_id) {
+      const newP = getProj(entry.project_id);
+      if (newP) {
+        const matCost = (parseFloat(entry.units_purchased) || 0) * (parseFloat(entry.unit_cost) || 0);
+        const row = {
+          ...defaultDailyRow(),
+          id:              Date.now() + Math.random(),
+          date:            entry.date             || '',
+          employee:        entry.employee         || '',
+          job_class:       entry.job_class        || '',
+          rate:            entry.rate             || '',
+          labor_hours:     entry.hours            || '',
+          equipment:       entry.equipment        || '',
+          equip_unit_cost: entry.equip_unit_cost  || '',
+          equip_hours:     entry.equip_hours      || '',
+          material:        entry.rubber_type ? `${entry.rubber_type} Rubber Infill` : (entry.material || ''),
+          supplier:        entry.supplier         || '',
+          po_num:          entry.po_num           || '',
+          units_purchased: entry.bags_produced    || '',
+          unit_cost:       entry.unit_cost        || '',
+          material_cost:   String(matCost),
+          quantity:        entry.bags_produced    || '',
+        };
+        newP.dailyRows.push(row);
+        entry.inv_row_id = row.id;
+        drPost(entry.project_id, row);
+        renderDailyTable(entry.project_id);
+      }
+    }
+    renderInventoryTab(); // Re-render to update summary
+  } else {
+    _syncINVRowField(entry, field);
+  }
+  saveInventoryEntries();
 });
 
 /* ── Supplier Tab ── */
@@ -10368,6 +10734,8 @@ document.addEventListener('click', e => {
       deletePO(btn.dataset.poId);
     } else if (tab === 'trucking') {
       deleteTR(btn.dataset.trId);
+    } else if (tab === 'inventory') {
+      deleteINV(btn.dataset.invId);
     } else if (tab === 'company-user') {
       deleteCompanyUser(parseInt(btn.dataset.userId));
     }
@@ -10520,6 +10888,7 @@ async function deleteCompanyUser(id) {
     loadProjects(),
     loadPurchaseOrders(),
     loadTruckingEntries(),
+    loadInventoryEntries(),
   ]);
 
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
@@ -10531,6 +10900,7 @@ async function deleteCompanyUser(id) {
   }
   if (activeTab === 'po') renderPOTab();
   if (activeTab === 'trucking') renderTruckingTab();
+  if (activeTab === 'inventory') renderInventoryTab();
   renderHeaderActions();
 })();
 
