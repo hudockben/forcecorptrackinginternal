@@ -1937,6 +1937,7 @@
     <button class="tab-btn" id="analytics-tab-btn">&#128200; Analytics ▾</button>
     <div class="analytics-dropdown-menu">
       <button class="admin-dropdown-item" id="analytics-item-equip" onclick="analyticsSwitchTab('equip')">&#128295; Equipment Utilization</button>
+      <button class="admin-dropdown-item" id="analytics-item-labor" onclick="analyticsSwitchTab('labor')">&#128100; Labor Analytics</button>
     </div>
   </div>
   <div class="admin-dropdown-wrap">
@@ -2143,6 +2144,11 @@
 <!-- ══════════════ EQUIPMENT UTILIZATION TAB ══════════════ -->
 <div class="tab-panel" id="tab-equip">
   <div id="equip-content" style="padding:1rem"><!-- rendered by JS --></div>
+</div>
+
+<!-- ══════════════ LABOR ANALYTICS TAB ══════════════ -->
+<div class="tab-panel" id="tab-labor">
+  <div id="labor-content" style="padding:1rem"><!-- rendered by JS --></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -2953,7 +2959,8 @@ function analyticsSwitchTab(tab) {
   document.querySelectorAll('.tab-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'tab-' + tab));
   renderHeaderActions();
-  if (tab === 'equip') renderEquipTable();
+  if (tab === 'equip')  renderEquipTable();
+  if (tab === 'labor') renderLaborTable();
 }
 
 function adminSwitchTab(tab) {
@@ -3000,6 +3007,12 @@ function renderHeaderActions() {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportEquipCSV()">Export CSV</button>
       <button class="btn btn-ghost" onclick="exportEquipPDF()">&#128438; Export PDF</button>
+      ${summaryBtn}
+      ${logoutBtn}
+    `;
+  } else if (activeTab === 'labor') {
+    el.innerHTML = `
+      <button class="btn btn-ghost" onclick="exportLaborCSV()">Export CSV</button>
       ${summaryBtn}
       ${logoutBtn}
     `;
@@ -9031,6 +9044,491 @@ function exportEquipPDF() {
   const win = window.open('', '_blank');
   win.document.write(html);
   win.document.close();
+}
+
+/* ═══════════════════════════════════════════
+   LABOR ANALYTICS
+═══════════════════════════════════════════ */
+
+let laborFilters  = { project: '', dateFrom: '', dateTo: '', nameSearch: '', sortCol: 'hours', sortDir: 'desc' };
+let laborExpanded = new Set();
+let laborMonthView = false;
+let laborSections  = { jobClass: true, costCodes: true };
+
+function _buildLaborAgg(filters = {}) {
+  const { dateFrom, dateTo, project } = filters;
+  const passDate = d => (!dateFrom || d >= dateFrom) && (!dateTo || d <= dateTo);
+  const agg = {};
+
+  projectsList.forEach(p => {
+    const pname = p['project-name'] || p.id || '';
+    if (project && pname !== project) return;
+    (p.dailyRows || []).forEach(row => {
+      const name = (row.employee || '').trim();
+      if (!name) return;
+      const hrs = parseFloat(row.labor_hours) || 0;
+      if (hrs <= 0) return;
+      if (row.date && !passDate(row.date)) return;
+
+      if (!agg[name]) agg[name] = {
+        hours: 0, cost: 0, projects: new Set(), dates: new Set(),
+        costCodes: new Set(), rates: [], jobClasses: {},
+        projectDetail: {}, costCodeDetail: {}, monthlyData: {}, lastWorked: null
+      };
+      const a       = agg[name];
+      const rate    = parseFloat(row.rate) || 0;
+      const rowCost = rate * hrs;
+
+      a.hours += hrs;
+      a.cost  += rowCost;
+      if (rate > 0) a.rates.push(rate);
+      if (row.date) {
+        a.dates.add(row.date);
+        if (!a.lastWorked || row.date > a.lastWorked) a.lastWorked = row.date;
+        const mo = row.date.slice(0, 7);
+        if (!a.monthlyData[mo]) a.monthlyData[mo] = { hours: 0, cost: 0 };
+        a.monthlyData[mo].hours += hrs;
+        a.monthlyData[mo].cost  += rowCost;
+      }
+      const jc = (row.job_class || '').trim();
+      if (jc) {
+        if (!a.jobClasses[jc]) a.jobClasses[jc] = { hours: 0, cost: 0 };
+        a.jobClasses[jc].hours += hrs;
+        a.jobClasses[jc].cost  += rowCost;
+      }
+      if (row.cost_code) {
+        a.costCodes.add(row.cost_code);
+        if (!a.costCodeDetail[row.cost_code]) a.costCodeDetail[row.cost_code] = { hours: 0, cost: 0 };
+        a.costCodeDetail[row.cost_code].hours += hrs;
+        a.costCodeDetail[row.cost_code].cost  += rowCost;
+      }
+      a.projects.add(pname);
+      if (!a.projectDetail[pname]) a.projectDetail[pname] = { hours: 0, cost: 0 };
+      a.projectDetail[pname].hours += hrs;
+      a.projectDetail[pname].cost  += rowCost;
+    });
+  });
+
+  return agg;
+}
+
+function _laborSetSort(col) {
+  if (laborFilters.sortCol === col) laborFilters.sortDir = laborFilters.sortDir === 'desc' ? 'asc' : 'desc';
+  else { laborFilters.sortCol = col; laborFilters.sortDir = 'desc'; }
+  renderLaborTable();
+}
+
+function _laborToggle(name) {
+  if (laborExpanded.has(name)) laborExpanded.delete(name);
+  else laborExpanded.add(name);
+  renderLaborTable();
+}
+
+function _laborToggleSection(key) {
+  laborSections[key] = !laborSections[key];
+  renderLaborTable();
+}
+
+function renderLaborTable() {
+  const el = document.getElementById('labor-content');
+  if (!el) return;
+
+  const agg      = _buildLaborAgg(laborFilters);
+  const allNames = Object.keys(agg);
+  const totalHours = allNames.reduce((s, n) => s + agg[n].hours, 0);
+  const totalCost  = allNames.reduce((s, n) => s + agg[n].cost,  0);
+
+  let names = laborFilters.nameSearch
+    ? allNames.filter(n => n.toLowerCase().includes(laborFilters.nameSearch.toLowerCase()))
+    : allNames;
+
+  if (allNames.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted);padding:2rem;text-align:center">No labor entries found in daily tracking.</div>`;
+    return;
+  }
+
+  // ── Sort ──
+  const { sortCol, sortDir } = laborFilters;
+  const sortVal = n => {
+    const a = agg[n];
+    switch (sortCol) {
+      case 'name':     return n.toLowerCase();
+      case 'avgRate':  return a.rates.length ? a.rates.reduce((s,v)=>s+v,0)/a.rates.length : 0;
+      case 'hours':    return a.hours;
+      case 'cost':     return a.cost;
+      case 'cph':      return a.hours ? a.cost / a.hours : 0;
+      case 'pctHours': return a.hours;
+      case 'pctCost':  return a.cost;
+      case 'days':     return a.dates.size;
+      case 'lastWorked': return a.lastWorked || '';
+      case 'projects': return a.projects.size;
+      default:         return a.hours;
+    }
+  };
+  names.sort((a, b) => {
+    const av = sortVal(a), bv = sortVal(b);
+    if (sortCol === 'name' || sortCol === 'lastWorked')
+      return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    return sortDir === 'asc' ? av - bv : bv - av;
+  });
+
+  // ── Summary cards ──
+  const topHours = allNames.length ? [...allNames].sort((a,b) => agg[b].hours - agg[a].hours)[0] : null;
+  const topCost  = allNames.length ? [...allNames].sort((a,b) => agg[b].cost  - agg[a].cost)[0]  : null;
+  const topProj  = allNames.length ? [...allNames].sort((a,b) => agg[b].projects.size - agg[a].projects.size)[0] : null;
+  const avgCPH   = totalHours ? totalCost / totalHours : 0;
+
+  const card = (label, value, sub, color='var(--green)') =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.85rem 1.1rem;min-width:148px;flex:1">
+      <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.3rem">${label}</div>
+      <div style="font-size:1rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${value}</div>
+      ${sub ? `<div style="font-size:0.68rem;color:var(--muted);margin-top:0.15rem">${sub}</div>` : ''}
+    </div>`;
+
+  const cards = `<div style="display:flex;gap:0.65rem;flex-wrap:wrap;margin-bottom:1.1rem">
+    ${topHours ? card('Most Hours',    esc(topHours), fmt(agg[topHours].hours,1)+' hrs') : ''}
+    ${topCost  ? card('Highest Cost',  esc(topCost),  '$'+fmt(agg[topCost].cost)) : ''}
+    ${topProj  ? card('Most Projects', esc(topProj),  agg[topProj].projects.size+' project'+(agg[topProj].projects.size!==1?'s':'')) : ''}
+    ${card('Avg Labor Cost / Hr', avgCPH ? '$'+fmt(avgCPH) : '—', allNames.length+' employees tracked')}
+  </div>`;
+
+  // ── Project list for filter dropdown ──
+  const allProjects = [...new Set(allNames.flatMap(n => [...agg[n].projects]))].sort();
+
+  // ── Sortable header helpers ──
+  const shC = (col, lbl) => {
+    const active = sortCol === col;
+    const arrow  = active ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th class="calc-hdr" style="cursor:pointer;user-select:none${active?';color:var(--green)':''}" onclick="_laborSetSort('${col}')">${lbl}${arrow}</th>`;
+  };
+  const shL = (col, lbl) => {
+    const active = sortCol === col;
+    const arrow  = active ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th style="text-align:left;padding:0.4rem 0.75rem;cursor:pointer;user-select:none${active?';color:var(--green)':''}" onclick="_laborSetSort('${col}')">${lbl}${arrow}</th>`;
+  };
+
+  const miniBar = (pct, color) =>
+    `<div style="display:flex;align-items:center;gap:0.35rem">
+      <span style="font-size:0.73rem;min-width:2.8rem;text-align:right">${pct.toFixed(1)}%</span>
+      <div style="width:52px;background:var(--surface2);border-radius:2px;height:5px;flex-shrink:0">
+        <div style="width:${Math.min(pct,100).toFixed(1)}%;background:${color};height:5px;border-radius:2px"></div>
+      </div>
+    </div>`;
+
+  // ── Table rows ──
+  const rows = names.map(name => {
+    const a       = agg[name];
+    const avgRate = a.rates.length ? a.rates.reduce((s,v)=>s+v,0)/a.rates.length : 0;
+    const minRate = a.rates.length ? Math.min(...a.rates) : 0;
+    const maxRate = a.rates.length ? Math.max(...a.rates) : 0;
+    const cph     = a.hours ? a.cost / a.hours : 0;
+    const pctHrs  = totalHours ? (a.hours / totalHours * 100) : 0;
+    const pctCost = totalCost  ? (a.cost  / totalCost  * 100) : 0;
+    const expanded = laborExpanded.has(name);
+    const topJC = Object.entries(a.jobClasses).sort((x,y)=>y[1].hours-x[1].hours)[0];
+
+    const rateRange = minRate && maxRate && minRate !== maxRate
+      ? `$${fmt(minRate)} – $${fmt(maxRate)}`
+      : minRate ? `$${fmt(minRate)}` : '—';
+
+    // ── Expanded detail panel ──
+    let detailRow = '';
+    if (expanded) {
+      const thStyle  = `padding:0.25rem 0.6rem;color:var(--muted);font-weight:600;font-size:0.63rem;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid var(--border);text-align:right`;
+      const thStyleL = `padding:0.25rem 0.6rem;color:var(--muted);font-weight:600;font-size:0.63rem;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid var(--border);text-align:left`;
+      const tdR = v => `<td style="padding:0.3rem 0.6rem;text-align:right;border-bottom:1px solid var(--border);font-size:0.78rem">${v}</td>`;
+      const tdL = v => `<td style="padding:0.3rem 0.6rem;border-bottom:1px solid var(--border);font-size:0.78rem">${v}</td>`;
+
+      const projRows = Object.entries(a.projectDetail).filter(([,d])=>d.hours>0).sort((x,y)=>y[1].hours-x[1].hours);
+      const projTable = projRows.length
+        ? `<table style="border-collapse:collapse;width:100%"><thead><tr>
+            <th style="${thStyleL}">Project</th><th style="${thStyle}">Hours</th><th style="${thStyle}">Cost</th><th style="${thStyle}">% of Hrs</th>
+           </tr></thead><tbody>${projRows.map(([proj,d])=>`<tr>
+            ${tdL(`<span style="color:var(--text)">${esc(proj)}</span>`)}
+            ${tdR(`<span style="color:#86efac">${fmt(d.hours,1)} hrs</span>`)}
+            ${tdR(`<span style="color:#86efac">$${fmt(d.cost)}</span>`)}
+            ${tdR(a.hours?(d.hours/a.hours*100).toFixed(1)+'%':'—')}
+           </tr>`).join('')}</tbody></table>`
+        : `<div style="color:var(--muted);font-size:0.78rem;padding:0.4rem 0">No project breakdown available.</div>`;
+
+      const ccRows2 = Object.entries(a.costCodeDetail).sort((x,y)=>y[1].hours-x[1].hours);
+      const ccTable = ccRows2.length
+        ? `<table style="border-collapse:collapse;width:100%"><thead><tr>
+            <th style="${thStyleL}">Cost Code</th><th style="${thStyle}">Hours</th><th style="${thStyle}">Cost</th><th style="${thStyle}">% of Hrs</th>
+           </tr></thead><tbody>${ccRows2.map(([cc,d])=>`<tr>
+            ${tdL(`<span style="color:var(--text)">${esc(cc)}</span>`)}
+            ${tdR(`<span style="color:#86efac">${fmt(d.hours,1)} hrs</span>`)}
+            ${tdR(`<span style="color:#86efac">$${fmt(d.cost)}</span>`)}
+            ${tdR(a.hours?(d.hours/a.hours*100).toFixed(1)+'%':'—')}
+           </tr>`).join('')}</tbody></table>`
+        : `<div style="color:var(--muted);font-size:0.78rem;padding:0.4rem 0">No cost code data.</div>`;
+
+      const jcRows = Object.entries(a.jobClasses).sort((x,y)=>y[1].hours-x[1].hours);
+      const jcTable = jcRows.length
+        ? `<table style="border-collapse:collapse;width:100%"><thead><tr>
+            <th style="${thStyleL}">Job Class</th><th style="${thStyle}">Hours</th><th style="${thStyle}">Cost</th>
+           </tr></thead><tbody>${jcRows.map(([jc,d])=>`<tr>
+            ${tdL(`<span style="color:var(--text)">${esc(jc)}</span>`)}
+            ${tdR(`<span style="color:#86efac">${fmt(d.hours,1)} hrs</span>`)}
+            ${tdR(`<span style="color:#86efac">$${fmt(d.cost)}</span>`)}
+           </tr>`).join('')}</tbody></table>`
+        : `<div style="color:var(--muted);font-size:0.78rem;padding:0.4rem 0">No job class data.</div>`;
+
+      detailRow = `<tr><td colspan="12" style="padding:0;background:var(--bg);border-bottom:2px solid var(--border)">
+        <div style="padding:1rem 1.5rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.75rem">
+          <div><div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--green);margin-bottom:0.6rem">&#128196; Project Breakdown</div>${projTable}</div>
+          <div><div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--blue);margin-bottom:0.6rem">&#128200; Cost Code Breakdown</div>${ccTable}</div>
+          <div><div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--yellow);margin-bottom:0.6rem">&#127959; Job Classes</div>${jcTable}</div>
+        </div></td></tr>`;
+    }
+
+    return `<tr style="cursor:pointer" onclick="_laborToggle('${esc(name).replace(/'/g,"\\'")}')">
+      <td style="padding:0.45rem 0.75rem;font-weight:600;color:var(--text)">
+        <span style="font-size:0.62rem;color:var(--muted);margin-right:0.35rem">${expanded?'▼':'▶'}</span>${esc(name)}
+      </td>
+      <td class="calc">${avgRate ? '$'+fmt(avgRate) : '—'}</td>
+      <td class="calc" style="font-size:0.72rem;color:var(--muted)">${rateRange}</td>
+      <td class="calc">${fmt(a.hours,1)}</td>
+      <td class="calc">$${fmt(a.cost)}</td>
+      <td class="calc">${cph ? '$'+fmt(cph) : '—'}</td>
+      <td class="calc">${miniBar(pctHrs,'var(--green)')}</td>
+      <td class="calc">${miniBar(pctCost,'var(--blue)')}</td>
+      <td class="calc">${a.dates.size}</td>
+      <td class="calc">${a.lastWorked || '—'}</td>
+      <td class="calc">${a.projects.size}</td>
+      <td style="padding:0.45rem 0.75rem;font-size:0.7rem;color:var(--muted)">${topJC ? esc(topJC[0]) : '—'}</td>
+    </tr>${detailRow}`;
+  }).join('');
+
+  // ── Monthly summary ──
+  const fleetMonths = {};
+  allNames.forEach(n => {
+    Object.entries(agg[n].monthlyData).forEach(([mo, d]) => {
+      if (!fleetMonths[mo]) fleetMonths[mo] = { hours: 0, cost: 0, workers: new Set(), topWorker: '', topHrs: 0 };
+      fleetMonths[mo].hours += d.hours;
+      fleetMonths[mo].cost  += d.cost;
+      fleetMonths[mo].workers.add(n);
+      if (d.hours > fleetMonths[mo].topHrs) { fleetMonths[mo].topHrs = d.hours; fleetMonths[mo].topWorker = n; }
+    });
+  });
+  const monthlyRows = Object.entries(fleetMonths).sort((a,b) => b[0].localeCompare(a[0])).map(([mo, d]) => {
+    const moLabel = new Date(mo+'-02').toLocaleDateString(undefined,{month:'long',year:'numeric'});
+    const cph = d.hours ? d.cost / d.hours : 0;
+    return `<tr style="cursor:pointer" onclick="laborFilters.dateFrom='${mo}-01';laborFilters.dateTo='${mo}-31';laborMonthView=false;laborExpanded.clear();renderLaborTable()">
+      <td style="padding:0.4rem 0.75rem;font-weight:600;color:var(--text)">${moLabel}</td>
+      <td class="calc">${fmt(d.hours,1)}</td>
+      <td class="calc">$${fmt(d.cost)}</td>
+      <td class="calc">${cph ? '$'+fmt(cph) : '—'}</td>
+      <td class="calc">${d.workers.size}</td>
+      <td style="padding:0.4rem 0.75rem;font-size:0.78rem;color:var(--muted)">${esc(d.topWorker)||'—'}</td>
+    </tr>`;
+  }).join('');
+  const monthlySection = laborMonthView
+    ? `<div class="table-wrap" style="margin-bottom:1.25rem">
+        <table style="width:100%">
+          <thead><tr class="col-row">
+            <th style="text-align:left;padding:0.4rem 0.75rem">Month</th>
+            <th class="calc-hdr">Total Hours</th><th class="calc-hdr">Total Cost</th>
+            <th class="calc-hdr">Avg Cost / Hr</th><th class="calc-hdr">Active Workers</th>
+            <th style="text-align:left;padding:0.4rem 0.75rem">Most Hours</th>
+          </tr></thead>
+          <tbody>${monthlyRows || '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:1rem">No data.</td></tr>'}</tbody>
+        </table>
+        <div style="font-size:0.7rem;color:var(--muted);margin-top:0.5rem">&#9654; Click a month to filter the main view to that period</div>
+      </div>` : '';
+
+  // ── Job class section ──
+  const fleetJC = {};
+  allNames.forEach(n => {
+    Object.entries(agg[n].jobClasses).forEach(([jc, d]) => {
+      if (!fleetJC[jc]) fleetJC[jc] = { hours: 0, cost: 0, workers: new Set() };
+      fleetJC[jc].hours += d.hours;
+      fleetJC[jc].cost  += d.cost;
+      fleetJC[jc].workers.add(n);
+    });
+  });
+  const jcRows = Object.entries(fleetJC).sort((a,b) => b[1].hours - a[1].hours).map(([jc, d]) => {
+    const pct = totalHours ? (d.hours / totalHours * 100) : 0;
+    const cph = d.hours ? d.cost / d.hours : 0;
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:0.35rem 0.75rem;font-weight:600;color:var(--text)">${esc(jc)}</td>
+      <td class="calc">${fmt(d.hours,1)}</td>
+      <td class="calc">$${fmt(d.cost)}</td>
+      <td class="calc">${cph ? '$'+fmt(cph) : '—'}</td>
+      <td class="calc">${miniBar(pct,'var(--green)')}</td>
+      <td class="calc">${d.workers.size}</td>
+    </tr>`;
+  }).join('');
+  const jcOpen = laborSections.jobClass;
+  const jobClassSection = Object.keys(fleetJC).length ? `
+    <div style="margin-bottom:1.25rem">
+      <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem;cursor:pointer" onclick="_laborToggleSection('jobClass')">
+        <span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text)">&#127959; Job Class Summary</span>
+        <span style="font-size:0.7rem;color:var(--muted)">${jcOpen?'▼':'▶'}</span>
+      </div>
+      ${jcOpen ? `<div class="table-wrap"><table style="width:100%">
+        <thead><tr class="col-row">
+          <th style="text-align:left;padding:0.4rem 0.75rem">Job Class</th>
+          <th class="calc-hdr">Total Hours</th><th class="calc-hdr">Total Cost</th>
+          <th class="calc-hdr">Cost / Hr</th><th class="calc-hdr">% of Hours</th>
+          <th class="calc-hdr">Workers</th>
+        </tr></thead>
+        <tbody>${jcRows}</tbody>
+      </table></div>` : ''}
+    </div>` : '';
+
+  // ── Cost code section ──
+  const fleetCC = {};
+  allNames.forEach(n => {
+    Object.entries(agg[n].costCodeDetail).forEach(([cc, d]) => {
+      if (!fleetCC[cc]) fleetCC[cc] = { hours: 0, cost: 0, workers: new Set() };
+      fleetCC[cc].hours += d.hours;
+      fleetCC[cc].cost  += d.cost;
+      fleetCC[cc].workers.add(n);
+    });
+  });
+  const ccRows = Object.entries(fleetCC).sort((a,b) => b[1].cost - a[1].cost).map(([cc, d]) => {
+    const pct = totalCost ? (d.cost / totalCost * 100) : 0;
+    const cph = d.hours ? d.cost / d.hours : 0;
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:0.35rem 0.75rem;font-weight:600;color:var(--text)">${esc(cc)}</td>
+      <td class="calc">${fmt(d.hours,1)}</td>
+      <td class="calc">$${fmt(d.cost)}</td>
+      <td class="calc">${cph ? '$'+fmt(cph) : '—'}</td>
+      <td class="calc">${miniBar(pct,'var(--yellow)')}</td>
+      <td class="calc">${d.workers.size}</td>
+    </tr>`;
+  }).join('');
+  const ccOpen = laborSections.costCodes;
+  const costCodeSection = Object.keys(fleetCC).length ? `
+    <div style="margin-bottom:1.25rem">
+      <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem;cursor:pointer" onclick="_laborToggleSection('costCodes')">
+        <span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text)">&#128200; Cost Code Labor Analysis</span>
+        <span style="font-size:0.7rem;color:var(--muted)">${ccOpen?'▼':'▶'}</span>
+      </div>
+      ${ccOpen ? `<div class="table-wrap"><table style="width:100%">
+        <thead><tr class="col-row">
+          <th style="text-align:left;padding:0.4rem 0.75rem">Cost Code</th>
+          <th class="calc-hdr">Labor Hours</th><th class="calc-hdr">Labor Cost</th>
+          <th class="calc-hdr">Cost / Hr</th><th class="calc-hdr">% of Cost</th>
+          <th class="calc-hdr">Workers</th>
+        </tr></thead>
+        <tbody>${ccRows}</tbody>
+      </table></div>` : ''}
+    </div>` : '';
+
+  const hasFilters = laborFilters.project || laborFilters.dateFrom || laborFilters.dateTo || laborFilters.nameSearch;
+  const monthBtnStyle = (on) => `font-size:0.72rem;padding:0.2rem 0.55rem;border-radius:3px;border:1px solid var(--border);cursor:pointer;background:${on?'var(--green)':'var(--surface2)'};color:${on?'#000':'var(--muted)'}`;
+
+  el.innerHTML = `
+    <div style="margin-bottom:0.85rem">
+      <h2 style="margin:0 0 0.1rem;font-size:1rem;font-weight:700;color:var(--text)">Labor Analytics</h2>
+      <span style="font-size:0.75rem;color:var(--muted)">${allNames.length} employees tracked &nbsp;·&nbsp; ${fmt(totalHours,1)} total hours &nbsp;·&nbsp; $${fmt(totalCost)} total cost</span>
+    </div>
+
+    ${cards}
+
+    <div style="display:flex;gap:0.55rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem;padding:0.55rem 0.85rem;background:var(--surface);border:1px solid var(--border);border-radius:6px">
+      <span style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);flex-shrink:0">Filters</span>
+      <select style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.22rem 0.45rem;font-size:0.78rem;outline:none"
+        onchange="laborFilters.project=this.value;laborExpanded.clear();renderLaborTable()">
+        <option value="">All Projects</option>
+        ${allProjects.map(p=>`<option value="${esc(p)}"${laborFilters.project===p?' selected':''}>${esc(p)}</option>`).join('')}
+      </select>
+      <input type="date" value="${laborFilters.dateFrom}" title="From"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.22rem 0.45rem;font-size:0.78rem;outline:none"
+        onchange="laborFilters.dateFrom=this.value;laborExpanded.clear();renderLaborTable()">
+      <span style="color:var(--muted);font-size:0.75rem">–</span>
+      <input type="date" value="${laborFilters.dateTo}" title="To"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.22rem 0.45rem;font-size:0.78rem;outline:none"
+        onchange="laborFilters.dateTo=this.value;laborExpanded.clear();renderLaborTable()">
+      <input type="text" value="${esc(laborFilters.nameSearch)}" placeholder="Search employee…"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.22rem 0.55rem;font-size:0.78rem;outline:none;width:140px"
+        oninput="laborFilters.nameSearch=this.value;renderLaborTable()">
+      <div style="margin-left:auto;display:flex;gap:0.3rem">
+        <button style="${monthBtnStyle(!laborMonthView)}" onclick="laborMonthView=false;renderLaborTable()">All Time</button>
+        <button style="${monthBtnStyle(laborMonthView)}"  onclick="laborMonthView=true;renderLaborTable()">Monthly</button>
+      </div>
+      ${hasFilters ? `<button class="btn btn-ghost" style="font-size:0.72rem;padding:0.18rem 0.5rem" onclick="laborFilters={project:'',dateFrom:'',dateTo:'',nameSearch:'',sortCol:'hours',sortDir:'desc'};laborExpanded.clear();renderLaborTable()">✕ Clear</button>` : ''}
+    </div>
+
+    ${laborMonthView ? monthlySection : (names.length === 0
+      ? `<div style="color:var(--muted);padding:1.5rem;text-align:center;font-size:0.85rem">No employees match the current filters.</div>`
+      : `<div class="table-wrap" style="margin-bottom:1.25rem">
+          <table id="labor-table" style="width:100%">
+            <thead><tr class="col-row">
+              ${shL('name','Employee')}
+              ${shC('avgRate','Avg Rate')}
+              <th class="calc-hdr">Rate Range</th>
+              ${shC('hours','Total Hours')}
+              ${shC('cost','Total Cost')}
+              ${shC('cph','Cost / Hr')}
+              ${shC('pctHours','% of Hours')}
+              ${shC('pctCost','% of Cost')}
+              ${shC('days','Days Worked')}
+              ${shC('lastWorked','Last Worked')}
+              ${shC('projects','Projects')}
+              <th style="text-align:left;padding:0.4rem 0.75rem">Top Job Class</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+            <tfoot><tr style="border-top:2px solid var(--border);font-weight:600">
+              <td style="padding:0.45rem 0.75rem">Total</td>
+              <td class="calc">—</td><td class="calc">—</td>
+              <td class="calc">${fmt(totalHours,1)}</td>
+              <td class="calc">$${fmt(totalCost)}</td>
+              <td class="calc">${totalHours?'$'+fmt(totalCost/totalHours):'—'}</td>
+              <td class="calc">100%</td><td class="calc">100%</td>
+              <td class="calc">—</td><td class="calc">—</td><td class="calc">—</td><td></td>
+            </tr></tfoot>
+          </table>
+        </div>`
+    )}
+
+    ${jobClassSection}
+    ${costCodeSection}
+
+    <div class="legend" style="margin-top:0.5rem">
+      <span>&#9654; Click row to expand project, cost code &amp; job class breakdown</span>
+      <span>Monthly view: click a month row to filter main table to that period</span>
+      <span>Rate Range = min – max hourly rate observed · % shares are of unfiltered totals</span>
+    </div>`;
+}
+
+function exportLaborCSV() {
+  const agg = _buildLaborAgg(laborFilters);
+  const names = Object.keys(agg).sort((a, b) => agg[b].hours - agg[a].hours);
+  if (names.length === 0) { alert('No labor data to export.'); return; }
+  const totalHours = names.reduce((s, n) => s + agg[n].hours, 0);
+  const totalCost  = names.reduce((s, n) => s + agg[n].cost,  0);
+  const headers = ['Employee','Avg Rate','Min Rate','Max Rate','Total Hours','Total Cost','Cost/Hr','% of Hours','% of Cost','Days Worked','Last Worked','Projects','Top Job Class','Cost Codes'];
+  const rows = [headers.join(',')];
+  names.forEach(name => {
+    const a       = agg[name];
+    const avgRate = a.rates.length ? a.rates.reduce((s,v)=>s+v,0)/a.rates.length : 0;
+    const minRate = a.rates.length ? Math.min(...a.rates) : 0;
+    const maxRate = a.rates.length ? Math.max(...a.rates) : 0;
+    const cph     = a.hours ? a.cost / a.hours : 0;
+    const pctHrs  = totalHours ? (a.hours / totalHours * 100) : 0;
+    const pctCost = totalCost  ? (a.cost  / totalCost  * 100) : 0;
+    const topJC   = Object.entries(a.jobClasses).sort((x,y)=>y[1].hours-x[1].hours)[0];
+    rows.push([
+      name,
+      avgRate ? avgRate.toFixed(2) : '',
+      minRate ? minRate.toFixed(2) : '',
+      maxRate ? maxRate.toFixed(2) : '',
+      a.hours.toFixed(1),
+      a.cost.toFixed(2),
+      cph     ? cph.toFixed(2)    : '',
+      pctHrs.toFixed(1)  + '%',
+      pctCost.toFixed(1) + '%',
+      a.dates.size,
+      a.lastWorked || '',
+      a.projects.size,
+      topJC ? topJC[0] : '',
+      [...a.costCodes].sort().join('; '),
+    ].map(v => `"${v}"`).join(','));
+  });
+  downloadCSV(rows.join('\n'), 'labor_analytics.csv');
 }
 
 /* ═══════════════════════════════════════════
