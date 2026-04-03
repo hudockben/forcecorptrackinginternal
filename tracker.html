@@ -3140,9 +3140,12 @@ function renderHomeTab() {
   inventoryEntries.forEach(e => {
     const rt = (e.rubber_type || '').trim() || '(unspecified)';
     if (!invByType[rt]) invByType[rt] = { produced: 0, used: 0, poundage: 0 };
-    invByType[rt].produced += parseFloat(e.bags_produced)  || 0;
-    invByType[rt].poundage += parseFloat(e.total_poundage) || 0;
-    if (e.project_id) invByType[rt].used += parseFloat(e.bags_produced) || 0;
+    if (e.project_id) {
+      invByType[rt].used += parseFloat(e.bags_produced) || 0;
+    } else {
+      invByType[rt].produced += parseFloat(e.bags_produced)  || 0;
+      invByType[rt].poundage += parseFloat(e.total_poundage) || 0;
+    }
   });
   const invSectionHTML = Object.keys(invByType).length === 0 ? '' : `
     <p class="home-section-title">Rubber Inventory</p>
@@ -6445,9 +6448,12 @@ function renderInventoryTab() {
   inventoryEntries.forEach(e => {
     const rt = (e.rubber_type || '').trim() || '(unspecified)';
     if (!invByType[rt]) invByType[rt] = { produced: 0, used: 0, poundage: 0 };
-    invByType[rt].produced += parseFloat(e.bags_produced)  || 0;
-    invByType[rt].poundage += parseFloat(e.total_poundage) || 0;
-    if (e.project_id) invByType[rt].used += parseFloat(e.bags_produced) || 0;
+    if (e.project_id) {
+      invByType[rt].used += parseFloat(e.bags_produced) || 0;
+    } else {
+      invByType[rt].produced += parseFloat(e.bags_produced)  || 0;
+      invByType[rt].poundage += parseFloat(e.total_poundage) || 0;
+    }
   });
 
   const summaryHTML = Object.keys(invByType).length === 0
