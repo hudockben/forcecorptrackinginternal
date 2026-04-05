@@ -1939,6 +1939,7 @@
     <div class="analytics-dropdown-menu">
       <button class="admin-dropdown-item" id="analytics-item-equip" onclick="analyticsSwitchTab('equip')">&#128295; Equipment Utilization</button>
       <button class="admin-dropdown-item" id="analytics-item-labor" onclick="analyticsSwitchTab('labor')">&#128100; Labor Analytics</button>
+      <button class="admin-dropdown-item" id="analytics-item-scale" onclick="analyticsSwitchTab('scale')">&#128200; Scale of Economy</button>
     </div>
   </div>
   <div class="admin-dropdown-wrap">
@@ -2150,6 +2151,11 @@
 <!-- ══════════════ LABOR ANALYTICS TAB ══════════════ -->
 <div class="tab-panel" id="tab-labor">
   <div id="labor-content" style="padding:1rem"><!-- rendered by JS --></div>
+</div>
+
+<!-- ══════════════ SCALE OF ECONOMY TAB ══════════════ -->
+<div class="tab-panel" id="tab-scale">
+  <div id="scale-content" style="padding:1rem"><!-- rendered by JS --></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -2961,7 +2967,8 @@ function analyticsSwitchTab(tab) {
     p.classList.toggle('active', p.id === 'tab-' + tab));
   renderHeaderActions();
   if (tab === 'equip')  renderEquipTable();
-  if (tab === 'labor') renderLaborTable();
+  if (tab === 'labor')  renderLaborTable();
+  if (tab === 'scale')  renderScaleOfEconomy();
 }
 
 function adminSwitchTab(tab) {
@@ -9654,6 +9661,296 @@ function exportLaborCSV() {
     ].map(v => `"${v}"`).join(','));
   });
   downloadCSV(rows.join('\n'), 'labor_analytics.csv');
+}
+
+/* ═══════════════════════════════════════════
+   SCALE OF ECONOMY
+═══════════════════════════════════════════ */
+
+function renderScaleOfEconomy() {
+  const el = document.getElementById('scale-content');
+  if (!el) return;
+
+  const byProj = buildProjectSubCodeAgg();
+
+  // ── Build regression data per sub code ──────────────────────────────────
+  const stats = [];
+  Object.entries(byProj).forEach(([key, projects]) => {
+    const [costCode, subCode] = key.split('||');
+
+    // Resolve unit from any project's bidItems
+    let unit = '';
+    for (const p of projectsList) {
+      const bi = (p.bidItems || []).find(b =>
+        (b.cost_code || '') === costCode && (b.sub_code || '') === subCode);
+      if (bi && bi.unit) { unit = bi.unit; break; }
+    }
+
+    // Only include jobs with valid bid qty AND production cost
+    const pts = projects
+      .filter(pr => pr.bidQty > 0 && pr.runQty > 0 && pr.totalCost > 0)
+      .map(pr => ({ x: pr.bidQty, y: pr.totalCost / pr.runQty }));
+
+    if (pts.length < 2) return;
+
+    const n    = pts.length;
+    const sumX = pts.reduce((s, p) => s + p.x, 0);
+    const sumY = pts.reduce((s, p) => s + p.y, 0);
+    const sumXY= pts.reduce((s, p) => s + p.x * p.y, 0);
+    const sumX2= pts.reduce((s, p) => s + p.x * p.x, 0);
+    const sumY2= pts.reduce((s, p) => s + p.y * p.y, 0);
+    const meanX= sumX / n;
+    const meanY= sumY / n;
+
+    const denom  = n * sumX2 - sumX * sumX;
+    const slope  = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
+    const interc = (sumY - slope * sumX) / n;
+
+    // Pearson R and R²
+    const ssXY = pts.reduce((s, p) => s + (p.x - meanX) * (p.y - meanY), 0);
+    const ssX  = pts.reduce((s, p) => s + (p.x - meanX) ** 2, 0);
+    const ssY  = pts.reduce((s, p) => s + (p.y - meanY) ** 2, 0);
+    const r    = (ssX > 0 && ssY > 0) ? ssXY / Math.sqrt(ssX * ssY) : 0;
+    const r2   = r * r;
+
+    const minX = Math.min(...pts.map(p => p.x));
+    const maxX = Math.max(...pts.map(p => p.x));
+    const ucAtMin = slope * minX + interc;
+    const ucAtMax = slope * maxX + interc;
+    const pctChange = ucAtMin > 0 ? (ucAtMax - ucAtMin) / ucAtMin * 100 : 0;
+
+    let trend, trendColor, trendIcon;
+    if (r2 < 0.10) {
+      trend = 'No Clear Pattern'; trendColor = '#9ca3af'; trendIcon = '→';
+    } else if (slope < 0) {
+      trend = 'Economy of Scale'; trendColor = '#4ade80'; trendIcon = '↓';
+    } else {
+      trend = 'Inverse Scale';    trendColor = '#f87171'; trendIcon = '↑';
+    }
+    const strength = r2 < 0.10 ? '—' : r2 < 0.30 ? 'Weak' : r2 < 0.55 ? 'Moderate' : r2 < 0.75 ? 'Strong' : 'Very Strong';
+
+    stats.push({ key, costCode, subCode, unit, pts, slope, interc, r, r2,
+      trend, trendColor, trendIcon, strength, pctChange,
+      minX, maxX, n, avgUC: meanY });
+  });
+
+  if (stats.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted);padding:3rem;text-align:center">
+      Not enough data yet — need at least 2 completed jobs sharing the same sub code with bid quantities entered.<br>
+      <span style="font-size:0.75rem;margin-top:0.4rem;display:block">Make sure bid items have Bid Qty filled in and daily rows are logged with quantities.</span>
+    </div>`;
+    return;
+  }
+
+  // Sort: most data points first, then by sub code name
+  stats.sort((a, b) => b.n - a.n || a.subCode.localeCompare(b.subCode));
+
+  // ── Summary cards ────────────────────────────────────────────────────────
+  const econCount    = stats.filter(s => s.trend === 'Economy of Scale').length;
+  const invCount     = stats.filter(s => s.trend === 'Inverse Scale').length;
+  const flatCount    = stats.filter(s => s.trend === 'No Clear Pattern').length;
+  const bestEcon     = stats.filter(s => s.trend === 'Economy of Scale').sort((a,b) => b.r2 - a.r2)[0] || null;
+  const biggestSaving= bestEcon ? Math.abs(bestEcon.pctChange).toFixed(1) : null;
+
+  const card = (label, value, sub='', color='var(--green)') =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.85rem 1.1rem;min-width:148px;flex:1">
+      <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.3rem">${label}</div>
+      <div style="font-size:1rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${value}</div>
+      ${sub ? `<div style="font-size:0.68rem;color:var(--muted);margin-top:0.15rem">${sub}</div>` : ''}
+    </div>`;
+
+  const cards = `<div style="display:flex;gap:0.65rem;flex-wrap:wrap;margin-bottom:1.25rem">
+    ${card('Sub Codes Analyzed', stats.length, stats.length + ' sub codes · 2+ jobs each')}
+    ${card('Economy of Scale', econCount, 'Cost decreases as job size ↑', '#4ade80')}
+    ${card('Inverse Scale', invCount, 'Cost increases as job size ↑', '#f87171')}
+    ${card('No Clear Pattern', flatCount, 'Size has little effect on cost', '#9ca3af')}
+    ${bestEcon ? card('Best Economy Sub Code', esc(bestEcon.subCode), biggestSaving + '% cost reduction small→large · R²='+Math.round(bestEcon.r2*100)+'%') : ''}
+  </div>`;
+
+  // ── Scatter SVG helper ───────────────────────────────────────────────────
+  function scatterSVG(pts, slope, interc, trendColor) {
+    const W = 300, H = 160, padL = 46, padR = 12, padT = 10, padB = 30;
+    const iW = W - padL - padR, iH = H - padT - padB;
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const xRange = maxX - minX || 1, yRange = maxY - minY || 1;
+    const px = x => padL + (x - minX) / xRange * iW;
+    const py = y => padT + iH - (y - minY) / yRange * iH;
+    const fmtX = v => v >= 1000 ? (v/1000).toFixed(0)+'k' : String(Math.round(v));
+    const fmtY = v => '$' + (v >= 1 ? fmt(v,2) : fmt(v,3));
+
+    // Axis ticks
+    const xTicks = [minX, minX + xRange*0.5, maxX].map(v =>
+      `<text x="${px(v).toFixed(1)}" y="${(padT+iH+14).toFixed(1)}" text-anchor="middle" fill="#555" font-size="9">${fmtX(v)}</text>`).join('');
+    const yTicks = [minY, minY + yRange*0.5, maxY].map(v =>
+      `<text x="${(padL-4).toFixed(1)}" y="${(py(v)+3).toFixed(1)}" text-anchor="end" fill="#555" font-size="9">${fmtY(v)}</text>`).join('');
+
+    // Axis lines
+    const axes = `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+iH}" stroke="#2a2a3a" stroke-width="1"/>
+      <line x1="${padL}" y1="${padT+iH}" x2="${padL+iW}" y2="${padT+iH}" stroke="#2a2a3a" stroke-width="1"/>`;
+
+    // Trend line (clamped to data range)
+    const ty1 = Math.max(minY - yRange*0.1, slope * minX + interc);
+    const ty2 = Math.max(minY - yRange*0.1, slope * maxX + interc);
+    const trendLine = `<line x1="${px(minX).toFixed(1)}" y1="${py(Math.max(minY-yRange*0.15,Math.min(maxY+yRange*0.15,ty1))).toFixed(1)}"
+      x2="${px(maxX).toFixed(1)}" y2="${py(Math.max(minY-yRange*0.15,Math.min(maxY+yRange*0.15,ty2))).toFixed(1)}"
+      stroke="${trendColor}" stroke-width="1.5" stroke-dasharray="5 3" opacity="0.75"/>`;
+
+    // Data points
+    const dots = pts.map(p =>
+      `<circle cx="${px(p.x).toFixed(1)}" cy="${py(p.y).toFixed(1)}" r="4.5" fill="#60a5fa" stroke="#1e3a5f" stroke-width="1.2" opacity="0.9"/>`).join('');
+
+    // Axis labels
+    const xLabel = `<text x="${(padL + iW/2).toFixed(1)}" y="${(H-2).toFixed(1)}" text-anchor="middle" fill="#555" font-size="9">Bid Qty</text>`;
+    const yLabel = `<text x="8" y="${(padT + iH/2).toFixed(1)}" text-anchor="middle" fill="#555" font-size="9" transform="rotate(-90,8,${(padT+iH/2).toFixed(1)})">$/unit</text>`;
+
+    return `<svg width="${W}" height="${H}" style="display:block;border-radius:4px;background:#0d0d14">
+      ${axes}${trendLine}${dots}${xTicks}${yTicks}${xLabel}${yLabel}
+    </svg>`;
+  }
+
+  // ── Size-band breakdown table ────────────────────────────────────────────
+  function bandTable(pts, unit) {
+    if (pts.length < 3) return '';
+    const sorted = [...pts].sort((a, b) => a.x - b.x);
+    const third  = Math.floor(sorted.length / 3);
+    const small  = sorted.slice(0, third);
+    const mid    = sorted.slice(third, third * 2);
+    const large  = sorted.slice(third * 2);
+    const avgUC  = arr => arr.length ? arr.reduce((s, p) => s + p.y, 0) / arr.length : null;
+    const avgBQ  = arr => arr.length ? arr.reduce((s, p) => s + p.x, 0) / arr.length : null;
+    const row = (label, arr, color) => {
+      const uc = avgUC(arr), bq = avgBQ(arr);
+      return uc !== null ? `<tr>
+        <td style="padding:0.3rem 0.65rem;color:${color};font-weight:600">${label}</td>
+        <td style="padding:0.3rem 0.65rem;text-align:right;color:var(--muted);font-size:0.75rem">${arr.length} job${arr.length!==1?'s':''}</td>
+        <td style="padding:0.3rem 0.65rem;text-align:right;color:var(--muted);font-size:0.75rem">${bq ? fmt(bq,0)+' '+(unit||'units') : '—'} avg</td>
+        <td style="padding:0.3rem 0.65rem;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${color}">$${fmt(uc)}/unit</td>
+      </tr>` : '';
+    };
+    const smUC = avgUC(small), lgUC = avgUC(large);
+    const diffPct = smUC && lgUC ? ((lgUC - smUC) / smUC * 100) : null;
+    const diffStr = diffPct !== null
+      ? `<div style="font-size:0.72rem;color:${diffPct < 0 ? '#4ade80':'#f87171'};margin-top:0.5rem">
+          Large jobs cost ${Math.abs(diffPct).toFixed(1)}% ${diffPct < 0 ? 'less' : 'more'} per unit than small jobs
+         </div>` : '';
+    return `<table style="border-collapse:collapse;font-size:0.8rem;width:100%">
+      <thead><tr>
+        <th style="padding:0.25rem 0.65rem;text-align:left;color:#555;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.06em">Size Tier</th>
+        <th style="padding:0.25rem 0.65rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Jobs</th>
+        <th style="padding:0.25rem 0.65rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Avg Size</th>
+        <th style="padding:0.25rem 0.65rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Avg Unit Cost</th>
+      </tr></thead>
+      <tbody>
+        ${row('Small', small, '#9ca3af')}
+        ${mid.length ? row('Medium', mid, '#93c5fd') : ''}
+        ${row('Large', large, '#4ade80')}
+      </tbody>
+    </table>${diffStr}`;
+  }
+
+  // ── Interpretation text ──────────────────────────────────────────────────
+  function interpretation(s) {
+    const lines = [];
+    if (s.trend === 'Economy of Scale') {
+      lines.push(`<strong style="color:#4ade80">Economy of scale applies.</strong> Unit cost decreases as job size increases.`);
+      if (s.r2 >= 0.30) lines.push(`The relationship is ${s.strength.toLowerCase()} (R²=${Math.round(s.r2*100)}%), meaning job size is a reliable predictor of unit cost.`);
+      if (Math.abs(s.pctChange) >= 10) lines.push(`Going from the smallest to largest recorded job, unit cost drops ~${Math.abs(s.pctChange).toFixed(0)}%. Consider more competitive pricing on larger ${s.unit || 'unit'} jobs.`);
+    } else if (s.trend === 'Inverse Scale') {
+      lines.push(`<strong style="color:#f87171">Inverse scale.</strong> Unit cost increases as job size increases.`);
+      if (s.r2 >= 0.30) lines.push(`The relationship is ${s.strength.toLowerCase()} (R²=${Math.round(s.r2*100)}%). Larger jobs for this sub code appear more complex or resource-intensive.`);
+      lines.push(`Review whether large-${s.unit || 'unit'} jobs require additional crew, longer hauls, or more setup that isn't captured in the bid.`);
+    } else {
+      lines.push(`<strong style="color:#9ca3af">No clear size-cost relationship.</strong> Job size doesn't significantly predict unit cost for this sub code (R²=${Math.round(s.r2*100)}%).`);
+      lines.push(`Cost variability is likely driven by other factors — crew composition, site conditions, equipment availability, or seasonality.`);
+    }
+    lines.push(`<span style="color:var(--muted);font-size:0.72rem">Based on ${s.n} job${s.n!==1?'s':''} · Size range: ${fmt(s.minX,0)}–${fmt(s.maxX,0)} ${s.unit||'units'} · Avg unit cost: $${fmt(s.avgUC)}</span>`);
+    return lines.map(l => `<p style="margin:0 0 0.45rem;font-size:0.8rem;line-height:1.5">${l}</p>`).join('');
+  }
+
+  // ── Rows ─────────────────────────────────────────────────────────────────
+  const TH = `padding:0.45rem 0.75rem;text-align:left;font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#888;background:var(--surface2);border:1px solid var(--border);white-space:nowrap`;
+  const THR = TH + ';text-align:right';
+
+  const rows = stats.map((s, i) => {
+    const detId  = 'soe-det-' + i;
+    const pctStr = s.r2 >= 0.10
+      ? (s.pctChange >= 0 ? '+' : '') + s.pctChange.toFixed(1) + '%'
+      : '—';
+    const pctColor = s.r2 >= 0.10 ? (s.pctChange < 0 ? '#4ade80' : '#f87171') : '#9ca3af';
+    return `
+      <tr style="cursor:pointer;border-bottom:1px solid var(--border)" onclick="_toggleSoEDetail('${detId}',this)">
+        <td style="padding:0.5rem 0.75rem;font-weight:600">${esc(s.subCode||'(No Sub Code)')}</td>
+        <td style="padding:0.5rem 0.6rem;color:var(--muted);font-size:0.75rem">${esc(s.costCode||'')}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${esc(s.unit||'—')}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center">${s.n}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums">$${fmt(s.avgUC)}</td>
+        <td style="padding:0.5rem 0.75rem;font-weight:700;color:${s.trendColor}">${s.trendIcon} ${s.trend}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${s.r2>=0.10?s.strength:'—'}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${pctColor}">${pctStr}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.8rem;transition:transform 0.15s" class="soe-arrow">▶</td>
+      </tr>
+      <tr id="${detId}" style="display:none">
+        <td colspan="9" style="padding:1rem 1.5rem 1.25rem;background:#0d0d14;border-bottom:2px solid var(--border)">
+          <div style="display:flex;gap:2rem;flex-wrap:wrap;align-items:flex-start">
+            <div>
+              <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Unit Cost vs Job Size</div>
+              ${scatterSVG(s.pts, s.slope, s.interc, s.trendColor)}
+              <div style="font-size:0.65rem;color:#444;margin-top:0.3rem;text-align:center">● each dot = one job</div>
+            </div>
+            <div style="flex:1;min-width:220px;display:flex;flex-direction:column;gap:1rem">
+              <div>
+                <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Interpretation</div>
+                ${interpretation(s)}
+              </div>
+              ${s.pts.length >= 3 ? `<div>
+                <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Unit Cost by Size Tier</div>
+                ${bandTable(s.pts, s.unit)}
+              </div>` : ''}
+            </div>
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
+
+  el.innerHTML = `<div style="max-width:1200px">
+    <div style="margin-bottom:0.75rem">
+      <div style="font-size:0.75rem;color:var(--muted);line-height:1.5">
+        Does cost per unit change as job size increases? <strong style="color:var(--text)">Economy of scale</strong> = larger jobs cost less per unit.
+        <strong style="color:var(--text)">Inverse scale</strong> = larger jobs cost more per unit. Click any row to see the scatter plot and size-tier breakdown.
+      </div>
+    </div>
+    ${cards}
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+        <thead><tr>
+          <th style="${TH}">Sub Code</th>
+          <th style="${TH}">Cost Code</th>
+          <th style="${TH};text-align:center">Unit</th>
+          <th style="${THR};text-align:center"># Jobs</th>
+          <th style="${THR}">Avg Unit Cost</th>
+          <th style="${TH}">Scale Trend</th>
+          <th style="${TH};text-align:center">Strength</th>
+          <th style="${THR}">Cost Δ Small→Large</th>
+          <th style="${TH};width:28px"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="font-size:0.68rem;color:#444;margin-top:0.6rem">
+      R² = coefficient of determination (how much of cost variation is explained by job size). Strength thresholds: Weak &lt;30% · Moderate &lt;55% · Strong &lt;75% · Very Strong 75%+. Requires ≥2 jobs per sub code.
+    </div>
+  </div>`;
+}
+
+function _toggleSoEDetail(detId, row) {
+  const det   = document.getElementById(detId);
+  if (!det) return;
+  const open  = det.style.display !== 'none';
+  det.style.display = open ? 'none' : 'table-row';
+  const arrow = row ? row.querySelector('.soe-arrow') : null;
+  if (arrow) arrow.textContent = open ? '▶' : '▼';
 }
 
 /* ═══════════════════════════════════════════
