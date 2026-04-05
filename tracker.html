@@ -5089,8 +5089,8 @@ function renderBidTable(projId, opts = {}) {
 
       gBidTotal += bidTot; gActual += actual; gCumHrs += cumHrs; gProj += proj;
 
-      // Size-aware past avg for this sub code
-      const _pa     = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code);
+      // Size-aware past avg for this sub code — exclude this project from its own benchmark
+      const _pa     = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId);
       const _paUC   = _pa ? _pa.histUC   : 0;
       const _paTip  = _pa
         ? `Similar-size job avg (${_pa.band != null ? '\u00b1'+Math.round(_pa.band*100)+'%' : 'Global'}, n=${_pa.jobCount}, ${_pa.confidence})`
@@ -7415,6 +7415,7 @@ function buildProjectSubCodeAgg() {
     Object.entries(projAgg).forEach(([key, data]) => {
       if (!agg[key]) agg[key] = [];
       agg[key].push({
+        projId:    p.id,
         bidQty:    bidMap[key] || 0,
         runQty:    data.runQty,
         totalCost: data.totalCost,
@@ -7432,10 +7433,12 @@ function buildProjectSubCodeAgg() {
 // Adaptive bandwidth past avg: starts at ±10%, expands until min sample met.
 // Returns { histUC, histLbrPD, histEqPD, histMU, histDays, band, jobCount, confidence }
 // or null if no data exists at all for this sub code.
-function computeSizeAwarePastAvg(bidQty, costCode, subCode) {
+// excludeProjId: omit the current project so it isn't benchmarked against itself.
+function computeSizeAwarePastAvg(bidQty, costCode, subCode, excludeProjId = null) {
   const key      = (costCode || '') + '||' + (subCode || '');
   const byProj   = buildProjectSubCodeAgg();
-  const projects = byProj[key] || [];
+  // Exclude the current project so it isn't benchmarked against its own data
+  const projects = (byProj[key] || []).filter(pr => pr.projId !== excludeProjId);
   if (projects.length === 0) return null;
 
   let filtered     = [];
@@ -9691,6 +9694,7 @@ function renderScaleOfEconomy() {
       .filter(pr => pr.bidQty > 0 && pr.runQty > 0 && pr.totalCost > 0)
       .map(pr => ({ x: pr.bidQty, y: pr.totalCost / pr.runQty }));
 
+    // Need at least 2 points to show anything; need 3+ for valid R² (2 points always = R²=1.0)
     if (pts.length < 2) return;
 
     const n    = pts.length;
@@ -9698,7 +9702,6 @@ function renderScaleOfEconomy() {
     const sumY = pts.reduce((s, p) => s + p.y, 0);
     const sumXY= pts.reduce((s, p) => s + p.x * p.y, 0);
     const sumX2= pts.reduce((s, p) => s + p.x * p.x, 0);
-    const sumY2= pts.reduce((s, p) => s + p.y * p.y, 0);
     const meanX= sumX / n;
     const meanY= sumY / n;
 
@@ -9706,12 +9709,14 @@ function renderScaleOfEconomy() {
     const slope  = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
     const interc = (sumY - slope * sumX) / n;
 
-    // Pearson R and R²
+    // Pearson R and R² — only meaningful with 3+ points
     const ssXY = pts.reduce((s, p) => s + (p.x - meanX) * (p.y - meanY), 0);
     const ssX  = pts.reduce((s, p) => s + (p.x - meanX) ** 2, 0);
     const ssY  = pts.reduce((s, p) => s + (p.y - meanY) ** 2, 0);
-    const r    = (ssX > 0 && ssY > 0) ? ssXY / Math.sqrt(ssX * ssY) : 0;
+    const r    = (n >= 3 && ssX > 0 && ssY > 0) ? ssXY / Math.sqrt(ssX * ssY) : 0;
     const r2   = r * r;
+    // Flag rows where n < 3 so the UI can warn about unreliable R²
+    const tooFewForR2 = n < 3;
 
     const minX = Math.min(...pts.map(p => p.x));
     const maxX = Math.max(...pts.map(p => p.x));
@@ -9719,18 +9724,21 @@ function renderScaleOfEconomy() {
     const ucAtMax = slope * maxX + interc;
     const pctChange = ucAtMin > 0 ? (ucAtMax - ucAtMin) / ucAtMin * 100 : 0;
 
+    // Only classify trend when we have enough data for a meaningful R²
     let trend, trendColor, trendIcon;
-    if (r2 < 0.10) {
+    if (tooFewForR2) {
+      trend = 'Need More Jobs';   trendColor = '#6b7280'; trendIcon = '?';
+    } else if (r2 < 0.10) {
       trend = 'No Clear Pattern'; trendColor = '#9ca3af'; trendIcon = '→';
     } else if (slope < 0) {
       trend = 'Economy of Scale'; trendColor = '#4ade80'; trendIcon = '↓';
     } else {
       trend = 'Inverse Scale';    trendColor = '#f87171'; trendIcon = '↑';
     }
-    const strength = r2 < 0.10 ? '—' : r2 < 0.30 ? 'Weak' : r2 < 0.55 ? 'Moderate' : r2 < 0.75 ? 'Strong' : 'Very Strong';
+    const strength = tooFewForR2 ? '—' : r2 < 0.10 ? '—' : r2 < 0.30 ? 'Weak' : r2 < 0.55 ? 'Moderate' : r2 < 0.75 ? 'Strong' : 'Very Strong';
 
     stats.push({ key, costCode, subCode, unit, pts, slope, interc, r, r2,
-      trend, trendColor, trendIcon, strength, pctChange,
+      trend, trendColor, trendIcon, strength, pctChange, tooFewForR2,
       minX, maxX, n, avgUC: meanY });
   });
 
@@ -9749,6 +9757,7 @@ function renderScaleOfEconomy() {
   const econCount    = stats.filter(s => s.trend === 'Economy of Scale').length;
   const invCount     = stats.filter(s => s.trend === 'Inverse Scale').length;
   const flatCount    = stats.filter(s => s.trend === 'No Clear Pattern').length;
+  const needMoreCount= stats.filter(s => s.tooFewForR2).length;
   const bestEcon     = stats.filter(s => s.trend === 'Economy of Scale').sort((a,b) => b.r2 - a.r2)[0] || null;
   const biggestSaving= bestEcon ? Math.abs(bestEcon.pctChange).toFixed(1) : null;
 
@@ -9853,7 +9862,10 @@ function renderScaleOfEconomy() {
   // ── Interpretation text ──────────────────────────────────────────────────
   function interpretation(s) {
     const lines = [];
-    if (s.trend === 'Economy of Scale') {
+    if (s.tooFewForR2) {
+      lines.push(`<strong style="color:#9ca3af">Insufficient data for trend analysis.</strong> Only ${s.n} job${s.n!==1?'s':''} recorded — need at least 3 for a statistically valid R².`);
+      lines.push(`The scatter plot shows the data points available, but the trend line direction is not reliable with this sample size. Keep logging jobs to unlock trend analysis.`);
+    } else if (s.trend === 'Economy of Scale') {
       lines.push(`<strong style="color:#4ade80">Economy of scale applies.</strong> Unit cost decreases as job size increases.`);
       if (s.r2 >= 0.30) lines.push(`The relationship is ${s.strength.toLowerCase()} (R²=${Math.round(s.r2*100)}%), meaning job size is a reliable predictor of unit cost.`);
       if (Math.abs(s.pctChange) >= 10) lines.push(`Going from the smallest to largest recorded job, unit cost drops ~${Math.abs(s.pctChange).toFixed(0)}%. Consider more competitive pricing on larger ${s.unit || 'unit'} jobs.`);
@@ -9874,20 +9886,23 @@ function renderScaleOfEconomy() {
   const THR = TH + ';text-align:right';
 
   const rows = stats.map((s, i) => {
-    const detId  = 'soe-det-' + i;
-    const pctStr = s.r2 >= 0.10
+    const detId    = 'soe-det-' + i;
+    const pctStr   = (!s.tooFewForR2 && s.r2 >= 0.10)
       ? (s.pctChange >= 0 ? '+' : '') + s.pctChange.toFixed(1) + '%'
       : '—';
-    const pctColor = s.r2 >= 0.10 ? (s.pctChange < 0 ? '#4ade80' : '#f87171') : '#9ca3af';
+    const pctColor = (!s.tooFewForR2 && s.r2 >= 0.10) ? (s.pctChange < 0 ? '#4ade80' : '#f87171') : '#9ca3af';
+    const lowSampleBadge = s.tooFewForR2
+      ? `<span title="Only ${s.n} jobs — need 3+ for reliable trend analysis" style="font-size:0.6rem;font-weight:700;background:rgba(107,114,128,0.2);color:#9ca3af;padding:0.1rem 0.35rem;border-radius:3px;margin-left:0.4rem;letter-spacing:0.04em">LOW SAMPLE</span>`
+      : (s.n <= 4 ? `<span title="${s.n} jobs — trend direction may shift as more data is added" style="font-size:0.6rem;font-weight:700;background:rgba(251,191,36,0.15);color:#fbbf24;padding:0.1rem 0.35rem;border-radius:3px;margin-left:0.4rem;letter-spacing:0.04em">FEW JOBS</span>` : '');
     return `
       <tr style="cursor:pointer;border-bottom:1px solid var(--border)" onclick="_toggleSoEDetail('${detId}',this)">
-        <td style="padding:0.5rem 0.75rem;font-weight:600">${esc(s.subCode||'(No Sub Code)')}</td>
+        <td style="padding:0.5rem 0.75rem;font-weight:600">${esc(s.subCode||'(No Sub Code)')}${lowSampleBadge}</td>
         <td style="padding:0.5rem 0.6rem;color:var(--muted);font-size:0.75rem">${esc(s.costCode||'')}</td>
         <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${esc(s.unit||'—')}</td>
         <td style="padding:0.5rem 0.6rem;text-align:center">${s.n}</td>
         <td style="padding:0.5rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums">$${fmt(s.avgUC)}</td>
         <td style="padding:0.5rem 0.75rem;font-weight:700;color:${s.trendColor}">${s.trendIcon} ${s.trend}</td>
-        <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${s.r2>=0.10?s.strength:'—'}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${s.strength}</td>
         <td style="padding:0.5rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${pctColor}">${pctStr}</td>
         <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.8rem;transition:transform 0.15s" class="soe-arrow">▶</td>
       </tr>
@@ -10268,7 +10283,7 @@ function exportBidPDF(projId) {
       const diffCls = diff >= 0 ? 'under' : 'over';
       const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : dash;
       const projCls = (proj - bidTot) <= 0 ? 'under' : 'over';
-      const _paPDF  = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code);
+      const _paPDF  = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId);
       const _paUCPDF = _paPDF ? _paPDF.histUC : 0;
 
       gBid += bidTot; gActual += actual; gHrs += cumHrs; gProj += proj;
@@ -11534,7 +11549,8 @@ function renderProductionRateView(projId) {
       });
 
       // Historical benchmark for this sub code — size-aware (adaptive bandwidth)
-      const hist      = computeSizeAwarePastAvg(bidQty, rawCc, rawSc);
+      // Exclude this project so it isn't benchmarked against its own data
+      const hist      = computeSizeAwarePastAvg(bidQty, rawCc, rawSc, p.id);
       const histUC    = hist ? hist.histUC    : 0;
       const histLbrPD = hist ? hist.histLbrPD : 0;
       const histEqPD  = hist ? hist.histEqPD  : 0;
