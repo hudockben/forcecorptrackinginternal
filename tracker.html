@@ -2084,7 +2084,7 @@
       <thead><tr>
         <th style="width:28px"></th>
         <th>Cost Code <button class="cfb bfb" data-bf="cost_code">▼</button> / Sub Code <button class="cfb bfb" data-bf="sub_code">▼</button></th>
-        <th>Unit</th><th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+        <th>Unit</th><th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
         <th class="num">Bid Total</th><th class="num">Actual Cost</th>
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
@@ -3813,7 +3813,7 @@ function renderDashProjectCards() {
                     <th>Sub Code</th>
                     <th class="num">Bid Qty</th><th class="num">Unit Cost</th>
                     <th class="num">Running Qty</th><th class="num">Qty Completed</th>
-                    <th class="num">Running Unit Cost</th>
+                    <th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
                     <th class="num">Bid Total</th><th class="num">Actual Cost</th>
                     <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
                     <th class="num">Variance</th><th class="num">Projected Cost</th>
@@ -4958,6 +4958,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">—</td>
     <td class="foot-label num">—</td>
     <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
     <td class="foot-label num">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
@@ -4995,7 +4996,7 @@ function addBidSubCode(projId, costCode) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 14 : 16;
+  const COLS     = readonly ? 15 : 17;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
@@ -5080,6 +5081,16 @@ function renderBidTable(projId, opts = {}) {
 
       gBidTotal += bidTot; gActual += actual; gCumHrs += cumHrs; gProj += proj;
 
+      // Size-aware past avg for this sub code
+      const _pa     = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code);
+      const _paUC   = _pa ? _pa.histUC   : 0;
+      const _paTip  = _pa
+        ? `Similar-size job avg (${_pa.band != null ? '\u00b1'+Math.round(_pa.band*100)+'%' : 'Global'}, n=${_pa.jobCount}, ${_pa.confidence})`
+        : 'No comparison data';
+      const _paStyle = (_paUC > 0 && rqty > 0 && actual)
+        ? ((actual / rqty) > _paUC ? 'color:#f87171' : 'color:#4ade80')
+        : '';
+
       const childTr = document.createElement('tr');
       childTr.className = 'bid-group-child';
       childTr.dataset.group = groupId;
@@ -5089,6 +5100,7 @@ function renderBidTable(projId, opts = {}) {
         <td class="bid-calc">${pct}</td>`;
       const calcCellsB = `
         <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual/rqty) : '—'}</td>
+        <td class="bid-calc" title="${_paTip}" style="color:var(--muted);font-style:italic;${_paStyle}">${_paUC > 0 ? '$'+fmt(_paUC) : '—'}</td>
         <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
         <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
         <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
@@ -5135,7 +5147,7 @@ function renderBidTable(projId, opts = {}) {
     const totalCells = `
       <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">—</td><td class="bid-calc">—</td>
-      <td class="bid-calc">—</td>
+      <td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
       <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
       <td class="bid-calc">${gCumHrs ? fmt(gCumHrs) : '—'}</td>
@@ -7357,6 +7369,112 @@ function buildDailyAgg() {
   _aggCache = agg;
   _aggCacheRowCount = totalRows;
   return agg;
+}
+
+// ── Per-project sub code aggregation for size-aware past avg ──
+let _projSubAggCache = null;
+let _projSubAggCacheRowCount = -1;
+
+// Builds a map of cost_code||sub_code → array of per-project aggregates (one entry per project).
+// Each entry includes the project's bid qty for that sub code so we can filter by job size.
+function buildProjectSubCodeAgg() {
+  const totalRows = projectsList.reduce((s, p) => s + (p.dailyRows ? p.dailyRows.length : 0), 0);
+  if (_projSubAggCache && _projSubAggCacheRowCount === totalRows) return _projSubAggCache;
+  const agg = {};
+  projectsList.forEach(p => {
+    const bidItems  = p.bidItems  || [];
+    const dailyRows = p.dailyRows || [];
+    // Build bid qty map for this project (include change orders)
+    const bidMap = {};
+    bidItems.forEach(b => {
+      const key = (b.cost_code || '') + '||' + (b.sub_code || '');
+      const coQty = (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+      bidMap[key] = (parseFloat(b.quantity) || 0) + coQty;
+    });
+    // Aggregate this project's daily rows by sub code
+    const projAgg = {};
+    dailyRows.forEach(row => {
+      const key = (row.cost_code || '') + '||' + (row.sub_code || '');
+      if (!projAgg[key]) projAgg[key] = { runQty: 0, totalCost: 0, laborHrs: 0, equipHrs: 0, dates: new Set() };
+      const c = calcDaily(row);
+      const importedCost = parseFloat(row.total_cost) || 0;
+      projAgg[key].runQty    += parseFloat(row.quantity)    || 0;
+      projAgg[key].totalCost += importedCost > 0 ? importedCost : c.total_cost;
+      projAgg[key].laborHrs  += parseFloat(row.labor_hours) || 0;
+      projAgg[key].equipHrs  += parseFloat(row.equip_hours) || 0;
+      if (row.date) projAgg[key].dates.add(row.date);
+    });
+    Object.entries(projAgg).forEach(([key, data]) => {
+      if (!agg[key]) agg[key] = [];
+      agg[key].push({
+        bidQty:    bidMap[key] || 0,
+        runQty:    data.runQty,
+        totalCost: data.totalCost,
+        laborHrs:  data.laborHrs,
+        equipHrs:  data.equipHrs,
+        dayCount:  data.dates.size,
+      });
+    });
+  });
+  _projSubAggCache = agg;
+  _projSubAggCacheRowCount = totalRows;
+  return agg;
+}
+
+// Adaptive bandwidth past avg: starts at ±10%, expands until min sample met.
+// Returns { histUC, histLbrPD, histEqPD, histMU, histDays, band, jobCount, confidence }
+// or null if no data exists at all for this sub code.
+function computeSizeAwarePastAvg(bidQty, costCode, subCode) {
+  const key      = (costCode || '') + '||' + (subCode || '');
+  const byProj   = buildProjectSubCodeAgg();
+  const projects = byProj[key] || [];
+  if (projects.length === 0) return null;
+
+  let filtered     = [];
+  let selectedBand = null;
+  let confidence   = 'Global';
+
+  if (bidQty > 0) {
+    const tiers = [
+      { band: 0.10, minJobs: 20, label: 'High'         },
+      { band: 0.15, minJobs: 10, label: 'Good'         },
+      { band: 0.20, minJobs:  5, label: 'Moderate'     },
+      { band: 0.30, minJobs:  3, label: 'Low'          },
+      { band: 0.40, minJobs:  1, label: 'Insufficient' },
+    ];
+    for (const tier of tiers) {
+      const lo      = bidQty * (1 - tier.band);
+      const hi      = bidQty * (1 + tier.band);
+      const matches = projects.filter(pr => pr.bidQty > 0 && pr.bidQty >= lo && pr.bidQty <= hi);
+      if (matches.length >= tier.minJobs) {
+        filtered     = matches;
+        selectedBand = tier.band;
+        confidence   = tier.label;
+        break;
+      }
+    }
+    // If no tier matched (0 jobs even at ±40%), fall through to global
+    if (filtered.length === 0) { filtered = projects; selectedBand = null; confidence = 'Global'; }
+  } else {
+    filtered = projects; selectedBand = null; confidence = 'Global';
+  }
+
+  const totRunQty = filtered.reduce((s, pr) => s + pr.runQty,    0);
+  const totCost   = filtered.reduce((s, pr) => s + pr.totalCost, 0);
+  const totLbr    = filtered.reduce((s, pr) => s + pr.laborHrs,  0);
+  const totEq     = filtered.reduce((s, pr) => s + pr.equipHrs,  0);
+  const totDays   = filtered.reduce((s, pr) => s + pr.dayCount,  0);
+
+  return {
+    histUC:    totRunQty > 0 ? totCost / totRunQty : 0,
+    histLbrPD: totDays   > 0 ? totLbr  / totDays   : 0,
+    histEqPD:  totDays   > 0 ? totEq   / totDays   : 0,
+    histMU:    totEq     > 0 ? totRunQty / totEq    : 0,
+    histDays:  totDays,
+    band:      selectedBand,
+    jobCount:  filtered.length,
+    confidence,
+  };
 }
 
 function getFilteredProjectIds() {
@@ -9832,7 +9950,7 @@ function exportBidPDF(projId) {
 
   groupOrder.forEach(costCode => {
     const gItems = groups[costCode];
-    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
+    rowsHTML += `<tr class="group-hdr"><td colspan="17"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
     gItems.forEach(b => {
@@ -9852,6 +9970,8 @@ function exportBidPDF(projId) {
       const diffCls = diff >= 0 ? 'under' : 'over';
       const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : dash;
       const projCls = (proj - bidTot) <= 0 ? 'under' : 'over';
+      const _paPDF  = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code);
+      const _paUCPDF = _paPDF ? _paPDF.histUC : 0;
 
       gBid += bidTot; gActual += actual; gHrs += cumHrs; gProj += proj;
 
@@ -9863,6 +9983,7 @@ function exportBidPDF(projId) {
         ${r(pct)}
         ${r(bidQty ? '$' + fmt(uc) : dash)}
         ${r(ruc)}
+        ${r(_paUCPDF > 0 ? '$' + fmt(_paUCPDF) : dash)}
         ${r(bidTot ? '$' + fmt(bidTot) : dash)}
         ${r(actual ? '$' + fmt(actual) : dash, 'actual')}
         ${r(cumHrs ? fmt(cumHrs) : dash)}
@@ -9880,7 +10001,7 @@ function exportBidPDF(projId) {
     const gProjCls = (gProj - gBid) <= 0 ? 'under' : 'over';
     rowsHTML += `<tr class="subtotal">
       <td><em>${esc(costCode) || '(No Code)'} — Total</em></td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(gBid ? '$' + fmt(gBid) : dash)}
       ${r(gActual ? '$' + fmt(gActual) : dash, 'actual')}
       ${r(gHrs ? fmt(gHrs) : dash)}
@@ -9927,7 +10048,7 @@ function exportBidPDF(projId) {
     <thead><tr>
       <th>Sub Code</th><th>Unit</th>
       <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th>
-      <th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+      <th class="num">Unit Cost</th><th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
       <th class="num">Bid Total</th><th class="num">Actual Cost</th>
       <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
       <th class="num">Variance</th><th class="num">Projected Cost</th>
@@ -9936,7 +10057,7 @@ function exportBidPDF(projId) {
     <tbody>${rowsHTML}</tbody>
     <tfoot><tr class="totals">
       <td>Totals</td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(grandBid   ? '$' + fmt(grandBid)    : dash)}
       ${r(grandActual ? '$' + fmt(grandActual) : dash, 'actual')}
       ${r(grandHrs   ? fmt(grandHrs)          : dash)}
@@ -11114,18 +11235,22 @@ function renderProductionRateView(projId) {
         return a < b ? -1 : a > b ? 1 : 0;
       });
 
-      // Historical benchmark for this sub code
-      const histKey   = rawCc + '||' + rawSc;
-      const hist      = histAgg[histKey] || null;
-      const histDays  = hist ? hist.dates.size        : 0;
-      const histQty   = hist ? hist.running_qty        : 0;
-      const histCost  = hist ? hist.total_cost         : 0;
-      const histLbr   = hist ? hist.labor_hours        : 0;
-      const histEq    = hist ? hist.equip_hours        : 0;
-      const histUC    = histQty  > 0 ? histCost / histQty  : 0;
-      const histLbrPD = histDays > 0 ? histLbr  / histDays : 0;
-      const histEqPD  = histDays > 0 ? histEq   / histDays : 0;
-      const histMU    = histEq   > 0 ? histQty  / histEq   : 0;
+      // Historical benchmark for this sub code — size-aware (adaptive bandwidth)
+      const hist      = computeSizeAwarePastAvg(bidQty, rawCc, rawSc);
+      const histUC    = hist ? hist.histUC    : 0;
+      const histLbrPD = hist ? hist.histLbrPD : 0;
+      const histEqPD  = hist ? hist.histEqPD  : 0;
+      const histMU    = hist ? hist.histMU    : 0;
+      const histDays  = hist ? hist.histDays  : 0;
+      const histBand  = hist ? hist.band      : null;
+      const histCount = hist ? hist.jobCount  : 0;
+      const histConf  = hist ? hist.confidence : '';
+      // Tooltip helper for Past Avg cells
+      const _hBandStr = histBand != null ? '\u00b1' + Math.round(histBand * 100) + '%' : 'Global avg';
+      function histTip(label) {
+        if (!hist) return '';
+        return ` title="${label} \u2014 ${_hBandStr} band, n=${histCount} job${histCount !== 1 ? 's' : ''}, ${histConf} confidence"`;
+      }
 
       // Cumulative state + previous-day tracking for day-over-day colours
       let cumQty = 0, cumCost = 0, cumLbr = 0, cumEq = 0, cumDays = 0;
@@ -11189,15 +11314,15 @@ function renderProductionRateView(projId) {
           <td style="${TD('uc')}${SEP}${c_dailyUC}">${dailyUC > 0 ? '$'+fmt(dailyUC) : '—'}</td>
           <td style="${TD('uc')}${c_runUC}">${runUC > 0 ? '$'+fmt(runUC) : '—'}</td>
           <td style="${TD('uc')}${c_projUC}">${projUC > 0 ? '$'+fmt(projUC) : '—'}</td>
-          <td style="${TD_H('uc')}color:var(--muted);">${histUC > 0 ? '$'+fmt(histUC) : '—'}</td>
+          <td style="${TD_H('uc')}color:var(--muted);"${histTip('Unit Cost Past Avg')}>${histUC > 0 ? '$'+fmt(histUC) : '—'}</td>
           <td style="${TD('lbr')}${SEP}">${day.labor_hours > 0 ? fmt(day.labor_hours) : '—'}</td>
-          <td style="${TD_H('lbr')}color:var(--muted);">${histLbrPD > 0 ? fmt(histLbrPD) : '—'}</td>
+          <td style="${TD_H('lbr')}color:var(--muted);"${histTip('Labor Hrs/Day Past Avg')}>${histLbrPD > 0 ? fmt(histLbrPD) : '—'}</td>
           <td style="${TD('days')}${SEP}">${cumDays}</td>
-          <td style="${TD_H('days')}color:var(--muted);">${histDays > 0 ? histDays : '—'}</td>
+          <td style="${TD_H('days')}color:var(--muted);"${histTip('Days Past Total')}>${histDays > 0 ? histDays : '—'}</td>
           <td style="${TD('eq')}${SEP}">${day.equip_hours > 0 ? fmt(day.equip_hours) : '—'}</td>
-          <td style="${TD_H('eq')}color:var(--muted);">${histEqPD > 0 ? fmt(histEqPD) : '—'}</td>
+          <td style="${TD_H('eq')}color:var(--muted);"${histTip('Equip Hrs/Day Past Avg')}>${histEqPD > 0 ? fmt(histEqPD) : '—'}</td>
           <td style="${TD('mu')}${SEP}${c_runMU}">${runMU > 0 ? fmt(runMU) : '—'}</td>
-          <td style="${TD_H('mu')}color:var(--muted);">${histMU > 0 ? fmt(histMU) : '—'}</td>
+          <td style="${TD_H('mu')}color:var(--muted);"${histTip('MU Equip Past Avg')}>${histMU > 0 ? fmt(histMU) : '—'}</td>
         </tr>`;
       });
 
@@ -11234,15 +11359,15 @@ function renderProductionRateView(projId) {
           <th style="${TH('uc')}${SEP}">Today</th>
           <th style="${TH('uc')}">Running</th>
           <th style="${TH('uc')}">Projected</th>
-          <th style="${TH_H('uc')}">Past Avg</th>
+          <th style="${TH_H('uc')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Avg${histBand != null ? ' (\u00b1'+Math.round(histBand*100)+'%)' : ''}</th>
           <th style="${TH('lbr')}${SEP}">Today</th>
-          <th style="${TH_H('lbr')}">Past Avg/Day</th>
+          <th style="${TH_H('lbr')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Avg/Day</th>
           <th style="${TH('days')}${SEP}">Worked</th>
-          <th style="${TH_H('days')}">Past Total</th>
+          <th style="${TH_H('days')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Total</th>
           <th style="${TH('eq')}${SEP}">Today</th>
-          <th style="${TH_H('eq')}">Past Avg/Day</th>
+          <th style="${TH_H('eq')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Avg/Day</th>
           <th style="${TH('mu')}${SEP}">Running</th>
-          <th style="${TH_H('mu')}">Past Avg</th>
+          <th style="${TH_H('mu')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Avg</th>
         </tr>`;
 
       // Safe string for use inside onclick attribute
