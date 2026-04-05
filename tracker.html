@@ -355,6 +355,7 @@
       background: var(--surface2); color: #888; font-size: 0.63rem; font-weight: 700;
       letter-spacing: 0.07em; text-transform: uppercase; padding: 0.4rem 0.6rem;
       border: 1px solid var(--border); text-align: left;
+      position: sticky; top: 0; z-index: 10;
     }
     .bid-table th.num { text-align: right; }
     .bid-table td { border: 1px solid var(--border); padding: 0; vertical-align: middle; }
@@ -1938,6 +1939,7 @@
     <div class="analytics-dropdown-menu">
       <button class="admin-dropdown-item" id="analytics-item-equip" onclick="analyticsSwitchTab('equip')">&#128295; Equipment Utilization</button>
       <button class="admin-dropdown-item" id="analytics-item-labor" onclick="analyticsSwitchTab('labor')">&#128100; Labor Analytics</button>
+      <button class="admin-dropdown-item" id="analytics-item-scale" onclick="analyticsSwitchTab('scale')">&#128200; Scale of Economy</button>
     </div>
   </div>
   <div class="admin-dropdown-wrap">
@@ -2084,7 +2086,7 @@
       <thead><tr>
         <th style="width:28px"></th>
         <th>Cost Code <button class="cfb bfb" data-bf="cost_code">▼</button> / Sub Code <button class="cfb bfb" data-bf="sub_code">▼</button></th>
-        <th>Unit</th><th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+        <th>Unit</th><th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
         <th class="num">Bid Total</th><th class="num">Actual Cost</th>
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
@@ -2149,6 +2151,11 @@
 <!-- ══════════════ LABOR ANALYTICS TAB ══════════════ -->
 <div class="tab-panel" id="tab-labor">
   <div id="labor-content" style="padding:1rem"><!-- rendered by JS --></div>
+</div>
+
+<!-- ══════════════ SCALE OF ECONOMY TAB ══════════════ -->
+<div class="tab-panel" id="tab-scale">
+  <div id="scale-content" style="padding:1rem"><!-- rendered by JS --></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -2960,7 +2967,8 @@ function analyticsSwitchTab(tab) {
     p.classList.toggle('active', p.id === 'tab-' + tab));
   renderHeaderActions();
   if (tab === 'equip')  renderEquipTable();
-  if (tab === 'labor') renderLaborTable();
+  if (tab === 'labor')  renderLaborTable();
+  if (tab === 'scale')  renderScaleOfEconomy();
 }
 
 function adminSwitchTab(tab) {
@@ -3813,7 +3821,7 @@ function renderDashProjectCards() {
                     <th>Sub Code</th>
                     <th class="num">Bid Qty</th><th class="num">Unit Cost</th>
                     <th class="num">Running Qty</th><th class="num">Qty Completed</th>
-                    <th class="num">Running Unit Cost</th>
+                    <th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
                     <th class="num">Bid Total</th><th class="num">Actual Cost</th>
                     <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
                     <th class="num">Variance</th><th class="num">Projected Cost</th>
@@ -4958,6 +4966,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">—</td>
     <td class="foot-label num">—</td>
     <td class="foot-label num">—</td>
+    <td class="foot-label num">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
     <td class="foot-label num">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
@@ -4995,7 +5004,7 @@ function addBidSubCode(projId, costCode) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 14 : 16;
+  const COLS     = readonly ? 15 : 17;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
@@ -5080,6 +5089,16 @@ function renderBidTable(projId, opts = {}) {
 
       gBidTotal += bidTot; gActual += actual; gCumHrs += cumHrs; gProj += proj;
 
+      // Size-aware past avg for this sub code — exclude this project from its own benchmark
+      const _pa     = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId);
+      const _paUC   = _pa ? _pa.histUC   : 0;
+      const _paTip  = _pa
+        ? `Similar-size job avg (${_pa.band != null ? '\u00b1'+Math.round(_pa.band*100)+'%' : 'Global'}, n=${_pa.jobCount}, ${_pa.confidence})`
+        : 'No comparison data';
+      const _paStyle = (_paUC > 0 && rqty > 0 && actual)
+        ? ((actual / rqty) > _paUC ? 'color:#f87171' : 'color:#4ade80')
+        : '';
+
       const childTr = document.createElement('tr');
       childTr.className = 'bid-group-child';
       childTr.dataset.group = groupId;
@@ -5089,6 +5108,7 @@ function renderBidTable(projId, opts = {}) {
         <td class="bid-calc">${pct}</td>`;
       const calcCellsB = `
         <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual/rqty) : '—'}</td>
+        <td class="bid-calc" title="${_paTip}" style="color:var(--muted);font-style:italic;${_paStyle}">${_paUC > 0 ? '$'+fmt(_paUC) : '—'}</td>
         <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
         <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
         <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
@@ -5135,7 +5155,7 @@ function renderBidTable(projId, opts = {}) {
     const totalCells = `
       <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">—</td><td class="bid-calc">—</td>
-      <td class="bid-calc">—</td>
+      <td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
       <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
       <td class="bid-calc">${gCumHrs ? fmt(gCumHrs) : '—'}</td>
@@ -7359,6 +7379,147 @@ function buildDailyAgg() {
   return agg;
 }
 
+// ── Per-project sub code aggregation for size-aware past avg ──
+let _projSubAggCache = null;
+let _projSubAggCacheRowCount = -1;
+
+// Builds a map of cost_code||sub_code → array of per-project aggregates (one entry per project).
+// Each entry includes bid qty, production totals, monthly breakdown, crew, and equipment data.
+function buildProjectSubCodeAgg() {
+  const totalRows = projectsList.reduce((s, p) => s + (p.dailyRows ? p.dailyRows.length : 0), 0);
+  if (_projSubAggCache && _projSubAggCacheRowCount === totalRows) return _projSubAggCache;
+  const agg = {};
+  projectsList.forEach(p => {
+    const bidItems  = p.bidItems  || [];
+    const dailyRows = p.dailyRows || [];
+    // Build bid qty + bid unit cost maps for this project (include change orders)
+    const bidQtyMap = {}, bidUCMap = {};
+    bidItems.forEach(b => {
+      const key = (b.cost_code || '') + '||' + (b.sub_code || '');
+      const coQty = (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+      bidQtyMap[key] = (parseFloat(b.quantity) || 0) + coQty;
+      bidUCMap[key]  = parseFloat(b.unit_cost) || 0;
+    });
+    // Aggregate this project's daily rows by sub code
+    const projAgg = {};
+    dailyRows.forEach(row => {
+      const key = (row.cost_code || '') + '||' + (row.sub_code || '');
+      if (!projAgg[key]) projAgg[key] = {
+        runQty: 0, totalCost: 0, laborHrs: 0, equipHrs: 0, dates: new Set(),
+        monthly: {},    // 'YYYY-MM' → { cost, qty }
+        employees: {},  // name → labor hours
+        equipment: {},  // name → equip hours
+      };
+      const d     = projAgg[key];
+      const c     = calcDaily(row);
+      const importedCost = parseFloat(row.total_cost) || 0;
+      const rowCost = importedCost > 0 ? importedCost : c.total_cost;
+      const qty   = parseFloat(row.quantity)    || 0;
+      const lh    = parseFloat(row.labor_hours) || 0;
+      const eh    = parseFloat(row.equip_hours) || 0;
+      d.runQty    += qty;
+      d.totalCost += rowCost;
+      d.laborHrs  += lh;
+      d.equipHrs  += eh;
+      if (row.date) {
+        d.dates.add(row.date);
+        const mo = row.date.substring(0, 7); // 'YYYY-MM'
+        if (!d.monthly[mo]) d.monthly[mo] = { cost: 0, qty: 0 };
+        d.monthly[mo].cost += rowCost;
+        d.monthly[mo].qty  += qty;
+      }
+      if (row.employee && lh > 0) {
+        d.employees[row.employee] = (d.employees[row.employee] || 0) + lh;
+      }
+      if (row.equipment && eh > 0) {
+        d.equipment[row.equipment] = (d.equipment[row.equipment] || 0) + eh;
+      }
+    });
+    Object.entries(projAgg).forEach(([key, data]) => {
+      if (!agg[key]) agg[key] = [];
+      const bidQty     = bidQtyMap[key] || 0;
+      const bidUnitCost= bidUCMap[key]  || 0;
+      const bidTotal   = bidQty * bidUnitCost;
+      agg[key].push({
+        projId:      p.id,
+        projName:    p['project-name'] || 'Unnamed',
+        bidQty,
+        bidUnitCost,
+        overBid:     bidTotal > 0 ? data.totalCost > bidTotal : null,
+        runQty:      data.runQty,
+        totalCost:   data.totalCost,
+        laborHrs:    data.laborHrs,
+        equipHrs:    data.equipHrs,
+        dayCount:    data.dates.size,
+        monthly:     data.monthly,
+        employees:   data.employees,
+        equipment:   data.equipment,
+      });
+    });
+  });
+  _projSubAggCache = agg;
+  _projSubAggCacheRowCount = totalRows;
+  return agg;
+}
+
+// Adaptive bandwidth past avg: starts at ±10%, expands until min sample met.
+// Returns { histUC, histLbrPD, histEqPD, histMU, histDays, band, jobCount, confidence }
+// or null if no data exists at all for this sub code.
+// excludeProjId: omit the current project so it isn't benchmarked against itself.
+function computeSizeAwarePastAvg(bidQty, costCode, subCode, excludeProjId = null) {
+  const key      = (costCode || '') + '||' + (subCode || '');
+  const byProj   = buildProjectSubCodeAgg();
+  // Exclude the current project so it isn't benchmarked against its own data
+  const projects = (byProj[key] || []).filter(pr => pr.projId !== excludeProjId);
+  if (projects.length === 0) return null;
+
+  let filtered     = [];
+  let selectedBand = null;
+  let confidence   = 'Global';
+
+  if (bidQty > 0) {
+    const tiers = [
+      { band: 0.10, minJobs: 20, label: 'High'         },
+      { band: 0.15, minJobs: 10, label: 'Good'         },
+      { band: 0.20, minJobs:  5, label: 'Moderate'     },
+      { band: 0.30, minJobs:  3, label: 'Low'          },
+      { band: 0.40, minJobs:  1, label: 'Insufficient' },
+    ];
+    for (const tier of tiers) {
+      const lo      = bidQty * (1 - tier.band);
+      const hi      = bidQty * (1 + tier.band);
+      const matches = projects.filter(pr => pr.bidQty > 0 && pr.bidQty >= lo && pr.bidQty <= hi);
+      if (matches.length >= tier.minJobs) {
+        filtered     = matches;
+        selectedBand = tier.band;
+        confidence   = tier.label;
+        break;
+      }
+    }
+    // If no tier matched (0 jobs even at ±40%), fall through to global
+    if (filtered.length === 0) { filtered = projects; selectedBand = null; confidence = 'Global'; }
+  } else {
+    filtered = projects; selectedBand = null; confidence = 'Global';
+  }
+
+  const totRunQty = filtered.reduce((s, pr) => s + pr.runQty,    0);
+  const totCost   = filtered.reduce((s, pr) => s + pr.totalCost, 0);
+  const totLbr    = filtered.reduce((s, pr) => s + pr.laborHrs,  0);
+  const totEq     = filtered.reduce((s, pr) => s + pr.equipHrs,  0);
+  const totDays   = filtered.reduce((s, pr) => s + pr.dayCount,  0);
+
+  return {
+    histUC:    totRunQty > 0 ? totCost / totRunQty : 0,
+    histLbrPD: totDays   > 0 ? totLbr  / totDays   : 0,
+    histEqPD:  totDays   > 0 ? totEq   / totDays   : 0,
+    histMU:    totEq     > 0 ? totRunQty / totEq    : 0,
+    histDays:  totDays,
+    band:      selectedBand,
+    jobCount:  filtered.length,
+    confidence,
+  };
+}
+
 function getFilteredProjectIds() {
   // Returns null (= all) or a Set of project IDs passing project name + sqft + status filters
   const projFilter   = costFilters['_project'];     // Set of project names, or undefined
@@ -9538,6 +9699,482 @@ function exportLaborCSV() {
 }
 
 /* ═══════════════════════════════════════════
+   SCALE OF ECONOMY
+═══════════════════════════════════════════ */
+
+function renderScaleOfEconomy() {
+  const el = document.getElementById('scale-content');
+  if (!el) return;
+
+  const byProj = buildProjectSubCodeAgg();
+
+  // ── Build regression data per sub code ──────────────────────────────────
+  const stats = [];
+  Object.entries(byProj).forEach(([key, projects]) => {
+    const [costCode, subCode] = key.split('||');
+
+    // Resolve unit from any project's bidItems
+    let unit = '';
+    for (const p of projectsList) {
+      const bi = (p.bidItems || []).find(b =>
+        (b.cost_code || '') === costCode && (b.sub_code || '') === subCode);
+      if (bi && bi.unit) { unit = bi.unit; break; }
+    }
+
+    // Only include jobs with valid bid qty AND production cost
+    const validProjs = projects.filter(pr => pr.bidQty > 0 && pr.runQty > 0 && pr.totalCost > 0);
+    if (validProjs.length < 2) return;
+
+    // Build raw points with full metadata for scatter plot
+    const rawPts = validProjs.map(pr => ({
+      x:        pr.bidQty,
+      y:        pr.totalCost / pr.runQty,
+      overBid:  pr.overBid,
+      projName: pr.projName,
+      projId:   pr.projId,
+      monthly:  pr.monthly,
+      employees:pr.employees,
+      equipment:pr.equipment,
+    }));
+
+    // ── Outlier detection (>2σ from mean unit cost) ──
+    const ys    = rawPts.map(p => p.y);
+    const meanY0= ys.reduce((s, v) => s + v, 0) / ys.length;
+    const stdY  = Math.sqrt(ys.reduce((s, v) => s + (v - meanY0) ** 2, 0) / ys.length);
+    const pts   = rawPts.map(p => ({ ...p, isOutlier: Math.abs(p.y - meanY0) > 2 * stdY }));
+    const ptsClean = pts.filter(p => !p.isOutlier);
+
+    // Need at least 2 points to show anything; need 3+ for valid R² (2 points always = R²=1.0)
+    const n    = pts.length;
+    const sumX = pts.reduce((s, p) => s + p.x, 0);
+    const sumY = pts.reduce((s, p) => s + p.y, 0);
+    const sumXY= pts.reduce((s, p) => s + p.x * p.y, 0);
+    const sumX2= pts.reduce((s, p) => s + p.x * p.x, 0);
+    const meanX= sumX / n;
+    const meanY= sumY / n;
+
+    const denom  = n * sumX2 - sumX * sumX;
+    const slope  = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
+    const interc = (sumY - slope * sumX) / n;
+
+    // Pearson R and R² — only meaningful with 3+ points
+    const ssXY = pts.reduce((s, p) => s + (p.x - meanX) * (p.y - meanY), 0);
+    const ssX  = pts.reduce((s, p) => s + (p.x - meanX) ** 2, 0);
+    const ssY  = pts.reduce((s, p) => s + (p.y - meanY) ** 2, 0);
+    const r    = (n >= 3 && ssX > 0 && ssY > 0) ? ssXY / Math.sqrt(ssX * ssY) : 0;
+    const r2   = r * r;
+    const tooFewForR2 = n < 3;
+
+    // ── Slope without outliers (shown as second trend line if outliers exist) ──
+    let slopeClean = null, intercClean = null;
+    if (ptsClean.length >= 2 && ptsClean.length < pts.length) {
+      const nc  = ptsClean.length;
+      const sxc = ptsClean.reduce((s, p) => s + p.x, 0);
+      const syc = ptsClean.reduce((s, p) => s + p.y, 0);
+      const sxyc= ptsClean.reduce((s, p) => s + p.x * p.y, 0);
+      const sx2c= ptsClean.reduce((s, p) => s + p.x * p.x, 0);
+      const dc  = nc * sx2c - sxc * sxc;
+      slopeClean  = dc !== 0 ? (nc * sxyc - sxc * syc) / dc : 0;
+      intercClean = (syc - slopeClean * sxc) / nc;
+    }
+
+    const minX = Math.min(...pts.map(p => p.x));
+    const maxX = Math.max(...pts.map(p => p.x));
+    const ucAtMin = slope * minX + interc;
+    const ucAtMax = slope * maxX + interc;
+    const pctChange = ucAtMin > 0 ? (ucAtMax - ucAtMin) / ucAtMin * 100 : 0;
+    const outlierCount = pts.filter(p => p.isOutlier).length;
+
+    // Only classify trend when we have enough data for a meaningful R²
+    let trend, trendColor, trendIcon;
+    if (tooFewForR2) {
+      trend = 'Need More Jobs';   trendColor = '#6b7280'; trendIcon = '?';
+    } else if (r2 < 0.10) {
+      trend = 'No Clear Pattern'; trendColor = '#9ca3af'; trendIcon = '→';
+    } else if (slope < 0) {
+      trend = 'Economy of Scale'; trendColor = '#4ade80'; trendIcon = '↓';
+    } else {
+      trend = 'Inverse Scale';    trendColor = '#f87171'; trendIcon = '↑';
+    }
+    const strength = tooFewForR2 ? '—' : r2 < 0.10 ? '—' : r2 < 0.30 ? 'Weak' : r2 < 0.55 ? 'Moderate' : r2 < 0.75 ? 'Strong' : 'Very Strong';
+
+    stats.push({ key, costCode, subCode, unit, pts, slope, interc,
+      slopeClean, intercClean, r, r2,
+      trend, trendColor, trendIcon, strength, pctChange, tooFewForR2,
+      minX, maxX, n, avgUC: meanY, outlierCount,
+      allProjects: validProjs });
+  });
+
+  if (stats.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted);padding:3rem;text-align:center">
+      Not enough data yet — need at least 2 completed jobs sharing the same sub code with bid quantities entered.<br>
+      <span style="font-size:0.75rem;margin-top:0.4rem;display:block">Make sure bid items have Bid Qty filled in and daily rows are logged with quantities.</span>
+    </div>`;
+    return;
+  }
+
+  // Sort: most data points first, then by sub code name
+  stats.sort((a, b) => b.n - a.n || a.subCode.localeCompare(b.subCode));
+
+  // ── Summary cards ────────────────────────────────────────────────────────
+  const econCount    = stats.filter(s => s.trend === 'Economy of Scale').length;
+  const invCount     = stats.filter(s => s.trend === 'Inverse Scale').length;
+  const flatCount    = stats.filter(s => s.trend === 'No Clear Pattern').length;
+  const needMoreCount= stats.filter(s => s.tooFewForR2).length;
+  const bestEcon     = stats.filter(s => s.trend === 'Economy of Scale').sort((a,b) => b.r2 - a.r2)[0] || null;
+  const biggestSaving= bestEcon ? Math.abs(bestEcon.pctChange).toFixed(1) : null;
+
+  const card = (label, value, sub='', color='var(--green)') =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.85rem 1.1rem;min-width:148px;flex:1">
+      <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.3rem">${label}</div>
+      <div style="font-size:1rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${value}</div>
+      ${sub ? `<div style="font-size:0.68rem;color:var(--muted);margin-top:0.15rem">${sub}</div>` : ''}
+    </div>`;
+
+  const cards = `<div style="display:flex;gap:0.65rem;flex-wrap:wrap;margin-bottom:1.25rem">
+    ${card('Sub Codes Analyzed', stats.length, stats.length + ' sub codes · 2+ jobs each')}
+    ${card('Economy of Scale', econCount, 'Cost decreases as job size ↑', '#4ade80')}
+    ${card('Inverse Scale', invCount, 'Cost increases as job size ↑', '#f87171')}
+    ${card('No Clear Pattern', flatCount, 'Size has little effect on cost', '#9ca3af')}
+    ${bestEcon ? card('Best Economy Sub Code', esc(bestEcon.subCode), biggestSaving + '% cost reduction small→large · R²='+Math.round(bestEcon.r2*100)+'%') : ''}
+  </div>`;
+
+  // ── Scatter SVG helper (with outlier + bid accuracy + dual trend lines) ──
+  function scatterSVG(pts, slope, interc, trendColor, slopeClean, intercClean) {
+    const W = 340, H = 180, padL = 50, padR = 14, padT = 12, padB = 32;
+    const iW = W - padL - padR, iH = H - padT - padB;
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const padY = (maxY - minY) * 0.12 || 0.01;
+    const xRange = maxX - minX || 1;
+    const yLo = minY - padY, yHi = maxY + padY, yRange = yHi - yLo;
+    const px = x => padL + (x - minX) / xRange * iW;
+    const py = y => padT + iH - (y - yLo) / yRange * iH;
+    const clampY = y => Math.max(yLo, Math.min(yHi, y));
+    const fmtX = v => v >= 1000 ? (v/1000).toFixed(0)+'k' : String(Math.round(v));
+    const fmtY = v => '$' + (v >= 1 ? fmt(v,2) : fmt(v,3));
+
+    // Axis ticks
+    const xTicks = [minX, minX + xRange*0.5, maxX].map(v =>
+      `<text x="${px(v).toFixed(1)}" y="${(padT+iH+14).toFixed(1)}" text-anchor="middle" fill="#555" font-size="9">${fmtX(v)}</text>`).join('');
+    const yTicks = [minY, (minY+maxY)/2, maxY].map(v =>
+      `<text x="${(padL-4).toFixed(1)}" y="${(py(v)+3).toFixed(1)}" text-anchor="end" fill="#555" font-size="9">${fmtY(v)}</text>`).join('');
+
+    // Axis lines
+    const axes = `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+iH}" stroke="#2a2a3a" stroke-width="1"/>
+      <line x1="${padL}" y1="${padT+iH}" x2="${padL+iW}" y2="${padT+iH}" stroke="#2a2a3a" stroke-width="1"/>`;
+
+    // Trend line — all data (dashed)
+    const trendLine = `<line x1="${px(minX).toFixed(1)}" y1="${py(clampY(slope*minX+interc)).toFixed(1)}"
+      x2="${px(maxX).toFixed(1)}" y2="${py(clampY(slope*maxX+interc)).toFixed(1)}"
+      stroke="${trendColor}" stroke-width="1.5" stroke-dasharray="5 3" opacity="0.65"/>`;
+
+    // Second trend line — outliers removed (solid, brighter) if it differs
+    const cleanLine = (slopeClean !== null)
+      ? `<line x1="${px(minX).toFixed(1)}" y1="${py(clampY(slopeClean*minX+intercClean)).toFixed(1)}"
+          x2="${px(maxX).toFixed(1)}" y2="${py(clampY(slopeClean*maxX+intercClean)).toFixed(1)}"
+          stroke="${trendColor}" stroke-width="2" opacity="0.95"/>`
+      : '';
+
+    // Dots: color = bid accuracy, ring = outlier
+    const dots = pts.map(p => {
+      const fill   = p.overBid === true ? '#f87171' : p.overBid === false ? '#4ade80' : '#60a5fa';
+      const stroke = p.isOutlier ? '#fbbf24' : '#111827';
+      const sw     = p.isOutlier ? 2 : 1.2;
+      const r      = p.isOutlier ? 6 : 5;
+      const tip    = `${esc(p.projName)} · $${fmt(p.y)}/${p.overBid===true?'over bid':p.overBid===false?'under bid':'no bid data'}${p.isOutlier?' · ⚠ outlier':''}`;
+      return `<circle cx="${px(p.x).toFixed(1)}" cy="${py(p.y).toFixed(1)}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" opacity="0.92"><title>${tip}</title></circle>`;
+    }).join('');
+
+    // Legend
+    const hasOver    = pts.some(p => p.overBid === true);
+    const hasUnder   = pts.some(p => p.overBid === false);
+    const hasOutlier = pts.some(p => p.isOutlier);
+    const hasClean   = slopeClean !== null;
+    let legendX = padL + 4, legendY = padT + 10;
+    let legend = '';
+    if (hasUnder)   { legend += `<circle cx="${legendX}" cy="${legendY}" r="4" fill="#4ade80"/><text x="${legendX+8}" y="${legendY+3.5}" fill="#9ca3af" font-size="8">Under bid</text>`; legendX += 58; }
+    if (hasOver)    { legend += `<circle cx="${legendX}" cy="${legendY}" r="4" fill="#f87171"/><text x="${legendX+8}" y="${legendY+3.5}" fill="#9ca3af" font-size="8">Over bid</text>`;  legendX += 52; }
+    if (hasOutlier) { legend += `<circle cx="${legendX}" cy="${legendY}" r="4" fill="#fbbf24"/><text x="${legendX+8}" y="${legendY+3.5}" fill="#9ca3af" font-size="8">Outlier (>2σ)</text>`; legendX += 66; }
+    if (hasClean)   { legend += `<line x1="${legendX}" y1="${legendY}" x2="${legendX+14}" y2="${legendY}" stroke="${trendColor}" stroke-width="2"/><text x="${legendX+18}" y="${legendY+3.5}" fill="#9ca3af" font-size="8">Excl. outliers</text>`; }
+
+    // Axis labels
+    const xLabel = `<text x="${(padL+iW/2).toFixed(1)}" y="${(H-2).toFixed(1)}" text-anchor="middle" fill="#555" font-size="9">Bid Qty</text>`;
+    const yLabel = `<text x="8" y="${(padT+iH/2).toFixed(1)}" text-anchor="middle" fill="#555" font-size="9" transform="rotate(-90,8,${(padT+iH/2).toFixed(1)})">$/unit</text>`;
+
+    return `<svg width="${W}" height="${H}" style="display:block;border-radius:4px;background:#0d0d14">
+      ${axes}${trendLine}${cleanLine}${dots}${xTicks}${yTicks}${xLabel}${yLabel}${legend}
+    </svg>`;
+  }
+
+  // ── Seasonal chart (avg unit cost by calendar month) ────────────────────
+  function seasonalChart(allProjects, unit) {
+    // Aggregate cost+qty across all projects by calendar month (1–12)
+    const byMonth = {}; // monthNum → { cost, qty, jobs: Set }
+    allProjects.forEach(pr => {
+      if (!pr.monthly) return;
+      Object.entries(pr.monthly).forEach(([mo, d]) => {
+        const mNum = parseInt(mo.substring(5, 7), 10); // 1–12
+        if (!byMonth[mNum]) byMonth[mNum] = { cost: 0, qty: 0, jobs: new Set() };
+        byMonth[mNum].cost += d.cost;
+        byMonth[mNum].qty  += d.qty;
+        byMonth[mNum].jobs.add(pr.projId);
+      });
+    });
+    const months = Object.keys(byMonth).map(Number).sort((a,b) => a-b);
+    if (months.length < 2) return '';
+    const MO_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const ucs  = months.map(m => byMonth[m].qty > 0 ? byMonth[m].cost / byMonth[m].qty : null).filter(v => v !== null);
+    const mean = ucs.reduce((s,v) => s+v, 0) / ucs.length;
+    const rows = months.map(m => {
+      const d   = byMonth[m];
+      const uc  = d.qty > 0 ? d.cost / d.qty : null;
+      if (!uc) return '';
+      const pct = ((uc - mean) / mean * 100);
+      const color = pct > 10 ? '#f87171' : pct < -10 ? '#4ade80' : '#9ca3af';
+      const barW  = Math.min(120, Math.abs(pct) * 1.2);
+      return `<tr>
+        <td style="padding:0.25rem 0.6rem;color:var(--muted);font-size:0.75rem;white-space:nowrap">${MO_NAMES[m]}</td>
+        <td style="padding:0.25rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums;color:${color}">$${fmt(uc)}</td>
+        <td style="padding:0.25rem 0.6rem;text-align:right;color:var(--muted);font-size:0.72rem">${d.jobs.size} job${d.jobs.size!==1?'s':''}</td>
+        <td style="padding:0.25rem 0.6rem">
+          <div style="display:flex;align-items:center;gap:4px">
+            <div style="width:${barW.toFixed(0)}px;height:6px;background:${color};border-radius:2px;opacity:0.8"></div>
+            <span style="font-size:0.68rem;color:${color}">${pct>=0?'+':''}${pct.toFixed(0)}%</span>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+    return `<table style="border-collapse:collapse;font-size:0.8rem;width:100%">
+      <thead><tr>
+        <th style="padding:0.25rem 0.6rem;text-align:left;color:#555;font-size:0.65rem;text-transform:uppercase">Month</th>
+        <th style="padding:0.25rem 0.6rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Avg $/Unit</th>
+        <th style="padding:0.25rem 0.6rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Jobs</th>
+        <th style="padding:0.25rem 0.6rem;color:#555;font-size:0.65rem;text-transform:uppercase">vs Annual Avg</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="font-size:0.68rem;color:#444;margin-top:0.3rem">Annual avg unit cost: $${fmt(mean)} · ${ucs.length} months with data</div>`;
+  }
+
+  // ── Crew & equipment breakdown ───────────────────────────────────────────
+  function crewBreakdown(allProjects) {
+    // For each employee/equipment, collect unit costs of jobs they worked on
+    const empJobs = {}, eqJobs = {};
+    allProjects.forEach(pr => {
+      if (pr.runQty <= 0 || pr.totalCost <= 0) return;
+      const uc = pr.totalCost / pr.runQty;
+      Object.keys(pr.employees || {}).forEach(name => {
+        if (!empJobs[name]) empJobs[name] = [];
+        empJobs[name].push(uc);
+      });
+      Object.keys(pr.equipment || {}).forEach(name => {
+        if (!eqJobs[name]) eqJobs[name] = [];
+        eqJobs[name].push(uc);
+      });
+    });
+    const mkRows = (map, overallMean) => Object.entries(map)
+      .map(([name, ucs]) => ({ name, avg: ucs.reduce((s,v)=>s+v,0)/ucs.length, n: ucs.length }))
+      .sort((a,b) => a.avg - b.avg)
+      .map(({ name, avg, n }) => {
+        const pct = ((avg - overallMean) / overallMean * 100);
+        const color = pct < -5 ? '#4ade80' : pct > 5 ? '#f87171' : '#9ca3af';
+        return `<tr>
+          <td style="padding:0.25rem 0.6rem;font-size:0.78rem">${esc(name)}</td>
+          <td style="padding:0.25rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums;color:${color}">$${fmt(avg)}</td>
+          <td style="padding:0.25rem 0.6rem;text-align:right;color:var(--muted);font-size:0.72rem">${n} job${n!==1?'s':''}</td>
+          <td style="padding:0.25rem 0.6rem;font-size:0.72rem;color:${color}">${pct>=0?'+':''}${pct.toFixed(0)}% vs avg</td>
+        </tr>`;
+      }).join('');
+
+    const overallMean = allProjects.reduce((s, pr) => {
+      return pr.runQty > 0 ? s + pr.totalCost / pr.runQty : s;
+    }, 0) / allProjects.filter(pr => pr.runQty > 0).length || 1;
+
+    const hdr = `<thead><tr>
+      <th style="padding:0.25rem 0.6rem;text-align:left;color:#555;font-size:0.65rem;text-transform:uppercase">Name</th>
+      <th style="padding:0.25rem 0.6rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Avg Unit Cost</th>
+      <th style="padding:0.25rem 0.6rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Jobs</th>
+      <th style="padding:0.25rem 0.6rem;color:#555;font-size:0.65rem;text-transform:uppercase">vs Overall</th>
+    </tr></thead>`;
+
+    const empRows = mkRows(empJobs, overallMean);
+    const eqRows  = mkRows(eqJobs,  overallMean);
+    let out = '';
+    if (empRows) out += `<div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.4rem">By Employee</div>
+      <table style="border-collapse:collapse;font-size:0.8rem;width:100%;margin-bottom:0.75rem">${hdr}<tbody>${empRows}</tbody></table>`;
+    if (eqRows)  out += `<div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.4rem">By Equipment</div>
+      <table style="border-collapse:collapse;font-size:0.8rem;width:100%">${hdr}<tbody>${eqRows}</tbody></table>`;
+    return out || '<span style="color:var(--muted);font-size:0.75rem">No crew/equipment data logged for this sub code.</span>';
+  }
+
+  // ── Size-band breakdown table ────────────────────────────────────────────
+  function bandTable(pts, unit) {
+    if (pts.length < 3) return '';
+    const sorted = [...pts].sort((a, b) => a.x - b.x);
+    const third  = Math.floor(sorted.length / 3);
+    const small  = sorted.slice(0, third);
+    const mid    = sorted.slice(third, third * 2);
+    const large  = sorted.slice(third * 2);
+    const avgUC  = arr => arr.length ? arr.reduce((s, p) => s + p.y, 0) / arr.length : null;
+    const avgBQ  = arr => arr.length ? arr.reduce((s, p) => s + p.x, 0) / arr.length : null;
+    const row = (label, arr, color) => {
+      const uc = avgUC(arr), bq = avgBQ(arr);
+      return uc !== null ? `<tr>
+        <td style="padding:0.3rem 0.65rem;color:${color};font-weight:600">${label}</td>
+        <td style="padding:0.3rem 0.65rem;text-align:right;color:var(--muted);font-size:0.75rem">${arr.length} job${arr.length!==1?'s':''}</td>
+        <td style="padding:0.3rem 0.65rem;text-align:right;color:var(--muted);font-size:0.75rem">${bq ? fmt(bq,0)+' '+(unit||'units') : '—'} avg</td>
+        <td style="padding:0.3rem 0.65rem;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${color}">$${fmt(uc)}/unit</td>
+      </tr>` : '';
+    };
+    const smUC = avgUC(small), lgUC = avgUC(large);
+    const diffPct = smUC && lgUC ? ((lgUC - smUC) / smUC * 100) : null;
+    const diffStr = diffPct !== null
+      ? `<div style="font-size:0.72rem;color:${diffPct < 0 ? '#4ade80':'#f87171'};margin-top:0.5rem">
+          Large jobs cost ${Math.abs(diffPct).toFixed(1)}% ${diffPct < 0 ? 'less' : 'more'} per unit than small jobs
+         </div>` : '';
+    return `<table style="border-collapse:collapse;font-size:0.8rem;width:100%">
+      <thead><tr>
+        <th style="padding:0.25rem 0.65rem;text-align:left;color:#555;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.06em">Size Tier</th>
+        <th style="padding:0.25rem 0.65rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Jobs</th>
+        <th style="padding:0.25rem 0.65rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Avg Size</th>
+        <th style="padding:0.25rem 0.65rem;text-align:right;color:#555;font-size:0.65rem;text-transform:uppercase">Avg Unit Cost</th>
+      </tr></thead>
+      <tbody>
+        ${row('Small', small, '#9ca3af')}
+        ${mid.length ? row('Medium', mid, '#93c5fd') : ''}
+        ${row('Large', large, '#4ade80')}
+      </tbody>
+    </table>${diffStr}`;
+  }
+
+  // ── Interpretation text ──────────────────────────────────────────────────
+  function interpretation(s) {
+    const lines = [];
+    if (s.tooFewForR2) {
+      lines.push(`<strong style="color:#9ca3af">Insufficient data for trend analysis.</strong> Only ${s.n} job${s.n!==1?'s':''} recorded — need at least 3 for a statistically valid R².`);
+      lines.push(`The scatter plot shows the data points available, but the trend line direction is not reliable with this sample size. Keep logging jobs to unlock trend analysis.`);
+    } else if (s.trend === 'Economy of Scale') {
+      lines.push(`<strong style="color:#4ade80">Economy of scale applies.</strong> Unit cost decreases as job size increases.`);
+      if (s.r2 >= 0.30) lines.push(`The relationship is ${s.strength.toLowerCase()} (R²=${Math.round(s.r2*100)}%), meaning job size is a reliable predictor of unit cost.`);
+      if (Math.abs(s.pctChange) >= 10) lines.push(`Going from the smallest to largest recorded job, unit cost drops ~${Math.abs(s.pctChange).toFixed(0)}%. Consider more competitive pricing on larger ${s.unit || 'unit'} jobs.`);
+    } else if (s.trend === 'Inverse Scale') {
+      lines.push(`<strong style="color:#f87171">Inverse scale.</strong> Unit cost increases as job size increases.`);
+      if (s.r2 >= 0.30) lines.push(`The relationship is ${s.strength.toLowerCase()} (R²=${Math.round(s.r2*100)}%). Larger jobs for this sub code appear more complex or resource-intensive.`);
+      lines.push(`Review whether large-${s.unit || 'unit'} jobs require additional crew, longer hauls, or more setup that isn't captured in the bid.`);
+    } else {
+      lines.push(`<strong style="color:#9ca3af">No clear size-cost relationship.</strong> Job size doesn't significantly predict unit cost for this sub code (R²=${Math.round(s.r2*100)}%).`);
+      lines.push(`Cost variability is likely driven by other factors — crew composition, site conditions, equipment availability, or seasonality.`);
+    }
+    if (s.outlierCount > 0) lines.push(`<span style="color:#fbbf24;font-size:0.72rem">⚠ ${s.outlierCount} outlier job${s.outlierCount!==1?'s':''} detected (&gt;2σ from mean). ${s.slopeClean !== null ? 'Solid trend line excludes outliers for a cleaner fit.' : ''}</span>`);
+    lines.push(`<span style="color:var(--muted);font-size:0.72rem">Based on ${s.n} job${s.n!==1?'s':''} · Size range: ${fmt(s.minX,0)}–${fmt(s.maxX,0)} ${s.unit||'units'} · Avg unit cost: $${fmt(s.avgUC)}</span>`);
+    return lines.map(l => `<p style="margin:0 0 0.45rem;font-size:0.8rem;line-height:1.5">${l}</p>`).join('');
+  }
+
+  // ── Rows ─────────────────────────────────────────────────────────────────
+  const TH = `padding:0.45rem 0.75rem;text-align:left;font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#888;background:var(--surface2);border:1px solid var(--border);white-space:nowrap`;
+  const THR = TH + ';text-align:right';
+
+  const rows = stats.map((s, i) => {
+    const detId    = 'soe-det-' + i;
+    const pctStr   = (!s.tooFewForR2 && s.r2 >= 0.10)
+      ? (s.pctChange >= 0 ? '+' : '') + s.pctChange.toFixed(1) + '%'
+      : '—';
+    const pctColor = (!s.tooFewForR2 && s.r2 >= 0.10) ? (s.pctChange < 0 ? '#4ade80' : '#f87171') : '#9ca3af';
+    const lowSampleBadge = s.tooFewForR2
+      ? `<span title="Only ${s.n} jobs — need 3+ for reliable trend analysis" style="font-size:0.6rem;font-weight:700;background:rgba(107,114,128,0.2);color:#9ca3af;padding:0.1rem 0.35rem;border-radius:3px;margin-left:0.4rem;letter-spacing:0.04em">LOW SAMPLE</span>`
+      : (s.n <= 4 ? `<span title="${s.n} jobs — trend direction may shift as more data is added" style="font-size:0.6rem;font-weight:700;background:rgba(251,191,36,0.15);color:#fbbf24;padding:0.1rem 0.35rem;border-radius:3px;margin-left:0.4rem;letter-spacing:0.04em">FEW JOBS</span>` : '');
+    return `
+      <tr style="cursor:pointer;border-bottom:1px solid var(--border)" onclick="_toggleSoEDetail('${detId}',this)">
+        <td style="padding:0.5rem 0.75rem;font-weight:600">${esc(s.subCode||'(No Sub Code)')}${lowSampleBadge}</td>
+        <td style="padding:0.5rem 0.6rem;color:var(--muted);font-size:0.75rem">${esc(s.costCode||'')}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${esc(s.unit||'—')}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center">${s.n}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums">$${fmt(s.avgUC)}</td>
+        <td style="padding:0.5rem 0.75rem;font-weight:700;color:${s.trendColor}">${s.trendIcon} ${s.trend}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${s.strength}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${pctColor}">${pctStr}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.8rem;transition:transform 0.15s" class="soe-arrow">▶</td>
+      </tr>
+      <tr id="${detId}" style="display:none">
+        <td colspan="9" style="padding:1rem 1.5rem 1.25rem;background:#0d0d14;border-bottom:2px solid var(--border)">
+          <!-- Row 1: scatter + interpretation + size tier -->
+          <div style="display:flex;gap:2rem;flex-wrap:wrap;align-items:flex-start;margin-bottom:1.25rem">
+            <div>
+              <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">
+                Unit Cost vs Job Size
+                ${s.outlierCount > 0 ? `<span style="color:#fbbf24;margin-left:0.5rem">(${s.outlierCount} outlier${s.outlierCount!==1?'s':''} flagged)</span>` : ''}
+              </div>
+              ${scatterSVG(s.pts, s.slope, s.interc, s.trendColor, s.slopeClean, s.intercClean)}
+              <div style="font-size:0.65rem;color:#444;margin-top:0.3rem">● dot color = under/over bid &nbsp;·&nbsp; yellow ring = outlier (&gt;2σ)</div>
+            </div>
+            <div style="flex:1;min-width:220px;display:flex;flex-direction:column;gap:1rem">
+              <div>
+                <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Interpretation</div>
+                ${interpretation(s)}
+              </div>
+              ${s.pts.length >= 3 ? `<div>
+                <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Unit Cost by Size Tier</div>
+                ${bandTable(s.pts, s.unit)}
+              </div>` : ''}
+            </div>
+          </div>
+          <!-- Row 2: seasonal + crew/equipment -->
+          <div style="display:flex;gap:2rem;flex-wrap:wrap;align-items:flex-start;border-top:1px solid var(--border);padding-top:1rem">
+            <div style="flex:1;min-width:220px">
+              <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Seasonal Pattern (Unit Cost by Month)</div>
+              ${seasonalChart(s.allProjects, s.unit) || '<span style="color:var(--muted);font-size:0.75rem">Not enough monthly data.</span>'}
+            </div>
+            <div style="flex:1;min-width:220px">
+              <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Crew & Equipment Performance</div>
+              ${crewBreakdown(s.allProjects)}
+            </div>
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
+
+  el.innerHTML = `<div style="max-width:1200px">
+    <div style="margin-bottom:0.75rem">
+      <div style="font-size:0.75rem;color:var(--muted);line-height:1.5">
+        Does cost per unit change as job size increases? <strong style="color:var(--text)">Economy of scale</strong> = larger jobs cost less per unit.
+        <strong style="color:var(--text)">Inverse scale</strong> = larger jobs cost more per unit. Click any row to see the scatter plot and size-tier breakdown.
+      </div>
+    </div>
+    ${cards}
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+        <thead><tr>
+          <th style="${TH}">Sub Code</th>
+          <th style="${TH}">Cost Code</th>
+          <th style="${TH};text-align:center">Unit</th>
+          <th style="${THR};text-align:center"># Jobs</th>
+          <th style="${THR}">Avg Unit Cost</th>
+          <th style="${TH}">Scale Trend</th>
+          <th style="${TH};text-align:center">Strength</th>
+          <th style="${THR}">Cost Δ Small→Large</th>
+          <th style="${TH};width:28px"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="font-size:0.68rem;color:#444;margin-top:0.6rem">
+      R² = coefficient of determination (how much of cost variation is explained by job size). Strength thresholds: Weak &lt;30% · Moderate &lt;55% · Strong &lt;75% · Very Strong 75%+. Requires ≥2 jobs per sub code.
+    </div>
+  </div>`;
+}
+
+function _toggleSoEDetail(detId, row) {
+  const det   = document.getElementById(detId);
+  if (!det) return;
+  const open  = det.style.display !== 'none';
+  det.style.display = open ? 'none' : 'table-row';
+  const arrow = row ? row.querySelector('.soe-arrow') : null;
+  if (arrow) arrow.textContent = open ? '▶' : '▼';
+}
+
+/* ═══════════════════════════════════════════
    DAILY TRACKING
 ═══════════════════════════════════════════ */
 
@@ -9832,7 +10469,7 @@ function exportBidPDF(projId) {
 
   groupOrder.forEach(costCode => {
     const gItems = groups[costCode];
-    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
+    rowsHTML += `<tr class="group-hdr"><td colspan="17"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
     gItems.forEach(b => {
@@ -9852,6 +10489,8 @@ function exportBidPDF(projId) {
       const diffCls = diff >= 0 ? 'under' : 'over';
       const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : dash;
       const projCls = (proj - bidTot) <= 0 ? 'under' : 'over';
+      const _paPDF  = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId);
+      const _paUCPDF = _paPDF ? _paPDF.histUC : 0;
 
       gBid += bidTot; gActual += actual; gHrs += cumHrs; gProj += proj;
 
@@ -9863,6 +10502,7 @@ function exportBidPDF(projId) {
         ${r(pct)}
         ${r(bidQty ? '$' + fmt(uc) : dash)}
         ${r(ruc)}
+        ${r(_paUCPDF > 0 ? '$' + fmt(_paUCPDF) : dash)}
         ${r(bidTot ? '$' + fmt(bidTot) : dash)}
         ${r(actual ? '$' + fmt(actual) : dash, 'actual')}
         ${r(cumHrs ? fmt(cumHrs) : dash)}
@@ -9880,7 +10520,7 @@ function exportBidPDF(projId) {
     const gProjCls = (gProj - gBid) <= 0 ? 'under' : 'over';
     rowsHTML += `<tr class="subtotal">
       <td><em>${esc(costCode) || '(No Code)'} — Total</em></td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(gBid ? '$' + fmt(gBid) : dash)}
       ${r(gActual ? '$' + fmt(gActual) : dash, 'actual')}
       ${r(gHrs ? fmt(gHrs) : dash)}
@@ -9927,7 +10567,7 @@ function exportBidPDF(projId) {
     <thead><tr>
       <th>Sub Code</th><th>Unit</th>
       <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th>
-      <th class="num">Unit Cost</th><th class="num">Running Unit Cost</th>
+      <th class="num">Unit Cost</th><th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
       <th class="num">Bid Total</th><th class="num">Actual Cost</th>
       <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
       <th class="num">Variance</th><th class="num">Projected Cost</th>
@@ -9936,7 +10576,7 @@ function exportBidPDF(projId) {
     <tbody>${rowsHTML}</tbody>
     <tfoot><tr class="totals">
       <td>Totals</td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(grandBid   ? '$' + fmt(grandBid)    : dash)}
       ${r(grandActual ? '$' + fmt(grandActual) : dash, 'actual')}
       ${r(grandHrs   ? fmt(grandHrs)          : dash)}
@@ -11114,18 +11754,23 @@ function renderProductionRateView(projId) {
         return a < b ? -1 : a > b ? 1 : 0;
       });
 
-      // Historical benchmark for this sub code
-      const histKey   = rawCc + '||' + rawSc;
-      const hist      = histAgg[histKey] || null;
-      const histDays  = hist ? hist.dates.size        : 0;
-      const histQty   = hist ? hist.running_qty        : 0;
-      const histCost  = hist ? hist.total_cost         : 0;
-      const histLbr   = hist ? hist.labor_hours        : 0;
-      const histEq    = hist ? hist.equip_hours        : 0;
-      const histUC    = histQty  > 0 ? histCost / histQty  : 0;
-      const histLbrPD = histDays > 0 ? histLbr  / histDays : 0;
-      const histEqPD  = histDays > 0 ? histEq   / histDays : 0;
-      const histMU    = histEq   > 0 ? histQty  / histEq   : 0;
+      // Historical benchmark for this sub code — size-aware (adaptive bandwidth)
+      // Exclude this project so it isn't benchmarked against its own data
+      const hist      = computeSizeAwarePastAvg(bidQty, rawCc, rawSc, p.id);
+      const histUC    = hist ? hist.histUC    : 0;
+      const histLbrPD = hist ? hist.histLbrPD : 0;
+      const histEqPD  = hist ? hist.histEqPD  : 0;
+      const histMU    = hist ? hist.histMU    : 0;
+      const histDays  = hist ? hist.histDays  : 0;
+      const histBand  = hist ? hist.band      : null;
+      const histCount = hist ? hist.jobCount  : 0;
+      const histConf  = hist ? hist.confidence : '';
+      // Tooltip helper for Past Avg cells
+      const _hBandStr = histBand != null ? '\u00b1' + Math.round(histBand * 100) + '%' : 'Global avg';
+      function histTip(label) {
+        if (!hist) return '';
+        return ` title="${label} \u2014 ${_hBandStr} band, n=${histCount} job${histCount !== 1 ? 's' : ''}, ${histConf} confidence"`;
+      }
 
       // Cumulative state + previous-day tracking for day-over-day colours
       let cumQty = 0, cumCost = 0, cumLbr = 0, cumEq = 0, cumDays = 0;
@@ -11189,15 +11834,15 @@ function renderProductionRateView(projId) {
           <td style="${TD('uc')}${SEP}${c_dailyUC}">${dailyUC > 0 ? '$'+fmt(dailyUC) : '—'}</td>
           <td style="${TD('uc')}${c_runUC}">${runUC > 0 ? '$'+fmt(runUC) : '—'}</td>
           <td style="${TD('uc')}${c_projUC}">${projUC > 0 ? '$'+fmt(projUC) : '—'}</td>
-          <td style="${TD_H('uc')}color:var(--muted);">${histUC > 0 ? '$'+fmt(histUC) : '—'}</td>
+          <td style="${TD_H('uc')}color:var(--muted);"${histTip('Unit Cost Past Avg')}>${histUC > 0 ? '$'+fmt(histUC) : '—'}</td>
           <td style="${TD('lbr')}${SEP}">${day.labor_hours > 0 ? fmt(day.labor_hours) : '—'}</td>
-          <td style="${TD_H('lbr')}color:var(--muted);">${histLbrPD > 0 ? fmt(histLbrPD) : '—'}</td>
+          <td style="${TD_H('lbr')}color:var(--muted);"${histTip('Labor Hrs/Day Past Avg')}>${histLbrPD > 0 ? fmt(histLbrPD) : '—'}</td>
           <td style="${TD('days')}${SEP}">${cumDays}</td>
-          <td style="${TD_H('days')}color:var(--muted);">${histDays > 0 ? histDays : '—'}</td>
+          <td style="${TD_H('days')}color:var(--muted);"${histTip('Days Past Total')}>${histDays > 0 ? histDays : '—'}</td>
           <td style="${TD('eq')}${SEP}">${day.equip_hours > 0 ? fmt(day.equip_hours) : '—'}</td>
-          <td style="${TD_H('eq')}color:var(--muted);">${histEqPD > 0 ? fmt(histEqPD) : '—'}</td>
+          <td style="${TD_H('eq')}color:var(--muted);"${histTip('Equip Hrs/Day Past Avg')}>${histEqPD > 0 ? fmt(histEqPD) : '—'}</td>
           <td style="${TD('mu')}${SEP}${c_runMU}">${runMU > 0 ? fmt(runMU) : '—'}</td>
-          <td style="${TD_H('mu')}color:var(--muted);">${histMU > 0 ? fmt(histMU) : '—'}</td>
+          <td style="${TD_H('mu')}color:var(--muted);"${histTip('MU Equip Past Avg')}>${histMU > 0 ? fmt(histMU) : '—'}</td>
         </tr>`;
       });
 
@@ -11234,15 +11879,15 @@ function renderProductionRateView(projId) {
           <th style="${TH('uc')}${SEP}">Today</th>
           <th style="${TH('uc')}">Running</th>
           <th style="${TH('uc')}">Projected</th>
-          <th style="${TH_H('uc')}">Past Avg</th>
+          <th style="${TH_H('uc')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Avg${histBand != null ? ' (\u00b1'+Math.round(histBand*100)+'%)' : ''}</th>
           <th style="${TH('lbr')}${SEP}">Today</th>
-          <th style="${TH_H('lbr')}">Past Avg/Day</th>
+          <th style="${TH_H('lbr')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Avg/Day</th>
           <th style="${TH('days')}${SEP}">Worked</th>
-          <th style="${TH_H('days')}">Past Total</th>
+          <th style="${TH_H('days')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Total</th>
           <th style="${TH('eq')}${SEP}">Today</th>
-          <th style="${TH_H('eq')}">Past Avg/Day</th>
+          <th style="${TH_H('eq')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Avg/Day</th>
           <th style="${TH('mu')}${SEP}">Running</th>
-          <th style="${TH_H('mu')}">Past Avg</th>
+          <th style="${TH_H('mu')}" title="Similar-size job avg (${_hBandStr}, n=${histCount})">Past Avg</th>
         </tr>`;
 
       // Safe string for use inside onclick attribute
