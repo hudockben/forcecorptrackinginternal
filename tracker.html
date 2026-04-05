@@ -5535,6 +5535,8 @@ function _subCodeOpts(po) {
 /* ── PO filter state ── */
 let poFilters = {};   // { field: Set<string> } — absent key = no filter
 let poSearch = '';
+let poPage = 0;       // current pagination page (0-indexed)
+const PO_PAGE_SIZE = 10;
 let _pffField = null;
 let _pffPending = null;
 
@@ -5633,12 +5635,14 @@ function applyPOFilter() {
     poFilters[_pffField] = new Set(checked);
   }
   document.getElementById('po-filter-dd').style.display = 'none';
+  poPage = 0;
   renderPOTab();
 }
 
 function clearPOFilter() {
   delete poFilters[_pffField];
   document.getElementById('po-filter-dd').style.display = 'none';
+  poPage = 0;
   renderPOTab();
 }
 
@@ -5659,12 +5663,16 @@ function renderPOTab() {
     `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
 
   const filteredPOs = applyPOFilters().slice().reverse();
+  const totalPages = Math.max(1, Math.ceil(filteredPOs.length / PO_PAGE_SIZE));
+  if (poPage >= totalPages) poPage = Math.max(0, totalPages - 1);
+  const pageStart = poPage * PO_PAGE_SIZE;
+  const pagePOs = filteredPOs.slice(pageStart, pageStart + PO_PAGE_SIZE);
 
   const bodyHTML = purchaseOrders.length === 0
     ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
     : filteredPOs.length === 0
     ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders match the current filters.</td></tr>`
-    : filteredPOs.map(po => {
+    : pagePOs.map(po => {
         const qty   = parseFloat(po.qty)       || 0;
         const uc    = parseFloat(po.unit_cost)  || 0;
         const tax   = parseFloat(po.tax)        || 0;
@@ -5732,13 +5740,13 @@ function renderPOTab() {
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem">
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Purchase Orders</span>
         <div style="display:flex;gap:0.5rem;align-items:center">
-          ${hasFilters ? `<button class="btn" onclick="poFilters={};poSearch='';renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
+          ${hasFilters ? `<button class="btn" onclick="poFilters={};poSearch='';poPage=0;renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
           <button class="btn" onclick="exportPOCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#1d4ed8;color:#fff">&#8595; Export CSV</button>
           ${perm.canEdit ? `<button class="btn btn-green" onclick="addPO()">+ New PO</button>` : ''}
         </div>
       </div>
       <input class="po-global-search" type="text" value="${esc(poSearch)}" placeholder="&#128269; Search purchase orders…"
-        oninput="poSearch=this.value;renderPOTab()"
+        oninput="poSearch=this.value;poPage=0;renderPOTab()"
         style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.82rem;padding:0.45rem 0.75rem;outline:none;box-sizing:border-box;margin-bottom:0.85rem">
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1400px">
@@ -5753,6 +5761,12 @@ function renderPOTab() {
           <tbody>${bodyHTML}</tbody>
         </table>
       </div>
+      ${filteredPOs.length > PO_PAGE_SIZE ? `
+      <div style="display:flex;align-items:center;justify-content:center;gap:0.75rem;margin-top:1rem;font-size:0.82rem;color:var(--muted)">
+        <button class="btn" onclick="poPage=Math.max(0,poPage-1);renderPOTab()" ${poPage === 0 ? 'disabled' : ''} style="padding:0.3rem 0.65rem;font-size:0.8rem">&#8592; Prev</button>
+        <span>Page ${poPage + 1} of ${totalPages} &nbsp;·&nbsp; ${filteredPOs.length} total</span>
+        <button class="btn" onclick="poPage=Math.min(${totalPages - 1},poPage+1);renderPOTab()" ${poPage >= totalPages - 1 ? 'disabled' : ''} style="padding:0.3rem 0.65rem;font-size:0.8rem">Next &#8594;</button>
+      </div>` : ''}
     </div>`;
 
   if (searchWasFocused) {
