@@ -5507,8 +5507,8 @@ function _syncPORowField(po, field) {
                 cost_code: 'cost_code', sub_code: 'sub_code' };
   if (map[field]) r[map[field]] = po[field] || '';
   if (['qty','unit_cost','tax'].includes(field)) {
-    const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
-    r.material_cost = String(qty * uc + tax);
+    const t = _poTotals(po);
+    r.material_cost = String(t.total);
   }
   drPutNow(r.id, r);
   renderDailyTable(po.project_id);
@@ -5537,6 +5537,7 @@ let poFilters = {};   // { field: Set<string> } — absent key = no filter
 let poSearch = '';
 let poPage = 0;       // current pagination page (0-indexed)
 const PO_PAGE_SIZE = 10;
+let poExpanded = new Set(); // PO ids with releases panel open
 let _pffField = null;
 let _pffPending = null;
 
@@ -5563,6 +5564,86 @@ function applyPOFilters() {
     }
     return true;
   });
+}
+
+/* ── PO releases (blanket/standing PO support) ── */
+
+function _poTotals(po) {
+  if (po.releases && po.releases.length > 0) {
+    let qty = 0, amt = 0, tax = 0;
+    for (const r of po.releases) {
+      const rq = parseFloat(r.qty) || 0;
+      const ru = parseFloat(r.unit_cost) || 0;
+      const rt = parseFloat(r.tax) || 0;
+      qty += rq;
+      amt += rq * ru;
+      tax += rt;
+    }
+    return { qty, amt, tax, total: amt + tax };
+  }
+  const qty = parseFloat(po.qty) || 0;
+  const uc  = parseFloat(po.unit_cost) || 0;
+  const tax = parseFloat(po.tax) || 0;
+  const amt = qty * uc;
+  return { qty, amt, tax, total: amt + tax };
+}
+
+function togglePOExpand(poId) {
+  if (poExpanded.has(poId)) poExpanded.delete(poId);
+  else poExpanded.add(poId);
+  renderPOTab();
+}
+
+function addPORelease(poId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po) return;
+  if (!po.releases) po.releases = [];
+  // Migrate existing direct fields into first release
+  if (po.releases.length === 0 && (po.qty || po.unit_cost || po.tax)) {
+    po.releases.push({
+      id: uid(),
+      date: po.date_created || _localDateStr(),
+      qty: po.qty || '',
+      unit_cost: po.unit_cost || '',
+      tax: po.tax || '',
+      note: 'Initial order',
+    });
+    po.qty = ''; po.unit_cost = ''; po.tax = '';
+  }
+  po.releases.push({
+    id: uid(),
+    date: _localDateStr(),
+    qty: '',
+    unit_cost: '',
+    tax: '',
+    note: '',
+  });
+  poExpanded.add(poId);
+  savePurchaseOrders();
+  renderPOTab();
+}
+
+function deletePORelease(poId, relId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !po.releases) return;
+  po.releases = po.releases.filter(r => r.id !== relId);
+  savePurchaseOrders();
+  _syncPOReleaseTotals(po);
+  renderPOTab();
+  if (po.project_id) renderProjectPOs(po.project_id);
+}
+
+function _syncPOReleaseTotals(po) {
+  if (!po.project_id || !po.po_row_id) return;
+  const proj = getProj(po.project_id);
+  if (!proj) return;
+  const r = proj.dailyRows.find(r => r.id === po.po_row_id);
+  if (!r) return;
+  const t = _poTotals(po);
+  r.material_cost = String(t.total);
+  r.units_purchased = String(t.qty);
+  drPutNow(r.id, r);
+  renderDailyTable(po.project_id);
 }
 
 function exportPOCSV() {
@@ -5673,11 +5754,10 @@ function renderPOTab() {
     : filteredPOs.length === 0
     ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders match the current filters.</td></tr>`
     : pagePOs.map(po => {
-        const qty   = parseFloat(po.qty)       || 0;
-        const uc    = parseFloat(po.unit_cost)  || 0;
-        const tax   = parseFloat(po.tax)        || 0;
-        const amt   = qty * uc;
-        const total = amt + tax;
+        const hasReleases = po.releases && po.releases.length > 0;
+        const totals = _poTotals(po);
+        const { qty, amt, tax, total } = totals;
+        const isExpanded = poExpanded.has(po.id);
 
         const inp = (field, type = 'text', extra = '') =>
           `<input type="${type}" value="${esc(String(po[field] || ''))}"
@@ -5715,22 +5795,81 @@ function renderPOTab() {
           statusMetaHtml = `<div id="po-status-meta-${po.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem"></div>`;
         }
 
-        return `<tr style="border-bottom:1px solid var(--border)">
-          <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(po.po_number)}</td>
+        // Qty / Unit Cost / Tax cells — read-only totals when releases exist, editable otherwise
+        const qtyCell = hasReleases
+          ? `<td style="padding:0.35rem 0.6rem;min-width:65px;text-align:right;font-size:0.8rem;color:var(--text)" id="po-qty-${po.id}">${fmt(qty, qty % 1 === 0 ? 0 : 2)}</td>`
+          : `<td style="padding:0.35rem 0.6rem;min-width:65px">${inp('qty', 'number', 'step="any" placeholder="0"')}</td>`;
+        const ucCell = hasReleases
+          ? `<td style="padding:0.35rem 0.6rem;min-width:85px;text-align:right;font-size:0.75rem;color:var(--muted)">varies</td>`
+          : `<td style="padding:0.35rem 0.6rem;min-width:85px">${inp('unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>`;
+        const taxCell = hasReleases
+          ? `<td style="padding:0.35rem 0.6rem;min-width:75px;text-align:right;font-size:0.8rem;color:var(--text)" id="po-tax-${po.id}">$${fmt(tax)}</td>`
+          : `<td style="padding:0.35rem 0.6rem;min-width:75px">${inp('tax', 'number', 'step="any" placeholder="0.00"')}</td>`;
+
+        const expandBtn = hasReleases
+          ? `<button onclick="togglePOExpand('${po.id}')" title="${isExpanded ? 'Collapse releases' : 'Show releases'}"
+               style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:0.7rem;padding:0 0.2rem;margin-right:0.2rem">${isExpanded ? '▼' : '▶'} ${po.releases.length}</button>`
+          : '';
+
+        const mainRow = `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${expandBtn}${esc(po.po_number)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}">${sel('sub_code_sel', _subCodeOpts(po))}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('title', 'text', 'placeholder="Title"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px">${sel('supplier', supOpts)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('qty', 'number', 'step="any" placeholder="0"')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:85px">${inp('unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
+          ${qtyCell}
+          ${ucCell}
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${po.id}">$${fmt(amt)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('tax', 'number', 'step="any" placeholder="0.00"')}</td>
+          ${taxCell}
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">$${fmt(total)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('employee', empOpts)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date_created', 'date')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:110px">${hasReleases ? `<span style="font-size:0.78rem;color:var(--muted)">${esc(po.date_created||'')}</span>` : inp('date_created', 'date')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}">${sel('status', statusOpts)}${statusMetaHtml}</td>
-          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>` : '<td></td>'}
+          <td style="padding:0.25rem 0.4rem;text-align:center;white-space:nowrap">
+            ${perm.canEdit ? `<button onclick="addPORelease('${po.id}')" title="Add release" style="background:none;border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--green);font-size:0.72rem;padding:0.1rem 0.35rem;margin-right:0.2rem">+ Rel</button>` : ''}
+            ${perm.canEdit ? `<button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button>` : ''}
+          </td>
         </tr>`;
+
+        // Release sub-rows (shown when expanded)
+        let releaseRows = '';
+        if (hasReleases && isExpanded) {
+          const relInp = (rel, field, type='text', extra='') =>
+            `<input type="${type}" value="${esc(String(rel[field]||''))}"
+              data-po-id="${po.id}" data-rel-id="${rel.id}" data-rel-field="${field}"
+              style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.78rem;outline:none;padding:0.1rem 0" ${extra}>`;
+
+          releaseRows = po.releases.map((rel, idx) => {
+            const rq  = parseFloat(rel.qty) || 0;
+            const ru  = parseFloat(rel.unit_cost) || 0;
+            const rt  = parseFloat(rel.tax) || 0;
+            const ra  = rq * ru;
+            const rto = ra + rt;
+            return `<tr style="background:rgba(0,0,0,0.12);border-bottom:1px solid var(--border)">
+              <td style="padding:0.25rem 0.4rem;text-align:right;font-size:0.68rem;color:var(--muted)">└</td>
+              <td colspan="2" style="padding:0.25rem 0.6rem;font-size:0.7rem;color:var(--muted);white-space:nowrap;font-style:italic">Release ${idx + 1}</td>
+              <td style="padding:0.25rem 0.4rem;min-width:130px">${relInp(rel,'note','text','placeholder="Note"')}</td>
+              <td></td>
+              <td style="padding:0.25rem 0.4rem;min-width:65px">${relInp(rel,'qty','number','step="any" placeholder="0"')}</td>
+              <td style="padding:0.25rem 0.4rem;min-width:85px">${relInp(rel,'unit_cost','number','step="any" placeholder="0.00"')}</td>
+              <td style="padding:0.25rem 0.6rem;text-align:right;color:var(--green);font-size:0.78rem;white-space:nowrap" id="rel-amt-${rel.id}">$${fmt(ra)}</td>
+              <td style="padding:0.25rem 0.4rem;min-width:75px">${relInp(rel,'tax','number','step="any" placeholder="0.00"')}</td>
+              <td style="padding:0.25rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.78rem;font-weight:600;white-space:nowrap" id="rel-tot-${rel.id}">$${fmt(rto)}</td>
+              <td></td>
+              <td style="padding:0.25rem 0.4rem;min-width:110px">${relInp(rel,'date','date')}</td>
+              <td></td>
+              <td style="padding:0.15rem 0.3rem;text-align:center">
+                ${perm.canEdit ? `<button class="del-btn" onclick="deletePORelease('${po.id}','${rel.id}')" title="Remove release">&#10005;</button>` : ''}
+              </td>
+            </tr>`;
+          }).join('') + `<tr style="background:rgba(0,0,0,0.12);border-bottom:1px solid var(--border)">
+            <td colspan="15" style="padding:0.3rem 0.9rem">
+              <button onclick="addPORelease('${po.id}')" style="font-size:0.72rem;padding:0.18rem 0.65rem;background:var(--surface);border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--text)">+ Add Release</button>
+            </td>
+          </tr>`;
+        }
+
+        return mainRow + releaseRows;
       }).join('');
 
   const hasFilters = Object.keys(poFilters).length > 0 || poSearch;
@@ -5803,16 +5942,14 @@ function renderProjectPOs(projId, bodyIdOverride) {
     return;
   }
   body.innerHTML = linked.map(po => {
-    const qty   = parseFloat(po.qty)      || 0;
-    const uc    = parseFloat(po.unit_cost) || 0;
-    const tax   = parseFloat(po.tax)       || 0;
-    const total = qty * uc + tax;
+    const t = _poTotals(po);
+    const relCount = po.releases && po.releases.length > 0 ? ` <span style="font-size:0.68rem;color:var(--muted)">(${po.releases.length} rel)</span>` : '';
     const sc = po.status === 'approved' ? 'color:#86efac' : po.status === 'closed' ? 'color:var(--muted)' : 'color:var(--yellow)';
     return `<tr>
-      <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</td>
+      <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}${relCount}</td>
       <td style="padding:0.35rem 0.6rem;font-size:0.82rem">${esc(po.title || '—')}</td>
-      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--green)">$${fmt(uc)}</td>
-      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--yellow);font-weight:600">$${fmt(total)}</td>
+      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--green)">$${fmt(t.amt)}</td>
+      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--yellow);font-weight:600">$${fmt(t.total)}</td>
       <td style="padding:0.35rem 0.6rem;font-size:0.78rem;text-transform:capitalize;${sc}">${esc(po.status || '')}</td>
     </tr>`;
   }).join('');
@@ -5820,10 +5957,44 @@ function renderProjectPOs(projId, bodyIdOverride) {
 
 document.getElementById('po-root').addEventListener('input', e => {
   const el = e.target;
-  const id = el.dataset.poId, field = el.dataset.poField;
-  if (!id || !field) return;
+  const id = el.dataset.poId;
+  if (!id) return;
   const po = purchaseOrders.find(p => p.id === id);
   if (!po) return;
+
+  // Release field
+  const relId = el.dataset.relId, relField = el.dataset.relField;
+  if (relId && relField) {
+    const rel = (po.releases || []).find(r => r.id === relId);
+    if (!rel) return;
+    rel[relField] = el.value;
+    savePurchaseOrders();
+    if (['qty', 'unit_cost', 'tax'].includes(relField)) {
+      const rq = parseFloat(rel.qty) || 0, ru = parseFloat(rel.unit_cost) || 0, rt = parseFloat(rel.tax) || 0;
+      const ra = rq * ru;
+      const relAmtEl = document.getElementById('rel-amt-' + relId);
+      const relTotEl = document.getElementById('rel-tot-' + relId);
+      if (relAmtEl) relAmtEl.textContent = '$' + fmt(ra);
+      if (relTotEl) relTotEl.textContent = '$' + fmt(ra + rt);
+      // Update PO totals display
+      const t = _poTotals(po);
+      const amtEl = document.getElementById('po-amt-' + id);
+      const totEl = document.getElementById('po-tot-' + id);
+      const qtyEl = document.getElementById('po-qty-' + id);
+      const taxEl = document.getElementById('po-tax-' + id);
+      if (amtEl) amtEl.textContent = '$' + fmt(t.amt);
+      if (totEl) totEl.textContent = '$' + fmt(t.total);
+      if (qtyEl) qtyEl.textContent = fmt(t.qty, t.qty % 1 === 0 ? 0 : 2);
+      if (taxEl) taxEl.textContent = '$' + fmt(t.tax);
+      _syncPOReleaseTotals(po);
+    }
+    if (po.project_id) renderProjectPOs(po.project_id);
+    return;
+  }
+
+  // Regular PO field
+  const field = el.dataset.poField;
+  if (!field) return;
   po[field] = el.value;
   savePurchaseOrders();
   if (['qty', 'unit_cost', 'tax'].includes(field)) {
