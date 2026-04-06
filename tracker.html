@@ -9900,38 +9900,75 @@ function renderScaleOfEconomy() {
       .filter(pr => pr.laborHrs > 0 && pr.runQty > 0 && pr.bidQty > 0)
       .map(pr => ({ x: pr.bidQty, y: pr.laborHrs / pr.runQty, projName: pr.projName }));
 
+    // ── Labor power law regression (primary classification signal) ────────────
+    const logLaborPts = laborPts.filter(p => p.x > 0 && p.y > 0).map(p => ({
+      ...p, lx: Math.log(p.x), ly: Math.log(p.y)
+    }));
+    let laborA = null, laborB = null, laborR2 = 0;
+    const laborTooFew = laborPts.length < 2;
+    if (logLaborPts.length >= 2) {
+      const nl = logLaborPts.length;
+      const slx  = logLaborPts.reduce((s,p) => s+p.lx, 0), sly  = logLaborPts.reduce((s,p) => s+p.ly, 0);
+      const slxy = logLaborPts.reduce((s,p) => s+p.lx*p.ly, 0), slx2 = logLaborPts.reduce((s,p) => s+p.lx*p.lx, 0);
+      const mlx  = slx/nl, mly = sly/nl;
+      const dL   = nl*slx2 - slx*slx;
+      laborB = dL !== 0 ? (nl*slxy - slx*sly) / dL : 0;
+      laborA = Math.exp(mly - laborB*mlx);
+      if (nl >= 3) {
+        const ssXY = logLaborPts.reduce((s,p) => s+(p.lx-mlx)*(p.ly-mly), 0);
+        const ssX  = logLaborPts.reduce((s,p) => s+(p.lx-mlx)**2, 0);
+        const ssY  = logLaborPts.reduce((s,p) => s+(p.ly-mly)**2, 0);
+        const rL   = (ssX>0&&ssY>0) ? ssXY/Math.sqrt(ssX*ssY) : 0;
+        laborR2 = rL*rL;
+      }
+    }
+
     const minX = Math.min(...pts.map(p => p.x));
     const maxX = Math.max(...pts.map(p => p.x));
-    // pctChange: use best-fit model for the stated cost reduction figure
-    let ucAtMin, ucAtMax;
-    if (usePowerLaw && aPow !== null && minX > 0 && maxX > 0) {
-      ucAtMin = aPow * Math.pow(minX, bPow);
-      ucAtMax = aPow * Math.pow(maxX, bPow);
+
+    // pctChange: labor efficiency small→large when labor data available, else cost-based
+    let pctChange;
+    if (!laborTooFew && laborA !== null && minX > 0 && maxX > 0) {
+      const lhAtMin = laborA * Math.pow(minX, laborB);
+      const lhAtMax = laborA * Math.pow(maxX, laborB);
+      pctChange = lhAtMin > 0 ? (lhAtMax - lhAtMin) / lhAtMin * 100 : 0;
     } else {
-      ucAtMin = slope * minX + interc;
-      ucAtMax = slope * maxX + interc;
+      let ucAtMin, ucAtMax;
+      if (usePowerLaw && aPow !== null && minX > 0 && maxX > 0) {
+        ucAtMin = aPow * Math.pow(minX, bPow);
+        ucAtMax = aPow * Math.pow(maxX, bPow);
+      } else {
+        ucAtMin = slope * minX + interc;
+        ucAtMax = slope * maxX + interc;
+      }
+      pctChange = ucAtMin > 0 ? (ucAtMax - ucAtMin) / ucAtMin * 100 : 0;
     }
-    const pctChange = ucAtMin > 0 ? (ucAtMax - ucAtMin) / ucAtMin * 100 : 0;
     const outlierCount = pts.filter(p => p.isOutlier).length;
 
-    // Classify trend using the best-fit model's R² and slope direction
+    // Classify trend: labor efficiency is primary; fall back to cost if no labor data
+    const useLabor   = !laborTooFew && laborPts.length >= 2;
+    const classR2    = useLabor ? laborR2    : effectiveR2;
+    const classSlope = useLabor ? laborB     : effectiveSlope;
+    const classTooFew = useLabor ? laborTooFew : tooFewForR2;
+
     let trend, trendColor, trendIcon;
-    if (tooFewForR2) {
+    if (classTooFew) {
       trend = 'Need More Jobs';   trendColor = '#6b7280'; trendIcon = '?';
-    } else if (effectiveR2 < 0.10) {
+    } else if (classR2 < 0.10) {
       trend = 'No Clear Pattern'; trendColor = '#9ca3af'; trendIcon = '→';
-    } else if (effectiveSlope < 0) {
+    } else if (classSlope < 0) {
       trend = 'Economy of Scale'; trendColor = '#4ade80'; trendIcon = '↓';
     } else {
       trend = 'Inverse Scale';    trendColor = '#f87171'; trendIcon = '↑';
     }
-    const strength = tooFewForR2 ? '—' : effectiveR2 < 0.10 ? '—'
-      : effectiveR2 < 0.30 ? 'Weak' : effectiveR2 < 0.55 ? 'Moderate'
-      : effectiveR2 < 0.75 ? 'Strong' : 'Very Strong';
+    const strength = classTooFew ? '—' : classR2 < 0.10 ? '—'
+      : classR2 < 0.30 ? 'Weak' : classR2 < 0.55 ? 'Moderate'
+      : classR2 < 0.75 ? 'Strong' : 'Very Strong';
 
     stats.push({ key, costCode, subCode, unit, pts, slope, interc,
       slopeClean, intercClean, r, r2,
       aPow, bPow, r2Pow, usePowerLaw, effectiveR2, effectiveSlope,
+      laborA, laborB, laborR2, laborTooFew, useLabor,
       trend, trendColor, trendIcon, strength, pctChange, tooFewForR2,
       minX, maxX, n, avgUC: meanY, outlierCount,
       laborPts,
@@ -9954,7 +9991,8 @@ function renderScaleOfEconomy() {
   const invCount     = stats.filter(s => s.trend === 'Inverse Scale').length;
   const flatCount    = stats.filter(s => s.trend === 'No Clear Pattern').length;
   const needMoreCount= stats.filter(s => s.tooFewForR2).length;
-  const bestEcon     = stats.filter(s => s.trend === 'Economy of Scale').sort((a,b) => b.r2 - a.r2)[0] || null;
+  const bestEcon     = stats.filter(s => s.trend === 'Economy of Scale')
+    .sort((a,b) => (b.useLabor ? b.laborR2 : b.effectiveR2) - (a.useLabor ? a.laborR2 : a.effectiveR2))[0] || null;
   const biggestSaving = bestEcon ? Math.abs(bestEcon.pctChange).toFixed(1) : null;
   const powerLawCount = stats.filter(s => s.usePowerLaw && s.trend !== 'Need More Jobs').length;
 
@@ -9966,16 +10004,18 @@ function renderScaleOfEconomy() {
     </div>`;
 
   const bestEconR2Label = bestEcon
-    ? (bestEcon.usePowerLaw
-        ? `${biggestSaving}% reduction small→large · R²=${Math.round(bestEcon.effectiveR2*100)}% (power law)`
-        : `${biggestSaving}% reduction small→large · R²=${Math.round(bestEcon.effectiveR2*100)}% (linear)`)
+    ? (bestEcon.useLabor
+        ? `${biggestSaving}% labor efficiency gain small→large · R²=${Math.round(bestEcon.laborR2*100)}% (labor hrs/unit)`
+        : (bestEcon.usePowerLaw
+            ? `${biggestSaving}% reduction small→large · R²=${Math.round(bestEcon.effectiveR2*100)}% (cost power law)`
+            : `${biggestSaving}% reduction small→large · R²=${Math.round(bestEcon.effectiveR2*100)}% (cost linear)`))
     : null;
 
   const cards = `<div style="display:flex;gap:0.65rem;flex-wrap:wrap;margin-bottom:1.25rem">
     ${card('Sub Codes Analyzed', stats.length, stats.length + ' sub codes · 2+ jobs each')}
-    ${card('Economy of Scale', econCount, 'Cost decreases as job size ↑', '#4ade80')}
-    ${card('Inverse Scale', invCount, 'Cost increases as job size ↑', '#f87171')}
-    ${card('No Clear Pattern', flatCount, 'Size has little effect on cost', '#9ca3af')}
+    ${card('Economy of Scale', econCount, 'Labor hrs/unit decreases as job size ↑', '#4ade80')}
+    ${card('Inverse Scale', invCount, 'Labor hrs/unit increases as job size ↑', '#f87171')}
+    ${card('No Clear Pattern', flatCount, 'Size has little effect on labor efficiency', '#9ca3af')}
     ${powerLawCount > 0 ? card('Power Law Fits', powerLawCount, 'Sub codes where curve fits better than line', '#818cf8') : ''}
     ${bestEcon ? card('Best Economy Sub Code', esc(bestEcon.subCode), bestEconR2Label) : ''}
   </div>`;
@@ -10312,42 +10352,72 @@ function renderScaleOfEconomy() {
   // ── Interpretation text ──────────────────────────────────────────────────
   function interpretation(s) {
     const lines = [];
-    const r2Pct  = Math.round(s.effectiveR2 * 100);
-    const model  = s.usePowerLaw ? 'power law' : 'linear';
-    const modelBadge = s.usePowerLaw
+    const laborR2Pct = Math.round(s.laborR2 * 100);
+    const costR2Pct  = Math.round(s.effectiveR2 * 100);
+    const laborModelBadge = `<span style="font-size:0.65rem;background:rgba(74,222,128,0.12);color:#4ade80;padding:0.1rem 0.4rem;border-radius:3px;margin-left:0.35rem;font-weight:600">LABOR HRS/UNIT</span>`;
+    const costModelBadge  = s.usePowerLaw
       ? `<span style="font-size:0.65rem;background:rgba(129,140,248,0.15);color:#818cf8;padding:0.1rem 0.4rem;border-radius:3px;margin-left:0.35rem;font-weight:600">POWER LAW</span>`
       : `<span style="font-size:0.65rem;background:rgba(96,165,250,0.12);color:#60a5fa;padding:0.1rem 0.4rem;border-radius:3px;margin-left:0.35rem;font-weight:600">LINEAR</span>`;
+    const primaryBadge = s.useLabor ? laborModelBadge : costModelBadge;
+    const primaryR2Pct = s.useLabor ? laborR2Pct : costR2Pct;
 
-    if (s.tooFewForR2) {
-      lines.push(`<strong style="color:#9ca3af">Insufficient data for trend analysis.</strong> Only ${s.n} job${s.n!==1?'s':''} recorded — need at least 3 for a statistically valid R².`);
-      lines.push(`Keep logging jobs with bid quantities to unlock trend analysis.`);
+    if (s.classTooFew || (s.useLabor ? s.laborTooFew : s.tooFewForR2)) {
+      lines.push(`<strong style="color:#9ca3af">Insufficient data for trend analysis.</strong> Only ${s.n} job${s.n!==1?'s':''} recorded — need at least 2 with labor hours tracked.`);
+      lines.push(`Keep logging jobs with bid quantities and daily hours to unlock trend analysis.`);
     } else if (s.trend === 'Economy of Scale') {
-      lines.push(`<strong style="color:#4ade80">Economy of scale confirmed.</strong>${modelBadge} Unit cost decreases as job size grows.`);
-      if (s.effectiveR2 >= 0.30) lines.push(`${s.strength} relationship (R²=${r2Pct}%): job size explains ${r2Pct}% of the cost variation across projects.`);
-      if (Math.abs(s.pctChange) >= 5) lines.push(`Smallest → largest recorded job: unit cost drops ~${Math.abs(s.pctChange).toFixed(0)}%. Bid larger ${s.unit||'unit'} jobs more aggressively.`);
-      if (s.usePowerLaw && s.bPow !== null) {
-        // Translate exponent into plain English
-        const doublingPct = ((Math.pow(2, s.bPow) - 1) * 100).toFixed(1);
-        lines.push(`Scale exponent b = ${s.bPow.toFixed(2)}: doubling job size reduces unit cost by ~${Math.abs(doublingPct)}%. ${Math.abs(s.bPow) >= 0.20 ? 'This is a <strong style="color:#4ade80">strong</strong> scale effect — industry benchmark for turf/rubber install is typically 0.15–0.25.' : 'Moderate scale effect — typical for installation work with fixed mobilization costs.'}`);
+      if (s.useLabor) {
+        lines.push(`<strong style="color:#4ade80">Labor scale economy confirmed.</strong>${primaryBadge} Crew labor hours per ${s.unit||'unit'} decrease as job size grows — your team gets more efficient on larger jobs.`);
+        if (s.laborR2 >= 0.30) lines.push(`${s.strength} relationship (R²=${laborR2Pct}%): job size explains ${laborR2Pct}% of the labor efficiency variation.`);
+        if (Math.abs(s.pctChange) >= 5) lines.push(`Smallest → largest recorded job: labor hrs/${s.unit||'unit'} drops ~${Math.abs(s.pctChange).toFixed(0)}%. Bid larger jobs more aggressively — your crew runs leaner at scale.`);
+        if (s.laborB !== null) {
+          const doublingPct = ((Math.pow(2, s.laborB) - 1) * 100).toFixed(1);
+          lines.push(`Labor scale exponent b = ${s.laborB.toFixed(2)}: doubling job size reduces labor hrs/${s.unit||'unit'} by ~${Math.abs(doublingPct)}%. ${Math.abs(s.laborB) >= 0.20 ? 'This is a <strong style="color:#4ade80">strong</strong> labor scale effect — industry benchmark for turf/rubber install is typically b = −0.15 to −0.30.' : 'Moderate labor scale effect — consistent with installation work benefiting from setup amortization.'}`);
+        }
+        if (costR2Pct >= 10) lines.push(`<span style="color:#6b7280;font-size:0.7rem">Cost signal (R²=${costR2Pct}%): cost-per-unit also trends down with size, supporting the labor finding.</span>`);
+      } else {
+        lines.push(`<strong style="color:#4ade80">Economy of scale confirmed.</strong>${primaryBadge} Unit cost decreases as job size grows.`);
+        if (s.effectiveR2 >= 0.30) lines.push(`${s.strength} relationship (R²=${costR2Pct}%): job size explains ${costR2Pct}% of the cost variation across projects.`);
+        if (Math.abs(s.pctChange) >= 5) lines.push(`Smallest → largest recorded job: unit cost drops ~${Math.abs(s.pctChange).toFixed(0)}%. Bid larger ${s.unit||'unit'} jobs more aggressively.`);
+        if (s.usePowerLaw && s.bPow !== null) {
+          const doublingPct = ((Math.pow(2, s.bPow) - 1) * 100).toFixed(1);
+          lines.push(`Scale exponent b = ${s.bPow.toFixed(2)}: doubling job size reduces unit cost by ~${Math.abs(doublingPct)}%. ${Math.abs(s.bPow) >= 0.20 ? 'This is a <strong style="color:#4ade80">strong</strong> scale effect — industry benchmark for turf/rubber install is typically 0.15–0.25.' : 'Moderate scale effect — typical for installation work with fixed mobilization costs.'}`);
+        }
       }
     } else if (s.trend === 'Inverse Scale') {
-      lines.push(`<strong style="color:#f87171">Inverse scale.</strong>${modelBadge} Unit cost increases as job size grows.`);
-      if (s.effectiveR2 >= 0.30) lines.push(`${s.strength} relationship (R²=${r2Pct}%). Larger jobs for this sub code run more expensive per unit.`);
-      lines.push(`Review whether large-job complexity — extra crew coordination, longer hauls, or phased installs — is fully captured in your bid.`);
-      if (s.usePowerLaw && s.bPow !== null) {
-        const doublingPct = ((Math.pow(2, s.bPow) - 1) * 100).toFixed(1);
-        lines.push(`Scale exponent b = +${s.bPow.toFixed(2)}: doubling job size adds ~${doublingPct}% to unit cost.`);
+      if (s.useLabor) {
+        lines.push(`<strong style="color:#f87171">Labor inverse scale.</strong>${primaryBadge} Crew labor hrs/${s.unit||'unit'} increases as job size grows — larger jobs are less efficient for this sub code.`);
+        if (s.laborR2 >= 0.30) lines.push(`${s.strength} relationship (R²=${laborR2Pct}%). Review crew sizing and setup time on large jobs.`);
+        lines.push(`Consider whether larger jobs involve more complex phasing, longer material hauls, or crew coordination overhead that reduces per-unit efficiency.`);
+        if (s.laborB !== null) {
+          const doublingPct = ((Math.pow(2, s.laborB) - 1) * 100).toFixed(1);
+          lines.push(`Labor scale exponent b = +${s.laborB.toFixed(2)}: doubling job size adds ~${doublingPct}% to labor hrs/${s.unit||'unit'}.`);
+        }
+      } else {
+        lines.push(`<strong style="color:#f87171">Inverse scale.</strong>${primaryBadge} Unit cost increases as job size grows.`);
+        if (s.effectiveR2 >= 0.30) lines.push(`${s.strength} relationship (R²=${costR2Pct}%). Larger jobs for this sub code run more expensive per unit.`);
+        lines.push(`Review whether large-job complexity — extra crew coordination, longer hauls, or phased installs — is fully captured in your bid.`);
+        if (s.usePowerLaw && s.bPow !== null) {
+          const doublingPct = ((Math.pow(2, s.bPow) - 1) * 100).toFixed(1);
+          lines.push(`Scale exponent b = +${s.bPow.toFixed(2)}: doubling job size adds ~${doublingPct}% to unit cost.`);
+        }
       }
     } else {
-      lines.push(`<strong style="color:#9ca3af">No clear size-cost relationship.</strong>${modelBadge} Job size doesn't significantly predict unit cost (R²=${r2Pct}%).`);
-      lines.push(`Cost variation is likely driven by crew composition, site conditions, or seasonality. Check the Seasonal Pattern and Crew sections below.`);
-      if (s.laborPts && s.laborPts.length >= 3) lines.push(`<span style="color:#818cf8;font-size:0.75rem">Tip: check the Labor Efficiency chart — there may be a scale trend in crew hours/unit even if total cost doesn't show it clearly.</span>`);
+      if (s.useLabor) {
+        lines.push(`<strong style="color:#9ca3af">No clear labor scale pattern.</strong>${primaryBadge} Job size doesn't significantly predict labor hrs/${s.unit||'unit'} (R²=${laborR2Pct}%).`);
+        lines.push(`Labor efficiency variation is likely driven by crew composition, site conditions, or individual job complexity.`);
+      } else {
+        lines.push(`<strong style="color:#9ca3af">No clear size-cost relationship.</strong>${primaryBadge} Job size doesn't significantly predict unit cost (R²=${costR2Pct}%).`);
+        lines.push(`Cost variation is likely driven by crew composition, site conditions, or seasonality. Check the Seasonal Pattern and Crew sections below.`);
+      }
     }
-    if (s.outlierCount > 0) lines.push(`<span style="color:#fbbf24;font-size:0.72rem">⚠ ${s.outlierCount} outlier job${s.outlierCount!==1?'s':''} detected (&gt;2σ from mean). ${s.slopeClean !== null ? 'Dashed line excludes outliers.' : ''}</span>`);
-    if (s.usePowerLaw && !s.tooFewForR2) {
-      lines.push(`<span style="color:#6b7280;font-size:0.7rem">Model selected: power law (R²=${Math.round(s.r2Pow*100)}%) vs linear (R²=${Math.round(s.r2*100)}%) — power law fits better, consistent with construction industry scale patterns.</span>`);
+    if (s.outlierCount > 0) lines.push(`<span style="color:#fbbf24;font-size:0.72rem">⚠ ${s.outlierCount} cost outlier job${s.outlierCount!==1?'s':''} detected (&gt;2σ from mean). ${s.slopeClean !== null ? 'Dashed line excludes outliers.' : ''}</span>`);
+    if (!s.useLabor && s.usePowerLaw && !s.tooFewForR2) {
+      lines.push(`<span style="color:#6b7280;font-size:0.7rem">Cost model: power law (R²=${Math.round(s.r2Pow*100)}%) vs linear (R²=${Math.round(s.r2*100)}%) — power law fits better.</span>`);
     }
-    lines.push(`<span style="color:var(--muted);font-size:0.72rem">Based on ${s.n} job${s.n!==1?'s':''} · Size range: ${fmt(s.minX,0)}–${fmt(s.maxX,0)} ${s.unit||'units'} · Avg unit cost: $${fmt(s.avgUC)}</span>`);
+    const laborNote = s.useLabor
+      ? `· Labor signal: R²=${laborR2Pct}%, b=${s.laborB !== null ? s.laborB.toFixed(2) : '—'} (${s.laborPts.length} jobs w/ hours)`
+      : '';
+    lines.push(`<span style="color:var(--muted);font-size:0.72rem">Based on ${s.n} job${s.n!==1?'s':''} · Size range: ${fmt(s.minX,0)}–${fmt(s.maxX,0)} ${s.unit||'units'} · Avg unit cost: $${fmt(s.avgUC)} ${laborNote}</span>`);
     return lines.map(l => `<p style="margin:0 0 0.45rem;font-size:0.8rem;line-height:1.5">${l}</p>`).join('');
   }
 
@@ -10357,10 +10427,9 @@ function renderScaleOfEconomy() {
 
   const rows = stats.map((s, i) => {
     const detId    = 'soe-det-' + i;
-    const pctStr   = (!s.tooFewForR2 && s.r2 >= 0.10)
-      ? (s.pctChange >= 0 ? '+' : '') + s.pctChange.toFixed(1) + '%'
-      : '—';
-    const pctColor = (!s.tooFewForR2 && s.r2 >= 0.10) ? (s.pctChange < 0 ? '#4ade80' : '#f87171') : '#9ca3af';
+    const hasTrend = s.trend === 'Economy of Scale' || s.trend === 'Inverse Scale';
+    const pctStr   = hasTrend ? (s.pctChange >= 0 ? '+' : '') + s.pctChange.toFixed(1) + '%' : '—';
+    const pctColor = hasTrend ? (s.pctChange < 0 ? '#4ade80' : '#f87171') : '#9ca3af';
     const lowSampleBadge = s.tooFewForR2
       ? `<span title="Only ${s.n} jobs — need 3+ for reliable trend analysis" style="font-size:0.6rem;font-weight:700;background:rgba(107,114,128,0.2);color:#9ca3af;padding:0.1rem 0.35rem;border-radius:3px;margin-left:0.4rem;letter-spacing:0.04em">LOW SAMPLE</span>`
       : (s.n <= 4 ? `<span title="${s.n} jobs — trend direction may shift as more data is added" style="font-size:0.6rem;font-weight:700;background:rgba(251,191,36,0.15);color:#fbbf24;padding:0.1rem 0.35rem;border-radius:3px;margin-left:0.4rem;letter-spacing:0.04em">FEW JOBS</span>` : '');
@@ -10423,8 +10492,8 @@ function renderScaleOfEconomy() {
   el.innerHTML = `<div style="max-width:1200px">
     <div style="margin-bottom:0.75rem">
       <div style="font-size:0.75rem;color:var(--muted);line-height:1.5">
-        Does cost per unit change as job size increases? <strong style="color:var(--text)">Economy of scale</strong> = larger jobs cost less per unit.
-        <strong style="color:var(--text)">Inverse scale</strong> = larger jobs cost more per unit. Click any row to see the scatter plot and size-tier breakdown.
+        Does labor efficiency change as job size increases? <strong style="color:var(--text)">Economy of scale</strong> = larger jobs require fewer labor hours per unit.
+        <strong style="color:var(--text)">Inverse scale</strong> = larger jobs require more labor hours per unit. Classification is based on <strong style="color:var(--text)">labor hrs/unit</strong> (pure crew productivity — no material cost noise). Click any row to see charts and detail.
       </div>
     </div>
     ${cards}
@@ -10436,18 +10505,19 @@ function renderScaleOfEconomy() {
           <th style="${TH};text-align:center">Unit</th>
           <th style="${THR};text-align:center"># Jobs</th>
           <th style="${THR}">Avg Unit Cost</th>
-          <th style="${TH}">Scale Trend</th>
+          <th style="${TH}">Labor Scale Trend</th>
           <th style="${TH};text-align:center">Strength</th>
-          <th style="${THR}">Cost Δ Small→Large</th>
+          <th style="${THR}">Labor Δ Small→Large</th>
           <th style="${TH};width:28px"></th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
     <div style="font-size:0.68rem;color:#444;margin-top:0.6rem;line-height:1.6">
-      <strong style="color:#6b7280">R²</strong> = how much of cost variation job size explains. Strength: Weak &lt;30% · Moderate &lt;55% · Strong &lt;75% · Very Strong 75%+. Requires ≥2 jobs per sub code. ·
-      <strong style="color:#818cf8">Power law</strong> (y = a·x<sup>b</sup>) is used when it fits better than linear — this is the industry-standard model for scale of economy in construction.
-      Scale exponent b: negative means larger jobs cost less per unit (economy of scale); the magnitude tells you how steep the savings curve is. Doubling job size reduces cost by (2<sup>b</sup>−1)×100%.
+      <strong style="color:#4ade80">Labor Scale Trend</strong> = primary signal based on labor hrs/unit vs job size (strips material cost, shows pure crew productivity). Requires ≥2 jobs with hours tracked. ·
+      <strong style="color:#6b7280">R²</strong> = how much of the efficiency variation job size explains. Strength: Weak &lt;30% · Moderate &lt;55% · Strong &lt;75% · Very Strong 75%+. ·
+      Scale exponent b: negative = larger jobs need fewer hrs/unit (economy of scale); doubling job size changes labor by (2<sup>b</sup>−1)×100%. ·
+      <strong style="color:#818cf8">Power law</strong> (y = a·x<sup>b</sup>) is the industry-standard scale model for construction — used when it fits better than linear.
     </div>
   </div>`;
 }
