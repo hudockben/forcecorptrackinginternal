@@ -7185,7 +7185,17 @@ function getSubCodes(projId, costCode) {
   const p = projId ? getProj(projId) : null;
   const src = p ? (p.bidItems || []) : costRows;
   const filtered = costCode ? src.filter(r => r.cost_code === costCode) : src;
-  return [...new Set(filtered.map(r => r.sub_code).filter(Boolean))];
+  const fromBids = [...new Set(filtered.map(r => r.sub_code).filter(Boolean))];
+  // Also include sub codes already used in daily rows for this cost code —
+  // handles the case where the bid item's sub_code field is blank but rows
+  // have already been saved with a value (e.g. after a rename).
+  if (p && p.dailyRows) {
+    const fromRows = p.dailyRows
+      .filter(r => (!costCode || r.cost_code === costCode) && r.sub_code)
+      .map(r => r.sub_code);
+    return [...new Set([...fromBids, ...fromRows])];
+  }
+  return fromBids;
 }
 
 /* ── Modal ── */
@@ -12576,16 +12586,16 @@ document.addEventListener('input', e => {
     p.dailyRows[i][f] = el.value;
     // Filter sub_code dropdown to only show sub codes for the selected cost code
     if (f === 'cost_code') {
-      const newSubCodes = getSubCodes(projId, el.value);
+      const newSubCodes = getSubCodes(projId, el.value); // includes daily-row values
       const _tbody = document.getElementById('daily-tbody-' + projId);
       const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
       if (rowEl) {
         const scSelect = rowEl.querySelector('[data-f="sub_code"]');
         if (scSelect) {
           const cur = p.dailyRows[i].sub_code;
-          const opts = el.value ? ['', ...newSubCodes] : ['', ...getSubCodes(projId)];
+          const opts = el.value ? ['', ...newSubCodes.slice().sort((a,b) => a.localeCompare(b))] : ['', ...getSubCodes(projId).slice().sort((a,b) => a.localeCompare(b))];
           scSelect.innerHTML = opts.map(o =>
-            `<option value="${esc(o)}"${o === cur && opts.includes(cur) ? ' selected' : ''}>${esc(o)}</option>`
+            `<option value="${esc(o)}"${o === cur ? ' selected' : ''}>${esc(o)}</option>`
           ).join('');
           if (cur && !newSubCodes.includes(cur)) {
             scSelect.value = '';
