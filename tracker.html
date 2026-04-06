@@ -2283,6 +2283,7 @@
     <button class="btn btn-ghost" id="sched-pp-btn" onclick="_ppOpen()" style="font-size:0.75rem;display:none">&#128197; Projection Planner</button>
     <button class="btn btn-ghost" id="sched-pm-btn" onclick="openDailyPMReport()" style="font-size:0.75rem;display:none">&#128203; Daily PM Report</button>
     <button class="btn btn-ghost" id="sched-pdf-btn" onclick="printSchedulePDF()" style="font-size:0.75rem;display:none">&#128438; Export PDF</button>
+    <button class="btn btn-ghost" id="sched-gantt-btn" onclick="printGanttPDF()" style="font-size:0.75rem;display:none">&#128200; Gantt Chart</button>
     <span id="sched-last-updated" style="font-size:0.7rem;color:var(--muted);margin-left:auto"></span>
   </div>
   <div id="sched-body" style="padding:1.25rem;overflow:auto;max-height:calc(100vh - 110px)">
@@ -13055,32 +13056,42 @@ function _schedCalcRow(bi, agg, daysLeft, deadline) {
   return { a, bidQty, baseBidQty, coQtyDelta, runningQty, daysWorked, currentPace, recentPace, avgCrewPerDay, pct, unitsLeft, plannedPace, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, hoursLeft, unitsPerHour, laborHoursPerDay, notStartedYet, isLumpSum, forcedComplete, costToComplete, costPerUnit };
 }
 
-/** Build sorted [{date, qty}] for one cost code from the project's daily rows. */
+/** Build sorted [{date, qty, hours}] for one cost code from the project's daily rows. */
 function _schedDailyBreakdown(proj, biKey) {
   const byDate = {};
   (proj.dailyRows || []).forEach(row => {
     const k = (row.cost_code || '') + '||' + (row.sub_code || '');
     if (k !== biKey) return;
-    byDate[row.date] = (byDate[row.date] || 0) + (parseFloat(row.quantity) || 0);
+    if (!byDate[row.date]) byDate[row.date] = { qty: 0, hours: 0 };
+    byDate[row.date].qty   += parseFloat(row.quantity)    || 0;
+    byDate[row.date].hours += parseFloat(row.labor_hours) || 0;
   });
-  return Object.entries(byDate).sort(([a],[b]) => a.localeCompare(b)).map(([date, qty]) => ({ date, qty }));
+  return Object.entries(byDate).sort(([a],[b]) => a.localeCompare(b))
+    .map(([date, { qty, hours }]) => ({ date, qty, hours }));
 }
 
-/** Compute pace trend metrics from a daily breakdown. */
+/** Compute pace trend metrics from a daily breakdown.
+ *  When labor_hours are available, uses efficiency (qty/hr) instead of raw qty/day
+ *  so the trend normalises for crew-size fluctuations. */
 function _schedTrendMetrics(breakdown) {
   if (!breakdown || breakdown.length < 2) return null;
-  const qtys  = breakdown.map(d => d.qty);
-  const last3  = qtys.slice(-3);
-  const last7  = qtys.slice(-7);
-  const avg3   = last3.reduce((a, b) => a + b, 0) / last3.length;
-  const avg7   = last7.reduce((a, b) => a + b, 0) / last7.length;
+  const hasHours = breakdown.some(d => d.hours > 0);
+  // Efficiency-based: filter to days with hours logged, use qty/hr as the value
+  const vals = hasHours
+    ? breakdown.filter(d => d.hours > 0).map(d => d.qty / d.hours)
+    : breakdown.map(d => d.qty);
+  if (vals.length < 2) return null;
+  const last3 = vals.slice(-3);
+  const last7 = vals.slice(-7);
+  const avg3  = last3.reduce((a, b) => a + b, 0) / last3.length;
+  const avg7  = last7.reduce((a, b) => a + b, 0) / last7.length;
   let direction = 'flat';
   if (avg7 > 0.001) {
     const delta = (avg3 - avg7) / avg7;
     if (delta > 0.10)       direction = 'up';
     else if (delta < -0.10) direction = 'down';
   }
-  return { avg3, avg7, direction, totalDays: breakdown.length };
+  return { avg3, avg7, direction, totalDays: breakdown.length, efficiencyBased: hasHours };
 }
 
 /** Replay per-day status to build a history array [{date, status, gap, pace}].
@@ -13165,10 +13176,19 @@ function renderScheduleProjectDetail(proj) {
     const trendWord  = trend ? ({ up: 'Improving', flat: 'Stable', down: 'Declining' }[trend.direction]) : null;
     const csColor    = { 'behind': 'var(--red)', 'at-risk': 'var(--yellow)', 'on-track': 'var(--green)', 'complete': 'var(--blue)' }[csStatus] || 'var(--muted)';
     const csLabel    = { 'behind': 'behind', 'at-risk': 'at-risk', 'on-track': 'on track', 'complete': 'complete' }[csStatus] || (csStatus || '');
+    // Sparkline: use efficiency (qty/hr) values when hours are available so the line
+    // reflects productivity rather than crew-size-inflated volume.
+    const sparkBreakdown = (trend && trend.efficiencyBased)
+      ? breakdown.filter(d => d.hours > 0).map(d => ({ date: d.date, qty: d.qty / d.hours, hours: d.hours }))
+      : breakdown;
+    const trendEffLabel  = trend && trend.efficiencyBased
+      ? `<div style="font-size:0.6rem;color:var(--muted);opacity:0.7;margin-top:1px">efficiency/hr</div>`
+      : '';
     const trendCell  = `<td class="num"><div class="sched-trend-cell">
-      ${trend && breakdown.length >= 2 ? _sparklineSvg(breakdown, trendColor) : '<span style="color:var(--muted);font-size:0.72rem">—</span>'}
+      ${trend && sparkBreakdown.length >= 2 ? _sparklineSvg(sparkBreakdown, trendColor) : '<span style="color:var(--muted);font-size:0.72rem">—</span>'}
       ${trendArrow ? `<div class="sched-trend-arrow" style="color:${trendColor};font-size:0.75rem;font-weight:700">${trendArrow} <span style="font-size:0.65rem">${trendWord}</span></div>` : ''}
       ${csDays >= 2 ? `<div class="sched-trend-label" style="color:${csColor}">${csDays}d ${csLabel}</div>` : ''}
+      ${trendEffLabel}
     </div></td>`;
 
     const employees  = [...a.employees].slice(0, 3).join(', ') || '—';
@@ -13280,12 +13300,17 @@ function renderScheduleProjectDetail(proj) {
           ? (() => {
               const showRecent = recentPace > 0 && Math.abs(recentPace - currentPace) > 0.01;
               const display    = showRecent ? recentPace : currentPace;
+              const crewNote   = avgCrewPerDay !== null && avgCrewPerDay > 1.05
+                ? ` · ${fmt(avgCrewPerDay,1)} crew` : '';
               const subLabel   = showRecent
-                ? `<span style="font-size:0.62rem;color:var(--muted)">7d avg${avgCrewPerDay !== null && avgCrewPerDay > 1.05 ? ` · ${fmt(avgCrewPerDay,1)} crew` : ''}</span>`
-                : avgCrewPerDay !== null && avgCrewPerDay > 1.05
+                ? `<span style="font-size:0.62rem;color:var(--muted)">7d avg${crewNote}</span>`
+                : crewNote
                   ? `<span style="font-size:0.62rem;color:var(--muted)">${fmt(avgCrewPerDay,1)} avg crew</span>`
                   : '';
-              return `${fmt(display, 2)}${uLabel}/d${subLabel ? '<br>' + subLabel : ''}`;
+              const hrLabel    = unitsPerHour !== null
+                ? `<br><span style="font-size:0.62rem;color:var(--muted);opacity:0.85">${fmt(unitsPerHour,2)}${uLabel}/hr</span>`
+                : '';
+              return `${fmt(display, 2)}${uLabel}/d${subLabel ? '<br>' + subLabel : ''}${hrLabel}`;
             })()
           : '—'}</td>
       ${trendCell}
@@ -13295,9 +13320,9 @@ function renderScheduleProjectDetail(proj) {
         : notStartedYet || hoursLeft === null ? '<span style="color:var(--muted)">—</span>'
         : (() => {
             const hrs = Math.round(hoursLeft);
-            const rateNote = unitsPerHour !== null ? `<br><span style="font-size:0.62rem;color:var(--muted)">${fmt(unitsPerHour,2)}/hr avg</span>` : '';
+            const hrsColor = hrs <= 8 ? 'var(--green)' : hrs <= 40 ? 'var(--yellow)' : 'var(--text)';
             const costNote = costToComplete !== null ? `<br><span style="font-size:0.62rem;color:var(--yellow)">$${fmt(costToComplete)} est. cost</span>` : '';
-            return `<span style="font-weight:600">${hrs} hr${hrs !== 1 ? 's' : ''}</span>${rateNote}${costNote}`;
+            return `<span style="font-weight:700;font-size:0.9rem;color:${hrsColor}">${hrs}</span><span style="font-size:0.72rem;color:var(--muted)"> hr${hrs !== 1 ? 's' : ''}</span>${costNote}`;
           })()
       }</td>
       <td class="num" style="white-space:nowrap">${goalCell}</td>
@@ -13341,7 +13366,7 @@ function renderScheduleProjectDetail(proj) {
           <th class="num">Current Pace</th>
           <th class="num" style="min-width:80px">Pace Trend</th>
           <th class="num">Required Pace</th>
-          <th class="num">Est. Left</th>
+          <th class="num">Est. Hours Remaining</th>
           <th class="num">Today's Goal</th>
           <th class="num">Gap</th>
           <th class="num">Proj. Finish</th>
@@ -13476,10 +13501,11 @@ async function renderScheduleTab() {
   if (!_schedDeadlinesLoaded) await loadScheduleDeadlines();
 
   const projId = sel ? sel.value : '';
-  const aiBtn  = document.getElementById('sched-ai-btn');
-  const ppBtn  = document.getElementById('sched-pp-btn');
-  const pmBtn  = document.getElementById('sched-pm-btn');
-  const pdfBtn = document.getElementById('sched-pdf-btn');
+  const aiBtn     = document.getElementById('sched-ai-btn');
+  const ppBtn     = document.getElementById('sched-pp-btn');
+  const pmBtn     = document.getElementById('sched-pm-btn');
+  const pdfBtn    = document.getElementById('sched-pdf-btn');
+  const ganttBtn  = document.getElementById('sched-gantt-btn');
 
   if (projId) {
     const proj = getProj(projId);
@@ -13491,27 +13517,31 @@ async function renderScheduleTab() {
         body.innerHTML = `<div class="sched-no-data">Error rendering schedule detail.<br><span style="font-size:0.72rem;color:var(--muted)">${e.message || e}</span></div>`;
       }
       const hasBidItems = (proj.bidItems || []).length > 0;
-      if (aiBtn)  aiBtn.style.display  = hasBidItems ? '' : 'none';
-      if (ppBtn)  ppBtn.style.display  = hasBidItems ? '' : 'none';
-      if (pmBtn)  pmBtn.style.display  = hasBidItems ? '' : 'none';
-      if (pdfBtn) pdfBtn.style.display = hasBidItems ? '' : 'none';
+      const hasGanttData = hasBidItems && (proj.bidItems || []).some(bi => bi.start_date || bi.target_date);
+      if (aiBtn)    aiBtn.style.display    = hasBidItems  ? '' : 'none';
+      if (ppBtn)    ppBtn.style.display    = hasBidItems  ? '' : 'none';
+      if (pmBtn)    pmBtn.style.display    = hasBidItems  ? '' : 'none';
+      if (pdfBtn)   pdfBtn.style.display   = hasBidItems  ? '' : 'none';
+      if (ganttBtn) ganttBtn.style.display = hasGanttData ? '' : 'none';
       // Store current projId for the PP button
       _pp.projId = proj.id;
       if (_pp.projId !== proj.id) { _pp.days = {}; _pp.biKey = null; }
     } else {
       body.innerHTML = '<div class="sched-no-data">Project not found.</div>';
-      if (aiBtn)  aiBtn.style.display  = 'none';
-      if (ppBtn)  ppBtn.style.display  = 'none';
-      if (pmBtn)  pmBtn.style.display  = 'none';
-      if (pdfBtn) pdfBtn.style.display = 'none';
+      if (aiBtn)    aiBtn.style.display    = 'none';
+      if (ppBtn)    ppBtn.style.display    = 'none';
+      if (pmBtn)    pmBtn.style.display    = 'none';
+      if (pdfBtn)   pdfBtn.style.display   = 'none';
+      if (ganttBtn) ganttBtn.style.display = 'none';
     }
   } else {
     if (!_schedPage) _schedPage = 0; // reset only if undefined
     body.innerHTML = renderScheduleAllProjects();
-    if (aiBtn)  aiBtn.style.display  = 'none';
-    if (ppBtn)  ppBtn.style.display  = 'none';
-    if (pmBtn)  pmBtn.style.display  = 'none';
-    if (pdfBtn) pdfBtn.style.display = 'none';
+    if (aiBtn)    aiBtn.style.display    = 'none';
+    if (ppBtn)    ppBtn.style.display    = 'none';
+    if (pmBtn)    pmBtn.style.display    = 'none';
+    if (pdfBtn)   pdfBtn.style.display   = 'none';
+    if (ganttBtn) ganttBtn.style.display = 'none';
   }
 
   const ts = document.getElementById('sched-last-updated');
@@ -13662,17 +13692,19 @@ function _buildDailyPMReport(proj, aiResult) {
             </div>
             <div class="det-row">
               <span class="det-lbl">Curr. Pace</span>
-              <span>${currentPace > 0 ? fmt(currentPace,2) + '/day avg (' + daysWorked + ' days worked)' : 'No entries yet'}</span>
+              <span>${currentPace > 0
+                ? fmt(currentPace,2) + '/day avg (' + daysWorked + ' days worked)'
+                  + (unitsPerHour !== null ? ` · ${fmt(unitsPerHour,2)}/hr` : '')
+                : 'No entries yet'}</span>
             </div>
             <div class="det-row">
-              <span class="det-lbl">Est. Hrs Left</span>
+              <span class="det-lbl">Est. Hrs Remaining</span>
               <span>${
                 status === 'complete' ? '✓ Complete'
                 : hoursLeft === null ? '—'
                 : (() => {
                     const hrs = Math.round(hoursLeft);
-                    const rateStr = unitsPerHour !== null ? ` · ${fmt(unitsPerHour,2)}/hr historical rate` : '';
-                    return `~${hrs} hr${hrs !== 1 ? 's' : ''}${rateStr}`;
+                    return `~${hrs} hr${hrs !== 1 ? 's' : ''}`;
                   })()
               }</span>
             </div>
@@ -13800,7 +13832,10 @@ function printDailyPMReport() {
             </div>
             <div style="display:flex;gap:8px">
               <span style="font-size:9px;color:#777;text-transform:uppercase;min-width:58px">Curr. Pace</span>
-              <span style="font-size:10px">${currentPace > 0 ? fmt(currentPace,2) + '/day avg (' + daysWorked + ' day' + (daysWorked !== 1 ? 's' : '') + ' worked)' : 'No entries yet'}</span>
+              <span style="font-size:10px">${currentPace > 0
+                ? fmt(currentPace,2) + '/day avg (' + daysWorked + ' day' + (daysWorked !== 1 ? 's' : '') + ' worked)'
+                  + (unitsPerHour !== null ? ` · ${fmt(unitsPerHour,2)}/hr` : '')
+                : 'No entries yet'}</span>
             </div>
             <div style="display:flex;gap:8px">
               <span style="font-size:9px;color:#777;text-transform:uppercase;min-width:58px">Crew</span>
@@ -13918,7 +13953,7 @@ async function printSchedulePDF() {
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
 
   const tableRows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, recentPace, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, notStartedYet, isLumpSum, forcedComplete } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, recentPace, pct, unitsLeft, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, notStartedYet, isLumpSum, forcedComplete, hoursLeft, unitsPerHour } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
     const pdfUnit   = (bi.unit || '').toUpperCase();
     const pdfULabel = pdfUnit ? ` ${pdfUnit}` : '';
@@ -14001,9 +14036,20 @@ async function printSchedulePDF() {
         </div>
       </td>
       <td style="text-align:right">${daysWorked > 0 ? daysWorked : '—'}</td>
-      <td style="text-align:right">${currentPace > 0 ? fmt(currentPace,2)+'/d' : '—'}</td>
+      <td style="text-align:right">${currentPace > 0
+        ? fmt(currentPace,2)+'/d' + (unitsPerHour !== null ? `<br><span style="font-size:7.5px;color:#888">${fmt(unitsPerHour,2)}/hr</span>` : '')
+        : '—'}</td>
       <td style="text-align:right">${trendCell}</td>
       <td style="text-align:right">${requiredPace !== null ? fmt(requiredPace,2)+pdfULabel+'/d' + (usingPPDays ? `<br><span style="font-size:8px;color:#555">${ppDaysFmt}d PP</span>` : `<br><span style="font-size:7px;color:#aaa">cal. est.</span>`) : '—'}</td>
+      <td style="text-align:right">${
+        forcedComplete || pct >= 100 ? '<span style="color:#15803d">✓ Done</span>'
+        : notStartedYet || hoursLeft === null ? '—'
+        : (() => {
+            const pdfHrs = Math.round(hoursLeft);
+            const pdfHrsColor = pdfHrs <= 8 ? '#15803d' : pdfHrs <= 40 ? '#b45309' : '#111';
+            return `<span style="font-weight:700;font-size:10px;color:${pdfHrsColor}">~${pdfHrs} hr${pdfHrs !== 1 ? 's' : ''}</span>`;
+          })()
+      }</td>
       <td style="text-align:right;font-weight:700;color:${sc}">${goalTxt}</td>
       <td style="text-align:right">${gapTxt}</td>
       <td style="text-align:right">${projFinishTxt}</td>
@@ -14079,16 +14125,284 @@ async function printSchedulePDF() {
       <th style="text-align:right">Curr. Pace</th>
       <th style="text-align:right;min-width:70px">Pace Trend</th>
       <th style="text-align:right">Req. Pace</th>
+      <th style="text-align:right">Est. Hrs Remaining</th>
       <th style="text-align:right">Today's Goal</th>
       <th style="text-align:right">Gap</th>
       <th style="text-align:right">Proj. Finish</th>
       <th style="text-align:center">Status</th>
     </tr></thead>
-    <tbody>${tableRows || '<tr><td colspan="12" style="text-align:center;color:#888;padding:1rem">No bid items found.</td></tr>'}</tbody>
+    <tbody>${tableRows || '<tr><td colspan="13" style="text-align:center;color:#888;padding:1rem">No bid items found.</td></tr>'}</tbody>
   </table>
   <div style="margin-top:10px;padding-top:6px;border-top:1px solid #ddd;font-size:8px;color:#aaa;display:flex;justify-content:space-between">
     <span>DataWatch — Schedule Pacing Report</span>
     <span>Generated ${new Date().toLocaleString()}</span>
+  </div>
+  <script>window.onload = () => { window.print(); }<\/script>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+}
+
+/* ── Gantt Chart PDF Export ──────────────────────────────────────────────── */
+
+function printGanttPDF() {
+  const sel    = document.getElementById('sched-proj-select');
+  const projId = sel ? sel.value : '';
+  if (!projId) return;
+  const proj = getProj(projId);
+  if (!proj) return;
+
+  const deadline   = _schedGetDeadline(proj);
+  const daysLeft   = _schedDaysRemaining(deadline);
+  const agg        = _schedPaceForProject(proj);
+  const bidItems   = (proj.bidItems || []).filter(bi => bi.start_date || bi.target_date || bi.cost_code);
+  if (!bidItems.length) return;
+
+  const projName  = proj['project-name'] || 'Untitled Project';
+  const jobNum    = proj['job-number'] ? 'Job #' + proj['job-number'] : '';
+  const todayStr  = _localDateStr();
+  const todayMs   = new Date(todayStr + 'T12:00:00').getTime();
+
+  // ── Compute date range ────────────────────────────────────────────────────
+  const allDates = [];
+  bidItems.forEach(bi => {
+    if (bi.start_date)  allDates.push(new Date(bi.start_date  + 'T12:00:00').getTime());
+    if (bi.target_date) allDates.push(new Date(bi.target_date + 'T12:00:00').getTime());
+  });
+  if (deadline) allDates.push(new Date(deadline + 'T12:00:00').getTime());
+  allDates.push(todayMs);
+
+  // Compute projected finish dates and add to range
+  bidItems.forEach(bi => {
+    const { recentPace, currentPace, unitsLeft, pct, forcedComplete } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    if (!forcedComplete && pct < 100) {
+      const pace = recentPace > 0 ? recentPace : currentPace;
+      if (pace > 0 && unitsLeft > 0) {
+        const pf = _addWorkingDays(todayStr, unitsLeft / pace);
+        if (pf) allDates.push(new Date(pf + 'T12:00:00').getTime());
+      }
+    }
+  });
+
+  let rangeStart = Math.min(...allDates);
+  let rangeEnd   = Math.max(...allDates);
+  // Pad 3 days each side
+  const DAY_MS = 86400000;
+  rangeStart -= 3 * DAY_MS;
+  rangeEnd   += 3 * DAY_MS;
+  const totalMs = rangeEnd - rangeStart;
+
+  // ── SVG layout constants ──────────────────────────────────────────────────
+  const SVG_W      = 900;
+  const LEFT_PAD   = 200;  // label column
+  const RIGHT_PAD  = 20;
+  const ROW_H      = 28;
+  const BAR_H      = 14;
+  const BAR_Y_OFF  = (ROW_H - BAR_H) / 2;
+  const HEADER_H   = 40;
+  const CHART_W    = SVG_W - LEFT_PAD - RIGHT_PAD;
+  const SVG_H      = HEADER_H + bidItems.length * ROW_H + 30;
+
+  function xPos(ms) {
+    return LEFT_PAD + ((ms - rangeStart) / totalMs) * CHART_W;
+  }
+
+  // ── Month/week tick marks ─────────────────────────────────────────────────
+  const tickLines = [];
+  const tickLabels = [];
+  const startD = new Date(rangeStart);
+  startD.setDate(1); // snap to 1st of month
+  let tickD = new Date(startD);
+  while (tickD.getTime() <= rangeEnd) {
+    const x = xPos(tickD.getTime());
+    if (x >= LEFT_PAD && x <= SVG_W - RIGHT_PAD) {
+      tickLines.push(`<line x1="${x.toFixed(1)}" y1="${HEADER_H}" x2="${x.toFixed(1)}" y2="${SVG_H - 10}" stroke="#2a2a3a" stroke-width="1"/>`);
+      const lbl = tickD.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      tickLabels.push(`<text x="${x.toFixed(1)}" y="${HEADER_H - 6}" font-size="9" fill="#888" text-anchor="middle">${lbl}</text>`);
+    }
+    tickD.setMonth(tickD.getMonth() + 1);
+  }
+
+  // ── Today line ────────────────────────────────────────────────────────────
+  const todayX = xPos(todayMs);
+  const todayLine = `<line x1="${todayX.toFixed(1)}" y1="${HEADER_H - 10}" x2="${todayX.toFixed(1)}" y2="${SVG_H - 10}" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <text x="${todayX.toFixed(1)}" y="${HEADER_H - 13}" font-size="8" fill="#f59e0b" text-anchor="middle">TODAY</text>`;
+
+  // ── Deadline line ─────────────────────────────────────────────────────────
+  let deadlineLine = '';
+  if (deadline) {
+    const dlMs = new Date(deadline + 'T12:00:00').getTime();
+    const dlX  = xPos(dlMs);
+    deadlineLine = `<line x1="${dlX.toFixed(1)}" y1="${HEADER_H - 10}" x2="${dlX.toFixed(1)}" y2="${SVG_H - 10}" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <text x="${dlX.toFixed(1)}" y="${HEADER_H - 13}" font-size="8" fill="#ef4444" text-anchor="middle">DEADLINE</text>`;
+  }
+
+  // ── Status colors (light theme for print) ────────────────────────────────
+  const barColors = {
+    'on-track':    { fill: '#86efac', stroke: '#15803d', text: '#14532d' },
+    'at-risk':     { fill: '#fde68a', stroke: '#b45309', text: '#78350f' },
+    'behind':      { fill: '#fca5a5', stroke: '#dc2626', text: '#7f1d1d' },
+    'complete':    { fill: '#93c5fd', stroke: '#1d4ed8', text: '#1e3a8a' },
+    'not-started': { fill: '#c7d2fe', stroke: '#6366f1', text: '#312e81' },
+    'no-data':     { fill: '#e5e7eb', stroke: '#9ca3af', text: '#374151' },
+  };
+
+  // ── Render rows ───────────────────────────────────────────────────────────
+  const rows = bidItems.map((bi, i) => {
+    const { recentPace, currentPace, unitsLeft, pct, status, forcedComplete, notStartedYet, isLumpSum } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const y = HEADER_H + i * ROW_H;
+    const rowBg = i % 2 === 0 ? '#1a1a2e' : '#16213e';
+
+    // Determine bar start/end
+    const barStartStr = bi.start_date || todayStr;
+    const barEndStr   = bi.target_date || deadline;
+    let projFinishStr = null;
+    if (!forcedComplete && pct < 100 && !isLumpSum) {
+      const pace = recentPace > 0 ? recentPace : currentPace;
+      if (pace > 0 && unitsLeft > 0) {
+        projFinishStr = _addWorkingDays(todayStr, unitsLeft / pace);
+      }
+    }
+
+    const barStartMs = new Date(barStartStr + 'T12:00:00').getTime();
+    const barEndMs   = barEndStr ? new Date(barEndStr + 'T12:00:00').getTime() : null;
+    const projFinMs  = projFinishStr ? new Date(projFinishStr + 'T12:00:00').getTime() : null;
+
+    const c = barColors[status] || barColors['no-data'];
+    const label = (bi.cost_code || '—') + (bi.sub_code ? ' · ' + bi.sub_code : '');
+
+    const parts = [];
+
+    // Row background stripe
+    parts.push(`<rect x="0" y="${y}" width="${SVG_W}" height="${ROW_H}" fill="${rowBg}"/>`);
+
+    // Label
+    const truncLabel = label.length > 26 ? label.slice(0, 24) + '…' : label;
+    parts.push(`<text x="${LEFT_PAD - 8}" y="${y + ROW_H / 2 + 4}" font-size="10" fill="#e2e8f0" text-anchor="end" font-family="monospace">${truncLabel}</text>`);
+
+    // Unit label
+    if (bi.unit) {
+      parts.push(`<text x="${LEFT_PAD - 8}" y="${y + ROW_H / 2 + 14}" font-size="7.5" fill="#64748b" text-anchor="end" font-family="sans-serif">${bi.unit.toUpperCase()}</text>`);
+    }
+
+    // Planned bar (start → target)
+    if (barEndMs && barEndMs > barStartMs) {
+      const x1 = Math.max(LEFT_PAD, xPos(barStartMs));
+      const x2 = Math.min(SVG_W - RIGHT_PAD, xPos(barEndMs));
+      const bw = Math.max(2, x2 - x1);
+      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y + BAR_Y_OFF).toFixed(1)}" width="${bw.toFixed(1)}" height="${BAR_H}" rx="3" fill="${c.fill}" stroke="${c.stroke}" stroke-width="1" opacity="0.55"/>`);
+
+      // Progress fill
+      if (pct > 0) {
+        const fillW = Math.min(bw, bw * (pct / 100));
+        parts.push(`<rect x="${x1.toFixed(1)}" y="${(y + BAR_Y_OFF).toFixed(1)}" width="${fillW.toFixed(1)}" height="${BAR_H}" rx="3" fill="${c.fill}" stroke="${c.stroke}" stroke-width="1" opacity="0.95"/>`);
+      }
+
+      // % label inside bar if wide enough
+      if (bw > 35 && pct > 0) {
+        const midX = (x1 + x2) / 2;
+        parts.push(`<text x="${midX.toFixed(1)}" y="${(y + BAR_Y_OFF + BAR_H / 2 + 3.5).toFixed(1)}" font-size="8" fill="${c.text}" text-anchor="middle" font-weight="700">${Math.round(pct)}%</text>`);
+      }
+    } else if (!barEndMs) {
+      // No end date — draw a short marker at start
+      const x1 = Math.max(LEFT_PAD, xPos(barStartMs));
+      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y + BAR_Y_OFF).toFixed(1)}" width="8" height="${BAR_H}" rx="2" fill="${c.fill}" stroke="${c.stroke}" stroke-width="1"/>`);
+    }
+
+    // Projected finish marker (diamond) if different from target
+    if (projFinMs && (!barEndMs || Math.abs(projFinMs - barEndMs) > DAY_MS)) {
+      const px = xPos(projFinMs);
+      if (px >= LEFT_PAD && px <= SVG_W - RIGHT_PAD) {
+        const cy = y + ROW_H / 2;
+        const s  = 5;
+        const pfColor = projFinMs > (barEndMs || todayMs) ? '#ef4444' : '#22c55e';
+        parts.push(`<polygon points="${px},${cy - s} ${px + s},${cy} ${px},${cy + s} ${px - s},${cy}" fill="${pfColor}" opacity="0.9"/>`);
+      }
+    }
+
+    // Status pill text on right if no bar
+    if (!barEndMs && !barStartMs) {
+      parts.push(`<text x="${(SVG_W - RIGHT_PAD - 4).toFixed(1)}" y="${y + ROW_H / 2 + 4}" font-size="8" fill="${c.stroke}" text-anchor="end">${status}</text>`);
+    }
+
+    return parts.join('\n');
+  });
+
+  // ── Legend ────────────────────────────────────────────────────────────────
+  const legendItems = [
+    { label: 'On Track',    color: '#86efac' },
+    { label: 'At Risk',     color: '#fde68a' },
+    { label: 'Behind',      color: '#fca5a5' },
+    { label: 'Complete',    color: '#93c5fd' },
+    { label: 'Not Started', color: '#c7d2fe' },
+    { label: 'Proj. Finish',color: '#ef4444', diamond: true },
+  ];
+  const legendY  = SVG_H - 6;
+  const legendSvg = legendItems.map((item, i) => {
+    const lx = LEFT_PAD + i * 125;
+    if (item.diamond) {
+      return `<polygon points="${lx + 5},${legendY - 8} ${lx + 10},${legendY - 4} ${lx + 5},${legendY} ${lx},${legendY - 4}" fill="${item.color}"/>
+        <text x="${lx + 14}" y="${legendY - 1}" font-size="8" fill="#94a3b8">${item.label}</text>`;
+    }
+    return `<rect x="${lx}" y="${legendY - 9}" width="10" height="8" rx="2" fill="${item.color}" opacity="0.9"/>
+      <text x="${lx + 13}" y="${legendY - 1}" font-size="8" fill="#94a3b8">${item.label}</text>`;
+  }).join('\n');
+
+  const deadlineFmt = deadline
+    ? new Date(deadline + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    : null;
+
+  const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${SVG_W}" height="${SVG_H}" style="background:#0f0f1a;border-radius:6px">
+    <!-- grid stripes -->
+    ${tickLines.join('\n')}
+    <!-- rows -->
+    ${rows.join('\n')}
+    <!-- header bg -->
+    <rect x="0" y="0" width="${SVG_W}" height="${HEADER_H}" fill="#0f0f1a"/>
+    <rect x="${LEFT_PAD}" y="0" width="${CHART_W + RIGHT_PAD}" height="${HEADER_H}" fill="#0f0f1a"/>
+    <!-- tick labels -->
+    ${tickLabels.join('\n')}
+    <!-- today / deadline lines -->
+    ${todayLine}
+    ${deadlineLine}
+    <!-- left label column border -->
+    <line x1="${LEFT_PAD}" y1="0" x2="${LEFT_PAD}" y2="${SVG_H}" stroke="#2a2a3a" stroke-width="1"/>
+    <!-- legend -->
+    ${legendSvg}
+  </svg>`;
+
+  const html = `<!DOCTYPE html>
+  <html><head>
+  <meta charset="utf-8">
+  <title>Gantt Chart — ${esc(projName)}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0a14; color: #e2e8f0; font-family: sans-serif; padding: 24px; }
+    h1 { font-size: 1.15rem; font-weight: 700; margin-bottom: 2px; }
+    .sub { font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; }
+    .meta { font-size: 0.72rem; color: #64748b; margin-bottom: 16px; display: flex; gap: 1.5rem; flex-wrap: wrap; }
+    .chart-wrap { overflow-x: auto; }
+    .footer { margin-top: 14px; font-size: 0.68rem; color: #475569; display: flex; justify-content: space-between; }
+    @media print {
+      body { background: #fff; color: #111; padding: 12px; }
+      .chart-wrap { overflow: visible; }
+    }
+  </style>
+  </head><body>
+  <h1>${esc(projName)}</h1>
+  ${jobNum ? `<div class="sub">${esc(jobNum)}</div>` : ''}
+  <div class="meta">
+    <span>Gantt Chart</span>
+    ${deadlineFmt ? `<span>Project Deadline: <strong>${deadlineFmt}</strong></span>` : ''}
+    <span>${bidItems.length} cost code${bidItems.length !== 1 ? 's' : ''}</span>
+    <span>Generated ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+  </div>
+  <div class="chart-wrap">${svgContent}</div>
+  <div class="footer">
+    <span>DataWatch — Schedule Gantt</span>
+    <span>Bars = planned schedule · Diamond = projected finish at current pace · Dashed amber = today · Dashed red = deadline</span>
   </div>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
