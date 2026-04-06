@@ -4382,6 +4382,26 @@ let purchaseOrders = [];
 async function loadPurchaseOrders() {
   const saved = await apiGet('fct_purchase_orders');
   purchaseOrders = Array.isArray(saved) ? saved : [];
+  _migratePOs();
+}
+
+function _migratePOs() {
+  // Upgrade flat single-line POs to the new lines[] format
+  purchaseOrders.forEach(po => {
+    if (!po.lines) {
+      const hasData = po.qty || po.unit_cost;
+      po.lines = hasData ? [{
+        id:          uid(),
+        invoice_num: '',
+        date:        po.date_created || _localDateStr(),
+        qty:         po.qty       || '',
+        unit_cost:   po.unit_cost || '',
+        tax:         po.tax       || '',
+        employee:    po.employee  || '',
+        po_row_id:   po.po_row_id || null,
+      }] : [];
+    }
+  });
 }
 
 function savePurchaseOrders() { apiPut('fct_purchase_orders', purchaseOrders); }
@@ -5568,58 +5588,149 @@ async function loadLists() {
 function saveLists() { apiPut('fct_lists', lists); }
 
 /* ── Purchase Orders Tab ── */
+let _poExpanded = new Set();   // PO ids with delivery lines visible
+
+function _poTotals(po) {
+  let qty = 0, amt = 0, tax = 0;
+  (po.lines || []).forEach(l => {
+    const q = parseFloat(l.qty)       || 0;
+    const u = parseFloat(l.unit_cost) || 0;
+    const t = parseFloat(l.tax)       || 0;
+    qty += q; amt += q * u; tax += t;
+  });
+  return { qty, amt, tax, total: amt + tax };
+}
+
 function addPO() {
-  purchaseOrders.push({
-    id: uid(),
+  const po = {
+    id:           uid(),
     po_number:    nextPONumber(),
     title:        '',
     supplier:     '',
-    qty:          '',
-    unit_cost:    '',
-    tax:          '',
     status:       'pending',
-    employee:     '',
     date_created: _localDateStr(),
     project_id:   '',
     cost_code:    '',
     sub_code:     '',
-  });
+    lines:        [],
+  };
+  purchaseOrders.push(po);
+  _poExpanded.add(po.id);
+  // Auto-add first delivery line
+  po.lines.push({ id: uid(), invoice_num: '', date: _localDateStr(), qty: '', unit_cost: '', tax: '', employee: '', po_row_id: null });
   savePurchaseOrders();
   renderPOTab();
+}
+
+function addPOLine(poId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po) return;
+  if (!po.lines) po.lines = [];
+  po.lines.push({ id: uid(), invoice_num: '', date: _localDateStr(), qty: '', unit_cost: '', tax: '', employee: '', po_row_id: null });
+  _poExpanded.add(poId);
+  savePurchaseOrders();
+  renderPOTab();
+}
+
+function deletePOLine(poId, lineId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po) return;
+  const line = (po.lines || []).find(l => l.id === lineId);
+  if (line && line.po_row_id && po.project_id) {
+    const proj = getProj(po.project_id);
+    if (proj) {
+      proj.dailyRows = proj.dailyRows.filter(r => r.id !== line.po_row_id);
+      drDelete(line.po_row_id);
+    }
+  }
+  po.lines = (po.lines || []).filter(l => l.id !== lineId);
+  savePurchaseOrders();
+  renderPOTab();
+  if (po.project_id) renderProjectPOs(po.project_id);
 }
 
 function deletePO(id) {
   const po = purchaseOrders.find(p => p.id === id);
   const oldProj = po ? po.project_id : '';
-  if (po && po.po_row_id && oldProj) {
+  if (po && oldProj) {
     const proj = getProj(oldProj);
     if (proj) {
-      proj.dailyRows = proj.dailyRows.filter(r => r.id !== po.po_row_id);
-      drDelete(po.po_row_id);
+      (po.lines || []).forEach(line => {
+        if (line.po_row_id) {
+          proj.dailyRows = proj.dailyRows.filter(r => r.id !== line.po_row_id);
+          drDelete(line.po_row_id);
+        }
+      });
       renderDailyTable(oldProj);
     }
   }
+  _poExpanded.delete(id);
   purchaseOrders = purchaseOrders.filter(p => p.id !== id);
   savePurchaseOrders();
   renderPOTab();
   if (oldProj) renderProjectPOs(oldProj);
 }
 
-function _syncPORowField(po, field) {
-  if (!po.project_id || !po.po_row_id) return;
+// Sync all of a PO's lines to their daily rows after a header field changes
+function _syncPOHeaderToLines(po) {
+  if (!po.project_id) return;
   const proj = getProj(po.project_id);
   if (!proj) return;
-  const r = proj.dailyRows.find(r => r.id === po.po_row_id);
+  (po.lines || []).forEach(line => {
+    if (!line.po_row_id) return;
+    const r = proj.dailyRows.find(r => r.id === line.po_row_id);
+    if (!r) return;
+    r.material  = po.title    || '';
+    r.supplier  = po.supplier || '';
+    r.cost_code = po.cost_code|| '';
+    r.sub_code  = po.sub_code || '';
+    r.po_num    = po.po_number|| '';
+    drPutNow(r.id, r);
+  });
+  renderDailyTable(po.project_id);
+}
+
+// Sync one line's fields to its daily row
+function _syncPOLineToRow(po, line) {
+  if (!po.project_id || !line.po_row_id) return;
+  const proj = getProj(po.project_id);
+  if (!proj) return;
+  const r = proj.dailyRows.find(r => r.id === line.po_row_id);
   if (!r) return;
-  const map = { title: 'material', supplier: 'supplier', employee: 'employee',
-                date_created: 'date', qty: 'units_purchased', unit_cost: 'unit_cost',
-                cost_code: 'cost_code', sub_code: 'sub_code' };
-  if (map[field]) r[map[field]] = po[field] || '';
-  if (['qty','unit_cost','tax'].includes(field)) {
-    const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
-    r.material_cost = String(qty * uc + tax);
-  }
+  r.date           = line.date     || '';
+  r.employee       = line.employee || '';
+  r.units_purchased= line.qty      || '';
+  r.unit_cost      = line.unit_cost|| '';
+  const q = parseFloat(line.qty) || 0, u = parseFloat(line.unit_cost) || 0, t = parseFloat(line.tax) || 0;
+  r.material_cost  = String(q * u + t);
   drPutNow(r.id, r);
+  renderDailyTable(po.project_id);
+}
+
+// Create a daily row for a line when it gets qty/cost data and a project is linked
+function _ensurePOLineRow(po, line) {
+  if (!po.project_id || line.po_row_id) return;
+  const proj = getProj(po.project_id);
+  if (!proj) return;
+  const q = parseFloat(line.qty) || 0, u = parseFloat(line.unit_cost) || 0, t = parseFloat(line.tax) || 0;
+  const row = {
+    ...defaultDailyRow(),
+    id:              uid(),
+    date:            line.date     || po.date_created || _localDateStr(),
+    employee:        line.employee || '',
+    cost_code:       po.cost_code  || '',
+    sub_code:        po.sub_code   || '',
+    material:        po.title      || '',
+    supplier:        po.supplier   || '',
+    po_num:          po.po_number  || '',
+    units_purchased: line.qty      || '',
+    unit_cost:       line.unit_cost|| '',
+    material_cost:   String(q * u + t),
+    field_type:      'Material',
+  };
+  proj.dailyRows.push(row);
+  line.po_row_id = row.id;
+  drPost(po.project_id, row);
   renderDailyTable(po.project_id);
 }
 
@@ -5665,7 +5776,8 @@ function applyPOFilters() {
     if (q) {
       const proj = projectsList.find(p => p.id === po.project_id);
       const projName = proj ? (proj['project-name'] || '') : '';
-      const hay = [po.po_number, projName, po.sub_code, po.title, po.supplier, po.employee, po.status, po.date_created].join(' ').toLowerCase();
+      const lineHay = (po.lines || []).map(l => [l.invoice_num, l.employee, l.date].join(' ')).join(' ');
+      const hay = [po.po_number, projName, po.sub_code, po.title, po.supplier, po.status, po.date_created, lineHay].join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -5673,21 +5785,35 @@ function applyPOFilters() {
 }
 
 function exportPOCSV() {
-  const rows = applyPOFilters();
-  const headers = ['PO #','Project','Sub Code','Title','Supplier','Qty','Unit Cost','Amount','Tax','Total','Employee','Date Created','Status'];
+  const pos = applyPOFilters();
+  const headers = ['PO #','Project','Sub Code','Title','Supplier','Invoice #','Delivery Date','Qty','Unit Cost','Amount','Tax','Total','Employee','Status'];
   const escape = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
-  const lines = [headers.map(escape).join(',')];
-  rows.forEach(po => {
+  const csvLines = [headers.map(escape).join(',')];
+  pos.forEach(po => {
     const proj = projectsList.find(p => p.id === po.project_id);
     const projName = proj ? (proj['project-name'] || '') : '';
-    const qty = parseFloat(po.qty) || 0;
-    const uc  = parseFloat(po.unit_cost) || 0;
-    const tax = parseFloat(po.tax) || 0;
-    const amt = qty * uc;
-    const total = amt + tax;
-    lines.push([po.po_number, projName, po.sub_code||'', po.title||'', po.supplier||'', qty, uc, amt.toFixed(2), tax.toFixed(2), total.toFixed(2), po.employee||'', po.date_created||'', po.status||''].map(escape).join(','));
+    const lines = (po.lines || []);
+    if (lines.length === 0) {
+      csvLines.push([po.po_number, projName, po.sub_code||'', po.title||'', po.supplier||'', '', '', '', '', '', '', '', '', po.status||''].map(escape).join(','));
+    } else {
+      lines.forEach((l, i) => {
+        const q = parseFloat(l.qty) || 0, u = parseFloat(l.unit_cost) || 0, t = parseFloat(l.tax) || 0;
+        const amt = q * u;
+        csvLines.push([
+          i === 0 ? po.po_number : '', // only show PO # on first line
+          i === 0 ? projName : '',
+          i === 0 ? (po.sub_code||'') : '',
+          i === 0 ? (po.title||'') : '',
+          po.supplier||'',
+          l.invoice_num||'', l.date||'',
+          q||'', u||'', amt.toFixed(2), t.toFixed(2), (amt+t).toFixed(2),
+          l.employee||'',
+          i === 0 ? (po.status||'') : '',
+        ].map(escape).join(','));
+      });
+    }
   });
-  const blob = new Blob([lines.join('\r\n')], {type:'text/csv'});
+  const blob = new Blob([csvLines.join('\r\n')], {type:'text/csv'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'purchase_orders.csv';
@@ -5757,81 +5883,141 @@ function renderPOTab() {
 
   const searchWasFocused = document.activeElement?.classList?.contains('po-global-search');
 
-  const thf = (label, key, right) => {
+  const TH_S = 'padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap';
+  const thf = (label, key) => {
     const active = poFilters[key] ? ' active' : '';
-    const align = right ? ';text-align:right' : '';
-    return `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${align}">
-      ${label} <button class="cfb pofb${active}" data-pof="${key}" title="Filter ${label}">▼</button>
-    </th>`;
+    return `<th style="${TH_S}">${label} <button class="cfb pofb${active}" data-pof="${key}" title="Filter ${label}">▼</button></th>`;
   };
   const th = (label, right) =>
-    `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
+    `<th style="${TH_S}${right ? ';text-align:right' : ''}">${label}</th>`;
 
   const filteredPOs = applyPOFilters().slice().reverse();
 
+  // ── supplier / status opts (shared across rows) ───────────────────────
+  const supNames = lists.suppliers.map(s => s.name||'').filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  const empNames = lists.employees.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(e=>e.name);
+  const projsSorted = projectsList.slice().sort((a,b)=>(a['project-name']||'').localeCompare(b['project-name']||''));
+
+  const selOpts = (field, options, current, poId, lineId) => {
+    const attr = lineId
+      ? `data-po-id="${poId}" data-line-id="${lineId}" data-line-field="${field}"`
+      : `data-po-id="${poId}" data-po-field="${field}"`;
+    const style = 'background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem';
+    const optHtml = options.map(([v,l]) => `<option value="${esc(v)}" ${v===current?'selected':''}>${esc(l)}</option>`).join('');
+    return `<select ${attr} style="${style}">${optHtml}</select>`;
+  };
+  const inp = (field, type, current, poId, lineId, extra='') => {
+    const attr = lineId
+      ? `data-po-id="${poId}" data-line-id="${lineId}" data-line-field="${field}"`
+      : `data-po-id="${poId}" data-po-field="${field}"`;
+    return `<input type="${type}" value="${esc(String(current??''))}" ${attr} style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0" ${extra}>`;
+  };
+
+  const COLS = 13; // total columns in the table
+
   const bodyHTML = purchaseOrders.length === 0
-    ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
+    ? `<tr><td colspan="${COLS}" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
     : filteredPOs.length === 0
-    ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders match the current filters.</td></tr>`
+    ? `<tr><td colspan="${COLS}" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders match the current filters.</td></tr>`
     : filteredPOs.map(po => {
-        const qty   = parseFloat(po.qty)       || 0;
-        const uc    = parseFloat(po.unit_cost)  || 0;
-        const tax   = parseFloat(po.tax)        || 0;
-        const amt   = qty * uc;
-        const total = amt + tax;
+        const tot     = _poTotals(po);
+        const lCount  = (po.lines||[]).length;
+        const expanded= _poExpanded.has(po.id);
 
-        const inp = (field, type = 'text', extra = '') =>
-          `<input type="${type}" value="${esc(String(po[field] || ''))}"
-            data-po-id="${po.id}" data-po-field="${field}"
-            style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0" ${extra}>`;
+        // Header-level dropdowns
+        const projOpts = [['','— none —'], ...projsSorted.map(p=>[p.id, p['project-name']||'Untitled'])];
+        const supOpts  = [['','— select —'], ...supNames.map(n=>[n,n])];
+        const statusOpts = [['pending','Pending'],['approved','Approved'],['closed','Closed']];
 
-        const sel = (field, opts) =>
-          `<select data-po-id="${po.id}" data-po-field="${field}"
-            style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
-
-        const supOpts = `<option value="">— select —</option>` +
-          lists.suppliers.map(s => s.name || '').filter(Boolean).sort((a,b) => a.localeCompare(b))
-            .map(n => `<option value="${esc(n)}" ${n === po.supplier ? 'selected' : ''}>${esc(n)}</option>`).join('');
-
-        const empOpts = `<option value="">— select —</option>` +
-          lists.employees.slice().sort((a,b) => a.name.localeCompare(b.name)).map(e =>
-            `<option value="${esc(e.name)}" ${e.name === po.employee ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
-
-        const statusOpts = ['pending', 'approved', 'closed'].map(s =>
-          `<option value="${s}" ${s === po.status ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
-
-        const projOpts = `<option value="">— none —</option>` +
-          projectsList.slice().sort((a,b) => (a['project-name']||'').localeCompare(b['project-name']||'')).map(p =>
-            `<option value="${esc(p.id)}" ${p.id === po.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
-
-        const statusColor = po.status === 'approved' ? '#86efac' : po.status === 'closed' ? 'var(--muted)' : 'var(--yellow)';
-        let statusMetaHtml = '';
+        const statusColor = po.status==='approved' ? '#86efac' : po.status==='closed' ? 'var(--muted)' : 'var(--yellow)';
+        let statusMeta = '';
         if (po.status_changed_at) {
-          const d  = new Date(po.status_changed_at);
-          const ds = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-          const ts = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-          const who = po.status_changed_by ? esc(po.status_changed_by) + ' &middot; ' : '';
-          statusMetaHtml = `<div id="po-status-meta-${po.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap;line-height:1.3">${who}${ds} ${ts}</div>`;
+          const d=new Date(po.status_changed_at);
+          const who = po.status_changed_by ? esc(po.status_changed_by)+' &middot; ' : '';
+          statusMeta = `<div id="po-status-meta-${po.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap">${who}${d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})} ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>`;
         } else {
-          statusMetaHtml = `<div id="po-status-meta-${po.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem"></div>`;
+          statusMeta = `<div id="po-status-meta-${po.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem"></div>`;
         }
 
-        return `<tr style="border-bottom:1px solid var(--border)">
-          <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(po.po_number)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}">${sel('sub_code_sel', _subCodeOpts(po))}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:130px">${inp('title', 'text', 'placeholder="Title"')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:130px">${sel('supplier', supOpts)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('qty', 'number', 'step="any" placeholder="0"')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:85px">${inp('unit_cost', 'number', 'step="any" placeholder="0.00"')}</td>
-          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${po.id}">$${fmt(amt)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:75px">${inp('tax', 'number', 'step="any" placeholder="0.00"')}</td>
-          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">$${fmt(total)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:120px">${sel('employee', empOpts)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:110px">${inp('date_created', 'date')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}">${sel('status', statusOpts)}${statusMetaHtml}</td>
-          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>` : '<td></td>'}
+        // Badge showing delivery count
+        const badge = lCount > 0
+          ? `<span style="background:rgba(96,165,250,0.18);color:#93c5fd;border-radius:10px;padding:0.1rem 0.5rem;font-size:0.68rem;font-weight:700;margin-left:0.4rem">${lCount} delivery${lCount!==1?'s':''}</span>`
+          : `<span style="color:var(--muted);font-size:0.68rem;margin-left:0.4rem">no deliveries</span>`;
+
+        // ── PO header row ──────────────────────────────────────────────
+        const headerRow = `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="_togglePOLines('${po.id}')">
+          <td style="padding:0.35rem 0.5rem;font-size:0.75rem;color:var(--muted);text-align:center;width:28px">
+            <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${expanded?90:0}deg)" id="po-arrow-${po.id}">▶</span>
+          </td>
+          <td style="padding:0.35rem 0.6rem;white-space:nowrap" onclick="event.stopPropagation()">
+            <span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</span>${badge}
+          </td>
+          <td style="padding:0.35rem 0.6rem;min-width:110px" onclick="event.stopPropagation()">${inp('date_created','date',po.date_created,po.id,null)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${selOpts('project_id',projOpts,po.project_id,po.id,null)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}" onclick="event.stopPropagation()">${selOpts('sub_code_sel',[['','— pick project —'],...((getProj(po.project_id)?.bidItems||[]).filter(b=>b.cost_code||b.sub_code).sort((a,b)=>((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b=>[((b.cost_code||'')+'||'+(b.sub_code||'')),([b.cost_code,b.sub_code].filter(Boolean).join(' / '))]))],((po.cost_code||'')+'||'+(po.sub_code||'')),po.id,null)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${inp('title','text',po.title,po.id,null,'placeholder="Material / Description"')}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${selOpts('supplier',supOpts,po.supplier,po.id,null)}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.8rem;color:var(--muted)" id="po-qty-${po.id}">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${po.id}">${tot.amt > 0 ? '$'+fmt(tot.amt) : '—'}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}" onclick="event.stopPropagation()">${selOpts('status',statusOpts,po.status,po.id,null)}${statusMeta}</td>
+          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center" onclick="event.stopPropagation()"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>` : '<td></td>'}
         </tr>`;
+
+        // ── Delivery lines sub-table (when expanded) ───────────────────
+        const empOpts = [['','— select —'], ...empNames.map(n=>[n,n])];
+        const lineRows = (po.lines||[]).map(line => {
+          const q = parseFloat(line.qty)||0, u = parseFloat(line.unit_cost)||0, t = parseFloat(line.tax)||0;
+          const lineAmt = q*u, lineTot = lineAmt+t;
+          return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <td style="padding:0.3rem 0.5rem;min-width:120px">${inp('invoice_num','text',line.invoice_num,po.id,line.id,'placeholder="Invoice / Ticket #"')}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:115px">${inp('date','date',line.date,po.id,line.id)}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:70px">${inp('qty','number',line.qty,po.id,line.id,'step="any" placeholder="0"')}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:90px">${inp('unit_cost','number',line.unit_cost,po.id,line.id,'step="any" placeholder="0.00"')}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem" id="po-line-amt-${line.id}">${lineAmt > 0 ? '$'+fmt(lineAmt) : '—'}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:80px">${inp('tax','number',line.tax,po.id,line.id,'step="any" placeholder="0.00"')}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600" id="po-line-tot-${line.id}">${lineTot > 0 ? '$'+fmt(lineTot) : '—'}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:130px">${selOpts('employee',empOpts,line.employee,po.id,line.id)}</td>
+            ${perm.canEdit ? `<td style="padding:0.3rem 0.4rem;text-align:center"><button onclick="deletePOLine('${po.id}','${line.id}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.8rem;opacity:0.6" title="Remove delivery">&#10005;</button></td>` : '<td></td>'}
+          </tr>`;
+        }).join('');
+
+        const totRow = (po.lines||[]).length > 1 ? `
+          <tr style="border-top:1px solid var(--border);background:rgba(255,255,255,0.03)">
+            <td colspan="4" style="padding:0.3rem 0.5rem;font-size:0.72rem;color:var(--muted);font-weight:600">RUNNING TOTAL — ${(po.lines||[]).length} deliveries</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:700">$${fmt(tot.amt)}</td>
+            <td></td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:700">$${fmt(tot.total)}</td>
+            <td colspan="2"></td>
+          </tr>` : '';
+
+        const linesRow = `<tr id="po-lines-${po.id}" style="display:${expanded?'table-row':'none'}">
+          <td colspan="${COLS}" style="padding:0;background:#0b0b14;border-bottom:2px solid var(--border)">
+            <div style="padding:0.5rem 1.25rem 0.75rem 2.5rem">
+              <div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.4rem;margin-top:0.4rem">Deliveries / Invoices</div>
+              <div style="overflow-x:auto">
+                <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+                  <thead><tr style="font-size:0.63rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em">
+                    <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Invoice / Ticket #</th>
+                    <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Delivery Date</th>
+                    <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Qty</th>
+                    <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Unit Cost</th>
+                    <th style="padding:0.25rem 0.5rem;text-align:right;font-weight:600">Amount</th>
+                    <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Tax</th>
+                    <th style="padding:0.25rem 0.5rem;text-align:right;font-weight:600">Total</th>
+                    <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Employee</th>
+                    <th style="width:32px"></th>
+                  </tr></thead>
+                  <tbody>${lineRows}</tbody>
+                  ${totRow}
+                </table>
+              </div>
+              ${perm.canEdit ? `<button onclick="addPOLine('${po.id}')" style="margin-top:0.6rem;font-size:0.72rem;padding:0.25rem 0.75rem;background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.3);color:#4ade80;border-radius:4px;cursor:pointer">+ Add Delivery</button>` : ''}
+            </div>
+          </td>
+        </tr>`;
+
+        return headerRow + linesRow;
       }).join('');
 
   const hasFilters = Object.keys(poFilters).length > 0 || poSearch;
@@ -5850,15 +6036,21 @@ function renderPOTab() {
         oninput="poSearch=this.value;renderPOTab()"
         style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.82rem;padding:0.45rem 0.75rem;outline:none;box-sizing:border-box;margin-bottom:0.85rem">
       <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1400px">
-          <thead>
-            <tr>
-              ${thf('PO #','po_number')} ${thf('Project','project_id')} ${thf('Sub Code','sub_code')} ${thf('Title','title')} ${thf('Supplier','supplier')}
-              ${th('Qty',1)} ${th('Unit Cost',1)} ${th('Amount',1)} ${th('Tax',1)} ${th('Total',1)}
-              ${thf('Employee','employee')} ${thf('Date Created','date_created')} ${thf('Status','status')}
-              <th style="width:36px;border-bottom:1px solid var(--border)"></th>
-            </tr>
-          </thead>
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1200px">
+          <thead><tr>
+            <th style="${TH_S};width:28px"></th>
+            ${thf('PO #','po_number')}
+            ${th('Date')}
+            ${thf('Project','project_id')}
+            ${thf('Sub Code','sub_code')}
+            ${thf('Title','title')}
+            ${thf('Supplier','supplier')}
+            ${th('Running Qty',1)}
+            ${th('Running Amount',1)}
+            ${th('Running Total',1)}
+            ${thf('Status','status')}
+            <th style="${TH_S};width:36px"></th>
+          </tr></thead>
           <tbody>${bodyHTML}</tbody>
         </table>
       </div>
@@ -5870,16 +6062,32 @@ function renderPOTab() {
   }
 }
 
+function _togglePOLines(poId) {
+  if (_poExpanded.has(poId)) {
+    _poExpanded.delete(poId);
+  } else {
+    _poExpanded.add(poId);
+  }
+  const row = document.getElementById('po-lines-' + poId);
+  const arrow = document.getElementById('po-arrow-' + poId);
+  if (row) row.style.display = _poExpanded.has(poId) ? 'table-row' : 'none';
+  if (arrow) arrow.style.transform = `rotate(${_poExpanded.has(poId) ? 90 : 0}deg)`;
+}
+
 function exportProjectPOsCSV(projId) {
   const proj = getProj(projId);
   const linked = purchaseOrders.filter(po => po.project_id === projId);
-  const rows = [['PO #', 'Title', 'Unit Cost', 'Qty', 'Tax', 'Total', 'Status']];
+  const rows = [['PO #', 'Title', 'Invoice #', 'Delivery Date', 'Qty', 'Unit Cost', 'Amount', 'Tax', 'Total', 'Employee', 'Status']];
   linked.forEach(po => {
-    const qty = parseFloat(po.qty) || 0;
-    const uc  = parseFloat(po.unit_cost) || 0;
-    const tax = parseFloat(po.tax) || 0;
-    const total = qty * uc + tax;
-    rows.push([po.po_number || '', po.title || '', uc.toFixed(2), qty, tax.toFixed(2), total.toFixed(2), po.status || '']);
+    const lines = po.lines || [];
+    if (lines.length === 0) {
+      rows.push([po.po_number||'', po.title||'', '', '', '', '', '', '', '', '', po.status||'']);
+    } else {
+      lines.forEach((l, i) => {
+        const q=parseFloat(l.qty)||0, u=parseFloat(l.unit_cost)||0, t=parseFloat(l.tax)||0;
+        rows.push([i===0?po.po_number:'', i===0?po.title||'':'', l.invoice_num||'', l.date||'', q||'', u||'', (q*u).toFixed(2), t.toFixed(2), (q*u+t).toFixed(2), l.employee||'', i===0?po.status||'':'']);
+      });
+    }
   });
   const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
   const a = document.createElement('a');
@@ -5898,57 +6106,71 @@ function renderProjectPOs(projId, bodyIdOverride) {
     return;
   }
   body.innerHTML = linked.map(po => {
-    const qty   = parseFloat(po.qty)      || 0;
-    const uc    = parseFloat(po.unit_cost) || 0;
-    const tax   = parseFloat(po.tax)       || 0;
-    const total = qty * uc + tax;
+    const tot  = _poTotals(po);
+    const lCount = (po.lines||[]).length;
     const sc = po.status === 'approved' ? 'color:#86efac' : po.status === 'closed' ? 'color:var(--muted)' : 'color:var(--yellow)';
+    const delivNote = lCount > 1 ? `<span style="font-size:0.68rem;color:var(--muted);margin-left:0.35rem">(${lCount} deliveries)</span>` : '';
     return `<tr>
       <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</td>
-      <td style="padding:0.35rem 0.6rem;font-size:0.82rem">${esc(po.title || '—')}</td>
-      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--green)">$${fmt(uc)}</td>
-      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--yellow);font-weight:600">$${fmt(total)}</td>
+      <td style="padding:0.35rem 0.6rem;font-size:0.82rem">${esc(po.title || '—')}${delivNote}</td>
+      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--muted)">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
+      <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--yellow);font-weight:600">$${fmt(tot.total)}</td>
       <td style="padding:0.35rem 0.6rem;font-size:0.78rem;text-transform:capitalize;${sc}">${esc(po.status || '')}</td>
     </tr>`;
   }).join('');
 }
 
-document.getElementById('po-root').addEventListener('input', e => {
+// ── PO event delegation (handles both header fields and line fields) ──────
+function _handlePOEvent(e) {
   const el = e.target;
-  const id = el.dataset.poId, field = el.dataset.poField;
-  if (!id || !field) return;
-  const po = purchaseOrders.find(p => p.id === id);
+  const poId = el.dataset.poId;
+  if (!poId) return;
+  const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
-  po[field] = el.value;
-  savePurchaseOrders();
-  if (['qty', 'unit_cost', 'tax'].includes(field)) {
-    const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
-    const amt = qty * uc;
-    const amtEl = document.getElementById('po-amt-' + id);
-    const totEl = document.getElementById('po-tot-' + id);
-    if (amtEl) amtEl.textContent = '$' + fmt(amt);
-    if (totEl) totEl.textContent = '$' + fmt(amt + tax);
-  }
-  _syncPORowField(po, field);
-  if (po.project_id) renderProjectPOs(po.project_id);
-});
 
-document.getElementById('po-root').addEventListener('change', e => {
-  const el = e.target;
-  const id = el.dataset.poId, field = el.dataset.poField;
-  if (!id || !field) return;
-  const po = purchaseOrders.find(p => p.id === id);
-  if (!po) return;
+  // ── Line-level field ──────────────────────────────────────────────────
+  const lineId    = el.dataset.lineId;
+  const lineField = el.dataset.lineField;
+  if (lineId && lineField) {
+    const line = (po.lines || []).find(l => l.id === lineId);
+    if (!line) return;
+    line[lineField] = el.value;
+    // Live update line amount/total cells
+    if (['qty','unit_cost','tax'].includes(lineField)) {
+      const q = parseFloat(line.qty)||0, u = parseFloat(line.unit_cost)||0, t = parseFloat(line.tax)||0;
+      const la = q*u;
+      const amtEl = document.getElementById('po-line-amt-' + lineId);
+      const totEl = document.getElementById('po-line-tot-' + lineId);
+      if (amtEl) amtEl.textContent = la > 0 ? '$'+fmt(la) : '—';
+      if (totEl) totEl.textContent = (la+t) > 0 ? '$'+fmt(la+t) : '—';
+      // Update running totals on header row
+      const tot = _poTotals(po);
+      const hAmt = document.getElementById('po-amt-' + poId);
+      const hTot = document.getElementById('po-tot-' + poId);
+      const hQty = document.getElementById('po-qty-' + poId);
+      if (hAmt) hAmt.textContent = tot.amt > 0 ? '$'+fmt(tot.amt) : '—';
+      if (hTot) hTot.textContent = tot.total > 0 ? '$'+fmt(tot.total) : '—';
+      if (hQty) hQty.textContent = tot.qty > 0 ? fmt(tot.qty) : '—';
+    }
+    // Ensure a daily row exists once we have qty data
+    if (po.project_id && (line.qty || line.unit_cost)) _ensurePOLineRow(po, line);
+    _syncPOLineToRow(po, line);
+    savePurchaseOrders();
+    if (po.project_id) renderProjectPOs(po.project_id);
+    return;
+  }
+
+  // ── PO header field ───────────────────────────────────────────────────
+  const field = el.dataset.poField;
+  if (!field) return;
   const oldProj = po.project_id;
 
   if (field === 'sub_code_sel') {
-    // Parse combined cost_code||sub_code value
     const [cc, sc] = el.value.split('||');
     po.cost_code = cc || '';
     po.sub_code  = sc || '';
     savePurchaseOrders();
-    _syncPORowField(po, 'cost_code');
-    _syncPORowField(po, 'sub_code');
+    _syncPOHeaderToLines(po);
     if (po.project_id) renderProjectPOs(po.project_id);
     return;
   }
@@ -5958,69 +6180,52 @@ document.getElementById('po-root').addEventListener('change', e => {
   if (field === 'status') {
     po.status_changed_at = new Date().toISOString();
     po.status_changed_by = fctUser ? (fctUser.name || fctUser.username || '') : '';
-    const metaEl = document.getElementById('po-status-meta-' + id);
+    const metaEl = document.getElementById('po-status-meta-' + poId);
     if (metaEl) {
       const d = new Date(po.status_changed_at);
-      const ds = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const ts = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-      metaEl.textContent = (po.status_changed_by ? po.status_changed_by + ' · ' : '') + ds + ' ' + ts;
+      metaEl.textContent = (po.status_changed_by ? po.status_changed_by + ' · ' : '') +
+        d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) + ' ' +
+        d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
     }
   }
 
   if (field === 'project_id') {
-    // Remove auto-inserted row from old project
-    if (oldProj && po.po_row_id) {
+    // Remove all line daily rows from old project
+    if (oldProj) {
       const oldP = getProj(oldProj);
       if (oldP) {
-        oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== po.po_row_id);
-        drDelete(po.po_row_id);
+        (po.lines||[]).forEach(line => {
+          if (line.po_row_id) {
+            oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== line.po_row_id);
+            drDelete(line.po_row_id);
+            line.po_row_id = null;
+          }
+        });
         renderDailyTable(oldProj);
       }
     }
-    po.po_row_id  = null;
-    po.cost_code  = '';
-    po.sub_code   = '';
-
-    // Update sub_code dropdown for this row
-    const subCell = document.getElementById('po-subcode-cell-' + po.id);
-    if (subCell) {
-      const subSel = subCell.querySelector('select');
-      if (subSel) subSel.innerHTML = _subCodeOpts(po);
-    }
-
-    // Insert new row into new project
+    po.cost_code = '';
+    po.sub_code  = '';
+    // Refresh sub code dropdown
+    const subCell = document.getElementById('po-subcode-cell-' + poId);
+    if (subCell) { const ss = subCell.querySelector('select'); if (ss) ss.innerHTML = _subCodeOpts(po); }
+    // Create daily rows for each line with data in new project
     if (po.project_id) {
-      const newP = getProj(po.project_id);
-      if (newP) {
-        const qty = parseFloat(po.qty) || 0, uc = parseFloat(po.unit_cost) || 0, tax = parseFloat(po.tax) || 0;
-        const row = {
-          ...defaultDailyRow(),
-          id:              Date.now() + Math.random(),
-          date:            po.date_created    || '',
-          employee:        po.employee        || '',
-          material:        po.title           || '',
-          supplier:        po.supplier        || '',
-          po_num:          po.po_number       || '',
-          units_purchased: po.qty             || '',
-          unit_cost:       po.unit_cost       || '',
-          material_cost:   String(qty * uc + tax),
-          cost_code:       po.cost_code       || '',
-          sub_code:        po.sub_code        || '',
-        };
-        newP.dailyRows.push(row);
-        po.po_row_id = row.id;
-        drPost(po.project_id, row);
-        renderDailyTable(po.project_id);
-      }
+      (po.lines||[]).forEach(line => { if (line.qty || line.unit_cost) _ensurePOLineRow(po, line); });
     }
     if (oldProj)       renderProjectPOs(oldProj);
     if (po.project_id) renderProjectPOs(po.project_id);
   } else {
-    _syncPORowField(po, field);
+    // title / supplier / date_created changes — push to daily rows
+    _syncPOHeaderToLines(po);
     if (po.project_id) renderProjectPOs(po.project_id);
   }
+
   savePurchaseOrders();
-});
+}
+
+document.getElementById('po-root').addEventListener('input',  _handlePOEvent);
+document.getElementById('po-root').addEventListener('change', _handlePOEvent);
 
 /* ── Trucking Tab ── */
 function addTR() {
