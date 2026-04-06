@@ -1484,6 +1484,10 @@
     .sched-pace-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .sched-pace-table tr:hover td { background: var(--surface2); }
     .sched-trend-cell { display:flex; flex-direction:column; align-items:flex-end; gap:0.15rem; }
+    /* Scale of Economy interactive dots */
+    .soe-dot { cursor:pointer; transition:transform 0.12s ease; transform-box:fill-box; transform-origin:center; }
+    .soe-dot:hover { transform:scale(1.55); }
+    #soe-tip { position:fixed;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.1s;background:#12121e;border:1px solid rgba(255,255,255,0.13);border-radius:7px;padding:0.6rem 0.8rem;font-size:0.78rem;color:#e5e7eb;box-shadow:0 6px 28px rgba(0,0,0,0.6);min-width:170px;max-width:250px;line-height:1.5;font-family:system-ui,-apple-system,sans-serif; }
     .sched-status-pill {
       display: inline-block; padding: 0.15rem 0.5rem;
       border-radius: 20px; font-size: 0.7rem; font-weight: 600; white-space: nowrap;
@@ -9908,7 +9912,7 @@ function renderScaleOfEconomy() {
     // Strips out material cost — shows where the crew efficiency scale effect lives.
     const laborPts = validProjs
       .filter(pr => pr.laborHrs > 0 && pr.runQty > 0 && pr.bidQty > 0)
-      .map(pr => ({ x: pr.bidQty, y: pr.laborHrs / pr.runQty, projName: pr.projName }));
+      .map(pr => ({ x: pr.bidQty, y: pr.laborHrs / pr.runQty, projName: pr.projName, projId: pr.projId }));
 
     // ── Labor power law regression (primary classification signal) ────────────
     const logLaborPts = laborPts.filter(p => p.x > 0 && p.y > 0).map(p => ({
@@ -10105,12 +10109,20 @@ function renderScaleOfEconomy() {
       const sw     = p.isOutlier ? 2.5 : 1.5;
       const r      = p.isOutlier ? 7 : 5.5;
       const cx = px(p.x), cy = py(p.y);
-      const tip = `${esc(p.projName)}\n${fmtX(p.x)} ${unitLabel||'units'} · $${fmt(p.y)}/unit\n${p.overBid===true?'Over bid':p.overBid===false?'Under bid':'No bid data'}${p.isOutlier?' · ⚠ outlier':''}`;
+      const tipJson = JSON.stringify({
+        n:   (p.projName || 'Unknown').slice(0, 40),
+        sz:  fmtX(p.x),
+        u:   unitLabel || 'units',
+        c:   '$' + fmt(p.y) + '/unit',
+        ob:  p.overBid === true ? 1 : p.overBid === false ? 0 : -1,
+        out: p.isOutlier ? 1 : 0,
+        pid: p.projId || '',
+      }).replace(/"/g, '&quot;');
       // Small name label (truncated, faded)
       const nameLabel = p.projName
         ? `<text x="${cx.toFixed(1)}" y="${(cy - r - 3).toFixed(1)}" text-anchor="middle" fill="#6b7280" font-size="7.5" font-family="sans-serif">${esc((p.projName||'').slice(0,18))}</text>`
         : '';
-      return nameLabel + `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" opacity="0.92"><title>${tip}</title></circle>`;
+      return nameLabel + `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" opacity="0.92" class="soe-dot" data-tip="${tipJson}" onmouseover="_soeTipOn(event,this)" onmouseout="_soeTipOff()" onmousemove="_soeTipMove(event)" onclick="_soeDotClick(this)"></circle>`;
     }).join('');
 
     // Legend
@@ -10336,10 +10348,19 @@ function renderScaleOfEconomy() {
     const yTicks = [minY, (minY+maxY)/2, maxY].map(v => `<text x="${(padL-5).toFixed(1)}" y="${(lpy(v)+3.5).toFixed(1)}" text-anchor="end" fill="#4b5563" font-size="9">${fmtY(v)}</text>`).join('');
     const dots = laborPts.map(p => {
       const cx = lpx(p.x), cy = lpy(p.y);
-      const tip = `${esc(p.projName||'')}\n${fmtX(p.x)} ${unit||'units'} · ${fmt(p.y,3)} hrs/${unit||'unit'}`;
       const lbl = (p.projName||'').slice(0,16);
+      const tipJson = JSON.stringify({
+        n:   (p.projName || 'Unknown').slice(0, 40),
+        sz:  fmtX(p.x),
+        u:   unit || 'units',
+        c:   fmt(p.y, 3) + ' hrs/' + (unit || 'unit'),
+        lh:  null,
+        ob:  -1,
+        out: 0,
+        pid: p.projId || '',
+      }).replace(/"/g, '&quot;');
       return `<text x="${cx.toFixed(1)}" y="${(cy-8).toFixed(1)}" text-anchor="middle" fill="#6b7280" font-size="7.5">${esc(lbl)}</text>
-        <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${laborColor}" stroke="#111827" stroke-width="1.5" opacity="0.88"><title>${tip}</title></circle>`;
+        <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${laborColor}" stroke="#111827" stroke-width="1.5" opacity="0.88" class="soe-dot" data-tip="${tipJson}" onmouseover="_soeTipOn(event,this)" onmouseout="_soeTipOff()" onmousemove="_soeTipMove(event)" onclick="_soeDotClick(this)"></circle>`;
     }).join('');
 
     const trendNote = lbLP !== null && lr2LP >= 0.10
@@ -10644,6 +10665,41 @@ function _soeSetUnit(costCode, subCode, newUnit) {
   });
   renderScaleOfEconomy();
 }
+
+// ── Scale of Economy — interactive dot tooltip & click ───────────────────
+(function () {
+  function _tip() {
+    let el = document.getElementById('soe-tip');
+    if (!el) { el = document.createElement('div'); el.id = 'soe-tip'; document.body.appendChild(el); }
+    return el;
+  }
+  window._soeTipOn = function (e, el) {
+    const d = JSON.parse(el.dataset.tip);
+    const sc = d.ob === 1 ? '#f87171' : d.ob === 0 ? '#4ade80' : '#9ca3af';
+    const st = d.ob === 1 ? '↑ Over bid' : d.ob === 0 ? '↓ Under bid' : 'No bid data';
+    _tip().innerHTML =
+      `<div style="font-weight:700;font-size:0.83rem;margin-bottom:0.3rem;color:#f3f4f6">${d.n}</div>` +
+      `<div><span style="color:#9ca3af">${d.sz} ${d.u}</span> &nbsp;·&nbsp; <span style="font-weight:600;color:#f3f4f6">${d.c}</span></div>` +
+      (d.lh ? `<div style="color:#9ca3af;font-size:0.72rem">${d.lh}</div>` : '') +
+      `<div style="color:${sc};margin-top:0.2rem;font-size:0.73rem">${st}</div>` +
+      (d.out ? `<div style="color:#fbbf24;font-size:0.7rem;margin-top:0.15rem">⚠ Cost outlier (&gt;2σ from mean)</div>` : '') +
+      (d.pid ? `<div style="color:#4b5563;font-size:0.67rem;margin-top:0.35rem;border-top:1px solid rgba(255,255,255,0.08);padding-top:0.28rem">Click to view project →</div>` : '');
+    _tip().style.opacity = '1';
+    window._soeTipMove(e);
+  };
+  window._soeTipMove = function (e) {
+    const t = _tip();
+    if (t.style.opacity === '0') return;
+    const tw = t.offsetWidth || 200, th = t.offsetHeight || 100;
+    const x = e.clientX + 16, y = e.clientY - 12;
+    t.style.left = (x + tw > window.innerWidth  ? e.clientX - tw - 16 : x) + 'px';
+    t.style.top  = (y + th > window.innerHeight ? e.clientY - th      : y) + 'px';
+  };
+  window._soeTipOff = function () { _tip().style.opacity = '0'; };
+  window._soeDotClick = function (el) {
+    try { const d = JSON.parse(el.dataset.tip); if (d.pid) openProductionRateView(d.pid); } catch (_) {}
+  };
+})();
 
 /* ═══════════════════════════════════════════
    DAILY TRACKING
