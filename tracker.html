@@ -10447,7 +10447,11 @@ function renderScaleOfEconomy() {
       <tr style="cursor:pointer;border-bottom:1px solid var(--border)" onclick="_toggleSoEDetail('${detId}',this)">
         <td style="padding:0.5rem 0.75rem;font-weight:600">${esc(s.subCode||'(No Sub Code)')}${lowSampleBadge}</td>
         <td style="padding:0.5rem 0.6rem;color:var(--muted);font-size:0.75rem">${esc(s.costCode||'')}</td>
-        <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${esc(s.unit||'—')}</td>
+        <td style="padding:0.5rem 0.6rem;text-align:center;font-size:0.75rem" onclick="event.stopPropagation()">
+          <span style="cursor:pointer;color:${s.unit ? 'var(--muted)' : 'var(--border)'};border-bottom:1px dashed ${s.unit ? 'var(--border)' : 'rgba(96,165,250,0.4)'}"
+            title="Click to set unit"
+            onclick="_soeEditUnit('${esc(s.costCode)}','${esc(s.subCode)}',this)">${esc(s.unit||'—')}</span>
+        </td>
         <td style="padding:0.5rem 0.6rem;text-align:center">${s.n}</td>
         <td style="padding:0.5rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums">$${fmt(s.avgUC)}</td>
         <td style="padding:0.5rem 0.75rem;font-weight:700;color:${s.trendColor}">${s.trendIcon} ${s.trend}</td>
@@ -10602,6 +10606,43 @@ function _toggleSoEDetail(detId, row) {
   det.style.display = open ? 'none' : 'table-row';
   const arrow = row ? row.querySelector('.soe-arrow') : null;
   if (arrow) arrow.textContent = open ? '▶' : '▼';
+}
+
+function _soeEditUnit(costCode, subCode, el) {
+  // Replace the unit cell content with a tiny inline input
+  const current = (el.textContent || '').trim();
+  const inp = document.createElement('input');
+  inp.value = current === '—' ? '' : current;
+  inp.placeholder = 'SF';
+  inp.style.cssText = 'width:52px;background:var(--surface2);border:1px solid var(--blue);color:var(--text);border-radius:3px;padding:0.15rem 0.35rem;font-size:0.75rem;text-align:center;outline:none';
+  el.replaceWith(inp);
+  inp.focus();
+  inp.select();
+  const commit = () => {
+    const val = inp.value.trim().toUpperCase();
+    _soeSetUnit(costCode, subCode, val);
+  };
+  inp.addEventListener('blur', commit);
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') renderScaleOfEconomy();
+  });
+}
+
+function _soeSetUnit(costCode, subCode, newUnit) {
+  // Propagate the unit to every matching bid item across all projects
+  const touched = new Set();
+  projectsList.forEach(p => {
+    let changed = false;
+    (p.bidItems || []).forEach(bi => {
+      if ((bi.cost_code || '') === costCode && (bi.sub_code || '') === subCode) {
+        bi.unit = newUnit;
+        changed = true;
+      }
+    });
+    if (changed) { saveProject(p.id); touched.add(p.id); }
+  });
+  renderScaleOfEconomy();
 }
 
 /* ═══════════════════════════════════════════
