@@ -10237,48 +10237,6 @@ function renderScaleOfEconomy() {
     return out || '<span style="color:var(--muted);font-size:0.75rem">No crew/equipment data logged for this sub code.</span>';
   }
 
-  // ── Sweet spot: size range with best observed efficiency ─────────────────
-  function computeSweetSpot(s) {
-    // Use labor efficiency (hrs/unit) when available — strips material cost noise
-    const pts = (s.useLabor && s.laborPts && s.laborPts.length >= 2) ? s.laborPts : s.pts;
-    if (pts.length < 2) return null;
-    const sorted = [...pts].sort((a, b) => a.y - b.y);        // lowest y = best
-    const topN   = Math.max(1, Math.ceil(sorted.length / 3));  // top-performing third
-    const best   = sorted.slice(0, topN);
-    const lo     = Math.min(...best.map(p => p.x));
-    const hi     = Math.max(...best.map(p => p.x));
-    const avgY   = best.reduce((sum, p) => sum + p.y, 0) / best.length;
-    const allAvg = pts.reduce((sum, p) => sum + p.y, 0) / pts.length;
-    const pct    = allAvg > 0 ? (allAvg - avgY) / allAvg * 100 : 0;
-    return { lo, hi, avgY, pct, isLabor: s.useLabor && s.laborPts && s.laborPts.length >= 2, n: best.length };
-  }
-
-  function sweetSpotPanel(s) {
-    const ss = computeSweetSpot(s);
-    if (!ss) return '';
-    const unit      = s.unit || 'units';
-    const fmtSz     = v => v >= 10000 ? (v/1000).toFixed(0)+'k' : v >= 1000 ? (v/1000).toFixed(1)+'k' : fmt(v, 0);
-    const rangeStr  = ss.lo === ss.hi ? `~${fmtSz(ss.lo)} ${unit}` : `${fmtSz(ss.lo)}–${fmtSz(ss.hi)} ${unit}`;
-    const metricStr = ss.isLabor ? `${fmt(ss.avgY, 3)} hr/${unit} avg` : `$${fmt(ss.avgY)}/unit avg`;
-    const improveStr= ss.pct >= 1 ? `${ss.pct.toFixed(0)}% better than avg` : 'near overall avg';
-    return `
-      <div style="background:rgba(74,222,128,0.07);border:1px solid rgba(74,222,128,0.25);border-radius:6px;padding:0.65rem 0.9rem;margin-bottom:1.1rem;display:flex;align-items:flex-start;gap:1.1rem;flex-wrap:wrap">
-        <div>
-          <div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.09em;color:#4ade80;font-weight:700;margin-bottom:0.25rem">&#9733; Sweet Spot</div>
-          <div style="font-size:1.05rem;font-weight:700;color:var(--text)">${rangeStr}</div>
-        </div>
-        <div style="flex:1;min-width:180px">
-          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.2rem">
-            ${metricStr} &nbsp;·&nbsp; ${ss.n} best job${ss.n !== 1 ? 's' : ''} &nbsp;·&nbsp; <span style="color:#4ade80;font-weight:600">${improveStr}</span>
-          </div>
-          <div style="font-size:0.7rem;color:#6b7280;line-height:1.4">
-            Jobs in this ${unit} range had the ${ss.isLabor ? 'fewest labor hours per unit' : 'lowest cost per unit'}.
-            Target bids in this size range for best crew efficiency.
-          </div>
-        </div>
-      </div>`;
-  }
-
   // ── Size-band breakdown table ────────────────────────────────────────────
   function bandTable(pts, unit) {
     if (pts.length < 3) return '';
@@ -10491,15 +10449,6 @@ function renderScaleOfEconomy() {
         <td style="padding:0.5rem 0.6rem;color:var(--muted);font-size:0.75rem">${esc(s.costCode||'')}</td>
         <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${esc(s.unit||'—')}</td>
         <td style="padding:0.5rem 0.6rem;text-align:center">${s.n}</td>
-        <td style="padding:0.5rem 0.6rem;font-size:0.75rem">${(() => {
-          const ss = computeSweetSpot(s);
-          if (!ss) return '<span style="color:var(--muted)">—</span>';
-          const fmtSz = v => v >= 10000 ? (v/1000).toFixed(0)+'k' : v >= 1000 ? (v/1000).toFixed(1)+'k' : fmt(v, 0);
-          const range = ss.lo === ss.hi ? `~${fmtSz(ss.lo)}` : `${fmtSz(ss.lo)}–${fmtSz(ss.hi)}`;
-          const u = s.unit ? `<span style="color:var(--muted)">${esc(s.unit)}</span>` : '';
-          const imp = ss.pct >= 1 ? `<br><span style="color:#4ade80;font-size:0.67rem">▲ ${ss.pct.toFixed(0)}% better</span>` : '';
-          return `<span style="font-weight:600;color:var(--text)">${range}</span> ${u}${imp}`;
-        })()}</td>
         <td style="padding:0.5rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums">$${fmt(s.avgUC)}</td>
         <td style="padding:0.5rem 0.75rem;font-weight:700;color:${s.trendColor}">${s.trendIcon} ${s.trend}</td>
         <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.75rem">${s.strength}</td>
@@ -10507,7 +10456,7 @@ function renderScaleOfEconomy() {
         <td style="padding:0.5rem 0.6rem;text-align:center;color:var(--muted);font-size:0.8rem;transition:transform 0.15s" class="soe-arrow">▶</td>
       </tr>
       <tr id="${detId}" style="display:none">
-        <td colspan="10" style="padding:1rem 1.5rem 1.25rem;background:#0d0d14;border-bottom:2px solid var(--border)">
+        <td colspan="9" style="padding:1rem 1.5rem 1.25rem;background:#0d0d14;border-bottom:2px solid var(--border)">
           <!-- Detail header with PDF button -->
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:0.65rem;border-bottom:1px solid var(--border)">
             <div>
@@ -10521,8 +10470,6 @@ function renderScaleOfEconomy() {
               Export PDF
             </button>
           </div>
-          <!-- Sweet spot callout -->
-          ${sweetSpotPanel(s)}
           <!-- Row 1: scatter + interpretation + size tier -->
           <div style="display:flex;gap:2rem;flex-wrap:wrap;align-items:flex-start;margin-bottom:1.25rem">
             <div>
@@ -10580,7 +10527,6 @@ function renderScaleOfEconomy() {
           <th style="${TH}">Cost Code</th>
           <th style="${TH};text-align:center">Unit</th>
           <th style="${THR};text-align:center"># Jobs</th>
-          <th style="${TH}">Sweet Spot</th>
           <th style="${THR}">Avg Unit Cost</th>
           <th style="${TH}">Labor Scale Trend</th>
           <th style="${TH};text-align:center">Strength</th>
