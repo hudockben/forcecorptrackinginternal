@@ -10065,34 +10065,70 @@ function _soeSendFromCT(btn, costCode, subCode, runQty, totalCost, laborHrs, equ
   const existing = document.getElementById('soe-send-pop');
   if (existing) { existing.remove(); if (existing._sourceBtn === btn) return; }
 
-  const defaultLabel = costCode + (subCode ? ' / ' + subCode : '') + ' — ' + new Date().toLocaleDateString();
+  // Collect per-project rows for this cost code / sub code from the live projAgg
+  const prefix = costCode + '||' + subCode + '||';
+  const projRows = Object.entries(_ctProjAgg)
+    .filter(([pk]) => pk.startsWith(prefix))
+    .map(([, pa]) => pa);
+
   const pop = document.createElement('div');
   pop.id = 'soe-send-pop';
   pop._sourceBtn = btn;
-  pop.style.cssText = 'position:absolute;z-index:9999;background:var(--surface,#111118);border:1px solid var(--border,#2a2a3a);border-radius:6px;padding:0.75rem;width:260px;box-shadow:0 4px 20px rgba(0,0,0,0.5)';
-  pop.innerHTML = `
-    <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent,#22c55e);margin-bottom:0.5rem">Send to Scale of Economy</div>
-    <input id="soe-send-label" value="${esc(defaultLabel)}"
-      style="width:100%;padding:0.4rem 0.55rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.8rem;font-family:inherit;outline:none;margin-bottom:0.5rem" />
-    <div style="display:flex;gap:0.5rem">
-      <button onclick="document.getElementById('soe-send-pop').remove()"
-        style="flex:1;padding:0.35rem;background:var(--surface2,#1e1e2e);border:1px solid var(--border,#2a2a3a);color:var(--muted,#888);border-radius:4px;font-size:0.75rem;cursor:pointer">Cancel</button>
-      <button onclick="_soeSendConfirm()"
-        style="flex:1;padding:0.35rem;background:#16a34a;border:none;color:#fff;border-radius:4px;font-size:0.75rem;font-weight:700;cursor:pointer">Send ✦</button>
-    </div>`;
+  pop.style.cssText = 'position:absolute;z-index:9999;background:var(--surface,#111118);border:1px solid var(--border,#2a2a3a);border-radius:6px;padding:0.75rem;width:300px;box-shadow:0 4px 20px rgba(0,0,0,0.5)';
 
-  // Store pending values on pop element for confirm handler
-  pop._data = { costCode, subCode, runQty, totalCost, laborHrs, equipHrs, bidQty, bidUnitCost };
+  if (projRows.length > 1) {
+    // Multiple projects — send each as a separate job
+    const listHTML = projRows.map(pa => `
+      <div style="display:flex;justify-content:space-between;padding:0.2rem 0;font-size:0.75rem;border-bottom:1px solid #1a1a2a">
+        <span style="color:var(--text,#e0e0e0)">${esc(pa.project)}</span>
+        <span style="color:var(--muted,#888)">${pa.running_qty.toLocaleString()} · $${pa.total_cost.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+      </div>`).join('');
+    pop.innerHTML = `
+      <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent,#22c55e);margin-bottom:0.5rem">Send to Scale of Economy</div>
+      <div style="font-size:0.72rem;color:var(--muted,#888);margin-bottom:0.5rem">${projRows.length} jobs found — each sent as a separate data point:</div>
+      <div style="max-height:160px;overflow-y:auto;margin-bottom:0.6rem">${listHTML}</div>
+      <div style="display:flex;gap:0.5rem">
+        <button onclick="document.getElementById('soe-send-pop').remove()"
+          style="flex:1;padding:0.35rem;background:var(--surface2,#1e1e2e);border:1px solid var(--border,#2a2a3a);color:var(--muted,#888);border-radius:4px;font-size:0.75rem;cursor:pointer">Cancel</button>
+        <button onclick="_soeSendConfirm()"
+          style="flex:1;padding:0.35rem;background:#16a34a;border:none;color:#fff;border-radius:4px;font-size:0.75rem;font-weight:700;cursor:pointer">Send ${projRows.length} Jobs ✦</button>
+      </div>`;
+    pop._projects = projRows.map(pa => ({
+      label: pa.project, costCode, subCode,
+      run_qty: pa.running_qty, total_cost: pa.total_cost,
+      labor_hrs: pa.labor_hours, equip_hrs: pa.equip_hours,
+      bid_qty: bidQty / projRows.length,   // split bid qty evenly as best estimate
+      bid_unit_cost: bidUnitCost,
+    }));
+  } else {
+    // Single project or no breakdown — send aggregate with editable label
+    const defaultLabel = costCode + (subCode ? ' / ' + subCode : '') + ' — ' + new Date().toLocaleDateString();
+    pop.innerHTML = `
+      <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent,#22c55e);margin-bottom:0.5rem">Send to Scale of Economy</div>
+      <input id="soe-send-label" value="${esc(projRows.length === 1 ? projRows[0].project : defaultLabel)}"
+        style="width:100%;padding:0.4rem 0.55rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.8rem;font-family:inherit;outline:none;margin-bottom:0.5rem" />
+      <div style="display:flex;gap:0.5rem">
+        <button onclick="document.getElementById('soe-send-pop').remove()"
+          style="flex:1;padding:0.35rem;background:var(--surface2,#1e1e2e);border:1px solid var(--border,#2a2a3a);color:var(--muted,#888);border-radius:4px;font-size:0.75rem;cursor:pointer">Cancel</button>
+        <button onclick="_soeSendConfirm()"
+          style="flex:1;padding:0.35rem;background:#16a34a;border:none;color:#fff;border-radius:4px;font-size:0.75rem;font-weight:700;cursor:pointer">Send ✦</button>
+      </div>`;
+    pop._projects = [{
+      label: null, costCode, subCode,
+      run_qty: runQty, total_cost: totalCost,
+      labor_hrs: laborHrs, equip_hrs: equipHrs,
+      bid_qty: bidQty, bid_unit_cost: bidUnitCost,
+    }];
+  }
 
-  // Position below the button
   document.body.appendChild(pop);
   const rect = btn.getBoundingClientRect();
   pop.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
-  pop.style.left = Math.min(rect.left + window.scrollX, window.innerWidth - 270) + 'px';
+  pop.style.left = Math.min(rect.left + window.scrollX, window.innerWidth - 310) + 'px';
 
-  document.getElementById('soe-send-label').select();
+  const labelEl = document.getElementById('soe-send-label');
+  if (labelEl) labelEl.select();
 
-  // Close on outside click
   setTimeout(() => {
     document.addEventListener('click', function h(e) {
       if (!pop.contains(e.target) && e.target !== btn) { pop.remove(); document.removeEventListener('click', h); }
@@ -10101,26 +10137,30 @@ function _soeSendFromCT(btn, costCode, subCode, runQty, totalCost, laborHrs, equ
 }
 
 function _soeSendConfirm() {
-  const pop   = document.getElementById('soe-send-pop');
+  const pop = document.getElementById('soe-send-pop');
   if (!pop) return;
-  const label = document.getElementById('soe-send-label').value.trim() || pop._data.costCode;
-  const d     = pop._data;
-  scaleManualEntries.push({
-    id:            crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2),
-    label,
-    cost_code:     d.costCode,
-    sub_code:      d.subCode,
-    run_qty:       d.runQty,
-    total_cost:    d.totalCost,
-    labor_hrs:     d.laborHrs,
-    equip_hrs:     d.equipHrs,
-    bid_qty:       d.bidQty,
-    bid_unit_cost: d.bidUnitCost,
-    created_at:    new Date().toISOString().slice(0, 10),
+  const labelEl = document.getElementById('soe-send-label');
+  const projects = pop._projects || [];
+
+  projects.forEach(d => {
+    const label = d.label || (labelEl ? labelEl.value.trim() : '') || d.costCode;
+    scaleManualEntries.push({
+      id:            crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2),
+      label,
+      cost_code:     d.costCode,
+      sub_code:      d.subCode,
+      run_qty:       d.run_qty,
+      total_cost:    d.total_cost,
+      labor_hrs:     d.labor_hrs,
+      equip_hrs:     d.equip_hrs,
+      bid_qty:       d.bid_qty,
+      bid_unit_cost: d.bid_unit_cost,
+      created_at:    new Date().toISOString().slice(0, 10),
+    });
   });
+
   saveScaleManualEntries();
   pop.remove();
-  // brief flash on the button
   const btn = pop._sourceBtn;
   if (btn) { btn.style.color = '#4ade80'; setTimeout(() => { btn.style.color = ''; }, 1200); }
 }
