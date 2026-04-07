@@ -73,16 +73,17 @@ CREATE TABLE IF NOT EXISTS daily_tracking (
 );
 
 CREATE TABLE IF NOT EXISTS dropdown_lists (
-    id         SERIAL PRIMARY KEY,
-    list_name  VARCHAR(50)  NOT NULL,
-    value      VARCHAR(255) NOT NULL,
-    sort_order INTEGER      NOT NULL DEFAULT 0,
-    UNIQUE (list_name, value)
+    id           SERIAL PRIMARY KEY,
+    company_code TEXT         NOT NULL,
+    list_name    VARCHAR(50)  NOT NULL,
+    value        VARCHAR(255) NOT NULL,
+    sort_order   INTEGER      NOT NULL DEFAULT 0,
+    UNIQUE (company_code, list_name, value)
 );
 
 CREATE TABLE IF NOT EXISTS equipment_list (
     id         SERIAL PRIMARY KEY,
-    name       VARCHAR(255) NOT NULL UNIQUE,
+    name       VARCHAR(255) NOT NULL,
     unit_cost  NUMERIC(14,4) NOT NULL DEFAULT 0,
     sort_order INTEGER       NOT NULL DEFAULT 0
 );
@@ -199,6 +200,13 @@ ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS active       BOOLEAN NOT NUL
 ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
+-- Drop the old global unique constraint on name (if it exists from initial schema)
+-- and replace with a per-company constraint so multiple companies can share equipment names.
+ALTER TABLE equipment_list DROP CONSTRAINT IF EXISTS equipment_list_name_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_equipment_company_name ON equipment_list(company_code, name)
+  WHERE company_code IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_equipment_company ON equipment_list(company_code);
 
 -- ─────────────────────────────────────────────────
@@ -209,6 +217,15 @@ ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS project_id   TEXT;
 ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS description  TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_cost_items_company_project ON cost_items(company_code, project_id);
+
+-- ─────────────────────────────────────────────────
+-- DROPDOWN LISTS  (add company scoping if upgrading
+-- from old schema that lacked company_code)
+-- ─────────────────────────────────────────────────
+ALTER TABLE dropdown_lists ADD COLUMN IF NOT EXISTS company_code TEXT NOT NULL DEFAULT '';
+ALTER TABLE dropdown_lists DROP CONSTRAINT IF EXISTS dropdown_lists_list_name_value_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dropdown_company_list_value ON dropdown_lists(company_code, list_name, value);
+CREATE INDEX IF NOT EXISTS idx_dropdown_company ON dropdown_lists(company_code);
 
 -- ─────────────────────────────────────────────────
 -- SUPPLIERS

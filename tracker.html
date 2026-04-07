@@ -4448,6 +4448,20 @@ let inventoryEntries = [];
 let _invYear = new Date().getFullYear();
 let _invBreakdownOpen = false;
 
+// ── Scale of Economy — manual job entries ────────────────────────────────────
+// Summarized jobs that feed Scale of Economy analysis without daily tracking rows.
+let scaleManualEntries = [];
+
+async function loadScaleManualEntries() {
+  const saved = await apiGet('fct_scale_manual');
+  scaleManualEntries = Array.isArray(saved) ? saved : [];
+}
+
+function saveScaleManualEntries() {
+  apiPut('fct_scale_manual', scaleManualEntries);
+  _projSubAggCache = null; // invalidate so next render picks up the change
+}
+
 async function loadInventoryEntries() {
   let saved = await apiGet('fct_inventory');
   if (!saved || (Array.isArray(saved) && saved.length === 0)) {
@@ -7691,7 +7705,8 @@ let _projSubAggCacheRowCount = -1;
 // Each entry includes bid qty, production totals, monthly breakdown, crew, and equipment data.
 function buildProjectSubCodeAgg() {
   const totalRows = projectsList.reduce((s, p) => s + (p.dailyRows ? p.dailyRows.length : 0), 0);
-  if (_projSubAggCache && _projSubAggCacheRowCount === totalRows) return _projSubAggCache;
+  const cacheKey  = totalRows + '|' + scaleManualEntries.length;
+  if (_projSubAggCache && _projSubAggCacheRowCount === cacheKey) return _projSubAggCache;
   const agg = {};
   projectsList.forEach(p => {
     const bidItems  = p.bidItems  || [];
@@ -7741,9 +7756,10 @@ function buildProjectSubCodeAgg() {
     });
     Object.entries(projAgg).forEach(([key, data]) => {
       if (!agg[key]) agg[key] = [];
-      const bidQty     = bidQtyMap[key] || 0;
+      // Fall back to run qty when no bid — keeps the project visible in SOE scatter
+      const bidQty     = bidQtyMap[key] > 0 ? bidQtyMap[key] : data.runQty;
       const bidUnitCost= bidUCMap[key]  || 0;
-      const bidTotal   = bidQty * bidUnitCost;
+      const bidTotal   = (bidQtyMap[key] || 0) * bidUnitCost;
       agg[key].push({
         projId:      p.id,
         projName:    p['project-name'] || 'Unnamed',
@@ -7761,8 +7777,33 @@ function buildProjectSubCodeAgg() {
       });
     });
   });
+  // ── Merge manual job entries ────────────────────────────────────────────
+  for (const entry of scaleManualEntries) {
+    if (!entry.cost_code || !(entry.run_qty > 0) || !(entry.total_cost > 0)) continue;
+    const key = (entry.cost_code || '') + '||' + (entry.sub_code || '');
+    if (!agg[key]) agg[key] = [];
+    const bidQty     = entry.bid_qty     > 0 ? entry.bid_qty     : entry.run_qty;
+    const bidUnitCost= entry.bid_unit_cost > 0 ? entry.bid_unit_cost : entry.total_cost / entry.run_qty;
+    agg[key].push({
+      projId:      entry.id,
+      projName:    (entry.label || 'Manual Entry') + ' ✦',
+      bidQty,
+      bidUnitCost,
+      overBid:     null,
+      runQty:      entry.run_qty,
+      totalCost:   entry.total_cost,
+      laborHrs:    entry.labor_hrs  || 0,
+      equipHrs:    entry.equip_hrs  || 0,
+      dayCount:    0,
+      monthly:     {},
+      employees:   {},
+      equipment:   {},
+      isManual:    true,
+    });
+  }
+
   _projSubAggCache = agg;
-  _projSubAggCacheRowCount = totalRows;
+  _projSubAggCacheRowCount = cacheKey;
   return agg;
 }
 
@@ -8198,6 +8239,11 @@ function renderCostTable() {
             title="Edit bid amounts per project"
             style="margin-left:0.25rem;background:none;border:none;color:#60a5fa;cursor:pointer;font-size:0.82rem;padding:0;line-height:1;vertical-align:middle;opacity:0.7"
             onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">✏️</button>
+          <button
+            title="Send to Scale of Economy"
+            onclick="event.stopPropagation();_soeSendFromCT(this,'${esc(costCode)}','${esc(sc)}',${rqty},${rtotal},${a.labor_hours},${a.equip_hours},${bq},${buc})"
+            style="margin-left:0.25rem;background:none;border:none;color:#a78bfa;cursor:pointer;font-size:0.78rem;padding:0;line-height:1;vertical-align:middle;opacity:0.7;font-weight:700"
+            onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">✦</button>
         </td>
         <td class="calc">${bq ? fmt(bq,2) : '—'}</td>
         <td class="calc">${buc ? '$'+fmt(buc) : isDailyOnly ? '<span style="color:#555;font-size:0.68rem">No bid entry</span>' : '—'}</td>
@@ -10006,6 +10052,120 @@ function exportLaborCSV() {
    SCALE OF ECONOMY
 ═══════════════════════════════════════════ */
 
+// ── Scale of Economy — sent-entries helpers ──────────────────────────────────
+
+function _soeDeleteManual(id) {
+  if (!confirm('Remove this entry from Scale of Economy?')) return;
+  scaleManualEntries = scaleManualEntries.filter(e => e.id !== id);
+  saveScaleManualEntries();
+  renderScaleOfEconomy();
+}
+
+// send-to-SOE popover (called from cost tracking row button)
+function _soeSendFromCT(btn, costCode, subCode, runQty, totalCost, laborHrs, equipHrs, bidQty, bidUnitCost) {
+  const existing = document.getElementById('soe-send-pop');
+  if (existing) { existing.remove(); if (existing._sourceBtn === btn) return; }
+
+  // Collect per-project rows for this cost code / sub code from the live projAgg
+  const prefix = costCode + '||' + subCode + '||';
+  const projRows = Object.entries(_ctProjAgg)
+    .filter(([pk]) => pk.startsWith(prefix))
+    .map(([, pa]) => pa);
+
+  const pop = document.createElement('div');
+  pop.id = 'soe-send-pop';
+  pop._sourceBtn = btn;
+  pop.style.cssText = 'position:absolute;z-index:9999;background:var(--surface,#111118);border:1px solid var(--border,#2a2a3a);border-radius:6px;padding:0.75rem;width:300px;box-shadow:0 4px 20px rgba(0,0,0,0.5)';
+
+  if (projRows.length > 1) {
+    // Multiple projects — send each as a separate job
+    const listHTML = projRows.map(pa => `
+      <div style="display:flex;justify-content:space-between;padding:0.2rem 0;font-size:0.75rem;border-bottom:1px solid #1a1a2a">
+        <span style="color:var(--text,#e0e0e0)">${esc(pa.project)}</span>
+        <span style="color:var(--muted,#888)">${pa.running_qty.toLocaleString()} · $${pa.total_cost.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+      </div>`).join('');
+    pop.innerHTML = `
+      <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent,#22c55e);margin-bottom:0.5rem">Send to Scale of Economy</div>
+      <div style="font-size:0.72rem;color:var(--muted,#888);margin-bottom:0.5rem">${projRows.length} jobs found — each sent as a separate data point:</div>
+      <div style="max-height:160px;overflow-y:auto;margin-bottom:0.6rem">${listHTML}</div>
+      <div style="display:flex;gap:0.5rem">
+        <button onclick="document.getElementById('soe-send-pop').remove()"
+          style="flex:1;padding:0.35rem;background:var(--surface2,#1e1e2e);border:1px solid var(--border,#2a2a3a);color:var(--muted,#888);border-radius:4px;font-size:0.75rem;cursor:pointer">Cancel</button>
+        <button onclick="_soeSendConfirm()"
+          style="flex:1;padding:0.35rem;background:#16a34a;border:none;color:#fff;border-radius:4px;font-size:0.75rem;font-weight:700;cursor:pointer">Send ${projRows.length} Jobs ✦</button>
+      </div>`;
+    pop._projects = projRows.map(pa => ({
+      label: pa.project, costCode, subCode,
+      run_qty: pa.running_qty, total_cost: pa.total_cost,
+      labor_hrs: pa.labor_hours, equip_hrs: pa.equip_hours,
+      bid_qty: bidQty / projRows.length,   // split bid qty evenly as best estimate
+      bid_unit_cost: bidUnitCost,
+    }));
+  } else {
+    // Single project or no breakdown — send aggregate with editable label
+    const defaultLabel = costCode + (subCode ? ' / ' + subCode : '') + ' — ' + new Date().toLocaleDateString();
+    pop.innerHTML = `
+      <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent,#22c55e);margin-bottom:0.5rem">Send to Scale of Economy</div>
+      <input id="soe-send-label" value="${esc(projRows.length === 1 ? projRows[0].project : defaultLabel)}"
+        style="width:100%;padding:0.4rem 0.55rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.8rem;font-family:inherit;outline:none;margin-bottom:0.5rem" />
+      <div style="display:flex;gap:0.5rem">
+        <button onclick="document.getElementById('soe-send-pop').remove()"
+          style="flex:1;padding:0.35rem;background:var(--surface2,#1e1e2e);border:1px solid var(--border,#2a2a3a);color:var(--muted,#888);border-radius:4px;font-size:0.75rem;cursor:pointer">Cancel</button>
+        <button onclick="_soeSendConfirm()"
+          style="flex:1;padding:0.35rem;background:#16a34a;border:none;color:#fff;border-radius:4px;font-size:0.75rem;font-weight:700;cursor:pointer">Send ✦</button>
+      </div>`;
+    pop._projects = [{
+      label: null, costCode, subCode,
+      run_qty: runQty, total_cost: totalCost,
+      labor_hrs: laborHrs, equip_hrs: equipHrs,
+      bid_qty: bidQty, bid_unit_cost: bidUnitCost,
+    }];
+  }
+
+  document.body.appendChild(pop);
+  const rect = btn.getBoundingClientRect();
+  pop.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+  pop.style.left = Math.min(rect.left + window.scrollX, window.innerWidth - 310) + 'px';
+
+  const labelEl = document.getElementById('soe-send-label');
+  if (labelEl) labelEl.select();
+
+  setTimeout(() => {
+    document.addEventListener('click', function h(e) {
+      if (!pop.contains(e.target) && e.target !== btn) { pop.remove(); document.removeEventListener('click', h); }
+    });
+  }, 0);
+}
+
+function _soeSendConfirm() {
+  const pop = document.getElementById('soe-send-pop');
+  if (!pop) return;
+  const labelEl = document.getElementById('soe-send-label');
+  const projects = pop._projects || [];
+
+  projects.forEach(d => {
+    const label = d.label || (labelEl ? labelEl.value.trim() : '') || d.costCode;
+    scaleManualEntries.push({
+      id:            crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2),
+      label,
+      cost_code:     d.costCode,
+      sub_code:      d.subCode,
+      run_qty:       d.run_qty,
+      total_cost:    d.total_cost,
+      labor_hrs:     d.labor_hrs,
+      equip_hrs:     d.equip_hrs,
+      bid_qty:       d.bid_qty,
+      bid_unit_cost: d.bid_unit_cost,
+      created_at:    new Date().toISOString().slice(0, 10),
+    });
+  });
+
+  saveScaleManualEntries();
+  pop.remove();
+  const btn = pop._sourceBtn;
+  if (btn) { btn.style.color = '#4ade80'; setTimeout(() => { btn.style.color = ''; }, 1200); }
+}
+
 function renderScaleOfEconomy() {
   const el = document.getElementById('scale-content');
   if (!el) return;
@@ -10025,9 +10185,12 @@ function renderScaleOfEconomy() {
       if (bi && bi.unit) { unit = bi.unit; break; }
     }
 
-    // Only include jobs with valid bid qty AND production cost
-    const validProjs = projects.filter(pr => pr.bidQty > 0 && pr.runQty > 0 && pr.totalCost > 0);
-    if (validProjs.length < 2) return;
+    // Only include jobs with valid bid qty AND production cost.
+    // Sent entries (isManual) can appear with just 1 job — they show with LOW SAMPLE badge.
+    const validProjs  = projects.filter(pr => pr.bidQty > 0 && pr.runQty > 0 && pr.totalCost > 0);
+    const manualJobs  = validProjs.filter(pr => pr.isManual);
+    if (validProjs.length < 2 && manualJobs.length === 0) return;
+    if (validProjs.length < 1) return;
 
     // Build raw points with full metadata for scatter plot
     const rawPts = validProjs.map(pr => ({
@@ -10190,7 +10353,7 @@ function renderScaleOfEconomy() {
       laborA, laborB, laborR2, laborTooFew, useLabor,
       trend, trendColor, trendIcon, strength, pctChange, tooFewForR2,
       minX, maxX, n, avgUC: meanY, outlierCount,
-      laborPts,
+      laborPts, manualJobs,
       allProjects: validProjs });
   });
 
@@ -10738,6 +10901,18 @@ function renderScaleOfEconomy() {
               ${crewBreakdown(s.allProjects)}
             </div>
           </div>
+          ${s.manualJobs.length ? `
+          <div style="border-top:1px solid var(--border);padding-top:0.75rem;margin-top:0.75rem">
+            <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:#a78bfa;margin-bottom:0.5rem">✦ Sent from Cost Tracking</div>
+            <div style="display:flex;flex-wrap:wrap;gap:0.4rem">
+              ${s.manualJobs.map(j => `
+                <span style="display:inline-flex;align-items:center;gap:0.4rem;background:rgba(167,139,250,0.08);border:1px solid rgba(167,139,250,0.25);border-radius:4px;padding:0.2rem 0.5rem;font-size:0.75rem;color:#c4b5fd">
+                  ${esc(j.projName.replace(' ✦',''))}
+                  <button onclick="event.stopPropagation();_soeDeleteManual('${j.projId}')"
+                    title="Remove from analysis" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:0.8rem;padding:0;line-height:1">✕</button>
+                </span>`).join('')}
+            </div>
+          </div>` : ''}
         </td>
       </tr>`;
   }).join('');
@@ -13202,6 +13377,7 @@ async function deleteCompanyUser(id) {
     loadPurchaseOrders(),
     loadTruckingEntries(),
     loadInventoryEntries(),
+    loadScaleManualEntries(),
   ]);
 
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
