@@ -7756,9 +7756,10 @@ function buildProjectSubCodeAgg() {
     });
     Object.entries(projAgg).forEach(([key, data]) => {
       if (!agg[key]) agg[key] = [];
-      const bidQty     = bidQtyMap[key] || 0;
+      // Fall back to run qty when no bid — keeps the project visible in SOE scatter
+      const bidQty     = bidQtyMap[key] > 0 ? bidQtyMap[key] : data.runQty;
       const bidUnitCost= bidUCMap[key]  || 0;
-      const bidTotal   = bidQty * bidUnitCost;
+      const bidTotal   = (bidQtyMap[key] || 0) * bidUnitCost;
       agg[key].push({
         projId:      p.id,
         projName:    p['project-name'] || 'Unnamed',
