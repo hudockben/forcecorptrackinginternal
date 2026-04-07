@@ -1,7 +1,8 @@
 'use strict';
 
-const { neon } = require('@neondatabase/serverless');
-const jwt      = require('jsonwebtoken');
+const { neon }        = require('@neondatabase/serverless');
+const jwt             = require('jsonwebtoken');
+const { syncForKey }  = require('../lib/sync-normalized');
 
 const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory'];
 function isAllowedKey(k) {
@@ -73,6 +74,11 @@ module.exports = async (req, res) => {
       ON CONFLICT (key)
       DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
     `;
+    // Write-through: mirror into normalized tables (fire-and-forget on error
+    // so a sync hiccup never breaks the primary save).
+    syncForKey(sql, payload.companyCode, key, value).catch(err =>
+      console.error('[sync-normalized] PUT', key, err.message)
+    );
     return res.json({ ok: true });
   }
 
@@ -82,13 +88,21 @@ module.exports = async (req, res) => {
     if (!fields || typeof fields !== 'object') {
       return res.status(400).json({ error: '`fields` object required in body' });
     }
-    // Use JSONB concatenation operator to merge fields into existing value
-    await sql`
+    // Use JSONB concatenation operator to merge fields into existing value,
+    // then return the merged result so we can sync the full updated value.
+    const updated = await sql`
       UPDATE app_data
       SET value = COALESCE(value, '{}'::jsonb) || ${JSON.stringify(fields)}::jsonb,
           updated_at = NOW()
       WHERE key = ${scopedKey}
+      RETURNING value
     `;
+    // Write-through: mirror merged value into normalized tables.
+    if (updated.length) {
+      syncForKey(sql, payload.companyCode, key, updated[0].value).catch(err =>
+        console.error('[sync-normalized] PATCH', key, err.message)
+      );
+    }
     return res.json({ ok: true });
   }
 
