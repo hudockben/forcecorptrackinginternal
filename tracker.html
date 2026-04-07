@@ -4448,6 +4448,20 @@ let inventoryEntries = [];
 let _invYear = new Date().getFullYear();
 let _invBreakdownOpen = false;
 
+// ── Scale of Economy — manual job entries ────────────────────────────────────
+// Summarized jobs that feed Scale of Economy analysis without daily tracking rows.
+let scaleManualEntries = [];
+
+async function loadScaleManualEntries() {
+  const saved = await apiGet('fct_scale_manual');
+  scaleManualEntries = Array.isArray(saved) ? saved : [];
+}
+
+function saveScaleManualEntries() {
+  apiPut('fct_scale_manual', scaleManualEntries);
+  _projSubAggCache = null; // invalidate so next render picks up the change
+}
+
 async function loadInventoryEntries() {
   let saved = await apiGet('fct_inventory');
   if (!saved || (Array.isArray(saved) && saved.length === 0)) {
@@ -7691,7 +7705,8 @@ let _projSubAggCacheRowCount = -1;
 // Each entry includes bid qty, production totals, monthly breakdown, crew, and equipment data.
 function buildProjectSubCodeAgg() {
   const totalRows = projectsList.reduce((s, p) => s + (p.dailyRows ? p.dailyRows.length : 0), 0);
-  if (_projSubAggCache && _projSubAggCacheRowCount === totalRows) return _projSubAggCache;
+  const cacheKey  = totalRows + '|' + scaleManualEntries.length;
+  if (_projSubAggCache && _projSubAggCacheRowCount === cacheKey) return _projSubAggCache;
   const agg = {};
   projectsList.forEach(p => {
     const bidItems  = p.bidItems  || [];
@@ -7761,8 +7776,33 @@ function buildProjectSubCodeAgg() {
       });
     });
   });
+  // ── Merge manual job entries ────────────────────────────────────────────
+  for (const entry of scaleManualEntries) {
+    if (!entry.cost_code || !(entry.run_qty > 0) || !(entry.total_cost > 0)) continue;
+    const key = (entry.cost_code || '') + '||' + (entry.sub_code || '');
+    if (!agg[key]) agg[key] = [];
+    const bidQty     = entry.bid_qty     > 0 ? entry.bid_qty     : entry.run_qty;
+    const bidUnitCost= entry.bid_unit_cost > 0 ? entry.bid_unit_cost : entry.total_cost / entry.run_qty;
+    agg[key].push({
+      projId:      entry.id,
+      projName:    (entry.label || 'Manual Entry') + ' ✦',
+      bidQty,
+      bidUnitCost,
+      overBid:     null,
+      runQty:      entry.run_qty,
+      totalCost:   entry.total_cost,
+      laborHrs:    entry.labor_hrs  || 0,
+      equipHrs:    entry.equip_hrs  || 0,
+      dayCount:    0,
+      monthly:     {},
+      employees:   {},
+      equipment:   {},
+      isManual:    true,
+    });
+  }
+
   _projSubAggCache = agg;
-  _projSubAggCacheRowCount = totalRows;
+  _projSubAggCacheRowCount = cacheKey;
   return agg;
 }
 
@@ -10006,6 +10046,166 @@ function exportLaborCSV() {
    SCALE OF ECONOMY
 ═══════════════════════════════════════════ */
 
+// ── Scale of Economy — manual entry helpers ──────────────────────────────────
+
+function _soeManualPanelHTML() {
+  const rows = scaleManualEntries.map((e, i) => `
+    <tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:0.4rem 0.6rem;font-size:0.8rem;font-weight:600">${esc(e.label||'—')}</td>
+      <td style="padding:0.4rem 0.6rem;font-size:0.78rem;color:var(--muted)">${esc(e.cost_code||'')} ${e.sub_code ? '/ '+esc(e.sub_code) : ''}</td>
+      <td style="padding:0.4rem 0.6rem;font-size:0.78rem;text-align:right;font-variant-numeric:tabular-nums">${(+e.run_qty||0).toLocaleString()}</td>
+      <td style="padding:0.4rem 0.6rem;font-size:0.78rem;text-align:right;font-variant-numeric:tabular-nums">$${(+e.total_cost||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}</td>
+      <td style="padding:0.4rem 0.6rem;font-size:0.78rem;text-align:right;color:var(--muted)">${e.labor_hrs > 0 ? (+e.labor_hrs).toLocaleString() : '—'}</td>
+      <td style="padding:0.4rem 0.6rem;font-size:0.78rem;text-align:right;color:var(--muted)">${e.equip_hrs > 0 ? (+e.equip_hrs).toLocaleString() : '—'}</td>
+      <td style="padding:0.4rem 0.5rem;text-align:center">
+        <button onclick="_soeDeleteManual('${e.id}')"
+          style="background:none;border:1px solid #7f1d1d;color:#f87171;border-radius:3px;padding:0.15rem 0.5rem;font-size:0.68rem;cursor:pointer">✕</button>
+      </td>
+    </tr>`).join('');
+
+  const TH = 'padding:0.35rem 0.6rem;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#888;background:var(--surface2);border:1px solid var(--border)';
+  return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:1rem;overflow:hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;border-bottom:1px solid var(--border);background:var(--surface2)">
+        <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:var(--accent)">
+          ✦ Manual Job Entries <span style="font-weight:400;color:var(--muted);margin-left:0.5rem">${scaleManualEntries.length} entr${scaleManualEntries.length===1?'y':'ies'}</span>
+        </div>
+        <button onclick="_soeOpenAddForm()"
+          style="background:var(--accent-dim,#052e16);border:1px solid var(--accent,#22c55e);color:var(--accent,#22c55e);border-radius:4px;padding:0.3rem 0.8rem;font-size:0.72rem;font-weight:700;cursor:pointer;letter-spacing:0.05em">
+          + Add Job
+        </button>
+      </div>
+      ${scaleManualEntries.length === 0
+        ? `<div style="padding:1rem 1.25rem;font-size:0.78rem;color:var(--muted)">
+             No manual entries yet. Use <strong>+ Add Job</strong> to enter summarized job data (e.g. completed work tracked outside daily rows).
+             Manual jobs appear in regression analysis alongside project data — marked with ✦.
+           </div>`
+        : `<div style="overflow-x:auto">
+             <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+               <thead><tr>
+                 <th style="${TH}">Label</th>
+                 <th style="${TH}">Cost / Sub Code</th>
+                 <th style="${TH};text-align:right">Qty</th>
+                 <th style="${TH};text-align:right">Total Cost</th>
+                 <th style="${TH};text-align:right">Labor Hrs</th>
+                 <th style="${TH};text-align:right">Equip Hrs</th>
+                 <th style="${TH};width:36px"></th>
+               </tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>`}
+    </div>`;
+}
+
+function _soeOpenAddForm() {
+  const existing = document.getElementById('soe-add-modal');
+  if (existing) { existing.remove(); return; }
+
+  const costCodes = [...new Set(
+    projectsList.flatMap(p => (p.bidItems||[]).map(b => b.cost_code)).filter(Boolean)
+  )].sort();
+
+  const modal = document.createElement('div');
+  modal.id = 'soe-add-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem';
+  modal.innerHTML = `
+    <div style="background:var(--surface,#111118);border:1px solid var(--border,#2a2a3a);border-radius:10px;padding:1.5rem;width:100%;max-width:520px;max-height:90vh;overflow-y:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+        <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:var(--accent,#22c55e)">Add Manual Job Entry</div>
+        <button onclick="document.getElementById('soe-add-modal').remove()" style="background:none;border:none;color:var(--muted,#888);font-size:1.2rem;cursor:pointer">✕</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem">
+        <div style="grid-column:1/-1">
+          <label style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted,#888);display:block;margin-bottom:0.3rem">Job Label <span style="color:#f87171">*</span></label>
+          <input id="soe-f-label" placeholder="e.g. Tron — Site A" style="width:100%;padding:0.5rem 0.65rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.85rem;font-family:inherit;outline:none" />
+        </div>
+        <div>
+          <label style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted,#888);display:block;margin-bottom:0.3rem">Cost Code <span style="color:#f87171">*</span></label>
+          <input id="soe-f-cc" list="soe-cc-list" placeholder="e.g. 01-01" style="width:100%;padding:0.5rem 0.65rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.85rem;font-family:inherit;outline:none" />
+          <datalist id="soe-cc-list">${costCodes.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
+        </div>
+        <div>
+          <label style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted,#888);display:block;margin-bottom:0.3rem">Sub Code</label>
+          <input id="soe-f-sub" placeholder="e.g. A" style="width:100%;padding:0.5rem 0.65rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.85rem;font-family:inherit;outline:none" />
+        </div>
+        <div>
+          <label style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted,#888);display:block;margin-bottom:0.3rem">Qty Completed <span style="color:#f87171">*</span></label>
+          <input id="soe-f-qty" type="number" min="0" step="any" placeholder="5000" style="width:100%;padding:0.5rem 0.65rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.85rem;font-family:inherit;outline:none" />
+        </div>
+        <div>
+          <label style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted,#888);display:block;margin-bottom:0.3rem">Total Cost ($) <span style="color:#f87171">*</span></label>
+          <input id="soe-f-cost" type="number" min="0" step="any" placeholder="12500" style="width:100%;padding:0.5rem 0.65rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.85rem;font-family:inherit;outline:none" />
+        </div>
+        <div>
+          <label style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted,#888);display:block;margin-bottom:0.3rem">Labor Hours <span style="color:var(--muted,#888);font-weight:400">(optional)</span></label>
+          <input id="soe-f-lhr" type="number" min="0" step="any" placeholder="120" style="width:100%;padding:0.5rem 0.65rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.85rem;font-family:inherit;outline:none" />
+        </div>
+        <div>
+          <label style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted,#888);display:block;margin-bottom:0.3rem">Equip Hours <span style="color:var(--muted,#888);font-weight:400">(optional)</span></label>
+          <input id="soe-f-ehr" type="number" min="0" step="any" placeholder="40" style="width:100%;padding:0.5rem 0.65rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.85rem;font-family:inherit;outline:none" />
+        </div>
+        <div>
+          <label style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted,#888);display:block;margin-bottom:0.3rem">Bid Qty <span style="color:var(--muted,#888);font-weight:400">(optional)</span></label>
+          <input id="soe-f-bqty" type="number" min="0" step="any" placeholder="defaults to Qty" style="width:100%;padding:0.5rem 0.65rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.85rem;font-family:inherit;outline:none" />
+        </div>
+        <div>
+          <label style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted,#888);display:block;margin-bottom:0.3rem">Bid Unit Cost ($) <span style="color:var(--muted,#888);font-weight:400">(optional)</span></label>
+          <input id="soe-f-buc" type="number" min="0" step="any" placeholder="defaults to actual" style="width:100%;padding:0.5rem 0.65rem;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);border-radius:4px;color:var(--text,#e0e0e0);font-size:0.85rem;font-family:inherit;outline:none" />
+        </div>
+      </div>
+      <div id="soe-form-err" style="display:none;margin-top:0.75rem;padding:0.45rem 0.6rem;background:#2d0a0a;border:1px solid #7f1d1d;border-radius:4px;color:#f87171;font-size:0.78rem"></div>
+      <div style="display:flex;gap:0.75rem;margin-top:1.25rem;justify-content:flex-end">
+        <button onclick="document.getElementById('soe-add-modal').remove()"
+          style="padding:0.5rem 1rem;background:var(--surface2,#1e1e2e);border:1px solid var(--border,#2a2a3a);color:var(--muted,#888);border-radius:4px;font-size:0.8rem;cursor:pointer">Cancel</button>
+        <button onclick="_soeSaveManual()"
+          style="padding:0.5rem 1.2rem;background:#16a34a;border:none;color:#fff;border-radius:4px;font-size:0.8rem;font-weight:700;cursor:pointer">Save Entry</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  document.getElementById('soe-f-label').focus();
+}
+
+function _soeSaveManual() {
+  const label  = document.getElementById('soe-f-label').value.trim();
+  const cc     = document.getElementById('soe-f-cc').value.trim();
+  const qty    = parseFloat(document.getElementById('soe-f-qty').value);
+  const cost   = parseFloat(document.getElementById('soe-f-cost').value);
+  const errEl  = document.getElementById('soe-form-err');
+
+  if (!label || !cc || !(qty > 0) || !(cost > 0)) {
+    errEl.textContent = 'Label, Cost Code, Qty, and Total Cost are required.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const entry = {
+    id:            crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36),
+    label,
+    cost_code:     cc,
+    sub_code:      document.getElementById('soe-f-sub').value.trim(),
+    run_qty:       qty,
+    total_cost:    cost,
+    labor_hrs:     parseFloat(document.getElementById('soe-f-lhr').value)  || 0,
+    equip_hrs:     parseFloat(document.getElementById('soe-f-ehr').value)  || 0,
+    bid_qty:       parseFloat(document.getElementById('soe-f-bqty').value) || 0,
+    bid_unit_cost: parseFloat(document.getElementById('soe-f-buc').value)  || 0,
+    created_at:    new Date().toISOString().slice(0, 10),
+  };
+
+  scaleManualEntries.push(entry);
+  saveScaleManualEntries();
+  document.getElementById('soe-add-modal').remove();
+  renderScaleOfEconomy();
+}
+
+function _soeDeleteManual(id) {
+  if (!confirm('Remove this manual entry?')) return;
+  scaleManualEntries = scaleManualEntries.filter(e => e.id !== id);
+  saveScaleManualEntries();
+  renderScaleOfEconomy();
+}
+
 function renderScaleOfEconomy() {
   const el = document.getElementById('scale-content');
   if (!el) return;
@@ -10749,6 +10949,7 @@ function renderScaleOfEconomy() {
         <strong style="color:var(--text)">Inverse scale</strong> = larger jobs require more labor hours per unit. Classification is based on <strong style="color:var(--text)">labor hrs/unit</strong> (pure crew productivity — no material cost noise). Click any row to see charts and detail.
       </div>
     </div>
+    ${_soeManualPanelHTML()}
     ${cards}
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
       <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
@@ -13202,6 +13403,7 @@ async function deleteCompanyUser(id) {
     loadPurchaseOrders(),
     loadTruckingEntries(),
     loadInventoryEntries(),
+    loadScaleManualEntries(),
   ]);
 
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
