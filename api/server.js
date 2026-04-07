@@ -60,58 +60,9 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
 });
 
-/**
- * GET /api/data/:key
- * Returns the stored JSON value for the given key.
- * Responds with { value: null } when the key has not been saved yet.
- */
-app.get('/api/data/:key', async (req, res) => {
-  const { key } = req.params;
-  try {
-    const rows = await sql`
-      SELECT value FROM app_data WHERE key = ${key}
-    `;
-    const value = rows.length ? rows[0].value : null;
-    res.json({ value });
-  } catch (err) {
-    console.error('GET /api/data/:key error:', err.message);
-    res.status(500).json({ error: 'Database error', detail: err.message });
-  }
-});
-
-/**
- * PUT /api/data/:key
- * Body: { "value": <any JSON> }
- * Upserts the value for the given key and returns { ok: true }.
- */
-app.put('/api/data/:key', async (req, res) => {
-  const { key } = req.params;
-  const { value } = req.body;
-
-  if (value === undefined) {
-    return res.status(400).json({ error: '`value` field is required in request body' });
-  }
-
-  // Only allow the keys the app uses
-  const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence'];
-  const isAllowed = ALLOWED_KEYS.includes(key) || /^fct_project_[a-zA-Z0-9_-]+$/.test(key);
-  if (!isAllowed) {
-    return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}, fct_project_*` });
-  }
-
-  try {
-    await sql`
-      INSERT INTO app_data (key, value, updated_at)
-      VALUES (${key}, ${JSON.stringify(value)}, NOW())
-      ON CONFLICT (key)
-      DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-    `;
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('PUT /api/data/:key error:', err.message);
-    res.status(500).json({ error: 'Database error', detail: err.message });
-  }
-});
+// All /api/data requests are handled by api/data/[key].js (JWT-scoped per company).
+// Those routes are registered above via app.all('/api/data', ...).
+// No unscoped legacy routes here.
 
 // ── Start ──────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {

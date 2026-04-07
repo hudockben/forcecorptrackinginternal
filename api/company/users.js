@@ -82,10 +82,10 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
     try {
-      // Ensure the user belongs to this company
+      // Ensure the user belongs to this company, and scope the DELETE to this company
       const rows = await sql`SELECT id FROM users WHERE id = ${id} AND company_code = ${companyCode}`;
       if (!rows.length) return res.status(404).json({ error: 'User not found' });
-      await sql`DELETE FROM users WHERE id = ${id}`;
+      await sql`DELETE FROM users WHERE id = ${id} AND company_code = ${companyCode}`;
       return res.json({ ok: true });
     } catch (err) {
       return res.status(500).json({ error: err.message });

@@ -73,11 +73,12 @@ CREATE TABLE IF NOT EXISTS daily_tracking (
 );
 
 CREATE TABLE IF NOT EXISTS dropdown_lists (
-    id         SERIAL PRIMARY KEY,
-    list_name  VARCHAR(50)  NOT NULL,
-    value      VARCHAR(255) NOT NULL,
-    sort_order INTEGER      NOT NULL DEFAULT 0,
-    UNIQUE (list_name, value)
+    id           SERIAL PRIMARY KEY,
+    company_code TEXT         NOT NULL,
+    list_name    VARCHAR(50)  NOT NULL,
+    value        VARCHAR(255) NOT NULL,
+    sort_order   INTEGER      NOT NULL DEFAULT 0,
+    UNIQUE (company_code, list_name, value)
 );
 
 CREATE TABLE IF NOT EXISTS equipment_list (
@@ -216,6 +217,15 @@ ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS project_id   TEXT;
 ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS description  TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_cost_items_company_project ON cost_items(company_code, project_id);
+
+-- ─────────────────────────────────────────────────
+-- DROPDOWN LISTS  (add company scoping if upgrading
+-- from old schema that lacked company_code)
+-- ─────────────────────────────────────────────────
+ALTER TABLE dropdown_lists ADD COLUMN IF NOT EXISTS company_code TEXT NOT NULL DEFAULT '';
+ALTER TABLE dropdown_lists DROP CONSTRAINT IF EXISTS dropdown_lists_list_name_value_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dropdown_company_list_value ON dropdown_lists(company_code, list_name, value);
+CREATE INDEX IF NOT EXISTS idx_dropdown_company ON dropdown_lists(company_code);
 
 -- ─────────────────────────────────────────────────
 -- SUPPLIERS
