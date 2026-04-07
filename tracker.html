@@ -3183,6 +3183,7 @@ function renderHomeTab() {
   if (window.innerWidth <= 768) renderMobileProjCards();
   updateMobEntryBadge();
   const today = new Date();
+  const todayNoon = new Date(_localDateStr() + 'T12:00:00');
   const weekAgo = _localDateStr(new Date(today - 7 * 24 * 60 * 60 * 1000));
 
   // ── Cross-project aggregates (sum from each project's own data) ──
@@ -3298,7 +3299,7 @@ function renderHomeTab() {
         const name      = p['project-name'] || 'Untitled Project';
         const meta      = [p['job-number'], p['client'], p['status']].filter(Boolean).map(v => esc(v)).join(' · ');
         const endDate   = p['end-date'];
-        const daysLeft  = endDate ? Math.ceil((new Date(endDate) - today) / (1000*60*60*24)) : null;
+        const daysLeft  = endDate ? Math.round((new Date(endDate + 'T12:00:00') - todayNoon) / (1000*60*60*24)) : null;
         const endChip   = endDate
           ? (daysLeft < 0
               ? `<span style="font-size:0.68rem;color:var(--red);font-weight:600">&#9888; ${Math.abs(daysLeft)}d overdue</span>`
@@ -3740,9 +3741,8 @@ function renderDeadlinePosts(posts) {
     return;
   }
   el.innerHTML = posts.map(p => {
-    const now = new Date();
     const deadlineDate = p.deadline_date ? new Date(p.deadline_date + 'T12:00:00') : null;
-    const days = deadlineDate ? Math.ceil((deadlineDate - now) / (1000 * 60 * 60 * 24)) : null;
+    const days = deadlineDate ? Math.round((deadlineDate - new Date(_localDateStr() + 'T12:00:00')) / (1000 * 60 * 60 * 24)) : null;
     const chipColor = days === null ? 'var(--muted)' : days < 0 ? 'var(--red)' : days <= 7 ? 'var(--yellow)' : 'var(--green)';
     const chipBg    = days === null ? 'transparent' : days < 0 ? '#2a0a0a' : days <= 7 ? '#2a1f00' : '#0a2a0a';
     const chipLabel = days === null ? '' : days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? 'Today' : `${days}d left`;
