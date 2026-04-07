@@ -138,11 +138,10 @@ async function syncLists(sql, companyCode, lists) {
     await sql`
       INSERT INTO equipment_list (name, unit_cost, sort_order, company_code, updated_at)
       VALUES (${name}, ${unitCost}, ${i}, ${companyCode}, NOW())
-      ON CONFLICT (name) DO UPDATE SET
-        unit_cost    = EXCLUDED.unit_cost,
-        sort_order   = EXCLUDED.sort_order,
-        company_code = EXCLUDED.company_code,
-        updated_at   = NOW()
+      ON CONFLICT (company_code, name) DO UPDATE SET
+        unit_cost  = EXCLUDED.unit_cost,
+        sort_order = EXCLUDED.sort_order,
+        updated_at = NOW()
     `;
     equipment++;
   }

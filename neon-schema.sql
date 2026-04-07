@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS dropdown_lists (
 
 CREATE TABLE IF NOT EXISTS equipment_list (
     id         SERIAL PRIMARY KEY,
-    name       VARCHAR(255) NOT NULL UNIQUE,
+    name       VARCHAR(255) NOT NULL,
     unit_cost  NUMERIC(14,4) NOT NULL DEFAULT 0,
     sort_order INTEGER       NOT NULL DEFAULT 0
 );
@@ -198,6 +198,16 @@ ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS company_code TEXT REFERENCES
 ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS active       BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Drop the old global unique constraint on name (if it exists from initial schema)
+-- and replace with a per-company constraint so multiple companies can share equipment names.
+DO $$ BEGIN
+  ALTER TABLE equipment_list DROP CONSTRAINT IF EXISTS equipment_list_name_key;
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_equipment_company_name ON equipment_list(company_code, name)
+  WHERE company_code IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_equipment_company ON equipment_list(company_code);
 
