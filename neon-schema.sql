@@ -201,10 +201,7 @@ ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS updated_at   TIMESTAMPTZ NOT
 
 -- Drop the old global unique constraint on name (if it exists from initial schema)
 -- and replace with a per-company constraint so multiple companies can share equipment names.
-DO $$ BEGIN
-  ALTER TABLE equipment_list DROP CONSTRAINT IF EXISTS equipment_list_name_key;
-EXCEPTION WHEN others THEN NULL;
-END $$;
+ALTER TABLE equipment_list DROP CONSTRAINT IF EXISTS equipment_list_name_key;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_equipment_company_name ON equipment_list(company_code, name)
   WHERE company_code IS NOT NULL;
