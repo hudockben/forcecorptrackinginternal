@@ -230,6 +230,32 @@
 
   </div>
 
+  <!-- Database Sync -->
+  <div style="margin-top:1.5rem;">
+    <div class="panel">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Database Sync</span>
+        <span style="font-size:0.65rem;color:#555;text-transform:none;letter-spacing:0;font-weight:400">Mirrors all app data into normalized tables for backup &amp; retrieval</span>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="flex:1;min-width:160px">
+          <label>Company Code</label>
+          <input type="text" id="sync-company" placeholder="ACME" autocapitalize="characters" />
+        </div>
+        <button class="btn btn-green" id="sync-btn" style="white-space:nowrap">Run Sync</button>
+      </div>
+      <div class="result" id="sync-result"></div>
+      <div id="sync-stats" style="display:none">
+        <div style="font-size:0.7rem;color:#555;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">Records synced</div>
+        <div id="sync-stats-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:0.5rem"></div>
+      </div>
+      <div style="font-size:0.72rem;color:#444;line-height:1.5">
+        Runs automatically on first login after each deploy. Use this button to manually re-sync
+        or recover after an outage. Safe to run any time — all writes are upserts.
+      </div>
+    </div>
+  </div>
+
   <div style="margin-top:1.5rem;text-align:center;">
     <a href="index.html" class="btn btn-ghost">← Back to Login</a>
   </div>
@@ -380,6 +406,52 @@ async function deleteUser(id, username) {
   if (data.ok) loadUsers();
   else alert(data.error || 'Error deleting user');
 }
+
+// ── Database Sync ─────────────────────────────────
+document.getElementById('sync-btn').addEventListener('click', async () => {
+  const companyCode = document.getElementById('sync-company').value.trim().toUpperCase();
+  if (!companyCode) { showResult('sync-result', 'Company code is required.', false); return; }
+
+  const btn = document.getElementById('sync-btn');
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  document.getElementById('sync-stats').style.display = 'none';
+  showResult('sync-result', '', true); // clear
+
+  try {
+    const r = await fetch('/api/admin/sync-db', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminSecret: ADMIN_SECRET, companyCode }),
+    });
+    const data = await r.json();
+
+    if (data.ok) {
+      showResult('sync-result', `Sync complete for ${data.companyCode}.`, true);
+      const labels = {
+        projects: 'Projects', bid_items: 'Bid Items', employees: 'Employees',
+        equipment: 'Equipment', suppliers: 'Suppliers',
+        purchase_orders: 'Purchase Orders', po_deliveries: 'PO Deliveries',
+        inventory_items: 'Inventory Items',
+      };
+      const statsEl = document.getElementById('sync-stats-grid');
+      statsEl.innerHTML = Object.entries(data.stats || {}).map(([k, v]) => `
+        <div style="background:#0a0a0f;border:1px solid #2a2a3a;border-radius:4px;padding:0.5rem 0.75rem">
+          <div style="font-size:1.1rem;font-weight:700;color:#4ade80">${v}</div>
+          <div style="font-size:0.65rem;color:#666;text-transform:uppercase;letter-spacing:0.08em;margin-top:0.1rem">${labels[k] || k}</div>
+        </div>
+      `).join('');
+      document.getElementById('sync-stats').style.display = 'block';
+    } else {
+      showResult('sync-result', data.error || 'Sync failed.', false);
+    }
+  } catch (err) {
+    showResult('sync-result', 'Network error: ' + err.message, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Sync';
+  }
+});
 </script>
 </body>
 </html>

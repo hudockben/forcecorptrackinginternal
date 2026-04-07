@@ -6,11 +6,10 @@
  * normalized table (projects, bid_items, employees, equipment_list,
  * suppliers, purchase_orders, po_deliveries, inventory_items).
  *
- * Requires: Authorization: Bearer <JWT>  (admin or level3 role)
- * Optional body: { companyCode: "ACME" }  — defaults to caller's company
+ * Auth: Bearer JWT (admin or level3)  OR  { adminSecret, companyCode } in body
  *
  * The live write-through in api/data/[key].js keeps tables current on every
- * save; this endpoint is for initial backfill or recovery after an outage.
+ * save. This endpoint is for initial backfill or recovery after an outage.
  */
 
 const { neon } = require('@neondatabase/serverless');
@@ -41,15 +40,21 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const payload = verifyToken(req);
-  if (!payload) return res.status(401).json({ error: 'Unauthorized' });
-  if (!['admin', 'level3'].includes(payload.role)) {
-    return res.status(403).json({ error: 'Forbidden — admin or level3 required' });
-  }
+  const body = req.body || {};
 
-  const companyCode = (req.body && req.body.companyCode)
-    ? String(req.body.companyCode).toUpperCase()
-    : payload.companyCode;
+  // Auth: accept JWT or admin secret
+  let companyCode;
+  const jwtPayload = verifyToken(req);
+  if (jwtPayload && ['admin', 'level3'].includes(jwtPayload.role)) {
+    companyCode = body.companyCode
+      ? String(body.companyCode).toUpperCase()
+      : jwtPayload.companyCode;
+  } else if (body.adminSecret && body.adminSecret === process.env.ADMIN_SECRET) {
+    if (!body.companyCode) return res.status(400).json({ error: 'companyCode required' });
+    companyCode = String(body.companyCode).toUpperCase();
+  } else {
+    return res.status(403).json({ error: 'Forbidden — valid JWT (admin/level3) or adminSecret required' });
+  }
 
   const sql = neon(process.env.DATABASE_URL);
 
@@ -75,11 +80,9 @@ module.exports = async (req, res) => {
 
     const p = companyCode + ':';
 
-    // Sync projects from the index/array blob
     const projectsValue = blobs[`${p}fct_projects`] || blobs[`${p}fct_projects_index`] || [];
     const s1 = await syncProjects(sql, companyCode, projectsValue);
 
-    // Sync individual project blobs (may contain bid items the index omits)
     let extraProjects = 0, extraBidItems = 0;
     for (const row of projectBlobs) {
       if (!row.value) continue;
@@ -92,17 +95,24 @@ module.exports = async (req, res) => {
     const s3 = await syncPurchaseOrders(sql, companyCode, blobs[`${p}fct_purchase_orders`] || []);
     const s4 = await syncInventory(sql, companyCode, blobs[`${p}fct_inventory`] || []);
 
+    // Record sync timestamp so auto-sync on login knows it's been done
+    await sql`
+      INSERT INTO app_data (key, value, updated_at)
+      VALUES (${companyCode + ':fct_last_sync'}, ${JSON.stringify(new Date().toISOString())}, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    `;
+
     return res.json({
       ok: true,
       companyCode,
       stats: {
-        projects:       s1.projects       + extraProjects,
-        bid_items:      s1.bid_items      + extraBidItems,
-        employees:      s2.employees,
-        equipment:      s2.equipment,
-        suppliers:      s2.suppliers,
+        projects:        s1.projects      + extraProjects,
+        bid_items:       s1.bid_items     + extraBidItems,
+        employees:       s2.employees,
+        equipment:       s2.equipment,
+        suppliers:       s2.suppliers,
         purchase_orders: s3.purchase_orders,
-        po_deliveries:  s3.po_deliveries,
+        po_deliveries:   s3.po_deliveries,
         inventory_items: s4.inventory_items,
       },
     });
