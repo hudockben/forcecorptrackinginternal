@@ -10053,39 +10053,6 @@ function exportLaborCSV() {
 
 // ── Scale of Economy — sent-entries helpers ──────────────────────────────────
 
-function _soeSentPanelHTML() {
-  if (!scaleManualEntries.length) return '';
-  const TH = 'padding:0.3rem 0.6rem;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#888;background:var(--surface2);border:1px solid var(--border)';
-  const rows = scaleManualEntries.map(e => `
-    <tr style="border-bottom:1px solid var(--border)">
-      <td style="padding:0.35rem 0.6rem;font-size:0.78rem;font-weight:600">${esc(e.label||'—')}</td>
-      <td style="padding:0.35rem 0.6rem;font-size:0.75rem;color:var(--muted)">${esc(e.cost_code||'')}${e.sub_code?' / '+esc(e.sub_code):''}</td>
-      <td style="padding:0.35rem 0.6rem;font-size:0.75rem;text-align:right;font-variant-numeric:tabular-nums">${(+e.run_qty||0).toLocaleString()}</td>
-      <td style="padding:0.35rem 0.6rem;font-size:0.75rem;text-align:right;font-variant-numeric:tabular-nums">$${(+e.total_cost||0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-      <td style="padding:0.35rem 0.6rem;font-size:0.75rem;text-align:right;color:var(--muted)">${e.labor_hrs>0?(+e.labor_hrs).toLocaleString():'—'}</td>
-      <td style="padding:0.35rem 0.5rem;text-align:center">
-        <button onclick="_soeDeleteManual('${e.id}')" title="Remove"
-          style="background:none;border:1px solid #7f1d1d;color:#f87171;border-radius:3px;padding:0.12rem 0.45rem;font-size:0.68rem;cursor:pointer">✕</button>
-      </td>
-    </tr>`).join('');
-  return `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:1rem;overflow:hidden">
-      <div style="padding:0.5rem 1rem;border-bottom:1px solid var(--border);background:var(--surface2);font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:var(--accent)">
-        ✦ Sent from Cost Tracking <span style="font-weight:400;color:var(--muted)">${scaleManualEntries.length} entr${scaleManualEntries.length===1?'y':'ies'} · marked ✦ in analysis</span>
-      </div>
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse">
-          <thead><tr>
-            <th style="${TH}">Label</th><th style="${TH}">Code</th>
-            <th style="${TH};text-align:right">Qty</th><th style="${TH};text-align:right">Cost</th>
-            <th style="${TH};text-align:right">Labor Hrs</th><th style="${TH};width:36px"></th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    </div>`;
-}
-
 function _soeDeleteManual(id) {
   if (!confirm('Remove this entry from Scale of Economy?')) return;
   scaleManualEntries = scaleManualEntries.filter(e => e.id !== id);
@@ -10177,9 +10144,12 @@ function renderScaleOfEconomy() {
       if (bi && bi.unit) { unit = bi.unit; break; }
     }
 
-    // Only include jobs with valid bid qty AND production cost
-    const validProjs = projects.filter(pr => pr.bidQty > 0 && pr.runQty > 0 && pr.totalCost > 0);
-    if (validProjs.length < 2) return;
+    // Only include jobs with valid bid qty AND production cost.
+    // Sent entries (isManual) can appear with just 1 job — they show with LOW SAMPLE badge.
+    const validProjs  = projects.filter(pr => pr.bidQty > 0 && pr.runQty > 0 && pr.totalCost > 0);
+    const manualJobs  = validProjs.filter(pr => pr.isManual);
+    if (validProjs.length < 2 && manualJobs.length === 0) return;
+    if (validProjs.length < 1) return;
 
     // Build raw points with full metadata for scatter plot
     const rawPts = validProjs.map(pr => ({
@@ -10342,7 +10312,7 @@ function renderScaleOfEconomy() {
       laborA, laborB, laborR2, laborTooFew, useLabor,
       trend, trendColor, trendIcon, strength, pctChange, tooFewForR2,
       minX, maxX, n, avgUC: meanY, outlierCount,
-      laborPts,
+      laborPts, manualJobs,
       allProjects: validProjs });
   });
 
@@ -10890,6 +10860,18 @@ function renderScaleOfEconomy() {
               ${crewBreakdown(s.allProjects)}
             </div>
           </div>
+          ${s.manualJobs.length ? `
+          <div style="border-top:1px solid var(--border);padding-top:0.75rem;margin-top:0.75rem">
+            <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:#a78bfa;margin-bottom:0.5rem">✦ Sent from Cost Tracking</div>
+            <div style="display:flex;flex-wrap:wrap;gap:0.4rem">
+              ${s.manualJobs.map(j => `
+                <span style="display:inline-flex;align-items:center;gap:0.4rem;background:rgba(167,139,250,0.08);border:1px solid rgba(167,139,250,0.25);border-radius:4px;padding:0.2rem 0.5rem;font-size:0.75rem;color:#c4b5fd">
+                  ${esc(j.projName.replace(' ✦',''))}
+                  <button onclick="event.stopPropagation();_soeDeleteManual('${j.projId}')"
+                    title="Remove from analysis" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:0.8rem;padding:0;line-height:1">✕</button>
+                </span>`).join('')}
+            </div>
+          </div>` : ''}
         </td>
       </tr>`;
   }).join('');
@@ -10901,7 +10883,6 @@ function renderScaleOfEconomy() {
         <strong style="color:var(--text)">Inverse scale</strong> = larger jobs require more labor hours per unit. Classification is based on <strong style="color:var(--text)">labor hrs/unit</strong> (pure crew productivity — no material cost noise). Click any row to see charts and detail.
       </div>
     </div>
-    ${_soeSentPanelHTML()}
     ${cards}
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
       <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
