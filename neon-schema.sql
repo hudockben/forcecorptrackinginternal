@@ -127,3 +127,170 @@ CREATE TABLE IF NOT EXISTS deadlines (
 );
 
 CREATE INDEX IF NOT EXISTS idx_deadlines_company ON deadlines(company_code, deadline_date ASC);
+
+-- ─────────────────────────────────────────────────
+-- PROJECTS
+-- One row per project per company.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS projects (
+    id                TEXT PRIMARY KEY,         -- UUID from the app
+    company_code      TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name              TEXT NOT NULL,
+    job_number        TEXT,
+    start_date        DATE,
+    target_completion DATE,
+    pinned            BOOLEAN       NOT NULL DEFAULT FALSE,
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_company ON projects(company_code);
+
+-- ─────────────────────────────────────────────────
+-- BID ITEMS
+-- One row per bid line item, linked to a project.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS bid_items (
+    id           TEXT PRIMARY KEY,              -- UUID from the app
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    company_code TEXT NOT NULL,
+    cost_code    TEXT NOT NULL,
+    sub_code     TEXT,
+    description  TEXT,
+    quantity     NUMERIC(14,4) NOT NULL DEFAULT 0,
+    unit         TEXT,
+    unit_cost    NUMERIC(14,4) NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL DEFAULT 'Active'
+                 CHECK (status IN ('Active','Complete','On Hold','At Risk')),
+    target_date  DATE,
+    created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bid_items_project    ON bid_items(project_id);
+CREATE INDEX IF NOT EXISTS idx_bid_items_company_cc ON bid_items(company_code, cost_code, sub_code);
+
+-- ─────────────────────────────────────────────────
+-- EMPLOYEES
+-- One row per employee per company, with rate info.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS employees (
+    id           SERIAL PRIMARY KEY,
+    company_code TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name         TEXT          NOT NULL,
+    job_class    TEXT,
+    rate         NUMERIC(10,4),                 -- default/standard rate
+    pw_rate      NUMERIC(10,4),                 -- prevailing wage rate
+    non_pw_rate  NUMERIC(10,4),                 -- non-prevailing wage rate
+    sort_order   INTEGER       NOT NULL DEFAULT 0,
+    active       BOOLEAN       NOT NULL DEFAULT TRUE,
+    created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    UNIQUE (company_code, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_employees_company ON employees(company_code);
+
+-- ─────────────────────────────────────────────────
+-- EQUIPMENT LIST  (add company scoping)
+-- ─────────────────────────────────────────────────
+ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS company_code TEXT REFERENCES companies(code) ON DELETE CASCADE;
+ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS active       BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE equipment_list ADD COLUMN IF NOT EXISTS updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS idx_equipment_company ON equipment_list(company_code);
+
+-- ─────────────────────────────────────────────────
+-- COST ITEMS  (add company + project scoping)
+-- ─────────────────────────────────────────────────
+ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS company_code TEXT;
+ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS project_id   TEXT;
+ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS description  TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_cost_items_company_project ON cost_items(company_code, project_id);
+
+-- ─────────────────────────────────────────────────
+-- SUPPLIERS
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS suppliers (
+    id           SERIAL PRIMARY KEY,
+    company_code TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name         TEXT          NOT NULL,
+    contact_name TEXT,
+    phone        TEXT,
+    email        TEXT,
+    sort_order   INTEGER       NOT NULL DEFAULT 0,
+    active       BOOLEAN       NOT NULL DEFAULT TRUE,
+    created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    UNIQUE (company_code, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_suppliers_company ON suppliers(company_code);
+
+-- ─────────────────────────────────────────────────
+-- PURCHASE ORDERS
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS purchase_orders (
+    id           TEXT PRIMARY KEY,              -- UUID from the app
+    company_code TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    project_id   TEXT,
+    po_num       TEXT          NOT NULL,
+    supplier     TEXT,
+    material     TEXT,
+    cost_code    TEXT,
+    sub_code     TEXT,
+    total_units  NUMERIC(14,4) NOT NULL DEFAULT 0,
+    unit_cost    NUMERIC(14,4) NOT NULL DEFAULT 0,
+    total_cost   NUMERIC(14,4) NOT NULL DEFAULT 0,
+    status       TEXT          NOT NULL DEFAULT 'Open'
+                 CHECK (status IN ('Open','Partial','Complete','Cancelled')),
+    notes        TEXT,
+    created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_po_company         ON purchase_orders(company_code);
+CREATE INDEX IF NOT EXISTS idx_po_company_project ON purchase_orders(company_code, project_id);
+CREATE INDEX IF NOT EXISTS idx_po_num             ON purchase_orders(company_code, po_num);
+
+-- ─────────────────────────────────────────────────
+-- PO DELIVERIES
+-- Tracks individual deliveries against a PO.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS po_deliveries (
+    id              SERIAL PRIMARY KEY,
+    po_id           TEXT          NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    company_code    TEXT          NOT NULL,
+    delivery_date   DATE,
+    units_delivered NUMERIC(14,4) NOT NULL DEFAULT 0,
+    unit_cost       NUMERIC(14,4) NOT NULL DEFAULT 0,
+    delivery_cost   NUMERIC(14,4) NOT NULL DEFAULT 0,
+    notes           TEXT,
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_po_deliveries_po      ON po_deliveries(po_id);
+CREATE INDEX IF NOT EXISTS idx_po_deliveries_company ON po_deliveries(company_code);
+
+-- ─────────────────────────────────────────────────
+-- INVENTORY ITEMS
+-- Tracks infill material and other inventory.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS inventory_items (
+    id           SERIAL PRIMARY KEY,
+    company_code TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    project_id   TEXT,
+    infill_type  TEXT          NOT NULL,
+    location     TEXT,
+    quantity     NUMERIC(14,4) NOT NULL DEFAULT 0,
+    unit         TEXT,
+    unit_cost    NUMERIC(14,4),
+    notes        TEXT,
+    date_added   DATE,
+    created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_company ON inventory_items(company_code);
+CREATE INDEX IF NOT EXISTS idx_inventory_project ON inventory_items(company_code, project_id);

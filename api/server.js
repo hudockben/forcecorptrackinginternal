@@ -46,6 +46,9 @@ app.all('/api/board', require('./board'));
 /** Deadlines */
 app.all('/api/deadlines', require('./deadlines'));
 
+/** Sync JSON blobs → normalized tables */
+app.post('/api/admin/sync-db', require('./admin/sync-db'));
+
 /** AI schedule analysis */
 app.post('/api/ai/schedule-analysis', require('./ai/schedule-analysis'));
 
