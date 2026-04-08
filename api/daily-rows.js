@@ -321,8 +321,14 @@ module.exports = async (req, res) => {
           WHERE cost_code = ${costCode} AND sub_code = ${subCode}
             AND company_code = ${companyCode}
         `;
+      } else if (subCode !== undefined) {
+        // Sub-code-only delete — removes across all cost codes
+        await sql`
+          DELETE FROM daily_tracking
+          WHERE sub_code = ${subCode} AND company_code = ${companyCode}
+        `;
       } else {
-        return res.status(400).json({ error: 'id, projectId, or costCode+subCode required' });
+        return res.status(400).json({ error: 'id, projectId, subCode, or costCode+subCode required' });
       }
       return res.json({ ok: true });
     }
