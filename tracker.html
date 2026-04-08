@@ -4717,7 +4717,72 @@ function deleteDailyRowsBySubCode(costCode, subCode) {
     const n = (p.dailyRows || []).filter(r => r.cost_code === costCode && r.sub_code === subCode).length;
     if (n) { totalCount += n; projCount++; }
   });
-  if (!totalCount) { alert('No daily rows found for this sub code.'); return; }
+  if (!totalCount) {
+    // No daily rows — check if bid items exist for this sub code
+    const bidProjects = projectsList.filter(p => (p.bidItems || []).some(b => b.cost_code === costCode && b.sub_code === subCode));
+    if (!bidProjects.length) { alert('No daily rows or bid entries found for this sub code.'); return; }
+
+    const label = subCode || '(no sub code)';
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay open';
+    overlay.style.cssText = 'z-index:9999';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:440px;width:100%">
+        <div class="modal-header" style="background:var(--red)">
+          <h2>DELETE BID ENTRIES</h2>
+          <button class="modal-close" id="dbi-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p style="margin:0 0 0.75rem;color:var(--text);font-size:0.85rem;line-height:1.6">
+            No daily rows exist for this sub code. This will permanently delete
+            <strong style="color:#fff">${bidProjects.length} bid entr${bidProjects.length !== 1 ? 'ies' : 'y'}</strong>
+            across <strong style="color:#fff">${bidProjects.length} project${bidProjects.length !== 1 ? 's' : ''}</strong> for:<br>
+            <span style="color:#aaa">${esc(costCode)}</span> / <strong style="color:#fff">${esc(label)}</strong><br>
+            This action cannot be undone.
+          </p>
+          <p style="margin:0 0 0.4rem;color:#aaa;font-size:0.78rem">
+            To confirm, type <strong style="color:#fff">${esc(label)}</strong> below:
+          </p>
+          <input id="dbi-input" type="text" autocomplete="off" spellcheck="false"
+            placeholder="${esc(label)}"
+            style="width:100%;box-sizing:border-box;background:#111;border:1px solid #444;color:#fff;
+                   padding:0.45rem 0.6rem;border-radius:4px;font-size:0.85rem;outline:none"/>
+          <div style="margin-top:1rem;display:flex;justify-content:flex-end;gap:0.5rem">
+            <button id="dbi-cancel" class="btn" style="background:#333;color:#ccc;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer">Cancel</button>
+            <button id="dbi-confirm" class="btn btn-danger" disabled
+              style="opacity:0.4;transition:opacity 0.15s">Delete Bid Entr${bidProjects.length !== 1 ? 'ies' : 'y'}</button>
+          </div>
+        </div>
+      </div>`;
+
+    document.body.appendChild(overlay);
+    const input   = overlay.querySelector('#dbi-input');
+    const confirm = overlay.querySelector('#dbi-confirm');
+
+    input.addEventListener('input', () => {
+      const match = input.value === label;
+      confirm.disabled = !match;
+      confirm.style.opacity = match ? '1' : '0.4';
+    });
+
+    function close() { overlay.remove(); }
+    overlay.querySelector('#dbi-close').addEventListener('click', close);
+    overlay.querySelector('#dbi-cancel').addEventListener('click', close);
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+    confirm.addEventListener('click', () => {
+      if (confirm.disabled) return;
+      close();
+      bidProjects.forEach(p => {
+        p.bidItems = p.bidItems.filter(b => !(b.cost_code === costCode && b.sub_code === subCode));
+        saveProject(p.id);
+      });
+      renderCostTable();
+    });
+
+    setTimeout(() => input.focus(), 50);
+    return;
+  }
 
   const label = subCode || '(no sub code)';
   const overlay = document.createElement('div');
