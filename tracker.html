@@ -11163,6 +11163,19 @@ function renderDailyTotals(projId) {
   el('dft-total').textContent = total ? '$' + fmt(total) : '—';
 }
 
+function makePOSelect(projId, selected, dataI) {
+  const projPOs = purchaseOrders
+    .filter(po => po.project_id === projId)
+    .map(po => po.po_number)
+    .filter(Boolean)
+    .sort();
+  const opts = (selected && !projPOs.includes(selected)) ? [...projPOs, selected] : projPOs;
+  return `<select data-tab="daily" data-i="${dataI}" data-f="po_num" data-proj="${projId}">
+    <option value="">—</option>
+    ${opts.map(o => `<option value="${esc(o)}" ${o === selected ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+  </select>`;
+}
+
 function renderDailyTable(projId) {
   const p     = getProj(projId); if (!p) return;
   const allRows = p.dailyRows || [];
@@ -11227,7 +11240,7 @@ function renderDailyTable(projId) {
       <td class="calc">$${fmt(c.equip_total)}</td>
       <td><input type="text"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="material"        value="${esc(row.material)}"   placeholder="Description&hellip;"></td>
       <td>${makeSelect(supplierOpts, row.supplier, 'daily', ai, 'supplier', projId)}</td>
-      <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="po_num"          value="${row.po_num}"          placeholder="0"></td>
+      <td>${makePOSelect(projId, row.po_num, ai)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="units_purchased" value="${row.units_purchased}" step="any" placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
       <td class="calc" id="daily-mat-${projId}-${ai}">$${fmt(parseFloat(row.material_cost)||0)}</td>
