@@ -4462,6 +4462,19 @@ function saveScaleManualEntries() {
   _projSubAggCache = null; // invalidate so next render picks up the change
 }
 
+// Persistent unit overrides for the Scale of Economy table.
+// Keyed by 'costCode||subCode' so units always stick even when no bidItems exist.
+let soeUnitOverrides = {};
+
+async function loadSoeUnitOverrides() {
+  const saved = await apiGet('fct_soe_units');
+  soeUnitOverrides = (saved && typeof saved === 'object' && !Array.isArray(saved)) ? saved : {};
+}
+
+function saveSoeUnitOverrides() {
+  apiPut('fct_soe_units', soeUnitOverrides);
+}
+
 async function loadInventoryEntries() {
   let saved = await apiGet('fct_inventory');
   if (!saved || (Array.isArray(saved) && saved.length === 0)) {
@@ -10193,12 +10206,15 @@ function renderScaleOfEconomy() {
   Object.entries(byProj).forEach(([key, projects]) => {
     const [costCode, subCode] = key.split('||');
 
-    // Resolve unit from any project's bidItems
-    let unit = '';
-    for (const p of projectsList) {
-      const bi = (p.bidItems || []).find(b =>
-        (b.cost_code || '') === costCode && (b.sub_code || '') === subCode);
-      if (bi && bi.unit) { unit = bi.unit; break; }
+    // Resolve unit: dedicated override store first, then fall back to bidItems
+    const _unitKey = costCode + '||' + subCode;
+    let unit = soeUnitOverrides[_unitKey] || '';
+    if (!unit) {
+      for (const p of projectsList) {
+        const bi = (p.bidItems || []).find(b =>
+          (b.cost_code || '') === costCode && (b.sub_code || '') === subCode);
+        if (bi && bi.unit) { unit = bi.unit; break; }
+      }
     }
 
     // Only include jobs with valid bid qty AND production cost.
@@ -11047,8 +11063,17 @@ function _soeEditUnit(costCode, subCode, el) {
 }
 
 function _soeSetUnit(costCode, subCode, newUnit) {
-  // Propagate the unit to every matching bid item across all projects
-  const touched = new Set();
+  // Always persist in the dedicated unit-override store so units stick even
+  // when no bidItems exist for this cost code / sub code combination.
+  const key = costCode + '||' + subCode;
+  if (newUnit) {
+    soeUnitOverrides[key] = newUnit;
+  } else {
+    delete soeUnitOverrides[key];
+  }
+  saveSoeUnitOverrides();
+
+  // Also propagate to any existing bid items so they stay in sync
   projectsList.forEach(p => {
     let changed = false;
     (p.bidItems || []).forEach(bi => {
@@ -11057,7 +11082,7 @@ function _soeSetUnit(costCode, subCode, newUnit) {
         changed = true;
       }
     });
-    if (changed) { saveProject(p.id); touched.add(p.id); }
+    if (changed) saveProject(p.id);
   });
   renderScaleOfEconomy();
 }
@@ -13407,6 +13432,7 @@ async function deleteCompanyUser(id) {
     loadTruckingEntries(),
     loadInventoryEntries(),
     loadScaleManualEntries(),
+    loadSoeUnitOverrides(),
   ]);
 
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
