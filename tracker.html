@@ -7906,10 +7906,17 @@ function buildProjectSubCodeAgg() {
 // or null if no data exists at all for this sub code.
 // excludeProjId: omit the current project so it isn't benchmarked against itself.
 function computeSizeAwarePastAvg(bidQty, costCode, subCode, excludeProjId = null) {
-  const key      = (costCode || '') + '||' + (subCode || '');
   const byProj   = buildProjectSubCodeAgg();
-  // Exclude the current project so it isn't benchmarked against its own data
-  const projects = (byProj[key] || []).filter(pr => pr.projId !== excludeProjId);
+  // Aggregate across ALL cost codes with the same sub code name so that
+  // production rate benchmarks reflect all historical usage regardless of
+  // which cost code the work was filed under on any given job.
+  const targetSc = subCode || '';
+  const projects = [];
+  Object.entries(byProj).forEach(([k, entries]) => {
+    if ((k.split('||')[1] || '') === targetSc) {
+      entries.forEach(pr => { if (pr.projId !== excludeProjId) projects.push(pr); });
+    }
+  });
   if (projects.length === 0) return null;
 
   let filtered     = [];
@@ -8222,6 +8229,17 @@ function renderCostTable() {
   const COLS = 16;
   const alertItems = [];  // { cc, sc, pct, level }
 
+  // Cross-code production rate: same sub code name across ALL cost codes.
+  // This ensures "Place & Grade 9s" filed under different cost codes on different
+  // jobs still contributes to one unified rate rather than two partial ones.
+  const crossCodeAvg = {};
+  Object.entries(agg).forEach(([key, data]) => {
+    const sc = key.split('||')[1] || '';
+    if (!crossCodeAvg[sc]) crossCodeAvg[sc] = { qty: 0, cost: 0 };
+    crossCodeAvg[sc].qty  += data.running_qty;
+    crossCodeAvg[sc].cost += data.total_cost;
+  });
+
   groupOrder.forEach(costCode => {
     const keys    = groups[costCode];
     const groupId = 'cg-' + costCode.replace(/\W/g, '_') + '_' + Math.random().toString(36).slice(2,6);
@@ -8291,7 +8309,10 @@ function renderCostTable() {
       const rqty      = a.running_qty;
       const avg_qty   = a.qty_count ? a.running_qty / a.qty_count : 0;
       const rtotal    = a.total_cost;
-      const past_avg  = rqty    ? rtotal / rqty         : 0;
+      // Use cross-code average so the same sub code filed under different cost codes
+      // on different jobs all contribute to one unified production rate.
+      const _xca      = crossCodeAvg[sc] || { qty: 0, cost: 0 };
+      const past_avg  = _xca.qty ? _xca.cost / _xca.qty : 0;
       const days      = a.dates.size;
       const avg_lab   = a.num_laborers_count ? a.num_laborers_sum / a.num_laborers_count
                       : (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
