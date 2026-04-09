@@ -19,6 +19,9 @@ const {
   syncLists,
   syncPurchaseOrders,
   syncInventory,
+  syncCostRows,
+  syncTrucking,
+  syncScaleManual,
 } = require('../lib/sync-normalized');
 
 function verifyToken(req) {
@@ -66,6 +69,9 @@ module.exports = async (req, res) => {
       `${companyCode}:fct_lists`,
       `${companyCode}:fct_purchase_orders`,
       `${companyCode}:fct_inventory`,
+      `${companyCode}:fct_cost_rows`,
+      `${companyCode}:fct_trucking`,
+      `${companyCode}:fct_scale_manual`,
     ];
     const rows = await sql`SELECT key, value FROM app_data WHERE key = ANY(${keys})`;
     const blobs = {};
@@ -94,6 +100,9 @@ module.exports = async (req, res) => {
     const s2 = await syncLists(sql, companyCode, blobs[`${p}fct_lists`] || {});
     const s3 = await syncPurchaseOrders(sql, companyCode, blobs[`${p}fct_purchase_orders`] || []);
     const s4 = await syncInventory(sql, companyCode, blobs[`${p}fct_inventory`] || []);
+    const s5 = await syncCostRows(sql, companyCode, blobs[`${p}fct_cost_rows`] || []);
+    const s6 = await syncTrucking(sql, companyCode, blobs[`${p}fct_trucking`] || []);
+    const s7 = await syncScaleManual(sql, companyCode, blobs[`${p}fct_scale_manual`] || []);
 
     // Record sync timestamp so auto-sync on login knows it's been done
     await sql`
@@ -106,14 +115,17 @@ module.exports = async (req, res) => {
       ok: true,
       companyCode,
       stats: {
-        projects:        s1.projects      + extraProjects,
-        bid_items:       s1.bid_items     + extraBidItems,
-        employees:       s2.employees,
-        equipment:       s2.equipment,
-        suppliers:       s2.suppliers,
-        purchase_orders: s3.purchase_orders,
-        po_deliveries:   s3.po_deliveries,
-        inventory_items: s4.inventory_items,
+        projects:             s1.projects      + extraProjects,
+        bid_items:            s1.bid_items     + extraBidItems,
+        employees:            s2.employees,
+        equipment:            s2.equipment,
+        suppliers:            s2.suppliers,
+        purchase_orders:      s3.purchase_orders,
+        po_deliveries:        s3.po_deliveries,
+        inventory_items:      s4.inventory_items,
+        cost_items:           s5.cost_items,
+        trucking_entries:     s6.trucking_entries,
+        scale_manual_entries: s7.scale_manual_entries,
       },
     });
 

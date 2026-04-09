@@ -1995,7 +1995,8 @@
     <div class="analytics-dropdown-menu">
       <button class="admin-dropdown-item" id="analytics-item-equip" onclick="analyticsSwitchTab('equip')">&#128295; Equipment Utilization</button>
       <button class="admin-dropdown-item" id="analytics-item-labor" onclick="analyticsSwitchTab('labor')">&#128100; Labor Analytics</button>
-      <button class="admin-dropdown-item" id="analytics-item-scale" onclick="analyticsSwitchTab('scale')">&#128200; Scale of Economy</button>
+      <button class="admin-dropdown-item" id="analytics-item-scale"   onclick="analyticsSwitchTab('scale')">&#128200; Scale of Economy</button>
+      <button class="admin-dropdown-item" id="analytics-item-subcode" onclick="analyticsSwitchTab('subcode')">&#128202; Sub Code Performance</button>
     </div>
   </div>
   <div class="admin-dropdown-wrap">
@@ -2214,6 +2215,11 @@
   <div id="scale-content" style="padding:1rem"><!-- rendered by JS --></div>
 </div>
 
+<!-- ══════════════ SUB CODE PERFORMANCE TAB ══════════════ -->
+<div class="tab-panel" id="tab-subcode">
+  <div id="scp-content" style="padding:1rem"><!-- rendered by JS --></div>
+</div>
+
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
 <div class="tab-panel" id="tab-cost">
   <div id="pv-cost-banner" style="display:none;background:#854d0e;color:#fef9c3;font-size:0.78rem;padding:0.35rem 1rem;font-weight:500;letter-spacing:0.01em"></div>
@@ -2235,6 +2241,12 @@
       <button class="btn btn-ghost" style="font-size:0.72rem;padding:0.2rem 0.5rem" onclick="applySqftFilter()">Apply</button>
     </div>
     <button class="btn btn-ghost" id="cost-clear-filters-btn" style="font-size:0.72rem;padding:0.2rem 0.5rem;display:none" onclick="clearAllCostFilters()">✕ Clear Filters</button>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:0.35rem">
+      <input id="cost-sc-search" type="text" placeholder="Search sub codes…"
+        oninput="renderCostTable()"
+        style="width:160px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:0.2rem 0.5rem;font-size:0.75rem;outline:none;transition:border-color 0.15s"
+        onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+    </div>
   </div>
   <div class="table-wrap">
     <table id="tracker">
@@ -3064,9 +3076,10 @@ function analyticsSwitchTab(tab) {
   document.querySelectorAll('.tab-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'tab-' + tab));
   renderHeaderActions();
-  if (tab === 'equip')  renderEquipTable();
-  if (tab === 'labor')  renderLaborTable();
-  if (tab === 'scale')  renderScaleOfEconomy();
+  if (tab === 'equip')    renderEquipTable();
+  if (tab === 'labor')    renderLaborTable();
+  if (tab === 'scale')    renderScaleOfEconomy();
+  if (tab === 'subcode')  renderSubCodePerf();
 }
 
 function adminSwitchTab(tab) {
@@ -3119,6 +3132,12 @@ function renderHeaderActions() {
   } else if (activeTab === 'labor') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportLaborCSV()">Export CSV</button>
+      ${summaryBtn}
+      ${logoutBtn}
+    `;
+  } else if (activeTab === 'subcode') {
+    el.innerHTML = `
+      <button class="btn btn-ghost" onclick="exportSubCodePDF()">&#128438; Export PDF</button>
       ${summaryBtn}
       ${logoutBtn}
     `;
@@ -8251,6 +8270,11 @@ function renderCostTable() {
   if (costFilters['_field_type']) {
     scList = scList.filter(sc => scAgg[sc]);
   }
+  // Apply search bar filter
+  const _scSearch = (document.getElementById('cost-sc-search')?.value || '').trim().toLowerCase();
+  if (_scSearch) {
+    scList = scList.filter(sc => sc.toLowerCase().includes(_scSearch));
+  }
 
   if (scList.length === 0) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="16">No bid items found. Add bid items in Project Dashboard to populate this view.</td></tr>';
@@ -11644,6 +11668,632 @@ function clearAllCostFilters() {
   _updateCostClearBtn();
   _updateCostFilterButtons();
   renderCostTable();
+}
+
+/* ═══════════════════════════════════════════════════════
+   SUB CODE PERFORMANCE REPORT
+   ═══════════════════════════════════════════════════════ */
+let scpSortCol    = 'tier';
+let scpSortDir    = 'desc';
+let scpTierFilter = '';
+let scpSearch     = '';
+const scpExpanded = new Set();
+
+function _scpSetSort(col) {
+  if (scpSortCol === col) scpSortDir = scpSortDir === 'asc' ? 'desc' : 'asc';
+  else { scpSortCol = col; scpSortDir = col === 'name' ? 'asc' : 'desc'; }
+  renderSubCodePerf();
+}
+function _scpToggle(sc) {
+  if (scpExpanded.has(sc)) scpExpanded.delete(sc); else scpExpanded.add(sc);
+  renderSubCodePerf();
+}
+function _scpSetTier(t) {
+  scpTierFilter = scpTierFilter === t ? '' : t;
+  renderSubCodePerf();
+}
+
+function renderSubCodePerf() {
+  const el = document.getElementById('scp-content');
+  if (!el) return;
+
+  // ── Build bid map (sub code → { qty, total }) ────────────────────────────
+  const scBidMap = {};
+  projectsList.forEach(p => {
+    (p.bidItems || []).forEach(b => {
+      const sc = b.sub_code || '';
+      if (!scBidMap[sc]) scBidMap[sc] = { qty: 0, total: 0 };
+      const bq = (parseFloat(b.quantity) || 0) +
+        (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+      scBidMap[sc].qty   += bq;
+      scBidMap[sc].total += bq * (parseFloat(b.unit_cost) || 0);
+    });
+  });
+
+  // ── Build daily agg keyed by sub code ────────────────────────────────────
+  const { agg, projAgg } = buildFilteredDailyAgg();
+  const scAgg = {};
+  Object.entries(agg).forEach(([key, data]) => {
+    const sc = key.split('||')[1] || '';
+    if (!scAgg[sc]) scAgg[sc] = {
+      running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
+      labor_hours: 0, equip_hours: 0, equip_cost: 0,
+      num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
+    };
+    const a = scAgg[sc];
+    a.running_qty    += data.running_qty;    a.qty_count      += data.qty_count;
+    a.total_cost     += data.total_cost;     a.imported_total += data.imported_total;
+    a.labor_hours    += data.labor_hours;    a.equip_hours    += data.equip_hours;
+    a.equip_cost     += data.equip_cost;
+    a.num_laborers_sum   += data.num_laborers_sum;
+    a.num_laborers_count += data.num_laborers_count;
+    data.dates.forEach(d => a.dates.add(d));
+  });
+
+  // ── Per-project breakdown for expanded rows ───────────────────────────────
+  const scProjAgg = {};
+  Object.entries(projAgg).forEach(([pkey, data]) => {
+    const parts = pkey.split('||');
+    const sc    = parts[1] || '';
+    const nk    = sc + '||' + (parts[2] || '');
+    if (!scProjAgg[nk]) scProjAgg[nk] = {
+      project: data.project, projectId: data.projectId,
+      running_qty: 0, total_cost: 0, imported_total: 0, labor_hours: 0, dates: new Set(),
+    };
+    const pa = scProjAgg[nk];
+    pa.running_qty    += data.running_qty;
+    pa.total_cost     += data.total_cost;
+    pa.imported_total += data.imported_total;
+    pa.labor_hours    += data.labor_hours;
+    data.dates.forEach(d => pa.dates.add(d));
+  });
+
+  const allSc = new Set([...Object.keys(scBidMap), ...Object.keys(scAgg)]);
+  if (allSc.size === 0) {
+    el.innerHTML = `<div style="color:var(--muted);padding:2rem;text-align:center">No cost data found. Add bid items and daily tracking entries to populate this report.</div>`;
+    return;
+  }
+
+  // ── Tier definitions ──────────────────────────────────────────────────────
+  const TIER_ORDER = { critical: 0, watch: 1, on_par: 2, under: 3, no_activity: 4 };
+  const TIER_LABEL = { critical: 'Needs Re-evaluation', watch: 'Watch', on_par: 'On Par', under: 'Under Budget', no_activity: 'No Activity' };
+  const TIER_COLOR = { critical: '#ef4444', watch: '#f59e0b', on_par: '#22c55e', under: '#38bdf8', no_activity: 'var(--muted)' };
+  const TIER_BG    = { critical: 'rgba(239,68,68,0.10)', watch: 'rgba(245,158,11,0.10)', on_par: 'rgba(34,197,94,0.10)', under: 'rgba(56,189,248,0.10)', no_activity: 'transparent' };
+  const CONF_COLOR = { High: '#22c55e', Good: '#4ade80', Moderate: '#f59e0b', Low: '#fb923c', Insufficient: '#ef4444', Global: 'var(--muted)' };
+
+  // ── Classify every sub code ───────────────────────────────────────────────
+  const scData = [];
+  for (const sc of allSc) {
+    const b = scBidMap[sc];
+    const a = scAgg[sc];
+    const hasBid      = !!b && b.total > 0;
+    const hasActivity = !!a && (a.total_cost > 0 || a.running_qty > 0 || a.labor_hours > 0);
+
+    if (!hasActivity) {
+      scData.push({ sc, tier: 'no_activity', reasons: ['No daily tracking entries recorded yet.'],
+        benchmark: null, budgetPct: null, runUC: null, ucDiffPct: null, lbrDiffPct: null,
+        running_total: 0, bid_total: hasBid ? b.total : 0, days: 0 });
+      continue;
+    }
+
+    const runningTotal = a.imported_total || a.total_cost;
+    const bidTotal     = hasBid ? b.total : 0;
+    const budgetPct    = hasBid && bidTotal > 0 ? (runningTotal / bidTotal) * 100 : null;
+    const days         = a.dates.size;
+    const runUC        = a.running_qty > 0 ? runningTotal / a.running_qty : null;
+    const lbrPD        = days > 0 ? a.labor_hours / days : null;
+    const bench        = computeSizeAwarePastAvg(hasBid ? b.qty : 0, '', sc, null);
+
+    let tier = 'on_par';
+    let ucDiffPct = null, lbrDiffPct = null;
+
+    // Budget tier
+    if (budgetPct !== null) {
+      if      (budgetPct > 130) tier = 'critical';
+      else if (budgetPct > 115) tier = 'watch';
+      else if (budgetPct <  85) tier = 'under';
+    }
+
+    // Unit cost vs benchmark
+    if (bench && bench.histUC > 0 && runUC !== null) {
+      ucDiffPct = (runUC - bench.histUC) / bench.histUC * 100;
+      if      (ucDiffPct > 40 && tier !== 'critical') tier = 'critical';
+      else if (ucDiffPct > 20 && tier === 'on_par')   tier = 'watch';
+      else if (ucDiffPct > 20 && tier === 'under')    tier = 'on_par'; // downgrade positive if unit cost high
+    }
+
+    // Labor hrs/day vs benchmark
+    if (bench && bench.histLbrPD > 0 && lbrPD !== null) {
+      lbrDiffPct = (lbrPD - bench.histLbrPD) / bench.histLbrPD * 100;
+      if (lbrDiffPct > 40 && tier === 'on_par') tier = 'watch';
+    }
+
+    // ── Generate reasoning ────────────────────────────────────────────────
+    const reasons = [];
+
+    if (budgetPct !== null) {
+      if (budgetPct > 130)
+        reasons.push(`${(budgetPct - 100).toFixed(0)}% over budget — $${fmt(runningTotal)} actual vs $${fmt(bidTotal)} bid.`);
+      else if (budgetPct > 115)
+        reasons.push(`Approaching limit at ${budgetPct.toFixed(0)}% of bid ($${fmt(runningTotal)} of $${fmt(bidTotal)}).`);
+      else if (budgetPct < 85)
+        reasons.push(`${(100 - budgetPct).toFixed(0)}% below bid budget — $${fmt(runningTotal)} of $${fmt(bidTotal)}.`);
+      else
+        reasons.push(`On track at ${budgetPct.toFixed(0)}% of bid ($${fmt(runningTotal)} of $${fmt(bidTotal)}).`);
+    } else {
+      reasons.push(`Running total $${fmt(runningTotal)} — no bid on file for comparison.`);
+    }
+
+    if (bench && bench.histUC > 0 && runUC !== null) {
+      const sign = ucDiffPct >= 0 ? '+' : '';
+      const jw   = bench.jobCount === 1 ? 'job' : 'jobs';
+      if (Math.abs(ucDiffPct) < 5)
+        reasons.push(`Unit cost $${fmt(runUC)}/unit — in line with historical avg ($${fmt(bench.histUC)}, ${bench.jobCount} ${jw}).`);
+      else
+        reasons.push(`Unit cost $${fmt(runUC)}/unit — ${sign}${ucDiffPct.toFixed(0)}% vs historical avg $${fmt(bench.histUC)}/unit (${bench.jobCount} ${jw}).`);
+    } else if (!bench && hasActivity) {
+      reasons.push('No historical benchmark available for this sub code yet.');
+    }
+
+    if (bench && bench.histLbrPD > 0 && lbrPD !== null && Math.abs(lbrDiffPct) > 10) {
+      const sign = lbrDiffPct >= 0 ? '+' : '';
+      reasons.push(`Labor: ${fmt(lbrPD, 1)} hrs/day vs benchmark ${fmt(bench.histLbrPD, 1)} hrs/day (${sign}${lbrDiffPct.toFixed(0)}%).`);
+    }
+
+    if (days > 0 && days < 3)
+      reasons.push(`Limited data — only ${days} day${days > 1 ? 's' : ''} of entries so far.`);
+
+    scData.push({
+      sc, tier, reasons, benchmark: bench,
+      budgetPct, runUC, ucDiffPct, lbrDiffPct,
+      running_total: runningTotal, bid_total: bidTotal, days,
+      labor_hours: a.labor_hours, running_qty: a.running_qty,
+    });
+  }
+
+  // ── Apply search + tier filter ────────────────────────────────────────────
+  let filtered = scData.slice();
+  if (scpTierFilter) filtered = filtered.filter(d => d.tier === scpTierFilter);
+  if (scpSearch)     filtered = filtered.filter(d => d.sc.toLowerCase().includes(scpSearch.toLowerCase()));
+
+  // ── Sort ──────────────────────────────────────────────────────────────────
+  filtered.sort((a, b) => {
+    let av, bv;
+    switch (scpSortCol) {
+      case 'name':    av = a.sc.toLowerCase(); bv = b.sc.toLowerCase(); break;
+      case 'budget':  av = a.budgetPct ?? -1;  bv = b.budgetPct ?? -1;  break;
+      case 'uc_diff': av = a.ucDiffPct ?? 0;   bv = b.ucDiffPct ?? 0;   break;
+      case 'days':    av = a.days;              bv = b.days;             break;
+      default:        av = TIER_ORDER[a.tier] ?? 9; bv = TIER_ORDER[b.tier] ?? 9;
+    }
+    if (scpSortCol === 'name') return scpSortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    return scpSortDir === 'asc' ? av - bv : bv - av;
+  });
+
+  // ── Tier counts for cards ─────────────────────────────────────────────────
+  const counts = {};
+  scData.forEach(d => { counts[d.tier] = (counts[d.tier] || 0) + 1; });
+
+  // ── Tier card helper ──────────────────────────────────────────────────────
+  const tierCard = (key, label, icon) => {
+    const n = counts[key] || 0;
+    const active = scpTierFilter === key;
+    const col    = TIER_COLOR[key];
+    return `<div onclick="_scpSetTier('${key}')"
+      style="background:var(--surface);border:2px solid ${active ? col : 'var(--border)'};border-radius:8px;padding:0.85rem 1.1rem;min-width:120px;flex:1;cursor:pointer;transition:border-color 0.15s">
+      <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.35rem">${icon} ${label}</div>
+      <div style="font-size:1.55rem;font-weight:700;color:${col};line-height:1">${n}</div>
+      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.2rem">sub code${n !== 1 ? 's' : ''}${active ? ' · clear' : ''}</div>
+    </div>`;
+  };
+
+  const cards = `<div style="display:flex;gap:0.65rem;flex-wrap:wrap;margin-bottom:1.1rem">
+    ${tierCard('critical',    'Needs Re-evaluation', '🔴')}
+    ${tierCard('watch',       'Watch',               '🟡')}
+    ${tierCard('on_par',      'On Par',              '🟢')}
+    ${tierCard('under',       'Under Budget',        '🔵')}
+    ${tierCard('no_activity', 'No Activity',         '⬜')}
+  </div>`;
+
+  // ── Sortable header helper ────────────────────────────────────────────────
+  const sh = (col, lbl, align = 'right') => {
+    const active = scpSortCol === col;
+    const arrow  = active ? (scpSortDir === 'asc' ? ' ▲' : ' ▼') : '';
+    const ta = align === 'left' ? 'text-align:left;padding:0.4rem 0.75rem' : 'padding:0.4rem 0.75rem';
+    return `<th class="${align === 'right' ? 'calc-hdr' : ''}" style="${ta};cursor:pointer;user-select:none${active ? ';color:var(--green)' : ''}" onclick="_scpSetSort('${col}')">${lbl}${arrow}</th>`;
+  };
+
+  // ── Build table rows ──────────────────────────────────────────────────────
+  const rows = filtered.map(d => {
+    const tier      = d.tier;
+    const col       = TIER_COLOR[tier];
+    const bg        = TIER_BG[tier];
+    const expanded  = scpExpanded.has(d.sc);
+    const hasToggle = tier !== 'no_activity';
+
+    // Budget bar
+    let budgetCell = '<td style="text-align:right;padding:0.3rem 0.75rem;font-size:0.8rem">—</td>';
+    if (d.budgetPct !== null) {
+      const pct   = d.budgetPct;
+      const barCol = pct > 130 ? '#ef4444' : pct > 115 ? '#f59e0b' : pct < 85 ? '#38bdf8' : '#22c55e';
+      budgetCell  = `<td style="padding:0.3rem 0.75rem">
+        <div style="display:flex;align-items:center;gap:0.4rem;justify-content:flex-end">
+          <span style="font-size:0.75rem;min-width:2.6rem;text-align:right;color:${barCol};font-weight:600">${pct.toFixed(0)}%</span>
+          <div style="width:52px;background:var(--surface2);border-radius:2px;height:5px;flex-shrink:0">
+            <div style="width:${Math.min(pct, 200) / 2}%;max-width:100%;background:${barCol};height:5px;border-radius:2px"></div>
+          </div>
+        </div>
+      </td>`;
+    }
+
+    // Unit cost vs benchmark cell
+    let ucCell = '<td style="text-align:right;padding:0.3rem 0.75rem;font-size:0.75rem;color:var(--muted)">—</td>';
+    if (d.ucDiffPct !== null) {
+      const sign   = d.ucDiffPct >= 0 ? '+' : '';
+      const ucCol  = d.ucDiffPct > 20 ? '#ef4444' : d.ucDiffPct > 5 ? '#f59e0b' : d.ucDiffPct < -5 ? '#22c55e' : 'var(--text)';
+      ucCell = `<td style="text-align:right;padding:0.3rem 0.75rem;font-size:0.75rem;font-weight:600;color:${ucCol}">${sign}${d.ucDiffPct.toFixed(0)}%</td>`;
+    } else if (d.runUC !== null) {
+      ucCell = `<td style="text-align:right;padding:0.3rem 0.75rem;font-size:0.75rem;color:var(--muted)">$${fmt(d.runUC)}</td>`;
+    }
+
+    // Confidence badge
+    let confCell = '<td style="text-align:center;padding:0.3rem 0.5rem">—</td>';
+    if (d.benchmark) {
+      const cc = CONF_COLOR[d.benchmark.confidence] || 'var(--muted)';
+      confCell = `<td style="text-align:center;padding:0.3rem 0.5rem">
+        <span style="font-size:0.63rem;padding:0.1rem 0.35rem;border-radius:3px;background:${cc}1a;color:${cc};white-space:nowrap;font-weight:600">
+          ${d.benchmark.confidence} · ${d.benchmark.jobCount}j
+        </span>
+      </td>`;
+    }
+
+    const mainRow = `<tr style="background:${bg};border-bottom:1px solid var(--border)" ${hasToggle ? `onclick="_scpToggle('${esc(d.sc)}')" style="cursor:pointer;background:${bg};border-bottom:1px solid var(--border)"` : ''}>
+      <td style="padding:0.35rem 0.75rem;font-size:0.82rem;font-weight:600">
+        ${hasToggle ? `<span style="display:inline-block;margin-right:0.35rem;transition:transform 0.15s;transform:rotate(${expanded ? '0' : '-90'}deg);font-size:0.7rem">▼</span>` : ''}
+        ${esc(d.sc) || '—'}
+      </td>
+      <td style="padding:0.3rem 0.75rem">
+        <span style="font-size:0.7rem;padding:0.15rem 0.45rem;border-radius:3px;background:${col}1a;color:${col};font-weight:600;white-space:nowrap">${TIER_LABEL[tier]}</span>
+      </td>
+      ${budgetCell}
+      ${ucCell}
+      ${confCell}
+      <td style="padding:0.3rem 0.75rem;text-align:right;font-size:0.75rem">${d.days > 0 ? d.days : '—'}</td>
+      <td style="padding:0.3rem 0.75rem;font-size:0.75rem;color:var(--muted);max-width:340px">${d.reasons[0] || ''}</td>
+    </tr>`;
+
+    if (!expanded) return mainRow;
+
+    // ── Expanded detail ───────────────────────────────────────────────────
+    const projKeys = Object.keys(scProjAgg).filter(k => k.startsWith(d.sc + '||'));
+    let detailHtml = '';
+
+    if (projKeys.length) {
+      const pRows = projKeys.map(pk => {
+        const pa = scProjAgg[pk];
+        const pTotal = pa.imported_total || pa.total_cost;
+        // Find bid total for this sub code on this specific project
+        const projObj   = projectsList.find(p => p.id === pa.projectId);
+        const projBidTot = projObj
+          ? (projObj.bidItems || []).filter(b => (b.sub_code || '') === d.sc)
+              .reduce((s, b) => {
+                const bq = (parseFloat(b.quantity) || 0) +
+                  (b.change_orders || []).reduce((x, co) => x + (parseFloat(co.qty_delta) || 0), 0);
+                return s + bq * (parseFloat(b.unit_cost) || 0);
+              }, 0)
+          : 0;
+        const pBudPct = projBidTot > 0 ? (pTotal / projBidTot * 100) : null;
+        const pBudCol = pBudPct === null ? 'var(--muted)' : pBudPct > 130 ? '#ef4444' : pBudPct > 115 ? '#f59e0b' : pBudPct < 85 ? '#38bdf8' : '#22c55e';
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:0.25rem 0.75rem 0.25rem 2.5rem;font-size:0.78rem">${esc(pa.project || pa.projectId)}</td>
+          <td style="padding:0.25rem 0.75rem;text-align:right;font-size:0.78rem">$${fmt(pTotal)}</td>
+          <td style="padding:0.25rem 0.75rem;text-align:right;font-size:0.78rem">${projBidTot > 0 ? '$' + fmt(projBidTot) : '—'}</td>
+          <td style="padding:0.25rem 0.75rem;text-align:right;font-size:0.78rem;font-weight:600;color:${pBudCol}">${pBudPct !== null ? pBudPct.toFixed(0) + '%' : '—'}</td>
+          <td style="padding:0.25rem 0.75rem;text-align:right;font-size:0.78rem">${pa.dates.size}</td>
+        </tr>`;
+      }).join('');
+      detailHtml = `<table style="border-collapse:collapse;width:100%">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:0.25rem 0.75rem 0.25rem 2.5rem;text-align:left;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Project</th>
+          <th style="padding:0.25rem 0.75rem;text-align:right;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Actual</th>
+          <th style="padding:0.25rem 0.75rem;text-align:right;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Bid</th>
+          <th style="padding:0.25rem 0.75rem;text-align:right;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Budget %</th>
+          <th style="padding:0.25rem 0.75rem;text-align:right;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Days</th>
+        </tr></thead>
+        <tbody>${pRows}</tbody>
+      </table>`;
+    }
+
+    // Additional reasons
+    const extraReasons = d.reasons.slice(1).map(r =>
+      `<div style="font-size:0.75rem;color:var(--muted);padding:0.1rem 0.75rem 0.1rem 2.5rem">• ${r}</div>`
+    ).join('');
+
+    // Benchmark snapshot
+    let benchHtml = '';
+    if (d.benchmark) {
+      const bk = d.benchmark;
+      benchHtml = `<div style="padding:0.5rem 0.75rem 0.5rem 2.5rem;display:flex;gap:1.5rem;flex-wrap:wrap">
+        ${bk.histUC    > 0 ? `<span style="font-size:0.72rem;color:var(--muted)">Benchmark unit cost: <strong style="color:var(--text)">$${fmt(bk.histUC)}/unit</strong></span>` : ''}
+        ${bk.histLbrPD > 0 ? `<span style="font-size:0.72rem;color:var(--muted)">Benchmark labor: <strong style="color:var(--text)">${fmt(bk.histLbrPD, 1)} hrs/day</strong></span>` : ''}
+        ${bk.histEqPD  > 0 ? `<span style="font-size:0.72rem;color:var(--muted)">Benchmark equip: <strong style="color:var(--text)">${fmt(bk.histEqPD, 1)} hrs/day</strong></span>` : ''}
+        <span style="font-size:0.72rem;color:var(--muted)">Based on <strong style="color:var(--text)">${bk.jobCount}</strong> comparable job${bk.jobCount !== 1 ? 's' : ''} (${bk.confidence} confidence)</span>
+      </div>`;
+    }
+
+    const detailTr = `<tr style="background:var(--surface2)">
+      <td colspan="7" style="padding:0;border-bottom:2px solid var(--border)">
+        ${extraReasons.length ? `<div style="padding:0.4rem 0">${extraReasons}</div>` : ''}
+        ${benchHtml}
+        ${detailHtml}
+      </td>
+    </tr>`;
+
+    return mainRow + detailTr;
+  }).join('');
+
+  // ── Final render ──────────────────────────────────────────────────────────
+  const emptyMsg = filtered.length === 0
+    ? `<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--muted)">No sub codes match the current filter.</td></tr>`
+    : rows;
+
+  el.innerHTML = `
+    <div style="max-width:1200px">
+      <div style="margin-bottom:0.75rem">
+        <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:0.2rem">Sub Code Performance</div>
+        <div style="font-size:0.75rem;color:var(--muted)">Compares each sub code's running costs and unit rates against bid and historical benchmarks. Click a card to filter. Click a row to expand project breakdown.</div>
+      </div>
+      ${cards}
+      <div style="display:flex;align-items:center;gap:0.65rem;margin-bottom:0.65rem;flex-wrap:wrap">
+        <input id="scp-search" type="text" placeholder="Search sub codes…" value="${esc(scpSearch)}"
+          oninput="scpSearch=this.value;renderSubCodePerf()"
+          style="width:180px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:0.25rem 0.5rem;font-size:0.75rem;outline:none"
+          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+        ${scpTierFilter ? `<span style="font-size:0.72rem;color:var(--muted)">Showing: <strong style="color:${TIER_COLOR[scpTierFilter]}">${TIER_LABEL[scpTierFilter]}</strong></span>` : ''}
+        ${scpTierFilter || scpSearch ? `<button class="btn btn-ghost" onclick="scpTierFilter='';scpSearch='';renderSubCodePerf()" style="font-size:0.72rem;padding:0.2rem 0.5rem">✕ Clear</button>` : ''}
+        <span style="margin-left:auto;font-size:0.72rem;color:var(--muted)">${filtered.length} of ${scData.length} sub codes</span>
+      </div>
+      <div class="table-wrap">
+        <table id="scp-table" style="width:100%">
+          <thead>
+            <tr class="col-row">
+              ${sh('name',    'Sub Code',          'left')}
+              ${sh('tier',    'Status',            'left')}
+              ${sh('budget',  'Budget Used',       'right')}
+              ${sh('uc_diff', 'Unit Cost vs Hist', 'right')}
+              <th style="padding:0.4rem 0.5rem;text-align:center">Benchmark Confidence</th>
+              ${sh('days',    'Days',              'right')}
+              <th style="padding:0.4rem 0.75rem;text-align:left">Key Insight</th>
+            </tr>
+          </thead>
+          <tbody>${emptyMsg}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function exportSubCodePDF() {
+  // ── Rebuild classification data (same logic as renderSubCodePerf) ─────────
+  const scBidMap = {};
+  projectsList.forEach(p => {
+    (p.bidItems || []).forEach(b => {
+      const sc = b.sub_code || '';
+      if (!scBidMap[sc]) scBidMap[sc] = { qty: 0, total: 0 };
+      const bq = (parseFloat(b.quantity) || 0) +
+        (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+      scBidMap[sc].qty   += bq;
+      scBidMap[sc].total += bq * (parseFloat(b.unit_cost) || 0);
+    });
+  });
+
+  const { agg } = buildFilteredDailyAgg();
+  const scAgg = {};
+  Object.entries(agg).forEach(([key, data]) => {
+    const sc = key.split('||')[1] || '';
+    if (!scAgg[sc]) scAgg[sc] = {
+      running_qty: 0, total_cost: 0, imported_total: 0,
+      labor_hours: 0, equip_hours: 0, dates: new Set(),
+    };
+    const a = scAgg[sc];
+    a.running_qty    += data.running_qty;
+    a.total_cost     += data.total_cost;
+    a.imported_total += data.imported_total;
+    a.labor_hours    += data.labor_hours;
+    a.equip_hours    += data.equip_hours;
+    data.dates.forEach(d => a.dates.add(d));
+  });
+
+  const allSc = new Set([...Object.keys(scBidMap), ...Object.keys(scAgg)]);
+  if (allSc.size === 0) { alert('No sub code data to export.'); return; }
+
+  const TIER_LABEL = { critical: 'Needs Re-evaluation', watch: 'Watch', on_par: 'On Par', under: 'Under Budget', no_activity: 'No Activity' };
+  const TIER_ORDER = { critical: 0, watch: 1, on_par: 2, under: 3, no_activity: 4 };
+  const TIER_BG    = { critical: '#fef2f2', watch: '#fffbeb', on_par: '#f0fdf4', under: '#f0f9ff', no_activity: '#fff' };
+  const TIER_TC    = { critical: '#dc2626', watch: '#d97706', on_par: '#16a34a', under: '#0284c7', no_activity: '#9ca3af' };
+  const CONF_TC    = { High: '#16a34a', Good: '#22c55e', Moderate: '#d97706', Low: '#ea580c', Insufficient: '#dc2626', Global: '#6b7280' };
+
+  const scData = [];
+  for (const sc of allSc) {
+    const b = scBidMap[sc];
+    const a = scAgg[sc];
+    const hasBid      = !!b && b.total > 0;
+    const hasActivity = !!a && (a.total_cost > 0 || a.running_qty > 0 || a.labor_hours > 0);
+
+    if (!hasActivity) {
+      scData.push({ sc, tier: 'no_activity', reasons: ['No daily tracking entries recorded yet.'],
+        benchmark: null, budgetPct: null, runUC: null, ucDiffPct: null,
+        running_total: 0, bid_total: hasBid ? b.total : 0, days: 0 });
+      continue;
+    }
+
+    const runningTotal = a.imported_total || a.total_cost;
+    const bidTotal     = hasBid ? b.total : 0;
+    const budgetPct    = hasBid && bidTotal > 0 ? (runningTotal / bidTotal) * 100 : null;
+    const days         = a.dates.size;
+    const runUC        = a.running_qty > 0 ? runningTotal / a.running_qty : null;
+    const lbrPD        = days > 0 ? a.labor_hours / days : null;
+    const bench        = computeSizeAwarePastAvg(hasBid ? b.qty : 0, '', sc, null);
+
+    let tier = 'on_par';
+    let ucDiffPct = null, lbrDiffPct = null;
+    if (budgetPct !== null) {
+      if      (budgetPct > 130) tier = 'critical';
+      else if (budgetPct > 115) tier = 'watch';
+      else if (budgetPct <  85) tier = 'under';
+    }
+    if (bench && bench.histUC > 0 && runUC !== null) {
+      ucDiffPct = (runUC - bench.histUC) / bench.histUC * 100;
+      if      (ucDiffPct > 40 && tier !== 'critical') tier = 'critical';
+      else if (ucDiffPct > 20 && tier === 'on_par')   tier = 'watch';
+      else if (ucDiffPct > 20 && tier === 'under')    tier = 'on_par';
+    }
+    if (bench && bench.histLbrPD > 0 && lbrPD !== null) {
+      lbrDiffPct = (lbrPD - bench.histLbrPD) / bench.histLbrPD * 100;
+      if (lbrDiffPct > 40 && tier === 'on_par') tier = 'watch';
+    }
+
+    const reasons = [];
+    if (budgetPct !== null) {
+      if (budgetPct > 130)
+        reasons.push(`${(budgetPct - 100).toFixed(0)}% over budget — $${fmt(runningTotal)} actual vs $${fmt(bidTotal)} bid.`);
+      else if (budgetPct > 115)
+        reasons.push(`Approaching limit at ${budgetPct.toFixed(0)}% of bid ($${fmt(runningTotal)} of $${fmt(bidTotal)}).`);
+      else if (budgetPct < 85)
+        reasons.push(`${(100 - budgetPct).toFixed(0)}% below bid budget — $${fmt(runningTotal)} of $${fmt(bidTotal)}.`);
+      else
+        reasons.push(`On track at ${budgetPct.toFixed(0)}% of bid ($${fmt(runningTotal)} of $${fmt(bidTotal)}).`);
+    } else {
+      reasons.push(`Running total $${fmt(runningTotal)} — no bid on file.`);
+    }
+    if (bench && bench.histUC > 0 && runUC !== null) {
+      const sign = ucDiffPct >= 0 ? '+' : '';
+      const jw   = bench.jobCount === 1 ? 'job' : 'jobs';
+      if (Math.abs(ucDiffPct) < 5)
+        reasons.push(`Unit cost $${fmt(runUC)}/unit — in line with historical avg ($${fmt(bench.histUC)}, ${bench.jobCount} ${jw}).`);
+      else
+        reasons.push(`Unit cost $${fmt(runUC)}/unit — ${sign}${ucDiffPct.toFixed(0)}% vs historical avg $${fmt(bench.histUC)}/unit (${bench.jobCount} ${jw}).`);
+    } else if (!bench && hasActivity) {
+      reasons.push('No historical benchmark available yet.');
+    }
+    if (bench && bench.histLbrPD > 0 && lbrPD !== null && Math.abs(lbrDiffPct) > 10) {
+      const sign = lbrDiffPct >= 0 ? '+' : '';
+      reasons.push(`Labor: ${fmt(lbrPD, 1)} hrs/day vs benchmark ${fmt(bench.histLbrPD, 1)} hrs/day (${sign}${lbrDiffPct.toFixed(0)}%).`);
+    }
+    if (days > 0 && days < 3)
+      reasons.push(`Limited data — only ${days} day${days > 1 ? 's' : ''} of entries.`);
+
+    scData.push({ sc, tier, reasons, benchmark: bench,
+      budgetPct, runUC, ucDiffPct, lbrDiffPct,
+      running_total: runningTotal, bid_total: bidTotal, days });
+  }
+
+  scData.sort((a, b) => (TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9) || a.sc.localeCompare(b.sc));
+
+  // ── Counts ───────────────────────────────────────────────────────────────
+  const counts = {};
+  scData.forEach(d => { counts[d.tier] = (counts[d.tier] || 0) + 1; });
+  const dateStr = new Date().toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+
+  // ── Summary band ─────────────────────────────────────────────────────────
+  const summaryBand = [
+    { key: 'critical', label: 'Needs Re-evaluation' },
+    { key: 'watch',    label: 'Watch'               },
+    { key: 'on_par',   label: 'On Par'              },
+    { key: 'under',    label: 'Under Budget'        },
+    { key: 'no_activity', label: 'No Activity'      },
+  ].map(t => `
+    <div style="flex:1;text-align:center;padding:0.6rem 0.5rem;border-right:1px solid #e5e7eb">
+      <div style="font-size:8px;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:0.2rem">${t.label}</div>
+      <div style="font-size:1.3rem;font-weight:700;color:${TIER_TC[t.key]}">${counts[t.key] || 0}</div>
+    </div>`).join('');
+
+  // ── Table rows ────────────────────────────────────────────────────────────
+  const r  = (v, bold) => `<td style="padding:0.26rem 0.4rem;text-align:right;border-bottom:1px solid #e5e7eb${bold ? ';font-weight:700' : ''}">${v}</td>`;
+  const rL = (v, bold) => `<td style="padding:0.26rem 0.4rem;border-bottom:1px solid #e5e7eb${bold ? ';font-weight:700' : ''}">${v}</td>`;
+
+  const tableRows = scData.map(d => {
+    const rowBg   = TIER_BG[d.tier];
+    const tierCol = TIER_TC[d.tier];
+
+    const budgetCell = d.budgetPct !== null
+      ? `<span style="font-weight:700;color:${d.budgetPct > 130 ? '#dc2626' : d.budgetPct > 115 ? '#d97706' : d.budgetPct < 85 ? '#0284c7' : '#16a34a'}">${d.budgetPct.toFixed(0)}%</span>`
+      : '—';
+
+    const ucCell = d.ucDiffPct !== null
+      ? `<span style="font-weight:700;color:${d.ucDiffPct > 20 ? '#dc2626' : d.ucDiffPct > 5 ? '#d97706' : d.ucDiffPct < -5 ? '#16a34a' : '#111'}">${d.ucDiffPct >= 0 ? '+' : ''}${d.ucDiffPct.toFixed(0)}%</span>`
+      : (d.runUC !== null ? `$${fmt(d.runUC)}` : '—');
+
+    const confCell = d.benchmark
+      ? `<span style="color:${CONF_TC[d.benchmark.confidence] || '#6b7280'}">${d.benchmark.confidence} (${d.benchmark.jobCount}j)</span>`
+      : '—';
+
+    return `<tr style="background:${rowBg}">
+      ${rL(`<strong>${esc(d.sc) || '(blank)'}</strong>`)}
+      ${rL(`<span style="color:${tierCol};font-weight:600">${TIER_LABEL[d.tier]}</span>`)}
+      ${r(budgetCell)}
+      ${r(d.running_total > 0 ? '$' + fmt(d.running_total) : '—')}
+      ${r(d.bid_total > 0 ? '$' + fmt(d.bid_total) : '—')}
+      ${r(ucCell)}
+      ${r(confCell)}
+      ${r(d.days > 0 ? d.days : '—')}
+      ${rL(d.reasons.join(' '))}
+    </tr>`;
+  }).join('');
+
+  // ── HTML document ─────────────────────────────────────────────────────────
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Sub Code Performance Report</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; font-size: 10px; color: #111; margin: 0; padding: 1rem 1.25rem; }
+    h1 { font-size: 15px; font-weight: 700; margin: 0 0 0.15rem; }
+    .meta { font-size: 9px; color: #6b7280; margin-bottom: 0.8rem; }
+    .summary { display: flex; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; margin-bottom: 1rem; }
+    .summary > div:last-child { border-right: none; }
+    table { width: 100%; border-collapse: collapse; font-size: 9.5px; }
+    thead th { background: #f3f4f6; padding: 0.3rem 0.4rem; font-size: 8.5px; font-weight: 700;
+               color: #374151; border-bottom: 2px solid #d1d5db; white-space: nowrap; text-align: right; }
+    thead th.left { text-align: left; }
+    thead th.center { text-align: center; }
+    tbody tr:hover { filter: brightness(0.97); }
+    .note { font-size: 8px; color: #9ca3af; margin-top: 0.6rem; font-style: italic; }
+    @media print {
+      body { padding: 0.3rem 0.5rem; }
+      thead { display: table-header-group; }
+      tr { page-break-inside: avoid; }
+    }
+  </style></head><body>
+  <h1>Sub Code Performance Report</h1>
+  <div class="meta">Generated ${dateStr} &nbsp;·&nbsp; ${scData.length} sub codes</div>
+  <div class="summary">${summaryBand}</div>
+  <table>
+    <thead><tr>
+      <th class="left">Sub Code</th>
+      <th class="left">Status</th>
+      <th>Budget Used</th>
+      <th>Running Total</th>
+      <th>Bid Total</th>
+      <th>Unit Cost vs Hist</th>
+      <th class="center">Benchmark Confidence</th>
+      <th>Days</th>
+      <th class="left">Key Insights</th>
+    </tr></thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  <div class="note">
+    Needs Re-evaluation: &gt;130% of bid OR unit cost &gt;40% above historical &nbsp;·&nbsp;
+    Watch: 115–130% of bid OR unit cost 20–40% above historical &nbsp;·&nbsp;
+    On Par: within 115% of bid, unit cost within 20% of historical &nbsp;·&nbsp;
+    Under Budget: &lt;85% of bid &nbsp;·&nbsp;
+    Confidence = benchmark similarity tier (job count shown in parentheses)
+  </div>
+  <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) { alert('Pop-up blocked — please allow pop-ups for this site and try again.'); return; }
+  win.document.write(html);
+  win.document.close();
 }
 
 function _updateCostFilterButtons() {
