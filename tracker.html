@@ -11674,14 +11674,14 @@ function clearAllCostFilters() {
    SUB CODE PERFORMANCE REPORT
    ═══════════════════════════════════════════════════════ */
 let scpSortCol    = 'tier';
-let scpSortDir    = 'desc';
+let scpSortDir    = 'asc';
 let scpTierFilter = '';
 let scpSearch     = '';
 const scpExpanded = new Set();
 
 function _scpSetSort(col) {
   if (scpSortCol === col) scpSortDir = scpSortDir === 'asc' ? 'desc' : 'asc';
-  else { scpSortCol = col; scpSortDir = col === 'name' ? 'asc' : 'desc'; }
+  else { scpSortCol = col; scpSortDir = (col === 'name' || col === 'tier') ? 'asc' : 'desc'; }
   renderSubCodePerf();
 }
 function _scpToggle(sc) {
