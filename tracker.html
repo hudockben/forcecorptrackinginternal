@@ -11781,7 +11781,11 @@ function renderSubCodePerf() {
     const budgetPct    = hasBid && bidTotal > 0 ? (runningTotal / bidTotal) * 100 : null;
     const days         = a.dates.size;
     const runUC        = a.running_qty > 0 ? runningTotal / a.running_qty : null;
-    const lbrPD        = days > 0 ? a.labor_hours / days : null;
+    // Use project-days (sum of unique dates per project) so labor hrs/day is not
+    // inflated when multiple projects work the same calendar date simultaneously
+    const projKeysForSc = Object.keys(scProjAgg).filter(k => k.startsWith(sc + '||'));
+    const projectDays   = projKeysForSc.reduce((s, pk) => s + scProjAgg[pk].dates.size, 0) || days;
+    const lbrPD         = projectDays > 0 ? a.labor_hours / projectDays : null;
     const bench        = computeSizeAwarePastAvg(hasBid ? b.qty : 0, '', sc, null);
 
     let tier = 'on_par';
@@ -12094,7 +12098,7 @@ function exportSubCodePDF() {
     });
   });
 
-  const { agg } = buildFilteredDailyAgg();
+  const { agg, projAgg: pdfProjAgg } = buildFilteredDailyAgg();
   const scAgg = {};
   Object.entries(agg).forEach(([key, data]) => {
     const sc = key.split('||')[1] || '';
@@ -12109,6 +12113,14 @@ function exportSubCodePDF() {
     a.labor_hours    += data.labor_hours;
     a.equip_hours    += data.equip_hours;
     data.dates.forEach(d => a.dates.add(d));
+  });
+  const pdfScProjAgg = {};
+  Object.entries(pdfProjAgg).forEach(([pkey, data]) => {
+    const parts = pkey.split('||');
+    const sc = parts[1] || '';
+    const nk = sc + '||' + (parts[2] || '');
+    if (!pdfScProjAgg[nk]) pdfScProjAgg[nk] = { dates: new Set() };
+    data.dates.forEach(d => pdfScProjAgg[nk].dates.add(d));
   });
 
   const allSc = new Set([...Object.keys(scBidMap), ...Object.keys(scAgg)]);
@@ -12139,7 +12151,9 @@ function exportSubCodePDF() {
     const budgetPct    = hasBid && bidTotal > 0 ? (runningTotal / bidTotal) * 100 : null;
     const days         = a.dates.size;
     const runUC        = a.running_qty > 0 ? runningTotal / a.running_qty : null;
-    const lbrPD        = days > 0 ? a.labor_hours / days : null;
+    const pdfProjKeys  = Object.keys(pdfScProjAgg).filter(k => k.startsWith(sc + '||'));
+    const pdfProjDays  = pdfProjKeys.reduce((s, pk) => s + pdfScProjAgg[pk].dates.size, 0) || days;
+    const lbrPD        = pdfProjDays > 0 ? a.labor_hours / pdfProjDays : null;
     const bench        = computeSizeAwarePastAvg(hasBid ? b.qty : 0, '', sc, null);
 
     let tier = 'on_par';
