@@ -250,15 +250,24 @@ async function syncPurchaseOrders(sql, companyCode, value) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INVENTORY
+// Delete-then-reinsert so removed items propagate and no duplicates accumulate.
+// Frontend inventory entries use rubber_type/bags_produced; map to table columns.
 // ─────────────────────────────────────────────────────────────────────────────
 async function syncInventory(sql, companyCode, value) {
   const list = Array.isArray(value) ? value
     : (value && Array.isArray(value.items) ? value.items : []);
-  let inventory_items = 0;
 
+  // Wipe stale rows before reinserting so deletes and edits are reflected.
+  await sql`DELETE FROM inventory_items WHERE company_code = ${companyCode}`;
+
+  let inventory_items = 0;
   for (const item of list) {
     if (!item) continue;
-    const infillType = item.infill_type || item.infillType || item.type || 'Unknown';
+    // rubber_type is the field name used by the inventory tab; fall back to
+    // infill_type / type for any legacy data that used the old field names.
+    const infillType = item.rubber_type || item.infill_type || item.infillType || item.type || 'Unknown';
+    // bags_produced is the primary quantity field for inventory entries.
+    const qty = safeFloat(item.bags_produced ?? item.quantity) ?? 0;
 
     await sql`
       INSERT INTO inventory_items (
@@ -269,9 +278,9 @@ async function syncInventory(sql, companyCode, value) {
         ${item.project_id || item.projectId || null},
         ${infillType},
         ${item.location || null},
-        ${safeFloat(item.quantity) ?? 0},
+        ${qty},
         ${item.unit || null},
-        ${safeFloat(item.unit_cost ?? item.unitCost)},
+        ${safeFloat(item.unit_cost ?? item.unitCost) ?? null},
         ${item.notes || null},
         ${safeDate(item.date || item.date_added || item.dateAdded)},
         NOW()
@@ -281,6 +290,161 @@ async function syncInventory(sql, companyCode, value) {
   }
 
   return { inventory_items };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COST ROWS  (fct_cost_rows → cost_items)
+// Delete-then-reinsert by company so edits/deletes propagate.
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncCostRows(sql, companyCode, value) {
+  const list = Array.isArray(value) ? value : [];
+
+  await sql`DELETE FROM cost_items WHERE company_code = ${companyCode}`;
+
+  let cost_items = 0;
+  for (const row of list) {
+    if (!row) continue;
+    await sql`
+      INSERT INTO cost_items (
+        company_code, cost_code, sub_code, quantity, bid_item_cost, status,
+        description, updated_at
+      ) VALUES (
+        ${companyCode},
+        ${row.cost_code || row.costCode || ''},
+        ${row.sub_code  || row.subCode  || null},
+        ${safeFloat(row.quantity)      ?? 0},
+        ${safeFloat(row.bid_item_cost ?? row.bidItemCost) ?? 0},
+        ${row.status || 'Active'},
+        ${row.description || null},
+        NOW()
+      )
+    `;
+    cost_items++;
+  }
+
+  return { cost_items };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TRUCKING ENTRIES  (fct_trucking → trucking_entries)
+// Upsert by app-provided UUID id.
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncTrucking(sql, companyCode, value) {
+  const list = Array.isArray(value) ? value : [];
+
+  // Delete rows that are no longer in the blob (handles deletions).
+  const ids = list.map(t => t && t.id).filter(Boolean);
+  if (ids.length) {
+    await sql`
+      DELETE FROM trucking_entries
+      WHERE company_code = ${companyCode}
+        AND id <> ALL(${ids})
+    `;
+  } else {
+    await sql`DELETE FROM trucking_entries WHERE company_code = ${companyCode}`;
+  }
+
+  let trucking_entries = 0;
+  for (const t of list) {
+    if (!t || !t.id) continue;
+    await sql`
+      INSERT INTO trucking_entries (
+        id, company_code, tr_number, driver, truck_type, project_id,
+        date, material_hauled, loads, rate, hours, status, notes,
+        cost_code, sub_code, updated_at
+      ) VALUES (
+        ${t.id}, ${companyCode},
+        ${t.tr_number  || t.trNumber  || null},
+        ${t.driver     || null},
+        ${t.truck_type || t.truckType || null},
+        ${t.project_id || t.projectId || null},
+        ${safeDate(t.date)},
+        ${t.material_hauled || t.materialHauled || null},
+        ${safeFloat(t.loads)  ?? null},
+        ${safeFloat(t.rate)   ?? null},
+        ${safeFloat(t.hours)  ?? null},
+        ${t.status || 'pending'},
+        ${t.notes  || null},
+        ${t.cost_code || t.costCode || null},
+        ${t.sub_code  || t.subCode  || null},
+        NOW()
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        tr_number       = EXCLUDED.tr_number,
+        driver          = EXCLUDED.driver,
+        truck_type      = EXCLUDED.truck_type,
+        project_id      = EXCLUDED.project_id,
+        date            = EXCLUDED.date,
+        material_hauled = EXCLUDED.material_hauled,
+        loads           = EXCLUDED.loads,
+        rate            = EXCLUDED.rate,
+        hours           = EXCLUDED.hours,
+        status          = EXCLUDED.status,
+        notes           = EXCLUDED.notes,
+        cost_code       = EXCLUDED.cost_code,
+        sub_code        = EXCLUDED.sub_code,
+        updated_at      = NOW()
+    `;
+    trucking_entries++;
+  }
+
+  return { trucking_entries };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCALE MANUAL ENTRIES  (fct_scale_manual → scale_manual_entries)
+// Upsert by app-provided UUID id.
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncScaleManual(sql, companyCode, value) {
+  const list = Array.isArray(value) ? value : [];
+
+  const ids = list.map(e => e && e.id).filter(Boolean);
+  if (ids.length) {
+    await sql`
+      DELETE FROM scale_manual_entries
+      WHERE company_code = ${companyCode}
+        AND id <> ALL(${ids})
+    `;
+  } else {
+    await sql`DELETE FROM scale_manual_entries WHERE company_code = ${companyCode}`;
+  }
+
+  let scale_manual_entries = 0;
+  for (const e of list) {
+    if (!e || !e.id) continue;
+    await sql`
+      INSERT INTO scale_manual_entries (
+        id, company_code, label, cost_code, sub_code,
+        run_qty, total_cost, labor_hrs, equip_hrs,
+        bid_qty, bid_unit_cost, created_at
+      ) VALUES (
+        ${e.id}, ${companyCode},
+        ${e.label     || null},
+        ${e.cost_code || e.costCode || null},
+        ${e.sub_code  || e.subCode  || null},
+        ${safeFloat(e.run_qty)       ?? null},
+        ${safeFloat(e.total_cost)    ?? null},
+        ${safeFloat(e.labor_hrs)     ?? null},
+        ${safeFloat(e.equip_hrs)     ?? null},
+        ${safeFloat(e.bid_qty)       ?? null},
+        ${safeFloat(e.bid_unit_cost) ?? null},
+        ${safeDate(e.created_at) || null}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        label         = EXCLUDED.label,
+        cost_code     = EXCLUDED.cost_code,
+        sub_code      = EXCLUDED.sub_code,
+        run_qty       = EXCLUDED.run_qty,
+        total_cost    = EXCLUDED.total_cost,
+        labor_hrs     = EXCLUDED.labor_hrs,
+        equip_hrs     = EXCLUDED.equip_hrs,
+        bid_qty       = EXCLUDED.bid_qty,
+        bid_unit_cost = EXCLUDED.bid_unit_cost
+    `;
+    scale_manual_entries++;
+  }
+
+  return { scale_manual_entries };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,7 +477,22 @@ async function syncForKey(sql, companyCode, key, value) {
     return syncInventory(sql, companyCode, value);
   }
 
+  if (key === 'fct_cost_rows') {
+    return syncCostRows(sql, companyCode, value);
+  }
+
+  if (key === 'fct_trucking') {
+    return syncTrucking(sql, companyCode, value);
+  }
+
+  if (key === 'fct_scale_manual') {
+    return syncScaleManual(sql, companyCode, value);
+  }
+
   return {};
 }
 
-module.exports = { syncProjects, syncLists, syncPurchaseOrders, syncInventory, syncForKey };
+module.exports = {
+  syncProjects, syncLists, syncPurchaseOrders, syncInventory,
+  syncCostRows, syncTrucking, syncScaleManual, syncForKey,
+};

@@ -311,3 +311,55 @@ CREATE TABLE IF NOT EXISTS inventory_items (
 
 CREATE INDEX IF NOT EXISTS idx_inventory_company ON inventory_items(company_code);
 CREATE INDEX IF NOT EXISTS idx_inventory_project ON inventory_items(company_code, project_id);
+
+-- ─────────────────────────────────────────────────
+-- TRUCKING ENTRIES
+-- One row per trucking entry from the Trucking tab.
+-- Financial detail (hours, equip cost) also flows
+-- through daily_tracking via tr_row_id.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS trucking_entries (
+    id              TEXT PRIMARY KEY,              -- UUID from the app
+    company_code    TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    tr_number       TEXT,
+    driver          TEXT,
+    truck_type      TEXT,
+    project_id      TEXT,
+    date            DATE,
+    material_hauled TEXT,
+    loads           NUMERIC(10,2),
+    rate            NUMERIC(10,4),
+    hours           NUMERIC(10,4),
+    status          TEXT          NOT NULL DEFAULT 'pending',
+    notes           TEXT,
+    cost_code       TEXT,
+    sub_code        TEXT,
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_trucking_company ON trucking_entries(company_code);
+CREATE INDEX IF NOT EXISTS idx_trucking_project ON trucking_entries(company_code, project_id);
+CREATE INDEX IF NOT EXISTS idx_trucking_date    ON trucking_entries(company_code, date);
+
+-- ─────────────────────────────────────────────────
+-- SCALE MANUAL ENTRIES
+-- Snapshots sent from Cost Tracking to the
+-- Scale of Economy analysis tab.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS scale_manual_entries (
+    id            TEXT PRIMARY KEY,               -- UUID from the app
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    label         TEXT,
+    cost_code     TEXT,
+    sub_code      TEXT,
+    run_qty       NUMERIC(14,4),
+    total_cost    NUMERIC(14,4),
+    labor_hrs     NUMERIC(14,4),
+    equip_hrs     NUMERIC(14,4),
+    bid_qty       NUMERIC(14,4),
+    bid_unit_cost NUMERIC(14,4),
+    created_at    DATE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scale_manual_company ON scale_manual_entries(company_code);
