@@ -2235,6 +2235,12 @@
       <button class="btn btn-ghost" style="font-size:0.72rem;padding:0.2rem 0.5rem" onclick="applySqftFilter()">Apply</button>
     </div>
     <button class="btn btn-ghost" id="cost-clear-filters-btn" style="font-size:0.72rem;padding:0.2rem 0.5rem;display:none" onclick="clearAllCostFilters()">✕ Clear Filters</button>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:0.35rem">
+      <input id="cost-sc-search" type="text" placeholder="Search sub codes…"
+        oninput="renderCostTable()"
+        style="width:160px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:0.2rem 0.5rem;font-size:0.75rem;outline:none;transition:border-color 0.15s"
+        onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+    </div>
   </div>
   <div class="table-wrap">
     <table id="tracker">
@@ -8250,6 +8256,11 @@ function renderCostTable() {
   // Apply field type filter (only show sub codes that have matching daily rows)
   if (costFilters['_field_type']) {
     scList = scList.filter(sc => scAgg[sc]);
+  }
+  // Apply search bar filter
+  const _scSearch = (document.getElementById('cost-sc-search')?.value || '').trim().toLowerCase();
+  if (_scSearch) {
+    scList = scList.filter(sc => sc.toLowerCase().includes(_scSearch));
   }
 
   if (scList.length === 0) {
