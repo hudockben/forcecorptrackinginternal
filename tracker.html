@@ -12037,6 +12037,8 @@ function renderSubCodePerf() {
     ? `<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--muted)">No sub codes match the current filter.</td></tr>`
     : rows;
 
+  const scpSearchHadFocus = document.activeElement && document.activeElement.id === 'scp-search';
+
   el.innerHTML = `
     <div style="max-width:100%">
       <div style="margin-bottom:0.75rem">
@@ -12070,6 +12072,12 @@ function renderSubCodePerf() {
         </table>
       </div>
     </div>`;
+
+  // Restore focus to search input if it was active before re-render
+  if (scpSearchHadFocus) {
+    const si = document.getElementById('scp-search');
+    if (si) { si.focus(); const l = si.value.length; si.setSelectionRange(l, l); }
+  }
 }
 
 function exportSubCodePDF() {
