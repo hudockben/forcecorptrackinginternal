@@ -2598,6 +2598,11 @@ function logout() {
   });
 }
 
+function switchDivision() {
+  localStorage.removeItem('fct_division');
+  window.location.replace('divisions.html');
+}
+
 // Show user avatar bubble + company label in header
 (function () {
   const badge = document.getElementById('user-badge');
@@ -3111,6 +3116,8 @@ function renderHeaderActions() {
   const el = document.getElementById('header-actions');
   const logoutBtn = `<button class="btn btn-ghost" onclick="logout()">Sign Out</button>`;
   const summaryBtn = `<button class="btn btn-ghost" onclick="openDailySummaryReport()" title="Download a PDF summary of today's production across all projects">&#8659; Daily Summary</button><button class="btn btn-ghost" onclick="openCrewSignInOverlay()" title="Print crew sign-in sheet for a given day">&#128221; Sign-In Sheet</button>`;
+  const canSwitch = fctUser && (fctUser.isPlatformAdmin || (Array.isArray(fctUser.allowedDivisions) && fctUser.allowedDivisions.length > 1));
+  const switchBtn = canSwitch ? `<button class="btn btn-ghost" onclick="switchDivision()">Switch Division</button>` : '';
   if (activeTab === 'cost') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
@@ -3127,6 +3134,7 @@ function renderHeaderActions() {
         <span style="font-size:0.72rem;color:var(--muted)">/hr</span>
       </div>
       ${summaryBtn}
+      ${switchBtn}
       ${logoutBtn}
     `;
   } else if (activeTab === 'equip') {
@@ -3134,24 +3142,27 @@ function renderHeaderActions() {
       <button class="btn btn-ghost" onclick="exportEquipCSV()">Export CSV</button>
       <button class="btn btn-ghost" onclick="exportEquipPDF()">&#128438; Export PDF</button>
       ${summaryBtn}
+      ${switchBtn}
       ${logoutBtn}
     `;
   } else if (activeTab === 'labor') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportLaborCSV()">Export CSV</button>
       ${summaryBtn}
+      ${switchBtn}
       ${logoutBtn}
     `;
   } else if (activeTab === 'subcode') {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportSubCodePDF()">&#128438; Export PDF</button>
       ${summaryBtn}
+      ${switchBtn}
       ${logoutBtn}
     `;
   } else if (activeTab === 'mob-entry') {
-    el.innerHTML = logoutBtn;
+    el.innerHTML = `${switchBtn}${logoutBtn}`;
   } else {
-    el.innerHTML = `${summaryBtn}${logoutBtn}`;
+    el.innerHTML = `${summaryBtn}${switchBtn}${logoutBtn}`;
   }
 }
 
