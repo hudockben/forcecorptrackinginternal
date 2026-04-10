@@ -66,11 +66,15 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 0.65rem;
+      font-size: 0.62rem;
       font-weight: 700;
       color: #fff;
       letter-spacing: 0.02em;
       flex-shrink: 0;
+    }
+
+    .user-avatar-sm.platform {
+      background: #7c3aed;
     }
 
     .user-label {
@@ -82,6 +86,18 @@
     .user-label strong {
       color: var(--text);
       font-weight: 600;
+    }
+
+    .platform-badge {
+      font-size: 0.5rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      background: rgba(124,58,237,0.15);
+      color: #a78bfa;
+      border: 1px solid rgba(124,58,237,0.3);
+      border-radius: 3px;
+      padding: 0.15rem 0.45rem;
     }
 
     .sign-out-btn {
@@ -144,11 +160,15 @@
     /* ── Cards ── */
     .cards {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
       gap: 1.25rem;
-      max-width: 860px;
+      max-width: 900px;
       width: 100%;
     }
+
+    /* Adjust columns based on how many cards are visible */
+    .cards.count-1 { grid-template-columns: 1fr; max-width: 340px; }
+    .cards.count-2 { grid-template-columns: repeat(2, 1fr); max-width: 620px; }
+    .cards.count-3 { grid-template-columns: repeat(3, 1fr); }
 
     .card {
       background: var(--surface);
@@ -167,15 +187,18 @@
     }
 
     .card.active:hover {
-      border-color: var(--green);
-      box-shadow: 0 0 0 1px rgba(34,197,94,0.35), 0 12px 40px rgba(34,197,94,0.1);
+      border-color: var(--card-accent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--card-accent) 35%, transparent),
+                  0 12px 40px color-mix(in srgb, var(--card-accent) 12%, transparent);
       transform: translateY(-3px);
     }
 
-    .card.active:hover .card-icon { background: rgba(34,197,94,0.15); }
+    .card.active:hover .card-icon {
+      background: color-mix(in srgb, var(--card-accent) 15%, transparent);
+    }
 
     .card.soon {
-      opacity: 0.45;
+      opacity: 0.4;
       cursor: not-allowed;
     }
 
@@ -241,10 +264,9 @@
       font-weight: 700;
       letter-spacing: 0.1em;
       text-transform: uppercase;
-      color: var(--green);
-      padding-top: 0.25rem;
+      color: var(--card-accent);
+      padding-top: 0.5rem;
       border-top: 1px solid var(--border);
-      margin-top: 0.25rem;
     }
 
     .card-cta svg {
@@ -262,14 +284,15 @@
       text-align: center;
       padding: 1.5rem;
       font-size: 0.62rem;
-      color: #333;
+      color: #2a2a3a;
       letter-spacing: 0.04em;
       border-top: 1px solid var(--border);
     }
 
     /* ── Mobile ── */
     @media (max-width: 700px) {
-      .cards { grid-template-columns: 1fr; max-width: 420px; }
+      .cards.count-2,
+      .cards.count-3 { grid-template-columns: 1fr; max-width: 420px; }
       main { padding: 2.5rem 1.25rem; }
       .welcome { margin-bottom: 2.25rem; }
       .user-label { display: none; }
@@ -284,6 +307,7 @@
       <div class="user-pill">
         <div class="user-avatar-sm" id="userAvatar"></div>
         <div class="user-label" id="userLabel"></div>
+        <span class="platform-badge" id="platformBadge" style="display:none">Platform Admin</span>
       </div>
       <button class="sign-out-btn" onclick="signOut()">Sign Out</button>
     </div>
@@ -293,79 +317,70 @@
     <div class="welcome">
       <div class="welcome-eyebrow">Force Corp Operations</div>
       <div class="welcome-heading" id="welcomeHeading">Select a Division</div>
-      <div class="welcome-sub">Choose the line of business you want to access.</div>
+      <div class="welcome-sub" id="welcomeSub">Choose the line of business you want to access.</div>
     </div>
 
-    <div class="cards">
-
-      <!-- Turf Management -->
-      <div class="card active" id="cardTurf" onclick="enterDivision('turf')">
-        <span class="card-badge badge-live">Live</span>
-        <div class="card-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 3c0 0-4 4.5-4 8h8c0-3.5-4-8-4-8z"/>
-            <path d="M6.5 9C6.5 9 3.5 12 3.5 15H9"/>
-            <path d="M17.5 9C17.5 9 20.5 12 20.5 15H15"/>
-            <line x1="2" y1="19" x2="22" y2="19"/>
-            <line x1="5" y1="19" x2="5" y2="22"/>
-            <line x1="9" y1="19" x2="9" y2="22"/>
-            <line x1="12" y1="19" x2="12" y2="22"/>
-            <line x1="15" y1="19" x2="15" y2="22"/>
-            <line x1="19" y1="19" x2="19" y2="22"/>
-          </svg>
-        </div>
-        <div class="card-name">Turf Management</div>
-        <div class="card-desc">Cost tracking, project management, purchase orders, scheduling, and analytics for turf operations.</div>
-        <div class="card-cta">
-          Enter System
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="5" y1="12" x2="19" y2="12"/>
-            <polyline points="12 5 19 12 12 19"/>
-          </svg>
-        </div>
-      </div>
-
-      <!-- Dust Control -->
-      <div class="card soon">
-        <span class="card-badge badge-soon">Coming Soon</span>
-        <div class="card-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 7H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-3"/>
-            <path d="M9 11l7-7"/>
-            <path d="M17 4h3v3"/>
-            <path d="M3 13h4"/>
-            <path d="M3 17h6"/>
-            <path d="M3 9h2"/>
-          </svg>
-        </div>
-        <div class="card-name">Dust Control</div>
-        <div class="card-desc">Route management, application tracking, and cost analysis for dust control operations.</div>
-      </div>
-
-      <!-- Paving -->
-      <div class="card soon">
-        <span class="card-badge badge-soon">Coming Soon</span>
-        <div class="card-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="15" width="20" height="5" rx="1"/>
-            <rect x="2" y="9" width="20" height="4" rx="1"/>
-            <line x1="6" y1="9" x2="6" y2="5"/>
-            <line x1="12" y1="9" x2="12" y2="5"/>
-            <line x1="18" y1="9" x2="18" y2="5"/>
-            <line x1="4" y1="5" x2="20" y2="5"/>
-          </svg>
-        </div>
-        <div class="card-name">Paving</div>
-        <div class="card-desc">Project tracking, material management, and crew cost allocation for paving operations.</div>
-      </div>
-
-    </div>
+    <div class="cards" id="cardsGrid"></div>
   </main>
 
   <footer>© DataWatch · Force Corp · All rights reserved</footer>
 
   <script>
-    // ── Auth guard ─────────────────────────────────────────────────────────
+    // ── Division catalog ────────────────────────────────────────────────────
+    // built: true = the system exists and is accessible
+    // built: false = licensed but not yet developed; shows as "Coming Soon"
+    const DIVISION_CATALOG = {
+      turf: {
+        name:  'Turf Management',
+        desc:  'Cost tracking, project management, purchase orders, scheduling, and analytics for turf operations.',
+        color: '#22c55e',
+        href:  'tracker.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3c0 0-4 4.5-4 8h8c0-3.5-4-8-4-8z"/>
+                  <path d="M6.5 9C6.5 9 3.5 12 3.5 15H9"/>
+                  <path d="M17.5 9C17.5 9 20.5 12 20.5 15H15"/>
+                  <line x1="2" y1="19" x2="22" y2="19"/>
+                  <line x1="5" y1="19" x2="5" y2="22"/>
+                  <line x1="9" y1="19" x2="9" y2="22"/>
+                  <line x1="12" y1="19" x2="12" y2="22"/>
+                  <line x1="15" y1="19" x2="15" y2="22"/>
+                  <line x1="19" y1="19" x2="19" y2="22"/>
+                </svg>`,
+      },
+      dust: {
+        name:  'Dust Control',
+        desc:  'Route management, application tracking, and cost analysis for dust control operations.',
+        color: '#fbbf24',
+        href:  'dust.html',
+        built: false,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 8h16"/>
+                  <path d="M4 12h10"/>
+                  <path d="M4 16h6"/>
+                  <path d="M18 12c0 0 2-1.5 2-3s-1-3-3-3-3 2-3 2"/>
+                </svg>`,
+      },
+      paving: {
+        name:  'Paving',
+        desc:  'Project tracking, material management, and crew cost allocation for paving operations.',
+        color: '#60a5fa',
+        href:  'paving.html',
+        built: false,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="15" width="20" height="5" rx="1"/>
+                  <rect x="2" y="9" width="20" height="4" rx="1"/>
+                  <line x1="6" y1="9" x2="6" y2="5"/>
+                  <line x1="12" y1="9" x2="12" y2="5"/>
+                  <line x1="18" y1="9" x2="18" y2="5"/>
+                  <line x1="4" y1="5" x2="20" y2="5"/>
+                </svg>`,
+      },
+    };
+
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving'];
+
+    // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
     const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
 
@@ -373,12 +388,39 @@
       window.location.replace('index.html');
     }
 
-    // ── Populate user info ─────────────────────────────────────────────────
+    const isPlatformAdmin  = Boolean(user && user.isPlatformAdmin);
+    // Platform admins see everything; others see only their licensed divisions
+    const visibleDivisions = isPlatformAdmin
+      ? ALL_DIVISIONS
+      : (user && Array.isArray(user.allowedDivisions) && user.allowedDivisions.length
+          ? user.allowedDivisions
+          : ['turf']);
+
+    // ── Auto-skip for single-division, non-admin accounts ──────────────────
+    // If a company only has one division and it's built, send them straight in.
+    // Platform admins always see the selector so they can switch between divisions.
+    if (!isPlatformAdmin && visibleDivisions.length === 1) {
+      const only = visibleDivisions[0];
+      if (DIVISION_CATALOG[only] && DIVISION_CATALOG[only].built) {
+        localStorage.setItem('fct_division', only);
+        window.location.replace(DIVISION_CATALOG[only].href);
+      }
+      // If built=false, fall through and show the card with "Coming Soon"
+    }
+
+    // ── Populate header ─────────────────────────────────────────────────────
     if (user) {
       const initials = (user.username || 'U').slice(0, 2).toUpperCase();
-      document.getElementById('userAvatar').textContent = initials;
+      const avatarEl = document.getElementById('userAvatar');
+      avatarEl.textContent = initials;
+      if (isPlatformAdmin) avatarEl.classList.add('platform');
+
       document.getElementById('userLabel').innerHTML =
         `<strong>${user.username}</strong>&nbsp;·&nbsp;${user.companyName || user.companyCode}`;
+
+      if (isPlatformAdmin) {
+        document.getElementById('platformBadge').style.display = '';
+      }
 
       const firstName = user.username
         ? user.username.charAt(0).toUpperCase() + user.username.slice(1)
@@ -386,17 +428,60 @@
       if (firstName) {
         document.getElementById('welcomeHeading').textContent = `Welcome, ${firstName}`;
       }
-    }
 
-    // ── Division routing ───────────────────────────────────────────────────
-    function enterDivision(division) {
-      localStorage.setItem('fct_division', division);
-      if (division === 'turf') {
-        window.location.replace('tracker.html');
+      if (isPlatformAdmin) {
+        document.getElementById('welcomeSub').textContent =
+          'You have platform-wide access. Select a division to enter.';
       }
     }
 
-    // ── Sign out ───────────────────────────────────────────────────────────
+    // ── Render cards ────────────────────────────────────────────────────────
+    const grid = document.getElementById('cardsGrid');
+    grid.classList.add(`count-${Math.min(visibleDivisions.length, 3)}`);
+
+    visibleDivisions.forEach(key => {
+      const def = DIVISION_CATALOG[key];
+      if (!def) return;
+
+      const isActive = def.built;
+      const card = document.createElement('div');
+      card.className = isActive ? 'card active' : 'card soon';
+      card.style.setProperty('--card-accent', def.color);
+
+      card.innerHTML = `
+        <span class="card-badge ${isActive ? 'badge-live' : 'badge-soon'}">
+          ${isActive ? 'Live' : 'Coming Soon'}
+        </span>
+        <div class="card-icon">${def.icon}</div>
+        <div class="card-name">${def.name}</div>
+        <div class="card-desc">${def.desc}</div>
+        ${isActive ? `
+        <div class="card-cta">
+          Enter System
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"/>
+            <polyline points="12 5 19 12 12 19"/>
+          </svg>
+        </div>` : ''}
+      `;
+
+      if (isActive) {
+        card.addEventListener('click', () => enterDivision(key));
+      }
+
+      grid.appendChild(card);
+    });
+
+    // ── Division routing ────────────────────────────────────────────────────
+    function enterDivision(division) {
+      localStorage.setItem('fct_division', division);
+      const def = DIVISION_CATALOG[division];
+      if (def && def.built) {
+        window.location.replace(def.href);
+      }
+    }
+
+    // ── Sign out ────────────────────────────────────────────────────────────
     function signOut() {
       localStorage.removeItem('fct_token');
       localStorage.removeItem('fct_user');

@@ -20,11 +20,13 @@ module.exports = (req, res) => {
     return res.json({
       ok: true,
       user: {
-        userId:      payload.userId,
-        username:    payload.username,
-        companyCode: payload.companyCode,
-        companyName: payload.companyName,
-        role:        payload.role,
+        userId:           payload.userId,
+        username:         payload.username,
+        companyCode:      payload.companyCode,
+        companyName:      payload.companyName,
+        role:             payload.role,
+        allowedDivisions: payload.allowedDivisions || ['turf'],
+        isPlatformAdmin:  payload.isPlatformAdmin  || false,
       },
     });
   } catch {
