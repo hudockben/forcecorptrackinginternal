@@ -597,6 +597,7 @@
           <div class="add-item-row">
             <input type="text" id="new-equip-name" placeholder="Vehicle / equipment name…" />
             <input type="text" id="new-equip-unit" class="short" placeholder="Unit #" />
+            <input type="number" id="new-equip-rate" class="short" placeholder="Rate $" min="0" step="0.01" />
             <button class="btn-list-add" onclick="addListItem('equipment')">+ Add</button>
           </div>
         </div>
@@ -1064,6 +1065,9 @@
               <span class="list-item-lbl">Unit #</span>
               <input type="text" class="short" value="${esc(eq.unit_number||'')}" placeholder="Unit #"
                 oninput="updateListItem('equipment','${eq.id}','unit_number',this.value)" />
+              <span class="list-item-lbl">Rate $</span>
+              <input type="number" class="short" value="${eq.vehicle_rate != null ? eq.vehicle_rate : ''}" placeholder="0.00" min="0" step="0.01"
+                oninput="updateListItem('equipment','${eq.id}','vehicle_rate',parseFloat(this.value)||0)" />
               <button class="remove-item" onclick="removeListItem('equipment','${eq.id}')">✕</button>
             </div>`).join('')
         : '<div class="empty-hint">No equipment added yet.</div>';
@@ -1189,10 +1193,12 @@
       if (type === 'equipment') {
         const name = document.getElementById('new-equip-name').value.trim();
         const unit = document.getElementById('new-equip-unit').value.trim();
+        const rate = parseFloat(document.getElementById('new-equip-rate').value) || 0;
         if (!name) { document.getElementById('new-equip-name').focus(); return; }
-        dustLists.equipment.push({ id: uid(), name, unit_number: unit });
+        dustLists.equipment.push({ id: uid(), name, unit_number: unit, vehicle_rate: rate || null });
         document.getElementById('new-equip-name').value = '';
         document.getElementById('new-equip-unit').value = '';
+        document.getElementById('new-equip-rate').value = '';
         renderEquipmentPanel();
       } else if (type === 'employees') {
         const name = document.getElementById('new-emp-name').value.trim();
