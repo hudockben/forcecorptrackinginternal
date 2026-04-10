@@ -1124,6 +1124,9 @@
                 <div class="company-header">
                   <input type="text" value="${esc(co.name)}" placeholder="Company name"
                     oninput="updateListItem('companies','${co.id}','name',this.value)" />
+                  <span class="list-item-lbl">Tier</span>
+                  <input type="text" class="short" value="${esc(co.tier||'')}" placeholder="Tier"
+                    oninput="updateListItem('companies','${co.id}','tier',this.value)" />
                   <button class="remove-item" onclick="removeListItem('companies','${co.id}')">✕</button>
                 </div>
                 <div>
