@@ -367,6 +367,152 @@
     }
     th.calc-hdr { color: #c4b85a; font-style: italic; }
 
+    .col-filter {
+      display: block; width: 100%; box-sizing: border-box; margin-top: 0.25rem;
+      background: rgba(255,255,255,0.04); border: none;
+      border-bottom: 1px solid var(--border);
+      color: var(--text); font-size: 0.62rem; font-family: inherit;
+      padding: 0.1rem 0.25rem; outline: none; border-radius: 2px;
+    }
+    .col-filter:focus { border-bottom-color: var(--amber); background: rgba(251,191,36,0.06); }
+    .col-filter::placeholder { color: var(--muted); opacity: 0.5; }
+
+    /* ── Analytics tab ── */
+    .an-wrap { padding: 1.5rem 1.5rem 3rem; max-width: 1400px; }
+
+    .an-subtabs {
+      display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1.75rem;
+    }
+    .an-subtab {
+      padding: 0.5rem 1.2rem; font-size: 0.65rem; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s; margin-bottom: -1px;
+    }
+    .an-subtab.active { color: var(--amber); border-bottom-color: var(--amber); }
+    .an-subtab:hover:not(.active) { color: var(--text); }
+
+    .an-section-lbl {
+      font-size: 0.57rem; font-weight: 700; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--muted);
+      margin: 1.75rem 0 0.85rem;
+    }
+
+    /* Summary cards */
+    .an-cards {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.85rem;
+    }
+    @media (max-width: 900px) { .an-cards { grid-template-columns: repeat(2,1fr); } }
+    .an-card {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1rem 1.25rem;
+    }
+    .an-card-lbl {
+      font-size: 0.57rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 0.45rem;
+    }
+    .an-card-val {
+      font-size: 1.6rem; font-weight: 700; color: var(--text);
+      font-variant-numeric: tabular-nums; line-height: 1;
+    }
+    .an-card-val.amber { color: var(--amber); }
+    .an-card-sub { font-size: 0.66rem; color: var(--muted); margin-top: 0.3rem; }
+
+    /* Charts grid */
+    .an-charts {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.85rem;
+    }
+    @media (max-width: 1000px) { .an-charts { grid-template-columns: 1fr; } }
+    .an-chart-box {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1.1rem 1.25rem;
+    }
+    .an-chart-ttl {
+      font-size: 0.57rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; margin-bottom: 1rem;
+    }
+    .an-chart-ttl.amber { color: var(--amber); }
+    .an-chart-ttl.blue  { color: var(--blue);  }
+    .an-chart-ttl.green { color: var(--green); }
+
+    /* Bar chart */
+    .bar-list { display: flex; flex-direction: column; gap: 0.6rem; }
+    .bar-item  { display: flex; align-items: center; gap: 0.65rem; }
+    .bar-label {
+      font-size: 0.69rem; color: var(--text); width: 110px; flex-shrink: 0;
+      text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .bar-track {
+      flex: 1; background: rgba(255,255,255,0.05); border-radius: 3px;
+      height: 16px; overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%; border-radius: 3px; min-width: 3px;
+      transition: width 0.55s cubic-bezier(0.4,0,0.2,1);
+    }
+    .bar-fill.amber { background: linear-gradient(90deg, #fbbf24, rgba(251,191,36,0.5)); }
+    .bar-fill.blue  { background: linear-gradient(90deg, #60a5fa, rgba(96,165,250,0.5)); }
+    .bar-fill.green { background: linear-gradient(90deg, #22c55e, rgba(34,197,94,0.5));  }
+    .bar-val { font-size: 0.64rem; color: var(--muted); width: 72px; flex-shrink: 0; }
+
+    /* Analytics detail table */
+    .an-tbl-wrap {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; overflow: hidden;
+    }
+    .an-tbl { width: 100%; border-collapse: collapse; font-size: 0.76rem; }
+    .an-tbl thead th {
+      background: #111120; color: var(--muted);
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.65rem 0.85rem;
+      text-align: right; border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .an-tbl thead th:first-child { text-align: left; }
+    .an-tbl tbody td {
+      padding: 0.55rem 0.85rem; text-align: right;
+      border-bottom: 1px solid rgba(255,255,255,0.035); color: var(--text);
+      white-space: nowrap;
+    }
+    .an-tbl tbody td:first-child { text-align: left; font-weight: 600; }
+    .an-tbl tbody td.muted { color: var(--muted); }
+    .an-tbl tbody td.hi    { color: var(--amber); font-weight: 700; }
+    .an-tbl tbody tr:last-child td { border-bottom: none; }
+    .an-tbl tbody tr:hover td { background: rgba(251,191,36,0.03); }
+
+    /* Top locations cards */
+    .an-locs {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 0.85rem;
+    }
+    .an-loc-card {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.9rem 1rem;
+    }
+    .an-loc-hdr {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 0.6rem;
+    }
+    .an-loc-name { font-size: 0.72rem; font-weight: 700; color: var(--text); }
+    .an-loc-sub  { font-size: 0.6rem; color: var(--muted); }
+    .an-loc-row  {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 0.69rem; padding: 0.22rem 0;
+      border-top: 1px solid rgba(255,255,255,0.04); color: var(--muted);
+    }
+    .an-loc-row:first-of-type { border-top: none; }
+    .an-loc-row strong { color: var(--text); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .an-loc-badge {
+      font-size: 0.58rem; background: rgba(251,191,36,0.12);
+      color: var(--amber); border-radius: 3px; padding: 0.1rem 0.35rem;
+      white-space: nowrap;
+    }
+
+    .an-empty {
+      text-align: center; padding: 3rem 1rem;
+      color: var(--muted); font-size: 0.82rem;
+    }
+
     /* Row hover */
     .sheet-table tbody tr:hover td { background: rgba(251,191,36,0.03); }
 
@@ -472,6 +618,7 @@
   <nav class="tab-bar">
     <button class="tab-btn active" data-tab="home">Home</button>
     <button class="tab-btn" data-tab="tracking">Dust Control Tracking</button>
+    <button class="tab-btn" data-tab="analytics">Analytics</button>
   </nav>
 
   <!-- ══════════════════════════════════════════════
@@ -538,19 +685,19 @@
             <th class="g-del"></th>
           </tr>
           <tr class="col-row">
-            <th class="cw-date">Date</th>
+            <th class="cw-date">Date<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('date',this.value)"></th>
             <th class="cw-time">Start Time</th>
             <th class="cw-time">End Time</th>
             <th class="cw-ttim calc-hdr">Total Time (hrs)</th>
-            <th class="cw-co">Company</th>
-            <th class="cw-cm">Company Man</th>
-            <th class="cw-loc">Location</th>
-            <th class="cw-st">State</th>
-            <th class="cw-veh">Vehicle 1</th>
+            <th class="cw-co">Company<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('company',this.value)"></th>
+            <th class="cw-cm">Company Man<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('company_man',this.value)"></th>
+            <th class="cw-loc">Location<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('location',this.value)"></th>
+            <th class="cw-st">State<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('state',this.value)"></th>
+            <th class="cw-veh">Vehicle 1<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('vehicle1',this.value)"></th>
             <th class="cw-unit">Unit&nbsp;#</th>
             <th class="cw-rate">Vehicle Rate</th>
             <th class="cw-vtot calc-hdr">Vehicle&nbsp;#1 Total</th>
-            <th class="cw-veh">Vehicle 2</th>
+            <th class="cw-veh">Vehicle 2<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('vehicle2',this.value)"></th>
             <th class="cw-unit">Unit&nbsp;#</th>
             <th class="cw-rate">Vehicle Rate</th>
             <th class="cw-vtot calc-hdr">Vehicle&nbsp;#2 Total</th>
@@ -575,6 +722,49 @@
   </div><!-- /tab-tracking -->
 
   <!-- ══════════════════════════════════════════════
+       ANALYTICS TAB
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-analytics">
+    <div class="an-wrap">
+      <div class="an-subtabs">
+        <button class="an-subtab active" data-an="company">Company Data</button>
+      </div>
+      <div id="an-company">
+        <div class="an-section-lbl">Overview</div>
+        <div class="an-cards" id="an-cards"></div>
+        <div class="an-section-lbl">Breakdown by Company</div>
+        <div class="an-charts">
+          <div class="an-chart-box">
+            <div class="an-chart-ttl amber">Invoice Total by Company</div>
+            <div class="bar-list" id="an-bar-invoice"></div>
+          </div>
+          <div class="an-chart-box">
+            <div class="an-chart-ttl blue">Service Hours by Company</div>
+            <div class="bar-list" id="an-bar-hours"></div>
+          </div>
+          <div class="an-chart-box">
+            <div class="an-chart-ttl green">Gallons Applied by Company</div>
+            <div class="bar-list" id="an-bar-gallons"></div>
+          </div>
+        </div>
+        <div class="an-section-lbl">Company Detail</div>
+        <div class="an-tbl-wrap">
+          <table class="an-tbl">
+            <thead><tr>
+              <th>Company</th><th>Tier</th><th>Visits</th>
+              <th>Total Hrs</th><th>Avg Hrs / Visit</th><th>Gallons</th>
+              <th>Vehicle $</th><th>UB $</th><th>Invoice Total</th>
+            </tr></thead>
+            <tbody id="an-detail-body"></tbody>
+          </table>
+        </div>
+        <div class="an-section-lbl">Top Locations by Company</div>
+        <div class="an-locs" id="an-locs"></div>
+      </div>
+    </div>
+  </div><!-- /tab-analytics -->
+
+  <!-- ══════════════════════════════════════════════
        MANAGE LISTS MODAL
   ══════════════════════════════════════════════ -->
   <div class="modal-overlay" id="listsModal">
@@ -585,7 +775,6 @@
       </div>
       <div class="modal-tabs" id="listModalTabs">
         <button class="modal-tab-btn active" data-panel="equipment">Equipment</button>
-        <button class="modal-tab-btn" data-panel="employees">Employees</button>
         <button class="modal-tab-btn" data-panel="companies">Companies</button>
         <button class="modal-tab-btn" data-panel="states">States</button>
       </div>
@@ -597,16 +786,8 @@
           <div class="add-item-row">
             <input type="text" id="new-equip-name" placeholder="Vehicle / equipment name…" />
             <input type="text" id="new-equip-unit" class="short" placeholder="Unit #" />
+            <input type="number" id="new-equip-rate" class="short" placeholder="Rate $" min="0" step="0.01" />
             <button class="btn-list-add" onclick="addListItem('equipment')">+ Add</button>
-          </div>
-        </div>
-
-        <!-- Employees -->
-        <div class="list-panel" id="lp-employees">
-          <div class="list-items" id="li-employees"></div>
-          <div class="add-item-row">
-            <input type="text" id="new-emp-name" placeholder="Employee name…" />
-            <button class="btn-list-add" onclick="addListItem('employees')">+ Add</button>
           </div>
         </div>
 
@@ -723,7 +904,16 @@
     let ubRate    = 0;
     let saveTimer = null;
 
-    let dustLists = { equipment: [], employees: [], companies: [], states: [] };
+    let dustLists  = { equipment: [], employees: [], companies: [], states: [] };
+    let dustFilters = {};
+
+    function setFilter(field, value) {
+      const v = value.trim().toLowerCase();
+      if (v) dustFilters[field] = v;
+      else   delete dustFilters[field];
+      renderTable();
+    }
+
 
     function saveLists() { apiPut('dust_lists', dustLists); }
 
@@ -804,9 +994,18 @@
     function renderTable() {
       const tbody = document.getElementById('dustTbody');
 
+      // Apply active filters; preserve original idx so in-row edits stay correct
+      const filterEntries = Object.entries(dustFilters);
+      const visibleIdxs = rows.reduce((acc, row, idx) => {
+        if (!filterEntries.length || filterEntries.every(([f, v]) =>
+            (row[f] || '').toLowerCase().includes(v))) acc.push(idx);
+        return acc;
+      }, []);
+
       let totVeh = 0, totUb = 0, totInv = 0, totGal = 0;
 
-      tbody.innerHTML = rows.map((row, idx) => {
+      tbody.innerHTML = visibleIdxs.map(idx => {
+        const row = rows[idx];
         const c = calc(row);
         totVeh += c.vehTotal;
         totUb  += c.ubTotal;
@@ -823,9 +1022,9 @@
             `<option value="${esc(co.name)}"${row.company===co.name?' selected':''}>${esc(co.name)}</option>`).join('');
 
         const selCo  = dustLists.companies.find(c => c.name === row.company);
-        const coMen  = selCo ? (selCo.men || []).slice().sort() : [];
+        const coMen  = selCo ? (selCo.men || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
         const cmOpts = '<option value="">— select —</option>' +
-          coMen.map(n => `<option value="${esc(n)}"${row.company_man===n?' selected':''}>${esc(n)}</option>`).join('');
+          coMen.map(m => `<option value="${esc(m.name)}"${row.company_man===m.name?' selected':''}>${esc(m.name)}</option>`).join('');
 
         const coLocs = selCo ? (selCo.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
         const locOpts = '<option value="">— select —</option>' +
@@ -846,11 +1045,11 @@
           </select></td>
           <td class="cw-veh"><select onchange="setVehicle(${idx},1,this.value)">${vehOpts(row.vehicle1)}</select></td>
           <td class="cw-unit"><input type="text" data-field="v1_unit" value="${esc(row.v1_unit||'')}" oninput="set(${idx},'v1_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="set(${idx},'v1_rate',this.value)"></td>
+          <td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="set(${idx},'v1_rate',this.value)"></td>
           ${calcCell(c.v1Total  ? money(c.v1Total)  : '', 'cw-vtot')}
           <td class="cw-veh"><select onchange="setVehicle(${idx},2,this.value)">${vehOpts(row.vehicle2)}</select></td>
           <td class="cw-unit"><input type="text" data-field="v2_unit" value="${esc(row.v2_unit||'')}" oninput="set(${idx},'v2_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="set(${idx},'v2_rate',this.value)"></td>
+          <td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="set(${idx},'v2_rate',this.value)"></td>
           ${calcCell(c.v2Total  ? money(c.v2Total)  : '', 'cw-vtot')}
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
           <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="set(${idx},'gallons_ub',this.value)"></td>
@@ -861,8 +1060,10 @@
       }).join('');
 
       renderTotals(totVeh, totUb, totInv, totGal);
-      document.getElementById('rowCount').textContent =
-        `${rows.length} row${rows.length !== 1 ? 's' : ''}`;
+      const total = rows.length, shown = visibleIdxs.length;
+      document.getElementById('rowCount').textContent = filterEntries.length
+        ? `${shown} of ${total} row${total !== 1 ? 's' : ''}`
+        : `${total} row${total !== 1 ? 's' : ''}`;
     }
 
     function calcCell(val, extraClass = '') {
@@ -972,9 +1173,9 @@
       if (tr) {
         const cmSel = tr.querySelector('select[data-role="cm"]');
         if (cmSel) {
-          const men = co ? (co.men || []).slice().sort() : [];
+          const men = co ? (co.men || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
           cmSel.innerHTML = '<option value="">— select —</option>' +
-            men.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+            men.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
         }
         // Rebuild location dropdown filtered to this company's well pads
         const locSel = tr.querySelector('select[data-role="location"]');
@@ -1007,16 +1208,23 @@
     function setVehicle(idx, num, vehicleName) {
       const vField = num === 1 ? 'vehicle1' : 'vehicle2';
       const uField = num === 1 ? 'v1_unit'  : 'v2_unit';
+      const rField = num === 1 ? 'v1_rate'  : 'v2_rate';
       rows[idx][vField] = vehicleName;
-      // Auto-fill unit # from equipment list
+      // Auto-fill unit # and vehicle rate from equipment list
       const eq      = dustLists.equipment.find(e => e.name === vehicleName);
       const unitVal = eq?.unit_number || '';
+      const rateVal = eq?.vehicle_rate != null ? eq.vehicle_rate : '';
       rows[idx][uField] = unitVal;
+      rows[idx][rField] = rateVal;
       const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
       if (tr) {
         const unitInput = tr.querySelector(`input[data-field="${uField}"]`);
         if (unitInput) unitInput.value = unitVal;
+        const rateInput = tr.querySelector(`input[data-field="${rField}"]`);
+        if (rateInput) rateInput.value = rateVal;
       }
+      refreshCalcCells(idx);
+      refreshAllTotals();
       scheduleSave();
     }
 
@@ -1049,7 +1257,6 @@
 
     function renderListPanels() {
       renderEquipmentPanel();
-      renderEmployeesPanel();
       renderCompaniesPanel();
       renderStatesPanel();
     }
@@ -1064,38 +1271,27 @@
               <span class="list-item-lbl">Unit #</span>
               <input type="text" class="short" value="${esc(eq.unit_number||'')}" placeholder="Unit #"
                 oninput="updateListItem('equipment','${eq.id}','unit_number',this.value)" />
+              <span class="list-item-lbl">Rate $</span>
+              <input type="number" class="short" value="${eq.vehicle_rate != null ? eq.vehicle_rate : ''}" placeholder="0.00" min="0" step="0.01"
+                oninput="updateListItem('equipment','${eq.id}','vehicle_rate',parseFloat(this.value)||0)" />
               <button class="remove-item" onclick="removeListItem('equipment','${eq.id}')">✕</button>
             </div>`).join('')
         : '<div class="empty-hint">No equipment added yet.</div>';
     }
 
-    function renderEmployeesPanel() {
-      const sorted = dustLists.employees.slice().sort((a,b) => a.name.localeCompare(b.name));
-      document.getElementById('li-employees').innerHTML = sorted.length
-        ? sorted.map(emp => `
-            <div class="list-item">
-              <input type="text" value="${esc(emp.name)}" placeholder="Employee name"
-                oninput="updateListItem('employees','${emp.id}','name',this.value)" />
-              <button class="remove-item" onclick="removeListItem('employees','${emp.id}')">✕</button>
-            </div>`).join('')
-        : '<div class="empty-hint">No employees added yet.</div>';
-    }
 
     function renderCompaniesPanel() {
       const sorted = dustLists.companies.slice().sort((a,b) => a.name.localeCompare(b.name));
       document.getElementById('li-companies').innerHTML = sorted.length
         ? sorted.map(co => {
-            const empList = dustLists.employees.slice().sort((a,b) => a.name.localeCompare(b.name));
-            const checksHtml = empList.length
-              ? empList.map(emp => {
-                  const checked = (co.men || []).includes(emp.name);
-                  return `<label class="emp-check${checked?' checked':''}">
-                    <input type="checkbox" ${checked?'checked':''}
-                      onchange="toggleCompanyMan('${co.id}','${esc(emp.name)}',this.checked);this.closest('label').classList.toggle('checked',this.checked)" />
-                    ${esc(emp.name)}
-                  </label>`;
-                }).join('')
-              : '<span class="empty-hint">Add employees first.</span>';
+            const coMen  = (co.men || []).slice().sort((a,b) => a.name.localeCompare(b.name));
+            const mensHtml = coMen.length
+              ? coMen.map(m => `
+                  <div class="list-item co-location-item" style="padding:0.28rem 0.5rem">
+                    <span style="flex:1;font-size:0.82rem;color:var(--text)">${esc(m.name)}</span>
+                    <button class="remove-item" onclick="removeCompanyMan('${co.id}','${m.id}')">✕</button>
+                  </div>`).join('')
+              : '<div class="empty-hint">No company men added yet.</div>';
 
             const coLocs    = (co.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name));
             const stateOpts = dustLists.states.slice().sort().map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
@@ -1120,11 +1316,18 @@
                 <div class="company-header">
                   <input type="text" value="${esc(co.name)}" placeholder="Company name"
                     oninput="updateListItem('companies','${co.id}','name',this.value)" />
+                  <span class="list-item-lbl">Tier</span>
+                  <input type="text" class="short" value="${esc(co.tier||'')}" placeholder="Tier"
+                    oninput="updateListItem('companies','${co.id}','tier',this.value)" />
                   <button class="remove-item" onclick="removeListItem('companies','${co.id}')">✕</button>
                 </div>
-                <div>
+                <div class="co-locations-section">
                   <div class="co-men-lbl">Company Men</div>
-                  <div class="emp-checks">${checksHtml}</div>
+                  <div class="co-location-items">${mensHtml}</div>
+                  <div class="add-location-row">
+                    <input type="text" class="new-man-name-co" placeholder="Company man name…" />
+                    <button class="btn-list-add" onclick="addCompanyMan('${co.id}',this)">+ Add</button>
+                  </div>
                 </div>
                 <div class="co-locations-section">
                   <div class="co-men-lbl">Well Pads / Locations</div>
@@ -1189,18 +1392,13 @@
       if (type === 'equipment') {
         const name = document.getElementById('new-equip-name').value.trim();
         const unit = document.getElementById('new-equip-unit').value.trim();
+        const rate = parseFloat(document.getElementById('new-equip-rate').value) || 0;
         if (!name) { document.getElementById('new-equip-name').focus(); return; }
-        dustLists.equipment.push({ id: uid(), name, unit_number: unit });
+        dustLists.equipment.push({ id: uid(), name, unit_number: unit, vehicle_rate: rate || null });
         document.getElementById('new-equip-name').value = '';
         document.getElementById('new-equip-unit').value = '';
+        document.getElementById('new-equip-rate').value = '';
         renderEquipmentPanel();
-      } else if (type === 'employees') {
-        const name = document.getElementById('new-emp-name').value.trim();
-        if (!name) { document.getElementById('new-emp-name').focus(); return; }
-        dustLists.employees.push({ id: uid(), name });
-        document.getElementById('new-emp-name').value = '';
-        renderEmployeesPanel();
-        renderCompaniesPanel(); // new employee needs to appear in company checkboxes
       } else if (type === 'companies') {
         const name = document.getElementById('new-co-name').value.trim();
         if (!name) { document.getElementById('new-co-name').focus(); return; }
@@ -1221,13 +1419,7 @@
     }
 
     function removeListItem(type, id) {
-      if (type === 'employees') {
-        const emp = dustLists.employees.find(e => e.id === id);
-        if (emp) dustLists.companies.forEach(co => {
-          co.men = (co.men || []).filter(n => n !== emp.name);
-        });
-        dustLists.employees = dustLists.employees.filter(item => item.id !== id);
-      } else if (type === 'states') {
+      if (type === 'states') {
         // id here is the abbreviation string
         dustLists.states = dustLists.states.filter(s => s !== id);
         // Clear state from company well pads that used it
@@ -1247,12 +1439,25 @@
       saveLists();
     }
 
-    function toggleCompanyMan(coId, empName, checked) {
+    function addCompanyMan(coId, btn) {
+      const row   = btn.closest('.add-location-row');
+      const input = row ? row.querySelector('.new-man-name-co') : null;
+      const name  = input ? input.value.trim() : '';
+      if (!name) { if (input) input.focus(); return; }
       const co = dustLists.companies.find(c => c.id === coId);
       if (!co) return;
       if (!co.men) co.men = [];
-      if (checked) { if (!co.men.includes(empName)) co.men.push(empName); }
-      else          { co.men = co.men.filter(n => n !== empName); }
+      co.men.push({ id: uid(), name });
+      if (input) input.value = '';
+      renderCompaniesPanel();
+      saveLists();
+    }
+
+    function removeCompanyMan(coId, manId) {
+      const co = dustLists.companies.find(c => c.id === coId);
+      if (!co) return;
+      co.men = (co.men || []).filter(m => m.id !== manId);
+      renderCompaniesPanel();
       saveLists();
     }
 
@@ -1260,7 +1465,6 @@
     ['new-equip-name','new-equip-unit'].forEach(id => {
       document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('equipment'); });
     });
-    document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
     document.getElementById('new-co-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('companies'); });
     document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
 
@@ -1296,8 +1500,12 @@
         dustLists.employees = Array.isArray(savedLists.employees) ? savedLists.employees : [];
         dustLists.companies = Array.isArray(savedLists.companies) ? savedLists.companies : [];
         dustLists.states    = Array.isArray(savedLists.states)    ? savedLists.states    : [];
-        // Ensure each company has a locations array (migration for older data)
-        dustLists.companies.forEach(co => { if (!Array.isArray(co.locations)) co.locations = []; });
+        // Ensure each company has required arrays; migrate co.men strings → {id,name} objects
+        dustLists.companies.forEach(co => {
+          if (!Array.isArray(co.locations)) co.locations = [];
+          if (!Array.isArray(co.men)) co.men = [];
+          co.men = co.men.map(m => typeof m === 'string' ? { id: uid(), name: m } : m);
+        });
       }
 
       renderTable();
@@ -1309,6 +1517,128 @@
       apiPut('dust_rows', rows);
       apiPut('dust_settings', { ub_rate: ubRate });
     });
+
+    /* ═══════════════════════════════════════════
+       ANALYTICS
+    ═══════════════════════════════════════════ */
+    function renderAnalytics() {
+      if (!rows.length) {
+        document.getElementById('an-cards').innerHTML =
+          '<div class="an-empty">No tracking data yet — add rows in the Dust Control Tracking tab.</div>';
+        ['an-bar-invoice','an-bar-hours','an-bar-gallons','an-detail-body','an-locs']
+          .forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
+        return;
+      }
+
+      /* ── Aggregate by company ── */
+      const coMap = {};
+      rows.forEach(row => {
+        const name = row.company || '(Unassigned)';
+        const c = calc(row);
+        if (!coMap[name]) coMap[name] = { name, visits:0, hours:0, gallons:0, vehTotal:0, ubTotal:0, invTotal:0, locations:{}, men:{} };
+        const co = coMap[name];
+        co.visits++;
+        co.hours    += c.totalHours || 0;
+        co.gallons  += c.gallons    || 0;
+        co.vehTotal += c.vehTotal   || 0;
+        co.ubTotal  += c.ubTotal    || 0;
+        co.invTotal += c.invTotal   || 0;
+        if (row.location)    co.locations[row.location]    = (co.locations[row.location]    || 0) + 1;
+        if (row.company_man) co.men[row.company_man]       = (co.men[row.company_man]       || 0) + 1;
+      });
+      const cos = Object.values(coMap).sort((a,b) => b.invTotal - a.invTotal);
+
+      const totInv  = cos.reduce((s,c) => s + c.invTotal, 0);
+      const totHrs  = cos.reduce((s,c) => s + c.hours,    0);
+      const totGal  = cos.reduce((s,c) => s + c.gallons,  0);
+      const fmtGal  = v => (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1));
+
+      /* ── Summary cards ── */
+      document.getElementById('an-cards').innerHTML = `
+        <div class="an-card">
+          <div class="an-card-lbl">Active Companies</div>
+          <div class="an-card-val">${cos.length}</div>
+          <div class="an-card-sub">${rows.length} total entr${rows.length===1?'y':'ies'}</div>
+        </div>
+        <div class="an-card">
+          <div class="an-card-lbl">Total Service Hours</div>
+          <div class="an-card-val">${round2(totHrs).toFixed(1)}</div>
+          <div class="an-card-sub">hrs across all companies</div>
+        </div>
+        <div class="an-card">
+          <div class="an-card-lbl">Total Gallons Applied</div>
+          <div class="an-card-val">${fmtGal(totGal)}</div>
+          <div class="an-card-sub">gallons of UB product</div>
+        </div>
+        <div class="an-card">
+          <div class="an-card-lbl">Total Invoiced</div>
+          <div class="an-card-val amber">${money(totInv)}</div>
+          <div class="an-card-sub">combined invoice total</div>
+        </div>`;
+
+      /* ── Bar chart builder ── */
+      function buildBars(id, data, color, fmt) {
+        const max = Math.max(...data.map(d => d.v), 1e-9);
+        document.getElementById(id).innerHTML = data.length
+          ? data.map(d => `
+              <div class="bar-item">
+                <div class="bar-label" title="${esc(d.label)}">${esc(d.label)}</div>
+                <div class="bar-track">
+                  <div class="bar-fill ${color}" style="width:${((d.v/max)*100).toFixed(1)}%"></div>
+                </div>
+                <div class="bar-val">${fmt(d.v)}</div>
+              </div>`).join('')
+          : '<div style="color:var(--muted);font-size:0.72rem">No data</div>';
+      }
+
+      buildBars('an-bar-invoice', cos.map(c=>({label:c.name, v:c.invTotal})), 'amber', v => money(v));
+      buildBars('an-bar-hours',   cos.map(c=>({label:c.name, v:c.hours})),    'blue',  v => v.toFixed(1)+' hrs');
+      buildBars('an-bar-gallons', cos.map(c=>({label:c.name, v:c.gallons})),  'green', v => fmtGal(v)+' gal');
+
+      /* ── Detail table ── */
+      const tierOf = name => dustLists.companies.find(c => c.name === name)?.tier || '—';
+      document.getElementById('an-detail-body').innerHTML = cos.map(c => `
+        <tr>
+          <td>${esc(c.name)}</td>
+          <td class="muted">${esc(tierOf(c.name))}</td>
+          <td>${c.visits}</td>
+          <td>${round2(c.hours).toFixed(2)}</td>
+          <td class="muted">${c.visits ? round2(c.hours/c.visits).toFixed(2) : '—'}</td>
+          <td>${fmtGal(c.gallons)}</td>
+          <td>${money(c.vehTotal)}</td>
+          <td>${money(c.ubTotal)}</td>
+          <td class="hi">${money(c.invTotal)}</td>
+        </tr>`).join('');
+
+      /* ── Top locations ── */
+      const withLocs = cos.filter(c => Object.keys(c.locations).length);
+      document.getElementById('an-locs').innerHTML = withLocs.length
+        ? withLocs.map(c => {
+            const locs = Object.entries(c.locations).sort((a,b)=>b[1]-a[1]).slice(0,5);
+            const topMan = Object.entries(c.men).sort((a,b)=>b[1]-a[1])[0];
+            return `
+              <div class="an-loc-card">
+                <div class="an-loc-hdr">
+                  <span class="an-loc-name">${esc(c.name)}</span>
+                  <span class="an-loc-sub">${c.visits} visit${c.visits!==1?'s':''}</span>
+                </div>
+                ${topMan ? `<div class="an-loc-row" style="margin-bottom:0.3rem">
+                  <strong>Primary contact</strong>
+                  <span class="an-loc-badge">${esc(topMan[0])}</span>
+                </div>` : ''}
+                ${locs.map(([loc,cnt]) => `
+                  <div class="an-loc-row">
+                    <strong title="${esc(loc)}">${esc(loc)}</strong>
+                    <span class="an-loc-badge">${cnt} visit${cnt!==1?'s':''}</span>
+                  </div>`).join('')}
+              </div>`;
+          }).join('')
+        : '<div style="color:var(--muted);font-size:0.78rem;padding:0.5rem 0">No location data recorded yet.</div>';
+    }
+
+    /* Hook analytics tab */
+    document.querySelector('[data-tab="analytics"]')
+      ?.addEventListener('click', renderAnalytics);
 
     init();
   </script>
