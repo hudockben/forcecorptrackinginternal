@@ -368,10 +368,11 @@
     th.calc-hdr { color: #c4b85a; font-style: italic; }
 
     .sheet-table thead tr.filter-row th {
-      background: #0e0e18;
+      background: #0b0b15;
       padding: 0.2rem 0.3rem;
       border: 1px solid var(--border);
-      position: sticky; top: 54px; z-index: 3;
+      border-top: 2px solid rgba(251,191,36,0.18);
+      position: sticky; top: 60px; z-index: 3; /* JS overrides top precisely */
     }
     .filter-row input[type="text"] {
       width: 100%; box-sizing: border-box;
@@ -379,7 +380,7 @@
       color: var(--text); font-size: 0.65rem; font-family: inherit;
       padding: 0.15rem 0.3rem; outline: none;
     }
-    .filter-row input[type="text"]:focus { border-color: var(--amber); }
+    .filter-row input[type="text"]:focus { border-color: var(--amber); background: #1e1e2e; }
     .filter-row input[type="text"]::placeholder { color: var(--muted); opacity: 0.55; }
 
     /* Row hover */
@@ -760,6 +761,15 @@
       if (v) dustFilters[field] = v;
       else   delete dustFilters[field];
       renderTable();
+    }
+
+    function sizeFilterRow() {
+      const groupRow  = document.querySelector('.sheet-table thead tr.group-row');
+      const colRow    = document.querySelector('.sheet-table thead tr.col-row');
+      if (!groupRow || !colRow) return;
+      const top = groupRow.offsetHeight + colRow.offsetHeight;
+      document.querySelectorAll('.sheet-table thead tr.filter-row th')
+        .forEach(th => { th.style.top = top + 'px'; });
     }
 
     function saveLists() { apiPut('dust_lists', dustLists); }
@@ -1356,7 +1366,10 @@
       }
 
       renderTable();
+      requestAnimationFrame(sizeFilterRow);
     }
+
+    window.addEventListener('resize', sizeFilterRow);
 
     // Flush pending save on unload
     window.addEventListener('beforeunload', () => {
