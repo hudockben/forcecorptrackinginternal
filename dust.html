@@ -585,7 +585,6 @@
       </div>
       <div class="modal-tabs" id="listModalTabs">
         <button class="modal-tab-btn active" data-panel="equipment">Equipment</button>
-        <button class="modal-tab-btn" data-panel="employees">Employees</button>
         <button class="modal-tab-btn" data-panel="companies">Companies</button>
         <button class="modal-tab-btn" data-panel="states">States</button>
       </div>
@@ -599,15 +598,6 @@
             <input type="text" id="new-equip-unit" class="short" placeholder="Unit #" />
             <input type="number" id="new-equip-rate" class="short" placeholder="Rate $" min="0" step="0.01" />
             <button class="btn-list-add" onclick="addListItem('equipment')">+ Add</button>
-          </div>
-        </div>
-
-        <!-- Employees -->
-        <div class="list-panel" id="lp-employees">
-          <div class="list-items" id="li-employees"></div>
-          <div class="add-item-row">
-            <input type="text" id="new-emp-name" placeholder="Employee name…" />
-            <button class="btn-list-add" onclick="addListItem('employees')">+ Add</button>
           </div>
         </div>
 
@@ -824,9 +814,9 @@
             `<option value="${esc(co.name)}"${row.company===co.name?' selected':''}>${esc(co.name)}</option>`).join('');
 
         const selCo  = dustLists.companies.find(c => c.name === row.company);
-        const coMen  = selCo ? (selCo.men || []).slice().sort() : [];
+        const coMen  = selCo ? (selCo.men || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
         const cmOpts = '<option value="">— select —</option>' +
-          coMen.map(n => `<option value="${esc(n)}"${row.company_man===n?' selected':''}>${esc(n)}</option>`).join('');
+          coMen.map(m => `<option value="${esc(m.name)}"${row.company_man===m.name?' selected':''}>${esc(m.name)}</option>`).join('');
 
         const coLocs = selCo ? (selCo.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
         const locOpts = '<option value="">— select —</option>' +
@@ -973,9 +963,9 @@
       if (tr) {
         const cmSel = tr.querySelector('select[data-role="cm"]');
         if (cmSel) {
-          const men = co ? (co.men || []).slice().sort() : [];
+          const men = co ? (co.men || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
           cmSel.innerHTML = '<option value="">— select —</option>' +
-            men.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+            men.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
         }
         // Rebuild location dropdown filtered to this company's well pads
         const locSel = tr.querySelector('select[data-role="location"]');
@@ -1050,7 +1040,6 @@
 
     function renderListPanels() {
       renderEquipmentPanel();
-      renderEmployeesPanel();
       renderCompaniesPanel();
       renderStatesPanel();
     }
@@ -1073,33 +1062,19 @@
         : '<div class="empty-hint">No equipment added yet.</div>';
     }
 
-    function renderEmployeesPanel() {
-      const sorted = dustLists.employees.slice().sort((a,b) => a.name.localeCompare(b.name));
-      document.getElementById('li-employees').innerHTML = sorted.length
-        ? sorted.map(emp => `
-            <div class="list-item">
-              <input type="text" value="${esc(emp.name)}" placeholder="Employee name"
-                oninput="updateListItem('employees','${emp.id}','name',this.value)" />
-              <button class="remove-item" onclick="removeListItem('employees','${emp.id}')">✕</button>
-            </div>`).join('')
-        : '<div class="empty-hint">No employees added yet.</div>';
-    }
 
     function renderCompaniesPanel() {
       const sorted = dustLists.companies.slice().sort((a,b) => a.name.localeCompare(b.name));
       document.getElementById('li-companies').innerHTML = sorted.length
         ? sorted.map(co => {
-            const empList = dustLists.employees.slice().sort((a,b) => a.name.localeCompare(b.name));
-            const checksHtml = empList.length
-              ? empList.map(emp => {
-                  const checked = (co.men || []).includes(emp.name);
-                  return `<label class="emp-check${checked?' checked':''}">
-                    <input type="checkbox" ${checked?'checked':''}
-                      onchange="toggleCompanyMan('${co.id}','${esc(emp.name)}',this.checked);this.closest('label').classList.toggle('checked',this.checked)" />
-                    ${esc(emp.name)}
-                  </label>`;
-                }).join('')
-              : '<span class="empty-hint">Add employees first.</span>';
+            const coMen  = (co.men || []).slice().sort((a,b) => a.name.localeCompare(b.name));
+            const mensHtml = coMen.length
+              ? coMen.map(m => `
+                  <div class="list-item co-location-item" style="padding:0.28rem 0.5rem">
+                    <span style="flex:1;font-size:0.82rem;color:var(--text)">${esc(m.name)}</span>
+                    <button class="remove-item" onclick="removeCompanyMan('${co.id}','${m.id}')">✕</button>
+                  </div>`).join('')
+              : '<div class="empty-hint">No company men added yet.</div>';
 
             const coLocs    = (co.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name));
             const stateOpts = dustLists.states.slice().sort().map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
@@ -1129,9 +1104,13 @@
                     oninput="updateListItem('companies','${co.id}','tier',this.value)" />
                   <button class="remove-item" onclick="removeListItem('companies','${co.id}')">✕</button>
                 </div>
-                <div>
+                <div class="co-locations-section">
                   <div class="co-men-lbl">Company Men</div>
-                  <div class="emp-checks">${checksHtml}</div>
+                  <div class="co-location-items">${mensHtml}</div>
+                  <div class="add-location-row">
+                    <input type="text" class="new-man-name-co" placeholder="Company man name…" />
+                    <button class="btn-list-add" onclick="addCompanyMan('${co.id}',this)">+ Add</button>
+                  </div>
                 </div>
                 <div class="co-locations-section">
                   <div class="co-men-lbl">Well Pads / Locations</div>
@@ -1203,13 +1182,6 @@
         document.getElementById('new-equip-unit').value = '';
         document.getElementById('new-equip-rate').value = '';
         renderEquipmentPanel();
-      } else if (type === 'employees') {
-        const name = document.getElementById('new-emp-name').value.trim();
-        if (!name) { document.getElementById('new-emp-name').focus(); return; }
-        dustLists.employees.push({ id: uid(), name });
-        document.getElementById('new-emp-name').value = '';
-        renderEmployeesPanel();
-        renderCompaniesPanel(); // new employee needs to appear in company checkboxes
       } else if (type === 'companies') {
         const name = document.getElementById('new-co-name').value.trim();
         if (!name) { document.getElementById('new-co-name').focus(); return; }
@@ -1230,13 +1202,7 @@
     }
 
     function removeListItem(type, id) {
-      if (type === 'employees') {
-        const emp = dustLists.employees.find(e => e.id === id);
-        if (emp) dustLists.companies.forEach(co => {
-          co.men = (co.men || []).filter(n => n !== emp.name);
-        });
-        dustLists.employees = dustLists.employees.filter(item => item.id !== id);
-      } else if (type === 'states') {
+      if (type === 'states') {
         // id here is the abbreviation string
         dustLists.states = dustLists.states.filter(s => s !== id);
         // Clear state from company well pads that used it
@@ -1256,12 +1222,25 @@
       saveLists();
     }
 
-    function toggleCompanyMan(coId, empName, checked) {
+    function addCompanyMan(coId, btn) {
+      const row   = btn.closest('.add-location-row');
+      const input = row ? row.querySelector('.new-man-name-co') : null;
+      const name  = input ? input.value.trim() : '';
+      if (!name) { if (input) input.focus(); return; }
       const co = dustLists.companies.find(c => c.id === coId);
       if (!co) return;
       if (!co.men) co.men = [];
-      if (checked) { if (!co.men.includes(empName)) co.men.push(empName); }
-      else          { co.men = co.men.filter(n => n !== empName); }
+      co.men.push({ id: uid(), name });
+      if (input) input.value = '';
+      renderCompaniesPanel();
+      saveLists();
+    }
+
+    function removeCompanyMan(coId, manId) {
+      const co = dustLists.companies.find(c => c.id === coId);
+      if (!co) return;
+      co.men = (co.men || []).filter(m => m.id !== manId);
+      renderCompaniesPanel();
       saveLists();
     }
 
@@ -1269,7 +1248,6 @@
     ['new-equip-name','new-equip-unit'].forEach(id => {
       document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('equipment'); });
     });
-    document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
     document.getElementById('new-co-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('companies'); });
     document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
 
@@ -1305,8 +1283,12 @@
         dustLists.employees = Array.isArray(savedLists.employees) ? savedLists.employees : [];
         dustLists.companies = Array.isArray(savedLists.companies) ? savedLists.companies : [];
         dustLists.states    = Array.isArray(savedLists.states)    ? savedLists.states    : [];
-        // Ensure each company has a locations array (migration for older data)
-        dustLists.companies.forEach(co => { if (!Array.isArray(co.locations)) co.locations = []; });
+        // Ensure each company has required arrays; migrate co.men strings → {id,name} objects
+        dustLists.companies.forEach(co => {
+          if (!Array.isArray(co.locations)) co.locations = [];
+          if (!Array.isArray(co.men)) co.men = [];
+          co.men = co.men.map(m => typeof m === 'string' ? { id: uid(), name: m } : m);
+        });
       }
 
       renderTable();
