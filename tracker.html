@@ -2575,11 +2575,17 @@
 /* ═══════════════════════════════════════════
    AUTH — check token on load, expose helpers
 ═══════════════════════════════════════════ */
-const fctToken = localStorage.getItem('fct_token');
-const fctUser  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+const fctToken    = localStorage.getItem('fct_token');
+const fctUser     = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+const fctDivision = localStorage.getItem('fct_division');
 
 if (!fctToken || !fctUser) {
   window.location.replace('index.html');
+}
+
+// Ensure user arrived through the division selector for this system
+if (fctDivision !== 'turf') {
+  window.location.replace('divisions.html');
 }
 
 function logout() {
@@ -2587,6 +2593,7 @@ function logout() {
   _presenceRemoveSelf().finally(() => {
     localStorage.removeItem('fct_token');
     localStorage.removeItem('fct_user');
+    localStorage.removeItem('fct_division');
     window.location.replace('index.html');
   });
 }

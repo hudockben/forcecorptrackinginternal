@@ -589,7 +589,7 @@
     // Redirect if already logged in
     (function () {
       const token = localStorage.getItem('fct_token');
-      if (token) window.location.replace('tracker.html');
+      if (token) window.location.replace('divisions.html');
     })();
 
     const form      = document.getElementById('loginForm');
@@ -649,7 +649,7 @@
 
         localStorage.setItem('fct_token', data.token);
         localStorage.setItem('fct_user',  JSON.stringify(data.user));
-        window.location.replace('tracker.html');
+        window.location.replace('divisions.html');
       } catch {
         showError('Network error — please check your connection.');
       } finally {

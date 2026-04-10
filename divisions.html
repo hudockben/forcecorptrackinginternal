@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='%230a0f1e' stroke='%2322c55e' stroke-width='6'/><circle cx='50' cy='50' r='12' fill='%2322c55e'/><line x1='50' y1='12' x2='50' y2='38' stroke='%2300dcff' stroke-width='4' stroke-linecap='round'/><line x1='50' y1='62' x2='50' y2='88' stroke='%2300dcff' stroke-width='4' stroke-linecap='round'/><line x1='12' y1='50' x2='38' y2='50' stroke='%238b5cf6' stroke-width='4' stroke-linecap='round'/><line x1='62' y1='50' x2='88' y2='50' stroke='%238b5cf6' stroke-width='4' stroke-linecap='round'/></svg>">
+  <title>DataWatch — Select Division</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #111118;
+      --surface2:  #1a1a26;
+      --border:    #2a2a3a;
+      --green:     #22c55e;
+      --green-dim: #16a34a;
+      --text:      #e0e0e0;
+      --muted:     #666;
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.875rem 1.75rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      font-size: 0.68rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--green);
+      font-weight: 700;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+    }
+
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .user-avatar-sm {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--green-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: 0.02em;
+      flex-shrink: 0;
+    }
+
+    .user-label {
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 0.01em;
+    }
+
+    .user-label strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .sign-out-btn {
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.38rem 0.8rem;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+
+    .sign-out-btn:hover {
+      color: var(--text);
+      border-color: #555;
+    }
+
+    /* ── Main ── */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 4rem 1.5rem;
+    }
+
+    .welcome {
+      text-align: center;
+      margin-bottom: 3.5rem;
+    }
+
+    .welcome-eyebrow {
+      font-size: 0.6rem;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: var(--green);
+      margin-bottom: 0.75rem;
+      opacity: 0.8;
+    }
+
+    .welcome-heading {
+      font-size: clamp(1.6rem, 3vw, 2.25rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      color: #fff;
+      margin-bottom: 0.6rem;
+    }
+
+    .welcome-sub {
+      font-size: 0.82rem;
+      color: var(--muted);
+      letter-spacing: 0.01em;
+    }
+
+    /* ── Cards ── */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+      max-width: 860px;
+      width: 100%;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 2rem 1.75rem 1.6rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.9rem;
+      position: relative;
+      transition: border-color 0.2s, box-shadow 0.2s, transform 0.18s;
+    }
+
+    .card.active {
+      cursor: pointer;
+    }
+
+    .card.active:hover {
+      border-color: var(--green);
+      box-shadow: 0 0 0 1px rgba(34,197,94,0.35), 0 12px 40px rgba(34,197,94,0.1);
+      transform: translateY(-3px);
+    }
+
+    .card.active:hover .card-icon { background: rgba(34,197,94,0.15); }
+
+    .card.soon {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .card-badge {
+      position: absolute;
+      top: 1rem;
+      right: 1rem;
+      font-size: 0.52rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.55rem;
+      border-radius: 3px;
+    }
+
+    .badge-live {
+      background: rgba(34,197,94,0.1);
+      color: var(--green);
+      border: 1px solid rgba(34,197,94,0.25);
+    }
+
+    .badge-soon {
+      background: rgba(100,116,139,0.12);
+      color: #475569;
+      border: 1px solid rgba(100,116,139,0.18);
+    }
+
+    .card-icon {
+      width: 46px;
+      height: 46px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface2);
+      transition: background 0.2s;
+    }
+
+    .card-icon svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    .card-name {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+    }
+
+    .card-desc {
+      font-size: 0.77rem;
+      color: #4a5568;
+      line-height: 1.55;
+      flex: 1;
+    }
+
+    .card-cta {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--green);
+      padding-top: 0.25rem;
+      border-top: 1px solid var(--border);
+      margin-top: 0.25rem;
+    }
+
+    .card-cta svg {
+      width: 13px;
+      height: 13px;
+      transition: transform 0.15s;
+    }
+
+    .card.active:hover .card-cta svg {
+      transform: translateX(4px);
+    }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      padding: 1.5rem;
+      font-size: 0.62rem;
+      color: #333;
+      letter-spacing: 0.04em;
+      border-top: 1px solid var(--border);
+    }
+
+    /* ── Mobile ── */
+    @media (max-width: 700px) {
+      .cards { grid-template-columns: 1fr; max-width: 420px; }
+      main { padding: 2.5rem 1.25rem; }
+      .welcome { margin-bottom: 2.25rem; }
+      .user-label { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">DataWatch</div>
+    <div class="header-right">
+      <div class="user-pill">
+        <div class="user-avatar-sm" id="userAvatar"></div>
+        <div class="user-label" id="userLabel"></div>
+      </div>
+      <button class="sign-out-btn" onclick="signOut()">Sign Out</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="welcome">
+      <div class="welcome-eyebrow">Force Corp Operations</div>
+      <div class="welcome-heading" id="welcomeHeading">Select a Division</div>
+      <div class="welcome-sub">Choose the line of business you want to access.</div>
+    </div>
+
+    <div class="cards">
+
+      <!-- Turf Management -->
+      <div class="card active" id="cardTurf" onclick="enterDivision('turf')">
+        <span class="card-badge badge-live">Live</span>
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3c0 0-4 4.5-4 8h8c0-3.5-4-8-4-8z"/>
+            <path d="M6.5 9C6.5 9 3.5 12 3.5 15H9"/>
+            <path d="M17.5 9C17.5 9 20.5 12 20.5 15H15"/>
+            <line x1="2" y1="19" x2="22" y2="19"/>
+            <line x1="5" y1="19" x2="5" y2="22"/>
+            <line x1="9" y1="19" x2="9" y2="22"/>
+            <line x1="12" y1="19" x2="12" y2="22"/>
+            <line x1="15" y1="19" x2="15" y2="22"/>
+            <line x1="19" y1="19" x2="19" y2="22"/>
+          </svg>
+        </div>
+        <div class="card-name">Turf Management</div>
+        <div class="card-desc">Cost tracking, project management, purchase orders, scheduling, and analytics for turf operations.</div>
+        <div class="card-cta">
+          Enter System
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"/>
+            <polyline points="12 5 19 12 12 19"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Dust Control -->
+      <div class="card soon">
+        <span class="card-badge badge-soon">Coming Soon</span>
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 7H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-3"/>
+            <path d="M9 11l7-7"/>
+            <path d="M17 4h3v3"/>
+            <path d="M3 13h4"/>
+            <path d="M3 17h6"/>
+            <path d="M3 9h2"/>
+          </svg>
+        </div>
+        <div class="card-name">Dust Control</div>
+        <div class="card-desc">Route management, application tracking, and cost analysis for dust control operations.</div>
+      </div>
+
+      <!-- Paving -->
+      <div class="card soon">
+        <span class="card-badge badge-soon">Coming Soon</span>
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="15" width="20" height="5" rx="1"/>
+            <rect x="2" y="9" width="20" height="4" rx="1"/>
+            <line x1="6" y1="9" x2="6" y2="5"/>
+            <line x1="12" y1="9" x2="12" y2="5"/>
+            <line x1="18" y1="9" x2="18" y2="5"/>
+            <line x1="4" y1="5" x2="20" y2="5"/>
+          </svg>
+        </div>
+        <div class="card-name">Paving</div>
+        <div class="card-desc">Project tracking, material management, and crew cost allocation for paving operations.</div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer>© DataWatch · Force Corp · All rights reserved</footer>
+
+  <script>
+    // ── Auth guard ─────────────────────────────────────────────────────────
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+
+    if (!token || !user) {
+      window.location.replace('index.html');
+    }
+
+    // ── Populate user info ─────────────────────────────────────────────────
+    if (user) {
+      const initials = (user.username || 'U').slice(0, 2).toUpperCase();
+      document.getElementById('userAvatar').textContent = initials;
+      document.getElementById('userLabel').innerHTML =
+        `<strong>${user.username}</strong>&nbsp;·&nbsp;${user.companyName || user.companyCode}`;
+
+      const firstName = user.username
+        ? user.username.charAt(0).toUpperCase() + user.username.slice(1)
+        : null;
+      if (firstName) {
+        document.getElementById('welcomeHeading').textContent = `Welcome, ${firstName}`;
+      }
+    }
+
+    // ── Division routing ───────────────────────────────────────────────────
+    function enterDivision(division) {
+      localStorage.setItem('fct_division', division);
+      if (division === 'turf') {
+        window.location.replace('tracker.html');
+      }
+    }
+
+    // ── Sign out ───────────────────────────────────────────────────────────
+    function signOut() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+  </script>
+
+</body>
+</html>
