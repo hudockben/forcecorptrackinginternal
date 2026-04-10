@@ -180,6 +180,137 @@
     .tot-label { font-size: 0.6rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
     .tot-val { font-size: 0.82rem; font-weight: 600; color: var(--amber); font-variant-numeric: tabular-nums; }
 
+    /* ── Table selects ── */
+    .sheet-table td select {
+      width: 100%; height: 100%;
+      background: transparent; border: none; outline: none;
+      color: var(--text); font-size: 0.77rem; font-family: inherit;
+      padding: 0 0.3rem; cursor: pointer;
+    }
+    .sheet-table td select:focus { background: #1e1e2e; }
+    .sheet-table td select option { background: #1a1a26; color: var(--text); }
+
+    /* ── Modal overlay ── */
+    .modal-overlay {
+      position: fixed; inset: 0; z-index: 1000;
+      background: rgba(0,0,0,0.72);
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0; pointer-events: none; transition: opacity 0.18s;
+    }
+    .modal-overlay.open { opacity: 1; pointer-events: all; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 620px; max-width: 96vw;
+      max-height: 88vh;
+      display: flex; flex-direction: column;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+    }
+
+    .modal-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1rem 1.25rem 0.85rem;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .modal-title { font-size: 0.85rem; font-weight: 700; color: #fff; letter-spacing: -0.01em; }
+    .modal-close {
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 1rem; padding: 0.2rem 0.4rem;
+      border-radius: 3px; transition: color 0.15s; line-height: 1;
+    }
+    .modal-close:hover { color: var(--text); }
+
+    .modal-tabs {
+      display: flex; padding: 0 1.25rem;
+      background: var(--surface2); border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .modal-tab-btn {
+      padding: 0.52rem 1rem;
+      font-size: 0.62rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); background: none; border: none;
+      border-bottom: 2px solid transparent; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    .modal-tab-btn:hover { color: var(--text); }
+    .modal-tab-btn.active { color: var(--amber); border-bottom-color: var(--amber); }
+
+    .modal-body { flex: 1; overflow-y: auto; padding: 1rem 1.25rem; }
+
+    .list-panel { display: none; }
+    .list-panel.active { display: block; }
+
+    .list-items { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem; min-height: 1rem; }
+
+    .list-item {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.42rem 0.65rem;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 5px;
+    }
+    .list-item input[type="text"],
+    .list-item input[type="number"] {
+      background: transparent; border: none; outline: none;
+      color: var(--text); font-size: 0.8rem; font-family: inherit; flex: 1; min-width: 0;
+    }
+    .list-item input.short { flex: none; width: 90px; text-align: right; }
+    .list-item input:focus { background: #1e1e2e; border-radius: 3px; padding: 0.1rem 0.25rem; }
+
+    .list-item-lbl {
+      font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--muted); white-space: nowrap; flex-shrink: 0;
+    }
+
+    .remove-item {
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 0.82rem;
+      padding: 0.1rem 0.3rem; border-radius: 3px; flex-shrink: 0;
+      transition: color 0.15s, background 0.15s;
+    }
+    .remove-item:hover { color: var(--red); background: rgba(239,68,68,0.1); }
+
+    .add-item-row {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding-top: 0.75rem; border-top: 1px solid var(--border);
+    }
+    .add-item-row input {
+      flex: 1; padding: 0.38rem 0.6rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.8rem;
+      font-family: inherit; outline: none;
+    }
+    .add-item-row input:focus { border-color: var(--amber); }
+    .add-item-row input.short { flex: none; width: 110px; }
+
+    .btn-list-add {
+      font-size: 0.63rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+      color: #000; background: var(--amber); border: none; border-radius: 4px;
+      padding: 0.38rem 0.8rem; cursor: pointer; white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .btn-list-add:hover { background: #f59e0b; }
+
+    /* ── Company list item ── */
+    .company-item { flex-direction: column; align-items: stretch; gap: 0.55rem; }
+    .company-header { display: flex; align-items: center; gap: 0.5rem; }
+    .company-header input { flex: 1; }
+    .co-men-lbl {
+      font-size: 0.57rem; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 0.35rem;
+    }
+    .emp-checks { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .emp-check {
+      display: flex; align-items: center; gap: 0.3rem; cursor: pointer;
+      font-size: 0.75rem; color: var(--text);
+      padding: 0.2rem 0.55rem; border-radius: 3px;
+      background: rgba(251,191,36,0.04); border: 1px solid var(--border);
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .emp-check:hover { background: rgba(251,191,36,0.08); }
+    .emp-check input[type="checkbox"] { accent-color: var(--amber); cursor: pointer; }
+    .emp-check.checked { background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.3); }
+    .empty-hint { font-size: 0.72rem; color: var(--muted); font-style: italic; }
+
     /* ── Table wrapper ── */
     .table-wrap {
       overflow-x: auto;
@@ -350,6 +481,7 @@
     <!-- Toolbar -->
     <div class="toolbar">
       <button class="btn-add" onclick="addRow()">+ Add Row</button>
+      <button class="btn-ghost" onclick="openListsModal()">Manage Lists</button>
       <span class="row-count" id="rowCount">0 rows</span>
       <div class="ub-rate-wrap">
         <label for="ubRateInput">UB Rate</label>
@@ -429,6 +561,54 @@
     </div>
 
   </div><!-- /tab-tracking -->
+
+  <!-- ══════════════════════════════════════════════
+       MANAGE LISTS MODAL
+  ══════════════════════════════════════════════ -->
+  <div class="modal-overlay" id="listsModal">
+    <div class="modal">
+      <div class="modal-hdr">
+        <div class="modal-title">Manage Lists</div>
+        <button class="modal-close" onclick="closeListsModal()">✕</button>
+      </div>
+      <div class="modal-tabs" id="listModalTabs">
+        <button class="modal-tab-btn active" data-panel="equipment">Equipment</button>
+        <button class="modal-tab-btn" data-panel="employees">Employees</button>
+        <button class="modal-tab-btn" data-panel="companies">Companies</button>
+      </div>
+      <div class="modal-body">
+
+        <!-- Equipment -->
+        <div class="list-panel active" id="lp-equipment">
+          <div class="list-items" id="li-equipment"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-equip-name" placeholder="Vehicle / equipment name…" />
+            <input type="text" id="new-equip-unit" class="short" placeholder="Unit #" />
+            <button class="btn-list-add" onclick="addListItem('equipment')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- Employees -->
+        <div class="list-panel" id="lp-employees">
+          <div class="list-items" id="li-employees"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-emp-name" placeholder="Employee name…" />
+            <button class="btn-list-add" onclick="addListItem('employees')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- Companies -->
+        <div class="list-panel" id="lp-companies">
+          <div class="list-items" id="li-companies"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-co-name" placeholder="Company name…" />
+            <button class="btn-list-add" onclick="addListItem('companies')">+ Add</button>
+          </div>
+        </div>
+
+      </div><!-- /modal-body -->
+    </div><!-- /modal -->
+  </div><!-- /listsModal -->
 
   <script>
     /* ═══════════════════════════════════════════
@@ -521,6 +701,10 @@
     let ubRate    = 0;
     let saveTimer = null;
 
+    let dustLists = { equipment: [], employees: [], companies: [] };
+
+    function saveLists() { apiPut('dust_lists', dustLists); }
+
     function scheduleSave() {
       setSaveState('saving');
       clearTimeout(saveTimer);
@@ -607,25 +791,39 @@
         totInv += c.invTotal;
         totGal += c.gallons;
 
+        // Build dropdown options from lists
+        const vehOpts = val => '<option value="">— select —</option>' +
+          dustLists.equipment.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(eq =>
+            `<option value="${esc(eq.name)}"${val===eq.name?' selected':''}>${esc(eq.name)}</option>`).join('');
+
+        const coOpts = '<option value="">— select —</option>' +
+          dustLists.companies.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(co =>
+            `<option value="${esc(co.name)}"${row.company===co.name?' selected':''}>${esc(co.name)}</option>`).join('');
+
+        const selCo  = dustLists.companies.find(c => c.name === row.company);
+        const coMen  = selCo ? (selCo.men || []).slice().sort() : [];
+        const cmOpts = '<option value="">— select —</option>' +
+          coMen.map(n => `<option value="${esc(n)}"${row.company_man===n?' selected':''}>${esc(n)}</option>`).join('');
+
         return `<tr data-idx="${idx}">
-          <td class="cw-date"><input type="date"   value="${esc(row.date        || '')}" onchange="set(${idx},'date',this.value)"></td>
-          <td class="cw-time"><input type="time"   value="${esc(row.start_time  || '')}" onchange="set(${idx},'start_time',this.value)"></td>
-          <td class="cw-time"><input type="time"   value="${esc(row.end_time    || '')}" onchange="set(${idx},'end_time',this.value)"></td>
+          <td class="cw-date"><input type="date" value="${esc(row.date       ||'')}" onchange="set(${idx},'date',this.value)"></td>
+          <td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>
+          <td class="cw-time"><input type="time" value="${esc(row.end_time   ||'')}" onchange="set(${idx},'end_time',this.value)"></td>
           ${calcCell(c.totalHours ? c.totalHours.toFixed(2) : '', 'cw-ttim')}
-          <td class="cw-co"><input  type="text" value="${esc(row.company     || '')}" oninput="set(${idx},'company',this.value)"></td>
-          <td class="cw-cm"><input  type="text" value="${esc(row.company_man || '')}" oninput="set(${idx},'company_man',this.value)"></td>
-          <td class="cw-loc"><input type="text" value="${esc(row.location    || '')}" oninput="set(${idx},'location',this.value)"></td>
-          <td class="cw-st"><input  type="text" value="${esc(row.state       || '')}" oninput="set(${idx},'state',this.value)" maxlength="2" style="text-transform:uppercase"></td>
-          <td class="cw-veh"><input type="text" value="${esc(row.vehicle1    || '')}" oninput="set(${idx},'vehicle1',this.value)"></td>
-          <td class="cw-unit"><input type="text" value="${esc(row.v1_unit    || '')}" oninput="set(${idx},'v1_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v1_rate || '')}" oninput="set(${idx},'v1_rate',this.value)"></td>
+          <td class="cw-co"><select onchange="setCompany(${idx},this.value)">${coOpts}</select></td>
+          <td class="cw-cm"><select data-role="cm" onchange="set(${idx},'company_man',this.value)">${cmOpts}</select></td>
+          <td class="cw-loc"><input type="text" value="${esc(row.location ||'')}" oninput="set(${idx},'location',this.value)"></td>
+          <td class="cw-st"><input  type="text" value="${esc(row.state    ||'')}" oninput="set(${idx},'state',this.value)" maxlength="2" style="text-transform:uppercase"></td>
+          <td class="cw-veh"><select onchange="setVehicle(${idx},1,this.value)">${vehOpts(row.vehicle1)}</select></td>
+          <td class="cw-unit"><input type="text" data-field="v1_unit" value="${esc(row.v1_unit||'')}" oninput="set(${idx},'v1_unit',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="set(${idx},'v1_rate',this.value)"></td>
           ${calcCell(c.v1Total  ? money(c.v1Total)  : '', 'cw-vtot')}
-          <td class="cw-veh"><input type="text" value="${esc(row.vehicle2    || '')}" oninput="set(${idx},'vehicle2',this.value)"></td>
-          <td class="cw-unit"><input type="text" value="${esc(row.v2_unit    || '')}" oninput="set(${idx},'v2_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v2_rate || '')}" oninput="set(${idx},'v2_rate',this.value)"></td>
+          <td class="cw-veh"><select onchange="setVehicle(${idx},2,this.value)">${vehOpts(row.vehicle2)}</select></td>
+          <td class="cw-unit"><input type="text" data-field="v2_unit" value="${esc(row.v2_unit||'')}" oninput="set(${idx},'v2_unit',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="set(${idx},'v2_rate',this.value)"></td>
           ${calcCell(c.v2Total  ? money(c.v2Total)  : '', 'cw-vtot')}
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
-          <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub || '')}" oninput="set(${idx},'gallons_ub',this.value)"></td>
+          <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="set(${idx},'gallons_ub',this.value)"></td>
           ${calcCell(c.ubTotal  ? money(c.ubTotal)  : '', 'cw-ubt')}
           ${calcCell(c.invTotal ? money(c.invTotal) : '', 'cw-inv')}
           <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
@@ -733,6 +931,190 @@
       scheduleSave();
     }
 
+    function setCompany(idx, value) {
+      rows[idx].company     = value;
+      rows[idx].company_man = ''; // reset man when company changes
+      // Rebuild company man dropdown in-place (no full re-render)
+      const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
+      if (tr) {
+        const cmSel = tr.querySelector('select[data-role="cm"]');
+        if (cmSel) {
+          const co  = dustLists.companies.find(c => c.name === value);
+          const men = co ? (co.men || []).slice().sort() : [];
+          cmSel.innerHTML = '<option value="">— select —</option>' +
+            men.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+        }
+      }
+      scheduleSave();
+    }
+
+    function setVehicle(idx, num, vehicleName) {
+      const vField = num === 1 ? 'vehicle1' : 'vehicle2';
+      const uField = num === 1 ? 'v1_unit'  : 'v2_unit';
+      rows[idx][vField] = vehicleName;
+      // Auto-fill unit # from equipment list
+      const eq      = dustLists.equipment.find(e => e.name === vehicleName);
+      const unitVal = eq?.unit_number || '';
+      rows[idx][uField] = unitVal;
+      const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
+      if (tr) {
+        const unitInput = tr.querySelector(`input[data-field="${uField}"]`);
+        if (unitInput) unitInput.value = unitVal;
+      }
+      scheduleSave();
+    }
+
+    /* ═══════════════════════════════════════════
+       MANAGE LISTS MODAL
+    ═══════════════════════════════════════════ */
+    // Close on backdrop click
+    document.getElementById('listsModal').addEventListener('click', e => {
+      if (e.target === e.currentTarget) closeListsModal();
+    });
+
+    // Tab switching
+    document.getElementById('listModalTabs').addEventListener('click', e => {
+      const btn = e.target.closest('.modal-tab-btn');
+      if (!btn) return;
+      document.querySelectorAll('.modal-tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.list-panel').forEach(p =>
+        p.classList.toggle('active', p.id === 'lp-' + btn.dataset.panel));
+    });
+
+    function openListsModal() {
+      renderListPanels();
+      document.getElementById('listsModal').classList.add('open');
+    }
+
+    function closeListsModal() {
+      document.getElementById('listsModal').classList.remove('open');
+      renderTable(); // refresh dropdowns with any new list items
+    }
+
+    function renderListPanels() {
+      renderEquipmentPanel();
+      renderEmployeesPanel();
+      renderCompaniesPanel();
+    }
+
+    function renderEquipmentPanel() {
+      const sorted = dustLists.equipment.slice().sort((a,b) => a.name.localeCompare(b.name));
+      document.getElementById('li-equipment').innerHTML = sorted.length
+        ? sorted.map(eq => `
+            <div class="list-item">
+              <input type="text" value="${esc(eq.name)}" placeholder="Vehicle name"
+                oninput="updateListItem('equipment','${eq.id}','name',this.value)" />
+              <span class="list-item-lbl">Unit #</span>
+              <input type="text" class="short" value="${esc(eq.unit_number||'')}" placeholder="Unit #"
+                oninput="updateListItem('equipment','${eq.id}','unit_number',this.value)" />
+              <button class="remove-item" onclick="removeListItem('equipment','${eq.id}')">✕</button>
+            </div>`).join('')
+        : '<div class="empty-hint">No equipment added yet.</div>';
+    }
+
+    function renderEmployeesPanel() {
+      const sorted = dustLists.employees.slice().sort((a,b) => a.name.localeCompare(b.name));
+      document.getElementById('li-employees').innerHTML = sorted.length
+        ? sorted.map(emp => `
+            <div class="list-item">
+              <input type="text" value="${esc(emp.name)}" placeholder="Employee name"
+                oninput="updateListItem('employees','${emp.id}','name',this.value)" />
+              <button class="remove-item" onclick="removeListItem('employees','${emp.id}')">✕</button>
+            </div>`).join('')
+        : '<div class="empty-hint">No employees added yet.</div>';
+    }
+
+    function renderCompaniesPanel() {
+      const sorted = dustLists.companies.slice().sort((a,b) => a.name.localeCompare(b.name));
+      document.getElementById('li-companies').innerHTML = sorted.length
+        ? sorted.map(co => {
+            const empList = dustLists.employees.slice().sort((a,b) => a.name.localeCompare(b.name));
+            const checksHtml = empList.length
+              ? empList.map(emp => {
+                  const checked = (co.men || []).includes(emp.name);
+                  return `<label class="emp-check${checked?' checked':''}">
+                    <input type="checkbox" ${checked?'checked':''}
+                      onchange="toggleCompanyMan('${co.id}','${esc(emp.name)}',this.checked);this.closest('label').classList.toggle('checked',this.checked)" />
+                    ${esc(emp.name)}
+                  </label>`;
+                }).join('')
+              : '<span class="empty-hint">Add employees first.</span>';
+            return `
+              <div class="list-item company-item">
+                <div class="company-header">
+                  <input type="text" value="${esc(co.name)}" placeholder="Company name"
+                    oninput="updateListItem('companies','${co.id}','name',this.value)" />
+                  <button class="remove-item" onclick="removeListItem('companies','${co.id}')">✕</button>
+                </div>
+                <div>
+                  <div class="co-men-lbl">Company Men</div>
+                  <div class="emp-checks">${checksHtml}</div>
+                </div>
+              </div>`;
+          }).join('')
+        : '<div class="empty-hint">No companies added yet.</div>';
+    }
+
+    function addListItem(type) {
+      if (type === 'equipment') {
+        const name = document.getElementById('new-equip-name').value.trim();
+        const unit = document.getElementById('new-equip-unit').value.trim();
+        if (!name) { document.getElementById('new-equip-name').focus(); return; }
+        dustLists.equipment.push({ id: uid(), name, unit_number: unit });
+        document.getElementById('new-equip-name').value = '';
+        document.getElementById('new-equip-unit').value = '';
+        renderEquipmentPanel();
+      } else if (type === 'employees') {
+        const name = document.getElementById('new-emp-name').value.trim();
+        if (!name) { document.getElementById('new-emp-name').focus(); return; }
+        dustLists.employees.push({ id: uid(), name });
+        document.getElementById('new-emp-name').value = '';
+        renderEmployeesPanel();
+        renderCompaniesPanel(); // new employee needs to appear in company checkboxes
+      } else if (type === 'companies') {
+        const name = document.getElementById('new-co-name').value.trim();
+        if (!name) { document.getElementById('new-co-name').focus(); return; }
+        dustLists.companies.push({ id: uid(), name, men: [] });
+        document.getElementById('new-co-name').value = '';
+        renderCompaniesPanel();
+      }
+      saveLists();
+    }
+
+    function removeListItem(type, id) {
+      if (type === 'employees') {
+        const emp = dustLists.employees.find(e => e.id === id);
+        if (emp) dustLists.companies.forEach(co => {
+          co.men = (co.men || []).filter(n => n !== emp.name);
+        });
+      }
+      dustLists[type] = dustLists[type].filter(item => item.id !== id);
+      renderListPanels();
+      saveLists();
+    }
+
+    function updateListItem(type, id, field, value) {
+      const item = dustLists[type].find(i => i.id === id);
+      if (item) item[field] = value;
+      saveLists();
+    }
+
+    function toggleCompanyMan(coId, empName, checked) {
+      const co = dustLists.companies.find(c => c.id === coId);
+      if (!co) return;
+      if (!co.men) co.men = [];
+      if (checked) { if (!co.men.includes(empName)) co.men.push(empName); }
+      else          { co.men = co.men.filter(n => n !== empName); }
+      saveLists();
+    }
+
+    // Enter key to add items
+    ['new-equip-name','new-equip-unit'].forEach(id => {
+      document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('equipment'); });
+    });
+    document.getElementById('new-emp-name')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('employees'); });
+    document.getElementById('new-co-name')?.addEventListener('keydown',  e => { if (e.key==='Enter') addListItem('companies'); });
+
     /* ═══════════════════════════════════════════
        UB RATE
     ═══════════════════════════════════════════ */
@@ -747,9 +1129,10 @@
        INIT
     ═══════════════════════════════════════════ */
     async function init() {
-      const [savedRows, savedSettings] = await Promise.all([
+      const [savedRows, savedSettings, savedLists] = await Promise.all([
         apiGet('dust_rows'),
         apiGet('dust_settings'),
+        apiGet('dust_lists'),
       ]);
 
       if (Array.isArray(savedRows)) rows = savedRows;
@@ -757,6 +1140,12 @@
       if (savedSettings && typeof savedSettings.ub_rate === 'number') {
         ubRate = savedSettings.ub_rate;
         document.getElementById('ubRateInput').value = ubRate.toFixed(2);
+      }
+
+      if (savedLists && typeof savedLists === 'object') {
+        dustLists.equipment = Array.isArray(savedLists.equipment) ? savedLists.equipment : [];
+        dustLists.employees = Array.isArray(savedLists.employees) ? savedLists.employees : [];
+        dustLists.companies = Array.isArray(savedLists.companies) ? savedLists.companies : [];
       }
 
       renderTable();
