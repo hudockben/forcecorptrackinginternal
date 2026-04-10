@@ -3,6 +3,8 @@
 const { neon }  = require('@neondatabase/serverless');
 const bcrypt    = require('bcryptjs');
 
+const VALID_DIVISIONS = ['turf', 'dust', 'paving'];
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -12,7 +14,7 @@ module.exports = async (req, res) => {
 
   const sql = neon(process.env.DATABASE_URL);
 
-  // GET — list users for a company
+  // GET — list users for a company (or all users)
   if (req.method === 'GET') {
     const { adminSecret, companyCode } = req.query;
     if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
@@ -20,17 +22,34 @@ module.exports = async (req, res) => {
     }
     try {
       const rows = companyCode
-        ? await sql`SELECT id, username, company_code, role, created_at FROM users WHERE company_code = ${companyCode.toUpperCase()} ORDER BY created_at DESC`
-        : await sql`SELECT id, username, company_code, role, created_at FROM users ORDER BY created_at DESC`;
+        ? await sql`
+            SELECT id, username, company_code, role, divisions, is_platform_admin, created_at
+            FROM users
+            WHERE company_code = ${companyCode.toUpperCase()}
+            ORDER BY created_at DESC
+          `
+        : await sql`
+            SELECT id, username, company_code, role, divisions, is_platform_admin, created_at
+            FROM users
+            ORDER BY created_at DESC
+          `;
       return res.json({ ok: true, users: rows });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
   }
 
-  // POST — create or reset a user
+  // POST — create or update a user
   if (req.method === 'POST') {
-    const { adminSecret, companyCode, username, password, role = 'level1' } = req.body || {};
+    const {
+      adminSecret,
+      companyCode,
+      username,
+      password,
+      role             = 'level1',
+      divisions        = null,   // null = inherits all of company's allowed_divisions
+      is_platform_admin = false,
+    } = req.body || {};
 
     if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
       return res.status(403).json({ error: 'Forbidden' });
@@ -45,7 +64,19 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'password must be at least 8 characters' });
     }
 
-    const cleanCode = companyCode.trim().toUpperCase();
+    // Validate divisions if provided
+    if (divisions !== null) {
+      if (!Array.isArray(divisions) || divisions.length === 0) {
+        return res.status(400).json({ error: 'divisions must be a non-empty array or null' });
+      }
+      const invalid = divisions.filter(d => !VALID_DIVISIONS.includes(d));
+      if (invalid.length) {
+        return res.status(400).json({ error: `Invalid division(s): ${invalid.join(', ')}` });
+      }
+    }
+
+    const cleanCode       = companyCode.trim().toUpperCase();
+    const isPlatformAdmin = Boolean(is_platform_admin);
 
     try {
       const companies = await sql`SELECT code FROM companies WHERE code = ${cleanCode}`;
@@ -55,12 +86,23 @@ module.exports = async (req, res) => {
 
       const hash = await bcrypt.hash(password, 12);
       await sql`
-        INSERT INTO users (username, company_code, password_hash, role)
-        VALUES (${username.trim()}, ${cleanCode}, ${hash}, ${role})
+        INSERT INTO users (username, company_code, password_hash, role, divisions, is_platform_admin)
+        VALUES (${username.trim()}, ${cleanCode}, ${hash}, ${role}, ${divisions}, ${isPlatformAdmin})
         ON CONFLICT (username, company_code)
-        DO UPDATE SET password_hash = EXCLUDED.password_hash, role = EXCLUDED.role
+        DO UPDATE SET
+          password_hash     = EXCLUDED.password_hash,
+          role              = EXCLUDED.role,
+          divisions         = EXCLUDED.divisions,
+          is_platform_admin = EXCLUDED.is_platform_admin
       `;
-      return res.json({ ok: true, username: username.trim(), companyCode: cleanCode, role });
+      return res.json({
+        ok: true,
+        username:          username.trim(),
+        companyCode:       cleanCode,
+        role,
+        divisions,
+        is_platform_admin: isPlatformAdmin,
+      });
     } catch (err) {
       console.error('[admin/users] error:', err.message);
       return res.status(500).json({ error: err.message });

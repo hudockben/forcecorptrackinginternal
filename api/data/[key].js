@@ -8,7 +8,8 @@ const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_co
 function isAllowedKey(k) {
   return ALLOWED_KEYS.includes(k)
     || /^fct_project_[a-zA-Z0-9_-]+$/.test(k)
-    || /^fct_trend_[a-zA-Z0-9_-]+$/.test(k);
+    || /^fct_trend_[a-zA-Z0-9_-]+$/.test(k)
+    || /^dust_[a-zA-Z0-9_-]+$/.test(k);
 }
 
 function verifyToken(req) {

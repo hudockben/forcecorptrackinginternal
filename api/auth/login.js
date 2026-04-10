@@ -5,6 +5,20 @@ const bcrypt     = require('bcryptjs');
 const jwt        = require('jsonwebtoken');
 const { syncProjects, syncLists, syncPurchaseOrders, syncInventory } = require('../lib/sync-normalized');
 
+// All divisions the platform supports — order determines display order on the selector
+const ALL_DIVISIONS = ['turf', 'dust', 'paving'];
+
+/**
+ * Compute the effective divisions a user can access.
+ * Platform admins always get everything.
+ * Otherwise: user.divisions (if set) overrides the company's allowed_divisions.
+ */
+function effectiveDivisions(isPlatformAdmin, userDivisions, companyDivisions) {
+  if (isPlatformAdmin) return ALL_DIVISIONS;
+  if (userDivisions && userDivisions.length > 0) return userDivisions;
+  return companyDivisions && companyDivisions.length > 0 ? companyDivisions : ['turf'];
+}
+
 /**
  * Background sync — runs after login if the projects table has no rows for
  * this company (i.e. first login after a fresh deploy). Fire-and-forget:
@@ -73,12 +87,20 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
-    // Look up user within that company
+    // Fetch user + company in one query, including division fields
     const rows = await sql`
-      SELECT u.id, u.username, u.password_hash, u.role, c.name AS company_name
+      SELECT
+        u.id,
+        u.username,
+        u.password_hash,
+        u.role,
+        u.divisions,
+        u.is_platform_admin,
+        c.name               AS company_name,
+        c.allowed_divisions
       FROM users u
       JOIN companies c ON c.code = u.company_code
-      WHERE LOWER(u.username) = LOWER(${username.trim()})
+      WHERE LOWER(u.username)     = LOWER(${username.trim()})
         AND LOWER(u.company_code) = LOWER(${companyCode.trim()})
     `;
 
@@ -93,29 +115,42 @@ module.exports = async (req, res) => {
       return res.status(401).json({ error: 'Invalid company code, username, or password' });
     }
 
+    const isPlatformAdmin   = Boolean(user.is_platform_admin);
+    const allowedDivisions  = effectiveDivisions(
+      isPlatformAdmin,
+      user.divisions,
+      user.allowed_divisions,
+    );
+
+    const cleanCode = companyCode.trim().toUpperCase();
+
     const token = jwt.sign(
       {
-        userId:      user.id,
-        username:    user.username,
-        companyCode: companyCode.trim().toUpperCase(),
-        companyName: user.company_name,
-        role:        user.role,
+        userId:           user.id,
+        username:         user.username,
+        companyCode:      cleanCode,
+        companyName:      user.company_name,
+        role:             user.role,
+        allowedDivisions,
+        isPlatformAdmin,
       },
       process.env.JWT_SECRET,
       { expiresIn: '12h' }
     );
 
     // Trigger background backfill on first login after deploy (no await — never delays login)
-    autoSyncIfNeeded(companyCode.trim().toUpperCase());
+    autoSyncIfNeeded(cleanCode);
 
     return res.json({
       ok: true,
       token,
       user: {
-        username:    user.username,
-        companyCode: companyCode.trim().toUpperCase(),
-        companyName: user.company_name,
-        role:        user.role,
+        username:         user.username,
+        companyCode:      cleanCode,
+        companyName:      user.company_name,
+        role:             user.role,
+        allowedDivisions,
+        isPlatformAdmin,
       },
     });
   } catch (err) {
