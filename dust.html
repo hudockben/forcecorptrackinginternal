@@ -386,7 +386,7 @@
       <table class="sheet-table">
         <thead>
           <tr class="group-row">
-            <th class="g-entry"  colspan="5">Entry</th>
+            <th class="g-entry"  colspan="4">Entry</th>
             <th class="g-cust"   colspan="4">Customer</th>
             <th class="g-v1"     colspan="4">Vehicle 1</th>
             <th class="g-v2"     colspan="4">Vehicle 2</th>
@@ -397,8 +397,7 @@
             <th class="cw-date">Date</th>
             <th class="cw-time">Start Time</th>
             <th class="cw-time">End Time</th>
-            <th class="cw-ttim calc-hdr">Total Time</th>
-            <th class="cw-conv calc-hdr">Conversion</th>
+            <th class="cw-ttim calc-hdr">Total Time (hrs)</th>
             <th class="cw-co">Company</th>
             <th class="cw-cm">Company Man</th>
             <th class="cw-loc">Location</th>
@@ -421,7 +420,7 @@
         <tbody id="dustTbody"></tbody>
         <tfoot>
           <tr class="add-row-foot">
-            <td colspan="22">
+            <td colspan="21">
               <button class="add-row-foot-btn" onclick="addRow()">+ Add Row</button>
             </td>
           </tr>
@@ -570,27 +569,25 @@
       const s = parseMins(row.start_time);
       const e = parseMins(row.end_time);
 
-      let totalTimeDisplay = '';
-      let conversion       = 0;
+      let totalHours = 0;
 
       if (s !== null && e !== null) {
         let mins = e - s;
         if (mins < 0) mins += 24 * 60; // overnight support
-        conversion       = Math.round(mins / 60 * 100) / 100;
-        totalTimeDisplay = fmtMins(mins);
+        totalHours = Math.round(mins / 60 * 100) / 100;
       }
 
       const v1Rate   = parseFloat(row.v1_rate)    || 0;
       const v2Rate   = parseFloat(row.v2_rate)    || 0;
       const gallons  = parseFloat(row.gallons_ub) || 0;
 
-      const v1Total  = round2(v1Rate * conversion);
-      const v2Total  = round2(v2Rate * conversion);
+      const v1Total  = round2(v1Rate * totalHours);
+      const v2Total  = round2(v2Rate * totalHours);
       const vehTotal = round2(v1Total + v2Total);
       const ubTotal  = round2(gallons * ubRate);
       const invTotal = round2(vehTotal + ubTotal);
 
-      return { totalTimeDisplay, conversion, v1Total, v2Total, vehTotal, gallons, ubTotal, invTotal };
+      return { totalHours, v1Total, v2Total, vehTotal, gallons, ubTotal, invTotal };
     }
 
     function round2(n) { return Math.round(n * 100) / 100; }
@@ -614,8 +611,7 @@
           <td class="cw-date"><input type="date"   value="${esc(row.date        || '')}" onchange="set(${idx},'date',this.value)"></td>
           <td class="cw-time"><input type="time"   value="${esc(row.start_time  || '')}" onchange="set(${idx},'start_time',this.value)"></td>
           <td class="cw-time"><input type="time"   value="${esc(row.end_time    || '')}" onchange="set(${idx},'end_time',this.value)"></td>
-          ${calcCell(c.totalTimeDisplay,         'cw-ttim')}
-          ${calcCell(c.conversion ? c.conversion.toFixed(2) : '', 'cw-conv')}
+          ${calcCell(c.totalHours ? c.totalHours.toFixed(2) : '', 'cw-ttim')}
           <td class="cw-co"><input  type="text" value="${esc(row.company     || '')}" oninput="set(${idx},'company',this.value)"></td>
           <td class="cw-cm"><input  type="text" value="${esc(row.company_man || '')}" oninput="set(${idx},'company_man',this.value)"></td>
           <td class="cw-loc"><input type="text" value="${esc(row.location    || '')}" oninput="set(${idx},'location',this.value)"></td>
@@ -667,10 +663,9 @@
       const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
       if (!tr) return;
 
-      // Calc cells in DOM order: Total Time, Conversion, V1 Total, V2 Total, Veh Total, UB Total, Invoice Total
+      // Calc cells in DOM order: Total Time (hrs), V1 Total, V2 Total, Veh Total, UB Total, Invoice Total
       const vals = [
-        c.totalTimeDisplay || '',
-        c.conversion ? c.conversion.toFixed(2) : '',
+        c.totalHours ? c.totalHours.toFixed(2) : '',
         c.v1Total  ? money(c.v1Total)  : '',
         c.v2Total  ? money(c.v2Total)  : '',
         c.vehTotal ? money(c.vehTotal) : '',
