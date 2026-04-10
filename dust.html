@@ -404,7 +404,7 @@
     .cw-co   { min-width: 150px; }
     .cw-cm   { min-width: 120px; }
     .cw-loc  { min-width: 150px; }
-    .cw-st   { min-width: 52px; }
+    .cw-st   { min-width: 70px; }
     .cw-veh  { min-width: 130px; }
     .cw-unit { min-width: 68px; }
     .cw-rate { min-width: 88px; }
@@ -575,6 +575,8 @@
         <button class="modal-tab-btn active" data-panel="equipment">Equipment</button>
         <button class="modal-tab-btn" data-panel="employees">Employees</button>
         <button class="modal-tab-btn" data-panel="companies">Companies</button>
+        <button class="modal-tab-btn" data-panel="locations">Locations</button>
+        <button class="modal-tab-btn" data-panel="states">States</button>
       </div>
       <div class="modal-body">
 
@@ -603,6 +605,27 @@
           <div class="add-item-row">
             <input type="text" id="new-co-name" placeholder="Company name…" />
             <button class="btn-list-add" onclick="addListItem('companies')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- Locations -->
+        <div class="list-panel" id="lp-locations">
+          <div class="list-items" id="li-locations"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-loc-name" placeholder="Location name…" />
+            <select id="new-loc-state" style="flex:none;width:90px;padding:0.38rem 0.4rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.8rem;outline:none">
+              <option value="">State…</option>
+            </select>
+            <button class="btn-list-add" onclick="addListItem('locations')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- States -->
+        <div class="list-panel" id="lp-states">
+          <div class="list-items" id="li-states"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-state-abbr" placeholder="State abbreviation (e.g. PA)" maxlength="2" style="text-transform:uppercase;max-width:200px" />
+            <button class="btn-list-add" onclick="addListItem('states')">+ Add</button>
           </div>
         </div>
 
@@ -701,7 +724,7 @@
     let ubRate    = 0;
     let saveTimer = null;
 
-    let dustLists = { equipment: [], employees: [], companies: [] };
+    let dustLists = { equipment: [], employees: [], companies: [], locations: [], states: [] };
 
     function saveLists() { apiPut('dust_lists', dustLists); }
 
@@ -812,8 +835,16 @@
           ${calcCell(c.totalHours ? c.totalHours.toFixed(2) : '', 'cw-ttim')}
           <td class="cw-co"><select onchange="setCompany(${idx},this.value)">${coOpts}</select></td>
           <td class="cw-cm"><select data-role="cm" onchange="set(${idx},'company_man',this.value)">${cmOpts}</select></td>
-          <td class="cw-loc"><input type="text" value="${esc(row.location ||'')}" oninput="set(${idx},'location',this.value)"></td>
-          <td class="cw-st"><input  type="text" value="${esc(row.state    ||'')}" oninput="set(${idx},'state',this.value)" maxlength="2" style="text-transform:uppercase"></td>
+          <td class="cw-loc"><select onchange="setLocation(${idx},this.value)">
+            <option value="">— select —</option>
+            ${dustLists.locations.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(loc=>
+              `<option value="${esc(loc.name)}"${row.location===loc.name?' selected':''}>${esc(loc.name)}</option>`).join('')}
+          </select></td>
+          <td class="cw-st"><select data-role="state" onchange="set(${idx},'state',this.value)">
+            <option value="">—</option>
+            ${dustLists.states.slice().sort().map(s=>
+              `<option value="${esc(s)}"${row.state===s?' selected':''}>${esc(s)}</option>`).join('')}
+          </select></td>
           <td class="cw-veh"><select onchange="setVehicle(${idx},1,this.value)">${vehOpts(row.vehicle1)}</select></td>
           <td class="cw-unit"><input type="text" data-field="v1_unit" value="${esc(row.v1_unit||'')}" oninput="set(${idx},'v1_unit',this.value)"></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="set(${idx},'v1_rate',this.value)"></td>
@@ -948,6 +979,18 @@
       scheduleSave();
     }
 
+    function setLocation(idx, locationName) {
+      rows[idx].location = locationName;
+      const loc = dustLists.locations.find(l => l.name === locationName);
+      if (loc && loc.state) {
+        rows[idx].state = loc.state;
+        const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
+        const stSel = tr && tr.querySelector('select[data-role="state"]');
+        if (stSel) stSel.value = loc.state;
+      }
+      scheduleSave();
+    }
+
     function setVehicle(idx, num, vehicleName) {
       const vField = num === 1 ? 'vehicle1' : 'vehicle2';
       const uField = num === 1 ? 'v1_unit'  : 'v2_unit';
@@ -995,6 +1038,8 @@
       renderEquipmentPanel();
       renderEmployeesPanel();
       renderCompaniesPanel();
+      renderLocationsPanel();
+      renderStatesPanel();
     }
 
     function renderEquipmentPanel() {
@@ -1055,6 +1100,45 @@
         : '<div class="empty-hint">No companies added yet.</div>';
     }
 
+    function renderLocationsPanel() {
+      // Refresh state options in the "add location" state dropdown
+      const newLocState = document.getElementById('new-loc-state');
+      if (newLocState) {
+        const cur = newLocState.value;
+        newLocState.innerHTML = '<option value="">State…</option>' +
+          dustLists.states.slice().sort().map(s =>
+            `<option value="${esc(s)}"${s===cur?' selected':''}>${esc(s)}</option>`).join('');
+      }
+
+      const sorted = dustLists.locations.slice().sort((a,b) => a.name.localeCompare(b.name));
+      document.getElementById('li-locations').innerHTML = sorted.length
+        ? sorted.map(loc => `
+            <div class="list-item">
+              <input type="text" value="${esc(loc.name)}" placeholder="Location name"
+                oninput="updateListItem('locations','${loc.id}','name',this.value)" />
+              <span class="list-item-lbl">State</span>
+              <select style="flex:none;width:80px;background:transparent;border:none;outline:none;color:var(--text);font-size:0.78rem"
+                onchange="updateListItem('locations','${loc.id}','state',this.value)">
+                <option value="">—</option>
+                ${dustLists.states.slice().sort().map(s =>
+                  `<option value="${esc(s)}"${loc.state===s?' selected':''}>${esc(s)}</option>`).join('')}
+              </select>
+              <button class="remove-item" onclick="removeListItem('locations','${loc.id}')">✕</button>
+            </div>`).join('')
+        : '<div class="empty-hint">No locations added yet.</div>';
+    }
+
+    function renderStatesPanel() {
+      const sorted = dustLists.states.slice().sort();
+      document.getElementById('li-states').innerHTML = sorted.length
+        ? sorted.map(s => `
+            <div class="list-item">
+              <span style="font-size:0.82rem;font-weight:600;color:var(--text);flex:1">${esc(s)}</span>
+              <button class="remove-item" onclick="removeListItem('states','${esc(s)}')">✕</button>
+            </div>`).join('')
+        : '<div class="empty-hint">No states added yet.</div>';
+    }
+
     function addListItem(type) {
       if (type === 'equipment') {
         const name = document.getElementById('new-equip-name').value.trim();
@@ -1077,6 +1161,23 @@
         dustLists.companies.push({ id: uid(), name, men: [] });
         document.getElementById('new-co-name').value = '';
         renderCompaniesPanel();
+      } else if (type === 'locations') {
+        const name  = document.getElementById('new-loc-name').value.trim();
+        const state = document.getElementById('new-loc-state').value;
+        if (!name) { document.getElementById('new-loc-name').focus(); return; }
+        dustLists.locations.push({ id: uid(), name, state });
+        document.getElementById('new-loc-name').value = '';
+        document.getElementById('new-loc-state').value = '';
+        renderLocationsPanel();
+      } else if (type === 'states') {
+        const abbr = document.getElementById('new-state-abbr').value.trim().toUpperCase();
+        if (!abbr) { document.getElementById('new-state-abbr').focus(); return; }
+        if (!dustLists.states.includes(abbr)) {
+          dustLists.states.push(abbr);
+          document.getElementById('new-state-abbr').value = '';
+          renderStatesPanel();
+          renderLocationsPanel(); // refresh state dropdowns in locations panel
+        }
       }
       saveLists();
     }
@@ -1087,8 +1188,17 @@
         if (emp) dustLists.companies.forEach(co => {
           co.men = (co.men || []).filter(n => n !== emp.name);
         });
+        dustLists.employees = dustLists.employees.filter(item => item.id !== id);
+      } else if (type === 'states') {
+        // id here is the abbreviation string
+        dustLists.states = dustLists.states.filter(s => s !== id);
+        // Clear state from locations that used it
+        dustLists.locations.forEach(loc => { if (loc.state === id) loc.state = ''; });
+      } else if (type === 'locations') {
+        dustLists.locations = dustLists.locations.filter(item => item.id !== id);
+      } else {
+        dustLists[type] = dustLists[type].filter(item => item.id !== id);
       }
-      dustLists[type] = dustLists[type].filter(item => item.id !== id);
       renderListPanels();
       saveLists();
     }
@@ -1112,8 +1222,10 @@
     ['new-equip-name','new-equip-unit'].forEach(id => {
       document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('equipment'); });
     });
-    document.getElementById('new-emp-name')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('employees'); });
-    document.getElementById('new-co-name')?.addEventListener('keydown',  e => { if (e.key==='Enter') addListItem('companies'); });
+    document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
+    document.getElementById('new-co-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('companies'); });
+    document.getElementById('new-loc-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('locations'); });
+    document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
 
     /* ═══════════════════════════════════════════
        UB RATE
@@ -1146,6 +1258,8 @@
         dustLists.equipment = Array.isArray(savedLists.equipment) ? savedLists.equipment : [];
         dustLists.employees = Array.isArray(savedLists.employees) ? savedLists.employees : [];
         dustLists.companies = Array.isArray(savedLists.companies) ? savedLists.companies : [];
+        dustLists.locations = Array.isArray(savedLists.locations) ? savedLists.locations : [];
+        dustLists.states    = Array.isArray(savedLists.states)    ? savedLists.states    : [];
       }
 
       renderTable();
