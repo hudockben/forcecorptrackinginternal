@@ -299,6 +299,18 @@
       color: var(--muted); margin-bottom: 0.35rem;
     }
     .emp-checks { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .co-locations-section { border-top: 1px solid var(--border); padding-top: 0.5rem; }
+    .co-location-items { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.4rem; }
+    .add-location-row {
+      display: flex; align-items: center; gap: 0.4rem; margin-top: 0.35rem;
+    }
+    .add-location-row input {
+      flex: 1; padding: 0.28rem 0.5rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.78rem;
+      font-family: inherit; outline: none;
+    }
+    .add-location-row input:focus { border-color: var(--amber); }
     .emp-check {
       display: flex; align-items: center; gap: 0.3rem; cursor: pointer;
       font-size: 0.75rem; color: var(--text);
@@ -575,7 +587,6 @@
         <button class="modal-tab-btn active" data-panel="equipment">Equipment</button>
         <button class="modal-tab-btn" data-panel="employees">Employees</button>
         <button class="modal-tab-btn" data-panel="companies">Companies</button>
-        <button class="modal-tab-btn" data-panel="locations">Locations</button>
         <button class="modal-tab-btn" data-panel="states">States</button>
       </div>
       <div class="modal-body">
@@ -605,18 +616,6 @@
           <div class="add-item-row">
             <input type="text" id="new-co-name" placeholder="Company name…" />
             <button class="btn-list-add" onclick="addListItem('companies')">+ Add</button>
-          </div>
-        </div>
-
-        <!-- Locations -->
-        <div class="list-panel" id="lp-locations">
-          <div class="list-items" id="li-locations"></div>
-          <div class="add-item-row">
-            <input type="text" id="new-loc-name" placeholder="Location name…" />
-            <select id="new-loc-state" style="flex:none;width:90px;padding:0.38rem 0.4rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.8rem;outline:none">
-              <option value="">State…</option>
-            </select>
-            <button class="btn-list-add" onclick="addListItem('locations')">+ Add</button>
           </div>
         </div>
 
@@ -724,7 +723,7 @@
     let ubRate    = 0;
     let saveTimer = null;
 
-    let dustLists = { equipment: [], employees: [], companies: [], locations: [], states: [] };
+    let dustLists = { equipment: [], employees: [], companies: [], states: [] };
 
     function saveLists() { apiPut('dust_lists', dustLists); }
 
@@ -828,6 +827,10 @@
         const cmOpts = '<option value="">— select —</option>' +
           coMen.map(n => `<option value="${esc(n)}"${row.company_man===n?' selected':''}>${esc(n)}</option>`).join('');
 
+        const coLocs = selCo ? (selCo.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
+        const locOpts = '<option value="">— select —</option>' +
+          coLocs.map(loc => `<option value="${esc(loc.name)}"${row.location===loc.name?' selected':''}>${esc(loc.name)}</option>`).join('');
+
         return `<tr data-idx="${idx}">
           <td class="cw-date"><input type="date" value="${esc(row.date       ||'')}" onchange="set(${idx},'date',this.value)"></td>
           <td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>
@@ -835,11 +838,7 @@
           ${calcCell(c.totalHours ? c.totalHours.toFixed(2) : '', 'cw-ttim')}
           <td class="cw-co"><select onchange="setCompany(${idx},this.value)">${coOpts}</select></td>
           <td class="cw-cm"><select data-role="cm" onchange="set(${idx},'company_man',this.value)">${cmOpts}</select></td>
-          <td class="cw-loc"><select onchange="setLocation(${idx},this.value)">
-            <option value="">— select —</option>
-            ${dustLists.locations.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(loc=>
-              `<option value="${esc(loc.name)}"${row.location===loc.name?' selected':''}>${esc(loc.name)}</option>`).join('')}
-          </select></td>
+          <td class="cw-loc"><select data-role="location" onchange="setLocation(${idx},this.value)">${locOpts}</select></td>
           <td class="cw-st"><select data-role="state" onchange="set(${idx},'state',this.value)">
             <option value="">—</option>
             ${dustLists.states.slice().sort().map(s=>
@@ -964,24 +963,38 @@
 
     function setCompany(idx, value) {
       rows[idx].company     = value;
-      rows[idx].company_man = ''; // reset man when company changes
+      rows[idx].company_man = '';
+      rows[idx].location    = '';
+      rows[idx].state       = '';
+      const co = dustLists.companies.find(c => c.name === value);
       // Rebuild company man dropdown in-place (no full re-render)
       const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
       if (tr) {
         const cmSel = tr.querySelector('select[data-role="cm"]');
         if (cmSel) {
-          const co  = dustLists.companies.find(c => c.name === value);
           const men = co ? (co.men || []).slice().sort() : [];
           cmSel.innerHTML = '<option value="">— select —</option>' +
             men.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
         }
+        // Rebuild location dropdown filtered to this company's well pads
+        const locSel = tr.querySelector('select[data-role="location"]');
+        if (locSel) {
+          const locs = co ? (co.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
+          locSel.innerHTML = '<option value="">— select —</option>' +
+            locs.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join('');
+        }
+        // Clear state
+        const stSel = tr.querySelector('select[data-role="state"]');
+        if (stSel) stSel.value = '';
       }
       scheduleSave();
     }
 
     function setLocation(idx, locationName) {
       rows[idx].location = locationName;
-      const loc = dustLists.locations.find(l => l.name === locationName);
+      // Look up location within the row's selected company
+      const co  = dustLists.companies.find(c => c.name === rows[idx].company);
+      const loc = co ? (co.locations || []).find(l => l.name === locationName) : null;
       if (loc && loc.state) {
         rows[idx].state = loc.state;
         const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
@@ -1038,7 +1051,6 @@
       renderEquipmentPanel();
       renderEmployeesPanel();
       renderCompaniesPanel();
-      renderLocationsPanel();
       renderStatesPanel();
     }
 
@@ -1084,6 +1096,25 @@
                   </label>`;
                 }).join('')
               : '<span class="empty-hint">Add employees first.</span>';
+
+            const coLocs    = (co.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name));
+            const stateOpts = dustLists.states.slice().sort().map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+            const locsHtml  = coLocs.length
+              ? coLocs.map(loc => `
+                  <div class="list-item co-location-item" style="padding:0.28rem 0.5rem">
+                    <input type="text" value="${esc(loc.name)}" placeholder="Well pad name"
+                      oninput="updateCompanyLocation('${co.id}','${loc.id}','name',this.value)" />
+                    <span class="list-item-lbl">State</span>
+                    <select style="flex:none;width:80px;background:transparent;border:none;outline:none;color:var(--text);font-size:0.78rem"
+                      onchange="updateCompanyLocation('${co.id}','${loc.id}','state',this.value)">
+                      <option value="">—</option>
+                      ${dustLists.states.slice().sort().map(s =>
+                        `<option value="${esc(s)}"${loc.state===s?' selected':''}>${esc(s)}</option>`).join('')}
+                    </select>
+                    <button class="remove-item" onclick="removeCompanyLocation('${co.id}','${loc.id}')">✕</button>
+                  </div>`).join('')
+              : '<div class="empty-hint">No well pads added yet.</div>';
+
             return `
               <div class="list-item company-item">
                 <div class="company-header">
@@ -1095,37 +1126,52 @@
                   <div class="co-men-lbl">Company Men</div>
                   <div class="emp-checks">${checksHtml}</div>
                 </div>
+                <div class="co-locations-section">
+                  <div class="co-men-lbl">Well Pads / Locations</div>
+                  <div class="co-location-items">${locsHtml}</div>
+                  <div class="add-location-row">
+                    <input type="text" class="new-loc-name-co" placeholder="Well pad name…" />
+                    <select class="new-loc-state-co" style="flex:none;width:80px;padding:0.28rem 0.4rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.78rem;outline:none">
+                      <option value="">State…</option>
+                      ${stateOpts}
+                    </select>
+                    <button class="btn-list-add" onclick="addCompanyLocation('${co.id}',this)">+ Add</button>
+                  </div>
+                </div>
               </div>`;
           }).join('')
         : '<div class="empty-hint">No companies added yet.</div>';
     }
 
-    function renderLocationsPanel() {
-      // Refresh state options in the "add location" state dropdown
-      const newLocState = document.getElementById('new-loc-state');
-      if (newLocState) {
-        const cur = newLocState.value;
-        newLocState.innerHTML = '<option value="">State…</option>' +
-          dustLists.states.slice().sort().map(s =>
-            `<option value="${esc(s)}"${s===cur?' selected':''}>${esc(s)}</option>`).join('');
-      }
+    function addCompanyLocation(coId, btn) {
+      const row   = btn.closest('.add-location-row');
+      const input = row.querySelector('.new-loc-name-co');
+      const sel   = row.querySelector('.new-loc-state-co');
+      const name  = input ? input.value.trim() : '';
+      if (!name) { if (input) input.focus(); return; }
+      const co = dustLists.companies.find(c => c.id === coId);
+      if (!co) return;
+      if (!co.locations) co.locations = [];
+      co.locations.push({ id: uid(), name, state: sel ? sel.value : '' });
+      if (input) input.value = '';
+      if (sel)   sel.value   = '';
+      renderCompaniesPanel();
+      saveLists();
+    }
 
-      const sorted = dustLists.locations.slice().sort((a,b) => a.name.localeCompare(b.name));
-      document.getElementById('li-locations').innerHTML = sorted.length
-        ? sorted.map(loc => `
-            <div class="list-item">
-              <input type="text" value="${esc(loc.name)}" placeholder="Location name"
-                oninput="updateListItem('locations','${loc.id}','name',this.value)" />
-              <span class="list-item-lbl">State</span>
-              <select style="flex:none;width:80px;background:transparent;border:none;outline:none;color:var(--text);font-size:0.78rem"
-                onchange="updateListItem('locations','${loc.id}','state',this.value)">
-                <option value="">—</option>
-                ${dustLists.states.slice().sort().map(s =>
-                  `<option value="${esc(s)}"${loc.state===s?' selected':''}>${esc(s)}</option>`).join('')}
-              </select>
-              <button class="remove-item" onclick="removeListItem('locations','${loc.id}')">✕</button>
-            </div>`).join('')
-        : '<div class="empty-hint">No locations added yet.</div>';
+    function removeCompanyLocation(coId, locId) {
+      const co = dustLists.companies.find(c => c.id === coId);
+      if (!co) return;
+      co.locations = (co.locations || []).filter(l => l.id !== locId);
+      renderCompaniesPanel();
+      saveLists();
+    }
+
+    function updateCompanyLocation(coId, locId, field, value) {
+      const co  = dustLists.companies.find(c => c.id === coId);
+      const loc = co ? (co.locations || []).find(l => l.id === locId) : null;
+      if (loc) loc[field] = value;
+      saveLists();
     }
 
     function renderStatesPanel() {
@@ -1158,17 +1204,9 @@
       } else if (type === 'companies') {
         const name = document.getElementById('new-co-name').value.trim();
         if (!name) { document.getElementById('new-co-name').focus(); return; }
-        dustLists.companies.push({ id: uid(), name, men: [] });
+        dustLists.companies.push({ id: uid(), name, men: [], locations: [] });
         document.getElementById('new-co-name').value = '';
         renderCompaniesPanel();
-      } else if (type === 'locations') {
-        const name  = document.getElementById('new-loc-name').value.trim();
-        const state = document.getElementById('new-loc-state').value;
-        if (!name) { document.getElementById('new-loc-name').focus(); return; }
-        dustLists.locations.push({ id: uid(), name, state });
-        document.getElementById('new-loc-name').value = '';
-        document.getElementById('new-loc-state').value = '';
-        renderLocationsPanel();
       } else if (type === 'states') {
         const abbr = document.getElementById('new-state-abbr').value.trim().toUpperCase();
         if (!abbr) { document.getElementById('new-state-abbr').focus(); return; }
@@ -1176,7 +1214,7 @@
           dustLists.states.push(abbr);
           document.getElementById('new-state-abbr').value = '';
           renderStatesPanel();
-          renderLocationsPanel(); // refresh state dropdowns in locations panel
+          renderCompaniesPanel(); // refresh state dropdowns in well pad sections
         }
       }
       saveLists();
@@ -1192,10 +1230,10 @@
       } else if (type === 'states') {
         // id here is the abbreviation string
         dustLists.states = dustLists.states.filter(s => s !== id);
-        // Clear state from locations that used it
-        dustLists.locations.forEach(loc => { if (loc.state === id) loc.state = ''; });
-      } else if (type === 'locations') {
-        dustLists.locations = dustLists.locations.filter(item => item.id !== id);
+        // Clear state from company well pads that used it
+        dustLists.companies.forEach(co => {
+          (co.locations || []).forEach(loc => { if (loc.state === id) loc.state = ''; });
+        });
       } else {
         dustLists[type] = dustLists[type].filter(item => item.id !== id);
       }
@@ -1224,7 +1262,6 @@
     });
     document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
     document.getElementById('new-co-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('companies'); });
-    document.getElementById('new-loc-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('locations'); });
     document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
 
     /* ═══════════════════════════════════════════
@@ -1258,8 +1295,9 @@
         dustLists.equipment = Array.isArray(savedLists.equipment) ? savedLists.equipment : [];
         dustLists.employees = Array.isArray(savedLists.employees) ? savedLists.employees : [];
         dustLists.companies = Array.isArray(savedLists.companies) ? savedLists.companies : [];
-        dustLists.locations = Array.isArray(savedLists.locations) ? savedLists.locations : [];
         dustLists.states    = Array.isArray(savedLists.states)    ? savedLists.states    : [];
+        // Ensure each company has a locations array (migration for older data)
+        dustLists.companies.forEach(co => { if (!Array.isArray(co.locations)) co.locations = []; });
       }
 
       renderTable();
