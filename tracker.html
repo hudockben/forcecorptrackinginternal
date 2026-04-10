@@ -3415,7 +3415,8 @@ function renderHomeTab() {
     const variance  = bid - actual;
     const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
     const varTxt    = !bid ? '—' : variance >= 0 ? `$${fmt(Math.abs(variance))} under` : `$${fmt(Math.abs(variance))} over`;
-    const projCost      = projectedCostForProject(p);
+    const isComplete    = (p['status'] || '') === 'Complete';
+    const projCost      = isComplete ? actual : projectedCostForProject(p);
     const projTxt       = bid > 0 ? '$' + fmt(projCost) : '—';
     const projStyle     = !bid ? 'color:var(--muted)'
       : projCost > bid ? 'color:var(--red)'
