@@ -837,11 +837,11 @@
           </select></td>
           <td class="cw-veh"><select onchange="setVehicle(${idx},1,this.value)">${vehOpts(row.vehicle1)}</select></td>
           <td class="cw-unit"><input type="text" data-field="v1_unit" value="${esc(row.v1_unit||'')}" oninput="set(${idx},'v1_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="set(${idx},'v1_rate',this.value)"></td>
+          <td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="set(${idx},'v1_rate',this.value)"></td>
           ${calcCell(c.v1Total  ? money(c.v1Total)  : '', 'cw-vtot')}
           <td class="cw-veh"><select onchange="setVehicle(${idx},2,this.value)">${vehOpts(row.vehicle2)}</select></td>
           <td class="cw-unit"><input type="text" data-field="v2_unit" value="${esc(row.v2_unit||'')}" oninput="set(${idx},'v2_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="set(${idx},'v2_rate',this.value)"></td>
+          <td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="set(${idx},'v2_rate',this.value)"></td>
           ${calcCell(c.v2Total  ? money(c.v2Total)  : '', 'cw-vtot')}
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
           <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="set(${idx},'gallons_ub',this.value)"></td>
@@ -998,16 +998,23 @@
     function setVehicle(idx, num, vehicleName) {
       const vField = num === 1 ? 'vehicle1' : 'vehicle2';
       const uField = num === 1 ? 'v1_unit'  : 'v2_unit';
+      const rField = num === 1 ? 'v1_rate'  : 'v2_rate';
       rows[idx][vField] = vehicleName;
-      // Auto-fill unit # from equipment list
+      // Auto-fill unit # and vehicle rate from equipment list
       const eq      = dustLists.equipment.find(e => e.name === vehicleName);
       const unitVal = eq?.unit_number || '';
+      const rateVal = eq?.vehicle_rate != null ? eq.vehicle_rate : '';
       rows[idx][uField] = unitVal;
+      rows[idx][rField] = rateVal;
       const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
       if (tr) {
         const unitInput = tr.querySelector(`input[data-field="${uField}"]`);
         if (unitInput) unitInput.value = unitVal;
+        const rateInput = tr.querySelector(`input[data-field="${rField}"]`);
+        if (rateInput) rateInput.value = rateVal;
       }
+      refreshCalcCells(idx);
+      refreshAllTotals();
       scheduleSave();
     }
 
