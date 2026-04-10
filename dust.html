@@ -367,6 +367,21 @@
     }
     th.calc-hdr { color: #c4b85a; font-style: italic; }
 
+    .sheet-table thead tr.filter-row th {
+      background: #0e0e18;
+      padding: 0.2rem 0.3rem;
+      border: 1px solid var(--border);
+      position: sticky; top: 54px; z-index: 3;
+    }
+    .filter-row input[type="text"] {
+      width: 100%; box-sizing: border-box;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
+      color: var(--text); font-size: 0.65rem; font-family: inherit;
+      padding: 0.15rem 0.3rem; outline: none;
+    }
+    .filter-row input[type="text"]:focus { border-color: var(--amber); }
+    .filter-row input[type="text"]::placeholder { color: var(--muted); opacity: 0.55; }
+
     /* Row hover */
     .sheet-table tbody tr:hover td { background: rgba(251,191,36,0.03); }
 
@@ -560,6 +575,29 @@
             <th class="cw-inv  calc-hdr">Invoice Total</th>
             <th class="cw-del"></th>
           </tr>
+          <tr class="filter-row">
+            <th class="cw-date"><input type="text" placeholder="Date…"         oninput="setFilter('date',this.value)"></th>
+            <th class="cw-time"></th>
+            <th class="cw-time"></th>
+            <th class="cw-ttim"></th>
+            <th class="cw-co">  <input type="text" placeholder="Company…"      oninput="setFilter('company',this.value)"></th>
+            <th class="cw-cm">  <input type="text" placeholder="Co. Man…"      oninput="setFilter('company_man',this.value)"></th>
+            <th class="cw-loc"> <input type="text" placeholder="Location…"     oninput="setFilter('location',this.value)"></th>
+            <th class="cw-st">  <input type="text" placeholder="State…"        oninput="setFilter('state',this.value)"></th>
+            <th class="cw-veh"> <input type="text" placeholder="Vehicle 1…"    oninput="setFilter('vehicle1',this.value)"></th>
+            <th class="cw-unit"></th>
+            <th class="cw-rate"></th>
+            <th class="cw-vtot"></th>
+            <th class="cw-veh"> <input type="text" placeholder="Vehicle 2…"    oninput="setFilter('vehicle2',this.value)"></th>
+            <th class="cw-unit"></th>
+            <th class="cw-rate"></th>
+            <th class="cw-vtot"></th>
+            <th class="cw-vgrt"></th>
+            <th class="cw-gal"></th>
+            <th class="cw-ubt"></th>
+            <th class="cw-inv"></th>
+            <th class="cw-del"></th>
+          </tr>
         </thead>
         <tbody id="dustTbody"></tbody>
         <tfoot>
@@ -714,7 +752,15 @@
     let ubRate    = 0;
     let saveTimer = null;
 
-    let dustLists = { equipment: [], employees: [], companies: [], states: [] };
+    let dustLists  = { equipment: [], employees: [], companies: [], states: [] };
+    let dustFilters = {};
+
+    function setFilter(field, value) {
+      const v = value.trim().toLowerCase();
+      if (v) dustFilters[field] = v;
+      else   delete dustFilters[field];
+      renderTable();
+    }
 
     function saveLists() { apiPut('dust_lists', dustLists); }
 
@@ -795,9 +841,18 @@
     function renderTable() {
       const tbody = document.getElementById('dustTbody');
 
+      // Apply active filters; preserve original idx so in-row edits stay correct
+      const filterEntries = Object.entries(dustFilters);
+      const visibleIdxs = rows.reduce((acc, row, idx) => {
+        if (!filterEntries.length || filterEntries.every(([f, v]) =>
+            (row[f] || '').toLowerCase().includes(v))) acc.push(idx);
+        return acc;
+      }, []);
+
       let totVeh = 0, totUb = 0, totInv = 0, totGal = 0;
 
-      tbody.innerHTML = rows.map((row, idx) => {
+      tbody.innerHTML = visibleIdxs.map(idx => {
+        const row = rows[idx];
         const c = calc(row);
         totVeh += c.vehTotal;
         totUb  += c.ubTotal;
@@ -852,8 +907,10 @@
       }).join('');
 
       renderTotals(totVeh, totUb, totInv, totGal);
-      document.getElementById('rowCount').textContent =
-        `${rows.length} row${rows.length !== 1 ? 's' : ''}`;
+      const total = rows.length, shown = visibleIdxs.length;
+      document.getElementById('rowCount').textContent = filterEntries.length
+        ? `${shown} of ${total} row${total !== 1 ? 's' : ''}`
+        : `${total} row${total !== 1 ? 's' : ''}`;
     }
 
     function calcCell(val, extraClass = '') {
