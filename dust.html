@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='%230a0f1e' stroke='%23fbbf24' stroke-width='6'/><circle cx='50' cy='50' r='12' fill='%23fbbf24'/></svg>">
+  <title>DataWatch — Dust Control</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #111118;
+      --surface2:  #1a1a26;
+      --border:    #2a2a3a;
+      --green:     #22c55e;
+      --red:       #ef4444;
+      --yellow:    #eab308;
+      --blue:      #60a5fa;
+      --amber:     #fbbf24;
+      --amber-dim: #d97706;
+      --text:      #e0e0e0;
+      --muted:     #666;
+      --calc:      #1a1a0d;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.6rem 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 300;
+      gap: 1rem;
+    }
+
+    .hdr-left { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+
+    .brand {
+      font-size: 0.7rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--amber);
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .div-label {
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-left: 1px solid var(--border);
+      padding-left: 1rem;
+      white-space: nowrap;
+    }
+
+    .hdr-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
+
+    .user-avatar {
+      width: 30px; height: 30px; border-radius: 50%;
+      background: var(--amber-dim);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.62rem; font-weight: 700; color: #fff;
+      flex-shrink: 0;
+    }
+
+    .user-info { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+    .user-info strong { color: var(--text); }
+
+    .btn-ghost {
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.32rem 0.7rem; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    .btn-ghost:hover { color: var(--text); border-color: #555; }
+
+    /* ── Tab bar ── */
+    .tab-bar {
+      display: flex;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1rem;
+      position: sticky;
+      top: 45px;
+      z-index: 200;
+      overflow-x: auto;
+    }
+
+    .tab-btn {
+      padding: 0.6rem 1.25rem;
+      font-size: 0.67rem; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--amber); border-bottom-color: var(--amber); }
+
+    /* ── Panels ── */
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Home placeholder ── */
+    .home-wrap {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; min-height: 65vh; gap: 0.75rem;
+    }
+    .home-eyebrow {
+      font-size: 0.58rem; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--amber); opacity: 0.75;
+    }
+    .home-heading {
+      font-size: 1.5rem; font-weight: 700; color: #fff; letter-spacing: -0.02em;
+    }
+    .home-sub { font-size: 0.82rem; color: var(--muted); }
+
+    /* ── Toolbar ── */
+    .toolbar {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.65rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-wrap: wrap;
+    }
+
+    .btn-add {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #000;
+      background: var(--amber); border: none; border-radius: 4px;
+      padding: 0.38rem 0.9rem; cursor: pointer;
+      transition: background 0.15s, transform 0.1s; flex-shrink: 0;
+    }
+    .btn-add:hover { background: #f59e0b; transform: translateY(-1px); }
+    .btn-add:active { transform: translateY(0); }
+
+    .row-count {
+      font-size: 0.65rem; color: var(--muted); letter-spacing: 0.03em;
+    }
+
+    .ub-rate-wrap {
+      display: flex; align-items: center; gap: 0.4rem; margin-left: auto;
+    }
+    .ub-rate-wrap label {
+      font-size: 0.6rem; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--muted); white-space: nowrap;
+    }
+    .ub-rate-sym { font-size: 0.75rem; color: var(--muted); }
+    .ub-rate-input {
+      width: 82px; padding: 0.28rem 0.45rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.78rem;
+      font-family: inherit; outline: none; text-align: right;
+    }
+    .ub-rate-input:focus { border-color: var(--amber); }
+
+    /* ── Totals bar ── */
+    .totals-bar {
+      display: flex; gap: 2.5rem; align-items: center;
+      padding: 0.45rem 1.25rem;
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .tot-item { display: flex; gap: 0.45rem; align-items: baseline; }
+    .tot-label { font-size: 0.6rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+    .tot-val { font-size: 0.82rem; font-weight: 600; color: var(--amber); font-variant-numeric: tabular-nums; }
+
+    /* ── Table wrapper ── */
+    .table-wrap {
+      overflow-x: auto;
+      overflow-y: auto;
+      max-height: calc(100vh - 182px);
+    }
+
+    /* ── Sheet table ── */
+    .sheet-table {
+      border-collapse: collapse;
+      font-size: 0.77rem;
+      white-space: nowrap;
+      width: max-content;
+      min-width: 100%;
+    }
+
+    .sheet-table thead { position: sticky; top: 0; z-index: 10; }
+
+    .sheet-table thead tr.group-row th {
+      font-size: 0.57rem; font-weight: 700;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      padding: 0.32rem 0.5rem; text-align: center;
+      border: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 5;
+    }
+
+    /* Group header colours */
+    th.g-entry  { background: #0d1218; color: #60a5fa; }
+    th.g-cust   { background: #1a1508; color: #fbbf24; }
+    th.g-v1     { background: #0d1a0d; color: #22c55e; }
+    th.g-v2     { background: #1a100d; color: #f97316; }
+    th.g-totals { background: #170d24; color: #a78bfa; }
+    th.g-del    { background: var(--surface2); border: 1px solid var(--border); }
+
+    .sheet-table thead tr.col-row th {
+      background: var(--surface2);
+      color: var(--muted);
+      font-size: 0.6rem; font-weight: 600; letter-spacing: 0.05em;
+      padding: 0.32rem 0.45rem; text-align: center;
+      border: 1px solid var(--border);
+      position: sticky; top: 27px; z-index: 4;
+    }
+    th.calc-hdr { color: #c4b85a; font-style: italic; }
+
+    /* Row hover */
+    .sheet-table tbody tr:hover td { background: rgba(251,191,36,0.03); }
+
+    /* Cells */
+    .sheet-table td {
+      border: 1px solid var(--border);
+      padding: 0; vertical-align: middle;
+      height: 30px;
+    }
+
+    .sheet-table td input {
+      width: 100%; height: 100%;
+      background: transparent; border: none; outline: none;
+      color: var(--text); font-size: 0.77rem; font-family: inherit;
+      padding: 0 0.42rem;
+    }
+    .sheet-table td input:focus { background: #1e1e2e; }
+    .sheet-table td input[type="date"],
+    .sheet-table td input[type="time"] { color-scheme: dark; padding: 0 0.2rem; }
+
+    /* Calculated cells */
+    .sheet-table td.calc {
+      background: var(--calc);
+      color: #d4b84a;
+      text-align: right;
+      padding: 0 0.5rem;
+      font-variant-numeric: tabular-nums;
+      user-select: text;
+    }
+    .sheet-table td.calc.empty { color: #3a3620; }
+
+    /* Delete column */
+    .sheet-table td.del-col { text-align: center; width: 32px; }
+    .del-btn {
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 0.82rem;
+      padding: 0.15rem 0.35rem; border-radius: 3px;
+      transition: color 0.15s, background 0.15s; line-height: 1;
+    }
+    .del-btn:hover { color: var(--red); background: rgba(239,68,68,0.1); }
+
+    /* Column widths */
+    .cw-date { min-width: 112px; }
+    .cw-time { min-width: 88px; }
+    .cw-ttim { min-width: 72px; }
+    .cw-conv { min-width: 72px; }
+    .cw-co   { min-width: 150px; }
+    .cw-cm   { min-width: 120px; }
+    .cw-loc  { min-width: 150px; }
+    .cw-st   { min-width: 52px; }
+    .cw-veh  { min-width: 130px; }
+    .cw-unit { min-width: 68px; }
+    .cw-rate { min-width: 88px; }
+    .cw-vtot { min-width: 100px; }
+    .cw-vgrt { min-width: 105px; }
+    .cw-gal  { min-width: 92px; }
+    .cw-ubt  { min-width: 110px; }
+    .cw-inv  { min-width: 112px; }
+    .cw-del  { min-width: 34px; width: 34px; }
+
+    /* Add-row footer */
+    .add-row-foot td {
+      text-align: center; padding: 0.4rem;
+      border: 1px solid var(--border);
+    }
+    .add-row-foot-btn {
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 0.68rem; letter-spacing: 0.07em;
+      text-transform: uppercase; padding: 0.18rem 0.5rem; border-radius: 3px;
+      transition: color 0.15s;
+    }
+    .add-row-foot-btn:hover { color: var(--amber); }
+
+    /* Save indicator */
+    .save-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--muted); flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    .save-dot.saving  { background: var(--amber); }
+    .save-dot.saved   { background: var(--green); }
+    .save-dot.error   { background: var(--red); }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <header>
+    <div class="hdr-left">
+      <div class="brand">DataWatch</div>
+      <div class="div-label">Dust Control</div>
+    </div>
+    <div class="hdr-right">
+      <div class="save-dot" id="saveDot" title="Save status"></div>
+      <div class="user-avatar" id="userAvatar"></div>
+      <div class="user-info" id="userInfo"></div>
+      <button class="btn-ghost" onclick="switchDivision()">Switch Division</button>
+      <button class="btn-ghost" onclick="signOut()">Sign Out</button>
+    </div>
+  </header>
+
+  <!-- ── Tab bar ── -->
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-tab="home">Home</button>
+    <button class="tab-btn" data-tab="tracking">Dust Control Tracking</button>
+  </nav>
+
+  <!-- ══════════════════════════════════════════════
+       HOME TAB
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel active" id="tab-home">
+    <div class="home-wrap">
+      <div class="home-eyebrow">Dust Control Division</div>
+      <div class="home-heading">Home Dashboard</div>
+      <div class="home-sub">Metrics and reporting will appear here as data is collected.</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════
+       DUST CONTROL TRACKING TAB
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-tracking">
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <button class="btn-add" onclick="addRow()">+ Add Row</button>
+      <span class="row-count" id="rowCount">0 rows</span>
+      <div class="ub-rate-wrap">
+        <label for="ubRateInput">UB Rate</label>
+        <span class="ub-rate-sym">$</span>
+        <input class="ub-rate-input" type="number" id="ubRateInput"
+          step="0.01" min="0" placeholder="0.00"
+          oninput="onUbRateChange(this.value)" />
+        <span class="ub-rate-sym">/ gal</span>
+      </div>
+    </div>
+
+    <!-- Totals bar -->
+    <div class="totals-bar">
+      <div class="tot-item">
+        <span class="tot-label">Vehicle Total</span>
+        <span class="tot-val" id="tot-veh">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">UB Total</span>
+        <span class="tot-val" id="tot-ub">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Invoice Total</span>
+        <span class="tot-val" id="tot-inv">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Total Gallons</span>
+        <span class="tot-val" id="tot-gal">—</span>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table class="sheet-table">
+        <thead>
+          <tr class="group-row">
+            <th class="g-entry"  colspan="5">Entry</th>
+            <th class="g-cust"   colspan="4">Customer</th>
+            <th class="g-v1"     colspan="4">Vehicle 1</th>
+            <th class="g-v2"     colspan="4">Vehicle 2</th>
+            <th class="g-totals" colspan="4">Totals</th>
+            <th class="g-del"></th>
+          </tr>
+          <tr class="col-row">
+            <th class="cw-date">Date</th>
+            <th class="cw-time">Start Time</th>
+            <th class="cw-time">End Time</th>
+            <th class="cw-ttim calc-hdr">Total Time</th>
+            <th class="cw-conv calc-hdr">Conversion</th>
+            <th class="cw-co">Company</th>
+            <th class="cw-cm">Company Man</th>
+            <th class="cw-loc">Location</th>
+            <th class="cw-st">State</th>
+            <th class="cw-veh">Vehicle 1</th>
+            <th class="cw-unit">Unit&nbsp;#</th>
+            <th class="cw-rate">Vehicle Rate</th>
+            <th class="cw-vtot calc-hdr">Vehicle&nbsp;#1 Total</th>
+            <th class="cw-veh">Vehicle 2</th>
+            <th class="cw-unit">Unit&nbsp;#</th>
+            <th class="cw-rate">Vehicle Rate</th>
+            <th class="cw-vtot calc-hdr">Vehicle&nbsp;#2 Total</th>
+            <th class="cw-vgrt calc-hdr">Vehicle Total&nbsp;$</th>
+            <th class="cw-gal">Gallons of UB</th>
+            <th class="cw-ubt  calc-hdr">UB Gallon Total&nbsp;$</th>
+            <th class="cw-inv  calc-hdr">Invoice Total</th>
+            <th class="cw-del"></th>
+          </tr>
+        </thead>
+        <tbody id="dustTbody"></tbody>
+        <tfoot>
+          <tr class="add-row-foot">
+            <td colspan="22">
+              <button class="add-row-foot-btn" onclick="addRow()">+ Add Row</button>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+  </div><!-- /tab-tracking -->
+
+  <script>
+    /* ═══════════════════════════════════════════
+       AUTH
+    ═══════════════════════════════════════════ */
+    const token    = localStorage.getItem('fct_token');
+    const user     = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    const division = localStorage.getItem('fct_division');
+
+    if (!token || !user) window.location.replace('index.html');
+    if (division !== 'dust') window.location.replace('divisions.html');
+
+    /* ═══════════════════════════════════════════
+       HEADER
+    ═══════════════════════════════════════════ */
+    if (user) {
+      document.getElementById('userAvatar').textContent = (user.username || 'U').slice(0, 2).toUpperCase();
+      document.getElementById('userInfo').innerHTML =
+        `<strong>${esc(user.username)}</strong>&nbsp;·&nbsp;${esc(user.companyName || user.companyCode)}`;
+    }
+
+    /* ═══════════════════════════════════════════
+       TAB SWITCHING
+    ═══════════════════════════════════════════ */
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b =>
+          b.classList.toggle('active', b === btn));
+        document.querySelectorAll('.tab-panel').forEach(p =>
+          p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
+      });
+    });
+
+    /* ═══════════════════════════════════════════
+       NAVIGATION
+    ═══════════════════════════════════════════ */
+    function switchDivision() {
+      localStorage.removeItem('fct_division');
+      window.location.replace('divisions.html');
+    }
+
+    function signOut() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+
+    /* ═══════════════════════════════════════════
+       API LAYER
+    ═══════════════════════════════════════════ */
+    const AUTH_HDR = () => ({
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    });
+
+    const saveDot = document.getElementById('saveDot');
+
+    function setSaveState(state) {
+      saveDot.className = 'save-dot ' + state;
+    }
+
+    async function apiGet(key) {
+      try {
+        const r = await fetch(`/api/data/${key}`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (r.status === 401) { signOut(); return null; }
+        if (!r.ok) return null;
+        const { value } = await r.json();
+        return value;
+      } catch { return null; }
+    }
+
+    async function apiPut(key, value) {
+      try {
+        const r = await fetch(`/api/data/${key}`, {
+          method: 'PUT',
+          headers: AUTH_HDR(),
+          body: JSON.stringify({ value }),
+        });
+        return r.ok;
+      } catch { return false; }
+    }
+
+    /* ═══════════════════════════════════════════
+       STATE
+    ═══════════════════════════════════════════ */
+    let rows      = [];
+    let ubRate    = 0;
+    let saveTimer = null;
+
+    function scheduleSave() {
+      setSaveState('saving');
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        const ok = await apiPut('dust_rows', rows);
+        apiPut('dust_settings', { ub_rate: ubRate });
+        setSaveState(ok ? 'saved' : 'error');
+        setTimeout(() => setSaveState(''), 3000);
+      }, 900);
+    }
+
+    /* ═══════════════════════════════════════════
+       UTILITIES
+    ═══════════════════════════════════════════ */
+    function uid() {
+      return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    }
+
+    function todayStr() {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    }
+
+    function parseMins(t) {
+      if (!t) return null;
+      const [h, m] = t.split(':').map(Number);
+      return h * 60 + (m || 0);
+    }
+
+    function fmtMins(mins) {
+      return `${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')}`;
+    }
+
+    function money(n) {
+      return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    /* ═══════════════════════════════════════════
+       CALCULATIONS
+    ═══════════════════════════════════════════ */
+    function calc(row) {
+      const s = parseMins(row.start_time);
+      const e = parseMins(row.end_time);
+
+      let totalTimeDisplay = '';
+      let conversion       = 0;
+
+      if (s !== null && e !== null) {
+        let mins = e - s;
+        if (mins < 0) mins += 24 * 60; // overnight support
+        conversion       = Math.round(mins / 60 * 100) / 100;
+        totalTimeDisplay = fmtMins(mins);
+      }
+
+      const v1Rate   = parseFloat(row.v1_rate)    || 0;
+      const v2Rate   = parseFloat(row.v2_rate)    || 0;
+      const gallons  = parseFloat(row.gallons_ub) || 0;
+
+      const v1Total  = round2(v1Rate * conversion);
+      const v2Total  = round2(v2Rate * conversion);
+      const vehTotal = round2(v1Total + v2Total);
+      const ubTotal  = round2(gallons * ubRate);
+      const invTotal = round2(vehTotal + ubTotal);
+
+      return { totalTimeDisplay, conversion, v1Total, v2Total, vehTotal, gallons, ubTotal, invTotal };
+    }
+
+    function round2(n) { return Math.round(n * 100) / 100; }
+
+    /* ═══════════════════════════════════════════
+       RENDER
+    ═══════════════════════════════════════════ */
+    function renderTable() {
+      const tbody = document.getElementById('dustTbody');
+
+      let totVeh = 0, totUb = 0, totInv = 0, totGal = 0;
+
+      tbody.innerHTML = rows.map((row, idx) => {
+        const c = calc(row);
+        totVeh += c.vehTotal;
+        totUb  += c.ubTotal;
+        totInv += c.invTotal;
+        totGal += c.gallons;
+
+        return `<tr data-idx="${idx}">
+          <td class="cw-date"><input type="date"   value="${esc(row.date        || '')}" onchange="set(${idx},'date',this.value)"></td>
+          <td class="cw-time"><input type="time"   value="${esc(row.start_time  || '')}" onchange="set(${idx},'start_time',this.value)"></td>
+          <td class="cw-time"><input type="time"   value="${esc(row.end_time    || '')}" onchange="set(${idx},'end_time',this.value)"></td>
+          ${calcCell(c.totalTimeDisplay,         'cw-ttim')}
+          ${calcCell(c.conversion ? c.conversion.toFixed(2) : '', 'cw-conv')}
+          <td class="cw-co"><input  type="text" value="${esc(row.company     || '')}" oninput="set(${idx},'company',this.value)"></td>
+          <td class="cw-cm"><input  type="text" value="${esc(row.company_man || '')}" oninput="set(${idx},'company_man',this.value)"></td>
+          <td class="cw-loc"><input type="text" value="${esc(row.location    || '')}" oninput="set(${idx},'location',this.value)"></td>
+          <td class="cw-st"><input  type="text" value="${esc(row.state       || '')}" oninput="set(${idx},'state',this.value)" maxlength="2" style="text-transform:uppercase"></td>
+          <td class="cw-veh"><input type="text" value="${esc(row.vehicle1    || '')}" oninput="set(${idx},'vehicle1',this.value)"></td>
+          <td class="cw-unit"><input type="text" value="${esc(row.v1_unit    || '')}" oninput="set(${idx},'v1_unit',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v1_rate || '')}" oninput="set(${idx},'v1_rate',this.value)"></td>
+          ${calcCell(c.v1Total  ? money(c.v1Total)  : '', 'cw-vtot')}
+          <td class="cw-veh"><input type="text" value="${esc(row.vehicle2    || '')}" oninput="set(${idx},'vehicle2',this.value)"></td>
+          <td class="cw-unit"><input type="text" value="${esc(row.v2_unit    || '')}" oninput="set(${idx},'v2_unit',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.v2_rate || '')}" oninput="set(${idx},'v2_rate',this.value)"></td>
+          ${calcCell(c.v2Total  ? money(c.v2Total)  : '', 'cw-vtot')}
+          ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
+          <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub || '')}" oninput="set(${idx},'gallons_ub',this.value)"></td>
+          ${calcCell(c.ubTotal  ? money(c.ubTotal)  : '', 'cw-ubt')}
+          ${calcCell(c.invTotal ? money(c.invTotal) : '', 'cw-inv')}
+          <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
+        </tr>`;
+      }).join('');
+
+      renderTotals(totVeh, totUb, totInv, totGal);
+      document.getElementById('rowCount').textContent =
+        `${rows.length} row${rows.length !== 1 ? 's' : ''}`;
+    }
+
+    function calcCell(val, extraClass = '') {
+      const empty = !val;
+      return `<td class="calc ${extraClass}${empty ? ' empty' : ''}">${empty ? '—' : val}</td>`;
+    }
+
+    function renderTotals(totVeh, totUb, totInv, totGal) {
+      document.getElementById('tot-veh').textContent = totVeh ? money(totVeh) : '—';
+      document.getElementById('tot-ub').textContent  = totUb  ? money(totUb)  : '—';
+      document.getElementById('tot-inv').textContent = totInv ? money(totInv) : '—';
+      document.getElementById('tot-gal').textContent = totGal
+        ? (totGal % 1 === 0 ? totGal.toFixed(0) : totGal.toFixed(1))
+        : '—';
+    }
+
+    /* ═══════════════════════════════════════════
+       IN-PLACE CALC UPDATE
+       (avoids full re-render on numeric changes,
+        so focused inputs don't lose their value)
+    ═══════════════════════════════════════════ */
+    const CALC_TRIGGERS = new Set(['start_time','end_time','v1_rate','v2_rate','gallons_ub']);
+
+    function refreshCalcCells(idx) {
+      const c  = calc(rows[idx]);
+      const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
+      if (!tr) return;
+
+      // Calc cells in DOM order: Total Time, Conversion, V1 Total, V2 Total, Veh Total, UB Total, Invoice Total
+      const vals = [
+        c.totalTimeDisplay || '',
+        c.conversion ? c.conversion.toFixed(2) : '',
+        c.v1Total  ? money(c.v1Total)  : '',
+        c.v2Total  ? money(c.v2Total)  : '',
+        c.vehTotal ? money(c.vehTotal) : '',
+        c.ubTotal  ? money(c.ubTotal)  : '',
+        c.invTotal ? money(c.invTotal) : '',
+      ];
+
+      tr.querySelectorAll('td.calc').forEach((td, i) => {
+        const v = vals[i];
+        td.textContent = v || '—';
+        td.classList.toggle('empty', !v);
+      });
+    }
+
+    function refreshAllTotals() {
+      let totVeh = 0, totUb = 0, totInv = 0, totGal = 0;
+      rows.forEach(row => {
+        const c = calc(row);
+        totVeh += c.vehTotal;
+        totUb  += c.ubTotal;
+        totInv += c.invTotal;
+        totGal += c.gallons;
+      });
+      renderTotals(totVeh, totUb, totInv, totGal);
+    }
+
+    /* ═══════════════════════════════════════════
+       ROW CRUD
+    ═══════════════════════════════════════════ */
+    function addRow() {
+      rows.push({
+        id: uid(), date: todayStr(),
+        start_time: '', end_time: '',
+        company: '', company_man: '', location: '', state: '',
+        vehicle1: '', v1_unit: '', v1_rate: '',
+        vehicle2: '', v2_unit: '', v2_rate: '',
+        gallons_ub: '',
+      });
+      renderTable();
+      scheduleSave();
+
+      // Scroll to and focus new row
+      const tbody = document.getElementById('dustTbody');
+      const last  = tbody.lastElementChild;
+      if (last) {
+        last.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const inp = last.querySelector('input');
+        if (inp) setTimeout(() => inp.focus(), 80);
+      }
+    }
+
+    function deleteRow(idx) {
+      if (!confirm('Delete this row?')) return;
+      rows.splice(idx, 1);
+      renderTable();
+      scheduleSave();
+    }
+
+    function set(idx, field, value) {
+      rows[idx][field] = value;
+      if (CALC_TRIGGERS.has(field)) {
+        refreshCalcCells(idx);
+        refreshAllTotals();
+      }
+      scheduleSave();
+    }
+
+    /* ═══════════════════════════════════════════
+       UB RATE
+    ═══════════════════════════════════════════ */
+    function onUbRateChange(val) {
+      ubRate = parseFloat(val) || 0;
+      rows.forEach((_, i) => refreshCalcCells(i));
+      refreshAllTotals();
+      scheduleSave();
+    }
+
+    /* ═══════════════════════════════════════════
+       INIT
+    ═══════════════════════════════════════════ */
+    async function init() {
+      const [savedRows, savedSettings] = await Promise.all([
+        apiGet('dust_rows'),
+        apiGet('dust_settings'),
+      ]);
+
+      if (Array.isArray(savedRows)) rows = savedRows;
+
+      if (savedSettings && typeof savedSettings.ub_rate === 'number') {
+        ubRate = savedSettings.ub_rate;
+        document.getElementById('ubRateInput').value = ubRate.toFixed(2);
+      }
+
+      renderTable();
+    }
+
+    // Flush pending save on unload
+    window.addEventListener('beforeunload', () => {
+      clearTimeout(saveTimer);
+      apiPut('dust_rows', rows);
+      apiPut('dust_settings', { ub_rate: ubRate });
+    });
+
+    init();
+  </script>
+
+</body>
+</html>
