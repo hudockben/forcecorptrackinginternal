@@ -502,6 +502,17 @@
     .an-chart-ttl.blue  { color: var(--blue);  }
     .an-chart-ttl.green { color: var(--green); }
 
+    /* Financial tab */
+    .fin-delta { font-size: 0.62rem; font-weight: 700; margin-top: 0.2rem; display: block; }
+    .fin-delta.up { color: var(--green); }
+    .fin-delta.dn { color: var(--red); }
+    .fin-wide-chart { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.75rem; }
+    .fin-wide-chart .an-chart-ttl { margin-bottom: 1rem; }
+    .an-tbl tfoot td { padding: 0.55rem 0.85rem; font-weight: 700; color: var(--amber); border-top: 2px solid var(--border); white-space: nowrap; text-align: right; }
+    .an-tbl tfoot td:first-child { text-align: left; color: var(--text); }
+    .an-tbl td.neg { color: var(--red) !important; font-weight: 700; }
+    .an-tbl td.pos { color: var(--green) !important; font-weight: 700; }
+
     /* Bar chart */
     .bar-list { display: flex; flex-direction: column; gap: 0.6rem; }
     .bar-item  { display: flex; align-items: center; gap: 0.65rem; }
@@ -797,9 +808,10 @@
   <div class="tab-panel" id="tab-analytics">
     <div class="an-wrap">
       <div class="an-subtabs">
-        <button class="an-subtab active" data-an="company">Company Data</button>
+        <button class="an-subtab active" data-an="customer">Customer Data</button>
+        <button class="an-subtab" data-an="financial">Financial</button>
       </div>
-      <div id="an-company">
+      <div id="an-customer">
         <div class="an-section-lbl">Overview</div>
         <div class="an-cards" id="an-cards"></div>
         <div class="an-section-lbl">Breakdown by Company</div>
@@ -831,6 +843,62 @@
         <div class="an-section-lbl">Top Locations by Company</div>
         <div class="an-locs" id="an-locs"></div>
       </div>
+
+      <!-- ── Financial sub-panel ── -->
+      <div id="an-financial" style="display:none">
+
+        <div class="an-section-lbl">Year at a Glance</div>
+        <div class="an-cards" id="fin-year-cards"></div>
+
+        <div class="an-section-lbl">Annual Totals</div>
+        <div class="an-charts">
+          <div class="an-chart-box">
+            <div class="an-chart-ttl amber">Revenue by Year</div>
+            <div class="bar-list" id="fin-bar-annual"></div>
+          </div>
+          <div class="an-chart-box">
+            <div class="an-chart-ttl blue">Service Hours by Year</div>
+            <div class="bar-list" id="fin-bar-hours-yr"></div>
+          </div>
+          <div class="an-chart-box">
+            <div class="an-chart-ttl green">Gallons Applied by Year</div>
+            <div class="bar-list" id="fin-bar-gal-yr"></div>
+          </div>
+        </div>
+
+        <div class="an-section-lbl">Monthly Revenue Timeline</div>
+        <div class="fin-wide-chart">
+          <div class="an-chart-ttl amber">Invoice Total by Month</div>
+          <div class="bar-list" id="fin-bar-monthly"></div>
+        </div>
+
+        <div class="an-section-lbl">Customer Revenue — Year over Year</div>
+        <div class="an-tbl-wrap" style="overflow-x:auto">
+          <table class="an-tbl" style="min-width:520px">
+            <thead id="fin-co-yr-head"></thead>
+            <tbody id="fin-co-yr-body"></tbody>
+            <tfoot id="fin-co-yr-foot"></tfoot>
+          </table>
+        </div>
+
+        <div class="an-section-lbl" style="margin-top:1.75rem">Revenue Mix</div>
+        <div class="an-charts">
+          <div class="an-chart-box">
+            <div class="an-chart-ttl amber">Vehicle Revenue by Year</div>
+            <div class="bar-list" id="fin-bar-veh-yr"></div>
+          </div>
+          <div class="an-chart-box">
+            <div class="an-chart-ttl green">UB Product Revenue by Year</div>
+            <div class="bar-list" id="fin-bar-ub-yr"></div>
+          </div>
+          <div class="an-chart-box">
+            <div class="an-chart-ttl blue">Jobs Completed by Year</div>
+            <div class="bar-list" id="fin-bar-jobs-yr"></div>
+          </div>
+        </div>
+
+      </div><!-- /an-financial -->
+
     </div>
   </div><!-- /tab-analytics -->
 
@@ -2024,9 +2092,41 @@
     });
 
     /* ═══════════════════════════════════════════
-       ANALYTICS
+       ANALYTICS — shared helpers
     ═══════════════════════════════════════════ */
-    function renderAnalytics() {
+    function buildBars(id, data, color, fmt) {
+      const max = Math.max(...data.map(d => d.v), 1e-9);
+      const el  = document.getElementById(id);
+      if (!el) return;
+      el.innerHTML = data.length
+        ? data.map(d => `
+            <div class="bar-item">
+              <div class="bar-label" title="${esc(d.label)}">${esc(d.label)}</div>
+              <div class="bar-track">
+                <div class="bar-fill ${color}" style="width:${((d.v/max)*100).toFixed(1)}%"></div>
+              </div>
+              <div class="bar-val">${fmt(d.v)}</div>
+            </div>`).join('')
+        : '<div style="color:var(--muted);font-size:0.72rem">No data</div>';
+    }
+
+    /* ── Analytics sub-tab switching ── */
+    document.querySelectorAll('.an-subtab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.an-subtab').forEach(b => b.classList.toggle('active', b === btn));
+        const panel = btn.dataset.an;
+        document.getElementById('an-customer').style.display  = panel === 'customer'  ? '' : 'none';
+        document.getElementById('an-financial').style.display = panel === 'financial' ? '' : 'none';
+        if (panel === 'customer')  renderCustomerAnalytics();
+        if (panel === 'financial') renderFinancial();
+      });
+    });
+
+    /* ═══════════════════════════════════════════
+       ANALYTICS — Customer Data tab
+    ═══════════════════════════════════════════ */
+    function renderAnalytics() { renderCustomerAnalytics(); }
+    function renderCustomerAnalytics() {
       if (!rows.length) {
         document.getElementById('an-cards').innerHTML =
           '<div class="an-empty">No tracking data yet — add rows in the Dust Control Tracking tab.</div>';
@@ -2081,21 +2181,6 @@
           <div class="an-card-sub">combined invoice total</div>
         </div>`;
 
-      /* ── Bar chart builder ── */
-      function buildBars(id, data, color, fmt) {
-        const max = Math.max(...data.map(d => d.v), 1e-9);
-        document.getElementById(id).innerHTML = data.length
-          ? data.map(d => `
-              <div class="bar-item">
-                <div class="bar-label" title="${esc(d.label)}">${esc(d.label)}</div>
-                <div class="bar-track">
-                  <div class="bar-fill ${color}" style="width:${((d.v/max)*100).toFixed(1)}%"></div>
-                </div>
-                <div class="bar-val">${fmt(d.v)}</div>
-              </div>`).join('')
-          : '<div style="color:var(--muted);font-size:0.72rem">No data</div>';
-      }
-
       buildBars('an-bar-invoice', cos.map(c=>({label:c.name, v:c.invTotal})), 'amber', v => money(v));
       buildBars('an-bar-hours',   cos.map(c=>({label:c.name, v:c.hours})),    'blue',  v => v.toFixed(1)+' hrs');
       buildBars('an-bar-gallons', cos.map(c=>({label:c.name, v:c.gallons})),  'green', v => fmtGal(v)+' gal');
@@ -2139,6 +2224,154 @@
               </div>`;
           }).join('')
         : '<div style="color:var(--muted);font-size:0.78rem;padding:0.5rem 0">No location data recorded yet.</div>';
+    }
+
+    /* ═══════════════════════════════════════════
+       ANALYTICS — Financial tab
+    ═══════════════════════════════════════════ */
+    function renderFinancial() {
+      const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+      if (!rows.length) {
+        document.getElementById('fin-year-cards').innerHTML =
+          '<div class="an-empty">No tracking data yet.</div>';
+        return;
+      }
+
+      const years = [...new Set(
+        rows.map(r => (r.date||'').slice(0,4)).filter(y => /^\d{4}$/.test(y))
+      )].sort();
+
+      // Aggregate
+      const byYear    = {};  // year → totals
+      const byYearMo  = {};  // "YYYY-MM" → invTotal
+      const byYearCo  = {};  // year → company → totals
+
+      rows.forEach(row => {
+        const y = (row.date||'').slice(0,4);
+        if (!/^\d{4}$/.test(y)) return;
+        const mo = (row.date||'').slice(5,7);
+        const ym = `${y}-${mo}`;
+        const co = row.company || '(Unassigned)';
+        const c  = calc(row);
+
+        if (!byYear[y]) byYear[y] = { inv:0, veh:0, ub:0, hrs:0, gal:0, jobs:0 };
+        byYear[y].inv  += c.invTotal;
+        byYear[y].veh  += c.vehTotal;
+        byYear[y].ub   += c.ubTotal;
+        byYear[y].hrs  += c.totalHours;
+        byYear[y].gal  += c.gallons;
+        byYear[y].jobs++;
+
+        byYearMo[ym] = (byYearMo[ym] || 0) + c.invTotal;
+
+        if (!byYearCo[y])     byYearCo[y]     = {};
+        if (!byYearCo[y][co]) byYearCo[y][co] = { inv:0, veh:0, ub:0, hrs:0, jobs:0 };
+        byYearCo[y][co].inv  += c.invTotal;
+        byYearCo[y][co].veh  += c.vehTotal;
+        byYearCo[y][co].ub   += c.ubTotal;
+        byYearCo[y][co].hrs  += c.totalHours;
+        byYearCo[y][co].jobs++;
+      });
+
+      // ── Year summary cards ──
+      document.getElementById('fin-year-cards').innerHTML = years.map((y, i) => {
+        const d    = byYear[y];
+        const prev = i > 0 ? byYear[years[i-1]] : null;
+        const delta = prev && prev.inv
+          ? ((d.inv - prev.inv) / prev.inv * 100) : null;
+        const deltaHtml = delta !== null
+          ? `<span class="fin-delta ${delta >= 0 ? 'up' : 'dn'}">${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta).toFixed(1)}% vs ${years[i-1]}</span>`
+          : '';
+        return `
+          <div class="an-card">
+            <div class="an-card-lbl">${y} Revenue</div>
+            <div class="an-card-val amber">${money(d.inv)}</div>
+            <div class="an-card-sub">${d.jobs} jobs · ${round2(d.hrs).toFixed(1)} hrs · ${d.gal.toFixed(0)} gal${deltaHtml}</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">${y} Vehicle Rev</div>
+            <div class="an-card-val">${money(d.veh)}</div>
+            <div class="an-card-sub">${d.inv ? (d.veh/d.inv*100).toFixed(1) : 0}% of invoice</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">${y} UB Rev</div>
+            <div class="an-card-val">${money(d.ub)}</div>
+            <div class="an-card-sub">${d.inv ? (d.ub/d.inv*100).toFixed(1) : 0}% of invoice</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">${y} Avg / Job</div>
+            <div class="an-card-val">${d.jobs ? money(d.inv/d.jobs) : '—'}</div>
+            <div class="an-card-sub">avg invoice per job</div>
+          </div>`;
+      }).join('');
+
+      // ── Annual bar charts ──
+      buildBars('fin-bar-annual',   years.map(y=>({label:y, v:byYear[y].inv})),  'amber', v=>money(v));
+      buildBars('fin-bar-hours-yr', years.map(y=>({label:y, v:byYear[y].hrs})),  'blue',  v=>v.toFixed(1)+' hrs');
+      buildBars('fin-bar-gal-yr',   years.map(y=>({label:y, v:byYear[y].gal})),  'green', v=>v.toFixed(0)+' gal');
+      buildBars('fin-bar-veh-yr',   years.map(y=>({label:y, v:byYear[y].veh})),  'amber', v=>money(v));
+      buildBars('fin-bar-ub-yr',    years.map(y=>({label:y, v:byYear[y].ub})),   'green', v=>money(v));
+      buildBars('fin-bar-jobs-yr',  years.map(y=>({label:y, v:byYear[y].jobs})), 'blue',  v=>v+' jobs');
+
+      // ── Monthly timeline ──
+      const ymKeys = Object.keys(byYearMo).sort();
+      buildBars('fin-bar-monthly', ymKeys.map(ym => {
+        const mo = parseInt(ym.slice(5),10) - 1;
+        return { label: `${MONTHS[mo]} ${ym.slice(0,4)}`, v: byYearMo[ym] };
+      }), 'amber', v => money(v));
+
+      // ── Customer YoY table ──
+      const lastYear = years[years.length - 1];
+      const allCos   = [...new Set(
+        Object.values(byYearCo).flatMap(yco => Object.keys(yco))
+      )].sort((a,b) => {
+        const av = byYearCo[lastYear]?.[a]?.inv || 0;
+        const bv = byYearCo[lastYear]?.[b]?.inv || 0;
+        return bv - av;
+      });
+
+      document.getElementById('fin-co-yr-head').innerHTML = `<tr>
+        <th style="text-align:left">Customer</th>
+        ${years.map(y => `<th>${y} Revenue</th><th>${y} Jobs</th><th>${y} Hrs</th>`).join('')}
+        ${years.length >= 2 ? '<th>YoY Growth</th>' : ''}
+      </tr>`;
+
+      document.getElementById('fin-co-yr-body').innerHTML = allCos.map(co => {
+        const cells = years.map(y => {
+          const d = byYearCo[y]?.[co];
+          return d
+            ? `<td class="hi">${money(d.inv)}</td><td class="muted">${d.jobs}</td><td class="muted">${d.hrs.toFixed(1)}</td>`
+            : `<td class="muted">—</td><td class="muted">—</td><td class="muted">—</td>`;
+        }).join('');
+
+        let growthCell = '';
+        if (years.length >= 2) {
+          const first = byYearCo[years[0]]?.[co]?.inv  || 0;
+          const last  = byYearCo[lastYear]?.[co]?.inv   || 0;
+          if (first && last) {
+            const pct = (last - first) / first * 100;
+            growthCell = `<td class="${pct >= 0 ? 'pos' : 'neg'}">${pct >= 0?'+':''}${pct.toFixed(1)}%</td>`;
+          } else {
+            growthCell = `<td class="muted">—</td>`;
+          }
+        }
+        return `<tr><td>${esc(co)}</td>${cells}${growthCell}</tr>`;
+      }).join('');
+
+      // Totals footer row
+      const footCells = years.map(y => {
+        const d = byYear[y];
+        return `<td>${money(d.inv)}</td><td>${d.jobs}</td><td>${d.hrs.toFixed(1)}</td>`;
+      }).join('');
+      let footGrowth = '';
+      if (years.length >= 2) {
+        const f = byYear[years[0]].inv, l = byYear[lastYear].inv;
+        const pct = f ? (l - f) / f * 100 : 0;
+        footGrowth = `<td style="color:${pct>=0?'var(--green)':'var(--red)'};font-weight:700">${pct>=0?'+':''}${pct.toFixed(1)}%</td>`;
+      }
+      document.getElementById('fin-co-yr-foot').innerHTML =
+        `<tr><td>Total</td>${footCells}${footGrowth}</tr>`;
     }
 
     /* Hook analytics tab */
