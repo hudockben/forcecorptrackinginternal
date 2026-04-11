@@ -709,6 +709,7 @@
       <button class="btn-add" onclick="addRow()">+ Add Row</button>
       <button class="btn-ghost" onclick="openListsModal()">Manage Lists</button>
       <button class="btn-ghost" onclick="openImportModal()">↑ Import CSV</button>
+      <button class="btn-ghost" id="repairBtn" onclick="repairListsFromRows()">⟳ Repair Lists</button>
       <div id="yearSelector" class="year-selector"></div>
       <span class="row-count" id="rowCount">0 rows</span>
       <div class="ub-rate-wrap">
@@ -1333,6 +1334,19 @@
         co.locations.sort((a,b) => a.name.localeCompare(b.name));
         co.men.sort((a,b) => a.name.localeCompare(b.name));
       });
+    }
+
+    async function repairListsFromRows() {
+      if (!rows.length) return;
+      const btn = document.getElementById('repairBtn');
+      const orig = btn.textContent;
+      btn.textContent = 'Repairing…';
+      btn.disabled = true;
+      syncListsFromImport(rows);
+      await apiPut('dust_lists', dustLists);
+      renderTable(); // rebuild dropdowns with newly populated lists
+      btn.textContent = '✓ Done';
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
     }
 
     async function confirmImport() {
