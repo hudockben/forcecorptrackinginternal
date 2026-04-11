@@ -169,6 +169,16 @@
     }
     .ub-rate-input:focus { border-color: var(--amber); }
 
+    .year-selector { display: flex; gap: 0.3rem; align-items: center; }
+    .year-btn {
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.25rem 0.6rem;
+      background: none; border: 1px solid var(--border); border-radius: 4px;
+      color: var(--muted); cursor: pointer; transition: all 0.15s; white-space: nowrap;
+    }
+    .year-btn:hover { color: var(--text); border-color: #555; }
+    .year-btn.active { background: var(--amber); color: #000; border-color: var(--amber); }
+
     /* ── Totals bar ── */
     .totals-bar {
       display: flex; gap: 2.5rem; align-items: center;
@@ -641,6 +651,7 @@
     <div class="toolbar">
       <button class="btn-add" onclick="addRow()">+ Add Row</button>
       <button class="btn-ghost" onclick="openListsModal()">Manage Lists</button>
+      <div id="yearSelector" class="year-selector"></div>
       <span class="row-count" id="rowCount">0 rows</span>
       <div class="ub-rate-wrap">
         <label for="ubRateInput">UB Rate</label>
@@ -900,9 +911,10 @@
     /* ═══════════════════════════════════════════
        STATE
     ═══════════════════════════════════════════ */
-    let rows      = [];
-    let ubRate    = 0;
-    let saveTimer = null;
+    let rows       = [];
+    let ubRate     = 0;
+    let saveTimer  = null;
+    let activeYear = String(new Date().getFullYear());
 
     let dustLists  = { equipment: [], employees: [], companies: [], states: [] };
     let dustFilters = {};
@@ -914,6 +926,27 @@
       renderTable();
     }
 
+    function renderYearSelector() {
+      const years = [...new Set(
+        rows.map(r => (r.date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort();
+      const el = document.getElementById('yearSelector');
+      if (!el) return;
+      if (!years.length) { el.innerHTML = ''; return; }
+      // If the default year has no data, snap to the most recent year with data
+      if (activeYear !== 'all' && !years.includes(activeYear)) activeYear = years[years.length - 1];
+      el.innerHTML =
+        `<button class="year-btn${activeYear === 'all' ? ' active' : ''}" onclick="setYear('all')">All</button>` +
+        years.map(y =>
+          `<button class="year-btn${activeYear === y ? ' active' : ''}" onclick="setYear('${y}')">${y}</button>`
+        ).join('');
+    }
+
+    function setYear(y) {
+      activeYear = y;
+      renderYearSelector();
+      renderTable();
+    }
 
     function saveLists() { apiPut('dust_lists', dustLists); }
 
@@ -997,8 +1030,10 @@
       // Apply active filters; preserve original idx so in-row edits stay correct
       const filterEntries = Object.entries(dustFilters);
       const visibleIdxs = rows.reduce((acc, row, idx) => {
-        if (!filterEntries.length || filterEntries.every(([f, v]) =>
-            (row[f] || '').toLowerCase().includes(v))) acc.push(idx);
+        if (activeYear !== 'all' && (row.date || '').slice(0, 4) !== activeYear) return acc;
+        if (filterEntries.length && !filterEntries.every(([f, v]) =>
+            (row[f] || '').toLowerCase().includes(v))) return acc;
+        acc.push(idx);
         return acc;
       }, []);
 
@@ -1061,7 +1096,7 @@
 
       renderTotals(totVeh, totUb, totInv, totGal);
       const total = rows.length, shown = visibleIdxs.length;
-      document.getElementById('rowCount').textContent = filterEntries.length
+      document.getElementById('rowCount').textContent = shown < total
         ? `${shown} of ${total} row${total !== 1 ? 's' : ''}`
         : `${total} row${total !== 1 ? 's' : ''}`;
     }
@@ -1508,6 +1543,7 @@
         });
       }
 
+      renderYearSelector();
       renderTable();
     }
 
