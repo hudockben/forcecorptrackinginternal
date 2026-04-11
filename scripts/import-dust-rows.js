@@ -3,66 +3,108 @@
 /**
  * scripts/import-dust-rows.js
  *
- * Bulk-imports historical dust control tracking rows from CSV directly into
- * the Neon database so dust.html picks them up immediately.
+ * Bulk-imports historical dust control rows from CSV via the live Vercel API.
+ * No database credentials needed — uses the same JWT token your browser uses.
  *
- * Usage:
- *   node scripts/import-dust-rows.js --list-keys
- *     Show all dust_* keys in the DB so you can find your company code.
+ * ── Setup ──────────────────────────────────────────────────────────────────
+ * 1. Open dust.html in your browser and log in.
+ * 2. Open DevTools → Console and run:
+ *      localStorage.getItem('fct_token')
+ *    Copy the token string.
+ * 3. Run this script:
  *
- *   node scripts/import-dust-rows.js --company <code> --csv <file.csv> [--csv <file2.csv>]
- *     Import one or more CSV files. Merges with existing rows (skips duplicates).
+ * ── Usage ──────────────────────────────────────────────────────────────────
+ *   node scripts/import-dust-rows.js \
+ *     --url   https://your-app.vercel.app \
+ *     --token eyJhbGc... \
+ *     --csv   ./2024.csv \
+ *     --csv   ./2025.csv
  *
- *   node scripts/import-dust-rows.js --company <code> --csv <file.csv> --dry-run
- *     Parse and preview without writing anything.
+ *   # Preview without writing anything:
+ *   node scripts/import-dust-rows.js --url ... --token ... --csv ... --dry-run
  *
- *   node scripts/import-dust-rows.js --company <code> --csv <file.csv> --replace
- *     Replace ALL existing rows instead of merging.
+ *   # Replace ALL existing rows instead of merging:
+ *   node scripts/import-dust-rows.js --url ... --token ... --csv ... --replace
  *
- * Expected CSV columns (tab or comma delimited, header row required):
+ * ── Expected CSV columns ───────────────────────────────────────────────────
  *   Date, Start Time, End Time, Total Time, Conversion,
  *   Company, Company Man, Location, State,
  *   Vehicle 1, Unit #, Vehicle Rate, Vehicle #1 Total,
  *   Vehicle 2, Unit #, Vehicle Rate, Vehicle #2 Total,
  *   Vehicle Total $, Gallons of UB, UB Gallon Total $, Invoice Total
  *
- * Calculated columns (Total Time, Vehicle #1 Total, etc.) are ignored —
- * the app recomputes them from raw values at display time.
+ *   Tab or comma delimited. Calculated columns are ignored (the app recomputes them).
  */
 
-// Load env from api/.env (where DATABASE_URL lives) with fallback to root .env
-require('dotenv').config({ path: require('path').join(__dirname, '../api/.env') });
-require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
-
-const { neon } = require('@neondatabase/serverless');
 const fs   = require('fs');
 const path = require('path');
 
 // ── CLI arg parsing ────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
-let companyCode = null;
+let appUrl      = null;
+let token       = null;
 let csvPaths    = [];
 let replace     = false;
 let dryRun      = false;
-let listKeys    = false;
 
 for (let i = 0; i < args.length; i++) {
-  if      (args[i] === '--company')   companyCode = args[++i];
-  else if (args[i] === '--csv')       csvPaths.push(args[++i]);
-  else if (args[i] === '--replace')   replace  = true;
-  else if (args[i] === '--dry-run')   dryRun   = true;
-  else if (args[i] === '--list-keys') listKeys = true;
+  if      (args[i] === '--url')     appUrl   = args[++i];
+  else if (args[i] === '--token')   token    = args[++i];
+  else if (args[i] === '--csv')     csvPaths.push(args[++i]);
+  else if (args[i] === '--replace') replace  = true;
+  else if (args[i] === '--dry-run') dryRun   = true;
 }
 
-if (!process.env.DATABASE_URL) {
-  console.error('ERROR: DATABASE_URL not set.');
-  console.error('Make sure api/.env contains: DATABASE_URL=postgresql://...');
+if (!appUrl || !token) {
+  console.error('');
+  console.error('Usage:');
+  console.error('  node scripts/import-dust-rows.js \\');
+  console.error('    --url   https://your-app.vercel.app \\');
+  console.error('    --token <jwt-token> \\');
+  console.error('    --csv   ./2024.csv [--csv ./2025.csv]');
+  console.error('');
+  console.error('Get your token from the browser console:');
+  console.error('  localStorage.getItem(\'fct_token\')');
+  console.error('');
+  process.exit(1);
+}
+if (!csvPaths.length) {
+  console.error('Error: at least one --csv <path> is required.');
   process.exit(1);
 }
 
-const sql = neon(process.env.DATABASE_URL);
+// Normalize base URL (strip trailing slash)
+const BASE = appUrl.replace(/\/$/, '');
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── API helpers ────────────────────────────────────────────────────────────
+async function apiGet(key) {
+  const url = `${BASE}/api/data/${key}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) {
+    console.error('Error: token rejected (401). Copy a fresh token from localStorage.');
+    process.exit(1);
+  }
+  if (!res.ok) throw new Error(`GET ${url} → ${res.status} ${res.statusText}`);
+  const { value } = await res.json();
+  return value;
+}
+
+async function apiPut(key, value) {
+  const url = `${BASE}/api/data/${key}`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ value }),
+  });
+  if (!res.ok) throw new Error(`PUT ${url} → ${res.status} ${res.statusText}`);
+}
+
+// ── CSV helpers ────────────────────────────────────────────────────────────
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
@@ -74,11 +116,11 @@ function normalizeDate(raw) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
-  console.warn(`  [warn] Unrecognized date format: "${raw}" — storing as-is`);
+  console.warn(`  [warn] Unrecognized date: "${raw}" — stored as-is`);
   return s;
 }
 
-/** Normalizes to HH:MM (24h). Handles "7:00", "07:00", "7:00 AM", "3:30 PM". */
+/** Normalizes to HH:MM 24h. Handles "7:00", "07:00", "7:00 AM", "3:30 PM". */
 function normalizeTime(raw) {
   if (!raw || !String(raw).trim()) return '';
   const s = String(raw).trim();
@@ -90,30 +132,27 @@ function normalizeTime(raw) {
   const ap = s.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
   if (ap) {
     let h = parseInt(ap[1], 10);
-    const isPM = ap[3].toUpperCase() === 'PM';
-    if (isPM && h !== 12) h += 12;
-    if (!isPM && h === 12) h = 0;
+    if (ap[3].toUpperCase() === 'PM' && h !== 12) h += 12;
+    if (ap[3].toUpperCase() === 'AM' && h === 12) h = 0;
     return `${String(h).padStart(2, '0')}:${ap[2]}`;
   }
-  console.warn(`  [warn] Unrecognized time format: "${raw}" — storing as-is`);
+  console.warn(`  [warn] Unrecognized time: "${raw}" — stored as-is`);
   return s;
 }
 
-/** Strips $, commas, spaces and returns a number or '' if empty/invalid. */
+/** Strips $, commas; returns number or '' if blank/invalid. */
 function parseNum(raw) {
   if (!raw || !String(raw).trim()) return '';
   const n = parseFloat(String(raw).replace(/[$,\s]/g, ''));
   return isNaN(n) ? '' : n;
 }
 
-/** Auto-detect tab vs comma delimiter from the header line. */
 function detectDelimiter(line) {
   const tabs   = (line.match(/\t/g) || []).length;
   const commas = (line.match(/,/g)  || []).length;
   return tabs > commas ? '\t' : ',';
 }
 
-/** Split a CSV line respecting double-quoted fields. */
 function parseCSVLine(line, delim) {
   const cols = []; let cur = ''; let inQ = false;
   for (let i = 0; i < line.length; i++) {
@@ -128,7 +167,6 @@ function parseCSVLine(line, delim) {
   return cols;
 }
 
-// ── CSV → row objects ──────────────────────────────────────────────────────
 function parseCSVFile(filePath) {
   const content = fs.readFileSync(filePath, 'utf8');
   const lines   = content.split(/\r?\n/).filter(l => l.trim());
@@ -137,13 +175,11 @@ function parseCSVFile(filePath) {
     return [];
   }
 
-  const delim = detectDelimiter(lines[0]);
-
-  // Normalize header text: lowercase, collapse whitespace, strip trailing #
+  const delim   = detectDelimiter(lines[0]);
   const norm    = s => s.toLowerCase().replace(/\s+/g, ' ').replace(/#/g, '').trim();
   const headers = parseCSVLine(lines[0], delim).map(norm);
 
-  // "unit " and "vehicle rate" each appear twice — resolve by occurrence index
+  // "unit" and "vehicle rate" each appear twice — resolve by occurrence
   const findIdx = (name, occ = 0) => {
     let count = 0;
     for (let i = 0; i < headers.length; i++) {
@@ -161,7 +197,7 @@ function parseCSVFile(filePath) {
     location:    findIdx('location'),
     state:       findIdx('state'),
     vehicle1:    findIdx('vehicle 1'),
-    v1_unit:     findIdx('unit', 0),           // "Unit #" → "unit"
+    v1_unit:     findIdx('unit', 0),
     v1_rate:     findIdx('vehicle rate', 0),
     vehicle2:    findIdx('vehicle 2'),
     v2_unit:     findIdx('unit', 1),
@@ -171,7 +207,7 @@ function parseCSVFile(filePath) {
 
   console.log(`\n  Column mapping for ${path.basename(filePath)}:`);
   Object.entries(COL).forEach(([k, v]) => {
-    if (v < 0) console.warn(`    ⚠  "${k}" not found in headers — will be blank`);
+    if (v < 0) console.warn(`    ⚠  "${k}" not found — will be blank`);
     else        console.log( `    ✓  "${k}" → col ${v} ("${headers[v]}")`);
   });
 
@@ -180,7 +216,7 @@ function parseCSVFile(filePath) {
   const parsed = [];
   for (let li = 1; li < lines.length; li++) {
     const cols = parseCSVLine(lines[li], delim);
-    if (cols.every(c => !c)) continue; // skip blank rows
+    if (cols.every(c => !c)) continue;
     parsed.push({
       id:          uid(),
       date:        normalizeDate(get(cols, COL.date)),
@@ -205,50 +241,11 @@ function parseCSVFile(filePath) {
 // ── Main ───────────────────────────────────────────────────────────────────
 async function main() {
 
-  // --list-keys: discover company codes in the DB
-  if (listKeys) {
-    console.log('Scanning app_data for dust_rows keys…\n');
-    const result = await sql`
-      SELECT key, updated_at,
-             jsonb_array_length(CASE WHEN jsonb_typeof(value) = 'array' THEN value ELSE '[]'::jsonb END) AS row_count
-      FROM app_data
-      WHERE key LIKE '%:dust_rows'
-      ORDER BY key
-    `;
-    if (!result.length) {
-      console.log('No dust_rows keys found in DB yet.');
-      console.log('The key is created automatically when dust.html first saves data.');
-    } else {
-      console.log('Found dust_rows entries:');
-      result.forEach(r => {
-        const code = r.key.replace(':dust_rows', '');
-        console.log(`  company code: "${code}"  →  ${r.row_count} rows  (updated ${r.updated_at})`);
-      });
-    }
-    console.log('\nUse: node scripts/import-dust-rows.js --company <code> --csv <file.csv>');
-    return;
-  }
-
-  if (!companyCode) {
-    console.error('Error: --company <code> is required.\n');
-    console.error('Run with --list-keys first to find your company code:');
-    console.error('  node scripts/import-dust-rows.js --list-keys\n');
-    console.error('Then import:');
-    console.error('  node scripts/import-dust-rows.js --company <code> --csv ./2024.csv --csv ./2025.csv');
-    process.exit(1);
-  }
-
-  if (!csvPaths.length) {
-    console.error('Error: at least one --csv <path> is required.');
-    process.exit(1);
-  }
-
-  // Expand directories to .csv files
+  // Expand any directory paths to .csv files
   const files = [];
   for (const p of csvPaths) {
     const resolved = path.resolve(p);
-    const stat = fs.statSync(resolved);
-    if (stat.isDirectory()) {
+    if (fs.statSync(resolved).isDirectory()) {
       fs.readdirSync(resolved)
         .filter(f => f.toLowerCase().endsWith('.csv'))
         .sort()
@@ -257,51 +254,45 @@ async function main() {
       files.push(resolved);
     }
   }
-
   if (!files.length) {
     console.error('No .csv files found at the specified paths.');
     process.exit(1);
   }
 
-  // Parse all CSV files
+  // Parse CSV files
   let incoming = [];
   for (const f of files) {
     console.log(`\nParsing: ${f}`);
     const parsed = parseCSVFile(f);
-    console.log(`  → ${parsed.length} data rows parsed`);
+    console.log(`  → ${parsed.length} data rows`);
     incoming = incoming.concat(parsed);
   }
 
-  console.log(`\nTotal rows from all CSVs: ${incoming.length}`);
+  console.log(`\nTotal rows from CSV: ${incoming.length}`);
   if (!incoming.length) { console.log('Nothing to import.'); return; }
 
   if (dryRun) {
-    console.log('\n── DRY RUN — first 5 rows preview ──');
+    console.log('\n── DRY RUN — first 5 rows ──');
     incoming.slice(0, 5).forEach((r, i) => {
-      console.log(`  [${i + 1}] ${r.date || '(no date)'}  ${r.start_time}-${r.end_time}  ` +
-        `${r.company || '(no company)'}  /  ${r.vehicle1 || '—'}  gal:${r.gallons_ub || 0}`);
+      console.log(`  [${i + 1}] ${r.date || '(no date)'}  ${r.start_time}–${r.end_time}  ` +
+        `"${r.company || '(no company)'}"  v1: ${r.vehicle1 || '—'}  gal: ${r.gallons_ub || 0}`);
     });
-    console.log('\nDRY RUN complete — no changes written to the database.');
+    console.log('\nDRY RUN complete — nothing written.');
     return;
   }
 
-  const scopedKey = `${companyCode}:dust_rows`;
+  // Fetch existing rows via API
   let existing = [];
-
   if (!replace) {
-    console.log(`\nFetching existing rows from DB (key: ${scopedKey})…`);
-    const result = await sql`SELECT value FROM app_data WHERE key = ${scopedKey}`;
-    if (result.length && Array.isArray(result[0].value)) {
-      existing = result[0].value;
-      console.log(`  ${existing.length} existing rows found`);
-    } else {
-      console.log('  No existing rows found — this will be a fresh import');
-    }
+    process.stdout.write(`\nFetching existing rows from ${BASE}… `);
+    const saved = await apiGet('dust_rows');
+    existing = Array.isArray(saved) ? saved : [];
+    console.log(`${existing.length} rows found`);
   } else {
-    console.log('\n--replace flag set: all existing rows will be discarded');
+    console.log('\n--replace: discarding all existing rows');
   }
 
-  // Deduplicate: skip rows that already exist (matched by date + company + start_time)
+  // Deduplicate by date + company + start_time
   const existingKeys = new Set(
     existing.map(r => `${r.date}|${(r.company || '').toLowerCase()}|${r.start_time}`)
   );
@@ -311,34 +302,30 @@ async function main() {
   });
 
   const skipped = incoming.length - newRows.length;
-  if (skipped > 0) console.log(`  Skipped ${skipped} duplicate rows (same date + company + start time)`);
-  console.log(`  Writing ${newRows.length} new rows`);
+  if (skipped > 0) console.log(`  Skipped ${skipped} duplicates (same date + company + start time)`);
+  console.log(`  Adding ${newRows.length} new rows`);
 
   if (!newRows.length && !replace) {
-    console.log('\nAll rows already exist in the database. Nothing to do.');
+    console.log('\nAll rows already exist. Nothing to write.');
     return;
   }
 
   const merged = replace ? incoming : [...existing, ...newRows];
   merged.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
-  await sql`
-    INSERT INTO app_data (key, value, updated_at)
-    VALUES (${scopedKey}, ${JSON.stringify(merged)}::jsonb, NOW())
-    ON CONFLICT (key)
-    DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-  `;
+  process.stdout.write(`Uploading ${merged.length} rows to ${BASE}… `);
+  await apiPut('dust_rows', merged);
+  console.log('done.');
 
-  // Print year breakdown
+  // Year summary
   const byYear = {};
   merged.forEach(r => {
     const y = (r.date || '').slice(0, 4) || '(unknown)';
     byYear[y] = (byYear[y] || 0) + 1;
   });
-  console.log('\nRows by year:');
+  console.log('\nRows by year in DB:');
   Object.keys(byYear).sort().forEach(y => console.log(`  ${y}: ${byYear[y]} rows`));
-  console.log(`\nDone! ${merged.length} total rows now in the database.`);
-  console.log('Refresh dust.html to see the imported data.');
+  console.log(`\nDone! Refresh dust.html to see the data.`);
 }
 
 main().catch(err => {
