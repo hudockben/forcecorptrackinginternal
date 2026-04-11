@@ -169,6 +169,63 @@
     }
     .ub-rate-input:focus { border-color: var(--amber); }
 
+    /* ── Import modal ── */
+    .import-modal { width: 780px; }
+    .import-drop {
+      border: 2px dashed var(--border); border-radius: 8px;
+      padding: 2rem 1.5rem; text-align: center; cursor: pointer;
+      transition: border-color 0.15s, background 0.15s; margin-bottom: 1rem;
+    }
+    .import-drop:hover, .import-drop.drag-over {
+      border-color: var(--amber); background: rgba(251,191,36,0.04);
+    }
+    .import-drop-icon { font-size: 1.6rem; margin-bottom: 0.5rem; opacity: 0.4; }
+    .import-drop-lbl { font-size: 0.78rem; color: var(--muted); }
+    .import-drop-lbl strong { color: var(--amber); }
+    .import-drop input[type="file"] { display: none; }
+    .import-actions { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1.25rem; }
+    .import-tpl-btn {
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); background: none; border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.32rem 0.7rem; cursor: pointer; white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .import-tpl-btn:hover { color: var(--text); border-color: #555; }
+    .import-status { font-size: 0.72rem; color: var(--muted); }
+    .import-status.ok  { color: var(--green); }
+    .import-status.err { color: var(--red); }
+    .import-preview {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; overflow: hidden; margin-bottom: 1.25rem;
+    }
+    .import-preview-hdr {
+      padding: 0.55rem 0.85rem; font-size: 0.62rem; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .import-preview-wrap { overflow-x: auto; max-height: 240px; overflow-y: auto; }
+    .import-tbl { width: 100%; border-collapse: collapse; font-size: 0.7rem; white-space: nowrap; }
+    .import-tbl th {
+      background: #111120; color: var(--muted); font-size: 0.58rem; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase; padding: 0.4rem 0.65rem;
+      border-bottom: 1px solid var(--border); text-align: left; position: sticky; top: 0;
+    }
+    .import-tbl td {
+      padding: 0.35rem 0.65rem; color: var(--text);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .import-tbl tr.dup td { color: var(--muted); text-decoration: line-through; opacity: 0.5; }
+    .import-tbl tr.warn td { color: var(--yellow); }
+    .import-confirm-row { display: flex; gap: 0.75rem; align-items: center; justify-content: flex-end; }
+    .btn-import-confirm {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+      background: var(--amber); color: #000; border: none; border-radius: 4px;
+      padding: 0.45rem 1.1rem; cursor: pointer; transition: background 0.15s;
+    }
+    .btn-import-confirm:hover { background: #f59e0b; }
+    .btn-import-confirm:disabled { opacity: 0.35; cursor: not-allowed; }
+
     .year-selector { display: flex; gap: 0.3rem; align-items: center; }
     .year-btn {
       font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em;
@@ -651,6 +708,7 @@
     <div class="toolbar">
       <button class="btn-add" onclick="addRow()">+ Add Row</button>
       <button class="btn-ghost" onclick="openListsModal()">Manage Lists</button>
+      <button class="btn-ghost" onclick="openImportModal()">↑ Import CSV</button>
       <div id="yearSelector" class="year-selector"></div>
       <span class="row-count" id="rowCount">0 rows</span>
       <div class="ub-rate-wrap">
@@ -824,6 +882,66 @@
     </div><!-- /modal -->
   </div><!-- /listsModal -->
 
+  <!-- ══════════════════════════════════════════════
+       IMPORT CSV MODAL
+  ══════════════════════════════════════════════ -->
+  <div class="modal-overlay" id="importModal" onclick="if(event.target===this)closeImportModal()">
+    <div class="modal import-modal">
+      <div class="modal-hdr">
+        <span class="modal-title">Import Dust Control Data</span>
+        <button class="modal-close" onclick="closeImportModal()">✕</button>
+      </div>
+      <div class="modal-body">
+
+        <div class="import-actions">
+          <button class="import-tpl-btn" onclick="downloadTemplate()">↓ Download Template CSV</button>
+          <span class="import-status" id="importStatus">Select a CSV file to begin.</span>
+        </div>
+
+        <!-- Drop zone / file picker -->
+        <label class="import-drop" id="importDrop"
+          ondragover="event.preventDefault();this.classList.add('drag-over')"
+          ondragleave="this.classList.remove('drag-over')"
+          ondrop="event.preventDefault();this.classList.remove('drag-over');handleImportFile(event.dataTransfer.files[0])">
+          <div class="import-drop-icon">📂</div>
+          <div class="import-drop-lbl">
+            <strong>Click to browse</strong> or drag &amp; drop your CSV file here<br>
+            <span style="font-size:0.65rem;margin-top:0.3rem;display:block">Accepts .csv — dates as M/D/YYYY or M.D.YYYY, times as 7:00 AM or 07:00</span>
+          </div>
+          <input type="file" id="importFileInput" accept=".csv,.txt"
+            onchange="handleImportFile(this.files[0])">
+        </label>
+
+        <!-- Preview (hidden until file loaded) -->
+        <div class="import-preview" id="importPreview" style="display:none">
+          <div class="import-preview-hdr">
+            <span>Preview</span>
+            <span id="importPreviewCount"></span>
+          </div>
+          <div class="import-preview-wrap">
+            <table class="import-tbl">
+              <thead>
+                <tr>
+                  <th>Date</th><th>Start</th><th>End</th><th>Company</th>
+                  <th>Man</th><th>Location</th><th>St</th>
+                  <th>Vehicle 1</th><th>Unit</th><th>Rate</th>
+                  <th>Vehicle 2</th><th>Unit</th><th>Rate</th><th>Gallons</th>
+                </tr>
+              </thead>
+              <tbody id="importTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="import-confirm-row">
+          <button class="modal-close" onclick="closeImportModal()" style="font-size:0.7rem;padding:0.4rem 0.8rem;border:1px solid var(--border);border-radius:4px">Cancel</button>
+          <button class="btn-import-confirm" id="importConfirmBtn" onclick="confirmImport()" disabled>Import Rows</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
   <script>
     /* ═══════════════════════════════════════════
        AUTH
@@ -924,6 +1042,240 @@
       if (v) dustFilters[field] = v;
       else   delete dustFilters[field];
       renderTable();
+    }
+
+    /* ═══════════════════════════════════════════
+       CSV IMPORT
+    ═══════════════════════════════════════════ */
+    let importBuffer = []; // staged rows waiting for confirmation
+
+    function openImportModal() {
+      importBuffer = [];
+      document.getElementById('importPreview').style.display = 'none';
+      document.getElementById('importConfirmBtn').disabled = true;
+      document.getElementById('importStatus').textContent = 'Select a CSV file to begin.';
+      document.getElementById('importStatus').className = 'import-status';
+      document.getElementById('importFileInput').value = '';
+      document.getElementById('importModal').classList.add('open');
+    }
+
+    function closeImportModal() {
+      document.getElementById('importModal').classList.remove('open');
+    }
+
+    function downloadTemplate() {
+      const headers = [
+        'Date','Start Time','End Time','Company','Company Man','Location','State',
+        'Vehicle 1','Unit #','Vehicle Rate','Vehicle 2','Unit #','Vehicle Rate','Gallons of UB'
+      ].join(',');
+      const example = [
+        '3/14/2025','7:00 AM','3:00 PM','Range','Nate Palmer','Stewart Trust','PA',
+        'Distributor Truck','4000','135','Escort Vehicle','7549','75','2500'
+      ].join(',');
+      const blob = new Blob([headers + '\n' + example + '\n'], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'dust_import_template.csv';
+      a.click();
+    }
+
+    function handleImportFile(file) {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          const parsed = parseImportCSV(e.target.result);
+          renderImportPreview(parsed);
+        } catch(err) {
+          document.getElementById('importStatus').textContent = 'Error parsing file: ' + err.message;
+          document.getElementById('importStatus').className = 'import-status err';
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    function importNormalizeDate(raw) {
+      if (!raw || !raw.trim()) return '';
+      const s = raw.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+      // M/D/YYYY or M.D.YYYY (dots or slashes)
+      const m = s.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})$/);
+      if (m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+      // Malformed like "4.212025" — missing separator before year
+      const bad = s.match(/^(\d{1,2})\.(\d{1,2})(\d{4})$/);
+      if (bad) return `${bad[3]}-${bad[1].padStart(2,'0')}-${bad[2].padStart(2,'0')}`;
+      return s;
+    }
+
+    function importNormalizeTime(raw) {
+      if (!raw || !raw.trim()) return '';
+      const s = raw.trim();
+      if (/^\d{2}:\d{2}$/.test(s)) return s;
+      if (/^\d{1,2}:\d{2}$/.test(s)) return s.split(':')[0].padStart(2,'0') + ':' + s.split(':')[1];
+      const ap = s.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (ap) {
+        let h = parseInt(ap[1]);
+        if (ap[3].toUpperCase()==='PM' && h!==12) h+=12;
+        if (ap[3].toUpperCase()==='AM' && h===12) h=0;
+        return String(h).padStart(2,'0') + ':' + ap[2];
+      }
+      return s;
+    }
+
+    function importParseNum(raw) {
+      if (!raw || !raw.trim()) return '';
+      const n = parseFloat(String(raw).replace(/[$,\s]/g,''));
+      return isNaN(n) ? '' : n;
+    }
+
+    function importParseCSVLine(line, delim) {
+      const cols=[]; let cur=''; let inQ=false;
+      for (let i=0;i<line.length;i++) {
+        const ch=line[i];
+        if(ch==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++;}else inQ=!inQ;}
+        else if(ch===delim&&!inQ){cols.push(cur.trim());cur='';}
+        else cur+=ch;
+      }
+      cols.push(cur.trim());
+      return cols;
+    }
+
+    function parseImportCSV(text) {
+      const lines = text.split(/\r?\n/).filter(l => l.trim());
+      if (lines.length < 2) throw new Error('File appears empty or has no data rows.');
+
+      const tabs   = (lines[0].match(/\t/g)||[]).length;
+      const commas = (lines[0].match(/,/g)||[]).length;
+      const delim  = tabs > commas ? '\t' : ',';
+
+      const norm = s => s.toLowerCase().replace(/\s+/g,' ').replace(/#/g,'').trim();
+      const headers = importParseCSVLine(lines[0], delim).map(norm);
+
+      const findIdx = (name, occ=0) => {
+        let count=0;
+        for(let i=0;i<headers.length;i++){
+          if(headers[i]===name){if(count===occ)return i;count++;}
+        }
+        return -1;
+      };
+
+      const COL = {
+        date:        findIdx('date'),
+        start_time:  findIdx('start time'),
+        end_time:    findIdx('end time'),
+        company:     findIdx('company'),
+        company_man: findIdx('company man'),
+        location:    findIdx('location'),
+        state:       findIdx('state'),
+        vehicle1:    findIdx('vehicle 1'),
+        v1_unit:     findIdx('unit', 0),
+        v1_rate:     findIdx('vehicle rate', 0),
+        vehicle2:    findIdx('vehicle 2'),
+        v2_unit:     findIdx('unit', 1),
+        v2_rate:     findIdx('vehicle rate', 1),
+        gallons_ub:  findIdx('gallons of ub'),
+      };
+
+      const get = (cols,idx) => (idx>=0&&idx<cols.length) ? cols[idx] : '';
+      const parsed = [];
+
+      for (let li=1; li<lines.length; li++) {
+        const cols = importParseCSVLine(lines[li], delim);
+        if (cols.every(c=>!c)) continue;
+        parsed.push({
+          id:          uid(),
+          date:        importNormalizeDate(get(cols, COL.date)),
+          start_time:  importNormalizeTime(get(cols, COL.start_time)),
+          end_time:    importNormalizeTime(get(cols, COL.end_time)),
+          company:     get(cols, COL.company),
+          company_man: get(cols, COL.company_man),
+          location:    get(cols, COL.location),
+          state:       get(cols, COL.state),
+          vehicle1:    get(cols, COL.vehicle1),
+          v1_unit:     get(cols, COL.v1_unit),
+          v1_rate:     importParseNum(get(cols, COL.v1_rate)),
+          vehicle2:    get(cols, COL.vehicle2),
+          v2_unit:     get(cols, COL.v2_unit),
+          v2_rate:     importParseNum(get(cols, COL.v2_rate)),
+          gallons_ub:  importParseNum(get(cols, COL.gallons_ub)),
+        });
+      }
+
+      if (!parsed.length) throw new Error('No data rows found after parsing headers.');
+      return parsed;
+    }
+
+    function renderImportPreview(parsed) {
+      // Deduplicate against current rows
+      const existingKeys = new Set(
+        rows.map(r => `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`)
+      );
+      let newCount = 0, dupCount = 0;
+
+      const tbody = document.getElementById('importTbody');
+      tbody.innerHTML = parsed.map(r => {
+        const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+        const isDup = existingKeys.has(key);
+        const isWarn = !r.date || !r.company;
+        if (isDup) dupCount++; else newCount++;
+        const cls = isDup ? 'dup' : (isWarn ? 'warn' : '');
+        return `<tr class="${cls}">
+          <td>${r.date||'?'}</td>
+          <td>${r.start_time}</td>
+          <td>${r.end_time}</td>
+          <td>${esc(r.company)}</td>
+          <td>${esc(r.company_man)}</td>
+          <td>${esc(r.location)}</td>
+          <td>${r.state}</td>
+          <td>${esc(r.vehicle1)}</td>
+          <td>${r.v1_unit}</td>
+          <td>${r.v1_rate||''}</td>
+          <td>${esc(r.vehicle2)}</td>
+          <td>${r.v2_unit}</td>
+          <td>${r.v2_rate||''}</td>
+          <td>${r.gallons_ub||''}</td>
+        </tr>`;
+      }).join('');
+
+      const statusEl = document.getElementById('importStatus');
+      const countEl  = document.getElementById('importPreviewCount');
+      countEl.textContent = `${parsed.length} rows — ${newCount} new, ${dupCount} already exist (strikethrough)`;
+      statusEl.textContent = newCount > 0
+        ? `${newCount} new row${newCount!==1?'s':''} ready to import.`
+        : 'All rows already exist — nothing to import.';
+      statusEl.className = 'import-status ' + (newCount > 0 ? 'ok' : 'err');
+
+      document.getElementById('importPreview').style.display = 'block';
+      document.getElementById('importConfirmBtn').disabled = newCount === 0;
+
+      // Store only non-duplicates for import
+      importBuffer = parsed.filter(r => {
+        const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+        return !existingKeys.has(key);
+      });
+    }
+
+    async function confirmImport() {
+      if (!importBuffer.length) return;
+      const btn = document.getElementById('importConfirmBtn');
+      btn.disabled = true;
+      btn.textContent = 'Importing…';
+
+      const merged = [...rows, ...importBuffer];
+      merged.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+
+      const ok = await apiPut('dust_rows', merged);
+      if (ok) {
+        rows = merged;
+        renderYearSelector();
+        renderTable();
+        closeImportModal();
+      } else {
+        btn.disabled = false;
+        btn.textContent = 'Import Rows';
+        document.getElementById('importStatus').textContent = 'Save failed — check your connection and try again.';
+        document.getElementById('importStatus').className = 'import-status err';
+      }
     }
 
     function renderYearSelector() {
