@@ -163,7 +163,7 @@
       margin: 1.5rem 1.5rem 0.65rem;
     }
     .dash-feed {
-      margin: 0 1.5rem; background: var(--surface);
+      margin: 0 1.5rem 2rem; background: var(--surface);
       border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
     }
     .dash-feed-row {
@@ -2388,21 +2388,6 @@
           ${kpiCard('Service Hours YTD', numFmt(round2(ytdHours), 1),   'blue',  'hrs in the field')}
         </div>
 
-        <div class="dash-section-lbl">Recent Jobs</div>
-        <div class="dash-feed">
-          ${recent.length ? recent.map(r => `
-            <div class="dash-feed-row">
-              <span class="dash-feed-dot"></span>
-              <span class="dash-feed-date">${r.date}</span>
-              <span class="dash-feed-co" title="${esc(r.company || '')}">${esc(r.company || '—')}</span>
-              <span class="dash-feed-loc" title="${esc(r.location || '')}">${esc(r.location || '—')}</span>
-              <span class="dash-feed-veh">${esc(r.vehicle1 || '—')}${r.vehicle2 ? ' + ' + esc(r.vehicle2) : ''}</span>
-              <span class="dash-feed-gal">${r.gallons ? numFmt(Math.round(r.gallons)) + ' gal' : '—'}</span>
-              <span class="dash-feed-inv">${r.invTotal ? money(r.invTotal) : '—'}</span>
-            </div>`).join('')
-          : '<div class="dash-empty-sm">No jobs yet.</div>'}
-        </div>
-
         <div class="dash-widgets-row" style="margin-top:1.5rem">
           <div class="dash-widget">
             <div class="dash-section-lbl">Top Customers — YTD</div>
@@ -2462,6 +2447,21 @@
         <div class="dash-states">
           ${states.map(s => `<span class="dash-state-badge">${esc(s)}</span>`).join('')}
         </div>` : ''}
+
+        <div class="dash-section-lbl">Recent Jobs</div>
+        <div class="dash-feed">
+          ${recent.length ? recent.map(r => `
+            <div class="dash-feed-row">
+              <span class="dash-feed-dot"></span>
+              <span class="dash-feed-date">${r.date}</span>
+              <span class="dash-feed-co" title="${esc(r.company || '')}">${esc(r.company || '—')}</span>
+              <span class="dash-feed-loc" title="${esc(r.location || '')}">${esc(r.location || '—')}</span>
+              <span class="dash-feed-veh">${esc(r.vehicle1 || '—')}${r.vehicle2 ? ' + ' + esc(r.vehicle2) : ''}</span>
+              <span class="dash-feed-gal">${r.gallons ? numFmt(Math.round(r.gallons)) + ' gal' : '—'}</span>
+              <span class="dash-feed-inv">${r.invTotal ? money(r.invTotal) : '—'}</span>
+            </div>`).join('')
+          : '<div class="dash-empty-sm">No jobs yet.</div>'}
+        </div>
       `;
     }
 
