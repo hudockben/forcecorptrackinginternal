@@ -447,8 +447,12 @@
     /* ── Analytics tab ── */
     .an-wrap { padding: 1.5rem 1.5rem 3rem; max-width: 1400px; }
 
+    .an-subtab-row {
+      display: flex; align-items: flex-end; justify-content: space-between;
+      border-bottom: 1px solid var(--border); margin-bottom: 1.75rem;
+    }
     .an-subtabs {
-      display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1.75rem;
+      display: flex; gap: 0; border-bottom: none;
     }
     .an-subtab {
       padding: 0.5rem 1.2rem; font-size: 0.65rem; font-weight: 600;
@@ -458,6 +462,13 @@
     }
     .an-subtab.active { color: var(--amber); border-bottom-color: var(--amber); }
     .an-subtab:hover:not(.active) { color: var(--text); }
+    .an-export-btn {
+      font-size: 0.62rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+      background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+      color: var(--muted); padding: 0.32rem 0.85rem; border-radius: 5px;
+      cursor: pointer; margin-bottom: 0.45rem; transition: background 0.15s, color 0.15s;
+    }
+    .an-export-btn:hover { background: rgba(255,255,255,0.12); color: var(--text); }
 
     .an-section-lbl {
       font-size: 0.57rem; font-weight: 700; letter-spacing: 0.14em;
@@ -494,13 +505,24 @@
       background: var(--surface2); border: 1px solid var(--border);
       border-radius: 8px; padding: 1.1rem 1.25rem;
     }
+    .an-chart-hdr {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;
+    }
     .an-chart-ttl {
       font-size: 0.57rem; font-weight: 700; letter-spacing: 0.12em;
-      text-transform: uppercase; margin-bottom: 1rem;
+      text-transform: uppercase; margin-bottom: 0;
     }
     .an-chart-ttl.amber { color: var(--amber); }
     .an-chart-ttl.blue  { color: var(--blue);  }
     .an-chart-ttl.green { color: var(--green); }
+    .chart-toggle-btn {
+      font-size: 0.58rem; font-weight: 600; letter-spacing: 0.04em;
+      background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+      color: var(--muted); padding: 0.2rem 0.55rem; border-radius: 4px;
+      cursor: pointer; transition: background 0.15s, color 0.15s; flex-shrink: 0;
+    }
+    .chart-toggle-btn:hover { background: rgba(255,255,255,0.12); color: var(--text); }
+    .chart-toggle-btn.active-line { color: var(--blue); border-color: var(--blue); background: rgba(96,165,250,0.08); }
 
     /* Financial tab */
     .fin-delta { font-size: 0.62rem; font-weight: 700; margin-top: 0.2rem; display: block; }
@@ -673,6 +695,50 @@
     .save-dot.saving  { background: var(--amber); }
     .save-dot.saved   { background: var(--green); }
     .save-dot.error   { background: var(--red); }
+
+    /* ── Print / PDF export ─────────────────────────────────────────── */
+    @media print {
+      @page { margin: 0.7in 0.6in; }
+      body { background: #fff !important; color: #111 !important; font-size: 10pt; }
+      .topbar, .tab-nav, .toolbar, .modal-overlay,
+      #tab-tracking, #tab-lists,
+      .an-subtab-row, .chart-toggle-btn { display: none !important; }
+      #tab-analytics { display: block !important; height: auto !important; overflow: visible !important; padding: 0 !important; }
+      .tab-content, .tab-panel { display: block !important; height: auto !important; overflow: visible !important; }
+      .an-wrap { padding: 0 !important; }
+      #an-customer, #an-financial { display: block !important; }
+      .an-section-lbl { color: #555 !important; margin-top: 1.1rem !important; border-bottom: 1px solid #ccc; padding-bottom: 0.25rem; }
+      .an-cards { grid-template-columns: repeat(4,1fr) !important; gap: 0.5rem !important; }
+      .an-card { background: #f5f5f5 !important; border: 1px solid #ddd !important; break-inside: avoid; }
+      .an-card-lbl { color: #555 !important; }
+      .an-card-val { color: #111 !important; }
+      .an-card-val.amber { color: #b45309 !important; }
+      .an-charts { grid-template-columns: repeat(3,1fr) !important; gap: 0.5rem !important; }
+      .an-chart-box, .fin-wide-chart { background: #f9f9f9 !important; border: 1px solid #ddd !important; break-inside: avoid; padding: 0.6rem 0.75rem !important; }
+      .an-chart-ttl.amber { color: #b45309 !important; }
+      .an-chart-ttl.blue  { color: #1d4ed8 !important; }
+      .an-chart-ttl.green { color: #15803d !important; }
+      .bar-fill { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      .bar-fill.amber { background: #fbbf24 !important; }
+      .bar-fill.blue  { background: #60a5fa !important; }
+      .bar-fill.green { background: #22c55e !important; }
+      .bar-track { background: #e5e5e5 !important; }
+      .bar-label, .bar-val { color: #444 !important; }
+      .an-tbl-wrap { background: #fff !important; border: 1px solid #ddd !important; }
+      .an-tbl thead th { background: #f0f0f0 !important; color: #444 !important; }
+      .an-tbl td, .an-tbl th { color: #111 !important; }
+      .an-tbl td.hi { color: #b45309 !important; }
+      .an-tbl td.muted { color: #666 !important; }
+      .an-tbl tfoot td { color: #b45309 !important; border-top-color: #ccc !important; }
+      .an-loc-card { background: #f5f5f5 !important; border: 1px solid #ddd !important; break-inside: avoid; }
+      .an-loc-name { color: #111 !important; }
+      .an-loc-sub  { color: #555 !important; }
+      .an-loc-badge { background: #e5e5e5 !important; color: #333 !important; }
+      .fin-delta.up { color: #15803d !important; }
+      .fin-delta.dn { color: #b91c1c !important; }
+      svg text { fill: #333 !important; }
+      svg line { stroke: #ccc !important; }
+    }
   </style>
 </head>
 <body>
@@ -807,9 +873,12 @@
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-analytics">
     <div class="an-wrap">
-      <div class="an-subtabs">
-        <button class="an-subtab active" data-an="customer">Customer Data</button>
-        <button class="an-subtab" data-an="financial">Financial</button>
+      <div class="an-subtab-row">
+        <div class="an-subtabs">
+          <button class="an-subtab active" data-an="customer">Customer Data</button>
+          <button class="an-subtab" data-an="financial">Financial</button>
+        </div>
+        <button class="an-export-btn" onclick="exportPDF()">↓ Export PDF</button>
       </div>
       <div id="an-customer">
         <div class="an-section-lbl">Overview</div>
@@ -817,15 +886,24 @@
         <div class="an-section-lbl">Breakdown by Company</div>
         <div class="an-charts">
           <div class="an-chart-box">
-            <div class="an-chart-ttl amber">Invoice Total by Company</div>
+            <div class="an-chart-hdr">
+              <div class="an-chart-ttl amber">Invoice Total by Company</div>
+              <button class="chart-toggle-btn" id="tog-an-bar-invoice" onclick="toggleChartType('an-bar-invoice')">〜 Line</button>
+            </div>
             <div class="bar-list" id="an-bar-invoice"></div>
           </div>
           <div class="an-chart-box">
-            <div class="an-chart-ttl blue">Service Hours by Company</div>
+            <div class="an-chart-hdr">
+              <div class="an-chart-ttl blue">Service Hours by Company</div>
+              <button class="chart-toggle-btn" id="tog-an-bar-hours" onclick="toggleChartType('an-bar-hours')">〜 Line</button>
+            </div>
             <div class="bar-list" id="an-bar-hours"></div>
           </div>
           <div class="an-chart-box">
-            <div class="an-chart-ttl green">Gallons Applied by Company</div>
+            <div class="an-chart-hdr">
+              <div class="an-chart-ttl green">Gallons Applied by Company</div>
+              <button class="chart-toggle-btn" id="tog-an-bar-gallons" onclick="toggleChartType('an-bar-gallons')">〜 Line</button>
+            </div>
             <div class="bar-list" id="an-bar-gallons"></div>
           </div>
         </div>
@@ -853,22 +931,34 @@
         <div class="an-section-lbl">Annual Totals</div>
         <div class="an-charts">
           <div class="an-chart-box">
-            <div class="an-chart-ttl amber">Revenue by Year</div>
+            <div class="an-chart-hdr">
+              <div class="an-chart-ttl amber">Revenue by Year</div>
+              <button class="chart-toggle-btn" id="tog-fin-bar-annual" onclick="toggleChartType('fin-bar-annual')">〜 Line</button>
+            </div>
             <div class="bar-list" id="fin-bar-annual"></div>
           </div>
           <div class="an-chart-box">
-            <div class="an-chart-ttl blue">Service Hours by Year</div>
+            <div class="an-chart-hdr">
+              <div class="an-chart-ttl blue">Service Hours by Year</div>
+              <button class="chart-toggle-btn" id="tog-fin-bar-hours-yr" onclick="toggleChartType('fin-bar-hours-yr')">〜 Line</button>
+            </div>
             <div class="bar-list" id="fin-bar-hours-yr"></div>
           </div>
           <div class="an-chart-box">
-            <div class="an-chart-ttl green">Gallons Applied by Year</div>
+            <div class="an-chart-hdr">
+              <div class="an-chart-ttl green">Gallons Applied by Year</div>
+              <button class="chart-toggle-btn" id="tog-fin-bar-gal-yr" onclick="toggleChartType('fin-bar-gal-yr')">〜 Line</button>
+            </div>
             <div class="bar-list" id="fin-bar-gal-yr"></div>
           </div>
         </div>
 
         <div class="an-section-lbl">Monthly Revenue Timeline</div>
         <div class="fin-wide-chart">
-          <div class="an-chart-ttl amber">Invoice Total by Month</div>
+          <div class="an-chart-hdr">
+            <div class="an-chart-ttl amber">Invoice Total by Month</div>
+            <button class="chart-toggle-btn" id="tog-fin-bar-monthly" onclick="toggleChartType('fin-bar-monthly')">〜 Line</button>
+          </div>
           <div class="bar-list" id="fin-bar-monthly"></div>
         </div>
 
@@ -884,15 +974,24 @@
         <div class="an-section-lbl" style="margin-top:1.75rem">Revenue Mix</div>
         <div class="an-charts">
           <div class="an-chart-box">
-            <div class="an-chart-ttl amber">Vehicle Revenue by Year</div>
+            <div class="an-chart-hdr">
+              <div class="an-chart-ttl amber">Vehicle Revenue by Year</div>
+              <button class="chart-toggle-btn" id="tog-fin-bar-veh-yr" onclick="toggleChartType('fin-bar-veh-yr')">〜 Line</button>
+            </div>
             <div class="bar-list" id="fin-bar-veh-yr"></div>
           </div>
           <div class="an-chart-box">
-            <div class="an-chart-ttl green">UB Product Revenue by Year</div>
+            <div class="an-chart-hdr">
+              <div class="an-chart-ttl green">UB Product Revenue by Year</div>
+              <button class="chart-toggle-btn" id="tog-fin-bar-ub-yr" onclick="toggleChartType('fin-bar-ub-yr')">〜 Line</button>
+            </div>
             <div class="bar-list" id="fin-bar-ub-yr"></div>
           </div>
           <div class="an-chart-box">
-            <div class="an-chart-ttl blue">Jobs Completed by Year</div>
+            <div class="an-chart-hdr">
+              <div class="an-chart-ttl blue">Jobs Completed by Year</div>
+              <button class="chart-toggle-btn" id="tog-fin-bar-jobs-yr" onclick="toggleChartType('fin-bar-jobs-yr')">〜 Line</button>
+            </div>
             <div class="bar-list" id="fin-bar-jobs-yr"></div>
           </div>
         </div>
@@ -2098,10 +2197,39 @@
     /* ═══════════════════════════════════════════
        ANALYTICS — shared helpers
     ═══════════════════════════════════════════ */
-    function buildBars(id, data, color, fmt) {
-      const max = Math.max(...data.map(d => d.v), 1e-9);
+    /* ── Chart registry: stores data + mode per chart so toggle can re-render ── */
+    const chartRegistry = {};
+
+    function buildChart(id, data, color, fmt) {
+      if (!chartRegistry[id]) chartRegistry[id] = { mode: 'bar' };
+      Object.assign(chartRegistry[id], { data, color, fmt });
+      _renderChart(id);
+    }
+    // Keep legacy name working (called from renderCustomerAnalytics / renderFinancial)
+    const buildBars = buildChart;
+
+    function toggleChartType(id) {
+      const reg = chartRegistry[id];
+      if (!reg) return;
+      reg.mode = reg.mode === 'bar' ? 'line' : 'bar';
+      const btn = document.getElementById('tog-' + id);
+      if (btn) {
+        btn.textContent = reg.mode === 'bar' ? '〜 Line' : '▬ Bar';
+        btn.classList.toggle('active-line', reg.mode === 'line');
+      }
+      _renderChart(id);
+    }
+
+    function _renderChart(id) {
+      const reg = chartRegistry[id];
       const el  = document.getElementById(id);
-      if (!el) return;
+      if (!reg || !el) return;
+      if (reg.mode === 'line') _buildLineChart(el, reg.data, reg.color, reg.fmt);
+      else                     _buildBarChart(el, reg.data, reg.color, reg.fmt);
+    }
+
+    function _buildBarChart(el, data, color, fmt) {
+      const max = Math.max(...data.map(d => d.v), 1e-9);
       el.innerHTML = data.length
         ? data.map(d => `
             <div class="bar-item">
@@ -2113,6 +2241,71 @@
             </div>`).join('')
         : '<div style="color:var(--muted);font-size:0.72rem">No data</div>';
     }
+
+    function _buildLineChart(el, data, color, fmt) {
+      if (!data.length) {
+        el.innerHTML = '<div style="color:var(--muted);font-size:0.72rem">No data</div>';
+        return;
+      }
+      const W = 500, H = 175;
+      const P = { t: 28, r: 18, b: 46, l: 14 };
+      const cW = W - P.l - P.r, cH = H - P.t - P.b;
+      const max = Math.max(...data.map(d => d.v), 1e-9);
+      const xOf = i => P.l + (data.length > 1 ? (i / (data.length - 1)) * cW : cW / 2);
+      const yOf = v => P.t + cH - (v / max) * cH;
+
+      const STROKE = { amber: '#fbbf24', blue: '#60a5fa', green: '#22c55e' };
+      const stroke = STROKE[color] || '#60a5fa';
+      const fill   = stroke + '22';
+
+      // Horizontal grid lines + value ticks
+      const grid = [0.25, 0.5, 0.75, 1].map(f => {
+        const gy = (P.t + cH - f * cH).toFixed(1);
+        return `<line x1="${P.l}" y1="${gy}" x2="${P.l + cW}" y2="${gy}"
+                  stroke="rgba(255,255,255,0.07)" stroke-width="1"/>
+                <text x="${(P.l - 3).toFixed(1)}" y="${(+gy + 3.5).toFixed(1)}"
+                  fill="rgba(255,255,255,0.22)" font-size="6.5" text-anchor="end">${fmt(f * max)}</text>`;
+      }).join('');
+
+      // Area fill path
+      const aX0 = xOf(0).toFixed(1), aXn = xOf(data.length - 1).toFixed(1), aYb = (P.t + cH).toFixed(1);
+      const area = `M${aX0},${aYb} ` +
+        data.map((d, i) => `L${xOf(i).toFixed(1)},${yOf(d.v).toFixed(1)}`).join(' ') +
+        ` L${aXn},${aYb} Z`;
+
+      // Line
+      const pts = data.map((d, i) => `${xOf(i).toFixed(1)},${yOf(d.v).toFixed(1)}`).join(' ');
+
+      // Dots + value labels + tooltips
+      const dots = data.map((d, i) => {
+        const cx = xOf(i).toFixed(1), cy = yOf(d.v).toFixed(1);
+        const lblY = (yOf(d.v) - 9).toFixed(1);
+        return `<g>
+          <title>${esc(d.label)}: ${fmt(d.v)}</title>
+          <circle cx="${cx}" cy="${cy}" r="4" fill="${stroke}" stroke="#0e0e1a" stroke-width="1.5"/>
+          <text x="${cx}" y="${lblY}" fill="${stroke}" font-size="7" text-anchor="middle" font-weight="700">${fmt(d.v)}</text>
+        </g>`;
+      }).join('');
+
+      // X-axis labels (rotated for long labels)
+      const xlabels = data.map((d, i) => {
+        const lx = xOf(i).toFixed(1), ly = (H - 5).toFixed(1);
+        return `<text x="${lx}" y="${ly}" fill="rgba(255,255,255,0.38)"
+                  font-size="8" text-anchor="end"
+                  transform="rotate(-35,${lx},${ly})">${esc(d.label)}</text>`;
+      }).join('');
+
+      el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block;overflow:visible">
+        ${grid}
+        <path d="${area}" fill="${fill}"/>
+        <polyline points="${pts}" fill="none" stroke="${stroke}" stroke-width="2.5"
+          stroke-linejoin="round" stroke-linecap="round"/>
+        ${dots}
+        ${xlabels}
+      </svg>`;
+    }
+
+    function exportPDF() { window.print(); }
 
     /* ── Analytics sub-tab switching ── */
     document.querySelectorAll('.an-subtab').forEach(btn => {
