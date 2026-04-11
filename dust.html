@@ -1255,21 +1255,86 @@
       });
     }
 
+    /** Auto-populate dustLists from imported rows so dropdowns are pre-filled. */
+    function syncListsFromImport(newRows) {
+      newRows.forEach(row => {
+        // ── States ────────────────────────────────────────────────────────
+        if (row.state && !dustLists.states.includes(row.state)) {
+          dustLists.states.push(row.state);
+        }
+
+        // ── Equipment (vehicles) ──────────────────────────────────────────
+        [[row.vehicle1, row.v1_unit, row.v1_rate],
+         [row.vehicle2, row.v2_unit, row.v2_rate]].forEach(([name, unit, rate]) => {
+          if (!name) return;
+          const existing = dustLists.equipment.find(e => e.name === name);
+          if (!existing) {
+            dustLists.equipment.push({
+              id: uid(), name,
+              unit_number:  unit  || '',
+              vehicle_rate: rate  != null && rate !== '' ? rate : null,
+            });
+          } else {
+            // Fill in unit/rate if the existing entry is missing them
+            if (!existing.unit_number && unit)  existing.unit_number = unit;
+            if (existing.vehicle_rate == null && rate != null && rate !== '') existing.vehicle_rate = rate;
+          }
+        });
+
+        // ── Company + locations + men ─────────────────────────────────────
+        if (!row.company) return;
+        let co = dustLists.companies.find(c => c.name === row.company);
+        if (!co) {
+          co = { id: uid(), name: row.company, tier: '', locations: [], men: [] };
+          dustLists.companies.push(co);
+        }
+        if (!Array.isArray(co.locations)) co.locations = [];
+        if (!Array.isArray(co.men))       co.men       = [];
+
+        // Location (with state)
+        if (row.location && !co.locations.find(l => l.name === row.location)) {
+          co.locations.push({ id: uid(), name: row.location, state: row.state || '' });
+        }
+
+        // Company man
+        if (row.company_man && !co.men.find(m => m.name === row.company_man)) {
+          co.men.push({ id: uid(), name: row.company_man });
+        }
+      });
+
+      // Sort everything for clean dropdowns
+      dustLists.states.sort();
+      dustLists.equipment.sort((a,b) => a.name.localeCompare(b.name));
+      dustLists.companies.sort((a,b) => a.name.localeCompare(b.name));
+      dustLists.companies.forEach(co => {
+        co.locations.sort((a,b) => a.name.localeCompare(b.name));
+        co.men.sort((a,b) => a.name.localeCompare(b.name));
+      });
+    }
+
     async function confirmImport() {
       if (!importBuffer.length) return;
       const btn = document.getElementById('importConfirmBtn');
       btn.disabled = true;
       btn.textContent = 'Importing…';
 
+      // Auto-populate lists from imported data before saving
+      syncListsFromImport(importBuffer);
+
       const merged = [...rows, ...importBuffer];
       merged.sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
-      const ok = await apiPut('dust_rows', merged);
-      if (ok) {
+      const [rowsOk, listsOk] = await Promise.all([
+        apiPut('dust_rows',  merged),
+        apiPut('dust_lists', dustLists),
+      ]);
+
+      if (rowsOk) {
         rows = merged;
         renderYearSelector();
         renderTable();
         closeImportModal();
+        if (!listsOk) console.warn('Rows saved but lists save failed — retry will resync.');
       } else {
         btn.disabled = false;
         btn.textContent = 'Import Rows';
