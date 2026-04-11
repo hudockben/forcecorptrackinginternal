@@ -2346,7 +2346,7 @@
 
       // ── Equipment activity (vehicles used this year) ──
       const equipMap = {};
-      computed.forEach(r => {
+      ytd.forEach(r => {
         [[r.vehicle1, r.v1Total], [r.vehicle2, r.v2Total]].forEach(([name, rev]) => {
           if (!name) return;
           if (!equipMap[name]) equipMap[name] = { jobs: 0, rev: 0, lastDate: '' };
