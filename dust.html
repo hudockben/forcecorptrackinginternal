@@ -116,19 +116,144 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
-    /* ── Home placeholder ── */
-    .home-wrap {
-      display: flex; flex-direction: column; align-items: center;
-      justify-content: center; min-height: 65vh; gap: 0.75rem;
+    /* ── Home Dashboard ── */
+    .dash-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      padding: 1.5rem 1.5rem 0;
     }
-    .home-eyebrow {
+    .dash-eyebrow {
       font-size: 0.58rem; letter-spacing: 0.22em; text-transform: uppercase;
-      color: var(--amber); opacity: 0.75;
+      color: var(--amber); opacity: 0.75; margin-bottom: 0.25rem;
     }
-    .home-heading {
-      font-size: 1.5rem; font-weight: 700; color: #fff; letter-spacing: -0.02em;
+    .dash-title {
+      font-size: 1.4rem; font-weight: 700; color: #fff; letter-spacing: -0.02em;
     }
-    .home-sub { font-size: 0.82rem; color: var(--muted); }
+    .dash-year-badge {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.1em;
+      background: rgba(251,191,36,0.1); color: var(--amber);
+      border: 1px solid rgba(251,191,36,0.25); padding: 0.3rem 0.8rem;
+      border-radius: 20px; margin-top: 0.35rem;
+    }
+    .dash-kpi-strip {
+      display: flex; border: 1px solid var(--border); border-radius: 8px;
+      overflow: hidden; margin: 1.25rem 1.5rem; background: var(--surface);
+    }
+    .dash-kpi-item {
+      flex: 1; padding: 1rem 1.1rem; border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 0.2rem;
+    }
+    .dash-kpi-item:last-child { border-right: none; }
+    .dash-kpi-label {
+      font-size: 0.56rem; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .dash-kpi-value {
+      font-size: 1.22rem; font-weight: 700;
+      font-variant-numeric: tabular-nums; line-height: 1.1;
+    }
+    .dash-kpi-value.amber { color: var(--amber); }
+    .dash-kpi-value.blue  { color: var(--blue);  }
+    .dash-kpi-value.green { color: var(--green); }
+    .dash-kpi-value.muted { color: var(--muted); }
+    .dash-kpi-sub { font-size: 0.62rem; color: var(--muted); }
+
+    .dash-section-lbl {
+      font-size: 0.57rem; font-weight: 700; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--muted);
+      margin: 1.5rem 1.5rem 0.65rem;
+    }
+    .dash-feed {
+      margin: 0 1.5rem; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    }
+    .dash-feed-row {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.52rem 1rem; border-bottom: 1px solid var(--border);
+      font-size: 0.75rem;
+    }
+    .dash-feed-row:last-child { border-bottom: none; }
+    .dash-feed-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--amber); flex-shrink: 0;
+    }
+    .dash-feed-date { color: var(--muted); font-size: 0.68rem; flex-shrink: 0; min-width: 75px; }
+    .dash-feed-co   { font-weight: 600; min-width: 130px; max-width: 155px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; flex-shrink: 0; }
+    .dash-feed-loc  { color: var(--muted); flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .dash-feed-veh  { color: #8ab8e0; font-size: 0.67rem; flex-shrink: 0; max-width: 140px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .dash-feed-gal  { color: var(--green); font-size: 0.68rem; flex-shrink: 0; min-width: 58px; text-align: right; }
+    .dash-feed-inv  { color: var(--amber); font-weight: 700; font-size: 0.75rem; flex-shrink: 0; min-width: 76px; text-align: right; }
+
+    .dash-widgets-row {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin: 0 1.5rem;
+    }
+    .dash-widget {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1.1rem 1.25rem;
+    }
+    .dash-widget .dash-section-lbl { margin: 0 0 0.75rem; }
+    .dash-co-row { margin-bottom: 0.6rem; }
+    .dash-co-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.22rem; }
+    .dash-co-name { font-size: 0.72rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 65%; }
+    .dash-co-val  { font-size: 0.7rem; color: var(--amber); font-weight: 700; }
+    .dash-co-track { height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; margin-bottom: 0.18rem; }
+    .dash-co-fill  { height: 100%; border-radius: 3px; min-width: 3px; }
+    .dash-co-fill.amber { background: linear-gradient(90deg, #fbbf24, rgba(251,191,36,0.4)); }
+    .dash-co-jobs  { font-size: 0.61rem; color: var(--muted); }
+
+    /* Vertical monthly bar chart */
+    .dash-month-bars {
+      display: flex; gap: 0.28rem; height: 95px; align-items: flex-end; margin-top: 0.5rem;
+    }
+    .dash-month-col { flex: 1; display: flex; flex-direction: column; align-items: stretch; }
+    .dash-month-track {
+      flex: 1; display: flex; align-items: flex-end;
+      background: rgba(255,255,255,0.04); border-radius: 2px 2px 0 0;
+    }
+    .dash-month-fill {
+      width: 100%; border-radius: 2px 2px 0 0; min-height: 2px;
+      background: linear-gradient(180deg, #fbbf24, rgba(251,191,36,0.35));
+      transition: height 0.4s ease;
+    }
+    .dash-month-lbl {
+      font-size: 0.52rem; color: var(--muted); text-align: center;
+      margin-top: 0.22rem; letter-spacing: 0.02em;
+    }
+
+    /* Equipment strip */
+    .dash-equip-strip { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 0 1.5rem; }
+    .dash-equip-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.85rem 1rem; min-width: 130px; flex: 1;
+    }
+    .dash-equip-name {
+      font-size: 0.71rem; font-weight: 600; margin-bottom: 0.3rem;
+      overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    }
+    .dash-equip-rev  { font-size: 1.05rem; font-weight: 700; color: var(--amber); line-height: 1; }
+    .dash-equip-meta { font-size: 0.61rem; color: var(--muted); margin-top: 0.15rem; }
+    .dash-equip-last {
+      font-size: 0.6rem; margin-top: 0.45rem; padding: 0.14rem 0.4rem;
+      border-radius: 3px; display: inline-block;
+    }
+    .dash-equip-last.recent { background: rgba(34,197,94,0.12);  color: var(--green); }
+    .dash-equip-last.warm   { background: rgba(251,191,36,0.12); color: var(--amber); }
+    .dash-equip-last.cold   { background: rgba(255,255,255,0.06); color: var(--muted); }
+
+    /* States */
+    .dash-states { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 1.5rem 2rem; }
+    .dash-state-badge {
+      background: rgba(96,165,250,0.1); border: 1px solid rgba(96,165,250,0.25);
+      color: var(--blue); font-size: 0.68rem; font-weight: 600;
+      letter-spacing: 0.06em; padding: 0.25rem 0.7rem; border-radius: 20px;
+    }
+    .dash-empty    { text-align: center; padding: 2.5rem; color: var(--muted); font-size: 0.82rem; }
+    .dash-empty-sm { padding: 0.75rem 1rem; color: var(--muted); font-size: 0.74rem; }
+
+    @media (max-width: 960px) {
+      .dash-kpi-strip { flex-wrap: wrap; }
+      .dash-kpi-item  { min-width: calc(33% - 1px); }
+      .dash-widgets-row { grid-template-columns: 1fr; }
+    }
 
     /* ── Toolbar ── */
     .toolbar {
@@ -768,11 +893,7 @@
        HOME TAB
   ══════════════════════════════════════════════ -->
   <div class="tab-panel active" id="tab-home">
-    <div class="home-wrap">
-      <div class="home-eyebrow">Dust Control Division</div>
-      <div class="home-heading">Home Dashboard</div>
-      <div class="home-sub">Metrics and reporting will appear here as data is collected.</div>
-    </div>
+    <div id="home-content"></div>
   </div>
 
   <!-- ══════════════════════════════════════════════
@@ -2155,6 +2276,195 @@
     /* ═══════════════════════════════════════════
        INIT
     ═══════════════════════════════════════════ */
+    /* ═══════════════════════════════════════════
+       HOME DASHBOARD
+    ═══════════════════════════════════════════ */
+    const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    function kpiCard(label, value, color, sub) {
+      return `<div class="dash-kpi-item">
+        <span class="dash-kpi-label">${label}</span>
+        <span class="dash-kpi-value ${color}">${value}</span>
+        <span class="dash-kpi-sub">${sub}</span>
+      </div>`;
+    }
+
+    function renderHomeDashboard() {
+      const el = document.getElementById('home-content');
+      if (!el) return;
+
+      const now       = new Date();
+      const thisYear  = now.getFullYear();
+      const thisMo    = now.getMonth(); // 0-indexed
+      const thisYrStr = String(thisYear);
+      const thisMoStr = `${thisYrStr}-${String(thisMo + 1).padStart(2, '0')}`;
+
+      // Compute calculated fields for every row
+      const computed = rows.map(r => ({ ...r, ...calc(r) }));
+
+      // Slices
+      const ytd      = computed.filter(r => (r.date || '').startsWith(thisYrStr));
+      const thisMonth = computed.filter(r => (r.date || '').startsWith(thisMoStr));
+
+      // ── KPIs ──
+      const ytdRevenue   = ytd.reduce((s, r) => s + r.invTotal,   0);
+      const ytdGallons   = ytd.reduce((s, r) => s + r.gallons,    0);
+      const ytdHours     = ytd.reduce((s, r) => s + r.totalHours, 0);
+      const ytdJobs      = ytd.length;
+      const monthJobs    = thisMonth.length;
+      const activeCos    = new Set(ytd.map(r => r.company).filter(Boolean)).size;
+      const avgRevPerJob = ytdJobs ? ytdRevenue / ytdJobs : 0;
+
+      // ── Monthly revenue bars (all 12 months of this year) ──
+      const byMonth = {};
+      ytd.forEach(r => {
+        const mo = (r.date || '').slice(5, 7);
+        if (mo) byMonth[mo] = (byMonth[mo] || 0) + r.invTotal;
+      });
+      const monthBars = MONTH_NAMES.map((name, i) => ({
+        label: name,
+        v: byMonth[String(i + 1).padStart(2, '0')] || 0,
+      }));
+      const maxMonthV = Math.max(...monthBars.map(m => m.v), 1e-9);
+
+      // ── Top customers YTD ──
+      const coMap = {};
+      ytd.forEach(r => {
+        if (!r.company) return;
+        if (!coMap[r.company]) coMap[r.company] = { rev: 0, jobs: 0 };
+        coMap[r.company].rev  += r.invTotal;
+        coMap[r.company].jobs += 1;
+      });
+      const topCos    = Object.entries(coMap).sort((a, b) => b[1].rev - a[1].rev).slice(0, 7);
+      const maxCoRev  = topCos.length ? topCos[0][1].rev : 1;
+
+      // ── Recent jobs (last 10 by date desc) ──
+      const recent = [...computed]
+        .filter(r => r.date)
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, 10);
+
+      // ── Equipment activity (vehicles used this year) ──
+      const equipMap = {};
+      computed.forEach(r => {
+        [[r.vehicle1, r.v1Total], [r.vehicle2, r.v2Total]].forEach(([name, rev]) => {
+          if (!name) return;
+          if (!equipMap[name]) equipMap[name] = { jobs: 0, rev: 0, lastDate: '' };
+          equipMap[name].jobs++;
+          equipMap[name].rev += rev || 0;
+          if (!equipMap[name].lastDate || r.date > equipMap[name].lastDate)
+            equipMap[name].lastDate = r.date || '';
+        });
+      });
+      const equipCards = Object.entries(equipMap)
+        .filter(([, e]) => e.lastDate.startsWith(thisYrStr))
+        .sort((a, b) => b[1].rev - a[1].rev)
+        .slice(0, 6)
+        .map(([name, e]) => ({ name, ...e }));
+
+      // ── States coverage this year ──
+      const states = [...new Set(ytd.map(r => r.state).filter(Boolean))].sort();
+
+      // ── Build HTML ──
+      const noData = !rows.length;
+
+      el.innerHTML = `
+        <div class="dash-header">
+          <div>
+            <div class="dash-eyebrow">Dust Control Division</div>
+            <div class="dash-title">Home Dashboard</div>
+          </div>
+          <div class="dash-year-badge">${thisYrStr}</div>
+        </div>
+
+        ${noData ? '<div class="dash-empty">No data yet — import or add rows to see your dashboard.</div>' : ''}
+
+        <div class="dash-kpi-strip">
+          ${kpiCard('YTD Revenue',       money(ytdRevenue),              'amber', `${numFmt(ytdJobs)} job${ytdJobs !== 1 ? 's' : ''}`)}
+          ${kpiCard('Jobs This Month',   numFmt(monthJobs),              monthJobs > 0 ? 'green' : 'muted', MONTH_NAMES[thisMo])}
+          ${kpiCard('Gallons YTD',       numFmt(Math.round(ytdGallons)), 'blue',  'UB product applied')}
+          ${kpiCard('Active Customers',  numFmt(activeCos),              'amber', `served this year`)}
+          ${kpiCard('Avg Rev / Job',     money(avgRevPerJob),            'green', 'this year')}
+          ${kpiCard('Service Hours YTD', numFmt(round2(ytdHours), 1),   'blue',  'hrs in the field')}
+        </div>
+
+        <div class="dash-section-lbl">Recent Jobs</div>
+        <div class="dash-feed">
+          ${recent.length ? recent.map(r => `
+            <div class="dash-feed-row">
+              <span class="dash-feed-dot"></span>
+              <span class="dash-feed-date">${r.date}</span>
+              <span class="dash-feed-co" title="${esc(r.company || '')}">${esc(r.company || '—')}</span>
+              <span class="dash-feed-loc" title="${esc(r.location || '')}">${esc(r.location || '—')}</span>
+              <span class="dash-feed-veh">${esc(r.vehicle1 || '—')}${r.vehicle2 ? ' + ' + esc(r.vehicle2) : ''}</span>
+              <span class="dash-feed-gal">${r.gallons ? numFmt(Math.round(r.gallons)) + ' gal' : '—'}</span>
+              <span class="dash-feed-inv">${r.invTotal ? money(r.invTotal) : '—'}</span>
+            </div>`).join('')
+          : '<div class="dash-empty-sm">No jobs yet.</div>'}
+        </div>
+
+        <div class="dash-widgets-row" style="margin-top:1.5rem">
+          <div class="dash-widget">
+            <div class="dash-section-lbl">Top Customers — YTD</div>
+            ${topCos.length ? topCos.map(([name, d]) => `
+              <div class="dash-co-row">
+                <div class="dash-co-meta">
+                  <span class="dash-co-name" title="${esc(name)}">${esc(name)}</span>
+                  <span class="dash-co-val">${money(d.rev)}</span>
+                </div>
+                <div class="dash-co-track">
+                  <div class="dash-co-fill amber" style="width:${((d.rev / maxCoRev) * 100).toFixed(1)}%"></div>
+                </div>
+                <span class="dash-co-jobs">${numFmt(d.jobs)} visit${d.jobs !== 1 ? 's' : ''}</span>
+              </div>`).join('')
+            : '<div class="dash-empty-sm">No data yet.</div>'}
+          </div>
+
+          <div class="dash-widget">
+            <div class="dash-section-lbl">Monthly Revenue — ${thisYrStr}</div>
+            <div class="dash-month-bars">
+              ${monthBars.map(m => {
+                const pct = m.v ? Math.max(2, (m.v / maxMonthV) * 100) : 0;
+                return `<div class="dash-month-col">
+                  <div class="dash-month-track">
+                    <div class="dash-month-fill" style="height:${pct.toFixed(1)}%" title="${m.label}: ${money(m.v)}"></div>
+                  </div>
+                  <div class="dash-month-lbl">${m.label[0]}</div>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>
+        </div>
+
+        ${equipCards.length ? `
+        <div class="dash-section-lbl">Equipment — Active This Year</div>
+        <div class="dash-equip-strip">
+          ${equipCards.map(e => {
+            const daysSince = e.lastDate
+              ? Math.floor((now - new Date(e.lastDate + 'T00:00:00')) / 86400000)
+              : null;
+            const cls = daysSince === null ? '' : daysSince <= 7 ? 'recent' : daysSince <= 30 ? 'warm' : 'cold';
+            const lastLbl = daysSince === null ? ''
+              : daysSince === 0 ? 'Today'
+              : daysSince === 1 ? 'Yesterday'
+              : `${numFmt(daysSince)}d ago`;
+            return `<div class="dash-equip-card">
+              <div class="dash-equip-name" title="${esc(e.name)}">${esc(e.name)}</div>
+              <div class="dash-equip-rev">${money(e.rev)}</div>
+              <div class="dash-equip-meta">${numFmt(e.jobs)} job${e.jobs !== 1 ? 's' : ''} this year</div>
+              ${lastLbl ? `<div class="dash-equip-last ${cls}">${lastLbl}</div>` : ''}
+            </div>`;
+          }).join('')}
+        </div>` : ''}
+
+        ${states.length ? `
+        <div class="dash-section-lbl">Coverage — ${numFmt(states.length)} State${states.length !== 1 ? 's' : ''} This Year</div>
+        <div class="dash-states">
+          ${states.map(s => `<span class="dash-state-badge">${esc(s)}</span>`).join('')}
+        </div>` : ''}
+      `;
+    }
+
     async function init() {
       const [savedRows, savedSettings, savedLists] = await Promise.all([
         apiGet('dust_rows'),
@@ -2184,6 +2494,7 @@
 
       renderYearSelector();
       renderTable();
+      renderHomeDashboard();
     }
 
     // Flush pending save on unload
@@ -2570,7 +2881,9 @@
         `<tr><td>Total</td>${footCells}${footGrowth}</tr>`;
     }
 
-    /* Hook analytics tab */
+    /* Hook tab clicks that need a render */
+    document.querySelector('[data-tab="home"]')
+      ?.addEventListener('click', renderHomeDashboard);
     document.querySelector('[data-tab="analytics"]')
       ?.addEventListener('click', renderAnalytics);
 
