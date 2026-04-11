@@ -934,6 +934,10 @@
         </div>
 
         <div class="import-confirm-row">
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.7rem;color:var(--muted);cursor:pointer;margin-right:auto">
+            <input type="checkbox" id="importUpdateMode" onchange="refreshImportPreview()">
+            Update existing rows
+          </label>
           <button class="modal-close" onclick="closeImportModal()" style="font-size:0.7rem;padding:0.4rem 0.8rem;border:1px solid var(--border);border-radius:4px">Cancel</button>
           <button class="btn-import-confirm" id="importConfirmBtn" onclick="confirmImport()" disabled>Import Rows</button>
         </div>
@@ -1047,16 +1051,23 @@
     /* ═══════════════════════════════════════════
        CSV IMPORT
     ═══════════════════════════════════════════ */
-    let importBuffer = []; // staged rows waiting for confirmation
+    let importBuffer   = []; // staged rows waiting for confirmation
+    let importLastParsed = []; // last parsed CSV rows (for re-preview on toggle change)
 
     function openImportModal() {
       importBuffer = [];
+      importLastParsed = [];
       document.getElementById('importPreview').style.display = 'none';
       document.getElementById('importConfirmBtn').disabled = true;
       document.getElementById('importStatus').textContent = 'Select a CSV file to begin.';
       document.getElementById('importStatus').className = 'import-status';
       document.getElementById('importFileInput').value = '';
+      document.getElementById('importUpdateMode').checked = false;
       document.getElementById('importModal').classList.add('open');
+    }
+
+    function refreshImportPreview() {
+      if (importLastParsed.length) renderImportPreview(importLastParsed);
     }
 
     function closeImportModal() {
@@ -1084,8 +1095,8 @@
       const reader = new FileReader();
       reader.onload = e => {
         try {
-          const parsed = parseImportCSV(e.target.result);
-          renderImportPreview(parsed);
+          importLastParsed = parseImportCSV(e.target.result);
+          renderImportPreview(importLastParsed);
         } catch(err) {
           document.getElementById('importStatus').textContent = 'Error parsing file: ' + err.message;
           document.getElementById('importStatus').className = 'import-status err';
@@ -1206,19 +1217,22 @@
     }
 
     function renderImportPreview(parsed) {
-      // Deduplicate against current rows
+      const updateMode = document.getElementById('importUpdateMode').checked;
       const existingKeys = new Set(
         rows.map(r => `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`)
       );
-      let newCount = 0, dupCount = 0;
+      let newCount = 0, updateCount = 0;
 
       const tbody = document.getElementById('importTbody');
       tbody.innerHTML = parsed.map(r => {
         const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-        const isDup = existingKeys.has(key);
+        const isExisting = existingKeys.has(key);
         const isWarn = !r.date || !r.company;
-        if (isDup) dupCount++; else newCount++;
-        const cls = isDup ? 'dup' : (isWarn ? 'warn' : '');
+        // In update mode: existing rows will be overwritten (shown normally)
+        // In normal mode: existing rows are skipped (shown strikethrough)
+        const cls = (!updateMode && isExisting) ? 'dup' : (isWarn ? 'warn' : '');
+        if (isExisting && updateMode) updateCount++;
+        else if (!isExisting) newCount++;
         return `<tr class="${cls}">
           <td>${r.date||'?'}</td>
           <td>${r.start_time}</td>
@@ -1237,22 +1251,31 @@
         </tr>`;
       }).join('');
 
-      const statusEl = document.getElementById('importStatus');
-      const countEl  = document.getElementById('importPreviewCount');
-      countEl.textContent = `${parsed.length} rows — ${newCount} new, ${dupCount} already exist (strikethrough)`;
-      statusEl.textContent = newCount > 0
-        ? `${newCount} new row${newCount!==1?'s':''} ready to import.`
-        : 'All rows already exist — nothing to import.';
-      statusEl.className = 'import-status ' + (newCount > 0 ? 'ok' : 'err');
+      const statusEl  = document.getElementById('importStatus');
+      const countEl   = document.getElementById('importPreviewCount');
+      const totalAct  = newCount + updateCount;
+
+      if (updateMode) {
+        countEl.textContent = `${parsed.length} rows — ${newCount} new, ${updateCount} will be updated`;
+        statusEl.textContent = totalAct > 0 ? `${totalAct} row${totalAct!==1?'s':''} ready (${updateCount} update${updateCount!==1?'s':''}).` : 'Nothing to import.';
+      } else {
+        countEl.textContent = `${parsed.length} rows — ${newCount} new, ${parsed.length - newCount} already exist (strikethrough)`;
+        statusEl.textContent = newCount > 0 ? `${newCount} new row${newCount!==1?'s':''} ready to import.` : 'All rows already exist — tick "Update existing rows" to overwrite.';
+      }
+      statusEl.className = 'import-status ' + (totalAct > 0 ? 'ok' : 'err');
 
       document.getElementById('importPreview').style.display = 'block';
-      document.getElementById('importConfirmBtn').disabled = newCount === 0;
+      document.getElementById('importConfirmBtn').disabled = totalAct === 0;
 
-      // Store only non-duplicates for import
-      importBuffer = parsed.filter(r => {
-        const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-        return !existingKeys.has(key);
-      });
+      // Build import buffer
+      if (updateMode) {
+        importBuffer = parsed; // all rows — existing ones will replace their matches
+      } else {
+        importBuffer = parsed.filter(r => {
+          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+          return !existingKeys.has(key);
+        });
+      }
     }
 
     /** Auto-populate dustLists from imported rows so dropdowns are pre-filled. */
@@ -1321,7 +1344,22 @@
       // Auto-populate lists from imported data before saving
       syncListsFromImport(importBuffer);
 
-      const merged = [...rows, ...importBuffer];
+      const updateMode = document.getElementById('importUpdateMode').checked;
+      let merged;
+      if (updateMode) {
+        // Replace existing rows that match date+company+start_time; append truly new ones
+        const importKeys = new Map(
+          importBuffer.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
+        );
+        // Keep existing rows that are NOT being updated, then add all import rows
+        const kept = rows.filter(r => {
+          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+          return !importKeys.has(key);
+        });
+        merged = [...kept, ...importBuffer];
+      } else {
+        merged = [...rows, ...importBuffer];
+      }
       merged.sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
       const [rowsOk, listsOk] = await Promise.all([
