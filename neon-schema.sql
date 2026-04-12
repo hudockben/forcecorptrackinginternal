@@ -215,6 +215,8 @@ CREATE INDEX IF NOT EXISTS idx_equipment_company ON equipment_list(company_code)
 ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS company_code TEXT;
 ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS project_id   TEXT;
 ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS description  TEXT;
+ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS app_id       TEXT;  -- client-generated id (Date.now()+random)
+ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 CREATE INDEX IF NOT EXISTS idx_cost_items_company_project ON cost_items(company_code, project_id);
 
@@ -368,3 +370,19 @@ CREATE TABLE IF NOT EXISTS scale_manual_entries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scale_manual_company ON scale_manual_entries(company_code);
+
+-- ─────────────────────────────────────────────────
+-- PURCHASE ORDERS — extra columns + status fix
+-- ─────────────────────────────────────────────────
+-- Frontend uses 'pending'/'approved'/'closed' — drop the enum constraint.
+ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS date_created       DATE;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_at  TIMESTAMPTZ;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_by  TEXT;
+
+-- PO DELIVERIES — extra columns for frontend line fields
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS line_id     TEXT;   -- frontend UUID
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS invoice_num TEXT;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS tax         NUMERIC(14,4) NOT NULL DEFAULT 0;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS employee    TEXT;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS po_row_id   TEXT;   -- linked daily_tracking row

@@ -4427,13 +4427,20 @@ function getProj(id) { return projectsList.find(p => p.id === id); }
 let purchaseOrders = [];
 
 async function loadPurchaseOrders() {
-  const saved = await apiGet('fct_purchase_orders');
-  purchaseOrders = Array.isArray(saved) ? saved : [];
-  _migratePOs();
+  try {
+    const r = await fetch(`${API_BASE}/purchase-orders`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
+    if (r.status === 401) { logout(); return; }
+    if (r.ok) {
+      const data = await r.json();
+      purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+      return;
+    }
+  } catch (err) { console.warn('[DB] GET purchase-orders failed:', err.message); }
+  purchaseOrders = [];
 }
 
 function _migratePOs() {
-  // Upgrade flat single-line POs to the new lines[] format
+  // Upgrade flat single-line POs to the new lines[] format (legacy blob migration)
   purchaseOrders.forEach(po => {
     if (!po.lines) {
       const hasData = po.qty || po.unit_cost;
@@ -4451,7 +4458,14 @@ function _migratePOs() {
   });
 }
 
-function savePurchaseOrders() { apiPut('fct_purchase_orders', purchaseOrders); }
+function savePurchaseOrders() {
+  fetch(`${API_BASE}/purchase-orders`, {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body:    JSON.stringify({ purchaseOrders }),
+  }).then(r => { if (!r.ok) console.warn('[DB] PUT purchase-orders failed:', r.status); })
+    .catch(err => console.warn('[DB] PUT purchase-orders error:', err.message));
+}
 
 function nextPONumber() {
   const nums = purchaseOrders.map(po => {
@@ -4466,19 +4480,25 @@ function nextPONumber() {
 let truckingEntries = [];
 
 async function loadTruckingEntries() {
-  let saved = await apiGet('fct_trucking');
-  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
-    try {
-      const local = JSON.parse(localStorage.getItem('fct_trucking'));
-      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_trucking', saved); }
-    } catch {}
-  }
-  truckingEntries = Array.isArray(saved) ? saved : [];
+  try {
+    const r = await fetch(`${API_BASE}/trucking`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
+    if (r.status === 401) { logout(); return; }
+    if (r.ok) {
+      const data = await r.json();
+      truckingEntries = Array.isArray(data.truckingEntries) ? data.truckingEntries : [];
+      return;
+    }
+  } catch (err) { console.warn('[DB] GET trucking failed:', err.message); }
+  truckingEntries = [];
 }
 
 function saveTruckingEntries() {
-  localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
-  apiPut('fct_trucking', truckingEntries);
+  fetch(`${API_BASE}/trucking`, {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body:    JSON.stringify({ truckingEntries }),
+  }).then(r => { if (!r.ok) console.warn('[DB] PUT trucking failed:', r.status); })
+    .catch(err => console.warn('[DB] PUT trucking error:', err.message));
 }
 
 function nextTRNumber() {
@@ -4500,12 +4520,25 @@ let _invBreakdownOpen = false;
 let scaleManualEntries = [];
 
 async function loadScaleManualEntries() {
-  const saved = await apiGet('fct_scale_manual');
-  scaleManualEntries = Array.isArray(saved) ? saved : [];
+  try {
+    const r = await fetch(`${API_BASE}/scale-manual`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
+    if (r.status === 401) { logout(); return; }
+    if (r.ok) {
+      const data = await r.json();
+      scaleManualEntries = Array.isArray(data.scaleManualEntries) ? data.scaleManualEntries : [];
+      return;
+    }
+  } catch (err) { console.warn('[DB] GET scale-manual failed:', err.message); }
+  scaleManualEntries = [];
 }
 
 function saveScaleManualEntries() {
-  apiPut('fct_scale_manual', scaleManualEntries);
+  fetch(`${API_BASE}/scale-manual`, {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body:    JSON.stringify({ scaleManualEntries }),
+  }).then(r => { if (!r.ok) console.warn('[DB] PUT scale-manual failed:', r.status); })
+    .catch(err => console.warn('[DB] PUT scale-manual error:', err.message));
   _projSubAggCache = null; // invalidate so next render picks up the change
 }
 
@@ -7774,17 +7807,25 @@ const COST_KEY = 'fct_cost_rows';
 let costRows = [];
 
 async function loadCostRows() {
-  let saved = await apiGet('fct_cost_rows');
-  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
-    // Try legacy localStorage key as migration fallback
-    try {
-      const local = JSON.parse(localStorage.getItem('fct_rows'));
-      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_cost_rows', saved); }
-    } catch {}
-  }
-  costRows = Array.isArray(saved) ? saved : [];
+  try {
+    const r = await fetch(`${API_BASE}/cost-rows`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
+    if (r.status === 401) { logout(); return; }
+    if (r.ok) {
+      const data = await r.json();
+      costRows = Array.isArray(data.costRows) ? data.costRows : [];
+      return;
+    }
+  } catch (err) { console.warn('[DB] GET cost-rows failed:', err.message); }
+  costRows = [];
 }
-function saveCostRows() { apiPut('fct_cost_rows', costRows); }
+function saveCostRows() {
+  fetch(`${API_BASE}/cost-rows`, {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body:    JSON.stringify({ costRows }),
+  }).then(r => { if (!r.ok) console.warn('[DB] PUT cost-rows failed:', r.status); })
+    .catch(err => console.warn('[DB] PUT cost-rows error:', err.message));
+}
 
 // Only store bid/plan data — actuals come from daily aggregation
 const defaultCostRow = () => ({
