@@ -2547,14 +2547,14 @@
       const states = [...new Set(ytd.map(r => r.state).filter(Boolean))].sort();
 
       // ── Invoice status overview (all rows that have a calculated invoice amount) ──
-      const invOverdue = [], invOutstanding = [], invPaid = [], invUntracked = [];
+      // "Outstanding" bucket = unpaid, sent, or not yet tracked — anything not paid/overdue
+      const invOverdue = [], invOutstanding = [], invPaid = [];
       computed.forEach(r => {
         if (!r.invTotal) return;
         const st = effectiveInvStatus(r);
-        if      (st === 'overdue')              invOverdue.push(r);
-        else if (st === 'paid')                 invPaid.push(r);
-        else if (st === 'unpaid' || st ==='sent') invOutstanding.push(r);
-        else                                    invUntracked.push(r);
+        if      (st === 'overdue') invOverdue.push(r);
+        else if (st === 'paid')    invPaid.push(r);
+        else                       invOutstanding.push(r);
       });
       const sumInv = arr => arr.reduce((s, r) => s + r.invTotal, 0);
       const topOverdue = [...invOverdue]
@@ -2653,7 +2653,7 @@
             <div class="inv-count">${numFmt(invOverdue.length)} invoice${invOverdue.length !== 1 ? 's' : ''}</div>
           </div>
           <div class="dash-inv-card outstanding">
-            <div class="dash-kpi-label">Outstanding</div>
+            <div class="dash-kpi-label">Unpaid / Pending</div>
             <div class="inv-amount">${money(sumInv(invOutstanding))}</div>
             <div class="inv-count">${numFmt(invOutstanding.length)} invoice${invOutstanding.length !== 1 ? 's' : ''}</div>
           </div>
