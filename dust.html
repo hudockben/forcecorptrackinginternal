@@ -1876,7 +1876,7 @@
           coLocs.map(loc => `<option value="${esc(loc.name)}"${row.location===loc.name?' selected':''}>${esc(loc.name)}</option>`).join('');
 
         const invSt    = row.inv_status || '';
-        const badge    = invSt ? `<span class="inv-badge ${invSt}">${invSt}</span>` : '';
+        const badge    = invBadgeHtml(row);
         const invPanel = `
           <div class="inv-panel">
             <div class="inv-field">
@@ -2015,6 +2015,22 @@
        INVOICE EXPAND
     ═══════════════════════════════════════════ */
     const expandedRowIds = new Set();
+    const INV_LABELS = { unpaid: 'Unpaid', sent: 'Sent', paid: 'Paid', overdue: 'Overdue' };
+
+    /** Returns the status to display — auto-overdue if >45 days past job date and not paid/received. */
+    function effectiveInvStatus(row) {
+      if (row.inv_status === 'paid' || row.inv_received) return row.inv_status || '';
+      if (row.date) {
+        const days = Math.floor((Date.now() - new Date(row.date + 'T00:00:00')) / 86400000);
+        if (days > 45) return 'overdue';
+      }
+      return row.inv_status || '';
+    }
+
+    function invBadgeHtml(row) {
+      const st = effectiveInvStatus(row);
+      return st ? `<span class="inv-badge ${st}">${INV_LABELS[st] || st}</span>` : '';
+    }
 
     function toggleInvoice(idx) {
       const id     = rows[idx]?.id;
@@ -2028,19 +2044,15 @@
 
     function setInvStatus(idx, value) {
       rows[idx].inv_status = value;
-      // Update badge in the invoice total cell without a full re-render
+      // Update badge in-place using effectiveInvStatus (respects auto-overdue logic)
       const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
       if (tr) {
         const cell = tr.querySelector('td.cw-inv');
         if (cell) {
           const existing = cell.querySelector('.inv-badge');
           if (existing) existing.remove();
-          if (value) {
-            const span = document.createElement('span');
-            span.className = 'inv-badge ' + value;
-            span.textContent = value;
-            cell.appendChild(span);
-          }
+          const html = invBadgeHtml(rows[idx]);
+          if (html) cell.insertAdjacentHTML('beforeend', html);
         }
       }
       scheduleSave();
