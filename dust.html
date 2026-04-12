@@ -2546,10 +2546,11 @@
       // ── States coverage this year ──
       const states = [...new Set(ytd.map(r => r.state).filter(Boolean))].sort();
 
-      // ── Invoice status overview (all rows that have a calculated invoice amount) ──
+      // ── Invoice status overview (2026+ rows only) ──
       // "Outstanding" bucket = unpaid, sent, or not yet tracked — anything not paid/overdue
+      const inv2026plus = computed.filter(r => parseInt((r.date || '').slice(0, 4), 10) >= 2026);
       const invOverdue = [], invOutstanding = [], invPaid = [];
-      computed.forEach(r => {
+      inv2026plus.forEach(r => {
         if (!r.invTotal) return;
         const st = effectiveInvStatus(r);
         if      (st === 'overdue') invOverdue.push(r);
@@ -2645,7 +2646,7 @@
         </div>` : ''}
 
         ${(invOverdue.length || invOutstanding.length || invPaid.length) ? `
-        <div class="dash-section-lbl">Invoice Overview — All Time</div>
+        <div class="dash-section-lbl">Invoice Overview — 2026 &amp; Forward</div>
         <div class="dash-inv-strip">
           <div class="dash-inv-card overdue">
             <div class="dash-kpi-label">Overdue</div>
