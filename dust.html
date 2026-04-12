@@ -2020,7 +2020,7 @@
     /** Returns the status to display — auto-overdue if >45 days past job date and not paid/received. */
     function effectiveInvStatus(row) {
       if (row.inv_status === 'paid' || row.inv_received) return row.inv_status || '';
-      if (row.date) {
+      if (row.date && parseInt(row.date.slice(0, 4), 10) >= 2026) {
         const days = Math.floor((Date.now() - new Date(row.date + 'T00:00:00')) / 86400000);
         if (days > 45) return 'overdue';
       }
