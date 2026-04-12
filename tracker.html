@@ -5669,21 +5669,61 @@ const defaultLists = {
 let lists = {};
 
 async function loadLists() {
-  let saved = await apiGet('fct_lists');
-  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+  // Fetch all four entity types from their normalized endpoints in parallel.
+  // Falls back to empty defaults on any failure so the app stays usable.
+  const hdrs = { 'Authorization': `Bearer ${fctToken}` };
+  const [supR, eqR, empR, dlR] = await Promise.allSettled([
+    fetch(`${API_BASE}/suppliers`,      { headers: hdrs }),
+    fetch(`${API_BASE}/equipment`,      { headers: hdrs }),
+    fetch(`${API_BASE}/employees`,      { headers: hdrs }),
+    fetch(`${API_BASE}/dropdown-lists`, { headers: hdrs }),
+  ]);
+
+  async function safeJson(result, key) {
     try {
-      const local = JSON.parse(localStorage.getItem(LISTS_KEY));
-      if (local && typeof local === 'object') { saved = local; apiPut('fct_lists', saved); }
-    } catch {}
+      if (result.status !== 'fulfilled' || !result.value.ok) return null;
+      const data = await result.value.json();
+      return key ? data[key] : data;
+    } catch { return null; }
   }
-  lists = { ...defaultLists, ...(saved || {}) };
-  // Migrate suppliers from string[] to {name,state}[]
-  lists.suppliers = lists.suppliers.map(s => typeof s === 'string' ? { name: s, state: '', address: '', phone: '', website: '' } : { address: '', phone: '', website: '', ...s });
-  // Migrate employees from string[] to {name,non_prevailing_rate,prevailing_rate,job_class}[]
-  lists.employees = lists.employees.map(e => typeof e === 'string'
-    ? { name: e, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' } : e);
+
+  const suppliers  = await safeJson(supR,  'suppliers')  || [];
+  const equipment  = await safeJson(eqR,   'equipment')  || [];
+  const employees  = await safeJson(empR,  'employees')  || [];
+  const dropdowns  = await safeJson(dlR,   null)         || {};
+
+  lists = {
+    ...defaultLists,
+    suppliers,
+    equipment:    equipment.map(e => ({ name: e.name, unit_cost: parseFloat(e.unit_cost) || 0 })),
+    employees:    employees.map(e => ({
+      name:               e.name,
+      job_class:          e.job_class          || '',
+      prevailing_rate:    parseFloat(e.prevailing_rate)     || 0,
+      non_prevailing_rate: parseFloat(e.non_prevailing_rate) || 0,
+    })),
+    field_types:  dropdowns.field_types  || [],
+    job_classes:  dropdowns.job_classes  || [],
+    infill_types: dropdowns.infill_types || [],
+  };
 }
-function saveLists() { apiPut('fct_lists', lists); }
+
+function saveLists() {
+  // Write each entity group to its own normalized endpoint (fire-and-forget).
+  const hdrs = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` };
+  const put  = (path, body) => fetch(`${API_BASE}/${path}`, { method: 'PUT', headers: hdrs, body: JSON.stringify(body) })
+    .then(r => { if (!r.ok) console.warn(`[lists] PUT ${path} failed: ${r.status}`); })
+    .catch(err => console.warn(`[lists] PUT ${path} error:`, err.message));
+
+  put('suppliers', { suppliers: lists.suppliers });
+  put('equipment', { equipment: lists.equipment });
+  put('employees', { employees: lists.employees });
+  put('dropdown-lists', {
+    field_types:  lists.field_types  || [],
+    job_classes:  lists.job_classes  || [],
+    infill_types: lists.infill_types || [],
+  });
+}
 
 /* ── Purchase Orders Tab ── */
 let _poExpanded = new Set();   // PO ids with delivery lines visible

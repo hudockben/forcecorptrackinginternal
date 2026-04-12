@@ -245,6 +245,11 @@ CREATE TABLE IF NOT EXISTS suppliers (
 
 CREATE INDEX IF NOT EXISTS idx_suppliers_company ON suppliers(company_code);
 
+-- Add columns used by the frontend (safe to re-run: IF NOT EXISTS)
+ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS state   TEXT;
+ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS website TEXT;
+
 -- ─────────────────────────────────────────────────
 -- PURCHASE ORDERS
 -- ─────────────────────────────────────────────────
