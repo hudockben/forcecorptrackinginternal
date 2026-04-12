@@ -780,6 +780,53 @@
     }
     .del-btn:hover { color: var(--red); background: rgba(239,68,68,0.1); }
 
+    /* Invoice expand toggle */
+    .cw-expand { width: 28px; text-align: center; padding: 0 !important; }
+    .expand-btn {
+      background: none; border: none; color: var(--muted);
+      font-size: 0.72rem; cursor: pointer; padding: 0.2rem 0.45rem;
+      transition: color 0.15s, transform 0.2s; display: inline-block;
+      line-height: 1; border-radius: 3px;
+    }
+    .expand-btn:hover { color: var(--amber); background: rgba(251,191,36,0.08); }
+    .expand-btn.open  { transform: rotate(90deg); color: var(--amber); }
+
+    /* Invoice status badge (shown inline in Invoice Total cell) */
+    .inv-badge {
+      display: inline-block; font-size: 0.52rem; font-weight: 700;
+      letter-spacing: 0.07em; text-transform: uppercase;
+      padding: 0.1rem 0.35rem; border-radius: 3px;
+      margin-left: 0.35rem; vertical-align: middle; line-height: 1.4;
+    }
+    .inv-badge.unpaid  { background: rgba(239,68,68,0.15);  color: #f87171; }
+    .inv-badge.sent    { background: rgba(251,191,36,0.15); color: var(--amber); }
+    .inv-badge.paid    { background: rgba(34,197,94,0.15);  color: var(--green); }
+    .inv-badge.overdue { background: rgba(239,68,68,0.22);  color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+
+    /* Expandable invoice detail row */
+    .inv-row > td { padding: 0; }
+    .inv-panel {
+      display: flex; flex-wrap: wrap; gap: 1.1rem; align-items: flex-end;
+      padding: 0.85rem 1.5rem 0.9rem;
+      background: rgba(251,191,36,0.03);
+      border-top: 1px solid rgba(251,191,36,0.12);
+      border-bottom: 1px solid var(--border);
+    }
+    .inv-field { display: flex; flex-direction: column; gap: 0.3rem; }
+    .inv-field label {
+      font-size: 0.55rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--amber); opacity: 0.85;
+    }
+    .inv-field input, .inv-field select {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); font-size: 0.76rem;
+      padding: 0.35rem 0.55rem; border-radius: 4px; min-width: 140px;
+    }
+    .inv-field input:focus, .inv-field select:focus {
+      outline: none; border-color: var(--amber);
+    }
+    .inv-field select { min-width: 115px; }
+
     /* Column widths */
     .cw-date { min-width: 112px; }
     .cw-time { min-width: 88px; }
@@ -945,6 +992,7 @@
       <table class="sheet-table">
         <thead>
           <tr class="group-row">
+            <th class="cw-expand"></th>
             <th class="g-entry"  colspan="4">Entry</th>
             <th class="g-cust"   colspan="4">Customer</th>
             <th class="g-v1"     colspan="4">Vehicle 1</th>
@@ -953,6 +1001,7 @@
             <th class="g-del"></th>
           </tr>
           <tr class="col-row">
+            <th class="cw-expand"></th>
             <th class="cw-date">Date<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('date',this.value)"></th>
             <th class="cw-time">Start Time</th>
             <th class="cw-time">End Time</th>
@@ -979,7 +1028,7 @@
         <tbody id="dustTbody"></tbody>
         <tfoot>
           <tr class="add-row-foot">
-            <td colspan="21">
+            <td colspan="22">
               <button class="add-row-foot-btn" onclick="addRow()">+ Add Row</button>
             </td>
           </tr>
@@ -1826,7 +1875,39 @@
         const locOpts = '<option value="">— select —</option>' +
           coLocs.map(loc => `<option value="${esc(loc.name)}"${row.location===loc.name?' selected':''}>${esc(loc.name)}</option>`).join('');
 
+        const invSt    = row.inv_status || '';
+        const badge    = invSt ? `<span class="inv-badge ${invSt}">${invSt}</span>` : '';
+        const invPanel = `
+          <div class="inv-panel">
+            <div class="inv-field">
+              <label>Invoice #</label>
+              <input type="text" value="${esc(row.inv_number||'')}" placeholder="e.g. INV-1001"
+                oninput="set(${idx},'inv_number',this.value)">
+            </div>
+            <div class="inv-field">
+              <label>Invoice Sent</label>
+              <input type="date" value="${esc(row.inv_sent||'')}"
+                onchange="set(${idx},'inv_sent',this.value)">
+            </div>
+            <div class="inv-field">
+              <label>Payment Received</label>
+              <input type="date" value="${esc(row.inv_received||'')}"
+                onchange="set(${idx},'inv_received',this.value)">
+            </div>
+            <div class="inv-field">
+              <label>Status</label>
+              <select onchange="setInvStatus(${idx},this.value)">
+                <option value=""     ${!invSt              ?'selected':''}>— select —</option>
+                <option value="unpaid"  ${'unpaid'  ===invSt?'selected':''}>Unpaid</option>
+                <option value="sent"    ${'sent'    ===invSt?'selected':''}>Sent</option>
+                <option value="paid"    ${'paid'    ===invSt?'selected':''}>Paid</option>
+                <option value="overdue" ${'overdue' ===invSt?'selected':''}>Overdue</option>
+              </select>
+            </div>
+          </div>`;
+
         return `<tr data-idx="${idx}">
+          <td class="cw-expand"><button class="expand-btn" id="expbtn-${idx}" onclick="toggleInvoice(${idx})" title="Invoice details">›</button></td>
           <td class="cw-date"><input type="date" value="${esc(row.date       ||'')}" onchange="set(${idx},'date',this.value)"></td>
           <td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>
           <td class="cw-time"><input type="time" value="${esc(row.end_time   ||'')}" onchange="set(${idx},'end_time',this.value)"></td>
@@ -1850,10 +1931,23 @@
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
           <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="set(${idx},'gallons_ub',this.value)"></td>
           ${calcCell(c.ubTotal  ? money(c.ubTotal)  : '', 'cw-ubt')}
-          ${calcCell(c.invTotal ? money(c.invTotal) : '', 'cw-inv')}
+          <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}</td>
           <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
+        </tr>
+        <tr class="inv-row" id="inv-row-${idx}" style="display:none">
+          <td colspan="22">${invPanel}</td>
         </tr>`;
       }).join('');
+
+      // Restore any rows that were expanded before the re-render
+      visibleIdxs.forEach(idx => {
+        if (expandedRowIds.has(rows[idx]?.id)) {
+          const invRow = document.getElementById('inv-row-' + idx);
+          const btn    = document.getElementById('expbtn-'  + idx);
+          if (invRow) invRow.style.display = '';
+          if (btn)    btn.classList.add('open');
+        }
+      });
 
       renderTotals(totVeh, totUb, totInv, totGal);
       const total = rows.length, shown = visibleIdxs.length;
@@ -1918,6 +2012,41 @@
     }
 
     /* ═══════════════════════════════════════════
+       INVOICE EXPAND
+    ═══════════════════════════════════════════ */
+    const expandedRowIds = new Set();
+
+    function toggleInvoice(idx) {
+      const id     = rows[idx]?.id;
+      const invRow = document.getElementById('inv-row-' + idx);
+      const btn    = document.getElementById('expbtn-'  + idx);
+      const isOpen = invRow && invRow.style.display !== 'none';
+      if (invRow) invRow.style.display = isOpen ? 'none' : '';
+      if (btn)    btn.classList.toggle('open', !isOpen);
+      if (id) { if (isOpen) expandedRowIds.delete(id); else expandedRowIds.add(id); }
+    }
+
+    function setInvStatus(idx, value) {
+      rows[idx].inv_status = value;
+      // Update badge in the invoice total cell without a full re-render
+      const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
+      if (tr) {
+        const cell = tr.querySelector('td.cw-inv');
+        if (cell) {
+          const existing = cell.querySelector('.inv-badge');
+          if (existing) existing.remove();
+          if (value) {
+            const span = document.createElement('span');
+            span.className = 'inv-badge ' + value;
+            span.textContent = value;
+            cell.appendChild(span);
+          }
+        }
+      }
+      scheduleSave();
+    }
+
+    /* ═══════════════════════════════════════════
        ROW CRUD
     ═══════════════════════════════════════════ */
     function addRow() {
@@ -1928,13 +2057,15 @@
         vehicle1: '', v1_unit: '', v1_rate: '',
         vehicle2: '', v2_unit: '', v2_rate: '',
         gallons_ub: '',
+        inv_number: '', inv_sent: '', inv_received: '', inv_status: '',
       });
       renderTable();
       scheduleSave();
 
-      // Scroll to and focus new row
-      const tbody = document.getElementById('dustTbody');
-      const last  = tbody.lastElementChild;
+      // Scroll to and focus new row (skip inv-row siblings)
+      const tbody   = document.getElementById('dustTbody');
+      const mainRows = tbody.querySelectorAll('tr[data-idx]');
+      const last    = mainRows[mainRows.length - 1];
       if (last) {
         last.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         const inp = last.querySelector('input');
