@@ -2667,14 +2667,16 @@
         <div class="dash-overdue-list">
           ${topOverdue.map(r => {
             const days = r.date ? Math.floor((Date.now() - new Date(r.date + 'T00:00:00')) / 86400000) : null;
-            return \`<div class="dash-overdue-row">
-              <span class="dash-overdue-dot"></span>
-              <span class="dash-overdue-date">\${r.date || '—'}</span>
-              <span class="dash-overdue-co" title="\${esc(r.company || '')}">\${esc(r.company || '—')}</span>
-              \${r.location ? \`<span class="dash-overdue-loc" title="\${esc(r.location)}">\${esc(r.location)}</span>\` : ''}
-              <span class="dash-overdue-amt">\${money(r.invTotal)}</span>
-              \${days !== null ? \`<span class="dash-overdue-days">\${numFmt(days)}d old</span>\` : ''}
-            </div>\`;
+            const loc  = r.location ? `<span class="dash-overdue-loc" title="${esc(r.location)}">${esc(r.location)}</span>` : '';
+            const age  = days !== null ? `<span class="dash-overdue-days">${numFmt(days)}d old</span>` : '';
+            return '<div class="dash-overdue-row">'
+              + '<span class="dash-overdue-dot"></span>'
+              + '<span class="dash-overdue-date">' + (r.date || '—') + '</span>'
+              + '<span class="dash-overdue-co" title="' + esc(r.company || '') + '">' + esc(r.company || '—') + '</span>'
+              + loc
+              + '<span class="dash-overdue-amt">' + money(r.invTotal) + '</span>'
+              + age
+              + '</div>';
           }).join('')}
         </div>` : ''}` : ''}
 
