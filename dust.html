@@ -247,6 +247,43 @@
       color: var(--blue); font-size: 0.68rem; font-weight: 600;
       letter-spacing: 0.06em; padding: 0.25rem 0.7rem; border-radius: 20px;
     }
+    /* Invoice overview */
+    .dash-inv-strip { display: flex; gap: 1rem; margin: 0 1.5rem; }
+    .dash-inv-card {
+      flex: 1; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1rem 1.1rem;
+    }
+    .dash-inv-card .dash-kpi-label {
+      font-size: 0.56rem; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .dash-inv-card .inv-amount {
+      font-size: 1.15rem; font-weight: 700;
+      font-variant-numeric: tabular-nums; line-height: 1.2;
+      margin: 0.2rem 0 0.15rem;
+    }
+    .dash-inv-card .inv-count { font-size: 0.62rem; color: var(--muted); }
+    .dash-inv-card.overdue     .inv-amount { color: #f87171; }
+    .dash-inv-card.outstanding .inv-amount { color: var(--amber); }
+    .dash-inv-card.paid        .inv-amount { color: var(--green); }
+    .dash-overdue-list {
+      margin: 0.75rem 1.5rem 0;
+      background: var(--surface); border: 1px solid rgba(248,113,113,0.25);
+      border-radius: 8px; overflow: hidden;
+    }
+    .dash-overdue-row {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.48rem 1rem; border-bottom: 1px solid var(--border);
+      font-size: 0.74rem;
+    }
+    .dash-overdue-row:last-child { border-bottom: none; }
+    .dash-overdue-dot  { width: 6px; height: 6px; border-radius: 50%; background: #f87171; flex-shrink: 0; }
+    .dash-overdue-date { color: var(--muted); font-size: 0.67rem; flex-shrink: 0; min-width: 75px; }
+    .dash-overdue-co   { font-weight: 600; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .dash-overdue-loc  { color: var(--muted); font-size: 0.67rem; flex-shrink: 0; max-width: 130px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .dash-overdue-amt  { color: #f87171; font-weight: 700; font-size: 0.75rem; flex-shrink: 0; }
+    .dash-overdue-days { font-size: 0.62rem; color: var(--muted); flex-shrink: 0; min-width: 55px; text-align: right; }
+
     .dash-empty    { text-align: center; padding: 2.5rem; color: var(--muted); font-size: 0.82rem; }
     .dash-empty-sm { padding: 0.75rem 1rem; color: var(--muted); font-size: 0.74rem; }
 
@@ -2509,6 +2546,21 @@
       // ── States coverage this year ──
       const states = [...new Set(ytd.map(r => r.state).filter(Boolean))].sort();
 
+      // ── Invoice status overview (all rows that have a calculated invoice amount) ──
+      const invOverdue = [], invOutstanding = [], invPaid = [], invUntracked = [];
+      computed.forEach(r => {
+        if (!r.invTotal) return;
+        const st = effectiveInvStatus(r);
+        if      (st === 'overdue')              invOverdue.push(r);
+        else if (st === 'paid')                 invPaid.push(r);
+        else if (st === 'unpaid' || st ==='sent') invOutstanding.push(r);
+        else                                    invUntracked.push(r);
+      });
+      const sumInv = arr => arr.reduce((s, r) => s + r.invTotal, 0);
+      const topOverdue = [...invOverdue]
+        .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+        .slice(0, 8);
+
       // ── Build HTML ──
       const noData = !rows.length;
 
@@ -2591,6 +2643,40 @@
         <div class="dash-states">
           ${states.map(s => `<span class="dash-state-badge">${esc(s)}</span>`).join('')}
         </div>` : ''}
+
+        ${(invOverdue.length || invOutstanding.length || invPaid.length) ? `
+        <div class="dash-section-lbl">Invoice Overview — All Time</div>
+        <div class="dash-inv-strip">
+          <div class="dash-inv-card overdue">
+            <div class="dash-kpi-label">Overdue</div>
+            <div class="inv-amount">${money(sumInv(invOverdue))}</div>
+            <div class="inv-count">${numFmt(invOverdue.length)} invoice${invOverdue.length !== 1 ? 's' : ''}</div>
+          </div>
+          <div class="dash-inv-card outstanding">
+            <div class="dash-kpi-label">Outstanding</div>
+            <div class="inv-amount">${money(sumInv(invOutstanding))}</div>
+            <div class="inv-count">${numFmt(invOutstanding.length)} invoice${invOutstanding.length !== 1 ? 's' : ''}</div>
+          </div>
+          <div class="dash-inv-card paid">
+            <div class="dash-kpi-label">Paid</div>
+            <div class="inv-amount">${money(sumInv(invPaid))}</div>
+            <div class="inv-count">${numFmt(invPaid.length)} invoice${invPaid.length !== 1 ? 's' : ''}</div>
+          </div>
+        </div>
+        ${topOverdue.length ? `
+        <div class="dash-overdue-list">
+          ${topOverdue.map(r => {
+            const days = r.date ? Math.floor((Date.now() - new Date(r.date + 'T00:00:00')) / 86400000) : null;
+            return \`<div class="dash-overdue-row">
+              <span class="dash-overdue-dot"></span>
+              <span class="dash-overdue-date">\${r.date || '—'}</span>
+              <span class="dash-overdue-co" title="\${esc(r.company || '')}">\${esc(r.company || '—')}</span>
+              \${r.location ? \`<span class="dash-overdue-loc" title="\${esc(r.location)}">\${esc(r.location)}</span>\` : ''}
+              <span class="dash-overdue-amt">\${money(r.invTotal)}</span>
+              \${days !== null ? \`<span class="dash-overdue-days">\${numFmt(days)}d old</span>\` : ''}
+            </div>\`;
+          }).join('')}
+        </div>` : ''}` : ''}
 
         <div class="dash-section-lbl">Recent Jobs</div>
         <div class="dash-feed">
