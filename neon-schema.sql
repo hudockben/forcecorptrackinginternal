@@ -388,3 +388,39 @@ ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_che
 ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS tr_row_id          TEXT;
 ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS status_changed_at  TIMESTAMPTZ;
 ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS status_changed_by  TEXT;
+
+-- ─────────────────────────────────────────────────
+-- DUST CONTROL ENTRIES
+-- One row per job entry from the Dust Control tab.
+-- Computed fields (v1Total, ubTotal, invTotal) are
+-- derived from stored values + ub_rate setting; they
+-- are NOT stored here to avoid drift.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS dust_control_entries (
+    id              TEXT PRIMARY KEY,              -- app-generated uid
+    company_code    TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    date            DATE,
+    start_time      TEXT,                          -- "HH:MM" string
+    end_time        TEXT,                          -- "HH:MM" string
+    company         TEXT,
+    company_man     TEXT,
+    location        TEXT,
+    state           TEXT,
+    vehicle1        TEXT,
+    v1_unit         TEXT,
+    v1_rate         NUMERIC(10,4),
+    vehicle2        TEXT,
+    v2_unit         TEXT,
+    v2_rate         NUMERIC(10,4),
+    gallons_ub      NUMERIC(10,4),
+    inv_number      TEXT,
+    inv_sent        DATE,
+    inv_received    DATE,
+    inv_status      TEXT,
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dust_company      ON dust_control_entries(company_code);
+CREATE INDEX IF NOT EXISTS idx_dust_company_date ON dust_control_entries(company_code, date);
+CREATE INDEX IF NOT EXISTS idx_dust_company_co   ON dust_control_entries(company_code, company);
