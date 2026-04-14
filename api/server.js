@@ -46,6 +46,9 @@ app.all('/api/trucking', require('./trucking'));
 /** Purchase orders + delivery lines */
 app.all('/api/purchase-orders', require('./purchase-orders'));
 
+/** Dust control entries */
+app.all('/api/dust-rows', require('./dust-rows'));
+
 /** Company board */
 app.all('/api/board', require('./board'));
 

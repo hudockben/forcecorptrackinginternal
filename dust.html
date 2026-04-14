@@ -1419,6 +1419,29 @@
       } catch { return false; }
     }
 
+    /** Load dust rows from normalized REST endpoint (falls back to blob internally). */
+    async function loadDustRows() {
+      try {
+        const r = await fetch('/api/dust-rows', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (r.status === 401) { signOut(); return null; }
+        if (!r.ok) return null;
+        const data = await r.json();
+        return Array.isArray(data.dustRows) ? data.dustRows : null;
+      } catch { return null; }
+    }
+
+    /** Save dust rows to normalized REST endpoint (writes blob first internally). */
+    async function saveDustRows(dustRows) {
+      try {
+        const r = await fetch('/api/dust-rows', {
+          method: 'PUT',
+          headers: AUTH_HDR(),
+          body: JSON.stringify({ dustRows }),
+        });
+        return r.ok;
+      } catch { return false; }
+    }
+
     /* ═══════════════════════════════════════════
        STATE
     ═══════════════════════════════════════════ */
@@ -1765,7 +1788,7 @@
       merged.sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
       const [rowsOk, listsOk] = await Promise.all([
-        apiPut('dust_rows',  merged),
+        saveDustRows(merged),
         apiPut('dust_lists', dustLists),
       ]);
 
@@ -1811,7 +1834,7 @@
       setSaveState('saving');
       clearTimeout(saveTimer);
       saveTimer = setTimeout(async () => {
-        const ok = await apiPut('dust_rows', rows);
+        const ok = await saveDustRows(rows);
         apiPut('dust_settings', { ub_rate: ubRate });
         setSaveState(ok ? 'saved' : 'error');
         setTimeout(() => setSaveState(''), 3000);
@@ -2714,7 +2737,7 @@
 
     async function init() {
       const [savedRows, savedSettings, savedLists] = await Promise.all([
-        apiGet('dust_rows'),
+        loadDustRows(),
         apiGet('dust_settings'),
         apiGet('dust_lists'),
       ]);
@@ -2747,7 +2770,7 @@
     // Flush pending save on unload
     window.addEventListener('beforeunload', () => {
       clearTimeout(saveTimer);
-      apiPut('dust_rows', rows);
+      saveDustRows(rows);
       apiPut('dust_settings', { ub_rate: ubRate });
     });
 
