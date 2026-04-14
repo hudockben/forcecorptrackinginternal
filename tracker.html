@@ -3345,8 +3345,9 @@ function renderHomeTab() {
         const name      = p['project-name'] || 'Untitled Project';
         const meta      = [p['job-number'], p['client'], p['status']].filter(Boolean).map(v => esc(v)).join(' · ');
         const endDate   = p['end-date'];
+        const projDone  = ['complete','closed'].includes((p.status||'').toLowerCase());
         const daysLeft  = endDate ? Math.round((new Date(endDate + 'T12:00:00') - todayNoon) / (1000*60*60*24)) : null;
-        const endChip   = endDate
+        const endChip   = (!projDone && endDate)
           ? (daysLeft < 0
               ? `<span style="font-size:0.68rem;color:var(--red);font-weight:600">&#9888; ${Math.abs(daysLeft)}d overdue</span>`
               : daysLeft <= 14
@@ -3448,6 +3449,7 @@ function renderHomeTab() {
     const atRisk    = (p.bidItems||[]).filter(b => b.status === 'At Risk').length;
     const onHold    = (p.bidItems||[]).filter(b => b.status === 'On Hold').length;
     const status    = p['status'] || '';
+    const projDone  = ['complete','closed'].includes(status.toLowerCase());
     let statusCell;
     if (atRisk > 0)       statusCell = `<span style="color:var(--red);font-size:0.7rem;font-weight:600">⚠ ${atRisk} At Risk</span>`;
     else if (onHold > 0)  statusCell = `<span style="color:var(--yellow);font-size:0.7rem;font-weight:600">◼ ${onHold} On Hold</span>`;
@@ -3456,7 +3458,7 @@ function renderHomeTab() {
     else if (status)                statusCell = `<span style="color:var(--muted);font-size:0.7rem">${esc(status)}</span>`;
     else                            statusCell = `<span style="color:var(--muted)">—</span>`;
     let deadlineNote = '';
-    if (daysLeft !== null) {
+    if (!projDone && daysLeft !== null) {
       if (daysLeft < 0)        deadlineNote = `<div style="font-size:0.61rem;color:var(--red);margin-top:0.1rem">${Math.abs(daysLeft)}d overdue</div>`;
       else if (daysLeft <= 14) deadlineNote = `<div style="font-size:0.61rem;color:var(--yellow);margin-top:0.1rem">${daysLeft}d left</div>`;
     }
