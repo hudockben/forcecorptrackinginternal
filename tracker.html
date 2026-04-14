@@ -15089,22 +15089,21 @@ function _schedChangePage(delta) {
 }
 
 function renderScheduleAllProjects() {
-  const active = projectsList.filter(p => {
-    const s = (p.status || '').toLowerCase();
-    return s !== 'complete' && s !== 'closed';
-  });
+  const active = projectsList.slice(); // all projects — completed ones shown with muted style
 
   if (!active.length) {
     return `<div class="sched-no-data">No active projects. Add projects in the Project Dashboard tab.</div>`;
   }
 
-  // Sort: most recently added project first (insertion order desc),
+  // Sort: active projects first, then complete/closed; within each group newest-added first,
   // tiebreak by most recent daily entry date desc
   const lastDate = p => {
     const dates = (p.dailyRows || []).map(r => r.date).filter(Boolean);
     return dates.length ? dates.reduce((a, b) => a > b ? a : b) : '0000-00-00';
   };
+  const isDone = p => { const s = (p.status || '').toLowerCase(); return s === 'complete' || s === 'closed'; };
   active.sort((a, b) => {
+    if (isDone(a) !== isDone(b)) return isDone(a) ? 1 : -1;  // active first
     const idxA = projectsList.indexOf(a);
     const idxB = projectsList.indexOf(b);
     if (idxB !== idxA) return idxB - idxA;            // newer-added first
@@ -15127,7 +15126,8 @@ function renderScheduleAllProjects() {
       counts[status] = (counts[status] || 0) + 1;
     });
 
-    const cardBorder    = counts['behind'] > 0 ? 'behind' : counts['at-risk'] > 0 ? 'at-risk' : 'on-track';
+    const projDone      = isDone(proj);
+    const cardBorder    = projDone ? 'on-track' : counts['behind'] > 0 ? 'behind' : counts['at-risk'] > 0 ? 'at-risk' : 'on-track';
     const totalRows     = (proj.dailyRows || []).length;
     const totalBidItems = (proj.bidItems || []).length;
     const deadlineFmt   = deadline
@@ -15139,9 +15139,9 @@ function renderScheduleAllProjects() {
       : null;
 
     return `
-      <div class="sched-proj-card ${cardBorder}" style="cursor:pointer"
+      <div class="sched-proj-card ${cardBorder}" style="cursor:pointer${projDone ? ';opacity:0.55' : ''}"
         onclick="document.getElementById('sched-proj-select').value='${proj.id}';renderScheduleTab()">
-        <div style="font-weight:700;font-size:0.9rem;margin-bottom:0.1rem">${esc(proj['project-name'] || 'Untitled')}</div>
+        <div style="font-weight:700;font-size:0.9rem;margin-bottom:0.1rem">${esc(proj['project-name'] || 'Untitled')}${projDone ? ` <span style="font-size:0.65rem;font-weight:400;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em">${esc(proj.status)}</span>` : ''}</div>
         ${proj['job-number'] ? `<div style="font-size:0.7rem;color:var(--muted);margin-bottom:0.3rem">Job #${esc(proj['job-number'])}</div>` : `<div style="margin-bottom:0.3rem"></div>`}
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.65rem">
           ${deadlineFmt ? `<span style="font-size:0.7rem;color:var(--muted)">${deadlineFmt}</span>` : `<span></span>`}
@@ -15171,7 +15171,7 @@ function renderScheduleAllProjects() {
 
   return `
     <div class="sched-section-hdr" style="display:flex;align-items:center;justify-content:space-between">
-      <span>Active Projects — Pacing Overview</span>
+      <span>All Projects — Pacing Overview</span>
       <span style="font-size:0.72rem;color:var(--muted);font-weight:400">${active.length} project${active.length !== 1 ? 's' : ''} · newest first</span>
     </div>
     <div class="sched-summary-grid">${cards.join('')}</div>
