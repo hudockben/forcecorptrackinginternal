@@ -104,10 +104,10 @@ module.exports = async (req, res) => {
       const list = Array.isArray(blob) ? blob : [];
 
       if (list.length > 0) {
-        // Migrate blob into normalized tables (fire-and-forget)
-        _migratePOBlob(sql, companyCode, list).catch(err =>
-          console.error('[purchase-orders] blob migration failed:', err.message)
-        );
+        // Migrate blob into normalized tables — awaited so it completes
+        // before the response is sent (serverless functions freeze on return).
+        try { await _migratePOBlob(sql, companyCode, list); }
+        catch (err) { console.error('[purchase-orders] blob migration failed:', err.message); }
       }
 
       return res.json({ purchaseOrders: list });

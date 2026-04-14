@@ -79,10 +79,10 @@ module.exports = async (req, res) => {
       const list = Array.isArray(blob) ? blob : [];
 
       if (list.length > 0) {
-        // Migrate blob data into normalized table (fire-and-forget)
-        _migrateTruckingBlob(sql, companyCode, list).catch(err =>
-          console.error('[trucking] blob migration failed:', err.message)
-        );
+        // Migrate blob data into normalized table — awaited so it completes
+        // before the response is sent (serverless functions freeze on return).
+        try { await _migrateTruckingBlob(sql, companyCode, list); }
+        catch (err) { console.error('[trucking] blob migration failed:', err.message); }
       }
 
       return res.json({ truckingEntries: list });
