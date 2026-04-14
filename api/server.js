@@ -40,6 +40,12 @@ app.use(express.static(path.join(__dirname, '..')));
 /** Daily rows — scalable per-row storage */
 app.all('/api/daily-rows', require('./daily-rows'));
 
+/** Trucking entries */
+app.all('/api/trucking', require('./trucking'));
+
+/** Purchase orders + delivery lines */
+app.all('/api/purchase-orders', require('./purchase-orders'));
+
 /** Company board */
 app.all('/api/board', require('./board'));
 

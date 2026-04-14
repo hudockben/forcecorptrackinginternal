@@ -4427,8 +4427,20 @@ function getProj(id) { return projectsList.find(p => p.id === id); }
 let purchaseOrders = [];
 
 async function loadPurchaseOrders() {
-  const saved = await apiGet('fct_purchase_orders');
-  purchaseOrders = Array.isArray(saved) ? saved : [];
+  try {
+    const r = await fetch(`${API_BASE}/purchase-orders`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (r.status === 401) { logout(); return; }
+    if (r.ok) {
+      const data = await r.json();
+      purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+    } else {
+      purchaseOrders = [];
+    }
+  } catch {
+    purchaseOrders = [];
+  }
   _migratePOs();
 }
 
@@ -4451,7 +4463,15 @@ function _migratePOs() {
   });
 }
 
-function savePurchaseOrders() { apiPut('fct_purchase_orders', purchaseOrders); }
+function savePurchaseOrders() {
+  fetch(`${API_BASE}/purchase-orders`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body: JSON.stringify({ purchaseOrders })
+  }).then(r => {
+    if (!r.ok) _showSaveError(r.status === 401);
+  }).catch(() => _showSaveError(false));
+}
 
 function nextPONumber() {
   const nums = purchaseOrders.map(po => {
@@ -4466,19 +4486,32 @@ function nextPONumber() {
 let truckingEntries = [];
 
 async function loadTruckingEntries() {
-  let saved = await apiGet('fct_trucking');
-  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
-    try {
-      const local = JSON.parse(localStorage.getItem('fct_trucking'));
-      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_trucking', saved); }
-    } catch {}
+  try {
+    const r = await fetch(`${API_BASE}/trucking`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (r.status === 401) { logout(); return; }
+    if (r.ok) {
+      const data = await r.json();
+      truckingEntries = Array.isArray(data.truckingEntries) ? data.truckingEntries : [];
+    } else {
+      truckingEntries = [];
+    }
+  } catch {
+    truckingEntries = [];
   }
-  truckingEntries = Array.isArray(saved) ? saved : [];
+  localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
 }
 
 function saveTruckingEntries() {
   localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
-  apiPut('fct_trucking', truckingEntries);
+  fetch(`${API_BASE}/trucking`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+    body: JSON.stringify({ truckingEntries })
+  }).then(r => {
+    if (!r.ok) _showSaveError(r.status === 401);
+  }).catch(() => _showSaveError(false));
 }
 
 function nextTRNumber() {

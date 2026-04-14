@@ -363,3 +363,28 @@ CREATE TABLE IF NOT EXISTS scale_manual_entries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scale_manual_company ON scale_manual_entries(company_code);
+
+-- ─────────────────────────────────────────────────
+-- MIGRATION: add columns needed by REST endpoints
+-- ─────────────────────────────────────────────────
+
+-- po_deliveries: extra fields to store frontend line shape
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS line_id       TEXT;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS invoice_num   TEXT;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS tax           NUMERIC(14,4) NOT NULL DEFAULT 0;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS employee      TEXT;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS po_row_id     TEXT;
+
+-- purchase_orders: frontend uses po_number, title, date_created, status audit
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS po_num            TEXT;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS title             TEXT;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS date_created      DATE;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_by TEXT;
+-- Drop the strict status check so any app status value is accepted
+ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check;
+
+-- trucking_entries: add tr_row_id and status audit columns
+ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS tr_row_id          TEXT;
+ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS status_changed_at  TIMESTAMPTZ;
+ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS status_changed_by  TEXT;
