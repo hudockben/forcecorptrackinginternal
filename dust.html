@@ -625,6 +625,15 @@
     }
     .an-subtab.active { color: var(--amber); border-bottom-color: var(--amber); }
     .an-subtab:hover:not(.active) { color: var(--text); }
+    .yr-filter { display: flex; align-items: center; gap: 0.3rem; padding-bottom: 0.45rem; }
+    .yr-pill {
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.04em;
+      padding: 0.18rem 0.55rem; border-radius: 99px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--muted); cursor: pointer; transition: all 0.15s;
+    }
+    .yr-pill:hover:not(.active) { color: var(--text); border-color: rgba(255,255,255,0.25); }
+    .yr-pill.active { color: var(--amber); border-color: var(--amber); background: rgba(251,191,36,0.1); }
     .an-export-btn {
       font-size: 0.62rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
       background: rgba(255,255,255,0.06); border: 1px solid var(--border);
@@ -713,9 +722,11 @@
       height: 100%; border-radius: 3px; min-width: 3px;
       transition: width 0.55s cubic-bezier(0.4,0,0.2,1);
     }
-    .bar-fill.amber { background: linear-gradient(90deg, #fbbf24, rgba(251,191,36,0.5)); }
-    .bar-fill.blue  { background: linear-gradient(90deg, #60a5fa, rgba(96,165,250,0.5)); }
-    .bar-fill.green { background: linear-gradient(90deg, #22c55e, rgba(34,197,94,0.5));  }
+    .bar-fill.amber  { background: linear-gradient(90deg, #fbbf24, rgba(251,191,36,0.5)); }
+    .bar-fill.blue   { background: linear-gradient(90deg, #60a5fa, rgba(96,165,250,0.5)); }
+    .bar-fill.green  { background: linear-gradient(90deg, #22c55e, rgba(34,197,94,0.5));  }
+    .bar-fill.purple { background: linear-gradient(90deg, #a78bfa, rgba(167,139,250,0.5)); }
+    .bar-fill.rose   { background: linear-gradient(90deg, #fb7185, rgba(251,113,133,0.5)); }
     .bar-val { font-size: 0.64rem; color: var(--muted); width: 72px; flex-shrink: 0; }
 
     /* Analytics detail table */
@@ -928,9 +939,11 @@
       .an-chart-ttl.blue  { color: #1d4ed8 !important; }
       .an-chart-ttl.green { color: #15803d !important; }
       .bar-fill { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-      .bar-fill.amber { background: #fbbf24 !important; }
-      .bar-fill.blue  { background: #60a5fa !important; }
-      .bar-fill.green { background: #22c55e !important; }
+      .bar-fill.amber  { background: #fbbf24 !important; }
+      .bar-fill.blue   { background: #60a5fa !important; }
+      .bar-fill.green  { background: #22c55e !important; }
+      .bar-fill.purple { background: #a78bfa !important; }
+      .bar-fill.rose   { background: #fb7185 !important; }
       .bar-track { background: #e5e5e5 !important; }
       .bar-label, .bar-val { color: #444 !important; }
       .an-tbl-wrap { background: #fff !important; border: 1px solid #ddd !important; }
@@ -1085,6 +1098,7 @@
           <button class="an-subtab active" data-an="customer">Customer Data</button>
           <button class="an-subtab" data-an="financial">Financial</button>
         </div>
+        <div id="an-yr-filter" class="yr-filter"></div>
         <button class="an-export-btn" onclick="exportPDF()">↓ Export PDF</button>
       </div>
       <div id="an-customer">
@@ -2778,7 +2792,7 @@
             <div class="bar-item">
               <div class="bar-label" title="${esc(d.label)}">${esc(d.label)}</div>
               <div class="bar-track">
-                <div class="bar-fill ${color}" style="width:${((d.v/max)*100).toFixed(1)}%"></div>
+                <div class="bar-fill ${d.color || color}" style="width:${((d.v/max)*100).toFixed(1)}%"></div>
               </div>
               <div class="bar-val">${fmt(d.v)}</div>
             </div>`).join('')
@@ -2865,9 +2879,36 @@
     /* ═══════════════════════════════════════════
        ANALYTICS — Customer Data tab
     ═══════════════════════════════════════════ */
-    function renderAnalytics() { renderCustomerAnalytics(); }
+    /* ── Year filter ── */
+    let _anYear = null; // null = all years
+
+    function getAnRows() {
+      return _anYear ? rows.filter(r => (r.date || '').slice(0, 4) === _anYear) : rows;
+    }
+
+    function buildYearFilter() {
+      const el = document.getElementById('an-yr-filter');
+      if (!el) return;
+      const years = [...new Set(rows.map(r => (r.date||'').slice(0,4)).filter(y => /^\d{4}$/.test(y)))].sort();
+      if (years.length < 2) { el.innerHTML = ''; return; }
+      el.innerHTML =
+        `<button class="yr-pill${!_anYear ? ' active' : ''}" onclick="_setAnYear(null)">All</button>` +
+        years.map(y => `<button class="yr-pill${_anYear === y ? ' active' : ''}" onclick="_setAnYear('${y}')">${y}</button>`).join('');
+    }
+
+    function _setAnYear(y) {
+      _anYear = y;
+      buildYearFilter();
+      const panel = document.querySelector('.an-subtab.active')?.dataset.an;
+      if (panel === 'customer') renderCustomerAnalytics();
+      else renderFinancial();
+    }
+
+    function renderAnalytics() { buildYearFilter(); renderCustomerAnalytics(); }
     function renderCustomerAnalytics() {
-      if (!rows.length) {
+      buildYearFilter();
+      const anRows = getAnRows();
+      if (!anRows.length) {
         document.getElementById('an-cards').innerHTML =
           '<div class="an-empty">No tracking data yet — add rows in the Dust Control Tracking tab.</div>';
         ['an-bar-invoice','an-bar-hours','an-bar-gallons','an-detail-body','an-locs']
@@ -2877,7 +2918,7 @@
 
       /* ── Aggregate by company ── */
       const coMap = {};
-      rows.forEach(row => {
+      anRows.forEach(row => {
         const name = row.company || '(Unassigned)';
         const c = calc(row);
         if (!coMap[name]) coMap[name] = { name, visits:0, hours:0, gallons:0, vehTotal:0, ubTotal:0, invTotal:0, locations:{}, men:{} };
@@ -2903,7 +2944,7 @@
         <div class="an-card">
           <div class="an-card-lbl">Active Companies</div>
           <div class="an-card-val">${cos.length}</div>
-          <div class="an-card-sub">${rows.length} total entr${rows.length===1?'y':'ies'}</div>
+          <div class="an-card-sub">${anRows.length} total entr${anRows.length===1?'y':'ies'}</div>
         </div>
         <div class="an-card">
           <div class="an-card-lbl">Total Service Hours</div>
@@ -2971,13 +3012,16 @@
     ═══════════════════════════════════════════ */
     function renderFinancial() {
       const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      buildYearFilter();
+      const anRows = getAnRows();
 
-      if (!rows.length) {
+      if (!anRows.length) {
         document.getElementById('fin-year-cards').innerHTML =
           '<div class="an-empty">No tracking data yet.</div>';
         return;
       }
 
+      // Use all rows for year palette so colors stay consistent when filtering
       const years = [...new Set(
         rows.map(r => (r.date||'').slice(0,4)).filter(y => /^\d{4}$/.test(y))
       )].sort();
@@ -2987,7 +3031,7 @@
       const byYearMo  = {};  // "YYYY-MM" → invTotal
       const byYearCo  = {};  // year → company → totals
 
-      rows.forEach(row => {
+      anRows.forEach(row => {
         const y = (row.date||'').slice(0,4);
         if (!/^\d{4}$/.test(y)) return;
         const mo = (row.date||'').slice(5,7);
@@ -3055,10 +3099,13 @@
       buildBars('fin-bar-jobs-yr',  years.map(y=>({label:y, v:byYear[y].jobs})), 'blue',  v=>numFmt(v)+' jobs');
 
       // ── Monthly timeline ──
+      const YR_COLORS = ['amber', 'blue', 'green', 'purple', 'rose'];
       const ymKeys = Object.keys(byYearMo).sort();
       buildBars('fin-bar-monthly', ymKeys.map(ym => {
-        const mo = parseInt(ym.slice(5),10) - 1;
-        return { label: `${MONTHS[mo]} ${ym.slice(0,4)}`, v: byYearMo[ym] };
+        const mo    = parseInt(ym.slice(5),10) - 1;
+        const yr    = ym.slice(0,4);
+        const yrIdx = years.indexOf(yr);
+        return { label: `${MONTHS[mo]} ${yr}`, v: byYearMo[ym], color: YR_COLORS[yrIdx % YR_COLORS.length] };
       }), 'amber', v => money(v));
 
       // ── Customer YoY table ──

@@ -215,8 +215,6 @@ CREATE INDEX IF NOT EXISTS idx_equipment_company ON equipment_list(company_code)
 ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS company_code TEXT;
 ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS project_id   TEXT;
 ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS description  TEXT;
-ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS app_id       TEXT;  -- client-generated id (Date.now()+random)
-ALTER TABLE cost_items ADD COLUMN IF NOT EXISTS updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 CREATE INDEX IF NOT EXISTS idx_cost_items_company_project ON cost_items(company_code, project_id);
 
@@ -246,11 +244,6 @@ CREATE TABLE IF NOT EXISTS suppliers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_suppliers_company ON suppliers(company_code);
-
--- Add columns used by the frontend (safe to re-run: IF NOT EXISTS)
-ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS state   TEXT;
-ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS address TEXT;
-ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS website TEXT;
 
 -- ─────────────────────────────────────────────────
 -- PURCHASE ORDERS
@@ -372,17 +365,26 @@ CREATE TABLE IF NOT EXISTS scale_manual_entries (
 CREATE INDEX IF NOT EXISTS idx_scale_manual_company ON scale_manual_entries(company_code);
 
 -- ─────────────────────────────────────────────────
--- PURCHASE ORDERS — extra columns + status fix
+-- MIGRATION: add columns needed by REST endpoints
 -- ─────────────────────────────────────────────────
--- Frontend uses 'pending'/'approved'/'closed' — drop the enum constraint.
-ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check;
-ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS date_created       DATE;
-ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_at  TIMESTAMPTZ;
-ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_by  TEXT;
 
--- PO DELIVERIES — extra columns for frontend line fields
-ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS line_id     TEXT;   -- frontend UUID
-ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS invoice_num TEXT;
-ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS tax         NUMERIC(14,4) NOT NULL DEFAULT 0;
-ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS employee    TEXT;
-ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS po_row_id   TEXT;   -- linked daily_tracking row
+-- po_deliveries: extra fields to store frontend line shape
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS line_id       TEXT;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS invoice_num   TEXT;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS tax           NUMERIC(14,4) NOT NULL DEFAULT 0;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS employee      TEXT;
+ALTER TABLE po_deliveries ADD COLUMN IF NOT EXISTS po_row_id     TEXT;
+
+-- purchase_orders: frontend uses po_number, title, date_created, status audit
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS po_num            TEXT;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS title             TEXT;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS date_created      DATE;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ;
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_by TEXT;
+-- Drop the strict status check so any app status value is accepted
+ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check;
+
+-- trucking_entries: add tr_row_id and status audit columns
+ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS tr_row_id          TEXT;
+ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS status_changed_at  TIMESTAMPTZ;
+ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS status_changed_by  TEXT;

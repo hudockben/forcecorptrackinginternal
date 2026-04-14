@@ -3,13 +3,20 @@
  * GET /api/purchase-orders  — all POs with their delivery lines
  * PUT /api/purchase-orders  — full sync: { purchaseOrders: [...] }
  *
- * Field mapping (frontend → DB):
- *   po.po_number       → purchase_orders.po_num
- *   po.title           → purchase_orders.material
- *   po.date_created    → purchase_orders.date_created
- *   po.lines[].id      → po_deliveries.line_id
- *   po.lines[].qty     → po_deliveries.units_delivered
- *   po.lines[].date    → po_deliveries.delivery_date
+ * Primary source: purchase_orders + po_deliveries normalized tables.
+ * Fallback:       app_data JSON blob (fct_purchase_orders) when tables are
+ *                 empty, transparently migrating data on first read.
+ *
+ * Frontend PO shape:
+ *   { id, po_number, date_created, project_id, cost_code, sub_code, title,
+ *     supplier, status, notes,
+ *     lines: [{ id, invoice_num, date, qty, unit_cost, tax, employee, po_row_id }] }
+ *
+ * DB shape (purchase_orders + po_deliveries with extra columns added via ALTER TABLE):
+ *   purchase_orders: id, po_num (=po_number), title, supplier, cost_code,
+ *                    sub_code, project_id, status, notes, date_created
+ *   po_deliveries:   line_id (=lines[].id), invoice_num, delivery_date (=date),
+ *                    units_delivered (=qty), unit_cost, tax, employee, po_row_id
  */
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
@@ -26,6 +33,11 @@ function safeDate(v) {
 }
 
 module.exports = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
   const payload = requireAuth(req, res);
   if (!payload) return;
 
@@ -35,58 +47,70 @@ module.exports = async (req, res) => {
   try {
     // ── GET ──────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
-      // Fetch POs and their delivery lines in two queries then stitch together
-      const pos = await sql`
-        SELECT id, po_num, material AS title, supplier, status, date_created,
-               project_id, cost_code, sub_code, notes,
-               status_changed_at, status_changed_by,
-               total_units, unit_cost, total_cost, created_at
-        FROM   purchase_orders
+      const poRows = await sql`
+        SELECT * FROM purchase_orders
         WHERE  company_code = ${companyCode}
-        ORDER  BY created_at DESC
+        ORDER  BY created_at ASC
       `;
 
-      if (!pos.length) return res.json({ purchaseOrders: [] });
+      if (poRows.length > 0) {
+        const poIds = poRows.map(r => r.id);
+        const dlRows = await sql`
+          SELECT * FROM po_deliveries
+          WHERE  po_id = ANY(${poIds})
+          ORDER  BY po_id, created_at ASC
+        `;
 
-      const poIds = pos.map(p => p.id);
-      const lines = await sql`
-        SELECT po_id, line_id AS id, invoice_num, delivery_date AS date,
-               units_delivered AS qty, unit_cost, tax, employee, po_row_id, id AS _seq
-        FROM   po_deliveries
-        WHERE  po_id = ANY(${poIds})
-        ORDER  BY po_id, _seq ASC
-      `;
+        // Group deliveries by PO
+        const linesByPO = {};
+        for (const d of dlRows) {
+          if (!linesByPO[d.po_id]) linesByPO[d.po_id] = [];
+          linesByPO[d.po_id].push({
+            id:          d.line_id      || String(d.id),
+            invoice_num: d.invoice_num  || '',
+            date:        d.delivery_date ? String(d.delivery_date).slice(0, 10) : '',
+            qty:         d.units_delivered != null ? String(d.units_delivered) : '',
+            unit_cost:   d.unit_cost       != null ? String(d.unit_cost)       : '',
+            tax:         d.tax             != null ? String(d.tax)             : '',
+            employee:    d.employee        || '',
+            po_row_id:   d.po_row_id       || null,
+          });
+        }
 
-      // Group lines by po_id
-      const linesByPo = {};
-      for (const l of lines) {
-        if (!linesByPo[l.po_id]) linesByPo[l.po_id] = [];
-        const { po_id, _seq, ...rest } = l;
-        // Return date as plain string, qty/unit_cost as numbers matching frontend
-        rest.date     = rest.date ? String(rest.date).slice(0, 10) : '';
-        rest.qty      = rest.qty      != null ? String(rest.qty)      : '';
-        rest.unit_cost = rest.unit_cost != null ? String(rest.unit_cost) : '';
-        rest.tax       = rest.tax      != null ? String(rest.tax)      : '';
-        linesByPo[l.po_id].push(rest);
+        const purchaseOrders = poRows.map(r => ({
+          id:                    r.id,
+          po_number:             r.po_num          || '',
+          date_created:          r.date_created ? String(r.date_created).slice(0, 10) : '',
+          project_id:            r.project_id      || '',
+          cost_code:             r.cost_code        || '',
+          sub_code:              r.sub_code         || '',
+          title:                 r.title            || '',
+          supplier:              r.supplier         || '',
+          status:                r.status           || 'pending',
+          notes:                 r.notes            || '',
+          status_changed_at:     r.status_changed_at ? String(r.status_changed_at) : undefined,
+          status_changed_by:     r.status_changed_by || undefined,
+          lines:                 linesByPO[r.id]    || [],
+        }));
+
+        return res.json({ purchaseOrders });
       }
 
-      const result = pos.map(po => ({
-        id:               po.id,
-        po_number:        po.po_num,
-        title:            po.title     || '',
-        supplier:         po.supplier  || '',
-        status:           po.status    || 'pending',
-        date_created:     po.date_created ? String(po.date_created).slice(0, 10) : '',
-        project_id:       po.project_id   || '',
-        cost_code:        po.cost_code    || '',
-        sub_code:         po.sub_code     || '',
-        notes:            po.notes        || '',
-        status_changed_at: po.status_changed_at || null,
-        status_changed_by: po.status_changed_by || '',
-        lines:            linesByPo[po.id] || [],
-      }));
+      // ── Fallback: read from JSON blob ──────────────────────────────────
+      const blobRows = await sql`
+        SELECT value FROM app_data WHERE key = ${companyCode + ':fct_purchase_orders'}
+      `;
+      const blob = blobRows.length ? blobRows[0].value : null;
+      const list = Array.isArray(blob) ? blob : [];
 
-      return res.json({ purchaseOrders: result });
+      if (list.length > 0) {
+        // Migrate blob into normalized tables — awaited so it completes
+        // before the response is sent (serverless functions freeze on return).
+        try { await _migratePOBlob(sql, companyCode, list); }
+        catch (err) { console.error('[purchase-orders] blob migration failed:', err.message); }
+      }
+
+      return res.json({ purchaseOrders: list });
     }
 
     // ── PUT (full sync) ───────────────────────────────────────────────────
@@ -96,98 +120,17 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'purchaseOrders array required' });
       }
 
-      // Remove POs that were deleted from the frontend list
-      const incomingIds = purchaseOrders.map(p => p.id).filter(Boolean);
-      if (incomingIds.length) {
-        await sql`
-          DELETE FROM purchase_orders
-          WHERE company_code = ${companyCode} AND id <> ALL(${incomingIds})
-        `;
-      } else {
-        await sql`DELETE FROM purchase_orders WHERE company_code = ${companyCode}`;
-      }
+      // Always write to JSON blob first — this is the source of truth.
+      await sql`
+        INSERT INTO app_data (key, value, updated_at)
+        VALUES (${companyCode + ':fct_purchase_orders'}, ${JSON.stringify(purchaseOrders)}::jsonb, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+      `;
 
-      for (const po of purchaseOrders) {
-        if (!po || !po.id) continue;
-
-        const lines = Array.isArray(po.lines) ? po.lines : [];
-
-        // Compute totals from lines
-        let totalUnits = 0, totalCost = 0;
-        for (const l of lines) {
-          const q = parseFloat(l.qty)       || 0;
-          const u = parseFloat(l.unit_cost) || 0;
-          const t = parseFloat(l.tax)       || 0;
-          totalUnits += q;
-          totalCost  += (q * u) + t;
-        }
-
-        await sql`
-          INSERT INTO purchase_orders (
-            id, company_code, po_num, material, supplier, status,
-            date_created, project_id, cost_code, sub_code, notes,
-            status_changed_at, status_changed_by,
-            total_units, total_cost, updated_at
-          ) VALUES (
-            ${po.id}, ${companyCode},
-            ${po.po_number  || ''},
-            ${po.title      || null},
-            ${po.supplier   || null},
-            ${po.status     || 'pending'},
-            ${safeDate(po.date_created)},
-            ${po.project_id || null},
-            ${po.cost_code  || null},
-            ${po.sub_code   || null},
-            ${po.notes      || null},
-            ${po.status_changed_at || null},
-            ${po.status_changed_by || null},
-            ${totalUnits}, ${totalCost}, NOW()
-          )
-          ON CONFLICT (id) DO UPDATE SET
-            po_num            = EXCLUDED.po_num,
-            material          = EXCLUDED.material,
-            supplier          = EXCLUDED.supplier,
-            status            = EXCLUDED.status,
-            date_created      = EXCLUDED.date_created,
-            project_id        = EXCLUDED.project_id,
-            cost_code         = EXCLUDED.cost_code,
-            sub_code          = EXCLUDED.sub_code,
-            notes             = EXCLUDED.notes,
-            status_changed_at = EXCLUDED.status_changed_at,
-            status_changed_by = EXCLUDED.status_changed_by,
-            total_units       = EXCLUDED.total_units,
-            total_cost        = EXCLUDED.total_cost,
-            updated_at        = NOW()
-        `;
-
-        // Replace delivery lines for this PO
-        await sql`DELETE FROM po_deliveries WHERE po_id = ${po.id} AND company_code = ${companyCode}`;
-        for (const l of lines) {
-          if (!l) continue;
-          const qty      = safeFloat(l.qty);
-          const unitCost = safeFloat(l.unit_cost);
-          const tax      = safeFloat(l.tax) ?? 0;
-          const delivCost = ((qty ?? 0) * (unitCost ?? 0)) + tax;
-          await sql`
-            INSERT INTO po_deliveries (
-              po_id, company_code, line_id, invoice_num,
-              delivery_date, units_delivered, unit_cost, delivery_cost,
-              tax, employee, po_row_id
-            ) VALUES (
-              ${po.id}, ${companyCode},
-              ${l.id   || null},
-              ${l.invoice_num || null},
-              ${safeDate(l.date)},
-              ${qty      ?? 0},
-              ${unitCost ?? 0},
-              ${delivCost},
-              ${tax},
-              ${l.employee  || null},
-              ${l.po_row_id || null}
-            )
-          `;
-        }
-      }
+      // Mirror to normalized tables (fire-and-forget: FK errors must not block the save)
+      _migratePOBlob(sql, companyCode, purchaseOrders).catch(err =>
+        console.error('[purchase-orders] normalize failed:', err.message)
+      );
 
       return res.json({ ok: true });
     }
@@ -199,3 +142,86 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: 'Database error', detail: err.message });
   }
 };
+
+async function _migratePOBlob(sql, companyCode, list) {
+  const incomingIds = list.map(p => p && p.id).filter(Boolean);
+
+  // Remove POs not in the incoming list
+  if (incomingIds.length) {
+    await sql`
+      DELETE FROM purchase_orders
+      WHERE company_code = ${companyCode} AND id <> ALL(${incomingIds})
+    `;
+  } else {
+    await sql`DELETE FROM purchase_orders WHERE company_code = ${companyCode}`;
+    return;
+  }
+
+  for (const po of list) {
+    if (!po || !po.id) continue;
+
+    // Upsert the PO header row
+    await sql`
+      INSERT INTO purchase_orders (
+        id, company_code, po_num, title, supplier, project_id,
+        cost_code, sub_code, status, notes,
+        date_created, status_changed_at, status_changed_by, updated_at
+      ) VALUES (
+        ${po.id}, ${companyCode},
+        ${po.po_number      || ''},
+        ${po.title          || null},
+        ${po.supplier       || null},
+        ${po.project_id     || null},
+        ${po.cost_code      || null},
+        ${po.sub_code       || null},
+        ${po.status         || 'pending'},
+        ${po.notes          || null},
+        ${safeDate(po.date_created)},
+        ${po.status_changed_at || null},
+        ${po.status_changed_by || null},
+        NOW()
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        po_num             = EXCLUDED.po_num,
+        title              = EXCLUDED.title,
+        supplier           = EXCLUDED.supplier,
+        project_id         = EXCLUDED.project_id,
+        cost_code          = EXCLUDED.cost_code,
+        sub_code           = EXCLUDED.sub_code,
+        status             = EXCLUDED.status,
+        notes              = EXCLUDED.notes,
+        date_created       = EXCLUDED.date_created,
+        status_changed_at  = EXCLUDED.status_changed_at,
+        status_changed_by  = EXCLUDED.status_changed_by,
+        updated_at         = NOW()
+    `;
+
+    // Delete old delivery lines for this PO then reinsert
+    await sql`DELETE FROM po_deliveries WHERE po_id = ${po.id} AND company_code = ${companyCode}`;
+
+    const lines = Array.isArray(po.lines) ? po.lines : [];
+    for (const line of lines) {
+      if (!line) continue;
+      const qty  = safeFloat(line.qty)       ?? 0;
+      const uc   = safeFloat(line.unit_cost) ?? 0;
+      const tax  = safeFloat(line.tax)       ?? 0;
+      await sql`
+        INSERT INTO po_deliveries (
+          po_id, company_code,
+          line_id, invoice_num, delivery_date,
+          units_delivered, unit_cost, delivery_cost,
+          tax, employee, po_row_id
+        ) VALUES (
+          ${po.id}, ${companyCode},
+          ${line.id        || null},
+          ${line.invoice_num || null},
+          ${safeDate(line.date)},
+          ${qty}, ${uc}, ${qty * uc},
+          ${tax},
+          ${line.employee  || null},
+          ${line.po_row_id || null}
+        )
+      `;
+    }
+  }
+}

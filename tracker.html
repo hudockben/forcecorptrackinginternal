@@ -4428,19 +4428,24 @@ let purchaseOrders = [];
 
 async function loadPurchaseOrders() {
   try {
-    const r = await fetch(`${API_BASE}/purchase-orders`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
+    const r = await fetch(`${API_BASE}/purchase-orders`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
     if (r.status === 401) { logout(); return; }
     if (r.ok) {
       const data = await r.json();
       purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
-      return;
+    } else {
+      purchaseOrders = [];
     }
-  } catch (err) { console.warn('[DB] GET purchase-orders failed:', err.message); }
-  purchaseOrders = [];
+  } catch {
+    purchaseOrders = [];
+  }
+  _migratePOs();
 }
 
 function _migratePOs() {
-  // Upgrade flat single-line POs to the new lines[] format (legacy blob migration)
+  // Upgrade flat single-line POs to the new lines[] format
   purchaseOrders.forEach(po => {
     if (!po.lines) {
       const hasData = po.qty || po.unit_cost;
@@ -4460,11 +4465,12 @@ function _migratePOs() {
 
 function savePurchaseOrders() {
   fetch(`${API_BASE}/purchase-orders`, {
-    method:  'PUT',
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body:    JSON.stringify({ purchaseOrders }),
-  }).then(r => { if (!r.ok) console.warn('[DB] PUT purchase-orders failed:', r.status); })
-    .catch(err => console.warn('[DB] PUT purchase-orders error:', err.message));
+    body: JSON.stringify({ purchaseOrders })
+  }).then(r => {
+    if (!r.ok) _showSaveError(r.status === 401);
+  }).catch(() => _showSaveError(false));
 }
 
 function nextPONumber() {
@@ -4481,24 +4487,31 @@ let truckingEntries = [];
 
 async function loadTruckingEntries() {
   try {
-    const r = await fetch(`${API_BASE}/trucking`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
+    const r = await fetch(`${API_BASE}/trucking`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
     if (r.status === 401) { logout(); return; }
     if (r.ok) {
       const data = await r.json();
       truckingEntries = Array.isArray(data.truckingEntries) ? data.truckingEntries : [];
-      return;
+    } else {
+      truckingEntries = [];
     }
-  } catch (err) { console.warn('[DB] GET trucking failed:', err.message); }
-  truckingEntries = [];
+  } catch {
+    truckingEntries = [];
+  }
+  localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
 }
 
 function saveTruckingEntries() {
+  localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
   fetch(`${API_BASE}/trucking`, {
-    method:  'PUT',
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body:    JSON.stringify({ truckingEntries }),
-  }).then(r => { if (!r.ok) console.warn('[DB] PUT trucking failed:', r.status); })
-    .catch(err => console.warn('[DB] PUT trucking error:', err.message));
+    body: JSON.stringify({ truckingEntries })
+  }).then(r => {
+    if (!r.ok) _showSaveError(r.status === 401);
+  }).catch(() => _showSaveError(false));
 }
 
 function nextTRNumber() {
@@ -4520,25 +4533,12 @@ let _invBreakdownOpen = false;
 let scaleManualEntries = [];
 
 async function loadScaleManualEntries() {
-  try {
-    const r = await fetch(`${API_BASE}/scale-manual`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
-    if (r.status === 401) { logout(); return; }
-    if (r.ok) {
-      const data = await r.json();
-      scaleManualEntries = Array.isArray(data.scaleManualEntries) ? data.scaleManualEntries : [];
-      return;
-    }
-  } catch (err) { console.warn('[DB] GET scale-manual failed:', err.message); }
-  scaleManualEntries = [];
+  const saved = await apiGet('fct_scale_manual');
+  scaleManualEntries = Array.isArray(saved) ? saved : [];
 }
 
 function saveScaleManualEntries() {
-  fetch(`${API_BASE}/scale-manual`, {
-    method:  'PUT',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body:    JSON.stringify({ scaleManualEntries }),
-  }).then(r => { if (!r.ok) console.warn('[DB] PUT scale-manual failed:', r.status); })
-    .catch(err => console.warn('[DB] PUT scale-manual error:', err.message));
+  apiPut('fct_scale_manual', scaleManualEntries);
   _projSubAggCache = null; // invalidate so next render picks up the change
 }
 
@@ -5702,61 +5702,21 @@ const defaultLists = {
 let lists = {};
 
 async function loadLists() {
-  // Fetch all four entity types from their normalized endpoints in parallel.
-  // Falls back to empty defaults on any failure so the app stays usable.
-  const hdrs = { 'Authorization': `Bearer ${fctToken}` };
-  const [supR, eqR, empR, dlR] = await Promise.allSettled([
-    fetch(`${API_BASE}/suppliers`,      { headers: hdrs }),
-    fetch(`${API_BASE}/equipment`,      { headers: hdrs }),
-    fetch(`${API_BASE}/employees`,      { headers: hdrs }),
-    fetch(`${API_BASE}/dropdown-lists`, { headers: hdrs }),
-  ]);
-
-  async function safeJson(result, key) {
+  let saved = await apiGet('fct_lists');
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
     try {
-      if (result.status !== 'fulfilled' || !result.value.ok) return null;
-      const data = await result.value.json();
-      return key ? data[key] : data;
-    } catch { return null; }
+      const local = JSON.parse(localStorage.getItem(LISTS_KEY));
+      if (local && typeof local === 'object') { saved = local; apiPut('fct_lists', saved); }
+    } catch {}
   }
-
-  const suppliers  = await safeJson(supR,  'suppliers')  || [];
-  const equipment  = await safeJson(eqR,   'equipment')  || [];
-  const employees  = await safeJson(empR,  'employees')  || [];
-  const dropdowns  = await safeJson(dlR,   null)         || {};
-
-  lists = {
-    ...defaultLists,
-    suppliers,
-    equipment:    equipment.map(e => ({ name: e.name, unit_cost: parseFloat(e.unit_cost) || 0 })),
-    employees:    employees.map(e => ({
-      name:               e.name,
-      job_class:          e.job_class          || '',
-      prevailing_rate:    parseFloat(e.prevailing_rate)     || 0,
-      non_prevailing_rate: parseFloat(e.non_prevailing_rate) || 0,
-    })),
-    field_types:  dropdowns.field_types  || [],
-    job_classes:  dropdowns.job_classes  || [],
-    infill_types: dropdowns.infill_types || [],
-  };
+  lists = { ...defaultLists, ...(saved || {}) };
+  // Migrate suppliers from string[] to {name,state}[]
+  lists.suppliers = lists.suppliers.map(s => typeof s === 'string' ? { name: s, state: '', address: '', phone: '', website: '' } : { address: '', phone: '', website: '', ...s });
+  // Migrate employees from string[] to {name,non_prevailing_rate,prevailing_rate,job_class}[]
+  lists.employees = lists.employees.map(e => typeof e === 'string'
+    ? { name: e, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' } : e);
 }
-
-function saveLists() {
-  // Write each entity group to its own normalized endpoint (fire-and-forget).
-  const hdrs = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` };
-  const put  = (path, body) => fetch(`${API_BASE}/${path}`, { method: 'PUT', headers: hdrs, body: JSON.stringify(body) })
-    .then(r => { if (!r.ok) console.warn(`[lists] PUT ${path} failed: ${r.status}`); })
-    .catch(err => console.warn(`[lists] PUT ${path} error:`, err.message));
-
-  put('suppliers', { suppliers: lists.suppliers });
-  put('equipment', { equipment: lists.equipment });
-  put('employees', { employees: lists.employees });
-  put('dropdown-lists', {
-    field_types:  lists.field_types  || [],
-    job_classes:  lists.job_classes  || [],
-    infill_types: lists.infill_types || [],
-  });
-}
+function saveLists() { apiPut('fct_lists', lists); }
 
 /* ── Purchase Orders Tab ── */
 let _poExpanded = new Set();   // PO ids with delivery lines visible
@@ -7807,25 +7767,17 @@ const COST_KEY = 'fct_cost_rows';
 let costRows = [];
 
 async function loadCostRows() {
-  try {
-    const r = await fetch(`${API_BASE}/cost-rows`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
-    if (r.status === 401) { logout(); return; }
-    if (r.ok) {
-      const data = await r.json();
-      costRows = Array.isArray(data.costRows) ? data.costRows : [];
-      return;
-    }
-  } catch (err) { console.warn('[DB] GET cost-rows failed:', err.message); }
-  costRows = [];
+  let saved = await apiGet('fct_cost_rows');
+  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
+    // Try legacy localStorage key as migration fallback
+    try {
+      const local = JSON.parse(localStorage.getItem('fct_rows'));
+      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_cost_rows', saved); }
+    } catch {}
+  }
+  costRows = Array.isArray(saved) ? saved : [];
 }
-function saveCostRows() {
-  fetch(`${API_BASE}/cost-rows`, {
-    method:  'PUT',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body:    JSON.stringify({ costRows }),
-  }).then(r => { if (!r.ok) console.warn('[DB] PUT cost-rows failed:', r.status); })
-    .catch(err => console.warn('[DB] PUT cost-rows error:', err.message));
-}
+function saveCostRows() { apiPut('fct_cost_rows', costRows); }
 
 // Only store bid/plan data — actuals come from daily aggregation
 const defaultCostRow = () => ({
@@ -15137,22 +15089,21 @@ function _schedChangePage(delta) {
 }
 
 function renderScheduleAllProjects() {
-  const active = projectsList.filter(p => {
-    const s = (p.status || '').toLowerCase();
-    return s !== 'complete' && s !== 'closed';
-  });
+  const active = projectsList.slice(); // all projects — completed ones shown with muted style
 
   if (!active.length) {
     return `<div class="sched-no-data">No active projects. Add projects in the Project Dashboard tab.</div>`;
   }
 
-  // Sort: most recently added project first (insertion order desc),
+  // Sort: active projects first, then complete/closed; within each group newest-added first,
   // tiebreak by most recent daily entry date desc
   const lastDate = p => {
     const dates = (p.dailyRows || []).map(r => r.date).filter(Boolean);
     return dates.length ? dates.reduce((a, b) => a > b ? a : b) : '0000-00-00';
   };
+  const isDone = p => { const s = (p.status || '').toLowerCase(); return s === 'complete' || s === 'closed'; };
   active.sort((a, b) => {
+    if (isDone(a) !== isDone(b)) return isDone(a) ? 1 : -1;  // active first
     const idxA = projectsList.indexOf(a);
     const idxB = projectsList.indexOf(b);
     if (idxB !== idxA) return idxB - idxA;            // newer-added first
@@ -15175,7 +15126,8 @@ function renderScheduleAllProjects() {
       counts[status] = (counts[status] || 0) + 1;
     });
 
-    const cardBorder    = counts['behind'] > 0 ? 'behind' : counts['at-risk'] > 0 ? 'at-risk' : 'on-track';
+    const projDone      = isDone(proj);
+    const cardBorder    = projDone ? 'on-track' : counts['behind'] > 0 ? 'behind' : counts['at-risk'] > 0 ? 'at-risk' : 'on-track';
     const totalRows     = (proj.dailyRows || []).length;
     const totalBidItems = (proj.bidItems || []).length;
     const deadlineFmt   = deadline
@@ -15187,9 +15139,9 @@ function renderScheduleAllProjects() {
       : null;
 
     return `
-      <div class="sched-proj-card ${cardBorder}" style="cursor:pointer"
+      <div class="sched-proj-card ${cardBorder}" style="cursor:pointer${projDone ? ';opacity:0.55' : ''}"
         onclick="document.getElementById('sched-proj-select').value='${proj.id}';renderScheduleTab()">
-        <div style="font-weight:700;font-size:0.9rem;margin-bottom:0.1rem">${esc(proj['project-name'] || 'Untitled')}</div>
+        <div style="font-weight:700;font-size:0.9rem;margin-bottom:0.1rem">${esc(proj['project-name'] || 'Untitled')}${projDone ? ` <span style="font-size:0.65rem;font-weight:400;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em">${esc(proj.status)}</span>` : ''}</div>
         ${proj['job-number'] ? `<div style="font-size:0.7rem;color:var(--muted);margin-bottom:0.3rem">Job #${esc(proj['job-number'])}</div>` : `<div style="margin-bottom:0.3rem"></div>`}
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.65rem">
           ${deadlineFmt ? `<span style="font-size:0.7rem;color:var(--muted)">${deadlineFmt}</span>` : `<span></span>`}
@@ -15219,7 +15171,7 @@ function renderScheduleAllProjects() {
 
   return `
     <div class="sched-section-hdr" style="display:flex;align-items:center;justify-content:space-between">
-      <span>Active Projects — Pacing Overview</span>
+      <span>All Projects — Pacing Overview</span>
       <span style="font-size:0.72rem;color:var(--muted);font-weight:400">${active.length} project${active.length !== 1 ? 's' : ''} · newest first</span>
     </div>
     <div class="sched-summary-grid">${cards.join('')}</div>
