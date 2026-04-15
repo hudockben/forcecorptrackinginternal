@@ -11611,11 +11611,12 @@ function toggleAllBidPDFCodes() {
 
 function generateBidPDF() {
   if (!_bidPDFProjId) return;
+  const projId = _bidPDFProjId;          // capture before closeBidPDFModal nulls it
   const selected = new Set(
     [...document.querySelectorAll('.bid-pdf-cc-chk:checked')].map(cb => cb.value)
   );
   closeBidPDFModal();
-  exportBidPDF(_bidPDFProjId, selected);
+  exportBidPDF(projId, selected);
 }
 
 function exportBidPDF(projId, selectedCostCodes = null) {
