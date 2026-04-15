@@ -17,6 +17,7 @@ function safeFloat(v) {
 
 function safeDate(v) {
   if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
   const s = String(v).slice(0, 10);
   return s.length === 10 ? s : null;
 }
@@ -29,7 +30,7 @@ function dbToTR(r) {
     driver:          r.driver          || '',
     truck_type:      r.truck_type      || '',
     project_id:      r.project_id      || '',
-    date:            r.date ? String(r.date).slice(0, 10) : '',
+    date:            safeDate(r.date) || '',
     material_hauled: r.material_hauled || '',
     loads:           r.loads  != null ? String(r.loads)  : '',
     rate:            r.rate   != null ? String(r.rate)   : '',
