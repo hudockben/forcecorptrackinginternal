@@ -2138,6 +2138,7 @@
       <button class="btn btn-green" id="bid-fs-add">+ Add Item</button>
     </div>
   </div>
+  <div id="bid-fs-sqft-bar" style="display:none;padding:0.75rem 1.25rem 0;"></div>
   <div style="flex:1;overflow:auto;padding:1.25rem;">
     <table class="bid-table" style="width:100%">
       <thead><tr>
@@ -5216,6 +5217,40 @@ function renderBidFooter(projId, opts = {}) {
     <td class="${diffCls}">${diffTxt}</td>
     <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>`;
   footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td>`;
+
+  // Update sqft summary bar in the fullscreen view (only when this project is open)
+  if (bidViewProjId === projId) {
+    const sqftBar = document.getElementById('bid-fs-sqft-bar');
+    if (sqftBar) {
+      const sqft = parseFloat(p['sqft']) || 0;
+      if (sqft > 0) {
+        const bidSF     = totalBid    / sqft;
+        const runningSF = totalActual / sqft;
+        const deltaSF   = bidSF - runningSF;
+        const deltaCls  = deltaSF >= 0 ? 'color:#166534' : 'color:#991b1b';
+        const deltaTxt  = deltaSF >= 0
+          ? `$${fmt(deltaSF)}/sf under bid`
+          : `$${fmt(Math.abs(deltaSF))}/sf over bid`;
+        sqftBar.style.display = 'block';
+        sqftBar.innerHTML = `
+          <div style="display:flex;gap:2rem;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:0.55rem 1rem;flex-wrap:wrap;margin-bottom:0.25rem">
+            <span style="font-size:0.65rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted)">Cost / SF &nbsp;·&nbsp; ${fmt(sqft)} sf</span>
+            <div style="display:flex;gap:0.4rem;align-items:baseline">
+              <span style="font-size:0.65rem;color:var(--muted)">Bid</span>
+              <span style="font-weight:700;font-size:0.95rem">$${fmt(bidSF)}<span style="font-size:0.65rem;font-weight:400;color:var(--muted)">/sf</span></span>
+            </div>
+            <div style="display:flex;gap:0.4rem;align-items:baseline">
+              <span style="font-size:0.65rem;color:var(--muted)">Running</span>
+              <span style="font-weight:700;font-size:0.95rem;color:#92400e">$${fmt(runningSF)}<span style="font-size:0.65rem;font-weight:400;color:var(--muted)">/sf</span></span>
+            </div>
+            <span style="font-weight:600;font-size:0.88rem;${deltaCls}">${deltaTxt}</span>
+          </div>`;
+      } else {
+        sqftBar.style.display = 'none';
+        sqftBar.innerHTML = '';
+      }
+    }
+  }
 }
 
 function removeBidGroup(projId, costCode) {
@@ -11592,6 +11627,25 @@ function exportBidPDF(projId) {
   const totDiffTxt = grandBid ? (totDiff >= 0 ? `$${fmt(totDiff)} under` : `$${fmt(Math.abs(totDiff))} over`) : dash;
   const totProjCls = (grandProj - grandBid) <= 0 ? 'under' : 'over';
 
+  const sqft = parseFloat(p['sqft']) || 0;
+  const sqftBarHTML = sqft > 0 ? (() => {
+    const bidSF     = grandBid    / sqft;
+    const runningSF = grandActual / sqft;
+    const deltaSF   = bidSF - runningSF;
+    const deltaCls  = deltaSF >= 0 ? 'sqft-under' : 'sqft-over';
+    const deltaTxt  = deltaSF >= 0
+      ? `$${fmt(deltaSF)}/sf under bid`
+      : `$${fmt(Math.abs(deltaSF))}/sf over bid`;
+    return `<div class="sqft-bar">
+      <div class="sqft-metric"><div class="sqft-label">Total SF</div><div class="sqft-val">${fmt(sqft)} sf</div></div>
+      <div class="sqft-sep"></div>
+      <div class="sqft-metric"><div class="sqft-label">Bid Cost / SF</div><div class="sqft-val">$${fmt(bidSF)}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Running Cost / SF</div><div class="sqft-val sqft-actual">$${fmt(runningSF)}</div></div>
+      <div class="sqft-sep"></div>
+      <div class="sqft-metric"><div class="sqft-label">$/SF Variance</div><div class="sqft-val ${deltaCls}">${deltaTxt}</div></div>
+    </div>`;
+  })() : '';
+
   const win = window.open('', '_blank');
   win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>${name} — Bid Line Items vs Actuals</title>
@@ -11599,7 +11653,15 @@ function exportBidPDF(projId) {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; font-size: 10px; color: #000; background: #fff; padding: 20px; }
     h2 { font-size: 13px; font-weight: 700; margin-bottom: 3px; }
-    p.meta { font-size: 9px; color: #555; margin-bottom: 12px; }
+    p.meta { font-size: 9px; color: #555; margin-bottom: 10px; }
+    .sqft-bar { display: flex; align-items: center; gap: 18px; background: #f3f9f4; border: 1px solid #c6e0cb; border-radius: 4px; padding: 6px 12px; margin-bottom: 10px; flex-wrap: wrap; }
+    .sqft-metric { display: flex; flex-direction: column; gap: 1px; }
+    .sqft-label { font-size: 7px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #666; }
+    .sqft-val { font-size: 11px; font-weight: 700; color: #000; }
+    .sqft-actual { color: #92400e; }
+    .sqft-under { color: #166534; }
+    .sqft-over { color: #991b1b; }
+    .sqft-sep { width: 1px; height: 28px; background: #c6e0cb; align-self: center; }
     table { width: 100%; border-collapse: collapse; table-layout: auto; }
     th, td { border: 1px solid #ccc; padding: 3px 5px; }
     td.sub { min-width: 140px; white-space: normal; word-break: break-word; }
@@ -11617,6 +11679,7 @@ function exportBidPDF(projId) {
   </head><body>
   <h2>Bid Line Items vs Actuals — ${esc(name)}${esc(jobNo)}</h2>
   <p class="meta">Printed ${new Date().toLocaleDateString()}</p>
+  ${sqftBarHTML}
   <table>
     <thead><tr>
       <th>Sub Code</th><th>Unit</th>
