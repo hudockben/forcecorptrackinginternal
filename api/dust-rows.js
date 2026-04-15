@@ -3,9 +3,10 @@
  * GET /api/dust-rows  — all dust control entries for the company
  * PUT /api/dust-rows  — full sync: { dustRows: [...] }
  *
- * Primary source: dust_control_entries normalized table.
- * Fallback:       app_data JSON blob (dust_rows) when table is empty,
- *                 which transparently migrates existing data on first read.
+ * Source of truth: dust_control_entries normalized table.
+ * Legacy migration: on first GET, if the table is empty, reads the
+ *   app_data blob (dust_rows key) and migrates it into the table,
+ *   then deletes the blob. One-time per company.
  *
  * Computed fields (v1Total, ubTotal, invTotal) are derived in the
  * frontend from stored values + the per-company ub_rate setting.
@@ -30,7 +31,7 @@ function safeDate(v) {
 function dbToRow(r) {
   return {
     id:           r.id,
-    date:         safeDate(r.date)         || '',
+    date:         safeDate(r.date)           || '',
     start_time:   r.start_time   || '',
     end_time:     r.end_time     || '',
     company:      r.company      || '',
@@ -45,8 +46,8 @@ function dbToRow(r) {
     v2_rate:      r.v2_rate   != null ? String(r.v2_rate)   : '',
     gallons_ub:   r.gallons_ub != null ? String(r.gallons_ub) : '',
     inv_number:   r.inv_number   || '',
-    inv_sent:     safeDate(r.inv_sent)     || '',
-    inv_received: safeDate(r.inv_received) || '',
+    inv_sent:     safeDate(r.inv_sent)       || '',
+    inv_received: safeDate(r.inv_received)   || '',
     inv_status:   r.inv_status   || '',
   };
 }
@@ -76,7 +77,7 @@ module.exports = async (req, res) => {
         return res.json({ dustRows: tableRows.map(dbToRow) });
       }
 
-      // ── Fallback: read from JSON blob (migrates data on first read) ──
+      // ── One-time migration from legacy JSON blob ──────────────────────
       const blobRows = await sql`
         SELECT value FROM app_data WHERE key = ${companyCode + ':dust_rows'}
       `;
@@ -84,9 +85,13 @@ module.exports = async (req, res) => {
       const list = Array.isArray(blob) ? blob : [];
 
       if (list.length > 0) {
-        // Awaited so migration completes before response (serverless freeze-on-return)
-        try { await _migrateDustBlob(sql, companyCode, list); }
-        catch (err) { console.error('[dust-rows] blob migration failed:', err.message); }
+        try {
+          await _upsertDustRows(sql, companyCode, list);
+          // Blob data is now in the table — remove the legacy key
+          await sql`DELETE FROM app_data WHERE key = ${companyCode + ':dust_rows'}`;
+        } catch (err) {
+          console.error('[dust-rows] blob migration failed:', err.message);
+        }
       }
 
       return res.json({ dustRows: list });
@@ -99,17 +104,7 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'dustRows array required' });
       }
 
-      // Always write to JSON blob first — this is the source of truth.
-      await sql`
-        INSERT INTO app_data (key, value, updated_at)
-        VALUES (${companyCode + ':dust_rows'}, ${JSON.stringify(dustRows)}::jsonb, NOW())
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-      `;
-
-      // Mirror to normalized table (fire-and-forget: FK errors must not block the save)
-      _migrateDustBlob(sql, companyCode, dustRows).catch(err =>
-        console.error('[dust-rows] normalize failed:', err.message)
-      );
+      await _upsertDustRows(sql, companyCode, dustRows);
 
       return res.json({ ok: true });
     }
@@ -122,10 +117,13 @@ module.exports = async (req, res) => {
   }
 };
 
-async function _migrateDustBlob(sql, companyCode, list) {
+/**
+ * Upsert a list of dust rows into dust_control_entries and delete any
+ * rows for this company that are no longer in the list.
+ */
+async function _upsertDustRows(sql, companyCode, list) {
   const ids = list.map(r => r && r.id).filter(Boolean);
 
-  // Delete rows removed from the list
   if (ids.length) {
     await sql`
       DELETE FROM dust_control_entries
