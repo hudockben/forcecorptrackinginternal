@@ -31,7 +31,9 @@ module.exports = async (req, res) => {
       `;
       const result = rows.map(r => ({
         ...r,
-        created_at: r.created_at ? String(r.created_at).slice(0, 10) : '',
+        created_at: r.created_at instanceof Date
+          ? r.created_at.toISOString().slice(0, 10)
+          : (r.created_at ? String(r.created_at).slice(0, 10) : ''),
       }));
       return res.json({ scaleManualEntries: result });
     }

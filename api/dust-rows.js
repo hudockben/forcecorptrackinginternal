@@ -21,6 +21,7 @@ function safeFloat(v) {
 
 function safeDate(v) {
   if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
   const s = String(v).slice(0, 10);
   return s.length === 10 ? s : null;
 }
@@ -29,7 +30,7 @@ function safeDate(v) {
 function dbToRow(r) {
   return {
     id:           r.id,
-    date:         r.date         ? String(r.date).slice(0, 10) : '',
+    date:         safeDate(r.date)         || '',
     start_time:   r.start_time   || '',
     end_time:     r.end_time     || '',
     company:      r.company      || '',
@@ -44,8 +45,8 @@ function dbToRow(r) {
     v2_rate:      r.v2_rate   != null ? String(r.v2_rate)   : '',
     gallons_ub:   r.gallons_ub != null ? String(r.gallons_ub) : '',
     inv_number:   r.inv_number   || '',
-    inv_sent:     r.inv_sent     ? String(r.inv_sent).slice(0, 10)     : '',
-    inv_received: r.inv_received ? String(r.inv_received).slice(0, 10) : '',
+    inv_sent:     safeDate(r.inv_sent)     || '',
+    inv_received: safeDate(r.inv_received) || '',
     inv_status:   r.inv_status   || '',
   };
 }

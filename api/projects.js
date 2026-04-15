@@ -13,6 +13,7 @@ const { requireAuth } = require('./lib/auth');
 
 function safeDate(v) {
   if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
   const s = String(v).slice(0, 10);
   return s.length === 10 ? s : null;
 }
@@ -67,8 +68,8 @@ function dbToProj(r, bidItems) {
     'client-contact':    r.client_contact    || '',
     address:             r.address           || '',
     'city-state':        r.city_state        || '',
-    'start-date':        r.start_date  ? String(r.start_date).slice(0, 10)  : '',
-    'end-date':          r.end_date    ? String(r.end_date).slice(0, 10)    : '',
+    'start-date':        safeDate(r.start_date)  || '',
+    'end-date':          safeDate(r.end_date)    || '',
     'contract-days':     r.contract_days     || '',
     'contract-amount':   r.contract_amount   || '',
     'revised-amount':    r.revised_amount    || '',
@@ -116,8 +117,8 @@ function dbToBid(r) {
     unit:          r.unit         || '',
     unit_cost:     r.unit_cost    != null ? String(r.unit_cost)  : '',
     status:        r.status       || 'Active',
-    target_date:   r.target_date  ? String(r.target_date).slice(0, 10)  : '',
-    start_date:    r.start_date   ? String(r.start_date).slice(0, 10)   : '',
+    target_date:   safeDate(r.target_date)  || '',
+    start_date:    safeDate(r.start_date)   || '',
     is_complete:   r.is_complete  === true,
     change_orders: Array.isArray(r.change_orders) ? r.change_orders : [],
   };
