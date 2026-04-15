@@ -846,10 +846,25 @@
   </script>
 
   <script>
-    // Redirect if already logged in
+    // Redirect if already logged in with a non-expired token
     (function () {
       const token = localStorage.getItem('fct_token');
-      if (token) window.location.replace('divisions.html');
+      if (!token) return;
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        if (payload.exp && payload.exp * 1000 > Date.now()) {
+          window.location.replace('divisions.html');
+        } else {
+          // Token expired — clear stale data so login works cleanly
+          localStorage.removeItem('fct_token');
+          localStorage.removeItem('fct_user');
+          localStorage.removeItem('fct_division');
+        }
+      } catch {
+        localStorage.removeItem('fct_token');
+        localStorage.removeItem('fct_user');
+        localStorage.removeItem('fct_division');
+      }
     })();
 
     const form      = document.getElementById('loginForm');
