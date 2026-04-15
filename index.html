@@ -11,17 +11,10 @@
     body {
       min-height: 100vh;
       display: flex;
-      background: #ffffff;
+      background: #060b14;
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      color: #0f172a;
+      color: #e2e8f0;
       overflow: hidden;
-    }
-
-    .bg-base {
-      position: fixed;
-      inset: 0;
-      background: #ffffff;
-      z-index: 0;
     }
 
     #bgCanvas {
@@ -47,7 +40,6 @@
       flex-direction: column;
       justify-content: center;
       padding: 3rem 4rem 3rem 5rem;
-      background: none;
       min-width: 0;
     }
 
@@ -55,7 +47,7 @@
       display: flex;
       align-items: center;
       gap: 0.65rem;
-      margin-bottom: 3rem;
+      margin-bottom: 2.5rem;
     }
 
     .brand-mark svg {
@@ -69,131 +61,265 @@
       font-weight: 700;
       letter-spacing: 0.22em;
       text-transform: uppercase;
-      color: #16a34a;
+      color: #22c55e;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      background: rgba(34, 197, 94, 0.08);
+      border: 1px solid rgba(34, 197, 94, 0.22);
+      border-radius: 100px;
+      padding: 0.3rem 0.85rem;
+      font-size: 0.6rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #22c55e;
+      margin-bottom: 1.75rem;
+      width: fit-content;
+    }
+
+    .status-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #22c55e;
+      flex-shrink: 0;
+      animation: statusPulse 2.4s ease-in-out infinite;
+    }
+
+    @keyframes statusPulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+      50% { opacity: 0.6; box-shadow: 0 0 0 4px rgba(34,197,94,0); }
     }
 
     .brand-headline {
-      font-size: clamp(2rem, 3.5vw, 3rem);
-      font-weight: 700;
-      letter-spacing: -0.025em;
-      line-height: 1.15;
-      color: #0f172a;
+      font-size: clamp(2.1rem, 3.4vw, 3.1rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
       margin-bottom: 1.25rem;
+      background: linear-gradient(140deg, #f1f5f9 20%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
 
     .brand-sub {
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       color: #475569;
-      line-height: 1.6;
-      max-width: 360px;
+      line-height: 1.7;
+      max-width: 350px;
+      margin-bottom: 2.75rem;
+    }
+
+    .brand-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      max-width: 340px;
       margin-bottom: 2.5rem;
+    }
+
+    .stat-card {
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 8px;
+      padding: 0.9rem 1rem;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .stat-card:hover {
+      background: rgba(34, 197, 94, 0.04);
+      border-color: rgba(34, 197, 94, 0.15);
+    }
+
+    .stat-value {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #22c55e;
+      letter-spacing: -0.01em;
+      margin-bottom: 0.2rem;
+    }
+
+    .stat-label {
+      font-size: 0.62rem;
+      color: #334155;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
 
     .brand-features {
       list-style: none;
       display: flex;
       flex-direction: column;
-      gap: 0.65rem;
+      gap: 0.6rem;
     }
 
     .brand-features li {
       display: flex;
       align-items: center;
-      gap: 0.65rem;
-      font-size: 0.8rem;
-      color: #64748b;
-      letter-spacing: 0.01em;
+      gap: 0.7rem;
+      font-size: 0.78rem;
+      color: #475569;
     }
 
-    .brand-features li .dot {
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: #22c55e;
+    .feat-icon {
+      width: 20px;
+      height: 20px;
+      background: rgba(34, 197, 94, 0.08);
+      border: 1px solid rgba(34, 197, 94, 0.15);
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
-      opacity: 0.85;
+    }
+
+    .feat-icon svg {
+      width: 11px;
+      height: 11px;
     }
 
     /* ── Right form panel ── */
     .form-panel {
-      width: 460px;
+      width: 480px;
       flex-shrink: 0;
-      background: rgba(255, 255, 255, 0.97);
-      border-left: 1px solid rgba(34, 197, 94, 0.18);
+      background: rgba(6, 11, 22, 0.88);
+      border-left: 1px solid rgba(34, 197, 94, 0.1);
       display: flex;
       flex-direction: column;
       justify-content: center;
       padding: 3.5rem 3.25rem;
-      backdrop-filter: blur(20px);
-      box-shadow: -8px 0 48px rgba(15, 23, 42, 0.08);
+      backdrop-filter: blur(40px);
+      -webkit-backdrop-filter: blur(40px);
+      box-shadow: -24px 0 80px rgba(0, 0, 0, 0.5), inset 1px 0 0 rgba(34, 197, 94, 0.05);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .form-panel::before {
+      content: '';
+      position: absolute;
+      top: -120px;
+      right: -80px;
+      width: 320px;
+      height: 320px;
+      background: radial-gradient(circle, rgba(34, 197, 94, 0.05) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .form-panel::after {
+      content: '';
+      position: absolute;
+      bottom: -80px;
+      left: -60px;
+      width: 240px;
+      height: 240px;
+      background: radial-gradient(circle, rgba(139, 92, 246, 0.04) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .form-inner {
+      position: relative;
+      z-index: 1;
+    }
+
+    .form-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      margin-bottom: 2.75rem;
+    }
+
+    .form-logo svg {
+      width: 24px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .form-logo-name {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: #22c55e;
     }
 
     .form-eyebrow {
-      font-size: 0.6rem;
-      letter-spacing: 0.22em;
+      font-size: 0.58rem;
+      letter-spacing: 0.2em;
       text-transform: uppercase;
-      color: #16a34a;
-      margin-bottom: 0.6rem;
-      opacity: 0.85;
+      color: #22c55e;
+      margin-bottom: 0.5rem;
+      opacity: 0.75;
     }
 
     .form-heading {
-      font-size: 1.65rem;
+      font-size: 1.75rem;
       font-weight: 700;
-      color: #0f172a;
+      color: #f1f5f9;
+      margin-bottom: 0.45rem;
+      letter-spacing: -0.025em;
+    }
+
+    .form-subheading {
+      font-size: 0.82rem;
+      color: #334155;
       margin-bottom: 2.5rem;
-      letter-spacing: -0.02em;
+      line-height: 1.5;
     }
 
     .field {
       display: flex;
       flex-direction: column;
-      gap: 0.4rem;
+      gap: 0.45rem;
       margin-bottom: 1.1rem;
     }
 
     label {
-      font-size: 0.67rem;
+      font-size: 0.63rem;
       font-weight: 600;
-      letter-spacing: 0.09em;
+      letter-spacing: 0.1em;
       text-transform: uppercase;
-      color: #64748b;
+      color: #475569;
     }
 
     input {
       width: 100%;
-      padding: 0.72rem 0.9rem;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 4px;
-      color: #0f172a;
+      padding: 0.78rem 0.95rem;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      color: #f1f5f9;
       font-size: 0.9rem;
       font-family: inherit;
-      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+      transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
       outline: none;
     }
 
     input:focus {
-      border-color: #22c55e;
-      background: #fff;
-      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12);
+      border-color: rgba(34, 197, 94, 0.55);
+      background: rgba(34, 197, 94, 0.04);
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.07), 0 0 24px rgba(34, 197, 94, 0.05);
     }
 
-    input::placeholder { color: #b0bec5; }
+    input::placeholder { color: rgba(255, 255, 255, 0.18); }
 
     .pw-wrap { position: relative; }
-    .pw-wrap input { padding-right: 2.5rem; }
+    .pw-wrap input { padding-right: 2.75rem; }
 
     .pw-toggle {
       position: absolute;
-      right: 0.65rem;
+      right: 0.7rem;
       top: 50%;
       transform: translateY(-50%);
       background: none;
       border: none;
       padding: 0;
       cursor: pointer;
-      color: #94a3b8;
+      color: #334155;
       display: flex;
       align-items: center;
       transition: color 0.15s;
@@ -203,43 +329,89 @@
 
     .error-msg {
       font-size: 0.75rem;
-      color: #ef4444;
-      min-height: 1em;
+      color: #fca5a5;
+      background: rgba(239, 68, 68, 0.07);
+      border: 1px solid rgba(239, 68, 68, 0.18);
+      border-radius: 5px;
+      padding: 0.55rem 0.75rem;
       display: none;
-      margin-bottom: 0.25rem;
+      margin-bottom: 0.5rem;
     }
     .error-msg.visible { display: block; }
 
     .submit-btn {
       width: 100%;
-      padding: 0.72rem;
-      font-size: 0.75rem;
+      padding: 0.84rem;
+      font-size: 0.72rem;
       font-weight: 700;
-      letter-spacing: 0.12em;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
       color: #fff;
-      background: #16a34a;
+      background: linear-gradient(135deg, #16a34a 0%, #166534 100%);
       border: none;
-      border-radius: 4px;
+      border-radius: 6px;
       cursor: pointer;
-      transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
-      margin-top: 0.5rem;
-      box-shadow: 0 2px 12px rgba(22, 163, 74, 0.35);
+      transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+      margin-top: 0.75rem;
+      box-shadow: 0 4px 24px rgba(22, 163, 74, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+      position: relative;
+      overflow: hidden;
     }
-    .submit-btn:hover:not(:disabled) { background: #15803d; transform: translateY(-1px); box-shadow: 0 4px 18px rgba(22,163,74,0.45); }
+
+    .submit-btn::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.12) 0%, transparent 55%);
+      opacity: 0;
+      transition: opacity 0.2s;
+      border-radius: inherit;
+    }
+
+    .submit-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 32px rgba(22, 163, 74, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    }
+    .submit-btn:hover:not(:disabled)::after { opacity: 1; }
     .submit-btn:active:not(:disabled) { transform: translateY(0); }
-    .submit-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .submit-btn:disabled { opacity: 0.28; cursor: not-allowed; }
+
+    .form-divider {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      margin: 2rem 0 0;
+    }
+
+    .form-divider-line {
+      flex: 1;
+      height: 1px;
+      background: rgba(255, 255, 255, 0.05);
+    }
 
     .form-footer {
-      margin-top: 2.5rem;
-      padding-top: 1.5rem;
-      border-top: 1px solid #e2e8f0;
-      font-size: 0.65rem;
-      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.6rem;
+      color: #1e293b;
       letter-spacing: 0.04em;
     }
 
-    /* ── Mobile: stack, hide brand panel ── */
+    .secure-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      color: #1e293b;
+    }
+
+    .secure-badge svg {
+      width: 11px;
+      height: 11px;
+      opacity: 0.6;
+    }
+
+    /* ── Mobile ── */
     @media (max-width: 680px) {
       .page { flex-direction: column; }
       .brand-panel { display: none; }
@@ -249,13 +421,13 @@
         padding: 2.5rem 1.75rem;
         justify-content: center;
         min-height: 100vh;
+        background: #060b14;
       }
     }
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
 </head>
 <body>
-  <div class="bg-base"></div>
   <canvas id="bgCanvas"></canvas>
 
   <div class="page">
@@ -264,74 +436,163 @@
     <div class="brand-panel">
       <div class="brand-mark">
         <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="20" cy="20" r="16" stroke="#16a34a" stroke-width="1.5" opacity="0.7"/>
-          <circle cx="20" cy="20" r="5" fill="#16a34a" opacity="1"/>
-          <line x1="20" y1="4"  x2="20" y2="15" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
-          <line x1="20" y1="25" x2="20" y2="36" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
-          <line x1="4"  y1="20" x2="15" y2="20" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
-          <line x1="25" y1="20" x2="36" y2="20" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+          <circle cx="20" cy="20" r="16" stroke="#22c55e" stroke-width="1.5" opacity="0.6"/>
+          <circle cx="20" cy="20" r="5" fill="#22c55e"/>
+          <line x1="20" y1="4"  x2="20" y2="15" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="20" y1="25" x2="20" y2="36" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="4"  y1="20" x2="15" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="25" y1="20" x2="36" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
         </svg>
         <span class="brand-mark-name">DataWatch</span>
+      </div>
+
+      <div class="status-badge">
+        <span class="status-dot"></span>
+        All systems operational
       </div>
 
       <div class="brand-headline">Track. Analyze.<br>Optimize.</div>
       <div class="brand-sub">Real-time workforce cost tracking and analysis for modern construction operations.</div>
 
+      <div class="brand-stats">
+        <div class="stat-card">
+          <div class="stat-value">Live</div>
+          <div class="stat-label">Cost Tracking</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">AI</div>
+          <div class="stat-label">Powered Insights</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">EAC</div>
+          <div class="stat-label">Forecasting</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">Multi</div>
+          <div class="stat-label">Project Support</div>
+        </div>
+      </div>
+
       <ul class="brand-features">
-        <li><span class="dot"></span>Daily cost entry across all projects</li>
-        <li><span class="dot"></span>Budget vs. actual variance analysis</li>
-        <li><span class="dot"></span>AI-powered scheduling & conflict resolution</li>
-        <li><span class="dot"></span>Purchase order management</li>
-        <li><span class="dot"></span>Projection planner & EAC forecasting</li>
+        <li>
+          <div class="feat-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+          </div>
+          Daily cost entry across all projects
+        </li>
+        <li>
+          <div class="feat-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+            </svg>
+          </div>
+          Budget vs. actual variance analysis
+        </li>
+        <li>
+          <div class="feat-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+            </svg>
+          </div>
+          AI-powered scheduling &amp; conflict resolution
+        </li>
+        <li>
+          <div class="feat-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+            </svg>
+          </div>
+          Purchase order management
+        </li>
+        <li>
+          <div class="feat-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+            </svg>
+          </div>
+          Projection planner &amp; EAC forecasting
+        </li>
       </ul>
     </div>
 
     <!-- ── Right: Form ── -->
     <div class="form-panel">
-      <div class="form-eyebrow">Workforce Intelligence Platform</div>
-      <div class="form-heading">Sign in</div>
+      <div class="form-inner">
 
-      <form id="loginForm" novalidate>
-        <div class="field">
-          <label for="companyCode">Company Code</label>
-          <input id="companyCode" type="text" placeholder="e.g. ACME"
-            autocomplete="organization" autocapitalize="characters" spellcheck="false" required />
+        <div class="form-logo">
+          <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="20" cy="20" r="16" stroke="#22c55e" stroke-width="1.5" opacity="0.6"/>
+            <circle cx="20" cy="20" r="5" fill="#22c55e"/>
+            <line x1="20" y1="4"  x2="20" y2="15" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+            <line x1="20" y1="25" x2="20" y2="36" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+            <line x1="4"  y1="20" x2="15" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+            <line x1="25" y1="20" x2="36" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          </svg>
+          <span class="form-logo-name">DataWatch</span>
         </div>
 
-        <div class="field">
-          <label for="username">Username</label>
-          <input id="username" type="text" placeholder="your username"
-            autocomplete="username" spellcheck="false" required />
+        <div class="form-eyebrow">Workforce Intelligence Platform</div>
+        <div class="form-heading">Welcome back</div>
+        <div class="form-subheading">Sign in to your workspace</div>
+
+        <form id="loginForm" novalidate>
+          <div class="field">
+            <label for="companyCode">Company Code</label>
+            <input id="companyCode" type="text" placeholder="e.g. ACME"
+              autocomplete="organization" autocapitalize="characters" spellcheck="false" required />
+          </div>
+
+          <div class="field">
+            <label for="username">Username</label>
+            <input id="username" type="text" placeholder="your username"
+              autocomplete="username" spellcheck="false" required />
+          </div>
+
+          <div class="field">
+            <label for="password">Password</label>
+            <div class="pw-wrap">
+              <input id="password" type="password" placeholder="••••••••"
+                autocomplete="current-password" required />
+              <button type="button" class="pw-toggle" id="pwToggle" aria-label="Toggle password visibility">
+                <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12S5 5 12 5s11 7 11 7-4 7-11 7S1 12 1 12z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+                <svg id="eyeClosed" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                  style="display:none">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94"/>
+                  <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                  <line x1="1" y1="1" x2="23" y2="23"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="error-msg" id="errorMsg"></div>
+
+          <button type="submit" class="submit-btn" id="submitBtn">Sign In</button>
+        </form>
+
+        <div class="form-divider">
+          <div class="form-divider-line"></div>
         </div>
 
-        <div class="field">
-          <label for="password">Password</label>
-          <div class="pw-wrap">
-            <input id="password" type="password" placeholder="••••••••"
-              autocomplete="current-password" required />
-            <button type="button" class="pw-toggle" id="pwToggle" aria-label="Toggle password visibility">
-              <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M1 12S5 5 12 5s11 7 11 7-4 7-11 7S1 12 1 12z"/>
-                <circle cx="12" cy="12" r="3"/>
-              </svg>
-              <svg id="eyeClosed" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                style="display:none">
-                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94"/>
-                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-                <line x1="1" y1="1" x2="23" y2="23"/>
-              </svg>
-            </button>
+        <div class="form-footer">
+          <span>© DataWatch · All rights reserved</span>
+          <div class="secure-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            Encrypted
           </div>
         </div>
 
-        <div class="error-msg" id="errorMsg"></div>
-
-        <button type="submit" class="submit-btn" id="submitBtn">Sign In</button>
-      </form>
-
-      <div class="form-footer">© DataWatch · Secure access · All rights reserved</div>
+      </div>
     </div>
 
   </div>
@@ -426,7 +687,6 @@
       function resize() {
         W = canvas.width  = window.innerWidth;
         H = canvas.height = window.innerHeight;
-        // Shift chip to ~35% across so it sits in the brand panel
         cx = W * 0.35;
         cy = H / 2;
         buildTraces();
@@ -447,7 +707,7 @@
         // Traces
         for (const tr of traces) {
           const [r, g, b] = tr.col;
-          ctx.strokeStyle = `rgba(${r},${g},${b},0.55)`;
+          ctx.strokeStyle = `rgba(${r},${g},${b},0.45)`;
           ctx.lineWidth   = 1.5;
           ctx.beginPath();
           ctx.moveTo(tr.pts[0][0], tr.pts[0][1]);
@@ -456,33 +716,33 @@
           for (let i = 1; i < tr.pts.length - 1; i++) {
             ctx.beginPath();
             ctx.arc(tr.pts[i][0], tr.pts[i][1], 2.5, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(${r},${g},${b},0.75)`;
+            ctx.fillStyle = `rgba(${r},${g},${b},0.65)`;
             ctx.fill();
           }
         }
 
         // Chip ambient glow
         const og = ctx.createRadialGradient(cx, cy, 10, cx, cy, CW * 0.85);
-        og.addColorStop(0, `rgba(34,197,94,${(0.1 + breathe * 0.08).toFixed(3)})`);
+        og.addColorStop(0, `rgba(34,197,94,${(0.12 + breathe * 0.1).toFixed(3)})`);
         og.addColorStop(1, 'rgba(34,197,94,0)');
         ctx.fillStyle = og;
         ctx.fillRect(L - CW, T - CH, CW * 3, CH * 3);
 
         // Chip body
-        ctx.fillStyle = 'rgba(10,16,28,0.92)';
+        ctx.fillStyle = 'rgba(8,14,28,0.95)';
         ctx.fillRect(L, T, CW, CH);
 
         ctx.lineWidth   = 1.5;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.55 + breathe * 0.25).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.6 + breathe * 0.3).toFixed(3)})`;
         ctx.strokeRect(L, T, CW, CH);
-        ctx.lineWidth   = 7;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.06 + breathe * 0.05).toFixed(3)})`;
+        ctx.lineWidth   = 8;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.07 + breathe * 0.06).toFixed(3)})`;
         ctx.strokeRect(L, T, CW, CH);
 
         // Internal grid
         const CELL = CW / 5;
         ctx.lineWidth   = 0.7;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.15 + breathe * 0.1).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.18 + breathe * 0.12).toFixed(3)})`;
         for (let i = 1; i < 5; i++) {
           ctx.beginPath(); ctx.moveTo(L + CELL * i, T + 5); ctx.lineTo(L + CELL * i, B - 5); ctx.stroke();
           ctx.beginPath(); ctx.moveTo(L + 5, T + CELL * i); ctx.lineTo(R - 5, T + CELL * i); ctx.stroke();
@@ -491,7 +751,7 @@
           for (let j = 1; j < 5; j++) {
             ctx.beginPath();
             ctx.arc(L + CELL * i, T + CELL * j, 1.5, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(34,197,94,${(0.35 + breathe * 0.25).toFixed(3)})`;
+            ctx.fillStyle = `rgba(34,197,94,${(0.4 + breathe * 0.3).toFixed(3)})`;
             ctx.fill();
           }
         }
@@ -499,12 +759,12 @@
         // Processor core
         ctx.beginPath();
         ctx.arc(cx, cy, 18 + breathe * 3, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(34,197,94,${(0.4 + breathe * 0.3).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(34,197,94,${(0.5 + breathe * 0.35).toFixed(3)})`;
         ctx.lineWidth   = 1.5;
         ctx.stroke();
         ctx.beginPath();
         ctx.arc(cx, cy, 8, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(34,197,94,${(0.3 + breathe * 0.25).toFixed(3)})`;
+        ctx.fillStyle = `rgba(34,197,94,${(0.35 + breathe * 0.3).toFixed(3)})`;
         ctx.fill();
         ctx.beginPath();
         ctx.arc(cx, cy, 3, 0, Math.PI * 2);
@@ -514,7 +774,7 @@
         // Corner notch
         ctx.beginPath();
         ctx.arc(L + 12, T + 12, 6, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(34,197,94,0.8)';
+        ctx.strokeStyle = 'rgba(34,197,94,0.9)';
         ctx.lineWidth   = 1.5;
         ctx.stroke();
         ctx.beginPath();
@@ -523,14 +783,14 @@
         ctx.fill();
 
         // Chip label
-        ctx.fillStyle = `rgba(34,197,94,${(0.45 + breathe * 0.2).toFixed(3)})`;
+        ctx.fillStyle = `rgba(34,197,94,${(0.5 + breathe * 0.25).toFixed(3)})`;
         ctx.font      = '9px monospace';
         ctx.textAlign = 'center';
         ctx.fillText('DW-1', cx, B - 8);
 
         // Pin stubs
         ctx.lineWidth   = 1.5;
-        ctx.strokeStyle = 'rgba(34,197,94,0.6)';
+        ctx.strokeStyle = 'rgba(34,197,94,0.55)';
         for (let i = 0; i < PINS; i++) {
           const px = L + hgap * (i + 1);
           const py = T + vgap * (i + 1);
@@ -541,7 +801,7 @@
           for (const [nx, ny] of [[px, T-STUB], [px, B+STUB], [L-STUB, py], [R+STUB, py]]) {
             ctx.beginPath();
             ctx.arc(nx, ny, 2, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(34,197,94,0.85)';
+            ctx.fillStyle = 'rgba(34,197,94,0.8)';
             ctx.fill();
           }
         }
@@ -556,22 +816,22 @@
           const [r, g, b] = traces[p.ti].col;
           const fade      = Math.sin(p.t * Math.PI);
 
-          const grd = ctx.createRadialGradient(px, py, 0, px, py, 12);
-          grd.addColorStop(0, `rgba(${r},${g},${b},${(fade * 0.5).toFixed(3)})`);
+          const grd = ctx.createRadialGradient(px, py, 0, px, py, 14);
+          grd.addColorStop(0, `rgba(${r},${g},${b},${(fade * 0.55).toFixed(3)})`);
           grd.addColorStop(1, `rgba(${r},${g},${b},0)`);
           ctx.beginPath();
-          ctx.arc(px, py, 12, 0, Math.PI * 2);
+          ctx.arc(px, py, 14, 0, Math.PI * 2);
           ctx.fillStyle = grd;
           ctx.fill();
 
           ctx.beginPath();
           ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${r},${g},${b},${(fade * 0.85).toFixed(3)})`;
+          ctx.fillStyle = `rgba(${r},${g},${b},${(fade * 0.9).toFixed(3)})`;
           ctx.fill();
 
           ctx.beginPath();
           ctx.arc(px, py, 1.5, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(255,255,255,${(fade * 0.85).toFixed(3)})`;
+          ctx.fillStyle = `rgba(255,255,255,${(fade * 0.9).toFixed(3)})`;
           ctx.fill();
         }
 
