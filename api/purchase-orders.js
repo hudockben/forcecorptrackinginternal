@@ -28,6 +28,7 @@ function safeFloat(v) {
 
 function safeDate(v) {
   if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
   const s = String(v).slice(0, 10);
   return s.length === 10 ? s : null;
 }
@@ -68,7 +69,7 @@ module.exports = async (req, res) => {
           linesByPO[d.po_id].push({
             id:          d.line_id      || String(d.id),
             invoice_num: d.invoice_num  || '',
-            date:        d.delivery_date ? String(d.delivery_date).slice(0, 10) : '',
+            date:        safeDate(d.delivery_date) || '',
             qty:         d.units_delivered != null ? String(d.units_delivered) : '',
             unit_cost:   d.unit_cost       != null ? String(d.unit_cost)       : '',
             tax:         d.tax             != null ? String(d.tax)             : '',
@@ -80,7 +81,7 @@ module.exports = async (req, res) => {
         const purchaseOrders = poRows.map(r => ({
           id:                    r.id,
           po_number:             r.po_num          || '',
-          date_created:          r.date_created ? String(r.date_created).slice(0, 10) : '',
+          date_created:          safeDate(r.date_created) || '',
           project_id:            r.project_id      || '',
           cost_code:             r.cost_code        || '',
           sub_code:              r.sub_code         || '',
