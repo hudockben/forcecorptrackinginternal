@@ -135,7 +135,7 @@ module.exports = async (req, res) => {
         isPlatformAdmin,
       },
       process.env.JWT_SECRET,
-      { expiresIn: '12h' }
+      { expiresIn: '30d' }
     );
 
     // Trigger background backfill on first login after deploy (no await — never delays login)
