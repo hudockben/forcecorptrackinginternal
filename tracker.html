@@ -18527,19 +18527,65 @@ function _luciusClearPins() {
   _luciusMarkers = [];
 }
 
+function _luciusPopupHtml(f, isStale) {
+  const e = s => escT(s || '');
+
+  // ── Row builders ──────────────────────────────────────────────
+  const rows = [];
+
+  if (f.operator) rows.push(
+    `<div style="color:#aaa;font-size:11px;margin-top:1px">${e(f.operator)}</div>`
+  );
+
+  if (f.addr) rows.push(
+    `<div style="color:#888;font-size:11px">${e(f.addr)}</div>`
+  );
+
+  const meta = [
+    f.sport   ? `sport: ${e(f.sport)}`   : '',
+    f.surface ? `surface: ${e(f.surface)}` : '',
+  ].filter(Boolean).join(' &nbsp;·&nbsp; ');
+  if (meta) rows.push(
+    `<div style="color:#888;font-size:11px;margin-top:2px">${meta}</div>`
+  );
+
+  // ── Links ─────────────────────────────────────────────────────
+  const gmUrl  = `https://www.google.com/maps?q=${f.lat},${f.lng}`;
+  const osmUrl = f.osmType && f.osmId
+    ? `https://www.openstreetmap.org/${f.osmType}/${f.osmId}`
+    : `https://www.openstreetmap.org/?mlat=${f.lat}&mlon=${f.lng}`;
+
+  const linkStyle = 'color:#60a5fa;text-decoration:none;font-size:11px';
+  const links = [
+    `<a href="${gmUrl}" target="_blank" rel="noopener" style="${linkStyle}">Google Maps</a>`,
+    `<a href="${osmUrl}" target="_blank" rel="noopener" style="${linkStyle}">OpenStreetMap</a>`,
+    f.website
+      ? `<a href="${e(f.website)}" target="_blank" rel="noopener" style="${linkStyle}">Website</a>`
+      : '',
+  ].filter(Boolean).join(' &nbsp;·&nbsp; ');
+  rows.push(`<div style="margin-top:5px">${links}</div>`);
+
+  if (isStale) rows.push(
+    `<div style="color:#a78bfa;font-size:10px;margin-top:3px;font-style:italic">cached — not in latest scan</div>`
+  );
+
+  const nameColor = isStale ? '#a78bfa' : f.isTurf ? '#22c55e' : '#ef4444';
+  return `<div style="min-width:200px;max-width:280px;line-height:1.5;padding:2px 0">
+    <strong style="font-size:13px;color:${nameColor}">${e(f.name)}</strong>
+    ${rows.join('')}
+  </div>`;
+}
+
 function _luciusDropPins(fields, staleIds) {
   _luciusClearPins();
   fields.forEach(f => {
     if (!f.lat || !f.lng) return;
-    const isStale  = staleIds && staleIds.has(f.id);
-    const icon     = isStale ? _LUCIUS_ICON_STALE()
-                   : f.isTurf ? _LUCIUS_ICON_TURF()
-                   : _LUCIUS_ICON_NONTURF();
-    const sport    = f.sport ? ` · ${f.sport}` : '';
-    const surface  = f.surface ? `<br><span style="color:#888;font-size:11px">surface: ${f.surface}</span>` : '';
-    const staleTag = isStale ? `<br><em style="color:#a78bfa;font-size:11px">cached — not in latest scan</em>` : '';
-    const popup    = `<strong>${esc(f.name)}</strong>${esc(sport)}${surface}${staleTag}`;
-    const marker   = L.marker([f.lat, f.lng], { icon }).bindPopup(popup);
+    const isStale = staleIds && staleIds.has(f.id);
+    const icon    = isStale ? _LUCIUS_ICON_STALE()
+                  : f.isTurf ? _LUCIUS_ICON_TURF()
+                  : _LUCIUS_ICON_NONTURF();
+    const marker  = L.marker([f.lat, f.lng], { icon })
+                     .bindPopup(_luciusPopupHtml(f, isStale), { maxWidth: 300 });
     marker.addTo(_luciusMap);
     _luciusMarkers.push(marker);
   });
@@ -18647,11 +18693,23 @@ async function runLucius() {
     const name    = tags.name || tags['name:en'] ||
                     `Field (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
 
+    // Build address from OSM addr:* tags
+    const _hn  = tags['addr:housenumber'] || '';
+    const _st  = tags['addr:street']      || '';
+    const _addrLine = _hn && _st ? `${_hn} ${_st}` : (_st || tags['addr:full'] || '');
+    const _addrParts = [_addrLine, tags['addr:city'], tags['addr:state'], tags['addr:postcode']]
+                         .filter(Boolean);
+    const addr = _addrParts.join(', ');
+
     freshIds.add(id);
     const existing = cacheMap.get(id);
     cacheMap.set(id, {
-      id, name, lat, lng, surface,
-      sport:     tags.sport || '',
+      id, name, lat, lng, surface, addr,
+      sport:    tags.sport    || '',
+      operator: tags.operator || tags['operator:type'] || tags['brand'] || '',
+      website:  tags.website  || tags['contact:website'] || tags['url'] || '',
+      osmType:  el.type,
+      osmId:    String(el.id),
       isTurf,
       lastSeen:  now,
       firstSeen: existing?.firstSeen || now,
