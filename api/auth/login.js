@@ -87,22 +87,45 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
-    // Fetch user + company in one query, including division fields
-    const rows = await sql`
-      SELECT
-        u.id,
-        u.username,
-        u.password_hash,
-        u.role,
-        u.divisions,
-        u.is_platform_admin,
-        c.name               AS company_name,
-        c.allowed_divisions
-      FROM users u
-      JOIN companies c ON c.code = u.company_code
-      WHERE LOWER(u.username)     = LOWER(${username.trim()})
-        AND LOWER(u.company_code) = LOWER(${companyCode.trim()})
-    `;
+    // Fetch user + company. Try with division_roles first; fall back gracefully
+    // if the column hasn't been migrated yet on this deployment.
+    let rows;
+    try {
+      rows = await sql`
+        SELECT
+          u.id,
+          u.username,
+          u.password_hash,
+          u.role,
+          u.divisions,
+          u.division_roles,
+          u.is_platform_admin,
+          c.name               AS company_name,
+          c.allowed_divisions
+        FROM users u
+        JOIN companies c ON c.code = u.company_code
+        WHERE LOWER(u.username)     = LOWER(${username.trim()})
+          AND LOWER(u.company_code) = LOWER(${companyCode.trim()})
+      `;
+    } catch (colErr) {
+      // division_roles column not yet migrated — query without it
+      rows = await sql`
+        SELECT
+          u.id,
+          u.username,
+          u.password_hash,
+          u.role,
+          u.divisions,
+          u.is_platform_admin,
+          c.name               AS company_name,
+          c.allowed_divisions
+        FROM users u
+        JOIN companies c ON c.code = u.company_code
+        WHERE LOWER(u.username)     = LOWER(${username.trim()})
+          AND LOWER(u.company_code) = LOWER(${companyCode.trim()})
+      `;
+      rows.forEach(r => { r.division_roles = null; });
+    }
 
     if (!rows.length) {
       return res.status(401).json({ error: 'Invalid company code, username, or password' });
@@ -116,11 +139,26 @@ module.exports = async (req, res) => {
     }
 
     const isPlatformAdmin   = Boolean(user.is_platform_admin);
-    const allowedDivisions  = effectiveDivisions(
-      isPlatformAdmin,
-      user.divisions,
-      user.allowed_divisions,
-    );
+    const divisionRoles     = user.division_roles || null; // e.g. {"turf":"level3","dust":"no_access"}
+
+    // Effective role for this session = turf role from division_roles (for tracker.html compat)
+    // Falls back to user.role for accounts without per-division roles set.
+    let effectiveRole = user.role;
+    if (!isPlatformAdmin && divisionRoles && divisionRoles.turf && divisionRoles.turf !== 'no_access') {
+      effectiveRole = divisionRoles.turf;
+    }
+
+    // Compute allowedDivisions: use division_roles keys (non-no_access) when set,
+    // otherwise fall back to user.divisions or company allowed_divisions.
+    let allowedDivisions;
+    if (!isPlatformAdmin && divisionRoles) {
+      allowedDivisions = Object.entries(divisionRoles)
+        .filter(([, v]) => v !== 'no_access')
+        .map(([k]) => k);
+      if (!allowedDivisions.length) allowedDivisions = [];
+    } else {
+      allowedDivisions = effectiveDivisions(isPlatformAdmin, user.divisions, user.allowed_divisions);
+    }
 
     const cleanCode = companyCode.trim().toUpperCase();
 
@@ -130,7 +168,8 @@ module.exports = async (req, res) => {
         username:         user.username,
         companyCode:      cleanCode,
         companyName:      user.company_name,
-        role:             user.role,
+        role:             effectiveRole,
+        divisionRoles,
         allowedDivisions,
         isPlatformAdmin,
       },
@@ -148,7 +187,8 @@ module.exports = async (req, res) => {
         username:         user.username,
         companyCode:      cleanCode,
         companyName:      user.company_name,
-        role:             user.role,
+        role:             effectiveRole,
+        divisionRoles,
         allowedDivisions,
         isPlatformAdmin,
       },

@@ -119,6 +119,192 @@
       border-color: #555;
     }
 
+    .add-user-btn {
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--green);
+      background: none;
+      border: 1px solid rgba(34,197,94,0.35);
+      border-radius: 4px;
+      padding: 0.38rem 0.8rem;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .add-user-btn:hover {
+      background: rgba(34,197,94,0.08);
+      border-color: var(--green);
+    }
+
+    /* ── User modal ── */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 100%;
+      max-width: 780px;
+      max-height: 92vh;
+      overflow-y: auto;
+      padding: 1.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .modal-title {
+      font-size: 0.9rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #fff;
+    }
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 1.2rem;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      transition: color 0.15s;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal label {
+      display: block;
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      margin-bottom: 0.3rem;
+    }
+    .modal input, .modal select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 0.45rem 0.65rem;
+      font-size: 0.85rem;
+      outline: none;
+      font-family: inherit;
+    }
+    .modal input:focus, .modal select:focus { border-color: var(--green); }
+    .modal-submit {
+      padding: 0.55rem 1.2rem;
+      background: var(--green);
+      color: #000;
+      font-weight: 700;
+      font-size: 0.78rem;
+      letter-spacing: 0.05em;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background 0.15s;
+      align-self: flex-start;
+    }
+    .modal-submit:hover { background: var(--green-dim); }
+    .modal-result { font-size: 0.8rem; min-height: 1.2em; }
+    .user-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+    .user-table th {
+      text-align: left;
+      padding: 0.4rem 0.6rem;
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .user-table td {
+      padding: 0.5rem 0.6rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      white-space: nowrap;
+    }
+    .user-del-btn {
+      background: none;
+      border: 1px solid rgba(239,68,68,0.3);
+      color: #ef4444;
+      border-radius: 3px;
+      padding: 0.15rem 0.45rem;
+      font-size: 0.7rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .user-del-btn:hover { background: rgba(239,68,68,0.1); }
+    .user-edit-btn {
+      background: none;
+      border: 1px solid rgba(34,197,94,0.3);
+      color: var(--green);
+      border-radius: 3px;
+      padding: 0.15rem 0.45rem;
+      font-size: 0.7rem;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-right: 0.3rem;
+    }
+    .user-edit-btn:hover { background: rgba(34,197,94,0.08); }
+    .div-role-badge {
+      font-size: 0.68rem;
+      padding: 0.12rem 0.4rem;
+      border-radius: 3px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .div-role-badge.admin   { background: rgba(124,58,237,0.15); color: #a78bfa; }
+    .div-role-badge.level3  { background: rgba(34,197,94,0.12);  color: #22c55e; }
+    .div-role-badge.level2  { background: rgba(96,165,250,0.12); color: #60a5fa; }
+    .div-role-badge.level1  { background: rgba(100,116,139,0.1); color: #94a3b8; }
+    .div-role-badge.none    { color: var(--border); }
+    .div-roles-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.6rem 1.2rem;
+    }
+    .div-role-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .div-role-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .mu-cancel-btn {
+      padding: 0.55rem 1.2rem;
+      background: none;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.78rem;
+      letter-spacing: 0.05em;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      margin-left: 0.5rem;
+    }
+    .mu-cancel-btn:hover { color: var(--text); border-color: #555; }
+
     /* ── Main ── */
     main {
       flex: 1;
@@ -169,6 +355,7 @@
     .cards.count-1 { grid-template-columns: 1fr; max-width: 340px; }
     .cards.count-2 { grid-template-columns: repeat(2, 1fr); max-width: 620px; }
     .cards.count-3 { grid-template-columns: repeat(3, 1fr); }
+    .cards.count-4 { grid-template-columns: repeat(4, 1fr); max-width: 1200px; }
 
     .card {
       background: var(--surface);
@@ -292,7 +479,8 @@
     /* ── Mobile ── */
     @media (max-width: 700px) {
       .cards.count-2,
-      .cards.count-3 { grid-template-columns: 1fr; max-width: 420px; }
+      .cards.count-3,
+      .cards.count-4 { grid-template-columns: 1fr; max-width: 420px; }
       main { padding: 2.5rem 1.25rem; }
       .welcome { margin-bottom: 2.25rem; }
       .user-label { display: none; }
@@ -309,9 +497,111 @@
         <div class="user-label" id="userLabel"></div>
         <span class="platform-badge" id="platformBadge" style="display:none">Platform Admin</span>
       </div>
+      <button class="add-user-btn" id="addUserBtn" style="display:none" onclick="openUserModal()">+ Manage Users</button>
       <button class="sign-out-btn" onclick="signOut()">Sign Out</button>
     </div>
   </header>
+
+  <!-- ── Manage Users modal ── -->
+  <div class="modal-backdrop" id="userModalBackdrop">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title">Manage Users</div>
+        <button class="modal-close" onclick="closeUserModal()">&#10005;</button>
+      </div>
+
+      <!-- User list -->
+      <div>
+        <div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.6rem">Current Users</div>
+        <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;overflow-x:auto">
+          <table class="user-table">
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Turf</th>
+                <th>Dust</th>
+                <th>Paving</th>
+                <th>Trucking</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="userListBody">
+              <tr><td colspan="6" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Create / Edit form -->
+      <div style="border-top:1px solid var(--border);padding-top:1.25rem;display:flex;flex-direction:column;gap:0.75rem">
+        <div id="mu-form-heading" style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted)">Create User</div>
+        <input type="hidden" id="mu-edit-id" value="" />
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem 1.2rem">
+          <div>
+            <label>Username</label>
+            <input id="mu-username" type="text" placeholder="john" />
+          </div>
+          <div>
+            <label>Password <span id="mu-pw-hint" style="text-transform:none;font-weight:400;color:var(--muted)">(min 8 chars)</span></label>
+            <input id="mu-password" type="password" placeholder="••••••••" />
+          </div>
+        </div>
+
+        <!-- Per-division role selects -->
+        <div>
+          <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.55rem">Division Permissions</div>
+          <div class="div-roles-grid">
+            <div class="div-role-row">
+              <span class="div-role-label">Turf</span>
+              <select id="mu-role-turf">
+                <option value="no_access">No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3" selected>Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Dust</span>
+              <select id="mu-role-dust">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3">Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Paving</span>
+              <select id="mu-role-paving">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3">Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Trucking</span>
+              <select id="mu-role-trucking">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3">Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div id="mu-result" class="modal-result"></div>
+        <div style="display:flex;align-items:center">
+          <button class="modal-submit" onclick="submitUserForm()">Save User</button>
+          <button class="mu-cancel-btn" id="mu-cancel-btn" style="display:none" onclick="resetUserForm()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <main>
     <div class="welcome">
@@ -376,9 +666,22 @@
                   <line x1="4" y1="5" x2="20" y2="5"/>
                 </svg>`,
       },
+      trucking: {
+        name:  'Trucking',
+        desc:  'Fleet dispatch, load tracking, driver management, and haul cost reporting for trucking operations.',
+        color: '#f97316',
+        href:  'trucking.html',
+        built: false,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="1" y="3" width="15" height="13" rx="1"/>
+                  <path d="M16 8h4l3 3v5h-7V8z"/>
+                  <circle cx="5.5" cy="18.5" r="2.5"/>
+                  <circle cx="18.5" cy="18.5" r="2.5"/>
+                </svg>`,
+      },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -437,7 +740,7 @@
 
     // ── Render cards ────────────────────────────────────────────────────────
     const grid = document.getElementById('cardsGrid');
-    grid.classList.add(`count-${Math.min(visibleDivisions.length, 3)}`);
+    grid.classList.add(`count-${Math.min(visibleDivisions.length, 4)}`);
 
     visibleDivisions.forEach(key => {
       const def = DIVISION_CATALOG[key];
@@ -478,6 +781,189 @@
       const def = DIVISION_CATALOG[division];
       if (def && def.built) {
         window.location.replace(def.href);
+      }
+    }
+
+    // ── Show Manage Users button for admins ─────────────────────────────────
+    if (user && (user.role === 'admin' || isPlatformAdmin)) {
+      document.getElementById('addUserBtn').style.display = '';
+    }
+
+    // ── User modal ──────────────────────────────────────────────────────────
+    const ROLE_SHORT = {
+      admin:     'Admin',
+      level3:    'Full',
+      level2:    'Edit',
+      level1:    'View',
+      no_access: '—',
+    };
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking'];
+
+    function openUserModal() {
+      document.getElementById('userModalBackdrop').classList.add('open');
+      loadUserList();
+    }
+
+    function closeUserModal() {
+      document.getElementById('userModalBackdrop').classList.remove('open');
+      resetUserForm();
+    }
+
+    document.getElementById('userModalBackdrop').addEventListener('click', function(e) {
+      if (e.target === this) closeUserModal();
+    });
+
+    function divRoleBadge(role) {
+      if (!role || role === 'no_access') return '<span class="div-role-badge none">—</span>';
+      return `<span class="div-role-badge ${role}">${ROLE_SHORT[role] || role}</span>`;
+    }
+
+    async function loadUserList() {
+      const tbody = document.getElementById('userListBody');
+      tbody.innerHTML = '<tr><td colspan="6" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      try {
+        const res  = await fetch('/api/company/users', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Failed');
+        if (!data.users.length) {
+          tbody.innerHTML = '<tr><td colspan="6" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = data.users.map(u => {
+          const dr = u.division_roles || {};
+          // For legacy users (no division_roles), show role in Turf and — elsewhere
+          const turf     = dr.turf     || (u.division_roles === null ? u.role : 'no_access');
+          const dust     = dr.dust     || (u.division_roles === null ? 'no_access' : 'no_access');
+          const paving   = dr.paving   || (u.division_roles === null ? 'no_access' : 'no_access');
+          const trucking = dr.trucking || (u.division_roles === null ? 'no_access' : 'no_access');
+          const isSelf   = String(u.id) === String(user.userId);
+          return `
+            <tr>
+              <td style="font-weight:600">${u.username}${isSelf ? ' <span style="color:var(--muted);font-size:0.68rem">(you)</span>' : ''}</td>
+              <td>${divRoleBadge(turf)}</td>
+              <td>${divRoleBadge(dust)}</td>
+              <td>${divRoleBadge(paving)}</td>
+              <td>${divRoleBadge(trucking)}</td>
+              <td style="text-align:right;white-space:nowrap">
+                <button class="user-edit-btn" onclick='editUser(${JSON.stringify(u)})'>Edit</button>
+                ${!isSelf
+                  ? `<button class="user-del-btn" onclick="deleteUser('${u.id}','${u.username}')">Remove</button>`
+                  : ''}
+              </td>
+            </tr>`;
+        }).join('');
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="6" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+      }
+    }
+
+    function editUser(u) {
+      document.getElementById('mu-edit-id').value = u.id;
+      document.getElementById('mu-username').value = u.username;
+      document.getElementById('mu-username').disabled = true;
+      document.getElementById('mu-password').value = '';
+      document.getElementById('mu-pw-hint').textContent = '(leave blank to keep current)';
+      document.getElementById('mu-form-heading').textContent = `Edit User — ${u.username}`;
+      document.getElementById('mu-cancel-btn').style.display = '';
+
+      const dr = u.division_roles || {};
+      // For legacy users without division_roles, pre-fill turf with their legacy role
+      const legacy = !u.division_roles;
+      document.getElementById('mu-role-turf').value     = dr.turf     || (legacy ? u.role : 'no_access');
+      document.getElementById('mu-role-dust').value     = dr.dust     || 'no_access';
+      document.getElementById('mu-role-paving').value   = dr.paving   || 'no_access';
+      document.getElementById('mu-role-trucking').value = dr.trucking || 'no_access';
+
+      document.getElementById('mu-result').textContent = '';
+      // Scroll form into view
+      document.getElementById('mu-form-heading').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function resetUserForm() {
+      document.getElementById('mu-edit-id').value = '';
+      document.getElementById('mu-username').value = '';
+      document.getElementById('mu-username').disabled = false;
+      document.getElementById('mu-password').value = '';
+      document.getElementById('mu-pw-hint').textContent = '(min 8 chars)';
+      document.getElementById('mu-form-heading').textContent = 'Create User';
+      document.getElementById('mu-cancel-btn').style.display = 'none';
+      document.getElementById('mu-role-turf').value     = 'level3';
+      document.getElementById('mu-role-dust').value     = 'no_access';
+      document.getElementById('mu-role-paving').value   = 'no_access';
+      document.getElementById('mu-role-trucking').value = 'no_access';
+      document.getElementById('mu-result').textContent  = '';
+    }
+
+    async function submitUserForm() {
+      const editId   = document.getElementById('mu-edit-id').value;
+      const username = document.getElementById('mu-username').value.trim();
+      const password = document.getElementById('mu-password').value;
+      const result   = document.getElementById('mu-result');
+      result.style.color = 'var(--muted)';
+      result.textContent = '';
+
+      if (!username) {
+        result.textContent = 'Username is required.';
+        result.style.color = '#ef4444';
+        return;
+      }
+      if (!editId && !password) {
+        result.textContent = 'Password is required for new users.';
+        result.style.color = '#ef4444';
+        return;
+      }
+
+      const division_roles = {
+        turf:     document.getElementById('mu-role-turf').value,
+        dust:     document.getElementById('mu-role-dust').value,
+        paving:   document.getElementById('mu-role-paving').value,
+        trucking: document.getElementById('mu-role-trucking').value,
+      };
+
+      const body = { username, division_roles };
+      if (password) body.password = password;
+
+      try {
+        const res  = await fetch('/api/company/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          const divSummary = DIV_KEYS
+            .filter(d => division_roles[d] !== 'no_access')
+            .map(d => `${d.charAt(0).toUpperCase()+d.slice(1)}: ${ROLE_SHORT[division_roles[d]]}`)
+            .join(', ') || 'No divisions';
+          result.textContent = `"${data.username}" saved. ${divSummary}`;
+          result.style.color = 'var(--green)';
+          resetUserForm();
+          loadUserList();
+        } else {
+          result.textContent = data.error || 'Error saving user.';
+          result.style.color = '#ef4444';
+        }
+      } catch (err) {
+        result.textContent = err.message;
+        result.style.color = '#ef4444';
+      }
+    }
+
+    async function deleteUser(id, username) {
+      if (!confirm(`Remove user "${username}"?`)) return;
+      try {
+        const res  = await fetch('/api/company/users', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ id }),
+        });
+        const data = await res.json();
+        if (data.ok) { resetUserForm(); loadUserList(); }
+        else alert(data.error || 'Error removing user.');
+      } catch (err) {
+        alert(err.message);
       }
     }
 

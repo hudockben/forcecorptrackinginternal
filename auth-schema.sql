@@ -56,6 +56,9 @@ ALTER TABLE users
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN NOT NULL DEFAULT FALSE;
 
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS division_roles     JSONB   DEFAULT NULL;
+
 -- ─────────────────────────────────────────────────
 -- NOTE: app_data keys are namespaced as:
 --   "{companyCode}:fct_projects"
