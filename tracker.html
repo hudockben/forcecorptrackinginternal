@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DataWatch — Tracker</title>
+  <!-- Leaflet.js for Lucius map tab -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -146,6 +149,115 @@
     .crm-sub-btn.active { color: var(--green); border-bottom-color: var(--green); }
     .crm-sub-panel { display: none; }
     .crm-sub-panel.active { display: block; }
+
+    /* ── Lucius map panel ── */
+    #lucius-root {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 140px);
+      padding: 1rem 1.25rem;
+      gap: 0.75rem;
+    }
+    #lucius-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+    .lucius-divider {
+      width: 1px; height: 24px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    .lucius-setting {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.72rem;
+    }
+    .lucius-setting label {
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+    }
+    #lucius-addr-input {
+      width: 210px;
+      padding: 0.3rem 0.5rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.75rem;
+    }
+    #lucius-addr-input:focus { outline: none; border-color: var(--green); }
+    #lucius-radius-input {
+      width: 52px;
+      padding: 0.3rem 0.4rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.75rem;
+      text-align: center;
+    }
+    #lucius-radius-input:focus { outline: none; border-color: var(--green); }
+    .lucius-set-btn {
+      padding: 0.28rem 0.6rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.72rem;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .lucius-set-btn:hover { border-color: var(--green); color: var(--green); }
+    #lucius-run-btn {
+      padding: 0.45rem 1.2rem;
+      background: var(--green);
+      color: #000;
+      font-weight: 700;
+      font-size: 0.8rem;
+      letter-spacing: 0.05em;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    #lucius-run-btn:hover { background: var(--green-dim); }
+    #lucius-run-btn:disabled { background: var(--muted); cursor: not-allowed; }
+    @keyframes lucius-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.7); }
+      50%       { box-shadow: 0 0 0 7px rgba(34,197,94,0); }
+    }
+    #lucius-run-btn.ready { animation: lucius-pulse 1.4s ease-in-out infinite; }
+    #lucius-status {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    #lucius-legend {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-left: auto;
+    }
+    .lucius-legend-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+    #lucius-map {
+      flex: 1;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      min-height: 400px;
+    }
 
     /* ── Admin dropdown ── */
     .admin-dropdown-wrap {
@@ -2258,6 +2370,7 @@
     <button class="crm-sub-btn"        data-crm-tab="people">People</button>
     <button class="crm-sub-btn"        data-crm-tab="companies">Companies</button>
     <button class="crm-sub-btn"        data-crm-tab="opportunities">Opportunities</button>
+    <button class="crm-sub-btn"        data-crm-tab="lucius">Lucius</button>
   </div>
 
   <!-- CRM sub-panels -->
@@ -2272,6 +2385,43 @@
   </div>
   <div class="crm-sub-panel" id="crm-panel-opportunities">
     <div id="crm-opportunities-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+
+  <div class="crm-sub-panel" id="crm-panel-lucius">
+    <div id="lucius-root">
+      <div id="lucius-toolbar">
+        <button id="lucius-run-btn" onclick="runLucius()">&#9654; Run Lucius</button>
+
+        <div class="lucius-divider"></div>
+
+        <div class="lucius-setting">
+          <label>Location</label>
+          <input id="lucius-addr-input" type="text" placeholder="Address, city, or lat,lng…"
+            onkeydown="if(event.key==='Enter') luciusGeocode()" />
+          <button class="lucius-set-btn" onclick="luciusGeocode()">Set</button>
+        </div>
+
+        <div class="lucius-divider"></div>
+
+        <div class="lucius-setting">
+          <label>Radius</label>
+          <input id="lucius-radius-input" type="number" min="1" max="200" step="1" value="10" />
+          <span style="color:var(--muted);font-size:0.72rem">mi</span>
+          <button class="lucius-set-btn" onclick="luciusApplyRadius()">Apply</button>
+        </div>
+
+        <span id="lucius-status" style="color:var(--muted);font-size:0.75rem">
+          Set a location and click Run Lucius.
+        </span>
+
+        <div id="lucius-legend">
+          <span><span class="lucius-legend-dot" style="background:#22c55e"></span>Turf</span>
+          <span><span class="lucius-legend-dot" style="background:#ef4444"></span>Non-turf / unknown</span>
+          <span><span class="lucius-legend-dot" style="background:#a78bfa"></span>Cached (not in latest scan)</span>
+        </div>
+      </div>
+      <div id="lucius-map"></div>
+    </div>
   </div>
 
 </div>
@@ -3170,6 +3320,7 @@ function crmSwitchTab(tab) {
   if (tab === 'people')        renderCrmPeopleTab();
   if (tab === 'companies')     renderCrmCompaniesTab();
   if (tab === 'opportunities') renderCrmOpportunitiesTab();
+  if (tab === 'lucius')        initLuciusTab();
 }
 
 document.querySelectorAll('.crm-sub-btn').forEach(btn =>
@@ -18176,6 +18327,414 @@ function _ppRenderMultiCode(proj, agg, MONTHS, NW_ICONS) {
     </div>
     <div style="font-size:0.7rem;color:var(--muted);margin-top:0.5rem">🟢 crew assigned · ⚠️ conflict · click any cell to edit that day</div>`;
 }
+
+// ══════════════════════════════════════════════════════════════
+// LUCIUS — Sports Field Map Scanner
+// ══════════════════════════════════════════════════════════════
+
+const LUCIUS_CACHE_KEY  = 'fct_lucius_fields';
+const LUCIUS_CONFIG_KEY = 'fct_lucius_config';
+
+// ── Runtime config (loaded from store; these are fallback defaults) ──
+let _luciusConfig = { lat: 36.1699, lng: -115.1398, radiusMiles: 10 };
+
+// ── State ─────────────────────────────────────────────────────
+let _luciusMap          = null;
+let _luciusMarkers      = [];
+let _luciusRadiusCircle = null;
+let _luciusInitDone     = false;
+
+// ── Config load / save ────────────────────────────────────────
+async function _luciusLoadConfig() {
+  try {
+    const saved = await apiGet(LUCIUS_CONFIG_KEY);
+    if (saved && saved.lat && saved.lng) {
+      _luciusConfig = { ..._luciusConfig, ...saved };
+    }
+  } catch { /* use defaults */ }
+}
+
+async function _luciusSaveConfig() {
+  try { await apiPut(LUCIUS_CONFIG_KEY, _luciusConfig); } catch { /* non-fatal */ }
+}
+
+function _luciusPopulateInputs() {
+  const addrEl   = document.getElementById('lucius-addr-input');
+  const radiusEl = document.getElementById('lucius-radius-input');
+  if (addrEl && !addrEl.value) {
+    addrEl.value = `${_luciusConfig.lat.toFixed(5)}, ${_luciusConfig.lng.toFixed(5)}`;
+  }
+  if (radiusEl) radiusEl.value = _luciusConfig.radiusMiles;
+}
+
+// ── Turf surface detection ────────────────────────────────────
+function _luciusIsTurf(surface) {
+  if (!surface) return false;
+  const s = surface.toLowerCase();
+  return s.includes('artificial') || s.includes('turf') ||
+         s.includes('synthetic')  || s.includes('astro') ||
+         s.includes('rubber')     || s.includes('3g')    ||
+         s.includes('4g');
+}
+
+// ── Cache helpers ─────────────────────────────────────────────
+async function _luciusLoadCache() {
+  try {
+    const data = await apiGet(LUCIUS_CACHE_KEY);
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
+}
+
+async function _luciusSaveCache(fields) {
+  try { await apiPut(LUCIUS_CACHE_KEY, fields); } catch { /* non-fatal */ }
+}
+
+// ── Overpass query builder ────────────────────────────────────
+function _luciusQueryTimeout() {
+  const mi = _luciusConfig.radiusMiles || 10;
+  if (mi <= 10) return 30;
+  if (mi <= 25) return 50;
+  return 90; // up to 50mi
+}
+
+function _luciusBuildQuery() {
+  const r   = ((_luciusConfig.radiusMiles || 10) * 1609.34).toFixed(0);
+  const lat = _luciusConfig.lat;
+  const lng = _luciusConfig.lng;
+  const t   = _luciusQueryTimeout();
+  return `[out:json][timeout:${t}];
+(
+  node["leisure"="pitch"](around:${r},${lat},${lng});
+  way["leisure"="pitch"](around:${r},${lat},${lng});
+  relation["leisure"="pitch"](around:${r},${lat},${lng});
+);
+out center;`;
+}
+
+// ── Status + button-ready helpers ────────────────────────────
+function _luciusSetStatus(msg) {
+  const el = document.getElementById('lucius-status');
+  if (el) el.textContent = msg;
+}
+
+function _luciusMarkReady() {
+  const btn = document.getElementById('lucius-run-btn');
+  if (btn) btn.classList.add('ready');
+}
+
+function _luciusUnmarkReady() {
+  const btn = document.getElementById('lucius-run-btn');
+  if (btn) btn.classList.remove('ready');
+}
+
+// ── Radius circle helper ──────────────────────────────────────
+function _luciusUpdateCircle() {
+  if (!_luciusMap) return;
+  const center = [_luciusConfig.lat, _luciusConfig.lng];
+  const radius = (_luciusConfig.radiusMiles || 10) * 1609.34;
+  if (_luciusRadiusCircle) {
+    _luciusRadiusCircle.setLatLng(center);
+    _luciusRadiusCircle.setRadius(radius);
+  } else {
+    _luciusRadiusCircle = L.circle(center, {
+      radius,
+      color: '#60a5fa', weight: 1.5, opacity: 0.5,
+      fillColor: '#60a5fa', fillOpacity: 0.04,
+    }).addTo(_luciusMap);
+  }
+}
+
+// ── Geocode address → update center ──────────────────────────
+async function luciusGeocode() {
+  const input = document.getElementById('lucius-addr-input');
+  if (!input) return;
+  const raw = input.value.trim();
+  if (!raw) return;
+
+  // Check if user typed raw "lat, lng" coordinates
+  const coordMatch = raw.match(/^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$/);
+  if (coordMatch) {
+    const lat = parseFloat(coordMatch[1]);
+    const lng = parseFloat(coordMatch[2]);
+    if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+      _luciusConfig.lat = lat;
+      _luciusConfig.lng = lng;
+      await _luciusSaveConfig();
+      _luciusMap.flyTo([lat, lng], 12, { duration: 1 });
+      _luciusUpdateCircle();
+      _luciusSetStatus(`Center set to ${lat.toFixed(5)}, ${lng.toFixed(5)} — click Run Lucius to scan.`);
+      _luciusMarkReady();
+      return;
+    }
+  }
+
+  // Otherwise geocode via Nominatim (free, no key)
+  _luciusSetStatus('Geocoding address…');
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(raw)}`;
+    const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    const hits = await res.json();
+    if (!hits.length) { _luciusSetStatus('Address not found — try a different search.'); return; }
+    const { lat, lon, display_name } = hits[0];
+    _luciusConfig.lat = parseFloat(lat);
+    _luciusConfig.lng = parseFloat(lon);
+    input.value       = display_name;
+    await _luciusSaveConfig();
+    _luciusMap.flyTo([_luciusConfig.lat, _luciusConfig.lng], 12, { duration: 1 });
+    _luciusUpdateCircle();
+    _luciusSetStatus(`Center set to: ${display_name} — click Run Lucius to scan.`);
+    _luciusMarkReady();
+  } catch (err) {
+    _luciusSetStatus(`Geocode error: ${err.message}`);
+  }
+}
+
+// ── Apply new radius ──────────────────────────────────────────
+async function luciusApplyRadius() {
+  const input = document.getElementById('lucius-radius-input');
+  if (!input) return;
+  const val = parseFloat(input.value);
+  if (!val || val < 1) { _luciusSetStatus('Enter a valid radius (minimum 1 mi).'); return; }
+  if (val > 50) { _luciusSetStatus('Maximum radius is 50 mi — Overpass servers time out above that. Try 25 mi or less for best results.'); input.value = 50; return; }
+  _luciusConfig.radiusMiles = val;
+  await _luciusSaveConfig();
+  _luciusUpdateCircle();
+  _luciusSetStatus(`Radius set to ${val} mi — click Run Lucius to scan.`);
+  _luciusMarkReady();
+}
+
+// ── Pin rendering ─────────────────────────────────────────────
+function _luciusColorIcon(color) {
+  const svg = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 36">
+    <path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 24 12 24s12-15 12-24C24 5.373 18.627 0 12 0z"
+      fill="${color}" stroke="#000" stroke-width="1.2"/>
+    <circle cx="12" cy="12" r="4" fill="#fff" opacity="0.85"/>
+  </svg>`);
+  return L.icon({
+    iconUrl:    `data:image/svg+xml,${svg}`,
+    iconSize:   [22, 33],
+    iconAnchor: [11, 33],
+    popupAnchor:[0, -34],
+  });
+}
+
+const _LUCIUS_ICON_TURF    = () => _luciusColorIcon('#22c55e');
+const _LUCIUS_ICON_NONTURF = () => _luciusColorIcon('#ef4444');
+const _LUCIUS_ICON_STALE   = () => _luciusColorIcon('#a78bfa');
+
+function _luciusClearPins() {
+  _luciusMarkers.forEach(m => m.remove());
+  _luciusMarkers = [];
+}
+
+function _luciusPopupHtml(f, isStale) {
+  const e = s => escT(s || '');
+
+  // ── Row builders ──────────────────────────────────────────────
+  const rows = [];
+
+  if (f.operator) rows.push(
+    `<div style="color:#aaa;font-size:11px;margin-top:1px">${e(f.operator)}</div>`
+  );
+
+  if (f.addr) rows.push(
+    `<div style="color:#888;font-size:11px">${e(f.addr)}</div>`
+  );
+
+  const meta = [
+    f.sport   ? `sport: ${e(f.sport)}`   : '',
+    f.surface ? `surface: ${e(f.surface)}` : '',
+  ].filter(Boolean).join(' &nbsp;·&nbsp; ');
+  if (meta) rows.push(
+    `<div style="color:#888;font-size:11px;margin-top:2px">${meta}</div>`
+  );
+
+  // ── Links ─────────────────────────────────────────────────────
+  const gmUrl  = `https://www.google.com/maps?q=${f.lat},${f.lng}`;
+  const osmUrl = f.osmType && f.osmId
+    ? `https://www.openstreetmap.org/${f.osmType}/${f.osmId}`
+    : `https://www.openstreetmap.org/?mlat=${f.lat}&mlon=${f.lng}`;
+
+  const linkStyle = 'color:#60a5fa;text-decoration:none;font-size:11px';
+  const links = [
+    `<a href="${gmUrl}" target="_blank" rel="noopener" style="${linkStyle}">Google Maps</a>`,
+    `<a href="${osmUrl}" target="_blank" rel="noopener" style="${linkStyle}">OpenStreetMap</a>`,
+    f.website
+      ? `<a href="${e(f.website)}" target="_blank" rel="noopener" style="${linkStyle}">Website</a>`
+      : '',
+  ].filter(Boolean).join(' &nbsp;·&nbsp; ');
+  rows.push(`<div style="margin-top:5px">${links}</div>`);
+
+  if (isStale) rows.push(
+    `<div style="color:#a78bfa;font-size:10px;margin-top:3px;font-style:italic">cached — not in latest scan</div>`
+  );
+
+  const nameColor = isStale ? '#a78bfa' : f.isTurf ? '#22c55e' : '#ef4444';
+  return `<div style="min-width:200px;max-width:280px;line-height:1.5;padding:2px 0">
+    <strong style="font-size:13px;color:${nameColor}">${e(f.name)}</strong>
+    ${rows.join('')}
+  </div>`;
+}
+
+function _luciusDropPins(fields, staleIds) {
+  _luciusClearPins();
+  fields.forEach(f => {
+    if (!f.lat || !f.lng) return;
+    const isStale = staleIds && staleIds.has(f.id);
+    const icon    = isStale ? _LUCIUS_ICON_STALE()
+                  : f.isTurf ? _LUCIUS_ICON_TURF()
+                  : _LUCIUS_ICON_NONTURF();
+    const marker  = L.marker([f.lat, f.lng], { icon })
+                     .bindPopup(_luciusPopupHtml(f, isStale), { maxWidth: 300 });
+    marker.addTo(_luciusMap);
+    _luciusMarkers.push(marker);
+  });
+}
+
+// ── Map initialisation ────────────────────────────────────────
+function _luciusInitMap() {
+  if (_luciusMap) {
+    setTimeout(() => _luciusMap.invalidateSize(), 50);
+    return;
+  }
+  _luciusMap = L.map('lucius-map').setView([_luciusConfig.lat, _luciusConfig.lng], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19,
+  }).addTo(_luciusMap);
+  _luciusUpdateCircle();
+}
+
+// ── Tab entry point ───────────────────────────────────────────
+async function initLuciusTab() {
+  // Load persisted config first so map opens at the right location
+  await _luciusLoadConfig();
+  _luciusPopulateInputs();
+  _luciusInitMap();
+
+  if (_luciusInitDone) return;
+  _luciusInitDone = true;
+
+  const cached = await _luciusLoadCache();
+  if (cached.length) {
+    _luciusDropPins(cached, null);
+    _luciusSetStatus(
+      `Showing ${cached.length} cached field${cached.length !== 1 ? 's' : ''}. Click Run Lucius to refresh.`
+    );
+  }
+}
+
+// ── Main scan function ────────────────────────────────────────
+async function runLucius() {
+  const btn = document.getElementById('lucius-run-btn');
+  if (btn) btn.disabled = true;
+  _luciusUnmarkReady();
+  _luciusSetStatus('Querying Overpass API…');
+  _luciusInitMap();
+
+  const cached   = await _luciusLoadCache();
+  const cacheMap = new Map(cached.map(f => [f.id, f]));
+
+  if (cached.length) _luciusDropPins(cached, null);
+
+  // Try each Overpass mirror in order until one succeeds
+  const _OVERPASS_ENDPOINTS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.openstreetmap.fr/api/interpreter',
+  ];
+
+  let elements = [];
+  let lastErr  = null;
+  const queryStr = encodeURIComponent(_luciusBuildQuery());
+  const abortMs  = (_luciusQueryTimeout() + 8) * 1000; // 8s buffer over server timeout
+
+  for (let i = 0; i < _OVERPASS_ENDPOINTS.length; i++) {
+    const endpoint = _OVERPASS_ENDPOINTS[i];
+    _luciusSetStatus(`Querying Overpass… (server ${i + 1}/${_OVERPASS_ENDPOINTS.length})`);
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), abortMs);
+      // Use GET to avoid Content-Type preflight issues on some servers/proxies
+      const res = await fetch(`${endpoint}?data=${queryStr}`, {
+        method: 'GET',
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      elements   = json.elements || [];
+      lastErr    = null;
+      break; // success — stop trying other servers
+    } catch (err) {
+      lastErr = err.name === 'AbortError' ? new Error('timeout') : err;
+    }
+  }
+
+  if (lastErr) {
+    _luciusSetStatus(`Overpass unreachable (${lastErr.message}) — check your connection and try again.`);
+    if (btn) btn.disabled = false;
+    _luciusMarkReady();
+    return;
+  }
+
+  const now      = new Date().toISOString();
+  const freshIds = new Set();
+
+  for (const el of elements) {
+    const lat = el.lat ?? el.center?.lat;
+    const lng = el.lon ?? el.center?.lon;
+    if (lat == null || lng == null) continue;
+
+    const id      = `osm/${el.type}/${el.id}`;
+    const tags    = el.tags || {};
+    const surface = tags.surface || '';
+    const isTurf  = _luciusIsTurf(surface);
+    const name    = tags.name || tags['name:en'] ||
+                    `Field (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+
+    // Build address from OSM addr:* tags
+    const _hn  = tags['addr:housenumber'] || '';
+    const _st  = tags['addr:street']      || '';
+    const _addrLine = _hn && _st ? `${_hn} ${_st}` : (_st || tags['addr:full'] || '');
+    const _addrParts = [_addrLine, tags['addr:city'], tags['addr:state'], tags['addr:postcode']]
+                         .filter(Boolean);
+    const addr = _addrParts.join(', ');
+
+    freshIds.add(id);
+    const existing = cacheMap.get(id);
+    cacheMap.set(id, {
+      id, name, lat, lng, surface, addr,
+      sport:    tags.sport    || '',
+      operator: tags.operator || tags['operator:type'] || tags['brand'] || '',
+      website:  tags.website  || tags['contact:website'] || tags['url'] || '',
+      osmType:  el.type,
+      osmId:    String(el.id),
+      isTurf,
+      lastSeen:  now,
+      firstSeen: existing?.firstSeen || now,
+    });
+  }
+
+  const allFields    = [...cacheMap.values()];
+  const staleIds     = new Set(allFields.filter(f => !freshIds.has(f.id)).map(f => f.id));
+  const turfCount    = allFields.filter(f =>  f.isTurf && !staleIds.has(f.id)).length;
+  const nonTurfCount = allFields.filter(f => !f.isTurf && !staleIds.has(f.id)).length;
+  const staleCount   = staleIds.size;
+  const newCount     = [...freshIds].filter(id => !cached.find(f => f.id === id)).length;
+
+  await _luciusSaveCache(allFields);
+  _luciusDropPins(allFields, staleIds);
+
+  let status = `${_luciusConfig.radiusMiles}mi scan — ${turfCount} turf · ${nonTurfCount} non-turf`;
+  if (staleCount) status += ` · ${staleCount} cached/not found`;
+  if (newCount > 0) status += ` · ${newCount} new`;
+  _luciusSetStatus(status);
+
+  if (btn) btn.disabled = false;
+}
+
+// ══════════════════════════════════════════════════════════════
 
 // Populate project dropdown when import tab opens
 function _populateImportProjectSelect() {
