@@ -165,6 +165,54 @@
       flex-wrap: wrap;
       flex-shrink: 0;
     }
+    .lucius-divider {
+      width: 1px; height: 24px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    .lucius-setting {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.72rem;
+    }
+    .lucius-setting label {
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+    }
+    #lucius-addr-input {
+      width: 210px;
+      padding: 0.3rem 0.5rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.75rem;
+    }
+    #lucius-addr-input:focus { outline: none; border-color: var(--green); }
+    #lucius-radius-input {
+      width: 52px;
+      padding: 0.3rem 0.4rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.75rem;
+      text-align: center;
+    }
+    #lucius-radius-input:focus { outline: none; border-color: var(--green); }
+    .lucius-set-btn {
+      padding: 0.28rem 0.6rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.72rem;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .lucius-set-btn:hover { border-color: var(--green); color: var(--green); }
     #lucius-run-btn {
       padding: 0.45rem 1.2rem;
       background: var(--green);
@@ -2338,9 +2386,31 @@
     <div id="lucius-root">
       <div id="lucius-toolbar">
         <button id="lucius-run-btn" onclick="runLucius()">&#9654; Run Lucius</button>
-        <span id="lucius-status">Click Run Lucius to scan for fields in the area.</span>
+
+        <div class="lucius-divider"></div>
+
+        <div class="lucius-setting">
+          <label>Location</label>
+          <input id="lucius-addr-input" type="text" placeholder="Address, city, or lat,lng…"
+            onkeydown="if(event.key==='Enter') luciusGeocode()" />
+          <button class="lucius-set-btn" onclick="luciusGeocode()">Set</button>
+        </div>
+
+        <div class="lucius-divider"></div>
+
+        <div class="lucius-setting">
+          <label>Radius</label>
+          <input id="lucius-radius-input" type="number" min="1" max="200" step="1" value="10" />
+          <span style="color:var(--muted);font-size:0.72rem">mi</span>
+          <button class="lucius-set-btn" onclick="luciusApplyRadius()">Apply</button>
+        </div>
+
+        <span id="lucius-status" style="color:var(--muted);font-size:0.75rem">
+          Set a location and click Run Lucius.
+        </span>
+
         <div id="lucius-legend">
-          <span><span class="lucius-legend-dot" style="background:#22c55e"></span>Turf field</span>
+          <span><span class="lucius-legend-dot" style="background:#22c55e"></span>Turf</span>
           <span><span class="lucius-legend-dot" style="background:#ef4444"></span>Non-turf / unknown</span>
           <span><span class="lucius-legend-dot" style="background:#a78bfa"></span>Cached (not in latest scan)</span>
         </div>
@@ -18257,18 +18327,40 @@ function _ppRenderMultiCode(proj, agg, MONTHS, NW_ICONS) {
 // LUCIUS — Sports Field Map Scanner
 // ══════════════════════════════════════════════════════════════
 
-// ── Configuration ────────────────────────────────────────────
-// Change LUCIUS_CENTER to your preferred starting coordinates.
-// Change LUCIUS_RADIUS_MILES to adjust the scan radius.
-const LUCIUS_CENTER       = { lat: 36.1699, lng: -115.1398 }; // Las Vegas, NV — update as needed
-const LUCIUS_RADIUS_MILES = 10;
-const LUCIUS_RADIUS_M     = LUCIUS_RADIUS_MILES * 1609.34;
-const LUCIUS_CACHE_KEY    = 'fct_lucius_fields';
+const LUCIUS_CACHE_KEY  = 'fct_lucius_fields';
+const LUCIUS_CONFIG_KEY = 'fct_lucius_config';
+
+// ── Runtime config (loaded from store; these are fallback defaults) ──
+let _luciusConfig = { lat: 36.1699, lng: -115.1398, radiusMiles: 10 };
 
 // ── State ─────────────────────────────────────────────────────
-let _luciusMap        = null;   // Leaflet map instance
-let _luciusMarkers    = [];     // active Leaflet markers
-let _luciusInitDone   = false;  // map initialised at least once
+let _luciusMap          = null;
+let _luciusMarkers      = [];
+let _luciusRadiusCircle = null;
+let _luciusInitDone     = false;
+
+// ── Config load / save ────────────────────────────────────────
+async function _luciusLoadConfig() {
+  try {
+    const saved = await apiGet(LUCIUS_CONFIG_KEY);
+    if (saved && saved.lat && saved.lng) {
+      _luciusConfig = { ..._luciusConfig, ...saved };
+    }
+  } catch { /* use defaults */ }
+}
+
+async function _luciusSaveConfig() {
+  try { await apiPut(LUCIUS_CONFIG_KEY, _luciusConfig); } catch { /* non-fatal */ }
+}
+
+function _luciusPopulateInputs() {
+  const addrEl   = document.getElementById('lucius-addr-input');
+  const radiusEl = document.getElementById('lucius-radius-input');
+  if (addrEl && !addrEl.value) {
+    addrEl.value = `${_luciusConfig.lat.toFixed(5)}, ${_luciusConfig.lng.toFixed(5)}`;
+  }
+  if (radiusEl) radiusEl.value = _luciusConfig.radiusMiles;
+}
 
 // ── Turf surface detection ────────────────────────────────────
 function _luciusIsTurf(surface) {
@@ -18294,9 +18386,9 @@ async function _luciusSaveCache(fields) {
 
 // ── Overpass query builder ────────────────────────────────────
 function _luciusBuildQuery() {
-  const r   = LUCIUS_RADIUS_M.toFixed(0);
-  const lat = LUCIUS_CENTER.lat;
-  const lng = LUCIUS_CENTER.lng;
+  const r   = ((_luciusConfig.radiusMiles || 10) * 1609.34).toFixed(0);
+  const lat = _luciusConfig.lat;
+  const lng = _luciusConfig.lng;
   return `[out:json][timeout:30];
 (
   node["leisure"="pitch"](around:${r},${lat},${lng});
@@ -18312,6 +18404,78 @@ function _luciusSetStatus(msg) {
   if (el) el.textContent = msg;
 }
 
+// ── Radius circle helper ──────────────────────────────────────
+function _luciusUpdateCircle() {
+  if (!_luciusMap) return;
+  const center = [_luciusConfig.lat, _luciusConfig.lng];
+  const radius = (_luciusConfig.radiusMiles || 10) * 1609.34;
+  if (_luciusRadiusCircle) {
+    _luciusRadiusCircle.setLatLng(center);
+    _luciusRadiusCircle.setRadius(radius);
+  } else {
+    _luciusRadiusCircle = L.circle(center, {
+      radius,
+      color: '#60a5fa', weight: 1.5, opacity: 0.5,
+      fillColor: '#60a5fa', fillOpacity: 0.04,
+    }).addTo(_luciusMap);
+  }
+}
+
+// ── Geocode address → update center ──────────────────────────
+async function luciusGeocode() {
+  const input = document.getElementById('lucius-addr-input');
+  if (!input) return;
+  const raw = input.value.trim();
+  if (!raw) return;
+
+  // Check if user typed raw "lat, lng" coordinates
+  const coordMatch = raw.match(/^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$/);
+  if (coordMatch) {
+    const lat = parseFloat(coordMatch[1]);
+    const lng = parseFloat(coordMatch[2]);
+    if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+      _luciusConfig.lat = lat;
+      _luciusConfig.lng = lng;
+      await _luciusSaveConfig();
+      _luciusMap.flyTo([lat, lng], 12, { duration: 1 });
+      _luciusUpdateCircle();
+      _luciusSetStatus(`Center set to ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+      return;
+    }
+  }
+
+  // Otherwise geocode via Nominatim (free, no key)
+  _luciusSetStatus('Geocoding address…');
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(raw)}`;
+    const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    const hits = await res.json();
+    if (!hits.length) { _luciusSetStatus('Address not found — try a different search.'); return; }
+    const { lat, lon, display_name } = hits[0];
+    _luciusConfig.lat = parseFloat(lat);
+    _luciusConfig.lng = parseFloat(lon);
+    input.value       = display_name;
+    await _luciusSaveConfig();
+    _luciusMap.flyTo([_luciusConfig.lat, _luciusConfig.lng], 12, { duration: 1 });
+    _luciusUpdateCircle();
+    _luciusSetStatus(`Center set to: ${display_name}`);
+  } catch (err) {
+    _luciusSetStatus(`Geocode error: ${err.message}`);
+  }
+}
+
+// ── Apply new radius ──────────────────────────────────────────
+async function luciusApplyRadius() {
+  const input = document.getElementById('lucius-radius-input');
+  if (!input) return;
+  const val = parseFloat(input.value);
+  if (!val || val < 1) { _luciusSetStatus('Enter a valid radius (minimum 1 mi).'); return; }
+  _luciusConfig.radiusMiles = val;
+  await _luciusSaveConfig();
+  _luciusUpdateCircle();
+  _luciusSetStatus(`Radius set to ${val} mi. Click Run Lucius to scan.`);
+}
+
 // ── Pin rendering ─────────────────────────────────────────────
 function _luciusColorIcon(color) {
   const svg = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 36">
@@ -18320,16 +18484,16 @@ function _luciusColorIcon(color) {
     <circle cx="12" cy="12" r="4" fill="#fff" opacity="0.85"/>
   </svg>`);
   return L.icon({
-    iconUrl: `data:image/svg+xml,${svg}`,
+    iconUrl:    `data:image/svg+xml,${svg}`,
     iconSize:   [22, 33],
     iconAnchor: [11, 33],
     popupAnchor:[0, -34],
   });
 }
 
-const _LUCIUS_ICON_TURF    = () => _luciusColorIcon('#22c55e'); // green  — turf
-const _LUCIUS_ICON_NONTURF = () => _luciusColorIcon('#ef4444'); // red    — non-turf / unknown
-const _LUCIUS_ICON_STALE   = () => _luciusColorIcon('#a78bfa'); // purple — cached, not in latest scan
+const _LUCIUS_ICON_TURF    = () => _luciusColorIcon('#22c55e');
+const _LUCIUS_ICON_NONTURF = () => _luciusColorIcon('#ef4444');
+const _LUCIUS_ICON_STALE   = () => _luciusColorIcon('#a78bfa');
 
 function _luciusClearPins() {
   _luciusMarkers.forEach(m => m.remove());
@@ -18347,7 +18511,7 @@ function _luciusDropPins(fields, staleIds) {
     const sport    = f.sport ? ` · ${f.sport}` : '';
     const surface  = f.surface ? `<br><span style="color:#888;font-size:11px">surface: ${f.surface}</span>` : '';
     const staleTag = isStale ? `<br><em style="color:#a78bfa;font-size:11px">cached — not in latest scan</em>` : '';
-    const popup    = `<strong>${f.name}</strong>${sport}${surface}${staleTag}`;
+    const popup    = `<strong>${esc(f.name)}</strong>${esc(sport)}${surface}${staleTag}`;
     const marker   = L.marker([f.lat, f.lng], { icon }).bindPopup(popup);
     marker.addTo(_luciusMap);
     _luciusMarkers.push(marker);
@@ -18357,65 +18521,48 @@ function _luciusDropPins(fields, staleIds) {
 // ── Map initialisation ────────────────────────────────────────
 function _luciusInitMap() {
   if (_luciusMap) {
-    // Map already exists; force a resize in case panel was hidden on first render
     setTimeout(() => _luciusMap.invalidateSize(), 50);
     return;
   }
-  _luciusMap = L.map('lucius-map').setView([LUCIUS_CENTER.lat, LUCIUS_CENTER.lng], 12);
+  _luciusMap = L.map('lucius-map').setView([_luciusConfig.lat, _luciusConfig.lng], 12);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     maxZoom: 19,
   }).addTo(_luciusMap);
-
-  // Draw the scan-radius circle so the user can see coverage
-  L.circle([LUCIUS_CENTER.lat, LUCIUS_CENTER.lng], {
-    radius:      LUCIUS_RADIUS_M,
-    color:       '#60a5fa',
-    weight:      1.5,
-    opacity:     0.5,
-    fillColor:   '#60a5fa',
-    fillOpacity: 0.04,
-  }).addTo(_luciusMap);
+  _luciusUpdateCircle();
 }
 
 // ── Tab entry point ───────────────────────────────────────────
 async function initLuciusTab() {
-  // Initialise map on first open
+  // Load persisted config first so map opens at the right location
+  await _luciusLoadConfig();
+  _luciusPopulateInputs();
   _luciusInitMap();
 
-  if (_luciusInitDone) return; // already loaded cached pins once this session
+  if (_luciusInitDone) return;
   _luciusInitDone = true;
 
-  // Show any previously cached fields right away (no network wait)
   const cached = await _luciusLoadCache();
   if (cached.length) {
     _luciusDropPins(cached, null);
     _luciusSetStatus(
-      `Showing ${cached.length} cached field${cached.length !== 1 ? 's' : ''}. ` +
-      `Click Run Lucius to refresh.`
+      `Showing ${cached.length} cached field${cached.length !== 1 ? 's' : ''}. Click Run Lucius to refresh.`
     );
   }
 }
 
-// ── Main scan function (triggered by button) ──────────────────
+// ── Main scan function ────────────────────────────────────────
 async function runLucius() {
   const btn = document.getElementById('lucius-run-btn');
   if (btn) btn.disabled = true;
   _luciusSetStatus('Querying Overpass API…');
-
-  // Ensure map is ready
   _luciusInitMap();
 
-  // 1. Load cache so we can show it and merge into it
   const cached   = await _luciusLoadCache();
   const cacheMap = new Map(cached.map(f => [f.id, f]));
 
-  // Show cached pins immediately while the network request is in flight
-  if (cached.length) {
-    _luciusDropPins(cached, null);
-  }
+  if (cached.length) _luciusDropPins(cached, null);
 
-  // 2. Fetch from Overpass
   let elements = [];
   try {
     const res = await fetch('https://overpass-api.de/api/interpreter', {
@@ -18432,9 +18579,8 @@ async function runLucius() {
     return;
   }
 
-  // 3. Process Overpass results and merge with cache
-  const now        = new Date().toISOString();
-  const freshIds   = new Set();
+  const now      = new Date().toISOString();
+  const freshIds = new Set();
 
   for (const el of elements) {
     const lat = el.lat ?? el.center?.lat;
@@ -18449,14 +18595,9 @@ async function runLucius() {
                     `Field (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
 
     freshIds.add(id);
-
     const existing = cacheMap.get(id);
     cacheMap.set(id, {
-      id,
-      name,
-      lat,
-      lng,
-      surface,
+      id, name, lat, lng, surface,
       sport:     tags.sport || '',
       isTurf,
       lastSeen:  now,
@@ -18464,27 +18605,17 @@ async function runLucius() {
     });
   }
 
-  // 4. Determine stale entries (cached but absent from latest scan)
-  const allFields = [...cacheMap.values()];
-  const staleIds  = new Set(
-    allFields.filter(f => !freshIds.has(f.id)).map(f => f.id)
-  );
-
-  // 5. Count breakdown
+  const allFields    = [...cacheMap.values()];
+  const staleIds     = new Set(allFields.filter(f => !freshIds.has(f.id)).map(f => f.id));
   const turfCount    = allFields.filter(f =>  f.isTurf && !staleIds.has(f.id)).length;
   const nonTurfCount = allFields.filter(f => !f.isTurf && !staleIds.has(f.id)).length;
   const staleCount   = staleIds.size;
-  const newCount     = freshIds.size - cached.filter(f => freshIds.has(f.id)).length;
+  const newCount     = [...freshIds].filter(id => !cached.find(f => f.id === id)).length;
 
-  // 6. Save merged cache
   await _luciusSaveCache(allFields);
-
-  // 7. Re-render pins with stale distinction
   _luciusDropPins(allFields, staleIds);
 
-  // 8. Update status line
-  let status = `${LUCIUS_RADIUS_MILES}mi scan complete — ` +
-               `${turfCount} turf · ${nonTurfCount} non-turf`;
+  let status = `${_luciusConfig.radiusMiles}mi scan — ${turfCount} turf · ${nonTurfCount} non-turf`;
   if (staleCount) status += ` · ${staleCount} cached/not found`;
   if (newCount > 0) status += ` · ${newCount} new`;
   _luciusSetStatus(status);
