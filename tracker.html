@@ -3167,7 +3167,8 @@ function crmSwitchTab(tab) {
     b.classList.toggle('active', b.dataset.crmTab === tab));
   document.querySelectorAll('.crm-sub-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'crm-panel-' + tab));
-  if (tab === 'people') renderCrmPeopleTab();
+  if (tab === 'people')    renderCrmPeopleTab();
+  if (tab === 'companies') renderCrmCompaniesTab();
 }
 
 document.querySelectorAll('.crm-sub-btn').forEach(btn =>
@@ -4771,6 +4772,94 @@ function renderCrmPeopleTab() {
           ${th('Title')}${th('Contact Type')}${th('Work Phone')}${th('Work Website')}
           ${th('Address')}${th('City')}${th('State')}${th('Zip')}
           ${th('LinkedIn')}${th('Description')}
+          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════════
+   CRM — Companies
+═══════════════════════════════════════════ */
+let crmCompanies = [];
+
+async function loadCrmCompanies() {
+  const saved = await apiGet('fct_crm_companies');
+  crmCompanies = Array.isArray(saved) ? saved : [];
+  if (document.getElementById('crm-panel-companies')?.classList.contains('active')) {
+    renderCrmCompaniesTab();
+  }
+}
+
+function saveCrmCompanies() { apiPut('fct_crm_companies', crmCompanies); }
+
+function addCrmCompany() {
+  crmCompanies.push({
+    id: uid(), tag: '', company_name: '', contact_type: '',
+    work_phone: '', email_domain: '', work_website: '',
+    address: '', city: '', state: '', zip: '',
+    field_type: '', field_size: ''
+  });
+  saveCrmCompanies();
+  renderCrmCompaniesTab();
+}
+
+function deleteCrmCompany(id) {
+  if (!confirm('Delete this company?')) return;
+  crmCompanies = crmCompanies.filter(c => c.id !== id);
+  saveCrmCompanies();
+  renderCrmCompaniesTab();
+}
+
+function renderCrmCompaniesTab() {
+  const root = document.getElementById('crm-companies-root');
+  if (!root) return;
+
+  const th = label =>
+    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+               text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
+
+  const td = (content, minW = '') =>
+    `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
+
+  const rows = crmCompanies.length
+    ? crmCompanies.map(c => `<tr>
+        ${td(_crmTagSel(c))}
+        ${td(_crmInp(c, 'company_name',  'Company Name'),  '150px')}
+        ${td(_crmInp(c, 'contact_type',  'Type'),          '110px')}
+        ${td(_crmInp(c, 'work_phone',    'Phone'),         '115px')}
+        ${td(_crmInp(c, 'email_domain',  'company.com'),   '130px')}
+        ${td(_crmLinkInp(c, 'work_website', 'https://'),   '145px')}
+        ${td(_crmInp(c, 'address',       'Address'),       '150px')}
+        ${td(_crmInp(c, 'city',          'City'),          '100px')}
+        ${td(_crmStateSel(c))}
+        ${td(_crmInp(c, 'zip',           'Zip'),            '62px')}
+        ${td(_crmInp(c, 'field_type',    'Field Type'),    '110px')}
+        ${td(_crmInp(c, 'field_size',    'Field Size'),    '100px')}
+        <td style="padding:0.25rem 0.4rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <button class="del-btn" data-crm-company-id="${c.id}">✕</button>
+        </td>
+      </tr>`).join('')
+    : `<tr><td colspan="13" style="padding:2.5rem;text-align:center;color:var(--muted)">
+         No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.
+       </td></tr>`;
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+      <span style="font-size:0.82rem;color:var(--muted)">
+        ${crmCompanies.length} compan${crmCompanies.length !== 1 ? 'ies' : 'y'}
+      </span>
+      <button class="btn btn-green" onclick="addCrmCompany()">+ Add Company</button>
+    </div>
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+        <thead><tr>
+          ${th('Tag')}${th('Company Name')}${th('Contact Type')}${th('Work Phone')}
+          ${th('Email Domain')}${th('Work Website')}${th('Address')}${th('City')}
+          ${th('State')}${th('Zip')}${th('Field Type')}${th('Field Size')}
           <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -7693,6 +7782,47 @@ document.getElementById('crm-people-root').addEventListener('change', e => {
 document.getElementById('crm-people-root').addEventListener('click', e => {
   const btn = e.target.closest('[data-crm-person-id]');
   if (btn) deleteCrmPerson(btn.dataset.crmPersonId);
+});
+
+/* ── CRM Companies events ── */
+document.getElementById('crm-companies-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const co = crmCompanies.find(c => c.id === id);
+  if (!co) return;
+  co[field] = el.value;
+
+  if (field === 'work_website') {
+    const val = el.value.trim();
+    const href = val ? (val.match(/^https?:\/\//) ? val : `https://${val}`) : '';
+    const icon = document.getElementById(`crm-lnk-${id}-work_website`);
+    if (icon) { icon.href = href; icon.title = val; icon.style.display = val ? '' : 'none'; }
+    el.style.color = val ? 'var(--blue)' : 'var(--muted)';
+    el.style.textDecoration = val ? 'underline' : 'none';
+  }
+  saveCrmCompanies();
+});
+
+document.getElementById('crm-companies-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const co = crmCompanies.find(c => c.id === id);
+  if (!co) return;
+  co[field] = el.value;
+
+  if (field === 'tag') {
+    const c = _CRM_TAG_COLORS[el.value];
+    el.style.background = c ? c.bg    : 'var(--surface2)';
+    el.style.color      = c ? c.color : 'var(--muted)';
+  }
+  saveCrmCompanies();
+});
+
+document.getElementById('crm-companies-root').addEventListener('click', e => {
+  const btn = e.target.closest('[data-crm-company-id]');
+  if (btn) deleteCrmCompany(btn.dataset.crmCompanyId);
 });
 
 /* ── Supplier Tab ── */
@@ -14597,6 +14727,7 @@ async function deleteCompanyUser(id) {
     loadTruckingEntries(),
     loadInventoryEntries(),
     loadCrmPeople(),
+    loadCrmCompanies(),
     loadScaleManualEntries(),
     loadSoeUnitOverrides(),
   ]);
