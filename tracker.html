@@ -117,6 +117,36 @@
     .tab-btn:hover { color: var(--text); }
     .tab-btn.active { color: var(--green); border-bottom-color: var(--green); }
 
+    /* ── CRM sub-tab bar ── */
+    .crm-sub-bar {
+      display: flex;
+      align-items: stretch;
+      padding: 0 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 90px;
+      z-index: 100;
+    }
+    .crm-sub-btn {
+      padding: 0.5rem 1.1rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      margin-bottom: -1px;
+      white-space: nowrap;
+    }
+    .crm-sub-btn:hover { color: var(--text); }
+    .crm-sub-btn.active { color: var(--green); border-bottom-color: var(--green); }
+    .crm-sub-panel { display: none; }
+    .crm-sub-panel.active { display: block; }
+
     /* ── Admin dropdown ── */
     .admin-dropdown-wrap {
       position: relative;
@@ -2221,7 +2251,29 @@
 
 <!-- ══════════════ CRM TAB ══════════════ -->
 <div class="tab-panel" id="tab-crm">
-  <div id="crm-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+
+  <!-- CRM sub-tab nav -->
+  <div class="crm-sub-bar">
+    <button class="crm-sub-btn active" data-crm-tab="dashboard">CRM Dashboard</button>
+    <button class="crm-sub-btn"        data-crm-tab="people">People</button>
+    <button class="crm-sub-btn"        data-crm-tab="companies">Companies</button>
+    <button class="crm-sub-btn"        data-crm-tab="opportunities">Opportunities</button>
+  </div>
+
+  <!-- CRM sub-panels -->
+  <div class="crm-sub-panel active" id="crm-panel-dashboard">
+    <div id="crm-dashboard-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-people">
+    <div id="crm-people-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-companies">
+    <div id="crm-companies-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-opportunities">
+    <div id="crm-opportunities-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+
 </div>
 
 <!-- ══════════════ MOBILE DAILY ENTRY TAB ══════════════ -->
@@ -3109,6 +3161,16 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 const _adminTabs = new Set(['supplier', 'users']);
+
+function crmSwitchTab(tab) {
+  document.querySelectorAll('.crm-sub-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.crmTab === tab));
+  document.querySelectorAll('.crm-sub-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'crm-panel-' + tab));
+}
+
+document.querySelectorAll('.crm-sub-btn').forEach(btn =>
+  btn.addEventListener('click', () => crmSwitchTab(btn.dataset.crmTab)));
 
 function analyticsSwitchTab(tab) {
   if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
