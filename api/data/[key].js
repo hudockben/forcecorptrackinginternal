@@ -9,6 +9,7 @@ function isAllowedKey(k) {
   return ALLOWED_KEYS.includes(k)
     || /^fct_project_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_trend_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_crm_[a-zA-Z0-9_-]+$/.test(k)
     || /^dust_[a-zA-Z0-9_-]+$/.test(k);
 }
 

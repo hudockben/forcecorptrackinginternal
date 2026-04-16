@@ -117,6 +117,36 @@
     .tab-btn:hover { color: var(--text); }
     .tab-btn.active { color: var(--green); border-bottom-color: var(--green); }
 
+    /* ── CRM sub-tab bar ── */
+    .crm-sub-bar {
+      display: flex;
+      align-items: stretch;
+      padding: 0 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 90px;
+      z-index: 100;
+    }
+    .crm-sub-btn {
+      padding: 0.5rem 1.1rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      margin-bottom: -1px;
+      white-space: nowrap;
+    }
+    .crm-sub-btn:hover { color: var(--text); }
+    .crm-sub-btn.active { color: var(--green); border-bottom-color: var(--green); }
+    .crm-sub-panel { display: none; }
+    .crm-sub-panel.active { display: block; }
+
     /* ── Admin dropdown ── */
     .admin-dropdown-wrap {
       position: relative;
@@ -1990,6 +2020,7 @@
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
   <button class="tab-btn"        data-tab="inventory">Infill Inventory</button>
+  <button class="tab-btn"        data-tab="crm">CRM</button>
   <div class="analytics-dropdown-wrap">
     <button class="tab-btn" id="analytics-tab-btn">&#128200; Analytics ▾</button>
     <div class="analytics-dropdown-menu">
@@ -2216,6 +2247,33 @@
 <!-- ══════════════ INVENTORY TAB ══════════════ -->
 <div class="tab-panel" id="tab-inventory">
   <div id="inventory-root"></div>
+</div>
+
+<!-- ══════════════ CRM TAB ══════════════ -->
+<div class="tab-panel" id="tab-crm">
+
+  <!-- CRM sub-tab nav -->
+  <div class="crm-sub-bar">
+    <button class="crm-sub-btn active" data-crm-tab="dashboard">CRM Dashboard</button>
+    <button class="crm-sub-btn"        data-crm-tab="people">People</button>
+    <button class="crm-sub-btn"        data-crm-tab="companies">Companies</button>
+    <button class="crm-sub-btn"        data-crm-tab="opportunities">Opportunities</button>
+  </div>
+
+  <!-- CRM sub-panels -->
+  <div class="crm-sub-panel active" id="crm-panel-dashboard">
+    <div id="crm-dashboard-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-people">
+    <div id="crm-people-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-companies">
+    <div id="crm-companies-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-opportunities">
+    <div id="crm-opportunities-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+
 </div>
 
 <!-- ══════════════ MOBILE DAILY ENTRY TAB ══════════════ -->
@@ -3103,6 +3161,19 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 const _adminTabs = new Set(['supplier', 'users']);
+
+function crmSwitchTab(tab) {
+  document.querySelectorAll('.crm-sub-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.crmTab === tab));
+  document.querySelectorAll('.crm-sub-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'crm-panel-' + tab));
+  if (tab === 'people')        renderCrmPeopleTab();
+  if (tab === 'companies')     renderCrmCompaniesTab();
+  if (tab === 'opportunities') renderCrmOpportunitiesTab();
+}
+
+document.querySelectorAll('.crm-sub-btn').forEach(btn =>
+  btn.addEventListener('click', () => crmSwitchTab(btn.dataset.crmTab)));
 
 function analyticsSwitchTab(tab) {
   if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
@@ -4557,6 +4628,394 @@ function nextTRNumber() {
 let inventoryEntries = [];
 let _invYear = new Date().getFullYear();
 let _invBreakdownOpen = false;
+
+/* ═══════════════════════════════════════════
+   CRM — People
+═══════════════════════════════════════════ */
+let crmPeople = [];
+
+async function loadCrmPeople() {
+  const saved = await apiGet('fct_crm_people');
+  crmPeople = Array.isArray(saved) ? saved : [];
+  if (document.getElementById('crm-panel-people')?.classList.contains('active')) {
+    renderCrmPeopleTab();
+  }
+}
+
+function saveCrmPeople() { apiPut('fct_crm_people', crmPeople); }
+
+function addCrmPerson() {
+  crmPeople.push({
+    id: uid(), tag: '', name: '', company: '',
+    work_email: '', title: '', contact_type: '',
+    work_phone: '', work_website: '',
+    address: '', city: '', state: '', zip: '',
+    linkedin: '', description: ''
+  });
+  saveCrmPeople();
+  renderCrmPeopleTab();
+}
+
+function deleteCrmPerson(id) {
+  if (!confirm('Delete this contact?')) return;
+  crmPeople = crmPeople.filter(p => p.id !== id);
+  saveCrmPeople();
+  renderCrmPeopleTab();
+}
+
+const _CRM_TAG_COLORS = {
+  Hot:      { bg: '#991b1b', color: '#fff' },
+  Followup: { bg: '#c2410c', color: '#fff' },
+  Soon:     { bg: '#92400e', color: '#fff' },
+  Upsale:   { bg: '#166534', color: '#fff' },
+  Cold:     { bg: '#1e3a8a', color: '#fff' },
+  Warm:     { bg: '#b45309', color: '#fff' },
+};
+const _CRM_TAG_OPTS    = ['', 'Hot', 'Followup', 'Soon', 'Upsale', 'Cold', 'Warm'];
+const _CRM_US_STATES   = [
+  '','AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN',
+  'IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV',
+  'NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN',
+  'TX','UT','VT','VA','WA','WV','WI','WY'
+];
+
+function _crmTagSel(p) {
+  const c = _CRM_TAG_COLORS[p.tag];
+  const bg = c ? c.bg : 'var(--surface2)', fg = c ? c.color : 'var(--muted)';
+  const opts = _CRM_TAG_OPTS.map(t =>
+    `<option value="${t}" ${p.tag === t ? 'selected' : ''}>${t || '— tag —'}</option>`).join('');
+  return `<select data-crm-id="${p.id}" data-crm-field="tag"
+    style="background:${bg};color:${fg};border:none;border-radius:12px;padding:0.2rem 0.55rem;
+           font-size:0.72rem;font-weight:600;cursor:pointer;outline:none;min-width:90px">${opts}</select>`;
+}
+
+function _crmStateSel(p) {
+  const opts = _CRM_US_STATES.map(s =>
+    `<option value="${s}" ${p.state === s ? 'selected' : ''}>${s || '—'}</option>`).join('');
+  return `<select data-crm-id="${p.id}" data-crm-field="state"
+    style="background:var(--surface2);border:1px solid var(--border);border-radius:3px;
+           color:var(--text);font-size:0.8rem;outline:none;padding:0.1rem 0.2rem;width:74px">${opts}</select>`;
+}
+
+function _crmInp(p, field, ph = '') {
+  return `<input type="text" value="${esc(p[field] || '')}"
+    data-crm-id="${p.id}" data-crm-field="${field}" placeholder="${ph}"
+    style="width:100%;background:transparent;border:none;color:var(--text);
+           font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">`;
+}
+
+function _crmLinkInp(p, field, ph = '', isEmail = false) {
+  const val = p[field] || '';
+  const href = val
+    ? (isEmail ? `mailto:${val}` : (val.match(/^https?:\/\//) ? val : `https://${val}`))
+    : '';
+  return `<div style="display:flex;align-items:center;gap:3px;min-width:0">
+    <input type="text" value="${esc(val)}"
+      data-crm-id="${p.id}" data-crm-field="${field}" placeholder="${ph}"
+      style="flex:1;background:transparent;border:none;
+             color:${val ? 'var(--blue)' : 'var(--muted)'};
+             text-decoration:${val ? 'underline' : 'none'};
+             font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">
+    <a id="crm-lnk-${p.id}-${field}" href="${esc(href)}" target="_blank" rel="noopener"
+      style="color:var(--blue);font-size:0.8rem;flex-shrink:0;${val ? '' : 'display:none'}"
+      title="${esc(val)}">↗</a>
+  </div>`;
+}
+
+function renderCrmPeopleTab() {
+  const root = document.getElementById('crm-people-root');
+  if (!root) return;
+
+  const th = label =>
+    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+               text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
+
+  const td = (content, minW = '') =>
+    `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
+
+  const rows = crmPeople.length
+    ? crmPeople.map(p => `<tr>
+        ${td(_crmTagSel(p))}
+        ${td(_crmInp(p, 'name',         'Name'),        '130px')}
+        ${td(_crmInp(p, 'company',      'Company'),     '120px')}
+        ${td(_crmLinkInp(p, 'work_email',   'email@…', true), '155px')}
+        ${td(_crmInp(p, 'title',        'Title'),       '100px')}
+        ${td(_crmInp(p, 'contact_type', 'Type'),        '100px')}
+        ${td(_crmInp(p, 'work_phone',   'Phone'),       '110px')}
+        ${td(_crmLinkInp(p, 'work_website', 'https://'),       '140px')}
+        ${td(_crmInp(p, 'address',      'Address'),     '150px')}
+        ${td(_crmInp(p, 'city',         'City'),        '100px')}
+        ${td(_crmStateSel(p))}
+        ${td(_crmInp(p, 'zip',          'Zip'),          '62px')}
+        ${td(_crmLinkInp(p, 'linkedin',     'LinkedIn URL'),    '140px')}
+        ${td(_crmInp(p, 'description',  'Description'), '200px')}
+        <td style="padding:0.25rem 0.4rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <button class="del-btn" data-crm-person-id="${p.id}">✕</button>
+        </td>
+      </tr>`).join('')
+    : `<tr><td colspan="15" style="padding:2.5rem;text-align:center;color:var(--muted)">
+         No contacts yet — click <strong style="color:var(--text)">+ Add Person</strong> to start.
+       </td></tr>`;
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+      <span style="font-size:0.82rem;color:var(--muted)">
+        ${crmPeople.length} contact${crmPeople.length !== 1 ? 's' : ''}
+      </span>
+      <button class="btn btn-green" onclick="addCrmPerson()">+ Add Person</button>
+    </div>
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+        <thead><tr>
+          ${th('Tag')}${th('Name')}${th('Company')}${th('Work Email')}
+          ${th('Title')}${th('Contact Type')}${th('Work Phone')}${th('Work Website')}
+          ${th('Address')}${th('City')}${th('State')}${th('Zip')}
+          ${th('LinkedIn')}${th('Description')}
+          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════════
+   CRM — Companies
+═══════════════════════════════════════════ */
+let crmCompanies = [];
+
+async function loadCrmCompanies() {
+  const saved = await apiGet('fct_crm_companies');
+  crmCompanies = Array.isArray(saved) ? saved : [];
+  if (document.getElementById('crm-panel-companies')?.classList.contains('active')) {
+    renderCrmCompaniesTab();
+  }
+}
+
+function saveCrmCompanies() { apiPut('fct_crm_companies', crmCompanies); }
+
+function addCrmCompany() {
+  crmCompanies.push({
+    id: uid(), tag: '', company_name: '', contact_type: '',
+    work_phone: '', email_domain: '', work_website: '',
+    address: '', city: '', state: '', zip: '',
+    field_type: '', field_size: ''
+  });
+  saveCrmCompanies();
+  renderCrmCompaniesTab();
+}
+
+function deleteCrmCompany(id) {
+  if (!confirm('Delete this company?')) return;
+  crmCompanies = crmCompanies.filter(c => c.id !== id);
+  saveCrmCompanies();
+  renderCrmCompaniesTab();
+}
+
+function renderCrmCompaniesTab() {
+  const root = document.getElementById('crm-companies-root');
+  if (!root) return;
+
+  const th = label =>
+    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+               text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
+
+  const td = (content, minW = '') =>
+    `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
+
+  const rows = crmCompanies.length
+    ? crmCompanies.map(c => `<tr>
+        ${td(_crmTagSel(c))}
+        ${td(_crmInp(c, 'company_name',  'Company Name'),  '150px')}
+        ${td(_crmInp(c, 'contact_type',  'Type'),          '110px')}
+        ${td(_crmInp(c, 'work_phone',    'Phone'),         '115px')}
+        ${td(_crmInp(c, 'email_domain',  'company.com'),   '130px')}
+        ${td(_crmLinkInp(c, 'work_website', 'https://'),   '145px')}
+        ${td(_crmInp(c, 'address',       'Address'),       '150px')}
+        ${td(_crmInp(c, 'city',          'City'),          '100px')}
+        ${td(_crmStateSel(c))}
+        ${td(_crmInp(c, 'zip',           'Zip'),            '62px')}
+        ${td(_crmInp(c, 'field_type',    'Field Type'),    '110px')}
+        ${td(_crmInp(c, 'field_size',    'Field Size'),    '100px')}
+        <td style="padding:0.25rem 0.4rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <button class="del-btn" data-crm-company-id="${c.id}">✕</button>
+        </td>
+      </tr>`).join('')
+    : `<tr><td colspan="13" style="padding:2.5rem;text-align:center;color:var(--muted)">
+         No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.
+       </td></tr>`;
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+      <span style="font-size:0.82rem;color:var(--muted)">
+        ${crmCompanies.length} compan${crmCompanies.length !== 1 ? 'ies' : 'y'}
+      </span>
+      <button class="btn btn-green" onclick="addCrmCompany()">+ Add Company</button>
+    </div>
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+        <thead><tr>
+          ${th('Tag')}${th('Company Name')}${th('Contact Type')}${th('Work Phone')}
+          ${th('Email Domain')}${th('Work Website')}${th('Address')}${th('City')}
+          ${th('State')}${th('Zip')}${th('Field Type')}${th('Field Size')}
+          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════════
+   CRM — Opportunities
+═══════════════════════════════════════════ */
+let crmOpportunities = [];
+
+async function loadCrmOpportunities() {
+  const saved = await apiGet('fct_crm_opportunities');
+  crmOpportunities = Array.isArray(saved) ? saved : [];
+  if (document.getElementById('crm-panel-opportunities')?.classList.contains('active')) {
+    renderCrmOpportunitiesTab();
+  }
+}
+
+function saveCrmOpportunities() { apiPut('fct_crm_opportunities', crmOpportunities); }
+
+function addCrmOpportunity() {
+  crmOpportunities.push({
+    id: uid(), tag: '', name: '', company: '',
+    stage: '', value: '', close_date: '',
+    win_pct: '', status: '', loss_reason: '',
+    priority: '', source: '', description: ''
+  });
+  saveCrmOpportunities();
+  renderCrmOpportunitiesTab();
+}
+
+function deleteCrmOpportunity(id) {
+  if (!confirm('Delete this opportunity?')) return;
+  crmOpportunities = crmOpportunities.filter(o => o.id !== id);
+  saveCrmOpportunities();
+  renderCrmOpportunitiesTab();
+}
+
+const _CRM_STAGES   = ['', 'Prospecting', 'Qualification', 'Proposal', 'Negotiation', 'Closed Won', 'Closed Lost'];
+const _CRM_STATUSES = ['', 'Open', 'Won', 'Lost', 'On Hold'];
+const _CRM_PRIORITIES = ['', 'Low', 'Medium', 'High', 'Critical'];
+
+const _CRM_STAGE_COLORS = {
+  'Prospecting':  { bg: '#1e3a8a', color: '#fff' },
+  'Qualification':{ bg: '#1e40af', color: '#fff' },
+  'Proposal':     { bg: '#92400e', color: '#fff' },
+  'Negotiation':  { bg: '#b45309', color: '#fff' },
+  'Closed Won':   { bg: '#166534', color: '#fff' },
+  'Closed Lost':  { bg: '#7f1d1d', color: '#fff' },
+};
+
+const _CRM_STATUS_COLORS = {
+  'Open':    { bg: '#1e3a8a', color: '#fff' },
+  'Won':     { bg: '#166534', color: '#fff' },
+  'Lost':    { bg: '#991b1b', color: '#fff' },
+  'On Hold': { bg: '#78350f', color: '#fff' },
+};
+
+const _CRM_PRIORITY_COLORS = {
+  'Low':      { bg: '#1e293b', color: '#94a3b8' },
+  'Medium':   { bg: '#78350f', color: '#fff' },
+  'High':     { bg: '#92400e', color: '#fff' },
+  'Critical': { bg: '#7f1d1d', color: '#fff' },
+};
+
+function _crmPillSel(o, field, opts, colorMap, minW = '110px') {
+  const c = colorMap[o[field]];
+  const bg = c ? c.bg : 'var(--surface2)', fg = c ? c.color : 'var(--muted)';
+  const optHTML = opts.map(v =>
+    `<option value="${v}" ${o[field] === v ? 'selected' : ''}>${v || '—'}</option>`).join('');
+  return `<select data-crm-id="${o.id}" data-crm-field="${field}"
+    data-crm-colormap="${field}"
+    style="background:${bg};color:${fg};border:none;border-radius:12px;
+           padding:0.2rem 0.55rem;font-size:0.72rem;font-weight:600;
+           cursor:pointer;outline:none;min-width:${minW}">${optHTML}</select>`;
+}
+
+function renderCrmOpportunitiesTab() {
+  const root = document.getElementById('crm-opportunities-root');
+  if (!root) return;
+
+  const th = label =>
+    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+               text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
+
+  const td = (content, minW = '') =>
+    `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
+
+  const numInp = (o, field, ph = '') =>
+    `<input type="number" value="${esc(o[field] || '')}"
+      data-crm-id="${o.id}" data-crm-field="${field}" placeholder="${ph}" step="any" min="0"
+      style="width:100%;background:transparent;border:none;color:var(--text);
+             font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">`;
+
+  const dateInp = (o, field) =>
+    `<input type="date" value="${esc(o[field] || '')}"
+      data-crm-id="${o.id}" data-crm-field="${field}"
+      style="background:transparent;border:none;color:var(--text);
+             font-size:0.8rem;outline:none;padding:0.15rem 0;cursor:pointer">`;
+
+  const rows = crmOpportunities.length
+    ? crmOpportunities.map(o => `<tr>
+        ${td(_crmTagSel(o))}
+        ${td(_crmInp(o, 'name',         'Opportunity name'),  '150px')}
+        ${td(_crmInp(o, 'company',      'Company'),           '120px')}
+        ${td(_crmPillSel(o, 'stage',    _CRM_STAGES,    _CRM_STAGE_COLORS,    '120px'))}
+        <td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;min-width:100px">
+          <div style="display:flex;align-items:center;gap:2px">
+            <span style="color:var(--muted);font-size:0.8rem">$</span>
+            ${numInp(o, 'value', '0.00')}
+          </div>
+        </td>
+        ${td(dateInp(o, 'close_date'),  '120px')}
+        <td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;min-width:75px">
+          <div style="display:flex;align-items:center;gap:2px">
+            ${numInp(o, 'win_pct', '0')}
+            <span style="color:var(--muted);font-size:0.8rem">%</span>
+          </div>
+        </td>
+        ${td(_crmPillSel(o, 'status',   _CRM_STATUSES,  _CRM_STATUS_COLORS,   '90px'))}
+        ${td(_crmInp(o, 'loss_reason',  'Reason…'),           '130px')}
+        ${td(_crmPillSel(o, 'priority', _CRM_PRIORITIES, _CRM_PRIORITY_COLORS, '95px'))}
+        ${td(_crmInp(o, 'source',       'Source'),            '110px')}
+        ${td(_crmInp(o, 'description',  'Description'),       '200px')}
+        <td style="padding:0.25rem 0.4rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <button class="del-btn" data-crm-opp-id="${o.id}">✕</button>
+        </td>
+      </tr>`).join('')
+    : `<tr><td colspan="14" style="padding:2.5rem;text-align:center;color:var(--muted)">
+         No opportunities yet — click <strong style="color:var(--text)">+ Add Opportunity</strong> to start.
+       </td></tr>`;
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+      <span style="font-size:0.82rem;color:var(--muted)">
+        ${crmOpportunities.length} opportunit${crmOpportunities.length !== 1 ? 'ies' : 'y'}
+      </span>
+      <button class="btn btn-green" onclick="addCrmOpportunity()">+ Add Opportunity</button>
+    </div>
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+        <thead><tr>
+          ${th('Tag')}${th('Name')}${th('Company')}${th('Stage')}${th('Value')}
+          ${th('Close Date')}${th('Win %')}${th('Status')}${th('Loss Reason')}
+          ${th('Priority')}${th('Source')}${th('Description')}
+          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
 
 // ── Scale of Economy — manual job entries ────────────────────────────────────
 // Summarized jobs that feed Scale of Economy analysis without daily tracking rows.
@@ -7427,6 +7886,133 @@ document.getElementById('inventory-root').addEventListener('change', e => {
     _syncINVRowField(entry, field);
   }
   saveInventoryEntries();
+});
+
+/* ── CRM People events ── */
+document.getElementById('crm-people-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const person = crmPeople.find(p => p.id === id);
+  if (!person) return;
+  person[field] = el.value;
+
+  // Live-update ↗ icon for link fields
+  const LINK_FIELDS = new Set(['work_email', 'work_website', 'linkedin']);
+  if (LINK_FIELDS.has(field)) {
+    const val = el.value.trim();
+    const href = val
+      ? (field === 'work_email' ? `mailto:${val}` : (val.match(/^https?:\/\//) ? val : `https://${val}`))
+      : '';
+    const icon = document.getElementById(`crm-lnk-${id}-${field}`);
+    if (icon) { icon.href = href; icon.title = val; icon.style.display = val ? '' : 'none'; }
+    el.style.color = val ? 'var(--blue)' : 'var(--muted)';
+    el.style.textDecoration = val ? 'underline' : 'none';
+  }
+  saveCrmPeople();
+});
+
+document.getElementById('crm-people-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const person = crmPeople.find(p => p.id === id);
+  if (!person) return;
+  person[field] = el.value;
+
+  // Live-update tag pill color
+  if (field === 'tag') {
+    const c = _CRM_TAG_COLORS[el.value];
+    el.style.background = c ? c.bg    : 'var(--surface2)';
+    el.style.color      = c ? c.color : 'var(--muted)';
+  }
+  saveCrmPeople();
+});
+
+document.getElementById('crm-people-root').addEventListener('click', e => {
+  const btn = e.target.closest('[data-crm-person-id]');
+  if (btn) deleteCrmPerson(btn.dataset.crmPersonId);
+});
+
+/* ── CRM Companies events ── */
+document.getElementById('crm-companies-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const co = crmCompanies.find(c => c.id === id);
+  if (!co) return;
+  co[field] = el.value;
+
+  if (field === 'work_website') {
+    const val = el.value.trim();
+    const href = val ? (val.match(/^https?:\/\//) ? val : `https://${val}`) : '';
+    const icon = document.getElementById(`crm-lnk-${id}-work_website`);
+    if (icon) { icon.href = href; icon.title = val; icon.style.display = val ? '' : 'none'; }
+    el.style.color = val ? 'var(--blue)' : 'var(--muted)';
+    el.style.textDecoration = val ? 'underline' : 'none';
+  }
+  saveCrmCompanies();
+});
+
+document.getElementById('crm-companies-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const co = crmCompanies.find(c => c.id === id);
+  if (!co) return;
+  co[field] = el.value;
+
+  if (field === 'tag') {
+    const c = _CRM_TAG_COLORS[el.value];
+    el.style.background = c ? c.bg    : 'var(--surface2)';
+    el.style.color      = c ? c.color : 'var(--muted)';
+  }
+  saveCrmCompanies();
+});
+
+document.getElementById('crm-companies-root').addEventListener('click', e => {
+  const btn = e.target.closest('[data-crm-company-id]');
+  if (btn) deleteCrmCompany(btn.dataset.crmCompanyId);
+});
+
+/* ── CRM Opportunities events ── */
+const _CRM_COLOR_MAPS = {
+  tag:      _CRM_TAG_COLORS,
+  stage:    _CRM_STAGE_COLORS,
+  status:   _CRM_STATUS_COLORS,
+  priority: _CRM_PRIORITY_COLORS,
+};
+
+document.getElementById('crm-opportunities-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const opp = crmOpportunities.find(o => o.id === id);
+  if (!opp) return;
+  opp[field] = el.value;
+  saveCrmOpportunities();
+});
+
+document.getElementById('crm-opportunities-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const opp = crmOpportunities.find(o => o.id === id);
+  if (!opp) return;
+  opp[field] = el.value;
+
+  const colorMap = _CRM_COLOR_MAPS[field];
+  if (colorMap) {
+    const c = colorMap[el.value];
+    el.style.background = c ? c.bg    : 'var(--surface2)';
+    el.style.color      = c ? c.color : 'var(--muted)';
+  }
+  saveCrmOpportunities();
+});
+
+document.getElementById('crm-opportunities-root').addEventListener('click', e => {
+  const btn = e.target.closest('[data-crm-opp-id]');
+  if (btn) deleteCrmOpportunity(btn.dataset.crmOppId);
 });
 
 /* ── Supplier Tab ── */
@@ -14330,6 +14916,9 @@ async function deleteCompanyUser(id) {
     loadPurchaseOrders(),
     loadTruckingEntries(),
     loadInventoryEntries(),
+    loadCrmPeople(),
+    loadCrmCompanies(),
+    loadCrmOpportunities(),
     loadScaleManualEntries(),
     loadSoeUnitOverrides(),
   ]);
