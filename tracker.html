@@ -3167,6 +3167,7 @@ function crmSwitchTab(tab) {
     b.classList.toggle('active', b.dataset.crmTab === tab));
   document.querySelectorAll('.crm-sub-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'crm-panel-' + tab));
+  if (tab === 'people') renderCrmPeopleTab();
 }
 
 document.querySelectorAll('.crm-sub-btn').forEach(btn =>
@@ -4625,6 +4626,157 @@ function nextTRNumber() {
 let inventoryEntries = [];
 let _invYear = new Date().getFullYear();
 let _invBreakdownOpen = false;
+
+/* ═══════════════════════════════════════════
+   CRM — People
+═══════════════════════════════════════════ */
+let crmPeople = [];
+
+async function loadCrmPeople() {
+  const saved = await apiGet('fct_crm_people');
+  crmPeople = Array.isArray(saved) ? saved : [];
+  if (document.getElementById('crm-panel-people')?.classList.contains('active')) {
+    renderCrmPeopleTab();
+  }
+}
+
+function saveCrmPeople() { apiPut('fct_crm_people', crmPeople); }
+
+function addCrmPerson() {
+  crmPeople.push({
+    id: uid(), tag: '', name: '', company: '',
+    work_email: '', title: '', contact_type: '',
+    work_phone: '', work_website: '',
+    address: '', city: '', state: '', zip: '',
+    linkedin: '', description: ''
+  });
+  saveCrmPeople();
+  renderCrmPeopleTab();
+}
+
+function deleteCrmPerson(id) {
+  if (!confirm('Delete this contact?')) return;
+  crmPeople = crmPeople.filter(p => p.id !== id);
+  saveCrmPeople();
+  renderCrmPeopleTab();
+}
+
+const _CRM_TAG_COLORS = {
+  Hot:      { bg: '#991b1b', color: '#fff' },
+  Followup: { bg: '#c2410c', color: '#fff' },
+  Soon:     { bg: '#92400e', color: '#fff' },
+  Upsale:   { bg: '#166534', color: '#fff' },
+  Cold:     { bg: '#1e3a8a', color: '#fff' },
+  Warm:     { bg: '#b45309', color: '#fff' },
+};
+const _CRM_TAG_OPTS    = ['', 'Hot', 'Followup', 'Soon', 'Upsale', 'Cold', 'Warm'];
+const _CRM_US_STATES   = [
+  '','AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN',
+  'IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV',
+  'NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN',
+  'TX','UT','VT','VA','WA','WV','WI','WY'
+];
+
+function _crmTagSel(p) {
+  const c = _CRM_TAG_COLORS[p.tag];
+  const bg = c ? c.bg : 'var(--surface2)', fg = c ? c.color : 'var(--muted)';
+  const opts = _CRM_TAG_OPTS.map(t =>
+    `<option value="${t}" ${p.tag === t ? 'selected' : ''}>${t || '— tag —'}</option>`).join('');
+  return `<select data-crm-id="${p.id}" data-crm-field="tag"
+    style="background:${bg};color:${fg};border:none;border-radius:12px;padding:0.2rem 0.55rem;
+           font-size:0.72rem;font-weight:600;cursor:pointer;outline:none;min-width:90px">${opts}</select>`;
+}
+
+function _crmStateSel(p) {
+  const opts = _CRM_US_STATES.map(s =>
+    `<option value="${s}" ${p.state === s ? 'selected' : ''}>${s || '—'}</option>`).join('');
+  return `<select data-crm-id="${p.id}" data-crm-field="state"
+    style="background:var(--surface2);border:1px solid var(--border);border-radius:3px;
+           color:var(--text);font-size:0.8rem;outline:none;padding:0.1rem 0.2rem;width:74px">${opts}</select>`;
+}
+
+function _crmInp(p, field, ph = '') {
+  return `<input type="text" value="${esc(p[field] || '')}"
+    data-crm-id="${p.id}" data-crm-field="${field}" placeholder="${ph}"
+    style="width:100%;background:transparent;border:none;color:var(--text);
+           font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">`;
+}
+
+function _crmLinkInp(p, field, ph = '', isEmail = false) {
+  const val = p[field] || '';
+  const href = val
+    ? (isEmail ? `mailto:${val}` : (val.match(/^https?:\/\//) ? val : `https://${val}`))
+    : '';
+  return `<div style="display:flex;align-items:center;gap:3px;min-width:0">
+    <input type="text" value="${esc(val)}"
+      data-crm-id="${p.id}" data-crm-field="${field}" placeholder="${ph}"
+      style="flex:1;background:transparent;border:none;
+             color:${val ? 'var(--blue)' : 'var(--muted)'};
+             text-decoration:${val ? 'underline' : 'none'};
+             font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">
+    <a id="crm-lnk-${p.id}-${field}" href="${esc(href)}" target="_blank" rel="noopener"
+      style="color:var(--blue);font-size:0.8rem;flex-shrink:0;${val ? '' : 'display:none'}"
+      title="${esc(val)}">↗</a>
+  </div>`;
+}
+
+function renderCrmPeopleTab() {
+  const root = document.getElementById('crm-people-root');
+  if (!root) return;
+
+  const th = label =>
+    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+               text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
+
+  const td = (content, minW = '') =>
+    `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
+
+  const rows = crmPeople.length
+    ? crmPeople.map(p => `<tr>
+        ${td(_crmTagSel(p))}
+        ${td(_crmInp(p, 'name',         'Name'),        '130px')}
+        ${td(_crmInp(p, 'company',      'Company'),     '120px')}
+        ${td(_crmLinkInp(p, 'work_email',   'email@…', true), '155px')}
+        ${td(_crmInp(p, 'title',        'Title'),       '100px')}
+        ${td(_crmInp(p, 'contact_type', 'Type'),        '100px')}
+        ${td(_crmInp(p, 'work_phone',   'Phone'),       '110px')}
+        ${td(_crmLinkInp(p, 'work_website', 'https://'),       '140px')}
+        ${td(_crmInp(p, 'address',      'Address'),     '150px')}
+        ${td(_crmInp(p, 'city',         'City'),        '100px')}
+        ${td(_crmStateSel(p))}
+        ${td(_crmInp(p, 'zip',          'Zip'),          '62px')}
+        ${td(_crmLinkInp(p, 'linkedin',     'LinkedIn URL'),    '140px')}
+        ${td(_crmInp(p, 'description',  'Description'), '200px')}
+        <td style="padding:0.25rem 0.4rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <button class="del-btn" data-crm-person-id="${p.id}">✕</button>
+        </td>
+      </tr>`).join('')
+    : `<tr><td colspan="15" style="padding:2.5rem;text-align:center;color:var(--muted)">
+         No contacts yet — click <strong style="color:var(--text)">+ Add Person</strong> to start.
+       </td></tr>`;
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+      <span style="font-size:0.82rem;color:var(--muted)">
+        ${crmPeople.length} contact${crmPeople.length !== 1 ? 's' : ''}
+      </span>
+      <button class="btn btn-green" onclick="addCrmPerson()">+ Add Person</button>
+    </div>
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+        <thead><tr>
+          ${th('Tag')}${th('Name')}${th('Company')}${th('Work Email')}
+          ${th('Title')}${th('Contact Type')}${th('Work Phone')}${th('Work Website')}
+          ${th('Address')}${th('City')}${th('State')}${th('Zip')}
+          ${th('LinkedIn')}${th('Description')}
+          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
 
 // ── Scale of Economy — manual job entries ────────────────────────────────────
 // Summarized jobs that feed Scale of Economy analysis without daily tracking rows.
@@ -7495,6 +7647,52 @@ document.getElementById('inventory-root').addEventListener('change', e => {
     _syncINVRowField(entry, field);
   }
   saveInventoryEntries();
+});
+
+/* ── CRM People events ── */
+document.getElementById('crm-people-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const person = crmPeople.find(p => p.id === id);
+  if (!person) return;
+  person[field] = el.value;
+
+  // Live-update ↗ icon for link fields
+  const LINK_FIELDS = new Set(['work_email', 'work_website', 'linkedin']);
+  if (LINK_FIELDS.has(field)) {
+    const val = el.value.trim();
+    const href = val
+      ? (field === 'work_email' ? `mailto:${val}` : (val.match(/^https?:\/\//) ? val : `https://${val}`))
+      : '';
+    const icon = document.getElementById(`crm-lnk-${id}-${field}`);
+    if (icon) { icon.href = href; icon.title = val; icon.style.display = val ? '' : 'none'; }
+    el.style.color = val ? 'var(--blue)' : 'var(--muted)';
+    el.style.textDecoration = val ? 'underline' : 'none';
+  }
+  saveCrmPeople();
+});
+
+document.getElementById('crm-people-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const person = crmPeople.find(p => p.id === id);
+  if (!person) return;
+  person[field] = el.value;
+
+  // Live-update tag pill color
+  if (field === 'tag') {
+    const c = _CRM_TAG_COLORS[el.value];
+    el.style.background = c ? c.bg    : 'var(--surface2)';
+    el.style.color      = c ? c.color : 'var(--muted)';
+  }
+  saveCrmPeople();
+});
+
+document.getElementById('crm-people-root').addEventListener('click', e => {
+  const btn = e.target.closest('[data-crm-person-id]');
+  if (btn) deleteCrmPerson(btn.dataset.crmPersonId);
 });
 
 /* ── Supplier Tab ── */
@@ -14398,6 +14596,7 @@ async function deleteCompanyUser(id) {
     loadPurchaseOrders(),
     loadTruckingEntries(),
     loadInventoryEntries(),
+    loadCrmPeople(),
     loadScaleManualEntries(),
     loadSoeUnitOverrides(),
   ]);
