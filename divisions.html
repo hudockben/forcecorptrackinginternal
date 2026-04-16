@@ -169,6 +169,7 @@
     .cards.count-1 { grid-template-columns: 1fr; max-width: 340px; }
     .cards.count-2 { grid-template-columns: repeat(2, 1fr); max-width: 620px; }
     .cards.count-3 { grid-template-columns: repeat(3, 1fr); }
+    .cards.count-4 { grid-template-columns: repeat(4, 1fr); max-width: 1200px; }
 
     .card {
       background: var(--surface);
@@ -292,7 +293,8 @@
     /* ── Mobile ── */
     @media (max-width: 700px) {
       .cards.count-2,
-      .cards.count-3 { grid-template-columns: 1fr; max-width: 420px; }
+      .cards.count-3,
+      .cards.count-4 { grid-template-columns: 1fr; max-width: 420px; }
       main { padding: 2.5rem 1.25rem; }
       .welcome { margin-bottom: 2.25rem; }
       .user-label { display: none; }
@@ -376,9 +378,22 @@
                   <line x1="4" y1="5" x2="20" y2="5"/>
                 </svg>`,
       },
+      trucking: {
+        name:  'Trucking',
+        desc:  'Fleet dispatch, load tracking, driver management, and haul cost reporting for trucking operations.',
+        color: '#f97316',
+        href:  'trucking.html',
+        built: false,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="1" y="3" width="15" height="13" rx="1"/>
+                  <path d="M16 8h4l3 3v5h-7V8z"/>
+                  <circle cx="5.5" cy="18.5" r="2.5"/>
+                  <circle cx="18.5" cy="18.5" r="2.5"/>
+                </svg>`,
+      },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -437,7 +452,7 @@
 
     // ── Render cards ────────────────────────────────────────────────────────
     const grid = document.getElementById('cardsGrid');
-    grid.classList.add(`count-${Math.min(visibleDivisions.length, 3)}`);
+    grid.classList.add(`count-${Math.min(visibleDivisions.length, 4)}`);
 
     visibleDivisions.forEach(key => {
       const def = DIVISION_CATALOG[key];
