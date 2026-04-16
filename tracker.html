@@ -18402,11 +18402,18 @@ function _luciusBuildQuery() {
   const lat = _luciusConfig.lat;
   const lng = _luciusConfig.lng;
   const t   = _luciusQueryTimeout();
+  // Sport regex: include football/soccer/baseball/softball/multi + exclude basketball/tennis by omission
+  const sports = 'american_football|soccer|football|baseball|softball|multi|dog_agility|lacrosse|rugby_league|rugby_union|rugby';
   return `[out:json][timeout:${t}];
 (
-  node["leisure"="pitch"](around:${r},${lat},${lng});
-  way["leisure"="pitch"](around:${r},${lat},${lng});
-  relation["leisure"="pitch"](around:${r},${lat},${lng});
+  node["leisure"="pitch"]["sport"~"${sports}"](around:${r},${lat},${lng});
+  way["leisure"="pitch"]["sport"~"${sports}"](around:${r},${lat},${lng});
+  relation["leisure"="pitch"]["sport"~"${sports}"](around:${r},${lat},${lng});
+  node["leisure"="pitch"][!"sport"](around:${r},${lat},${lng});
+  way["leisure"="pitch"][!"sport"](around:${r},${lat},${lng});
+  relation["leisure"="pitch"][!"sport"](around:${r},${lat},${lng});
+  node["leisure"="dog_park"](around:${r},${lat},${lng});
+  way["leisure"="dog_park"](around:${r},${lat},${lng});
 );
 out center;`;
 }
@@ -18688,10 +18695,13 @@ async function runLucius() {
 
     const id      = `osm/${el.type}/${el.id}`;
     const tags    = el.tags || {};
+    const leisure = tags.leisure || 'pitch';
     const surface = tags.surface || '';
     const isTurf  = _luciusIsTurf(surface);
-    const name    = tags.name || tags['name:en'] ||
-                    `Field (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+    const fallback = leisure === 'dog_park'
+      ? `Dog Park (${lat.toFixed(4)}, ${lng.toFixed(4)})`
+      : `Field (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+    const name = tags.name || tags['name:en'] || fallback;
 
     // Build address from OSM addr:* tags
     const _hn  = tags['addr:housenumber'] || '';
@@ -18704,8 +18714,8 @@ async function runLucius() {
     freshIds.add(id);
     const existing = cacheMap.get(id);
     cacheMap.set(id, {
-      id, name, lat, lng, surface, addr,
-      sport:    tags.sport    || '',
+      id, name, lat, lng, surface, addr, leisure,
+      sport:    tags.sport    || (leisure === 'dog_park' ? 'dog park' : ''),
       operator: tags.operator || tags['operator:type'] || tags['brand'] || '',
       website:  tags.website  || tags['contact:website'] || tags['url'] || '',
       osmType:  el.type,
