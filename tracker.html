@@ -18385,11 +18385,19 @@ async function _luciusSaveCache(fields) {
 }
 
 // ── Overpass query builder ────────────────────────────────────
+function _luciusQueryTimeout() {
+  const mi = _luciusConfig.radiusMiles || 10;
+  if (mi <= 10) return 30;
+  if (mi <= 25) return 50;
+  return 90; // up to 50mi
+}
+
 function _luciusBuildQuery() {
   const r   = ((_luciusConfig.radiusMiles || 10) * 1609.34).toFixed(0);
   const lat = _luciusConfig.lat;
   const lng = _luciusConfig.lng;
-  return `[out:json][timeout:30];
+  const t   = _luciusQueryTimeout();
+  return `[out:json][timeout:${t}];
 (
   node["leisure"="pitch"](around:${r},${lat},${lng});
   way["leisure"="pitch"](around:${r},${lat},${lng});
@@ -18470,6 +18478,7 @@ async function luciusApplyRadius() {
   if (!input) return;
   const val = parseFloat(input.value);
   if (!val || val < 1) { _luciusSetStatus('Enter a valid radius (minimum 1 mi).'); return; }
+  if (val > 50) { _luciusSetStatus('Maximum radius is 50 mi — Overpass servers time out above that. Try 25 mi or less for best results.'); input.value = 50; return; }
   _luciusConfig.radiusMiles = val;
   await _luciusSaveConfig();
   _luciusUpdateCircle();
@@ -18572,14 +18581,15 @@ async function runLucius() {
 
   let elements = [];
   let lastErr  = null;
-  const body   = 'data=' + encodeURIComponent(_luciusBuildQuery());
+  const body        = 'data=' + encodeURIComponent(_luciusBuildQuery());
+  const abortMs     = (_luciusQueryTimeout() + 8) * 1000; // 8s buffer over server timeout
 
   for (let i = 0; i < _OVERPASS_ENDPOINTS.length; i++) {
     const endpoint = _OVERPASS_ENDPOINTS[i];
     _luciusSetStatus(`Querying Overpass… (server ${i + 1}/${_OVERPASS_ENDPOINTS.length})`);
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 28000); // 28s timeout per server
+      const timer = setTimeout(() => ctrl.abort(), abortMs);
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
