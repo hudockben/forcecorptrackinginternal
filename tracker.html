@@ -18367,6 +18367,15 @@ function _luciusPopulateInputs() {
   if (radiusEl) radiusEl.value = _luciusConfig.radiusMiles;
 }
 
+// ── Sport exclusion filter ────────────────────────────────────
+function _luciusIsExcludedSport(sport) {
+  if (!sport) return false;
+  const s = sport.toLowerCase();
+  // Remove court-only or non-turf-field sports
+  return /basketball|tennis|volleyball|skateboard|skate|badminton|squash|racquet|table_tennis|bowls|boules|petanque|cycling|bmx|shooting|archery|gymnastics|martial|swimming|ice_|roller/.test(s)
+    && !/american_football|soccer|football|baseball|softball|multi|dog|lacrosse|rugby/.test(s);
+}
+
 // ── Turf surface detection ────────────────────────────────────
 function _luciusIsTurf(surface) {
   if (!surface) return false;
@@ -18622,7 +18631,7 @@ async function initLuciusTab() {
   if (_luciusInitDone) return;
   _luciusInitDone = true;
 
-  const cached = await _luciusLoadCache();
+  const cached = (await _luciusLoadCache()).filter(f => !_luciusIsExcludedSport(f.sport));
   if (cached.length) {
     _luciusDropPins(cached, null);
     _luciusSetStatus(
@@ -18639,7 +18648,7 @@ async function runLucius() {
   _luciusSetStatus('Querying Overpass API…');
   _luciusInitMap();
 
-  const cached   = await _luciusLoadCache();
+  const cached   = (await _luciusLoadCache()).filter(f => !_luciusIsExcludedSport(f.sport));
   const cacheMap = new Map(cached.map(f => [f.id, f]));
 
   if (cached.length) _luciusDropPins(cached, null);
