@@ -95,6 +95,7 @@ module.exports = async (req, res) => {
         u.password_hash,
         u.role,
         u.divisions,
+        u.division_roles,
         u.is_platform_admin,
         c.name               AS company_name,
         c.allowed_divisions
@@ -116,11 +117,26 @@ module.exports = async (req, res) => {
     }
 
     const isPlatformAdmin   = Boolean(user.is_platform_admin);
-    const allowedDivisions  = effectiveDivisions(
-      isPlatformAdmin,
-      user.divisions,
-      user.allowed_divisions,
-    );
+    const divisionRoles     = user.division_roles || null; // e.g. {"turf":"level3","dust":"no_access"}
+
+    // Effective role for this session = turf role from division_roles (for tracker.html compat)
+    // Falls back to user.role for accounts without per-division roles set.
+    let effectiveRole = user.role;
+    if (!isPlatformAdmin && divisionRoles && divisionRoles.turf && divisionRoles.turf !== 'no_access') {
+      effectiveRole = divisionRoles.turf;
+    }
+
+    // Compute allowedDivisions: use division_roles keys (non-no_access) when set,
+    // otherwise fall back to user.divisions or company allowed_divisions.
+    let allowedDivisions;
+    if (!isPlatformAdmin && divisionRoles) {
+      allowedDivisions = Object.entries(divisionRoles)
+        .filter(([, v]) => v !== 'no_access')
+        .map(([k]) => k);
+      if (!allowedDivisions.length) allowedDivisions = [];
+    } else {
+      allowedDivisions = effectiveDivisions(isPlatformAdmin, user.divisions, user.allowed_divisions);
+    }
 
     const cleanCode = companyCode.trim().toUpperCase();
 
@@ -130,7 +146,8 @@ module.exports = async (req, res) => {
         username:         user.username,
         companyCode:      cleanCode,
         companyName:      user.company_name,
-        role:             user.role,
+        role:             effectiveRole,
+        divisionRoles,
         allowedDivisions,
         isPlatformAdmin,
       },
@@ -148,7 +165,8 @@ module.exports = async (req, res) => {
         username:         user.username,
         companyCode:      cleanCode,
         companyName:      user.company_name,
-        role:             user.role,
+        role:             effectiveRole,
+        divisionRoles,
         allowedDivisions,
         isPlatformAdmin,
       },
