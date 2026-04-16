@@ -3167,8 +3167,9 @@ function crmSwitchTab(tab) {
     b.classList.toggle('active', b.dataset.crmTab === tab));
   document.querySelectorAll('.crm-sub-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'crm-panel-' + tab));
-  if (tab === 'people')    renderCrmPeopleTab();
-  if (tab === 'companies') renderCrmCompaniesTab();
+  if (tab === 'people')        renderCrmPeopleTab();
+  if (tab === 'companies')     renderCrmCompaniesTab();
+  if (tab === 'opportunities') renderCrmOpportunitiesTab();
 }
 
 document.querySelectorAll('.crm-sub-btn').forEach(btn =>
@@ -4860,6 +4861,155 @@ function renderCrmCompaniesTab() {
           ${th('Tag')}${th('Company Name')}${th('Contact Type')}${th('Work Phone')}
           ${th('Email Domain')}${th('Work Website')}${th('Address')}${th('City')}
           ${th('State')}${th('Zip')}${th('Field Type')}${th('Field Size')}
+          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════════
+   CRM — Opportunities
+═══════════════════════════════════════════ */
+let crmOpportunities = [];
+
+async function loadCrmOpportunities() {
+  const saved = await apiGet('fct_crm_opportunities');
+  crmOpportunities = Array.isArray(saved) ? saved : [];
+  if (document.getElementById('crm-panel-opportunities')?.classList.contains('active')) {
+    renderCrmOpportunitiesTab();
+  }
+}
+
+function saveCrmOpportunities() { apiPut('fct_crm_opportunities', crmOpportunities); }
+
+function addCrmOpportunity() {
+  crmOpportunities.push({
+    id: uid(), tag: '', name: '', company: '',
+    stage: '', value: '', close_date: '',
+    win_pct: '', status: '', loss_reason: '',
+    priority: '', source: '', description: ''
+  });
+  saveCrmOpportunities();
+  renderCrmOpportunitiesTab();
+}
+
+function deleteCrmOpportunity(id) {
+  if (!confirm('Delete this opportunity?')) return;
+  crmOpportunities = crmOpportunities.filter(o => o.id !== id);
+  saveCrmOpportunities();
+  renderCrmOpportunitiesTab();
+}
+
+const _CRM_STAGES   = ['', 'Prospecting', 'Qualification', 'Proposal', 'Negotiation', 'Closed Won', 'Closed Lost'];
+const _CRM_STATUSES = ['', 'Open', 'Won', 'Lost', 'On Hold'];
+const _CRM_PRIORITIES = ['', 'Low', 'Medium', 'High', 'Critical'];
+
+const _CRM_STAGE_COLORS = {
+  'Prospecting':  { bg: '#1e3a8a', color: '#fff' },
+  'Qualification':{ bg: '#1e40af', color: '#fff' },
+  'Proposal':     { bg: '#92400e', color: '#fff' },
+  'Negotiation':  { bg: '#b45309', color: '#fff' },
+  'Closed Won':   { bg: '#166534', color: '#fff' },
+  'Closed Lost':  { bg: '#7f1d1d', color: '#fff' },
+};
+
+const _CRM_STATUS_COLORS = {
+  'Open':    { bg: '#1e3a8a', color: '#fff' },
+  'Won':     { bg: '#166534', color: '#fff' },
+  'Lost':    { bg: '#991b1b', color: '#fff' },
+  'On Hold': { bg: '#78350f', color: '#fff' },
+};
+
+const _CRM_PRIORITY_COLORS = {
+  'Low':      { bg: '#1e293b', color: '#94a3b8' },
+  'Medium':   { bg: '#78350f', color: '#fff' },
+  'High':     { bg: '#92400e', color: '#fff' },
+  'Critical': { bg: '#7f1d1d', color: '#fff' },
+};
+
+function _crmPillSel(o, field, opts, colorMap, minW = '110px') {
+  const c = colorMap[o[field]];
+  const bg = c ? c.bg : 'var(--surface2)', fg = c ? c.color : 'var(--muted)';
+  const optHTML = opts.map(v =>
+    `<option value="${v}" ${o[field] === v ? 'selected' : ''}>${v || '—'}</option>`).join('');
+  return `<select data-crm-id="${o.id}" data-crm-field="${field}"
+    data-crm-colormap="${field}"
+    style="background:${bg};color:${fg};border:none;border-radius:12px;
+           padding:0.2rem 0.55rem;font-size:0.72rem;font-weight:600;
+           cursor:pointer;outline:none;min-width:${minW}">${optHTML}</select>`;
+}
+
+function renderCrmOpportunitiesTab() {
+  const root = document.getElementById('crm-opportunities-root');
+  if (!root) return;
+
+  const th = label =>
+    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+               text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
+
+  const td = (content, minW = '') =>
+    `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
+
+  const numInp = (o, field, ph = '') =>
+    `<input type="number" value="${esc(o[field] || '')}"
+      data-crm-id="${o.id}" data-crm-field="${field}" placeholder="${ph}" step="any" min="0"
+      style="width:100%;background:transparent;border:none;color:var(--text);
+             font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">`;
+
+  const dateInp = (o, field) =>
+    `<input type="date" value="${esc(o[field] || '')}"
+      data-crm-id="${o.id}" data-crm-field="${field}"
+      style="background:transparent;border:none;color:var(--text);
+             font-size:0.8rem;outline:none;padding:0.15rem 0;cursor:pointer">`;
+
+  const rows = crmOpportunities.length
+    ? crmOpportunities.map(o => `<tr>
+        ${td(_crmTagSel(o))}
+        ${td(_crmInp(o, 'name',         'Opportunity name'),  '150px')}
+        ${td(_crmInp(o, 'company',      'Company'),           '120px')}
+        ${td(_crmPillSel(o, 'stage',    _CRM_STAGES,    _CRM_STAGE_COLORS,    '120px'))}
+        <td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;min-width:100px">
+          <div style="display:flex;align-items:center;gap:2px">
+            <span style="color:var(--muted);font-size:0.8rem">$</span>
+            ${numInp(o, 'value', '0.00')}
+          </div>
+        </td>
+        ${td(dateInp(o, 'close_date'),  '120px')}
+        <td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;min-width:75px">
+          <div style="display:flex;align-items:center;gap:2px">
+            ${numInp(o, 'win_pct', '0')}
+            <span style="color:var(--muted);font-size:0.8rem">%</span>
+          </div>
+        </td>
+        ${td(_crmPillSel(o, 'status',   _CRM_STATUSES,  _CRM_STATUS_COLORS,   '90px'))}
+        ${td(_crmInp(o, 'loss_reason',  'Reason…'),           '130px')}
+        ${td(_crmPillSel(o, 'priority', _CRM_PRIORITIES, _CRM_PRIORITY_COLORS, '95px'))}
+        ${td(_crmInp(o, 'source',       'Source'),            '110px')}
+        ${td(_crmInp(o, 'description',  'Description'),       '200px')}
+        <td style="padding:0.25rem 0.4rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <button class="del-btn" data-crm-opp-id="${o.id}">✕</button>
+        </td>
+      </tr>`).join('')
+    : `<tr><td colspan="14" style="padding:2.5rem;text-align:center;color:var(--muted)">
+         No opportunities yet — click <strong style="color:var(--text)">+ Add Opportunity</strong> to start.
+       </td></tr>`;
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+      <span style="font-size:0.82rem;color:var(--muted)">
+        ${crmOpportunities.length} opportunit${crmOpportunities.length !== 1 ? 'ies' : 'y'}
+      </span>
+      <button class="btn btn-green" onclick="addCrmOpportunity()">+ Add Opportunity</button>
+    </div>
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+        <thead><tr>
+          ${th('Tag')}${th('Name')}${th('Company')}${th('Stage')}${th('Value')}
+          ${th('Close Date')}${th('Win %')}${th('Status')}${th('Loss Reason')}
+          ${th('Priority')}${th('Source')}${th('Description')}
           <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -7823,6 +7973,46 @@ document.getElementById('crm-companies-root').addEventListener('change', e => {
 document.getElementById('crm-companies-root').addEventListener('click', e => {
   const btn = e.target.closest('[data-crm-company-id]');
   if (btn) deleteCrmCompany(btn.dataset.crmCompanyId);
+});
+
+/* ── CRM Opportunities events ── */
+const _CRM_COLOR_MAPS = {
+  tag:      _CRM_TAG_COLORS,
+  stage:    _CRM_STAGE_COLORS,
+  status:   _CRM_STATUS_COLORS,
+  priority: _CRM_PRIORITY_COLORS,
+};
+
+document.getElementById('crm-opportunities-root').addEventListener('input', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const opp = crmOpportunities.find(o => o.id === id);
+  if (!opp) return;
+  opp[field] = el.value;
+  saveCrmOpportunities();
+});
+
+document.getElementById('crm-opportunities-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.crmId, field = el.dataset.crmField;
+  if (!id || !field) return;
+  const opp = crmOpportunities.find(o => o.id === id);
+  if (!opp) return;
+  opp[field] = el.value;
+
+  const colorMap = _CRM_COLOR_MAPS[field];
+  if (colorMap) {
+    const c = colorMap[el.value];
+    el.style.background = c ? c.bg    : 'var(--surface2)';
+    el.style.color      = c ? c.color : 'var(--muted)';
+  }
+  saveCrmOpportunities();
+});
+
+document.getElementById('crm-opportunities-root').addEventListener('click', e => {
+  const btn = e.target.closest('[data-crm-opp-id]');
+  if (btn) deleteCrmOpportunity(btn.dataset.crmOppId);
 });
 
 /* ── Supplier Tab ── */
@@ -14728,6 +14918,7 @@ async function deleteCompanyUser(id) {
     loadInventoryEntries(),
     loadCrmPeople(),
     loadCrmCompanies(),
+    loadCrmOpportunities(),
     loadScaleManualEntries(),
     loadSoeUnitOverrides(),
   ]);
