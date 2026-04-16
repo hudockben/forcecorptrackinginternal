@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DataWatch — Tracker</title>
+  <!-- Leaflet.js for Lucius map tab -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -146,6 +149,62 @@
     .crm-sub-btn.active { color: var(--green); border-bottom-color: var(--green); }
     .crm-sub-panel { display: none; }
     .crm-sub-panel.active { display: block; }
+
+    /* ── Lucius map panel ── */
+    #lucius-root {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 140px);
+      padding: 1rem 1.25rem;
+      gap: 0.75rem;
+    }
+    #lucius-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+    #lucius-run-btn {
+      padding: 0.45rem 1.2rem;
+      background: var(--green);
+      color: #000;
+      font-weight: 700;
+      font-size: 0.8rem;
+      letter-spacing: 0.05em;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    #lucius-run-btn:hover { background: var(--green-dim); }
+    #lucius-run-btn:disabled { background: var(--muted); cursor: not-allowed; }
+    #lucius-status {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    #lucius-legend {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-left: auto;
+    }
+    .lucius-legend-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+    #lucius-map {
+      flex: 1;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      min-height: 400px;
+    }
 
     /* ── Admin dropdown ── */
     .admin-dropdown-wrap {
@@ -2258,6 +2317,7 @@
     <button class="crm-sub-btn"        data-crm-tab="people">People</button>
     <button class="crm-sub-btn"        data-crm-tab="companies">Companies</button>
     <button class="crm-sub-btn"        data-crm-tab="opportunities">Opportunities</button>
+    <button class="crm-sub-btn"        data-crm-tab="lucius">Lucius</button>
   </div>
 
   <!-- CRM sub-panels -->
@@ -2272,6 +2332,21 @@
   </div>
   <div class="crm-sub-panel" id="crm-panel-opportunities">
     <div id="crm-opportunities-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+  </div>
+
+  <div class="crm-sub-panel" id="crm-panel-lucius">
+    <div id="lucius-root">
+      <div id="lucius-toolbar">
+        <button id="lucius-run-btn" onclick="runLucius()">&#9654; Run Lucius</button>
+        <span id="lucius-status">Click Run Lucius to scan for fields in the area.</span>
+        <div id="lucius-legend">
+          <span><span class="lucius-legend-dot" style="background:#22c55e"></span>Turf field</span>
+          <span><span class="lucius-legend-dot" style="background:#ef4444"></span>Non-turf / unknown</span>
+          <span><span class="lucius-legend-dot" style="background:#a78bfa"></span>Cached (not in latest scan)</span>
+        </div>
+      </div>
+      <div id="lucius-map"></div>
+    </div>
   </div>
 
 </div>
@@ -3170,6 +3245,7 @@ function crmSwitchTab(tab) {
   if (tab === 'people')        renderCrmPeopleTab();
   if (tab === 'companies')     renderCrmCompaniesTab();
   if (tab === 'opportunities') renderCrmOpportunitiesTab();
+  if (tab === 'lucius')        initLuciusTab();
 }
 
 document.querySelectorAll('.crm-sub-btn').forEach(btn =>
@@ -18176,6 +18252,247 @@ function _ppRenderMultiCode(proj, agg, MONTHS, NW_ICONS) {
     </div>
     <div style="font-size:0.7rem;color:var(--muted);margin-top:0.5rem">🟢 crew assigned · ⚠️ conflict · click any cell to edit that day</div>`;
 }
+
+// ══════════════════════════════════════════════════════════════
+// LUCIUS — Sports Field Map Scanner
+// ══════════════════════════════════════════════════════════════
+
+// ── Configuration ────────────────────────────────────────────
+// Change LUCIUS_CENTER to your preferred starting coordinates.
+// Change LUCIUS_RADIUS_MILES to adjust the scan radius.
+const LUCIUS_CENTER       = { lat: 36.1699, lng: -115.1398 }; // Las Vegas, NV — update as needed
+const LUCIUS_RADIUS_MILES = 10;
+const LUCIUS_RADIUS_M     = LUCIUS_RADIUS_MILES * 1609.34;
+const LUCIUS_CACHE_KEY    = 'fct_lucius_fields';
+
+// ── State ─────────────────────────────────────────────────────
+let _luciusMap        = null;   // Leaflet map instance
+let _luciusMarkers    = [];     // active Leaflet markers
+let _luciusInitDone   = false;  // map initialised at least once
+
+// ── Turf surface detection ────────────────────────────────────
+function _luciusIsTurf(surface) {
+  if (!surface) return false;
+  const s = surface.toLowerCase();
+  return s.includes('artificial') || s.includes('turf') ||
+         s.includes('synthetic')  || s.includes('astro') ||
+         s.includes('rubber')     || s.includes('3g')    ||
+         s.includes('4g');
+}
+
+// ── Cache helpers ─────────────────────────────────────────────
+async function _luciusLoadCache() {
+  try {
+    const data = await apiGet(LUCIUS_CACHE_KEY);
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
+}
+
+async function _luciusSaveCache(fields) {
+  try { await apiPut(LUCIUS_CACHE_KEY, fields); } catch { /* non-fatal */ }
+}
+
+// ── Overpass query builder ────────────────────────────────────
+function _luciusBuildQuery() {
+  const r   = LUCIUS_RADIUS_M.toFixed(0);
+  const lat = LUCIUS_CENTER.lat;
+  const lng = LUCIUS_CENTER.lng;
+  return `[out:json][timeout:30];
+(
+  node["leisure"="pitch"](around:${r},${lat},${lng});
+  way["leisure"="pitch"](around:${r},${lat},${lng});
+  relation["leisure"="pitch"](around:${r},${lat},${lng});
+);
+out center;`;
+}
+
+// ── Status helper ─────────────────────────────────────────────
+function _luciusSetStatus(msg) {
+  const el = document.getElementById('lucius-status');
+  if (el) el.textContent = msg;
+}
+
+// ── Pin rendering ─────────────────────────────────────────────
+function _luciusColorIcon(color) {
+  const svg = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 36">
+    <path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 24 12 24s12-15 12-24C24 5.373 18.627 0 12 0z"
+      fill="${color}" stroke="#000" stroke-width="1.2"/>
+    <circle cx="12" cy="12" r="4" fill="#fff" opacity="0.85"/>
+  </svg>`);
+  return L.icon({
+    iconUrl: `data:image/svg+xml,${svg}`,
+    iconSize:   [22, 33],
+    iconAnchor: [11, 33],
+    popupAnchor:[0, -34],
+  });
+}
+
+const _LUCIUS_ICON_TURF    = () => _luciusColorIcon('#22c55e'); // green  — turf
+const _LUCIUS_ICON_NONTURF = () => _luciusColorIcon('#ef4444'); // red    — non-turf / unknown
+const _LUCIUS_ICON_STALE   = () => _luciusColorIcon('#a78bfa'); // purple — cached, not in latest scan
+
+function _luciusClearPins() {
+  _luciusMarkers.forEach(m => m.remove());
+  _luciusMarkers = [];
+}
+
+function _luciusDropPins(fields, staleIds) {
+  _luciusClearPins();
+  fields.forEach(f => {
+    if (!f.lat || !f.lng) return;
+    const isStale  = staleIds && staleIds.has(f.id);
+    const icon     = isStale ? _LUCIUS_ICON_STALE()
+                   : f.isTurf ? _LUCIUS_ICON_TURF()
+                   : _LUCIUS_ICON_NONTURF();
+    const sport    = f.sport ? ` · ${f.sport}` : '';
+    const surface  = f.surface ? `<br><span style="color:#888;font-size:11px">surface: ${f.surface}</span>` : '';
+    const staleTag = isStale ? `<br><em style="color:#a78bfa;font-size:11px">cached — not in latest scan</em>` : '';
+    const popup    = `<strong>${f.name}</strong>${sport}${surface}${staleTag}`;
+    const marker   = L.marker([f.lat, f.lng], { icon }).bindPopup(popup);
+    marker.addTo(_luciusMap);
+    _luciusMarkers.push(marker);
+  });
+}
+
+// ── Map initialisation ────────────────────────────────────────
+function _luciusInitMap() {
+  if (_luciusMap) {
+    // Map already exists; force a resize in case panel was hidden on first render
+    setTimeout(() => _luciusMap.invalidateSize(), 50);
+    return;
+  }
+  _luciusMap = L.map('lucius-map').setView([LUCIUS_CENTER.lat, LUCIUS_CENTER.lng], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19,
+  }).addTo(_luciusMap);
+
+  // Draw the scan-radius circle so the user can see coverage
+  L.circle([LUCIUS_CENTER.lat, LUCIUS_CENTER.lng], {
+    radius:      LUCIUS_RADIUS_M,
+    color:       '#60a5fa',
+    weight:      1.5,
+    opacity:     0.5,
+    fillColor:   '#60a5fa',
+    fillOpacity: 0.04,
+  }).addTo(_luciusMap);
+}
+
+// ── Tab entry point ───────────────────────────────────────────
+async function initLuciusTab() {
+  // Initialise map on first open
+  _luciusInitMap();
+
+  if (_luciusInitDone) return; // already loaded cached pins once this session
+  _luciusInitDone = true;
+
+  // Show any previously cached fields right away (no network wait)
+  const cached = await _luciusLoadCache();
+  if (cached.length) {
+    _luciusDropPins(cached, null);
+    _luciusSetStatus(
+      `Showing ${cached.length} cached field${cached.length !== 1 ? 's' : ''}. ` +
+      `Click Run Lucius to refresh.`
+    );
+  }
+}
+
+// ── Main scan function (triggered by button) ──────────────────
+async function runLucius() {
+  const btn = document.getElementById('lucius-run-btn');
+  if (btn) btn.disabled = true;
+  _luciusSetStatus('Querying Overpass API…');
+
+  // Ensure map is ready
+  _luciusInitMap();
+
+  // 1. Load cache so we can show it and merge into it
+  const cached   = await _luciusLoadCache();
+  const cacheMap = new Map(cached.map(f => [f.id, f]));
+
+  // Show cached pins immediately while the network request is in flight
+  if (cached.length) {
+    _luciusDropPins(cached, null);
+  }
+
+  // 2. Fetch from Overpass
+  let elements = [];
+  try {
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'data=' + encodeURIComponent(_luciusBuildQuery()),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    elements   = json.elements || [];
+  } catch (err) {
+    _luciusSetStatus(`Overpass error: ${err.message}. Showing cached data.`);
+    if (btn) btn.disabled = false;
+    return;
+  }
+
+  // 3. Process Overpass results and merge with cache
+  const now        = new Date().toISOString();
+  const freshIds   = new Set();
+
+  for (const el of elements) {
+    const lat = el.lat ?? el.center?.lat;
+    const lng = el.lon ?? el.center?.lon;
+    if (lat == null || lng == null) continue;
+
+    const id      = `osm/${el.type}/${el.id}`;
+    const tags    = el.tags || {};
+    const surface = tags.surface || '';
+    const isTurf  = _luciusIsTurf(surface);
+    const name    = tags.name || tags['name:en'] ||
+                    `Field (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+
+    freshIds.add(id);
+
+    const existing = cacheMap.get(id);
+    cacheMap.set(id, {
+      id,
+      name,
+      lat,
+      lng,
+      surface,
+      sport:     tags.sport || '',
+      isTurf,
+      lastSeen:  now,
+      firstSeen: existing?.firstSeen || now,
+    });
+  }
+
+  // 4. Determine stale entries (cached but absent from latest scan)
+  const allFields = [...cacheMap.values()];
+  const staleIds  = new Set(
+    allFields.filter(f => !freshIds.has(f.id)).map(f => f.id)
+  );
+
+  // 5. Count breakdown
+  const turfCount    = allFields.filter(f =>  f.isTurf && !staleIds.has(f.id)).length;
+  const nonTurfCount = allFields.filter(f => !f.isTurf && !staleIds.has(f.id)).length;
+  const staleCount   = staleIds.size;
+  const newCount     = freshIds.size - cached.filter(f => freshIds.has(f.id)).length;
+
+  // 6. Save merged cache
+  await _luciusSaveCache(allFields);
+
+  // 7. Re-render pins with stale distinction
+  _luciusDropPins(allFields, staleIds);
+
+  // 8. Update status line
+  let status = `${LUCIUS_RADIUS_MILES}mi scan complete — ` +
+               `${turfCount} turf · ${nonTurfCount} non-turf`;
+  if (staleCount) status += ` · ${staleCount} cached/not found`;
+  if (newCount > 0) status += ` · ${newCount} new`;
+  _luciusSetStatus(status);
+
+  if (btn) btn.disabled = false;
+}
+
+// ══════════════════════════════════════════════════════════════
 
 // Populate project dropdown when import tab opens
 function _populateImportProjectSelect() {
