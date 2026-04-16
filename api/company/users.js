@@ -60,12 +60,24 @@ module.exports = async (req, res) => {
   // GET — list all users in this company
   if (req.method === 'GET') {
     try {
-      const rows = await sql`
-        SELECT id, username, role, division_roles, created_at
-        FROM users
-        WHERE company_code = ${companyCode}
-        ORDER BY created_at ASC
-      `;
+      let rows;
+      try {
+        rows = await sql`
+          SELECT id, username, role, division_roles, created_at
+          FROM users
+          WHERE company_code = ${companyCode}
+          ORDER BY created_at ASC
+        `;
+      } catch {
+        // division_roles column not yet migrated
+        rows = await sql`
+          SELECT id, username, role, created_at
+          FROM users
+          WHERE company_code = ${companyCode}
+          ORDER BY created_at ASC
+        `;
+        rows.forEach(r => { r.division_roles = null; });
+      }
       return res.json({ ok: true, users: rows });
     } catch (err) {
       return res.status(500).json({ error: err.message });
