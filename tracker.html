@@ -4304,7 +4304,9 @@ function renderProjectDashboard() {
   const allEmployees = new Set(_allDailyFlat.map(r => r.employee).filter(Boolean));
   const allDates     = new Set(_allDailyFlat.map(r => r.date).filter(Boolean));
 
-  document.getElementById('project-content').innerHTML = `
+  const _pcRoot = document.getElementById('project-content');
+  if (!_pcRoot) return;
+  _pcRoot.innerHTML = `
     <p class="home-title">Project Dashboard</p>
 
     <div class="stat-grid">
