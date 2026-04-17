@@ -62,17 +62,9 @@ module.exports = async (req, res) => {
   try {
     // ── GET ──────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
-      const rows = await sql`
-        SELECT * FROM trucking_entries
-        WHERE  company_code = ${companyCode}
-        ORDER  BY created_at ASC
-      `;
-
-      if (rows.length > 0) {
-        return res.json({ truckingEntries: rows.map(dbToTR) });
-      }
-
-      // ── Fallback: read from JSON blob (migrates data on first read) ──
+      // Blob is the source of truth — always read from it so extended fields
+      // (actual_start, actual_end, haul_fee, total, customer, description,
+      //  division) survive the round-trip without requiring schema changes.
       const blobRows = await sql`
         SELECT value FROM app_data WHERE key = ${companyCode + ':fct_trucking'}
       `;
@@ -80,10 +72,9 @@ module.exports = async (req, res) => {
       const list = Array.isArray(blob) ? blob : [];
 
       if (list.length > 0) {
-        // Migrate blob data into normalized table — awaited so it completes
-        // before the response is sent (serverless functions freeze on return).
-        try { await _migrateTruckingBlob(sql, companyCode, list); }
-        catch (err) { console.error('[trucking] blob migration failed:', err.message); }
+        _migrateTruckingBlob(sql, companyCode, list).catch(err =>
+          console.error('[trucking] blob migration failed:', err.message)
+        );
       }
 
       return res.json({ truckingEntries: list });
@@ -149,8 +140,8 @@ async function _migrateTruckingBlob(sql, companyCode, list) {
         ${safeDate(t.date)},
         ${t.material_hauled  || null},
         ${safeFloat(t.loads)  ?? null},
-        ${safeFloat(t.rate)   ?? null},
-        ${safeFloat(t.hours)  ?? null},
+        ${safeFloat(t.haul_fee ?? t.rate) ?? null},
+        ${safeFloat(t.total_hours ?? t.hours) ?? null},
         ${t.status || 'pending'},
         ${t.notes  || null},
         ${t.cost_code || null},
@@ -168,8 +159,8 @@ async function _migrateTruckingBlob(sql, companyCode, list) {
         date               = EXCLUDED.date,
         material_hauled    = EXCLUDED.material_hauled,
         loads              = EXCLUDED.loads,
-        rate               = EXCLUDED.rate,
-        hours              = EXCLUDED.hours,
+        rate               = EXCLUDED.rate,   -- haul_fee maps here
+        hours              = EXCLUDED.hours,  -- total_hours maps here
         status             = EXCLUDED.status,
         notes              = EXCLUDED.notes,
         cost_code          = EXCLUDED.cost_code,

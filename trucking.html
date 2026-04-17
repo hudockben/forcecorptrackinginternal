@@ -9,14 +9,15 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:          #0a0a0f;
-      --surface:     #111118;
-      --surface2:    #1a1a26;
-      --border:      #2a2a3a;
-      --orange:      #ef4444;
-      --orange-dim:  #b91c1c;
-      --text:        #e0e0e0;
-      --muted:       #666;
+      --bg:         #0a0a0f;
+      --surface:    #111118;
+      --surface2:   #1a1a26;
+      --border:     #2a2a3a;
+      --orange:     #ef4444;
+      --orange-dim: #b91c1c;
+      --text:       #e0e0e0;
+      --muted:      #666;
+      --green:      #22c55e;
     }
 
     body {
@@ -32,38 +33,28 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0.6rem 1.25rem;
+      padding: 0 1.25rem;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
       position: sticky;
       top: 0;
       z-index: 300;
       gap: 1rem;
+      height: 45px;
     }
-
     .hdr-left { display: flex; align-items: center; gap: 1rem; min-width: 0; }
-
     .brand {
-      font-size: 0.7rem;
-      letter-spacing: 0.3em;
-      text-transform: uppercase;
-      color: var(--orange);
-      font-weight: 700;
-      flex-shrink: 0;
+      font-size: 0.7rem; letter-spacing: 0.3em;
+      text-transform: uppercase; color: var(--orange);
+      font-weight: 700; flex-shrink: 0;
     }
-
     .div-label {
-      font-size: 0.6rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--muted);
+      font-size: 0.6rem; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted);
       border-left: 1px solid var(--border);
-      padding-left: 1rem;
-      white-space: nowrap;
+      padding-left: 1rem; white-space: nowrap;
     }
-
     .hdr-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
-
     .user-avatar {
       width: 30px; height: 30px; border-radius: 50%;
       background: var(--orange-dim);
@@ -71,10 +62,8 @@
       font-size: 0.62rem; font-weight: 700; color: #fff;
       flex-shrink: 0;
     }
-
     .user-info { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
     .user-info strong { color: var(--text); }
-
     .btn-ghost {
       font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
       text-transform: uppercase; color: var(--muted);
@@ -94,15 +83,15 @@
       top: 45px;
       z-index: 200;
       overflow-x: auto;
+      height: 38px;
     }
-
     .tab-btn {
-      padding: 0.6rem 1.25rem;
+      padding: 0 1.25rem;
       font-size: 0.67rem; font-weight: 600; letter-spacing: 0.08em;
       text-transform: uppercase; color: var(--muted);
       background: none; border: none; border-bottom: 2px solid transparent;
       cursor: pointer; transition: color 0.15s, border-color 0.15s;
-      white-space: nowrap; flex-shrink: 0;
+      white-space: nowrap; flex-shrink: 0; height: 100%;
     }
     .tab-btn:hover { color: var(--text); }
     .tab-btn.active { color: var(--orange); border-bottom-color: var(--orange); }
@@ -110,6 +99,196 @@
     /* ── Panels ── */
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
+
+    /* ════════════════════════════════
+       SHEET TOOLBAR
+    ════════════════════════════════ */
+    .sheet-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.55rem 1rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 83px;
+      z-index: 100;
+      height: 46px;
+    }
+    .btn-add-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.35rem 0.85rem;
+      background: var(--orange);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 0.67rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+    .btn-add-row:hover { background: var(--orange-dim); }
+    .row-count {
+      font-size: 0.68rem;
+      color: var(--muted);
+    }
+    .save-status {
+      margin-left: auto;
+      font-size: 0.64rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      transition: color 0.3s;
+    }
+    .save-status.saved  { color: var(--green); }
+    .save-status.saving { color: var(--muted); }
+    .save-status.error  { color: var(--orange); }
+
+    /* ════════════════════════════════
+       SHEET TABLE
+    ════════════════════════════════ */
+    .sheet-scroll {
+      overflow-x: auto;
+      overflow-y: visible;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .sheet-table {
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 12px;
+      min-width: 100%;
+    }
+
+    /* Header row */
+    .sheet-table thead th {
+      background: var(--surface2);
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 6px 8px;
+      text-align: left;
+      border: 1px solid var(--border);
+      white-space: nowrap;
+      position: sticky;
+      top: 129px; /* 45 header + 38 tabbar + 46 toolbar */
+      z-index: 10;
+      user-select: none;
+    }
+    .sheet-table thead th.col-num,
+    .sheet-table thead th.col-del { text-align: center; }
+
+    /* Body rows */
+    .sheet-table tbody tr:nth-child(even) td { background: rgba(255,255,255,0.015); }
+    .sheet-table tbody tr:hover td { background: rgba(239,68,68,0.05) !important; }
+
+    .sheet-table tbody td {
+      border: 1px solid var(--border);
+      padding: 0;
+    }
+    .sheet-table tbody td.col-num {
+      background: var(--surface2) !important;
+      color: var(--muted);
+      font-size: 10px;
+      text-align: center;
+      padding: 0 4px;
+      user-select: none;
+    }
+    .sheet-table tbody td.col-del {
+      background: var(--surface2) !important;
+      text-align: center;
+    }
+
+    /* ── Cell inputs ── */
+    .sheet-input {
+      display: block;
+      width: 100%;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      padding: 5px 8px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      min-height: 29px;
+    }
+    .sheet-input:focus {
+      background: rgba(239, 68, 68, 0.08);
+      box-shadow: inset 0 0 0 1px var(--orange);
+    }
+    .sheet-input[type="date"],
+    .sheet-input[type="time"] { color-scheme: dark; }
+    .sheet-input[type="number"] { text-align: right; }
+
+    /* ── Calculated (read-only) cells ── */
+    .sheet-calc {
+      min-height: 29px;
+      padding: 5px 8px;
+      display: flex;
+      align-items: center;
+      font-variant-numeric: tabular-nums;
+      background: rgba(0,0,0,0.18);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .sheet-calc.has-value { color: var(--text); }
+    .sheet-calc.currency  { color: var(--green); justify-content: flex-end; }
+    .sheet-calc.hours-val { justify-content: flex-end; }
+
+    /* ── Delete button ── */
+    .btn-del-row {
+      background: none;
+      border: none;
+      color: transparent;
+      cursor: pointer;
+      padding: 4px 8px;
+      font-size: 15px;
+      line-height: 1;
+      width: 100%;
+      transition: color 0.15s;
+    }
+    tr:hover .btn-del-row { color: var(--muted); }
+    .btn-del-row:hover    { color: var(--orange) !important; }
+
+    /* ── Empty state ── */
+    .sheet-empty {
+      padding: 4rem 1rem;
+      text-align: center;
+    }
+    .sheet-empty-icon {
+      font-size: 2.5rem;
+      margin-bottom: 1rem;
+      opacity: 0.2;
+    }
+    .sheet-empty-title {
+      font-size: 0.95rem;
+      color: #444;
+      margin-bottom: 0.4rem;
+    }
+    .sheet-empty-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+
+    /* ── Loading bar ── */
+    .loading-bar {
+      height: 2px;
+      background: linear-gradient(90deg, var(--orange), transparent);
+      animation: loadpulse 1.1s ease-in-out infinite;
+    }
+    @keyframes loadpulse {
+      0%   { transform: scaleX(0); transform-origin: left;  }
+      50%  { transform: scaleX(1); transform-origin: left;  }
+      51%  {                        transform-origin: right; }
+      100% { transform: scaleX(0); transform-origin: right; }
+    }
   </style>
 </head>
 <body>
@@ -142,15 +321,74 @@
   </div>
 
   <!-- ══════════════════════════════════════════════
-       ANALYTICS TAB
-  ══════════════════════════════════════════════ -->
-  <div class="tab-panel" id="tab-analytics">
-  </div>
-
-  <!-- ══════════════════════════════════════════════
        TRUCK TRACKING TAB
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-truck-tracking">
+
+    <div id="loadingBar" class="loading-bar"></div>
+
+    <!-- Toolbar -->
+    <div class="sheet-toolbar">
+      <button class="btn-add-row" onclick="addRow()">+ Add Row</button>
+      <span class="row-count" id="rowCount">0 entries</span>
+      <span class="save-status saved" id="saveStatus">Saved</span>
+    </div>
+
+    <!-- Scrollable spreadsheet -->
+    <div class="sheet-scroll">
+      <table class="sheet-table">
+        <colgroup>
+          <col style="width:36px">
+          <col style="width:110px">
+          <col style="width:126px">
+          <col style="width:130px">
+          <col style="width:90px">
+          <col style="width:96px">
+          <col style="width:96px">
+          <col style="width:100px">
+          <col style="width:100px">
+          <col style="width:106px">
+          <col style="width:130px">
+          <col style="width:180px">
+          <col style="width:110px">
+          <col style="width:190px">
+          <col style="width:36px">
+        </colgroup>
+        <thead>
+          <tr>
+            <th class="col-num">#</th>
+            <th>Task Number</th>
+            <th>Actual Date</th>
+            <th>Driver</th>
+            <th>Unit</th>
+            <th>Actual Start</th>
+            <th>Actual End</th>
+            <th>Total Hours</th>
+            <th>Haul Fee</th>
+            <th>Total</th>
+            <th>Customer</th>
+            <th>Description</th>
+            <th>Division</th>
+            <th>Notes</th>
+            <th class="col-del"></th>
+          </tr>
+        </thead>
+        <tbody id="sheetBody"></tbody>
+      </table>
+
+      <div id="sheetEmpty" class="sheet-empty" style="display:none">
+        <div class="sheet-empty-icon">🚛</div>
+        <div class="sheet-empty-title">No entries yet</div>
+        <div class="sheet-empty-sub">Click <strong>+ Add Row</strong> to log your first trucking entry.</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══════════════════════════════════════════════
+       ANALYTICS TAB
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-analytics">
   </div>
 
   <script>
@@ -164,15 +402,9 @@
     if (!token || !user) window.location.replace('index.html');
     if (division !== 'trucking') window.location.replace('divisions.html');
 
-    /* ── Populate header ── */
-    const avatarEl = document.getElementById('userAvatar');
-    const infoEl   = document.getElementById('userInfo');
-
-    if (user) {
-      avatarEl.textContent = (user.username || '?').charAt(0).toUpperCase();
-      infoEl.innerHTML =
-        `<strong>${(user.username || '').replace(/</g, '&lt;')}</strong>&nbsp;·&nbsp;${(user.companyName || user.companyCode || '').replace(/</g, '&lt;')}`;
-    }
+    document.getElementById('userAvatar').textContent = (user?.username || '?').charAt(0).toUpperCase();
+    document.getElementById('userInfo').innerHTML =
+      `<strong>${esc(user?.username || '')}</strong>&nbsp;·&nbsp;${esc(user?.companyName || user?.companyCode || '')}`;
 
     /* ═══════════════════════════════════════════
        TAB SWITCHING
@@ -193,13 +425,306 @@
       localStorage.removeItem('fct_division');
       window.location.replace('divisions.html');
     }
-
     function signOut() {
-      localStorage.removeItem('fct_token');
-      localStorage.removeItem('fct_user');
-      localStorage.removeItem('fct_division');
+      ['fct_token','fct_user','fct_division'].forEach(k => localStorage.removeItem(k));
       window.location.replace('index.html');
     }
+
+    /* ═══════════════════════════════════════════
+       UTILITIES
+    ═══════════════════════════════════════════ */
+    function esc(s) {
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+    function escAttr(s) {
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    }
+    function uid() {
+      return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    }
+
+    /* ═══════════════════════════════════════════
+       STATE
+    ═══════════════════════════════════════════ */
+    let truckingLog = [];
+    let saveTimer   = null;
+
+    /* ═══════════════════════════════════════════
+       MATH
+    ═══════════════════════════════════════════ */
+    function calcHours(start, end) {
+      if (!start || !end) return null;
+      const [sh, sm] = start.split(':').map(Number);
+      const [eh, em] = end.split(':').map(Number);
+      if ([sh,sm,eh,em].some(isNaN)) return null;
+      let mins = (eh * 60 + em) - (sh * 60 + sm);
+      if (mins < 0) mins += 1440; // overnight
+      return Math.round(mins / 60 * 100) / 100;
+    }
+    function calcTotal(hours, fee) {
+      const h = parseFloat(hours);
+      const f = parseFloat(fee);
+      if (isNaN(h) || isNaN(f)) return null;
+      return Math.round(h * f * 100) / 100;
+    }
+    function fmtHours(v) {
+      if (v === '' || v == null) return '';
+      const n = parseFloat(v);
+      return isNaN(n) ? '' : (n % 1 === 0 ? String(n) : n.toFixed(2));
+    }
+    function fmtCurrency(v) {
+      if (v === '' || v == null) return '';
+      const n = parseFloat(v);
+      return isNaN(n) ? '' : '$' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    /* ═══════════════════════════════════════════
+       ROW FACTORY
+    ═══════════════════════════════════════════ */
+    function newEntry() {
+      return {
+        id:           uid(),
+        tr_number:    'TR-' + String(truckingLog.length + 1).padStart(3, '0'),
+        actual_date:  new Date().toISOString().slice(0, 10),
+        driver:       '',
+        unit:         '',
+        actual_start: '',
+        actual_end:   '',
+        total_hours:  '',
+        haul_fee:     '',
+        total:        '',
+        customer:     '',
+        description:  '',
+        division:     '',
+        notes:        '',
+        status:       'pending',
+      };
+    }
+
+    /* ═══════════════════════════════════════════
+       RENDER
+    ═══════════════════════════════════════════ */
+    function renderSheet() {
+      const tbody  = document.getElementById('sheetBody');
+      const empty  = document.getElementById('sheetEmpty');
+      const countEl = document.getElementById('rowCount');
+      const n = truckingLog.length;
+      countEl.textContent = n === 1 ? '1 entry' : `${n} entries`;
+
+      if (n === 0) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+      tbody.innerHTML = truckingLog.map((e, i) => buildRow(e, i)).join('');
+    }
+
+    function buildRow(e, idx) {
+      function inp(field, type, extra) {
+        const val = escAttr(String(e[field] ?? ''));
+        const ta  = type === 'number' ? 'type="number" step="any" min="0"'
+                  : type === 'date'   ? 'type="date"'
+                  : type === 'time'   ? 'type="time"'
+                  : 'type="text"';
+        return `<input class="sheet-input" ${ta} value="${val}" ${extra||''}
+          data-id="${e.id}" data-field="${field}"
+          onchange="onCellChange(this)"
+          onkeydown="onCellKey(event,this)">`;
+      }
+
+      const hDisp = fmtHours(e.total_hours);
+      const tDisp = fmtCurrency(e.total);
+
+      return `<tr data-id="${e.id}">
+  <td class="col-num">${idx + 1}</td>
+  <td>${inp('tr_number',   'text')}</td>
+  <td>${inp('actual_date', 'date')}</td>
+  <td>${inp('driver',      'text')}</td>
+  <td>${inp('unit',        'text')}</td>
+  <td>${inp('actual_start','time')}</td>
+  <td>${inp('actual_end',  'time')}</td>
+  <td><div class="sheet-calc hours-val${hDisp ? ' has-value' : ''}" id="h-${e.id}">${esc(hDisp)}</div></td>
+  <td>${inp('haul_fee', 'number', 'placeholder="0.00"')}</td>
+  <td><div class="sheet-calc currency${tDisp ? ' has-value' : ''}" id="t-${e.id}">${esc(tDisp)}</div></td>
+  <td>${inp('customer',    'text')}</td>
+  <td>${inp('description', 'text')}</td>
+  <td>${inp('division',    'text')}</td>
+  <td>${inp('notes',       'text')}</td>
+  <td class="col-del"><button class="btn-del-row" onclick="deleteRow('${e.id}')" title="Delete row">✕</button></td>
+</tr>`;
+    }
+
+    /* ═══════════════════════════════════════════
+       CELL EVENTS
+    ═══════════════════════════════════════════ */
+    function onCellChange(input) {
+      const { id, field } = input.dataset;
+      const entry = truckingLog.find(e => e.id === id);
+      if (!entry) return;
+
+      entry[field] = input.value;
+
+      if (field === 'actual_start' || field === 'actual_end') {
+        const h = calcHours(entry.actual_start, entry.actual_end);
+        entry.total_hours = h !== null ? h : '';
+        const hEl = document.getElementById('h-' + id);
+        if (hEl) {
+          const hDisp = fmtHours(entry.total_hours);
+          hEl.textContent = hDisp;
+          hEl.classList.toggle('has-value', !!hDisp);
+        }
+      }
+
+      if (field === 'actual_start' || field === 'actual_end' || field === 'haul_fee') {
+        const t = calcTotal(entry.total_hours, entry.haul_fee);
+        entry.total = t !== null ? t : '';
+        const tEl = document.getElementById('t-' + id);
+        if (tEl) {
+          const tDisp = fmtCurrency(entry.total);
+          tEl.textContent = tDisp;
+          tEl.classList.toggle('has-value', !!tDisp);
+        }
+      }
+
+      scheduleSave();
+    }
+
+    function onCellKey(e, input) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const row  = input.closest('tr');
+      const next = row?.nextElementSibling;
+      if (next) {
+        next.querySelector(`input[data-field="${input.dataset.field}"]`)?.focus();
+      } else {
+        addRow();
+      }
+    }
+
+    /* ═══════════════════════════════════════════
+       ROW ACTIONS
+    ═══════════════════════════════════════════ */
+    function addRow() {
+      const entry = newEntry();
+      truckingLog.push(entry);
+      renderSheet();
+      document.getElementById('sheetBody')
+        .lastElementChild?.querySelector('input')?.focus();
+      scheduleSave();
+    }
+
+    function deleteRow(id) {
+      if (!confirm('Delete this row?')) return;
+      truckingLog = truckingLog.filter(e => e.id !== id);
+      renderSheet();
+      scheduleSave();
+    }
+
+    /* ═══════════════════════════════════════════
+       SAVE STATUS
+    ═══════════════════════════════════════════ */
+    function setSaveStatus(state) {
+      const el = document.getElementById('saveStatus');
+      if (!el) return;
+      el.className = 'save-status ' + state;
+      el.textContent = state === 'saving' ? 'Saving…'
+                     : state === 'saved'  ? 'Saved'
+                     : 'Save failed';
+    }
+    function scheduleSave() {
+      setSaveStatus('saving');
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveData, 1200);
+    }
+
+    /* ═══════════════════════════════════════════
+       API
+    ═══════════════════════════════════════════ */
+    async function saveData() {
+      try {
+        const entries = truckingLog.map(e => ({
+          id:             e.id,
+          tr_number:      e.tr_number,
+          date:           e.actual_date,
+          actual_date:    e.actual_date,
+          driver:         e.driver,
+          unit:           e.unit,
+          truck_type:     e.unit,
+          actual_start:   e.actual_start,
+          actual_end:     e.actual_end,
+          total_hours:    e.total_hours,
+          hours:          e.total_hours,
+          haul_fee:       e.haul_fee,
+          rate:           e.haul_fee,
+          total:          e.total,
+          customer:       e.customer,
+          description:    e.description,
+          material_hauled: e.description,
+          division:       e.division,
+          division_name:  e.division,
+          notes:          e.notes,
+          status:         e.status || 'pending',
+        }));
+        const res = await fetch('/api/trucking', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token,
+          },
+          body: JSON.stringify({ truckingEntries: entries }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        setSaveStatus('saved');
+      } catch (err) {
+        console.error('[trucking] save:', err);
+        setSaveStatus('error');
+      }
+    }
+
+    async function loadData() {
+      const bar = document.getElementById('loadingBar');
+      try {
+        const res = await fetch('/api/trucking', {
+          headers: { 'Authorization': 'Bearer ' + token },
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        truckingLog = (data.truckingEntries || []).map(e => ({
+          id:           e.id || uid(),
+          tr_number:    e.tr_number    || '',
+          actual_date:  e.actual_date  || e.date || '',
+          driver:       e.driver       || '',
+          unit:         e.unit         || e.truck_type || '',
+          actual_start: e.actual_start || '',
+          actual_end:   e.actual_end   || '',
+          total_hours:  e.total_hours  != null ? String(e.total_hours)
+                      : e.hours        != null ? String(e.hours) : '',
+          haul_fee:     e.haul_fee     != null ? String(e.haul_fee)
+                      : e.rate         != null ? String(e.rate) : '',
+          total:        e.total        != null ? String(e.total) : '',
+          customer:     e.customer     || '',
+          description:  e.description  || e.material_hauled || '',
+          division:     e.division     || e.division_name || '',
+          notes:        e.notes        || '',
+          status:       e.status       || 'pending',
+        }));
+
+        renderSheet();
+        setSaveStatus('saved');
+      } catch (err) {
+        console.error('[trucking] load:', err);
+        setSaveStatus('error');
+      } finally {
+        if (bar) bar.remove();
+      }
+    }
+
+    /* ═══════════════════════════════════════════
+       INIT
+    ═══════════════════════════════════════════ */
+    loadData();
   </script>
 </body>
 </html>
