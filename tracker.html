@@ -4304,7 +4304,9 @@ function renderProjectDashboard() {
   const allEmployees = new Set(_allDailyFlat.map(r => r.employee).filter(Boolean));
   const allDates     = new Set(_allDailyFlat.map(r => r.date).filter(Boolean));
 
-  document.getElementById('project-content').innerHTML = `
+  const _pcRoot = document.getElementById('project-content');
+  if (!_pcRoot) return;
+  _pcRoot.innerHTML = `
     <p class="home-title">Project Dashboard</p>
 
     <div class="stat-grid">
@@ -18211,6 +18213,12 @@ const LUCIUS_CONFIG_KEY = 'fct_lucius_config';
 // ── Runtime config (loaded from store; these are fallback defaults) ──
 let _luciusConfig = { lat: 36.1699, lng: -115.1398, radiusMiles: 10 };
 
+// ── Mapbox access token ───────────────────────────────────────
+// Paste your public Mapbox token here (starts with "pk."). Get one at
+// https://account.mapbox.com/access-tokens/ — free tier = 50k loads/month.
+// Leave blank to use free OpenStreetMap tiles as a fallback.
+let MAPBOX_TOKEN = ''; // fetched at runtime from /api/config/mapbox
+
 // ── State ─────────────────────────────────────────────────────
 let _luciusMap          = null;
 let _luciusMarkers      = [];
@@ -18481,16 +18489,68 @@ function _luciusDropPins(fields, staleIds) {
 }
 
 // ── Map initialisation ────────────────────────────────────────
-function _luciusInitMap() {
+async function _luciusFetchMapboxToken() {
+  if (MAPBOX_TOKEN) return MAPBOX_TOKEN;
+  // Client-side override for testing (set via: localStorage.setItem('fct_mapbox_token', 'pk...'))
+  const override = localStorage.getItem('fct_mapbox_token');
+  if (override) {
+    MAPBOX_TOKEN = override;
+    console.log('[lucius] Using Mapbox token from localStorage override');
+    return MAPBOX_TOKEN;
+  }
+  try {
+    const res = await fetch('/api/config/mapbox');
+    const data = await res.json();
+    MAPBOX_TOKEN = data.token || '';
+    console.log('[lucius] Mapbox token from server:', MAPBOX_TOKEN ? 'present' : 'empty');
+  } catch (e) {
+    console.warn('[lucius] Mapbox token fetch failed — using OSM fallback', e.message);
+    MAPBOX_TOKEN = '';
+  }
+  return MAPBOX_TOKEN;
+}
+
+async function _luciusInitMap() {
   if (_luciusMap) {
     setTimeout(() => _luciusMap.invalidateSize(), 50);
     return;
   }
+  await _luciusFetchMapboxToken();
   _luciusMap = L.map('lucius-map').setView([_luciusConfig.lat, _luciusConfig.lng], 12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    maxZoom: 19,
-  }).addTo(_luciusMap);
+
+  let streets, satellite;
+  if (MAPBOX_TOKEN) {
+    // Mapbox tiles — high-quality street + satellite views
+    const mapboxUrl = 'https://api.mapbox.com/styles/v1/{id}/tiles/{z}/{x}/{y}?access_token=' + MAPBOX_TOKEN;
+    const mapboxAttrib = '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+    streets = L.tileLayer(mapboxUrl, {
+      id: 'mapbox/streets-v12',
+      tileSize: 512,
+      zoomOffset: -1,
+      maxZoom: 19,
+      attribution: mapboxAttrib,
+    });
+    satellite = L.tileLayer(mapboxUrl, {
+      id: 'mapbox/satellite-streets-v12',
+      tileSize: 512,
+      zoomOffset: -1,
+      maxZoom: 19,
+      attribution: mapboxAttrib,
+    });
+    streets.addTo(_luciusMap);
+    L.control.layers(
+      { 'Streets': streets, 'Satellite': satellite },
+      null,
+      { position: 'topright', collapsed: false }
+    ).addTo(_luciusMap);
+  } else {
+    // Fallback: free OpenStreetMap tiles (no token required)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: 19,
+    }).addTo(_luciusMap);
+  }
+
   _luciusUpdateCircle();
 }
 
@@ -18499,7 +18559,7 @@ async function initLuciusTab() {
   // Load persisted config first so map opens at the right location
   await _luciusLoadConfig();
   _luciusPopulateInputs();
-  _luciusInitMap();
+  await _luciusInitMap();
 
   if (_luciusInitDone) return;
   _luciusInitDone = true;
