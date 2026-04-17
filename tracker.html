@@ -18489,10 +18489,18 @@ function _luciusDropPins(fields, staleIds) {
 // ── Map initialisation ────────────────────────────────────────
 async function _luciusFetchMapboxToken() {
   if (MAPBOX_TOKEN) return MAPBOX_TOKEN;
+  // Client-side override for testing (set via: localStorage.setItem('fct_mapbox_token', 'pk...'))
+  const override = localStorage.getItem('fct_mapbox_token');
+  if (override) {
+    MAPBOX_TOKEN = override;
+    console.log('[lucius] Using Mapbox token from localStorage override');
+    return MAPBOX_TOKEN;
+  }
   try {
     const res = await fetch('/api/config/mapbox');
     const data = await res.json();
     MAPBOX_TOKEN = data.token || '';
+    console.log('[lucius] Mapbox token from server:', MAPBOX_TOKEN ? 'present' : 'empty');
   } catch (e) {
     console.warn('[lucius] Mapbox token fetch failed — using OSM fallback', e.message);
     MAPBOX_TOKEN = '';
