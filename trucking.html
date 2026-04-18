@@ -251,6 +251,23 @@
     .yr-tab:hover { color: var(--text); border-color: #555; }
     .yr-tab.active { background: #facc15; color: #0a0a0f; border-color: #facc15; font-weight: 800; }
     .yr-row-count { font-size: 0.72rem; color: var(--muted); margin-left: 0.5rem; }
+
+    /* ── Analytics sub-tabs ── */
+    .sub-tab-bar {
+      display: flex; background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 0 1rem;
+    }
+    .sub-tab-btn {
+      padding: 0.55rem 1.1rem;
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); background: none; border: none;
+      border-bottom: 2px solid transparent; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    .sub-tab-btn:hover { color: var(--text); }
+    .sub-tab-btn.active { color: var(--orange); border-bottom-color: var(--orange); }
+    .sub-tab-panel { display: none; }
+    .sub-tab-panel.active { display: block; }
   </style>
 </head>
 <body>
@@ -298,6 +315,12 @@
        ANALYTICS TAB
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-analytics">
+    <div class="sub-tab-bar">
+      <button class="sub-tab-btn active" data-sub="customer-data">Customer Data</button>
+      <button class="sub-tab-btn" data-sub="financials">Financials</button>
+    </div>
+    <div class="sub-tab-panel active" id="sub-customer-data"></div>
+    <div class="sub-tab-panel" id="sub-financials"></div>
   </div>
 
   <!-- ══════════════════════════════════════════════
@@ -337,6 +360,16 @@
         document.querySelectorAll('.tab-panel').forEach(p =>
           p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
         if (btn.dataset.tab === 'truck-tracking') renderTrackingTab();
+      });
+    });
+
+    /* ── Analytics sub-tab switching ── */
+    document.querySelectorAll('.sub-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.sub-tab-btn').forEach(b =>
+          b.classList.toggle('active', b === btn));
+        document.querySelectorAll('.sub-tab-panel').forEach(p =>
+          p.classList.toggle('active', p.id === 'sub-' + btn.dataset.sub));
       });
     });
 
