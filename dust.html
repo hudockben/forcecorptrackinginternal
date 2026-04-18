@@ -2990,16 +2990,16 @@
       buildBars('an-bar-gallons', cos.map(c=>({label:c.name, v:c.gallons})),  'green', v => fmtGal(v)+' gal');
 
       /* ── Detail table — ABC revenue-tier analysis ── */
-      // Sort by revenue desc, accumulate cumulative %, assign tier:
-      //   Critical  = first 70% of total revenue (losing them is severe)
-      //   Moderate  = next 20%  (70–90% cumulative)
-      //   Low       = remaining 10%
+      // Classify by individual revenue share (not cumulative) so large customers
+      // like CNX (~17% of revenue) aren't demoted by what's above them:
+      //   Critical  ≥ 10% of total revenue
+      //   Moderate  ≥  3%
+      //   Low       <  3%
       const _totalInv = cos.reduce((s,c) => s + c.invTotal, 0);
-      let _cumPct = 0;
       const _tierMap = {};
-      [...cos].sort((a,b) => b.invTotal - a.invTotal).forEach(c => {
-        _cumPct += _totalInv ? (c.invTotal / _totalInv * 100) : 0;
-        _tierMap[c.name] = _cumPct <= 70 ? 'Critical' : _cumPct <= 90 ? 'Moderate' : 'Low';
+      cos.forEach(c => {
+        const share = _totalInv ? (c.invTotal / _totalInv * 100) : 0;
+        _tierMap[c.name] = share >= 10 ? 'Critical' : share >= 3 ? 'Moderate' : 'Low';
       });
       const tierBadge = name => {
         const t = _tierMap[name] || 'Low';
