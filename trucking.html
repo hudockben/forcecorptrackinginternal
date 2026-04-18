@@ -115,18 +115,48 @@
     .td-task-num { font-family: monospace; font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
     .td-total    { text-align: right; color: #facc15; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
 
-    .tr-tbl { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 6px; min-width: 1600px; }
-    .tr-tbl thead th {
-      padding: 0.55rem 0.6rem;
-      color: var(--muted);
-      font-size: 0.65rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      border-bottom: 1px solid var(--border);
-      white-space: nowrap;
-      text-align: left;
+    /* ── Scrollable table wrapper ── */
+    .tbl-scroll-wrap { overflow: auto; max-height: calc(100vh - 290px); border-radius: 6px; }
+
+    /* ── Totals bar ── */
+    .totals-bar {
+      display: flex; align-items: center; gap: 2rem; flex-wrap: wrap;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.55rem 1rem; margin-bottom: 0.65rem;
+      font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase;
     }
-    .tr-tbl thead th.r { text-align: right; }
+    .totals-bar .lbl { color: var(--muted); }
+    .totals-bar .val { color: #facc15; font-weight: 700; margin-left: 0.35rem; }
+
+    .tr-tbl { width: 100%; border-collapse: collapse; background: var(--surface); min-width: 1600px; }
+
+    /* ── Sticky column headers ── */
+    .tr-tbl thead tr.hdr-row th {
+      position: sticky; top: 0; z-index: 3;
+      padding: 0.55rem 0.6rem;
+      background: var(--surface2);
+      color: var(--muted);
+      font-size: 0.65rem; letter-spacing: 0.08em; text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap; text-align: left;
+    }
+    .tr-tbl thead tr.hdr-row th.r { text-align: right; }
+
+    /* ── Sticky filter row ── */
+    .tr-tbl thead tr.filter-row th {
+      position: sticky; top: 31px; z-index: 3;
+      background: var(--surface);
+      padding: 0.25rem 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .tr-tbl thead tr.filter-row input {
+      width: 100%; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 3px;
+      color: var(--muted); font-size: 0.7rem;
+      padding: 0.18rem 0.35rem; outline: none; box-sizing: border-box;
+    }
+    .tr-tbl thead tr.filter-row input:focus { border-color: #555; color: var(--text); }
+
     .tr-tbl tbody tr { border-bottom: 1px solid var(--border); }
     .tr-tbl tbody td { padding: 0.35rem 0.6rem; }
     .tr-tbl input[type=text],
@@ -600,6 +630,29 @@
     }
 
     /* ═══════════════════════════════════════════
+       COLUMN FILTERS
+    ═══════════════════════════════════════════ */
+    let trColFilters      = {};
+    let _activeFilterFld  = null;
+
+    function setColFilter(field, val) {
+      _activeFilterFld = field;
+      if (val) trColFilters[field] = val;
+      else delete trColFilters[field];
+      renderTrackingTab();
+    }
+
+    function applyColFilters(entries) {
+      const active = Object.entries(trColFilters).filter(([, v]) => v);
+      if (!active.length) return entries;
+      return entries.filter(e =>
+        active.every(([field, val]) =>
+          String(e[field] || '').toLowerCase().includes(val.toLowerCase())
+        )
+      );
+    }
+
+    /* ═══════════════════════════════════════════
        TRUCK TRACKING — RENDER
     ═══════════════════════════════════════════ */
     function renderTrackingTab() {
@@ -634,28 +687,55 @@
         `<select onchange="updateField('${id}','${field}',this.value)"
           style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
 
-      // ── Year tabs ──
+      // ── Year tabs + column filter ──
       const dataYears = [...new Set(
         divEntries.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
       )].sort();
       const tabYears = [...new Set([...dataYears, '2025', '2026'])].sort();
 
-      const visibleEntries = activeYearFilter === 'all'
+      const yearFiltered = activeYearFilter === 'all'
         ? divEntries
         : divEntries.filter(e => (e.actual_date || '').startsWith(activeYearFilter));
+
+      const filteredEntries = applyColFilters(yearFiltered);
+
+      // ── Totals ──
+      let sumHours = 0, sumRevenue = 0;
+      filteredEntries.forEach(e => {
+        const h = parseFloat(e.total_hours) || 0;
+        const f = parseFloat(e.haul_fee)    || 0;
+        sumHours   += h;
+        sumRevenue += h * f;
+      });
+      const fmtMoney = n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+      const totalsHTML = `
+        <div class="totals-bar">
+          <span><span class="lbl">Total Hours</span><span class="val">${sumHours.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2})}</span></span>
+          <span><span class="lbl">Total Revenue</span><span class="val">${fmtMoney(sumRevenue)}</span></span>
+          <span><span class="lbl">Entries</span><span class="val">${filteredEntries.length}</span></span>
+        </div>`;
 
       const yearTabsHTML = `
         <div class="yr-tabs">
           <button class="yr-tab${activeYearFilter === 'all' ? ' active' : ''}" onclick="setYearFilter('all')">All</button>
           ${tabYears.map(y => `<button class="yr-tab${activeYearFilter === y ? ' active' : ''}" onclick="setYearFilter('${y}')">${y}</button>`).join('')}
-          <span class="yr-row-count">${visibleEntries.length} of ${divEntries.length} row${divEntries.length === 1 ? '' : 's'}</span>
+          <span class="yr-row-count">${filteredEntries.length} of ${divEntries.length} row${divEntries.length === 1 ? '' : 's'}</span>
         </div>`;
+
+      // ── Filter input helper ──
+      const fi = field => {
+        const v = trColFilters[field] || '';
+        return `<input type="text" value="${esc(v)}" placeholder="filter…"
+          data-filter-field="${field}"
+          oninput="setColFilter('${field}',this.value)">`;
+      };
 
       const rowsHTML = divEntries.length === 0
         ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries yet — click + Add Row to begin.</td></tr>`
-        : visibleEntries.length === 0
-        ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries for ${activeYearFilter}.</td></tr>`
-        : visibleEntries.map(e => {
+        : filteredEntries.length === 0
+        ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries match the current filters.</td></tr>`
+        : filteredEntries.map(e => {
             const tot = (parseFloat(e.total_hours)||0) * (parseFloat(e.haul_fee)||0);
             return `<tr>
               <td class="td-task-num">${esc(e.task_number)}</td>
@@ -669,7 +749,7 @@
               <td style="min-width:90px">${inp(e.id,'actual_end','time','')}</td>
               <td style="min-width:80px;text-align:right">${inp(e.id,'total_hours','number','0')}</td>
               <td style="min-width:90px;text-align:right">${inp(e.id,'haul_fee','number','0.00')}</td>
-              <td class="td-total" id="td-tot-${e.id}">$${tot.toFixed(4)}</td>
+              <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
               <td style="min-width:130px">${sel(e.id,'customer',customerOpts(e.customer))}</td>
               <td style="min-width:160px">${inp(e.id,'description','text','Description')}</td>
               <td style="min-width:100px">${inp(e.id,'division','text','Division')}</td>
@@ -683,7 +763,7 @@
       const savedStyle = _isSaved ? '' : 'display:none';
 
       root.innerHTML = `
-        <div style="padding:1.25rem">
+        <div style="padding:1.25rem 1.25rem 0">
           <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.85rem;flex-wrap:wrap">
             <button class="btn-add-row" onclick="addRow()">+ Add Row</button>
             <button class="btn-ghost" onclick="triggerCSVUpload()" style="font-size:0.65rem;padding:0.28rem 0.65rem">&#8679; Upload CSV</button>
@@ -693,10 +773,13 @@
             <span id="save-status" style="font-size:0.72rem;font-weight:600;color:#22c55e;letter-spacing:0.06em;text-transform:uppercase;${savedStyle}">SAVED</span>
           </div>
           ${yearTabsHTML}
-          <div style="overflow-x:auto">
+          ${totalsHTML}
+        </div>
+        <div style="padding:0 1.25rem 1.25rem">
+          <div class="tbl-scroll-wrap">
             <table class="tr-tbl">
               <thead>
-                <tr>
+                <tr class="hdr-row">
                   <th>Task Number</th>
                   <th>Actual Date</th>
                   <th>Driver</th>
@@ -712,11 +795,33 @@
                   <th>Notes</th>
                   <th style="width:36px"></th>
                 </tr>
+                <tr class="filter-row">
+                  <th>${fi('task_number')}</th>
+                  <th>${fi('actual_date')}</th>
+                  <th>${fi('driver')}</th>
+                  <th>${fi('unit')}</th>
+                  <th>${fi('actual_start')}</th>
+                  <th>${fi('actual_end')}</th>
+                  <th>${fi('total_hours')}</th>
+                  <th>${fi('haul_fee')}</th>
+                  <th></th>
+                  <th>${fi('customer')}</th>
+                  <th>${fi('description')}</th>
+                  <th>${fi('division')}</th>
+                  <th>${fi('notes')}</th>
+                  <th></th>
+                </tr>
               </thead>
               <tbody>${rowsHTML}</tbody>
             </table>
           </div>
         </div>`;
+
+      // Restore focus to the active filter input after re-render
+      if (_activeFilterFld) {
+        const inp = root.querySelector(`input[data-filter-field="${_activeFilterFld}"]`);
+        if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+      }
     }
 
     /* ═══════════════════════════════════════════
