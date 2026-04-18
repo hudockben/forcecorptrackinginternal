@@ -362,7 +362,11 @@
         document.querySelectorAll('.tab-panel').forEach(p =>
           p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
         if (btn.dataset.tab === 'truck-tracking') renderTrackingTab();
-        if (btn.dataset.tab === 'analytics') renderCustomerData();
+        if (btn.dataset.tab === 'analytics') {
+          const activeSub = document.querySelector('.sub-tab-btn.active');
+          if (activeSub?.dataset.sub === 'equipment-utilization') renderEquipmentUtilization();
+          else renderCustomerData();
+        }
       });
     });
 
@@ -374,6 +378,7 @@
         document.querySelectorAll('.sub-tab-panel').forEach(p =>
           p.classList.toggle('active', p.id === 'sub-' + btn.dataset.sub));
         if (btn.dataset.sub === 'customer-data') renderCustomerData();
+        if (btn.dataset.sub === 'equipment-utilization') renderEquipmentUtilization();
       });
     });
 
@@ -403,6 +408,7 @@
     let _isSaved         = false;
     let activeYearFilter          = 'all';
     let analyticsYearFilter       = 'all';
+    let equipYearFilter           = 'all';
 
     function setYearFilter(year) {
       activeYearFilter = year;
@@ -992,6 +998,160 @@
                 }
               </tbody>
             </table>
+          </div>
+        </div>`;
+    }
+
+    /* ═══════════════════════════════════════════
+       ANALYTICS — EQUIPMENT UTILIZATION
+    ═══════════════════════════════════════════ */
+    function renderEquipmentUtilization() {
+      const root = document.getElementById('sub-equipment-utilization');
+      if (!root) return;
+
+      const esc = s => String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      const fmtMoney = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const fmtHrs   = n => n.toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+
+      // Year tabs
+      const dataYears = [...new Set(
+        divEntries.map(e=>(e.actual_date||'').slice(0,4)).filter(y=>/^\d{4}$/.test(y))
+      )].sort();
+      const tabYears = [...new Set([...dataYears,'2025','2026'])].sort();
+
+      const entries = equipYearFilter === 'all'
+        ? divEntries
+        : divEntries.filter(e=>(e.actual_date||'').startsWith(equipYearFilter));
+
+      // Aggregate by unit
+      const byUnit = {};
+      entries.forEach(e => {
+        const k = e.unit || '(none)';
+        if (!byUnit[k]) byUnit[k] = { hours:0, revenue:0, count:0 };
+        byUnit[k].hours   += parseFloat(e.total_hours)||0;
+        byUnit[k].revenue += (parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0);
+        byUnit[k].count++;
+      });
+      const unitRows = Object.entries(byUnit)
+        .map(([name,d])=>({name,...d}))
+        .sort((a,b)=>b.hours-a.hours);
+
+      // Aggregate by driver
+      const byDriver = {};
+      entries.forEach(e => {
+        const k = e.driver || '(none)';
+        if (!byDriver[k]) byDriver[k] = { hours:0, revenue:0, count:0 };
+        byDriver[k].hours   += parseFloat(e.total_hours)||0;
+        byDriver[k].revenue += (parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0);
+        byDriver[k].count++;
+      });
+      const driverRows = Object.entries(byDriver)
+        .map(([name,d])=>({name,...d}))
+        .sort((a,b)=>b.hours-a.hours);
+
+      const maxUnitHrs  = Math.max(...unitRows.map(r=>r.hours),   1);
+      const maxUnitRev  = Math.max(...unitRows.map(r=>r.revenue),  1);
+      const maxDrvHrs   = Math.max(...driverRows.map(r=>r.hours),  1);
+      const maxDrvRev   = Math.max(...driverRows.map(r=>r.revenue), 1);
+
+      const totalHours   = entries.reduce((s,e)=>s+(parseFloat(e.total_hours)||0),0);
+      const totalRevenue = entries.reduce((s,e)=>s+(parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0),0);
+      const activeUnits  = [...new Set(entries.map(e=>e.unit).filter(Boolean))].length;
+      const activeDrivers= [...new Set(entries.map(e=>e.driver).filter(Boolean))].length;
+
+      // Helpers
+      const statCard = (label, value, sub, accent=false) =>
+        `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.45rem">${label}</div>
+          <div style="font-size:1.55rem;font-weight:700;color:${accent?'#facc15':'var(--text)'};line-height:1.15;margin-bottom:0.25rem">${value}</div>
+          <div style="font-size:0.7rem;color:var(--muted)">${sub}</div>
+        </div>`;
+
+      const barRow = (name, val, max, color, label) =>
+        `<div style="display:flex;align-items:center;gap:0.65rem;margin-bottom:0.5rem">
+          <span style="font-size:0.74rem;color:var(--text);width:130px;flex-shrink:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(name)}">${esc(name)}</span>
+          <div style="flex:1;background:var(--border);border-radius:3px;height:9px;overflow:hidden;min-width:0">
+            <div style="width:${Math.min(100,(val/max)*100).toFixed(2)}%;height:100%;background:${color};border-radius:3px"></div>
+          </div>
+          <span style="font-size:0.7rem;color:var(--muted);white-space:nowrap;min-width:85px">${label}</span>
+        </div>`;
+
+      const chartCard = (title, color, rowsHtml) =>
+        `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};margin-bottom:1rem">${title}</div>
+          ${rowsHtml || `<div style="color:var(--muted);font-size:0.8rem">No data.</div>`}
+        </div>`;
+
+      const detailTable = (rows, labelCol) => {
+        if (!rows.length) return `<div style="padding:1rem;color:var(--muted);font-size:0.8rem">No data for this period.</div>`;
+        return `<table style="width:100%;border-collapse:collapse;font-size:0.78rem">
+          <thead>
+            <tr style="background:var(--surface2)">
+              ${['', 'Entries','Total Hrs','Avg Hrs / Entry','Total Revenue'].map((h,i) =>
+                `<th style="padding:0.6rem ${i===0?'1rem':'0.75rem'};text-align:${i===0?'left':'right'};font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">${h||labelCol}</th>`
+              ).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((r,i)=>{
+              const avg = r.count ? r.hours/r.count : 0;
+              return `<tr style="border-bottom:1px solid var(--border);${i%2===1?'background:rgba(255,255,255,0.02)':''}">
+                <td style="padding:0.55rem 1rem;color:var(--text);font-weight:500">${esc(r.name)}</td>
+                <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted)">${r.count}</td>
+                <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--text)">${fmtHrs(r.hours)}</td>
+                <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted)">${fmtHrs(avg)}</td>
+                <td style="padding:0.55rem 1rem;text-align:right;color:#facc15;font-weight:600">${fmtMoney(r.revenue)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+      };
+
+      const noData = `<div style="color:var(--muted);font-size:0.8rem;padding:0.5rem 0">No data for this period.</div>`;
+
+      const unitHrsRows   = unitRows.map(r=>barRow(r.name,r.hours,  maxUnitHrs,'#60a5fa',fmtHrs(r.hours)+' hrs')).join('') || noData;
+      const unitRevRows   = unitRows.map(r=>barRow(r.name,r.revenue,maxUnitRev,'#facc15',fmtMoney(r.revenue))).join('')   || noData;
+      const driverHrsRows = driverRows.map(r=>barRow(r.name,r.hours,  maxDrvHrs,'#34d399',fmtHrs(r.hours)+' hrs')).join('') || noData;
+      const driverRevRows = driverRows.map(r=>barRow(r.name,r.revenue,maxDrvRev,'#fb923c',fmtMoney(r.revenue))).join('')    || noData;
+
+      const yrTabsHtml = `
+        <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:1.25rem;flex-wrap:wrap">
+          <button class="yr-tab${equipYearFilter==='all'?' active':''}" onclick="equipYearFilter='all';renderEquipmentUtilization()">All</button>
+          ${tabYears.map(y=>`<button class="yr-tab${equipYearFilter===y?' active':''}" onclick="equipYearFilter='${y}';renderEquipmentUtilization()">${y}</button>`).join('')}
+        </div>`;
+
+      const sectionLabel = txt =>
+        `<div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem;margin-top:1.75rem">${txt}</div>`;
+
+      root.innerHTML = `
+        <div style="padding:1.25rem">
+          ${yrTabsHtml}
+
+          ${sectionLabel('Overview')}
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:0.8rem;margin-bottom:0.25rem">
+            ${statCard('Active Units',   activeUnits,   entries.length+' total entries')}
+            ${statCard('Active Drivers', activeDrivers, [...new Set(entries.map(e=>e.driver).filter(Boolean))].length+' unique drivers')}
+            ${statCard('Total Hours',    fmtHrs(totalHours)+' hrs', 'across all units & drivers')}
+            ${statCard('Total Revenue',  fmtMoney(totalRevenue), 'combined invoice total', true)}
+          </div>
+
+          ${sectionLabel('Unit Performance')}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:1rem">
+            ${chartCard('Hours by Unit',   '#60a5fa', unitHrsRows)}
+            ${chartCard('Revenue by Unit', '#facc15', unitRevRows)}
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:0.25rem">
+            ${detailTable(unitRows, 'Unit')}
+          </div>
+
+          ${sectionLabel('Driver Performance')}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:1rem">
+            ${chartCard('Hours by Driver',   '#34d399', driverHrsRows)}
+            ${chartCard('Revenue by Driver', '#fb923c', driverRevRows)}
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+            ${detailTable(driverRows, 'Driver')}
           </div>
         </div>`;
     }
