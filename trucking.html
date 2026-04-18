@@ -360,6 +360,7 @@
         document.querySelectorAll('.tab-panel').forEach(p =>
           p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
         if (btn.dataset.tab === 'truck-tracking') renderTrackingTab();
+        if (btn.dataset.tab === 'analytics') renderCustomerData();
       });
     });
 
@@ -370,6 +371,7 @@
           b.classList.toggle('active', b === btn));
         document.querySelectorAll('.sub-tab-panel').forEach(p =>
           p.classList.toggle('active', p.id === 'sub-' + btn.dataset.sub));
+        if (btn.dataset.sub === 'customer-data') renderCustomerData();
       });
     });
 
@@ -397,7 +399,8 @@
     let divTruckLists = { drivers: [], customers: [], units: [] };
     let _saveTimer       = null;
     let _isSaved         = false;
-    let activeYearFilter = 'all';
+    let activeYearFilter          = 'all';
+    let analyticsYearFilter       = 'all';
 
     function setYearFilter(year) {
       activeYearFilter = year;
@@ -860,6 +863,102 @@
     /* ═══════════════════════════════════════════
        CSV UPLOAD
     ═══════════════════════════════════════════ */
+    /* ═══════════════════════════════════════════
+       ANALYTICS — CUSTOMER DATA
+    ═══════════════════════════════════════════ */
+    function renderCustomerData() {
+      const root = document.getElementById('sub-customer-data');
+      if (!root) return;
+
+      const esc = s => String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      const fmtMoney = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const fmtHrs   = n => n.toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+
+      // Year tabs
+      const dataYears = [...new Set(
+        divEntries.map(e=>(e.actual_date||'').slice(0,4)).filter(y=>/^\d{4}$/.test(y))
+      )].sort();
+      const tabYears = [...new Set([...dataYears,'2025','2026'])].sort();
+
+      const entries = analyticsYearFilter === 'all'
+        ? divEntries
+        : divEntries.filter(e=>(e.actual_date||'').startsWith(analyticsYearFilter));
+
+      // Summary stats
+      const uniqueCustomers = [...new Set(entries.map(e=>e.customer).filter(Boolean))];
+      const totalHours   = entries.reduce((s,e)=>s+(parseFloat(e.total_hours)||0),0);
+      const totalRevenue = entries.reduce((s,e)=>s+(parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0),0);
+
+      // Aggregate by customer
+      const byCustomer = {};
+      entries.forEach(e => {
+        const c = e.customer || '(none)';
+        if (!byCustomer[c]) byCustomer[c] = { hours:0, revenue:0, count:0 };
+        byCustomer[c].hours   += parseFloat(e.total_hours)||0;
+        byCustomer[c].revenue += (parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0);
+        byCustomer[c].count++;
+      });
+
+      const custRows = Object.entries(byCustomer)
+        .map(([name,d])=>({name,...d}))
+        .sort((a,b)=>b.revenue-a.revenue);
+
+      const maxRev   = Math.max(...custRows.map(c=>c.revenue), 1);
+      const maxHours = Math.max(...custRows.map(c=>c.hours),   1);
+
+      // Helpers
+      const statCard = (label, value, sub, accent=false) =>
+        `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.45rem">${label}</div>
+          <div style="font-size:1.55rem;font-weight:700;color:${accent?'#facc15':'var(--text)'};line-height:1.15;margin-bottom:0.25rem">${value}</div>
+          <div style="font-size:0.7rem;color:var(--muted)">${sub}</div>
+        </div>`;
+
+      const chartCard = (title, color, rowsHtml) =>
+        `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};margin-bottom:1rem">${title}</div>
+          ${rowsHtml}
+        </div>`;
+
+      const barRow = (name, val, max, color, label) =>
+        `<div style="display:flex;align-items:center;gap:0.65rem;margin-bottom:0.5rem">
+          <span style="font-size:0.74rem;color:var(--text);width:130px;flex-shrink:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(name)}">${esc(name)}</span>
+          <div style="flex:1;background:var(--border);border-radius:3px;height:9px;overflow:hidden;min-width:0">
+            <div style="width:${Math.min(100,(val/max)*100).toFixed(2)}%;height:100%;background:${color};border-radius:3px;transition:width 0.3s"></div>
+          </div>
+          <span style="font-size:0.7rem;color:var(--muted);white-space:nowrap;min-width:85px">${label}</span>
+        </div>`;
+
+      const noData = `<div style="color:var(--muted);font-size:0.8rem;padding:0.5rem 0">No data for this period.</div>`;
+
+      const revenueRows = custRows.length ? custRows.map(c=>barRow(c.name,c.revenue,maxRev,'#facc15',fmtMoney(c.revenue))).join('') : noData;
+      const hoursRows   = custRows.length ? custRows.map(c=>barRow(c.name,c.hours,maxHours,'#60a5fa',fmtHrs(c.hours)+' hrs')).join('') : noData;
+
+      const yrTabsHtml = `
+        <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:1.25rem;flex-wrap:wrap">
+          <button class="yr-tab${analyticsYearFilter==='all'?' active':''}" onclick="analyticsYearFilter='all';renderCustomerData()">All</button>
+          ${tabYears.map(y=>`<button class="yr-tab${analyticsYearFilter===y?' active':''}" onclick="analyticsYearFilter='${y}';renderCustomerData()">${y}</button>`).join('')}
+        </div>`;
+
+      root.innerHTML = `
+        <div style="padding:1.25rem">
+          ${yrTabsHtml}
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">Overview</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:0.8rem;margin-bottom:1.75rem">
+            ${statCard('Active Customers', uniqueCustomers.length, entries.length+' total entries')}
+            ${statCard('Total Hours', fmtHrs(totalHours)+' hrs', 'across all customers')}
+            ${statCard('Total Revenue', fmtMoney(totalRevenue), 'combined invoice total', true)}
+            ${statCard('Total Entries', entries.length.toLocaleString(), 'truck tracking records')}
+          </div>
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">Breakdown by Customer</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem">
+            ${chartCard('Revenue by Customer','#facc15',revenueRows)}
+            ${chartCard('Hours by Customer','#60a5fa',hoursRows)}
+          </div>
+        </div>`;
+    }
+
     const CSV_FIELD_MAP = {
       'task number': 'task_number', 'task_number': 'task_number',
       'actual date':  'actual_date',  'actual_date': 'actual_date',  'date': 'actual_date',
