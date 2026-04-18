@@ -349,11 +349,13 @@
       <button class="sub-tab-btn active" data-sub="customer-data">Customer Data</button>
       <button class="sub-tab-btn" data-sub="financials">Financials</button>
       <button class="sub-tab-btn" data-sub="equipment-utilization">Equipment Utilization</button>
+      <button class="sub-tab-btn" data-sub="driver-performance">Driver Performance</button>
       <button class="pdf-btn" onclick="downloadAnalyticsPDF()">&#8595; Download PDF</button>
     </div>
     <div class="sub-tab-panel active" id="sub-customer-data"></div>
     <div class="sub-tab-panel" id="sub-financials"></div>
     <div class="sub-tab-panel" id="sub-equipment-utilization"></div>
+    <div class="sub-tab-panel" id="sub-driver-performance"></div>
   </div>
 
   <!-- ══════════════════════════════════════════════
@@ -398,6 +400,7 @@
           const activeSub = document.querySelector('.sub-tab-btn.active');
           if (activeSub?.dataset.sub === 'equipment-utilization') renderEquipmentUtilization();
           else if (activeSub?.dataset.sub === 'financials') renderFinancials();
+          else if (activeSub?.dataset.sub === 'driver-performance') renderDriverPerformance();
           else renderCustomerData();
         }
       });
@@ -413,6 +416,7 @@
         if (btn.dataset.sub === 'customer-data') renderCustomerData();
         if (btn.dataset.sub === 'financials') renderFinancials();
         if (btn.dataset.sub === 'equipment-utilization') renderEquipmentUtilization();
+        if (btn.dataset.sub === 'driver-performance') renderDriverPerformance();
       });
     });
 
@@ -1575,25 +1579,6 @@
         }))
         .sort((a,b) => b.hours - a.hours);
 
-      // ── Build driver aggregates ──
-      const byDriver = {};
-      entries.forEach(e => {
-        const k = e.driver || '(none)';
-        if (!byDriver[k]) byDriver[k] = { hours:0, revenue:0, dates:new Set(), customers:new Set(), units:new Set(), entries:[] };
-        byDriver[k].hours += parseFloat(e.total_hours)||0;
-        byDriver[k].revenue += (parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0);
-        if (e.actual_date) byDriver[k].dates.add(e.actual_date);
-        if (e.customer) byDriver[k].customers.add(e.customer);
-        if (e.unit) byDriver[k].units.add(e.unit);
-        byDriver[k].entries.push(e);
-      });
-      const driverRows = Object.entries(byDriver)
-        .map(([name,d]) => ({ name, ...d,
-          daysActive: d.dates.size,
-          lastUsed:   [...d.dates].sort().pop() || '',
-        }))
-        .sort((a,b) => b.hours - a.hours);
-
       // ── Helpers ──
       const statCard = (label, value, sub, accent=false) =>
         `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
@@ -1680,36 +1665,6 @@
         </tr>`;
       }).join('');
 
-      // ── Driver table rows ──
-      const driverTableRows = driverRows.map((r,i) => {
-        const pctH = totalHrs ? (r.hours/totalHrs*100)   : 0;
-        const pctR = totalRev ? (r.revenue/totalRev*100) : 0;
-        const revHr = r.hours ? r.revenue/r.hours : 0;
-        const unitList = [...r.units].join(', ');
-        const isOpen   = expandedDriverRows.has(r.name);
-        const carotStyle = `display:inline-block;transition:transform 0.18s;transform:rotate(${isOpen?'90':'0'}deg);color:var(--muted);font-size:0.85rem;cursor:pointer`;
-        return `<tr style="border-bottom:1px solid var(--border);${i%2===1?'background:rgba(255,255,255,0.015)':''}cursor:pointer" onclick="toggleDriverRow('${esc(r.name).replace(/'/g,'\\\'')}')" >
-          <td style="width:28px;text-align:center;padding:0 0.25rem">
-            <span id="drv-c-${esc(r.name)}" style="${carotStyle}">&#8250;</span>
-          </td>
-          <td style="padding:0.55rem 0.75rem;font-weight:600;color:var(--text)">${esc(r.name)}</td>
-          <td style="padding:0.55rem 0.75rem;text-align:right;color:#4ade80;font-weight:600">${fmtHrs(r.hours)}</td>
-          <td style="padding:0.55rem 0.75rem;text-align:right;color:#facc15;font-weight:600">${fmtMoney(r.revenue)}</td>
-          <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--text)">${fmtMoney(revHr)}</td>
-          <td style="padding:0.55rem 0.75rem">${pctBar(pctH,'#34d399')}</td>
-          <td style="padding:0.55rem 0.75rem">${pctBar(pctR,'#fb923c')}</td>
-          <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--text)">${r.daysActive}</td>
-          <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted);font-size:0.75rem">${esc(r.lastUsed)}</td>
-          <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--text)">${r.units.size}</td>
-          <td style="padding:0.55rem 1rem;color:var(--muted);font-size:0.72rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(unitList)}">${esc(unitList)||'—'}</td>
-        </tr>
-        <tr id="drv-sub-${esc(r.name)}" style="display:${isOpen?'table-row':'none'}">
-          <td colspan="11" style="padding:0;background:var(--surface2);border-bottom:2px solid var(--border)">
-            ${subTable(r.entries,['date','task','unit','customer','hours','fee','rev'],['Date','Task #','Unit','Customer','Hours','Haul Fee','Revenue'])}
-          </td>
-        </tr>`;
-      }).join('');
-
       const noRows = `<tr><td colspan="13" style="padding:1.5rem;text-align:center;color:var(--muted)">No data for this period.</td></tr>`;
 
       root.innerHTML = `<div style="padding:1.25rem">
@@ -1748,8 +1703,135 @@
             </table>
           </div>
         </div>
+      </div>`;
+    }
 
-        ${sectionLabel('Driver Performance')}
+    /* ═══════════════════════════════════════════
+       ANALYTICS — DRIVER PERFORMANCE
+    ═══════════════════════════════════════════ */
+    let driverPerfYearFilter = 'all';
+
+    function renderDriverPerformance() {
+      const root = document.getElementById('sub-driver-performance');
+      if (!root) return;
+
+      const esc      = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      const fmtMoney = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const fmtHrs   = n => n.toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+
+      const dataYears = [...new Set(divEntries.map(e=>(e.actual_date||'').slice(0,4)).filter(y=>/^\d{4}$/.test(y)))].sort();
+      const tabYears  = [...new Set([...dataYears,'2025','2026'])].sort();
+      const entries   = driverPerfYearFilter === 'all' ? divEntries : divEntries.filter(e=>(e.actual_date||'').startsWith(driverPerfYearFilter));
+
+      const totalHrs = entries.reduce((s,e)=>s+(parseFloat(e.total_hours)||0),0);
+      const totalRev = entries.reduce((s,e)=>s+(parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0),0);
+
+      // ── Build driver aggregates ──
+      const byDriver = {};
+      entries.forEach(e => {
+        const k = e.driver || '(none)';
+        if (!byDriver[k]) byDriver[k] = { hours:0, revenue:0, dates:new Set(), customers:new Set(), units:new Set(), entries:[] };
+        byDriver[k].hours   += parseFloat(e.total_hours)||0;
+        byDriver[k].revenue += (parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0);
+        if (e.actual_date) byDriver[k].dates.add(e.actual_date);
+        if (e.customer)    byDriver[k].customers.add(e.customer);
+        if (e.unit)        byDriver[k].units.add(e.unit);
+        byDriver[k].entries.push(e);
+      });
+      const driverRows = Object.entries(byDriver)
+        .map(([name,d]) => ({ name, ...d, daysActive: d.dates.size, lastUsed: [...d.dates].sort().pop() || '' }))
+        .sort((a,b) => b.hours - a.hours);
+
+      // ── Helpers ──
+      const statCard = (label, value, sub, accent=false) =>
+        `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.45rem">${label}</div>
+          <div style="font-size:1.55rem;font-weight:700;color:${accent?'#facc15':'var(--text)'};line-height:1.15;margin-bottom:0.25rem">${value}</div>
+          <div style="font-size:0.7rem;color:var(--muted)">${sub}</div>
+        </div>`;
+
+      const sectionLabel = txt =>
+        `<div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem;margin-top:1.75rem">${txt}</div>`;
+
+      const pctBar = (pct, color) =>
+        `<div style="display:flex;align-items:center;gap:5px;justify-content:flex-end">
+          <span style="color:${color};font-size:0.72rem;font-weight:500;min-width:38px;text-align:right">${pct.toFixed(1)}%</span>
+          <div style="width:55px;height:4px;background:var(--border);border-radius:2px;overflow:hidden;flex-shrink:0">
+            <div style="width:${Math.min(100,pct).toFixed(1)}%;height:100%;background:${color};border-radius:2px"></div>
+          </div>
+        </div>`;
+
+      const TH = (txt, color='var(--muted)', align='right', extra='') =>
+        `<th style="padding:0.6rem 0.75rem;text-align:${align};font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:${color};font-weight:700;border-bottom:2px solid var(--border);white-space:nowrap;${extra}">${txt}</th>`;
+
+      const subTable = (entriesToShow) => {
+        const sorted = [...entriesToShow].sort((a,b)=>(b.actual_date||'').localeCompare(a.actual_date||''));
+        return `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface)">
+            ${['Date','Task #','Unit','Customer','Hours','Haul Fee','Revenue'].map(h=>
+              `<th style="padding:0.4rem 0.75rem;font-size:0.6rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);text-align:${['Hours','Haul Fee','Revenue'].includes(h)?'right':'left'}">${h}</th>`
+            ).join('')}
+          </tr></thead>
+          <tbody>${sorted.map((e,i) => {
+            const r = (parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0);
+            return `<tr style="border-bottom:1px solid var(--border);${i%2===1?'background:rgba(255,255,255,0.025)':''}">
+              <td style="padding:0.4rem 0.75rem;color:var(--muted);font-size:0.75rem">${esc(e.actual_date||'')}</td>
+              <td style="padding:0.4rem 0.75rem;color:var(--orange);font-size:0.75rem">${esc(e.task_number||'')}</td>
+              <td style="padding:0.4rem 0.75rem;color:var(--text);font-size:0.75rem">${esc(e.unit||'')}</td>
+              <td style="padding:0.4rem 0.75rem;color:var(--text);font-size:0.75rem">${esc(e.customer||'')}</td>
+              <td style="padding:0.4rem 0.75rem;text-align:right;color:var(--text);font-size:0.75rem">${fmtHrs(parseFloat(e.total_hours)||0)}</td>
+              <td style="padding:0.4rem 0.75rem;text-align:right;color:var(--muted);font-size:0.75rem">${fmtMoney(parseFloat(e.haul_fee)||0)}/hr</td>
+              <td style="padding:0.4rem 0.75rem;text-align:right;color:#facc15;font-size:0.75rem;font-weight:600">${fmtMoney(r)}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>`;
+      };
+
+      const driverTableRows = driverRows.map((r,i) => {
+        const pctH = totalHrs ? (r.hours/totalHrs*100)   : 0;
+        const pctR = totalRev ? (r.revenue/totalRev*100) : 0;
+        const revHr = r.hours ? r.revenue/r.hours : 0;
+        const unitList = [...r.units].join(', ');
+        const isOpen   = expandedDriverRows.has(r.name);
+        const caretStyle = `display:inline-block;transition:transform 0.18s;transform:rotate(${isOpen?'90':'0'}deg);color:var(--muted);font-size:0.85rem;cursor:pointer`;
+        return `<tr style="border-bottom:1px solid var(--border);${i%2===1?'background:rgba(255,255,255,0.015)':''};cursor:pointer" onclick="toggleDriverRow('${esc(r.name).replace(/'/g,'\\\'') }')">
+          <td style="width:28px;text-align:center;padding:0 0.25rem">
+            <span id="drv-c-${esc(r.name)}" style="${caretStyle}">&#8250;</span>
+          </td>
+          <td style="padding:0.55rem 0.75rem;font-weight:600;color:var(--text)">${esc(r.name)}</td>
+          <td style="padding:0.55rem 0.75rem;text-align:right;color:#4ade80;font-weight:600">${fmtHrs(r.hours)}</td>
+          <td style="padding:0.55rem 0.75rem;text-align:right;color:#facc15;font-weight:600">${fmtMoney(r.revenue)}</td>
+          <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--text)">${fmtMoney(revHr)}</td>
+          <td style="padding:0.55rem 0.75rem">${pctBar(pctH,'#34d399')}</td>
+          <td style="padding:0.55rem 0.75rem">${pctBar(pctR,'#fb923c')}</td>
+          <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--text)">${r.daysActive}</td>
+          <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted);font-size:0.75rem">${esc(r.lastUsed)}</td>
+          <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--text)">${r.units.size}</td>
+          <td style="padding:0.55rem 1rem;color:var(--muted);font-size:0.72rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(unitList)}">${esc(unitList)||'—'}</td>
+        </tr>
+        <tr id="drv-sub-${esc(r.name)}" style="display:${isOpen?'table-row':'none'}">
+          <td colspan="11" style="padding:0;background:var(--surface2);border-bottom:2px solid var(--border)">
+            ${subTable(r.entries)}
+          </td>
+        </tr>`;
+      }).join('');
+
+      const noRows = `<tr><td colspan="11" style="padding:1.5rem;text-align:center;color:var(--muted)">No data for this period.</td></tr>`;
+
+      root.innerHTML = `<div style="padding:1.25rem">
+        <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:1.25rem;flex-wrap:wrap">
+          <button class="yr-tab${driverPerfYearFilter==='all'?' active':''}" onclick="driverPerfYearFilter='all';renderDriverPerformance()">All</button>
+          ${tabYears.map(y=>`<button class="yr-tab${driverPerfYearFilter===y?' active':''}" onclick="driverPerfYearFilter='${y}';renderDriverPerformance()">${y}</button>`).join('')}
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:0.8rem;margin-bottom:0.5rem">
+          ${statCard('Active Drivers', driverRows.length, entries.length+' total entries')}
+          ${statCard('Total Hours',    fmtHrs(totalHrs)+' hrs', 'across all drivers')}
+          ${statCard('Total Revenue',  fmtMoney(totalRev), 'combined invoice total', true)}
+          ${statCard('Avg Rev / Driver', fmtMoney(driverRows.length ? totalRev/driverRows.length : 0), 'average per driver')}
+        </div>
+
+        ${sectionLabel('Driver Breakdown')}
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden">
           <div style="overflow-x:auto">
             <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
