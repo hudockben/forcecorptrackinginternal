@@ -314,7 +314,7 @@
     const API_BASE = '/api';
     let divEntries    = [];
     let divLists      = { employees: [], equipment: [] };
-    let divTruckLists = { drivers: [], customers: [] };
+    let divTruckLists = { drivers: [], customers: [], units: [] };
     let _saveTimer    = null;
     let _isSaved      = false;
 
@@ -352,7 +352,8 @@
       }
       if (truckLists && typeof truckLists === 'object') {
         if (Array.isArray(truckLists.drivers))   divTruckLists.drivers   = truckLists.drivers;
-        if (Array.isArray(truckLists.customers))  divTruckLists.customers = truckLists.customers;
+        if (Array.isArray(truckLists.customers)) divTruckLists.customers = truckLists.customers;
+        if (Array.isArray(truckLists.units))     divTruckLists.units     = truckLists.units;
       }
       renderTrackingTab();
     }
@@ -396,9 +397,34 @@
           </div>
         </div>`;
 
+      const unitsHTML = `
+        <div class="lists-section">
+          <div class="lists-section-title">Units</div>
+          <div class="lists-add-row" style="flex-wrap:wrap;gap:0.3rem">
+            <input type="text" id="lists-new-unit-name" placeholder="Unit Name…"
+              style="flex:1;min-width:90px"
+              onkeydown="if(event.key==='Enter')addUnit()">
+            <input type="text" id="lists-new-unit-number" placeholder="# Number…"
+              style="flex:1;min-width:75px"
+              onkeydown="if(event.key==='Enter')addUnit()">
+            <button class="lists-add-btn" onclick="addUnit()">Add</button>
+          </div>
+          <div class="lists-items">
+            ${divTruckLists.units.length === 0
+              ? `<span style="font-size:0.72rem;color:var(--muted)">No units yet.</span>`
+              : divTruckLists.units.map(u => `
+                  <div class="lists-item">
+                    <span>${esc(u.name)}<span style="color:var(--muted);font-size:0.7rem;margin-left:0.4rem">#${esc(u.number)}</span></span>
+                    <button class="lists-item-del" onclick="removeUnit('${esc(u.name)}')" title="Remove">&#10005;</button>
+                  </div>`).join('')
+            }
+          </div>
+        </div>`;
+
       document.getElementById('lists-panel-body').innerHTML =
         section('drivers',   'Drivers',   divTruckLists.drivers) +
-        section('customers', 'Customers', divTruckLists.customers);
+        section('customers', 'Customers', divTruckLists.customers) +
+        unitsHTML;
     }
 
     function addToList(key) {
@@ -416,6 +442,30 @@
 
     function removeFromList(key, val) {
       divTruckLists[key] = divTruckLists[key].filter(v => v !== val);
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+    }
+
+    function addUnit() {
+      const nameInp = document.getElementById('lists-new-unit-name');
+      const numInp  = document.getElementById('lists-new-unit-number');
+      if (!nameInp || !numInp) return;
+      const name   = nameInp.value.trim();
+      const number = numInp.value.trim();
+      if (!name) return;
+      if (divTruckLists.units.some(u => u.name === name)) { nameInp.value = ''; numInp.value = ''; return; }
+      divTruckLists.units.push({ name, number });
+      divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
+      saveTruckLists();
+      nameInp.value = '';
+      numInp.value  = '';
+      renderListsPanel();
+      renderTrackingTab();
+    }
+
+    function removeUnit(name) {
+      divTruckLists.units = divTruckLists.units.filter(u => u.name !== name);
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
@@ -470,6 +520,11 @@
         const el  = document.getElementById('td-tot-' + id);
         if (el) el.textContent = '$' + tot.toFixed(4);
       }
+      if (field === 'unit') {
+        const unit  = divTruckLists.units.find(u => u.name === value);
+        const numEl = document.getElementById('unit-num-' + id);
+        if (numEl) numEl.textContent = unit ? unit.number : '';
+      }
       schedSave();
     }
 
@@ -494,8 +549,8 @@
         ).join('');
 
       const unitOpts = cur => '<option value="">— select —</option>' +
-        divLists.equipment.slice().sort((a,b) => (a.name||'').localeCompare(b.name||'')).map(eq =>
-          `<option value="${esc(eq.name)}"${eq.name === cur ? ' selected' : ''}>${esc(eq.name)}</option>`
+        divTruckLists.units.map(u =>
+          `<option value="${esc(u.name)}"${u.name === cur ? ' selected' : ''}>${esc(u.name)}</option>`
         ).join('');
 
       const inp = (id, field, type, placeholder) =>
@@ -516,7 +571,10 @@
               <td class="td-task-num">${esc(e.task_number)}</td>
               <td style="min-width:110px">${inp(e.id,'actual_date','date','')}</td>
               <td style="min-width:140px">${sel(e.id,'driver',driverOpts(e.driver))}</td>
-              <td style="min-width:130px">${sel(e.id,'unit',unitOpts(e.unit))}</td>
+              <td style="min-width:140px">
+                ${sel(e.id,'unit',unitOpts(e.unit))}
+                <div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>
+              </td>
               <td style="min-width:90px">${inp(e.id,'actual_start','time','')}</td>
               <td style="min-width:90px">${inp(e.id,'actual_end','time','')}</td>
               <td style="min-width:80px;text-align:right">${inp(e.id,'total_hours','number','0')}</td>
