@@ -110,6 +110,164 @@
     /* ── Panels ── */
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
+
+    /* ── Truck Tracking table ── */
+    .td-task-num { font-family: monospace; font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+    .td-total    { text-align: right; color: #facc15; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+
+    /* ── Scrollable table wrapper ── */
+    .tbl-scroll-wrap { overflow: auto; max-height: calc(100vh - 290px); border-radius: 6px; }
+
+    /* ── Totals bar ── */
+    .totals-bar {
+      display: flex; align-items: center; gap: 2rem; flex-wrap: wrap;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.55rem 1rem; margin-bottom: 0.65rem;
+      font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase;
+    }
+    .totals-bar .lbl { color: var(--muted); }
+    .totals-bar .val { color: #facc15; font-weight: 700; margin-left: 0.35rem; }
+
+    .tr-tbl { width: 100%; border-collapse: collapse; background: var(--surface); min-width: 1600px; }
+
+    /* ── Sticky column headers ── */
+    .tr-tbl thead tr.hdr-row th {
+      position: sticky; top: 0; z-index: 3;
+      padding: 0.55rem 0.6rem;
+      background: var(--surface2);
+      color: var(--muted);
+      font-size: 0.65rem; letter-spacing: 0.08em; text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap; text-align: left;
+    }
+    .tr-tbl thead tr.hdr-row th.r { text-align: right; }
+
+    /* ── Sticky filter row ── */
+    .tr-tbl thead tr.filter-row th {
+      position: sticky; top: 31px; z-index: 3;
+      background: var(--surface);
+      padding: 0.25rem 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .tr-tbl thead tr.filter-row input {
+      width: 100%; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 3px;
+      color: var(--muted); font-size: 0.7rem;
+      padding: 0.18rem 0.35rem; outline: none; box-sizing: border-box;
+    }
+    .tr-tbl thead tr.filter-row input:focus { border-color: #555; color: var(--text); }
+
+    .tr-tbl tbody tr { border-bottom: 1px solid var(--border); }
+    .tr-tbl tbody td { padding: 0.35rem 0.6rem; }
+    .tr-tbl input[type=text],
+    .tr-tbl input[type=date],
+    .tr-tbl input[type=time],
+    .tr-tbl input[type=number] {
+      width: 100%; background: transparent; border: none;
+      color: var(--text); font-size: 0.8rem; outline: none; padding: 0.15rem 0;
+    }
+    .tr-tbl select {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
+      color: var(--text); font-size: 0.8rem; outline: none; width: 100%; padding: 0.1rem 0.2rem;
+    }
+    .btn-add-row {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      color: #fff; background: var(--orange); border: none; border-radius: 4px;
+      padding: 0.4rem 0.85rem; cursor: pointer;
+    }
+    .btn-add-row:hover { background: var(--orange-dim); }
+    .btn-del-row {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 0.9rem; padding: 0.1rem 0.3rem; border-radius: 3px;
+    }
+    .btn-del-row:hover { color: var(--orange); background: rgba(239,68,68,0.1); }
+
+    /* ── Manage Lists panel ── */
+    .lists-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 400;
+    }
+    .lists-backdrop.open { display: block; }
+    .lists-panel {
+      position: absolute; top: 0; right: 0;
+      width: 300px; background: var(--surface2);
+      border-left: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      border-radius: 0 0 0 8px;
+      padding: 1rem 1.1rem 1.25rem;
+      box-shadow: -4px 4px 24px rgba(0,0,0,0.5);
+    }
+    .lists-panel h3 {
+      font-size: 0.65rem; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 1rem; font-weight: 600;
+    }
+    .lists-section { margin-bottom: 1.1rem; }
+    .lists-section-title {
+      font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 0.45rem; font-weight: 600;
+    }
+    .lists-add-row {
+      display: flex; gap: 0.4rem; margin-bottom: 0.5rem;
+    }
+    .lists-add-row input {
+      flex: 1; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.78rem;
+      padding: 0.3rem 0.5rem; outline: none;
+    }
+    .lists-add-row input:focus { border-color: #555; }
+    .lists-add-btn {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em;
+      color: #fff; background: var(--orange); border: none;
+      border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer; white-space: nowrap;
+    }
+    .lists-add-btn:hover { background: var(--orange-dim); }
+    .lists-items { display: flex; flex-direction: column; gap: 0.25rem; }
+    .lists-item {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.28rem 0.55rem; font-size: 0.78rem;
+    }
+    .lists-item-del {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 0.75rem; padding: 0 0.2rem; line-height: 1;
+    }
+    .lists-item-del:hover { color: var(--orange); }
+    .btn-manage-lists {
+      font-size: 0.62rem; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.28rem 0.6rem; cursor: pointer;
+    }
+    .btn-manage-lists:hover { color: var(--text); border-color: #555; }
+
+    /* ── Year filter tabs ── */
+    .yr-tabs { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.85rem; }
+    .yr-tab {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      background: none; border: 1px solid var(--border); border-radius: 20px;
+      padding: 0.26rem 0.8rem; cursor: pointer; color: var(--muted);
+      transition: color 0.12s, border-color 0.12s, background 0.12s;
+      white-space: nowrap;
+    }
+    .yr-tab:hover { color: var(--text); border-color: #555; }
+    .yr-tab.active { background: #facc15; color: #0a0a0f; border-color: #facc15; font-weight: 800; }
+    .yr-row-count { font-size: 0.72rem; color: var(--muted); margin-left: 0.5rem; }
+
+    /* ── Analytics sub-tabs ── */
+    .sub-tab-bar {
+      display: flex; background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 0 1rem;
+    }
+    .sub-tab-btn {
+      padding: 0.55rem 1.1rem;
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); background: none; border: none;
+      border-bottom: 2px solid transparent; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    .sub-tab-btn:hover { color: var(--text); }
+    .sub-tab-btn.active { color: var(--orange); border-bottom-color: var(--orange); }
+    .sub-tab-panel { display: none; }
+    .sub-tab-panel.active { display: block; }
   </style>
 </head>
 <body>
@@ -135,6 +293,18 @@
     <button class="tab-btn" data-tab="analytics">Analytics</button>
   </nav>
 
+  <!-- hidden CSV upload input — must live outside the re-rendered tab panel -->
+  <input type="file" id="csv-upload-input" accept=".csv" style="display:none"
+    onchange="handleCSVUpload(this)">
+
+  <!-- ── Manage Lists overlay ── -->
+  <div class="lists-backdrop" id="lists-backdrop" onclick="closeManageLists(event)">
+    <div class="lists-panel" id="lists-panel" onclick="event.stopPropagation()">
+      <h3>Manage Lists</h3>
+      <div id="lists-panel-body"></div>
+    </div>
+  </div>
+
   <!-- ══════════════════════════════════════════════
        DASHBOARD TAB
   ══════════════════════════════════════════════ -->
@@ -145,6 +315,14 @@
        ANALYTICS TAB
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-analytics">
+    <div class="sub-tab-bar">
+      <button class="sub-tab-btn active" data-sub="customer-data">Customer Data</button>
+      <button class="sub-tab-btn" data-sub="financials">Financials</button>
+      <button class="sub-tab-btn" data-sub="equipment-utilization">Equipment Utilization</button>
+    </div>
+    <div class="sub-tab-panel active" id="sub-customer-data"></div>
+    <div class="sub-tab-panel" id="sub-financials"></div>
+    <div class="sub-tab-panel" id="sub-equipment-utilization"></div>
   </div>
 
   <!-- ══════════════════════════════════════════════
@@ -183,6 +361,19 @@
           b.classList.toggle('active', b === btn));
         document.querySelectorAll('.tab-panel').forEach(p =>
           p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
+        if (btn.dataset.tab === 'truck-tracking') renderTrackingTab();
+        if (btn.dataset.tab === 'analytics') renderCustomerData();
+      });
+    });
+
+    /* ── Analytics sub-tab switching ── */
+    document.querySelectorAll('.sub-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.sub-tab-btn').forEach(b =>
+          b.classList.toggle('active', b === btn));
+        document.querySelectorAll('.sub-tab-panel').forEach(p =>
+          p.classList.toggle('active', p.id === 'sub-' + btn.dataset.sub));
+        if (btn.dataset.sub === 'customer-data') renderCustomerData();
       });
     });
 
@@ -200,6 +391,753 @@
       localStorage.removeItem('fct_division');
       window.location.replace('index.html');
     }
+
+    /* ═══════════════════════════════════════════
+       TRUCK TRACKING — DATA LAYER
+    ═══════════════════════════════════════════ */
+    const API_BASE = '/api';
+    let divEntries    = [];
+    let divLists      = { employees: [], equipment: [] };
+    let divTruckLists = { drivers: [], customers: [], units: [] };
+    let _saveTimer       = null;
+    let _isSaved         = false;
+    let activeYearFilter          = 'all';
+    let analyticsYearFilter       = 'all';
+
+    function setYearFilter(year) {
+      activeYearFilter = year;
+      renderTrackingTab();
+    }
+
+    async function tdGet(key) {
+      try {
+        const r = await fetch(`${API_BASE}/data/${key}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!r.ok) return null;
+        const { value } = await r.json();
+        return value;
+      } catch { return null; }
+    }
+
+    function tdPut(key, value) {
+      fetch(`${API_BASE}/data/${key}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ value })
+      }).catch(() => {});
+    }
+
+    /* Fix entries that were saved before the CSV normalisation was in place.
+       Safe to call on every load — no-op when data is already clean. */
+    function _migrateExistingEntries() {
+      let dataChanged  = false;
+      let listsChanged = false;
+
+      const addStr = (arr, val) => {
+        if (!val || arr.includes(val)) return arr;
+        listsChanged = true;
+        return arr.concat(val);
+      };
+
+      divEntries.forEach(e => {
+        // Date: MM/DD/YYYY → YYYY-MM-DD
+        const d = _csvDate(e.actual_date || '');
+        if (d !== (e.actual_date || '')) { e.actual_date = d; dataChanged = true; }
+
+        // Times: 12-hr AM/PM → 24-hr HH:MM
+        const ts = _csvTime(e.actual_start || '');
+        if (ts !== (e.actual_start || '')) { e.actual_start = ts; dataChanged = true; }
+        const te = _csvTime(e.actual_end || '');
+        if (te !== (e.actual_end || '')) { e.actual_end = te; dataChanged = true; }
+
+        // Haul fee / hours: strip currency symbols
+        const hf = _csvNum(e.haul_fee || '');
+        if (hf !== (e.haul_fee || '')) { e.haul_fee = hf; dataChanged = true; }
+        const th = _csvNum(e.total_hours || '');
+        if (th !== (e.total_hours || '')) { e.total_hours = th; dataChanged = true; }
+
+        // Auto-populate managed lists from stored entries
+        divTruckLists.drivers   = addStr(divTruckLists.drivers,   e.driver);
+        divTruckLists.customers = addStr(divTruckLists.customers, e.customer);
+        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)) {
+          divTruckLists.units.push({ name: e.unit, number: '' });
+          listsChanged = true;
+        }
+      });
+
+      if (listsChanged) {
+        divTruckLists.drivers.sort((a, b) => a.localeCompare(b));
+        divTruckLists.customers.sort((a, b) => a.localeCompare(b));
+        divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
+        saveTruckLists();
+      }
+      if (dataChanged) tdPut('fct_truck_division', divEntries);
+    }
+
+    async function loadTrackingData() {
+      const [entries, lists, truckLists] = await Promise.all([
+        tdGet('fct_truck_division'),
+        tdGet('fct_lists'),
+        tdGet('fct_truck_division_lists')
+      ]);
+      divEntries = Array.isArray(entries) ? entries : [];
+      if (lists) {
+        if (Array.isArray(lists.employees)) {
+          divLists.employees = lists.employees.map(e => typeof e === 'string' ? { name: e } : e);
+        }
+        if (Array.isArray(lists.equipment)) divLists.equipment = lists.equipment;
+      }
+      if (truckLists && typeof truckLists === 'object') {
+        if (Array.isArray(truckLists.drivers))   divTruckLists.drivers   = truckLists.drivers;
+        if (Array.isArray(truckLists.customers)) divTruckLists.customers = truckLists.customers;
+        if (Array.isArray(truckLists.units))     divTruckLists.units     = truckLists.units;
+      }
+      _migrateExistingEntries();
+      renderTrackingTab();
+    }
+
+    function saveTruckLists() {
+      tdPut('fct_truck_division_lists', divTruckLists);
+    }
+
+    /* ── Manage Lists panel ── */
+    function openManageLists() {
+      document.getElementById('lists-backdrop').classList.add('open');
+      renderListsPanel();
+    }
+
+    function closeManageLists(e) {
+      if (e && document.getElementById('lists-panel').contains(e.target)) return;
+      document.getElementById('lists-backdrop').classList.remove('open');
+    }
+
+    function renderListsPanel() {
+      const esc = s => String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      const section = (key, label, items) => `
+        <div class="lists-section">
+          <div class="lists-section-title">${label}</div>
+          <div class="lists-add-row">
+            <input type="text" id="lists-new-${key}" placeholder="Add ${label.toLowerCase()}…"
+              onkeydown="if(event.key==='Enter')addToList('${key}')">
+            <button class="lists-add-btn" onclick="addToList('${key}')">Add</button>
+          </div>
+          <div class="lists-items">
+            ${items.length === 0
+              ? `<span style="font-size:0.72rem;color:var(--muted)">No ${label.toLowerCase()} yet.</span>`
+              : items.map(v => `
+                  <div class="lists-item">
+                    <span>${esc(v)}</span>
+                    <button class="lists-item-del" onclick="removeFromList('${key}','${esc(v)}')" title="Remove">&#10005;</button>
+                  </div>`).join('')
+            }
+          </div>
+        </div>`;
+
+      const unitsHTML = `
+        <div class="lists-section">
+          <div class="lists-section-title">Units</div>
+          <div class="lists-add-row" style="flex-wrap:wrap;gap:0.3rem">
+            <input type="text" id="lists-new-unit-name" placeholder="Unit Name…"
+              style="flex:1;min-width:90px"
+              onkeydown="if(event.key==='Enter')addUnit()">
+            <input type="text" id="lists-new-unit-number" placeholder="# Number…"
+              style="flex:1;min-width:75px"
+              onkeydown="if(event.key==='Enter')addUnit()">
+            <button class="lists-add-btn" onclick="addUnit()">Add</button>
+          </div>
+          <div class="lists-items">
+            ${divTruckLists.units.length === 0
+              ? `<span style="font-size:0.72rem;color:var(--muted)">No units yet.</span>`
+              : divTruckLists.units.map(u => `
+                  <div class="lists-item">
+                    <span>${esc(u.name)}<span style="color:var(--muted);font-size:0.7rem;margin-left:0.4rem">#${esc(u.number)}</span></span>
+                    <button class="lists-item-del" onclick="removeUnit('${esc(u.name)}')" title="Remove">&#10005;</button>
+                  </div>`).join('')
+            }
+          </div>
+        </div>`;
+
+      document.getElementById('lists-panel-body').innerHTML =
+        section('drivers',   'Drivers',   divTruckLists.drivers) +
+        section('customers', 'Customers', divTruckLists.customers) +
+        unitsHTML;
+    }
+
+    function addToList(key) {
+      const inp = document.getElementById('lists-new-' + key);
+      if (!inp) return;
+      const val = inp.value.trim();
+      if (!val || divTruckLists[key].includes(val)) { inp.value = ''; return; }
+      divTruckLists[key].push(val);
+      divTruckLists[key].sort((a, b) => a.localeCompare(b));
+      saveTruckLists();
+      inp.value = '';
+      renderListsPanel();
+      renderTrackingTab();
+    }
+
+    function removeFromList(key, val) {
+      divTruckLists[key] = divTruckLists[key].filter(v => v !== val);
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+    }
+
+    function addUnit() {
+      const nameInp = document.getElementById('lists-new-unit-name');
+      const numInp  = document.getElementById('lists-new-unit-number');
+      if (!nameInp || !numInp) return;
+      const name   = nameInp.value.trim();
+      const number = numInp.value.trim();
+      if (!name) return;
+      if (divTruckLists.units.some(u => u.name === name)) { nameInp.value = ''; numInp.value = ''; return; }
+      divTruckLists.units.push({ name, number });
+      divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
+      saveTruckLists();
+      nameInp.value = '';
+      numInp.value  = '';
+      renderListsPanel();
+      renderTrackingTab();
+    }
+
+    function removeUnit(name) {
+      divTruckLists.units = divTruckLists.units.filter(u => u.name !== name);
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+    }
+
+    function schedSave() {
+      _isSaved = false;
+      const el = document.getElementById('save-status');
+      if (el) el.style.display = 'none';
+      clearTimeout(_saveTimer);
+      _saveTimer = setTimeout(() => {
+        tdPut('fct_truck_division', divEntries);
+        _isSaved = true;
+        const el2 = document.getElementById('save-status');
+        if (el2) el2.style.display = '';
+      }, 600);
+    }
+
+    function nextTaskNum() {
+      const nums = divEntries.map(e => {
+        const m = (e.task_number || '').match(/^TR-(\d+)$/);
+        return m ? parseInt(m[1], 10) : 0;
+      });
+      return 'TR-' + String((nums.length ? Math.max(...nums) : 0) + 1).padStart(4, '0');
+    }
+
+    function addRow() {
+      divEntries.push({
+        id: crypto.randomUUID(),
+        task_number: nextTaskNum(),
+        actual_date: '', driver: '', unit: '',
+        actual_start: '', actual_end: '',
+        total_hours: '', haul_fee: '',
+        customer: '', description: '', division: '', notes: ''
+      });
+      schedSave();
+      renderTrackingTab();
+    }
+
+    function deleteRow(id) {
+      divEntries = divEntries.filter(e => e.id !== id);
+      schedSave();
+      renderTrackingTab();
+    }
+
+    function updateField(id, field, value) {
+      const e = divEntries.find(e => e.id === id);
+      if (!e) return;
+      e[field] = value;
+      if (field === 'total_hours' || field === 'haul_fee') {
+        const tot = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
+        const el  = document.getElementById('td-tot-' + id);
+        if (el) el.textContent = '$' + tot.toFixed(4);
+      }
+      if (field === 'unit') {
+        const unit  = divTruckLists.units.find(u => u.name === value);
+        const numEl = document.getElementById('unit-num-' + id);
+        if (numEl) numEl.textContent = unit ? unit.number : '';
+      }
+      schedSave();
+    }
+
+    /* ═══════════════════════════════════════════
+       COLUMN FILTERS
+    ═══════════════════════════════════════════ */
+    let trColFilters      = {};
+    let _activeFilterFld  = null;
+
+    function setColFilter(field, val) {
+      _activeFilterFld = field;
+      if (val) trColFilters[field] = val;
+      else delete trColFilters[field];
+      renderTrackingTab();
+    }
+
+    function applyColFilters(entries) {
+      const active = Object.entries(trColFilters).filter(([, v]) => v);
+      if (!active.length) return entries;
+      return entries.filter(e =>
+        active.every(([field, val]) =>
+          String(e[field] || '').toLowerCase().includes(val.toLowerCase())
+        )
+      );
+    }
+
+    /* ═══════════════════════════════════════════
+       TRUCK TRACKING — RENDER
+    ═══════════════════════════════════════════ */
+    function renderTrackingTab() {
+      const root = document.getElementById('tab-truck-tracking');
+      if (!root) return;
+
+      const esc = s => String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      const driverOpts = cur => '<option value="">— select —</option>' +
+        divTruckLists.drivers.map(d =>
+          `<option value="${esc(d)}"${d === cur ? ' selected' : ''}>${esc(d)}</option>`
+        ).join('');
+
+      const customerOpts = cur => '<option value="">— select —</option>' +
+        divTruckLists.customers.map(c =>
+          `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(c)}</option>`
+        ).join('');
+
+      const unitOpts = cur => '<option value="">— select —</option>' +
+        divTruckLists.units.map(u =>
+          `<option value="${esc(u.name)}"${u.name === cur ? ' selected' : ''}>${esc(u.name)}</option>`
+        ).join('');
+
+      const inp = (id, field, type, placeholder) =>
+        `<input type="${type}" value="${esc(divEntries.find(e=>e.id===id)?.[field]||'')}"
+          placeholder="${placeholder}"
+          onchange="updateField('${id}','${field}',this.value)"
+          style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0">`;
+
+      const sel = (id, field, opts) =>
+        `<select onchange="updateField('${id}','${field}',this.value)"
+          style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
+
+      // ── Year tabs + column filter ──
+      const dataYears = [...new Set(
+        divEntries.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort();
+      const tabYears = [...new Set([...dataYears, '2025', '2026'])].sort();
+
+      const yearFiltered = activeYearFilter === 'all'
+        ? divEntries
+        : divEntries.filter(e => (e.actual_date || '').startsWith(activeYearFilter));
+
+      const filteredEntries = applyColFilters(yearFiltered);
+
+      // ── Totals ──
+      let sumHours = 0, sumRevenue = 0;
+      filteredEntries.forEach(e => {
+        const h = parseFloat(e.total_hours) || 0;
+        const f = parseFloat(e.haul_fee)    || 0;
+        sumHours   += h;
+        sumRevenue += h * f;
+      });
+      const fmtMoney = n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+      const totalsHTML = `
+        <div class="totals-bar">
+          <span><span class="lbl">Total Hours</span><span class="val">${sumHours.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2})}</span></span>
+          <span><span class="lbl">Total Revenue</span><span class="val">${fmtMoney(sumRevenue)}</span></span>
+          <span><span class="lbl">Entries</span><span class="val">${filteredEntries.length}</span></span>
+        </div>`;
+
+      const yearTabsHTML = `
+        <div class="yr-tabs">
+          <button class="yr-tab${activeYearFilter === 'all' ? ' active' : ''}" onclick="setYearFilter('all')">All</button>
+          ${tabYears.map(y => `<button class="yr-tab${activeYearFilter === y ? ' active' : ''}" onclick="setYearFilter('${y}')">${y}</button>`).join('')}
+          <span class="yr-row-count">${filteredEntries.length} of ${divEntries.length} row${divEntries.length === 1 ? '' : 's'}</span>
+        </div>`;
+
+      // ── Filter input helper ──
+      const fi = field => {
+        const v = trColFilters[field] || '';
+        return `<input type="text" value="${esc(v)}" placeholder="filter…"
+          data-filter-field="${field}"
+          oninput="setColFilter('${field}',this.value)">`;
+      };
+
+      const rowsHTML = divEntries.length === 0
+        ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries yet — click + Add Row to begin.</td></tr>`
+        : filteredEntries.length === 0
+        ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries match the current filters.</td></tr>`
+        : filteredEntries.map(e => {
+            const tot = (parseFloat(e.total_hours)||0) * (parseFloat(e.haul_fee)||0);
+            return `<tr>
+              <td class="td-task-num">${esc(e.task_number)}</td>
+              <td style="min-width:110px">${inp(e.id,'actual_date','date','')}</td>
+              <td style="min-width:140px">${sel(e.id,'driver',driverOpts(e.driver))}</td>
+              <td style="min-width:140px">
+                ${sel(e.id,'unit',unitOpts(e.unit))}
+                <div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>
+              </td>
+              <td style="min-width:90px">${inp(e.id,'actual_start','time','')}</td>
+              <td style="min-width:90px">${inp(e.id,'actual_end','time','')}</td>
+              <td style="min-width:80px;text-align:right">${inp(e.id,'total_hours','number','0')}</td>
+              <td style="min-width:90px;text-align:right">${inp(e.id,'haul_fee','number','0.00')}</td>
+              <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
+              <td style="min-width:130px">${sel(e.id,'customer',customerOpts(e.customer))}</td>
+              <td style="min-width:160px">${inp(e.id,'description','text','Description')}</td>
+              <td style="min-width:100px">${inp(e.id,'division','text','Division')}</td>
+              <td style="min-width:130px">${inp(e.id,'notes','text','Notes')}</td>
+              <td style="text-align:center;width:36px">
+                <button class="btn-del-row" onclick="deleteRow('${e.id}')" title="Delete">&#10005;</button>
+              </td>
+            </tr>`;
+          }).join('');
+
+      const savedStyle = _isSaved ? '' : 'display:none';
+
+      root.innerHTML = `
+        <div style="padding:1.25rem 1.25rem 0">
+          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.85rem;flex-wrap:wrap">
+            <button class="btn-add-row" onclick="addRow()">+ Add Row</button>
+            <button class="btn-ghost" onclick="triggerCSVUpload()" style="font-size:0.65rem;padding:0.28rem 0.65rem">&#8679; Upload CSV</button>
+            <button class="btn-ghost" onclick="downloadCSVTemplate()" style="font-size:0.65rem;padding:0.28rem 0.65rem">&#8681; CSV Template</button>
+            <span style="font-size:0.72rem;color:var(--muted)">${divEntries.length} ${divEntries.length === 1 ? 'entry' : 'entries'}</span>
+            <button class="btn-manage-lists" onclick="openManageLists()" style="margin-left:auto">⚙ Manage Lists</button>
+            <span id="save-status" style="font-size:0.72rem;font-weight:600;color:#22c55e;letter-spacing:0.06em;text-transform:uppercase;${savedStyle}">SAVED</span>
+          </div>
+          ${yearTabsHTML}
+          ${totalsHTML}
+        </div>
+        <div style="padding:0 1.25rem 1.25rem">
+          <div class="tbl-scroll-wrap">
+            <table class="tr-tbl">
+              <thead>
+                <tr class="hdr-row">
+                  <th>Task Number</th>
+                  <th>Actual Date</th>
+                  <th>Driver</th>
+                  <th>Unit</th>
+                  <th>Actual Start</th>
+                  <th>Actual End</th>
+                  <th class="r">Total Hours</th>
+                  <th class="r">Haul Fee</th>
+                  <th class="r">Total</th>
+                  <th>Customer</th>
+                  <th>Description</th>
+                  <th>Division</th>
+                  <th>Notes</th>
+                  <th style="width:36px"></th>
+                </tr>
+                <tr class="filter-row">
+                  <th>${fi('task_number')}</th>
+                  <th>${fi('actual_date')}</th>
+                  <th>${fi('driver')}</th>
+                  <th>${fi('unit')}</th>
+                  <th>${fi('actual_start')}</th>
+                  <th>${fi('actual_end')}</th>
+                  <th>${fi('total_hours')}</th>
+                  <th>${fi('haul_fee')}</th>
+                  <th></th>
+                  <th>${fi('customer')}</th>
+                  <th>${fi('description')}</th>
+                  <th>${fi('division')}</th>
+                  <th>${fi('notes')}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>${rowsHTML}</tbody>
+            </table>
+          </div>
+        </div>`;
+
+      // Restore focus to the active filter input after re-render
+      if (_activeFilterFld) {
+        const inp = root.querySelector(`input[data-filter-field="${_activeFilterFld}"]`);
+        if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+      }
+    }
+
+    /* ═══════════════════════════════════════════
+       CSV UPLOAD
+    ═══════════════════════════════════════════ */
+    /* ═══════════════════════════════════════════
+       ANALYTICS — CUSTOMER DATA
+    ═══════════════════════════════════════════ */
+    function renderCustomerData() {
+      const root = document.getElementById('sub-customer-data');
+      if (!root) return;
+
+      const esc = s => String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      const fmtMoney = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const fmtHrs   = n => n.toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+
+      // Year tabs
+      const dataYears = [...new Set(
+        divEntries.map(e=>(e.actual_date||'').slice(0,4)).filter(y=>/^\d{4}$/.test(y))
+      )].sort();
+      const tabYears = [...new Set([...dataYears,'2025','2026'])].sort();
+
+      const entries = analyticsYearFilter === 'all'
+        ? divEntries
+        : divEntries.filter(e=>(e.actual_date||'').startsWith(analyticsYearFilter));
+
+      // Summary stats
+      const uniqueCustomers = [...new Set(entries.map(e=>e.customer).filter(Boolean))];
+      const totalHours   = entries.reduce((s,e)=>s+(parseFloat(e.total_hours)||0),0);
+      const totalRevenue = entries.reduce((s,e)=>s+(parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0),0);
+
+      // Aggregate by customer
+      const byCustomer = {};
+      entries.forEach(e => {
+        const c = e.customer || '(none)';
+        if (!byCustomer[c]) byCustomer[c] = { hours:0, revenue:0, count:0 };
+        byCustomer[c].hours   += parseFloat(e.total_hours)||0;
+        byCustomer[c].revenue += (parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0);
+        byCustomer[c].count++;
+      });
+
+      const custRows = Object.entries(byCustomer)
+        .map(([name,d])=>({name,...d}))
+        .sort((a,b)=>b.revenue-a.revenue);
+
+      const maxRev   = Math.max(...custRows.map(c=>c.revenue), 1);
+      const maxHours = Math.max(...custRows.map(c=>c.hours),   1);
+
+      // Helpers
+      const statCard = (label, value, sub, accent=false) =>
+        `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.45rem">${label}</div>
+          <div style="font-size:1.55rem;font-weight:700;color:${accent?'#facc15':'var(--text)'};line-height:1.15;margin-bottom:0.25rem">${value}</div>
+          <div style="font-size:0.7rem;color:var(--muted)">${sub}</div>
+        </div>`;
+
+      const chartCard = (title, color, rowsHtml) =>
+        `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};margin-bottom:1rem">${title}</div>
+          ${rowsHtml}
+        </div>`;
+
+      const barRow = (name, val, max, color, label) =>
+        `<div style="display:flex;align-items:center;gap:0.65rem;margin-bottom:0.5rem">
+          <span style="font-size:0.74rem;color:var(--text);width:130px;flex-shrink:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(name)}">${esc(name)}</span>
+          <div style="flex:1;background:var(--border);border-radius:3px;height:9px;overflow:hidden;min-width:0">
+            <div style="width:${Math.min(100,(val/max)*100).toFixed(2)}%;height:100%;background:${color};border-radius:3px;transition:width 0.3s"></div>
+          </div>
+          <span style="font-size:0.7rem;color:var(--muted);white-space:nowrap;min-width:85px">${label}</span>
+        </div>`;
+
+      const noData = `<div style="color:var(--muted);font-size:0.8rem;padding:0.5rem 0">No data for this period.</div>`;
+
+      const revenueRows = custRows.length ? custRows.map(c=>barRow(c.name,c.revenue,maxRev,'#facc15',fmtMoney(c.revenue))).join('') : noData;
+      const hoursRows   = custRows.length ? custRows.map(c=>barRow(c.name,c.hours,maxHours,'#60a5fa',fmtHrs(c.hours)+' hrs')).join('') : noData;
+
+      const yrTabsHtml = `
+        <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:1.25rem;flex-wrap:wrap">
+          <button class="yr-tab${analyticsYearFilter==='all'?' active':''}" onclick="analyticsYearFilter='all';renderCustomerData()">All</button>
+          ${tabYears.map(y=>`<button class="yr-tab${analyticsYearFilter===y?' active':''}" onclick="analyticsYearFilter='${y}';renderCustomerData()">${y}</button>`).join('')}
+        </div>`;
+
+      root.innerHTML = `
+        <div style="padding:1.25rem">
+          ${yrTabsHtml}
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">Overview</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:0.8rem;margin-bottom:1.75rem">
+            ${statCard('Active Customers', uniqueCustomers.length, entries.length+' total entries')}
+            ${statCard('Total Hours', fmtHrs(totalHours)+' hrs', 'across all customers')}
+            ${statCard('Total Revenue', fmtMoney(totalRevenue), 'combined invoice total', true)}
+            ${statCard('Total Entries', entries.length.toLocaleString(), 'truck tracking records')}
+          </div>
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">Breakdown by Customer</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:1.75rem">
+            ${chartCard('Revenue by Customer','#facc15',revenueRows)}
+            ${chartCard('Hours by Customer','#60a5fa',hoursRows)}
+          </div>
+
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">Customer Detail</div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+            <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
+              <thead>
+                <tr style="background:var(--surface2)">
+                  <th style="padding:0.6rem 1rem;text-align:left;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Customer</th>
+                  <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Entries</th>
+                  <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Total Hrs</th>
+                  <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Avg Hrs / Entry</th>
+                  <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Avg Haul Fee</th>
+                  <th style="padding:0.6rem 1rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Total Revenue</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${custRows.length === 0
+                  ? `<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--muted)">No data for this period.</td></tr>`
+                  : custRows.map((c,i) => {
+                      const avgHrs = c.count ? c.hours / c.count : 0;
+                      const avgFee = c.count
+                        ? entries.filter(e=>e.customer===c.name).reduce((s,e)=>s+(parseFloat(e.haul_fee)||0),0) / c.count
+                        : 0;
+                      return `<tr style="border-bottom:1px solid var(--border);${i%2===1?'background:rgba(255,255,255,0.02)':''}">
+                        <td style="padding:0.55rem 1rem;color:var(--text);font-weight:500">${esc(c.name)}</td>
+                        <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted)">${c.count}</td>
+                        <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--text)">${fmtHrs(c.hours)}</td>
+                        <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted)">${fmtHrs(avgHrs)}</td>
+                        <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted)">${fmtMoney(avgFee)}</td>
+                        <td style="padding:0.55rem 1rem;text-align:right;color:#facc15;font-weight:600">${fmtMoney(c.revenue)}</td>
+                      </tr>`;
+                    }).join('')
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>`;
+    }
+
+    const CSV_FIELD_MAP = {
+      'task number': 'task_number', 'task_number': 'task_number',
+      'actual date':  'actual_date',  'actual_date': 'actual_date',  'date': 'actual_date',
+      'driver':       'driver',
+      'unit':         'unit',         'unit name':   'unit',          'unit_name': 'unit',
+      'actual start': 'actual_start', 'actual_start':'actual_start',  'start': 'actual_start',
+      'actual end':   'actual_end',   'actual_end':  'actual_end',    'end':   'actual_end',
+      'total hours':  'total_hours',  'total_hours': 'total_hours',   'hours': 'total_hours',
+      'haul fee':     'haul_fee',     'haul_fee':    'haul_fee',      'fee':   'haul_fee',
+      'customer':     'customer',
+      'description':  'description',  'desc':        'description',
+      'division':     'division',
+      'notes':        'notes',        'note':        'notes',
+    };
+
+    /* Normalise a CSV date value → YYYY-MM-DD for <input type="date"> */
+    function _csvDate(v) {
+      v = v.trim();
+      // MM/DD/YYYY or M/D/YYYY
+      const a = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (a) return `${a[3]}-${a[1].padStart(2,'0')}-${a[2].padStart(2,'0')}`;
+      // Already YYYY-MM-DD
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+      return v;
+    }
+
+    /* Normalise a CSV time value → HH:MM (24-hr) for <input type="time"> */
+    function _csvTime(v) {
+      v = v.trim();
+      const a = v.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i);
+      if (a) {
+        let h = parseInt(a[1], 10);
+        const period = a[3].toUpperCase();
+        if (period === 'AM' && h === 12) h = 0;
+        if (period === 'PM' && h !== 12) h += 12;
+        return `${String(h).padStart(2,'0')}:${a[2]}`;
+      }
+      if (/^\d{2}:\d{2}$/.test(v)) return v;
+      return v;
+    }
+
+    /* Strip currency symbols / commas so parseFloat works */
+    function _csvNum(v) { return v.replace(/[$,\s]/g, ''); }
+
+    function _parseCSVLine(line) {
+      const out = [];
+      let cur = '', inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') {
+          if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+          else inQ = !inQ;
+        } else if (c === ',' && !inQ) { out.push(cur); cur = ''; }
+        else cur += c;
+      }
+      out.push(cur);
+      return out;
+    }
+
+    function triggerCSVUpload() {
+      document.getElementById('csv-upload-input').click();
+    }
+
+    function handleCSVUpload(input) {
+      const file = input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => { importCSV(ev.target.result); input.value = ''; };
+      reader.readAsText(file);
+    }
+
+    function importCSV(text) {
+      const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+        .split('\n').filter(l => l.trim());
+      if (lines.length < 2) return;
+
+      const headers = _parseCSVLine(lines[0]).map(h => h.trim().toLowerCase());
+      const newEntries = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const cols = _parseCSVLine(lines[i]);
+        if (cols.every(c => !c.trim())) continue;
+
+        const entry = {
+          id: crypto.randomUUID(), task_number: '',
+          actual_date: '', driver: '', unit: '',
+          actual_start: '', actual_end: '',
+          total_hours: '', haul_fee: '',
+          customer: '', description: '', division: '', notes: ''
+        };
+
+        headers.forEach((h, idx) => {
+          const field = CSV_FIELD_MAP[h];
+          if (!field || cols[idx] === undefined) return;
+          const raw = cols[idx].trim();
+          if (field === 'actual_date')                      entry[field] = _csvDate(raw);
+          else if (field === 'actual_start' || field === 'actual_end') entry[field] = _csvTime(raw);
+          else if (field === 'total_hours' || field === 'haul_fee')    entry[field] = _csvNum(raw);
+          else entry[field] = raw;
+        });
+
+        if (!entry.task_number) entry.task_number = nextTaskNum();
+        newEntries.push(entry);
+        divEntries.push(entry);
+      }
+
+      if (newEntries.length === 0) return;
+
+      /* Auto-populate managed lists with any new values from the CSV */
+      const add = (arr, val) => val && !arr.includes(val) ? [...arr, val] : arr;
+      newEntries.forEach(e => {
+        divTruckLists.drivers   = add(divTruckLists.drivers,   e.driver);
+        divTruckLists.customers = add(divTruckLists.customers, e.customer);
+        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit))
+          divTruckLists.units.push({ name: e.unit, number: '' });
+      });
+      divTruckLists.drivers.sort((a,b) => a.localeCompare(b));
+      divTruckLists.customers.sort((a,b) => a.localeCompare(b));
+      divTruckLists.units.sort((a,b) => a.name.localeCompare(b.name));
+      saveTruckLists();
+
+      schedSave();
+      renderTrackingTab();
+      const el = document.getElementById('save-status');
+      if (el) {
+        el.textContent = `${newEntries.length} row${newEntries.length === 1 ? '' : 's'} imported`;
+        el.style.display = '';
+        setTimeout(() => { if (el.textContent.includes('imported')) el.textContent = 'SAVED'; }, 3000);
+      }
+    }
+
+    function downloadCSVTemplate() {
+      const headers = ['Task Number','Actual Date','Driver','Unit','Actual Start','Actual End',
+        'Total Hours','Haul Fee','Customer','Description','Division','Notes'];
+      const blob = new Blob([headers.join(',') + '\n'], { type: 'text/csv' });
+      const a = Object.assign(document.createElement('a'),
+        { href: URL.createObjectURL(blob), download: 'truck_tracking_template.csv' });
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    loadTrackingData();
   </script>
 </body>
 </html>
