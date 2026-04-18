@@ -11530,6 +11530,105 @@ function renderScaleOfEconomy() {
   }
 
   // ── Size-band breakdown table ────────────────────────────────────────────
+  // ── Scale Onset Thresholds ────────────────────────────────────────────────
+  // Calculates three actionable size thresholds from the regression model:
+  //   1. Cost Crossover  — size where unit cost = dataset average
+  //   2. 80% Gains       — size where 80% of total cost savings is captured
+  //   3. Labor Crossover — size where labor hrs/unit = dataset labor average
+  function scaleOnset(s) {
+    if (s.trend !== 'Economy of Scale') return '';
+
+    const u    = s.unit || 'units';
+    const fmt0 = n => Math.round(n).toLocaleString('en-US');
+    const fmtC = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const fmtH = n => n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+    const items = [];
+
+    // 1. Cost crossover: size where predicted cost = dataset average
+    let costCross = null;
+    if (s.usePowerLaw && s.aPow > 0 && s.bPow < 0 && s.avgUC > 0) {
+      costCross = Math.pow(s.avgUC / s.aPow, 1 / s.bPow);
+    } else if (!s.usePowerLaw && s.slope < 0 && s.avgUC > 0) {
+      costCross = (s.avgUC - s.interc) / s.slope;
+    }
+    if (costCross > 0 && isFinite(costCross)) {
+      const est = costCross < s.minX * 0.5 || costCross > s.maxX * 2;
+      items.push({
+        label: 'Cost Crossover', color: '#4ade80',
+        value: fmt0(costCross) + ' ' + u, est,
+        sub:  `Unit cost crosses your avg (${fmtC(s.avgUC)}/${u})`,
+        hint: `Below ${fmt0(costCross)} ${u} you're above average cost — above it scale works in your favor.`,
+      });
+    }
+
+    // 2. 80% of total cost savings captured
+    let x80 = null, costAt80 = null;
+    if (s.usePowerLaw && s.aPow > 0 && s.bPow < 0 && s.minX > 0 && s.maxX > s.minX) {
+      const cMin = s.aPow * Math.pow(s.minX, s.bPow);
+      const cMax = s.aPow * Math.pow(s.maxX, s.bPow);
+      const tgt  = cMin - 0.8 * (cMin - cMax);
+      x80        = Math.pow(tgt / s.aPow, 1 / s.bPow);
+      costAt80   = tgt;
+    } else if (!s.usePowerLaw && s.slope < 0 && s.minX > 0 && s.maxX > s.minX) {
+      const cMin = s.slope * s.minX + s.interc;
+      const cMax = s.slope * s.maxX + s.interc;
+      const tgt  = cMin - 0.8 * (cMin - cMax);
+      x80        = (tgt - s.interc) / s.slope;
+      costAt80   = tgt;
+    }
+    if (x80 > 0 && isFinite(x80)) {
+      const est = x80 > s.maxX * 1.25;
+      items.push({
+        label: '80% Gains Captured', color: '#60a5fa',
+        value: fmt0(x80) + ' ' + u, est,
+        sub:  `${fmtC(Math.max(0, costAt80))}/${u} — diminishing returns beyond here`,
+        hint: `Scaling beyond ${fmt0(x80)} ${u} yields only the final 20% of available efficiency — concentrate effort on winning jobs up to this size first.`,
+      });
+    }
+
+    // 3. Labor crossover: size where labor hrs/unit = dataset labor average
+    if (s.useLabor && s.laborA > 0 && s.laborB < 0 && s.laborPts.length >= 2) {
+      const avgLH = s.laborPts.reduce((sum, p) => sum + p.y, 0) / s.laborPts.length;
+      if (avgLH > 0) {
+        const lx = Math.pow(avgLH / s.laborA, 1 / s.laborB);
+        if (lx > 0 && isFinite(lx)) {
+          const est = lx < s.minX * 0.5 || lx > s.maxX * 2;
+          items.push({
+            label: 'Labor Crossover', color: '#34d399',
+            value: fmt0(lx) + ' ' + u, est,
+            sub:  `Crew hrs/${u} falls below avg (${fmtH(avgLH)} hrs/${u})`,
+            hint: `Above ${fmt0(lx)} ${u} your crew runs leaner than the average job — factor this into labor bids for larger work.`,
+          });
+        }
+      }
+    }
+
+    if (!items.length) return '';
+
+    const estBadge = `<span style="font-size:0.55rem;background:rgba(251,191,36,0.15);color:#fbbf24;padding:0.05rem 0.3rem;border-radius:3px;vertical-align:middle;margin-left:0.3rem;font-weight:600">est.</span>`;
+
+    const cards = items.map(item => `
+      <div style="background:var(--surface2);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:0.65rem 0.85rem;flex:1;min-width:130px">
+        <div style="font-size:0.57rem;text-transform:uppercase;letter-spacing:0.09em;color:${item.color};font-weight:700;margin-bottom:0.3rem">${item.label}</div>
+        <div style="font-size:1.1rem;font-weight:700;color:var(--text);line-height:1.1;margin-bottom:0.25rem">${item.value}${item.est ? estBadge : ''}</div>
+        <div style="font-size:0.67rem;color:var(--muted);line-height:1.35;overflow-wrap:break-word">${item.sub}</div>
+      </div>`).join('');
+
+    const hints = items.map(item => `
+      <div style="display:flex;align-items:baseline;gap:0.4rem;margin-bottom:0.25rem">
+        <span style="color:${item.color};font-size:0.7rem;flex-shrink:0">▸</span>
+        <span style="font-size:0.73rem;color:var(--muted);overflow-wrap:break-word;line-height:1.45">${item.hint}</span>
+      </div>`).join('');
+
+    return `
+      <div>
+        <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Scale Onset Thresholds</div>
+        <div style="display:flex;gap:0.55rem;flex-wrap:wrap;margin-bottom:0.6rem">${cards}</div>
+        <div style="padding:0.55rem 0.7rem;background:rgba(74,222,128,0.04);border:1px solid rgba(74,222,128,0.12);border-radius:5px">${hints}</div>
+      </div>`;
+  }
+
   function bandTable(pts, unit) {
     if (pts.length < 3) return '';
     const sorted = [...pts].sort((a, b) => a.x - b.x);
@@ -11791,6 +11890,7 @@ function renderScaleOfEconomy() {
                 <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Interpretation</div>
                 ${interpretation(s)}
               </div>
+              ${scaleOnset(s)}
               ${s.pts.length >= 3 ? `<div>
                 <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.5rem">Unit Cost by Size Tier</div>
                 ${bandTable(s.pts, s.unit)}
