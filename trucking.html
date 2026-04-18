@@ -360,6 +360,53 @@
       }).catch(() => {});
     }
 
+    /* Fix entries that were saved before the CSV normalisation was in place.
+       Safe to call on every load — no-op when data is already clean. */
+    function _migrateExistingEntries() {
+      let dataChanged  = false;
+      let listsChanged = false;
+
+      const addStr = (arr, val) => {
+        if (!val || arr.includes(val)) return arr;
+        listsChanged = true;
+        return arr.concat(val);
+      };
+
+      divEntries.forEach(e => {
+        // Date: MM/DD/YYYY → YYYY-MM-DD
+        const d = _csvDate(e.actual_date || '');
+        if (d !== (e.actual_date || '')) { e.actual_date = d; dataChanged = true; }
+
+        // Times: 12-hr AM/PM → 24-hr HH:MM
+        const ts = _csvTime(e.actual_start || '');
+        if (ts !== (e.actual_start || '')) { e.actual_start = ts; dataChanged = true; }
+        const te = _csvTime(e.actual_end || '');
+        if (te !== (e.actual_end || '')) { e.actual_end = te; dataChanged = true; }
+
+        // Haul fee / hours: strip currency symbols
+        const hf = _csvNum(e.haul_fee || '');
+        if (hf !== (e.haul_fee || '')) { e.haul_fee = hf; dataChanged = true; }
+        const th = _csvNum(e.total_hours || '');
+        if (th !== (e.total_hours || '')) { e.total_hours = th; dataChanged = true; }
+
+        // Auto-populate managed lists from stored entries
+        divTruckLists.drivers   = addStr(divTruckLists.drivers,   e.driver);
+        divTruckLists.customers = addStr(divTruckLists.customers, e.customer);
+        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)) {
+          divTruckLists.units.push({ name: e.unit, number: '' });
+          listsChanged = true;
+        }
+      });
+
+      if (listsChanged) {
+        divTruckLists.drivers.sort((a, b) => a.localeCompare(b));
+        divTruckLists.customers.sort((a, b) => a.localeCompare(b));
+        divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
+        saveTruckLists();
+      }
+      if (dataChanged) tdPut('fct_truck_division', divEntries);
+    }
+
     async function loadTrackingData() {
       const [entries, lists, truckLists] = await Promise.all([
         tdGet('fct_truck_division'),
@@ -378,6 +425,7 @@
         if (Array.isArray(truckLists.customers)) divTruckLists.customers = truckLists.customers;
         if (Array.isArray(truckLists.units))     divTruckLists.units     = truckLists.units;
       }
+      _migrateExistingEntries();
       renderTrackingTab();
     }
 
