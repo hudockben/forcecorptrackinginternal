@@ -235,7 +235,7 @@
 
   <!-- ── Manage Lists overlay ── -->
   <div class="lists-backdrop" id="lists-backdrop" onclick="closeManageLists(event)">
-    <div class="lists-panel" id="lists-panel">
+    <div class="lists-panel" id="lists-panel" onclick="event.stopPropagation()">
       <h3>Manage Lists</h3>
       <div id="lists-panel-body"></div>
     </div>
