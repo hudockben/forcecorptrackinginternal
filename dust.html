@@ -2989,12 +2989,31 @@
       buildBars('an-bar-hours',   cos.map(c=>({label:c.name, v:c.hours})),    'blue',  v => numFmt(v,1)+' hrs');
       buildBars('an-bar-gallons', cos.map(c=>({label:c.name, v:c.gallons})),  'green', v => fmtGal(v)+' gal');
 
-      /* ── Detail table ── */
-      const tierOf = name => dustLists.companies.find(c => c.name === name)?.tier || '—';
+      /* ── Detail table — ABC revenue-tier analysis ── */
+      // Classify by individual revenue share (not cumulative) so large customers
+      // like CNX (~17% of revenue) aren't demoted by what's above them:
+      //   Critical  ≥ 10% of total revenue
+      //   Moderate  ≥  3%
+      //   Low       <  3%
+      const _totalInv = cos.reduce((s,c) => s + c.invTotal, 0);
+      const _tierMap = {};
+      cos.forEach(c => {
+        const share = _totalInv ? (c.invTotal / _totalInv * 100) : 0;
+        _tierMap[c.name] = share >= 10 ? 'Critical' : share >= 3 ? 'Moderate' : 'Low';
+      });
+      const tierBadge = name => {
+        const t = _tierMap[name] || 'Low';
+        const s = {
+          Critical: 'background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3)',
+          Moderate: 'background:rgba(250,204,21,0.12);color:#facc15;border:1px solid rgba(250,204,21,0.25)',
+          Low:      'background:rgba(100,116,139,0.12);color:#94a3b8;border:1px solid rgba(100,116,139,0.2)',
+        }[t];
+        return `<span style="display:inline-block;padding:0.15rem 0.55rem;border-radius:99px;font-size:0.62rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;${s}">${t}</span>`;
+      };
       document.getElementById('an-detail-body').innerHTML = cos.map(c => `
         <tr>
           <td>${esc(c.name)}</td>
-          <td class="muted">${esc(tierOf(c.name))}</td>
+          <td>${tierBadge(c.name)}</td>
           <td>${numFmt(c.visits)}</td>
           <td>${numFmt(round2(c.hours), 2)}</td>
           <td class="muted">${c.visits ? numFmt(round2(c.hours/c.visits), 2) : '—'}</td>
