@@ -151,6 +151,63 @@
       font-size: 0.9rem; padding: 0.1rem 0.3rem; border-radius: 3px;
     }
     .btn-del-row:hover { color: var(--orange); background: rgba(239,68,68,0.1); }
+
+    /* ── Manage Lists panel ── */
+    .lists-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 400;
+    }
+    .lists-backdrop.open { display: block; }
+    .lists-panel {
+      position: absolute; top: 0; right: 0;
+      width: 300px; background: var(--surface2);
+      border-left: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      border-radius: 0 0 0 8px;
+      padding: 1rem 1.1rem 1.25rem;
+      box-shadow: -4px 4px 24px rgba(0,0,0,0.5);
+    }
+    .lists-panel h3 {
+      font-size: 0.65rem; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 1rem; font-weight: 600;
+    }
+    .lists-section { margin-bottom: 1.1rem; }
+    .lists-section-title {
+      font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 0.45rem; font-weight: 600;
+    }
+    .lists-add-row {
+      display: flex; gap: 0.4rem; margin-bottom: 0.5rem;
+    }
+    .lists-add-row input {
+      flex: 1; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.78rem;
+      padding: 0.3rem 0.5rem; outline: none;
+    }
+    .lists-add-row input:focus { border-color: #555; }
+    .lists-add-btn {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em;
+      color: #fff; background: var(--orange); border: none;
+      border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer; white-space: nowrap;
+    }
+    .lists-add-btn:hover { background: var(--orange-dim); }
+    .lists-items { display: flex; flex-direction: column; gap: 0.25rem; }
+    .lists-item {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.28rem 0.55rem; font-size: 0.78rem;
+    }
+    .lists-item-del {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 0.75rem; padding: 0 0.2rem; line-height: 1;
+    }
+    .lists-item-del:hover { color: var(--orange); }
+    .btn-manage-lists {
+      font-size: 0.62rem; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.28rem 0.6rem; cursor: pointer;
+    }
+    .btn-manage-lists:hover { color: var(--text); border-color: #555; }
   </style>
 </head>
 <body>
@@ -175,6 +232,14 @@
     <button class="tab-btn" data-tab="truck-tracking">Truck Tracking</button>
     <button class="tab-btn" data-tab="analytics">Analytics</button>
   </nav>
+
+  <!-- ── Manage Lists overlay ── -->
+  <div class="lists-backdrop" id="lists-backdrop" onclick="closeManageLists(event)">
+    <div class="lists-panel" id="lists-panel">
+      <h3>Manage Lists</h3>
+      <div id="lists-panel-body"></div>
+    </div>
+  </div>
 
   <!-- ══════════════════════════════════════════════
        DASHBOARD TAB
@@ -247,10 +312,11 @@
        TRUCK TRACKING — DATA LAYER
     ═══════════════════════════════════════════ */
     const API_BASE = '/api';
-    let divEntries = [];
-    let divLists   = { employees: [], equipment: [] };
-    let _saveTimer = null;
-    let _isSaved   = false;
+    let divEntries    = [];
+    let divLists      = { employees: [], equipment: [] };
+    let divTruckLists = { drivers: [], customers: [] };
+    let _saveTimer    = null;
+    let _isSaved      = false;
 
     async function tdGet(key) {
       try {
@@ -272,9 +338,10 @@
     }
 
     async function loadTrackingData() {
-      const [entries, lists] = await Promise.all([
+      const [entries, lists, truckLists] = await Promise.all([
         tdGet('fct_truck_division'),
-        tdGet('fct_lists')
+        tdGet('fct_lists'),
+        tdGet('fct_truck_division_lists')
       ]);
       divEntries = Array.isArray(entries) ? entries : [];
       if (lists) {
@@ -283,6 +350,74 @@
         }
         if (Array.isArray(lists.equipment)) divLists.equipment = lists.equipment;
       }
+      if (truckLists && typeof truckLists === 'object') {
+        if (Array.isArray(truckLists.drivers))   divTruckLists.drivers   = truckLists.drivers;
+        if (Array.isArray(truckLists.customers))  divTruckLists.customers = truckLists.customers;
+      }
+      renderTrackingTab();
+    }
+
+    function saveTruckLists() {
+      tdPut('fct_truck_division_lists', divTruckLists);
+    }
+
+    /* ── Manage Lists panel ── */
+    function openManageLists() {
+      document.getElementById('lists-backdrop').classList.add('open');
+      renderListsPanel();
+    }
+
+    function closeManageLists(e) {
+      if (e && document.getElementById('lists-panel').contains(e.target)) return;
+      document.getElementById('lists-backdrop').classList.remove('open');
+    }
+
+    function renderListsPanel() {
+      const esc = s => String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      const section = (key, label, items) => `
+        <div class="lists-section">
+          <div class="lists-section-title">${label}</div>
+          <div class="lists-add-row">
+            <input type="text" id="lists-new-${key}" placeholder="Add ${label.toLowerCase()}…"
+              onkeydown="if(event.key==='Enter')addToList('${key}')">
+            <button class="lists-add-btn" onclick="addToList('${key}')">Add</button>
+          </div>
+          <div class="lists-items">
+            ${items.length === 0
+              ? `<span style="font-size:0.72rem;color:var(--muted)">No ${label.toLowerCase()} yet.</span>`
+              : items.map(v => `
+                  <div class="lists-item">
+                    <span>${esc(v)}</span>
+                    <button class="lists-item-del" onclick="removeFromList('${key}','${esc(v)}')" title="Remove">&#10005;</button>
+                  </div>`).join('')
+            }
+          </div>
+        </div>`;
+
+      document.getElementById('lists-panel-body').innerHTML =
+        section('drivers',   'Drivers',   divTruckLists.drivers) +
+        section('customers', 'Customers', divTruckLists.customers);
+    }
+
+    function addToList(key) {
+      const inp = document.getElementById('lists-new-' + key);
+      if (!inp) return;
+      const val = inp.value.trim();
+      if (!val || divTruckLists[key].includes(val)) { inp.value = ''; return; }
+      divTruckLists[key].push(val);
+      divTruckLists[key].sort((a, b) => a.localeCompare(b));
+      saveTruckLists();
+      inp.value = '';
+      renderListsPanel();
+      renderTrackingTab();
+    }
+
+    function removeFromList(key, val) {
+      divTruckLists[key] = divTruckLists[key].filter(v => v !== val);
+      saveTruckLists();
+      renderListsPanel();
       renderTrackingTab();
     }
 
@@ -348,9 +483,14 @@
       const esc = s => String(s == null ? '' : s)
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-      const empOpts = cur => '<option value="">— select —</option>' +
-        divLists.employees.slice().sort((a,b) => a.name.localeCompare(b.name)).map(e =>
-          `<option value="${esc(e.name)}"${e.name === cur ? ' selected' : ''}>${esc(e.name)}</option>`
+      const driverOpts = cur => '<option value="">— select —</option>' +
+        divTruckLists.drivers.map(d =>
+          `<option value="${esc(d)}"${d === cur ? ' selected' : ''}>${esc(d)}</option>`
+        ).join('');
+
+      const customerOpts = cur => '<option value="">— select —</option>' +
+        divTruckLists.customers.map(c =>
+          `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(c)}</option>`
         ).join('');
 
       const unitOpts = cur => '<option value="">— select —</option>' +
@@ -375,14 +515,14 @@
             return `<tr>
               <td class="td-task-num">${esc(e.task_number)}</td>
               <td style="min-width:110px">${inp(e.id,'actual_date','date','')}</td>
-              <td style="min-width:140px">${sel(e.id,'driver',empOpts(e.driver))}</td>
+              <td style="min-width:140px">${sel(e.id,'driver',driverOpts(e.driver))}</td>
               <td style="min-width:130px">${sel(e.id,'unit',unitOpts(e.unit))}</td>
               <td style="min-width:90px">${inp(e.id,'actual_start','time','')}</td>
               <td style="min-width:90px">${inp(e.id,'actual_end','time','')}</td>
               <td style="min-width:80px;text-align:right">${inp(e.id,'total_hours','number','0')}</td>
               <td style="min-width:90px;text-align:right">${inp(e.id,'haul_fee','number','0.00')}</td>
               <td class="td-total" id="td-tot-${e.id}">$${tot.toFixed(4)}</td>
-              <td style="min-width:130px">${inp(e.id,'customer','text','Customer')}</td>
+              <td style="min-width:130px">${sel(e.id,'customer',customerOpts(e.customer))}</td>
               <td style="min-width:160px">${inp(e.id,'description','text','Description')}</td>
               <td style="min-width:100px">${inp(e.id,'division','text','Division')}</td>
               <td style="min-width:130px">${inp(e.id,'notes','text','Notes')}</td>
@@ -399,7 +539,8 @@
           <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.85rem">
             <button class="btn-add-row" onclick="addRow()">+ Add Row</button>
             <span style="font-size:0.72rem;color:var(--muted)">${divEntries.length} ${divEntries.length === 1 ? 'entry' : 'entries'}</span>
-            <span id="save-status" style="margin-left:auto;font-size:0.72rem;font-weight:600;color:#22c55e;letter-spacing:0.06em;text-transform:uppercase;${savedStyle}">SAVED</span>
+            <button class="btn-manage-lists" onclick="openManageLists()" style="margin-left:auto">⚙ Manage Lists</button>
+            <span id="save-status" style="font-size:0.72rem;font-weight:600;color:#22c55e;letter-spacing:0.06em;text-transform:uppercase;${savedStyle}">SAVED</span>
           </div>
           <div style="overflow-x:auto">
             <table class="tr-tbl">
