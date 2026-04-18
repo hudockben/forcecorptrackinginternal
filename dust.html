@@ -2989,12 +2989,31 @@
       buildBars('an-bar-hours',   cos.map(c=>({label:c.name, v:c.hours})),    'blue',  v => numFmt(v,1)+' hrs');
       buildBars('an-bar-gallons', cos.map(c=>({label:c.name, v:c.gallons})),  'green', v => fmtGal(v)+' gal');
 
-      /* ── Detail table ── */
-      const tierOf = name => dustLists.companies.find(c => c.name === name)?.tier || '—';
+      /* ── Detail table — ABC revenue-tier analysis ── */
+      // Sort by revenue desc, accumulate cumulative %, assign tier:
+      //   Critical  = first 70% of total revenue (losing them is severe)
+      //   Moderate  = next 20%  (70–90% cumulative)
+      //   Low       = remaining 10%
+      const _totalInv = cos.reduce((s,c) => s + c.invTotal, 0);
+      let _cumPct = 0;
+      const _tierMap = {};
+      [...cos].sort((a,b) => b.invTotal - a.invTotal).forEach(c => {
+        _cumPct += _totalInv ? (c.invTotal / _totalInv * 100) : 0;
+        _tierMap[c.name] = _cumPct <= 70 ? 'Critical' : _cumPct <= 90 ? 'Moderate' : 'Low';
+      });
+      const tierBadge = name => {
+        const t = _tierMap[name] || 'Low';
+        const s = {
+          Critical: 'background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3)',
+          Moderate: 'background:rgba(250,204,21,0.12);color:#facc15;border:1px solid rgba(250,204,21,0.25)',
+          Low:      'background:rgba(100,116,139,0.12);color:#94a3b8;border:1px solid rgba(100,116,139,0.2)',
+        }[t];
+        return `<span style="display:inline-block;padding:0.15rem 0.55rem;border-radius:99px;font-size:0.62rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;${s}">${t}</span>`;
+      };
       document.getElementById('an-detail-body').innerHTML = cos.map(c => `
         <tr>
           <td>${esc(c.name)}</td>
-          <td class="muted">${esc(tierOf(c.name))}</td>
+          <td>${tierBadge(c.name)}</td>
           <td>${numFmt(c.visits)}</td>
           <td>${numFmt(round2(c.hours), 2)}</td>
           <td class="muted">${c.visits ? numFmt(round2(c.hours/c.visits), 2) : '—'}</td>
