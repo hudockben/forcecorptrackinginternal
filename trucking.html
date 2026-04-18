@@ -952,9 +952,44 @@
             ${statCard('Total Entries', entries.length.toLocaleString(), 'truck tracking records')}
           </div>
           <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">Breakdown by Customer</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:1.75rem">
             ${chartCard('Revenue by Customer','#facc15',revenueRows)}
             ${chartCard('Hours by Customer','#60a5fa',hoursRows)}
+          </div>
+
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">Customer Detail</div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+            <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
+              <thead>
+                <tr style="background:var(--surface2)">
+                  <th style="padding:0.6rem 1rem;text-align:left;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Customer</th>
+                  <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Entries</th>
+                  <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Total Hrs</th>
+                  <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Avg Hrs / Entry</th>
+                  <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Avg Haul Fee</th>
+                  <th style="padding:0.6rem 1rem;text-align:right;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)">Total Revenue</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${custRows.length === 0
+                  ? `<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--muted)">No data for this period.</td></tr>`
+                  : custRows.map((c,i) => {
+                      const avgHrs = c.count ? c.hours / c.count : 0;
+                      const avgFee = c.count
+                        ? entries.filter(e=>e.customer===c.name).reduce((s,e)=>s+(parseFloat(e.haul_fee)||0),0) / c.count
+                        : 0;
+                      return `<tr style="border-bottom:1px solid var(--border);${i%2===1?'background:rgba(255,255,255,0.02)':''}">
+                        <td style="padding:0.55rem 1rem;color:var(--text);font-weight:500">${esc(c.name)}</td>
+                        <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted)">${c.count}</td>
+                        <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--text)">${fmtHrs(c.hours)}</td>
+                        <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted)">${fmtHrs(avgHrs)}</td>
+                        <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted)">${fmtMoney(avgFee)}</td>
+                        <td style="padding:0.55rem 1rem;text-align:right;color:#facc15;font-weight:600">${fmtMoney(c.revenue)}</td>
+                      </tr>`;
+                    }).join('')
+                }
+              </tbody>
+            </table>
           </div>
         </div>`;
     }
