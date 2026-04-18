@@ -1078,12 +1078,12 @@
 
       root.innerHTML = `<div style="padding:1.25rem;max-width:1400px">
 
-        <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">All-Time Overview</div>
+        <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">YTD Overview — ${curYear}</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:0.8rem">
-          ${statCard('Total Revenue',  fmtMoney(totalRevAll), divEntries.length+' total entries', true)}
-          ${statCard('Total Hours',    fmtHrs(totalHrsAll)+' hrs', 'across all records')}
-          ${statCard('Active Units',   activeUnits,   curYear+' — '+activeUnits+' units running')}
-          ${statCard('Active Drivers', activeDrivers, curYear+' — '+activeDrivers+' drivers')}
+          ${statCard('Total Revenue',  fmtMoney(curRev),  curEntries.length+' entries this year', true)}
+          ${statCard('Total Hours',    fmtHrs(curHrs)+' hrs', 'logged this year')}
+          ${statCard('Active Units',   activeUnits,   activeUnits+' units running')}
+          ${statCard('Active Drivers', activeDrivers, activeDrivers+' drivers active')}
         </div>
 
         ${yoySection}
