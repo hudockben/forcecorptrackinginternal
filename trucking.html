@@ -233,6 +233,10 @@
     <button class="tab-btn" data-tab="analytics">Analytics</button>
   </nav>
 
+  <!-- hidden CSV upload input — must live outside the re-rendered tab panel -->
+  <input type="file" id="csv-upload-input" accept=".csv" style="display:none"
+    onchange="handleCSVUpload(this)">
+
   <!-- ── Manage Lists overlay ── -->
   <div class="lists-backdrop" id="lists-backdrop" onclick="closeManageLists(event)">
     <div class="lists-panel" id="lists-panel" onclick="event.stopPropagation()">
@@ -594,8 +598,10 @@
 
       root.innerHTML = `
         <div style="padding:1.25rem">
-          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.85rem">
+          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.85rem;flex-wrap:wrap">
             <button class="btn-add-row" onclick="addRow()">+ Add Row</button>
+            <button class="btn-ghost" onclick="triggerCSVUpload()" style="font-size:0.65rem;padding:0.28rem 0.65rem">&#8679; Upload CSV</button>
+            <button class="btn-ghost" onclick="downloadCSVTemplate()" style="font-size:0.65rem;padding:0.28rem 0.65rem">&#8681; CSV Template</button>
             <span style="font-size:0.72rem;color:var(--muted)">${divEntries.length} ${divEntries.length === 1 ? 'entry' : 'entries'}</span>
             <button class="btn-manage-lists" onclick="openManageLists()" style="margin-left:auto">⚙ Manage Lists</button>
             <span id="save-status" style="font-size:0.72rem;font-weight:600;color:#22c55e;letter-spacing:0.06em;text-transform:uppercase;${savedStyle}">SAVED</span>
@@ -624,6 +630,101 @@
             </table>
           </div>
         </div>`;
+    }
+
+    /* ═══════════════════════════════════════════
+       CSV UPLOAD
+    ═══════════════════════════════════════════ */
+    const CSV_FIELD_MAP = {
+      'task number': null, 'task_number': null,           // auto-generated, ignored
+      'actual date':  'actual_date',  'actual_date': 'actual_date',  'date': 'actual_date',
+      'driver':       'driver',
+      'unit':         'unit',         'unit name':   'unit',          'unit_name': 'unit',
+      'actual start': 'actual_start', 'actual_start':'actual_start',  'start': 'actual_start',
+      'actual end':   'actual_end',   'actual_end':  'actual_end',    'end':   'actual_end',
+      'total hours':  'total_hours',  'total_hours': 'total_hours',   'hours': 'total_hours',
+      'haul fee':     'haul_fee',     'haul_fee':    'haul_fee',      'fee':   'haul_fee',
+      'customer':     'customer',
+      'description':  'description',  'desc':        'description',
+      'division':     'division',
+      'notes':        'notes',        'note':        'notes',
+    };
+
+    function _parseCSVLine(line) {
+      const out = [];
+      let cur = '', inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') {
+          if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+          else inQ = !inQ;
+        } else if (c === ',' && !inQ) { out.push(cur); cur = ''; }
+        else cur += c;
+      }
+      out.push(cur);
+      return out;
+    }
+
+    function triggerCSVUpload() {
+      document.getElementById('csv-upload-input').click();
+    }
+
+    function handleCSVUpload(input) {
+      const file = input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => { importCSV(ev.target.result); input.value = ''; };
+      reader.readAsText(file);
+    }
+
+    function importCSV(text) {
+      const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+        .split('\n').filter(l => l.trim());
+      if (lines.length < 2) return;
+
+      const headers = _parseCSVLine(lines[0]).map(h => h.trim().toLowerCase());
+      let added = 0;
+
+      for (let i = 1; i < lines.length; i++) {
+        const cols = _parseCSVLine(lines[i]);
+        if (cols.every(c => !c.trim())) continue;
+
+        const entry = {
+          id: crypto.randomUUID(), task_number: nextTaskNum(),
+          actual_date: '', driver: '', unit: '',
+          actual_start: '', actual_end: '',
+          total_hours: '', haul_fee: '',
+          customer: '', description: '', division: '', notes: ''
+        };
+
+        headers.forEach((h, idx) => {
+          const field = CSV_FIELD_MAP[h];
+          if (field && cols[idx] !== undefined) entry[field] = cols[idx].trim();
+        });
+
+        divEntries.push(entry);
+        added++;
+      }
+
+      if (added === 0) return;
+      schedSave();
+      renderTrackingTab();
+      const el = document.getElementById('save-status');
+      if (el) {
+        el.textContent = `${added} row${added === 1 ? '' : 's'} imported`;
+        el.style.display = '';
+        setTimeout(() => { if (el.textContent.includes('imported')) el.textContent = 'SAVED'; }, 3000);
+      }
+    }
+
+    function downloadCSVTemplate() {
+      const headers = ['Task Number','Actual Date','Driver','Unit','Actual Start','Actual End',
+        'Total Hours','Haul Fee','Customer','Description','Division','Notes'];
+      const blob = new Blob([headers.join(',') + '\n'], { type: 'text/csv' });
+      const a = Object.assign(document.createElement('a'),
+        { href: URL.createObjectURL(blob), download: 'truck_tracking_template.csv' });
+      a.click();
+      URL.revokeObjectURL(a.href);
     }
 
     loadTrackingData();
