@@ -675,7 +675,7 @@
        CSV UPLOAD
     ═══════════════════════════════════════════ */
     const CSV_FIELD_MAP = {
-      'task number': null, 'task_number': null,           // auto-generated, ignored
+      'task number': 'task_number', 'task_number': 'task_number',
       'actual date':  'actual_date',  'actual_date': 'actual_date',  'date': 'actual_date',
       'driver':       'driver',
       'unit':         'unit',         'unit name':   'unit',          'unit_name': 'unit',
@@ -688,6 +688,35 @@
       'division':     'division',
       'notes':        'notes',        'note':        'notes',
     };
+
+    /* Normalise a CSV date value → YYYY-MM-DD for <input type="date"> */
+    function _csvDate(v) {
+      v = v.trim();
+      // MM/DD/YYYY or M/D/YYYY
+      const a = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (a) return `${a[3]}-${a[1].padStart(2,'0')}-${a[2].padStart(2,'0')}`;
+      // Already YYYY-MM-DD
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+      return v;
+    }
+
+    /* Normalise a CSV time value → HH:MM (24-hr) for <input type="time"> */
+    function _csvTime(v) {
+      v = v.trim();
+      const a = v.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i);
+      if (a) {
+        let h = parseInt(a[1], 10);
+        const period = a[3].toUpperCase();
+        if (period === 'AM' && h === 12) h = 0;
+        if (period === 'PM' && h !== 12) h += 12;
+        return `${String(h).padStart(2,'0')}:${a[2]}`;
+      }
+      if (/^\d{2}:\d{2}$/.test(v)) return v;
+      return v;
+    }
+
+    /* Strip currency symbols / commas so parseFloat works */
+    function _csvNum(v) { return v.replace(/[$,\s]/g, ''); }
 
     function _parseCSVLine(line) {
       const out = [];
@@ -722,14 +751,14 @@
       if (lines.length < 2) return;
 
       const headers = _parseCSVLine(lines[0]).map(h => h.trim().toLowerCase());
-      let added = 0;
+      const newEntries = [];
 
       for (let i = 1; i < lines.length; i++) {
         const cols = _parseCSVLine(lines[i]);
         if (cols.every(c => !c.trim())) continue;
 
         const entry = {
-          id: crypto.randomUUID(), task_number: nextTaskNum(),
+          id: crypto.randomUUID(), task_number: '',
           actual_date: '', driver: '', unit: '',
           actual_start: '', actual_end: '',
           total_hours: '', haul_fee: '',
@@ -738,19 +767,39 @@
 
         headers.forEach((h, idx) => {
           const field = CSV_FIELD_MAP[h];
-          if (field && cols[idx] !== undefined) entry[field] = cols[idx].trim();
+          if (!field || cols[idx] === undefined) return;
+          const raw = cols[idx].trim();
+          if (field === 'actual_date')                      entry[field] = _csvDate(raw);
+          else if (field === 'actual_start' || field === 'actual_end') entry[field] = _csvTime(raw);
+          else if (field === 'total_hours' || field === 'haul_fee')    entry[field] = _csvNum(raw);
+          else entry[field] = raw;
         });
 
+        if (!entry.task_number) entry.task_number = nextTaskNum();
+        newEntries.push(entry);
         divEntries.push(entry);
-        added++;
       }
 
-      if (added === 0) return;
+      if (newEntries.length === 0) return;
+
+      /* Auto-populate managed lists with any new values from the CSV */
+      const add = (arr, val) => val && !arr.includes(val) ? [...arr, val] : arr;
+      newEntries.forEach(e => {
+        divTruckLists.drivers   = add(divTruckLists.drivers,   e.driver);
+        divTruckLists.customers = add(divTruckLists.customers, e.customer);
+        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit))
+          divTruckLists.units.push({ name: e.unit, number: '' });
+      });
+      divTruckLists.drivers.sort((a,b) => a.localeCompare(b));
+      divTruckLists.customers.sort((a,b) => a.localeCompare(b));
+      divTruckLists.units.sort((a,b) => a.name.localeCompare(b.name));
+      saveTruckLists();
+
       schedSave();
       renderTrackingTab();
       const el = document.getElementById('save-status');
       if (el) {
-        el.textContent = `${added} row${added === 1 ? '' : 's'} imported`;
+        el.textContent = `${newEntries.length} row${newEntries.length === 1 ? '' : 's'} imported`;
         el.style.display = '';
         setTimeout(() => { if (el.textContent.includes('imported')) el.textContent = 'SAVED'; }, 3000);
       }
