@@ -208,6 +208,19 @@
       border-radius: 4px; padding: 0.28rem 0.6rem; cursor: pointer;
     }
     .btn-manage-lists:hover { color: var(--text); border-color: #555; }
+
+    /* ── Year filter tabs ── */
+    .yr-tabs { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.85rem; }
+    .yr-tab {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      background: none; border: 1px solid var(--border); border-radius: 20px;
+      padding: 0.26rem 0.8rem; cursor: pointer; color: var(--muted);
+      transition: color 0.12s, border-color 0.12s, background 0.12s;
+      white-space: nowrap;
+    }
+    .yr-tab:hover { color: var(--text); border-color: #555; }
+    .yr-tab.active { background: #facc15; color: #0a0a0f; border-color: #facc15; font-weight: 800; }
+    .yr-row-count { font-size: 0.72rem; color: var(--muted); margin-left: 0.5rem; }
   </style>
 </head>
 <body>
@@ -319,8 +332,14 @@
     let divEntries    = [];
     let divLists      = { employees: [], equipment: [] };
     let divTruckLists = { drivers: [], customers: [], units: [] };
-    let _saveTimer    = null;
-    let _isSaved      = false;
+    let _saveTimer       = null;
+    let _isSaved         = false;
+    let activeYearFilter = 'all';
+
+    function setYearFilter(year) {
+      activeYearFilter = year;
+      renderTrackingTab();
+    }
 
     async function tdGet(key) {
       try {
@@ -567,9 +586,28 @@
         `<select onchange="updateField('${id}','${field}',this.value)"
           style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
 
+      // ── Year tabs ──
+      const dataYears = [...new Set(
+        divEntries.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort();
+      const tabYears = [...new Set([...dataYears, '2025', '2026'])].sort();
+
+      const visibleEntries = activeYearFilter === 'all'
+        ? divEntries
+        : divEntries.filter(e => (e.actual_date || '').startsWith(activeYearFilter));
+
+      const yearTabsHTML = `
+        <div class="yr-tabs">
+          <button class="yr-tab${activeYearFilter === 'all' ? ' active' : ''}" onclick="setYearFilter('all')">All</button>
+          ${tabYears.map(y => `<button class="yr-tab${activeYearFilter === y ? ' active' : ''}" onclick="setYearFilter('${y}')">${y}</button>`).join('')}
+          <span class="yr-row-count">${visibleEntries.length} of ${divEntries.length} row${divEntries.length === 1 ? '' : 's'}</span>
+        </div>`;
+
       const rowsHTML = divEntries.length === 0
         ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries yet — click + Add Row to begin.</td></tr>`
-        : divEntries.map(e => {
+        : visibleEntries.length === 0
+        ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries for ${activeYearFilter}.</td></tr>`
+        : visibleEntries.map(e => {
             const tot = (parseFloat(e.total_hours)||0) * (parseFloat(e.haul_fee)||0);
             return `<tr>
               <td class="td-task-num">${esc(e.task_number)}</td>
@@ -606,6 +644,7 @@
             <button class="btn-manage-lists" onclick="openManageLists()" style="margin-left:auto">⚙ Manage Lists</button>
             <span id="save-status" style="font-size:0.72rem;font-weight:600;color:#22c55e;letter-spacing:0.06em;text-transform:uppercase;${savedStyle}">SAVED</span>
           </div>
+          ${yearTabsHTML}
           <div style="overflow-x:auto">
             <table class="tr-tbl">
               <thead>
