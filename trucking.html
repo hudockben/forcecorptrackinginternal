@@ -392,6 +392,7 @@
           b.classList.toggle('active', b === btn));
         document.querySelectorAll('.tab-panel').forEach(p =>
           p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
+        if (btn.dataset.tab === 'dashboard') renderDashboard();
         if (btn.dataset.tab === 'truck-tracking') renderTrackingTab();
         if (btn.dataset.tab === 'analytics') {
           const activeSub = document.querySelector('.sub-tab-btn.active');
@@ -534,7 +535,7 @@
         if (Array.isArray(truckLists.units))     divTruckLists.units     = truckLists.units;
       }
       _migrateExistingEntries();
-      renderTrackingTab();
+      renderDashboard();
     }
 
     function saveTruckLists() {
@@ -905,6 +906,216 @@
     /* ═══════════════════════════════════════════
        CSV UPLOAD
     ═══════════════════════════════════════════ */
+    /* ═══════════════════════════════════════════
+       DASHBOARD
+    ═══════════════════════════════════════════ */
+    function renderDashboard() {
+      const root = document.getElementById('tab-dashboard');
+      if (!root) return;
+
+      const fmtMoney = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const fmtHrs   = n => n.toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+      const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      const rev = e => (parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0);
+      const hrs = e => parseFloat(e.total_hours)||0;
+
+      // Determine "current" year — most recent year in data, else calendar year
+      const allYears = [...new Set(
+        divEntries.map(e=>(e.actual_date||'').slice(0,4)).filter(y=>/^\d{4}$/.test(y))
+      )].sort();
+      const curYear  = allYears.length ? allYears[allYears.length-1] : String(new Date().getFullYear());
+      const prevYear = allYears.length > 1 ? allYears[allYears.length-2] : null;
+
+      const curEntries  = divEntries.filter(e=>(e.actual_date||'').startsWith(curYear));
+      const prevEntries = prevYear ? divEntries.filter(e=>(e.actual_date||'').startsWith(prevYear)) : [];
+
+      const curRev   = curEntries.reduce((s,e)=>s+rev(e),0);
+      const curHrs   = curEntries.reduce((s,e)=>s+hrs(e),0);
+      const prevRev  = prevEntries.reduce((s,e)=>s+rev(e),0);
+      const prevHrs  = prevEntries.reduce((s,e)=>s+hrs(e),0);
+
+      const totalRevAll  = divEntries.reduce((s,e)=>s+rev(e),0);
+      const totalHrsAll  = divEntries.reduce((s,e)=>s+hrs(e),0);
+      const activeUnits  = [...new Set(curEntries.map(e=>e.unit).filter(Boolean))].length;
+      const activeDrivers= [...new Set(curEntries.map(e=>e.driver).filter(Boolean))].length;
+
+      const pctChange = (a, b) => b ? ((a-b)/b*100) : null;
+      const delta = (a, b) => {
+        const p = pctChange(a, b);
+        if (p === null) return '';
+        const sign = p >= 0 ? '+' : '';
+        const color = p >= 0 ? '#4ade80' : '#f87171';
+        return `<span style="font-size:0.72rem;font-weight:600;color:${color}">${sign}${p.toFixed(1)}% vs ${prevYear}</span>`;
+      };
+
+      // ── Shared helpers ──
+      const statCard = (label, value, sub, accent=false, badge='') =>
+        `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+          <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.4rem">${label}</div>
+          <div style="font-size:1.5rem;font-weight:700;color:${accent?'#facc15':'var(--text)'};line-height:1.1;margin-bottom:0.3rem">${value}</div>
+          <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+            <span style="font-size:0.7rem;color:var(--muted)">${sub}</span>${badge}
+          </div>
+        </div>`;
+
+      const sectionLabel = txt =>
+        `<div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem;margin-top:1.75rem">${txt}</div>`;
+
+      const barRow = (name, val, max, color, label, nameW='140px') =>
+        `<div style="display:flex;align-items:center;gap:0.65rem;margin-bottom:0.5rem">
+          <span style="font-size:0.74rem;color:var(--text);width:${nameW};flex-shrink:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(name)}">${esc(name)}</span>
+          <div style="flex:1;background:var(--border);border-radius:3px;height:9px;overflow:hidden;min-width:0">
+            <div style="width:${Math.min(100,(val/max)*100).toFixed(2)}%;height:100%;background:${color};border-radius:3px;transition:width 0.3s"></div>
+          </div>
+          <span style="font-size:0.7rem;color:var(--muted);white-space:nowrap;min-width:80px">${label}</span>
+        </div>`;
+
+      const chartCard = (title, color, body) =>
+        `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+          <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};margin-bottom:1rem">${title}</div>
+          ${body || `<div style="color:var(--muted);font-size:0.8rem">No data.</div>`}
+        </div>`;
+
+      const noData = `<div style="color:var(--muted);font-size:0.8rem;padding:0.5rem 0">No data yet.</div>`;
+
+      // ── Monthly Revenue (current year) ──
+      const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const byMonth = {};
+      curEntries.forEach(e => {
+        const idx = parseInt((e.actual_date||'').slice(5,7),10)-1;
+        if (idx < 0 || idx > 11) return;
+        const k = MONTHS[idx];
+        if (!byMonth[k]) byMonth[k] = { revenue:0, hours:0, idx };
+        byMonth[k].revenue += rev(e);
+        byMonth[k].hours   += hrs(e);
+      });
+      const monthKeys    = Object.keys(byMonth).sort((a,b)=>byMonth[a].idx-byMonth[b].idx);
+      const maxMonthRev  = Math.max(...monthKeys.map(k=>byMonth[k].revenue),1);
+      const monthRevRows = monthKeys.length
+        ? monthKeys.map(k=>barRow(k,byMonth[k].revenue,maxMonthRev,'#4ade80',fmtMoney(byMonth[k].revenue),'55px')).join('')
+        : noData;
+
+      // ── Top 5 customers by revenue (current year) ──
+      const byCust = {};
+      curEntries.forEach(e => {
+        const k = e.customer||'(none)';
+        if (!byCust[k]) byCust[k] = 0;
+        byCust[k] += rev(e);
+      });
+      const topCust = Object.entries(byCust).sort((a,b)=>b[1]-a[1]).slice(0,5);
+      const maxCR   = Math.max(...topCust.map(r=>r[1]),1);
+      const custBarRows = topCust.length
+        ? topCust.map(([n,v])=>barRow(n,v,maxCR,'#facc15',fmtMoney(v))).join('')
+        : noData;
+
+      // ── Top 5 drivers by hours (current year) ──
+      const byDrv = {};
+      curEntries.forEach(e => {
+        const k = e.driver||'(none)';
+        if (!byDrv[k]) byDrv[k] = 0;
+        byDrv[k] += hrs(e);
+      });
+      const topDrv = Object.entries(byDrv).sort((a,b)=>b[1]-a[1]).slice(0,5);
+      const maxDH  = Math.max(...topDrv.map(r=>r[1]),1);
+      const drvBarRows = topDrv.length
+        ? topDrv.map(([n,v])=>barRow(n,v,maxDH,'#34d399',fmtHrs(v)+' hrs')).join('')
+        : noData;
+
+      // ── Recent 10 entries ──
+      const recent = [...divEntries]
+        .filter(e=>e.actual_date)
+        .sort((a,b)=>b.actual_date.localeCompare(a.actual_date))
+        .slice(0,10);
+
+      const thS = `padding:0.55rem 0.75rem;font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)`;
+      const recentRows = recent.length ? recent.map((e,i) => {
+        const entryRev = rev(e);
+        return `<tr style="border-bottom:1px solid var(--border);${i%2===1?'background:rgba(255,255,255,0.02)':''}">
+          <td style="padding:0.5rem 0.75rem;color:var(--muted);font-size:0.75rem">${esc(e.actual_date)}</td>
+          <td style="padding:0.5rem 0.75rem;color:var(--orange);font-size:0.75rem;font-weight:600">${esc(e.task_number)}</td>
+          <td style="padding:0.5rem 0.75rem;color:var(--text);font-size:0.75rem">${esc(e.driver)}</td>
+          <td style="padding:0.5rem 0.75rem;color:var(--text);font-size:0.75rem">${esc(e.customer)}</td>
+          <td style="padding:0.5rem 0.75rem;text-align:right;color:var(--text);font-size:0.75rem">${fmtHrs(hrs(e))} hrs</td>
+          <td style="padding:0.5rem 0.75rem;text-align:right;color:#facc15;font-size:0.75rem;font-weight:600">${fmtMoney(entryRev)}</td>
+        </tr>`;
+      }).join('')
+        : `<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--muted)">No entries yet.</td></tr>`;
+
+      // ── YoY comparison cards ──
+      const yoySection = prevYear ? `
+        ${sectionLabel('Year-over-Year — '+prevYear+' vs '+curYear)}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+            <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">Revenue</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+              <div>
+                <div style="font-size:0.65rem;color:var(--muted);margin-bottom:0.25rem">${prevYear}</div>
+                <div style="font-size:1.15rem;font-weight:700;color:var(--text)">${fmtMoney(prevRev)}</div>
+              </div>
+              <div>
+                <div style="font-size:0.65rem;color:var(--muted);margin-bottom:0.25rem">${curYear}</div>
+                <div style="font-size:1.15rem;font-weight:700;color:#facc15">${fmtMoney(curRev)}</div>
+              </div>
+            </div>
+            <div style="margin-top:0.65rem">${delta(curRev,prevRev)}</div>
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem">
+            <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">Hours</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+              <div>
+                <div style="font-size:0.65rem;color:var(--muted);margin-bottom:0.25rem">${prevYear}</div>
+                <div style="font-size:1.15rem;font-weight:700;color:var(--text)">${fmtHrs(prevHrs)} hrs</div>
+              </div>
+              <div>
+                <div style="font-size:0.65rem;color:var(--muted);margin-bottom:0.25rem">${curYear}</div>
+                <div style="font-size:1.15rem;font-weight:700;color:#60a5fa">${fmtHrs(curHrs)} hrs</div>
+              </div>
+            </div>
+            <div style="margin-top:0.65rem">${delta(curHrs,prevHrs)}</div>
+          </div>
+        </div>` : '';
+
+      root.innerHTML = `<div style="padding:1.25rem;max-width:1400px">
+
+        <div style="font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.65rem">All-Time Overview</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:0.8rem">
+          ${statCard('Total Revenue',  fmtMoney(totalRevAll), divEntries.length+' total entries', true)}
+          ${statCard('Total Hours',    fmtHrs(totalHrsAll)+' hrs', 'across all records')}
+          ${statCard('Active Units',   activeUnits,   curYear+' — '+activeUnits+' units running')}
+          ${statCard('Active Drivers', activeDrivers, curYear+' — '+activeDrivers+' drivers')}
+        </div>
+
+        ${yoySection}
+
+        ${sectionLabel('Monthly Revenue — '+curYear)}
+        ${chartCard('Revenue by Month', '#4ade80', monthRevRows)}
+
+        ${sectionLabel('Top Performers — '+curYear)}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem">
+          ${chartCard('Top Customers by Revenue', '#facc15', custBarRows)}
+          ${chartCard('Top Drivers by Hours',     '#34d399', drvBarRows)}
+        </div>
+
+        ${sectionLabel('Recent Activity')}
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          <table style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr style="background:var(--surface2)">
+                <th style="${thS};text-align:left">Date</th>
+                <th style="${thS};text-align:left">Task #</th>
+                <th style="${thS};text-align:left">Driver</th>
+                <th style="${thS};text-align:left">Customer</th>
+                <th style="${thS};text-align:right">Hours</th>
+                <th style="${thS};text-align:right">Revenue</th>
+              </tr>
+            </thead>
+            <tbody>${recentRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+    }
+
     /* ═══════════════════════════════════════════
        ANALYTICS — PDF DOWNLOAD
     ═══════════════════════════════════════════ */
