@@ -14371,31 +14371,51 @@ function _calcComputeResult(s, qty) {
     return `<div style="padding:2.5rem;text-align:center;color:var(--muted);font-size:0.82rem">Enter a quantity above to see estimates.</div>`;
   }
 
-  let unitCost;
-  if (s.usePowerLaw && s.aPow != null && s.bPow != null) {
-    unitCost = s.aPow * Math.pow(qtyNum, s.bPow);
+  const isExtrapolated = qtyNum < s.minX || qtyNum > s.maxX;
+
+  // ── Unit cost ──────────────────────────────────────────────────────────────
+  // Outside observed range the power law curve goes to unrealistic extremes.
+  // Fall back to historical average unit cost; use data std dev for the range.
+  let unitCost, lowUC, highUC, usingAvg = false;
+  if (isExtrapolated) {
+    usingAvg = true;
+    unitCost = s.avgUC;
+    const dataStd = Math.sqrt(s.pts.reduce((sum, p) => sum + (p.y - s.avgUC) ** 2, 0) / s.pts.length);
+    lowUC  = Math.max(0, s.avgUC - dataStd);
+    highUC = s.avgUC + dataStd;
   } else {
-    unitCost = s.slope * qtyNum + s.interc;
+    if (s.usePowerLaw && s.aPow != null && s.bPow != null) {
+      unitCost = s.aPow * Math.pow(qtyNum, s.bPow);
+    } else {
+      unitCost = s.slope * qtyNum + s.interc;
+    }
+    unitCost = Math.max(0, unitCost);
+    const residuals = s.pts.map(p => {
+      const pred = (s.usePowerLaw && s.aPow != null)
+        ? s.aPow * Math.pow(p.x, s.bPow)
+        : s.slope * p.x + s.interc;
+      return p.y - pred;
+    });
+    const meanRes = residuals.reduce((a, b) => a + b, 0) / residuals.length;
+    const stdRes  = Math.sqrt(residuals.reduce((a, r) => a + (r - meanRes) ** 2, 0) / residuals.length);
+    lowUC  = Math.max(0, unitCost - stdRes);
+    highUC = unitCost + stdRes;
   }
-  unitCost = Math.max(0, unitCost);
   const totalCost = unitCost * qtyNum;
 
-  const residuals = s.pts.map(p => {
-    const pred = (s.usePowerLaw && s.aPow != null)
-      ? s.aPow * Math.pow(p.x, s.bPow)
-      : s.slope * p.x + s.interc;
-    return p.y - pred;
-  });
-  const meanRes = residuals.reduce((a, b) => a + b, 0) / residuals.length;
-  const stdRes  = Math.sqrt(residuals.reduce((a, r) => a + (r - meanRes) ** 2, 0) / residuals.length);
-  const lowUC   = Math.max(0, unitCost - stdRes);
-  const highUC  = unitCost + stdRes;
-
+  // ── Labor hours ────────────────────────────────────────────────────────────
   let laborHrsPerUnit = null, totalLaborHrs = null, laborLow = null, laborHigh = null;
-  if (!s.laborTooFew && s.laborA != null && s.laborB != null) {
-    laborHrsPerUnit = Math.max(0, s.laborA * Math.pow(qtyNum, s.laborB));
-    totalLaborHrs   = laborHrsPerUnit * qtyNum;
-    if (s.laborPts && s.laborPts.length >= 2) {
+  if (!s.laborTooFew && s.laborA != null && s.laborB != null && s.laborPts?.length >= 2) {
+    if (isExtrapolated) {
+      const avgLaborHrsPerUnit = s.laborPts.reduce((sum, p) => sum + p.y, 0) / s.laborPts.length;
+      laborHrsPerUnit = avgLaborHrsPerUnit;
+      const lStdData = Math.sqrt(s.laborPts.reduce((sum, p) => sum + (p.y - avgLaborHrsPerUnit) ** 2, 0) / s.laborPts.length);
+      totalLaborHrs = laborHrsPerUnit * qtyNum;
+      laborLow  = Math.max(0, totalLaborHrs - lStdData * qtyNum);
+      laborHigh = totalLaborHrs + lStdData * qtyNum;
+    } else {
+      laborHrsPerUnit = Math.max(0, s.laborA * Math.pow(qtyNum, s.laborB));
+      totalLaborHrs   = laborHrsPerUnit * qtyNum;
       const lRes  = s.laborPts.map(p => p.y - s.laborA * Math.pow(p.x, s.laborB));
       const lMean = lRes.reduce((a, b) => a + b, 0) / lRes.length;
       const lStd  = Math.sqrt(lRes.reduce((a, r) => a + (r - lMean) ** 2, 0) / lRes.length);
@@ -14404,23 +14424,20 @@ function _calcComputeResult(s, qty) {
     }
   }
 
-  const isExtrapolated = qtyNum < s.minX || qtyNum > s.maxX;
-  const conf      = s.tooFewForR2 ? 'Low' : s.effectiveR2 >= 0.75 ? 'High' : s.effectiveR2 >= 0.45 ? 'Moderate' : 'Low';
+  const conf      = (isExtrapolated || s.tooFewForR2) ? 'Low' : s.effectiveR2 >= 0.75 ? 'High' : s.effectiveR2 >= 0.45 ? 'Moderate' : 'Low';
   const confColor = { High: '#4ade80', Moderate: '#facc15', Low: '#f87171' }[conf];
-  const confBadge = `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${conf} Confidence &middot; R&sup2;=${Math.round(s.effectiveR2*100)}%</span>`;
+  const confBadge = `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${conf} Confidence${!isExtrapolated ? ` &middot; R&sup2;=${Math.round(s.effectiveR2*100)}%` : ' &middot; outside observed range'}</span>`;
 
   return `
     ${isExtrapolated ? `
     <div style="margin-bottom:1rem;padding:0.65rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.76rem;color:#fbbf24">
-      &#9888; <strong>Extrapolation Warning:</strong>
-      ${qtyNum < s.minX
-        ? `${fmt(qtyNum,1)} ${s.unit} is below the smallest observed job (${fmt(s.minX,1)} ${s.unit}).`
-        : `${fmt(qtyNum,1)} ${s.unit} exceeds the largest observed job (${fmt(s.maxX,1)} ${s.unit}).`}
-      Estimates outside observed data carry higher uncertainty.
+      &#9888; <strong>${qtyNum < s.minX ? 'Below' : 'Above'} observed range</strong>
+      (${fmt(s.minX,1)}–${fmt(s.maxX,1)} ${s.unit || 'units'} across ${s.n} jobs) &mdash;
+      using historical average $${fmt(s.avgUC,2)}/${s.unit || 'unit'} instead of regression model.
     </div>` : ''}
 
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem">
-      ${card('Est. Unit Cost', fmtC(unitCost), `±1&sigma; range: ${fmtC(lowUC)} – ${fmtC(highUC)} / ${s.unit || 'unit'}`, 'var(--green)')}
+      ${card('Est. Unit Cost', fmtC(unitCost), `±1&sigma; range: ${fmtC(lowUC)} – ${fmtC(highUC)} / ${s.unit || 'unit'}${usingAvg ? ' (data spread)' : ''}`, 'var(--green)')}
       ${card('Total Est. Cost', '$' + fmt(totalCost, 2), `Range: $${fmt(lowUC*qtyNum,2)} – $${fmt(highUC*qtyNum,2)}`, '#60a5fa')}
       ${totalLaborHrs != null
         ? card('Total Est. Labor Hrs', fmt(totalLaborHrs, 1) + ' hrs',
@@ -14428,7 +14445,7 @@ function _calcComputeResult(s, qty) {
         : ''}
       ${laborHrsPerUnit != null
         ? card('Labor Hrs / ' + (s.unit || 'Unit'), fmt(laborHrsPerUnit, 3),
-            `Labor R&sup2;=${Math.round((s.laborR2||0)*100)}%`, '#f472b6')
+            `Labor R&sup2;=${Math.round((s.laborR2||0)*100)}%${usingAvg ? ' (avg)' : ''}`, '#f472b6')
         : ''}
     </div>
 
