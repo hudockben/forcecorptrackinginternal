@@ -14440,6 +14440,17 @@ function _calcComputeResult(s, qty) {
     }
   }
 
+  // ── Crew size ──────────────────────────────────────────────────────────────
+  const crewCounts = (s.allProjects || [])
+    .map(pr => Object.keys(pr.employees || {}).length)
+    .filter(n => n > 0);
+  let avgCrew = null, minCrew = null, maxCrew = null;
+  if (crewCounts.length >= 1) {
+    avgCrew = crewCounts.reduce((a, b) => a + b, 0) / crewCounts.length;
+    minCrew = Math.min(...crewCounts);
+    maxCrew = Math.max(...crewCounts);
+  }
+
   const conf      = (isExtrapolated || s.tooFewForR2) ? 'Low' : s.effectiveR2 >= 0.75 ? 'High' : s.effectiveR2 >= 0.45 ? 'Moderate' : 'Low';
   const confColor = { High: '#4ade80', Moderate: '#facc15', Low: '#f87171' }[conf];
   const confBadge = `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${conf} Confidence${!isExtrapolated ? ` &middot; R&sup2;=${Math.round(s.effectiveR2*100)}%` : ' &middot; outside observed range'}</span>`;
@@ -14470,6 +14481,10 @@ function _calcComputeResult(s, qty) {
       ${equipHrsPerUnit != null
         ? card('Equip Hrs / ' + (s.unit || 'Unit'), fmt(equipHrsPerUnit, 3),
             `avg across ${equipPts.length} job${equipPts.length !== 1 ? 's' : ''} with equip data`, '#fdba74')
+        : ''}
+      ${avgCrew != null
+        ? card('Typical Crew Size', Math.round(avgCrew) + ' laborers',
+            minCrew === maxCrew ? `consistent across ${crewCounts.length} jobs` : `range: ${minCrew}–${maxCrew} · avg ${fmt(avgCrew,1)}`, '#38bdf8')
         : ''}
     </div>
 
