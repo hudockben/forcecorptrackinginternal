@@ -90,14 +90,20 @@ module.exports = async (req, res) => {
       }
 
       // ── Fallback: migrate from legacy JSON blobs ────────────────────────
-      const [blobE, blobL] = await Promise.all([
+      // Check both the company-scoped key AND the old unscoped key (legacy format).
+      const [blobE, blobL, blobELegacy, blobLLegacy] = await Promise.all([
         sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division'}`,
         sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division_lists'}`,
+        sql`SELECT value FROM app_data WHERE key = 'fct_truck_division'`,
+        sql`SELECT value FROM app_data WHERE key = 'fct_truck_division_lists'`,
       ]);
 
-      const entries = Array.isArray(blobE[0]?.value) ? blobE[0].value : [];
-      const lists   = (blobL[0]?.value && typeof blobL[0].value === 'object')
-        ? blobL[0].value
+      const rawE = blobE[0]?.value ?? blobELegacy[0]?.value;
+      const rawL = blobL[0]?.value ?? blobLLegacy[0]?.value;
+
+      const entries = Array.isArray(rawE) ? rawE : [];
+      const lists   = (rawL && typeof rawL === 'object')
+        ? rawL
         : { drivers: [], customers: [], units: [] };
 
       if (entries.length > 0 || (lists.drivers || []).length > 0
