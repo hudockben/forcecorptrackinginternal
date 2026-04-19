@@ -2140,6 +2140,7 @@
       <button class="admin-dropdown-item" id="analytics-item-labor" onclick="analyticsSwitchTab('labor')">&#128100; Labor Analytics</button>
       <button class="admin-dropdown-item" id="analytics-item-scale"   onclick="analyticsSwitchTab('scale')">&#128200; Scale of Economy</button>
       <button class="admin-dropdown-item" id="analytics-item-subcode" onclick="analyticsSwitchTab('subcode')">&#128202; Sub Code Performance</button>
+      <button class="admin-dropdown-item" id="analytics-item-calc"    onclick="analyticsSwitchTab('calc')">&#129518; Turf Calculator</button>
     </div>
   </div>
   <div class="admin-dropdown-wrap">
@@ -2449,6 +2450,11 @@
 <!-- ══════════════ SUB CODE PERFORMANCE TAB ══════════════ -->
 <div class="tab-panel" id="tab-subcode">
   <div id="scp-content" style="padding:1rem"><!-- rendered by JS --></div>
+</div>
+
+<!-- ══════════════ TURF CALCULATOR TAB ══════════════ -->
+<div class="tab-panel" id="tab-calc">
+  <div id="calc-content" style="padding:1.25rem"><!-- rendered by JS --></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -3329,6 +3335,7 @@ function analyticsSwitchTab(tab) {
   if (tab === 'labor')    renderLaborTable();
   if (tab === 'scale')    renderScaleOfEconomy();
   if (tab === 'subcode')  renderSubCodePerf();
+  if (tab === 'calc')     renderTurfCalculator();
 }
 
 function adminSwitchTab(tab) {
@@ -5173,6 +5180,7 @@ function saveScaleManualEntries() {
 // Persistent unit overrides for the Scale of Economy table.
 // Keyed by 'costCode||subCode' so units always stick even when no bidItems exist.
 let soeUnitOverrides = {};
+let _soeStats = [];  // shared cache — populated by renderScaleOfEconomy()
 
 async function loadSoeUnitOverrides() {
   const saved = await apiGet('fct_soe_units');
@@ -11279,6 +11287,7 @@ function renderScaleOfEconomy() {
 
   // Sort: most data points first, then by sub code name
   stats.sort((a, b) => b.n - a.n || a.subCode.localeCompare(b.subCode));
+  _soeStats = stats;  // cache for Turf Calculator
 
   // ── Summary cards ────────────────────────────────────────────────────────
   const econCount    = stats.filter(s => s.trend === 'Economy of Scale').length;
@@ -14346,6 +14355,230 @@ function buildPaceSuggestions({ projUC, histUC, runUC, runMU, histMU,
       <div style="display:flex;flex-direction:column;gap:0.35rem;">${items}</div>
     </div>`;
 }
+
+function _calcComputeResult(s, qty) {
+  const fmt  = (v, d=0) => (v == null || isNaN(v)) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const fmtC = (v) => (v == null || isNaN(v)) ? '—' : '$' + fmt(v, 2);
+  const card = (label, value, sub='', color='var(--green)') =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.9rem 1.1rem;flex:1;min-width:160px">
+      <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
+      <div style="font-size:1.1rem;font-weight:700;color:${color}">${value}</div>
+      ${sub ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.15rem">${sub}</div>` : ''}
+    </div>`;
+
+  const qtyNum = parseFloat(qty);
+  if (isNaN(qtyNum) || qtyNum <= 0) {
+    return `<div style="padding:2.5rem;text-align:center;color:var(--muted);font-size:0.82rem">Enter a quantity above to see estimates.</div>`;
+  }
+
+  const isExtrapolated = qtyNum < s.minX || qtyNum > s.maxX;
+
+  // ── Unit cost ──────────────────────────────────────────────────────────────
+  // Outside observed range the power law curve goes to unrealistic extremes.
+  // Fall back to historical average unit cost; use data std dev for the range.
+  let unitCost, lowUC, highUC, usingAvg = false;
+  if (isExtrapolated) {
+    usingAvg = true;
+    unitCost = s.avgUC;
+    const dataStd = Math.sqrt(s.pts.reduce((sum, p) => sum + (p.y - s.avgUC) ** 2, 0) / s.pts.length);
+    lowUC  = Math.max(0, s.avgUC - dataStd);
+    highUC = s.avgUC + dataStd;
+  } else {
+    if (s.usePowerLaw && s.aPow != null && s.bPow != null) {
+      unitCost = s.aPow * Math.pow(qtyNum, s.bPow);
+    } else {
+      unitCost = s.slope * qtyNum + s.interc;
+    }
+    unitCost = Math.max(0, unitCost);
+    const residuals = s.pts.map(p => {
+      const pred = (s.usePowerLaw && s.aPow != null)
+        ? s.aPow * Math.pow(p.x, s.bPow)
+        : s.slope * p.x + s.interc;
+      return p.y - pred;
+    });
+    const meanRes = residuals.reduce((a, b) => a + b, 0) / residuals.length;
+    const stdRes  = Math.sqrt(residuals.reduce((a, r) => a + (r - meanRes) ** 2, 0) / residuals.length);
+    lowUC  = Math.max(0, unitCost - stdRes);
+    highUC = unitCost + stdRes;
+  }
+  const totalCost = unitCost * qtyNum;
+
+  // ── Labor hours ────────────────────────────────────────────────────────────
+  let laborHrsPerUnit = null, totalLaborHrs = null, laborLow = null, laborHigh = null;
+  if (!s.laborTooFew && s.laborA != null && s.laborB != null && s.laborPts?.length >= 2) {
+    if (isExtrapolated) {
+      const avgLaborHrsPerUnit = s.laborPts.reduce((sum, p) => sum + p.y, 0) / s.laborPts.length;
+      laborHrsPerUnit = avgLaborHrsPerUnit;
+      const lStdData = Math.sqrt(s.laborPts.reduce((sum, p) => sum + (p.y - avgLaborHrsPerUnit) ** 2, 0) / s.laborPts.length);
+      totalLaborHrs = laborHrsPerUnit * qtyNum;
+      laborLow  = Math.max(0, totalLaborHrs - lStdData * qtyNum);
+      laborHigh = totalLaborHrs + lStdData * qtyNum;
+    } else {
+      laborHrsPerUnit = Math.max(0, s.laborA * Math.pow(qtyNum, s.laborB));
+      totalLaborHrs   = laborHrsPerUnit * qtyNum;
+      const lRes  = s.laborPts.map(p => p.y - s.laborA * Math.pow(p.x, s.laborB));
+      const lMean = lRes.reduce((a, b) => a + b, 0) / lRes.length;
+      const lStd  = Math.sqrt(lRes.reduce((a, r) => a + (r - lMean) ** 2, 0) / lRes.length);
+      laborLow  = Math.max(0, totalLaborHrs - lStd * qtyNum);
+      laborHigh = totalLaborHrs + lStd * qtyNum;
+    }
+  }
+
+  // ── Equipment hours ────────────────────────────────────────────────────────
+  const equipPts = (s.allProjects || [])
+    .filter(pr => pr.equipHrs > 0 && pr.runQty > 0 && pr.bidQty > 0)
+    .map(pr => ({ x: pr.bidQty, y: pr.equipHrs / pr.runQty }));
+  let equipHrsPerUnit = null, totalEquipHrs = null, equipLow = null, equipHigh = null;
+  if (equipPts.length >= 1) {
+    const avgEHU = equipPts.reduce((sum, p) => sum + p.y, 0) / equipPts.length;
+    equipHrsPerUnit = avgEHU;
+    totalEquipHrs   = avgEHU * qtyNum;
+    if (equipPts.length >= 2) {
+      const eStd = Math.sqrt(equipPts.reduce((sum, p) => sum + (p.y - avgEHU) ** 2, 0) / equipPts.length);
+      equipLow  = Math.max(0, totalEquipHrs - eStd * qtyNum);
+      equipHigh = totalEquipHrs + eStd * qtyNum;
+    }
+  }
+
+  // ── Crew size — only from named employee tracking, no estimation ──────────
+  const crewCounts = (s.allProjects || [])
+    .map(pr => Object.keys(pr.employees || {}).length)
+    .filter(n => n > 0);
+  let avgCrew = null, minCrew = null, maxCrew = null;
+  if (crewCounts.length >= 1) {
+    avgCrew = crewCounts.reduce((a, b) => a + b, 0) / crewCounts.length;
+    minCrew = Math.min(...crewCounts);
+    maxCrew = Math.max(...crewCounts);
+  }
+
+  const conf      = (isExtrapolated || s.tooFewForR2) ? 'Low' : s.effectiveR2 >= 0.75 ? 'High' : s.effectiveR2 >= 0.45 ? 'Moderate' : 'Low';
+  const confColor = { High: '#4ade80', Moderate: '#facc15', Low: '#f87171' }[conf];
+  const confBadge = `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${conf} Confidence${!isExtrapolated ? ` &middot; R&sup2;=${Math.round(s.effectiveR2*100)}%` : ' &middot; outside observed range'}</span>`;
+
+  return `
+    ${isExtrapolated ? `
+    <div style="margin-bottom:1rem;padding:0.65rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.76rem;color:#fbbf24">
+      &#9888; <strong>${qtyNum < s.minX ? 'Below' : 'Above'} observed range</strong>
+      (${fmt(s.minX,1)}–${fmt(s.maxX,1)} ${s.unit || 'units'} across ${s.n} jobs) &mdash;
+      using historical average $${fmt(s.avgUC,2)}/${s.unit || 'unit'} instead of regression model.
+    </div>` : ''}
+
+    <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem">
+      ${card('Est. Unit Cost', fmtC(unitCost), `±1&sigma; range: ${fmtC(lowUC)} – ${fmtC(highUC)} / ${s.unit || 'unit'}${usingAvg ? ' (data spread)' : ''}`, 'var(--green)')}
+      ${card('Total Est. Cost', '$' + fmt(totalCost, 2), `Range: $${fmt(lowUC*qtyNum,2)} – $${fmt(highUC*qtyNum,2)}`, '#60a5fa')}
+      ${totalLaborHrs != null
+        ? card('Total Est. Labor Hrs', fmt(totalLaborHrs, 1) + ' hrs',
+            laborLow != null ? `Range: ${fmt(laborLow,1)} – ${fmt(laborHigh,1)} hrs` : '', '#a78bfa')
+        : ''}
+      ${laborHrsPerUnit != null
+        ? card('Labor Hrs / ' + (s.unit || 'Unit'), fmt(laborHrsPerUnit, 3),
+            `Labor R&sup2;=${Math.round((s.laborR2||0)*100)}%${usingAvg ? ' (avg)' : ''}`, '#f472b6')
+        : ''}
+      ${totalEquipHrs != null
+        ? card('Total Est. Equip Hrs', fmt(totalEquipHrs, 1) + ' hrs',
+            equipLow != null ? `Range: ${fmt(equipLow,1)} – ${fmt(equipHigh,1)} hrs` : '', '#fb923c')
+        : ''}
+      ${equipHrsPerUnit != null
+        ? card('Equip Hrs / ' + (s.unit || 'Unit'), fmt(equipHrsPerUnit, 3),
+            `avg across ${equipPts.length} job${equipPts.length !== 1 ? 's' : ''} with equip data`, '#fdba74')
+        : ''}
+      ${avgCrew != null
+        ? card('Typical Crew Size', Math.round(avgCrew) + ' laborers',
+            minCrew === maxCrew ? `consistent across ${crewCounts.length} jobs` : `range: ${minCrew}–${maxCrew} · avg ${fmt(avgCrew,1)}`, '#38bdf8')
+        : ''}
+    </div>
+
+    <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
+      ${confBadge}
+      <span style="font-size:0.7rem;color:var(--muted)">${s.n} jobs &middot; ${fmt(s.minX,1)}–${fmt(s.maxX,1)} ${s.unit || 'units'} observed &middot; historical avg $${fmt(s.avgUC,2)}/${s.unit || 'unit'}</span>
+    </div>
+
+    <div style="padding:0.65rem 0.9rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:0.72rem;color:var(--muted);line-height:1.7">
+      <strong style="color:var(--fg)">Cost model:</strong>
+      ${s.usePowerLaw
+        ? `Power law &mdash; cost/unit = ${s.aPow?.toFixed(4)} &times; qty<sup>${s.bPow?.toFixed(4)}</sup> &nbsp;|&nbsp; R&sup2;=${Math.round(s.effectiveR2*100)}%`
+        : `Linear &mdash; cost/unit = ${s.slope?.toFixed(4)} &times; qty + ${s.interc?.toFixed(2)} &nbsp;|&nbsp; R&sup2;=${Math.round(s.effectiveR2*100)}%`}
+      ${(!s.laborTooFew && s.laborA != null)
+        ? `<br><strong style="color:var(--fg)">Labor model:</strong> Power law &mdash; hrs/unit = ${s.laborA?.toFixed(4)} &times; qty<sup>${s.laborB?.toFixed(4)}</sup> &nbsp;|&nbsp; R&sup2;=${Math.round((s.laborR2||0)*100)}%`
+        : ''}
+    </div>`;
+}
+
+function renderTurfCalculator() {
+  const el = document.getElementById('calc-content');
+  if (!el) return;
+
+  if (_soeStats.length === 0) {
+    // Auto-build stats without requiring the user to visit the Scale of Economy tab first
+    const _tmp = document.createElement('div');
+    _tmp.id = 'scale-content';
+    _tmp.style.display = 'none';
+    document.body.appendChild(_tmp);
+    renderScaleOfEconomy();
+    document.body.removeChild(_tmp);
+  }
+  if (_soeStats.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted);padding:3rem;text-align:center">
+      Not enough data yet — need at least 2 completed jobs sharing the same sub code with bid quantities entered.<br>
+      <span style="font-size:0.75rem;display:block;margin-top:0.4rem">Make sure bid items have Bid Qty filled in and daily rows are logged with quantities.</span>
+    </div>`;
+    return;
+  }
+
+  const opts = _soeStats.map(s => ({
+    value: s.key,
+    label: `${s.subCode}  (${s.costCode})  —  ${s.n} jobs · unit: ${s.unit || 'n/a'}`,
+  }));
+
+  const selKey = window._calcSelectedKey || _soeStats[0].key;
+  const s = _soeStats.find(x => x.key === selKey) || _soeStats[0];
+  window._calcSelectedKey = s.key;
+  const qty = window._calcQty !== undefined ? window._calcQty : '';
+
+  const fmt = (v, d=0) => (v == null || isNaN(v)) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+  el.innerHTML = `
+    <div style="max-width:920px">
+      <div style="margin-bottom:1.25rem">
+        <div style="font-size:0.95rem;font-weight:700;color:var(--fg);margin-bottom:0.15rem">&#129518; Turf Calculator</div>
+        <div style="font-size:0.75rem;color:var(--muted)">Estimates cost &amp; labor hours using scale-of-economy regression models built from historical job data.</div>
+      </div>
+
+      <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.5rem;padding:1rem;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+        <div style="flex:2;min-width:220px">
+          <label style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);display:block;margin-bottom:0.35rem">Sub Code</label>
+          <select onchange="window._calcSelectedKey=this.value;window._calcQty='';renderTurfCalculator()"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.82rem">
+            ${opts.map(o => `<option value="${o.value}"${o.value===s.key?' selected':''}>${o.label}</option>`).join('')}
+          </select>
+        </div>
+        <div style="flex:1;min-width:150px">
+          <label style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);display:block;margin-bottom:0.35rem">
+            Quantity${s.unit ? ` <span style="color:var(--fg);font-weight:600">(${s.unit})</span>` : ''}
+          </label>
+          <input id="calc-qty-input" type="number" min="0" step="any" placeholder="Enter qty…" value="${qty}"
+            oninput="window._calcQty=this.value;_calcRefreshResults()"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.82rem">
+        </div>
+        <div style="font-size:0.7rem;color:var(--muted);align-self:flex-end;padding-bottom:0.45rem;line-height:1.6">
+          Observed range: <strong style="color:var(--fg)">${fmt(s.minX,1)}–${fmt(s.maxX,1)}</strong> ${s.unit || 'units'}<br>
+          Based on <strong style="color:var(--fg)">${s.n}</strong> historical jobs
+        </div>
+      </div>
+
+      <div id="calc-results">${_calcComputeResult(s, qty)}</div>
+    </div>`;
+}
+
+function _calcRefreshResults() {
+  const resEl = document.getElementById('calc-results');
+  if (!resEl) return;
+  const selKey = window._calcSelectedKey || (_soeStats[0] && _soeStats[0].key);
+  const s = _soeStats.find(x => x.key === selKey) || _soeStats[0];
+  if (!s) return;
+  resEl.innerHTML = _calcComputeResult(s, window._calcQty || '');
+}
+
 
 function renderProductionRateView(projId) {
   const p = getProj(projId);
