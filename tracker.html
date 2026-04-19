@@ -14440,18 +14440,10 @@ function _calcComputeResult(s, qty) {
     }
   }
 
-  // ── Crew size ──────────────────────────────────────────────────────────────
-  // Prefer named employee count; fall back to laborHrs ÷ (days × 8) estimate
-  let crewMethod = 'named';
-  const crewCounts = (s.allProjects || []).map(pr => {
-    const named = Object.keys(pr.employees || {}).length;
-    if (named > 0) return named;
-    if (pr.laborHrs > 0 && pr.dayCount > 0) {
-      crewMethod = 'estimated';
-      return Math.max(1, Math.round(pr.laborHrs / (pr.dayCount * 8)));
-    }
-    return 0;
-  }).filter(n => n > 0);
+  // ── Crew size — only from named employee tracking, no estimation ──────────
+  const crewCounts = (s.allProjects || [])
+    .map(pr => Object.keys(pr.employees || {}).length)
+    .filter(n => n > 0);
   let avgCrew = null, minCrew = null, maxCrew = null;
   if (crewCounts.length >= 1) {
     avgCrew = crewCounts.reduce((a, b) => a + b, 0) / crewCounts.length;
@@ -14492,7 +14484,7 @@ function _calcComputeResult(s, qty) {
         : ''}
       ${avgCrew != null
         ? card('Typical Crew Size', Math.round(avgCrew) + ' laborers',
-            (minCrew === maxCrew ? `consistent across ${crewCounts.length} jobs` : `range: ${minCrew}–${maxCrew} · avg ${fmt(avgCrew,1)}`) + (crewMethod === 'estimated' ? ' (est. from labor hrs/day)' : ''), '#38bdf8')
+            minCrew === maxCrew ? `consistent across ${crewCounts.length} jobs` : `range: ${minCrew}–${maxCrew} · avg ${fmt(avgCrew,1)}`, '#38bdf8')
         : ''}
     </div>
 
