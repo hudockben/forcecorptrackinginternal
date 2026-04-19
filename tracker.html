@@ -14424,6 +14424,22 @@ function _calcComputeResult(s, qty) {
     }
   }
 
+  // ── Equipment hours ────────────────────────────────────────────────────────
+  const equipPts = (s.allProjects || [])
+    .filter(pr => pr.equipHrs > 0 && pr.runQty > 0 && pr.bidQty > 0)
+    .map(pr => ({ x: pr.bidQty, y: pr.equipHrs / pr.runQty }));
+  let equipHrsPerUnit = null, totalEquipHrs = null, equipLow = null, equipHigh = null;
+  if (equipPts.length >= 1) {
+    const avgEHU = equipPts.reduce((sum, p) => sum + p.y, 0) / equipPts.length;
+    equipHrsPerUnit = avgEHU;
+    totalEquipHrs   = avgEHU * qtyNum;
+    if (equipPts.length >= 2) {
+      const eStd = Math.sqrt(equipPts.reduce((sum, p) => sum + (p.y - avgEHU) ** 2, 0) / equipPts.length);
+      equipLow  = Math.max(0, totalEquipHrs - eStd * qtyNum);
+      equipHigh = totalEquipHrs + eStd * qtyNum;
+    }
+  }
+
   const conf      = (isExtrapolated || s.tooFewForR2) ? 'Low' : s.effectiveR2 >= 0.75 ? 'High' : s.effectiveR2 >= 0.45 ? 'Moderate' : 'Low';
   const confColor = { High: '#4ade80', Moderate: '#facc15', Low: '#f87171' }[conf];
   const confBadge = `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${conf} Confidence${!isExtrapolated ? ` &middot; R&sup2;=${Math.round(s.effectiveR2*100)}%` : ' &middot; outside observed range'}</span>`;
@@ -14446,6 +14462,14 @@ function _calcComputeResult(s, qty) {
       ${laborHrsPerUnit != null
         ? card('Labor Hrs / ' + (s.unit || 'Unit'), fmt(laborHrsPerUnit, 3),
             `Labor R&sup2;=${Math.round((s.laborR2||0)*100)}%${usingAvg ? ' (avg)' : ''}`, '#f472b6')
+        : ''}
+      ${totalEquipHrs != null
+        ? card('Total Est. Equip Hrs', fmt(totalEquipHrs, 1) + ' hrs',
+            equipLow != null ? `Range: ${fmt(equipLow,1)} – ${fmt(equipHigh,1)} hrs` : '', '#fb923c')
+        : ''}
+      ${equipHrsPerUnit != null
+        ? card('Equip Hrs / ' + (s.unit || 'Unit'), fmt(equipHrsPerUnit, 3),
+            `avg across ${equipPts.length} job${equipPts.length !== 1 ? 's' : ''} with equip data`, '#fdba74')
         : ''}
     </div>
 
