@@ -73,12 +73,32 @@ module.exports = async (req, res) => {
             WHERE company_code = ${companyCode} ORDER BY sort_order, name`,
       ]);
 
-      const hasNormalized = entryRows.length > 0
-        || driverRows.length > 0
-        || customerRows.length > 0
-        || unitRows.length > 0;
+      // Always check the blob so we can detect if normalized tables are stale.
+      const [blobE, blobL, blobELegacy, blobLLegacy] = await Promise.all([
+        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division'}`,
+        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division_lists'}`,
+        sql`SELECT value FROM app_data WHERE key = 'fct_truck_division'`,
+        sql`SELECT value FROM app_data WHERE key = 'fct_truck_division_lists'`,
+      ]);
 
-      if (hasNormalized) {
+      // Pick the best available source (prefer whichever has more entries).
+      const scopedEntries  = Array.isArray(blobE[0]?.value) ? blobE[0].value : null;
+      const legacyEntries  = Array.isArray(blobELegacy[0]?.value) ? blobELegacy[0].value : null;
+      const blobEntries = (scopedEntries && scopedEntries.length > 0)
+        ? scopedEntries
+        : (legacyEntries || []);
+
+      const scopedLists = (blobL[0]?.value && typeof blobL[0].value === 'object') ? blobL[0].value : null;
+      const legacyLists = (blobLLegacy[0]?.value && typeof blobLLegacy[0].value === 'object') ? blobLLegacy[0].value : null;
+      const blobLists = scopedLists || legacyLists || { drivers: [], customers: [], units: [] };
+
+      // If normalized tables look good (within 10% of blob count), use them.
+      const normCount = entryRows.length;
+      const blobCount = blobEntries.length;
+      const normalizedIsTrustworthy = (normCount > 0 || driverRows.length > 0 || customerRows.length > 0 || unitRows.length > 0)
+        && (blobCount === 0 || normCount >= blobCount * 0.9);
+
+      if (normalizedIsTrustworthy) {
         return res.json({
           entries: entryRows.map(dbToEntry),
           lists: {
@@ -89,34 +109,14 @@ module.exports = async (req, res) => {
         });
       }
 
-      // ── Fallback: migrate from legacy JSON blobs ────────────────────────
-      // Check both the company-scoped key AND the old unscoped key (legacy format).
-      const [blobE, blobL, blobELegacy, blobLLegacy] = await Promise.all([
-        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division'}`,
-        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division_lists'}`,
-        sql`SELECT value FROM app_data WHERE key = 'fct_truck_division'`,
-        sql`SELECT value FROM app_data WHERE key = 'fct_truck_division_lists'`,
-      ]);
-
-      // Prefer whichever key has actual entries; an empty scoped blob should
-      // not shadow real data in the legacy unscoped key.
-      const scopedEntries  = Array.isArray(blobE[0]?.value) ? blobE[0].value : null;
-      const legacyEntries  = Array.isArray(blobELegacy[0]?.value) ? blobELegacy[0].value : null;
-      const rawE = (scopedEntries && scopedEntries.length > 0) ? scopedEntries : (legacyEntries || scopedEntries || []);
-
-      const scopedLists = (blobL[0]?.value && typeof blobL[0].value === 'object') ? blobL[0].value : null;
-      const legacyLists = (blobLLegacy[0]?.value && typeof blobLLegacy[0].value === 'object') ? blobLLegacy[0].value : null;
-      const rawL = scopedLists || legacyLists;
-
-      const entries = Array.isArray(rawE) ? rawE : [];
-      const lists   = (rawL && typeof rawL === 'object')
-        ? rawL
-        : { drivers: [], customers: [], units: [] };
+      // Normalized tables are empty or stale — use blob and re-sync.
+      const entries = blobEntries;
+      const lists   = blobLists;
 
       if (entries.length > 0 || (lists.drivers || []).length > 0
           || (lists.customers || []).length > 0 || (lists.units || []).length > 0) {
         _syncToTables(sql, companyCode, entries, lists).catch(err =>
-          console.error('[truck-division] initial migration failed:', err.message)
+          console.error('[truck-division] re-sync from blob failed:', err.message)
         );
       }
 

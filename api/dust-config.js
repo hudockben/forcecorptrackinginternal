@@ -46,10 +46,27 @@ module.exports = async (req, res) => {
             WHERE company_code = ${companyCode} ORDER BY sort_order, name`,
       ]);
 
+      // Always load blobs too so we can detect stale normalized tables.
+      const [blobSettings, blobLists] = await Promise.all([
+        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':dust_settings'}`,
+        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':dust_lists'}`,
+      ]);
+
+      const blobSettingsVal = (blobSettings[0]?.value && typeof blobSettings[0].value === 'object')
+        ? blobSettings[0].value : { ub_rate: 0 };
+      const blobListsVal = (blobLists[0]?.value && typeof blobLists[0].value === 'object')
+        ? blobLists[0].value
+        : { equipment: [], employees: [], companies: [], states: [] };
+
+      // Normalized is trustworthy if companies count matches blob companies count.
+      const blobCoCount   = (blobListsVal.companies || []).length;
+      const normCoCount   = coRows.length;
       const hasNormalized = settingsRows.length > 0 || equipRows.length > 0
         || empRows.length > 0 || coRows.length > 0;
+      const normalizedIsTrustworthy = hasNormalized
+        && (blobCoCount === 0 || normCoCount >= blobCoCount * 0.9);
 
-      if (hasNormalized) {
+      if (normalizedIsTrustworthy) {
         // Load locations + personnel for each company
         const coIds = coRows.map(c => c.id);
         const [locRows, persRows] = coIds.length > 0
@@ -87,18 +104,9 @@ module.exports = async (req, res) => {
         });
       }
 
-      // ── Fallback: migrate from JSON blobs ──────────────────────────────
-      const [blobSettings, blobLists] = await Promise.all([
-        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':dust_settings'}`,
-        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':dust_lists'}`,
-      ]);
-
-      const settings = (blobSettings[0]?.value && typeof blobSettings[0].value === 'object')
-        ? blobSettings[0].value
-        : { ub_rate: 0 };
-      const lists = (blobLists[0]?.value && typeof blobLists[0].value === 'object')
-        ? blobLists[0].value
-        : { equipment: [], employees: [], companies: [], states: [] };
+      // Normalized tables are stale or empty — use blobs and re-sync.
+      const settings = blobSettingsVal;
+      const lists    = blobListsVal;
 
       if (settings.ub_rate || (lists.equipment || []).length > 0
           || (lists.companies || []).length > 0) {
