@@ -32,15 +32,53 @@ module.exports = async (req, res) => {
   };
 
   let dbCheck = null;
+  let appDataKeys = null;
   if (process.env.DATABASE_URL) {
     try {
       const sql = neon(process.env.DATABASE_URL);
       await sql`SELECT 1`;
       dbCheck = 'ok';
+      // Show app_data blob state for trucking keys
+      const rows = await sql`
+        SELECT key,
+               CASE WHEN jsonb_typeof(value) = 'array' THEN jsonb_array_length(value) ELSE NULL END AS arr_len,
+               jsonb_typeof(value) AS val_type,
+               updated_at
+        FROM app_data
+        WHERE key LIKE '%truck_division%' OR key LIKE '%fct_lists%'
+           OR key LIKE '%dust_settings%' OR key LIKE '%dust_lists%'
+        ORDER BY key
+      `;
+      appDataKeys = rows.map(r => ({
+        key: r.key,
+        arrLen: r.arr_len,
+        valType: r.val_type,
+        updatedAt: r.updated_at,
+      }));
+
+      // Show normalized table row counts for trucking
+      try {
+        const [normEntries, normUnits, normDrivers, normCustomers] = await Promise.all([
+          sql`SELECT COUNT(*) AS n FROM truck_division_entries`,
+          sql`SELECT COUNT(*) AS n FROM truck_division_units`,
+          sql`SELECT COUNT(*) AS n FROM dropdown_lists WHERE list_name = 'truck_drivers'`,
+          sql`SELECT COUNT(*) AS n FROM dropdown_lists WHERE list_name = 'truck_customers'`,
+        ]);
+        appDataKeys.push({
+          _normalizedCounts: {
+            truck_division_entries: Number(normEntries[0].n),
+            truck_division_units:   Number(normUnits[0].n),
+            truck_drivers:          Number(normDrivers[0].n),
+            truck_customers:        Number(normCustomers[0].n),
+          }
+        });
+      } catch (e) {
+        appDataKeys.push({ _normalizedCountsError: e.message });
+      }
     } catch (err) {
       dbCheck = err.message;
     }
   }
 
-  return res.json({ checks, dbCheck });
+  return res.json({ checks, dbCheck, appDataKeys });
 };

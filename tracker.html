@@ -14504,79 +14504,175 @@ function _calcComputeResult(s, qty) {
     </div>`;
 }
 
+function _calcEnsureStats() {
+  if (_soeStats.length > 0) return true;
+  const _tmp = document.createElement('div');
+  _tmp.id = 'scale-content'; _tmp.style.display = 'none';
+  document.body.appendChild(_tmp);
+  renderScaleOfEconomy();
+  document.body.removeChild(_tmp);
+  return _soeStats.length > 0;
+}
+
+function _calcGetCost(s, qty) {
+  const qtyNum = parseFloat(qty);
+  if (isNaN(qtyNum) || qtyNum <= 0) return null;
+  const isExtrapolated = qtyNum < s.minX || qtyNum > s.maxX;
+  let unitCost, lowUC, highUC;
+  if (isExtrapolated) {
+    unitCost = s.avgUC;
+    const dataStd = Math.sqrt(s.pts.reduce((sum, p) => sum + (p.y - s.avgUC) ** 2, 0) / s.pts.length);
+    lowUC  = Math.max(0, s.avgUC - dataStd);
+    highUC = s.avgUC + dataStd;
+  } else {
+    unitCost = (s.usePowerLaw && s.aPow != null)
+      ? Math.max(0, s.aPow * Math.pow(qtyNum, s.bPow))
+      : Math.max(0, s.slope * qtyNum + s.interc);
+    const residuals = s.pts.map(p => p.y - ((s.usePowerLaw && s.aPow != null)
+      ? s.aPow * Math.pow(p.x, s.bPow) : s.slope * p.x + s.interc));
+    const meanRes = residuals.reduce((a,b) => a+b, 0) / residuals.length;
+    const stdRes  = Math.sqrt(residuals.reduce((a,r) => a+(r-meanRes)**2, 0) / residuals.length);
+    lowUC  = Math.max(0, unitCost - stdRes);
+    highUC = unitCost + stdRes;
+  }
+  return { totalCost: unitCost * qtyNum, lowCost: lowUC * qtyNum, highCost: highUC * qtyNum };
+}
+
+function _calcTotalHtml() {
+  const rows = window._calcRows || [];
+  const valid = rows.map(r => {
+    const s = _soeStats.find(x => x.key === r.key) || _soeStats[0];
+    if (!s) return null;
+    const cost = _calcGetCost(s, r.qty);
+    if (!cost) return null;
+    return { s, cost };
+  }).filter(Boolean);
+  if (valid.length < 2) return '';
+  const fmt = (v, d=0) => v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const tot  = valid.reduce((s, r) => s + r.cost.totalCost, 0);
+  const low  = valid.reduce((s, r) => s + r.cost.lowCost,   0);
+  const high = valid.reduce((s, r) => s + r.cost.highCost,  0);
+  return `
+    <div style="margin-top:1.5rem;padding:1.1rem 1.4rem;background:rgba(74,222,128,0.07);border:2px solid rgba(74,222,128,0.3);border-radius:10px">
+      <div style="display:flex;gap:2.5rem;flex-wrap:wrap;align-items:flex-start">
+        <div>
+          <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.25rem">Total Estimated Cost · ${valid.length} Sub Codes</div>
+          <div style="font-size:1.6rem;font-weight:700;color:#4ade80">$${fmt(tot,2)}</div>
+          <div style="font-size:0.7rem;color:var(--muted);margin-top:0.15rem">Range: $${fmt(low,2)} – $${fmt(high,2)}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:0.3rem;justify-content:center">
+          ${valid.map(r => `<div style="font-size:0.74rem;color:var(--muted)">
+            <span style="color:var(--fg);font-weight:600">${r.s.subCode}</span>
+            <span style="color:var(--muted)"> (${r.s.costCode})</span>
+            <span style="color:#4ade80;font-weight:600;margin-left:0.5rem">$${fmt(r.cost.totalCost,2)}</span>
+          </div>`).join('')}
+        </div>
+      </div>
+    </div>`;
+}
+
+function _calcBuildRowHtml(idx) {
+  const row = (window._calcRows || [])[idx];
+  if (!row) return '';
+  const s    = _soeStats.find(x => x.key === row.key) || _soeStats[0];
+  const fmt  = (v, d=0) => (v == null || isNaN(v)) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const opts = _soeStats.map(o =>
+    `<option value="${o.key}"${o.key===s.key?' selected':''}>${o.subCode}  (${o.costCode})  —  ${o.n} jobs · unit: ${o.unit||'n/a'}</option>`
+  ).join('');
+  const removeBtn = (window._calcRows.length > 1)
+    ? `<button onclick="_calcRemoveRow(${idx})" title="Remove"
+        style="align-self:flex-end;padding:0.38rem 0.65rem;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.35);color:#f87171;border-radius:6px;font-size:0.85rem;cursor:pointer;line-height:1;margin-bottom:0.2rem">&#10005;</button>`
+    : '';
+  return `
+    <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;padding:1rem;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+      <div style="flex:2;min-width:220px">
+        <label style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);display:block;margin-bottom:0.35rem">Sub Code</label>
+        <select onchange="_calcSetKey(${idx},this.value)"
+          style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.82rem">${opts}</select>
+      </div>
+      <div style="flex:1;min-width:150px">
+        <label style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);display:block;margin-bottom:0.35rem">
+          Quantity${s.unit?` <span style="color:var(--fg);font-weight:600">(${s.unit})</span>`:''}
+        </label>
+        <input id="calc-qty-${idx}" type="number" min="0" step="any" placeholder="Enter qty…" value="${row.qty}"
+          oninput="_calcSetQty(${idx},this.value)"
+          style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.82rem">
+      </div>
+      <div style="font-size:0.7rem;color:var(--muted);align-self:flex-end;padding-bottom:0.45rem;line-height:1.6;flex:0 0 auto">
+        Observed range: <strong style="color:var(--fg)">${fmt(s.minX,1)}–${fmt(s.maxX,1)}</strong> ${s.unit||'units'}<br>
+        Based on <strong style="color:var(--fg)">${s.n}</strong> historical jobs
+      </div>
+      ${removeBtn}
+    </div>
+    <div id="calc-results-${idx}" style="margin-top:0.75rem">${_calcComputeResult(s, row.qty)}</div>`;
+}
+
 function renderTurfCalculator() {
   const el = document.getElementById('calc-content');
   if (!el) return;
-
-  if (_soeStats.length === 0) {
-    // Auto-build stats without requiring the user to visit the Scale of Economy tab first
-    const _tmp = document.createElement('div');
-    _tmp.id = 'scale-content';
-    _tmp.style.display = 'none';
-    document.body.appendChild(_tmp);
-    renderScaleOfEconomy();
-    document.body.removeChild(_tmp);
-  }
-  if (_soeStats.length === 0) {
+  if (!_calcEnsureStats()) {
     el.innerHTML = `<div style="color:var(--muted);padding:3rem;text-align:center">
       Not enough data yet — need at least 2 completed jobs sharing the same sub code with bid quantities entered.<br>
       <span style="font-size:0.75rem;display:block;margin-top:0.4rem">Make sure bid items have Bid Qty filled in and daily rows are logged with quantities.</span>
     </div>`;
     return;
   }
+  if (!window._calcRows || window._calcRows.length === 0)
+    window._calcRows = [{ key: _soeStats[0].key, qty: '' }];
 
-  const opts = _soeStats.map(s => ({
-    value: s.key,
-    label: `${s.subCode}  (${s.costCode})  —  ${s.n} jobs · unit: ${s.unit || 'n/a'}`,
-  }));
-
-  const selKey = window._calcSelectedKey || _soeStats[0].key;
-  const s = _soeStats.find(x => x.key === selKey) || _soeStats[0];
-  window._calcSelectedKey = s.key;
-  const qty = window._calcQty !== undefined ? window._calcQty : '';
-
-  const fmt = (v, d=0) => (v == null || isNaN(v)) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const rowsHtml = window._calcRows.map((_, i) =>
+    `<div id="calc-row-${i}" style="margin-bottom:1.25rem">${_calcBuildRowHtml(i)}</div>`
+  ).join('');
 
   el.innerHTML = `
-    <div style="max-width:920px">
-      <div style="margin-bottom:1.25rem">
-        <div style="font-size:0.95rem;font-weight:700;color:var(--fg);margin-bottom:0.15rem">&#129518; Turf Calculator</div>
-        <div style="font-size:0.75rem;color:var(--muted)">Estimates cost &amp; labor hours using scale-of-economy regression models built from historical job data.</div>
+    <div style="max-width:960px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.25rem">
+        <div>
+          <div style="font-size:0.95rem;font-weight:700;color:var(--fg);margin-bottom:0.15rem">&#129518; Turf Calculator</div>
+          <div style="font-size:0.75rem;color:var(--muted)">Estimates cost &amp; labor hours using scale-of-economy regression models built from historical job data.</div>
+        </div>
+        <button onclick="_calcAddRow()"
+          style="display:flex;align-items:center;gap:0.35rem;padding:0.42rem 0.9rem;background:rgba(74,222,128,0.15);border:1.5px solid rgba(74,222,128,0.45);color:#4ade80;border-radius:7px;font-size:0.82rem;font-weight:700;cursor:pointer;white-space:nowrap">
+          &#43; Add Sub Code
+        </button>
       </div>
-
-      <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.5rem;padding:1rem;background:var(--surface);border:1px solid var(--border);border-radius:8px">
-        <div style="flex:2;min-width:220px">
-          <label style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);display:block;margin-bottom:0.35rem">Sub Code</label>
-          <select onchange="window._calcSelectedKey=this.value;window._calcQty='';renderTurfCalculator()"
-            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.82rem">
-            ${opts.map(o => `<option value="${o.value}"${o.value===s.key?' selected':''}>${o.label}</option>`).join('')}
-          </select>
-        </div>
-        <div style="flex:1;min-width:150px">
-          <label style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);display:block;margin-bottom:0.35rem">
-            Quantity${s.unit ? ` <span style="color:var(--fg);font-weight:600">(${s.unit})</span>` : ''}
-          </label>
-          <input id="calc-qty-input" type="number" min="0" step="any" placeholder="Enter qty…" value="${qty}"
-            oninput="window._calcQty=this.value;_calcRefreshResults()"
-            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.82rem">
-        </div>
-        <div style="font-size:0.7rem;color:var(--muted);align-self:flex-end;padding-bottom:0.45rem;line-height:1.6">
-          Observed range: <strong style="color:var(--fg)">${fmt(s.minX,1)}–${fmt(s.maxX,1)}</strong> ${s.unit || 'units'}<br>
-          Based on <strong style="color:var(--fg)">${s.n}</strong> historical jobs
-        </div>
-      </div>
-
-      <div id="calc-results">${_calcComputeResult(s, qty)}</div>
+      <div id="calc-rows-container">${rowsHtml}</div>
+      <div id="calc-total-container">${_calcTotalHtml()}</div>
     </div>`;
 }
 
-function _calcRefreshResults() {
-  const resEl = document.getElementById('calc-results');
-  if (!resEl) return;
-  const selKey = window._calcSelectedKey || (_soeStats[0] && _soeStats[0].key);
-  const s = _soeStats.find(x => x.key === selKey) || _soeStats[0];
-  if (!s) return;
-  resEl.innerHTML = _calcComputeResult(s, window._calcQty || '');
+function _calcSetKey(idx, key) {
+  if (!window._calcRows || !window._calcRows[idx]) return;
+  window._calcRows[idx].key = key;
+  window._calcRows[idx].qty = '';
+  const rowEl = document.getElementById(`calc-row-${idx}`);
+  if (rowEl) rowEl.innerHTML = _calcBuildRowHtml(idx);
+  const totEl = document.getElementById('calc-total-container');
+  if (totEl) totEl.innerHTML = _calcTotalHtml();
+}
+
+function _calcSetQty(idx, qty) {
+  if (!window._calcRows || !window._calcRows[idx]) return;
+  window._calcRows[idx].qty = qty;
+  const resEl = document.getElementById(`calc-results-${idx}`);
+  if (resEl) {
+    const s = _soeStats.find(x => x.key === window._calcRows[idx].key) || _soeStats[0];
+    if (s) resEl.innerHTML = _calcComputeResult(s, qty);
+  }
+  const totEl = document.getElementById('calc-total-container');
+  if (totEl) totEl.innerHTML = _calcTotalHtml();
+}
+
+function _calcAddRow() {
+  if (!window._calcRows) window._calcRows = [];
+  window._calcRows.push({ key: _soeStats[0].key, qty: '' });
+  renderTurfCalculator();
+}
+
+function _calcRemoveRow(idx) {
+  if (!window._calcRows) return;
+  window._calcRows.splice(idx, 1);
+  renderTurfCalculator();
 }
 
 

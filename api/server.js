@@ -70,14 +70,61 @@ app.post('/api/ai/schedule-analysis', require('./ai/schedule-analysis'));
 /** AI conflict resolution suggestions */
 app.post('/api/ai/conflict-resolve', require('./ai/conflict-resolve'));
 
+/** Debug / diagnostics */
+app.get('/api/debug', require('./debug'));
+
 /** Liveness / health check */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
 });
 
-// All /api/data requests are handled by api/data/[key].js (JWT-scoped per company).
-// Those routes are registered above via app.all('/api/data', ...).
-// No unscoped legacy routes here.
+// ── Legacy key-value store ─────────────────────────────────────────────────
+// Data was originally stored without a company prefix. These routes keep all
+// existing tdGet/tdPut calls (fct_lists, fct_projects, etc.) working.
+
+const LEGACY_ALLOWED = [
+  'fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows',
+  'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory',
+  'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists',
+];
+function isLegacyKey(k) {
+  return LEGACY_ALLOWED.includes(k)
+    || /^fct_project_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_trend_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_crm_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_lucius_[a-zA-Z0-9_-]+$/.test(k)
+    || /^dust_[a-zA-Z0-9_-]+$/.test(k);
+}
+
+app.get('/api/data/:key', async (req, res) => {
+  const { key } = req.params;
+  if (!isLegacyKey(key)) return res.status(400).json({ error: `Unknown key "${key}"` });
+  try {
+    const rows = await sql`SELECT value FROM app_data WHERE key = ${key}`;
+    res.json({ value: rows.length ? rows[0].value : null });
+  } catch (err) {
+    console.error('GET /api/data/:key error:', err.message);
+    res.status(500).json({ error: 'Database error', detail: err.message });
+  }
+});
+
+app.put('/api/data/:key', async (req, res) => {
+  const { key } = req.params;
+  if (!isLegacyKey(key)) return res.status(400).json({ error: `Unknown key "${key}"` });
+  const { value } = req.body;
+  if (value === undefined) return res.status(400).json({ error: '`value` field is required' });
+  try {
+    await sql`
+      INSERT INTO app_data (key, value, updated_at)
+      VALUES (${key}, ${JSON.stringify(value)}, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    `;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('PUT /api/data/:key error:', err.message);
+    res.status(500).json({ error: 'Database error', detail: err.message });
+  }
+});
 
 // ── Start ──────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
