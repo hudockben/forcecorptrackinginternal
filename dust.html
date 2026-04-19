@@ -1442,6 +1442,30 @@
       } catch { return false; }
     }
 
+    /** Load dust config (settings + lists) from normalized endpoint. */
+    async function dustConfigGet() {
+      try {
+        const r = await fetch('/api/dust-config', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (r.status === 401) { signOut(); return null; }
+        if (!r.ok) return null;
+        return await r.json();
+      } catch { return null; }
+    }
+
+    /** Save dust config (settings + lists) to normalized endpoint. */
+    function dustConfigPut() {
+      fetch('/api/dust-config', {
+        method: 'PUT',
+        headers: AUTH_HDR(),
+        body: JSON.stringify({
+          settings: { ub_rate: ubRate },
+          lists: dustLists,
+        }),
+      }).catch(() => {});
+    }
+
     /* ═══════════════════════════════════════════
        STATE
     ═══════════════════════════════════════════ */
@@ -1754,7 +1778,7 @@
       btn.textContent = 'Repairing…';
       btn.disabled = true;
       syncListsFromImport(rows);
-      await apiPut('dust_lists', dustLists);
+      dustConfigPut();
       renderTable(); // rebuild dropdowns with newly populated lists
       btn.textContent = '✓ Done';
       setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
@@ -1789,7 +1813,7 @@
 
       const [rowsOk, listsOk] = await Promise.all([
         saveDustRows(merged),
-        apiPut('dust_lists', dustLists),
+        dustConfigPut(),
       ]);
 
       if (rowsOk) {
@@ -1828,14 +1852,14 @@
       renderTable();
     }
 
-    function saveLists() { apiPut('dust_lists', dustLists); }
+    function saveLists() { dustConfigPut(); }
 
     function scheduleSave() {
       setSaveState('saving');
       clearTimeout(saveTimer);
       saveTimer = setTimeout(async () => {
         const ok = await saveDustRows(rows);
-        apiPut('dust_settings', { ub_rate: ubRate });
+        dustConfigPut();
         setSaveState(ok ? 'saved' : 'error');
         setTimeout(() => setSaveState(''), 3000);
       }, 900);
@@ -2736,30 +2760,31 @@
     }
 
     async function init() {
-      const [savedRows, savedSettings, savedLists] = await Promise.all([
+      const [savedRows, config] = await Promise.all([
         loadDustRows(),
-        apiGet('dust_settings'),
-        apiGet('dust_lists'),
+        dustConfigGet(),
       ]);
 
       if (Array.isArray(savedRows)) rows = savedRows;
 
-      if (savedSettings && typeof savedSettings.ub_rate === 'number') {
-        ubRate = savedSettings.ub_rate;
-        document.getElementById('ubRateInput').value = ubRate.toFixed(2);
-      }
-
-      if (savedLists && typeof savedLists === 'object') {
-        dustLists.equipment = Array.isArray(savedLists.equipment) ? savedLists.equipment : [];
-        dustLists.employees = Array.isArray(savedLists.employees) ? savedLists.employees : [];
-        dustLists.companies = Array.isArray(savedLists.companies) ? savedLists.companies : [];
-        dustLists.states    = Array.isArray(savedLists.states)    ? savedLists.states    : [];
-        // Ensure each company has required arrays; migrate co.men strings → {id,name} objects
-        dustLists.companies.forEach(co => {
-          if (!Array.isArray(co.locations)) co.locations = [];
-          if (!Array.isArray(co.men)) co.men = [];
-          co.men = co.men.map(m => typeof m === 'string' ? { id: uid(), name: m } : m);
-        });
+      if (config) {
+        const { settings, lists } = config;
+        if (settings && typeof settings.ub_rate === 'number') {
+          ubRate = settings.ub_rate;
+          document.getElementById('ubRateInput').value = ubRate.toFixed(2);
+        }
+        if (lists && typeof lists === 'object') {
+          dustLists.equipment = Array.isArray(lists.equipment) ? lists.equipment : [];
+          dustLists.employees = Array.isArray(lists.employees) ? lists.employees : [];
+          dustLists.companies = Array.isArray(lists.companies) ? lists.companies : [];
+          dustLists.states    = Array.isArray(lists.states)    ? lists.states    : [];
+          // Ensure each company has required arrays; migrate co.men strings → {id,name} objects
+          dustLists.companies.forEach(co => {
+            if (!Array.isArray(co.locations)) co.locations = [];
+            if (!Array.isArray(co.men)) co.men = [];
+            co.men = co.men.map(m => typeof m === 'string' ? { id: uid(), name: m } : m);
+          });
+        }
       }
 
       renderYearSelector();
@@ -2771,7 +2796,7 @@
     window.addEventListener('beforeunload', () => {
       clearTimeout(saveTimer);
       saveDustRows(rows);
-      apiPut('dust_settings', { ub_rate: ubRate });
+      dustConfigPut();
     });
 
     /* ═══════════════════════════════════════════
