@@ -38,7 +38,7 @@ module.exports = async (req, res) => {
       const sql = neon(process.env.DATABASE_URL);
       await sql`SELECT 1`;
       dbCheck = 'ok';
-      // Show app_data keys that relate to trucking (for diagnostics)
+      // Show app_data blob state for trucking keys
       const rows = await sql`
         SELECT key,
                CASE WHEN jsonb_typeof(value) = 'array' THEN jsonb_array_length(value) ELSE NULL END AS arr_len,
@@ -54,6 +54,26 @@ module.exports = async (req, res) => {
         valType: r.val_type,
         updatedAt: r.updated_at,
       }));
+
+      // Show normalized table row counts for trucking
+      try {
+        const [normEntries, normUnits, normDrivers, normCustomers] = await Promise.all([
+          sql`SELECT COUNT(*) AS n FROM truck_division_entries`,
+          sql`SELECT COUNT(*) AS n FROM truck_division_units`,
+          sql`SELECT COUNT(*) AS n FROM dropdown_lists WHERE list_name = 'truck_drivers'`,
+          sql`SELECT COUNT(*) AS n FROM dropdown_lists WHERE list_name = 'truck_customers'`,
+        ]);
+        appDataKeys.push({
+          _normalizedCounts: {
+            truck_division_entries: Number(normEntries[0].n),
+            truck_division_units:   Number(normUnits[0].n),
+            truck_drivers:          Number(normDrivers[0].n),
+            truck_customers:        Number(normCustomers[0].n),
+          }
+        });
+      } catch (e) {
+        appDataKeys.push({ _normalizedCountsError: e.message });
+      }
     } catch (err) {
       dbCheck = err.message;
     }
