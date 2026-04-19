@@ -424,3 +424,117 @@ CREATE TABLE IF NOT EXISTS dust_control_entries (
 CREATE INDEX IF NOT EXISTS idx_dust_company      ON dust_control_entries(company_code);
 CREATE INDEX IF NOT EXISTS idx_dust_company_date ON dust_control_entries(company_code, date);
 CREATE INDEX IF NOT EXISTS idx_dust_company_co   ON dust_control_entries(company_code, company);
+
+-- ─────────────────────────────────────────────────
+-- TRUCK DIVISION ENTRIES
+-- One row per job entry from the Trucking Division tab.
+-- Replaces fct_truck_division JSON blob.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS truck_division_entries (
+    id                TEXT PRIMARY KEY,
+    company_code      TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    task_number       TEXT,
+    actual_date       DATE,
+    driver            TEXT,
+    unit              TEXT,
+    actual_start      TEXT,                          -- HH:MM string
+    actual_end        TEXT,                          -- HH:MM string
+    total_hours       NUMERIC(10,4),
+    haul_fee          NUMERIC(10,4),
+    customer          TEXT,
+    description       TEXT,
+    division          TEXT,
+    notes             TEXT,
+    -- Invoice sub-row fields
+    qb_invoice        TEXT,
+    invoiced_date     DATE,
+    invoice_sent_date DATE,
+    invoice_status    TEXT          NOT NULL DEFAULT 'Unpaid',
+    date_paid         DATE,
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tde_company      ON truck_division_entries(company_code);
+CREATE INDEX IF NOT EXISTS idx_tde_company_date ON truck_division_entries(company_code, actual_date);
+CREATE INDEX IF NOT EXISTS idx_tde_driver       ON truck_division_entries(company_code, driver);
+CREATE INDEX IF NOT EXISTS idx_tde_customer     ON truck_division_entries(company_code, customer);
+
+-- ─────────────────────────────────────────────────
+-- TRUCK DIVISION UNITS
+-- Truck unit roster per company (name + unit number).
+-- Drivers/customers stored in dropdown_lists with
+-- list_name = 'truck_drivers' / 'truck_customers'.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS truck_division_units (
+    id           SERIAL PRIMARY KEY,
+    company_code TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name         TEXT          NOT NULL,
+    number       TEXT,
+    sort_order   INTEGER       NOT NULL DEFAULT 0,
+    UNIQUE (company_code, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tdu_company ON truck_division_units(company_code);
+
+-- ─────────────────────────────────────────────────
+-- DUST CONTROL CONFIG
+-- Replaces dust_settings and dust_lists JSON blobs.
+-- ─────────────────────────────────────────────────
+
+-- Per-company settings (ub_rate, etc.)
+CREATE TABLE IF NOT EXISTS dust_settings (
+    company_code TEXT PRIMARY KEY REFERENCES companies(code) ON DELETE CASCADE,
+    ub_rate      NUMERIC(10,4) NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- Vehicle/equipment roster
+CREATE TABLE IF NOT EXISTS dust_equipment (
+    id            TEXT PRIMARY KEY,              -- app-generated uid
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name          TEXT          NOT NULL,
+    unit_number   TEXT,
+    vehicle_rate  NUMERIC(10,4),
+    sort_order    INTEGER       NOT NULL DEFAULT 0,
+    UNIQUE (company_code, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dust_equip_company ON dust_equipment(company_code);
+
+-- Customer companies
+CREATE TABLE IF NOT EXISTS dust_companies (
+    id            TEXT PRIMARY KEY,              -- app-generated uid
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name          TEXT          NOT NULL,
+    tier          TEXT          NOT NULL DEFAULT '',
+    sort_order    INTEGER       NOT NULL DEFAULT 0,
+    UNIQUE (company_code, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dust_co_company ON dust_companies(company_code);
+
+-- Locations per customer company
+CREATE TABLE IF NOT EXISTS dust_company_locations (
+    id              TEXT PRIMARY KEY,            -- app-generated uid
+    dust_company_id TEXT          NOT NULL REFERENCES dust_companies(id) ON DELETE CASCADE,
+    name            TEXT          NOT NULL,
+    state           TEXT,
+    sort_order      INTEGER       NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_dust_loc_company ON dust_company_locations(dust_company_id);
+
+-- Personnel (company men) per customer company
+CREATE TABLE IF NOT EXISTS dust_company_personnel (
+    id              TEXT PRIMARY KEY,            -- app-generated uid
+    dust_company_id TEXT          NOT NULL REFERENCES dust_companies(id) ON DELETE CASCADE,
+    name            TEXT          NOT NULL,
+    sort_order      INTEGER       NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_dust_pers_company ON dust_company_personnel(dust_company_id);
+
+-- Employees and states stored in dropdown_lists:
+--   list_name = 'dust_employees'  (strings)
+--   list_name = 'dust_states'     (strings)

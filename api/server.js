@@ -43,11 +43,17 @@ app.all('/api/daily-rows', require('./daily-rows'));
 /** Trucking entries */
 app.all('/api/trucking', require('./trucking'));
 
+/** Truck division tracking + lists */
+app.all('/api/truck-division', require('./truck-division'));
+
 /** Purchase orders + delivery lines */
 app.all('/api/purchase-orders', require('./purchase-orders'));
 
 /** Dust control entries */
 app.all('/api/dust-rows', require('./dust-rows'));
+
+/** Dust control config (settings + lists) */
+app.all('/api/dust-config', require('./dust-config'));
 
 /** Company board */
 app.all('/api/board', require('./board'));
