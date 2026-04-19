@@ -14453,11 +14453,18 @@ function renderTurfCalculator() {
   if (!el) return;
 
   if (_soeStats.length === 0) {
+    // Auto-build stats without requiring the user to visit the Scale of Economy tab first
+    const _tmp = document.createElement('div');
+    _tmp.id = 'scale-content';
+    _tmp.style.display = 'none';
+    document.body.appendChild(_tmp);
+    renderScaleOfEconomy();
+    document.body.removeChild(_tmp);
+  }
+  if (_soeStats.length === 0) {
     el.innerHTML = `<div style="color:var(--muted);padding:3rem;text-align:center">
-      No Scale of Economy data loaded yet.<br>
-      <span style="font-size:0.75rem;display:block;margin-top:0.4rem">
-        Visit the <strong>Scale of Economy</strong> analytics tab first to build the model data, then return here.
-      </span>
+      Not enough data yet — need at least 2 completed jobs sharing the same sub code with bid quantities entered.<br>
+      <span style="font-size:0.75rem;display:block;margin-top:0.4rem">Make sure bid items have Bid Qty filled in and daily rows are logged with quantities.</span>
     </div>`;
     return;
   }
