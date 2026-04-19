@@ -47,16 +47,18 @@ module.exports = async (req, res) => {
       ]);
 
       // Always load blobs too so we can detect stale normalized tables.
-      const [blobSettings, blobLists] = await Promise.all([
+      // Check both scoped (FORCECORP:dust_settings) and legacy unscoped keys.
+      const [blobSettings, blobLists, blobSettingsLegacy, blobListsLegacy] = await Promise.all([
         sql`SELECT value FROM app_data WHERE key = ${companyCode + ':dust_settings'}`,
         sql`SELECT value FROM app_data WHERE key = ${companyCode + ':dust_lists'}`,
+        sql`SELECT value FROM app_data WHERE key = 'dust_settings'`,
+        sql`SELECT value FROM app_data WHERE key = 'dust_lists'`,
       ]);
 
-      const blobSettingsVal = (blobSettings[0]?.value && typeof blobSettings[0].value === 'object')
-        ? blobSettings[0].value : { ub_rate: 0 };
-      const blobListsVal = (blobLists[0]?.value && typeof blobLists[0].value === 'object')
-        ? blobLists[0].value
-        : { equipment: [], employees: [], companies: [], states: [] };
+      const _asObj = r => (r?.value && typeof r.value === 'object') ? r.value : null;
+      const blobSettingsVal = _asObj(blobSettings[0]) || _asObj(blobSettingsLegacy[0]) || { ub_rate: 0 };
+      const blobListsRaw    = _asObj(blobLists[0])    || _asObj(blobListsLegacy[0]);
+      const blobListsVal    = blobListsRaw || { equipment: [], employees: [], companies: [], states: [] };
 
       // Normalized is trustworthy if companies count matches blob companies count.
       const blobCoCount   = (blobListsVal.companies || []).length;

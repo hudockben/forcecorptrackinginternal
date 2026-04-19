@@ -46,6 +46,7 @@ module.exports = async (req, res) => {
                updated_at
         FROM app_data
         WHERE key LIKE '%truck_division%' OR key LIKE '%fct_lists%'
+           OR key LIKE '%dust_settings%' OR key LIKE '%dust_lists%'
         ORDER BY key
       `;
       appDataKeys = rows.map(r => ({
