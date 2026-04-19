@@ -2787,6 +2787,13 @@
         }
       }
 
+      // Auto-repair lists from row data when config comes back empty but rows exist.
+      const listsEmpty = dustLists.companies.length === 0 && dustLists.equipment.length === 0;
+      if (listsEmpty && rows.length > 0) {
+        syncListsFromImport(rows);
+        dustConfigPut();
+      }
+
       renderYearSelector();
       renderTable();
       renderHomeDashboard();
