@@ -70,6 +70,9 @@ app.post('/api/ai/schedule-analysis', require('./ai/schedule-analysis'));
 /** AI conflict resolution suggestions */
 app.post('/api/ai/conflict-resolve', require('./ai/conflict-resolve'));
 
+/** Debug / diagnostics */
+app.get('/api/debug', require('./debug'));
+
 /** Liveness / health check */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });

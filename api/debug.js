@@ -32,15 +32,30 @@ module.exports = async (req, res) => {
   };
 
   let dbCheck = null;
+  let appDataKeys = null;
   if (process.env.DATABASE_URL) {
     try {
       const sql = neon(process.env.DATABASE_URL);
       await sql`SELECT 1`;
       dbCheck = 'ok';
+      // Show app_data keys that relate to trucking (for diagnostics)
+      const rows = await sql`
+        SELECT key,
+               jsonb_array_length(CASE WHEN jsonb_typeof(value) = 'array' THEN value ELSE 'null'::jsonb END) AS arr_len,
+               updated_at
+        FROM app_data
+        WHERE key LIKE '%truck_division%' OR key LIKE '%fct_lists%'
+        ORDER BY key
+      `;
+      appDataKeys = rows.map(r => ({
+        key: r.key,
+        arrLen: r.arr_len,
+        updatedAt: r.updated_at,
+      }));
     } catch (err) {
       dbCheck = err.message;
     }
   }
 
-  return res.json({ checks, dbCheck });
+  return res.json({ checks, dbCheck, appDataKeys });
 };
