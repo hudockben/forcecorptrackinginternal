@@ -14356,6 +14356,98 @@ function buildPaceSuggestions({ projUC, histUC, runUC, runMU, histMU,
     </div>`;
 }
 
+function _calcComputeResult(s, qty) {
+  const fmt  = (v, d=0) => (v == null || isNaN(v)) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const fmtC = (v) => (v == null || isNaN(v)) ? '—' : '$' + fmt(v, 2);
+  const card = (label, value, sub='', color='var(--green)') =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.9rem 1.1rem;flex:1;min-width:160px">
+      <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
+      <div style="font-size:1.1rem;font-weight:700;color:${color}">${value}</div>
+      ${sub ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.15rem">${sub}</div>` : ''}
+    </div>`;
+
+  const qtyNum = parseFloat(qty);
+  if (isNaN(qtyNum) || qtyNum <= 0) {
+    return `<div style="padding:2.5rem;text-align:center;color:var(--muted);font-size:0.82rem">Enter a quantity above to see estimates.</div>`;
+  }
+
+  let unitCost;
+  if (s.usePowerLaw && s.aPow != null && s.bPow != null) {
+    unitCost = s.aPow * Math.pow(qtyNum, s.bPow);
+  } else {
+    unitCost = s.slope * qtyNum + s.interc;
+  }
+  unitCost = Math.max(0, unitCost);
+  const totalCost = unitCost * qtyNum;
+
+  const residuals = s.pts.map(p => {
+    const pred = (s.usePowerLaw && s.aPow != null)
+      ? s.aPow * Math.pow(p.x, s.bPow)
+      : s.slope * p.x + s.interc;
+    return p.y - pred;
+  });
+  const meanRes = residuals.reduce((a, b) => a + b, 0) / residuals.length;
+  const stdRes  = Math.sqrt(residuals.reduce((a, r) => a + (r - meanRes) ** 2, 0) / residuals.length);
+  const lowUC   = Math.max(0, unitCost - stdRes);
+  const highUC  = unitCost + stdRes;
+
+  let laborHrsPerUnit = null, totalLaborHrs = null, laborLow = null, laborHigh = null;
+  if (!s.laborTooFew && s.laborA != null && s.laborB != null) {
+    laborHrsPerUnit = Math.max(0, s.laborA * Math.pow(qtyNum, s.laborB));
+    totalLaborHrs   = laborHrsPerUnit * qtyNum;
+    if (s.laborPts && s.laborPts.length >= 2) {
+      const lRes  = s.laborPts.map(p => p.y - s.laborA * Math.pow(p.x, s.laborB));
+      const lMean = lRes.reduce((a, b) => a + b, 0) / lRes.length;
+      const lStd  = Math.sqrt(lRes.reduce((a, r) => a + (r - lMean) ** 2, 0) / lRes.length);
+      laborLow  = Math.max(0, totalLaborHrs - lStd * qtyNum);
+      laborHigh = totalLaborHrs + lStd * qtyNum;
+    }
+  }
+
+  const isExtrapolated = qtyNum < s.minX || qtyNum > s.maxX;
+  const conf      = s.tooFewForR2 ? 'Low' : s.effectiveR2 >= 0.75 ? 'High' : s.effectiveR2 >= 0.45 ? 'Moderate' : 'Low';
+  const confColor = { High: '#4ade80', Moderate: '#facc15', Low: '#f87171' }[conf];
+  const confBadge = `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${conf} Confidence &middot; R&sup2;=${Math.round(s.effectiveR2*100)}%</span>`;
+
+  return `
+    ${isExtrapolated ? `
+    <div style="margin-bottom:1rem;padding:0.65rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.76rem;color:#fbbf24">
+      &#9888; <strong>Extrapolation Warning:</strong>
+      ${qtyNum < s.minX
+        ? `${fmt(qtyNum,1)} ${s.unit} is below the smallest observed job (${fmt(s.minX,1)} ${s.unit}).`
+        : `${fmt(qtyNum,1)} ${s.unit} exceeds the largest observed job (${fmt(s.maxX,1)} ${s.unit}).`}
+      Estimates outside observed data carry higher uncertainty.
+    </div>` : ''}
+
+    <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem">
+      ${card('Est. Unit Cost', fmtC(unitCost), `±1&sigma; range: ${fmtC(lowUC)} – ${fmtC(highUC)} / ${s.unit || 'unit'}`, 'var(--green)')}
+      ${card('Total Est. Cost', '$' + fmt(totalCost, 2), `Range: $${fmt(lowUC*qtyNum,2)} – $${fmt(highUC*qtyNum,2)}`, '#60a5fa')}
+      ${totalLaborHrs != null
+        ? card('Total Est. Labor Hrs', fmt(totalLaborHrs, 1) + ' hrs',
+            laborLow != null ? `Range: ${fmt(laborLow,1)} – ${fmt(laborHigh,1)} hrs` : '', '#a78bfa')
+        : ''}
+      ${laborHrsPerUnit != null
+        ? card('Labor Hrs / ' + (s.unit || 'Unit'), fmt(laborHrsPerUnit, 3),
+            `Labor R&sup2;=${Math.round((s.laborR2||0)*100)}%`, '#f472b6')
+        : ''}
+    </div>
+
+    <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
+      ${confBadge}
+      <span style="font-size:0.7rem;color:var(--muted)">${s.n} jobs &middot; ${fmt(s.minX,1)}–${fmt(s.maxX,1)} ${s.unit || 'units'} observed &middot; historical avg $${fmt(s.avgUC,2)}/${s.unit || 'unit'}</span>
+    </div>
+
+    <div style="padding:0.65rem 0.9rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:0.72rem;color:var(--muted);line-height:1.7">
+      <strong style="color:var(--fg)">Cost model:</strong>
+      ${s.usePowerLaw
+        ? `Power law &mdash; cost/unit = ${s.aPow?.toFixed(4)} &times; qty<sup>${s.bPow?.toFixed(4)}</sup> &nbsp;|&nbsp; R&sup2;=${Math.round(s.effectiveR2*100)}%`
+        : `Linear &mdash; cost/unit = ${s.slope?.toFixed(4)} &times; qty + ${s.interc?.toFixed(2)} &nbsp;|&nbsp; R&sup2;=${Math.round(s.effectiveR2*100)}%`}
+      ${(!s.laborTooFew && s.laborA != null)
+        ? `<br><strong style="color:var(--fg)">Labor model:</strong> Power law &mdash; hrs/unit = ${s.laborA?.toFixed(4)} &times; qty<sup>${s.laborB?.toFixed(4)}</sup> &nbsp;|&nbsp; R&sup2;=${Math.round((s.laborR2||0)*100)}%`
+        : ''}
+    </div>`;
+}
+
 function renderTurfCalculator() {
   const el = document.getElementById('calc-content');
   if (!el) return;
@@ -14380,67 +14472,7 @@ function renderTurfCalculator() {
   window._calcSelectedKey = s.key;
   const qty = window._calcQty !== undefined ? window._calcQty : '';
 
-  const fmt  = (v, d=0) => (v == null || isNaN(v)) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
-  const fmtC = (v) => (v == null || isNaN(v)) ? '—' : '$' + fmt(v, 2);
-
-  // ── Compute estimates ──────────────────────────────────────────────────────
-  let result = null;
-  const qtyNum = parseFloat(qty);
-  if (!isNaN(qtyNum) && qtyNum > 0) {
-    let unitCost;
-    if (s.usePowerLaw && s.aPow != null && s.bPow != null) {
-      unitCost = s.aPow * Math.pow(qtyNum, s.bPow);
-    } else {
-      unitCost = s.slope * qtyNum + s.interc;
-    }
-    unitCost = Math.max(0, unitCost);
-    const totalCost = unitCost * qtyNum;
-
-    // Residual std dev → ±1σ range
-    const residuals = s.pts.map(p => {
-      const pred = (s.usePowerLaw && s.aPow != null)
-        ? s.aPow * Math.pow(p.x, s.bPow)
-        : s.slope * p.x + s.interc;
-      return p.y - pred;
-    });
-    const meanRes = residuals.reduce((a, b) => a + b, 0) / residuals.length;
-    const stdRes  = Math.sqrt(residuals.reduce((a, r) => a + (r - meanRes) ** 2, 0) / residuals.length);
-    const lowUC   = Math.max(0, unitCost - stdRes);
-    const highUC  = unitCost + stdRes;
-
-    // Labor
-    let laborHrsPerUnit = null, totalLaborHrs = null, laborLow = null, laborHigh = null;
-    if (!s.laborTooFew && s.laborA != null && s.laborB != null) {
-      laborHrsPerUnit = Math.max(0, s.laborA * Math.pow(qtyNum, s.laborB));
-      totalLaborHrs   = laborHrsPerUnit * qtyNum;
-      if (s.laborPts && s.laborPts.length >= 2) {
-        const lRes  = s.laborPts.map(p => p.y - s.laborA * Math.pow(p.x, s.laborB));
-        const lMean = lRes.reduce((a, b) => a + b, 0) / lRes.length;
-        const lStd  = Math.sqrt(lRes.reduce((a, r) => a + (r - lMean) ** 2, 0) / lRes.length);
-        laborLow  = Math.max(0, totalLaborHrs - lStd * qtyNum);
-        laborHigh = totalLaborHrs + lStd * qtyNum;
-      }
-    }
-
-    const isExtrapolated = qtyNum < s.minX || qtyNum > s.maxX;
-    const conf      = s.tooFewForR2 ? 'Low' : s.effectiveR2 >= 0.75 ? 'High' : s.effectiveR2 >= 0.45 ? 'Moderate' : 'Low';
-    const confColor = { High: '#4ade80', Moderate: '#facc15', Low: '#f87171' }[conf];
-
-    result = { unitCost, totalCost, lowUC, highUC, lowTotal: lowUC * qtyNum, highTotal: highUC * qtyNum,
-               laborHrsPerUnit, totalLaborHrs, laborLow, laborHigh,
-               isExtrapolated, conf, confColor };
-  }
-
-  const card = (label, value, sub='', color='var(--green)') =>
-    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.9rem 1.1rem;flex:1;min-width:160px">
-      <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
-      <div style="font-size:1.1rem;font-weight:700;color:${color}">${value}</div>
-      ${sub ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.15rem">${sub}</div>` : ''}
-    </div>`;
-
-  const confBadge = result
-    ? `<span style="background:${result.confColor}22;color:${result.confColor};border:1px solid ${result.confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${result.conf} Confidence &middot; R&sup2;=${Math.round(s.effectiveR2*100)}%</span>`
-    : '';
+  const fmt = (v, d=0) => (v == null || isNaN(v)) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
   el.innerHTML = `
     <div style="max-width:920px">
@@ -14461,8 +14493,8 @@ function renderTurfCalculator() {
           <label style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);display:block;margin-bottom:0.35rem">
             Quantity${s.unit ? ` <span style="color:var(--fg);font-weight:600">(${s.unit})</span>` : ''}
           </label>
-          <input type="number" min="0" step="any" placeholder="Enter qty…" value="${qty}"
-            oninput="window._calcQty=this.value;renderTurfCalculator()"
+          <input id="calc-qty-input" type="number" min="0" step="any" placeholder="Enter qty…" value="${qty}"
+            oninput="window._calcQty=this.value;_calcRefreshResults()"
             style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.82rem">
         </div>
         <div style="font-size:0.7rem;color:var(--muted);align-self:flex-end;padding-bottom:0.45rem;line-height:1.6">
@@ -14471,50 +14503,19 @@ function renderTurfCalculator() {
         </div>
       </div>
 
-      ${result ? `
-        ${result.isExtrapolated ? `
-        <div style="margin-bottom:1rem;padding:0.65rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.76rem;color:#fbbf24">
-          &#9888; <strong>Extrapolation Warning:</strong>
-          ${qtyNum < s.minX
-            ? `${fmt(qtyNum,1)} ${s.unit} is below the smallest observed job (${fmt(s.minX,1)} ${s.unit}).`
-            : `${fmt(qtyNum,1)} ${s.unit} exceeds the largest observed job (${fmt(s.maxX,1)} ${s.unit}).`}
-          Estimates outside observed data carry higher uncertainty.
-        </div>` : ''}
-
-        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem">
-          ${card('Est. Unit Cost', fmtC(result.unitCost), `±1&sigma; range: ${fmtC(result.lowUC)} – ${fmtC(result.highUC)} / ${s.unit || 'unit'}`, 'var(--green)')}
-          ${card('Total Est. Cost', '$' + fmt(result.totalCost, 2), `Range: $${fmt(result.lowTotal,2)} – $${fmt(result.highTotal,2)}`, '#60a5fa')}
-          ${result.totalLaborHrs != null
-            ? card('Total Est. Labor Hrs', fmt(result.totalLaborHrs, 1) + ' hrs',
-                result.laborLow != null ? `Range: ${fmt(result.laborLow,1)} – ${fmt(result.laborHigh,1)} hrs` : '', '#a78bfa')
-            : ''}
-          ${result.laborHrsPerUnit != null
-            ? card('Labor Hrs / ' + (s.unit || 'Unit'), fmt(result.laborHrsPerUnit, 3),
-                `Labor R&sup2;=${Math.round((s.laborR2||0)*100)}%`, '#f472b6')
-            : ''}
-        </div>
-
-        <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
-          ${confBadge}
-          <span style="font-size:0.7rem;color:var(--muted)">${s.n} jobs &middot; ${fmt(s.minX,1)}–${fmt(s.maxX,1)} ${s.unit || 'units'} observed &middot; historical avg $${fmt(s.avgUC,2)}/${s.unit || 'unit'}</span>
-        </div>
-
-        <div style="padding:0.65rem 0.9rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:0.72rem;color:var(--muted);line-height:1.7">
-          <strong style="color:var(--fg)">Cost model:</strong>
-          ${s.usePowerLaw
-            ? `Power law &mdash; cost/unit = ${s.aPow?.toFixed(4)} &times; qty<sup>${s.bPow?.toFixed(4)}</sup> &nbsp;|&nbsp; R&sup2;=${Math.round(s.effectiveR2*100)}%`
-            : `Linear &mdash; cost/unit = ${s.slope?.toFixed(4)} &times; qty + ${s.interc?.toFixed(2)} &nbsp;|&nbsp; R&sup2;=${Math.round(s.effectiveR2*100)}%`}
-          ${(!s.laborTooFew && s.laborA != null)
-            ? `<br><strong style="color:var(--fg)">Labor model:</strong> Power law &mdash; hrs/unit = ${s.laborA?.toFixed(4)} &times; qty<sup>${s.laborB?.toFixed(4)}</sup> &nbsp;|&nbsp; R&sup2;=${Math.round((s.laborR2||0)*100)}%`
-            : ''}
-        </div>
-      ` : `
-        <div style="padding:2.5rem;text-align:center;color:var(--muted);font-size:0.82rem">
-          Select a sub code and enter a quantity above to see estimates.
-        </div>
-      `}
+      <div id="calc-results">${_calcComputeResult(s, qty)}</div>
     </div>`;
 }
+
+function _calcRefreshResults() {
+  const resEl = document.getElementById('calc-results');
+  if (!resEl) return;
+  const selKey = window._calcSelectedKey || (_soeStats[0] && _soeStats[0].key);
+  const s = _soeStats.find(x => x.key === selKey) || _soeStats[0];
+  if (!s) return;
+  resEl.innerHTML = _calcComputeResult(s, window._calcQty || '');
+}
+
 
 function renderProductionRateView(projId) {
   const p = getProj(projId);
