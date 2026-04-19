@@ -41,7 +41,8 @@ module.exports = async (req, res) => {
       // Show app_data keys that relate to trucking (for diagnostics)
       const rows = await sql`
         SELECT key,
-               jsonb_array_length(CASE WHEN jsonb_typeof(value) = 'array' THEN value ELSE 'null'::jsonb END) AS arr_len,
+               CASE WHEN jsonb_typeof(value) = 'array' THEN jsonb_array_length(value) ELSE NULL END AS arr_len,
+               jsonb_typeof(value) AS val_type,
                updated_at
         FROM app_data
         WHERE key LIKE '%truck_division%' OR key LIKE '%fct_lists%'
@@ -50,6 +51,7 @@ module.exports = async (req, res) => {
       appDataKeys = rows.map(r => ({
         key: r.key,
         arrLen: r.arr_len,
+        valType: r.val_type,
         updatedAt: r.updated_at,
       }));
     } catch (err) {

@@ -98,8 +98,15 @@ module.exports = async (req, res) => {
         sql`SELECT value FROM app_data WHERE key = 'fct_truck_division_lists'`,
       ]);
 
-      const rawE = blobE[0]?.value ?? blobELegacy[0]?.value;
-      const rawL = blobL[0]?.value ?? blobLLegacy[0]?.value;
+      // Prefer whichever key has actual entries; an empty scoped blob should
+      // not shadow real data in the legacy unscoped key.
+      const scopedEntries  = Array.isArray(blobE[0]?.value) ? blobE[0].value : null;
+      const legacyEntries  = Array.isArray(blobELegacy[0]?.value) ? blobELegacy[0].value : null;
+      const rawE = (scopedEntries && scopedEntries.length > 0) ? scopedEntries : (legacyEntries || scopedEntries || []);
+
+      const scopedLists = (blobL[0]?.value && typeof blobL[0].value === 'object') ? blobL[0].value : null;
+      const legacyLists = (blobLLegacy[0]?.value && typeof blobLLegacy[0].value === 'object') ? blobLLegacy[0].value : null;
+      const rawL = scopedLists || legacyLists;
 
       const entries = Array.isArray(rawE) ? rawE : [];
       const lists   = (rawL && typeof rawL === 'object')
