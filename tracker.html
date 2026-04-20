@@ -4779,6 +4779,17 @@ let _invBreakdownOpen = false;
    CRM — People
 ═══════════════════════════════════════════ */
 let crmPeople = [];
+let _crmPeopleFilter  = {};
+let _crmCompanyFilter = {};
+let _crmOppFilter     = {};
+
+function _crmApplyFilter(rows, filter) {
+  const active = Object.entries(filter).filter(([, v]) => v.trim());
+  if (!active.length) return rows;
+  return rows.filter(row =>
+    active.every(([f, v]) => String(row[f] || '').toLowerCase().includes(v.trim().toLowerCase()))
+  );
+}
 
 async function loadCrmPeople() {
   const saved = await apiGet('fct_crm_people');
@@ -4875,17 +4886,29 @@ function renderCrmPeopleTab() {
   const root = document.getElementById('crm-people-root');
   if (!root) return;
 
-  const th = label =>
-    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+  const thS = `padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
                text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
-               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
-
+               border-bottom:1px solid var(--border);background:var(--surface2)`;
+  const th = label => `<th style="${thS}">${label}</th>`;
+  const fi = f => {
+    const v = _crmPeopleFilter[f] || '';
+    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
+      <input type="text" value="${esc(v)}" data-crm-pf="${f}" placeholder="…"
+        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
+               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
+               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
+    </th>`;
+  };
   const td = (content, minW = '') =>
     `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
                vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
 
-  const rows = crmPeople.length
-    ? crmPeople.map(p => `<tr>
+  const visible    = _crmApplyFilter(crmPeople, _crmPeopleFilter);
+  const isFiltered = visible.length !== crmPeople.length;
+  const anyFilter  = Object.values(_crmPeopleFilter).some(v => v);
+
+  const rows = visible.length
+    ? visible.map(p => `<tr>
         ${td(_crmTagSel(p))}
         ${td(_crmInp(p, 'name',         'Name'),        '130px')}
         ${td(_crmInp(p, 'company',      'Company'),     '120px')}
@@ -4905,13 +4928,14 @@ function renderCrmPeopleTab() {
         </td>
       </tr>`).join('')
     : `<tr><td colspan="15" style="padding:2.5rem;text-align:center;color:var(--muted)">
-         No contacts yet — click <strong style="color:var(--text)">+ Add Person</strong> to start.
+         ${isFiltered ? 'No contacts match the current filters.' : 'No contacts yet — click <strong style="color:var(--text)">+ Add Person</strong> to start.'}
        </td></tr>`;
 
   root.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
       <span style="font-size:0.82rem;color:var(--muted)">
-        ${crmPeople.length} contact${crmPeople.length !== 1 ? 's' : ''}
+        ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmPeople.length} contact${crmPeople.length !== 1 ? 's' : ''}
+        ${anyFilter ? `<button onclick="_crmClearFilter('people')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
       <div style="display:flex;gap:0.5rem;align-items:center">
         <button class="btn" onclick="_crmTriggerUpload('people')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
@@ -4920,13 +4944,22 @@ function renderCrmPeopleTab() {
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
       <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
-        <thead><tr>
-          ${th('Tag')}${th('Name')}${th('Company')}${th('Work Email')}
-          ${th('Title')}${th('Contact Type')}${th('Work Phone')}${th('Work Website')}
-          ${th('Address')}${th('City')}${th('State')}${th('Zip')}
-          ${th('LinkedIn')}${th('Description')}
-          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
-        </tr></thead>
+        <thead>
+          <tr>
+            ${th('Tag')}${th('Name')}${th('Company')}${th('Work Email')}
+            ${th('Title')}${th('Contact Type')}${th('Work Phone')}${th('Work Website')}
+            ${th('Address')}${th('City')}${th('State')}${th('Zip')}
+            ${th('LinkedIn')}${th('Description')}
+            <th style="${thS};width:30px"></th>
+          </tr>
+          <tr>
+            ${fi('tag')}${fi('name')}${fi('company')}${fi('work_email')}
+            ${fi('title')}${fi('contact_type')}${fi('work_phone')}${fi('work_website')}
+            ${fi('address')}${fi('city')}${fi('state')}${fi('zip')}
+            ${fi('linkedin')}${fi('description')}
+            <th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>
+          </tr>
+        </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -4969,17 +5002,29 @@ function renderCrmCompaniesTab() {
   const root = document.getElementById('crm-companies-root');
   if (!root) return;
 
-  const th = label =>
-    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+  const thS = `padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
                text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
-               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
-
+               border-bottom:1px solid var(--border);background:var(--surface2)`;
+  const th = label => `<th style="${thS}">${label}</th>`;
+  const fi = f => {
+    const v = _crmCompanyFilter[f] || '';
+    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
+      <input type="text" value="${esc(v)}" data-crm-cf="${f}" placeholder="…"
+        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
+               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
+               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
+    </th>`;
+  };
   const td = (content, minW = '') =>
     `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
                vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
 
-  const rows = crmCompanies.length
-    ? crmCompanies.map(c => `<tr>
+  const visible    = _crmApplyFilter(crmCompanies, _crmCompanyFilter);
+  const isFiltered = visible.length !== crmCompanies.length;
+  const anyFilter  = Object.values(_crmCompanyFilter).some(v => v);
+
+  const rows = visible.length
+    ? visible.map(c => `<tr>
         ${td(_crmTagSel(c))}
         ${td(_crmInp(c, 'company_name',  'Company Name'),  '150px')}
         ${td(_crmInp(c, 'contact_type',  'Type'),          '110px')}
@@ -4997,13 +5042,14 @@ function renderCrmCompaniesTab() {
         </td>
       </tr>`).join('')
     : `<tr><td colspan="13" style="padding:2.5rem;text-align:center;color:var(--muted)">
-         No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.
+         ${isFiltered ? 'No companies match the current filters.' : 'No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.'}
        </td></tr>`;
 
   root.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
       <span style="font-size:0.82rem;color:var(--muted)">
-        ${crmCompanies.length} compan${crmCompanies.length !== 1 ? 'ies' : 'y'}
+        ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmCompanies.length} compan${crmCompanies.length !== 1 ? 'ies' : 'y'}
+        ${anyFilter ? `<button onclick="_crmClearFilter('companies')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
       <div style="display:flex;gap:0.5rem;align-items:center">
         <button class="btn" onclick="_crmTriggerUpload('companies')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
@@ -5012,12 +5058,20 @@ function renderCrmCompaniesTab() {
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
       <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
-        <thead><tr>
-          ${th('Tag')}${th('Company Name')}${th('Contact Type')}${th('Work Phone')}
-          ${th('Email Domain')}${th('Work Website')}${th('Address')}${th('City')}
-          ${th('State')}${th('Zip')}${th('Field Type')}${th('Field Size')}
-          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
-        </tr></thead>
+        <thead>
+          <tr>
+            ${th('Tag')}${th('Company Name')}${th('Contact Type')}${th('Work Phone')}
+            ${th('Email Domain')}${th('Work Website')}${th('Address')}${th('City')}
+            ${th('State')}${th('Zip')}${th('Field Type')}${th('Field Size')}
+            <th style="${thS};width:30px"></th>
+          </tr>
+          <tr>
+            ${fi('tag')}${fi('company_name')}${fi('contact_type')}${fi('work_phone')}
+            ${fi('email_domain')}${fi('work_website')}${fi('address')}${fi('city')}
+            ${fi('state')}${fi('zip')}${fi('field_type')}${fi('field_size')}
+            <th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>
+          </tr>
+        </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -5101,11 +5155,19 @@ function renderCrmOpportunitiesTab() {
   const root = document.getElementById('crm-opportunities-root');
   if (!root) return;
 
-  const th = label =>
-    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+  const thS = `padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
                text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
-               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
-
+               border-bottom:1px solid var(--border);background:var(--surface2)`;
+  const th = label => `<th style="${thS}">${label}</th>`;
+  const fi = f => {
+    const v = _crmOppFilter[f] || '';
+    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
+      <input type="text" value="${esc(v)}" data-crm-of="${f}" placeholder="…"
+        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
+               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
+               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
+    </th>`;
+  };
   const td = (content, minW = '') =>
     `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
                vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
@@ -5122,8 +5184,12 @@ function renderCrmOpportunitiesTab() {
       style="background:transparent;border:none;color:var(--text);
              font-size:0.8rem;outline:none;padding:0.15rem 0;cursor:pointer">`;
 
-  const rows = crmOpportunities.length
-    ? crmOpportunities.map(o => `<tr>
+  const visible    = _crmApplyFilter(crmOpportunities, _crmOppFilter);
+  const isFiltered = visible.length !== crmOpportunities.length;
+  const anyFilter  = Object.values(_crmOppFilter).some(v => v);
+
+  const rows = visible.length
+    ? visible.map(o => `<tr>
         ${td(_crmTagSel(o))}
         ${td(_crmInp(o, 'name',         'Opportunity name'),  '150px')}
         ${td(_crmInp(o, 'company',      'Company'),           '120px')}
@@ -5151,13 +5217,14 @@ function renderCrmOpportunitiesTab() {
         </td>
       </tr>`).join('')
     : `<tr><td colspan="14" style="padding:2.5rem;text-align:center;color:var(--muted)">
-         No opportunities yet — click <strong style="color:var(--text)">+ Add Opportunity</strong> to start.
+         ${isFiltered ? 'No opportunities match the current filters.' : 'No opportunities yet — click <strong style="color:var(--text)">+ Add Opportunity</strong> to start.'}
        </td></tr>`;
 
   root.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
       <span style="font-size:0.82rem;color:var(--muted)">
-        ${crmOpportunities.length} opportunit${crmOpportunities.length !== 1 ? 'ies' : 'y'}
+        ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmOpportunities.length} opportunit${crmOpportunities.length !== 1 ? 'ies' : 'y'}
+        ${anyFilter ? `<button onclick="_crmClearFilter('opportunities')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
       <div style="display:flex;gap:0.5rem;align-items:center">
         <button class="btn" onclick="_crmTriggerUpload('opportunities')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
@@ -5166,12 +5233,20 @@ function renderCrmOpportunitiesTab() {
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
       <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
-        <thead><tr>
-          ${th('Tag')}${th('Name')}${th('Company')}${th('Stage')}${th('Value')}
-          ${th('Close Date')}${th('Win %')}${th('Status')}${th('Loss Reason')}
-          ${th('Priority')}${th('Source')}${th('Description')}
-          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
-        </tr></thead>
+        <thead>
+          <tr>
+            ${th('Tag')}${th('Name')}${th('Company')}${th('Stage')}${th('Value')}
+            ${th('Close Date')}${th('Win %')}${th('Status')}${th('Loss Reason')}
+            ${th('Priority')}${th('Source')}${th('Description')}
+            <th style="${thS};width:30px"></th>
+          </tr>
+          <tr>
+            ${fi('tag')}${fi('name')}${fi('company')}${fi('stage')}${fi('value')}
+            ${fi('close_date')}${fi('win_pct')}${fi('status')}${fi('loss_reason')}
+            ${fi('priority')}${fi('source')}${fi('description')}
+            <th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>
+          </tr>
+        </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -8261,16 +8336,33 @@ document.getElementById('inventory-root').addEventListener('change', e => {
   saveInventoryEntries();
 });
 
+function _crmClearFilter(type) {
+  if (type === 'people')        { _crmPeopleFilter  = {}; renderCrmPeopleTab(); }
+  else if (type === 'companies'){ _crmCompanyFilter = {}; renderCrmCompaniesTab(); }
+  else                          { _crmOppFilter     = {}; renderCrmOpportunitiesTab(); }
+}
+
+function _crmHandleFilterInput(el, filterObj, renderFn, rootId) {
+  const f = el.dataset.crmPf || el.dataset.crmCf || el.dataset.crmOf;
+  if (!f) return false;
+  filterObj[f] = el.value;
+  renderFn();
+  // Restore focus + cursor after re-render
+  const restored = document.querySelector(`#${rootId} [data-crm-pf="${f}"],[data-crm-cf="${f}"],[data-crm-of="${f}"]`);
+  if (restored) { const l = restored.value.length; restored.focus(); restored.setSelectionRange(l, l); }
+  return true;
+}
+
 /* ── CRM People events ── */
 document.getElementById('crm-people-root').addEventListener('input', e => {
   const el = e.target;
+  if (_crmHandleFilterInput(el, _crmPeopleFilter, renderCrmPeopleTab, 'crm-people-root')) return;
   const id = el.dataset.crmId, field = el.dataset.crmField;
   if (!id || !field) return;
   const person = crmPeople.find(p => p.id === id);
   if (!person) return;
   person[field] = el.value;
 
-  // Live-update ↗ icon for link fields
   const LINK_FIELDS = new Set(['work_email', 'work_website', 'linkedin']);
   if (LINK_FIELDS.has(field)) {
     const val = el.value.trim();
@@ -8292,8 +8384,6 @@ document.getElementById('crm-people-root').addEventListener('change', e => {
   const person = crmPeople.find(p => p.id === id);
   if (!person) return;
   person[field] = el.value;
-
-  // Live-update tag pill color
   if (field === 'tag') {
     const c = _CRM_TAG_COLORS[el.value];
     el.style.background = c ? c.bg    : 'var(--surface2)';
@@ -8310,6 +8400,7 @@ document.getElementById('crm-people-root').addEventListener('click', e => {
 /* ── CRM Companies events ── */
 document.getElementById('crm-companies-root').addEventListener('input', e => {
   const el = e.target;
+  if (_crmHandleFilterInput(el, _crmCompanyFilter, renderCrmCompaniesTab, 'crm-companies-root')) return;
   const id = el.dataset.crmId, field = el.dataset.crmField;
   if (!id || !field) return;
   const co = crmCompanies.find(c => c.id === id);
@@ -8334,7 +8425,6 @@ document.getElementById('crm-companies-root').addEventListener('change', e => {
   const co = crmCompanies.find(c => c.id === id);
   if (!co) return;
   co[field] = el.value;
-
   if (field === 'tag') {
     const c = _CRM_TAG_COLORS[el.value];
     el.style.background = c ? c.bg    : 'var(--surface2)';
@@ -8358,6 +8448,7 @@ const _CRM_COLOR_MAPS = {
 
 document.getElementById('crm-opportunities-root').addEventListener('input', e => {
   const el = e.target;
+  if (_crmHandleFilterInput(el, _crmOppFilter, renderCrmOpportunitiesTab, 'crm-opportunities-root')) return;
   const id = el.dataset.crmId, field = el.dataset.crmField;
   if (!id || !field) return;
   const opp = crmOpportunities.find(o => o.id === id);
