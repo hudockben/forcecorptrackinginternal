@@ -10,8 +10,7 @@
 
     body {
       min-height: 100vh;
-      display: flex;
-      background: #060b14;
+      background: #04090f;
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
       color: #e2e8f0;
       overflow: hidden;
@@ -24,295 +23,244 @@
       pointer-events: none;
     }
 
-    /* ── Split layout ── */
     .page {
       position: relative;
       z-index: 1;
       display: flex;
-      width: 100%;
+      align-items: center;
+      justify-content: space-between;
       min-height: 100vh;
+      padding: 2rem 5vw;
+      gap: 2rem;
     }
 
-    /* ── Left brand panel ── */
-    .brand-panel {
+    /* ── Left: bare text branding ── */
+    .brand {
       flex: 1;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      padding: 3rem 4rem 3rem 5rem;
       min-width: 0;
+      padding-left: clamp(0rem, 2vw, 2rem);
+      user-select: none;
     }
 
-    .brand-mark {
+    .brand-kicker {
       display: flex;
       align-items: center;
-      gap: 0.65rem;
-      margin-bottom: 2.5rem;
+      gap: 0.6rem;
+      margin-bottom: 1.5rem;
     }
 
-    .brand-mark svg {
+    .brand-kicker-line {
       width: 28px;
-      height: 28px;
-      flex-shrink: 0;
-    }
-
-    .brand-mark-name {
-      font-size: 0.68rem;
-      font-weight: 700;
-      letter-spacing: 0.22em;
-      text-transform: uppercase;
-      color: #22c55e;
-    }
-
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.45rem;
-      background: rgba(34, 197, 94, 0.08);
-      border: 1px solid rgba(34, 197, 94, 0.22);
-      border-radius: 100px;
-      padding: 0.3rem 0.85rem;
-      font-size: 0.6rem;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: #22c55e;
-      margin-bottom: 1.75rem;
-      width: fit-content;
-    }
-
-    .status-dot {
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
+      height: 1.5px;
       background: #22c55e;
-      flex-shrink: 0;
-      animation: statusPulse 2.4s ease-in-out infinite;
+      border-radius: 2px;
     }
 
-    @keyframes statusPulse {
-      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
-      50% { opacity: 0.6; box-shadow: 0 0 0 4px rgba(34,197,94,0); }
+    .brand-kicker-text {
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.26em;
+      text-transform: uppercase;
+      color: #22c55e;
     }
 
-    .brand-headline {
-      font-size: clamp(2.1rem, 3.4vw, 3.1rem);
-      font-weight: 800;
-      letter-spacing: -0.03em;
-      line-height: 1.1;
-      margin-bottom: 1.25rem;
-      background: linear-gradient(140deg, #f1f5f9 20%, #94a3b8 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+    .brand-wordmark {
+      font-size: clamp(2.8rem, 4.8vw, 5.5rem);
+      font-weight: 900;
+      letter-spacing: -0.045em;
+      line-height: 0.88;
+      color: #f1f5f9;
+      margin-bottom: 1.5rem;
     }
 
-    .brand-sub {
-      font-size: 0.88rem;
-      color: #475569;
-      line-height: 1.7;
-      max-width: 350px;
+    .brand-wordmark em {
+      font-style: normal;
+      color: #22c55e;
+    }
+
+    .brand-desc {
+      font-size: 0.84rem;
+      color: #334155;
+      line-height: 1.65;
+      max-width: 310px;
       margin-bottom: 2.75rem;
     }
 
-    .brand-stats {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
+    .brand-metrics {
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+    }
+
+    .brand-metric {
+      display: flex;
+      align-items: center;
       gap: 0.75rem;
-      max-width: 340px;
-      margin-bottom: 2.5rem;
+      font-size: 0.75rem;
+      color: #1e293b;
     }
 
-    .stat-card {
-      background: rgba(255, 255, 255, 0.025);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 8px;
-      padding: 0.9rem 1rem;
-      transition: border-color 0.2s, background 0.2s;
+    .brand-metric-dot {
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #22c55e;
+      opacity: 0.45;
+      flex-shrink: 0;
     }
 
-    .stat-card:hover {
-      background: rgba(34, 197, 94, 0.04);
-      border-color: rgba(34, 197, 94, 0.15);
-    }
-
-    .stat-value {
-      font-size: 1.1rem;
-      font-weight: 700;
-      color: #22c55e;
-      letter-spacing: -0.01em;
-      margin-bottom: 0.2rem;
-    }
-
-    .stat-label {
-      font-size: 0.62rem;
-      color: #334155;
-      letter-spacing: 0.06em;
+    .online-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.6rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
       text-transform: uppercase;
+      color: #22c55e;
+      margin-top: 3rem;
     }
 
-    .brand-features {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 0.6rem;
+    .online-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #22c55e;
+      animation: glow 2.2s ease-in-out infinite;
     }
 
-    .brand-features li {
-      display: flex;
-      align-items: center;
-      gap: 0.7rem;
-      font-size: 0.78rem;
-      color: #475569;
+    @keyframes glow {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.55); opacity: 1; }
+      50%       { box-shadow: 0 0 0 5px rgba(34,197,94,0); opacity: 0.65; }
     }
 
-    .feat-icon {
-      width: 20px;
-      height: 20px;
-      background: rgba(34, 197, 94, 0.08);
-      border: 1px solid rgba(34, 197, 94, 0.15);
-      border-radius: 5px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    /* ── Right: floating card ── */
+    .card {
+      width: 430px;
       flex-shrink: 0;
-    }
-
-    .feat-icon svg {
-      width: 11px;
-      height: 11px;
-    }
-
-    /* ── Right form panel ── */
-    .form-panel {
-      width: 480px;
-      flex-shrink: 0;
-      background: rgba(6, 11, 22, 0.88);
-      border-left: 1px solid rgba(34, 197, 94, 0.1);
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      padding: 3.5rem 3.25rem;
+      background: rgba(4, 9, 15, 0.78);
       backdrop-filter: blur(40px);
       -webkit-backdrop-filter: blur(40px);
-      box-shadow: -24px 0 80px rgba(0, 0, 0, 0.5), inset 1px 0 0 rgba(34, 197, 94, 0.05);
+      border: 1px solid rgba(34, 197, 94, 0.13);
+      border-radius: 18px;
+      padding: 3rem 2.75rem 2.5rem;
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,0.025),
+        0 32px 80px rgba(0,0,0,0.65),
+        inset 0 1px 0 rgba(34,197,94,0.07);
       position: relative;
       overflow: hidden;
     }
 
-    .form-panel::before {
+    /* Top accent bar */
+    .card::before {
       content: '';
       position: absolute;
-      top: -120px;
-      right: -80px;
-      width: 320px;
-      height: 320px;
-      background: radial-gradient(circle, rgba(34, 197, 94, 0.05) 0%, transparent 70%);
+      top: 0; left: 10%; right: 10%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(34,197,94,0.55), transparent);
+    }
+
+    /* Corner accent */
+    .card::after {
+      content: '';
+      position: absolute;
+      bottom: -60px; right: -60px;
+      width: 180px; height: 180px;
+      background: radial-gradient(circle, rgba(34,197,94,0.045) 0%, transparent 70%);
       pointer-events: none;
     }
 
-    .form-panel::after {
-      content: '';
-      position: absolute;
-      bottom: -80px;
-      left: -60px;
-      width: 240px;
-      height: 240px;
-      background: radial-gradient(circle, rgba(139, 92, 246, 0.04) 0%, transparent 70%);
-      pointer-events: none;
+    .card-inner { position: relative; z-index: 1; }
+
+    .card-header {
+      margin-bottom: 2.25rem;
     }
 
-    .form-inner {
-      position: relative;
-      z-index: 1;
-    }
-
-    .form-logo {
+    .card-logo {
       display: flex;
       align-items: center;
-      gap: 0.65rem;
-      margin-bottom: 2.75rem;
+      gap: 0.55rem;
+      margin-bottom: 1.85rem;
     }
 
-    .form-logo svg {
-      width: 24px;
-      height: 24px;
-      flex-shrink: 0;
+    .card-logo-mark {
+      width: 30px;
+      height: 30px;
+      border-radius: 7px;
+      background: rgba(34,197,94,0.1);
+      border: 1px solid rgba(34,197,94,0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
-    .form-logo-name {
-      font-size: 0.65rem;
+    .card-logo-mark svg {
+      width: 15px;
+      height: 15px;
+    }
+
+    .card-logo-name {
+      font-size: 0.62rem;
       font-weight: 700;
       letter-spacing: 0.22em;
       text-transform: uppercase;
       color: #22c55e;
     }
 
-    .form-eyebrow {
-      font-size: 0.58rem;
-      letter-spacing: 0.2em;
-      text-transform: uppercase;
-      color: #22c55e;
-      margin-bottom: 0.5rem;
-      opacity: 0.75;
-    }
-
-    .form-heading {
-      font-size: 1.75rem;
+    .card-title {
+      font-size: 1.65rem;
       font-weight: 700;
       color: #f1f5f9;
-      margin-bottom: 0.45rem;
       letter-spacing: -0.025em;
+      margin-bottom: 0.35rem;
     }
 
-    .form-subheading {
-      font-size: 0.82rem;
+    .card-subtitle {
+      font-size: 0.8rem;
       color: #334155;
-      margin-bottom: 2.5rem;
-      line-height: 1.5;
     }
 
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: 0.45rem;
-      margin-bottom: 1.1rem;
-    }
+    /* ── Fields ── */
+    .field { margin-bottom: 1rem; }
 
-    label {
-      font-size: 0.63rem;
+    .field label {
+      display: block;
+      font-size: 0.6rem;
       font-weight: 600;
-      letter-spacing: 0.1em;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
       color: #475569;
+      margin-bottom: 0.42rem;
     }
 
-    input {
+    .field input {
       width: 100%;
       padding: 0.78rem 0.95rem;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 6px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 8px;
       color: #f1f5f9;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       font-family: inherit;
-      transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
       outline: none;
+      transition: border-color 0.18s, background 0.18s, box-shadow 0.18s;
     }
 
-    input:focus {
-      border-color: rgba(34, 197, 94, 0.55);
-      background: rgba(34, 197, 94, 0.04);
-      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.07), 0 0 24px rgba(34, 197, 94, 0.05);
+    .field input:focus {
+      border-color: rgba(34,197,94,0.5);
+      background: rgba(34,197,94,0.035);
+      box-shadow: 0 0 0 3px rgba(34,197,94,0.08);
     }
 
-    input::placeholder { color: rgba(255, 255, 255, 0.18); }
+    .field input::placeholder { color: rgba(255,255,255,0.16); }
 
     .pw-wrap { position: relative; }
     .pw-wrap input { padding-right: 2.75rem; }
 
     .pw-toggle {
       position: absolute;
-      right: 0.7rem;
+      right: 0.75rem;
       top: 50%;
       transform: translateY(-50%);
       background: none;
@@ -325,35 +273,35 @@
       transition: color 0.15s;
     }
     .pw-toggle:hover { color: #22c55e; }
-    .pw-toggle svg { width: 16px; height: 16px; pointer-events: none; }
+    .pw-toggle svg { width: 15px; height: 15px; pointer-events: none; }
 
     .error-msg {
       font-size: 0.75rem;
       color: #fca5a5;
-      background: rgba(239, 68, 68, 0.07);
-      border: 1px solid rgba(239, 68, 68, 0.18);
-      border-radius: 5px;
+      background: rgba(239,68,68,0.07);
+      border: 1px solid rgba(239,68,68,0.18);
+      border-radius: 6px;
       padding: 0.55rem 0.75rem;
       display: none;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.6rem;
     }
     .error-msg.visible { display: block; }
 
     .submit-btn {
       width: 100%;
-      padding: 0.84rem;
-      font-size: 0.72rem;
+      padding: 0.88rem;
+      margin-top: 0.5rem;
+      font-size: 0.7rem;
       font-weight: 700;
-      letter-spacing: 0.14em;
+      letter-spacing: 0.15em;
       text-transform: uppercase;
       color: #fff;
-      background: linear-gradient(135deg, #16a34a 0%, #166534 100%);
+      background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
       border: none;
-      border-radius: 6px;
+      border-radius: 8px;
       cursor: pointer;
       transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
-      margin-top: 0.75rem;
-      box-shadow: 0 4px 24px rgba(22, 163, 74, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+      box-shadow: 0 4px 20px rgba(22,163,74,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
       position: relative;
       overflow: hidden;
     }
@@ -362,67 +310,43 @@
       content: '';
       position: absolute;
       inset: 0;
-      background: linear-gradient(135deg, rgba(255,255,255,0.12) 0%, transparent 55%);
+      background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, transparent 55%);
       opacity: 0;
       transition: opacity 0.2s;
-      border-radius: inherit;
     }
 
     .submit-btn:hover:not(:disabled) {
       transform: translateY(-1px);
-      box-shadow: 0 8px 32px rgba(22, 163, 74, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+      box-shadow: 0 8px 28px rgba(22,163,74,0.55), inset 0 1px 0 rgba(255,255,255,0.1);
     }
     .submit-btn:hover:not(:disabled)::after { opacity: 1; }
-    .submit-btn:active:not(:disabled) { transform: translateY(0); }
+    .submit-btn:active:not(:disabled) { transform: none; }
     .submit-btn:disabled { opacity: 0.28; cursor: not-allowed; }
 
-    .form-divider {
-      display: flex;
-      align-items: center;
-      gap: 0.85rem;
-      margin: 2rem 0 0;
-    }
-
-    .form-divider-line {
-      flex: 1;
-      height: 1px;
-      background: rgba(255, 255, 255, 0.05);
-    }
-
-    .form-footer {
+    .card-footer {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 0.6rem;
+      margin-top: 1.75rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid rgba(255,255,255,0.04);
+      font-size: 0.58rem;
       color: #1e293b;
       letter-spacing: 0.04em;
     }
 
-    .secure-badge {
+    .lock-badge {
       display: flex;
       align-items: center;
-      gap: 0.35rem;
-      color: #1e293b;
+      gap: 0.3rem;
     }
-
-    .secure-badge svg {
-      width: 11px;
-      height: 11px;
-      opacity: 0.6;
-    }
+    .lock-badge svg { width: 10px; height: 10px; opacity: 0.5; }
 
     /* ── Mobile ── */
-    @media (max-width: 680px) {
-      .page { flex-direction: column; }
-      .brand-panel { display: none; }
-      .form-panel {
-        width: 100%;
-        border-left: none;
-        padding: 2.5rem 1.75rem;
-        justify-content: center;
-        min-height: 100vh;
-        background: #060b14;
-      }
+    @media (max-width: 720px) {
+      .page { flex-direction: column; justify-content: center; padding: 2rem 1.25rem; }
+      .brand { display: none; }
+      .card { width: 100%; border-radius: 14px; }
     }
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
@@ -432,110 +356,50 @@
 
   <div class="page">
 
-    <!-- ── Left: Brand ── -->
-    <div class="brand-panel">
-      <div class="brand-mark">
-        <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="20" cy="20" r="16" stroke="#22c55e" stroke-width="1.5" opacity="0.6"/>
-          <circle cx="20" cy="20" r="5" fill="#22c55e"/>
-          <line x1="20" y1="4"  x2="20" y2="15" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-          <line x1="20" y1="25" x2="20" y2="36" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-          <line x1="4"  y1="20" x2="15" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-          <line x1="25" y1="20" x2="36" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-        </svg>
-        <span class="brand-mark-name">DataWatch</span>
+    <!-- Left: bare text branding -->
+    <div class="brand">
+      <div class="brand-kicker">
+        <div class="brand-kicker-line"></div>
+        <span class="brand-kicker-text">Workforce Intelligence</span>
       </div>
 
-      <div class="status-badge">
-        <span class="status-dot"></span>
+      <div class="brand-wordmark">Data<br><em>Watch</em></div>
+
+      <p class="brand-desc">
+        Real-time cost tracking and project analytics for modern construction operations.
+      </p>
+
+      <div class="brand-metrics">
+        <div class="brand-metric"><div class="brand-metric-dot"></div>Daily cost entry across all projects</div>
+        <div class="brand-metric"><div class="brand-metric-dot"></div>Budget vs. actual variance analysis</div>
+        <div class="brand-metric"><div class="brand-metric-dot"></div>AI-powered scheduling &amp; insights</div>
+        <div class="brand-metric"><div class="brand-metric-dot"></div>Purchase orders &amp; EAC forecasting</div>
+        <div class="brand-metric"><div class="brand-metric-dot"></div>CRM pipeline &amp; field operations</div>
+      </div>
+
+      <div class="online-badge">
+        <span class="online-dot"></span>
         All systems operational
       </div>
-
-      <div class="brand-headline">Track. Analyze.<br>Optimize.</div>
-      <div class="brand-sub">Real-time workforce cost tracking and analysis for modern construction operations.</div>
-
-      <div class="brand-stats">
-        <div class="stat-card">
-          <div class="stat-value">Live</div>
-          <div class="stat-label">Cost Tracking</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">AI</div>
-          <div class="stat-label">Powered Insights</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">EAC</div>
-          <div class="stat-label">Forecasting</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">Multi</div>
-          <div class="stat-label">Project Support</div>
-        </div>
-      </div>
-
-      <ul class="brand-features">
-        <li>
-          <div class="feat-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-            </svg>
-          </div>
-          Daily cost entry across all projects
-        </li>
-        <li>
-          <div class="feat-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
-            </svg>
-          </div>
-          Budget vs. actual variance analysis
-        </li>
-        <li>
-          <div class="feat-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
-            </svg>
-          </div>
-          AI-powered scheduling &amp; conflict resolution
-        </li>
-        <li>
-          <div class="feat-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
-            </svg>
-          </div>
-          Purchase order management
-        </li>
-        <li>
-          <div class="feat-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-            </svg>
-          </div>
-          Projection planner &amp; EAC forecasting
-        </li>
-      </ul>
     </div>
 
-    <!-- ── Right: Form ── -->
-    <div class="form-panel">
-      <div class="form-inner">
+    <!-- Right: floating card -->
+    <div class="card">
+      <div class="card-inner">
 
-        <div class="form-logo">
-          <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="20" cy="20" r="16" stroke="#22c55e" stroke-width="1.5" opacity="0.6"/>
-            <circle cx="20" cy="20" r="5" fill="#22c55e"/>
-            <line x1="20" y1="4"  x2="20" y2="15" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-            <line x1="20" y1="25" x2="20" y2="36" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-            <line x1="4"  y1="20" x2="15" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-            <line x1="25" y1="20" x2="36" y2="20" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-          </svg>
-          <span class="form-logo-name">DataWatch</span>
+        <div class="card-header">
+          <div class="card-logo">
+            <div class="card-logo-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+            </div>
+            <span class="card-logo-name">DataWatch</span>
+          </div>
+
+          <div class="card-title">Welcome back</div>
+          <div class="card-subtitle">Sign in to your workspace</div>
         </div>
-
-        <div class="form-eyebrow">Workforce Intelligence Platform</div>
-        <div class="form-heading">Welcome back</div>
-        <div class="form-subheading">Sign in to your workspace</div>
 
         <form id="loginForm" novalidate>
           <div class="field">
@@ -556,14 +420,11 @@
               <input id="password" type="password" placeholder="••••••••"
                 autocomplete="current-password" required />
               <button type="button" class="pw-toggle" id="pwToggle" aria-label="Toggle password visibility">
-                <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg id="eyeOpen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M1 12S5 5 12 5s11 7 11 7-4 7-11 7S1 12 1 12z"/>
                   <circle cx="12" cy="12" r="3"/>
                 </svg>
-                <svg id="eyeClosed" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                  style="display:none">
+                <svg id="eyeClosed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
                   <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94"/>
                   <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
                   <line x1="1" y1="1" x2="23" y2="23"/>
@@ -573,17 +434,12 @@
           </div>
 
           <div class="error-msg" id="errorMsg"></div>
-
           <button type="submit" class="submit-btn" id="submitBtn">Sign In</button>
         </form>
 
-        <div class="form-divider">
-          <div class="form-divider-line"></div>
-        </div>
-
-        <div class="form-footer">
+        <div class="card-footer">
           <span>© DataWatch · All rights reserved</span>
-          <div class="secure-badge">
+          <div class="lock-badge">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
@@ -597,256 +453,167 @@
 
   </div>
 
+  <!-- ── Radar sweep background ────────────────────────────────────────── -->
   <script>
-    // ── PCB animated background ────────────────────────────────────────────
     (function () {
       const canvas = document.getElementById('bgCanvas');
       const ctx    = canvas.getContext('2d');
-      let W, H, cx, cy;
-
-      const COLS = [
-        [34,  197, 94 ],
-        [0,   220, 255],
-        [139, 92,  246],
-        [251, 191, 36 ],
-      ];
-
-      const CW   = 140;
-      const CH   = 140;
-      const PINS = 5;
-      const STUB = 12;
-
-      let traces = [];
-      let pulses = [];
-      let frame  = 0;
-
-      function buildTraces() {
-        traces = [];
-        const L = cx - CW/2, R = cx + CW/2;
-        const T = cy - CH/2, B = cy + CH/2;
-        const hgap = CW / (PINS + 1);
-        const vgap = CH / (PINS + 1);
-
-        function add(pts, ci) {
-          const lens = [0];
-          let total = 0;
-          for (let i = 1; i < pts.length; i++) {
-            const dx = pts[i][0] - pts[i-1][0], dy = pts[i][1] - pts[i-1][1];
-            total += Math.hypot(dx, dy);
-            lens.push(total);
-          }
-          traces.push({ pts, col: COLS[ci % 4], lens, total });
-        }
-
-        for (let i = 0; i < PINS; i++) {
-          const px = L + hgap * (i + 1);
-          const ky = T - STUB - 18 - i * 14;
-          const ex = px + (i - 2) * 72;
-          add([[px, T - STUB], [px, ky], [ex, ky], [ex, -10]], i % 4);
-        }
-        for (let i = 0; i < PINS; i++) {
-          const px = L + hgap * (i + 1);
-          const ky = B + STUB + 18 + i * 14;
-          const ex = px - (i - 2) * 72;
-          add([[px, B + STUB], [px, ky], [ex, ky], [ex, H + 10]], (i + 1) % 4);
-        }
-        for (let i = 0; i < PINS; i++) {
-          const py = T + vgap * (i + 1);
-          const kx = L - STUB - 18 - i * 14;
-          const ey = py + (i - 2) * 62;
-          add([[L - STUB, py], [kx, py], [kx, ey], [-10, ey]], (i + 2) % 4);
-        }
-        for (let i = 0; i < PINS; i++) {
-          const py = T + vgap * (i + 1);
-          const kx = R + STUB + 18 + i * 14;
-          const ey = py - (i - 2) * 62;
-          add([[R + STUB, py], [kx, py], [kx, ey], [W + 10, ey]], (i + 3) % 4);
-        }
-      }
-
-      function ptOn(tr, t) {
-        const d = t * tr.total;
-        for (let i = 1; i < tr.pts.length; i++) {
-          if (tr.lens[i] >= d) {
-            const seg = tr.lens[i] - tr.lens[i-1];
-            const f   = seg > 0 ? (d - tr.lens[i-1]) / seg : 0;
-            const a   = tr.pts[i-1], b = tr.pts[i];
-            return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
-          }
-        }
-        return [...tr.pts[tr.pts.length - 1]];
-      }
-
-      function spawn() {
-        if (pulses.length >= 16) return;
-        const ti  = Math.floor(Math.random() * traces.length);
-        const dir = Math.random() > 0.5 ? 1 : -1;
-        pulses.push({ ti, t: dir > 0 ? 0 : 1, speed: 0.002 + Math.random() * 0.003, dir });
-      }
+      let W, H, cx, cy, angle = 0, frame = 0;
+      const blips = [];
+      const RINGS = 5;
+      const TRAIL = Math.PI * 0.65; // sweep trail arc length
 
       function resize() {
-        W = canvas.width  = window.innerWidth;
-        H = canvas.height = window.innerHeight;
-        cx = W * 0.35;
-        cy = H / 2;
-        buildTraces();
-        pulses = [];
-        for (let i = 0; i < 14; i++) spawn();
+        W  = canvas.width  = window.innerWidth;
+        H  = canvas.height = window.innerHeight;
+        cx = W * 0.36;
+        cy = H * 0.5;
+      }
+
+      function maxR() { return Math.min(W * 0.38, H * 0.44); }
+
+      function spawnBlip() {
+        if (blips.length >= 18) return;
+        const R  = maxR();
+        const r  = R * (0.15 + Math.random() * 0.78);
+        const a  = Math.random() * Math.PI * 2;
+        blips.push({
+          x: cx + Math.cos(a) * r,
+          y: cy + Math.sin(a) * r,
+          age: 0,
+          life: 90 + Math.random() * 120,
+          size: 1.5 + Math.random() * 1.5,
+        });
       }
 
       function draw() {
         ctx.clearRect(0, 0, W, H);
         frame++;
+        const R = maxR();
 
-        const breathe = (Math.sin(frame * 0.022) + 1) / 2;
-        const L = cx - CW / 2, R = cx + CW / 2;
-        const T = cy - CH / 2, B = cy + CH / 2;
-        const hgap = CW / (PINS + 1);
-        const vgap = CH / (PINS + 1);
+        // Faint vignette
+        const vig = ctx.createRadialGradient(cx, cy, R * 0.1, cx, cy, R * 1.5);
+        vig.addColorStop(0, 'rgba(34,197,94,0.03)');
+        vig.addColorStop(1, 'rgba(0,0,0,0.0)');
+        ctx.fillStyle = vig;
+        ctx.fillRect(0, 0, W, H);
 
-        // Traces
-        for (const tr of traces) {
-          const [r, g, b] = tr.col;
-          ctx.strokeStyle = `rgba(${r},${g},${b},0.45)`;
-          ctx.lineWidth   = 1.5;
+        // Sweep trail (sector fill, fading)
+        const steps = 64;
+        for (let i = 0; i < steps; i++) {
+          const a1    = angle - TRAIL * (i / steps);
+          const a2    = angle - TRAIL * ((i + 1) / steps);
+          const alpha = (1 - i / steps) * 0.09;
           ctx.beginPath();
-          ctx.moveTo(tr.pts[0][0], tr.pts[0][1]);
-          for (let i = 1; i < tr.pts.length; i++) ctx.lineTo(tr.pts[i][0], tr.pts[i][1]);
+          ctx.moveTo(cx, cy);
+          ctx.arc(cx, cy, R, a1, a2, true);
+          ctx.closePath();
+          ctx.fillStyle = `rgba(34,197,94,${alpha.toFixed(3)})`;
+          ctx.fill();
+        }
+
+        // Ring lines
+        for (let i = 1; i <= RINGS; i++) {
+          const r = R * (i / RINGS);
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.strokeStyle = i === RINGS
+            ? 'rgba(34,197,94,0.18)'
+            : 'rgba(34,197,94,0.07)';
+          ctx.lineWidth = i === RINGS ? 1.5 : 0.8;
           ctx.stroke();
-          for (let i = 1; i < tr.pts.length - 1; i++) {
-            ctx.beginPath();
-            ctx.arc(tr.pts[i][0], tr.pts[i][1], 2.5, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(${r},${g},${b},0.65)`;
-            ctx.fill();
-          }
         }
 
-        // Chip ambient glow
-        const og = ctx.createRadialGradient(cx, cy, 10, cx, cy, CW * 0.85);
-        og.addColorStop(0, `rgba(34,197,94,${(0.12 + breathe * 0.1).toFixed(3)})`);
-        og.addColorStop(1, 'rgba(34,197,94,0)');
-        ctx.fillStyle = og;
-        ctx.fillRect(L - CW, T - CH, CW * 3, CH * 3);
-
-        // Chip body
-        ctx.fillStyle = 'rgba(8,14,28,0.95)';
-        ctx.fillRect(L, T, CW, CH);
-
-        ctx.lineWidth   = 1.5;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.6 + breathe * 0.3).toFixed(3)})`;
-        ctx.strokeRect(L, T, CW, CH);
-        ctx.lineWidth   = 8;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.07 + breathe * 0.06).toFixed(3)})`;
-        ctx.strokeRect(L, T, CW, CH);
-
-        // Internal grid
-        const CELL = CW / 5;
-        ctx.lineWidth   = 0.7;
-        ctx.strokeStyle = `rgba(34,197,94,${(0.18 + breathe * 0.12).toFixed(3)})`;
-        for (let i = 1; i < 5; i++) {
-          ctx.beginPath(); ctx.moveTo(L + CELL * i, T + 5); ctx.lineTo(L + CELL * i, B - 5); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(L + 5, T + CELL * i); ctx.lineTo(R - 5, T + CELL * i); ctx.stroke();
+        // Cross hairs
+        ctx.setLineDash([4, 8]);
+        ctx.lineWidth = 0.8;
+        ctx.strokeStyle = 'rgba(34,197,94,0.09)';
+        for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+          ctx.stroke();
         }
-        for (let i = 1; i < 5; i++) {
-          for (let j = 1; j < 5; j++) {
-            ctx.beginPath();
-            ctx.arc(L + CELL * i, T + CELL * j, 1.5, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(34,197,94,${(0.4 + breathe * 0.3).toFixed(3)})`;
-            ctx.fill();
-          }
+        ctx.setLineDash([]);
+
+        // Range tick marks on outer ring
+        for (let i = 0; i < 36; i++) {
+          const a = (i / 36) * Math.PI * 2;
+          const inner = R - (i % 3 === 0 ? 8 : 4);
+          ctx.beginPath();
+          ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
+          ctx.lineTo(cx + Math.cos(a) * R,     cy + Math.sin(a) * R);
+          ctx.strokeStyle = 'rgba(34,197,94,0.2)';
+          ctx.lineWidth   = i % 9 === 0 ? 1.5 : 0.8;
+          ctx.stroke();
         }
 
-        // Processor core
+        // Sweep line
         ctx.beginPath();
-        ctx.arc(cx, cy, 18 + breathe * 3, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(34,197,94,${(0.5 + breathe * 0.35).toFixed(3)})`;
-        ctx.lineWidth   = 1.5;
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(angle) * R, cy + Math.sin(angle) * R);
+        const sweepGrad = ctx.createLinearGradient(cx, cy, cx + Math.cos(angle) * R, cy + Math.sin(angle) * R);
+        sweepGrad.addColorStop(0, 'rgba(34,197,94,0.0)');
+        sweepGrad.addColorStop(0.4, 'rgba(34,197,94,0.5)');
+        sweepGrad.addColorStop(1, 'rgba(34,197,94,0.9)');
+        ctx.strokeStyle = sweepGrad;
+        ctx.lineWidth   = 1.8;
         ctx.stroke();
+
+        // Sweep tip glow
         ctx.beginPath();
-        ctx.arc(cx, cy, 8, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(34,197,94,${(0.35 + breathe * 0.3).toFixed(3)})`;
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34,197,94,1)';
+        ctx.arc(cx + Math.cos(angle) * R, cy + Math.sin(angle) * R, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(34,197,94,0.7)';
         ctx.fill();
 
-        // Corner notch
+        // Center dot
         ctx.beginPath();
-        ctx.arc(L + 12, T + 12, 6, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(34,197,94,0.9)';
-        ctx.lineWidth   = 1.5;
-        ctx.stroke();
+        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(34,197,94,0.12)';
+        ctx.fill();
         ctx.beginPath();
-        ctx.arc(L + 12, T + 12, 2, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34,197,94,1)';
+        ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(34,197,94,0.9)';
         ctx.fill();
 
-        // Chip label
-        ctx.fillStyle = `rgba(34,197,94,${(0.5 + breathe * 0.25).toFixed(3)})`;
-        ctx.font      = '9px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('DW-1', cx, B - 8);
+        // Blips — spawn when sweep passes nearby
+        blips.forEach((b, i) => {
+          b.age++;
+          if (b.age > b.life) { blips.splice(i, 1); return; }
+          const t    = b.age / b.life;
+          const life = 1 - t;
+          const pulse = 0.4 + 0.6 * Math.sin(b.age * 0.18);
 
-        // Pin stubs
-        ctx.lineWidth   = 1.5;
-        ctx.strokeStyle = 'rgba(34,197,94,0.55)';
-        for (let i = 0; i < PINS; i++) {
-          const px = L + hgap * (i + 1);
-          const py = T + vgap * (i + 1);
-          ctx.beginPath(); ctx.moveTo(px, T); ctx.lineTo(px, T - STUB); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(px, B); ctx.lineTo(px, B + STUB); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(L, py); ctx.lineTo(L - STUB, py); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(R, py); ctx.lineTo(R + STUB, py); ctx.stroke();
-          for (const [nx, ny] of [[px, T-STUB], [px, B+STUB], [L-STUB, py], [R+STUB, py]]) {
-            ctx.beginPath();
-            ctx.arc(nx, ny, 2, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(34,197,94,0.8)';
-            ctx.fill();
-          }
-        }
-
-        // Light pulses
-        for (let i = pulses.length - 1; i >= 0; i--) {
-          const p = pulses[i];
-          p.t += p.speed * p.dir;
-          if (p.t < 0 || p.t > 1) { pulses.splice(i, 1); continue; }
-
-          const [px, py]  = ptOn(traces[p.ti], p.t);
-          const [r, g, b] = traces[p.ti].col;
-          const fade      = Math.sin(p.t * Math.PI);
-
-          const grd = ctx.createRadialGradient(px, py, 0, px, py, 14);
-          grd.addColorStop(0, `rgba(${r},${g},${b},${(fade * 0.55).toFixed(3)})`);
-          grd.addColorStop(1, `rgba(${r},${g},${b},0)`);
+          // Expanding ring
           ctx.beginPath();
-          ctx.arc(px, py, 14, 0, Math.PI * 2);
-          ctx.fillStyle = grd;
-          ctx.fill();
+          ctx.arc(b.x, b.y, b.size + t * 9, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(34,197,94,${(life * 0.45).toFixed(3)})`;
+          ctx.lineWidth   = 0.8;
+          ctx.stroke();
 
+          // Core dot
           ctx.beginPath();
-          ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${r},${g},${b},${(fade * 0.9).toFixed(3)})`;
+          ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(34,197,94,${(life * pulse).toFixed(3)})`;
           ctx.fill();
+        });
 
-          ctx.beginPath();
-          ctx.arc(px, py, 1.5, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(255,255,255,${(fade * 0.9).toFixed(3)})`;
-          ctx.fill();
-        }
+        // Spawn blips roughly when sweep passes (random)
+        if (frame % 40 === 0) spawnBlip();
 
-        if (frame % 50 === 0 && pulses.length < 16) spawn();
+        angle += 0.016;
         requestAnimationFrame(draw);
       }
 
       window.addEventListener('resize', resize);
       resize();
+      for (let i = 0; i < 10; i++) spawnBlip();
       draw();
     })();
   </script>
 
+  <!-- ── Auth logic (unchanged) ────────────────────────────────────────── -->
   <script>
-    // Redirect if already logged in with a non-expired token
     (function () {
       const token = localStorage.getItem('fct_token');
       if (!token) return;
@@ -855,7 +622,6 @@
         if (payload.exp && payload.exp * 1000 > Date.now()) {
           window.location.replace('divisions.html');
         } else {
-          // Token expired — clear stale data so login works cleanly
           localStorage.removeItem('fct_token');
           localStorage.removeItem('fct_user');
           localStorage.removeItem('fct_division');
@@ -870,16 +636,6 @@
     const form      = document.getElementById('loginForm');
     const errorMsg  = document.getElementById('errorMsg');
     const submitBtn = document.getElementById('submitBtn');
-
-    function showError(msg) {
-      errorMsg.textContent = msg;
-      errorMsg.classList.add('visible');
-    }
-
-    function clearError() {
-      errorMsg.classList.remove('visible');
-    }
-
     const pwToggle  = document.getElementById('pwToggle');
     const pwInput   = document.getElementById('password');
     const eyeOpen   = document.getElementById('eyeOpen');
@@ -887,10 +643,16 @@
 
     pwToggle.addEventListener('click', () => {
       const show = pwInput.type === 'password';
-      pwInput.type            = show ? 'text' : 'password';
-      eyeOpen.style.display   = show ? 'none' : '';
-      eyeClosed.style.display = show ? ''     : 'none';
+      pwInput.type            = show ? 'text'     : 'password';
+      eyeOpen.style.display   = show ? 'none'     : '';
+      eyeClosed.style.display = show ? ''         : 'none';
     });
+
+    function showError(msg) {
+      errorMsg.textContent = msg;
+      errorMsg.classList.add('visible');
+    }
+    function clearError() { errorMsg.classList.remove('visible'); }
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -916,7 +678,6 @@
         });
 
         const data = await res.json();
-
         if (!res.ok) {
           showError(data.error || 'Sign-in failed. Please try again.');
           return;
