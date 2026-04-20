@@ -5298,9 +5298,20 @@ function _crmShowUploadModal(type, file) {
       </div>
       ${total > 5 ? `<p style="font-size:0.75rem;color:var(--muted);margin:-0.25rem 0 0.5rem">Showing 5 of ${total} rows.</p>` : ''}`;
 
+    // Show which fields mapped and which didn't — helps debug header mismatches
+    const mappedHTML = `
+      <div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;font-size:0.75rem">
+        <span style="color:var(--muted);margin-right:0.4rem">Column map:</span>
+        ${fields.map(f => {
+          const found = headers.includes(f);
+          return `<span style="margin-right:0.35rem;color:${found ? '#4ade80' : '#f87171'}" title="${found ? 'mapped' : 'not found in CSV'}">${found ? '✓' : '✗'} ${f}</span>`;
+        }).join('')}
+      </div>`;
+
     const warningHTML = missing.length
-      ? `<div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:rgba(120,53,15,0.2);border:1px solid #b45309;border-radius:4px;font-size:0.78rem;color:#fbbf24">
-           Missing columns (will be blank): ${missing.map(f => `<code style="font-size:0.72rem;background:rgba(0,0,0,0.3);padding:0.1rem 0.3rem;border-radius:3px">${f}</code>`).join(' ')}
+      ? `<div style="margin-top:0.4rem;padding:0.5rem 0.75rem;background:rgba(120,53,15,0.2);border:1px solid #b45309;border-radius:4px;font-size:0.78rem;color:#fbbf24">
+           Not found in CSV (will be blank): ${missing.map(f => `<code style="font-size:0.72rem;background:rgba(0,0,0,0.3);padding:0.1rem 0.3rem;border-radius:3px">${f}</code>`).join(' ')}
+           <br><span style="font-size:0.72rem;opacity:0.8">Raw headers detected: ${headers.map(h => `<code style="background:rgba(0,0,0,0.3);padding:0.05rem 0.25rem;border-radius:2px">${esc(h)}</code>`).join(' ')}</span>
          </div>`
       : '';
 
@@ -5316,6 +5327,7 @@ function _crmShowUploadModal(type, file) {
           Found <strong style="color:var(--text)">${total}</strong> ${total === 1 ? noun : nounPlur} in
           <em>${esc(file.name)}</em>.
         </p>
+        ${mappedHTML}
         ${warningHTML}
         ${previewTable}
         ${existing ? `
