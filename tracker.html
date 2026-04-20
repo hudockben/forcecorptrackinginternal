@@ -5277,11 +5277,20 @@ function renderCrmDashboard() {
     s + (parseFloat(o.value) || 0) * (parseFloat(o.win_pct) || 0) / 100, 0);
   const winRate      = closedN ? Math.round(wonOpps.length / closedN * 100) : null;
 
-  // Stage breakdown
-  const stageData = _CRM_STAGES.filter(Boolean).map(s => {
-    const items = crmOpportunities.filter(o => o.stage === s);
-    return { s, count: items.length, value: items.reduce((sum, o) => sum + (parseFloat(o.value) || 0), 0) };
-  }).filter(d => d.count > 0);
+  // Stage breakdown — group by actual values in data, not just the predefined list
+  const _stageMap = {};
+  crmOpportunities.forEach(o => {
+    if (!o.stage) return;
+    if (!_stageMap[o.stage]) _stageMap[o.stage] = { count: 0, value: 0 };
+    _stageMap[o.stage].count++;
+    _stageMap[o.stage].value += parseFloat(o.value) || 0;
+  });
+  // Standard stages first (preserving funnel order), then any custom stage values
+  const stageData = [
+    ..._CRM_STAGES.filter(Boolean).filter(s => _stageMap[s]).map(s => ({ s, ..._stageMap[s] })),
+    ...Object.entries(_stageMap).filter(([s]) => !_CRM_STAGES.includes(s))
+      .sort((a, b) => b[1].value - a[1].value).map(([s, d]) => ({ s, ...d })),
+  ];
   const maxStageVal = Math.max(...stageData.map(d => d.value), 1);
 
   // Status & Priority
