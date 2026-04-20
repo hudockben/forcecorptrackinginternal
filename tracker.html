@@ -3310,6 +3310,7 @@ function crmSwitchTab(tab) {
     b.classList.toggle('active', b.dataset.crmTab === tab));
   document.querySelectorAll('.crm-sub-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'crm-panel-' + tab));
+  if (tab === 'dashboard')     renderCrmDashboard();
   if (tab === 'people')        renderCrmPeopleTab();
   if (tab === 'companies')     renderCrmCompaniesTab();
   if (tab === 'opportunities') renderCrmOpportunitiesTab();
@@ -4794,9 +4795,8 @@ function _crmApplyFilter(rows, filter) {
 async function loadCrmPeople() {
   const saved = await apiGet('fct_crm_people');
   crmPeople = Array.isArray(saved) ? saved : [];
-  if (document.getElementById('crm-panel-people')?.classList.contains('active')) {
-    renderCrmPeopleTab();
-  }
+  if (document.getElementById('crm-panel-people')?.classList.contains('active'))     renderCrmPeopleTab();
+  if (document.getElementById('crm-panel-dashboard')?.classList.contains('active'))  renderCrmDashboard();
 }
 
 function saveCrmPeople() { apiPut('fct_crm_people', crmPeople); }
@@ -4973,9 +4973,8 @@ let crmCompanies = [];
 async function loadCrmCompanies() {
   const saved = await apiGet('fct_crm_companies');
   crmCompanies = Array.isArray(saved) ? saved : [];
-  if (document.getElementById('crm-panel-companies')?.classList.contains('active')) {
-    renderCrmCompaniesTab();
-  }
+  if (document.getElementById('crm-panel-companies')?.classList.contains('active'))  renderCrmCompaniesTab();
+  if (document.getElementById('crm-panel-dashboard')?.classList.contains('active'))  renderCrmDashboard();
 }
 
 function saveCrmCompanies() { apiPut('fct_crm_companies', crmCompanies); }
@@ -5085,9 +5084,8 @@ let crmOpportunities = [];
 async function loadCrmOpportunities() {
   const saved = await apiGet('fct_crm_opportunities');
   crmOpportunities = Array.isArray(saved) ? saved : [];
-  if (document.getElementById('crm-panel-opportunities')?.classList.contains('active')) {
-    renderCrmOpportunitiesTab();
-  }
+  if (document.getElementById('crm-panel-opportunities')?.classList.contains('active')) renderCrmOpportunitiesTab();
+  if (document.getElementById('crm-panel-dashboard')?.classList.contains('active'))     renderCrmDashboard();
 }
 
 function saveCrmOpportunities() { apiPut('fct_crm_opportunities', crmOpportunities); }
@@ -5249,6 +5247,250 @@ function renderCrmOpportunitiesTab() {
         </thead>
         <tbody>${rows}</tbody>
       </table>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════════
+   CRM — Dashboard
+═══════════════════════════════════════════ */
+function renderCrmDashboard() {
+  const root = document.getElementById('crm-dashboard-root');
+  if (!root) return;
+
+  /* ── helpers ── */
+  const fmt$ = v => {
+    const n = parseFloat(v) || 0;
+    if (n >= 1_000_000) return '$' + (n / 1_000_000).toFixed(1) + 'M';
+    if (n >= 1_000)     return '$' + (n / 1_000).toFixed(1) + 'K';
+    return '$' + n.toLocaleString();
+  };
+
+  /* ── computations ── */
+  const openOpps  = crmOpportunities.filter(o => !o.status || o.status === 'Open' || o.status === 'On Hold');
+  const wonOpps   = crmOpportunities.filter(o => o.status === 'Won');
+  const lostOpps  = crmOpportunities.filter(o => o.status === 'Lost');
+  const closedN   = wonOpps.length + lostOpps.length;
+
+  const pipelineVal  = openOpps.reduce((s, o) => s + (parseFloat(o.value) || 0), 0);
+  const wonVal       = wonOpps.reduce((s,  o) => s + (parseFloat(o.value) || 0), 0);
+  const weightedVal  = openOpps.reduce((s, o) =>
+    s + (parseFloat(o.value) || 0) * (parseFloat(o.win_pct) || 0) / 100, 0);
+  const winRate      = closedN ? Math.round(wonOpps.length / closedN * 100) : null;
+
+  // Stage breakdown
+  const stageData = _CRM_STAGES.filter(Boolean).map(s => {
+    const items = crmOpportunities.filter(o => o.stage === s);
+    return { s, count: items.length, value: items.reduce((sum, o) => sum + (parseFloat(o.value) || 0), 0) };
+  }).filter(d => d.count > 0);
+  const maxStageVal = Math.max(...stageData.map(d => d.value), 1);
+
+  // Status & Priority
+  const statusData = _CRM_STATUSES.filter(Boolean).map(s => ({
+    s, count: crmOpportunities.filter(o => o.status === s).length
+  })).filter(d => d.count > 0);
+  const prioData = _CRM_PRIORITIES.filter(Boolean).map(p => ({
+    p, count: crmOpportunities.filter(o => o.priority === p).length
+  })).filter(d => d.count > 0);
+
+  // Top 6 opportunities by value
+  const topOpps = [...crmOpportunities]
+    .filter(o => parseFloat(o.value) > 0)
+    .sort((a, b) => (parseFloat(b.value) || 0) - (parseFloat(a.value) || 0))
+    .slice(0, 6);
+
+  // Upcoming / overdue closes
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const in60  = new Date(today); in60.setDate(today.getDate() + 60);
+  const overdue = [], upcoming = [];
+  crmOpportunities
+    .filter(o => o.close_date && o.status !== 'Won' && o.status !== 'Lost')
+    .forEach(o => {
+      const d = new Date(o.close_date);
+      if      (d < today) overdue.push({ ...o, closeD: d });
+      else if (d <= in60) upcoming.push({ ...o, closeD: d });
+    });
+  overdue.sort((a, b) => a.closeD - b.closeD);
+  upcoming.sort((a, b) => a.closeD - b.closeD);
+  const closeDates = [...overdue.slice(0, 3), ...upcoming.slice(0, 5)].slice(0, 7);
+
+  // People tag distribution
+  const tagDist = _CRM_TAG_OPTS.filter(Boolean).map(t => ({
+    t, count: crmPeople.filter(p => p.tag === t).length
+  })).filter(d => d.count > 0);
+  const maxTag = Math.max(...tagDist.map(d => d.count), 1);
+
+  // Opp source breakdown
+  const srcMap = {};
+  crmOpportunities.forEach(o => { if (o.source) srcMap[o.source] = (srcMap[o.source] || 0) + 1; });
+  const topSources = Object.entries(srcMap).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const maxSrc = Math.max(...topSources.map(([, c]) => c), 1);
+
+  /* ── component builders ── */
+  const kpiCard = (label, value, sub = '', color = 'var(--text)') => `
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:1rem 1.2rem">
+      <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.4rem">${label}</div>
+      <div style="font-size:1.55rem;font-weight:700;color:${color};line-height:1.1">${value}</div>
+      ${sub ? `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.3rem">${sub}</div>` : ''}
+    </div>`;
+
+  const panel = (title, body, extra = '') => `
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:1.1rem 1.2rem${extra}">
+      <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.85rem">${title}</div>
+      ${body}
+    </div>`;
+
+  const miniBar = (w, bg) =>
+    `<div style="flex:1;background:var(--bg);border-radius:3px;height:5px">
+       <div style="width:${w}%;height:100%;background:${bg};border-radius:3px"></div>
+     </div>`;
+
+  /* ── KPI row ── */
+  const hotLeads    = crmPeople.filter(p => p.tag === 'Hot').length;
+  const hotCompanies= crmCompanies.filter(c => c.tag === 'Hot').length;
+  const winColor    = winRate === null ? 'var(--muted)' : winRate >= 50 ? '#4ade80' : '#f87171';
+  const kpiHTML = `
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0.7rem;margin-bottom:0.85rem">
+      ${kpiCard('Contacts',       crmPeople.length,       hotLeads     ? hotLeads     + ' hot leads' : '')}
+      ${kpiCard('Companies',      crmCompanies.length,    hotCompanies ? hotCompanies + ' hot'       : '')}
+      ${kpiCard('Open Pipeline',  fmt$(pipelineVal),      openOpps.length + ' open deals', '#60a5fa')}
+      ${kpiCard('Weighted Value', fmt$(weightedVal),      'probability-adjusted',          '#a78bfa')}
+      ${kpiCard('Won Revenue',    fmt$(wonVal),           wonOpps.length + ' deals won',   '#4ade80')}
+      ${kpiCard('Win Rate',       winRate !== null ? winRate + '%' : '—', closedN + ' closed deals', winColor)}
+    </div>`;
+
+  /* ── pipeline by stage ── */
+  const stageBody = stageData.length
+    ? stageData.map(d => {
+        const c = _CRM_STAGE_COLORS[d.s];
+        return `
+          <div style="margin-bottom:0.65rem">
+            <div style="display:flex;justify-content:space-between;margin-bottom:0.2rem">
+              <span style="font-size:0.78rem;color:var(--text)">${esc(d.s)}</span>
+              <span style="font-size:0.72rem;color:var(--muted)">${d.count} · ${fmt$(d.value)}</span>
+            </div>
+            <div style="background:var(--bg);border-radius:3px;height:6px">
+              <div style="width:${Math.round(d.value / maxStageVal * 100)}%;height:100%;background:${c ? c.bg : '#3b82f6'};border-radius:3px"></div>
+            </div>
+          </div>`;
+      }).join('')
+    : `<p style="color:var(--muted);font-size:0.8rem;margin:0">No stage data yet.</p>`;
+
+  /* ── status list ── */
+  const statusBody = statusData.length
+    ? statusData.map(d => {
+        const c = _CRM_STATUS_COLORS[d.s];
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.28rem 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <span style="background:${c ? c.bg : 'var(--surface1)'};color:${c ? c.color : 'var(--muted)'};
+                       padding:0.12rem 0.55rem;border-radius:10px;font-size:0.7rem;font-weight:600">${esc(d.s)}</span>
+          <span style="font-size:0.82rem;font-weight:600;color:var(--text)">${d.count}</span>
+        </div>`;
+      }).join('')
+    : `<p style="color:var(--muted);font-size:0.8rem;margin:0">No data.</p>`;
+
+  /* ── priority list ── */
+  const prioBody = prioData.length
+    ? prioData.map(d => {
+        const c = _CRM_PRIORITY_COLORS[d.p];
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.28rem 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <span style="background:${c ? c.bg : 'var(--surface1)'};color:${c ? c.color : 'var(--muted)'};
+                       padding:0.12rem 0.55rem;border-radius:10px;font-size:0.7rem;font-weight:600">${esc(d.p)}</span>
+          <span style="font-size:0.82rem;font-weight:600;color:var(--text)">${d.count}</span>
+        </div>`;
+      }).join('')
+    : `<p style="color:var(--muted);font-size:0.8rem;margin:0">No data.</p>`;
+
+  /* ── top opportunities table ── */
+  const thS = 'padding:0.25rem 0.5rem;text-align:left;font-size:0.6rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);border-bottom:1px solid var(--border)';
+  const tdS = 'padding:0.35rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);font-size:0.78rem';
+  const topOppsBody = topOpps.length
+    ? `<table style="width:100%;border-collapse:collapse">
+        <thead><tr>
+          <th style="${thS}">Name</th><th style="${thS}">Company</th>
+          <th style="${thS}">Stage</th><th style="${thS};text-align:right">Value</th>
+          <th style="${thS};text-align:right">Win %</th><th style="${thS}">Status</th>
+        </tr></thead>
+        <tbody>${topOpps.map(o => {
+          const sc = _CRM_STAGE_COLORS[o.stage];
+          const stc = _CRM_STATUS_COLORS[o.status];
+          return `<tr>
+            <td style="${tdS};color:var(--text);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.name || '—')}</td>
+            <td style="${tdS};color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.company || '—')}</td>
+            <td style="${tdS}">${o.stage
+              ? `<span style="background:${sc ? sc.bg : 'var(--surface1)'};color:${sc ? sc.color : 'var(--muted)'};padding:0.1rem 0.45rem;border-radius:10px;font-size:0.67rem;font-weight:600;white-space:nowrap">${esc(o.stage)}</span>`
+              : `<span style="color:var(--muted)">—</span>`}
+            </td>
+            <td style="${tdS};text-align:right;color:#4ade80;font-weight:600">${fmt$(o.value)}</td>
+            <td style="${tdS};text-align:right;color:var(--muted)">${o.win_pct ? o.win_pct + '%' : '—'}</td>
+            <td style="${tdS}">${o.status
+              ? `<span style="background:${stc ? stc.bg : 'var(--surface1)'};color:${stc ? stc.color : 'var(--muted)'};padding:0.1rem 0.45rem;border-radius:10px;font-size:0.67rem;font-weight:600">${esc(o.status)}</span>`
+              : ''}
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`
+    : `<p style="color:var(--muted);font-size:0.8rem;margin:0">No opportunities with a value yet.</p>`;
+
+  /* ── upcoming / overdue closes ── */
+  const closesBody = closeDates.length
+    ? closeDates.map(o => {
+        const diffDays = Math.round((o.closeD - today) / 86_400_000);
+        const isOverdue = diffDays < 0;
+        const dateStr   = o.closeD.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const urgColor  = isOverdue ? '#f87171' : diffDays <= 7 ? '#fb923c' : '#facc15';
+        return `<div style="display:flex;align-items:center;gap:0.6rem;padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <div style="text-align:center;min-width:38px;flex-shrink:0">
+            <div style="font-size:0.67rem;font-weight:700;color:${urgColor}">${isOverdue ? 'LATE' : dateStr}</div>
+            <div style="font-size:0.6rem;color:${urgColor}">${isOverdue ? Math.abs(diffDays) + 'd ago' : diffDays + 'd'}</div>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:0.78rem;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.name || '—')}</div>
+            <div style="font-size:0.7rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.company || '—')}</div>
+          </div>
+          <div style="font-size:0.78rem;color:#4ade80;font-weight:600;flex-shrink:0">${fmt$(o.value)}</div>
+        </div>`;
+      }).join('')
+    : `<p style="color:var(--muted);font-size:0.8rem;margin:0">No closes due in the next 60 days.</p>`;
+
+  /* ── people tag distribution ── */
+  const tagBody = tagDist.length
+    ? tagDist.map(d => {
+        const c = _CRM_TAG_COLORS[d.t];
+        return `<div style="display:flex;align-items:center;gap:0.55rem;margin-bottom:0.45rem">
+          <span style="background:${c ? c.bg : 'var(--surface1)'};color:${c ? c.color : 'var(--muted)'};
+                       padding:0.1rem 0.5rem;border-radius:10px;font-size:0.68rem;font-weight:600;min-width:68px;text-align:center">${d.t}</span>
+          ${miniBar(Math.round(d.count / maxTag * 100), c ? c.bg : '#3b82f6')}
+          <span style="font-size:0.75rem;font-weight:600;color:var(--text);min-width:18px;text-align:right">${d.count}</span>
+        </div>`;
+      }).join('')
+    : `<p style="color:var(--muted);font-size:0.8rem;margin:0">No tagged contacts.</p>`;
+
+  /* ── opportunity sources ── */
+  const srcBody = topSources.length
+    ? topSources.map(([src, cnt]) => `
+        <div style="display:flex;align-items:center;gap:0.55rem;margin-bottom:0.4rem">
+          <span style="font-size:0.76rem;color:var(--text);min-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(src)}</span>
+          ${miniBar(Math.round(cnt / maxSrc * 100), '#3b82f6')}
+          <span style="font-size:0.74rem;color:var(--muted);min-width:18px;text-align:right">${cnt}</span>
+        </div>`).join('')
+    : `<p style="color:var(--muted);font-size:0.8rem;margin:0">No source data yet.</p>`;
+
+  /* ── assemble ── */
+  root.innerHTML = `
+    ${kpiHTML}
+    <div style="display:grid;grid-template-columns:1fr 220px;gap:0.7rem;margin-bottom:0.7rem">
+      ${panel('Pipeline by Stage', stageBody)}
+      <div style="display:grid;gap:0.7rem;align-content:start">
+        ${panel('By Status',   statusBody)}
+        ${panel('By Priority', prioBody)}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 230px 200px;gap:0.7rem">
+      ${panel('Top Opportunities by Value', topOppsBody)}
+      ${panel('Upcoming &amp; Overdue Closes', closesBody)}
+      <div style="display:grid;gap:0.7rem;align-content:start">
+        ${panel('People by Tag',  tagBody)}
+        ${panel('Opp. Sources',   srcBody)}
+      </div>
     </div>`;
 }
 
