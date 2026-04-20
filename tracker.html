@@ -5300,10 +5300,21 @@ function _crmShowUploadModal(type, file) {
         </h3>
         <p style="margin:0 0 0.6rem;font-size:0.8rem;color:var(--muted)">
           Found <strong style="color:var(--text)">${total}</strong> ${total === 1 ? noun : nounPlur} in
-          <em>${esc(file.name)}</em>${existing ? ` — will append to ${existing} existing ${existing === 1 ? noun : nounPlur}` : ''}.
+          <em>${esc(file.name)}</em>.
         </p>
         ${warningHTML}
         ${previewTable}
+        ${existing ? `
+        <div style="display:flex;gap:0.5rem;margin-bottom:0.85rem;padding:0.6rem 0.75rem;background:var(--surface2);border:1px solid var(--border);border-radius:5px">
+          <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text)">
+            <input type="radio" name="crm-import-mode" value="append" checked style="accent-color:var(--blue)">
+            Append to existing <span style="color:var(--muted)">(${existing} ${existing === 1 ? noun : nounPlur} + ${total} new)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text);margin-left:1.25rem">
+            <input type="radio" name="crm-import-mode" value="replace" style="accent-color:#ef4444">
+            Replace all <span style="color:#f87171">(deletes the ${existing} existing ${existing === 1 ? noun : nounPlur})</span>
+          </label>
+        </div>` : ''}
         <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.75rem">
           <button onclick="_crmDownloadTemplate('${type}')"
             style="background:none;border:none;color:var(--blue);font-size:0.78rem;cursor:pointer;padding:0;text-decoration:underline">
@@ -5325,20 +5336,22 @@ function _crmShowUploadModal(type, file) {
 }
 
 function _crmCommitUpload(type) {
+  const modeEl = document.querySelector('#crm-upload-modal input[name="crm-import-mode"]:checked');
+  const replace = modeEl?.value === 'replace';
   document.getElementById('crm-upload-modal')?.remove();
   const rows = _crmUploadPending;
   _crmUploadPending = null;
   if (!rows || !rows.length) return;
   if (type === 'people') {
-    crmPeople.push(...rows);
+    crmPeople = replace ? rows : [...crmPeople, ...rows];
     saveCrmPeople();
     renderCrmPeopleTab();
   } else if (type === 'companies') {
-    crmCompanies.push(...rows);
+    crmCompanies = replace ? rows : [...crmCompanies, ...rows];
     saveCrmCompanies();
     renderCrmCompaniesTab();
   } else {
-    crmOpportunities.push(...rows);
+    crmOpportunities = replace ? rows : [...crmOpportunities, ...rows];
     saveCrmOpportunities();
     renderCrmOpportunitiesTab();
   }
