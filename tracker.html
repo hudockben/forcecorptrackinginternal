@@ -19514,7 +19514,7 @@ function _luciusIsExcludedSport(sport) {
   if (!sport) return false;
   const s = sport.toLowerCase();
   // Remove court-only or non-turf-field sports
-  return /basketball|tennis|volleyball|skateboard|skate|badminton|squash|racquet|table_tennis|bowls|boules|petanque|cycling|bmx|shooting|archery|gymnastics|martial|swimming|ice_|roller/.test(s)
+  return /basketball|tennis|volleyball|pickleball|skateboard|skate|badminton|squash|racquet|table_tennis|bowls|boules|petanque|cycling|bmx|shooting|archery|gymnastics|martial|swimming|ice_|roller/.test(s)
     && !/american_football|soccer|football|baseball|softball|multi|dog|lacrosse|rugby/.test(s);
 }
 
