@@ -5229,13 +5229,35 @@ function _crmShowUploadModal(type, file) {
     const raw = _crmParseCSV(ev.target.result);
     if (raw.length < 2) { alert('CSV must have a header row and at least one data row.'); return; }
 
-    const headers = raw[0].map(h => h.toLowerCase().replace(/\s+/g, '_'));
+    // Normalize: lowercase, collapse any non-alphanumeric run to _, strip leading/trailing _
+    // Also handles UTF-8 BOM on first cell and common aliases (e.g. "Win %" → win_pct)
+    const _normHdr = h => h.replace(/^\uFEFF/, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const _HDR_ALIAS = { win: 'win_pct', win_pct: 'win_pct', win_percent: 'win_pct', win_percentage: 'win_pct',
+      close_date: 'close_date', closing_date: 'close_date', closedate: 'close_date', expected_close: 'close_date',
+      email: 'work_email', phone: 'work_phone', website: 'work_website' };
+    const headers = raw[0].map(h => { const n = _normHdr(h); return _HDR_ALIAS[n] || n; });
     const fields  = _CRM_UPLOAD_FIELDS[type];
     const dataRows = raw.slice(1).filter(r => r.some(c => c.trim()));
 
+    // Date fields that need ISO (YYYY-MM-DD) format for <input type="date">
+    const DATE_FIELDS = new Set(['close_date']);
+    const _toISODate = v => {
+      if (!v) return '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v; // already ISO
+      const m = v.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if (m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+      return v;
+    };
+
     _crmUploadPending = dataRows.map(row => {
       const obj = { id: uid() };
-      fields.forEach(f => { obj[f] = row[headers.indexOf(f)] !== undefined ? row[headers.indexOf(f)] : ''; });
+      fields.forEach(f => {
+        const idx = headers.indexOf(f);
+        let val = idx !== -1 ? (row[idx] || '') : '';
+        if (DATE_FIELDS.has(f)) val = _toISODate(val);
+        obj[f] = val;
+      });
       return obj;
     });
 
