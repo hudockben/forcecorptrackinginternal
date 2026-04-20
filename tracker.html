@@ -4779,6 +4779,17 @@ let _invBreakdownOpen = false;
    CRM — People
 ═══════════════════════════════════════════ */
 let crmPeople = [];
+let _crmPeopleFilter  = {};
+let _crmCompanyFilter = {};
+let _crmOppFilter     = {};
+
+function _crmApplyFilter(rows, filter) {
+  const active = Object.entries(filter).filter(([, v]) => v.trim());
+  if (!active.length) return rows;
+  return rows.filter(row =>
+    active.every(([f, v]) => String(row[f] || '').toLowerCase().includes(v.trim().toLowerCase()))
+  );
+}
 
 async function loadCrmPeople() {
   const saved = await apiGet('fct_crm_people');
@@ -4828,7 +4839,10 @@ const _CRM_US_STATES   = [
 function _crmTagSel(p) {
   const c = _CRM_TAG_COLORS[p.tag];
   const bg = c ? c.bg : 'var(--surface2)', fg = c ? c.color : 'var(--muted)';
-  const opts = _CRM_TAG_OPTS.map(t =>
+  // Include any imported value not in the standard list so it renders instead of blank
+  const tagOpts = (p.tag && !_CRM_TAG_OPTS.includes(p.tag))
+    ? [..._CRM_TAG_OPTS, p.tag] : _CRM_TAG_OPTS;
+  const opts = tagOpts.map(t =>
     `<option value="${t}" ${p.tag === t ? 'selected' : ''}>${t || '— tag —'}</option>`).join('');
   return `<select data-crm-id="${p.id}" data-crm-field="tag"
     style="background:${bg};color:${fg};border:none;border-radius:12px;padding:0.2rem 0.55rem;
@@ -4872,17 +4886,29 @@ function renderCrmPeopleTab() {
   const root = document.getElementById('crm-people-root');
   if (!root) return;
 
-  const th = label =>
-    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+  const thS = `padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
                text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
-               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
-
+               border-bottom:1px solid var(--border);background:var(--surface2)`;
+  const th = label => `<th style="${thS}">${label}</th>`;
+  const fi = f => {
+    const v = _crmPeopleFilter[f] || '';
+    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
+      <input type="text" value="${esc(v)}" data-crm-pf="${f}" placeholder="…"
+        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
+               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
+               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
+    </th>`;
+  };
   const td = (content, minW = '') =>
     `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
                vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
 
-  const rows = crmPeople.length
-    ? crmPeople.map(p => `<tr>
+  const visible    = _crmApplyFilter(crmPeople, _crmPeopleFilter);
+  const isFiltered = visible.length !== crmPeople.length;
+  const anyFilter  = Object.values(_crmPeopleFilter).some(v => v);
+
+  const rows = visible.length
+    ? visible.map(p => `<tr>
         ${td(_crmTagSel(p))}
         ${td(_crmInp(p, 'name',         'Name'),        '130px')}
         ${td(_crmInp(p, 'company',      'Company'),     '120px')}
@@ -4902,25 +4928,38 @@ function renderCrmPeopleTab() {
         </td>
       </tr>`).join('')
     : `<tr><td colspan="15" style="padding:2.5rem;text-align:center;color:var(--muted)">
-         No contacts yet — click <strong style="color:var(--text)">+ Add Person</strong> to start.
+         ${isFiltered ? 'No contacts match the current filters.' : 'No contacts yet — click <strong style="color:var(--text)">+ Add Person</strong> to start.'}
        </td></tr>`;
 
   root.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
       <span style="font-size:0.82rem;color:var(--muted)">
-        ${crmPeople.length} contact${crmPeople.length !== 1 ? 's' : ''}
+        ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmPeople.length} contact${crmPeople.length !== 1 ? 's' : ''}
+        ${anyFilter ? `<button onclick="_crmClearFilter('people')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
-      <button class="btn btn-green" onclick="addCrmPerson()">+ Add Person</button>
+      <div style="display:flex;gap:0.5rem;align-items:center">
+        <button class="btn" onclick="_crmTriggerUpload('people')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
+        <button class="btn btn-green" onclick="addCrmPerson()">+ Add Person</button>
+      </div>
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
       <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
-        <thead><tr>
-          ${th('Tag')}${th('Name')}${th('Company')}${th('Work Email')}
-          ${th('Title')}${th('Contact Type')}${th('Work Phone')}${th('Work Website')}
-          ${th('Address')}${th('City')}${th('State')}${th('Zip')}
-          ${th('LinkedIn')}${th('Description')}
-          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
-        </tr></thead>
+        <thead>
+          <tr>
+            ${th('Tag')}${th('Name')}${th('Company')}${th('Work Email')}
+            ${th('Title')}${th('Contact Type')}${th('Work Phone')}${th('Work Website')}
+            ${th('Address')}${th('City')}${th('State')}${th('Zip')}
+            ${th('LinkedIn')}${th('Description')}
+            <th style="${thS};width:30px"></th>
+          </tr>
+          <tr>
+            ${fi('tag')}${fi('name')}${fi('company')}${fi('work_email')}
+            ${fi('title')}${fi('contact_type')}${fi('work_phone')}${fi('work_website')}
+            ${fi('address')}${fi('city')}${fi('state')}${fi('zip')}
+            ${fi('linkedin')}${fi('description')}
+            <th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>
+          </tr>
+        </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -4963,17 +5002,29 @@ function renderCrmCompaniesTab() {
   const root = document.getElementById('crm-companies-root');
   if (!root) return;
 
-  const th = label =>
-    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+  const thS = `padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
                text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
-               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
-
+               border-bottom:1px solid var(--border);background:var(--surface2)`;
+  const th = label => `<th style="${thS}">${label}</th>`;
+  const fi = f => {
+    const v = _crmCompanyFilter[f] || '';
+    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
+      <input type="text" value="${esc(v)}" data-crm-cf="${f}" placeholder="…"
+        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
+               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
+               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
+    </th>`;
+  };
   const td = (content, minW = '') =>
     `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
                vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
 
-  const rows = crmCompanies.length
-    ? crmCompanies.map(c => `<tr>
+  const visible    = _crmApplyFilter(crmCompanies, _crmCompanyFilter);
+  const isFiltered = visible.length !== crmCompanies.length;
+  const anyFilter  = Object.values(_crmCompanyFilter).some(v => v);
+
+  const rows = visible.length
+    ? visible.map(c => `<tr>
         ${td(_crmTagSel(c))}
         ${td(_crmInp(c, 'company_name',  'Company Name'),  '150px')}
         ${td(_crmInp(c, 'contact_type',  'Type'),          '110px')}
@@ -4991,24 +5042,36 @@ function renderCrmCompaniesTab() {
         </td>
       </tr>`).join('')
     : `<tr><td colspan="13" style="padding:2.5rem;text-align:center;color:var(--muted)">
-         No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.
+         ${isFiltered ? 'No companies match the current filters.' : 'No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.'}
        </td></tr>`;
 
   root.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
       <span style="font-size:0.82rem;color:var(--muted)">
-        ${crmCompanies.length} compan${crmCompanies.length !== 1 ? 'ies' : 'y'}
+        ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmCompanies.length} compan${crmCompanies.length !== 1 ? 'ies' : 'y'}
+        ${anyFilter ? `<button onclick="_crmClearFilter('companies')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
-      <button class="btn btn-green" onclick="addCrmCompany()">+ Add Company</button>
+      <div style="display:flex;gap:0.5rem;align-items:center">
+        <button class="btn" onclick="_crmTriggerUpload('companies')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
+        <button class="btn btn-green" onclick="addCrmCompany()">+ Add Company</button>
+      </div>
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
       <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
-        <thead><tr>
-          ${th('Tag')}${th('Company Name')}${th('Contact Type')}${th('Work Phone')}
-          ${th('Email Domain')}${th('Work Website')}${th('Address')}${th('City')}
-          ${th('State')}${th('Zip')}${th('Field Type')}${th('Field Size')}
-          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
-        </tr></thead>
+        <thead>
+          <tr>
+            ${th('Tag')}${th('Company Name')}${th('Contact Type')}${th('Work Phone')}
+            ${th('Email Domain')}${th('Work Website')}${th('Address')}${th('City')}
+            ${th('State')}${th('Zip')}${th('Field Type')}${th('Field Size')}
+            <th style="${thS};width:30px"></th>
+          </tr>
+          <tr>
+            ${fi('tag')}${fi('company_name')}${fi('contact_type')}${fi('work_phone')}
+            ${fi('email_domain')}${fi('work_website')}${fi('address')}${fi('city')}
+            ${fi('state')}${fi('zip')}${fi('field_type')}${fi('field_size')}
+            <th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>
+          </tr>
+        </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -5077,7 +5140,9 @@ const _CRM_PRIORITY_COLORS = {
 function _crmPillSel(o, field, opts, colorMap, minW = '110px') {
   const c = colorMap[o[field]];
   const bg = c ? c.bg : 'var(--surface2)', fg = c ? c.color : 'var(--muted)';
-  const optHTML = opts.map(v =>
+  // Include any imported value not in the standard list so it renders instead of blank
+  const allOpts = (o[field] && !opts.includes(o[field])) ? [...opts, o[field]] : opts;
+  const optHTML = allOpts.map(v =>
     `<option value="${v}" ${o[field] === v ? 'selected' : ''}>${v || '—'}</option>`).join('');
   return `<select data-crm-id="${o.id}" data-crm-field="${field}"
     data-crm-colormap="${field}"
@@ -5090,11 +5155,19 @@ function renderCrmOpportunitiesTab() {
   const root = document.getElementById('crm-opportunities-root');
   if (!root) return;
 
-  const th = label =>
-    `<th style="padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+  const thS = `padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
                text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
-               border-bottom:2px solid var(--border);background:var(--surface2)">${label}</th>`;
-
+               border-bottom:1px solid var(--border);background:var(--surface2)`;
+  const th = label => `<th style="${thS}">${label}</th>`;
+  const fi = f => {
+    const v = _crmOppFilter[f] || '';
+    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
+      <input type="text" value="${esc(v)}" data-crm-of="${f}" placeholder="…"
+        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
+               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
+               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
+    </th>`;
+  };
   const td = (content, minW = '') =>
     `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
                vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
@@ -5111,8 +5184,12 @@ function renderCrmOpportunitiesTab() {
       style="background:transparent;border:none;color:var(--text);
              font-size:0.8rem;outline:none;padding:0.15rem 0;cursor:pointer">`;
 
-  const rows = crmOpportunities.length
-    ? crmOpportunities.map(o => `<tr>
+  const visible    = _crmApplyFilter(crmOpportunities, _crmOppFilter);
+  const isFiltered = visible.length !== crmOpportunities.length;
+  const anyFilter  = Object.values(_crmOppFilter).some(v => v);
+
+  const rows = visible.length
+    ? visible.map(o => `<tr>
         ${td(_crmTagSel(o))}
         ${td(_crmInp(o, 'name',         'Opportunity name'),  '150px')}
         ${td(_crmInp(o, 'company',      'Company'),           '120px')}
@@ -5140,27 +5217,251 @@ function renderCrmOpportunitiesTab() {
         </td>
       </tr>`).join('')
     : `<tr><td colspan="14" style="padding:2.5rem;text-align:center;color:var(--muted)">
-         No opportunities yet — click <strong style="color:var(--text)">+ Add Opportunity</strong> to start.
+         ${isFiltered ? 'No opportunities match the current filters.' : 'No opportunities yet — click <strong style="color:var(--text)">+ Add Opportunity</strong> to start.'}
        </td></tr>`;
 
   root.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
       <span style="font-size:0.82rem;color:var(--muted)">
-        ${crmOpportunities.length} opportunit${crmOpportunities.length !== 1 ? 'ies' : 'y'}
+        ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmOpportunities.length} opportunit${crmOpportunities.length !== 1 ? 'ies' : 'y'}
+        ${anyFilter ? `<button onclick="_crmClearFilter('opportunities')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
-      <button class="btn btn-green" onclick="addCrmOpportunity()">+ Add Opportunity</button>
+      <div style="display:flex;gap:0.5rem;align-items:center">
+        <button class="btn" onclick="_crmTriggerUpload('opportunities')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
+        <button class="btn btn-green" onclick="addCrmOpportunity()">+ Add Opportunity</button>
+      </div>
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
       <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
-        <thead><tr>
-          ${th('Tag')}${th('Name')}${th('Company')}${th('Stage')}${th('Value')}
-          ${th('Close Date')}${th('Win %')}${th('Status')}${th('Loss Reason')}
-          ${th('Priority')}${th('Source')}${th('Description')}
-          <th style="border-bottom:2px solid var(--border);background:var(--surface2);width:30px"></th>
-        </tr></thead>
+        <thead>
+          <tr>
+            ${th('Tag')}${th('Name')}${th('Company')}${th('Stage')}${th('Value')}
+            ${th('Close Date')}${th('Win %')}${th('Status')}${th('Loss Reason')}
+            ${th('Priority')}${th('Source')}${th('Description')}
+            <th style="${thS};width:30px"></th>
+          </tr>
+          <tr>
+            ${fi('tag')}${fi('name')}${fi('company')}${fi('stage')}${fi('value')}
+            ${fi('close_date')}${fi('win_pct')}${fi('status')}${fi('loss_reason')}
+            ${fi('priority')}${fi('source')}${fi('description')}
+            <th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>
+          </tr>
+        </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+/* ═══════════════════════════════════════════
+   CRM — CSV Bulk Upload
+═══════════════════════════════════════════ */
+let _crmUploadPending = null;
+
+const _CRM_UPLOAD_FIELDS = {
+  people:        ['tag','name','company','work_email','title','contact_type','work_phone','work_website','address','city','state','zip','linkedin','description'],
+  companies:     ['tag','company_name','contact_type','work_phone','email_domain','work_website','address','city','state','zip','field_type','field_size'],
+  opportunities: ['tag','name','company','stage','value','close_date','win_pct','status','loss_reason','priority','source','description'],
+};
+
+function _crmParseCSV(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const result = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const row = [];
+    let field = '', inQuote = false;
+    for (let j = 0; j <= line.length; j++) {
+      const ch = line[j];
+      if (ch === '"') {
+        if (inQuote && line[j + 1] === '"') { field += '"'; j++; }
+        else inQuote = !inQuote;
+      } else if ((ch === ',' || ch === undefined) && !inQuote) {
+        row.push(field.trim()); field = '';
+      } else {
+        field += (ch || '');
+      }
+    }
+    result.push(row);
+  }
+  return result;
+}
+
+function _crmDownloadTemplate(type) {
+  const fields = _CRM_UPLOAD_FIELDS[type];
+  const blob = new Blob([fields.join(',') + '\n'], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `crm_${type}_template.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function _crmTriggerUpload(type) {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.csv,text/csv';
+  inp.onchange = () => { if (inp.files[0]) _crmShowUploadModal(type, inp.files[0]); };
+  inp.click();
+}
+
+function _crmShowUploadModal(type, file) {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    // Strip BOM from the raw text before any parsing
+    const raw = _crmParseCSV(ev.target.result.replace(/^\uFEFF/, ''));
+    if (raw.length < 2) { alert('CSV must have a header row and at least one data row.'); return; }
+
+    // Normalize headers: lowercase, collapse any non-alphanumeric run to _, trim _
+    const _normHdr = h => h.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const _HDR_ALIAS = { win: 'win_pct', win_pct: 'win_pct', win_percent: 'win_pct', win_percentage: 'win_pct',
+      close_date: 'close_date', closing_date: 'close_date', closedate: 'close_date', expected_close: 'close_date',
+      email: 'work_email', phone: 'work_phone', website: 'work_website' };
+    const headers = raw[0].map(h => { const n = _normHdr(h); return _HDR_ALIAS[n] || n; });
+    const fields  = _CRM_UPLOAD_FIELDS[type];
+    const dataRows = raw.slice(1).filter(r => r.some(c => c.trim()));
+
+    // Known enum options — matched case-insensitively so "warm" → "Warm", "closed won" → "Closed Won"
+    const ENUM_OPTS = {
+      tag:      _CRM_TAG_OPTS.filter(Boolean),
+      stage:    _CRM_STAGES.filter(Boolean),
+      status:   _CRM_STATUSES.filter(Boolean),
+      priority: _CRM_PRIORITIES.filter(Boolean),
+    };
+    const _matchEnum = (field, val) => {
+      const opts = ENUM_OPTS[field];
+      if (!opts || !val) return val;
+      return opts.find(o => o.toLowerCase() === val.trim().toLowerCase()) || val;
+    };
+
+    // Date fields need ISO YYYY-MM-DD for <input type="date">
+    const DATE_FIELDS = new Set(['close_date']);
+    const _toISODate = v => {
+      if (!v) return '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+      const m = v.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if (m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+      return v;
+    };
+
+    _crmUploadPending = dataRows.map(row => {
+      const obj = { id: uid() };
+      fields.forEach(f => {
+        const idx = headers.indexOf(f);
+        let val = idx !== -1 ? (row[idx] !== undefined ? row[idx] : '') : '';
+        val = val.trim();
+        if (DATE_FIELDS.has(f))                    val = _toISODate(val);
+        if (ENUM_OPTS[f])                          val = _matchEnum(f, val);
+        if (f === 'value' || f === 'win_pct')      val = val.replace(/[$,%\s,]/g, '');
+        obj[f] = val;
+      });
+      return obj;
+    });
+
+    const missing = fields.filter(f => !headers.includes(f));
+    const previewFields = fields.slice(0, 5);
+    const previewRows   = _crmUploadPending.slice(0, 5);
+
+    const noun     = type === 'people' ? 'contact' : type === 'companies' ? 'company' : 'opportunity';
+    const nounPlur = type === 'people' ? 'contacts' : type === 'companies' ? 'companies' : 'opportunities';
+    const existing = type === 'people' ? crmPeople.length : type === 'companies' ? crmCompanies.length : crmOpportunities.length;
+    const total    = _crmUploadPending.length;
+
+    const thS = `padding:0.35rem 0.55rem;font-size:0.63rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap;background:var(--surface2)`;
+    const tdS = `padding:0.28rem 0.55rem;font-size:0.78rem;color:var(--text);border-bottom:1px solid rgba(255,255,255,0.05);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`;
+
+    const previewTable = `
+      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:4px;margin:0.75rem 0">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr>${previewFields.map(f => `<th style="${thS}">${f.replace(/_/g,' ')}</th>`).join('')}${fields.length > 5 ? `<th style="${thS}">…</th>` : ''}</tr></thead>
+          <tbody>${previewRows.map(obj =>
+            `<tr>${previewFields.map(f => `<td style="${tdS}" title="${esc(obj[f])}">${esc(obj[f]) || `<span style="color:var(--muted)">—</span>`}</td>`).join('')}${fields.length > 5 ? `<td style="${tdS};color:var(--muted)">…</td>` : ''}</tr>`
+          ).join('')}</tbody>
+        </table>
+      </div>
+      ${total > 5 ? `<p style="font-size:0.75rem;color:var(--muted);margin:-0.25rem 0 0.5rem">Showing 5 of ${total} rows.</p>` : ''}`;
+
+    // Show which fields mapped and which didn't — helps debug header mismatches
+    const mappedHTML = `
+      <div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;font-size:0.75rem">
+        <span style="color:var(--muted);margin-right:0.4rem">Column map:</span>
+        ${fields.map(f => {
+          const found = headers.includes(f);
+          return `<span style="margin-right:0.35rem;color:${found ? '#4ade80' : '#f87171'}" title="${found ? 'mapped' : 'not found in CSV'}">${found ? '✓' : '✗'} ${f}</span>`;
+        }).join('')}
+      </div>`;
+
+    const warningHTML = missing.length
+      ? `<div style="margin-top:0.4rem;padding:0.5rem 0.75rem;background:rgba(120,53,15,0.2);border:1px solid #b45309;border-radius:4px;font-size:0.78rem;color:#fbbf24">
+           Not found in CSV (will be blank): ${missing.map(f => `<code style="font-size:0.72rem;background:rgba(0,0,0,0.3);padding:0.1rem 0.3rem;border-radius:3px">${f}</code>`).join(' ')}
+           <br><span style="font-size:0.72rem;opacity:0.8">Raw headers detected: ${headers.map(h => `<code style="background:rgba(0,0,0,0.3);padding:0.05rem 0.25rem;border-radius:2px">${esc(h)}</code>`).join(' ')}</span>
+         </div>`
+      : '';
+
+    const modal = document.createElement('div');
+    modal.id = 'crm-upload-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem';
+    modal.innerHTML = `
+      <div style="background:var(--surface1);border:1px solid var(--border);border-radius:8px;padding:1.5rem;max-width:680px;width:100%;max-height:85vh;overflow-y:auto">
+        <h3 style="margin:0 0 0.25rem;font-size:1rem;color:var(--text)">
+          Import ${type.charAt(0).toUpperCase() + type.slice(1)} from CSV
+        </h3>
+        <p style="margin:0 0 0.6rem;font-size:0.8rem;color:var(--muted)">
+          Found <strong style="color:var(--text)">${total}</strong> ${total === 1 ? noun : nounPlur} in
+          <em>${esc(file.name)}</em>.
+        </p>
+        ${mappedHTML}
+        ${warningHTML}
+        ${previewTable}
+        ${existing ? `
+        <div style="display:flex;gap:0.5rem;margin-bottom:0.85rem;padding:0.6rem 0.75rem;background:var(--surface2);border:1px solid var(--border);border-radius:5px">
+          <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text)">
+            <input type="radio" name="crm-import-mode" value="append" checked style="accent-color:var(--blue)">
+            Append to existing <span style="color:var(--muted)">(${existing} ${existing === 1 ? noun : nounPlur} + ${total} new)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text);margin-left:1.25rem">
+            <input type="radio" name="crm-import-mode" value="replace" style="accent-color:#ef4444">
+            Replace all <span style="color:#f87171">(deletes the ${existing} existing ${existing === 1 ? noun : nounPlur})</span>
+          </label>
+        </div>` : ''}
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.75rem">
+          <button onclick="_crmDownloadTemplate('${type}')"
+            style="background:none;border:none;color:var(--blue);font-size:0.78rem;cursor:pointer;padding:0;text-decoration:underline">
+            Download template CSV
+          </button>
+          <div style="display:flex;gap:0.6rem">
+            <button class="btn" onclick="document.getElementById('crm-upload-modal').remove()"
+              style="background:var(--surface2);border:1px solid var(--border);color:var(--text)">Cancel</button>
+            <button class="btn btn-green" onclick="_crmCommitUpload('${type}')">
+              Import ${total} ${total === 1 ? noun : nounPlur}
+            </button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  };
+  reader.readAsText(file);
+}
+
+function _crmCommitUpload(type) {
+  const modeEl = document.querySelector('#crm-upload-modal input[name="crm-import-mode"]:checked');
+  const replace = modeEl?.value === 'replace';
+  document.getElementById('crm-upload-modal')?.remove();
+  const rows = _crmUploadPending;
+  _crmUploadPending = null;
+  if (!rows || !rows.length) return;
+  if (type === 'people') {
+    crmPeople = replace ? rows : [...crmPeople, ...rows];
+    saveCrmPeople();
+    renderCrmPeopleTab();
+  } else if (type === 'companies') {
+    crmCompanies = replace ? rows : [...crmCompanies, ...rows];
+    saveCrmCompanies();
+    renderCrmCompaniesTab();
+  } else {
+    crmOpportunities = replace ? rows : [...crmOpportunities, ...rows];
+    saveCrmOpportunities();
+    renderCrmOpportunitiesTab();
+  }
 }
 
 // ── Scale of Economy — manual job entries ────────────────────────────────────
@@ -8035,16 +8336,33 @@ document.getElementById('inventory-root').addEventListener('change', e => {
   saveInventoryEntries();
 });
 
+function _crmClearFilter(type) {
+  if (type === 'people')        { _crmPeopleFilter  = {}; renderCrmPeopleTab(); }
+  else if (type === 'companies'){ _crmCompanyFilter = {}; renderCrmCompaniesTab(); }
+  else                          { _crmOppFilter     = {}; renderCrmOpportunitiesTab(); }
+}
+
+function _crmHandleFilterInput(el, filterObj, renderFn, rootId) {
+  const f = el.dataset.crmPf || el.dataset.crmCf || el.dataset.crmOf;
+  if (!f) return false;
+  filterObj[f] = el.value;
+  renderFn();
+  // Restore focus + cursor after re-render
+  const restored = document.querySelector(`#${rootId} [data-crm-pf="${f}"],[data-crm-cf="${f}"],[data-crm-of="${f}"]`);
+  if (restored) { const l = restored.value.length; restored.focus(); restored.setSelectionRange(l, l); }
+  return true;
+}
+
 /* ── CRM People events ── */
 document.getElementById('crm-people-root').addEventListener('input', e => {
   const el = e.target;
+  if (_crmHandleFilterInput(el, _crmPeopleFilter, renderCrmPeopleTab, 'crm-people-root')) return;
   const id = el.dataset.crmId, field = el.dataset.crmField;
   if (!id || !field) return;
   const person = crmPeople.find(p => p.id === id);
   if (!person) return;
   person[field] = el.value;
 
-  // Live-update ↗ icon for link fields
   const LINK_FIELDS = new Set(['work_email', 'work_website', 'linkedin']);
   if (LINK_FIELDS.has(field)) {
     const val = el.value.trim();
@@ -8066,8 +8384,6 @@ document.getElementById('crm-people-root').addEventListener('change', e => {
   const person = crmPeople.find(p => p.id === id);
   if (!person) return;
   person[field] = el.value;
-
-  // Live-update tag pill color
   if (field === 'tag') {
     const c = _CRM_TAG_COLORS[el.value];
     el.style.background = c ? c.bg    : 'var(--surface2)';
@@ -8084,6 +8400,7 @@ document.getElementById('crm-people-root').addEventListener('click', e => {
 /* ── CRM Companies events ── */
 document.getElementById('crm-companies-root').addEventListener('input', e => {
   const el = e.target;
+  if (_crmHandleFilterInput(el, _crmCompanyFilter, renderCrmCompaniesTab, 'crm-companies-root')) return;
   const id = el.dataset.crmId, field = el.dataset.crmField;
   if (!id || !field) return;
   const co = crmCompanies.find(c => c.id === id);
@@ -8108,7 +8425,6 @@ document.getElementById('crm-companies-root').addEventListener('change', e => {
   const co = crmCompanies.find(c => c.id === id);
   if (!co) return;
   co[field] = el.value;
-
   if (field === 'tag') {
     const c = _CRM_TAG_COLORS[el.value];
     el.style.background = c ? c.bg    : 'var(--surface2)';
@@ -8132,6 +8448,7 @@ const _CRM_COLOR_MAPS = {
 
 document.getElementById('crm-opportunities-root').addEventListener('input', e => {
   const el = e.target;
+  if (_crmHandleFilterInput(el, _crmOppFilter, renderCrmOpportunitiesTab, 'crm-opportunities-root')) return;
   const id = el.dataset.crmId, field = el.dataset.crmField;
   if (!id || !field) return;
   const opp = crmOpportunities.find(o => o.id === id);
