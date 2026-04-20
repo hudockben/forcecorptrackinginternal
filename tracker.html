@@ -252,12 +252,146 @@
       margin-right: 4px;
       vertical-align: middle;
     }
+    /* ── Lucius view body ── */
+    #lucius-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+      gap: 0.5rem;
+    }
+    #lucius-body.split { flex-direction: row; }
     #lucius-map {
       flex: 1;
       border-radius: 8px;
       border: 1px solid var(--border);
-      min-height: 400px;
+      min-height: 200px;
     }
+    #lucius-map.hidden { display: none; }
+    /* ── Lucius list/table ── */
+    #lucius-list-wrap {
+      flex: 1;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      min-height: 0;
+    }
+    #lucius-list-wrap.hidden { display: none; }
+    #lucius-list-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.72rem;
+    }
+    #lucius-list-table th {
+      position: sticky; top: 0; z-index: 1;
+      padding: 0.4rem 0.6rem;
+      text-align: left;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.63rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+    #lucius-list-table th:hover { color: var(--text); }
+    #lucius-list-table td {
+      padding: 0.38rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    #lucius-list-table tr:last-child td { border-bottom: none; }
+    #lucius-list-table tr:hover td { background: rgba(255,255,255,0.025); }
+    /* ── Lucius filter bar ── */
+    #lucius-filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+      padding: 0.35rem 0.6rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 0.72rem;
+    }
+    #lucius-filter-bar label { color: var(--muted); font-size: 0.69rem; white-space: nowrap; }
+    .lucius-filter-sel, .lucius-filter-inp {
+      padding: 0.22rem 0.4rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.72rem;
+    }
+    .lucius-filter-sel:focus, .lucius-filter-inp:focus { outline: none; border-color: var(--green); }
+    /* ── Lucius view switcher & action buttons ── */
+    .lucius-view-btn {
+      padding: 0.28rem 0.65rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 0.72rem;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .lucius-view-btn.active, .lucius-view-btn:hover { border-color: var(--green); color: var(--green); }
+    .lucius-action-btn {
+      padding: 0.28rem 0.65rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.72rem;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .lucius-action-btn:hover { border-color: var(--green); color: var(--green); }
+    .lucius-action-btn.danger:hover { border-color: #ef4444; color: #ef4444; }
+    #lucius-saved-loc-sel {
+      padding: 0.28rem 0.5rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.72rem;
+      max-width: 160px;
+    }
+    /* ── Lucius surface/status badges ── */
+    .lucius-surface-badge {
+      display: inline-block;
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+      font-size: 0.62rem;
+      font-weight: 600;
+    }
+    /* ── Lucius popup controls ── */
+    .lucius-popup-status {
+      width: 100%;
+      padding: 0.2rem 0.3rem;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 4px;
+      color: #eee;
+      font-size: 11px;
+      margin-top: 3px;
+    }
+    .lucius-popup-crm-btn {
+      display: inline-block;
+      padding: 0.18rem 0.5rem;
+      background: #1e3a8a;
+      border: 1px solid #3b82f6;
+      border-radius: 4px;
+      color: #93c5fd;
+      font-size: 10px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .lucius-popup-crm-btn:hover { background: #1e40af; }
 
     /* ── Admin dropdown ── */
     .admin-dropdown-wrap {
@@ -2389,16 +2523,23 @@
 
   <div class="crm-sub-panel" id="crm-panel-lucius">
     <div id="lucius-root">
+
+      <!-- ── Toolbar ── -->
       <div id="lucius-toolbar">
         <button id="lucius-run-btn" onclick="runLucius()">&#9654; Run Lucius</button>
 
         <div class="lucius-divider"></div>
 
+        <!-- Saved locations + address -->
         <div class="lucius-setting">
           <label>Location</label>
+          <select id="lucius-saved-loc-sel" onchange="_luciusSwitchLocation(this.value)">
+            <option value="">— custom —</option>
+          </select>
           <input id="lucius-addr-input" type="text" placeholder="Address, city, or lat,lng…"
             onkeydown="if(event.key==='Enter') luciusGeocode()" />
           <button class="lucius-set-btn" onclick="luciusGeocode()">Set</button>
+          <button class="lucius-set-btn" onclick="_luciusSaveLocationPrompt()" title="Save current location as named bookmark">＋ Save</button>
         </div>
 
         <div class="lucius-divider"></div>
@@ -2410,17 +2551,74 @@
           <button class="lucius-set-btn" onclick="luciusApplyRadius()">Apply</button>
         </div>
 
-        <span id="lucius-status" style="color:var(--muted);font-size:0.75rem">
+        <div class="lucius-divider"></div>
+
+        <!-- View switcher -->
+        <div style="display:flex;gap:0.25rem;flex-shrink:0">
+          <button class="lucius-view-btn active" id="lucius-view-map"   onclick="_luciusSetView('map')"   title="Map only">Map</button>
+          <button class="lucius-view-btn"         id="lucius-view-split" onclick="_luciusSetView('split')" title="Map + List">Split</button>
+          <button class="lucius-view-btn"         id="lucius-view-list"  onclick="_luciusSetView('list')"  title="List only">List</button>
+        </div>
+
+        <div class="lucius-divider"></div>
+
+        <!-- Actions -->
+        <button class="lucius-action-btn" onclick="_luciusExportCsv()" title="Download visible fields as CSV">⬇ CSV</button>
+        <button class="lucius-action-btn danger" id="lucius-remove-stale-btn" onclick="_luciusRemoveStale()"
+          title="Remove fields not found in latest scan" style="display:none">✕ Stale</button>
+
+        <span id="lucius-status" style="color:var(--muted);font-size:0.75rem;flex-shrink:0">
           Set a location and click Run Lucius.
         </span>
 
         <div id="lucius-legend">
           <span><span class="lucius-legend-dot" style="background:#22c55e"></span>Turf</span>
-          <span><span class="lucius-legend-dot" style="background:#ef4444"></span>Non-turf / unknown</span>
-          <span><span class="lucius-legend-dot" style="background:#a78bfa"></span>Cached (not in latest scan)</span>
+          <span><span class="lucius-legend-dot" style="background:#ef4444"></span>Non-turf</span>
+          <span><span class="lucius-legend-dot" style="background:#f59e0b"></span>Contacted</span>
+          <span><span class="lucius-legend-dot" style="background:#60a5fa"></span>Interested</span>
+          <span><span class="lucius-legend-dot" style="background:#f97316"></span>Converted</span>
+          <span><span class="lucius-legend-dot" style="background:#a78bfa"></span>Cached</span>
         </div>
       </div>
-      <div id="lucius-map"></div>
+
+      <!-- ── Filter bar ── -->
+      <div id="lucius-filter-bar">
+        <label>Filters:</label>
+        <label>Sport</label>
+        <input type="text" class="lucius-filter-inp" id="lucius-f-sport" placeholder="any…" style="width:88px"
+          oninput="_luciusFilterChanged()">
+        <label>Surface</label>
+        <select class="lucius-filter-sel" id="lucius-f-surface" onchange="_luciusFilterChanged()">
+          <option value="all">All</option>
+          <option value="turf">Turf only</option>
+          <option value="nonturf">Non-turf only</option>
+        </select>
+        <label>Status</label>
+        <select class="lucius-filter-sel" id="lucius-f-status" onchange="_luciusFilterChanged()">
+          <option value="all">All</option>
+          <option value="Uncontacted">Uncontacted</option>
+          <option value="Contacted">Contacted</option>
+          <option value="Interested">Interested</option>
+          <option value="Not Interested">Not Interested</option>
+          <option value="Converted">Converted</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer">
+          <input type="checkbox" id="lucius-f-stale" checked onchange="_luciusFilterChanged()"> Show cached
+        </label>
+        <span id="lucius-filter-count" style="color:var(--muted);margin-left:auto;font-size:0.69rem"></span>
+      </div>
+
+      <!-- ── Map + List body ── -->
+      <div id="lucius-body">
+        <div id="lucius-map"></div>
+        <div id="lucius-list-wrap" class="hidden">
+          <table id="lucius-list-table">
+            <thead><tr id="lucius-list-head"></tr></thead>
+            <tbody id="lucius-list-body"></tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -19204,23 +19402,35 @@ function _ppRenderMultiCode(proj, agg, MONTHS, NW_ICONS) {
 // LUCIUS — Sports Field Map Scanner
 // ══════════════════════════════════════════════════════════════
 
-const LUCIUS_CACHE_KEY  = 'fct_lucius_fields';
-const LUCIUS_CONFIG_KEY = 'fct_lucius_config';
+const LUCIUS_CACHE_KEY     = 'fct_lucius_fields';
+const LUCIUS_CONFIG_KEY    = 'fct_lucius_config';
+const LUCIUS_LOCATIONS_KEY = 'fct_lucius_locations';
+
+const _LUCIUS_FIELD_STATUSES = ['Uncontacted', 'Contacted', 'Interested', 'Not Interested', 'Converted'];
+const _LUCIUS_STATUS_COLORS  = {
+  'Contacted':     '#f59e0b',
+  'Interested':    '#60a5fa',
+  'Not Interested':'#6b7280',
+  'Converted':     '#f97316',
+};
 
 // ── Runtime config (loaded from store; these are fallback defaults) ──
 let _luciusConfig = { lat: 36.1699, lng: -115.1398, radiusMiles: 10 };
 
-// ── Mapbox access token ───────────────────────────────────────
-// Paste your public Mapbox token here (starts with "pk."). Get one at
-// https://account.mapbox.com/access-tokens/ — free tier = 50k loads/month.
-// Leave blank to use free OpenStreetMap tiles as a fallback.
 let MAPBOX_TOKEN = ''; // fetched at runtime from /api/config/mapbox
 
 // ── State ─────────────────────────────────────────────────────
-let _luciusMap          = null;
-let _luciusMarkers      = [];
-let _luciusRadiusCircle = null;
-let _luciusInitDone     = false;
+let _luciusMap            = null;
+let _luciusMarkers        = [];
+let _luciusRadiusCircle   = null;
+let _luciusInitDone       = false;
+let _luciusAllFields      = [];       // full unfiltered field list
+let _luciusStaleIds       = new Set();
+let _luciusFilter         = { sport: '', surface: 'all', status: 'all', showStale: true };
+let _luciusSortCol        = 'name';
+let _luciusSortAsc        = true;
+let _luciusView           = 'map';    // 'map' | 'split' | 'list'
+let _luciusSavedLocations = [];
 
 // ── Config load / save ────────────────────────────────────────
 async function _luciusLoadConfig() {
@@ -19234,6 +19444,60 @@ async function _luciusLoadConfig() {
 
 async function _luciusSaveConfig() {
   try { await apiPut(LUCIUS_CONFIG_KEY, _luciusConfig); } catch { /* non-fatal */ }
+}
+
+// ── Saved locations ───────────────────────────────────────────
+async function _luciusLoadLocations() {
+  try {
+    const d = await apiGet(LUCIUS_LOCATIONS_KEY);
+    _luciusSavedLocations = Array.isArray(d) ? d : [];
+  } catch { _luciusSavedLocations = []; }
+  _luciusRenderLocationDropdown();
+}
+
+async function _luciusSaveLocations() {
+  try { await apiPut(LUCIUS_LOCATIONS_KEY, _luciusSavedLocations); } catch {}
+}
+
+function _luciusRenderLocationDropdown() {
+  const sel = document.getElementById('lucius-saved-loc-sel');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— custom —</option>' +
+    _luciusSavedLocations.map((loc, i) =>
+      `<option value="${i}">${esc(loc.name)}</option>`
+    ).join('');
+}
+
+function _luciusSaveLocationPrompt() {
+  const name = prompt('Name this location:', `${_luciusConfig.lat.toFixed(3)}, ${_luciusConfig.lng.toFixed(3)}`);
+  if (!name || !name.trim()) return;
+  _luciusSavedLocations.push({
+    name: name.trim(),
+    lat: _luciusConfig.lat,
+    lng: _luciusConfig.lng,
+    radiusMiles: _luciusConfig.radiusMiles,
+  });
+  _luciusSaveLocations();
+  _luciusRenderLocationDropdown();
+  const sel = document.getElementById('lucius-saved-loc-sel');
+  if (sel) sel.value = _luciusSavedLocations.length - 1;
+}
+
+async function _luciusSwitchLocation(idx) {
+  if (idx === '' || idx === null || idx === undefined) return;
+  const loc = _luciusSavedLocations[parseInt(idx)];
+  if (!loc) return;
+  _luciusConfig.lat = loc.lat;
+  _luciusConfig.lng = loc.lng;
+  _luciusConfig.radiusMiles = loc.radiusMiles;
+  _luciusPopulateInputs();
+  await _luciusSaveConfig();
+  if (_luciusMap) {
+    _luciusMap.flyTo([loc.lat, loc.lng], 12, { duration: 1 });
+    _luciusUpdateCircle();
+  }
+  _luciusSetStatus(`Switched to "${loc.name}" — click Run Lucius to scan.`);
+  _luciusMarkReady();
 }
 
 function _luciusPopulateInputs() {
@@ -19274,6 +19538,230 @@ async function _luciusLoadCache() {
 
 async function _luciusSaveCache(fields) {
   try { await apiPut(LUCIUS_CACHE_KEY, fields); } catch { /* non-fatal */ }
+}
+
+// ── Filter helpers ────────────────────────────────────────────
+function _luciusGetVisibleFields() {
+  let fields = _luciusAllFields.filter(f => !_luciusIsExcludedSport(f.sport));
+  const { sport, surface, status, showStale } = _luciusFilter;
+  if (!showStale) fields = fields.filter(f => !_luciusStaleIds.has(f.id));
+  if (sport) {
+    const s = sport.toLowerCase();
+    fields = fields.filter(f => (f.sport || '').toLowerCase().includes(s));
+  }
+  if (surface === 'turf')    fields = fields.filter(f =>  f.isTurf);
+  if (surface === 'nonturf') fields = fields.filter(f => !f.isTurf);
+  if (status !== 'all') {
+    if (status === 'Uncontacted')
+      fields = fields.filter(f => !f.status || f.status === 'Uncontacted');
+    else
+      fields = fields.filter(f => f.status === status);
+  }
+  return fields;
+}
+
+function _luciusFilterChanged() {
+  _luciusFilter.sport    = document.getElementById('lucius-f-sport')?.value   || '';
+  _luciusFilter.surface  = document.getElementById('lucius-f-surface')?.value || 'all';
+  _luciusFilter.status   = document.getElementById('lucius-f-status')?.value  || 'all';
+  _luciusFilter.showStale= document.getElementById('lucius-f-stale')?.checked ?? true;
+  _luciusRenderAll();
+}
+
+// ── View switcher ─────────────────────────────────────────────
+function _luciusSetView(view) {
+  _luciusView = view;
+  const body  = document.getElementById('lucius-body');
+  const mapEl = document.getElementById('lucius-map');
+  const listEl = document.getElementById('lucius-list-wrap');
+  if (!body || !mapEl || !listEl) return;
+
+  document.querySelectorAll('.lucius-view-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(`lucius-view-${view}`)?.classList.add('active');
+
+  if (view === 'map') {
+    body.classList.remove('split');
+    mapEl.classList.remove('hidden');
+    listEl.classList.add('hidden');
+  } else if (view === 'list') {
+    body.classList.remove('split');
+    mapEl.classList.add('hidden');
+    listEl.classList.remove('hidden');
+  } else {
+    body.classList.add('split');
+    mapEl.classList.remove('hidden');
+    listEl.classList.remove('hidden');
+  }
+  if (_luciusMap) setTimeout(() => _luciusMap.invalidateSize(), 50);
+  _luciusRenderTable();
+}
+
+// ── Field status tracking ─────────────────────────────────────
+async function _luciusSetFieldStatus(id, status) {
+  const f = _luciusAllFields.find(f => f.id === id);
+  if (!f) return;
+  f.status = status || 'Uncontacted';
+  await _luciusSaveCache(_luciusAllFields);
+  _luciusRenderAll();
+}
+
+// ── Icon coloring (status-aware) ──────────────────────────────
+function _luciusFieldIcon(f, isStale) {
+  if (isStale) return _luciusColorIcon('#a78bfa');
+  if (f.status && _LUCIUS_STATUS_COLORS[f.status]) return _luciusColorIcon(_LUCIUS_STATUS_COLORS[f.status]);
+  return f.isTurf ? _luciusColorIcon('#22c55e') : _luciusColorIcon('#ef4444');
+}
+
+// ── Render map + table together ───────────────────────────────
+function _luciusRenderAll() {
+  const visible = _luciusGetVisibleFields();
+  if (_luciusMap) _luciusDropPins(visible, _luciusStaleIds);
+  _luciusRenderTable();
+}
+
+// ── List/table view ───────────────────────────────────────────
+function _luciusRenderTable() {
+  const head = document.getElementById('lucius-list-head');
+  const body = document.getElementById('lucius-list-body');
+  if (!head || !body) return;
+
+  const cols = [
+    { key: 'name',      label: 'Name' },
+    { key: 'sport',     label: 'Sport' },
+    { key: 'surface',   label: 'Surface' },
+    { key: 'status',    label: 'Status' },
+    { key: 'addr',      label: 'Address' },
+    { key: 'operator',  label: 'Operator' },
+    { key: 'firstSeen', label: 'First Seen' },
+    { key: '_actions',  label: '' },
+  ];
+  head.innerHTML = cols.map(c => {
+    if (c.key === '_actions') return `<th style="width:70px;cursor:default"></th>`;
+    const arrow = _luciusSortCol === c.key ? (_luciusSortAsc ? ' ▲' : ' ▼') : '';
+    return `<th onclick="_luciusTableSort('${c.key}')">${c.label}${arrow}</th>`;
+  }).join('');
+
+  const fields = _luciusGetVisibleFields().slice().sort((a, b) => {
+    let va = a[_luciusSortCol] ?? '';
+    let vb = b[_luciusSortCol] ?? '';
+    const cmp = String(va).localeCompare(String(vb), undefined, { numeric: true });
+    return _luciusSortAsc ? cmp : -cmp;
+  });
+
+  const e = s => escT(s || '');
+  body.innerHTML = fields.map(f => {
+    const isStale  = _luciusStaleIds.has(f.id);
+    const surfColor = f.isTurf ? '#22c55e' : '#ef4444';
+    const surfLabel = f.isTurf ? 'Turf' : (f.surface || 'Unknown');
+    const statusColor = (f.status && _LUCIUS_STATUS_COLORS[f.status]) || (f.isTurf ? '#22c55e' : '#6b7280');
+    const nameColor   = isStale ? '#a78bfa' : statusColor;
+    const date = f.firstSeen ? f.firstSeen.slice(0, 10) : '';
+    const gmUrl = `https://www.google.com/maps?q=${f.lat},${f.lng}`;
+    const statusOpts = _LUCIUS_FIELD_STATUSES.map(s =>
+      `<option value="${s}"${(f.status || 'Uncontacted') === s ? ' selected' : ''}>${s}</option>`
+    ).join('');
+    return `<tr>
+      <td><a href="${gmUrl}" target="_blank" rel="noopener" style="color:${nameColor};text-decoration:none">${e(f.name)}</a>${isStale ? ' <span style="color:#a78bfa;font-size:10px">(cached)</span>' : ''}</td>
+      <td style="color:var(--muted)">${e(f.sport)}</td>
+      <td><span class="lucius-surface-badge" style="background:${surfColor}22;color:${surfColor}">${e(surfLabel)}</span></td>
+      <td>
+        <select class="lucius-popup-status" style="min-width:110px"
+          onchange="_luciusSetFieldStatus('${esc(f.id)}', this.value)">${statusOpts}</select>
+      </td>
+      <td style="color:var(--muted);font-size:0.68rem">${e(f.addr)}</td>
+      <td style="color:var(--muted)">${e(f.operator)}</td>
+      <td style="color:var(--muted);white-space:nowrap">${date}</td>
+      <td style="white-space:nowrap">
+        <button class="lucius-popup-crm-btn" style="font-size:9px;padding:0.12rem 0.3rem"
+          onclick="_luciusSendToCrm('${esc(f.id)}','company')" title="Add to CRM Companies">+Co</button>
+        <button class="lucius-popup-crm-btn" style="font-size:9px;padding:0.12rem 0.3rem;margin-left:2px"
+          onclick="_luciusSendToCrm('${esc(f.id)}','opportunity')" title="Add as CRM Opportunity">+Opp</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const total = _luciusAllFields.filter(f => !_luciusIsExcludedSport(f.sport)).length;
+  const countEl = document.getElementById('lucius-filter-count');
+  if (countEl) countEl.textContent = fields.length < total
+    ? `${fields.length} of ${total} fields`
+    : `${total} field${total !== 1 ? 's' : ''}`;
+}
+
+function _luciusTableSort(col) {
+  if (_luciusSortCol === col) _luciusSortAsc = !_luciusSortAsc;
+  else { _luciusSortCol = col; _luciusSortAsc = true; }
+  _luciusRenderTable();
+}
+
+// ── Export CSV ────────────────────────────────────────────────
+function _luciusExportCsv() {
+  const fields = _luciusGetVisibleFields();
+  if (!fields.length) { alert('No fields to export.'); return; }
+  const cols   = ['name','sport','surface','isTurf','status','addr','operator','website','lat','lng','firstSeen','lastSeen'];
+  const header = ['Name','Sport','Surface','Turf?','Status','Address','Operator','Website','Lat','Lng','First Seen','Last Seen'];
+  const rows = [header, ...fields.map(f => cols.map(c => {
+    const v = f[c];
+    if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+    if (v === null || v === undefined || v === '') return '';
+    return `"${String(v).replace(/"/g, '""')}"`;
+  }))];
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = `lucius_fields_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+}
+
+// ── Remove stale fields ───────────────────────────────────────
+async function _luciusRemoveStale() {
+  const count = _luciusStaleIds.size;
+  if (!count) { _luciusSetStatus('No stale fields to remove.'); return; }
+  if (!confirm(`Remove ${count} stale field${count !== 1 ? 's' : ''} (cached but not found in last scan)?`)) return;
+  _luciusAllFields = _luciusAllFields.filter(f => !_luciusStaleIds.has(f.id));
+  _luciusStaleIds  = new Set();
+  await _luciusSaveCache(_luciusAllFields);
+  const btn = document.getElementById('lucius-remove-stale-btn');
+  if (btn) btn.style.display = 'none';
+  _luciusRenderAll();
+  _luciusSetStatus('Stale fields removed.');
+}
+
+// ── Send to CRM ───────────────────────────────────────────────
+function _luciusSendToCrm(id, target) {
+  const f = _luciusAllFields.find(f => f.id === id);
+  if (!f) return;
+  if (target === 'company') {
+    if (!Array.isArray(crmCompanies)) { alert('CRM not loaded — open the CRM tab first.'); return; }
+    const exists = crmCompanies.find(c => c.company_name === f.name);
+    if (exists && !confirm(`"${f.name}" already exists in CRM Companies. Add anyway?`)) return;
+    crmCompanies.push({
+      id: uid(), tag: 'Prospect',
+      company_name: f.name,
+      contact_type: f.sport || '',
+      work_phone: '', email_domain: '',
+      work_website: f.website || '',
+      address: f.addr || '',
+      city: '', state: '', zip: '',
+      field_type: f.isTurf ? 'Turf' : 'Natural',
+      field_size: '',
+      notes: [f.operator, f.surface, `OSM: ${f.osmType}/${f.osmId}`].filter(Boolean).join(' · '),
+    });
+    saveCrmCompanies();
+    alert(`"${f.name}" added to CRM Companies.`);
+  } else {
+    if (!Array.isArray(crmOpportunities)) { alert('CRM not loaded — open the CRM tab first.'); return; }
+    crmOpportunities.push({
+      id: uid(), tag: '',
+      name: `Turf Install – ${f.name}`,
+      company: f.operator || f.name,
+      stage: 'Prospecting', value: '', close_date: '',
+      win_pct: '', status: 'Open', loss_reason: '',
+      priority: 'Medium', source: 'Lucius',
+      description: [f.addr, f.sport ? `Sport: ${f.sport}` : '', f.surface ? `Surface: ${f.surface}` : ''].filter(Boolean).join(' · '),
+    });
+    saveCrmOpportunities();
+    alert(`Opportunity "Turf Install – ${f.name}" added to CRM.`);
+  }
 }
 
 // ── Overpass query builder ────────────────────────────────────
@@ -19412,9 +19900,8 @@ function _luciusColorIcon(color) {
   });
 }
 
-const _LUCIUS_ICON_TURF    = () => _luciusColorIcon('#22c55e');
-const _LUCIUS_ICON_NONTURF = () => _luciusColorIcon('#ef4444');
-const _LUCIUS_ICON_STALE   = () => _luciusColorIcon('#a78bfa');
+// Status-aware icon selector (replaces old per-type constants)
+// _luciusFieldIcon(f, isStale) defined earlier in the filter section
 
 function _luciusClearPins() {
   _luciusMarkers.forEach(m => m.remove());
@@ -19423,48 +19910,51 @@ function _luciusClearPins() {
 
 function _luciusPopupHtml(f, isStale) {
   const e = s => escT(s || '');
-
-  // ── Row builders ──────────────────────────────────────────────
   const rows = [];
 
-  if (f.operator) rows.push(
-    `<div style="color:#aaa;font-size:11px;margin-top:1px">${e(f.operator)}</div>`
-  );
-
-  if (f.addr) rows.push(
-    `<div style="color:#888;font-size:11px">${e(f.addr)}</div>`
-  );
+  if (f.operator) rows.push(`<div style="color:#aaa;font-size:11px;margin-top:1px">${e(f.operator)}</div>`);
+  if (f.addr)     rows.push(`<div style="color:#888;font-size:11px">${e(f.addr)}</div>`);
 
   const meta = [
-    f.sport   ? `sport: ${e(f.sport)}`   : '',
+    f.sport   ? `sport: ${e(f.sport)}`     : '',
     f.surface ? `surface: ${e(f.surface)}` : '',
   ].filter(Boolean).join(' &nbsp;·&nbsp; ');
-  if (meta) rows.push(
-    `<div style="color:#888;font-size:11px;margin-top:2px">${meta}</div>`
-  );
+  if (meta) rows.push(`<div style="color:#888;font-size:11px;margin-top:2px">${meta}</div>`);
 
-  // ── Links ─────────────────────────────────────────────────────
   const gmUrl  = `https://www.google.com/maps?q=${f.lat},${f.lng}`;
   const osmUrl = f.osmType && f.osmId
     ? `https://www.openstreetmap.org/${f.osmType}/${f.osmId}`
     : `https://www.openstreetmap.org/?mlat=${f.lat}&mlon=${f.lng}`;
-
   const linkStyle = 'color:#60a5fa;text-decoration:none;font-size:11px';
   const links = [
-    `<a href="${gmUrl}" target="_blank" rel="noopener" style="${linkStyle}">Google Maps</a>`,
+    `<a href="${gmUrl}"  target="_blank" rel="noopener" style="${linkStyle}">Google Maps</a>`,
     `<a href="${osmUrl}" target="_blank" rel="noopener" style="${linkStyle}">OpenStreetMap</a>`,
-    f.website
-      ? `<a href="${e(f.website)}" target="_blank" rel="noopener" style="${linkStyle}">Website</a>`
-      : '',
+    f.website ? `<a href="${e(f.website)}" target="_blank" rel="noopener" style="${linkStyle}">Website</a>` : '',
   ].filter(Boolean).join(' &nbsp;·&nbsp; ');
   rows.push(`<div style="margin-top:5px">${links}</div>`);
+
+  // Status selector
+  const statusOpts = _LUCIUS_FIELD_STATUSES.map(s =>
+    `<option value="${s}"${(f.status || 'Uncontacted') === s ? ' selected' : ''}>${s}</option>`
+  ).join('');
+  rows.push(`<div style="margin-top:6px">
+    <label style="font-size:10px;color:#888">Status:</label>
+    <select class="lucius-popup-status" onchange="_luciusSetFieldStatus('${esc(f.id)}', this.value)">${statusOpts}</select>
+  </div>`);
+
+  // CRM buttons
+  rows.push(`<div style="margin-top:5px;display:flex;gap:4px">
+    <button class="lucius-popup-crm-btn" onclick="_luciusSendToCrm('${esc(f.id)}','company')">→ CRM Company</button>
+    <button class="lucius-popup-crm-btn" onclick="_luciusSendToCrm('${esc(f.id)}','opportunity')">→ CRM Opp</button>
+  </div>`);
 
   if (isStale) rows.push(
     `<div style="color:#a78bfa;font-size:10px;margin-top:3px;font-style:italic">cached — not in latest scan</div>`
   );
 
-  const nameColor = isStale ? '#a78bfa' : f.isTurf ? '#22c55e' : '#ef4444';
-  return `<div style="min-width:200px;max-width:280px;line-height:1.5;padding:2px 0">
+  const statusColor = (f.status && _LUCIUS_STATUS_COLORS[f.status]) || null;
+  const nameColor   = isStale ? '#a78bfa' : statusColor || (f.isTurf ? '#22c55e' : '#ef4444');
+  return `<div style="min-width:220px;max-width:290px;line-height:1.5;padding:2px 0">
     <strong style="font-size:13px;color:${nameColor}">${e(f.name)}</strong>
     ${rows.join('')}
   </div>`;
@@ -19472,14 +19962,13 @@ function _luciusPopupHtml(f, isStale) {
 
 function _luciusDropPins(fields, staleIds) {
   _luciusClearPins();
+  if (!_luciusMap) return;
   fields.forEach(f => {
     if (!f.lat || !f.lng) return;
     const isStale = staleIds && staleIds.has(f.id);
-    const icon    = isStale ? _LUCIUS_ICON_STALE()
-                  : f.isTurf ? _LUCIUS_ICON_TURF()
-                  : _LUCIUS_ICON_NONTURF();
+    const icon    = _luciusFieldIcon(f, isStale);
     const marker  = L.marker([f.lat, f.lng], { icon })
-                     .bindPopup(_luciusPopupHtml(f, isStale), { maxWidth: 300 });
+                     .bindPopup(_luciusPopupHtml(f, isStale), { maxWidth: 320 });
     marker.addTo(_luciusMap);
     _luciusMarkers.push(marker);
   });
@@ -19553,19 +20042,20 @@ async function _luciusInitMap() {
 
 // ── Tab entry point ───────────────────────────────────────────
 async function initLuciusTab() {
-  // Load persisted config first so map opens at the right location
   await _luciusLoadConfig();
   _luciusPopulateInputs();
   await _luciusInitMap();
+  await _luciusLoadLocations();
 
   if (_luciusInitDone) return;
   _luciusInitDone = true;
 
-  const cached = (await _luciusLoadCache()).filter(f => !_luciusIsExcludedSport(f.sport));
-  if (cached.length) {
-    _luciusDropPins(cached, null);
+  _luciusAllFields = await _luciusLoadCache();
+  _luciusSetView('map');
+  if (_luciusAllFields.length) {
+    _luciusRenderAll();
     _luciusSetStatus(
-      `Showing ${cached.length} cached field${cached.length !== 1 ? 's' : ''}. Click Run Lucius to refresh.`
+      `Showing ${_luciusAllFields.filter(f => !_luciusIsExcludedSport(f.sport)).length} cached field${_luciusAllFields.length !== 1 ? 's' : ''}. Click Run Lucius to refresh.`
     );
   }
 }
@@ -19578,10 +20068,13 @@ async function runLucius() {
   _luciusSetStatus('Querying Overpass API…');
   _luciusInitMap();
 
-  const cached   = (await _luciusLoadCache()).filter(f => !_luciusIsExcludedSport(f.sport));
+  const cached   = await _luciusLoadCache();
   const cacheMap = new Map(cached.map(f => [f.id, f]));
 
-  if (cached.length) _luciusDropPins(cached, null);
+  if (cached.length) {
+    _luciusAllFields = cached;
+    _luciusRenderAll();
+  }
 
   // Try each Overpass mirror in order until one succeeds
   const _OVERPASS_ENDPOINTS = [
@@ -19672,8 +20165,14 @@ async function runLucius() {
   const staleCount   = staleIds.size;
   const newCount     = [...freshIds].filter(id => !cached.find(f => f.id === id)).length;
 
+  _luciusAllFields = allFields;
+  _luciusStaleIds  = staleIds;
+
   await _luciusSaveCache(allFields);
-  _luciusDropPins(allFields, staleIds);
+  _luciusRenderAll();
+
+  const staleBtn = document.getElementById('lucius-remove-stale-btn');
+  if (staleBtn) staleBtn.style.display = staleCount > 0 ? '' : 'none';
 
   let status = `${_luciusConfig.radiusMiles}mi scan — ${turfCount} turf · ${nonTurfCount} non-turf`;
   if (staleCount) status += ` · ${staleCount} cached/not found`;
