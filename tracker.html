@@ -4828,7 +4828,10 @@ const _CRM_US_STATES   = [
 function _crmTagSel(p) {
   const c = _CRM_TAG_COLORS[p.tag];
   const bg = c ? c.bg : 'var(--surface2)', fg = c ? c.color : 'var(--muted)';
-  const opts = _CRM_TAG_OPTS.map(t =>
+  // Include any imported value not in the standard list so it renders instead of blank
+  const tagOpts = (p.tag && !_CRM_TAG_OPTS.includes(p.tag))
+    ? [..._CRM_TAG_OPTS, p.tag] : _CRM_TAG_OPTS;
+  const opts = tagOpts.map(t =>
     `<option value="${t}" ${p.tag === t ? 'selected' : ''}>${t || '— tag —'}</option>`).join('');
   return `<select data-crm-id="${p.id}" data-crm-field="tag"
     style="background:${bg};color:${fg};border:none;border-radius:12px;padding:0.2rem 0.55rem;
@@ -5083,7 +5086,9 @@ const _CRM_PRIORITY_COLORS = {
 function _crmPillSel(o, field, opts, colorMap, minW = '110px') {
   const c = colorMap[o[field]];
   const bg = c ? c.bg : 'var(--surface2)', fg = c ? c.color : 'var(--muted)';
-  const optHTML = opts.map(v =>
+  // Include any imported value not in the standard list so it renders instead of blank
+  const allOpts = (o[field] && !opts.includes(o[field])) ? [...opts, o[field]] : opts;
+  const optHTML = allOpts.map(v =>
     `<option value="${v}" ${o[field] === v ? 'selected' : ''}>${v || '—'}</option>`).join('');
   return `<select data-crm-id="${o.id}" data-crm-field="${field}"
     data-crm-colormap="${field}"
@@ -5268,8 +5273,9 @@ function _crmShowUploadModal(type, file) {
         const idx = headers.indexOf(f);
         let val = idx !== -1 ? (row[idx] !== undefined ? row[idx] : '') : '';
         val = val.trim();
-        if (DATE_FIELDS.has(f)) val = _toISODate(val);
-        if (ENUM_OPTS[f])       val = _matchEnum(f, val);
+        if (DATE_FIELDS.has(f))                    val = _toISODate(val);
+        if (ENUM_OPTS[f])                          val = _matchEnum(f, val);
+        if (f === 'value' || f === 'win_pct')      val = val.replace(/[$,%\s,]/g, '');
         obj[f] = val;
       });
       return obj;
