@@ -1966,6 +1966,12 @@
       const headers = _parseCSVLine(lines[0]).map(h => h.trim().toLowerCase());
       const newEntries = [];
 
+      // Track running max so task numbers stay unique across all imported rows
+      let maxTaskNum = Math.max(0, ...divEntries.map(e => {
+        const m = (e.task_number || '').match(/^TR-(\d+)$/);
+        return m ? parseInt(m[1], 10) : 0;
+      }));
+
       for (let i = 1; i < lines.length; i++) {
         const cols = _parseCSVLine(lines[i]);
         if (cols.every(c => !c.trim())) continue;
@@ -1988,14 +1994,17 @@
           else entry[field] = raw;
         });
 
-        if (!entry.task_number) entry.task_number = nextTaskNum();
+        if (!entry.task_number) {
+          maxTaskNum++;
+          entry.task_number = 'TR-' + String(maxTaskNum).padStart(4, '0');
+        }
         newEntries.push(entry);
-        divEntries.push(entry);
       }
 
       if (newEntries.length === 0) return;
 
-      /* Auto-populate managed lists with any new values from the CSV */
+      // Prepend so newly imported rows appear at the top
+      divEntries.unshift(...newEntries);
       const add = (arr, val) => val && !arr.includes(val) ? [...arr, val] : arr;
       newEntries.forEach(e => {
         divTruckLists.drivers   = add(divTruckLists.drivers,   e.driver);
