@@ -18,6 +18,7 @@
       --text:       #e0e0e0;
       --muted:      #666;
       --green:      #22c55e;
+      --red:        #ef4444;
     }
 
     body {
@@ -41,53 +42,38 @@
       z-index: 300;
       gap: 1rem;
     }
-
     .hdr-left { display: flex; align-items: center; gap: 1rem; min-width: 0; }
-
     .brand {
-      font-size: 0.7rem;
-      letter-spacing: 0.3em;
-      text-transform: uppercase;
-      color: var(--accent);
-      font-weight: 700;
-      flex-shrink: 0;
+      font-size: 0.7rem; letter-spacing: 0.3em; text-transform: uppercase;
+      color: var(--accent); font-weight: 700; flex-shrink: 0;
     }
-
     .div-label {
-      font-size: 0.6rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--muted);
-      border-left: 1px solid var(--border);
-      padding-left: 1rem;
-      white-space: nowrap;
+      font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--muted); border-left: 1px solid var(--border);
+      padding-left: 1rem; white-space: nowrap;
     }
-
     .hdr-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
-
     .user-avatar {
       width: 30px; height: 30px; border-radius: 50%;
       background: var(--accent-dim);
       display: flex; align-items: center; justify-content: center;
-      font-size: 0.62rem; font-weight: 700; color: #fff;
-      flex-shrink: 0;
+      font-size: 0.62rem; font-weight: 700; color: #fff; flex-shrink: 0;
     }
-
     .user-info { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
     .user-info strong { color: var(--text); }
-
-    .btn-switch {
+    .btn-ghost {
       font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
       text-transform: uppercase; color: var(--muted);
       background: none; border: 1px solid var(--border);
       border-radius: 4px; padding: 0.32rem 0.7rem; cursor: pointer;
       transition: color 0.15s, border-color 0.15s; white-space: nowrap;
     }
-    .btn-switch:hover { color: var(--text); border-color: #555; }
+    .btn-ghost:hover { color: var(--text); border-color: #555; }
 
     /* ── Tab bar ── */
     .tab-bar {
       display: flex;
+      align-items: center;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
       padding: 0 1rem;
@@ -95,8 +81,8 @@
       top: 45px;
       z-index: 200;
       overflow-x: auto;
+      gap: 0;
     }
-
     .tab-btn {
       padding: 0.6rem 1.25rem;
       font-size: 0.67rem; font-weight: 600; letter-spacing: 0.08em;
@@ -107,59 +93,167 @@
     }
     .tab-btn:hover { color: var(--text); }
     .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-bar-spacer { flex: 1; }
+    .btn-manage-lists {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--accent);
+      background: rgba(167,139,250,0.07);
+      border: 1px solid rgba(167,139,250,0.25);
+      border-radius: 4px; padding: 0.32rem 0.75rem; cursor: pointer;
+      transition: background 0.15s, border-color 0.15s; white-space: nowrap;
+      flex-shrink: 0; margin-right: 0.25rem;
+    }
+    .btn-manage-lists:hover { background: rgba(167,139,250,0.14); border-color: var(--accent); }
 
     /* ── Panels ── */
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
-    /* ── Empty state placeholder ── */
+    /* ── Empty state ── */
     .empty-panel {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: calc(100vh - 130px);
-      gap: 1rem;
-      color: var(--muted);
-      text-align: center;
-      padding: 3rem 1.5rem;
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; min-height: calc(100vh - 130px);
+      gap: 1rem; color: var(--muted); text-align: center; padding: 3rem 1.5rem;
     }
-
-    .empty-panel svg {
-      width: 48px;
-      height: 48px;
-      opacity: 0.25;
-    }
-
+    .empty-panel svg { width: 48px; height: 48px; opacity: 0.25; }
     .empty-panel .empty-title {
-      font-size: 0.85rem;
-      font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
+      font-size: 0.85rem; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .empty-panel .empty-sub {
+      font-size: 0.75rem; color: #3a3a4a; max-width: 340px; line-height: 1.6;
+    }
+    .coming-soon-badge {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.14em;
+      text-transform: uppercase; padding: 0.3rem 0.75rem;
+      border-radius: 9999px; background: rgba(167,139,250,0.08);
+      color: var(--accent); border: 1px solid rgba(167,139,250,0.2);
+    }
+
+    /* ── Manage Lists Modal ── */
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.72); z-index: 500;
+      align-items: center; justify-content: center; padding: 1.5rem;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 100%; max-width: 680px;
+      max-height: 88vh; overflow-y: auto;
+      display: flex; flex-direction: column;
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1.25rem 1.5rem 1rem;
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; background: var(--surface); z-index: 1;
+    }
+    .modal-title {
+      font-size: 0.82rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #fff;
+    }
+    .modal-close {
+      background: none; border: none; color: var(--muted);
+      font-size: 1.2rem; cursor: pointer; padding: 0.1rem 0.3rem;
+      border-radius: 3px; transition: color 0.15s; line-height: 1;
+    }
+    .modal-close:hover { color: var(--text); }
+
+    /* Company list */
+    .co-list {
+      padding: 1rem 1.5rem 0;
+      display: flex; flex-direction: column; gap: 0.5rem;
+    }
+    .co-list-label {
+      font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); margin-bottom: 0.25rem;
+    }
+    .co-item {
+      display: flex; align-items: flex-start; gap: 0.75rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.7rem 0.9rem;
+      transition: border-color 0.15s;
+    }
+    .co-item:hover { border-color: #3a3a4a; }
+    .co-item-body { flex: 1; min-width: 0; }
+    .co-item-name {
+      font-weight: 600; font-size: 0.82rem; color: var(--text); margin-bottom: 0.3rem;
+    }
+    .co-item-divs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.25rem; }
+    .div-tag {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.12rem 0.45rem; border-radius: 3px;
+    }
+    .div-tag.trucking { background: rgba(239,68,68,0.12); color: #ef4444; border: 1px solid rgba(239,68,68,0.2); }
+    .div-tag.dust     { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.2); }
+    .div-tag.turf     { background: rgba(34,197,94,0.10);  color: #22c55e; border: 1px solid rgba(34,197,94,0.2); }
+    .co-item-notes { font-size: 0.72rem; color: var(--muted); }
+    .co-item-actions { display: flex; flex-direction: column; gap: 0.3rem; flex-shrink: 0; }
+    .btn-co-edit {
+      font-size: 0.62rem; font-weight: 600; padding: 0.18rem 0.5rem;
+      background: none; border: 1px solid rgba(167,139,250,0.3); color: var(--accent);
+      border-radius: 3px; cursor: pointer; transition: background 0.15s;
+    }
+    .btn-co-edit:hover { background: rgba(167,139,250,0.1); }
+    .btn-co-del {
+      font-size: 0.62rem; font-weight: 600; padding: 0.18rem 0.5rem;
+      background: none; border: 1px solid rgba(239,68,68,0.25); color: var(--red);
+      border-radius: 3px; cursor: pointer; transition: background 0.15s;
+    }
+    .btn-co-del:hover { background: rgba(239,68,68,0.08); }
+    .co-empty {
+      font-size: 0.75rem; color: var(--muted); text-align: center;
+      padding: 1.5rem 1rem; border: 1px dashed var(--border); border-radius: 6px;
+    }
+
+    /* Add / edit form */
+    .co-form {
+      padding: 1.25rem 1.5rem 1.5rem;
+      border-top: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 0.75rem;
+      margin-top: 1rem;
+    }
+    .co-form-heading {
+      font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em;
       color: var(--muted);
     }
-
-    .empty-panel .empty-sub {
-      font-size: 0.75rem;
-      color: #3a3a4a;
-      max-width: 320px;
-      line-height: 1.6;
+    .co-form input[type="text"], .co-form textarea {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.82rem;
+      padding: 0.42rem 0.65rem; outline: none; font-family: inherit;
     }
-
-    .coming-soon-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      font-size: 0.6rem;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      padding: 0.3rem 0.75rem;
-      border-radius: 9999px;
-      background: rgba(167,139,250,0.08);
-      color: var(--accent);
-      border: 1px solid rgba(167,139,250,0.2);
+    .co-form input[type="text"]:focus, .co-form textarea:focus { border-color: var(--accent); }
+    .co-form textarea { resize: vertical; min-height: 52px; }
+    .co-form label.field-label {
+      font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--muted); display: block; margin-bottom: 0.3rem;
     }
+    .div-checks {
+      display: flex; gap: 1.2rem; flex-wrap: wrap;
+    }
+    .div-check-item {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.75rem; cursor: pointer;
+    }
+    .div-check-item input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
+    .co-form-actions { display: flex; align-items: center; gap: 0.6rem; }
+    .btn-save-co {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; padding: 0.45rem 1.1rem;
+      background: var(--accent); color: #000; border: none;
+      border-radius: 5px; cursor: pointer; transition: background 0.15s;
+    }
+    .btn-save-co:hover { background: #9061f9; }
+    .btn-cancel-co {
+      font-size: 0.72rem; font-weight: 600; padding: 0.45rem 0.9rem;
+      background: none; color: var(--muted); border: 1px solid var(--border);
+      border-radius: 5px; cursor: pointer; transition: color 0.15s, border-color 0.15s;
+    }
+    .btn-cancel-co:hover { color: var(--text); border-color: #555; }
   </style>
 </head>
 <body>
@@ -173,7 +267,7 @@
     <div class="hdr-right">
       <div class="user-avatar" id="userAvatar"></div>
       <div class="user-info" id="userInfo"></div>
-      <button class="btn-switch" onclick="switchDivision()">Switch Division</button>
+      <button class="btn-ghost" onclick="switchDivision()">Switch Division</button>
     </div>
   </header>
 
@@ -182,6 +276,8 @@
     <button class="tab-btn active" data-tab="dashboard"    onclick="switchTab('dashboard')">Dashboard</button>
     <button class="tab-btn"        data-tab="company-info" onclick="switchTab('company-info')">Company Info</button>
     <button class="tab-btn"        data-tab="analytics"    onclick="switchTab('analytics')">Analytics</button>
+    <div class="tab-bar-spacer"></div>
+    <button class="btn-manage-lists" onclick="openManageLists()">⚙ Manage Lists</button>
   </nav>
 
   <!-- ── Dashboard ── -->
@@ -228,15 +324,69 @@
     </div>
   </div>
 
+  <!-- ── Manage Lists Modal ── -->
+  <div class="modal-backdrop" id="listsBackdrop">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title">Manage Companies</div>
+        <button class="modal-close" onclick="closeManageLists()">&#10005;</button>
+      </div>
+
+      <!-- Company list -->
+      <div class="co-list">
+        <div class="co-list-label">Companies</div>
+        <div id="coListBody"></div>
+      </div>
+
+      <!-- Add / edit form -->
+      <div class="co-form">
+        <div class="co-form-heading" id="coFormHeading">Add Company</div>
+        <input type="hidden" id="coEditId" value="">
+
+        <div>
+          <label class="field-label">Company Name</label>
+          <input type="text" id="coNameInput" placeholder="e.g. XTO Energy" />
+        </div>
+
+        <div>
+          <label class="field-label">Pull data from divisions</label>
+          <div class="div-checks">
+            <label class="div-check-item">
+              <input type="checkbox" id="co-div-trucking"> Trucking
+            </label>
+            <label class="div-check-item">
+              <input type="checkbox" id="co-div-dust"> Dust Control
+            </label>
+            <label class="div-check-item">
+              <input type="checkbox" id="co-div-turf"> Turf
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <label class="field-label">Notes</label>
+          <textarea id="coNotesInput" placeholder="Billing contact, rate agreements, etc."></textarea>
+        </div>
+
+        <div class="co-form-actions">
+          <button class="btn-save-co" onclick="saveCompany()">Save Company</button>
+          <button class="btn-cancel-co" id="coCancelBtn" style="display:none" onclick="resetCoForm()">Cancel</button>
+        </div>
+        <div id="coFormResult" style="font-size:0.75rem;min-height:1em"></div>
+      </div>
+    </div>
+  </div>
+
   <script>
+    const API_BASE = '/api';
+
     // ── Auth guard ──────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
     const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
     if (!token || !user) { window.location.replace('index.html'); }
 
     // ── Header ─────────────────────────────────────────────────
-    const initials = (user?.username || 'U').slice(0, 2).toUpperCase();
-    document.getElementById('userAvatar').textContent = initials;
+    document.getElementById('userAvatar').textContent = (user?.username || 'U').slice(0, 2).toUpperCase();
     document.getElementById('userInfo').innerHTML =
       `<strong>${user?.username || ''}</strong>&nbsp;·&nbsp;${user?.companyName || user?.companyCode || ''}`;
 
@@ -253,6 +403,151 @@
       localStorage.removeItem('fct_division');
       window.location.replace('divisions.html');
     }
+
+    // ── Data ────────────────────────────────────────────────────
+    const IC_COMPANIES_KEY = 'fct_intercompany_companies';
+    let icCompanies = [];
+
+    function esc(s) { return String(s || '').replace(/"/g, '&quot;'); }
+    function escT(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function uid()  { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+    async function loadCompanies() {
+      try {
+        const r = await fetch(`${API_BASE}/data/${IC_COMPANIES_KEY}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) return;
+        const { value } = await r.json();
+        icCompanies = Array.isArray(value) ? value : [];
+      } catch { icCompanies = []; }
+    }
+
+    function saveCompanies() {
+      fetch(`${API_BASE}/data/${IC_COMPANIES_KEY}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value: icCompanies })
+      }).catch(() => {});
+    }
+
+    // ── Render company list ─────────────────────────────────────
+    function renderCoList() {
+      const body = document.getElementById('coListBody');
+      if (!icCompanies.length) {
+        body.innerHTML = `<div class="co-empty">No companies yet — add one below.</div>`;
+        return;
+      }
+
+      const DIV_LABELS = { trucking: 'Trucking', dust: 'Dust Control', turf: 'Turf' };
+      body.innerHTML = icCompanies.map(co => {
+        const divTags = (co.divisions || []).map(d =>
+          `<span class="div-tag ${d}">${DIV_LABELS[d] || d}</span>`
+        ).join('');
+        const notes = co.notes ? `<div class="co-item-notes">${escT(co.notes)}</div>` : '';
+        return `
+          <div class="co-item">
+            <div class="co-item-body">
+              <div class="co-item-name">${escT(co.name)}</div>
+              ${divTags ? `<div class="co-item-divs">${divTags}</div>` : ''}
+              ${notes}
+            </div>
+            <div class="co-item-actions">
+              <button class="btn-co-edit" onclick="editCompany('${esc(co.id)}')">Edit</button>
+              <button class="btn-co-del"  onclick="deleteCompany('${esc(co.id)}')">Remove</button>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // ── Add / edit form ─────────────────────────────────────────
+    function saveCompany() {
+      const name  = document.getElementById('coNameInput').value.trim();
+      const notes = document.getElementById('coNotesInput').value.trim();
+      const editId = document.getElementById('coEditId').value;
+      const result = document.getElementById('coFormResult');
+
+      if (!name) {
+        result.style.color = '#ef4444';
+        result.textContent = 'Company name is required.';
+        return;
+      }
+
+      const divisions = ['trucking', 'dust', 'turf'].filter(d =>
+        document.getElementById(`co-div-${d}`).checked
+      );
+
+      if (editId) {
+        const co = icCompanies.find(c => c.id === editId);
+        if (co) { co.name = name; co.divisions = divisions; co.notes = notes; }
+      } else {
+        icCompanies.push({ id: uid(), name, divisions, notes });
+      }
+
+      saveCompanies();
+      renderCoList();
+      resetCoForm();
+      result.style.color = 'var(--green)';
+      result.textContent = editId ? 'Company updated.' : `"${name}" added.`;
+      setTimeout(() => { result.textContent = ''; }, 2500);
+    }
+
+    function editCompany(id) {
+      const co = icCompanies.find(c => c.id === id);
+      if (!co) return;
+      document.getElementById('coEditId').value    = co.id;
+      document.getElementById('coNameInput').value  = co.name;
+      document.getElementById('coNotesInput').value = co.notes || '';
+      ['trucking', 'dust', 'turf'].forEach(d => {
+        document.getElementById(`co-div-${d}`).checked = (co.divisions || []).includes(d);
+      });
+      document.getElementById('coFormHeading').textContent = `Edit — ${co.name}`;
+      document.getElementById('coCancelBtn').style.display = '';
+      document.getElementById('coFormResult').textContent  = '';
+      document.getElementById('coNameInput').focus();
+    }
+
+    function deleteCompany(id) {
+      const co = icCompanies.find(c => c.id === id);
+      if (!co) return;
+      if (!confirm(`Remove "${co.name}"?`)) return;
+      icCompanies = icCompanies.filter(c => c.id !== id);
+      saveCompanies();
+      renderCoList();
+      if (document.getElementById('coEditId').value === id) resetCoForm();
+    }
+
+    function resetCoForm() {
+      document.getElementById('coEditId').value    = '';
+      document.getElementById('coNameInput').value  = '';
+      document.getElementById('coNotesInput').value = '';
+      ['trucking', 'dust', 'turf'].forEach(d => {
+        document.getElementById(`co-div-${d}`).checked = false;
+      });
+      document.getElementById('coFormHeading').textContent = 'Add Company';
+      document.getElementById('coCancelBtn').style.display = 'none';
+      document.getElementById('coFormResult').textContent  = '';
+    }
+
+    // ── Modal open / close ──────────────────────────────────────
+    async function openManageLists() {
+      await loadCompanies();
+      renderCoList();
+      resetCoForm();
+      document.getElementById('listsBackdrop').classList.add('open');
+    }
+
+    function closeManageLists() {
+      document.getElementById('listsBackdrop').classList.remove('open');
+    }
+
+    document.getElementById('listsBackdrop').addEventListener('click', function(e) {
+      if (e.target === this) closeManageLists();
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeManageLists();
+    });
   </script>
 </body>
 </html>
