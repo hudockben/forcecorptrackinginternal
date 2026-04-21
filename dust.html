@@ -1002,6 +1002,9 @@
     <!-- Toolbar -->
     <div class="toolbar">
       <button class="btn-add" onclick="addRow()">+ Add Row</button>
+      <input type="number" id="bulk-add-count" min="1" max="100" value="1"
+        title="Number of rows to add"
+        style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2,#1e1e1e);border:1px solid var(--border,#333);border-radius:4px;color:var(--text,#eee);font-size:0.72rem;text-align:center;outline:none">
       <button class="btn-ghost" onclick="openListsModal()">Manage Lists</button>
       <button class="btn-ghost" onclick="openImportModal()">↑ Import CSV</button>
       <button class="btn-ghost" id="repairBtn" onclick="repairListsFromRows()">⟳ Repair Lists</button>
@@ -1796,20 +1799,18 @@
       const updateMode = document.getElementById('importUpdateMode').checked;
       let merged;
       if (updateMode) {
-        // Replace existing rows that match date+company+start_time; append truly new ones
+        // Replace existing rows that match date+company+start_time; prepend truly new ones
         const importKeys = new Map(
           importBuffer.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
         );
-        // Keep existing rows that are NOT being updated, then add all import rows
         const kept = rows.filter(r => {
           const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
           return !importKeys.has(key);
         });
-        merged = [...kept, ...importBuffer];
+        merged = [...importBuffer, ...kept];
       } else {
-        merged = [...rows, ...importBuffer];
+        merged = [...importBuffer, ...rows];
       }
-      merged.sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
       const [rowsOk, listsOk] = await Promise.all([
         saveDustRows(merged),
@@ -2160,25 +2161,28 @@
        ROW CRUD
     ═══════════════════════════════════════════ */
     function addRow() {
-      rows.push({
-        id: uid(), date: todayStr(),
-        start_time: '', end_time: '',
-        company: '', company_man: '', location: '', state: '',
-        vehicle1: '', v1_unit: '', v1_rate: '',
-        vehicle2: '', v2_unit: '', v2_rate: '',
-        gallons_ub: '',
-        inv_number: '', inv_sent: '', inv_received: '', inv_status: '',
-      });
+      const countEl = document.getElementById('bulk-add-count');
+      const count = Math.min(Math.max(parseInt(countEl?.value) || 1, 1), 100);
+      for (let i = 0; i < count; i++) {
+        rows.unshift({
+          id: uid(), date: todayStr(),
+          start_time: '', end_time: '',
+          company: '', company_man: '', location: '', state: '',
+          vehicle1: '', v1_unit: '', v1_rate: '',
+          vehicle2: '', v2_unit: '', v2_rate: '',
+          gallons_ub: '',
+          inv_number: '', inv_sent: '', inv_received: '', inv_status: '',
+        });
+      }
       renderTable();
       scheduleSave();
 
-      // Scroll to and focus new row (skip inv-row siblings)
-      const tbody   = document.getElementById('dustTbody');
-      const mainRows = tbody.querySelectorAll('tr[data-idx]');
-      const last    = mainRows[mainRows.length - 1];
-      if (last) {
-        last.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        const inp = last.querySelector('input');
+      // Scroll to top and focus the first new row
+      const tbody = document.getElementById('dustTbody');
+      const first = tbody?.querySelector('tr[data-idx]');
+      if (first) {
+        first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const inp = first.querySelector('input');
         if (inp) setTimeout(() => inp.focus(), 80);
       }
     }
