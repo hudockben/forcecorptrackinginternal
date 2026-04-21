@@ -356,6 +356,7 @@
     .cards.count-2 { grid-template-columns: repeat(2, 1fr); max-width: 620px; }
     .cards.count-3 { grid-template-columns: repeat(3, 1fr); }
     .cards.count-4 { grid-template-columns: repeat(4, 1fr); max-width: 1200px; }
+    .cards.count-5 { grid-template-columns: repeat(3, 1fr); max-width: 1100px; }
 
     .card {
       background: var(--surface);
@@ -522,11 +523,12 @@
                 <th>Dust</th>
                 <th>Paving</th>
                 <th>Trucking</th>
+                <th>Billing</th>
                 <th></th>
               </tr>
             </thead>
             <tbody id="userListBody">
-              <tr><td colspan="6" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+              <tr><td colspan="7" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -584,6 +586,16 @@
             <div class="div-role-row">
               <span class="div-role-label">Trucking</span>
               <select id="mu-role-trucking">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3">Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Intercompany Billing</span>
+              <select id="mu-role-intercompany">
                 <option value="no_access" selected>No Access</option>
                 <option value="level1">Level 1 — View only</option>
                 <option value="level2">Level 2 — Insert &amp; edit</option>
@@ -679,9 +691,22 @@
                   <circle cx="18.5" cy="18.5" r="2.5"/>
                 </svg>`,
       },
+      intercompany: {
+        name:  'Intercompany Billing',
+        desc:  'Cross-division billing, internal charge tracking, and intercompany reconciliation across Force Corp entities.',
+        color: '#a78bfa',
+        href:  'intercompany.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="7" width="7" height="10" rx="1"/>
+                  <rect x="15" y="7" width="7" height="10" rx="1"/>
+                  <path d="M9 10h2l2-2 2 2h2"/>
+                  <path d="M9 14h2l2 2 2-2h2"/>
+                </svg>`,
+      },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'intercompany'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -740,7 +765,7 @@
 
     // ── Render cards ────────────────────────────────────────────────────────
     const grid = document.getElementById('cardsGrid');
-    grid.classList.add(`count-${Math.min(visibleDivisions.length, 4)}`);
+    grid.classList.add(`count-${Math.min(visibleDivisions.length, 5)}`);
 
     visibleDivisions.forEach(key => {
       const def = DIVISION_CATALOG[key];
@@ -797,7 +822,7 @@
       level1:    'View',
       no_access: '—',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'intercompany'];
 
     function openUserModal() {
       document.getElementById('userModalBackdrop').classList.add('open');
@@ -820,7 +845,7 @@
 
     async function loadUserList() {
       const tbody = document.getElementById('userListBody');
-      tbody.innerHTML = '<tr><td colspan="6" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
       try {
         const res  = await fetch('/api/company/users', {
           headers: { Authorization: `Bearer ${token}` }
@@ -828,17 +853,18 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Failed');
         if (!data.users.length) {
-          tbody.innerHTML = '<tr><td colspan="6" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
           return;
         }
         tbody.innerHTML = data.users.map(u => {
           const dr = u.division_roles || {};
           // For legacy users (no division_roles), show role in Turf and — elsewhere
-          const turf     = dr.turf     || (u.division_roles === null ? u.role : 'no_access');
-          const dust     = dr.dust     || (u.division_roles === null ? 'no_access' : 'no_access');
-          const paving   = dr.paving   || (u.division_roles === null ? 'no_access' : 'no_access');
-          const trucking = dr.trucking || (u.division_roles === null ? 'no_access' : 'no_access');
-          const isSelf   = String(u.id) === String(user.userId);
+          const turf         = dr.turf         || (u.division_roles === null ? u.role : 'no_access');
+          const dust         = dr.dust         || 'no_access';
+          const paving       = dr.paving       || 'no_access';
+          const trucking     = dr.trucking     || 'no_access';
+          const intercompany = dr.intercompany || 'no_access';
+          const isSelf       = String(u.id) === String(user.userId);
           return `
             <tr>
               <td style="font-weight:600">${u.username}${isSelf ? ' <span style="color:var(--muted);font-size:0.68rem">(you)</span>' : ''}</td>
@@ -846,6 +872,7 @@
               <td>${divRoleBadge(dust)}</td>
               <td>${divRoleBadge(paving)}</td>
               <td>${divRoleBadge(trucking)}</td>
+              <td>${divRoleBadge(intercompany)}</td>
               <td style="text-align:right;white-space:nowrap">
                 <button class="user-edit-btn" onclick='editUser(${JSON.stringify(u)})'>Edit</button>
                 ${!isSelf
@@ -855,7 +882,7 @@
             </tr>`;
         }).join('');
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="6" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
       }
     }
 
@@ -871,10 +898,11 @@
       const dr = u.division_roles || {};
       // For legacy users without division_roles, pre-fill turf with their legacy role
       const legacy = !u.division_roles;
-      document.getElementById('mu-role-turf').value     = dr.turf     || (legacy ? u.role : 'no_access');
-      document.getElementById('mu-role-dust').value     = dr.dust     || 'no_access';
-      document.getElementById('mu-role-paving').value   = dr.paving   || 'no_access';
-      document.getElementById('mu-role-trucking').value = dr.trucking || 'no_access';
+      document.getElementById('mu-role-turf').value         = dr.turf         || (legacy ? u.role : 'no_access');
+      document.getElementById('mu-role-dust').value         = dr.dust         || 'no_access';
+      document.getElementById('mu-role-paving').value       = dr.paving       || 'no_access';
+      document.getElementById('mu-role-trucking').value     = dr.trucking     || 'no_access';
+      document.getElementById('mu-role-intercompany').value = dr.intercompany || 'no_access';
 
       document.getElementById('mu-result').textContent = '';
       // Scroll form into view
@@ -889,10 +917,11 @@
       document.getElementById('mu-pw-hint').textContent = '(min 8 chars)';
       document.getElementById('mu-form-heading').textContent = 'Create User';
       document.getElementById('mu-cancel-btn').style.display = 'none';
-      document.getElementById('mu-role-turf').value     = 'level3';
-      document.getElementById('mu-role-dust').value     = 'no_access';
-      document.getElementById('mu-role-paving').value   = 'no_access';
-      document.getElementById('mu-role-trucking').value = 'no_access';
+      document.getElementById('mu-role-turf').value         = 'level3';
+      document.getElementById('mu-role-dust').value         = 'no_access';
+      document.getElementById('mu-role-paving').value       = 'no_access';
+      document.getElementById('mu-role-trucking').value     = 'no_access';
+      document.getElementById('mu-role-intercompany').value = 'no_access';
       document.getElementById('mu-result').textContent  = '';
     }
 
@@ -916,10 +945,11 @@
       }
 
       const division_roles = {
-        turf:     document.getElementById('mu-role-turf').value,
-        dust:     document.getElementById('mu-role-dust').value,
-        paving:   document.getElementById('mu-role-paving').value,
-        trucking: document.getElementById('mu-role-trucking').value,
+        turf:         document.getElementById('mu-role-turf').value,
+        dust:         document.getElementById('mu-role-dust').value,
+        paving:       document.getElementById('mu-role-paving').value,
+        trucking:     document.getElementById('mu-role-trucking').value,
+        intercompany: document.getElementById('mu-role-intercompany').value,
       };
 
       const body = { username, division_roles };
