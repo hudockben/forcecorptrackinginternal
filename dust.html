@@ -2003,6 +2003,16 @@
                 <option value="overdue" ${'overdue' ===invSt?'selected':''}>Overdue</option>
               </select>
             </div>
+            <div class="inv-field">
+              <label>Company Man Approval</label>
+              <input type="text" value="${esc(row.cm_approval||'')}" placeholder="Name or initials"
+                oninput="set(${idx},'cm_approval',this.value)">
+            </div>
+            <div class="inv-field">
+              <label>Invoiced Location</label>
+              <input type="text" value="${esc(row.inv_location||'')}" placeholder="Location"
+                oninput="set(${idx},'inv_location',this.value)">
+            </div>
           </div>`;
 
         return `<tr data-idx="${idx}">
@@ -2172,6 +2182,7 @@
           vehicle2: '', v2_unit: '', v2_rate: '',
           gallons_ub: '',
           inv_number: '', inv_sent: '', inv_received: '', inv_status: '',
+          cm_approval: '', inv_location: '',
         });
       }
       renderTable();
