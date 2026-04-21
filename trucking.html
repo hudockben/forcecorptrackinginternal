@@ -697,10 +697,16 @@
     }
 
     function addRow() {
+      // Default date: today if it matches the active year filter, otherwise first day of that year
+      const today = new Date().toISOString().slice(0, 10);
+      let defaultDate = today;
+      if (activeYearFilter !== 'all' && !today.startsWith(activeYearFilter)) {
+        defaultDate = activeYearFilter + '-01-01';
+      }
       divEntries.push({
         id: crypto.randomUUID(),
         task_number: nextTaskNum(),
-        actual_date: '', driver: '', unit: '',
+        actual_date: defaultDate, driver: '', unit: '',
         actual_start: '', actual_end: '',
         total_hours: '', haul_fee: '',
         customer: '', description: '', division: '', notes: ''
