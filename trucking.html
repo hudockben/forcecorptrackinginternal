@@ -703,7 +703,7 @@
       if (activeYearFilter !== 'all' && !today.startsWith(activeYearFilter)) {
         defaultDate = activeYearFilter + '-01-01';
       }
-      divEntries.push({
+      divEntries.unshift({
         id: crypto.randomUUID(),
         task_number: nextTaskNum(),
         actual_date: defaultDate, driver: '', unit: '',
