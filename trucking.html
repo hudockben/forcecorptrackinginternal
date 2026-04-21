@@ -724,6 +724,87 @@
       renderTrackingTab();
     }
 
+    async function sendToIntercompany(id) {
+      const e = divEntries.find(r => r.id === id);
+      if (!e) return;
+
+      const btn    = document.getElementById('ic-btn-' + id);
+      const status = document.getElementById('ic-status-' + id);
+      if (btn) btn.disabled = true;
+      if (status) { status.style.color = 'var(--muted)'; status.textContent = 'Checking…'; }
+
+      const IC_CO_KEY      = 'fct_intercompany_companies';
+      const IC_BILLING_KEY = 'fct_intercompany_billing_entries';
+
+      try {
+        // Load company list
+        const coRes = await fetch(`${API_BASE}/data/${IC_CO_KEY}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const { value: companies } = await coRes.json();
+        const coList = Array.isArray(companies) ? companies : [];
+
+        const customer = (e.customer || '').trim().toLowerCase();
+        const matched  = coList.find(c => c.name.trim().toLowerCase() === customer
+          && (c.divisions || []).includes('trucking'));
+
+        if (!matched) {
+          if (status) { status.style.color = 'var(--red)'; status.textContent = 'Customer not in Intercompany list.'; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 3500);
+          if (btn) btn.disabled = false;
+          return;
+        }
+
+        // Load existing billing entries
+        const beRes = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const { value: existing } = await beRes.json();
+        let entries = Array.isArray(existing) ? existing : [];
+
+        // Avoid exact duplicates (same source row already sent)
+        if (entries.some(x => x.source === 'trucking' && x.source_id === id)) {
+          if (status) { status.style.color = '#f59e0b'; status.textContent = 'Already sent.'; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 2500);
+          if (btn) btn.disabled = false;
+          return;
+        }
+
+        const tot = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
+        const entry = {
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+          source: 'trucking', source_id: id,
+          company_id: matched.id, company_name: matched.name,
+          task_number: e.task_number, actual_date: e.actual_date,
+          driver: e.driver, unit: e.unit,
+          actual_start: e.actual_start, actual_end: e.actual_end,
+          total_hours: e.total_hours, haul_fee: e.haul_fee, total: tot,
+          customer: e.customer, description: e.description,
+          division: e.division, notes: e.notes,
+          qb_invoice: e.qb_invoice, invoiced_date: e.invoiced_date,
+          invoice_sent_date: e.invoice_sent_date,
+          invoice_status: e.invoice_status, date_paid: e.date_paid,
+          sent_at: new Date().toISOString(),
+          sent_by: (typeof user !== 'undefined' && user?.username) || ''
+        };
+        entries.unshift(entry);
+
+        await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ value: entries })
+        });
+
+        if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
+        setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+      } catch (err) {
+        if (status) { status.style.color = 'var(--red)'; status.textContent = 'Error — try again.'; }
+        setTimeout(() => { if (status) status.textContent = ''; }, 3500);
+      }
+
+      if (btn) btn.disabled = false;
+    }
+
     function toggleInvoiceRow(id) {
       if (expandedRows.has(id)) {
         expandedRows.delete(id);
@@ -948,6 +1029,16 @@
                   <div style="min-width:140px">
                     <div style="${subLabel}">Date Paid</div>
                     ${invInp(e.id,'date_paid','date','',e.date_paid)}
+                  </div>
+                  <div style="display:flex;align-items:flex-end;padding-bottom:0.1rem">
+                    <button onclick="sendToIntercompany('${e.id}')"
+                      id="ic-btn-${e.id}"
+                      style="font-size:0.68rem;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;padding:0.32rem 0.8rem;background:rgba(167,139,250,0.1);color:#a78bfa;border:1px solid rgba(167,139,250,0.3);border-radius:4px;cursor:pointer;white-space:nowrap;transition:background 0.15s,border-color 0.15s"
+                      onmouseover="this.style.background='rgba(167,139,250,0.2)';this.style.borderColor='#a78bfa'"
+                      onmouseout="this.style.background='rgba(167,139,250,0.1)';this.style.borderColor='rgba(167,139,250,0.3)'">
+                      &#8644; Intercompany Billing
+                    </button>
+                    <span id="ic-status-${e.id}" style="font-size:0.7rem;font-weight:600;margin-left:0.6rem;min-width:1em"></span>
                   </div>
                 </div>
               </td>
