@@ -444,7 +444,7 @@
     let divTruckLists = { drivers: [], customers: [], units: [] };
     let _saveTimer       = null;
     let _isSaved         = false;
-    let activeYearFilter          = 'all';
+    let activeYearFilter          = new Date().getFullYear().toString();
     let analyticsYearFilter       = 'all';
     let equipYearFilter           = 'all';
     let financialsYearFilter      = 'all';
@@ -697,20 +697,23 @@
     }
 
     function addRow() {
-      // Default date: today if it matches the active year filter, otherwise first day of that year
+      const countEl = document.getElementById('bulk-add-count');
+      const count = Math.min(Math.max(parseInt(countEl?.value) || 1, 1), 100);
       const today = new Date().toISOString().slice(0, 10);
       let defaultDate = today;
       if (activeYearFilter !== 'all' && !today.startsWith(activeYearFilter)) {
         defaultDate = activeYearFilter + '-01-01';
       }
-      divEntries.unshift({
-        id: crypto.randomUUID(),
-        task_number: nextTaskNum(),
-        actual_date: defaultDate, driver: '', unit: '',
-        actual_start: '', actual_end: '',
-        total_hours: '', haul_fee: '',
-        customer: '', description: '', division: '', notes: ''
-      });
+      for (let i = 0; i < count; i++) {
+        divEntries.unshift({
+          id: crypto.randomUUID(),
+          task_number: nextTaskNum(),
+          actual_date: defaultDate, driver: '', unit: '',
+          actual_start: '', actual_end: '',
+          total_hours: '', haul_fee: '',
+          customer: '', description: '', division: '', notes: ''
+        });
+      }
       schedSave();
       renderTrackingTab();
     }
@@ -957,6 +960,9 @@
         <div style="padding:1.25rem 1.25rem 0">
           <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.85rem;flex-wrap:wrap">
             <button class="btn-add-row" onclick="addRow()">+ Add Row</button>
+            <input type="number" id="bulk-add-count" min="1" max="100" value="1"
+              title="Number of rows to add"
+              style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.72rem;text-align:center;outline:none">
             <button class="btn-ghost" onclick="triggerCSVUpload()" style="font-size:0.65rem;padding:0.28rem 0.65rem">&#8679; Upload CSV</button>
             <button class="btn-ghost" onclick="downloadCSVTemplate()" style="font-size:0.65rem;padding:0.28rem 0.65rem">&#8681; CSV Template</button>
             <span style="font-size:0.72rem;color:var(--muted)">${divEntries.length} ${divEntries.length === 1 ? 'entry' : 'entries'}</span>
