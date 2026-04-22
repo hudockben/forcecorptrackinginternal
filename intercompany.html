@@ -254,6 +254,93 @@
       border-radius: 5px; cursor: pointer; transition: color 0.15s, border-color 0.15s;
     }
     .btn-cancel-co:hover { color: var(--text); border-color: #555; }
+
+    /* ── Company Info tab ── */
+    .ci-toolbar {
+      display: flex; align-items: center; gap: 1rem;
+      padding: 0.65rem 1.25rem; border-bottom: 1px solid var(--border);
+      background: var(--surface); flex-wrap: wrap;
+    }
+    .ci-toolbar-group { display: flex; align-items: center; gap: 0.4rem; }
+    .ci-toolbar label {
+      font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+    }
+    .ci-toolbar select {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      font-size: 0.75rem; padding: 0.28rem 0.55rem; border-radius: 4px; outline: none; cursor: pointer;
+    }
+    .ci-toolbar select:focus { border-color: var(--accent); }
+    .ci-toolbar-spacer { flex: 1; }
+    .ci-toolbar-count { font-size: 0.68rem; color: var(--muted); }
+
+    .ci-body { padding: 1.25rem; display: flex; flex-direction: column; gap: 1.25rem; }
+
+    .ci-co-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; overflow: hidden;
+    }
+    .ci-co-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.7rem 1rem; background: var(--surface2);
+      border-bottom: 1px solid var(--border); gap: 1rem; flex-wrap: wrap;
+    }
+    .ci-co-name { font-size: 0.85rem; font-weight: 700; color: var(--text); }
+    .ci-co-meta { display: flex; gap: 1.75rem; flex-wrap: wrap; }
+    .ci-co-stat { display: flex; flex-direction: column; align-items: flex-end; }
+    .ci-co-stat-val { font-size: 0.82rem; font-weight: 600; color: var(--accent); }
+    .ci-co-stat-lbl { font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+
+    .ci-month-table { width: 100%; border-collapse: collapse; }
+    .ci-month-table th {
+      font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); text-align: left; padding: 0.38rem 0.85rem;
+      border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    .ci-month-table th.r { text-align: right; }
+    .ci-month-table td {
+      font-size: 0.78rem; padding: 0.35rem 0.85rem;
+      border-bottom: 1px solid rgba(42,42,58,0.5); color: var(--text);
+    }
+    .ci-month-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
+    .ci-month-table tbody tr:last-child td { border-bottom: none; }
+    .ci-month-table tbody tr:hover td { background: rgba(255,255,255,0.02); }
+    .ci-month-total td {
+      border-top: 1px solid var(--border) !important;
+      font-weight: 600; color: var(--accent); padding-top: 0.45rem !important;
+    }
+
+    .ci-detail-toggle {
+      width: 100%; text-align: left; background: none; border: none;
+      border-top: 1px solid var(--border);
+      font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); padding: 0.42rem 0.85rem; cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+    }
+    .ci-detail-toggle:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+
+    .ci-detail-section { display: none; border-top: 1px solid var(--border); overflow-x: auto; }
+    .ci-detail-section.open { display: block; }
+
+    .ci-detail-table { width: 100%; border-collapse: collapse; min-width: 640px; }
+    .ci-detail-table th {
+      font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.07em;
+      color: #3a3a5a; text-align: left; padding: 0.3rem 0.85rem;
+      border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    .ci-detail-table th.r { text-align: right; }
+    .ci-detail-table td {
+      font-size: 0.72rem; padding: 0.28rem 0.85rem; color: var(--muted);
+      border-bottom: 1px solid rgba(42,42,58,0.3); white-space: nowrap;
+    }
+    .ci-detail-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
+    .ci-detail-table tbody tr:last-child td { border-bottom: none; }
+
+    .ci-empty {
+      padding: 2.5rem 1.5rem; text-align: center;
+      font-size: 0.78rem; color: var(--muted); line-height: 1.7;
+    }
+    .ci-empty strong { display: block; margin-bottom: 0.35rem; color: #3a3a5a; font-size: 0.72rem;
+      text-transform: uppercase; letter-spacing: 0.08em; }
   </style>
 </head>
 <body>
@@ -297,15 +384,24 @@
 
   <!-- ── Company Info ── -->
   <div class="tab-panel" id="tab-company-info">
-    <div class="empty-panel">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 21h18"/>
-        <path d="M5 21V7l7-4 7 4v14"/>
-        <path d="M9 21v-4h6v4"/>
-      </svg>
-      <div class="empty-title">Company Info</div>
-      <div class="empty-sub">Entity profiles, billing relationships, and intercompany rate agreements will be managed here.</div>
-      <span class="coming-soon-badge">Coming Soon</span>
+    <div class="ci-toolbar">
+      <div class="ci-toolbar-group">
+        <label for="ciYearFilter">Year</label>
+        <select id="ciYearFilter" onchange="renderCompanyInfo()">
+          <option value="all">All Years</option>
+        </select>
+      </div>
+      <div class="ci-toolbar-group">
+        <label for="ciCoFilter">Company</label>
+        <select id="ciCoFilter" onchange="renderCompanyInfo()">
+          <option value="all">All Companies</option>
+        </select>
+      </div>
+      <div class="tab-bar-spacer"></div>
+      <div class="ci-toolbar-count" id="ciCount"></div>
+    </div>
+    <div class="ci-body" id="ciBody">
+      <div class="ci-empty"><strong>Loading</strong>Fetching billing entries…</div>
     </div>
   </div>
 
@@ -396,6 +492,7 @@
         b.classList.toggle('active', b.dataset.tab === tab));
       document.querySelectorAll('.tab-panel').forEach(p =>
         p.classList.toggle('active', p.id === 'tab-' + tab));
+      if (tab === 'company-info') loadAndRenderCompanyInfo();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -527,6 +624,192 @@
       document.getElementById('coFormHeading').textContent = 'Add Company';
       document.getElementById('coCancelBtn').style.display = 'none';
       document.getElementById('coFormResult').textContent  = '';
+    }
+
+    // ── Billing entries ─────────────────────────────────────────
+    const IC_BILLING_KEY = 'fct_intercompany_billing_entries';
+    let icBillingEntries = [];
+    const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    async function loadBillingEntries() {
+      try {
+        const r = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) { icBillingEntries = []; return; }
+        const { value } = await r.json();
+        icBillingEntries = Array.isArray(value) ? value : [];
+      } catch { icBillingEntries = []; }
+    }
+
+    async function loadAndRenderCompanyInfo() {
+      document.getElementById('ciBody').innerHTML =
+        '<div class="ci-empty"><strong>Loading</strong>Fetching billing entries…</div>';
+      await Promise.all([loadCompanies(), loadBillingEntries()]);
+
+      // Build year options from entry dates
+      const years = [...new Set(
+        icBillingEntries.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort().reverse();
+      const yearSel = document.getElementById('ciYearFilter');
+      const prevYear = yearSel.value;
+      yearSel.innerHTML = '<option value="all">All Years</option>' +
+        years.map(y => `<option value="${y}">${y}</option>`).join('');
+      const curYear = String(new Date().getFullYear());
+      yearSel.value = years.includes(prevYear) ? prevYear :
+                      (years.includes(curYear) ? curYear : 'all');
+
+      // Build company options from entries + icCompanies list
+      const coSel = document.getElementById('ciCoFilter');
+      const prevCo = coSel.value;
+      const seenIds = [...new Set(icBillingEntries.map(e => e.company_id).filter(Boolean))];
+      coSel.innerHTML = '<option value="all">All Companies</option>' +
+        seenIds.map(id => {
+          const co = icCompanies.find(c => c.id === id);
+          const name = co ? co.name : (icBillingEntries.find(e => e.company_id === id)?.company_name || id);
+          return `<option value="${escT(id)}">${escT(name)}</option>`;
+        }).join('');
+      if (seenIds.includes(prevCo)) coSel.value = prevCo;
+
+      renderCompanyInfo();
+    }
+
+    function renderCompanyInfo() {
+      const body      = document.getElementById('ciBody');
+      const yearFilter = document.getElementById('ciYearFilter').value;
+      const coFilter   = document.getElementById('ciCoFilter').value;
+
+      let entries = icBillingEntries;
+      if (yearFilter !== 'all') entries = entries.filter(e => (e.actual_date || '').startsWith(yearFilter));
+      if (coFilter  !== 'all') entries = entries.filter(e => e.company_id === coFilter);
+
+      const count = document.getElementById('ciCount');
+      count.textContent = entries.length ? `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}` : '';
+
+      if (!entries.length) {
+        body.innerHTML = `<div class="ci-empty">
+          <strong>No Entries</strong>
+          ${icBillingEntries.length
+            ? `No entries match the current filter selection.`
+            : `No intercompany billing entries yet. Use the <em>Intercompany Billing</em> button on a truck tracking row to send jobs here.`}
+        </div>`;
+        return;
+      }
+
+      // Group by company
+      const byCompany = {};
+      entries.forEach(e => {
+        const key = e.company_id || e.company_name || 'unknown';
+        if (!byCompany[key]) byCompany[key] = { name: e.company_name || key, id: e.company_id, rows: [] };
+        byCompany[key].rows.push(e);
+      });
+
+      const fmt$ = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+      const fmtH = v => v.toFixed(1) + ' hrs';
+
+      body.innerHTML = Object.values(byCompany).map((co, idx) => {
+        // Monthly aggregation
+        const byMonth = {};
+        co.rows.forEach(e => {
+          const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
+          const mIdx = isNaN(mRaw) ? -1 : mRaw;
+          const mKey = mIdx >= 0 ? mIdx : 'unknown';
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, total: 0 };
+          byMonth[mKey].jobs++;
+          byMonth[mKey].hours += parseFloat(e.total_hours) || 0;
+          byMonth[mKey].total += parseFloat(e.total) || 0;
+        });
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+
+        const totJobs  = co.rows.length;
+        const totHours = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totRev   = co.rows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
+
+        const monthRows = sortedMonths.map(m =>
+          `<tr>
+            <td>${m.label}</td>
+            <td class="r">${m.jobs}</td>
+            <td class="r">${fmtH(m.hours)}</td>
+            <td class="r">${fmt$(m.total)}</td>
+          </tr>`
+        ).join('');
+
+        const detailRows = [...co.rows]
+          .sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''))
+          .map(e => `<tr>
+            <td>${e.actual_date || '—'}</td>
+            <td>${escT(e.task_number || '—')}</td>
+            <td>${escT(e.driver || '—')}</td>
+            <td>${escT(e.unit || '—')}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${escT(e.description || '—')}</td>
+            <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
+            <td class="r">${fmt$(parseFloat(e.haul_fee) || 0)}/hr</td>
+            <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
+          </tr>`).join('');
+
+        return `
+        <div class="ci-co-card">
+          <div class="ci-co-header">
+            <div class="ci-co-name">${escT(co.name)}</div>
+            <div class="ci-co-meta">
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${totJobs}</div>
+                <div class="ci-co-stat-lbl">Jobs</div>
+              </div>
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${fmtH(totHours)}</div>
+                <div class="ci-co-stat-lbl">Hours</div>
+              </div>
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${fmt$(totRev)}</div>
+                <div class="ci-co-stat-lbl">Total</div>
+              </div>
+            </div>
+          </div>
+
+          <table class="ci-month-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th class="r">Jobs</th>
+                <th class="r">Hours</th>
+                <th class="r">Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${monthRows}
+              <tr class="ci-month-total">
+                <td>Total</td>
+                <td class="r">${totJobs}</td>
+                <td class="r">${fmtH(totHours)}</td>
+                <td class="r">${fmt$(totRev)}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <button class="ci-detail-toggle" onclick="toggleDetail('ci-det-${idx}', this)">
+            ▸ Show ${totJobs} individual entr${totJobs === 1 ? 'y' : 'ies'}
+          </button>
+          <div class="ci-detail-section" id="ci-det-${idx}">
+            <table class="ci-detail-table">
+              <thead>
+                <tr>
+                  <th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th>
+                  <th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th>
+                </tr>
+              </thead>
+              <tbody>${detailRows}</tbody>
+            </table>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function toggleDetail(id, btn) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.classList.toggle('open');
+      btn.textContent = btn.textContent.replace(/[▸▾]/, el.classList.contains('open') ? '▾' : '▸');
     }
 
     // ── Modal open / close ──────────────────────────────────────
