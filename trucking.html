@@ -839,14 +839,34 @@
     function toggleEquipRow(key)  { _toggleDrillRow(key, expandedEquipRows,  'equ-sub-', 'equ-c-'); }
     function toggleDriverRow(key) { _toggleDrillRow(key, expandedDriverRows, 'drv-sub-', 'drv-c-'); }
 
+    function calcHours(start, end) {
+      if (!start || !end) return null;
+      const [sh, sm] = start.split(':').map(Number);
+      const [eh, em] = end.split(':').map(Number);
+      if ([sh, sm, eh, em].some(isNaN)) return null;
+      let mins = (eh * 60 + em) - (sh * 60 + sm);
+      if (mins < 0) mins += 24 * 60;
+      return Math.round(mins / 60 * 100) / 100;
+    }
+
     function updateField(id, field, value) {
       const e = divEntries.find(e => e.id === id);
       if (!e) return;
       e[field] = value;
-      if (field === 'total_hours' || field === 'haul_fee') {
+
+      if (field === 'actual_start' || field === 'actual_end') {
+        const calc = calcHours(e.actual_start, e.actual_end);
+        if (calc !== null) {
+          e.total_hours = calc;
+          const hrsEl = document.getElementById('th-hrs-' + id);
+          if (hrsEl) hrsEl.value = calc;
+        }
+      }
+
+      if (['total_hours', 'haul_fee', 'actual_start', 'actual_end'].includes(field)) {
         const tot = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
         const el  = document.getElementById('td-tot-' + id);
-        if (el) el.textContent = '$' + tot.toFixed(4);
+        if (el) el.textContent = '$' + tot.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       }
       if (field === 'unit') {
         const unit  = divTruckLists.units.find(u => u.name === value);
@@ -996,7 +1016,12 @@
               </td>
               <td style="min-width:90px">${inp(e.id,'actual_start','time','',e.actual_start)}</td>
               <td style="min-width:90px">${inp(e.id,'actual_end','time','',e.actual_end)}</td>
-              <td style="min-width:80px;text-align:right">${inp(e.id,'total_hours','number','0',e.total_hours)}</td>
+              <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)">
+                <input type="number" id="th-hrs-${e.id}" value="${esc(e.total_hours || '')}"
+                  placeholder="0"
+                  onchange="updateField('${e.id}','total_hours',this.value)"
+                  style="width:100%;background:transparent;border:none;color:#fbbf24;font-size:0.8rem;outline:none;padding:0.15rem 0;text-align:right;font-weight:600">
+              </td>
               <td style="min-width:90px;text-align:right">${inp(e.id,'haul_fee','number','0.00',e.haul_fee)}</td>
               <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
               <td style="min-width:130px">${sel(e.id,'customer',customerOpts(e.customer))}</td>
@@ -1075,7 +1100,7 @@
                   <th>Unit</th>
                   <th>Actual Start</th>
                   <th>Actual End</th>
-                  <th class="r">Total Hours</th>
+                  <th class="r" style="color:#fbbf24">Total Hours <span title="Auto-calculated from start &amp; end times" style="font-size:0.55rem;vertical-align:middle;opacity:0.7">⚡</span></th>
                   <th class="r">Haul Fee</th>
                   <th class="r">Total</th>
                   <th>Customer</th>
