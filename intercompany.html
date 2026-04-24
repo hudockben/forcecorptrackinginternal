@@ -360,6 +360,26 @@
     .ci-div-stats { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-left: auto; }
     .ci-div-stat  { font-size: 0.65rem; color: var(--muted); }
     .ci-div-stat strong { color: var(--text); font-weight: 600; }
+
+    /* ── Company Info sub-tabs ── */
+    .ci-subtab-bar {
+      display: flex;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1.25rem;
+      gap: 0;
+    }
+    .ci-subtab-btn {
+      padding: 0.5rem 1.1rem;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .ci-subtab-btn:hover { color: var(--text); }
+    .ci-subtab-btn.st-truck { color: #ef4444; border-bottom-color: #ef4444; }
+    .ci-subtab-btn.st-dust  { color: #f59e0b; border-bottom-color: #f59e0b; }
   </style>
 </head>
 <body>
@@ -403,6 +423,10 @@
 
   <!-- ── Company Info ── -->
   <div class="tab-panel" id="tab-company-info">
+    <div class="ci-subtab-bar">
+      <button class="ci-subtab-btn st-truck" id="ciSubTruck" onclick="switchCiDiv('trucking')">Trucking</button>
+      <button class="ci-subtab-btn"          id="ciSubDust"  onclick="switchCiDiv('dust')">Dust Control</button>
+    </div>
     <div class="ci-toolbar">
       <div class="ci-toolbar-group">
         <label for="ciYearFilter">Year</label>
@@ -518,6 +542,16 @@
     function switchDivision() {
       localStorage.removeItem('fct_division');
       window.location.replace('divisions.html');
+    }
+
+    // ── Company Info sub-tab state ──────────────────────────────
+    let ciDivFilter = 'trucking';
+
+    function switchCiDiv(div) {
+      ciDivFilter = div;
+      document.getElementById('ciSubTruck').className = 'ci-subtab-btn' + (div === 'trucking' ? ' st-truck' : '');
+      document.getElementById('ciSubDust').className  = 'ci-subtab-btn' + (div === 'dust'     ? ' st-dust'  : '');
+      renderCompanyInfo();
     }
 
     // ── Data ────────────────────────────────────────────────────
@@ -701,16 +735,19 @@
       let entries = icBillingEntries;
       if (yearFilter !== 'all') entries = entries.filter(e => (e.actual_date || '').startsWith(yearFilter));
       if (coFilter  !== 'all') entries = entries.filter(e => e.company_id === coFilter);
+      entries = entries.filter(e => (e.source || 'trucking') === ciDivFilter);
 
       const count = document.getElementById('ciCount');
       count.textContent = entries.length ? `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}` : '';
 
       if (!entries.length) {
+        const divLabel  = ciDivFilter === 'dust' ? 'Dust Control' : 'Trucking';
+        const hasAnyDiv = icBillingEntries.some(e => (e.source || 'trucking') === ciDivFilter);
         body.innerHTML = `<div class="ci-empty">
-          <strong>No Entries</strong>
-          ${icBillingEntries.length
-            ? `No entries match the current filter selection.`
-            : `No intercompany billing entries yet. Use the <em>Intercompany Billing</em> button on a truck tracking row or a dust control invoice panel to send jobs here.`}
+          <strong>No ${divLabel} Entries</strong>
+          ${hasAnyDiv
+            ? `No ${divLabel} entries match the current filter selection.`
+            : `No ${divLabel} billing entries yet. Use the <em>Intercompany Billing</em> button on a ${ciDivFilter === 'dust' ? 'dust control invoice panel' : 'truck tracking row'} to send jobs here.`}
         </div>`;
         return;
       }
@@ -850,13 +887,9 @@
         const totHours = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
         const totRev   = co.rows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
 
-        const truckRows = co.rows.filter(e => (e.source || 'trucking') === 'trucking');
-        const dustRows  = co.rows.filter(e => e.source === 'dust');
-
-        const divSections = [
-          truckRows.length ? buildDivSection(truckRows, 'trucking', `ci-det-${idx}-tr`) : '',
-          dustRows.length  ? buildDivSection(dustRows,  'dust',     `ci-det-${idx}-du`) : '',
-        ].join('');
+        const divSections = co.rows.length
+          ? buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`)
+          : '';
 
         return `
         <div class="ci-co-card">
