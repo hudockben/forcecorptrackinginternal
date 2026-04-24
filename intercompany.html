@@ -380,6 +380,54 @@
     .ci-subtab-btn:hover { color: var(--text); }
     .ci-subtab-btn.st-truck { color: #ef4444; border-bottom-color: #ef4444; }
     .ci-subtab-btn.st-dust  { color: #f59e0b; border-bottom-color: #f59e0b; }
+
+    /* ── Intercompany rate inputs ── */
+    .ci-rates-group {
+      display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+      padding: 0.32rem 0.75rem;
+      background: rgba(167,139,250,0.07);
+      border: 1px solid rgba(167,139,250,0.2);
+      border-radius: 5px;
+    }
+    .ci-rates-group .rates-label {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--accent); white-space: nowrap;
+    }
+    .ci-rates-group .rate-field {
+      display: flex; align-items: center; gap: 0.3rem;
+    }
+    .ci-rates-group .rate-field label {
+      font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--muted); white-space: nowrap;
+    }
+    .ci-rate-wrap {
+      display: flex; align-items: center;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; overflow: hidden;
+    }
+    .ci-rate-wrap .rate-pre {
+      padding: 0.2rem 0.3rem; font-size: 0.72rem; color: var(--muted);
+      background: var(--surface2); border-right: 1px solid var(--border);
+      line-height: 1;
+    }
+    .ci-rate-wrap .rate-suf {
+      padding: 0.2rem 0.3rem; font-size: 0.72rem; color: var(--muted);
+      background: var(--surface2); border-left: 1px solid var(--border);
+      line-height: 1;
+    }
+    .ci-rate-wrap input[type="number"] {
+      width: 58px; padding: 0.2rem 0.35rem; background: transparent;
+      border: none; color: var(--text); font-size: 0.78rem;
+      outline: none; font-family: inherit; text-align: right;
+      -moz-appearance: textfield;
+    }
+    .ci-rate-wrap input[type="number"]::-webkit-inner-spin-button,
+    .ci-rate-wrap input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
+    .ci-rate-wrap input[type="number"]:focus { background: rgba(167,139,250,0.05); }
+
+    /* IC value highlight */
+    .ic-val { color: #a78bfa !important; }
+    .ic-val-dim { color: #7c5cbf !important; }
   </style>
 </head>
 <body>
@@ -439,6 +487,25 @@
         <select id="ciCoFilter" onchange="renderCompanyInfo()">
           <option value="all">All Companies</option>
         </select>
+      </div>
+      <div class="ci-rates-group" id="ciRatesGroup">
+        <span class="rates-label">IC Rates</span>
+        <div class="rate-field">
+          <label for="ciTruckRate">Trucking</label>
+          <div class="ci-rate-wrap">
+            <span class="rate-pre">$</span>
+            <input type="number" id="ciTruckRate" value="121" min="0" step="0.01" oninput="onRateChange()">
+            <span class="rate-suf">/hr</span>
+          </div>
+        </div>
+        <div class="rate-field">
+          <label for="ciLaborRate">Labor</label>
+          <div class="ci-rate-wrap">
+            <span class="rate-pre">$</span>
+            <input type="number" id="ciLaborRate" value="121" min="0" step="0.01" oninput="onRateChange()">
+            <span class="rate-suf">/hr</span>
+          </div>
+        </div>
       </div>
       <div class="tab-bar-spacer"></div>
       <div class="ci-toolbar-count" id="ciCount"></div>
@@ -547,10 +614,32 @@
     // ── Company Info sub-tab state ──────────────────────────────
     let ciDivFilter = 'trucking';
 
+    // ── Intercompany rates (persisted in localStorage) ──────────
+    let icTruckRate = parseFloat(localStorage.getItem('ic_truck_rate') ?? '121') || 121;
+    let icLaborRate = parseFloat(localStorage.getItem('ic_labor_rate') ?? '121') || 121;
+
+    function initRateInputs() {
+      const tr = document.getElementById('ciTruckRate');
+      const lr = document.getElementById('ciLaborRate');
+      if (tr) tr.value = icTruckRate;
+      if (lr) lr.value = icLaborRate;
+    }
+    initRateInputs();
+
+    function onRateChange() {
+      icTruckRate = parseFloat(document.getElementById('ciTruckRate').value) || 0;
+      icLaborRate = parseFloat(document.getElementById('ciLaborRate').value) || 0;
+      localStorage.setItem('ic_truck_rate', icTruckRate);
+      localStorage.setItem('ic_labor_rate', icLaborRate);
+      renderCompanyInfo();
+    }
+
     function switchCiDiv(div) {
       ciDivFilter = div;
       document.getElementById('ciSubTruck').className = 'ci-subtab-btn' + (div === 'trucking' ? ' st-truck' : '');
       document.getElementById('ciSubDust').className  = 'ci-subtab-btn' + (div === 'dust'     ? ' st-dust'  : '');
+      const rg = document.getElementById('ciRatesGroup');
+      if (rg) rg.style.display = div === 'trucking' ? '' : 'none';
       renderCompanyInfo();
     }
 
@@ -767,7 +856,9 @@
         const label    = source === 'trucking' ? 'Trucking' : 'Dust Control';
         const cssClass = source === 'trucking' ? 'trucking' : 'dust';
         const isDust   = source === 'dust';
-        const colSpan  = isDust ? 5 : 4;
+        // trucking: Month|Jobs|Hours|Revenue|IC Total = 5 cols
+        // dust:     Month|Jobs|Hours|UB Gallons|Revenue = 5 cols
+        const colSpan  = 5;
 
         // Build per-month buckets including the entries themselves
         const byMonth = {};
@@ -775,11 +866,12 @@
           const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
           const mIdx = isNaN(mRaw) ? -1 : mRaw;
           const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, gallons: 0, total: 0, entries: [] };
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, gallons: 0, total: 0, icTotal: 0, entries: [] };
           byMonth[mKey].jobs++;
           byMonth[mKey].hours   += parseFloat(e.total_hours) || 0;
           byMonth[mKey].gallons += parseFloat(e.gallons_ub)  || 0;
           byMonth[mKey].total   += parseFloat(e.total)       || 0;
+          byMonth[mKey].icTotal += (parseFloat(e.total_hours) || 0) * icTruckRate;
           byMonth[mKey].entries.push(e);
         });
         const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
@@ -788,10 +880,11 @@
         const totHours   = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
         const totGallons = divRows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
         const totRev     = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
+        const totIcRev   = totHours * icTruckRate;
 
         const detailHead = isDust
           ? `<th>Date</th><th>Location</th><th>Company Man</th><th>Vehicle 1</th><th>Vehicle 2</th><th class="r">Hours</th><th class="r">UB Gal</th><th class="r">UB Total</th><th class="r">Inv Total</th><th></th>`
-          : `<th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th><th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th><th></th>`;
+          : `<th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th><th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th><th class="r ic-val">IC Total</th><th></th>`;
 
         const monthRows = sortedMonths.map((m, mi) => {
           const detId = `${sectionId}-m${mi}`;
@@ -814,15 +907,18 @@
                 <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
               </tr>`;
             } else {
+              const hrs = parseFloat(e.total_hours) || 0;
+              const icAmt = hrs * icTruckRate;
               return `<tr>
                 <td>${e.actual_date || '—'}</td>
                 <td>${escT(e.task_number || '—')}</td>
                 <td>${escT(e.driver || '—')}</td>
                 <td>${escT(e.unit || '—')}</td>
                 <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${escT(e.description || '—')}</td>
-                <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
+                <td class="r">${fmtH(hrs)}</td>
                 <td class="r">${fmt$(parseFloat(e.haul_fee) || 0)}/hr</td>
                 <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
+                <td class="r ic-val">${fmt$(icAmt)}</td>
                 <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
               </tr>`;
             }
@@ -835,6 +931,7 @@
               <td class="r">${fmtH(m.hours)}</td>
               ${isDust ? `<td class="r">${m.gallons > 0 ? m.gallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
               <td class="r">${fmt$(m.total)}</td>
+              ${!isDust ? `<td class="r ic-val">${fmt$(m.icTotal)}</td>` : ''}
             </tr>
             <tr class="ci-mdet-row" id="${detId}">
               <td colspan="${colSpan}" class="ci-mdet-inner">
@@ -848,6 +945,8 @@
 
         const galStat = isDust && totGallons > 0
           ? `<div class="ci-div-stat"><strong>${totGallons.toLocaleString(undefined,{maximumFractionDigits:1})} gal</strong></div>` : '';
+        const icStat = !isDust
+          ? `<div class="ci-div-stat ic-val"><strong>${fmt$(totIcRev)}</strong> IC</div>` : '';
 
         return `
         <div class="ci-div-section">
@@ -858,6 +957,7 @@
               <div class="ci-div-stat"><strong>${fmtH(totHours)}</strong></div>
               ${galStat}
               <div class="ci-div-stat"><strong>${fmt$(totRev)}</strong></div>
+              ${icStat}
             </div>
           </div>
           <table class="ci-month-table">
@@ -866,6 +966,7 @@
                 <th>Month</th><th class="r">Jobs</th><th class="r">Hours</th>
                 ${isDust ? `<th class="r">UB Gallons</th>` : ''}
                 <th class="r">Revenue</th>
+                ${!isDust ? `<th class="r ic-val">IC Total</th>` : ''}
               </tr>
             </thead>
             <tbody>
@@ -876,6 +977,7 @@
                 <td class="r">${fmtH(totHours)}</td>
                 ${isDust ? `<td class="r">${totGallons > 0 ? totGallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
                 <td class="r">${fmt$(totRev)}</td>
+                ${!isDust ? `<td class="r ic-val">${fmt$(totIcRev)}</td>` : ''}
               </tr>
             </tbody>
           </table>
@@ -886,10 +988,17 @@
         const totJobs  = co.rows.length;
         const totHours = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
         const totRev   = co.rows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
+        const totIcRev = ciDivFilter === 'trucking' ? totHours * icTruckRate : null;
 
         const divSections = co.rows.length
           ? buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`)
           : '';
+
+        const icStatCard = totIcRev !== null ? `
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val ic-val">${fmt$(totIcRev)}</div>
+                <div class="ci-co-stat-lbl">Intercompany</div>
+              </div>` : '';
 
         return `
         <div class="ci-co-card">
@@ -908,6 +1017,7 @@
                 <div class="ci-co-stat-val">${fmt$(totRev)}</div>
                 <div class="ci-co-stat-lbl">Total</div>
               </div>
+              ${icStatCard}
             </div>
           </div>
           ${divSections}
