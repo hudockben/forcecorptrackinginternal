@@ -2079,7 +2079,7 @@
     }
 
     /* Strip currency symbols / commas so parseFloat works */
-    function _csvNum(v) { return v.replace(/[$,\s]/g, ''); }
+    function _csvNum(v) { return String(v == null ? '' : v).replace(/[$,\s]/g, ''); }
 
     function _parseCSVLine(line) {
       const out = [];
