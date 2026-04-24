@@ -444,7 +444,7 @@
     let divTruckLists = { drivers: [], customers: [], units: [] };
     let _saveTimer       = null;
     let _isSaved         = false;
-    let icSentMap = new Map(); // source_id → sent_at for trucking IC entries
+    let icSentMap = new Map(); // source_id → full IC entry (trucking)
 
     function fmtSentAt(ts) {
       if (!ts) return '';
@@ -466,9 +466,51 @@
         const { value } = await r.json();
         icSentMap.clear();
         if (Array.isArray(value)) {
-          value.forEach(e => { if (e.source === 'trucking' && e.source_id) icSentMap.set(e.source_id, e.sent_at || ''); });
+          value.forEach(e => { if (e.source === 'trucking' && e.source_id) icSentMap.set(e.source_id, e); });
         }
       } catch { /* non-fatal */ }
+    }
+
+    // Restore any trucking rows that were lost but exist in IC billing entries
+    function _recoverMissingICEntries() {
+      if (!icSentMap.size) return;
+      const existing = new Set(divEntries.map(e => e.id).filter(Boolean));
+      const toRestore = [];
+      icSentMap.forEach((ic, sourceId) => {
+        if (sourceId && !existing.has(sourceId)) toRestore.push(ic);
+      });
+      if (!toRestore.length) return;
+
+      const recovered = toRestore.map(ic => ({
+        id:                ic.source_id        || '',
+        task_number:       ic.task_number       || '',
+        actual_date:       ic.actual_date       || '',
+        driver:            ic.driver            || '',
+        unit:              ic.unit              || '',
+        actual_start:      ic.actual_start      || '',
+        actual_end:        ic.actual_end        || '',
+        total_hours:       String(ic.total_hours || ''),
+        haul_fee:          String(ic.haul_fee    || ''),
+        customer:          ic.customer           || '',
+        description:       ic.description        || '',
+        division:          ic.division           || '',
+        notes:             ic.notes              || '',
+        qb_invoice:        ic.qb_invoice         || '',
+        invoiced_date:     ic.invoiced_date       || '',
+        invoice_sent_date: ic.invoice_sent_date   || '',
+        invoice_status:    ic.invoice_status      || '',
+        date_paid:         ic.date_paid           || '',
+      })).filter(r => r.id); // discard any entry where source_id was falsy
+
+      if (!recovered.length) return;
+
+      divEntries = [...divEntries, ...recovered].sort((a, b) =>
+        (b.actual_date || '').localeCompare(a.actual_date || '') ||
+        (b.task_number || '').localeCompare(a.task_number || '')
+      );
+      schedSave();
+      renderTrackingTab();
+      console.log(`[IC Recovery] Restored ${recovered.length} trucking row(s):`, recovered.map(r => r.task_number).join(', '));
     }
     let activeYearFilter          = new Date().getFullYear().toString();
     let analyticsYearFilter       = 'all';
@@ -587,6 +629,7 @@
       }
       _migrateExistingEntries();
       renderDashboard();
+      try { _recoverMissingICEntries(); } catch(e) { console.error('[IC Recovery]', e); }
     }
 
     function saveTruckLists() {
@@ -822,9 +865,9 @@
           body: JSON.stringify({ value: entries })
         });
 
-        icSentMap.set(id, entry.sent_at);
+        icSentMap.set(id, entry);
         const tsEl = document.getElementById('ic-ts-' + id);
-        if (tsEl) tsEl.textContent = fmtSentAt(entry.sent_at);
+        if (tsEl) tsEl.textContent = fmtSentAt(entry?.sent_at);
         if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
         setTimeout(() => { if (status) status.textContent = ''; }, 3000);
       } catch (err) {
@@ -1096,7 +1139,7 @@
                       </button>
                       <span id="ic-status-${e.id}" style="font-size:0.7rem;font-weight:600;min-width:1em"></span>
                     </div>
-                    <span id="ic-ts-${e.id}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icSentMap.has(e.id) ? fmtSentAt(icSentMap.get(e.id)) : ''}</span>
+                    <span id="ic-ts-${e.id}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icSentMap.has(e.id) ? fmtSentAt(icSentMap.get(e.id)?.sent_at) : ''}</span>
                   </div>
                 </div>
               </td>
