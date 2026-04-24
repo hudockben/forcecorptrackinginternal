@@ -1491,6 +1491,9 @@
 
         await apiPut(IC_BILLING_KEY, entries);
 
+        icSentMapDust.set(row.id, entry.sent_at);
+        const tsEl = document.getElementById('ic-dust-ts-' + idx);
+        if (tsEl) tsEl.textContent = fmtSentAt(entry.sent_at);
         if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
         setTimeout(() => { if (status) status.textContent = ''; }, 3000);
       } catch (err) {
@@ -1544,6 +1547,28 @@
     let ubRate     = 0;
     let saveTimer  = null;
     let activeYear = String(new Date().getFullYear());
+    let icSentMapDust = new Map(); // row.id → sent_at for dust IC entries
+
+    function fmtSentAt(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      if (isNaN(d)) return '';
+      const mo = d.getMonth() + 1, day = d.getDate();
+      let hr = d.getHours(), min = d.getMinutes();
+      const ampm = hr >= 12 ? 'p' : 'a';
+      hr = hr % 12 || 12;
+      return `Sent ${mo}/${day} ${hr}:${String(min).padStart(2,'0')}${ampm}`;
+    }
+
+    async function loadIcSentMapDust() {
+      try {
+        const value = await apiGet('fct_intercompany_billing_entries');
+        icSentMapDust.clear();
+        if (Array.isArray(value)) {
+          value.forEach(e => { if (e.source === 'dust' && e.source_id) icSentMapDust.set(e.source_id, e.sent_at || ''); });
+        }
+      } catch { /* non-fatal */ }
+    }
 
     let dustLists  = { equipment: [], employees: [], companies: [], states: [] };
     let dustFilters = {};
@@ -2083,11 +2108,16 @@
             </div>
             <div class="inv-field" style="align-self:flex-end">
               <label>&nbsp;</label>
-              <button id="ic-dust-btn-${idx}" onclick="sendToIntercompanyDust(${idx})"
-                style="padding:0.3rem 0.75rem;font-size:0.72rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer;white-space:nowrap">
-                &#8644; Intercompany Billing
-              </button>
-              <span id="ic-dust-status-${idx}" style="font-size:0.7rem;font-weight:600;margin-left:0.6rem;min-width:1em"></span>
+              <div style="display:flex;flex-direction:column;gap:0.28rem">
+                <div style="display:flex;align-items:center;gap:0.5rem">
+                  <button id="ic-dust-btn-${idx}" onclick="sendToIntercompanyDust(${idx})"
+                    style="padding:0.3rem 0.75rem;font-size:0.72rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer;white-space:nowrap">
+                    &#8644; Intercompany Billing
+                  </button>
+                  <span id="ic-dust-status-${idx}" style="font-size:0.7rem;font-weight:600;min-width:1em"></span>
+                </div>
+                <span id="ic-dust-ts-${idx}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icSentMapDust.has(row.id) ? fmtSentAt(icSentMapDust.get(row.id)) : ''}</span>
+              </div>
             </div>
           </div>`;
 
@@ -2854,6 +2884,7 @@
       const [savedRows, config] = await Promise.all([
         loadDustRows(),
         dustConfigGet(),
+        loadIcSentMapDust(),
       ]);
 
       if (Array.isArray(savedRows)) rows = savedRows;
