@@ -507,6 +507,25 @@
           </div>
         </div>
       </div>
+      <div class="ci-rates-group" id="ciDustRatesGroup" style="display:none">
+        <span class="rates-label">IC Rates</span>
+        <div class="rate-field">
+          <label for="ciDustRate">Dust</label>
+          <div class="ci-rate-wrap">
+            <span class="rate-pre">$</span>
+            <input type="number" id="ciDustRate" value="121" min="0" step="0.01" oninput="onRateChange()">
+            <span class="rate-suf">/hr</span>
+          </div>
+        </div>
+        <div class="rate-field">
+          <label for="ciUbRate">UB Rate</label>
+          <div class="ci-rate-wrap">
+            <span class="rate-pre">$</span>
+            <input type="number" id="ciUbRate" value="0" min="0" step="0.01" oninput="onRateChange()">
+            <span class="rate-suf">/gal</span>
+          </div>
+        </div>
+      </div>
       <div class="tab-bar-spacer"></div>
       <div class="ci-toolbar-count" id="ciCount"></div>
     </div>
@@ -617,20 +636,30 @@
     // ── Intercompany rates (persisted in localStorage) ──────────
     let icTruckRate = parseFloat(localStorage.getItem('ic_truck_rate') ?? '121') || 121;
     let icLaborRate = parseFloat(localStorage.getItem('ic_labor_rate') ?? '121') || 121;
+    let icDustRate  = parseFloat(localStorage.getItem('ic_dust_rate')  ?? '121') || 121;
+    let icUbRate    = parseFloat(localStorage.getItem('ic_ub_rate')    ?? '0')   || 0;
 
     function initRateInputs() {
       const tr = document.getElementById('ciTruckRate');
       const lr = document.getElementById('ciLaborRate');
+      const dr = document.getElementById('ciDustRate');
+      const ur = document.getElementById('ciUbRate');
       if (tr) tr.value = icTruckRate;
       if (lr) lr.value = icLaborRate;
+      if (dr) dr.value = icDustRate;
+      if (ur) ur.value = icUbRate;
     }
     initRateInputs();
 
     function onRateChange() {
       icTruckRate = parseFloat(document.getElementById('ciTruckRate').value) || 0;
       icLaborRate = parseFloat(document.getElementById('ciLaborRate').value) || 0;
+      icDustRate  = parseFloat(document.getElementById('ciDustRate').value)  || 0;
+      icUbRate    = parseFloat(document.getElementById('ciUbRate').value)    || 0;
       localStorage.setItem('ic_truck_rate', icTruckRate);
       localStorage.setItem('ic_labor_rate', icLaborRate);
+      localStorage.setItem('ic_dust_rate',  icDustRate);
+      localStorage.setItem('ic_ub_rate',    icUbRate);
       renderCompanyInfo();
     }
 
@@ -639,7 +668,9 @@
       document.getElementById('ciSubTruck').className = 'ci-subtab-btn' + (div === 'trucking' ? ' st-truck' : '');
       document.getElementById('ciSubDust').className  = 'ci-subtab-btn' + (div === 'dust'     ? ' st-dust'  : '');
       const rg = document.getElementById('ciRatesGroup');
+      const dg = document.getElementById('ciDustRatesGroup');
       if (rg) rg.style.display = div === 'trucking' ? '' : 'none';
+      if (dg) dg.style.display = div === 'dust'     ? '' : 'none';
       renderCompanyInfo();
     }
 
@@ -857,8 +888,8 @@
         const cssClass = source === 'trucking' ? 'trucking' : 'dust';
         const isDust   = source === 'dust';
         // trucking: Month|Jobs|Hours|Revenue|IC Total = 5 cols
-        // dust:     Month|Jobs|Hours|UB Gallons|Revenue = 5 cols
-        const colSpan  = 5;
+        // dust:     Month|Jobs|Hours|UB Gallons|Revenue|IC Total = 6 cols
+        const colSpan  = isDust ? 6 : 5;
 
         // Build per-month buckets including the entries themselves
         const byMonth = {};
@@ -871,7 +902,9 @@
           byMonth[mKey].hours   += parseFloat(e.total_hours) || 0;
           byMonth[mKey].gallons += parseFloat(e.gallons_ub)  || 0;
           byMonth[mKey].total   += parseFloat(e.total)       || 0;
-          byMonth[mKey].icTotal += (parseFloat(e.total_hours) || 0) * icTruckRate;
+          byMonth[mKey].icTotal += isDust
+            ? (parseFloat(e.total_hours) || 0) * icDustRate + (parseFloat(e.gallons_ub) || 0) * icUbRate
+            : (parseFloat(e.total_hours) || 0) * icTruckRate;
           byMonth[mKey].entries.push(e);
         });
         const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
@@ -880,10 +913,12 @@
         const totHours   = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
         const totGallons = divRows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
         const totRev     = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
-        const totIcRev   = totHours * icTruckRate;
+        const totIcRev   = isDust
+          ? totHours * icDustRate + totGallons * icUbRate
+          : totHours * icTruckRate;
 
         const detailHead = isDust
-          ? `<th>Date</th><th>Location</th><th>Company Man</th><th>Vehicle 1</th><th>Vehicle 2</th><th class="r">Hours</th><th class="r">UB Gal</th><th class="r">UB Total</th><th class="r">Inv Total</th><th></th>`
+          ? `<th>Date</th><th>Location</th><th>Company Man</th><th>Vehicle 1</th><th>Vehicle 2</th><th class="r">Hours</th><th class="r">UB Gal</th><th class="r">UB Total</th><th class="r">Inv Total</th><th class="r ic-val">IC Total</th><th></th>`
           : `<th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th><th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th><th class="r ic-val">IC Total</th><th></th>`;
 
         const monthRows = sortedMonths.map((m, mi) => {
@@ -893,17 +928,20 @@
           const entryRows = sorted.map(e => {
             const eid = escT(e.id || '');
             if (isDust) {
+              const hrs = parseFloat(e.total_hours) || 0;
               const gal = parseFloat(e.gallons_ub) || 0;
+              const icAmt = hrs * icDustRate + gal * icUbRate;
               return `<tr>
                 <td>${e.actual_date || '—'}</td>
                 <td>${escT(e.location || '—')}</td>
                 <td>${escT(e.company_man || '—')}</td>
                 <td>${escT(e.vehicle1 || '—')}</td>
                 <td>${escT(e.vehicle2 || '—')}</td>
-                <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
+                <td class="r">${fmtH(hrs)}</td>
                 <td class="r">${gal > 0 ? gal.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>
                 <td class="r">${fmt$(parseFloat(e.ub_total) || 0)}</td>
                 <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
+                <td class="r ic-val">${fmt$(icAmt)}</td>
                 <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
               </tr>`;
             } else {
@@ -931,7 +969,7 @@
               <td class="r">${fmtH(m.hours)}</td>
               ${isDust ? `<td class="r">${m.gallons > 0 ? m.gallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
               <td class="r">${fmt$(m.total)}</td>
-              ${!isDust ? `<td class="r ic-val">${fmt$(m.icTotal)}</td>` : ''}
+              <td class="r ic-val">${fmt$(m.icTotal)}</td>
             </tr>
             <tr class="ci-mdet-row" id="${detId}">
               <td colspan="${colSpan}" class="ci-mdet-inner">
@@ -945,8 +983,7 @@
 
         const galStat = isDust && totGallons > 0
           ? `<div class="ci-div-stat"><strong>${totGallons.toLocaleString(undefined,{maximumFractionDigits:1})} gal</strong></div>` : '';
-        const icStat = !isDust
-          ? `<div class="ci-div-stat ic-val"><strong>${fmt$(totIcRev)}</strong> IC</div>` : '';
+        const icStat = `<div class="ci-div-stat ic-val"><strong>${fmt$(totIcRev)}</strong> IC</div>`;
 
         return `
         <div class="ci-div-section">
@@ -966,7 +1003,7 @@
                 <th>Month</th><th class="r">Jobs</th><th class="r">Hours</th>
                 ${isDust ? `<th class="r">UB Gallons</th>` : ''}
                 <th class="r">Revenue</th>
-                ${!isDust ? `<th class="r ic-val">IC Total</th>` : ''}
+                <th class="r ic-val">IC Total</th>
               </tr>
             </thead>
             <tbody>
@@ -977,7 +1014,7 @@
                 <td class="r">${fmtH(totHours)}</td>
                 ${isDust ? `<td class="r">${totGallons > 0 ? totGallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
                 <td class="r">${fmt$(totRev)}</td>
-                ${!isDust ? `<td class="r ic-val">${fmt$(totIcRev)}</td>` : ''}
+                <td class="r ic-val">${fmt$(totIcRev)}</td>
               </tr>
             </tbody>
           </table>
@@ -985,20 +1022,23 @@
       }
 
       body.innerHTML = Object.values(byCompany).map((co, idx) => {
-        const totJobs  = co.rows.length;
-        const totHours = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
-        const totRev   = co.rows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
-        const totIcRev = ciDivFilter === 'trucking' ? totHours * icTruckRate : null;
+        const totJobs    = co.rows.length;
+        const totHours   = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totGallons = co.rows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
+        const totRev     = co.rows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
+        const totIcRev   = ciDivFilter === 'trucking'
+          ? totHours * icTruckRate
+          : totHours * icDustRate + totGallons * icUbRate;
 
         const divSections = co.rows.length
           ? buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`)
           : '';
 
-        const icStatCard = totIcRev !== null ? `
+        const icStatCard = `
               <div class="ci-co-stat">
                 <div class="ci-co-stat-val ic-val">${fmt$(totIcRev)}</div>
                 <div class="ci-co-stat-lbl">Intercompany</div>
-              </div>` : '';
+              </div>`;
 
         return `
         <div class="ci-co-card">
