@@ -62,17 +62,8 @@ module.exports = async (req, res) => {
   try {
     // ── GET ──────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
-      const rows = await sql`
-        SELECT * FROM trucking_entries
-        WHERE  company_code = ${companyCode}
-        ORDER  BY created_at ASC
-      `;
-
-      if (rows.length > 0) {
-        return res.json({ truckingEntries: rows.map(dbToTR) });
-      }
-
-      // ── Fallback: read from JSON blob (migrates data on first read) ──
+      // JSON blob is the source of truth — PUT always awaits a write to it.
+      // Normalized table is a fire-and-forget mirror that may be stale.
       const blobRows = await sql`
         SELECT value FROM app_data WHERE key = ${companyCode + ':fct_trucking'}
       `;
@@ -80,13 +71,17 @@ module.exports = async (req, res) => {
       const list = Array.isArray(blob) ? blob : [];
 
       if (list.length > 0) {
-        // Migrate blob data into normalized table — awaited so it completes
-        // before the response is sent (serverless functions freeze on return).
-        try { await _migrateTruckingBlob(sql, companyCode, list); }
-        catch (err) { console.error('[trucking] blob migration failed:', err.message); }
+        return res.json({ truckingEntries: list });
       }
 
-      return res.json({ truckingEntries: list });
+      // ── Fallback: normalized table when blob is empty ──
+      const rows = await sql`
+        SELECT * FROM trucking_entries
+        WHERE  company_code = ${companyCode}
+        ORDER  BY created_at ASC
+      `;
+
+      return res.json({ truckingEntries: rows.map(dbToTR) });
     }
 
     // ── PUT (full sync) ───────────────────────────────────────────────────
