@@ -3364,6 +3364,41 @@
       ?.addEventListener('click', renderAnalytics);
 
     init();
+
+    /* ═══════════════════════════════════════════
+       DUST LISTS SYNC — poll for remote changes every 60s
+       Keeps equipment, companies, locations, and employees
+       in sync when another user edits them from another device.
+    ═══════════════════════════════════════════ */
+    (function () {
+      const DUST_POLL_MS = 60_000;
+
+      async function pollDustConfig() {
+        try {
+          const config = await dustConfigGet();
+          if (!config || !config.lists) return;
+          const { lists } = config;
+          const incoming = {
+            equipment: Array.isArray(lists.equipment) ? lists.equipment : [],
+            employees: Array.isArray(lists.employees) ? lists.employees : [],
+            companies: Array.isArray(lists.companies) ? lists.companies : [],
+            states:    Array.isArray(lists.states)    ? lists.states    : [],
+          };
+          incoming.companies.forEach(co => {
+            if (!Array.isArray(co.locations)) co.locations = [];
+            if (!Array.isArray(co.men)) co.men = [];
+            co.men = co.men.map(m => typeof m === 'string' ? { id: uid(), name: m } : m);
+          });
+          if (JSON.stringify(incoming) === JSON.stringify(dustLists)) return;
+          Object.assign(dustLists, incoming);
+          // Refresh the manage lists modal if it's currently open
+          const listsModal = document.getElementById('listsModal');
+          if (listsModal && listsModal.classList.contains('open')) renderListPanels();
+        } catch { /* non-fatal */ }
+      }
+
+      setInterval(pollDustConfig, DUST_POLL_MS);
+    })();
   </script>
 
 </body>

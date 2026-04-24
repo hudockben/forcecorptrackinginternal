@@ -16158,6 +16158,34 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
 })();
 
 /* ═══════════════════════════════════════════
+   LISTS SYNC — poll for remote changes every 60s
+   Keeps employees, equipment, and other dropdown
+   lists in sync when another user edits them.
+═══════════════════════════════════════════ */
+(function () {
+  const LISTS_POLL_MS = 60_000;
+
+  async function pollLists() {
+    try {
+      let saved = await apiGet('fct_lists');
+      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
+      const incoming = { ...defaultLists, ...saved };
+      incoming.suppliers = (incoming.suppliers || []).map(s =>
+        typeof s === 'string' ? { name: s, state: '', address: '', phone: '', website: '' } : { address: '', phone: '', website: '', ...s });
+      incoming.employees = (incoming.employees || []).map(e =>
+        typeof e === 'string' ? { name: e, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' } : e);
+      if (JSON.stringify(incoming) === JSON.stringify(lists)) return;
+      Object.assign(lists, incoming);
+      // Refresh the manage-lists panel if it's currently open
+      const anyPanelActive = document.querySelector('.list-panel.active');
+      if (anyPanelActive) renderAllListPanels();
+    } catch { /* non-fatal */ }
+  }
+
+  setInterval(pollLists, LISTS_POLL_MS);
+})();
+
+/* ═══════════════════════════════════════════
    CSV IMPORT
 ═══════════════════════════════════════════ */
 
