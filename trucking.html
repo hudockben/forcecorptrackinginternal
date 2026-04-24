@@ -2188,6 +2188,93 @@
     }
 
     loadTrackingData();
+
+    /* ═══════════════════════════════════════════
+       DATA SYNC — poll shared data every 60s
+       Keeps truck division entries, managed lists,
+       and intercompany billing status in sync
+       when another user makes changes.
+    ═══════════════════════════════════════════ */
+    (function () {
+      const POLL_MS = 60_000;
+
+      function _isEditing() {
+        const el = document.activeElement;
+        return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+      }
+
+      function _activeTabId() {
+        const btn = document.querySelector('.tab-btn.active');
+        return btn ? btn.dataset.tab : 'dashboard';
+      }
+
+      async function pollTruckDivision() {
+        try {
+          const divData = await tdDivGet();
+          if (!divData) return;
+          const inEntries = Array.isArray(divData.entries) ? divData.entries : [];
+          const tl        = divData.lists || {};
+          const inDrivers   = Array.isArray(tl.drivers)   ? tl.drivers   : divTruckLists.drivers;
+          const inCustomers = Array.isArray(tl.customers)  ? tl.customers : divTruckLists.customers;
+          const inUnits     = Array.isArray(tl.units)      ? tl.units     : divTruckLists.units;
+          const entriesChanged = JSON.stringify(inEntries)   !== JSON.stringify(divEntries);
+          const listsChanged   = JSON.stringify(inDrivers)   !== JSON.stringify(divTruckLists.drivers)   ||
+                                 JSON.stringify(inCustomers) !== JSON.stringify(divTruckLists.customers) ||
+                                 JSON.stringify(inUnits)     !== JSON.stringify(divTruckLists.units);
+          if (!entriesChanged && !listsChanged) return;
+          divEntries = inEntries;
+          if (Array.isArray(tl.drivers))   divTruckLists.drivers   = tl.drivers;
+          if (Array.isArray(tl.customers)) divTruckLists.customers = tl.customers;
+          if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
+          if (_isEditing()) return;
+          const tab = _activeTabId();
+          if (tab === 'dashboard')      renderDashboard();
+          if (tab === 'truck-tracking') renderTrackingTab();
+          // Managed lists panel — refresh if open
+          const listsBackdrop = document.getElementById('lists-backdrop');
+          if (listsBackdrop && listsBackdrop.classList.contains('open')) renderListsPanel();
+        } catch { /* non-fatal */ }
+      }
+
+      async function pollFctLists() {
+        try {
+          const saved = await tdGet('fct_lists');
+          if (!saved) return;
+          const inEmps = Array.isArray(saved.employees) ? saved.employees.map(e => typeof e === 'string' ? { name: e } : e) : null;
+          const inEq   = Array.isArray(saved.equipment) ? saved.equipment : null;
+          let changed = false;
+          if (inEmps && JSON.stringify(inEmps) !== JSON.stringify(divLists.employees)) { divLists.employees = inEmps; changed = true; }
+          if (inEq   && JSON.stringify(inEq)   !== JSON.stringify(divLists.equipment)) { divLists.equipment = inEq;   changed = true; }
+          if (!changed || _isEditing()) return;
+          const tab = _activeTabId();
+          if (tab === 'truck-tracking') renderTrackingTab();
+        } catch { /* non-fatal */ }
+      }
+
+      async function pollIcSentMap() {
+        try {
+          const r = await fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!r.ok) return;
+          const { value } = await r.json();
+          if (!Array.isArray(value)) return;
+          const newMap = new Map();
+          value.forEach(e => { if (e.source === 'trucking' && e.source_id) newMap.set(e.source_id, e); });
+          const cur = JSON.stringify([...icSentMap].sort((a, b) => a[0].localeCompare(b[0])));
+          const nxt = JSON.stringify([...newMap].sort((a, b) => a[0].localeCompare(b[0])));
+          if (cur === nxt) return;
+          icSentMap = newMap;
+          if (!_isEditing() && _activeTabId() === 'truck-tracking') renderTrackingTab();
+        } catch { /* non-fatal */ }
+      }
+
+      async function pollAll() {
+        await Promise.allSettled([pollTruckDivision(), pollFctLists(), pollIcSentMap()]);
+      }
+
+      setInterval(pollAll, POLL_MS);
+    })();
   </script>
 </body>
 </html>

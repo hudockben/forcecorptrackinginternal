@@ -3366,12 +3366,17 @@
     init();
 
     /* ═══════════════════════════════════════════
-       DUST LISTS SYNC — poll for remote changes every 60s
-       Keeps equipment, companies, locations, and employees
-       in sync when another user edits them from another device.
+       DUST DATA SYNC — poll all shared data every 60s
+       Keeps equipment/company lists, dust job rows, and
+       intercompany billing status in sync across devices.
     ═══════════════════════════════════════════ */
     (function () {
       const DUST_POLL_MS = 60_000;
+
+      function _isEditing() {
+        const el = document.activeElement;
+        return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+      }
 
       async function pollDustConfig() {
         try {
@@ -3391,13 +3396,49 @@
           });
           if (JSON.stringify(incoming) === JSON.stringify(dustLists)) return;
           Object.assign(dustLists, incoming);
-          // Refresh the manage lists modal if it's currently open
           const listsModal = document.getElementById('listsModal');
           if (listsModal && listsModal.classList.contains('open')) renderListPanels();
         } catch { /* non-fatal */ }
       }
 
-      setInterval(pollDustConfig, DUST_POLL_MS);
+      async function pollDustRows() {
+        try {
+          const incoming = await loadDustRows();
+          if (!Array.isArray(incoming)) return;
+          if (JSON.stringify(incoming) === JSON.stringify(rows)) return;
+          rows = incoming;
+          if (!_isEditing()) {
+            renderYearSelector();
+            renderTable();
+            renderHomeDashboard();
+          }
+        } catch { /* non-fatal */ }
+      }
+
+      async function pollIcSentMap() {
+        try {
+          const r = await fetch('/api/data/fct_intercompany_billing_entries', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (!r.ok) return;
+          const { value } = await r.json();
+          if (!Array.isArray(value)) return;
+          const newMap = new Map();
+          value.forEach(e => { if (e.source === 'dust' && e.source_id) newMap.set(e.source_id, e.sent_at || ''); });
+          // Compare by serialising the sorted entries
+          const cur = JSON.stringify([...icSentMapDust].sort());
+          const nxt = JSON.stringify([...newMap].sort());
+          if (cur === nxt) return;
+          icSentMapDust = newMap;
+          if (!_isEditing()) renderTable();
+        } catch { /* non-fatal */ }
+      }
+
+      async function pollAll() {
+        await Promise.allSettled([pollDustConfig(), pollDustRows(), pollIcSentMap()]);
+      }
+
+      setInterval(pollAll, DUST_POLL_MS);
     })();
   </script>
 

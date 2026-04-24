@@ -16186,6 +16186,141 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
 })();
 
 /* ═══════════════════════════════════════════
+   DATA SYNC — poll all shared data every 60s
+   Keeps projects, POs, cost rows, CRM, SOE,
+   trucking, inventory, board, and deadlines
+   in sync when other users make changes.
+═══════════════════════════════════════════ */
+(function () {
+  const POLL_MS  = 60_000;
+  const BOARD_MS = 30_000;
+
+  // Skip re-render while a user is typing/selecting
+  function _isEditing() {
+    const el = document.activeElement;
+    return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+  }
+
+  async function _pollCostRows() {
+    const saved = await apiGet('fct_cost_rows');
+    const incoming = Array.isArray(saved) ? saved : [];
+    if (JSON.stringify(incoming) === JSON.stringify(costRows)) return;
+    costRows = incoming;
+    if (activeTab === 'cost' && !_isEditing()) renderCostTable();
+  }
+
+  async function _pollProjects() {
+    const index = await apiGet('fct_projects_index');
+    if (!Array.isArray(index)) return;
+    const curIds = projectsList.map(p => p.id).slice().sort().join(',');
+    const newIds = index.slice().sort().join(',');
+    if (curIds === newIds && index.length > 0) return; // unchanged — skip expensive batch fetch
+    if (_isEditing()) return;
+    await loadProjects();
+    if (activeTab === 'home') renderHomeTab();
+    if (activeTab === 'info') renderProjectInfoComputed();
+  }
+
+  async function _pollPurchaseOrders() {
+    const r = await fetch(`${API_BASE}/purchase-orders`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+    if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
+    purchaseOrders = incoming;
+    _migratePOs();
+    if (activeTab === 'po' && !_isEditing()) renderPOTab();
+  }
+
+  async function _pollTrucking() {
+    const r = await fetch(`${API_BASE}/trucking`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    const incoming = Array.isArray(data.truckingEntries) ? data.truckingEntries : [];
+    if (JSON.stringify(incoming) === JSON.stringify(truckingEntries)) return;
+    truckingEntries = incoming;
+    if (activeTab === 'trucking' && !_isEditing()) renderTruckingTab();
+  }
+
+  async function _pollInventory() {
+    const saved = await apiGet('fct_inventory');
+    const incoming = Array.isArray(saved) ? saved : [];
+    if (JSON.stringify(incoming) === JSON.stringify(inventoryEntries)) return;
+    inventoryEntries = incoming;
+    if (activeTab === 'inventory' && !_isEditing()) renderInventoryTab();
+  }
+
+  async function _pollCrm() {
+    const [pRes, cRes, oRes] = await Promise.allSettled([
+      apiGet('fct_crm_people'),
+      apiGet('fct_crm_companies'),
+      apiGet('fct_crm_opportunities'),
+    ]);
+    const inPeople = pRes.status === 'fulfilled' && Array.isArray(pRes.value) ? pRes.value : null;
+    const inCos    = cRes.status === 'fulfilled' && Array.isArray(cRes.value) ? cRes.value : null;
+    const inOpps   = oRes.status === 'fulfilled' && Array.isArray(oRes.value) ? oRes.value : null;
+    // Always update state; only re-render if CRM tab is active and user isn't editing
+    let peopleChanged = false, cosChanged = false, oppsChanged = false;
+    if (inPeople && JSON.stringify(inPeople) !== JSON.stringify(crmPeople))         { crmPeople        = inPeople;  peopleChanged = true; }
+    if (inCos    && JSON.stringify(inCos)    !== JSON.stringify(crmCompanies))      { crmCompanies     = inCos;     cosChanged    = true; }
+    if (inOpps   && JSON.stringify(inOpps)   !== JSON.stringify(crmOpportunities))  { crmOpportunities = inOpps;    oppsChanged   = true; }
+    if (activeTab !== 'crm' || _isEditing()) return;
+    const activePanel = document.querySelector('.crm-sub-panel.active')?.id;
+    if (peopleChanged) {
+      if (activePanel === 'crm-panel-people')    renderCrmPeopleTab();
+      if (activePanel === 'crm-panel-dashboard') renderCrmDashboard();
+    }
+    if (cosChanged) {
+      if (activePanel === 'crm-panel-companies') renderCrmCompaniesTab();
+      if (activePanel === 'crm-panel-dashboard') renderCrmDashboard();
+    }
+    if (oppsChanged) {
+      if (activePanel === 'crm-panel-opportunities') renderCrmOpportunitiesTab();
+      if (activePanel === 'crm-panel-dashboard')     renderCrmDashboard();
+    }
+  }
+
+  async function _pollSoe() {
+    const [mRes, uRes] = await Promise.allSettled([
+      apiGet('fct_scale_manual'),
+      apiGet('fct_soe_units'),
+    ]);
+    const inManual = mRes.status === 'fulfilled' && Array.isArray(mRes.value) ? mRes.value : null;
+    const inUnits  = uRes.status === 'fulfilled' && uRes.value && typeof uRes.value === 'object' && !Array.isArray(uRes.value) ? uRes.value : null;
+    let changed = false;
+    if (inManual && JSON.stringify(inManual) !== JSON.stringify(scaleManualEntries)) { scaleManualEntries = inManual; changed = true; }
+    if (inUnits  && JSON.stringify(inUnits)  !== JSON.stringify(soeUnitOverrides))   { soeUnitOverrides  = inUnits;  changed = true; }
+    if (changed && activeTab === 'scale' && !_isEditing()) renderScaleOfEconomy();
+  }
+
+  // Board and deadlines live on the home tab; refresh them more frequently
+  async function _pollHomeFeeds() {
+    if (activeTab !== 'home') return;
+    loadBoard();
+    loadDeadlines();
+  }
+
+  async function _pollAll() {
+    await Promise.allSettled([
+      _pollCostRows(),
+      _pollPurchaseOrders(),
+      _pollTrucking(),
+      _pollInventory(),
+      _pollCrm(),
+      _pollSoe(),
+      _pollProjects(),
+    ]);
+  }
+
+  setInterval(_pollAll,      POLL_MS);
+  setInterval(_pollHomeFeeds, BOARD_MS);
+})();
+
+/* ═══════════════════════════════════════════
    CSV IMPORT
 ═══════════════════════════════════════════ */
 
