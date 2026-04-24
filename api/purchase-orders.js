@@ -48,56 +48,9 @@ module.exports = async (req, res) => {
   try {
     // ── GET ──────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
-      const poRows = await sql`
-        SELECT * FROM purchase_orders
-        WHERE  company_code = ${companyCode}
-        ORDER  BY created_at ASC
-      `;
-
-      if (poRows.length > 0) {
-        const poIds = poRows.map(r => r.id);
-        const dlRows = await sql`
-          SELECT * FROM po_deliveries
-          WHERE  po_id = ANY(${poIds})
-          ORDER  BY po_id, created_at ASC
-        `;
-
-        // Group deliveries by PO
-        const linesByPO = {};
-        for (const d of dlRows) {
-          if (!linesByPO[d.po_id]) linesByPO[d.po_id] = [];
-          linesByPO[d.po_id].push({
-            id:          d.line_id      || String(d.id),
-            invoice_num: d.invoice_num  || '',
-            date:        safeDate(d.delivery_date) || '',
-            qty:         d.units_delivered != null ? String(d.units_delivered) : '',
-            unit_cost:   d.unit_cost       != null ? String(d.unit_cost)       : '',
-            tax:         d.tax             != null ? String(d.tax)             : '',
-            employee:    d.employee        || '',
-            po_row_id:   d.po_row_id       || null,
-          });
-        }
-
-        const purchaseOrders = poRows.map(r => ({
-          id:                    r.id,
-          po_number:             r.po_num          || '',
-          date_created:          safeDate(r.date_created) || '',
-          project_id:            r.project_id      || '',
-          cost_code:             r.cost_code        || '',
-          sub_code:              r.sub_code         || '',
-          title:                 r.title            || '',
-          supplier:              r.supplier         || '',
-          status:                r.status           || 'pending',
-          notes:                 r.notes            || '',
-          status_changed_at:     r.status_changed_at ? String(r.status_changed_at) : undefined,
-          status_changed_by:     r.status_changed_by || undefined,
-          lines:                 linesByPO[r.id]    || [],
-        }));
-
-        return res.json({ purchaseOrders });
-      }
-
-      // ── Fallback: read from JSON blob ──────────────────────────────────
+      // The JSON blob is the source of truth (PUT always awaits a write to it).
+      // Prefer it over the normalized tables, which are a fire-and-forget mirror
+      // that may be stale if a serverless function was killed mid-migration.
       const blobRows = await sql`
         SELECT value FROM app_data WHERE key = ${companyCode + ':fct_purchase_orders'}
       `;
@@ -105,13 +58,59 @@ module.exports = async (req, res) => {
       const list = Array.isArray(blob) ? blob : [];
 
       if (list.length > 0) {
-        // Migrate blob into normalized tables — awaited so it completes
-        // before the response is sent (serverless functions freeze on return).
-        try { await _migratePOBlob(sql, companyCode, list); }
-        catch (err) { console.error('[purchase-orders] blob migration failed:', err.message); }
+        return res.json({ purchaseOrders: list });
       }
 
-      return res.json({ purchaseOrders: list });
+      // ── Fallback: read from normalized tables when blob is empty ──────
+      const poRows = await sql`
+        SELECT * FROM purchase_orders
+        WHERE  company_code = ${companyCode}
+        ORDER  BY created_at ASC
+      `;
+
+      if (poRows.length === 0) {
+        return res.json({ purchaseOrders: [] });
+      }
+
+      const poIds = poRows.map(r => r.id);
+      const dlRows = await sql`
+        SELECT * FROM po_deliveries
+        WHERE  po_id = ANY(${poIds})
+        ORDER  BY po_id, created_at ASC
+      `;
+
+      const linesByPO = {};
+      for (const d of dlRows) {
+        if (!linesByPO[d.po_id]) linesByPO[d.po_id] = [];
+        linesByPO[d.po_id].push({
+          id:          d.line_id      || String(d.id),
+          invoice_num: d.invoice_num  || '',
+          date:        safeDate(d.delivery_date) || '',
+          qty:         d.units_delivered != null ? String(d.units_delivered) : '',
+          unit_cost:   d.unit_cost       != null ? String(d.unit_cost)       : '',
+          tax:         d.tax             != null ? String(d.tax)             : '',
+          employee:    d.employee        || '',
+          po_row_id:   d.po_row_id       || null,
+        });
+      }
+
+      const purchaseOrders = poRows.map(r => ({
+        id:                    r.id,
+        po_number:             r.po_num          || '',
+        date_created:          safeDate(r.date_created) || '',
+        project_id:            r.project_id      || '',
+        cost_code:             r.cost_code        || '',
+        sub_code:              r.sub_code         || '',
+        title:                 r.title            || '',
+        supplier:              r.supplier         || '',
+        status:                r.status           || 'pending',
+        notes:                 r.notes            || '',
+        status_changed_at:     r.status_changed_at ? String(r.status_changed_at) : undefined,
+        status_changed_by:     r.status_changed_by || undefined,
+        lines:                 linesByPO[r.id]    || [],
+      }));
+
+      return res.json({ purchaseOrders });
     }
 
     // ── PUT (full sync) ───────────────────────────────────────────────────
