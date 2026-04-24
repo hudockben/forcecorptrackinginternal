@@ -98,10 +98,9 @@ module.exports = async (req, res) => {
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
       `;
 
-      // Mirror to normalized table (fire-and-forget: FK errors must not block the save)
-      _migrateTruckingBlob(sql, companyCode, truckingEntries).catch(err =>
-        console.error('[trucking] normalize failed:', err.message)
-      );
+      // Mirror to normalized table — awaited before response so serverless doesn't kill it.
+      try { await _migrateTruckingBlob(sql, companyCode, truckingEntries); }
+      catch (err) { console.error('[trucking] normalize failed:', err.message); }
 
       return res.json({ ok: true });
     }

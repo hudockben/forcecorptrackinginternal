@@ -78,11 +78,9 @@ module.exports = async (req, res) => {
       ON CONFLICT (key)
       DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
     `;
-    // Write-through: mirror into normalized tables (fire-and-forget on error
-    // so a sync hiccup never breaks the primary save).
-    syncForKey(sql, payload.companyCode, key, value).catch(err =>
-      console.error('[sync-normalized] PUT', key, err.message)
-    );
+    // Mirror into normalized tables — awaited before response so serverless doesn't kill it.
+    try { await syncForKey(sql, payload.companyCode, key, value); }
+    catch (err) { console.error('[sync-normalized] PUT', key, err.message); }
     return res.json({ ok: true });
   }
 
@@ -101,11 +99,10 @@ module.exports = async (req, res) => {
       WHERE key = ${scopedKey}
       RETURNING value
     `;
-    // Write-through: mirror merged value into normalized tables.
+    // Mirror merged value into normalized tables — awaited before response.
     if (updated.length) {
-      syncForKey(sql, payload.companyCode, key, updated[0].value).catch(err =>
-        console.error('[sync-normalized] PATCH', key, err.message)
-      );
+      try { await syncForKey(sql, payload.companyCode, key, updated[0].value); }
+      catch (err) { console.error('[sync-normalized] PATCH', key, err.message); }
     }
     return res.json({ ok: true });
   }
