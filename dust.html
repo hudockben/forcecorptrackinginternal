@@ -1433,6 +1433,74 @@
       } catch { return null; }
     }
 
+    async function sendToIntercompanyDust(idx) {
+      const row = rows[idx];
+      if (!row) return;
+
+      const btn    = document.getElementById('ic-dust-btn-' + idx);
+      const status = document.getElementById('ic-dust-status-' + idx);
+      if (btn) btn.disabled = true;
+      if (status) { status.style.color = 'var(--muted)'; status.textContent = 'Checking…'; }
+
+      const IC_CO_KEY      = 'fct_intercompany_companies';
+      const IC_BILLING_KEY = 'fct_intercompany_billing_entries';
+
+      try {
+        const coData  = await apiGet(IC_CO_KEY);
+        const coList  = Array.isArray(coData) ? coData : [];
+
+        const coName  = (row.company || '').trim().toLowerCase();
+        const matched = coList.find(c => c.name.trim().toLowerCase() === coName
+          && (c.divisions || []).includes('dust'));
+
+        if (!matched) {
+          if (status) { status.style.color = 'var(--red)'; status.textContent = 'Company not in Intercompany list.'; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 3500);
+          if (btn) btn.disabled = false;
+          return;
+        }
+
+        const existing = await apiGet(IC_BILLING_KEY);
+        let entries = Array.isArray(existing) ? existing : [];
+
+        if (entries.some(x => x.source === 'dust' && x.source_id === row.id)) {
+          if (status) { status.style.color = '#f59e0b'; status.textContent = 'Already sent.'; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 2500);
+          if (btn) btn.disabled = false;
+          return;
+        }
+
+        const c = calc(row);
+        const entry = {
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+          source: 'dust', source_id: row.id,
+          company_id: matched.id, company_name: matched.name,
+          actual_date: row.date,
+          total_hours: c.totalHours,
+          total: c.invTotal,
+          company_man: row.company_man,
+          location: row.location,
+          vehicle1: row.vehicle1, v1_unit: row.v1_unit, v1_rate: row.v1_rate, v1_total: c.v1Total,
+          vehicle2: row.vehicle2, v2_unit: row.v2_unit, v2_rate: row.v2_rate, v2_total: c.v2Total,
+          gallons_ub: row.gallons_ub, ub_total: c.ubTotal,
+          inv_number: row.inv_number, inv_status: row.inv_status,
+          sent_at: new Date().toISOString(),
+          sent_by: (user?.username) || ''
+        };
+        entries.unshift(entry);
+
+        await apiPut(IC_BILLING_KEY, entries);
+
+        if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
+        setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+      } catch (err) {
+        if (status) { status.style.color = 'var(--red)'; status.textContent = 'Error — try again.'; }
+        setTimeout(() => { if (status) status.textContent = ''; }, 3500);
+      }
+
+      if (btn) btn.disabled = false;
+    }
+
     /** Save dust rows to normalized REST endpoint (writes blob first internally). */
     async function saveDustRows(dustRows) {
       try {
@@ -2012,6 +2080,14 @@
               <label>Invoiced Location</label>
               <input type="text" value="${esc(row.inv_location||'')}" placeholder="Location"
                 oninput="set(${idx},'inv_location',this.value)">
+            </div>
+            <div class="inv-field" style="align-self:flex-end">
+              <label>&nbsp;</label>
+              <button id="ic-dust-btn-${idx}" onclick="sendToIntercompanyDust(${idx})"
+                style="padding:0.3rem 0.75rem;font-size:0.72rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer;white-space:nowrap">
+                &#8644; Intercompany Billing
+              </button>
+              <span id="ic-dust-status-${idx}" style="font-size:0.7rem;font-weight:600;margin-left:0.6rem;min-width:1em"></span>
             </div>
           </div>`;
 

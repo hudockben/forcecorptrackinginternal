@@ -341,6 +341,22 @@
     }
     .ci-empty strong { display: block; margin-bottom: 0.35rem; color: #3a3a5a; font-size: 0.72rem;
       text-transform: uppercase; letter-spacing: 0.08em; }
+
+    .ci-div-section { border-top: 1px solid var(--border); }
+    .ci-div-section:first-child { border-top: none; }
+    .ci-div-header {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.45rem 1rem; background: rgba(0,0,0,0.18);
+    }
+    .ci-div-label {
+      font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+      padding: 0.18rem 0.5rem; border-radius: 3px;
+    }
+    .ci-div-label.trucking { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+    .ci-div-label.dust     { background: rgba(251,191,36,0.12); color: #f59e0b; border: 1px solid rgba(251,191,36,0.3); }
+    .ci-div-stats { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-left: auto; }
+    .ci-div-stat  { font-size: 0.65rem; color: var(--muted); }
+    .ci-div-stat strong { color: var(--text); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -691,7 +707,7 @@
           <strong>No Entries</strong>
           ${icBillingEntries.length
             ? `No entries match the current filter selection.`
-            : `No intercompany billing entries yet. Use the <em>Intercompany Billing</em> button on a truck tracking row to send jobs here.`}
+            : `No intercompany billing entries yet. Use the <em>Intercompany Billing</em> button on a truck tracking row or a dust control invoice panel to send jobs here.`}
         </div>`;
         return;
       }
@@ -707,10 +723,12 @@
       const fmt$ = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
       const fmtH = v => v.toFixed(1) + ' hrs';
 
-      body.innerHTML = Object.values(byCompany).map((co, idx) => {
-        // Monthly aggregation
+      function buildDivSection(divRows, source, detId) {
+        const label    = source === 'trucking' ? 'Trucking' : 'Dust Control';
+        const cssClass = source === 'trucking' ? 'trucking' : 'dust';
+
         const byMonth = {};
-        co.rows.forEach(e => {
+        divRows.forEach(e => {
           const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
           const mIdx = isNaN(mRaw) ? -1 : mRaw;
           const mKey = mIdx >= 0 ? mIdx : 'unknown';
@@ -721,9 +739,9 @@
         });
         const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
 
-        const totJobs  = co.rows.length;
-        const totHours = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
-        const totRev   = co.rows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
+        const totJobs  = divRows.length;
+        const totHours = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totRev   = divRows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
 
         const monthRows = sortedMonths.map(m =>
           `<tr>
@@ -734,9 +752,10 @@
           </tr>`
         ).join('');
 
-        const detailRows = [...co.rows]
-          .sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''))
-          .map(e => `<tr>
+        const sorted = [...divRows].sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''));
+        let detailRows;
+        if (source === 'trucking') {
+          detailRows = sorted.map(e => `<tr>
             <td>${e.actual_date || '—'}</td>
             <td>${escT(e.task_number || '—')}</td>
             <td>${escT(e.driver || '—')}</td>
@@ -746,6 +765,72 @@
             <td class="r">${fmt$(parseFloat(e.haul_fee) || 0)}/hr</td>
             <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
           </tr>`).join('');
+        } else {
+          detailRows = sorted.map(e => `<tr>
+            <td>${e.actual_date || '—'}</td>
+            <td>${escT(e.location || '—')}</td>
+            <td>${escT(e.company_man || '—')}</td>
+            <td>${escT(e.vehicle1 || '—')}</td>
+            <td>${escT(e.vehicle2 || '—')}</td>
+            <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
+            <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
+          </tr>`).join('');
+        }
+
+        const detailHead = source === 'trucking'
+          ? `<th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th><th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th>`
+          : `<th>Date</th><th>Location</th><th>Company Man</th><th>Vehicle 1</th><th>Vehicle 2</th><th class="r">Hours</th><th class="r">Total</th>`;
+
+        return `
+        <div class="ci-div-section">
+          <div class="ci-div-header">
+            <span class="ci-div-label ${cssClass}">${label}</span>
+            <div class="ci-div-stats">
+              <div class="ci-div-stat"><strong>${totJobs}</strong> job${totJobs === 1 ? '' : 's'}</div>
+              <div class="ci-div-stat"><strong>${fmtH(totHours)}</strong></div>
+              <div class="ci-div-stat"><strong>${fmt$(totRev)}</strong></div>
+            </div>
+          </div>
+          <table class="ci-month-table">
+            <thead>
+              <tr>
+                <th>Month</th><th class="r">Jobs</th><th class="r">Hours</th><th class="r">Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${monthRows}
+              <tr class="ci-month-total">
+                <td>Total</td>
+                <td class="r">${totJobs}</td>
+                <td class="r">${fmtH(totHours)}</td>
+                <td class="r">${fmt$(totRev)}</td>
+              </tr>
+            </tbody>
+          </table>
+          <button class="ci-detail-toggle" onclick="toggleDetail('${detId}', this)">
+            ▸ Show ${totJobs} individual entr${totJobs === 1 ? 'y' : 'ies'}
+          </button>
+          <div class="ci-detail-section" id="${detId}">
+            <table class="ci-detail-table">
+              <thead><tr>${detailHead}</tr></thead>
+              <tbody>${detailRows}</tbody>
+            </table>
+          </div>
+        </div>`;
+      }
+
+      body.innerHTML = Object.values(byCompany).map((co, idx) => {
+        const totJobs  = co.rows.length;
+        const totHours = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totRev   = co.rows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
+
+        const truckRows = co.rows.filter(e => (e.source || 'trucking') === 'trucking');
+        const dustRows  = co.rows.filter(e => e.source === 'dust');
+
+        const divSections = [
+          truckRows.length ? buildDivSection(truckRows, 'trucking', `ci-det-${idx}-tr`) : '',
+          dustRows.length  ? buildDivSection(dustRows,  'dust',     `ci-det-${idx}-du`) : '',
+        ].join('');
 
         return `
         <div class="ci-co-card">
@@ -766,41 +851,7 @@
               </div>
             </div>
           </div>
-
-          <table class="ci-month-table">
-            <thead>
-              <tr>
-                <th>Month</th>
-                <th class="r">Jobs</th>
-                <th class="r">Hours</th>
-                <th class="r">Revenue</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${monthRows}
-              <tr class="ci-month-total">
-                <td>Total</td>
-                <td class="r">${totJobs}</td>
-                <td class="r">${fmtH(totHours)}</td>
-                <td class="r">${fmt$(totRev)}</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <button class="ci-detail-toggle" onclick="toggleDetail('ci-det-${idx}', this)">
-            ▸ Show ${totJobs} individual entr${totJobs === 1 ? 'y' : 'ies'}
-          </button>
-          <div class="ci-detail-section" id="ci-det-${idx}">
-            <table class="ci-detail-table">
-              <thead>
-                <tr>
-                  <th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th>
-                  <th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th>
-                </tr>
-              </thead>
-              <tbody>${detailRows}</tbody>
-            </table>
-          </div>
+          ${divSections}
         </div>`;
       }).join('');
     }
