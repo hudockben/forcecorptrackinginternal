@@ -444,6 +444,32 @@
     let divTruckLists = { drivers: [], customers: [], units: [] };
     let _saveTimer       = null;
     let _isSaved         = false;
+    let icSentMap = new Map(); // source_id → sent_at for trucking IC entries
+
+    function fmtSentAt(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      if (isNaN(d)) return '';
+      const mo = d.getMonth() + 1, day = d.getDate();
+      let hr = d.getHours(), min = d.getMinutes();
+      const ampm = hr >= 12 ? 'p' : 'a';
+      hr = hr % 12 || 12;
+      return `Sent ${mo}/${day} ${hr}:${String(min).padStart(2,'0')}${ampm}`;
+    }
+
+    async function loadIcSentMap() {
+      try {
+        const r = await fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) return;
+        const { value } = await r.json();
+        icSentMap.clear();
+        if (Array.isArray(value)) {
+          value.forEach(e => { if (e.source === 'trucking' && e.source_id) icSentMap.set(e.source_id, e.sent_at || ''); });
+        }
+      } catch { /* non-fatal */ }
+    }
     let activeYearFilter          = new Date().getFullYear().toString();
     let analyticsYearFilter       = 'all';
     let equipYearFilter           = 'all';
@@ -544,6 +570,7 @@
       const [divData, lists] = await Promise.all([
         tdDivGet(),
         tdGet('fct_lists'),
+        loadIcSentMap(),
       ]);
       if (divData) {
         divEntries = Array.isArray(divData.entries) ? divData.entries : [];
@@ -795,6 +822,9 @@
           body: JSON.stringify({ value: entries })
         });
 
+        icSentMap.set(id, entry.sent_at);
+        const tsEl = document.getElementById('ic-ts-' + id);
+        if (tsEl) tsEl.textContent = fmtSentAt(entry.sent_at);
         if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
         setTimeout(() => { if (status) status.textContent = ''; }, 3000);
       } catch (err) {
@@ -1055,15 +1085,18 @@
                     <div style="${subLabel}">Date Paid</div>
                     ${invInp(e.id,'date_paid','date','',e.date_paid)}
                   </div>
-                  <div style="display:flex;align-items:flex-end;padding-bottom:0.1rem">
-                    <button onclick="sendToIntercompany('${e.id}')"
-                      id="ic-btn-${e.id}"
-                      style="font-size:0.68rem;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;padding:0.32rem 0.8rem;background:rgba(167,139,250,0.1);color:#a78bfa;border:1px solid rgba(167,139,250,0.3);border-radius:4px;cursor:pointer;white-space:nowrap;transition:background 0.15s,border-color 0.15s"
-                      onmouseover="this.style.background='rgba(167,139,250,0.2)';this.style.borderColor='#a78bfa'"
-                      onmouseout="this.style.background='rgba(167,139,250,0.1)';this.style.borderColor='rgba(167,139,250,0.3)'">
-                      &#8644; Intercompany Billing
-                    </button>
-                    <span id="ic-status-${e.id}" style="font-size:0.7rem;font-weight:600;margin-left:0.6rem;min-width:1em"></span>
+                  <div style="display:flex;flex-direction:column;gap:0.3rem;padding-bottom:0.1rem">
+                    <div style="display:flex;align-items:center;gap:0.5rem">
+                      <button onclick="sendToIntercompany('${e.id}')"
+                        id="ic-btn-${e.id}"
+                        style="font-size:0.68rem;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;padding:0.32rem 0.8rem;background:rgba(167,139,250,0.1);color:#a78bfa;border:1px solid rgba(167,139,250,0.3);border-radius:4px;cursor:pointer;white-space:nowrap;transition:background 0.15s,border-color 0.15s"
+                        onmouseover="this.style.background='rgba(167,139,250,0.2)';this.style.borderColor='#a78bfa'"
+                        onmouseout="this.style.background='rgba(167,139,250,0.1)';this.style.borderColor='rgba(167,139,250,0.3)'">
+                        &#8644; Intercompany Billing
+                      </button>
+                      <span id="ic-status-${e.id}" style="font-size:0.7rem;font-weight:600;min-width:1em"></span>
+                    </div>
+                    <span id="ic-ts-${e.id}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icSentMap.has(e.id) ? fmtSentAt(icSentMap.get(e.id)) : ''}</span>
                   </div>
                 </div>
               </td>

@@ -127,10 +127,9 @@ module.exports = async (req, res) => {
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
       `;
 
-      // Mirror to normalized tables (fire-and-forget: FK errors must not block the save)
-      _migratePOBlob(sql, companyCode, purchaseOrders).catch(err =>
-        console.error('[purchase-orders] normalize failed:', err.message)
-      );
+      // Mirror to normalized tables — awaited before response so serverless doesn't kill it.
+      try { await _migratePOBlob(sql, companyCode, purchaseOrders); }
+      catch (err) { console.error('[purchase-orders] normalize failed:', err.message); }
 
       return res.json({ ok: true });
     }

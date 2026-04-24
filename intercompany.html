@@ -309,17 +309,14 @@
       font-weight: 600; color: var(--accent); padding-top: 0.45rem !important;
     }
 
-    .ci-detail-toggle {
-      width: 100%; text-align: left; background: none; border: none;
-      border-top: 1px solid var(--border);
-      font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.08em;
-      color: var(--muted); padding: 0.42rem 0.85rem; cursor: pointer;
-      transition: color 0.15s, background 0.15s;
-    }
-    .ci-detail-toggle:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+    .ci-month-row { cursor: pointer; }
+    .ci-month-row:hover td { background: rgba(255,255,255,0.04) !important; }
+    .ci-month-arrow { display: inline-block; margin-right: 0.35rem; font-size: 0.7rem; color: var(--muted); transition: transform 0.15s; }
+    .ci-month-row.open .ci-month-arrow { transform: rotate(90deg); }
 
-    .ci-detail-section { display: none; border-top: 1px solid var(--border); overflow-x: auto; }
-    .ci-detail-section.open { display: block; }
+    .ci-mdet-row { display: none; }
+    .ci-mdet-row.open { display: table-row; }
+    .ci-mdet-inner { padding: 0; overflow-x: auto; background: rgba(0,0,0,0.25); }
 
     .ci-detail-table { width: 100%; border-collapse: collapse; min-width: 640px; }
     .ci-detail-table th {
@@ -334,6 +331,12 @@
     }
     .ci-detail-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
     .ci-detail-table tbody tr:last-child td { border-bottom: none; }
+    .ci-del-btn {
+      background: none; border: none; color: #ef4444; cursor: pointer;
+      font-size: 0.75rem; padding: 0.1rem 0.35rem; border-radius: 3px;
+      opacity: 0.6; transition: opacity 0.15s, background 0.15s;
+    }
+    .ci-del-btn:hover { opacity: 1; background: rgba(239,68,68,0.12); }
 
     .ci-empty {
       padding: 2.5rem 1.5rem; text-align: center;
@@ -341,6 +344,22 @@
     }
     .ci-empty strong { display: block; margin-bottom: 0.35rem; color: #3a3a5a; font-size: 0.72rem;
       text-transform: uppercase; letter-spacing: 0.08em; }
+
+    .ci-div-section { border-top: 1px solid var(--border); }
+    .ci-div-section:first-child { border-top: none; }
+    .ci-div-header {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.45rem 1rem; background: rgba(0,0,0,0.18);
+    }
+    .ci-div-label {
+      font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+      padding: 0.18rem 0.5rem; border-radius: 3px;
+    }
+    .ci-div-label.trucking { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+    .ci-div-label.dust     { background: rgba(251,191,36,0.12); color: #f59e0b; border: 1px solid rgba(251,191,36,0.3); }
+    .ci-div-stats { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-left: auto; }
+    .ci-div-stat  { font-size: 0.65rem; color: var(--muted); }
+    .ci-div-stat strong { color: var(--text); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -691,7 +710,7 @@
           <strong>No Entries</strong>
           ${icBillingEntries.length
             ? `No entries match the current filter selection.`
-            : `No intercompany billing entries yet. Use the <em>Intercompany Billing</em> button on a truck tracking row to send jobs here.`}
+            : `No intercompany billing entries yet. Use the <em>Intercompany Billing</em> button on a truck tracking row or a dust control invoice panel to send jobs here.`}
         </div>`;
         return;
       }
@@ -707,45 +726,137 @@
       const fmt$ = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
       const fmtH = v => v.toFixed(1) + ' hrs';
 
-      body.innerHTML = Object.values(byCompany).map((co, idx) => {
-        // Monthly aggregation
+      function buildDivSection(divRows, source, sectionId) {
+        const label    = source === 'trucking' ? 'Trucking' : 'Dust Control';
+        const cssClass = source === 'trucking' ? 'trucking' : 'dust';
+        const isDust   = source === 'dust';
+        const colSpan  = isDust ? 5 : 4;
+
+        // Build per-month buckets including the entries themselves
         const byMonth = {};
-        co.rows.forEach(e => {
+        divRows.forEach(e => {
           const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
           const mIdx = isNaN(mRaw) ? -1 : mRaw;
-          const mKey = mIdx >= 0 ? mIdx : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, total: 0 };
+          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, gallons: 0, total: 0, entries: [] };
           byMonth[mKey].jobs++;
-          byMonth[mKey].hours += parseFloat(e.total_hours) || 0;
-          byMonth[mKey].total += parseFloat(e.total) || 0;
+          byMonth[mKey].hours   += parseFloat(e.total_hours) || 0;
+          byMonth[mKey].gallons += parseFloat(e.gallons_ub)  || 0;
+          byMonth[mKey].total   += parseFloat(e.total)       || 0;
+          byMonth[mKey].entries.push(e);
         });
         const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
 
+        const totJobs    = divRows.length;
+        const totHours   = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totGallons = divRows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
+        const totRev     = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
+
+        const detailHead = isDust
+          ? `<th>Date</th><th>Location</th><th>Company Man</th><th>Vehicle 1</th><th>Vehicle 2</th><th class="r">Hours</th><th class="r">UB Gal</th><th class="r">UB Total</th><th class="r">Inv Total</th><th></th>`
+          : `<th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th><th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th><th></th>`;
+
+        const monthRows = sortedMonths.map((m, mi) => {
+          const detId = `${sectionId}-m${mi}`;
+          const sorted = [...m.entries].sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''));
+
+          const entryRows = sorted.map(e => {
+            const eid = escT(e.id || '');
+            if (isDust) {
+              const gal = parseFloat(e.gallons_ub) || 0;
+              return `<tr>
+                <td>${e.actual_date || '—'}</td>
+                <td>${escT(e.location || '—')}</td>
+                <td>${escT(e.company_man || '—')}</td>
+                <td>${escT(e.vehicle1 || '—')}</td>
+                <td>${escT(e.vehicle2 || '—')}</td>
+                <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
+                <td class="r">${gal > 0 ? gal.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>
+                <td class="r">${fmt$(parseFloat(e.ub_total) || 0)}</td>
+                <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
+                <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
+              </tr>`;
+            } else {
+              return `<tr>
+                <td>${e.actual_date || '—'}</td>
+                <td>${escT(e.task_number || '—')}</td>
+                <td>${escT(e.driver || '—')}</td>
+                <td>${escT(e.unit || '—')}</td>
+                <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${escT(e.description || '—')}</td>
+                <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
+                <td class="r">${fmt$(parseFloat(e.haul_fee) || 0)}/hr</td>
+                <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
+                <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
+              </tr>`;
+            }
+          }).join('');
+
+          return `
+            <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
+              <td><span class="ci-month-arrow">▶</span>${m.label}</td>
+              <td class="r">${m.jobs}</td>
+              <td class="r">${fmtH(m.hours)}</td>
+              ${isDust ? `<td class="r">${m.gallons > 0 ? m.gallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
+              <td class="r">${fmt$(m.total)}</td>
+            </tr>
+            <tr class="ci-mdet-row" id="${detId}">
+              <td colspan="${colSpan}" class="ci-mdet-inner">
+                <table class="ci-detail-table">
+                  <thead><tr>${detailHead}</tr></thead>
+                  <tbody>${entryRows}</tbody>
+                </table>
+              </td>
+            </tr>`;
+        }).join('');
+
+        const galStat = isDust && totGallons > 0
+          ? `<div class="ci-div-stat"><strong>${totGallons.toLocaleString(undefined,{maximumFractionDigits:1})} gal</strong></div>` : '';
+
+        return `
+        <div class="ci-div-section">
+          <div class="ci-div-header">
+            <span class="ci-div-label ${cssClass}">${label}</span>
+            <div class="ci-div-stats">
+              <div class="ci-div-stat"><strong>${totJobs}</strong> job${totJobs === 1 ? '' : 's'}</div>
+              <div class="ci-div-stat"><strong>${fmtH(totHours)}</strong></div>
+              ${galStat}
+              <div class="ci-div-stat"><strong>${fmt$(totRev)}</strong></div>
+            </div>
+          </div>
+          <table class="ci-month-table">
+            <thead>
+              <tr>
+                <th>Month</th><th class="r">Jobs</th><th class="r">Hours</th>
+                ${isDust ? `<th class="r">UB Gallons</th>` : ''}
+                <th class="r">Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${monthRows}
+              <tr class="ci-month-total">
+                <td>Total</td>
+                <td class="r">${totJobs}</td>
+                <td class="r">${fmtH(totHours)}</td>
+                ${isDust ? `<td class="r">${totGallons > 0 ? totGallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
+                <td class="r">${fmt$(totRev)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`;
+      }
+
+      body.innerHTML = Object.values(byCompany).map((co, idx) => {
         const totJobs  = co.rows.length;
         const totHours = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
         const totRev   = co.rows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
 
-        const monthRows = sortedMonths.map(m =>
-          `<tr>
-            <td>${m.label}</td>
-            <td class="r">${m.jobs}</td>
-            <td class="r">${fmtH(m.hours)}</td>
-            <td class="r">${fmt$(m.total)}</td>
-          </tr>`
-        ).join('');
+        const truckRows = co.rows.filter(e => (e.source || 'trucking') === 'trucking');
+        const dustRows  = co.rows.filter(e => e.source === 'dust');
 
-        const detailRows = [...co.rows]
-          .sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''))
-          .map(e => `<tr>
-            <td>${e.actual_date || '—'}</td>
-            <td>${escT(e.task_number || '—')}</td>
-            <td>${escT(e.driver || '—')}</td>
-            <td>${escT(e.unit || '—')}</td>
-            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${escT(e.description || '—')}</td>
-            <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
-            <td class="r">${fmt$(parseFloat(e.haul_fee) || 0)}/hr</td>
-            <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
-          </tr>`).join('');
+        const divSections = [
+          truckRows.length ? buildDivSection(truckRows, 'trucking', `ci-det-${idx}-tr`) : '',
+          dustRows.length  ? buildDivSection(dustRows,  'dust',     `ci-det-${idx}-du`) : '',
+        ].join('');
 
         return `
         <div class="ci-co-card">
@@ -766,50 +877,29 @@
               </div>
             </div>
           </div>
-
-          <table class="ci-month-table">
-            <thead>
-              <tr>
-                <th>Month</th>
-                <th class="r">Jobs</th>
-                <th class="r">Hours</th>
-                <th class="r">Revenue</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${monthRows}
-              <tr class="ci-month-total">
-                <td>Total</td>
-                <td class="r">${totJobs}</td>
-                <td class="r">${fmtH(totHours)}</td>
-                <td class="r">${fmt$(totRev)}</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <button class="ci-detail-toggle" onclick="toggleDetail('ci-det-${idx}', this)">
-            ▸ Show ${totJobs} individual entr${totJobs === 1 ? 'y' : 'ies'}
-          </button>
-          <div class="ci-detail-section" id="ci-det-${idx}">
-            <table class="ci-detail-table">
-              <thead>
-                <tr>
-                  <th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th>
-                  <th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th>
-                </tr>
-              </thead>
-              <tbody>${detailRows}</tbody>
-            </table>
-          </div>
+          ${divSections}
         </div>`;
       }).join('');
     }
 
-    function toggleDetail(id, btn) {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.classList.toggle('open');
-      btn.textContent = btn.textContent.replace(/[▸▾]/, el.classList.contains('open') ? '▾' : '▸');
+    function toggleMonthDetail(detId, rowEl) {
+      const det = document.getElementById(detId);
+      if (!det) return;
+      const open = det.classList.toggle('open');
+      rowEl.classList.toggle('open', open);
+    }
+
+    async function deleteIcEntry(id) {
+      if (!confirm('Remove this billing entry?')) return;
+      icBillingEntries = icBillingEntries.filter(e => e.id !== id);
+      try {
+        await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ value: icBillingEntries })
+        });
+      } catch (err) { console.error('[deleteIcEntry]', err.message); }
+      renderCompanyInfo();
     }
 
     // ── Modal open / close ──────────────────────────────────────
