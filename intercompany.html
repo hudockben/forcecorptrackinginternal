@@ -727,27 +727,31 @@
         const label    = source === 'trucking' ? 'Trucking' : 'Dust Control';
         const cssClass = source === 'trucking' ? 'trucking' : 'dust';
 
+        const isDust = source === 'dust';
         const byMonth = {};
         divRows.forEach(e => {
           const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
           const mIdx = isNaN(mRaw) ? -1 : mRaw;
           const mKey = mIdx >= 0 ? mIdx : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, total: 0 };
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, gallons: 0, total: 0 };
           byMonth[mKey].jobs++;
-          byMonth[mKey].hours += parseFloat(e.total_hours) || 0;
-          byMonth[mKey].total += parseFloat(e.total) || 0;
+          byMonth[mKey].hours   += parseFloat(e.total_hours) || 0;
+          byMonth[mKey].gallons += parseFloat(e.gallons_ub)  || 0;
+          byMonth[mKey].total   += parseFloat(e.total)       || 0;
         });
         const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
 
-        const totJobs  = divRows.length;
-        const totHours = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
-        const totRev   = divRows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
+        const totJobs    = divRows.length;
+        const totHours   = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totGallons = divRows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
+        const totRev     = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
 
         const monthRows = sortedMonths.map(m =>
           `<tr>
             <td>${m.label}</td>
             <td class="r">${m.jobs}</td>
             <td class="r">${fmtH(m.hours)}</td>
+            ${isDust ? `<td class="r">${m.gallons > 0 ? m.gallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
             <td class="r">${fmt$(m.total)}</td>
           </tr>`
         ).join('');
@@ -766,20 +770,28 @@
             <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
           </tr>`).join('');
         } else {
-          detailRows = sorted.map(e => `<tr>
-            <td>${e.actual_date || '—'}</td>
-            <td>${escT(e.location || '—')}</td>
-            <td>${escT(e.company_man || '—')}</td>
-            <td>${escT(e.vehicle1 || '—')}</td>
-            <td>${escT(e.vehicle2 || '—')}</td>
-            <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
-            <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
-          </tr>`).join('');
+          detailRows = sorted.map(e => {
+            const gal = parseFloat(e.gallons_ub) || 0;
+            return `<tr>
+              <td>${e.actual_date || '—'}</td>
+              <td>${escT(e.location || '—')}</td>
+              <td>${escT(e.company_man || '—')}</td>
+              <td>${escT(e.vehicle1 || '—')}</td>
+              <td>${escT(e.vehicle2 || '—')}</td>
+              <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
+              <td class="r">${gal > 0 ? gal.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>
+              <td class="r">${fmt$(parseFloat(e.ub_total) || 0)}</td>
+              <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
+            </tr>`;
+          }).join('');
         }
 
         const detailHead = source === 'trucking'
           ? `<th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th><th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th>`
-          : `<th>Date</th><th>Location</th><th>Company Man</th><th>Vehicle 1</th><th>Vehicle 2</th><th class="r">Hours</th><th class="r">Total</th>`;
+          : `<th>Date</th><th>Location</th><th>Company Man</th><th>Vehicle 1</th><th>Vehicle 2</th><th class="r">Hours</th><th class="r">UB Gal</th><th class="r">UB Total</th><th class="r">Inv Total</th>`;
+
+        const galStat = isDust && totGallons > 0
+          ? `<div class="ci-div-stat"><strong>${totGallons.toLocaleString(undefined,{maximumFractionDigits:1})} gal</strong></div>` : '';
 
         return `
         <div class="ci-div-section">
@@ -788,13 +800,16 @@
             <div class="ci-div-stats">
               <div class="ci-div-stat"><strong>${totJobs}</strong> job${totJobs === 1 ? '' : 's'}</div>
               <div class="ci-div-stat"><strong>${fmtH(totHours)}</strong></div>
+              ${galStat}
               <div class="ci-div-stat"><strong>${fmt$(totRev)}</strong></div>
             </div>
           </div>
           <table class="ci-month-table">
             <thead>
               <tr>
-                <th>Month</th><th class="r">Jobs</th><th class="r">Hours</th><th class="r">Revenue</th>
+                <th>Month</th><th class="r">Jobs</th><th class="r">Hours</th>
+                ${isDust ? `<th class="r">UB Gallons</th>` : ''}
+                <th class="r">Revenue</th>
               </tr>
             </thead>
             <tbody>
@@ -803,6 +818,7 @@
                 <td>Total</td>
                 <td class="r">${totJobs}</td>
                 <td class="r">${fmtH(totHours)}</td>
+                ${isDust ? `<td class="r">${totGallons > 0 ? totGallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
                 <td class="r">${fmt$(totRev)}</td>
               </tr>
             </tbody>
