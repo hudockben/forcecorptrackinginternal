@@ -520,16 +520,8 @@
 
   <!-- ── Dashboard ── -->
   <div class="tab-panel active" id="tab-dashboard">
-    <div class="empty-panel">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="3" y="3" width="7" height="7" rx="1"/>
-        <rect x="14" y="3" width="7" height="7" rx="1"/>
-        <rect x="3" y="14" width="7" height="7" rx="1"/>
-        <rect x="14" y="14" width="7" height="7" rx="1"/>
-      </svg>
-      <div class="empty-title">Dashboard</div>
-      <div class="empty-sub">Summary KPIs, billing totals, and intercompany activity will appear here.</div>
-      <span class="coming-soon-badge">Coming Soon</span>
+    <div class="ci-body" id="dashBody">
+      <div class="ci-empty"><strong>Loading</strong>Fetching data…</div>
     </div>
   </div>
 
@@ -685,6 +677,7 @@
         b.classList.toggle('active', b.dataset.tab === tab));
       document.querySelectorAll('.tab-panel').forEach(p =>
         p.classList.toggle('active', p.id === 'tab-' + tab));
+      if (tab === 'dashboard')    loadAndRenderDashboard();
       if (tab === 'company-info') loadAndRenderCompanyInfo();
     }
 
@@ -867,6 +860,8 @@
     const IC_BILLING_KEY = 'fct_intercompany_billing_entries';
     let icBillingEntries = [];
     const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const fmt$   = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const fmtH   = v => v.toFixed(1) + ' hrs';
 
     async function loadBillingEntries() {
       try {
@@ -943,9 +938,6 @@
         if (!byCompany[key]) byCompany[key] = { name: e.company_name || key, id: e.company_id, rows: [] };
         byCompany[key].rows.push(e);
       });
-
-      const fmt$ = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-      const fmtH = v => v.toFixed(1) + ' hrs';
 
       function buildDivSection(divRows, source, sectionId) {
         const label    = source === 'trucking' ? 'Trucking' : 'Dust Control';
@@ -1085,79 +1077,7 @@
         </div>`;
       }
 
-      function buildPendingCard(dustEntries) {
-        const pending = dustEntries.filter(e => !e.invoice_sent_date || !e.payment_received_date);
-        if (!pending.length) return '';
-
-        const needsInv = pending.filter(e => !e.invoice_sent_date).length;
-        const needsPay = pending.filter(e => e.invoice_sent_date && !e.payment_received_date).length;
-        const totIc    = pending.reduce((s, e) =>
-          s + (parseFloat(e.total_hours)||0) * icDustRate + (parseFloat(e.gallons_ub)||0) * icUbRate, 0);
-
-        const badgeInv = needsInv > 0
-          ? `<span class="ci-pending-badge b-inv">${needsInv} no invoice</span>` : '';
-        const badgePay = needsPay > 0
-          ? `<span class="ci-pending-badge b-pay">${needsPay} awaiting payment</span>` : '';
-
-        const rows = pending
-          .slice()
-          .sort((a, b) => (a.actual_date||'').localeCompare(b.actual_date||''))
-          .map(e => {
-            const eid       = escT(e.id || '');
-            const hrs       = parseFloat(e.total_hours) || 0;
-            const gal       = parseFloat(e.gallons_ub)  || 0;
-            const icAmt     = hrs * icDustRate + gal * icUbRate;
-            const dotClass  = !e.invoice_sent_date ? 's-red' : 's-amber';
-            const invVal    = escT(e.invoice_sent_date || '');
-            const payVal    = escT(e.payment_received_date || '');
-            return `<tr>
-              <td><span class="ci-status-dot ${dotClass}"></span>${escT(e.company_name || '—')}</td>
-              <td>${escT(e.actual_date || '—')}</td>
-              <td>${escT(e.location || '—')}</td>
-              <td class="r">${fmtH(hrs)}</td>
-              <td class="r">${fmt$(parseFloat(e.total)||0)}</td>
-              <td class="r ic-val">${fmt$(icAmt)}</td>
-              <td><input type="date" class="ci-pend-date${invVal ? ' is-set' : ''}"
-                    value="${invVal}"
-                    onchange="setIcEntryDate('${eid}','invoice_sent_date',this.value)"
-                    title="Invoice Sent Date"></td>
-              <td><input type="date" class="ci-pend-date${payVal ? ' is-set' : ''}"
-                    value="${payVal}"
-                    onchange="setIcEntryDate('${eid}','payment_received_date',this.value)"
-                    title="Payment Received Date"></td>
-            </tr>`;
-          }).join('');
-
-        return `
-        <div class="ci-pending-card">
-          <div class="ci-pending-hdr" onclick="togglePendingCard()">
-            <span class="ci-pending-warn">⚠</span>
-            <span class="ci-pending-title">Pending Invoices &amp; Payments</span>
-            <div class="ci-pending-badges">${badgeInv}${badgePay}</div>
-            <div class="ci-pending-spacer"></div>
-            <span class="ci-pending-ic">${fmt$(totIc)} IC pending</span>
-            <span class="ci-pending-arrow" id="ciPendingArrow"
-              style="${pendingCardOpen ? 'transform:rotate(90deg)' : ''}">▶</span>
-          </div>
-          <div class="ci-pending-body${pendingCardOpen ? ' open' : ''}" id="ciPendingBody">
-            <table class="ci-pending-tbl">
-              <thead>
-                <tr>
-                  <th>Company</th><th>Date</th><th>Location</th>
-                  <th class="r">Hours</th><th class="r">Inv Total</th>
-                  <th class="r">IC Total</th>
-                  <th>Invoice Sent</th><th>Payment Received</th>
-                </tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
-        </div>`;
-      }
-
-      const pendingCard = ciDivFilter === 'dust' ? buildPendingCard(entries) : '';
-
-      body.innerHTML = pendingCard + Object.values(byCompany).map((co, idx) => {
+      body.innerHTML = Object.values(byCompany).map((co, idx) => {
         const totJobs    = co.rows.length;
         const totHours   = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
         const totGallons = co.rows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
@@ -1243,7 +1163,97 @@
           body: JSON.stringify({ value: icBillingEntries })
         });
       } catch (err) { console.error('[setIcEntryDate]', err.message); }
-      renderCompanyInfo();
+      renderDashboard();
+      if (ciDivFilter === 'dust') renderCompanyInfo();
+    }
+
+    // ── Pending card builder (used by dashboard) ────────────────
+    function buildPendingCard(dustEntries) {
+      const pending = dustEntries.filter(e => !e.invoice_sent_date || !e.payment_received_date);
+      if (!pending.length) return '';
+
+      const needsInv = pending.filter(e => !e.invoice_sent_date).length;
+      const needsPay = pending.filter(e => e.invoice_sent_date && !e.payment_received_date).length;
+      const totIc    = pending.reduce((s, e) =>
+        s + (parseFloat(e.total_hours)||0) * icDustRate + (parseFloat(e.gallons_ub)||0) * icUbRate, 0);
+
+      const badgeInv = needsInv > 0
+        ? `<span class="ci-pending-badge b-inv">${needsInv} no invoice</span>` : '';
+      const badgePay = needsPay > 0
+        ? `<span class="ci-pending-badge b-pay">${needsPay} awaiting payment</span>` : '';
+
+      const rows = pending
+        .slice()
+        .sort((a, b) => (a.actual_date||'').localeCompare(b.actual_date||''))
+        .map(e => {
+          const eid      = escT(e.id || '');
+          const hrs      = parseFloat(e.total_hours) || 0;
+          const gal      = parseFloat(e.gallons_ub)  || 0;
+          const icAmt    = hrs * icDustRate + gal * icUbRate;
+          const dotClass = !e.invoice_sent_date ? 's-red' : 's-amber';
+          const invVal   = escT(e.invoice_sent_date || '');
+          const payVal   = escT(e.payment_received_date || '');
+          return `<tr>
+            <td><span class="ci-status-dot ${dotClass}"></span>${escT(e.company_name || '—')}</td>
+            <td>${escT(e.actual_date || '—')}</td>
+            <td>${escT(e.location || '—')}</td>
+            <td class="r">${fmtH(hrs)}</td>
+            <td class="r">${fmt$(parseFloat(e.total)||0)}</td>
+            <td class="r ic-val">${fmt$(icAmt)}</td>
+            <td><input type="date" class="ci-pend-date${invVal ? ' is-set' : ''}"
+                  value="${invVal}"
+                  onchange="setIcEntryDate('${eid}','invoice_sent_date',this.value)"
+                  title="Invoice Sent Date"></td>
+            <td><input type="date" class="ci-pend-date${payVal ? ' is-set' : ''}"
+                  value="${payVal}"
+                  onchange="setIcEntryDate('${eid}','payment_received_date',this.value)"
+                  title="Payment Received Date"></td>
+          </tr>`;
+        }).join('');
+
+      return `
+      <div class="ci-pending-card">
+        <div class="ci-pending-hdr" onclick="togglePendingCard()">
+          <span class="ci-pending-warn">⚠</span>
+          <span class="ci-pending-title">Pending Invoices &amp; Payments — Dust Control</span>
+          <div class="ci-pending-badges">${badgeInv}${badgePay}</div>
+          <div class="ci-pending-spacer"></div>
+          <span class="ci-pending-ic">${fmt$(totIc)} IC pending</span>
+          <span class="ci-pending-arrow" id="ciPendingArrow"
+            style="${pendingCardOpen ? 'transform:rotate(90deg)' : ''}">▶</span>
+        </div>
+        <div class="ci-pending-body${pendingCardOpen ? ' open' : ''}" id="ciPendingBody">
+          <table class="ci-pending-tbl">
+            <thead>
+              <tr>
+                <th>Company</th><th>Date</th><th>Location</th>
+                <th class="r">Hours</th><th class="r">Inv Total</th>
+                <th class="r">IC Total</th>
+                <th>Invoice Sent</th><th>Payment Received</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+    }
+
+    // ── Dashboard ───────────────────────────────────────────────
+    async function loadAndRenderDashboard() {
+      const body = document.getElementById('dashBody');
+      if (body) body.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching data…</div>';
+      await Promise.all([loadCompanies(), loadBillingEntries()]);
+      renderDashboard();
+    }
+
+    function renderDashboard() {
+      const body = document.getElementById('dashBody');
+      if (!body) return;
+      const dustEntries = icBillingEntries.filter(e => (e.source || 'trucking') === 'dust');
+      const html = buildPendingCard(dustEntries);
+      body.innerHTML = html || `<div class="ci-empty">
+        <strong>All Clear</strong>All dust control entries have invoice and payment dates recorded.
+      </div>`;
     }
 
     // ── Modal open / close ──────────────────────────────────────
@@ -1265,6 +1275,9 @@
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') closeManageLists();
     });
+
+    // Initial dashboard load (default active tab)
+    loadAndRenderDashboard();
 
     /* ═══════════════════════════════════════════
        DATA SYNC — poll shared data every 60s
@@ -1294,7 +1307,10 @@
           const incoming = Array.isArray(value) ? value : [];
           if (JSON.stringify(incoming) === JSON.stringify(icBillingEntries)) return;
           icBillingEntries = incoming;
-          if (!_isEditing() && _activeTabId() === 'company-info') renderCompanyInfo();
+          if (!_isEditing()) {
+            if (_activeTabId() === 'dashboard')    renderDashboard();
+            if (_activeTabId() === 'company-info') renderCompanyInfo();
+          }
         } catch { /* non-fatal */ }
       }
 
@@ -1308,10 +1324,12 @@
           const incoming = Array.isArray(value) ? value : [];
           if (JSON.stringify(incoming) === JSON.stringify(icCompanies)) return;
           icCompanies = incoming;
-          // Re-render wherever companies are shown
           const listsBackdrop = document.getElementById('listsBackdrop');
           if (listsBackdrop && listsBackdrop.classList.contains('open')) renderCoList();
-          if (!_isEditing() && _activeTabId() === 'company-info') renderCompanyInfo();
+          if (!_isEditing()) {
+            if (_activeTabId() === 'dashboard')    renderDashboard();
+            if (_activeTabId() === 'company-info') renderCompanyInfo();
+          }
         } catch { /* non-fatal */ }
       }
 
