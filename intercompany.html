@@ -954,6 +954,58 @@
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') closeManageLists();
     });
+
+    /* ═══════════════════════════════════════════
+       DATA SYNC — poll shared data every 60s
+       Keeps billing entries and company list in
+       sync when another user makes changes.
+    ═══════════════════════════════════════════ */
+    (function () {
+      const POLL_MS = 60_000;
+
+      function _isEditing() {
+        const el = document.activeElement;
+        return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+      }
+
+      function _activeTabId() {
+        const btn = document.querySelector('.tab-btn.active');
+        return btn ? btn.dataset.tab : '';
+      }
+
+      async function pollBillingEntries() {
+        try {
+          const r = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!r.ok) return;
+          const { value } = await r.json();
+          const incoming = Array.isArray(value) ? value : [];
+          if (JSON.stringify(incoming) === JSON.stringify(icBillingEntries)) return;
+          icBillingEntries = incoming;
+          if (!_isEditing() && _activeTabId() === 'company-info') renderCompanyInfo();
+        } catch { /* non-fatal */ }
+      }
+
+      async function pollCompanies() {
+        try {
+          const r = await fetch(`${API_BASE}/data/${IC_COMPANIES_KEY}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!r.ok) return;
+          const { value } = await r.json();
+          const incoming = Array.isArray(value) ? value : [];
+          if (JSON.stringify(incoming) === JSON.stringify(icCompanies)) return;
+          icCompanies = incoming;
+          // Re-render wherever companies are shown
+          const listsBackdrop = document.getElementById('listsBackdrop');
+          if (listsBackdrop && listsBackdrop.classList.contains('open')) renderCoList();
+          if (!_isEditing() && _activeTabId() === 'company-info') renderCompanyInfo();
+        } catch { /* non-fatal */ }
+      }
+
+      setInterval(() => Promise.allSettled([pollBillingEntries(), pollCompanies()]), POLL_MS);
+    })();
   </script>
 </body>
 </html>
