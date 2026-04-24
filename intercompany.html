@@ -309,17 +309,14 @@
       font-weight: 600; color: var(--accent); padding-top: 0.45rem !important;
     }
 
-    .ci-detail-toggle {
-      width: 100%; text-align: left; background: none; border: none;
-      border-top: 1px solid var(--border);
-      font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.08em;
-      color: var(--muted); padding: 0.42rem 0.85rem; cursor: pointer;
-      transition: color 0.15s, background 0.15s;
-    }
-    .ci-detail-toggle:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+    .ci-month-row { cursor: pointer; }
+    .ci-month-row:hover td { background: rgba(255,255,255,0.04) !important; }
+    .ci-month-arrow { display: inline-block; margin-right: 0.35rem; font-size: 0.7rem; color: var(--muted); transition: transform 0.15s; }
+    .ci-month-row.open .ci-month-arrow { transform: rotate(90deg); }
 
-    .ci-detail-section { display: none; border-top: 1px solid var(--border); overflow-x: auto; }
-    .ci-detail-section.open { display: block; }
+    .ci-mdet-row { display: none; }
+    .ci-mdet-row.open { display: table-row; }
+    .ci-mdet-inner { padding: 0; overflow-x: auto; background: rgba(0,0,0,0.25); }
 
     .ci-detail-table { width: 100%; border-collapse: collapse; min-width: 640px; }
     .ci-detail-table th {
@@ -334,6 +331,12 @@
     }
     .ci-detail-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
     .ci-detail-table tbody tr:last-child td { border-bottom: none; }
+    .ci-del-btn {
+      background: none; border: none; color: #ef4444; cursor: pointer;
+      font-size: 0.75rem; padding: 0.1rem 0.35rem; border-radius: 3px;
+      opacity: 0.6; transition: opacity 0.15s, background 0.15s;
+    }
+    .ci-del-btn:hover { opacity: 1; background: rgba(239,68,68,0.12); }
 
     .ci-empty {
       padding: 2.5rem 1.5rem; text-align: center;
@@ -723,21 +726,24 @@
       const fmt$ = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
       const fmtH = v => v.toFixed(1) + ' hrs';
 
-      function buildDivSection(divRows, source, detId) {
+      function buildDivSection(divRows, source, sectionId) {
         const label    = source === 'trucking' ? 'Trucking' : 'Dust Control';
         const cssClass = source === 'trucking' ? 'trucking' : 'dust';
+        const isDust   = source === 'dust';
+        const colSpan  = isDust ? 5 : 4;
 
-        const isDust = source === 'dust';
+        // Build per-month buckets including the entries themselves
         const byMonth = {};
         divRows.forEach(e => {
           const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
           const mIdx = isNaN(mRaw) ? -1 : mRaw;
-          const mKey = mIdx >= 0 ? mIdx : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, gallons: 0, total: 0 };
+          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, gallons: 0, total: 0, entries: [] };
           byMonth[mKey].jobs++;
           byMonth[mKey].hours   += parseFloat(e.total_hours) || 0;
           byMonth[mKey].gallons += parseFloat(e.gallons_ub)  || 0;
           byMonth[mKey].total   += parseFloat(e.total)       || 0;
+          byMonth[mKey].entries.push(e);
         });
         const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
 
@@ -746,49 +752,62 @@
         const totGallons = divRows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
         const totRev     = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
 
-        const monthRows = sortedMonths.map(m =>
-          `<tr>
-            <td>${m.label}</td>
-            <td class="r">${m.jobs}</td>
-            <td class="r">${fmtH(m.hours)}</td>
-            ${isDust ? `<td class="r">${m.gallons > 0 ? m.gallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
-            <td class="r">${fmt$(m.total)}</td>
-          </tr>`
-        ).join('');
+        const detailHead = isDust
+          ? `<th>Date</th><th>Location</th><th>Company Man</th><th>Vehicle 1</th><th>Vehicle 2</th><th class="r">Hours</th><th class="r">UB Gal</th><th class="r">UB Total</th><th class="r">Inv Total</th><th></th>`
+          : `<th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th><th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th><th></th>`;
 
-        const sorted = [...divRows].sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''));
-        let detailRows;
-        if (source === 'trucking') {
-          detailRows = sorted.map(e => `<tr>
-            <td>${e.actual_date || '—'}</td>
-            <td>${escT(e.task_number || '—')}</td>
-            <td>${escT(e.driver || '—')}</td>
-            <td>${escT(e.unit || '—')}</td>
-            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${escT(e.description || '—')}</td>
-            <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
-            <td class="r">${fmt$(parseFloat(e.haul_fee) || 0)}/hr</td>
-            <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
-          </tr>`).join('');
-        } else {
-          detailRows = sorted.map(e => {
-            const gal = parseFloat(e.gallons_ub) || 0;
-            return `<tr>
-              <td>${e.actual_date || '—'}</td>
-              <td>${escT(e.location || '—')}</td>
-              <td>${escT(e.company_man || '—')}</td>
-              <td>${escT(e.vehicle1 || '—')}</td>
-              <td>${escT(e.vehicle2 || '—')}</td>
-              <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
-              <td class="r">${gal > 0 ? gal.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>
-              <td class="r">${fmt$(parseFloat(e.ub_total) || 0)}</td>
-              <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
-            </tr>`;
+        const monthRows = sortedMonths.map((m, mi) => {
+          const detId = `${sectionId}-m${mi}`;
+          const sorted = [...m.entries].sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''));
+
+          const entryRows = sorted.map(e => {
+            const eid = escT(e.id || '');
+            if (isDust) {
+              const gal = parseFloat(e.gallons_ub) || 0;
+              return `<tr>
+                <td>${e.actual_date || '—'}</td>
+                <td>${escT(e.location || '—')}</td>
+                <td>${escT(e.company_man || '—')}</td>
+                <td>${escT(e.vehicle1 || '—')}</td>
+                <td>${escT(e.vehicle2 || '—')}</td>
+                <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
+                <td class="r">${gal > 0 ? gal.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>
+                <td class="r">${fmt$(parseFloat(e.ub_total) || 0)}</td>
+                <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
+                <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
+              </tr>`;
+            } else {
+              return `<tr>
+                <td>${e.actual_date || '—'}</td>
+                <td>${escT(e.task_number || '—')}</td>
+                <td>${escT(e.driver || '—')}</td>
+                <td>${escT(e.unit || '—')}</td>
+                <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${escT(e.description || '—')}</td>
+                <td class="r">${fmtH(parseFloat(e.total_hours) || 0)}</td>
+                <td class="r">${fmt$(parseFloat(e.haul_fee) || 0)}/hr</td>
+                <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
+                <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
+              </tr>`;
+            }
           }).join('');
-        }
 
-        const detailHead = source === 'trucking'
-          ? `<th>Date</th><th>Task #</th><th>Driver</th><th>Unit</th><th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Total</th>`
-          : `<th>Date</th><th>Location</th><th>Company Man</th><th>Vehicle 1</th><th>Vehicle 2</th><th class="r">Hours</th><th class="r">UB Gal</th><th class="r">UB Total</th><th class="r">Inv Total</th>`;
+          return `
+            <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
+              <td><span class="ci-month-arrow">▶</span>${m.label}</td>
+              <td class="r">${m.jobs}</td>
+              <td class="r">${fmtH(m.hours)}</td>
+              ${isDust ? `<td class="r">${m.gallons > 0 ? m.gallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
+              <td class="r">${fmt$(m.total)}</td>
+            </tr>
+            <tr class="ci-mdet-row" id="${detId}">
+              <td colspan="${colSpan}" class="ci-mdet-inner">
+                <table class="ci-detail-table">
+                  <thead><tr>${detailHead}</tr></thead>
+                  <tbody>${entryRows}</tbody>
+                </table>
+              </td>
+            </tr>`;
+        }).join('');
 
         const galStat = isDust && totGallons > 0
           ? `<div class="ci-div-stat"><strong>${totGallons.toLocaleString(undefined,{maximumFractionDigits:1})} gal</strong></div>` : '';
@@ -823,15 +842,6 @@
               </tr>
             </tbody>
           </table>
-          <button class="ci-detail-toggle" onclick="toggleDetail('${detId}', this)">
-            ▸ Show ${totJobs} individual entr${totJobs === 1 ? 'y' : 'ies'}
-          </button>
-          <div class="ci-detail-section" id="${detId}">
-            <table class="ci-detail-table">
-              <thead><tr>${detailHead}</tr></thead>
-              <tbody>${detailRows}</tbody>
-            </table>
-          </div>
         </div>`;
       }
 
@@ -872,11 +882,24 @@
       }).join('');
     }
 
-    function toggleDetail(id, btn) {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.classList.toggle('open');
-      btn.textContent = btn.textContent.replace(/[▸▾]/, el.classList.contains('open') ? '▾' : '▸');
+    function toggleMonthDetail(detId, rowEl) {
+      const det = document.getElementById(detId);
+      if (!det) return;
+      const open = det.classList.toggle('open');
+      rowEl.classList.toggle('open', open);
+    }
+
+    async function deleteIcEntry(id) {
+      if (!confirm('Remove this billing entry?')) return;
+      icBillingEntries = icBillingEntries.filter(e => e.id !== id);
+      try {
+        await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ value: icBillingEntries })
+        });
+      } catch (err) { console.error('[deleteIcEntry]', err.message); }
+      renderCompanyInfo();
     }
 
     // ── Modal open / close ──────────────────────────────────────
