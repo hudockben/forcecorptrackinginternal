@@ -471,47 +471,6 @@
       } catch { /* non-fatal */ }
     }
 
-    // Restore any trucking rows that were lost but exist in IC billing entries
-    function _recoverMissingICEntries() {
-      if (!icSentMap.size) return;
-      const existing = new Set(divEntries.map(e => e.id).filter(Boolean));
-      const toRestore = [];
-      icSentMap.forEach((ic, sourceId) => {
-        if (sourceId && !existing.has(sourceId)) toRestore.push(ic);
-      });
-      if (!toRestore.length) return;
-
-      const recovered = toRestore.map(ic => ({
-        id:                ic.source_id        || '',
-        task_number:       ic.task_number       || '',
-        actual_date:       ic.actual_date       || '',
-        driver:            ic.driver            || '',
-        unit:              ic.unit              || '',
-        actual_start:      ic.actual_start      || '',
-        actual_end:        ic.actual_end        || '',
-        total_hours:       String(ic.total_hours || ''),
-        haul_fee:          String(ic.haul_fee    || ''),
-        customer:          ic.customer           || '',
-        description:       ic.description        || '',
-        division:          ic.division           || '',
-        notes:             ic.notes              || '',
-        qb_invoice:        ic.qb_invoice         || '',
-        invoiced_date:     ic.invoiced_date       || '',
-        invoice_sent_date: ic.invoice_sent_date   || '',
-        invoice_status:    ic.invoice_status      || '',
-        date_paid:         ic.date_paid           || '',
-      })).filter(r => r.id); // discard any entry where source_id was falsy
-
-      if (!recovered.length) return;
-
-      divEntries = [...divEntries, ...recovered].sort((a, b) =>
-        (b.actual_date || '').localeCompare(a.actual_date || '') ||
-        (b.task_number || '').localeCompare(a.task_number || '')
-      );
-      schedSave();
-      renderTrackingTab();
-      console.log(`[IC Recovery] Restored ${recovered.length} trucking row(s):`, recovered.map(r => r.task_number).join(', '));
-    }
     let activeYearFilter          = new Date().getFullYear().toString();
     let analyticsYearFilter       = 'all';
     let equipYearFilter           = 'all';
@@ -629,7 +588,6 @@
       }
       _migrateExistingEntries();
       renderDashboard();
-      try { _recoverMissingICEntries(); } catch(e) { console.error('[IC Recovery]', e); }
     }
 
     function saveTruckLists() {
