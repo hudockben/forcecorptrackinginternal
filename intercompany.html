@@ -592,6 +592,74 @@
     .icd-feed-co { font-size:0.72rem; color:var(--text); font-weight:500; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .icd-feed-ic { font-size:0.75rem; font-weight:700; color:var(--accent); white-space:nowrap; flex-shrink:0; }
     .icd-empty-sm { font-size:0.72rem; color:var(--muted); padding:0.5rem 0; }
+
+    /* ── Analytics tab ── */
+    .an-toolbar { display:flex; align-items:center; gap:1rem; padding:0.65rem 1.25rem; border-bottom:1px solid var(--border); background:var(--surface); flex-wrap:wrap; position:sticky; top:89px; z-index:100; }
+    .an-toolbar-group { display:flex; align-items:center; gap:0.4rem; }
+    .an-toolbar label { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); }
+    .an-toolbar select { background:var(--surface2); border:1px solid var(--border); color:var(--text); font-size:0.75rem; padding:0.28rem 0.55rem; border-radius:4px; outline:none; cursor:pointer; }
+    .an-div-btns { display:flex; }
+    .an-div-btn { font-size:0.62rem; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; padding:0.26rem 0.7rem; background:none; border:1px solid var(--border); color:var(--muted); cursor:pointer; transition:all 0.15s; }
+    .an-div-btn:first-child { border-radius:4px 0 0 4px; }
+    .an-div-btn:last-child  { border-radius:0 4px 4px 0; margin-left:-1px; }
+    .an-div-btn:not(:first-child):not(:last-child) { margin-left:-1px; }
+    .an-div-btn:hover { color:var(--text); z-index:1; }
+    .an-div-btn.active { color:var(--accent); border-color:rgba(167,139,250,0.5); background:rgba(167,139,250,0.08); z-index:1; }
+
+    .an-body { padding:1.5rem 1.5rem 3rem; }
+    .an-section-lbl { font-size:0.6rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); margin-bottom:0.75rem; font-weight:600; }
+
+    .an-kpi-strip { display:flex; gap:0.85rem; flex-wrap:wrap; margin-bottom:1.5rem; }
+    .an-kpi-card { flex:1; min-width:140px; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:0.85rem 1rem; }
+    .an-kpi-label { font-size:0.58rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); margin-bottom:0.3rem; }
+    .an-kpi-val { font-size:1.1rem; font-weight:700; line-height:1.1; margin-bottom:0.2rem; }
+    .an-kpi-sub { font-size:0.62rem; color:var(--muted); }
+
+    .an-widgets { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1.5rem; }
+    @media (max-width:860px) { .an-widgets { grid-template-columns:1fr; } }
+    .an-widget { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:1rem 1.1rem; }
+
+    .an-yoy-row { display:flex; align-items:center; gap:0.75rem; margin-bottom:0.6rem; }
+    .an-yoy-yr  { font-size:0.72rem; font-weight:600; color:var(--text); width:36px; flex-shrink:0; }
+    .an-yoy-amt { font-size:0.72rem; font-weight:700; color:var(--accent); white-space:nowrap; width:80px; text-align:right; flex-shrink:0; }
+
+    .an-inv-grid { display:grid; grid-template-columns:1fr 1fr; gap:0.65rem; }
+    .an-inv-card { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0.65rem 0.85rem; }
+    .an-inv-dot   { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:0.35rem; vertical-align:middle; }
+    .an-inv-label { font-size:0.58rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); display:flex; align-items:center; margin-bottom:0.3rem; }
+    .an-inv-val   { font-size:0.95rem; font-weight:700; }
+    .an-inv-cnt   { font-size:0.62rem; color:var(--muted); margin-top:0.1rem; }
+
+    .an-tbl-wrap { background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden; margin-bottom:1.5rem; overflow-x:auto; }
+    .an-tbl { width:100%; border-collapse:collapse; min-width:640px; }
+    .an-tbl th { font-size:0.6rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); text-align:left; padding:0.42rem 1rem; border-bottom:1px solid var(--border); white-space:nowrap; cursor:pointer; user-select:none; }
+    .an-tbl th:hover { color:var(--text); }
+    .an-tbl th.r { text-align:right; }
+    .an-tbl th.sort-asc::after  { content:' ▲'; font-size:0.52rem; color:var(--accent); }
+    .an-tbl th.sort-desc::after { content:' ▼'; font-size:0.52rem; color:var(--accent); }
+    .an-tbl td { font-size:0.75rem; padding:0.38rem 1rem; border-bottom:1px solid rgba(42,42,58,0.4); color:var(--text); white-space:nowrap; }
+    .an-tbl td.r { text-align:right; font-variant-numeric:tabular-nums; }
+    .an-tbl tbody tr:last-child td { border-bottom:none; }
+    .an-tbl tbody tr:hover td { background:rgba(255,255,255,0.02); }
+    .an-tbl tfoot td { font-weight:700; border-top:2px solid var(--border); color:var(--accent); padding:0.45rem 1rem; font-size:0.75rem; background:rgba(167,139,250,0.04); }
+    .an-tbl tfoot td.r { text-align:right; }
+
+    .an-trend-tbl { width:100%; border-collapse:collapse; min-width:600px; }
+    .an-trend-tbl th { font-size:0.6rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); text-align:left; padding:0.38rem 1rem; border-bottom:1px solid var(--border); white-space:nowrap; }
+    .an-trend-tbl th.r { text-align:right; }
+    .an-trend-tbl td { font-size:0.73rem; padding:0.32rem 1rem; border-bottom:1px solid rgba(42,42,58,0.35); color:var(--text); white-space:nowrap; }
+    .an-trend-tbl td.r { text-align:right; font-variant-numeric:tabular-nums; }
+    .an-trend-tbl tbody tr:hover td { background:rgba(255,255,255,0.02); }
+    .an-trend-tbl tfoot td { font-weight:700; border-top:2px solid var(--border); color:var(--accent); padding:0.4rem 1rem; font-size:0.73rem; background:rgba(167,139,250,0.04); }
+    .an-trend-tbl tfoot td.r { text-align:right; }
+    .an-trend-cur { background:rgba(167,139,250,0.04) !important; }
+    .an-cur-badge { font-size:0.56rem; color:var(--accent); font-weight:700; margin-left:0.35rem; vertical-align:middle; }
+
+    .an-delta-pos { color:#22c55e !important; }
+    .an-delta-neg { color:#ef4444 !important; }
+
+    .an-drv-bar  { height:5px; background:var(--border); border-radius:3px; overflow:hidden; margin-top:4px; width:100%; min-width:80px; }
+    .an-drv-fill { height:100%; background:#ef4444; border-radius:3px; }
   </style>
 </head>
 <body>
@@ -690,17 +758,25 @@
 
   <!-- ── Analytics ── -->
   <div class="tab-panel" id="tab-analytics">
-    <div class="empty-panel">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="18" y1="20" x2="18" y2="10"/>
-        <line x1="12" y1="20" x2="12" y2="4"/>
-        <line x1="6"  y1="20" x2="6"  y2="14"/>
-        <line x1="2"  y1="20" x2="22" y2="20"/>
-      </svg>
-      <div class="empty-title">Analytics</div>
-      <div class="empty-sub">Billing trends, reconciliation reports, and cross-entity cost breakdowns will be built here.</div>
-      <span class="coming-soon-badge">Coming Soon</span>
+    <div class="an-toolbar">
+      <div class="an-toolbar-group">
+        <label>Year</label>
+        <select id="anYearFilter" onchange="renderAnalytics()">
+          <option value="all">All Years</option>
+        </select>
+      </div>
+      <div class="an-toolbar-group">
+        <label>Division</label>
+        <div class="an-div-btns">
+          <button class="an-div-btn active" data-div="all"      onclick="setAnDiv('all')">All</button>
+          <button class="an-div-btn"        data-div="trucking" onclick="setAnDiv('trucking')">Trucking</button>
+          <button class="an-div-btn"        data-div="dust"     onclick="setAnDiv('dust')">Dust</button>
+        </div>
+      </div>
+      <div class="tab-bar-spacer"></div>
+      <div id="anEntryCount" style="font-size:0.68rem;color:var(--muted)"></div>
     </div>
+    <div id="analyticsBody"></div>
   </div>
 
   <!-- ── Manage Lists Modal ── -->
@@ -777,6 +853,7 @@
         p.classList.toggle('active', p.id === 'tab-' + tab));
       if (tab === 'dashboard')    loadAndRenderDashboard();
       if (tab === 'company-info') loadAndRenderCompanyInfo();
+      if (tab === 'analytics')    loadAndRenderAnalytics();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -1239,6 +1316,314 @@
       renderCompanyInfo();
     }
 
+    // ── Analytics ───────────────────────────────────────────────
+    let anDivFilter = 'all';
+    let anSortCol   = 'ic';
+    let anSortAsc   = false;
+
+    function setAnDiv(div) {
+      anDivFilter = div;
+      document.querySelectorAll('.an-div-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.div === div));
+      renderAnalytics();
+    }
+
+    function anSortBy(col) {
+      if (anSortCol === col) anSortAsc = !anSortAsc;
+      else { anSortCol = col; anSortAsc = false; }
+      renderAnalytics();
+    }
+
+    async function loadAndRenderAnalytics() {
+      const body = document.getElementById('analyticsBody');
+      if (body) body.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching data…</div>';
+      await Promise.all([loadCompanies(), loadBillingEntries()]);
+      const years = [...new Set(
+        icBillingEntries.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort().reverse();
+      const sel  = document.getElementById('anYearFilter');
+      const prev = sel ? sel.value : 'all';
+      if (sel) {
+        sel.innerHTML = '<option value="all">All Years</option>'
+          + years.map(y => `<option value="${y}">${y}</option>`).join('');
+        if (years.includes(prev)) sel.value = prev;
+      }
+      renderAnalytics();
+    }
+
+    function renderAnalytics() {
+      const el = document.getElementById('analyticsBody');
+      if (!el) return;
+
+      const yearFilter = document.getElementById('anYearFilter')?.value || 'all';
+      const numFmt = n => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+      const round1 = n => n.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+      const delta$ = (d) => (d >= 0 ? '+' : '') + fmt$(d);
+
+      let entries = icBillingEntries;
+      if (yearFilter !== 'all') entries = entries.filter(e => (e.actual_date || '').startsWith(yearFilter));
+      if (anDivFilter !== 'all') entries = entries.filter(e => (e.source || 'trucking') === anDivFilter);
+
+      const truckEntries = entries.filter(e => (e.source || 'trucking') === 'trucking');
+      const dustEntries  = entries.filter(e => e.source === 'dust');
+
+      function icAmt(e) {
+        if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
+        return (parseFloat(e.total_hours) || 0) * icDustRate + (parseFloat(e.gallons_ub) || 0) * icUbRate;
+      }
+
+      const totalIc  = entries.reduce((s, e) => s + icAmt(e), 0);
+      const totalRev = entries.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
+      const totalHrs = entries.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+      const delta    = totalIc - totalRev;
+
+      const cnt = document.getElementById('anEntryCount');
+      if (cnt) cnt.textContent = entries.length + ' entr' + (entries.length !== 1 ? 'ies' : 'y');
+
+      if (!entries.length) {
+        el.innerHTML = '<div class="ci-empty"><strong>No Data</strong>No billing entries match the current filters.</div>';
+        return;
+      }
+
+      // ── Invoice status breakdown ──
+      const paid     = entries.filter(e => e.payment_received_date);
+      const awaitPay = entries.filter(e => e.invoice_sent_date && !e.payment_received_date);
+      const noInv    = entries.filter(e => !e.invoice_sent_date && icAmt(e) > 0);
+      const paidIc   = paid.reduce((s, e) => s + icAmt(e), 0);
+      const awaitIc  = awaitPay.reduce((s, e) => s + icAmt(e), 0);
+      const noInvIc  = noInv.reduce((s, e) => s + icAmt(e), 0);
+      const collectRate = totalIc > 0 ? ((paidIc / totalIc) * 100).toFixed(1) + '%' : '—';
+
+      const invStatusHtml =
+        '<div class="an-inv-grid">'
+        + '<div class="an-inv-card"><div class="an-inv-label"><span class="an-inv-dot" style="background:#22c55e"></span>Paid / Received</div>'
+        + '<div class="an-inv-val" style="color:#22c55e">' + fmt$(paidIc) + '</div>'
+        + '<div class="an-inv-cnt">' + numFmt(paid.length) + ' entr' + (paid.length !== 1 ? 'ies' : 'y') + '</div></div>'
+        + '<div class="an-inv-card"><div class="an-inv-label"><span class="an-inv-dot" style="background:#f59e0b"></span>Awaiting Payment</div>'
+        + '<div class="an-inv-val" style="color:#f59e0b">' + fmt$(awaitIc) + '</div>'
+        + '<div class="an-inv-cnt">' + numFmt(awaitPay.length) + ' entr' + (awaitPay.length !== 1 ? 'ies' : 'y') + '</div></div>'
+        + '<div class="an-inv-card"><div class="an-inv-label"><span class="an-inv-dot" style="background:#ef4444"></span>No Invoice Sent</div>'
+        + '<div class="an-inv-val" style="color:#ef4444">' + fmt$(noInvIc) + '</div>'
+        + '<div class="an-inv-cnt">' + numFmt(noInv.length) + ' entr' + (noInv.length !== 1 ? 'ies' : 'y') + '</div></div>'
+        + '<div class="an-inv-card"><div class="an-inv-label"><span class="an-inv-dot" style="background:var(--accent)"></span>Collection Rate</div>'
+        + '<div class="an-inv-val" style="color:var(--accent)">' + collectRate + '</div>'
+        + '<div class="an-inv-cnt">of total IC billed</div></div>'
+        + '</div>';
+
+      // ── Year-over-Year IC ──
+      const allYears = [...new Set(
+        icBillingEntries.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort().reverse();
+      const yoyData = allYears.map(yr => {
+        const yrE = icBillingEntries.filter(e => (e.actual_date || '').startsWith(yr));
+        const tIc = yrE.filter(e => (e.source || 'trucking') === 'trucking').reduce((s, e) => s + icAmt(e), 0);
+        const dIc = yrE.filter(e => e.source === 'dust').reduce((s, e) => s + icAmt(e), 0);
+        return { yr, tIc, dIc, total: tIc + dIc };
+      });
+      const maxYoy = Math.max(...yoyData.map(d => d.total), 1);
+
+      const yoyHtml = yoyData.map(d => {
+        const tPct = ((d.tIc / maxYoy) * 100).toFixed(1);
+        const dPct = ((d.dIc / maxYoy) * 100).toFixed(1);
+        return '<div class="an-yoy-row">'
+          + '<span class="an-yoy-yr">' + d.yr + '</span>'
+          + '<div style="flex:1;position:relative;height:14px;background:var(--border);border-radius:3px;overflow:hidden">'
+          + '<div style="position:absolute;top:0;left:0;height:100%;width:' + tPct + '%;background:#ef4444;border-radius:3px 0 0 3px" title="Trucking IC: ' + fmt$(d.tIc) + '"></div>'
+          + '<div style="position:absolute;top:0;left:' + tPct + '%;height:100%;width:' + dPct + '%;background:#fbbf24" title="Dust IC: ' + fmt$(d.dIc) + '"></div>'
+          + '</div>'
+          + '<span class="an-yoy-amt">' + fmt$(d.total) + '</span>'
+          + '</div>';
+      }).join('');
+
+      // ── Company Reconciliation ──
+      const coMap = {};
+      entries.forEach(e => {
+        const k = e.company_name || e.company_id || 'Unknown';
+        if (!coMap[k]) coMap[k] = { name: k, entries: 0, hrs: 0, rev: 0, ic: 0, paid: 0 };
+        coMap[k].entries++;
+        coMap[k].hrs  += parseFloat(e.total_hours) || 0;
+        coMap[k].rev  += parseFloat(e.total) || 0;
+        coMap[k].ic   += icAmt(e);
+        if (e.payment_received_date) coMap[k].paid += icAmt(e);
+      });
+      let coRows = Object.values(coMap);
+      const sortFns = {
+        name:    r => r.name,
+        entries: r => r.entries,
+        hrs:     r => r.hrs,
+        rev:     r => r.rev,
+        ic:      r => r.ic,
+        delta:   r => r.ic - r.rev,
+        pct:     r => (totalIc ? r.ic / totalIc : 0),
+      };
+      if (sortFns[anSortCol]) {
+        coRows.sort((a, b) => {
+          const va = sortFns[anSortCol](a), vb = sortFns[anSortCol](b);
+          return anSortAsc ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
+        });
+      }
+      function th(col, label, right) {
+        const cls = (right ? 'r ' : '') + (anSortCol === col ? (anSortAsc ? 'sort-asc' : 'sort-desc') : '');
+        return '<th class="' + cls.trim() + '" onclick="anSortBy(\'' + col + '\')">' + label + '</th>';
+      }
+      const coTableHtml = '<div class="an-tbl-wrap">'
+        + '<table class="an-tbl"><thead><tr>'
+        + th('name',    'Company',       false)
+        + th('entries', 'Entries',       true)
+        + th('hrs',     'Hours',         true)
+        + th('rev',     'Customer Rev',  true)
+        + th('ic',      'IC Revenue',    true)
+        + th('delta',   'Δ IC vs Cust',  true)
+        + th('pct',     '% of Total',    true)
+        + '</tr></thead><tbody>'
+        + coRows.map(r => {
+            const d    = r.ic - r.rev;
+            const dCls = d >= 0 ? 'an-delta-pos' : 'an-delta-neg';
+            const pct  = totalIc ? ((r.ic / totalIc) * 100).toFixed(1) : '0.0';
+            return '<tr>'
+              + '<td>' + escT(r.name) + '</td>'
+              + '<td class="r">' + numFmt(r.entries) + '</td>'
+              + '<td class="r">' + round1(r.hrs) + ' hrs</td>'
+              + '<td class="r">' + fmt$(r.rev) + '</td>'
+              + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(r.ic) + '</td>'
+              + '<td class="r ' + dCls + '">' + delta$(d) + '</td>'
+              + '<td class="r">' + pct + '%</td>'
+              + '</tr>';
+          }).join('')
+        + '</tbody><tfoot><tr>'
+        + '<td>Total</td>'
+        + '<td class="r">' + numFmt(entries.length) + '</td>'
+        + '<td class="r">' + round1(totalHrs) + ' hrs</td>'
+        + '<td class="r">' + fmt$(totalRev) + '</td>'
+        + '<td class="r">' + fmt$(totalIc) + '</td>'
+        + '<td class="r ' + (delta >= 0 ? 'an-delta-pos' : 'an-delta-neg') + '">' + delta$(delta) + '</td>'
+        + '<td class="r">100%</td>'
+        + '</tr></tfoot></table></div>';
+
+      // ── Monthly Trend ──
+      const nowDate = new Date();
+      const curMo   = nowDate.getMonth();
+      const curYr   = nowDate.getFullYear();
+      const moMap   = {};
+      entries.forEach(e => {
+        const yr = (e.actual_date || '').slice(0, 4);
+        const mo = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
+        if (!yr || isNaN(mo) || mo < 0) return;
+        const key = yr + '-' + String(mo).padStart(2, '0');
+        if (!moMap[key]) moMap[key] = { yr: +yr, mo, label: MONTHS[mo] + ' ' + yr, hrs: 0, rev: 0, ic: 0, entries: 0 };
+        moMap[key].hrs += parseFloat(e.total_hours) || 0;
+        moMap[key].rev += parseFloat(e.total) || 0;
+        moMap[key].ic  += icAmt(e);
+        moMap[key].entries++;
+      });
+      const moRows = Object.values(moMap).sort((a, b) => a.yr !== b.yr ? a.yr - b.yr : a.mo - b.mo);
+      let runIc = 0;
+      const trendHtml = '<div class="an-tbl-wrap">'
+        + '<table class="an-trend-tbl"><thead><tr>'
+        + '<th>Month</th><th class="r">Entries</th><th class="r">Hours</th>'
+        + '<th class="r">Customer Rev</th><th class="r">IC Revenue</th>'
+        + '<th class="r">Δ IC vs Cust</th><th class="r">Running IC</th>'
+        + '</tr></thead><tbody>'
+        + moRows.map(m => {
+            runIc += m.ic;
+            const d    = m.ic - m.rev;
+            const dCls = d >= 0 ? 'an-delta-pos' : 'an-delta-neg';
+            const cur  = m.yr === curYr && m.mo === curMo;
+            return '<tr' + (cur ? ' class="an-trend-cur"' : '') + '>'
+              + '<td>' + m.label + (cur ? '<span class="an-cur-badge">← now</span>' : '') + '</td>'
+              + '<td class="r">' + numFmt(m.entries) + '</td>'
+              + '<td class="r">' + round1(m.hrs) + ' hrs</td>'
+              + '<td class="r">' + fmt$(m.rev) + '</td>'
+              + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(m.ic) + '</td>'
+              + '<td class="r ' + dCls + '">' + delta$(d) + '</td>'
+              + '<td class="r" style="color:var(--muted)">' + fmt$(runIc) + '</td>'
+              + '</tr>';
+          }).join('')
+        + '</tbody><tfoot><tr>'
+        + '<td>Total</td>'
+        + '<td class="r">' + numFmt(entries.length) + '</td>'
+        + '<td class="r">' + round1(totalHrs) + ' hrs</td>'
+        + '<td class="r">' + fmt$(totalRev) + '</td>'
+        + '<td class="r">' + fmt$(totalIc) + '</td>'
+        + '<td class="r ' + (delta >= 0 ? 'an-delta-pos' : 'an-delta-neg') + '">' + delta$(delta) + '</td>'
+        + '<td class="r">' + fmt$(totalIc) + '</td>'
+        + '</tr></tfoot></table></div>';
+
+      // ── Driver Performance (trucking) ──
+      const drvMap = {};
+      truckEntries.forEach(e => {
+        const k = e.driver || '(none)';
+        if (!drvMap[k]) drvMap[k] = { name: k, entries: 0, hrs: 0, ic: 0 };
+        drvMap[k].entries++;
+        drvMap[k].hrs += parseFloat(e.total_hours) || 0;
+        drvMap[k].ic  += icAmt(e);
+      });
+      const drvRows  = Object.values(drvMap).sort((a, b) => b.ic - a.ic).slice(0, 10);
+      const maxDrvIc = drvRows.length ? drvRows[0].ic : 1;
+
+      const driverHtml = (anDivFilter !== 'dust' && truckEntries.length > 0)
+        ? '<div class="an-section-lbl" style="margin-bottom:0.6rem">Driver Performance — Trucking</div>'
+          + '<div class="an-tbl-wrap"><table class="an-tbl">'
+          + '<thead><tr><th>Driver</th><th class="r">Entries</th><th class="r">Hours</th><th class="r">IC Revenue</th><th>Share</th></tr></thead>'
+          + '<tbody>'
+          + drvRows.map(d => {
+              const pct = ((d.ic / maxDrvIc) * 100).toFixed(1);
+              return '<tr>'
+                + '<td>' + escT(d.name) + '</td>'
+                + '<td class="r">' + numFmt(d.entries) + '</td>'
+                + '<td class="r">' + round1(d.hrs) + ' hrs</td>'
+                + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(d.ic) + '</td>'
+                + '<td style="width:120px"><div class="an-drv-bar"><div class="an-drv-fill" style="width:' + pct + '%"></div></div></td>'
+                + '</tr>';
+            }).join('')
+          + '</tbody></table></div>'
+        : '';
+
+      // ── KPI helpers ──
+      function kpi(label, val, color, sub) {
+        return '<div class="an-kpi-card">'
+          + '<div class="an-kpi-label">' + label + '</div>'
+          + '<div class="an-kpi-val" style="color:' + color + '">' + val + '</div>'
+          + '<div class="an-kpi-sub">' + sub + '</div>'
+          + '</div>';
+      }
+      const avgRate = totalHrs > 0 ? fmt$(totalIc / totalHrs) + '/hr avg' : '—';
+
+      el.innerHTML = `
+        <div class="an-body">
+          <div class="an-kpi-strip">
+            ${kpi('IC Revenue',       fmt$(totalIc),                           'var(--accent)', numFmt(entries.length) + ' entr' + (entries.length !== 1 ? 'ies' : 'y'))}
+            ${kpi('Customer Revenue', fmt$(totalRev),                           '#22c55e',       'billed at customer rates')}
+            ${kpi('Δ IC vs Customer', delta$(delta),                            delta >= 0 ? '#22c55e' : '#ef4444', delta >= 0 ? 'IC exceeds customer rev' : 'Customer rev exceeds IC')}
+            ${kpi('Total Hours',      round1(totalHrs) + ' hrs',                '#60a5fa',       avgRate)}
+            ${kpi('Outstanding IC',   fmt$(awaitIc + noInvIc),                  '#f97316',       numFmt(awaitPay.length + noInv.length) + ' entries pending')}
+          </div>
+
+          <div class="an-widgets">
+            <div class="an-widget">
+              <div class="an-section-lbl">IC Revenue by Year</div>
+              <div class="icd-legend" style="margin-bottom:0.65rem">
+                <div class="icd-legend-item"><div class="icd-legend-dot" style="background:#ef4444"></div>Trucking</div>
+                <div class="icd-legend-item"><div class="icd-legend-dot" style="background:#fbbf24"></div>Dust Control</div>
+              </div>
+              ${yoyHtml}
+            </div>
+            <div class="an-widget">
+              <div class="an-section-lbl">Invoice &amp; Payment Status</div>
+              ${invStatusHtml}
+            </div>
+          </div>
+
+          <div class="an-section-lbl" style="margin-bottom:0.6rem">Company Reconciliation — IC vs Customer Revenue <span style="font-weight:400;font-size:0.58rem;color:var(--muted);text-transform:none;letter-spacing:0">(click headers to sort)</span></div>
+          ${coTableHtml}
+
+          <div class="an-section-lbl" style="margin-bottom:0.6rem">Monthly IC Trend</div>
+          ${trendHtml}
+
+          ${driverHtml}
+        </div>`;
+    }
+
     // ── IC Dashboard ────────────────────────────────────────────
     let dashPendingOpen = false;
 
@@ -1541,6 +1926,7 @@
           if (!_isEditing()) {
             if (_activeTabId() === 'dashboard')    renderDashboard();
             if (_activeTabId() === 'company-info') renderCompanyInfo();
+            if (_activeTabId() === 'analytics')    renderAnalytics();
           }
         } catch { /* non-fatal */ }
       }
@@ -1560,6 +1946,7 @@
           if (!_isEditing()) {
             if (_activeTabId() === 'dashboard')    renderDashboard();
             if (_activeTabId() === 'company-info') renderCompanyInfo();
+            if (_activeTabId() === 'analytics')    renderAnalytics();
           }
         } catch { /* non-fatal */ }
       }
