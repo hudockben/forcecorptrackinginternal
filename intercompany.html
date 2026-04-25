@@ -2028,8 +2028,7 @@
         const byProject = {};
 
         function getOrCreate(pid) {
-          // Only track projects that have a real project record with a name
-          if (!projMap[pid]) return null;
+          if (!pid) return null;
           if (!byProject[pid]) {
             byProject[pid] = { pid, minDate: null, maxDate: null, laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, hoursWorked: 0 };
           }
@@ -2042,12 +2041,11 @@
           if (!entry.maxDate || date > entry.maxDate) entry.maxDate = date;
         }
 
-        // Aggregate daily tracking rows — skip entries with no matching project record
+        // Phase 1 — aggregate ALL project IDs from daily rows (no filtering yet)
         dailyRows.forEach(row => {
           const pid = row._projectId;
-          if (!pid) return;
           const entry = getOrCreate(pid);
-          if (!entry) return; // no project record → skip
+          if (!entry) return;
           trackDate(entry, row.date);
           const lh   = parseFloat(row.labor_hours)          || 0;
           const rate = parseFloat(row.rate)                 || 0;
@@ -2059,29 +2057,52 @@
           entry.hoursWorked += lh;
         });
 
-        // Aggregate turf trucking entries — split lowboy vs tri-axle
         truckRows.forEach(t => {
           const pid = t.project_id;
-          if (!pid) return;
           const entry = getOrCreate(pid);
-          if (!entry) return; // no project record → skip
+          if (!entry) return;
           trackDate(entry, t.date);
           const cost = (parseFloat(t.rate) || 0) * (parseFloat(t.hours) || 0);
           const type = (t.truck_type || '').toLowerCase();
-          if (type.includes('lowboy')) {
-            entry.lowboyCost  += cost;
-          } else if (type.includes('tri')) {
-            entry.triAxleCost += cost;
-          }
+          if (type.includes('lowboy'))     entry.lowboyCost  += cost;
+          else if (type.includes('tri'))   entry.triAxleCost += cost;
         });
 
-        // Build and sort report rows — only named projects with entries in the date range
-        const reportRows = Object.values(byProject).map(p => {
-          const proj  = projMap[p.pid];
-          const name  = proj['project-name'] || proj.name || p.pid;
-          const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost;
-          return { ...p, name, total };
-        }).sort((a, b) => a.name.localeCompare(b.name));
+        // Phase 2 — batch-fetch individual project blobs for any IDs not yet in projMap
+        const unknownPids = Object.keys(byProject).filter(pid => !projMap[pid]);
+        if (unknownPids.length) {
+          try {
+            const batchKeys = unknownPids.map(pid => 'fct_project_' + pid).join(',');
+            const batchRes2 = await fetch(
+              `${API_BASE}/data/_batch?keys=${encodeURIComponent(batchKeys)}`, { headers }
+            );
+            if (batchRes2.ok) {
+              const bj2 = await batchRes2.json();
+              Object.entries(bj2.values || {}).forEach(([key, val]) => {
+                if (!val) return;
+                const pid = key.replace(/^fct_project_/, '');
+                if (pid && (val['project-name'] || val.name)) projMap[pid] = val;
+              });
+            }
+          } catch { /* non-fatal */ }
+        }
+
+        // Phase 3 — build report rows: named projects only, with actual hours or costs
+        const reportRows = Object.values(byProject)
+          .filter(p => {
+            const proj = projMap[p.pid];
+            if (!proj) return false; // no project record — orphaned tracking row
+            // Must have at least some real work logged in the period
+            return p.hoursWorked > 0 || p.laborCost > 0 || p.equipCost > 0
+                   || p.lowboyCost > 0 || p.triAxleCost > 0;
+          })
+          .map(p => {
+            const proj  = projMap[p.pid];
+            const name  = proj['project-name'] || proj.name || p.pid;
+            const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost;
+            return { ...p, name, total };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name));
 
         if (!reportRows.length) {
           resultsEl.innerHTML = '<div class="ci-empty"><strong>No Data</strong>'
