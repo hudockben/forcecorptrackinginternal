@@ -660,6 +660,110 @@
 
     .an-drv-bar  { height:5px; background:var(--border); border-radius:3px; overflow:hidden; margin-top:4px; width:100%; min-width:80px; }
     .an-drv-fill { height:100%; background:#ef4444; border-radius:3px; }
+
+    /* ── Reports Tab ── */
+    .rpt-subtab-bar {
+      display: flex; background: var(--surface);
+      border-bottom: 1px solid var(--border); padding: 0 1.25rem;
+    }
+    .rpt-subtab-btn {
+      padding: 0.5rem 1.1rem; font-size: 0.62rem; font-weight: 700;
+      letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    .rpt-subtab-btn:hover { color: var(--text); }
+    .rpt-subtab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .rpt-sub-panel { display: none; }
+    .rpt-sub-panel.active { display: block; }
+    .rpt-toolbar {
+      display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+      padding: 0.65rem 1.25rem; border-bottom: 1px solid var(--border);
+      background: var(--surface); position: sticky; top: 89px; z-index: 100;
+    }
+    .rpt-toolbar-group { display: flex; align-items: center; gap: 0.4rem; }
+    .rpt-toolbar label { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); white-space: nowrap; }
+    .rpt-date-input {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); font-size: 0.75rem; padding: 0.28rem 0.55rem;
+      border-radius: 4px; outline: none; cursor: pointer; font-family: inherit;
+      color-scheme: dark;
+    }
+    .rpt-date-input:focus { border-color: var(--accent); }
+    .btn-run-report {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.38rem 1rem;
+      background: var(--accent); color: #000; border: none;
+      border-radius: 5px; cursor: pointer; transition: background 0.15s;
+    }
+    .btn-run-report:hover { background: #9061f9; }
+    .btn-run-report:disabled { opacity: 0.5; cursor: default; }
+    .btn-pdf {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.38rem 1rem;
+      background: none; color: var(--accent);
+      border: 1px solid rgba(167,139,250,0.4);
+      border-radius: 5px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .btn-pdf:hover { background: rgba(167,139,250,0.1); border-color: var(--accent); }
+    .rpt-body { padding: 1.25rem 1.25rem 3rem; }
+    .rpt-info { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
+
+    /* ── Print / PDF styles ── */
+    @media print {
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+      header, nav, .tab-bar, .rpt-subtab-bar, .rpt-toolbar,
+      .modal-backdrop { display: none !important; }
+
+      body, html { background: #fff !important; color: #111 !important; font-size: 11px; }
+
+      .tab-panel { display: none !important; }
+      #tab-reports { display: block !important; background: #fff !important; }
+      .rpt-sub-panel { display: none !important; }
+      #rpt-job-summary { display: block !important; background: #fff !important; }
+
+      .rpt-body { padding: 0; background: #fff !important; }
+
+      .rpt-print-header {
+        display: flex !important;
+        align-items: baseline; gap: 1rem;
+        margin-bottom: 0.85rem; padding-bottom: 0.5rem;
+        border-bottom: 2px solid #111;
+      }
+      .rpt-print-title { font-size: 15px; font-weight: 700; color: #111 !important; }
+      .rpt-print-range { font-size: 11px; color: #555 !important; }
+
+      .an-tbl-wrap { border: 1px solid #ccc !important; overflow: visible; background: #fff !important; }
+      .an-tbl { width: 100%; border-collapse: collapse; min-width: unset !important; font-size: 10px; }
+
+      .an-tbl thead tr { background: #222 !important; }
+      .an-tbl th {
+        background: #222 !important; color: #fff !important;
+        padding: 5px 8px; font-size: 9px; border: none;
+      }
+
+      /* Force all body cells to black regardless of inline styles or CSS vars */
+      .an-tbl tbody td,
+      .an-tbl tbody td * {
+        color: #111 !important;
+        background: #fff !important;
+      }
+      .an-tbl tbody tr:nth-child(even) td { background: #f9f9f9 !important; }
+      .an-tbl tbody td { padding: 5px 8px; border-bottom: 1px solid #ddd; }
+
+      .an-tbl tfoot td,
+      .an-tbl tfoot td * {
+        background: #eee !important;
+        color: #111 !important;
+        font-weight: 700;
+        border-top: 2px solid #111 !important;
+        padding: 5px 8px;
+      }
+    }
+
+    .rpt-print-header { display: none; }
   </style>
 </head>
 <body>
@@ -682,6 +786,7 @@
     <button class="tab-btn active" data-tab="dashboard"    onclick="switchTab('dashboard')">Dashboard</button>
     <button class="tab-btn"        data-tab="company-info" onclick="switchTab('company-info')">Company Info</button>
     <button class="tab-btn"        data-tab="analytics"    onclick="switchTab('analytics')">Analytics</button>
+    <button class="tab-btn"        data-tab="reports"      onclick="switchTab('reports')">Reports</button>
     <div class="tab-bar-spacer"></div>
     <button class="btn-manage-lists" onclick="openManageLists()">⚙ Manage Lists</button>
   </nav>
@@ -779,6 +884,40 @@
     <div id="analyticsBody"></div>
   </div>
 
+  <!-- ── Reports ── -->
+  <div class="tab-panel" id="tab-reports">
+    <div class="rpt-subtab-bar">
+      <button class="rpt-subtab-btn active" data-sub="job-summary" onclick="switchRptSubTab('job-summary')">Job Summary</button>
+    </div>
+
+    <!-- Job Summary sub-panel -->
+    <div class="rpt-sub-panel active" id="rpt-job-summary">
+      <div class="rpt-toolbar">
+        <div class="rpt-toolbar-group">
+          <label for="jsStartDate">Start Date</label>
+          <input type="date" id="jsStartDate" class="rpt-date-input" />
+        </div>
+        <div class="rpt-toolbar-group">
+          <label for="jsEndDate">End Date</label>
+          <input type="date" id="jsEndDate" class="rpt-date-input" />
+        </div>
+        <button class="btn-run-report" onclick="runJobSummaryReport()">Run Report</button>
+        <button class="btn-pdf" id="jsPdfBtn" style="display:none" onclick="downloadJobSummaryPdf()">&#8659; Download PDF</button>
+        <div class="tab-bar-spacer"></div>
+        <div class="rpt-info" id="jsReportInfo"></div>
+      </div>
+      <div class="rpt-body">
+        <div class="rpt-print-header" id="jsPrintHeader">
+          <span class="rpt-print-title">Job Summary Report</span>
+          <span class="rpt-print-range" id="jsPrintRange"></span>
+        </div>
+        <div id="jsSummaryBody">
+          <div class="ci-empty"><strong>Select a Date Range</strong>Choose Start Date and End Date above, then click Run Report.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Manage Lists Modal ── -->
   <div class="modal-backdrop" id="listsBackdrop">
     <div class="modal" onclick="event.stopPropagation()">
@@ -854,6 +993,7 @@
       if (tab === 'dashboard')    loadAndRenderDashboard();
       if (tab === 'company-info') loadAndRenderCompanyInfo();
       if (tab === 'analytics')    loadAndRenderAnalytics();
+      if (tab === 'reports')      initReportsTab();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -1870,6 +2010,245 @@
             <div class="icd-feed">${recentHtml}</div>
           </div>
         </div>`;
+    }
+
+    // ── Reports Tab ─────────────────────────────────────────────
+    function initReportsTab() {
+      const startEl = document.getElementById('jsStartDate');
+      const endEl   = document.getElementById('jsEndDate');
+      if (!startEl.value) {
+        const now  = new Date();
+        startEl.value = now.getFullYear() + '-01-01';
+        endEl.value   = now.toISOString().slice(0, 10);
+      }
+    }
+
+    function downloadJobSummaryPdf() {
+      const startDate = document.getElementById('jsStartDate').value;
+      const endDate   = document.getElementById('jsEndDate').value;
+      const rangeEl   = document.getElementById('jsPrintRange');
+      if (rangeEl) rangeEl.textContent = startDate + ' – ' + endDate;
+      window.print();
+    }
+
+    function switchRptSubTab(sub) {
+      document.querySelectorAll('.rpt-subtab-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.sub === sub));
+      document.querySelectorAll('.rpt-sub-panel').forEach(p =>
+        p.classList.toggle('active', p.id === 'rpt-' + sub));
+    }
+
+    async function runJobSummaryReport() {
+      const startDate = document.getElementById('jsStartDate').value;
+      const endDate   = document.getElementById('jsEndDate').value;
+      const resultsEl = document.getElementById('jsSummaryBody');
+      const infoEl    = document.getElementById('jsReportInfo');
+
+      if (!startDate || !endDate) {
+        resultsEl.innerHTML = '<div class="ci-empty"><strong>Date Range Required</strong>Please select both Start Date and End Date.</div>';
+        return;
+      }
+      if (startDate > endDate) {
+        resultsEl.innerHTML = '<div class="ci-empty"><strong>Invalid Range</strong>Start Date must be on or before End Date.</div>';
+        return;
+      }
+
+      const btn    = document.querySelector('.btn-run-report');
+      const pdfBtnL = document.getElementById('jsPdfBtn');
+      if (btn)     btn.disabled = true;
+      if (pdfBtnL) pdfBtnL.style.display = 'none';
+      resultsEl.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching project data…</div>';
+      if (infoEl) infoEl.textContent = '';
+
+      try {
+        const headers = { Authorization: `Bearer ${token}` };
+
+        // Fetch all sources in parallel — projects from both normalized table and blob for best coverage
+        const [projRes, blobRes, rowsRes, truckRes] = await Promise.all([
+          fetch(`${API_BASE}/projects`, { headers }),
+          fetch(`${API_BASE}/data/fct_projects`, { headers }),
+          fetch(`${API_BASE}/daily-rows?since=${startDate}&limit=50000`, { headers }),
+          fetch(`${API_BASE}/trucking`, { headers }),
+        ]);
+
+        // daily-rows and trucking are required
+        if (!rowsRes.ok || !truckRes.ok) {
+          const failures = [];
+          if (!rowsRes.ok)  failures.push('/api/daily-rows (HTTP ' + rowsRes.status + ')');
+          if (!truckRes.ok) failures.push('/api/trucking (HTTP ' + truckRes.status + ')');
+          throw new Error('Could not load cost data — ' + failures.join(', '));
+        }
+
+        // Build project map from BOTH sources — normalized table takes precedence over blob
+        const projMap = {};
+        if (blobRes.ok) {
+          try {
+            const bj = await blobRes.json();
+            const blob = Array.isArray(bj.value) ? bj.value : [];
+            blob.forEach(p => { if (p && p.id) projMap[p.id] = p; });
+          } catch { /* non-fatal */ }
+        }
+        if (projRes.ok) {
+          try {
+            const pj = await projRes.json();
+            (Array.isArray(pj.projects) ? pj.projects : []).forEach(p => {
+              if (p && p.id) projMap[p.id] = p; // overwrite blob entry with normalized data
+            });
+          } catch { /* non-fatal */ }
+        }
+
+        const { rows: allRows }   = await rowsRes.json();
+        const { truckingEntries } = await truckRes.json();
+
+        // Filter to the exact date window
+        const dailyRows = (allRows || []).filter(r => r.date && r.date >= startDate && r.date <= endDate);
+        const truckRows = (truckingEntries || []).filter(t => t.date && t.date >= startDate && t.date <= endDate);
+
+        const byProject = {};
+
+        function getOrCreate(pid) {
+          if (!pid) return null;
+          if (!byProject[pid]) {
+            byProject[pid] = { pid, minDate: null, maxDate: null, laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, hoursWorked: 0 };
+          }
+          return byProject[pid];
+        }
+
+        function trackDate(entry, date) {
+          if (!date) return;
+          if (!entry.minDate || date < entry.minDate) entry.minDate = date;
+          if (!entry.maxDate || date > entry.maxDate) entry.maxDate = date;
+        }
+
+        // Phase 1 — aggregate ALL project IDs from daily rows (no filtering yet)
+        dailyRows.forEach(row => {
+          const pid = row._projectId;
+          const entry = getOrCreate(pid);
+          if (!entry) return;
+          trackDate(entry, row.date);
+          const lh   = parseFloat(row.labor_hours)          || 0;
+          const rate = parseFloat(row.rate)                 || 0;
+          const euc  = parseFloat(row.equip_unit_cost)      || 0;
+          const eh   = parseFloat(row.equip_hours)          || 0;
+          const eto  = parseFloat(row.equip_total_override) || 0;
+          entry.laborCost   += rate * lh;
+          // Skip equipment cost on trucking-mirrored rows (job_class = 'Trucking') —
+          // those costs are already captured from trucking_entries as lowboy/tri-axle.
+          if ((row.job_class || '').toLowerCase() !== 'trucking') {
+            entry.equipCost += eto || (euc * eh);
+          }
+          entry.hoursWorked += lh;
+        });
+
+        truckRows.forEach(t => {
+          const pid = t.project_id;
+          const entry = getOrCreate(pid);
+          if (!entry) return;
+          trackDate(entry, t.date);
+          const cost = (parseFloat(t.rate) || 0) * (parseFloat(t.hours) || 0);
+          const type = (t.truck_type || '').toLowerCase();
+          if (type.includes('lowboy'))     entry.lowboyCost  += cost;
+          else if (type.includes('tri'))   entry.triAxleCost += cost;
+        });
+
+        // Phase 2 — batch-fetch individual project blobs for any IDs not yet in projMap
+        const unknownPids = Object.keys(byProject).filter(pid => !projMap[pid]);
+        if (unknownPids.length) {
+          try {
+            const batchKeys = unknownPids.map(pid => 'fct_project_' + pid).join(',');
+            const batchRes2 = await fetch(
+              `${API_BASE}/data/_batch?keys=${encodeURIComponent(batchKeys)}`, { headers }
+            );
+            if (batchRes2.ok) {
+              const bj2 = await batchRes2.json();
+              Object.entries(bj2.values || {}).forEach(([key, val]) => {
+                if (!val) return;
+                const pid = key.replace(/^fct_project_/, '');
+                if (pid && (val['project-name'] || val.name)) projMap[pid] = val;
+              });
+            }
+          } catch { /* non-fatal */ }
+        }
+
+        // Phase 3 — build report rows: named projects only, with actual hours or costs
+        const reportRows = Object.values(byProject)
+          .filter(p => {
+            const proj = projMap[p.pid];
+            if (!proj) return false; // no project record — orphaned tracking row
+            // Only show if there is actual dollar cost data for the period
+            return p.laborCost > 0 || p.equipCost > 0
+                   || p.lowboyCost > 0 || p.triAxleCost > 0;
+          })
+          .map(p => {
+            const proj  = projMap[p.pid];
+            const name  = proj['project-name'] || proj.name || p.pid;
+            const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost;
+            return { ...p, name, total };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        if (!reportRows.length) {
+          resultsEl.innerHTML = '<div class="ci-empty"><strong>No Data</strong>'
+            + 'No project entries found between ' + startDate + ' and ' + endDate + '.</div>';
+          if (infoEl) infoEl.textContent = '';
+          return;
+        }
+
+        // Column totals
+        const totLabor  = reportRows.reduce((s, r) => s + r.laborCost,   0);
+        const totEquip  = reportRows.reduce((s, r) => s + r.equipCost,   0);
+        const totLowboy = reportRows.reduce((s, r) => s + r.lowboyCost,  0);
+        const totTri    = reportRows.reduce((s, r) => s + r.triAxleCost, 0);
+        const totTotal  = reportRows.reduce((s, r) => s + r.total,       0);
+        const totHours  = reportRows.reduce((s, r) => s + r.hoursWorked, 0);
+
+        const pCnt  = reportRows.length;
+        const pdfBtn = document.getElementById('jsPdfBtn');
+        if (infoEl)  infoEl.textContent = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + ' · ' + dailyRows.length + ' entries';
+        if (pdfBtn)  pdfBtn.style.display = '';
+
+        resultsEl.innerHTML = '<div class="an-tbl-wrap"><table class="an-tbl" style="min-width:950px">'
+          + '<thead><tr>'
+          + '<th>PROJECT</th>'
+          + '<th>DATE RANGE</th>'
+          + '<th class="r">LABOR COSTS</th>'
+          + '<th class="r">EQUIPMENT COSTS</th>'
+          + '<th class="r">LOWBOY COSTS</th>'
+          + '<th class="r">TRI AXLE COSTS</th>'
+          + '<th class="r">TOTAL AMOUNT</th>'
+          + '<th class="r">HOURS WORKED</th>'
+          + '</tr></thead><tbody>'
+          + reportRows.map(r => {
+              const dateRange = r.minDate === r.maxDate
+                ? (r.minDate || startDate)
+                : (r.minDate || startDate) + ' – ' + (r.maxDate || endDate);
+              return '<tr>'
+                + '<td style="font-weight:500">' + escT(r.name) + '</td>'
+                + '<td style="color:var(--muted);white-space:nowrap">' + dateRange + '</td>'
+                + '<td class="r">' + fmt$(r.laborCost) + '</td>'
+                + '<td class="r">' + fmt$(r.equipCost) + '</td>'
+                + '<td class="r">' + (r.lowboyCost  > 0 ? fmt$(r.lowboyCost)  : '—') + '</td>'
+                + '<td class="r">' + (r.triAxleCost > 0 ? fmt$(r.triAxleCost) : '—') + '</td>'
+                + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(r.total) + '</td>'
+                + '<td class="r">' + r.hoursWorked.toFixed(1) + ' hrs</td>'
+                + '</tr>';
+            }).join('')
+          + '</tbody><tfoot><tr>'
+          + '<td>TOTALS — ' + pCnt + ' project' + (pCnt !== 1 ? 's' : '') + '</td>'
+          + '<td>—</td>'
+          + '<td class="r">' + fmt$(totLabor)  + '</td>'
+          + '<td class="r">' + fmt$(totEquip)  + '</td>'
+          + '<td class="r">' + (totLowboy > 0 ? fmt$(totLowboy) : '—') + '</td>'
+          + '<td class="r">' + (totTri    > 0 ? fmt$(totTri)    : '—') + '</td>'
+          + '<td class="r">' + fmt$(totTotal)  + '</td>'
+          + '<td class="r">' + totHours.toFixed(1) + ' hrs</td>'
+          + '</tr></tfoot></table></div>';
+
+      } catch (err) {
+        resultsEl.innerHTML = '<div class="ci-empty"><strong>Error</strong>' + escT(err.message) + '</div>';
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     }
 
     // ── Modal open / close ──────────────────────────────────────
