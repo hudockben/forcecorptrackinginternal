@@ -2132,7 +2132,11 @@
           const eh   = parseFloat(row.equip_hours)          || 0;
           const eto  = parseFloat(row.equip_total_override) || 0;
           entry.laborCost   += rate * lh;
-          entry.equipCost   += eto || (euc * eh);
+          // Skip equipment cost on trucking-mirrored rows (job_class = 'Trucking') —
+          // those costs are already captured from trucking_entries as lowboy/tri-axle.
+          if ((row.job_class || '').toLowerCase() !== 'trucking') {
+            entry.equipCost += eto || (euc * eh);
+          }
           entry.hoursWorked += lh;
         });
 
