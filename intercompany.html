@@ -1984,39 +1984,37 @@
       try {
         const headers = { Authorization: `Bearer ${token}` };
 
-        // Fetch all three data sources in parallel
-        const [projRes, rowsRes, truckRes] = await Promise.all([
+        // Fetch all sources in parallel — projects from both normalized table and blob for best coverage
+        const [projRes, blobRes, rowsRes, truckRes] = await Promise.all([
           fetch(`${API_BASE}/projects`, { headers }),
+          fetch(`${API_BASE}/data/fct_projects`, { headers }),
           fetch(`${API_BASE}/daily-rows?since=${startDate}&limit=50000`, { headers }),
           fetch(`${API_BASE}/trucking`, { headers }),
         ]);
 
-        // Collect any HTTP-level failures with status codes for diagnostics
-        const failures = [];
-        if (!projRes.ok)  failures.push('/api/projects (HTTP ' + projRes.status + ')');
-        if (!rowsRes.ok)  failures.push('/api/daily-rows (HTTP ' + rowsRes.status + ')');
-        if (!truckRes.ok) failures.push('/api/trucking (HTTP ' + truckRes.status + ')');
-
-        // daily-rows and trucking are required for meaningful cost data
+        // daily-rows and trucking are required
         if (!rowsRes.ok || !truckRes.ok) {
+          const failures = [];
+          if (!rowsRes.ok)  failures.push('/api/daily-rows (HTTP ' + rowsRes.status + ')');
+          if (!truckRes.ok) failures.push('/api/trucking (HTTP ' + truckRes.status + ')');
           throw new Error('Could not load cost data — ' + failures.join(', '));
         }
 
-        // Parse responses; project list is optional (fall back to blob)
-        let projects = [];
-        if (projRes.ok) {
-          const pj = await projRes.json();
-          projects = Array.isArray(pj.projects) ? pj.projects : [];
-        }
-        if (!projects.length) {
-          // Fallback: read project index from the blob store
+        // Build project map from BOTH sources — normalized table takes precedence over blob
+        const projMap = {};
+        if (blobRes.ok) {
           try {
-            const blobRes = await fetch(`${API_BASE}/data/fct_projects`, { headers });
-            if (blobRes.ok) {
-              const bj = await blobRes.json();
-              const blob = Array.isArray(bj.value) ? bj.value : [];
-              projects = blob;
-            }
+            const bj = await blobRes.json();
+            const blob = Array.isArray(bj.value) ? bj.value : [];
+            blob.forEach(p => { if (p && p.id) projMap[p.id] = p; });
+          } catch { /* non-fatal */ }
+        }
+        if (projRes.ok) {
+          try {
+            const pj = await projRes.json();
+            (Array.isArray(pj.projects) ? pj.projects : []).forEach(p => {
+              if (p && p.id) projMap[p.id] = p; // overwrite blob entry with normalized data
+            });
           } catch { /* non-fatal */ }
         }
 
@@ -2027,13 +2025,11 @@
         const dailyRows = (allRows || []).filter(r => r.date && r.date >= startDate && r.date <= endDate);
         const truckRows = (truckingEntries || []).filter(t => t.date && t.date >= startDate && t.date <= endDate);
 
-        // Build project lookup
-        const projMap = {};
-        (projects || []).forEach(p => { projMap[p.id] = p; });
-
         const byProject = {};
 
         function getOrCreate(pid) {
+          // Only track projects that have a real project record with a name
+          if (!projMap[pid]) return null;
           if (!byProject[pid]) {
             byProject[pid] = { pid, minDate: null, maxDate: null, laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, hoursWorked: 0 };
           }
@@ -2046,16 +2042,17 @@
           if (!entry.maxDate || date > entry.maxDate) entry.maxDate = date;
         }
 
-        // Aggregate daily tracking rows
+        // Aggregate daily tracking rows — skip entries with no matching project record
         dailyRows.forEach(row => {
           const pid = row._projectId;
           if (!pid) return;
           const entry = getOrCreate(pid);
+          if (!entry) return; // no project record → skip
           trackDate(entry, row.date);
-          const lh   = parseFloat(row.labor_hours)       || 0;
-          const rate = parseFloat(row.rate)              || 0;
-          const euc  = parseFloat(row.equip_unit_cost)   || 0;
-          const eh   = parseFloat(row.equip_hours)       || 0;
+          const lh   = parseFloat(row.labor_hours)          || 0;
+          const rate = parseFloat(row.rate)                 || 0;
+          const euc  = parseFloat(row.equip_unit_cost)      || 0;
+          const eh   = parseFloat(row.equip_hours)          || 0;
           const eto  = parseFloat(row.equip_total_override) || 0;
           entry.laborCost   += rate * lh;
           entry.equipCost   += eto || (euc * eh);
@@ -2067,6 +2064,7 @@
           const pid = t.project_id;
           if (!pid) return;
           const entry = getOrCreate(pid);
+          if (!entry) return; // no project record → skip
           trackDate(entry, t.date);
           const cost = (parseFloat(t.rate) || 0) * (parseFloat(t.hours) || 0);
           const type = (t.truck_type || '').toLowerCase();
@@ -2077,10 +2075,10 @@
           }
         });
 
-        // Build and sort report rows
+        // Build and sort report rows — only named projects with entries in the date range
         const reportRows = Object.values(byProject).map(p => {
           const proj  = projMap[p.pid];
-          const name  = proj ? (proj['project-name'] || p.pid) : p.pid;
+          const name  = proj['project-name'] || proj.name || p.pid;
           const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost;
           return { ...p, name, total };
         }).sort((a, b) => a.name.localeCompare(b.name));
