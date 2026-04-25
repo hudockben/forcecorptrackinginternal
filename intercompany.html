@@ -698,8 +698,58 @@
     }
     .btn-run-report:hover { background: #9061f9; }
     .btn-run-report:disabled { opacity: 0.5; cursor: default; }
+    .btn-pdf {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.38rem 1rem;
+      background: none; color: var(--accent);
+      border: 1px solid rgba(167,139,250,0.4);
+      border-radius: 5px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .btn-pdf:hover { background: rgba(167,139,250,0.1); border-color: var(--accent); }
     .rpt-body { padding: 1.25rem 1.25rem 3rem; }
     .rpt-info { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
+
+    /* ── Print / PDF styles ── */
+    @media print {
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+      header, nav, .tab-bar, .rpt-subtab-bar, .rpt-toolbar,
+      .modal-backdrop { display: none !important; }
+
+      body { background: #fff; color: #111; font-size: 11px; }
+
+      .tab-panel { display: none !important; }
+      #tab-reports { display: block !important; }
+      .rpt-sub-panel { display: none !important; }
+      #rpt-job-summary { display: block !important; }
+
+      .rpt-body { padding: 0; }
+
+      .rpt-print-header {
+        display: flex !important;
+        align-items: baseline; gap: 1rem;
+        margin-bottom: 0.85rem; padding-bottom: 0.5rem;
+        border-bottom: 2px solid #111;
+      }
+      .rpt-print-title { font-size: 15px; font-weight: 700; color: #111; }
+      .rpt-print-range { font-size: 11px; color: #555; }
+
+      .an-tbl-wrap { border: none; overflow: visible; }
+      .an-tbl { width: 100%; border-collapse: collapse; min-width: unset; font-size: 10px; }
+      .an-tbl th {
+        background: #111 !important; color: #fff !important;
+        padding: 5px 8px; font-size: 9px; border: none;
+      }
+      .an-tbl td { padding: 4px 8px; border-bottom: 1px solid #ddd; color: #111; }
+      .an-tbl tfoot td {
+        background: #f3f3f3 !important; color: #111 !important;
+        font-weight: 700; border-top: 2px solid #111;
+      }
+      .an-tbl tbody tr:hover td { background: none; }
+    }
+
+    .rpt-print-header { display: none; }
   </style>
 </head>
 <body>
@@ -838,10 +888,15 @@
           <input type="date" id="jsEndDate" class="rpt-date-input" />
         </div>
         <button class="btn-run-report" onclick="runJobSummaryReport()">Run Report</button>
+        <button class="btn-pdf" id="jsPdfBtn" style="display:none" onclick="downloadJobSummaryPdf()">&#8659; Download PDF</button>
         <div class="tab-bar-spacer"></div>
         <div class="rpt-info" id="jsReportInfo"></div>
       </div>
       <div class="rpt-body">
+        <div class="rpt-print-header" id="jsPrintHeader">
+          <span class="rpt-print-title">Job Summary Report</span>
+          <span class="rpt-print-range" id="jsPrintRange"></span>
+        </div>
         <div id="jsSummaryBody">
           <div class="ci-empty"><strong>Select a Date Range</strong>Choose Start Date and End Date above, then click Run Report.</div>
         </div>
@@ -1954,6 +2009,14 @@
       }
     }
 
+    function downloadJobSummaryPdf() {
+      const startDate = document.getElementById('jsStartDate').value;
+      const endDate   = document.getElementById('jsEndDate').value;
+      const rangeEl   = document.getElementById('jsPrintRange');
+      if (rangeEl) rangeEl.textContent = startDate + ' – ' + endDate;
+      window.print();
+    }
+
     function switchRptSubTab(sub) {
       document.querySelectorAll('.rpt-subtab-btn').forEach(b =>
         b.classList.toggle('active', b.dataset.sub === sub));
@@ -1976,8 +2039,10 @@
         return;
       }
 
-      const btn = document.querySelector('.btn-run-report');
-      if (btn) btn.disabled = true;
+      const btn    = document.querySelector('.btn-run-report');
+      const pdfBtnL = document.getElementById('jsPdfBtn');
+      if (btn)     btn.disabled = true;
+      if (pdfBtnL) pdfBtnL.style.display = 'none';
       resultsEl.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching project data…</div>';
       if (infoEl) infoEl.textContent = '';
 
@@ -2119,8 +2184,10 @@
         const totTotal  = reportRows.reduce((s, r) => s + r.total,       0);
         const totHours  = reportRows.reduce((s, r) => s + r.hoursWorked, 0);
 
-        const pCnt = reportRows.length;
-        if (infoEl) infoEl.textContent = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + ' · ' + dailyRows.length + ' entries';
+        const pCnt  = reportRows.length;
+        const pdfBtn = document.getElementById('jsPdfBtn');
+        if (infoEl)  infoEl.textContent = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + ' · ' + dailyRows.length + ' entries';
+        if (pdfBtn)  pdfBtn.style.display = '';
 
         resultsEl.innerHTML = '<div class="an-tbl-wrap"><table class="an-tbl" style="min-width:950px">'
           + '<thead><tr>'
