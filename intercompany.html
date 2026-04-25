@@ -2052,8 +2052,9 @@
           const euc  = parseFloat(row.equip_unit_cost)      || 0;
           const eh   = parseFloat(row.equip_hours)          || 0;
           const eto  = parseFloat(row.equip_total_override) || 0;
+          const mat  = parseFloat(row.material_cost)        || 0;
           entry.laborCost   += rate * lh;
-          entry.equipCost   += eto || (euc * eh);
+          entry.equipCost   += (eto || (euc * eh)) + mat;
           entry.hoursWorked += lh;
         });
 
@@ -2092,8 +2093,8 @@
           .filter(p => {
             const proj = projMap[p.pid];
             if (!proj) return false; // no project record — orphaned tracking row
-            // Must have at least some real work logged in the period
-            return p.hoursWorked > 0 || p.laborCost > 0 || p.equipCost > 0
+            // Only show if there is actual dollar cost data for the period
+            return p.laborCost > 0 || p.equipCost > 0
                    || p.lowboyCost > 0 || p.triAxleCost > 0;
           })
           .map(p => {
