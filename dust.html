@@ -2813,6 +2813,58 @@
       const invNeedsPayment = inv2026plus.filter(r =>
         r.invTotal && r.inv_sent && !r.inv_received && effectiveInvStatus(r) !== 'paid');
 
+      // ── Pre-build pending card HTML (avoids 3-level template literal nesting) ──
+      const _pendingRows = [...invNeedsSent, ...invNeedsPayment]
+        .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+        .map(r => {
+          const dotCls = !r.inv_sent ? 's-red' : 's-amber';
+          const stLbl  = !r.inv_sent ? 'No Invoice' : 'Awaiting Payment';
+          const rid    = esc(r.id || '');
+          const invVal = esc(r.inv_sent || '');
+          const payVal = esc(r.inv_received || '');
+          return `<tr>
+            <td><span class="dp-dot ${dotCls}"></span><span style="font-size:0.67rem;color:var(--muted)">${stLbl}</span></td>
+            <td>${r.date || '—'}</td>
+            <td>${esc(r.company || '—')}</td>
+            <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.location || '—')}</td>
+            <td class="r" style="color:var(--amber);font-weight:600">${money(r.invTotal)}</td>
+            <td><input type="date" class="dp-date${invVal ? ' is-set' : ''}"
+                  value="${invVal}"
+                  onchange="setInvDateByRowId('${rid}','inv_sent',this.value)"
+                  title="Invoice Sent Date"></td>
+            <td><input type="date" class="dp-date${payVal ? ' is-set' : ''}"
+                  value="${payVal}"
+                  onchange="setInvDateByRowId('${rid}','inv_received',this.value)"
+                  title="Payment Received Date"></td>
+          </tr>`;
+        }).join('');
+      const _pendingCard = (invNeedsSent.length || invNeedsPayment.length) ? `
+        <div class="dash-section-lbl">Pending Invoices &amp; Payments</div>
+        <div class="dust-pending-card">
+          <div class="dust-pending-hdr" onclick="toggleDustPending()">
+            <span class="dust-pending-warn">⚠</span>
+            <span class="dust-pending-title">Action Required</span>
+            <div class="dust-pending-badges">
+              ${invNeedsSent.length    ? `<span class="dust-pending-badge b-inv">${invNeedsSent.length} no invoice sent</span>` : ''}
+              ${invNeedsPayment.length ? `<span class="dust-pending-badge b-pay">${invNeedsPayment.length} awaiting payment</span>` : ''}
+            </div>
+            <div class="dust-pending-sp"></div>
+            <span class="dust-pending-tot">${money(sumInv(invNeedsSent) + sumInv(invNeedsPayment))} outstanding</span>
+            <span class="dust-pending-arrow" id="dustPendingArrow"
+              style="${dustPendingOpen ? 'transform:rotate(90deg)' : ''}">▶</span>
+          </div>
+          <div class="dust-pending-body${dustPendingOpen ? ' open' : ''}" id="dustPendingBody">
+            <table class="dust-pending-tbl">
+              <thead><tr>
+                <th>Status</th><th>Date</th><th>Company</th><th>Location</th>
+                <th class="r">Inv Total</th>
+                <th>Invoice Sent</th><th>Payment Received</th>
+              </tr></thead>
+              <tbody>${_pendingRows}</tbody>
+            </table>
+          </div>
+        </div>` : '';
+
       // ── Build HTML ──
       const noData = !rows.length;
 
@@ -2932,57 +2984,7 @@
           }).join('')}
         </div>` : ''}` : ''}
 
-        ${(invNeedsSent.length || invNeedsPayment.length) ? `
-        <div class="dash-section-lbl">Pending Invoices &amp; Payments</div>
-        <div class="dust-pending-card">
-          <div class="dust-pending-hdr" onclick="toggleDustPending()">
-            <span class="dust-pending-warn">⚠</span>
-            <span class="dust-pending-title">Action Required</span>
-            <div class="dust-pending-badges">
-              ${invNeedsSent.length    ? `<span class="dust-pending-badge b-inv">${invNeedsSent.length} no invoice sent</span>` : ''}
-              ${invNeedsPayment.length ? `<span class="dust-pending-badge b-pay">${invNeedsPayment.length} awaiting payment</span>` : ''}
-            </div>
-            <div class="dust-pending-sp"></div>
-            <span class="dust-pending-tot">${money(sumInv(invNeedsSent) + sumInv(invNeedsPayment))} outstanding</span>
-            <span class="dust-pending-arrow" id="dustPendingArrow"
-              style="${dustPendingOpen ? 'transform:rotate(90deg)' : ''}">▶</span>
-          </div>
-          <div class="dust-pending-body${dustPendingOpen ? ' open' : ''}" id="dustPendingBody">
-            <table class="dust-pending-tbl">
-              <thead><tr>
-                <th>Status</th><th>Date</th><th>Company</th><th>Location</th>
-                <th class="r">Inv Total</th>
-                <th>Invoice Sent</th><th>Payment Received</th>
-              </tr></thead>
-              <tbody>
-                ${[...invNeedsSent, ...invNeedsPayment]
-                  .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
-                  .map(r => {
-                    const dotCls = !r.inv_sent ? 's-red' : 's-amber';
-                    const stLbl  = !r.inv_sent ? 'No Invoice' : 'Awaiting Payment';
-                    const rid    = esc(r.id || '');
-                    const invVal = esc(r.inv_sent || '');
-                    const payVal = esc(r.inv_received || '');
-                    return \`<tr>
-                      <td><span class="dp-dot \${dotCls}"></span><span style="font-size:0.67rem;color:var(--muted)">\${stLbl}</span></td>
-                      <td>\${r.date || '—'}</td>
-                      <td>\${esc(r.company || '—')}</td>
-                      <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${esc(r.location || '—')}</td>
-                      <td class="r" style="color:var(--amber);font-weight:600">\${money(r.invTotal)}</td>
-                      <td><input type="date" class="dp-date\${invVal ? ' is-set' : ''}"
-                            value="\${invVal}"
-                            onchange="setInvDateByRowId('\${rid}','inv_sent',this.value)"
-                            title="Invoice Sent Date"></td>
-                      <td><input type="date" class="dp-date\${payVal ? ' is-set' : ''}"
-                            value="\${payVal}"
-                            onchange="setInvDateByRowId('\${rid}','inv_received',this.value)"
-                            title="Payment Received Date"></td>
-                    </tr>\`;
-                  }).join('')}
-              </tbody>
-            </table>
-          </div>
-        </div>` : ''}
+        ${_pendingCard}
 
         <div class="dash-section-lbl">Recent Jobs</div>
         <div class="dash-feed">
