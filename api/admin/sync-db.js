@@ -22,6 +22,8 @@ const {
   syncCostRows,
   syncTrucking,
   syncScaleManual,
+  syncIntercompanyCompanies,
+  syncIntercompanyBillingEntries,
 } = require('../lib/sync-normalized');
 
 function verifyToken(req) {
@@ -72,6 +74,8 @@ module.exports = async (req, res) => {
       `${companyCode}:fct_cost_rows`,
       `${companyCode}:fct_trucking`,
       `${companyCode}:fct_scale_manual`,
+      `${companyCode}:fct_intercompany_companies`,
+      `${companyCode}:fct_intercompany_billing_entries`,
     ];
     const rows = await sql`SELECT key, value FROM app_data WHERE key = ANY(${keys})`;
     const blobs = {};
@@ -103,6 +107,8 @@ module.exports = async (req, res) => {
     const s5 = await syncCostRows(sql, companyCode, blobs[`${p}fct_cost_rows`] || []);
     const s6 = await syncTrucking(sql, companyCode, blobs[`${p}fct_trucking`] || []);
     const s7 = await syncScaleManual(sql, companyCode, blobs[`${p}fct_scale_manual`] || []);
+    const s8 = await syncIntercompanyCompanies(sql, companyCode, blobs[`${p}fct_intercompany_companies`] || []);
+    const s9 = await syncIntercompanyBillingEntries(sql, companyCode, blobs[`${p}fct_intercompany_billing_entries`] || []);
 
     // Record sync timestamp so auto-sync on login knows it's been done
     await sql`
@@ -124,8 +130,10 @@ module.exports = async (req, res) => {
         po_deliveries:        s3.po_deliveries,
         inventory_items:      s4.inventory_items,
         cost_items:           s5.cost_items,
-        trucking_entries:     s6.trucking_entries,
-        scale_manual_entries: s7.scale_manual_entries,
+        trucking_entries:              s6.trucking_entries,
+        scale_manual_entries:          s7.scale_manual_entries,
+        intercompany_companies:        s8.intercompany_companies,
+        intercompany_billing_entries:  s9.intercompany_billing_entries,
       },
     });
 
