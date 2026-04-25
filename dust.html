@@ -961,6 +961,70 @@
       svg text { fill: #333 !important; }
       svg line { stroke: #ccc !important; }
     }
+
+    /* ── Pending invoices card (Home Dashboard) ── */
+    .dust-pending-card {
+      margin: 0 1.5rem;
+      background: var(--surface);
+      border: 1px solid rgba(251,191,36,0.22);
+      border-radius: 8px; overflow: hidden;
+    }
+    .dust-pending-hdr {
+      display: flex; align-items: center; gap: 0.65rem;
+      padding: 0.6rem 1rem; cursor: pointer;
+      background: rgba(251,191,36,0.05);
+      user-select: none; flex-wrap: wrap;
+    }
+    .dust-pending-hdr:hover { background: rgba(251,191,36,0.09); }
+    .dust-pending-warn  { font-size: 0.85rem; }
+    .dust-pending-title { font-size: 0.75rem; font-weight: 700; color: #fbbf24; }
+    .dust-pending-badges { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+    .dust-pending-badge {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.07em;
+      text-transform: uppercase; padding: 0.1rem 0.45rem;
+      border-radius: 9999px; white-space: nowrap;
+    }
+    .dust-pending-badge.b-inv { background: rgba(239,68,68,0.12); color: #f87171; border: 1px solid rgba(239,68,68,0.2); }
+    .dust-pending-badge.b-pay { background: rgba(251,191,36,0.12); color: #f59e0b; border: 1px solid rgba(251,191,36,0.2); }
+    .dust-pending-sp    { flex: 1; min-width: 0.5rem; }
+    .dust-pending-tot   { font-size: 0.72rem; font-weight: 600; color: var(--muted); white-space: nowrap; }
+    .dust-pending-arrow { color: #fbbf24; font-size: 0.65rem; transition: transform 0.15s; }
+
+    .dust-pending-body { display: none; overflow-x: auto; }
+    .dust-pending-body.open { display: block; }
+
+    .dust-pending-tbl { width: 100%; border-collapse: collapse; min-width: 700px; }
+    .dust-pending-tbl th {
+      font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--muted); text-align: left; padding: 0.3rem 0.85rem;
+      border-bottom: 1px solid var(--border); white-space: nowrap;
+      background: rgba(0,0,0,0.12);
+    }
+    .dust-pending-tbl th.r { text-align: right; }
+    .dust-pending-tbl td {
+      font-size: 0.72rem; padding: 0.28rem 0.85rem; color: var(--text);
+      border-bottom: 1px solid rgba(42,42,58,0.4); vertical-align: middle;
+    }
+    .dust-pending-tbl td.r { text-align: right; font-variant-numeric: tabular-nums; }
+    .dust-pending-tbl tbody tr:last-child td { border-bottom: none; }
+    .dust-pending-tbl tbody tr:hover td { background: rgba(255,255,255,0.015); }
+
+    .dp-date {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 3px; color: var(--muted); font-size: 0.67rem;
+      padding: 0.14rem 0.3rem; outline: none; cursor: pointer;
+      font-family: inherit; width: 125px; color-scheme: dark;
+    }
+    .dp-date:focus { border-color: var(--amber); }
+    .dp-date.is-set { border-color: rgba(34,197,94,0.45); color: var(--green); }
+    .dp-date.is-set:focus { border-color: var(--green); }
+
+    .dp-dot {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      margin-right: 0.3rem; vertical-align: middle;
+    }
+    .dp-dot.s-red   { background: #f87171; }
+    .dp-dot.s-amber { background: #f59e0b; }
   </style>
 </head>
 <body>
@@ -2744,6 +2808,11 @@
         .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
         .slice(0, 8);
 
+      // ── Pending: no invoice sent, or sent but not yet paid ──
+      const invNeedsSent    = inv2026plus.filter(r => r.invTotal && !r.inv_sent);
+      const invNeedsPayment = inv2026plus.filter(r =>
+        r.invTotal && r.inv_sent && !r.inv_received && effectiveInvStatus(r) !== 'paid');
+
       // ── Build HTML ──
       const noData = !rows.length;
 
@@ -2863,6 +2932,58 @@
           }).join('')}
         </div>` : ''}` : ''}
 
+        ${(invNeedsSent.length || invNeedsPayment.length) ? `
+        <div class="dash-section-lbl">Pending Invoices &amp; Payments</div>
+        <div class="dust-pending-card">
+          <div class="dust-pending-hdr" onclick="toggleDustPending()">
+            <span class="dust-pending-warn">⚠</span>
+            <span class="dust-pending-title">Action Required</span>
+            <div class="dust-pending-badges">
+              ${invNeedsSent.length    ? `<span class="dust-pending-badge b-inv">${invNeedsSent.length} no invoice sent</span>` : ''}
+              ${invNeedsPayment.length ? `<span class="dust-pending-badge b-pay">${invNeedsPayment.length} awaiting payment</span>` : ''}
+            </div>
+            <div class="dust-pending-sp"></div>
+            <span class="dust-pending-tot">${money(sumInv(invNeedsSent) + sumInv(invNeedsPayment))} outstanding</span>
+            <span class="dust-pending-arrow" id="dustPendingArrow"
+              style="${dustPendingOpen ? 'transform:rotate(90deg)' : ''}">▶</span>
+          </div>
+          <div class="dust-pending-body${dustPendingOpen ? ' open' : ''}" id="dustPendingBody">
+            <table class="dust-pending-tbl">
+              <thead><tr>
+                <th>Status</th><th>Date</th><th>Company</th><th>Location</th>
+                <th class="r">Inv Total</th>
+                <th>Invoice Sent</th><th>Payment Received</th>
+              </tr></thead>
+              <tbody>
+                ${[...invNeedsSent, ...invNeedsPayment]
+                  .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+                  .map(r => {
+                    const dotCls = !r.inv_sent ? 's-red' : 's-amber';
+                    const stLbl  = !r.inv_sent ? 'No Invoice' : 'Awaiting Payment';
+                    const rid    = esc(r.id || '');
+                    const invVal = esc(r.inv_sent || '');
+                    const payVal = esc(r.inv_received || '');
+                    return \`<tr>
+                      <td><span class="dp-dot \${dotCls}"></span><span style="font-size:0.67rem;color:var(--muted)">\${stLbl}</span></td>
+                      <td>\${r.date || '—'}</td>
+                      <td>\${esc(r.company || '—')}</td>
+                      <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${esc(r.location || '—')}</td>
+                      <td class="r" style="color:var(--amber);font-weight:600">\${money(r.invTotal)}</td>
+                      <td><input type="date" class="dp-date\${invVal ? ' is-set' : ''}"
+                            value="\${invVal}"
+                            onchange="setInvDateByRowId('\${rid}','inv_sent',this.value)"
+                            title="Invoice Sent Date"></td>
+                      <td><input type="date" class="dp-date\${payVal ? ' is-set' : ''}"
+                            value="\${payVal}"
+                            onchange="setInvDateByRowId('\${rid}','inv_received',this.value)"
+                            title="Payment Received Date"></td>
+                    </tr>\`;
+                  }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : ''}
+
         <div class="dash-section-lbl">Recent Jobs</div>
         <div class="dash-feed">
           ${recent.length ? recent.map(r => `
@@ -2878,6 +2999,24 @@
           : '<div class="dash-empty-sm">No jobs yet.</div>'}
         </div>
       `;
+    }
+
+    // ── Pending invoices card state & helpers ───────────────────
+    let dustPendingOpen = false;
+
+    function toggleDustPending() {
+      dustPendingOpen = !dustPendingOpen;
+      const body  = document.getElementById('dustPendingBody');
+      const arrow = document.getElementById('dustPendingArrow');
+      if (body)  body.classList.toggle('open', dustPendingOpen);
+      if (arrow) arrow.style.transform = dustPendingOpen ? 'rotate(90deg)' : '';
+    }
+
+    function setInvDateByRowId(rowId, field, value) {
+      const idx = rows.findIndex(r => r.id === rowId);
+      if (idx === -1) return;
+      set(idx, field, value);
+      renderHomeDashboard();
     }
 
     async function init() {
