@@ -2052,9 +2052,8 @@
           const euc  = parseFloat(row.equip_unit_cost)      || 0;
           const eh   = parseFloat(row.equip_hours)          || 0;
           const eto  = parseFloat(row.equip_total_override) || 0;
-          const mat  = parseFloat(row.material_cost)        || 0;
           entry.laborCost   += rate * lh;
-          entry.equipCost   += (eto || (euc * eh)) + mat;
+          entry.equipCost   += eto || (euc * eh);
           entry.hoursWorked += lh;
         });
 
