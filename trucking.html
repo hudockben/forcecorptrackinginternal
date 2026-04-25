@@ -195,7 +195,13 @@
       border-radius: 0 0 0 8px;
       padding: 1rem 1.1rem 1.25rem;
       box-shadow: -4px 4px 24px rgba(0,0,0,0.5);
+      max-height: calc(100vh - 3rem);
+      overflow-y: auto;
     }
+    .lists-panel::-webkit-scrollbar { width: 5px; }
+    .lists-panel::-webkit-scrollbar-track { background: transparent; }
+    .lists-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .lists-panel::-webkit-scrollbar-thumb:hover { background: #555; }
     .lists-panel h3 {
       font-size: 0.65rem; letter-spacing: 0.12em; text-transform: uppercase;
       color: var(--muted); margin-bottom: 1rem; font-weight: 600;
