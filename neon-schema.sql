@@ -538,3 +538,74 @@ CREATE INDEX IF NOT EXISTS idx_dust_pers_company ON dust_company_personnel(dust_
 -- Employees and states stored in dropdown_lists:
 --   list_name = 'dust_employees'  (strings)
 --   list_name = 'dust_states'     (strings)
+
+-- ─────────────────────────────────────────────────
+-- INTERCOMPANY BILLING
+-- Mirrors fct_intercompany_companies and
+-- fct_intercompany_billing_entries JSON blobs.
+-- ─────────────────────────────────────────────────
+
+-- Companies eligible for intercompany billing
+CREATE TABLE IF NOT EXISTS intercompany_companies (
+    id            TEXT PRIMARY KEY,              -- app-generated uid
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name          TEXT          NOT NULL,
+    divisions     TEXT[]        NOT NULL DEFAULT '{}',
+    notes         TEXT,
+    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    UNIQUE (company_code, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ic_co_company ON intercompany_companies(company_code);
+
+-- Billing entries sent from trucking or dust control to an intercompany company
+CREATE TABLE IF NOT EXISTS intercompany_billing_entries (
+    id                TEXT PRIMARY KEY,          -- app-generated uid
+    company_code      TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    source            TEXT          NOT NULL,    -- 'trucking' | 'dust'
+    source_id         TEXT          NOT NULL,    -- id of the originating entry
+    company_id        TEXT,                      -- references intercompany_companies.id
+    company_name      TEXT,
+    actual_date       DATE,
+    total_hours       NUMERIC(10,4),
+    total             NUMERIC(10,4),             -- invoice total billed to customer
+    sent_at           TIMESTAMPTZ,
+    sent_by           TEXT,
+    -- Trucking-specific fields
+    task_number       TEXT,
+    driver            TEXT,
+    unit              TEXT,
+    actual_start      TEXT,
+    actual_end        TEXT,
+    haul_fee          NUMERIC(10,4),
+    customer          TEXT,
+    description       TEXT,
+    division          TEXT,
+    notes             TEXT,
+    qb_invoice        TEXT,
+    invoiced_date     DATE,
+    invoice_sent_date DATE,
+    invoice_status    TEXT,
+    date_paid         DATE,
+    -- Dust-specific fields
+    location          TEXT,
+    company_man       TEXT,
+    vehicle1          TEXT,
+    v1_unit           TEXT,
+    v1_rate           NUMERIC(10,4),
+    v1_total          NUMERIC(10,4),
+    vehicle2          TEXT,
+    v2_unit           TEXT,
+    v2_rate           NUMERIC(10,4),
+    v2_total          NUMERIC(10,4),
+    gallons_ub        NUMERIC(10,4),
+    ub_total          NUMERIC(10,4),
+    inv_number        TEXT,
+    inv_status        TEXT,
+    updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ic_be_company      ON intercompany_billing_entries(company_code);
+CREATE INDEX IF NOT EXISTS idx_ic_be_company_date ON intercompany_billing_entries(company_code, actual_date);
+CREATE INDEX IF NOT EXISTS idx_ic_be_source       ON intercompany_billing_entries(company_code, source);
+CREATE INDEX IF NOT EXISTS idx_ic_be_ic_company   ON intercompany_billing_entries(company_code, company_id);

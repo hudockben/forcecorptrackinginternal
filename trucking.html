@@ -451,6 +451,8 @@
     let _saveTimer       = null;
     let _isSaved         = false;
     let icSentMap = new Map(); // source_id → full IC entry (trucking)
+    let icBillingArr = [];        // full IC billing list for syncing updates back
+    let _icBillingDirty = false;  // pending IC billing changes not yet saved
 
     function fmtSentAt(ts) {
       if (!ts) return '';
@@ -471,9 +473,8 @@
         if (!r.ok) return;
         const { value } = await r.json();
         icSentMap.clear();
-        if (Array.isArray(value)) {
-          value.forEach(e => { if (e.source === 'trucking' && e.source_id) icSentMap.set(e.source_id, e); });
-        }
+        icBillingArr = Array.isArray(value) ? value : [];
+        icBillingArr.forEach(e => { if (e.source === 'trucking' && e.source_id) icSentMap.set(e.source_id, e); });
       } catch { /* non-fatal */ }
     }
 
@@ -524,6 +525,14 @@
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ entries: divEntries, lists: divTruckLists })
       }).catch(() => {});
+      if (_icBillingDirty && icBillingArr.length) {
+        _icBillingDirty = false;
+        fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ value: icBillingArr })
+        }).catch(() => {});
+      }
     }
 
     /* Fix entries that were saved before the CSV normalisation was in place.
@@ -593,7 +602,24 @@
         if (Array.isArray(lists.equipment)) divLists.equipment = lists.equipment;
       }
       _migrateExistingEntries();
+      _syncStaleIcEntries();
       renderDashboard();
+    }
+
+    function _syncStaleIcEntries() {
+      let changed = false;
+      icBillingArr.forEach((icEntry, idx) => {
+        if (icEntry.source !== 'trucking' || !icEntry.source_id) return;
+        const te = divEntries.find(e => e.id === icEntry.source_id);
+        if (!te) return;
+        const tot = (parseFloat(te.total_hours) || 0) * (parseFloat(te.haul_fee) || 0);
+        if (icEntry.total_hours !== te.total_hours || icEntry.haul_fee !== te.haul_fee) {
+          icBillingArr[idx] = { ...icEntry, total_hours: te.total_hours, haul_fee: te.haul_fee, total: tot };
+          icSentMap.set(icEntry.source_id, icBillingArr[idx]);
+          changed = true;
+        }
+      });
+      if (changed) _icBillingDirty = true;
     }
 
     function saveTruckLists() {
@@ -904,6 +930,14 @@
         const tot = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
         const el  = document.getElementById('td-tot-' + id);
         if (el) el.textContent = '$' + tot.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const icIdx = icBillingArr.findIndex(x => x.source === 'trucking' && x.source_id === id);
+        if (icIdx >= 0) {
+          icBillingArr[icIdx].total_hours = e.total_hours;
+          icBillingArr[icIdx].haul_fee    = e.haul_fee;
+          icBillingArr[icIdx].total       = tot;
+          icSentMap.set(id, icBillingArr[icIdx]);
+          _icBillingDirty = true;
+        }
       }
       if (field === 'unit') {
         const unit  = divTruckLists.units.find(u => u.name === value);
@@ -2271,6 +2305,7 @@
           const nxt = JSON.stringify([...newMap].sort((a, b) => a[0].localeCompare(b[0])));
           if (cur === nxt) return;
           icSentMap = newMap;
+          if (!_icBillingDirty) icBillingArr = value;
           if (!_isEditing() && _activeTabId() === 'truck-tracking') renderTrackingTab();
         } catch { /* non-fatal */ }
       }

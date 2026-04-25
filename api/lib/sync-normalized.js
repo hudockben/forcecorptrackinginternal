@@ -448,6 +448,153 @@ async function syncScaleManual(sql, companyCode, value) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// INTERCOMPANY COMPANIES  (fct_intercompany_companies → intercompany_companies)
+// Upsert by app-provided id; delete rows no longer in the list.
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncIntercompanyCompanies(sql, companyCode, value) {
+  const list = Array.isArray(value) ? value : [];
+
+  const ids = list.map(c => c && c.id).filter(Boolean);
+  if (ids.length) {
+    await sql`
+      DELETE FROM intercompany_companies
+      WHERE company_code = ${companyCode}
+        AND id <> ALL(${ids})
+    `;
+  } else {
+    await sql`DELETE FROM intercompany_companies WHERE company_code = ${companyCode}`;
+  }
+
+  let intercompany_companies = 0;
+  for (const c of list) {
+    if (!c || !c.id) continue;
+    const divisions = Array.isArray(c.divisions) ? c.divisions : [];
+    await sql`
+      INSERT INTO intercompany_companies (id, company_code, name, divisions, notes, updated_at)
+      VALUES (${c.id}, ${companyCode}, ${c.name || ''}, ${divisions}, ${c.notes || null}, NOW())
+      ON CONFLICT (id) DO UPDATE SET
+        name       = EXCLUDED.name,
+        divisions  = EXCLUDED.divisions,
+        notes      = EXCLUDED.notes,
+        updated_at = NOW()
+    `;
+    intercompany_companies++;
+  }
+
+  return { intercompany_companies };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERCOMPANY BILLING ENTRIES  (fct_intercompany_billing_entries → intercompany_billing_entries)
+// Upsert by app-provided id; delete rows no longer in the list.
+// Handles both trucking entries (haul_fee, task_number, driver …) and
+// dust entries (location, company_man, gallons_ub …).
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncIntercompanyBillingEntries(sql, companyCode, value) {
+  const list = Array.isArray(value) ? value : [];
+
+  const ids = list.map(e => e && e.id).filter(Boolean);
+  if (ids.length) {
+    await sql`
+      DELETE FROM intercompany_billing_entries
+      WHERE company_code = ${companyCode}
+        AND id <> ALL(${ids})
+    `;
+  } else {
+    await sql`DELETE FROM intercompany_billing_entries WHERE company_code = ${companyCode}`;
+  }
+
+  let intercompany_billing_entries = 0;
+  for (const e of list) {
+    if (!e || !e.id) continue;
+    await sql`
+      INSERT INTO intercompany_billing_entries (
+        id, company_code, source, source_id, company_id, company_name,
+        actual_date, total_hours, total, sent_at, sent_by,
+        task_number, driver, unit, actual_start, actual_end,
+        haul_fee, customer, description, division, notes,
+        qb_invoice, invoiced_date, invoice_sent_date, invoice_status, date_paid,
+        location, company_man,
+        vehicle1, v1_unit, v1_rate, v1_total,
+        vehicle2, v2_unit, v2_rate, v2_total,
+        gallons_ub, ub_total, inv_number, inv_status,
+        updated_at
+      ) VALUES (
+        ${e.id}, ${companyCode},
+        ${e.source || 'trucking'}, ${e.source_id || null},
+        ${e.company_id || null}, ${e.company_name || null},
+        ${safeDate(e.actual_date)},
+        ${safeFloat(e.total_hours) ?? null},
+        ${safeFloat(e.total)       ?? null},
+        ${e.sent_at ? new Date(e.sent_at).toISOString() : null},
+        ${e.sent_by || null},
+        ${e.task_number || null}, ${e.driver || null}, ${e.unit || null},
+        ${e.actual_start || null}, ${e.actual_end || null},
+        ${safeFloat(e.haul_fee)    ?? null},
+        ${e.customer || null}, ${e.description || null},
+        ${e.division || null}, ${e.notes || null},
+        ${e.qb_invoice || null},
+        ${safeDate(e.invoiced_date)},
+        ${safeDate(e.invoice_sent_date)},
+        ${e.invoice_status || null},
+        ${safeDate(e.date_paid)},
+        ${e.location || null}, ${e.company_man || null},
+        ${e.vehicle1 || null}, ${e.v1_unit || null},
+        ${safeFloat(e.v1_rate) ?? null}, ${safeFloat(e.v1_total) ?? null},
+        ${e.vehicle2 || null}, ${e.v2_unit || null},
+        ${safeFloat(e.v2_rate) ?? null}, ${safeFloat(e.v2_total) ?? null},
+        ${safeFloat(e.gallons_ub) ?? null}, ${safeFloat(e.ub_total) ?? null},
+        ${e.inv_number || null}, ${e.inv_status || null},
+        NOW()
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        source            = EXCLUDED.source,
+        source_id         = EXCLUDED.source_id,
+        company_id        = EXCLUDED.company_id,
+        company_name      = EXCLUDED.company_name,
+        actual_date       = EXCLUDED.actual_date,
+        total_hours       = EXCLUDED.total_hours,
+        total             = EXCLUDED.total,
+        sent_at           = EXCLUDED.sent_at,
+        sent_by           = EXCLUDED.sent_by,
+        task_number       = EXCLUDED.task_number,
+        driver            = EXCLUDED.driver,
+        unit              = EXCLUDED.unit,
+        actual_start      = EXCLUDED.actual_start,
+        actual_end        = EXCLUDED.actual_end,
+        haul_fee          = EXCLUDED.haul_fee,
+        customer          = EXCLUDED.customer,
+        description       = EXCLUDED.description,
+        division          = EXCLUDED.division,
+        notes             = EXCLUDED.notes,
+        qb_invoice        = EXCLUDED.qb_invoice,
+        invoiced_date     = EXCLUDED.invoiced_date,
+        invoice_sent_date = EXCLUDED.invoice_sent_date,
+        invoice_status    = EXCLUDED.invoice_status,
+        date_paid         = EXCLUDED.date_paid,
+        location          = EXCLUDED.location,
+        company_man       = EXCLUDED.company_man,
+        vehicle1          = EXCLUDED.vehicle1,
+        v1_unit           = EXCLUDED.v1_unit,
+        v1_rate           = EXCLUDED.v1_rate,
+        v1_total          = EXCLUDED.v1_total,
+        vehicle2          = EXCLUDED.vehicle2,
+        v2_unit           = EXCLUDED.v2_unit,
+        v2_rate           = EXCLUDED.v2_rate,
+        v2_total          = EXCLUDED.v2_total,
+        gallons_ub        = EXCLUDED.gallons_ub,
+        ub_total          = EXCLUDED.ub_total,
+        inv_number        = EXCLUDED.inv_number,
+        inv_status        = EXCLUDED.inv_status,
+        updated_at        = NOW()
+    `;
+    intercompany_billing_entries++;
+  }
+
+  return { intercompany_billing_entries };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ROUTE DISPATCHER
 // Given a bare key (no company prefix) and its value, runs the right sync(s).
 // Returns a stats object (may be empty if the key doesn't map to any table).
@@ -489,10 +636,20 @@ async function syncForKey(sql, companyCode, key, value) {
     return syncScaleManual(sql, companyCode, value);
   }
 
+  if (key === 'fct_intercompany_companies') {
+    return syncIntercompanyCompanies(sql, companyCode, value);
+  }
+
+  if (key === 'fct_intercompany_billing_entries') {
+    return syncIntercompanyBillingEntries(sql, companyCode, value);
+  }
+
   return {};
 }
 
 module.exports = {
   syncProjects, syncLists, syncPurchaseOrders, syncInventory,
-  syncCostRows, syncTrucking, syncScaleManual, syncForKey,
+  syncCostRows, syncTrucking, syncScaleManual,
+  syncIntercompanyCompanies, syncIntercompanyBillingEntries,
+  syncForKey,
 };
