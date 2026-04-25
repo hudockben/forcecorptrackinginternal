@@ -717,14 +717,14 @@
       header, nav, .tab-bar, .rpt-subtab-bar, .rpt-toolbar,
       .modal-backdrop { display: none !important; }
 
-      body { background: #fff; color: #111; font-size: 11px; }
+      body, html { background: #fff !important; color: #111 !important; font-size: 11px; }
 
       .tab-panel { display: none !important; }
-      #tab-reports { display: block !important; }
+      #tab-reports { display: block !important; background: #fff !important; }
       .rpt-sub-panel { display: none !important; }
-      #rpt-job-summary { display: block !important; }
+      #rpt-job-summary { display: block !important; background: #fff !important; }
 
-      .rpt-body { padding: 0; }
+      .rpt-body { padding: 0; background: #fff !important; }
 
       .rpt-print-header {
         display: flex !important;
@@ -732,21 +732,35 @@
         margin-bottom: 0.85rem; padding-bottom: 0.5rem;
         border-bottom: 2px solid #111;
       }
-      .rpt-print-title { font-size: 15px; font-weight: 700; color: #111; }
-      .rpt-print-range { font-size: 11px; color: #555; }
+      .rpt-print-title { font-size: 15px; font-weight: 700; color: #111 !important; }
+      .rpt-print-range { font-size: 11px; color: #555 !important; }
 
-      .an-tbl-wrap { border: none; overflow: visible; }
-      .an-tbl { width: 100%; border-collapse: collapse; min-width: unset; font-size: 10px; }
+      .an-tbl-wrap { border: 1px solid #ccc !important; overflow: visible; background: #fff !important; }
+      .an-tbl { width: 100%; border-collapse: collapse; min-width: unset !important; font-size: 10px; }
+
+      .an-tbl thead tr { background: #222 !important; }
       .an-tbl th {
-        background: #111 !important; color: #fff !important;
+        background: #222 !important; color: #fff !important;
         padding: 5px 8px; font-size: 9px; border: none;
       }
-      .an-tbl td { padding: 4px 8px; border-bottom: 1px solid #ddd; color: #111; }
-      .an-tbl tfoot td {
-        background: #f3f3f3 !important; color: #111 !important;
-        font-weight: 700; border-top: 2px solid #111;
+
+      /* Force all body cells to black regardless of inline styles or CSS vars */
+      .an-tbl tbody td,
+      .an-tbl tbody td * {
+        color: #111 !important;
+        background: #fff !important;
       }
-      .an-tbl tbody tr:hover td { background: none; }
+      .an-tbl tbody tr:nth-child(even) td { background: #f9f9f9 !important; }
+      .an-tbl tbody td { padding: 5px 8px; border-bottom: 1px solid #ddd; }
+
+      .an-tbl tfoot td,
+      .an-tbl tfoot td * {
+        background: #eee !important;
+        color: #111 !important;
+        font-weight: 700;
+        border-top: 2px solid #111 !important;
+        padding: 5px 8px;
+      }
     }
 
     .rpt-print-header { display: none; }
