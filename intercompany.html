@@ -1983,17 +1983,43 @@
 
       try {
         const headers = { Authorization: `Bearer ${token}` };
+
+        // Fetch all three data sources in parallel
         const [projRes, rowsRes, truckRes] = await Promise.all([
           fetch(`${API_BASE}/projects`, { headers }),
           fetch(`${API_BASE}/daily-rows?since=${startDate}&limit=50000`, { headers }),
           fetch(`${API_BASE}/trucking`, { headers }),
         ]);
 
-        if (!projRes.ok || !rowsRes.ok || !truckRes.ok) {
-          throw new Error('Failed to fetch data from one or more endpoints.');
+        // Collect any HTTP-level failures with status codes for diagnostics
+        const failures = [];
+        if (!projRes.ok)  failures.push('/api/projects (HTTP ' + projRes.status + ')');
+        if (!rowsRes.ok)  failures.push('/api/daily-rows (HTTP ' + rowsRes.status + ')');
+        if (!truckRes.ok) failures.push('/api/trucking (HTTP ' + truckRes.status + ')');
+
+        // daily-rows and trucking are required for meaningful cost data
+        if (!rowsRes.ok || !truckRes.ok) {
+          throw new Error('Could not load cost data — ' + failures.join(', '));
         }
 
-        const { projects }        = await projRes.json();
+        // Parse responses; project list is optional (fall back to blob)
+        let projects = [];
+        if (projRes.ok) {
+          const pj = await projRes.json();
+          projects = Array.isArray(pj.projects) ? pj.projects : [];
+        }
+        if (!projects.length) {
+          // Fallback: read project index from the blob store
+          try {
+            const blobRes = await fetch(`${API_BASE}/data/fct_projects`, { headers });
+            if (blobRes.ok) {
+              const bj = await blobRes.json();
+              const blob = Array.isArray(bj.value) ? bj.value : [];
+              projects = blob;
+            }
+          } catch { /* non-fatal */ }
+        }
+
         const { rows: allRows }   = await rowsRes.json();
         const { truckingEntries } = await truckRes.json();
 
