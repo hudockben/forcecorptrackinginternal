@@ -1005,7 +1005,8 @@
     // ── Company Info sub-tab state ──────────────────────────────
     let ciDivFilter = 'trucking';
 
-    // ── Intercompany rates (persisted in localStorage) ──────────
+    // ── Intercompany rates (server-persisted, shared across all users) ──
+    const IC_RATES_KEY = 'fct_ic_rates';
     let icTruckRate = parseFloat(localStorage.getItem('ic_truck_rate') ?? '121') || 121;
     let icLaborRate = parseFloat(localStorage.getItem('ic_labor_rate') ?? '121') || 121;
     let icDustRate  = parseFloat(localStorage.getItem('ic_dust_rate')  ?? '121') || 121;
@@ -1023,15 +1024,42 @@
     }
     initRateInputs();
 
-    function onRateChange() {
-      icTruckRate = parseFloat(document.getElementById('ciTruckRate').value) || 0;
-      icLaborRate = parseFloat(document.getElementById('ciLaborRate').value) || 0;
-      icDustRate  = parseFloat(document.getElementById('ciDustRate').value)  || 0;
-      icUbRate    = parseFloat(document.getElementById('ciUbRate').value)    || 0;
+    async function loadRates() {
+      try {
+        const r = await fetch(`${API_BASE}/data/${IC_RATES_KEY}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) return;
+        const { value } = await r.json();
+        if (value && typeof value === 'object') {
+          if (value.truck != null) icTruckRate = parseFloat(value.truck) || icTruckRate;
+          if (value.labor != null) icLaborRate = parseFloat(value.labor) || icLaborRate;
+          if (value.dust  != null) icDustRate  = parseFloat(value.dust)  || icDustRate;
+          if (value.ub    != null) icUbRate    = parseFloat(value.ub)    ?? icUbRate;
+          initRateInputs();
+        }
+      } catch { /* keep localStorage fallback values */ }
+    }
+
+    function saveRates() {
+      const payload = { truck: icTruckRate, labor: icLaborRate, dust: icDustRate, ub: icUbRate };
       localStorage.setItem('ic_truck_rate', icTruckRate);
       localStorage.setItem('ic_labor_rate', icLaborRate);
       localStorage.setItem('ic_dust_rate',  icDustRate);
       localStorage.setItem('ic_ub_rate',    icUbRate);
+      fetch(`${API_BASE}/data/${IC_RATES_KEY}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value: payload })
+      }).catch(() => {});
+    }
+
+    function onRateChange() {
+      icTruckRate = parseFloat(document.getElementById('ciTruckRate').value) || 0;
+      icLaborRate = parseFloat(document.getElementById('ciLaborRate').value) || 0;
+      icDustRate  = parseFloat(document.getElementById('ciDustRate').value)  || 0;
+      icUbRate    = parseFloat(document.getElementById('ciUbRate').value)    ?? 0;
+      saveRates();
       renderCompanyInfo();
     }
 
@@ -1192,7 +1220,7 @@
     async function loadAndRenderCompanyInfo() {
       document.getElementById('ciBody').innerHTML =
         '<div class="ci-empty"><strong>Loading</strong>Fetching billing entries…</div>';
-      await Promise.all([loadCompanies(), loadBillingEntries()]);
+      await Promise.all([loadCompanies(), loadBillingEntries(), loadRates()]);
 
       // Build year options from entry dates
       const years = [...new Set(
@@ -1482,7 +1510,7 @@
     async function loadAndRenderAnalytics() {
       const body = document.getElementById('analyticsBody');
       if (body) body.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching data…</div>';
-      await Promise.all([loadCompanies(), loadBillingEntries()]);
+      await Promise.all([loadCompanies(), loadBillingEntries(), loadRates()]);
       const years = [...new Set(
         icBillingEntries.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
       )].sort().reverse();
@@ -1797,7 +1825,7 @@
     async function loadAndRenderDashboard() {
       const body = document.getElementById('dashBody');
       if (body) body.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching data…</div>';
-      await Promise.all([loadCompanies(), loadBillingEntries()]);
+      await Promise.all([loadCompanies(), loadBillingEntries(), loadRates()]);
       renderDashboard();
     }
 
