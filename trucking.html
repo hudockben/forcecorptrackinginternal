@@ -304,6 +304,10 @@
       }
       .sub-tab-panel.active { display: block !important; }
     }
+    .online-avatar-wrap { position:relative; display:inline-flex; }
+    .online-avatar-wrap .user-avatar { opacity:0.9; }
+    .online-dot { position:absolute; bottom:-1px; right:-1px; width:8px; height:8px; background:#22c55e; border-radius:50%; border:1.5px solid #0a0a0a; }
+    .online-users-label { font-size:0.65rem; color:#555; letter-spacing:0.04em; white-space:nowrap; }
   </style>
 </head>
 <body>
@@ -315,6 +319,7 @@
       <div class="div-label">Trucking</div>
     </div>
     <div class="hdr-right">
+      <span id="online-users" style="display:flex;align-items:center;gap:0.3rem;margin-right:0.25rem;"></span>
       <div class="user-avatar" id="userAvatar"></div>
       <div class="user-info" id="userInfo"></div>
       <button class="btn-ghost" onclick="switchDivision()">Switch Division</button>
@@ -435,10 +440,14 @@
     }
 
     function signOut() {
-      localStorage.removeItem('fct_token');
-      localStorage.removeItem('fct_user');
-      localStorage.removeItem('fct_division');
-      window.location.replace('index.html');
+      const go = () => {
+        localStorage.removeItem('fct_token');
+        localStorage.removeItem('fct_user');
+        localStorage.removeItem('fct_division');
+        window.location.replace('index.html');
+      };
+      if (window._presenceRemoveSelf) window._presenceRemoveSelf().finally(go);
+      else go();
     }
 
     /* ═══════════════════════════════════════════
@@ -2315,6 +2324,83 @@
       }
 
       setInterval(pollAll, POLL_MS);
+    })();
+
+    /* ═══════════════════════════════════════════
+       WHO'S ONLINE — presence heartbeat
+    ═══════════════════════════════════════════ */
+    (function () {
+      if (!user) return;
+      const PRESENCE_KEY = 'fct_presence';
+      const HEARTBEAT_MS = 30_000;
+      const STALE_MS     = 120_000;
+
+      const myId    = String(user.userId || user.username);
+      const myName  = user.name || user.username || '';
+      const myUser  = user.username || '';
+      const parts   = myName.trim().split(/\s+/);
+      const myInit  = parts.length >= 2
+        ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+        : myName.slice(0, 2).toUpperCase() || '?';
+      const palette = ['#2ecc71','#3498db','#9b59b6','#e67e22','#e74c3c','#1abc9c','#f39c12','#16a085'];
+      let h = 0;
+      for (let i = 0; i < myName.length; i++) h = (h * 31 + myName.charCodeAt(i)) & 0xffff;
+      const myColor = palette[h % palette.length];
+
+      async function _presenceFetch() {
+        try {
+          const r = await fetch(`${API_BASE}/data/${PRESENCE_KEY}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (!r.ok) return {};
+          const j = await r.json();
+          return j.value || {};
+        } catch { return {}; }
+      }
+
+      async function _presencePut(data) {
+        try {
+          await fetch(`${API_BASE}/data/${PRESENCE_KEY}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ value: data })
+          });
+        } catch { /* best-effort */ }
+      }
+
+      window._presenceRemoveSelf = async function () {
+        const data = await _presenceFetch();
+        delete data[myId];
+        await _presencePut(data);
+      };
+
+      function renderOnline(data) {
+        const el = document.getElementById('online-users');
+        if (!el) return;
+        const now    = Date.now();
+        const others = Object.entries(data)
+          .filter(([id, u]) => id !== myId && (now - (u.ts || 0)) < STALE_MS)
+          .sort((a, b) => (a[1].username || '').localeCompare(b[1].username || ''));
+        if (!others.length) { el.innerHTML = ''; return; }
+        el.innerHTML =
+          '<span class="online-users-label">Online:</span>' +
+          others.map(([, u]) =>
+            `<span class="online-avatar-wrap">` +
+              `<span class="user-avatar" style="background:${u.color||'#555'};width:26px;height:26px;font-size:0.62rem;" title="${u.username||''}">${u.initials||'?'}</span>` +
+              `<span class="online-dot"></span>` +
+            `</span>`
+          ).join('');
+      }
+
+      async function heartbeat() {
+        const data = await _presenceFetch();
+        data[myId] = { username: myUser, initials: myInit, color: myColor, ts: Date.now() };
+        await _presencePut(data);
+        renderOnline(data);
+      }
+
+      heartbeat();
+      setInterval(heartbeat, HEARTBEAT_MS);
     })();
   </script>
 </body>
