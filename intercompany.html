@@ -2120,6 +2120,14 @@
           if (!entry.maxDate || date > entry.maxDate) entry.maxDate = date;
         }
 
+        // Build a set of daily-row IDs that are trucking mirrors — used below to
+        // prevent trucking_entries from double-counting those same rows.
+        const truckingDailyIds = new Set(
+          dailyRows
+            .filter(r => (r.job_class || '').toLowerCase() === 'trucking')
+            .map(r => String(r.id))
+        );
+
         // Phase 1 — aggregate ALL project IDs from daily rows (no filtering yet)
         dailyRows.forEach(row => {
           const pid = row._projectId;
@@ -2131,16 +2139,24 @@
           const euc  = parseFloat(row.equip_unit_cost)      || 0;
           const eh   = parseFloat(row.equip_hours)          || 0;
           const eto  = parseFloat(row.equip_total_override) || 0;
-          entry.laborCost   += rate * lh;
-          // Skip equipment cost on trucking-mirrored rows (job_class = 'Trucking') —
-          // those costs are already captured from trucking_entries as lowboy/tri-axle.
-          if ((row.job_class || '').toLowerCase() !== 'trucking') {
+          entry.laborCost += rate * lh;
+          entry.hoursWorked += lh;
+          if ((row.job_class || '').toLowerCase() === 'trucking') {
+            // Classify trucking rows by equipment type so manually-entered
+            // daily rows (with no trucking_entry) are still captured.
+            const truckCost = eto || (euc * eh);
+            const equip = (row.equipment || '').toLowerCase();
+            if (equip.includes('lowboy'))     entry.lowboyCost  += truckCost;
+            else if (equip.includes('tri'))   entry.triAxleCost += truckCost;
+          } else {
             entry.equipCost += eto || (euc * eh);
           }
-          entry.hoursWorked += lh;
         });
 
+        // Only count trucking_entries that don't already have a daily-row mirror
+        // with job_class='Trucking' (to avoid double-counting).
         truckRows.forEach(t => {
+          if (t.tr_row_id && truckingDailyIds.has(String(t.tr_row_id))) return;
           const pid = t.project_id;
           const entry = getOrCreate(pid);
           if (!entry) return;

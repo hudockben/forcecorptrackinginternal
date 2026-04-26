@@ -8623,6 +8623,7 @@ document.getElementById('trucking-root').addEventListener('change', e => {
           id:              Date.now() + Math.random(),
           date:            tr.date            || '',
           employee:        tr.driver          || '',
+          job_class:       'Trucking',
           equipment:       tr.truck_type      || '',
           equip_unit_cost: String(rate),
           equip_hours:     String(hours),
