@@ -1312,7 +1312,7 @@
                 <td>${escT(e.vehicle2 || '—')}</td>
                 <td class="r">${fmtH(hrs)}</td>
                 <td class="r">${gal > 0 ? gal.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>
-                <td class="r">${fmt$(parseFloat(e.ub_total) || 0)}</td>
+                <td class="r ic-val">${gal > 0 && icUbRate > 0 ? fmt$(gal * icUbRate) : '—'}</td>
                 <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
                 <td class="r ic-val">${fmt$(icAmt)}</td>
                 <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
