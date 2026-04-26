@@ -1259,8 +1259,8 @@
         const cssClass = source === 'trucking' ? 'trucking' : 'dust';
         const isDust   = source === 'dust';
         // trucking: Month|Jobs|Hours|Revenue|IC Total = 5 cols
-        // dust:     Month|Jobs|Hours|UB Gallons|Revenue|IC Total = 6 cols
-        const colSpan  = isDust ? 6 : 5;
+        // dust:     Month|Jobs|Hours|UB Gallons|IC UB Total|Revenue|IC Total = 7 cols
+        const colSpan  = isDust ? 7 : 5;
 
         // Build per-month buckets including the entries themselves
         const byMonth = {};
@@ -1268,23 +1268,25 @@
           const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
           const mIdx = isNaN(mRaw) ? -1 : mRaw;
           const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, gallons: 0, total: 0, icTotal: 0, entries: [] };
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, gallons: 0, icUbTotal: 0, total: 0, icTotal: 0, entries: [] };
           byMonth[mKey].jobs++;
-          byMonth[mKey].hours   += parseFloat(e.total_hours) || 0;
-          byMonth[mKey].gallons += parseFloat(e.gallons_ub)  || 0;
-          byMonth[mKey].total   += parseFloat(e.total)       || 0;
-          byMonth[mKey].icTotal += isDust
+          byMonth[mKey].hours     += parseFloat(e.total_hours) || 0;
+          byMonth[mKey].gallons   += parseFloat(e.gallons_ub)  || 0;
+          byMonth[mKey].icUbTotal += (parseFloat(e.gallons_ub) || 0) * icUbRate;
+          byMonth[mKey].total     += parseFloat(e.total)       || 0;
+          byMonth[mKey].icTotal   += isDust
             ? (parseFloat(e.total_hours) || 0) * icDustRate + (parseFloat(e.gallons_ub) || 0) * icUbRate
             : (parseFloat(e.total_hours) || 0) * icTruckRate;
           byMonth[mKey].entries.push(e);
         });
         const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
 
-        const totJobs    = divRows.length;
-        const totHours   = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
-        const totGallons = divRows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
-        const totRev     = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
-        const totIcRev   = isDust
+        const totJobs      = divRows.length;
+        const totHours     = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totGallons   = divRows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
+        const totRev       = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
+        const totIcUbTotal = isDust ? totGallons * icUbRate : 0;
+        const totIcRev     = isDust
           ? totHours * icDustRate + totGallons * icUbRate
           : totHours * icTruckRate;
 
@@ -1339,6 +1341,7 @@
               <td class="r">${m.jobs}</td>
               <td class="r">${fmtH(m.hours)}</td>
               ${isDust ? `<td class="r">${m.gallons > 0 ? m.gallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
+              ${isDust ? `<td class="r ic-val">${m.icUbTotal > 0 ? fmt$(m.icUbTotal) : '—'}</td>` : ''}
               <td class="r">${fmt$(m.total)}</td>
               <td class="r ic-val">${fmt$(m.icTotal)}</td>
             </tr>
@@ -1373,6 +1376,7 @@
               <tr>
                 <th>Month</th><th class="r">Jobs</th><th class="r">Hours</th>
                 ${isDust ? `<th class="r">UB Gallons</th>` : ''}
+                ${isDust ? `<th class="r ic-val">IC UB Total</th>` : ''}
                 <th class="r">Revenue</th>
                 <th class="r ic-val">IC Total</th>
               </tr>
@@ -1384,6 +1388,7 @@
                 <td class="r">${totJobs}</td>
                 <td class="r">${fmtH(totHours)}</td>
                 ${isDust ? `<td class="r">${totGallons > 0 ? totGallons.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>` : ''}
+                ${isDust ? `<td class="r ic-val">${totIcUbTotal > 0 ? fmt$(totIcUbTotal) : '—'}</td>` : ''}
                 <td class="r">${fmt$(totRev)}</td>
                 <td class="r ic-val">${fmt$(totIcRev)}</td>
               </tr>
