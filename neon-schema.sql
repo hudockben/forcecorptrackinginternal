@@ -417,6 +417,8 @@ CREATE TABLE IF NOT EXISTS dust_control_entries (
     inv_sent        DATE,
     inv_received    DATE,
     inv_status      TEXT,
+    cm_approval     TEXT,
+    inv_location    TEXT,
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
