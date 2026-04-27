@@ -1967,15 +1967,25 @@
       const updateMode = document.getElementById('importUpdateMode').checked;
       let merged;
       if (updateMode) {
-        // Replace existing rows that match date+company+start_time; prepend truly new ones
-        const importKeys = new Map(
-          importBuffer.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
+        // Build a key→existing-row map so we can preserve original IDs.
+        // Changing IDs on update would cause recoverFromIcBilling to re-insert
+        // the old rows on the next page load, creating duplicates.
+        const existingByKey = new Map(
+          rows.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
+        );
+        const patchedImport = importBuffer.map(r => {
+          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+          const existing = existingByKey.get(key);
+          return existing ? { ...r, id: existing.id } : r;
+        });
+        const importedKeys = new Set(
+          patchedImport.map(r => `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`)
         );
         const kept = rows.filter(r => {
           const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-          return !importKeys.has(key);
+          return !importedKeys.has(key);
         });
-        merged = [...importBuffer, ...kept];
+        merged = [...patchedImport, ...kept];
       } else {
         merged = [...importBuffer, ...rows];
       }
@@ -3039,7 +3049,23 @@
         loadIcSentMapDust(),
       ]);
 
-      if (Array.isArray(savedRows)) rows = savedRows;
+      if (Array.isArray(savedRows)) {
+        // Remove duplicate rows that share date+company+start_time+vehicle1+location.
+        // These accumulate when update-mode imports changed row IDs and the
+        // IC-billing recovery re-inserted the originals on the next cold start.
+        const seen = new Set();
+        const deduped = savedRows.filter(r => {
+          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        rows = deduped;
+        if (deduped.length < savedRows.length) {
+          console.warn(`[dust] removed ${savedRows.length - deduped.length} duplicate row(s)`);
+          saveDustRows(rows);
+        }
+      }
 
       if (config) {
         const { settings, lists } = config;
