@@ -1540,7 +1540,7 @@
         const existing = await apiGet(IC_BILLING_KEY);
         let entries = Array.isArray(existing) ? existing : [];
 
-        if (entries.some(x => x.source === 'dust' && x.source_id === row.id)) {
+        if (icSentAt(row) || entries.some(x => x.source === 'dust' && x.source_id === row.id)) {
           if (status) { status.style.color = '#f59e0b'; status.textContent = 'Already sent.'; }
           setTimeout(() => { if (status) status.textContent = ''; }, 2500);
           if (btn) btn.disabled = false;
@@ -1633,7 +1633,8 @@
     let ubRate     = 0;
     let saveTimer  = null;
     let activeYear = String(new Date().getFullYear());
-    let icSentMapDust = new Map(); // row.id → sent_at for dust IC entries
+    let icSentMapDust    = new Map(); // row.id → sent_at
+    let icSentMapDustKey = new Map(); // "date|company|start_time" → sent_at (fallback when row IDs changed)
 
     function fmtSentAt(ts) {
       if (!ts) return '';
@@ -1650,10 +1651,25 @@
       try {
         const value = await apiGet('fct_intercompany_billing_entries');
         icSentMapDust.clear();
+        icSentMapDustKey.clear();
         if (Array.isArray(value)) {
-          value.forEach(e => { if (e.source === 'dust' && e.source_id) icSentMapDust.set(e.source_id, e.sent_at || ''); });
+          value.forEach(e => {
+            if (e.source !== 'dust') return;
+            const ts = e.sent_at || '';
+            if (e.source_id) icSentMapDust.set(e.source_id, ts);
+            if (e.actual_date && e.company_name) {
+              const k = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${e.actual_start||''}`;
+              if (!icSentMapDustKey.has(k)) icSentMapDustKey.set(k, ts);
+            }
+          });
         }
       } catch { /* non-fatal */ }
+    }
+
+    function icSentAt(row) {
+      return icSentMapDust.get(row.id)
+        || icSentMapDustKey.get(`${row.date}|${(row.company||'').toLowerCase()}|${row.start_time||''}`)
+        || null;
     }
 
     let dustLists  = { equipment: [], employees: [], companies: [], states: [] };
@@ -2179,9 +2195,8 @@
 
         const invSt    = row.inv_status || '';
         const badge    = invBadgeHtml(row);
-        const icChip   = icSentMapDust.has(row.id)
-          ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icSentMapDust.get(row.id))}</span>`
-          : '';
+        const icTs     = icSentAt(row);
+        const icChip   = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
         const invPanel = `
           <div class="inv-panel">
             <div class="inv-field">
@@ -2229,7 +2244,7 @@
                   </button>
                   <span id="ic-dust-status-${idx}" style="font-size:0.7rem;font-weight:600;min-width:1em"></span>
                 </div>
-                <span id="ic-dust-ts-${idx}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icSentMapDust.has(row.id) ? fmtSentAt(icSentMapDust.get(row.id)) : ''}</span>
+                <span id="ic-dust-ts-${idx}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icSentAt(row) ? fmtSentAt(icSentAt(row)) : ''}</span>
               </div>
             </div>
           </div>`;
@@ -3644,13 +3659,23 @@
           if (!r.ok) return;
           const { value } = await r.json();
           if (!Array.isArray(value)) return;
-          const newMap = new Map();
-          value.forEach(e => { if (e.source === 'dust' && e.source_id) newMap.set(e.source_id, e.sent_at || ''); });
+          const newMap    = new Map();
+          const newKeyMap = new Map();
+          value.forEach(e => {
+            if (e.source !== 'dust') return;
+            const ts = e.sent_at || '';
+            if (e.source_id) newMap.set(e.source_id, ts);
+            if (e.actual_date && e.company_name) {
+              const k = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${e.actual_start||''}`;
+              if (!newKeyMap.has(k)) newKeyMap.set(k, ts);
+            }
+          });
           // Compare by serialising the sorted entries
           const cur = JSON.stringify([...icSentMapDust].sort());
           const nxt = JSON.stringify([...newMap].sort());
           if (cur === nxt) return;
-          icSentMapDust = newMap;
+          icSentMapDust    = newMap;
+          icSentMapDustKey = newKeyMap;
           if (!_isEditing()) renderTable();
         } catch { /* non-fatal */ }
       }
