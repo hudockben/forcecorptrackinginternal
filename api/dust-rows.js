@@ -15,6 +15,15 @@
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
 
+// Idempotent guard so ALTER TABLE only runs once per cold-start
+let _columnsEnsured = false;
+async function ensureColumns(sql) {
+  if (_columnsEnsured) return;
+  await sql`ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS cm_approval  TEXT`;
+  await sql`ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS inv_location TEXT`;
+  _columnsEnsured = true;
+}
+
 function safeFloat(v) {
   const f = parseFloat(v);
   return isNaN(f) ? null : f;
@@ -67,6 +76,8 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
+    await ensureColumns(sql);
+
     // ── GET ──────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
       const tableRows = await sql`
