@@ -3043,8 +3043,8 @@
 
       if (config) {
         const { settings, lists } = config;
-        if (settings && typeof settings.ub_rate === 'number') {
-          ubRate = settings.ub_rate;
+        if (settings && settings.ub_rate != null) {
+          ubRate = parseFloat(settings.ub_rate) || 0;
           document.getElementById('ubRateInput').value = ubRate.toFixed(2);
         }
         if (lists && typeof lists === 'object') {

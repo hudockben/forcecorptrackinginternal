@@ -91,7 +91,7 @@ module.exports = async (req, res) => {
         }));
 
         return res.json({
-          settings: { ub_rate: settingsRows[0]?.ub_rate ?? 0 },
+          settings: { ub_rate: parseFloat(settingsRows[0]?.ub_rate) || 0 },
           lists: {
             equipment: equipRows.map(e => ({
               id:           e.id,
