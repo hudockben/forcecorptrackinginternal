@@ -1635,6 +1635,7 @@
     let activeYear = String(new Date().getFullYear());
     let icSentMapDust    = new Map(); // row.id → sent_at
     let icSentMapDustKey = new Map(); // "date|company|start_time" → sent_at (fallback when row IDs changed)
+    let icSentMapDustLoc = new Map(); // "date|company|location"   → sent_at (fallback when original had no start_time)
 
     function fmtSentAt(ts) {
       if (!ts) return '';
@@ -1652,14 +1653,24 @@
         const value = await apiGet('fct_intercompany_billing_entries');
         icSentMapDust.clear();
         icSentMapDustKey.clear();
+        icSentMapDustLoc.clear();
         if (Array.isArray(value)) {
           value.forEach(e => {
             if (e.source !== 'dust') return;
-            const ts = e.sent_at || '';
+            const ts  = e.sent_at || '';
+            const co  = (e.company_name || '').toLowerCase();
+            const dt  = e.actual_date  || '';
+            const st  = e.actual_start || '';
+            const loc = (e.location    || '').toLowerCase();
             if (e.source_id) icSentMapDust.set(e.source_id, ts);
-            if (e.actual_date && e.company_name) {
-              const k = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${e.actual_start||''}`;
+            if (dt && co) {
+              const k = `${dt}|${co}|${st}`;
               if (!icSentMapDustKey.has(k)) icSentMapDustKey.set(k, ts);
+              // When the original had no start_time, also index by date+company+location
+              if (!st && loc) {
+                const kl = `${dt}|${co}|${loc}`;
+                if (!icSentMapDustLoc.has(kl)) icSentMapDustLoc.set(kl, ts);
+              }
             }
           });
         }
@@ -1667,8 +1678,11 @@
     }
 
     function icSentAt(row) {
+      const co  = (row.company  || '').toLowerCase();
+      const loc = (row.location || '').toLowerCase();
       return icSentMapDust.get(row.id)
-        || icSentMapDustKey.get(`${row.date}|${(row.company||'').toLowerCase()}|${row.start_time||''}`)
+        || icSentMapDustKey.get(`${row.date}|${co}|${row.start_time||''}`)
+        || icSentMapDustLoc.get(`${row.date}|${co}|${loc}`)
         || null;
     }
 
@@ -3661,13 +3675,22 @@
           if (!Array.isArray(value)) return;
           const newMap    = new Map();
           const newKeyMap = new Map();
+          const newLocMap = new Map();
           value.forEach(e => {
             if (e.source !== 'dust') return;
-            const ts = e.sent_at || '';
+            const ts  = e.sent_at || '';
+            const co  = (e.company_name || '').toLowerCase();
+            const dt  = e.actual_date  || '';
+            const st  = e.actual_start || '';
+            const loc = (e.location    || '').toLowerCase();
             if (e.source_id) newMap.set(e.source_id, ts);
-            if (e.actual_date && e.company_name) {
-              const k = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${e.actual_start||''}`;
+            if (dt && co) {
+              const k = `${dt}|${co}|${st}`;
               if (!newKeyMap.has(k)) newKeyMap.set(k, ts);
+              if (!st && loc) {
+                const kl = `${dt}|${co}|${loc}`;
+                if (!newLocMap.has(kl)) newLocMap.set(kl, ts);
+              }
             }
           });
           // Compare by serialising the sorted entries
@@ -3676,6 +3699,7 @@
           if (cur === nxt) return;
           icSentMapDust    = newMap;
           icSentMapDustKey = newKeyMap;
+          icSentMapDustLoc = newLocMap;
           if (!_isEditing()) renderTable();
         } catch { /* non-fatal */ }
       }
