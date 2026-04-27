@@ -1828,12 +1828,20 @@
       const existingKeys = new Set(
         rows.map(r => `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`)
       );
+      // Time-tolerant lookup: if an existing row has no start_time, match by
+      // date+company+location so a CSV row with times doesn't appear as new.
+      const existingTimelessKeys = new Set(
+        rows
+          .filter(r => !r.start_time)
+          .map(r => `${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`)
+      );
       let newCount = 0, updateCount = 0;
 
       const tbody = document.getElementById('importTbody');
       tbody.innerHTML = parsed.map(r => {
-        const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-        const isExisting = existingKeys.has(key);
+        const key         = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+        const timelessKey = `${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+        const isExisting  = existingKeys.has(key) || existingTimelessKeys.has(timelessKey);
         const isWarn = !r.date || !r.company;
         // In update mode: existing rows will be overwritten (shown normally)
         // In normal mode: existing rows are skipped (shown strikethrough)
@@ -1879,8 +1887,9 @@
         importBuffer = parsed; // all rows — existing ones will replace their matches
       } else {
         importBuffer = parsed.filter(r => {
-          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-          return !existingKeys.has(key);
+          const key         = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+          const timelessKey = `${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+          return !existingKeys.has(key) && !existingTimelessKeys.has(timelessKey);
         });
       }
     }
@@ -1973,18 +1982,23 @@
         const existingByKey = new Map(
           rows.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
         );
+        // Also index time-less existing rows by date+company+location so a
+        // CSV row with a start_time still matches the original no-time entry.
+        const existingTimeless = new Map(
+          rows
+            .filter(r => !r.start_time)
+            .map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`, r])
+        );
         const patchedImport = importBuffer.map(r => {
-          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-          const existing = existingByKey.get(key);
+          const key         = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+          const timelessKey = `${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+          const existing    = existingByKey.get(key) || existingTimeless.get(timelessKey);
           return existing ? { ...r, id: existing.id } : r;
         });
-        const importedKeys = new Set(
-          patchedImport.map(r => `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`)
-        );
-        const kept = rows.filter(r => {
-          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-          return !importedKeys.has(key);
-        });
+        // Build the set of existing IDs that are being replaced so we can drop
+        // both the timed and time-less originals from `kept`.
+        const replacedIds = new Set(patchedImport.map(r => r.id));
+        const kept = rows.filter(r => !replacedIds.has(r.id));
         merged = [...patchedImport, ...kept];
       } else {
         merged = [...importBuffer, ...rows];
@@ -3050,16 +3064,31 @@
       ]);
 
       if (Array.isArray(savedRows)) {
-        // Remove duplicate rows that share date+company+start_time+vehicle1+location.
-        // These accumulate when update-mode imports changed row IDs and the
-        // IC-billing recovery re-inserted the originals on the next cold start.
+        // Pass 1: exact dedup — same date+company+start_time+vehicle1+location.
         const seen = new Set();
-        const deduped = savedRows.filter(r => {
+        let deduped = savedRows.filter(r => {
           const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
           if (seen.has(key)) return false;
           seen.add(key);
           return true;
         });
+
+        // Pass 2: time-tolerant dedup.
+        // If a timed row exists for date+company+vehicle1+location, drop any
+        // time-less row for the same combo. This cleans up the pattern where
+        // manually-entered rows had no times and a later CSV import added the
+        // same rows with times, creating doubles because the key didn't match.
+        const timedKeys = new Set(
+          deduped
+            .filter(r => r.start_time)
+            .map(r => `${r.date}|${(r.company||'').toLowerCase()}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`)
+        );
+        deduped = deduped.filter(r => {
+          if (r.start_time) return true;
+          const key = `${r.date}|${(r.company||'').toLowerCase()}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+          return !timedKeys.has(key);
+        });
+
         rows = deduped;
         if (deduped.length < savedRows.length) {
           console.warn(`[dust] removed ${savedRows.length - deduped.length} duplicate row(s)`);
