@@ -24,6 +24,65 @@ async function ensureColumns(sql) {
   _columnsEnsured = true;
 }
 
+// One-time recovery: re-insert dust rows that were lost but exist in IC billing.
+// Runs once per cold-start; a no-op when nothing is missing.
+let _recoveryRun = false;
+async function recoverFromIcBilling(sql, companyCode) {
+  if (_recoveryRun) return;
+  _recoveryRun = true;
+  try {
+    const missing = await sql`
+      SELECT
+        ib.source_id         AS id,
+        ib.company_name      AS company,
+        ib.actual_date       AS date,
+        ib.actual_start      AS start_time,
+        ib.actual_end        AS end_time,
+        ib.company_man,
+        ib.location,
+        ib.vehicle1, ib.v1_unit, ib.v1_rate,
+        ib.vehicle2, ib.v2_unit, ib.v2_rate,
+        ib.gallons_ub,
+        ib.inv_number, ib.inv_status
+      FROM intercompany_billing_entries ib
+      WHERE ib.company_code = ${companyCode}
+        AND ib.source       = 'dust'
+        AND ib.source_id    IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM dust_control_entries dc
+          WHERE dc.id = ib.source_id
+        )
+    `;
+    for (const r of missing) {
+      await sql`
+        INSERT INTO dust_control_entries (
+          id, company_code,
+          date, start_time, end_time,
+          company, company_man, location,
+          vehicle1, v1_unit, v1_rate,
+          vehicle2, v2_unit, v2_rate,
+          gallons_ub, inv_number, inv_status,
+          updated_at
+        ) VALUES (
+          ${r.id}, ${companyCode},
+          ${r.date}, ${r.start_time || null}, ${r.end_time || null},
+          ${r.company || null}, ${r.company_man || null}, ${r.location || null},
+          ${r.vehicle1 || null}, ${r.v1_unit || null}, ${safeFloat(r.v1_rate) ?? null},
+          ${r.vehicle2 || null}, ${r.v2_unit || null}, ${safeFloat(r.v2_rate) ?? null},
+          ${safeFloat(r.gallons_ub) ?? null}, ${r.inv_number || null}, ${r.inv_status || null},
+          NOW()
+        )
+        ON CONFLICT (id) DO NOTHING
+      `;
+    }
+    if (missing.length > 0) {
+      console.log(`[dust-rows] recovered ${missing.length} row(s) from IC billing for ${companyCode}`);
+    }
+  } catch (err) {
+    console.error('[dust-rows] IC billing recovery error (non-fatal):', err.message);
+  }
+}
+
 function safeFloat(v) {
   const f = parseFloat(v);
   return isNaN(f) ? null : f;
@@ -77,6 +136,7 @@ module.exports = async (req, res) => {
 
   try {
     await ensureColumns(sql);
+    await recoverFromIcBilling(sql, companyCode);
 
     // ── GET ──────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
