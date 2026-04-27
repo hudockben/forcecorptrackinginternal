@@ -1031,18 +1031,31 @@
 
     async function loadRates() {
       try {
-        const r = await fetch(`${API_BASE}/data/${IC_RATES_KEY}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (!r.ok) return;
-        const { value } = await r.json();
-        if (value && typeof value === 'object') {
-          if (value.truck != null) icTruckRate = parseFloat(value.truck) || icTruckRate;
-          if (value.labor != null) icLaborRate = parseFloat(value.labor) || icLaborRate;
-          if (value.dust  != null) icDustRate  = parseFloat(value.dust)  || icDustRate;
-          if (value.ub    != null) icUbRate    = parseFloat(value.ub)    ?? icUbRate;
-          initRateInputs();
+        const [ratesRes, dustRes] = await Promise.all([
+          fetch(`${API_BASE}/data/${IC_RATES_KEY}`,  { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API_BASE}/dust-config`,            { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+
+        // Pull UB rate from dust_settings (authoritative source for dust billing)
+        if (dustRes.ok) {
+          const dc = await dustRes.json();
+          const ubFromDust = parseFloat(dc?.settings?.ub_rate);
+          if (!isNaN(ubFromDust)) icUbRate = ubFromDust;
         }
+
+        // IC rates blob may override if explicitly saved from this page
+        if (ratesRes.ok) {
+          const { value } = await ratesRes.json();
+          if (value && typeof value === 'object') {
+            if (value.truck != null) icTruckRate = parseFloat(value.truck) || icTruckRate;
+            if (value.labor != null) icLaborRate = parseFloat(value.labor) || icLaborRate;
+            if (value.dust  != null) icDustRate  = parseFloat(value.dust)  || icDustRate;
+            // Only override dust UB rate if it was explicitly saved here (non-zero)
+            if (value.ub    != null && parseFloat(value.ub) > 0) icUbRate = parseFloat(value.ub);
+          }
+        }
+
+        initRateInputs();
       } catch { /* keep localStorage fallback values */ }
     }
 
@@ -1063,7 +1076,7 @@
       icTruckRate = parseFloat(document.getElementById('ciTruckRate').value) || 0;
       icLaborRate = parseFloat(document.getElementById('ciLaborRate').value) || 0;
       icDustRate  = parseFloat(document.getElementById('ciDustRate').value)  || 0;
-      icUbRate    = parseFloat(document.getElementById('ciUbRate').value)    ?? 0;
+      icUbRate    = parseFloat(document.getElementById('ciUbRate').value)    || 0;
       saveRates();
       renderCompanyInfo();
     }
