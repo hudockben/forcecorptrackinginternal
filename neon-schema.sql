@@ -427,6 +427,9 @@ CREATE INDEX IF NOT EXISTS idx_dust_company      ON dust_control_entries(company
 CREATE INDEX IF NOT EXISTS idx_dust_company_date ON dust_control_entries(company_code, date);
 CREATE INDEX IF NOT EXISTS idx_dust_company_co   ON dust_control_entries(company_code, company);
 
+ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS cm_approval  TEXT;
+ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS inv_location TEXT;
+
 -- ─────────────────────────────────────────────────
 -- TRUCK DIVISION ENTRIES
 -- One row per job entry from the Trucking Division tab.
