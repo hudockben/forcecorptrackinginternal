@@ -137,15 +137,14 @@ module.exports = async (req, res) => {
 async function _upsertDustRows(sql, companyCode, list) {
   const ids = list.map(r => r && r.id).filter(Boolean);
 
-  if (ids.length) {
-    await sql`
-      DELETE FROM dust_control_entries
-      WHERE company_code = ${companyCode} AND id <> ALL(${ids})
-    `;
-  } else {
-    await sql`DELETE FROM dust_control_entries WHERE company_code = ${companyCode}`;
-    return;
-  }
+  // Refuse to delete everything when the client sends an empty list —
+  // this prevents accidental wipes if the browser had an empty rows state.
+  if (ids.length === 0) return;
+
+  await sql`
+    DELETE FROM dust_control_entries
+    WHERE company_code = ${companyCode} AND id <> ALL(${ids})
+  `;
 
   for (const r of list) {
     if (!r || !r.id) continue;
