@@ -140,9 +140,7 @@ module.exports = async (req, res) => {
         `,
       ]);
 
-      _syncToTables(sql, companyCode, safeSettings, safeLists).catch(err =>
-        console.error('[dust-config] normalize failed:', err.message)
-      );
+      await _syncToTables(sql, companyCode, safeSettings, safeLists);
 
       return res.json({ ok: true });
     }
