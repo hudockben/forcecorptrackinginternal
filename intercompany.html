@@ -1233,30 +1233,39 @@
         const { value } = await r.json();
         const raw = Array.isArray(value) ? value : [];
 
-        // Dedup: for dust entries sharing the same source_id keep the latest by sent_at.
-        // Also dedup by date+company+start+location for entries with no source_id.
-        const bySourceId = new Map();
-        const byContentKey = new Map();
+        // Two-pass dedup for dust entries with source_id:
+        //   Pass 1a: per source_id, keep the entry with the latest sent_at.
+        //   Pass 1b: among those winners, dedup by physical job key
+        //            (date+company+location+vehicle1, ignoring start_time so that a
+        //            time-less original and its timed CSV replacement collapse to one).
+        // Non-dust and dust entries without source_id: dedup by content key.
+        const bestBySourceId = new Map();
+        for (const e of raw) {
+          if (e.source === 'dust' && e.source_id) {
+            const prev = bestBySourceId.get(e.source_id);
+            if (!prev || (e.sent_at || '') > (prev.sent_at || '')) {
+              bestBySourceId.set(e.source_id, e);
+            }
+          }
+        }
+        const bestByJobKey = new Map();
+        for (const e of bestBySourceId.values()) {
+          const jk = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
+          const prev = bestByJobKey.get(jk);
+          if (!prev || (e.sent_at || '') > (prev.sent_at || '')) {
+            bestByJobKey.set(jk, e);
+          }
+        }
+        const seenContentKeys = new Set();
         const deduped = [];
         for (const e of raw) {
           if (e.source === 'dust' && e.source_id) {
-            const prev = bySourceId.get(e.source_id);
-            if (prev) {
-              // Replace only if this entry is newer
-              if ((e.sent_at || '') > (prev.sent_at || '')) {
-                const idx = deduped.indexOf(prev);
-                if (idx !== -1) deduped.splice(idx, 1, e);
-                bySourceId.set(e.source_id, e);
-              }
-              continue;
-            }
-            bySourceId.set(e.source_id, e);
+            const jk = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
+            if (bestByJobKey.get(jk) === e) deduped.push(e);
           } else {
             const ck = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${e.actual_start||''}|${(e.location||'').toLowerCase()}|${e.source||''}`;
-            if (byContentKey.has(ck)) continue;
-            byContentKey.set(ck, e);
+            if (!seenContentKeys.has(ck)) { seenContentKeys.add(ck); deduped.push(e); }
           }
-          deduped.push(e);
         }
 
         icBillingEntries = deduped;
