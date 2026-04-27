@@ -49,6 +49,8 @@ function dbToRow(r) {
     inv_sent:     safeDate(r.inv_sent)       || '',
     inv_received: safeDate(r.inv_received)   || '',
     inv_status:   r.inv_status   || '',
+    cm_approval:  r.cm_approval  || '',
+    inv_location: r.inv_location || '',
   };
 }
 
@@ -145,6 +147,7 @@ async function _upsertDustRows(sql, companyCode, list) {
         vehicle2, v2_unit, v2_rate,
         gallons_ub,
         inv_number, inv_sent, inv_received, inv_status,
+        cm_approval, inv_location,
         updated_at
       ) VALUES (
         ${r.id}, ${companyCode},
@@ -154,6 +157,7 @@ async function _upsertDustRows(sql, companyCode, list) {
         ${r.vehicle2 || null}, ${r.v2_unit || null}, ${safeFloat(r.v2_rate) ?? null},
         ${safeFloat(r.gallons_ub) ?? null},
         ${r.inv_number || null}, ${safeDate(r.inv_sent)}, ${safeDate(r.inv_received)}, ${r.inv_status || null},
+        ${r.cm_approval || null}, ${r.inv_location || null},
         NOW()
       )
       ON CONFLICT (id) DO UPDATE SET
@@ -175,6 +179,8 @@ async function _upsertDustRows(sql, companyCode, list) {
         inv_sent     = EXCLUDED.inv_sent,
         inv_received = EXCLUDED.inv_received,
         inv_status   = EXCLUDED.inv_status,
+        cm_approval  = EXCLUDED.cm_approval,
+        inv_location = EXCLUDED.inv_location,
         updated_at   = NOW()
     `;
   }

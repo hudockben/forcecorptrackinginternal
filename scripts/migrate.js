@@ -71,6 +71,11 @@ async function migrate() {
   await sql`CREATE INDEX IF NOT EXISTS idx_scale_manual_company ON scale_manual_entries(company_code)`;
   console.log('  ✓ scale_manual_entries indexes');
 
+  // ── dust_control_entries — cm_approval & inv_location columns ────────────
+  await sql`ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS cm_approval  TEXT`;
+  await sql`ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS inv_location TEXT`;
+  console.log('  ✓ dust_control_entries cm_approval, inv_location');
+
   console.log('\nAll migrations applied successfully.');
 }
 
