@@ -1031,18 +1031,31 @@
 
     async function loadRates() {
       try {
-        const r = await fetch(`${API_BASE}/data/${IC_RATES_KEY}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (!r.ok) return;
-        const { value } = await r.json();
-        if (value && typeof value === 'object') {
-          if (value.truck != null) icTruckRate = parseFloat(value.truck) || icTruckRate;
-          if (value.labor != null) icLaborRate = parseFloat(value.labor) || icLaborRate;
-          if (value.dust  != null) icDustRate  = parseFloat(value.dust)  || icDustRate;
-          if (value.ub    != null) icUbRate    = parseFloat(value.ub)    ?? icUbRate;
-          initRateInputs();
+        const [ratesRes, dustRes] = await Promise.all([
+          fetch(`${API_BASE}/data/${IC_RATES_KEY}`,  { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API_BASE}/dust-config`,            { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+
+        // Pull UB rate from dust_settings (authoritative source for dust billing)
+        if (dustRes.ok) {
+          const dc = await dustRes.json();
+          const ubFromDust = parseFloat(dc?.settings?.ub_rate);
+          if (!isNaN(ubFromDust)) icUbRate = ubFromDust;
         }
+
+        // IC rates blob may override if explicitly saved from this page
+        if (ratesRes.ok) {
+          const { value } = await ratesRes.json();
+          if (value && typeof value === 'object') {
+            if (value.truck != null) icTruckRate = parseFloat(value.truck) || icTruckRate;
+            if (value.labor != null) icLaborRate = parseFloat(value.labor) || icLaborRate;
+            if (value.dust  != null) icDustRate  = parseFloat(value.dust)  || icDustRate;
+            // Only override dust UB rate if it was explicitly saved here (non-zero)
+            if (value.ub    != null && parseFloat(value.ub) > 0) icUbRate = parseFloat(value.ub);
+          }
+        }
+
+        initRateInputs();
       } catch { /* keep localStorage fallback values */ }
     }
 
@@ -1063,7 +1076,7 @@
       icTruckRate = parseFloat(document.getElementById('ciTruckRate').value) || 0;
       icLaborRate = parseFloat(document.getElementById('ciLaborRate').value) || 0;
       icDustRate  = parseFloat(document.getElementById('ciDustRate').value)  || 0;
-      icUbRate    = parseFloat(document.getElementById('ciUbRate').value)    ?? 0;
+      icUbRate    = parseFloat(document.getElementById('ciUbRate').value)    || 0;
       saveRates();
       renderCompanyInfo();
     }
@@ -1218,7 +1231,52 @@
         });
         if (!r.ok) { icBillingEntries = []; return; }
         const { value } = await r.json();
-        icBillingEntries = Array.isArray(value) ? value : [];
+        const raw = Array.isArray(value) ? value : [];
+
+        // Two-pass dedup for dust entries with source_id:
+        //   Pass 1a: per source_id, keep the entry with the latest sent_at.
+        //   Pass 1b: among those winners, dedup by physical job key
+        //            (date+company+location+vehicle1, ignoring start_time so that a
+        //            time-less original and its timed CSV replacement collapse to one).
+        // Non-dust and dust entries without source_id: dedup by content key.
+        const bestBySourceId = new Map();
+        for (const e of raw) {
+          if (e.source === 'dust' && e.source_id) {
+            const prev = bestBySourceId.get(e.source_id);
+            if (!prev || (e.sent_at || '') > (prev.sent_at || '')) {
+              bestBySourceId.set(e.source_id, e);
+            }
+          }
+        }
+        const bestByJobKey = new Map();
+        for (const e of bestBySourceId.values()) {
+          const jk = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
+          const prev = bestByJobKey.get(jk);
+          if (!prev || (e.sent_at || '') > (prev.sent_at || '')) {
+            bestByJobKey.set(jk, e);
+          }
+        }
+        const seenContentKeys = new Set();
+        const deduped = [];
+        for (const e of raw) {
+          if (e.source === 'dust' && e.source_id) {
+            const jk = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
+            if (bestByJobKey.get(jk) === e) deduped.push(e);
+          } else {
+            const ck = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${e.actual_start||''}|${(e.location||'').toLowerCase()}|${e.source||''}`;
+            if (!seenContentKeys.has(ck)) { seenContentKeys.add(ck); deduped.push(e); }
+          }
+        }
+
+        icBillingEntries = deduped;
+        if (deduped.length < raw.length) {
+          console.warn(`[ic-billing] removed ${raw.length - deduped.length} duplicate entry/entries`);
+          fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ value: deduped })
+          }).catch(() => {});
+        }
       } catch { icBillingEntries = []; }
     }
 
@@ -1308,7 +1366,7 @@
           byMonth[mKey].icUbTotal += (parseFloat(e.gallons_ub) || 0) * icUbRate;
           byMonth[mKey].total     += parseFloat(e.total)       || 0;
           byMonth[mKey].icTotal   += isDust
-            ? (parseFloat(e.total_hours) || 0) * icDustRate + (parseFloat(e.gallons_ub) || 0) * icUbRate
+            ? (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0) + (parseFloat(e.gallons_ub) || 0) * icUbRate
             : (parseFloat(e.total_hours) || 0) * icTruckRate;
           byMonth[mKey].entries.push(e);
         });
@@ -1320,7 +1378,7 @@
         const totRev       = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
         const totIcUbTotal = isDust ? totGallons * icUbRate : 0;
         const totIcRev     = isDust
-          ? totHours * icDustRate + totGallons * icUbRate
+          ? divRows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * icUbRate, 0)
           : totHours * icTruckRate;
 
         const detailHead = isDust
@@ -1336,7 +1394,7 @@
             if (isDust) {
               const hrs = parseFloat(e.total_hours) || 0;
               const gal = parseFloat(e.gallons_ub) || 0;
-              const icAmt = hrs * icDustRate + gal * icUbRate;
+              const icAmt = (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + gal * icUbRate;
               return `<tr>
                 <td>${e.actual_date || '—'}</td>
                 <td>${escT(e.location || '—')}</td>
@@ -1437,7 +1495,7 @@
         const totRev     = co.rows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
         const totIcRev   = ciDivFilter === 'trucking'
           ? totHours * icTruckRate
-          : totHours * icDustRate + totGallons * icUbRate;
+          : co.rows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * icUbRate, 0);
 
         const divSections = co.rows.length
           ? buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`)
@@ -1547,7 +1605,11 @@
 
       function icAmt(e) {
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
-        return (parseFloat(e.total_hours) || 0) * icDustRate + (parseFloat(e.gallons_ub) || 0) * icUbRate;
+        // Use stored per-vehicle totals (actual rates) + current UB rate.
+        // Old entries were sent with ubRate=0 so e.total excluded UB; using
+        // v1_total+v2_total+gallons×icUbRate gives the correct amount for both.
+        return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
+             + (parseFloat(e.gallons_ub) || 0) * icUbRate;
       }
 
       const totalIc  = entries.reduce((s, e) => s + icAmt(e), 0);
@@ -1848,7 +1910,11 @@
 
       function icAmt(e) {
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
-        return (parseFloat(e.total_hours) || 0) * icDustRate + (parseFloat(e.gallons_ub) || 0) * icUbRate;
+        // Use stored per-vehicle totals (actual rates) + current UB rate.
+        // Old entries were sent with ubRate=0 so e.total excluded UB; using
+        // v1_total+v2_total+gallons×icUbRate gives the correct amount for both.
+        return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
+             + (parseFloat(e.gallons_ub) || 0) * icUbRate;
       }
 
       const truckIcYTD  = truckEntries.reduce((s, e) => s + icAmt(e), 0);

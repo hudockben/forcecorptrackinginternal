@@ -850,6 +850,10 @@
     .inv-badge.sent    { background: rgba(251,191,36,0.15); color: var(--amber); }
     .inv-badge.paid    { background: rgba(34,197,94,0.15);  color: var(--green); }
     .inv-badge.overdue { background: rgba(239,68,68,0.22);  color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+    .ic-sent-chip {
+      display: block; font-size: 0.55rem; font-weight: 700; letter-spacing: 0.05em;
+      color: #22c55e; margin-top: 0.18rem; white-space: nowrap;
+    }
 
     /* Expandable invoice detail row */
     .inv-row > td { padding: 0; }
@@ -1536,7 +1540,7 @@
         const existing = await apiGet(IC_BILLING_KEY);
         let entries = Array.isArray(existing) ? existing : [];
 
-        if (entries.some(x => x.source === 'dust' && x.source_id === row.id)) {
+        if (icSentAt(row) || entries.some(x => x.source === 'dust' && x.source_id === row.id)) {
           if (status) { status.style.color = '#f59e0b'; status.textContent = 'Already sent.'; }
           setTimeout(() => { if (status) status.textContent = ''; }, 2500);
           if (btn) btn.disabled = false;
@@ -1569,6 +1573,13 @@
         icSentMapDust.set(row.id, entry.sent_at);
         const tsEl = document.getElementById('ic-dust-ts-' + idx);
         if (tsEl) tsEl.textContent = fmtSentAt(entry.sent_at);
+        // Update the persistent chip on the main row without a full re-render
+        const invCell = document.querySelector(`tr[data-idx="${idx}"] .cw-inv`);
+        if (invCell) {
+          let chip = invCell.querySelector('.ic-sent-chip');
+          if (!chip) { chip = document.createElement('span'); chip.className = 'ic-sent-chip'; invCell.appendChild(chip); }
+          chip.textContent = `⇄ IC ${fmtSentAt(entry.sent_at)}`;
+        }
         if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
         setTimeout(() => { if (status) status.textContent = ''; }, 3000);
       } catch (err) {
@@ -1622,7 +1633,9 @@
     let ubRate     = 0;
     let saveTimer  = null;
     let activeYear = String(new Date().getFullYear());
-    let icSentMapDust = new Map(); // row.id → sent_at for dust IC entries
+    let icSentMapDust    = new Map(); // row.id → sent_at
+    let icSentMapDustKey = new Map(); // "date|company|start_time" → sent_at (fallback when row IDs changed)
+    let icSentMapDustLoc = new Map(); // "date|company|location"   → sent_at (fallback when original had no start_time)
 
     function fmtSentAt(ts) {
       if (!ts) return '';
@@ -1639,10 +1652,38 @@
       try {
         const value = await apiGet('fct_intercompany_billing_entries');
         icSentMapDust.clear();
+        icSentMapDustKey.clear();
+        icSentMapDustLoc.clear();
         if (Array.isArray(value)) {
-          value.forEach(e => { if (e.source === 'dust' && e.source_id) icSentMapDust.set(e.source_id, e.sent_at || ''); });
+          value.forEach(e => {
+            if (e.source !== 'dust') return;
+            const ts  = e.sent_at || '';
+            const co  = (e.company_name || '').toLowerCase();
+            const dt  = e.actual_date  || '';
+            const st  = e.actual_start || '';
+            const loc = (e.location    || '').toLowerCase();
+            if (e.source_id) icSentMapDust.set(e.source_id, ts);
+            if (dt && co) {
+              const k = `${dt}|${co}|${st}`;
+              if (!icSentMapDustKey.has(k)) icSentMapDustKey.set(k, ts);
+              // When the original had no start_time, also index by date+company+location
+              if (!st && loc) {
+                const kl = `${dt}|${co}|${loc}`;
+                if (!icSentMapDustLoc.has(kl)) icSentMapDustLoc.set(kl, ts);
+              }
+            }
+          });
         }
       } catch { /* non-fatal */ }
+    }
+
+    function icSentAt(row) {
+      const co  = (row.company  || '').toLowerCase();
+      const loc = (row.location || '').toLowerCase();
+      return icSentMapDust.get(row.id)
+        || icSentMapDustKey.get(`${row.date}|${co}|${row.start_time||''}`)
+        || icSentMapDustLoc.get(`${row.date}|${co}|${loc}`)
+        || null;
     }
 
     let dustLists  = { equipment: [], employees: [], companies: [], states: [] };
@@ -1828,12 +1869,20 @@
       const existingKeys = new Set(
         rows.map(r => `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`)
       );
+      // Time-tolerant lookup: if an existing row has no start_time, match by
+      // date+company+location so a CSV row with times doesn't appear as new.
+      const existingTimelessKeys = new Set(
+        rows
+          .filter(r => !r.start_time)
+          .map(r => `${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`)
+      );
       let newCount = 0, updateCount = 0;
 
       const tbody = document.getElementById('importTbody');
       tbody.innerHTML = parsed.map(r => {
-        const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-        const isExisting = existingKeys.has(key);
+        const key         = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+        const timelessKey = `${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+        const isExisting  = existingKeys.has(key) || existingTimelessKeys.has(timelessKey);
         const isWarn = !r.date || !r.company;
         // In update mode: existing rows will be overwritten (shown normally)
         // In normal mode: existing rows are skipped (shown strikethrough)
@@ -1879,8 +1928,9 @@
         importBuffer = parsed; // all rows — existing ones will replace their matches
       } else {
         importBuffer = parsed.filter(r => {
-          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-          return !existingKeys.has(key);
+          const key         = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+          const timelessKey = `${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+          return !existingKeys.has(key) && !existingTimelessKeys.has(timelessKey);
         });
       }
     }
@@ -1967,15 +2017,30 @@
       const updateMode = document.getElementById('importUpdateMode').checked;
       let merged;
       if (updateMode) {
-        // Replace existing rows that match date+company+start_time; prepend truly new ones
-        const importKeys = new Map(
-          importBuffer.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
+        // Build a key→existing-row map so we can preserve original IDs.
+        // Changing IDs on update would cause recoverFromIcBilling to re-insert
+        // the old rows on the next page load, creating duplicates.
+        const existingByKey = new Map(
+          rows.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
         );
-        const kept = rows.filter(r => {
-          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
-          return !importKeys.has(key);
+        // Also index time-less existing rows by date+company+location so a
+        // CSV row with a start_time still matches the original no-time entry.
+        const existingTimeless = new Map(
+          rows
+            .filter(r => !r.start_time)
+            .map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`, r])
+        );
+        const patchedImport = importBuffer.map(r => {
+          const key         = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`;
+          const timelessKey = `${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+          const existing    = existingByKey.get(key) || existingTimeless.get(timelessKey);
+          return existing ? { ...r, id: existing.id } : r;
         });
-        merged = [...importBuffer, ...kept];
+        // Build the set of existing IDs that are being replaced so we can drop
+        // both the timed and time-less originals from `kept`.
+        const replacedIds = new Set(patchedImport.map(r => r.id));
+        const kept = rows.filter(r => !replacedIds.has(r.id));
+        merged = [...patchedImport, ...kept];
       } else {
         merged = [...importBuffer, ...rows];
       }
@@ -2144,6 +2209,8 @@
 
         const invSt    = row.inv_status || '';
         const badge    = invBadgeHtml(row);
+        const icTs     = icSentAt(row);
+        const icChip   = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
         const invPanel = `
           <div class="inv-panel">
             <div class="inv-field">
@@ -2191,7 +2258,7 @@
                   </button>
                   <span id="ic-dust-status-${idx}" style="font-size:0.7rem;font-weight:600;min-width:1em"></span>
                 </div>
-                <span id="ic-dust-ts-${idx}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icSentMapDust.has(row.id) ? fmtSentAt(icSentMapDust.get(row.id)) : ''}</span>
+                <span id="ic-dust-ts-${idx}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icSentAt(row) ? fmtSentAt(icSentAt(row)) : ''}</span>
               </div>
             </div>
           </div>`;
@@ -2221,7 +2288,7 @@
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
           <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="set(${idx},'gallons_ub',this.value)"></td>
           ${calcCell(c.ubTotal  ? money(c.ubTotal)  : '', 'cw-ubt')}
-          <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}</td>
+          <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}${icChip}</td>
           <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
         </tr>
         <tr class="inv-row" id="inv-row-${idx}" style="display:none">
@@ -3039,7 +3106,70 @@
         loadIcSentMapDust(),
       ]);
 
-      if (Array.isArray(savedRows)) rows = savedRows;
+      if (Array.isArray(savedRows)) {
+        // Pass 1: exact dedup — same date+company+start_time+vehicle1+location.
+        const seen = new Set();
+        let deduped = savedRows.filter(r => {
+          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        // Pass 2: time-tolerant dedup.
+        // If a timed row exists for date+company+vehicle1+location, drop any
+        // time-less row for the same combo. This cleans up the pattern where
+        // manually-entered rows had no times and a later CSV import added the
+        // same rows with times, creating doubles because the key didn't match.
+        const timedKeys = new Set(
+          deduped
+            .filter(r => r.start_time)
+            .map(r => `${r.date}|${(r.company||'').toLowerCase()}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`)
+        );
+        deduped = deduped.filter(r => {
+          if (r.start_time) return true;
+          const key = `${r.date}|${(r.company||'').toLowerCase()}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+          return !timedKeys.has(key);
+        });
+
+        rows = deduped;
+        if (deduped.length < savedRows.length) {
+          console.warn(`[dust] removed ${savedRows.length - deduped.length} duplicate row(s)`);
+
+          // Remap IC billing source_ids from removed row IDs → replacement row IDs
+          // so the ID-based IC chip lookup works after dedup changes which row is kept.
+          try {
+            const contentKey = r => `${r.date}|${(r.company||'').toLowerCase()}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+            const keptByContent = new Map(deduped.map(r => [contentKey(r), r]));
+            const idRemap = new Map();
+            savedRows.forEach(r => {
+              if (!deduped.find(d => d.id === r.id)) {
+                const rep = keptByContent.get(contentKey(r));
+                if (rep && rep.id !== r.id) idRemap.set(r.id, rep.id);
+              }
+            });
+            if (idRemap.size > 0) {
+              const icData = await apiGet('fct_intercompany_billing_entries');
+              if (Array.isArray(icData)) {
+                let changed = false;
+                const updated = icData.map(e => {
+                  if (e.source === 'dust' && idRemap.has(e.source_id)) {
+                    changed = true;
+                    return { ...e, source_id: idRemap.get(e.source_id) };
+                  }
+                  return e;
+                });
+                if (changed) {
+                  await apiPut('fct_intercompany_billing_entries', updated);
+                  await loadIcSentMapDust();
+                }
+              }
+            }
+          } catch { /* non-fatal */ }
+
+          saveDustRows(rows);
+        }
+      }
 
       if (config) {
         const { settings, lists } = config;
@@ -3575,13 +3705,33 @@
           if (!r.ok) return;
           const { value } = await r.json();
           if (!Array.isArray(value)) return;
-          const newMap = new Map();
-          value.forEach(e => { if (e.source === 'dust' && e.source_id) newMap.set(e.source_id, e.sent_at || ''); });
+          const newMap    = new Map();
+          const newKeyMap = new Map();
+          const newLocMap = new Map();
+          value.forEach(e => {
+            if (e.source !== 'dust') return;
+            const ts  = e.sent_at || '';
+            const co  = (e.company_name || '').toLowerCase();
+            const dt  = e.actual_date  || '';
+            const st  = e.actual_start || '';
+            const loc = (e.location    || '').toLowerCase();
+            if (e.source_id) newMap.set(e.source_id, ts);
+            if (dt && co) {
+              const k = `${dt}|${co}|${st}`;
+              if (!newKeyMap.has(k)) newKeyMap.set(k, ts);
+              if (!st && loc) {
+                const kl = `${dt}|${co}|${loc}`;
+                if (!newLocMap.has(kl)) newLocMap.set(kl, ts);
+              }
+            }
+          });
           // Compare by serialising the sorted entries
           const cur = JSON.stringify([...icSentMapDust].sort());
           const nxt = JSON.stringify([...newMap].sort());
           if (cur === nxt) return;
-          icSentMapDust = newMap;
+          icSentMapDust    = newMap;
+          icSentMapDustKey = newKeyMap;
+          icSentMapDustLoc = newLocMap;
           if (!_isEditing()) renderTable();
         } catch { /* non-fatal */ }
       }
