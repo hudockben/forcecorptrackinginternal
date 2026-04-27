@@ -3135,6 +3135,38 @@
         rows = deduped;
         if (deduped.length < savedRows.length) {
           console.warn(`[dust] removed ${savedRows.length - deduped.length} duplicate row(s)`);
+
+          // Remap IC billing source_ids from removed row IDs → replacement row IDs
+          // so the ID-based IC chip lookup works after dedup changes which row is kept.
+          try {
+            const contentKey = r => `${r.date}|${(r.company||'').toLowerCase()}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
+            const keptByContent = new Map(deduped.map(r => [contentKey(r), r]));
+            const idRemap = new Map();
+            savedRows.forEach(r => {
+              if (!deduped.find(d => d.id === r.id)) {
+                const rep = keptByContent.get(contentKey(r));
+                if (rep && rep.id !== r.id) idRemap.set(r.id, rep.id);
+              }
+            });
+            if (idRemap.size > 0) {
+              const icData = await apiGet('fct_intercompany_billing_entries');
+              if (Array.isArray(icData)) {
+                let changed = false;
+                const updated = icData.map(e => {
+                  if (e.source === 'dust' && idRemap.has(e.source_id)) {
+                    changed = true;
+                    return { ...e, source_id: idRemap.get(e.source_id) };
+                  }
+                  return e;
+                });
+                if (changed) {
+                  await apiPut('fct_intercompany_billing_entries', updated);
+                  await loadIcSentMapDust();
+                }
+              }
+            }
+          } catch { /* non-fatal */ }
+
           saveDustRows(rows);
         }
       }

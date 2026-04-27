@@ -1321,7 +1321,7 @@
           byMonth[mKey].icUbTotal += (parseFloat(e.gallons_ub) || 0) * icUbRate;
           byMonth[mKey].total     += parseFloat(e.total)       || 0;
           byMonth[mKey].icTotal   += isDust
-            ? (parseFloat(e.total_hours) || 0) * icDustRate + (parseFloat(e.gallons_ub) || 0) * icUbRate
+            ? (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0) + (parseFloat(e.gallons_ub) || 0) * icUbRate
             : (parseFloat(e.total_hours) || 0) * icTruckRate;
           byMonth[mKey].entries.push(e);
         });
@@ -1333,7 +1333,7 @@
         const totRev       = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
         const totIcUbTotal = isDust ? totGallons * icUbRate : 0;
         const totIcRev     = isDust
-          ? totHours * icDustRate + totGallons * icUbRate
+          ? divRows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * icUbRate, 0)
           : totHours * icTruckRate;
 
         const detailHead = isDust
@@ -1349,7 +1349,7 @@
             if (isDust) {
               const hrs = parseFloat(e.total_hours) || 0;
               const gal = parseFloat(e.gallons_ub) || 0;
-              const icAmt = hrs * icDustRate + gal * icUbRate;
+              const icAmt = (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + gal * icUbRate;
               return `<tr>
                 <td>${e.actual_date || '—'}</td>
                 <td>${escT(e.location || '—')}</td>
@@ -1450,7 +1450,7 @@
         const totRev     = co.rows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
         const totIcRev   = ciDivFilter === 'trucking'
           ? totHours * icTruckRate
-          : totHours * icDustRate + totGallons * icUbRate;
+          : co.rows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * icUbRate, 0);
 
         const divSections = co.rows.length
           ? buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`)
@@ -1560,7 +1560,11 @@
 
       function icAmt(e) {
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
-        return (parseFloat(e.total_hours) || 0) * icDustRate + (parseFloat(e.gallons_ub) || 0) * icUbRate;
+        // Use stored per-vehicle totals (actual rates) + current UB rate.
+        // Old entries were sent with ubRate=0 so e.total excluded UB; using
+        // v1_total+v2_total+gallons×icUbRate gives the correct amount for both.
+        return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
+             + (parseFloat(e.gallons_ub) || 0) * icUbRate;
       }
 
       const totalIc  = entries.reduce((s, e) => s + icAmt(e), 0);
@@ -1861,7 +1865,11 @@
 
       function icAmt(e) {
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
-        return (parseFloat(e.total_hours) || 0) * icDustRate + (parseFloat(e.gallons_ub) || 0) * icUbRate;
+        // Use stored per-vehicle totals (actual rates) + current UB rate.
+        // Old entries were sent with ubRate=0 so e.total excluded UB; using
+        // v1_total+v2_total+gallons×icUbRate gives the correct amount for both.
+        return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
+             + (parseFloat(e.gallons_ub) || 0) * icUbRate;
       }
 
       const truckIcYTD  = truckEntries.reduce((s, e) => s + icAmt(e), 0);

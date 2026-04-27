@@ -55,9 +55,12 @@ async function recoverFromIcBilling(sql, companyCode) {
         AND NOT EXISTS (
           SELECT 1 FROM dust_control_entries dc
           WHERE dc.company_code = ${companyCode}
-            AND dc.date        = ib.actual_date
-            AND dc.company     = ib.company_name
-            AND dc.start_time  = ib.actual_start
+            AND dc.date         = ib.actual_date
+            AND dc.company      = ib.company_name
+            AND (
+              (COALESCE(ib.actual_start,'') <> '' AND dc.start_time = ib.actual_start)
+              OR (COALESCE(ib.actual_start,'') =  '' AND COALESCE(dc.location,'') = COALESCE(ib.location,''))
+            )
         )
     `;
     for (const r of missing) {
