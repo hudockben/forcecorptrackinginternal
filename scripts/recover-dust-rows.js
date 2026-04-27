@@ -9,7 +9,6 @@
  * in dust_control_entries, this script re-inserts the row with all available data.
  *
  * Fields that cannot be recovered (not stored in IC billing):
- *   - start_time, end_time  (will be empty — user can re-enter)
  *   - state                 (will be empty — user can re-enter)
  *   - inv_sent, inv_received, cm_approval, inv_location
  *
@@ -35,6 +34,8 @@ async function recover() {
       ib.source_id         AS id,
       ib.company_name      AS company,
       ib.actual_date       AS date,
+      ib.actual_start      AS start_time,
+      ib.actual_end        AS end_time,
       ib.company_man,
       ib.location,
       ib.vehicle1, ib.v1_unit, ib.v1_rate,
@@ -74,7 +75,7 @@ async function recover() {
       await sql`
         INSERT INTO dust_control_entries (
           id, company_code,
-          date,
+          date, start_time, end_time,
           company, company_man, location,
           vehicle1, v1_unit, v1_rate,
           vehicle2, v2_unit, v2_rate,
@@ -83,7 +84,7 @@ async function recover() {
           updated_at
         ) VALUES (
           ${r.id}, ${r.company_code},
-          ${r.date},
+          ${r.date}, ${r.start_time || null}, ${r.end_time || null},
           ${r.company || null}, ${r.company_man || null}, ${r.location || null},
           ${r.vehicle1 || null}, ${r.v1_unit || null}, ${r.v1_rate ?? null},
           ${r.vehicle2 || null}, ${r.v2_unit || null}, ${r.v2_rate ?? null},
@@ -101,8 +102,7 @@ async function recover() {
   }
 
   console.log(`\nDone. ${restored} of ${recoverable.length} rows restored.`);
-  console.log('Note: start_time, end_time, and state were not stored in IC billing and will be blank.');
-  console.log('      You can fill them in from the Dust Control Tracking table.');
+  console.log('Note: state was not stored in IC billing and will be blank — fill it in from the tracking table.');
 }
 
 recover().catch(err => {
