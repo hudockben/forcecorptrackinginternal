@@ -1605,14 +1605,14 @@
 
     /** Save dust config (settings + lists) to normalized endpoint. */
     function dustConfigPut() {
-      fetch('/api/dust-config', {
+      return fetch('/api/dust-config', {
         method: 'PUT',
         headers: AUTH_HDR(),
         body: JSON.stringify({
           settings: { ub_rate: ubRate },
           lists: dustLists,
         }),
-      }).catch(() => {});
+      }).then(r => r.ok ? r.json() : null).catch(() => null);
     }
 
     /* ═══════════════════════════════════════════
