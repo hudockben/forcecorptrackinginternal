@@ -850,6 +850,10 @@
     .inv-badge.sent    { background: rgba(251,191,36,0.15); color: var(--amber); }
     .inv-badge.paid    { background: rgba(34,197,94,0.15);  color: var(--green); }
     .inv-badge.overdue { background: rgba(239,68,68,0.22);  color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+    .ic-sent-chip {
+      display: block; font-size: 0.55rem; font-weight: 700; letter-spacing: 0.05em;
+      color: #22c55e; margin-top: 0.18rem; white-space: nowrap;
+    }
 
     /* Expandable invoice detail row */
     .inv-row > td { padding: 0; }
@@ -1569,6 +1573,13 @@
         icSentMapDust.set(row.id, entry.sent_at);
         const tsEl = document.getElementById('ic-dust-ts-' + idx);
         if (tsEl) tsEl.textContent = fmtSentAt(entry.sent_at);
+        // Update the persistent chip on the main row without a full re-render
+        const invCell = document.querySelector(`tr[data-idx="${idx}"] .cw-inv`);
+        if (invCell) {
+          let chip = invCell.querySelector('.ic-sent-chip');
+          if (!chip) { chip = document.createElement('span'); chip.className = 'ic-sent-chip'; invCell.appendChild(chip); }
+          chip.textContent = `⇄ IC ${fmtSentAt(entry.sent_at)}`;
+        }
         if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
         setTimeout(() => { if (status) status.textContent = ''; }, 3000);
       } catch (err) {
@@ -2168,6 +2179,9 @@
 
         const invSt    = row.inv_status || '';
         const badge    = invBadgeHtml(row);
+        const icChip   = icSentMapDust.has(row.id)
+          ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icSentMapDust.get(row.id))}</span>`
+          : '';
         const invPanel = `
           <div class="inv-panel">
             <div class="inv-field">
@@ -2245,7 +2259,7 @@
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
           <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="set(${idx},'gallons_ub',this.value)"></td>
           ${calcCell(c.ubTotal  ? money(c.ubTotal)  : '', 'cw-ubt')}
-          <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}</td>
+          <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}${icChip}</td>
           <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
         </tr>
         <tr class="inv-row" id="inv-row-${idx}" style="display:none">
