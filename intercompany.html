@@ -1231,7 +1231,43 @@
         });
         if (!r.ok) { icBillingEntries = []; return; }
         const { value } = await r.json();
-        icBillingEntries = Array.isArray(value) ? value : [];
+        const raw = Array.isArray(value) ? value : [];
+
+        // Dedup: for dust entries sharing the same source_id keep the latest by sent_at.
+        // Also dedup by date+company+start+location for entries with no source_id.
+        const bySourceId = new Map();
+        const byContentKey = new Map();
+        const deduped = [];
+        for (const e of raw) {
+          if (e.source === 'dust' && e.source_id) {
+            const prev = bySourceId.get(e.source_id);
+            if (prev) {
+              // Replace only if this entry is newer
+              if ((e.sent_at || '') > (prev.sent_at || '')) {
+                const idx = deduped.indexOf(prev);
+                if (idx !== -1) deduped.splice(idx, 1, e);
+                bySourceId.set(e.source_id, e);
+              }
+              continue;
+            }
+            bySourceId.set(e.source_id, e);
+          } else {
+            const ck = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${e.actual_start||''}|${(e.location||'').toLowerCase()}|${e.source||''}`;
+            if (byContentKey.has(ck)) continue;
+            byContentKey.set(ck, e);
+          }
+          deduped.push(e);
+        }
+
+        icBillingEntries = deduped;
+        if (deduped.length < raw.length) {
+          console.warn(`[ic-billing] removed ${raw.length - deduped.length} duplicate entry/entries`);
+          fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ value: deduped })
+          }).catch(() => {});
+        }
       } catch { icBillingEntries = []; }
     }
 
