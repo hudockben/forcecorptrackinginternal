@@ -91,7 +91,7 @@ module.exports = async (req, res) => {
         }));
 
         return res.json({
-          settings: { ub_rate: settingsRows[0]?.ub_rate ?? 0 },
+          settings: { ub_rate: parseFloat(settingsRows[0]?.ub_rate) || 0 },
           lists: {
             equipment: equipRows.map(e => ({
               id:           e.id,
@@ -140,9 +140,7 @@ module.exports = async (req, res) => {
         `,
       ]);
 
-      _syncToTables(sql, companyCode, safeSettings, safeLists).catch(err =>
-        console.error('[dust-config] normalize failed:', err.message)
-      );
+      await _syncToTables(sql, companyCode, safeSettings, safeLists);
 
       return res.json({ ok: true });
     }

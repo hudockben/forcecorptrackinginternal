@@ -1605,14 +1605,14 @@
 
     /** Save dust config (settings + lists) to normalized endpoint. */
     function dustConfigPut() {
-      fetch('/api/dust-config', {
+      return fetch('/api/dust-config', {
         method: 'PUT',
         headers: AUTH_HDR(),
         body: JSON.stringify({
           settings: { ub_rate: ubRate },
           lists: dustLists,
         }),
-      }).catch(() => {});
+      }).then(r => r.ok ? r.json() : null).catch(() => null);
     }
 
     /* ═══════════════════════════════════════════
@@ -3043,8 +3043,8 @@
 
       if (config) {
         const { settings, lists } = config;
-        if (settings && typeof settings.ub_rate === 'number') {
-          ubRate = settings.ub_rate;
+        if (settings && settings.ub_rate != null) {
+          ubRate = parseFloat(settings.ub_rate) || 0;
           document.getElementById('ubRateInput').value = ubRate.toFixed(2);
         }
         if (lists && typeof lists === 'object') {
