@@ -2336,27 +2336,71 @@
           })
           .sort((a, b) => a.name.localeCompare(b.name));
 
-        if (!reportRows.length) {
+        // Aggregate infill entries with no project_id as a standalone billing row
+        const orphanInv = invRows.filter(e => !e.project_id);
+        let infillRow = null;
+        if (orphanInv.length) {
+          infillRow = orphanInv.reduce((acc, inv) => {
+            const lh    = parseFloat(inv.hours)           || 0;
+            const rate  = parseFloat(inv.rate)            || 0;
+            const euc   = parseFloat(inv.equip_unit_cost) || 0;
+            const eh    = parseFloat(inv.equip_hours)     || 0;
+            const uc    = parseFloat(inv.unit_cost)       || 0;
+            const units = parseFloat(inv.units_purchased) || 0;
+            acc.laborCost    += rate * lh;
+            acc.equipCost    += euc  * eh;
+            acc.materialCost += uc   * units;
+            acc.hoursWorked  += lh;
+            if (inv.date) {
+              if (!acc.minDate || inv.date < acc.minDate) acc.minDate = inv.date;
+              if (!acc.maxDate || inv.date > acc.maxDate) acc.maxDate = inv.date;
+            }
+            return acc;
+          }, { laborCost: 0, equipCost: 0, materialCost: 0, hoursWorked: 0, minDate: null, maxDate: null });
+          infillRow.total = infillRow.laborCost + infillRow.equipCost + infillRow.materialCost;
+        }
+
+        if (!reportRows.length && !infillRow) {
           resultsEl.innerHTML = '<div class="ci-empty"><strong>No Data</strong>'
             + 'No project entries found between ' + startDate + ' and ' + endDate + '.</div>';
           if (infoEl) infoEl.textContent = '';
           return;
         }
 
-        // Column totals
-        const totLabor    = reportRows.reduce((s, r) => s + r.laborCost,    0);
-        const totEquip    = reportRows.reduce((s, r) => s + r.equipCost,    0);
+        // Column totals — include infill row in grand totals
+        const totLabor    = reportRows.reduce((s, r) => s + r.laborCost,    0) + (infillRow ? infillRow.laborCost    : 0);
+        const totEquip    = reportRows.reduce((s, r) => s + r.equipCost,    0) + (infillRow ? infillRow.equipCost    : 0);
         const totLowboy   = reportRows.reduce((s, r) => s + r.lowboyCost,   0);
         const totTri      = reportRows.reduce((s, r) => s + r.triAxleCost,  0);
-        const totMaterial = reportRows.reduce((s, r) => s + r.materialCost, 0);
-        const totTotal    = reportRows.reduce((s, r) => s + r.total,        0);
-        const totHours    = reportRows.reduce((s, r) => s + r.hoursWorked,  0);
+        const totMaterial = reportRows.reduce((s, r) => s + r.materialCost, 0) + (infillRow ? infillRow.materialCost : 0);
+        const totTotal    = reportRows.reduce((s, r) => s + r.total,        0) + (infillRow ? infillRow.total        : 0);
+        const totHours    = reportRows.reduce((s, r) => s + r.hoursWorked,  0) + (infillRow ? infillRow.hoursWorked  : 0);
 
         const pCnt  = reportRows.length;
         const pdfBtn = document.getElementById('jsPdfBtn');
         const invCnt = invRows.length;
         if (infoEl)  infoEl.textContent = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + ' · ' + dailyRows.length + ' entries' + (invCnt ? ' · ' + invCnt + ' infill' : '');
         if (pdfBtn)  pdfBtn.style.display = '';
+
+        function renderInfillRow(row) {
+          if (!row) return '';
+          const dateRange = row.minDate === row.maxDate
+            ? (row.minDate || startDate)
+            : (row.minDate || startDate) + ' – ' + (row.maxDate || endDate);
+          return '<tr style="background:rgba(100,200,120,0.06);font-style:italic">'
+            + '<td style="font-weight:500;color:var(--accent)">Rubber Infill Production</td>'
+            + '<td style="color:var(--muted);white-space:nowrap">' + dateRange + '</td>'
+            + '<td class="r">' + (row.laborCost    > 0 ? fmt$(row.laborCost)    : '—') + '</td>'
+            + '<td class="r">' + (row.equipCost    > 0 ? fmt$(row.equipCost)    : '—') + '</td>'
+            + '<td class="r">—</td>'
+            + '<td class="r">—</td>'
+            + '<td class="r">' + (row.materialCost > 0 ? fmt$(row.materialCost) : '—') + '</td>'
+            + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(row.total) + '</td>'
+            + '<td class="r">' + row.hoursWorked.toFixed(1) + ' hrs</td>'
+            + '</tr>';
+        }
+
+        const totalRowLabel = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + (infillRow ? ' + infill' : '');
 
         resultsEl.innerHTML = '<div class="an-tbl-wrap"><table class="an-tbl" style="min-width:1100px">'
           + '<thead><tr>'
@@ -2386,8 +2430,9 @@
                 + '<td class="r">' + r.hoursWorked.toFixed(1) + ' hrs</td>'
                 + '</tr>';
             }).join('')
+          + renderInfillRow(infillRow)
           + '</tbody><tfoot><tr>'
-          + '<td>TOTALS — ' + pCnt + ' project' + (pCnt !== 1 ? 's' : '') + '</td>'
+          + '<td>TOTALS — ' + totalRowLabel + '</td>'
           + '<td>—</td>'
           + '<td class="r">' + fmt$(totLabor)    + '</td>'
           + '<td class="r">' + fmt$(totEquip)    + '</td>'
