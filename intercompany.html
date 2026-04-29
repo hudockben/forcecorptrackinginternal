@@ -2168,11 +2168,12 @@
         const headers = { Authorization: `Bearer ${token}` };
 
         // Fetch all sources in parallel — projects from both normalized table and blob for best coverage
-        const [projRes, blobRes, rowsRes, truckRes] = await Promise.all([
+        const [projRes, blobRes, rowsRes, truckRes, invRes] = await Promise.all([
           fetch(`${API_BASE}/projects`, { headers }),
           fetch(`${API_BASE}/data/fct_projects`, { headers }),
           fetch(`${API_BASE}/daily-rows?since=${startDate}&limit=50000`, { headers }),
           fetch(`${API_BASE}/trucking`, { headers }),
+          fetch(`${API_BASE}/data/fct_inventory`, { headers }),
         ]);
 
         // daily-rows and trucking are required
@@ -2204,16 +2205,26 @@
         const { rows: allRows }   = await rowsRes.json();
         const { truckingEntries } = await truckRes.json();
 
+        // Parse infill inventory entries (non-fatal if unavailable)
+        let allInvEntries = [];
+        if (invRes.ok) {
+          try {
+            const ij = await invRes.json();
+            allInvEntries = Array.isArray(ij.value) ? ij.value : [];
+          } catch { /* non-fatal */ }
+        }
+
         // Filter to the exact date window
         const dailyRows = (allRows || []).filter(r => r.date && r.date >= startDate && r.date <= endDate);
         const truckRows = (truckingEntries || []).filter(t => t.date && t.date >= startDate && t.date <= endDate);
+        const invRows   = allInvEntries.filter(e => e.date && e.date >= startDate && e.date <= endDate);
 
         const byProject = {};
 
         function getOrCreate(pid) {
           if (!pid) return null;
           if (!byProject[pid]) {
-            byProject[pid] = { pid, minDate: null, maxDate: null, laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, hoursWorked: 0 };
+            byProject[pid] = { pid, minDate: null, maxDate: null, laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, materialCost: 0, hoursWorked: 0 };
           }
           return byProject[pid];
         }
@@ -2271,6 +2282,24 @@
           else if (type.includes('tri'))   entry.triAxleCost += cost;
         });
 
+        // Infill inventory entries — labor, equipment, and material costs
+        invRows.forEach(inv => {
+          const pid = inv.project_id;
+          const entry = getOrCreate(pid);
+          if (!entry) return;
+          trackDate(entry, inv.date);
+          const lh       = parseFloat(inv.hours)           || 0;
+          const rate     = parseFloat(inv.rate)            || 0;
+          const euc      = parseFloat(inv.equip_unit_cost) || 0;
+          const eh       = parseFloat(inv.equip_hours)     || 0;
+          const uc       = parseFloat(inv.unit_cost)       || 0;
+          const units    = parseFloat(inv.units_purchased) || 0;
+          entry.laborCost    += rate * lh;
+          entry.equipCost    += euc  * eh;
+          entry.materialCost += uc   * units;
+          entry.hoursWorked  += lh;
+        });
+
         // Phase 2 — batch-fetch individual project blobs for any IDs not yet in projMap
         const unknownPids = Object.keys(byProject).filter(pid => !projMap[pid]);
         if (unknownPids.length) {
@@ -2297,12 +2326,12 @@
             if (!proj) return false; // no project record — orphaned tracking row
             // Only show if there is actual dollar cost data for the period
             return p.laborCost > 0 || p.equipCost > 0
-                   || p.lowboyCost > 0 || p.triAxleCost > 0;
+                   || p.lowboyCost > 0 || p.triAxleCost > 0 || p.materialCost > 0;
           })
           .map(p => {
             const proj  = projMap[p.pid];
             const name  = proj['project-name'] || proj.name || p.pid;
-            const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost;
+            const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost + p.materialCost;
             return { ...p, name, total };
           })
           .sort((a, b) => a.name.localeCompare(b.name));
@@ -2315,19 +2344,21 @@
         }
 
         // Column totals
-        const totLabor  = reportRows.reduce((s, r) => s + r.laborCost,   0);
-        const totEquip  = reportRows.reduce((s, r) => s + r.equipCost,   0);
-        const totLowboy = reportRows.reduce((s, r) => s + r.lowboyCost,  0);
-        const totTri    = reportRows.reduce((s, r) => s + r.triAxleCost, 0);
-        const totTotal  = reportRows.reduce((s, r) => s + r.total,       0);
-        const totHours  = reportRows.reduce((s, r) => s + r.hoursWorked, 0);
+        const totLabor    = reportRows.reduce((s, r) => s + r.laborCost,    0);
+        const totEquip    = reportRows.reduce((s, r) => s + r.equipCost,    0);
+        const totLowboy   = reportRows.reduce((s, r) => s + r.lowboyCost,   0);
+        const totTri      = reportRows.reduce((s, r) => s + r.triAxleCost,  0);
+        const totMaterial = reportRows.reduce((s, r) => s + r.materialCost, 0);
+        const totTotal    = reportRows.reduce((s, r) => s + r.total,        0);
+        const totHours    = reportRows.reduce((s, r) => s + r.hoursWorked,  0);
 
         const pCnt  = reportRows.length;
         const pdfBtn = document.getElementById('jsPdfBtn');
-        if (infoEl)  infoEl.textContent = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + ' · ' + dailyRows.length + ' entries';
+        const invCnt = invRows.length;
+        if (infoEl)  infoEl.textContent = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + ' · ' + dailyRows.length + ' entries' + (invCnt ? ' · ' + invCnt + ' infill' : '');
         if (pdfBtn)  pdfBtn.style.display = '';
 
-        resultsEl.innerHTML = '<div class="an-tbl-wrap"><table class="an-tbl" style="min-width:950px">'
+        resultsEl.innerHTML = '<div class="an-tbl-wrap"><table class="an-tbl" style="min-width:1100px">'
           + '<thead><tr>'
           + '<th>PROJECT</th>'
           + '<th>DATE RANGE</th>'
@@ -2335,6 +2366,7 @@
           + '<th class="r">EQUIPMENT COSTS</th>'
           + '<th class="r">LOWBOY COSTS</th>'
           + '<th class="r">TRI AXLE COSTS</th>'
+          + '<th class="r">MATERIAL COSTS</th>'
           + '<th class="r">TOTAL AMOUNT</th>'
           + '<th class="r">HOURS WORKED</th>'
           + '</tr></thead><tbody>'
@@ -2347,8 +2379,9 @@
                 + '<td style="color:var(--muted);white-space:nowrap">' + dateRange + '</td>'
                 + '<td class="r">' + fmt$(r.laborCost) + '</td>'
                 + '<td class="r">' + fmt$(r.equipCost) + '</td>'
-                + '<td class="r">' + (r.lowboyCost  > 0 ? fmt$(r.lowboyCost)  : '—') + '</td>'
-                + '<td class="r">' + (r.triAxleCost > 0 ? fmt$(r.triAxleCost) : '—') + '</td>'
+                + '<td class="r">' + (r.lowboyCost    > 0 ? fmt$(r.lowboyCost)    : '—') + '</td>'
+                + '<td class="r">' + (r.triAxleCost   > 0 ? fmt$(r.triAxleCost)   : '—') + '</td>'
+                + '<td class="r">' + (r.materialCost  > 0 ? fmt$(r.materialCost)  : '—') + '</td>'
                 + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(r.total) + '</td>'
                 + '<td class="r">' + r.hoursWorked.toFixed(1) + ' hrs</td>'
                 + '</tr>';
@@ -2356,11 +2389,12 @@
           + '</tbody><tfoot><tr>'
           + '<td>TOTALS — ' + pCnt + ' project' + (pCnt !== 1 ? 's' : '') + '</td>'
           + '<td>—</td>'
-          + '<td class="r">' + fmt$(totLabor)  + '</td>'
-          + '<td class="r">' + fmt$(totEquip)  + '</td>'
-          + '<td class="r">' + (totLowboy > 0 ? fmt$(totLowboy) : '—') + '</td>'
-          + '<td class="r">' + (totTri    > 0 ? fmt$(totTri)    : '—') + '</td>'
-          + '<td class="r">' + fmt$(totTotal)  + '</td>'
+          + '<td class="r">' + fmt$(totLabor)    + '</td>'
+          + '<td class="r">' + fmt$(totEquip)    + '</td>'
+          + '<td class="r">' + (totLowboy   > 0 ? fmt$(totLowboy)   : '—') + '</td>'
+          + '<td class="r">' + (totTri      > 0 ? fmt$(totTri)      : '—') + '</td>'
+          + '<td class="r">' + (totMaterial > 0 ? fmt$(totMaterial) : '—') + '</td>'
+          + '<td class="r">' + fmt$(totTotal)    + '</td>'
           + '<td class="r">' + totHours.toFixed(1) + ' hrs</td>'
           + '</tr></tfoot></table></div>';
 
