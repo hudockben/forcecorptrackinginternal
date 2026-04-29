@@ -3378,6 +3378,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       p.classList.toggle('active', p.id === 'tab-' + activeTab));
     renderHeaderActions();
     if (activeTab === 'home')      renderHomeTab();
+    if (activeTab === 'cost')      { const _tb = activeTab; requestAnimationFrame(() => { if (activeTab === _tb) renderCostTable(); }); }
     if (activeTab === 'info')      renderProjectInfoComputed();
     if (activeTab === 'supplier')  renderSupplierTab();
     if (activeTab === 'po')        renderPOTab();
@@ -16034,7 +16035,6 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     loadSoeUnitOverrides(),
   ]);
 
-  if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
   if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
   renderProjectsTab();
   if (perm.visibleTabs && !perm.visibleTabs.has('home') && perm.visibleTabs.has('info')) {
@@ -16094,7 +16094,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const incoming = Array.isArray(saved) ? saved : [];
     if (JSON.stringify(incoming) === JSON.stringify(costRows)) return;
     costRows = incoming;
-    if (activeTab === 'cost' && !_isEditing()) renderCostTable();
+    if (activeTab === 'cost' && !_isEditing()) requestAnimationFrame(() => { if (activeTab === 'cost') renderCostTable(); });
   }
 
   async function _pollProjects() {
