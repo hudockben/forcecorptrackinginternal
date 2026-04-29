@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DataWatch — Paving</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #111118;
+      --surface2:  #1a1a26;
+      --border:    #2a2a3a;
+      --green:     #22c55e;
+      --green-dim: #16a34a;
+      --text:      #e0e0e0;
+      --muted:     #666;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 200;
+    }
+    header .brand {
+      font-size: 0.75rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--green);
+      font-weight: 600;
+    }
+    header .actions { display: flex; gap: 0.5rem; align-items: center; }
+
+    .user-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      color: #fff;
+      font-size: 0.65rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      cursor: default;
+      user-select: none;
+      letter-spacing: 0.02em;
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 0.4rem 0.85rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+    .btn-ghost {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { border-color: #444; color: #fff; }
+
+    /* ── Tab bar ── */
+    .tab-bar {
+      display: flex;
+      gap: 0;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1.25rem;
+      position: sticky;
+      top: 47px;
+      z-index: 150;
+    }
+    .tab-btn {
+      padding: 0.6rem 1.25rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      margin-bottom: -1px;
+      white-space: nowrap;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--green); border-bottom-color: var(--green); }
+
+    /* ── Tab panels ── */
+    .tab-panel { display: none; padding: 2rem 1.25rem; }
+    .tab-panel.active { display: block; }
+
+    .coming-soon {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 4rem 1rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    .coming-soon strong {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #444;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .coming-soon span {
+      font-size: 0.78rem;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <span class="brand">DATAWATCH</span>
+  <div class="actions">
+    <div id="user-badge"></div>
+    <button class="btn btn-ghost" id="switchBtn" onclick="switchDivision()">Switch Division</button>
+    <button class="btn btn-ghost" onclick="logout()">Sign Out</button>
+  </div>
+</header>
+
+<nav class="tab-bar">
+  <button class="tab-btn active" data-tab="home"             onclick="switchTab('home')">Home</button>
+  <button class="tab-btn"        data-tab="cost-tracking"    onclick="switchTab('cost-tracking')">Cost Tracking</button>
+  <button class="tab-btn"        data-tab="project-dashboard" onclick="switchTab('project-dashboard')">Project Dashboard</button>
+  <button class="tab-btn"        data-tab="schedule"         onclick="switchTab('schedule')">Schedule</button>
+  <button class="tab-btn"        data-tab="purchase-orders"  onclick="switchTab('purchase-orders')">Purchase Orders</button>
+  <button class="tab-btn"        data-tab="trucking"         onclick="switchTab('trucking')">Trucking</button>
+  <button class="tab-btn"        data-tab="analytics"        onclick="switchTab('analytics')">Analytics</button>
+</nav>
+
+<div id="tab-home" class="tab-panel active">
+  <div class="coming-soon"><strong>Home</strong><span>Content coming soon.</span></div>
+</div>
+
+<div id="tab-cost-tracking" class="tab-panel">
+  <div class="coming-soon"><strong>Cost Tracking</strong><span>Content coming soon.</span></div>
+</div>
+
+<div id="tab-project-dashboard" class="tab-panel">
+  <div class="coming-soon"><strong>Project Dashboard</strong><span>Content coming soon.</span></div>
+</div>
+
+<div id="tab-schedule" class="tab-panel">
+  <div class="coming-soon"><strong>Schedule</strong><span>Content coming soon.</span></div>
+</div>
+
+<div id="tab-purchase-orders" class="tab-panel">
+  <div class="coming-soon"><strong>Purchase Orders</strong><span>Content coming soon.</span></div>
+</div>
+
+<div id="tab-trucking" class="tab-panel">
+  <div class="coming-soon"><strong>Trucking</strong><span>Content coming soon.</span></div>
+</div>
+
+<div id="tab-analytics" class="tab-panel">
+  <div class="coming-soon"><strong>Analytics</strong><span>Content coming soon.</span></div>
+</div>
+
+<script>
+/* ── Auth ── */
+const fctToken    = localStorage.getItem('fct_token');
+const fctUser     = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+const fctDivision = localStorage.getItem('fct_division');
+
+if (!fctToken || !fctUser) {
+  window.location.replace('index.html');
+}
+
+if (fctDivision !== 'paving') {
+  window.location.replace('divisions.html');
+}
+
+function logout() {
+  localStorage.removeItem('fct_token');
+  localStorage.removeItem('fct_user');
+  localStorage.removeItem('fct_division');
+  window.location.replace('index.html');
+}
+
+function switchDivision() {
+  localStorage.removeItem('fct_division');
+  window.location.replace('divisions.html');
+}
+
+/* ── User badge ── */
+(function () {
+  const badge = document.getElementById('user-badge');
+  if (!badge || !fctUser) return;
+  const name = fctUser.name || fctUser.username || '';
+  const parts = name.trim().split(/\s+/);
+  const initials = parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : name.slice(0, 2).toUpperCase() || '?';
+  const palette = ['#2ecc71','#3498db','#9b59b6','#e67e22','#e74c3c','#1abc9c','#f39c12','#16a085'];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+  const color = palette[h % palette.length];
+  badge.style.cssText = 'display:flex;align-items:center;gap:0.5rem;';
+  badge.innerHTML = `
+    <span class="user-avatar" style="background:${color}" title="${name}">${initials}</span>
+    <span style="font-size:0.7rem;color:#888;letter-spacing:0.05em;">${fctUser.companyName || fctUser.companyCode} &middot; ${fctUser.username}</span>
+  `;
+})();
+
+/* ── Tab switching ── */
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-' + tab));
+}
+</script>
+</body>
+</html>
