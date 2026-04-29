@@ -3381,7 +3381,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     // Defer heavy renders so the tab transition paints first
     setTimeout(() => {
       if (_t === 'home')      renderHomeTab();
-      if (_t === 'cost')      renderCostTable();
       if (_t === 'info')      renderProjectInfoComputed();
       if (_t === 'supplier')  renderSupplierTab();
       if (_t === 'po')        renderPOTab();
