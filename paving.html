@@ -3377,13 +3377,17 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p =>
       p.classList.toggle('active', p.id === 'tab-' + activeTab));
     renderHeaderActions();
-    if (activeTab === 'home')     renderHomeTab();
-    if (activeTab === 'info')     renderProjectInfoComputed();
-    if (activeTab === 'supplier') renderSupplierTab();
-    if (activeTab === 'po')       renderPOTab();
-    if (activeTab === 'trucking')  renderTruckingTab();
-    if (activeTab === 'schedule')   renderScheduleTab();
-    if (activeTab === 'mob-entry')  renderMobileEntryForm();
+    const _t = activeTab;
+    // Defer heavy renders so the tab transition paints first
+    setTimeout(() => {
+      if (_t === 'home')      renderHomeTab();
+      if (_t === 'info')      renderProjectInfoComputed();
+      if (_t === 'supplier')  renderSupplierTab();
+      if (_t === 'po')        renderPOTab();
+      if (_t === 'trucking')  renderTruckingTab();
+      if (_t === 'schedule')  renderScheduleTab();
+      if (_t === 'mob-entry') renderMobileEntryForm();
+    }, 0);
   });
 });
 
@@ -6805,12 +6809,12 @@ function projectCardHTML(p) {
           <div class="assign-col-label" style="display:flex;align-items:center;justify-content:space-between">
             <span>Assigned Employees <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></span>
             <button class="btn" style="font-size:0.7rem;padding:0.15rem 0.55rem;margin-left:0.5rem;flex-shrink:0"
-              onclick="selectAllProjectAssignment('${p.id}','assigned_employees',[${lists.employees.map(e=>`'${esc(e.name)}'`).join(',')}],this)">
-              ${lists.employees.length && lists.employees.every(e=>(p.assigned_employees||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
+              onclick="selectAllProjectAssignment('${p.id}','assigned_employees',[${(lists.employees||[]).map(e=>`'${esc(e.name)}'`).join(',')}],this)">
+              ${(lists.employees||[]).length && (lists.employees||[]).every(e=>(p.assigned_employees||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
             </button>
           </div>
           <div class="assign-list">
-            ${lists.employees.map(emp => `
+            ${(lists.employees||[]).map(emp => `
               <label class="assign-check">
                 <input type="checkbox" ${(p.assigned_employees||[]).includes(emp.name) ? 'checked' : ''}
                   onchange="toggleProjectAssignment('${p.id}','assigned_employees','${esc(emp.name)}',this.checked)">
@@ -6822,12 +6826,12 @@ function projectCardHTML(p) {
           <div class="assign-col-label" style="display:flex;align-items:center;justify-content:space-between">
             <span>Assigned Equipment <span style="font-weight:400;color:var(--muted)">(only these will appear in daily tracking dropdowns)</span></span>
             <button class="btn" style="font-size:0.7rem;padding:0.15rem 0.55rem;margin-left:0.5rem;flex-shrink:0"
-              onclick="selectAllProjectAssignment('${p.id}','assigned_equipment',[${lists.equipment.map(e=>`'${esc(e.name)}'`).join(',')}],this)">
-              ${lists.equipment.length && lists.equipment.every(e=>(p.assigned_equipment||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
+              onclick="selectAllProjectAssignment('${p.id}','assigned_equipment',[${(lists.equipment||[]).map(e=>`'${esc(e.name)}'`).join(',')}],this)">
+              ${(lists.equipment||[]).length && (lists.equipment||[]).every(e=>(p.assigned_equipment||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
             </button>
           </div>
           <div class="assign-list">
-            ${lists.equipment.map(eq => `
+            ${(lists.equipment||[]).map(eq => `
               <label class="assign-check">
                 <input type="checkbox" ${(p.assigned_equipment||[]).includes(eq.name) ? 'checked' : ''}
                   onchange="toggleProjectAssignment('${p.id}','assigned_equipment','${esc(eq.name)}',this.checked)">
@@ -7014,6 +7018,12 @@ async function loadLists() {
     } catch {}
   }
   lists = { ...defaultLists, ...(saved || {}) };
+  // Guard against null/non-array values from corrupted saved data
+  if (!Array.isArray(lists.suppliers))   lists.suppliers   = [];
+  if (!Array.isArray(lists.employees))   lists.employees   = [];
+  if (!Array.isArray(lists.equipment))   lists.equipment   = [];
+  if (!Array.isArray(lists.job_classes)) lists.job_classes = [];
+  if (!Array.isArray(lists.infill_types)) lists.infill_types = [];
   // Migrate suppliers from string[] to {name,state}[]
   lists.suppliers = lists.suppliers.map(s => typeof s === 'string' ? { name: s, state: '', address: '', phone: '', website: '' } : { address: '', phone: '', website: '', ...s });
   // Migrate employees from string[] to {name,non_prevailing_rate,prevailing_rate,job_class}[]
@@ -7335,8 +7345,8 @@ function renderPOTab() {
   const filteredPOs = allFilteredPOs.slice(poPage * PO_PER_PAGE, (poPage + 1) * PO_PER_PAGE);
 
   // ── supplier / status opts (shared across rows) ───────────────────────
-  const supNames = lists.suppliers.map(s => s.name||'').filter(Boolean).sort((a,b)=>a.localeCompare(b));
-  const empNames = lists.employees.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(e=>e.name);
+  const supNames = (lists.suppliers||[]).map(s => s.name||'').filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  const empNames = (lists.employees||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(e=>e.name);
   const projsSorted = projectsList.slice().sort((a,b)=>(a['project-name']||'').localeCompare(b['project-name']||''));
 
   const selOpts = (field, options, current, poId, lineId) => {
