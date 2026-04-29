@@ -3381,6 +3381,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     // Defer heavy renders so the tab transition paints first
     setTimeout(() => {
       if (_t === 'home')      renderHomeTab();
+      if (_t === 'cost')      renderCostTable();
       if (_t === 'info')      renderProjectInfoComputed();
       if (_t === 'supplier')  renderSupplierTab();
       if (_t === 'po')        renderPOTab();
@@ -16038,16 +16039,19 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     loadSoeUnitOverrides(),
   ]);
 
-  if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
-  if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
-  renderProjectDashboard();
-  renderProjectsTab();
-  if (perm.visibleTabs && !perm.visibleTabs.has('home') && perm.visibleTabs.has('info')) {
-    renderProjectInfoComputed();
-  }
-  if (activeTab === 'po') renderPOTab();
-  if (activeTab === 'trucking') renderTruckingTab();
-  renderHeaderActions();
+  // Defer all post-load renders so the browser can paint and process clicks first
+  setTimeout(() => {
+    if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
+    if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
+    renderProjectDashboard();
+    renderProjectsTab();
+    if (perm.visibleTabs && !perm.visibleTabs.has('home') && perm.visibleTabs.has('info')) {
+      renderProjectInfoComputed();
+    }
+    if (activeTab === 'po') renderPOTab();
+    if (activeTab === 'trucking') renderTruckingTab();
+    renderHeaderActions();
+  }, 0);
 })();
 
 /* ═══════════════════════════════════════════
