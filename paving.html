@@ -15,14 +15,14 @@
       --surface:   #111118;
       --surface2:  #1a1a26;
       --border:    #2a2a3a;
-      --green:     #22c55e;
-      --green-dim: #16a34a;
+      --green:     #3b82f6;
+      --green-dim: #2563eb;
       --red:       #ef4444;
       --yellow:    #eab308;
       --blue:      #60a5fa;
       --text:      #e0e0e0;
       --muted:     #666;
-      --calc:      #1e2a1e;
+      --calc:      #1a1d2e;
     }
 
     body {
@@ -16038,18 +16038,18 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     loadSoeUnitOverrides(),
   ]);
 
-  // Defer all post-load renders so the browser can paint and process clicks first
+  // Defer visible-tab renders so the browser can paint first
   setTimeout(() => {
-    if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
     if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
-    renderProjectDashboard();
-    renderProjectsTab();
+    if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
     if (perm.visibleTabs && !perm.visibleTabs.has('home') && perm.visibleTabs.has('info')) {
-      renderProjectInfoComputed();
+      renderProjectInfoComputed(); // level1 users start on Project Dashboard
     }
     if (activeTab === 'po') renderPOTab();
     if (activeTab === 'trucking') renderTruckingTab();
     renderHeaderActions();
+    // Note: renderProjectsTab() is NOT called here — it renders lazily on first tab click
+    // to avoid blocking the UI with a heavy off-screen render during startup.
   }, 0);
 })();
 
