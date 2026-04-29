@@ -3381,6 +3381,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     // Defer heavy renders so the tab transition paints first
     setTimeout(() => {
       if (_t === 'home')      renderHomeTab();
+      if (_t === 'cost')      renderCostTable();
       if (_t === 'info')      renderProjectInfoComputed();
       if (_t === 'supplier')  renderSupplierTab();
       if (_t === 'po')        renderPOTab();
@@ -16041,15 +16042,14 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   // Defer visible-tab renders so the browser can paint first
   setTimeout(() => {
     if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
-    if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
     if (perm.visibleTabs && !perm.visibleTabs.has('home') && perm.visibleTabs.has('info')) {
       renderProjectInfoComputed(); // level1 users start on Project Dashboard
     }
     if (activeTab === 'po') renderPOTab();
     if (activeTab === 'trucking') renderTruckingTab();
+    if (activeTab === 'cost') renderCostTable();
     renderHeaderActions();
-    // Note: renderProjectsTab() is NOT called here — it renders lazily on first tab click
-    // to avoid blocking the UI with a heavy off-screen render during startup.
+    // renderProjectsTab() and renderCostTable() are lazy — only render on tab click
   }, 0);
 })();
 
