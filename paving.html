@@ -4772,16 +4772,8 @@ let purchaseOrders = [];
 
 async function loadPurchaseOrders() {
   try {
-    const r = await fetch(`${API_BASE}/purchase-orders`, {
-      headers: { 'Authorization': `Bearer ${fctToken}` }
-    });
-    if (r.status === 401) { logout(); return; }
-    if (r.ok) {
-      const data = await r.json();
-      purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
-    } else {
-      purchaseOrders = [];
-    }
+    const saved = await apiGet('fct_paving_purchase_orders');
+    purchaseOrders = Array.isArray(saved) ? saved : [];
   } catch {
     purchaseOrders = [];
   }
@@ -4808,13 +4800,7 @@ function _migratePOs() {
 }
 
 function savePurchaseOrders() {
-  fetch(`${API_BASE}/purchase-orders`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body: JSON.stringify({ purchaseOrders })
-  }).then(r => {
-    if (!r.ok) _showSaveError(r.status === 401);
-  }).catch(() => _showSaveError(false));
+  apiPut('fct_paving_purchase_orders', purchaseOrders);
 }
 
 function nextPONumber() {
@@ -16130,12 +16116,8 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollPurchaseOrders() {
-    const r = await fetch(`${API_BASE}/purchase-orders`, {
-      headers: { 'Authorization': `Bearer ${fctToken}` }
-    });
-    if (!r.ok) return;
-    const data = await r.json();
-    const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+    const saved = await apiGet('fct_paving_purchase_orders');
+    const incoming = Array.isArray(saved) ? saved : [];
     if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
     purchaseOrders = incoming;
     _migratePOs();
