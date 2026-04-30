@@ -25,39 +25,35 @@ module.exports = async (req, res) => {
   if (!payload) return res.status(401).json({ error: 'Unauthorized' });
 
   const companyCode = payload.companyCode;
+  const division    = (req.query.division || 'turf').toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const sql = neon(process.env.DATABASE_URL);
 
   try {
-    // GET — return top 5 most recent posts for this company
     if (req.method === 'GET') {
       const rows = await sql`
         SELECT id, message, author_user, author_name, completed, created_at
         FROM company_board
-        WHERE company_code = ${companyCode}
+        WHERE company_code = ${companyCode} AND division = ${division}
         ORDER BY created_at DESC
         LIMIT 5
       `;
       return res.json({ posts: rows });
     }
 
-    // POST — create a new post (admin only)
     if (req.method === 'POST') {
       if (payload.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
       const { message } = req.body || {};
       if (!message || !message.trim()) return res.status(400).json({ error: 'message required' });
 
       const authorUser = payload.username || '';
-      const authorName = payload.username || '';
-
       const [row] = await sql`
-        INSERT INTO company_board (company_code, message, author_user, author_name)
-        VALUES (${companyCode}, ${message.trim()}, ${authorUser}, ${authorName})
+        INSERT INTO company_board (company_code, division, message, author_user, author_name)
+        VALUES (${companyCode}, ${division}, ${message.trim()}, ${authorUser}, ${authorUser})
         RETURNING id, message, author_user, author_name, completed, created_at
       `;
       return res.status(201).json({ post: row });
     }
 
-    // PATCH — toggle completed on a post (admin only)
     if (req.method === 'PATCH') {
       if (payload.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
       const { id } = req.query;
@@ -73,7 +69,6 @@ module.exports = async (req, res) => {
       return res.json({ ok: true });
     }
 
-    // DELETE — remove a post (admin only)
     if (req.method === 'DELETE') {
       if (payload.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
       const { id } = req.query;

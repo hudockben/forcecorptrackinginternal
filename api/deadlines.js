@@ -25,29 +25,28 @@ module.exports = async (req, res) => {
   if (!payload) return res.status(401).json({ error: 'Unauthorized' });
 
   const companyCode = payload.companyCode;
+  const division    = (req.query.division || 'turf').toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const sql = neon(process.env.DATABASE_URL);
 
   try {
-    // GET — return all deadlines for this company, sorted by deadline date
     if (req.method === 'GET') {
       const rows = await sql`
         SELECT id, message, deadline_date, project_name, author_user, created_at
         FROM deadlines
-        WHERE company_code = ${companyCode}
+        WHERE company_code = ${companyCode} AND division = ${division}
         ORDER BY deadline_date ASC NULLS LAST, created_at DESC
       `;
       return res.json({ deadlines: rows });
     }
 
-    // POST — create a deadline entry (any authenticated user)
     if (req.method === 'POST') {
       const { message, deadline_date, project_name } = req.body || {};
       if (!message || !message.trim()) return res.status(400).json({ error: 'message required' });
 
       const [row] = await sql`
-        INSERT INTO deadlines (company_code, message, deadline_date, project_name, author_user)
+        INSERT INTO deadlines (company_code, division, message, deadline_date, project_name, author_user)
         VALUES (
-          ${companyCode},
+          ${companyCode}, ${division},
           ${message.trim()},
           ${deadline_date || null},
           ${(project_name || '').trim()},
@@ -58,7 +57,6 @@ module.exports = async (req, res) => {
       return res.status(201).json({ deadline: row });
     }
 
-    // DELETE — remove a deadline (admin only)
     if (req.method === 'DELETE') {
       if (payload.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
       const { id } = req.query;
