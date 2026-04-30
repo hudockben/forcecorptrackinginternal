@@ -2263,7 +2263,8 @@
             </div>
           </div>`;
 
-        return `<tr data-idx="${idx}">
+        const missingInvoice = !row.inv_number || !row.inv_sent;
+        return `<tr data-idx="${idx}"${missingInvoice ? ' style="background:rgba(239,68,68,0.18)"' : ''}>
           <td class="cw-expand"><button class="expand-btn" id="expbtn-${idx}" onclick="toggleInvoice(${idx})" title="Invoice details">›</button></td>
           <td class="cw-date"><input type="date" value="${esc(row.date       ||'')}" onchange="set(${idx},'date',this.value)"></td>
           <td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>

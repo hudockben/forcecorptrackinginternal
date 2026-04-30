@@ -909,6 +909,8 @@
         icSentMap.set(id, entry);
         const tsEl = document.getElementById('ic-ts-' + id);
         if (tsEl) tsEl.textContent = fmtSentAt(entry?.sent_at);
+        const mainBadge = document.getElementById('ic-main-' + id);
+        if (mainBadge) { mainBadge.innerHTML = `&#10003; IC ${fmtSentAt(entry?.sent_at)}`; mainBadge.style.color = '#22c55e'; }
         if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
         setTimeout(() => { if (status) status.textContent = ''; }, 3000);
       } catch (err) {
@@ -1125,7 +1127,13 @@
             const isOpen  = expandedRows.has(e.id);
             const caretStyle = `display:inline-block;transition:transform 0.18s;transform:rotate(${isOpen?'90':'0'}deg);color:var(--muted);font-size:0.85rem;line-height:1;cursor:pointer;user-select:none`;
             const subLabel = `font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--orange);font-weight:700;margin-bottom:0.3rem`;
-            return `<tr>
+            const missingInvoice = !e.invoiced_date || !e.invoice_sent_date;
+            const rowBg = missingInvoice ? 'background:rgba(239,68,68,0.18)' : '';
+            const icEntry = icSentMap.get(e.id);
+            const icBadge = icEntry
+              ? `<div id="ic-main-${e.id}" style="font-size:0.62rem;color:#22c55e;font-weight:600;margin-top:0.18rem;white-space:nowrap;letter-spacing:0.01em">&#10003; IC ${fmtSentAt(icEntry.sent_at)}</div>`
+              : `<div id="ic-main-${e.id}"></div>`;
+            return `<tr style="${rowBg}">
               <td style="width:28px;text-align:center;padding:0 0.25rem;cursor:pointer" onclick="toggleInvoiceRow('${e.id}')">
                 <span id="caret-${e.id}" style="${caretStyle}">&#8250;</span>
               </td>
@@ -1149,7 +1157,7 @@
               <td style="min-width:130px">${sel(e.id,'customer',customerOpts(e.customer))}</td>
               <td style="min-width:160px">${inp(e.id,'description','text','Description',e.description)}</td>
               <td style="min-width:100px">${inp(e.id,'division','text','Division',e.division)}</td>
-              <td style="min-width:130px">${inp(e.id,'notes','text','Notes',e.notes)}</td>
+              <td style="min-width:130px">${inp(e.id,'notes','text','Notes',e.notes)}${icBadge}</td>
               <td style="text-align:center;width:36px">
                 <button class="btn-del-row" onclick="deleteRow('${e.id}')" title="Delete">&#10005;</button>
               </td>
