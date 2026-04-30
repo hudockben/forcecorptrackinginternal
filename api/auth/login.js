@@ -6,7 +6,7 @@ const jwt        = require('jsonwebtoken');
 const { syncProjects, syncLists, syncPurchaseOrders, syncInventory } = require('../lib/sync-normalized');
 
 // All divisions the platform supports — order determines display order on the selector
-const ALL_DIVISIONS = ['turf', 'dust', 'paving'];
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'intercompany'];
 
 /**
  * Compute the effective divisions a user can access.

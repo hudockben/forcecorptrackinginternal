@@ -7,8 +7,8 @@
  * Primary source: trucking_entries normalized table (filtered by division).
  * Fallback:       app_data JSON blob (fct_trucking:<division>) when table is empty.
  */
-const { neon }        = require('@neondatabase/serverless');
-const { requireAuth } = require('./lib/auth');
+const { neon }            = require('@neondatabase/serverless');
+const { requireDivision } = require('./lib/auth');
 
 function safeFloat(v) {
   const f = parseFloat(v);
@@ -51,11 +51,11 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const payload = requireAuth(req, res);
-  if (!payload) return;
+  const guard = requireDivision(req, res);
+  if (!guard) return;
+  const { payload, division } = guard;
 
   const { companyCode } = payload;
-  const division = (req.query.division || 'turf').toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const blobKey  = `${companyCode}:fct_trucking:${division}`;
   const sql = neon(process.env.DATABASE_URL);
 

@@ -1,8 +1,8 @@
 'use strict';
 
 const { neon }        = require('@neondatabase/serverless');
-const jwt             = require('jsonwebtoken');
 const { syncForKey }  = require('../lib/sync-normalized');
+const { requireAuth, hasDivisionAccess, divisionForKey } = require('../lib/auth');
 
 const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory', 'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists'];
 function isAllowedKey(k) {
@@ -16,15 +16,14 @@ function isAllowedKey(k) {
     || /^fct_paving_[a-zA-Z0-9_-]+$/.test(k);
 }
 
-function verifyToken(req) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return null;
-  try {
-    return jwt.verify(token, process.env.JWT_SECRET);
-  } catch {
-    return null;
-  }
+/**
+ * Returns true if the JWT payload is permitted to read/write this blob key.
+ * Maps key prefix → division and verifies divisionRoles[division] != 'no_access'.
+ * Keys without a division-specific prefix (turf-default) require turf access.
+ */
+function isKeyAllowedForUser(key, payload) {
+  const division = divisionForKey(key) || 'turf';
+  return hasDivisionAccess(payload, division);
 }
 
 module.exports = async (req, res) => {
@@ -34,10 +33,8 @@ module.exports = async (req, res) => {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const payload = verifyToken(req);
-  if (!payload) {
-    return res.status(401).json({ error: 'Unauthorized — please log in' });
-  }
+  const payload = requireAuth(req, res);
+  if (!payload) return;
 
   const key = req.query.key;
   const sql = neon(process.env.DATABASE_URL);
@@ -46,8 +43,11 @@ module.exports = async (req, res) => {
   if (key === '_batch' && req.method === 'GET') {
     const keysParam = req.query.keys;
     if (!keysParam) return res.status(400).json({ error: 'keys query param required (comma-separated)' });
-    const keys = keysParam.split(',').filter(k => isAllowedKey(k));
-    if (!keys.length) return res.status(400).json({ error: 'No valid keys provided' });
+    // Filter to keys that are both syntactically allowed AND permitted for this user's divisions.
+    // Silently dropping keys the user can't access (rather than 403) keeps batch reads
+    // resilient when a UI batch list happens to include cross-division keys.
+    const keys = keysParam.split(',').filter(k => isAllowedKey(k) && isKeyAllowedForUser(k, payload));
+    if (!keys.length) return res.json({ values: {} });
     const scopedKeys = keys.map(k => `${payload.companyCode}:${k}`);
     const rows = await sql`SELECT key, value FROM app_data WHERE key = ANY(${scopedKeys})`;
     const prefix = payload.companyCode + ':';
@@ -58,6 +58,10 @@ module.exports = async (req, res) => {
 
   if (!isAllowedKey(key)) {
     return res.status(400).json({ error: `Unknown key "${key}". Allowed: ${ALLOWED_KEYS.join(', ')}, fct_project_*, fct_trend_*` });
+  }
+
+  if (!isKeyAllowedForUser(key, payload)) {
+    return res.status(403).json({ error: 'You do not have access to this division\'s data' });
   }
 
   // Namespace the DB key by company so each company's data is isolated

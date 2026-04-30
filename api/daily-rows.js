@@ -1,18 +1,7 @@
 'use strict';
 
-const { neon } = require('@neondatabase/serverless');
-const jwt      = require('jsonwebtoken');
-
-function verifyToken(req) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return null;
-  try {
-    return jwt.verify(token, process.env.JWT_SECRET);
-  } catch {
-    return null;
-  }
-}
+const { neon }            = require('@neondatabase/serverless');
+const { requireDivision } = require('./lib/auth');
 
 // Falls back to today when date is missing (schema: date DATE NOT NULL)
 function dateOrToday(v) {
@@ -144,11 +133,10 @@ module.exports = async (req, res) => {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const payload = verifyToken(req);
-  if (!payload) return res.status(401).json({ error: 'Unauthorized — please log in' });
-
+  const guard = requireDivision(req, res);
+  if (!guard) return;
+  const { payload, division } = guard;
   const companyCode = payload.companyCode;
-  const division    = (req.query.division || 'turf').toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const sql = neon(process.env.DATABASE_URL);
 
   try {
@@ -251,7 +239,6 @@ module.exports = async (req, res) => {
             NOW()
           )
           ON CONFLICT (row_id) DO UPDATE SET
-            division        = EXCLUDED.division,
             date            = EXCLUDED.date,
             field_type      = EXCLUDED.field_type,
             employee        = EXCLUDED.employee,
@@ -272,6 +259,7 @@ module.exports = async (req, res) => {
             quantity        = EXCLUDED.quantity,
             updated_at      = NOW()
           WHERE daily_tracking.company_code = ${companyCode}
+            AND daily_tracking.division     = ${division}
         `;
       } else {
         await sql`
@@ -296,6 +284,7 @@ module.exports = async (req, res) => {
             quantity        = ${parseFloatOrZero(row.quantity)},
             updated_at      = NOW()
           WHERE row_id = ${id} AND company_code = ${companyCode}
+            AND division = ${division}
         `;
       }
       return res.json({ ok: true });
