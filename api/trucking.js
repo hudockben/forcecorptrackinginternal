@@ -1,11 +1,11 @@
 'use strict';
 /**
- * GET /api/trucking  — all trucking entries for the company
- * PUT /api/trucking  — full sync: { truckingEntries: [...] }
+ * GET /api/trucking?division=turf  — all trucking entries for a division
+ * PUT /api/trucking?division=turf  — full sync: { truckingEntries: [...] }
  *
- * Primary source: trucking_entries normalized table.
- * Fallback:       app_data JSON blob (fct_trucking) when table is empty,
- *                 which transparently migrates existing data on first read.
+ * `division` defaults to 'turf' for backward compatibility.
+ * Primary source: trucking_entries normalized table (filtered by division).
+ * Fallback:       app_data JSON blob (fct_trucking:<division>) when table is empty.
  */
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
@@ -39,10 +39,8 @@ function dbToTR(r) {
     notes:           r.notes           || '',
     cost_code:       r.cost_code       || '',
     sub_code:        r.sub_code        || '',
-    // Status audit fields
     status_changed_at: r.status_changed_at ? String(r.status_changed_at) : undefined,
     status_changed_by: r.status_changed_by || undefined,
-    // Daily-row link
     tr_row_id:       r.tr_row_id       || undefined,
   };
 }
@@ -57,15 +55,16 @@ module.exports = async (req, res) => {
   if (!payload) return;
 
   const { companyCode } = payload;
+  const division = (req.query.division || 'turf').toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  const blobKey  = `${companyCode}:fct_trucking:${division}`;
   const sql = neon(process.env.DATABASE_URL);
 
   try {
     // ── GET ──────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
       // JSON blob is the source of truth — PUT always awaits a write to it.
-      // Normalized table is a fire-and-forget mirror that may be stale.
       const blobRows = await sql`
-        SELECT value FROM app_data WHERE key = ${companyCode + ':fct_trucking'}
+        SELECT value FROM app_data WHERE key = ${blobKey}
       `;
       const blob = blobRows.length ? blobRows[0].value : null;
       const list = Array.isArray(blob) ? blob : [];
@@ -74,10 +73,10 @@ module.exports = async (req, res) => {
         return res.json({ truckingEntries: list });
       }
 
-      // ── Fallback: normalized table when blob is empty ──
+      // ── Fallback: normalized table filtered by division ──
       const rows = await sql`
         SELECT * FROM trucking_entries
-        WHERE  company_code = ${companyCode}
+        WHERE  company_code = ${companyCode} AND division = ${division}
         ORDER  BY created_at ASC
       `;
 
@@ -91,15 +90,15 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'truckingEntries array required' });
       }
 
-      // Always write to JSON blob first — this is the source of truth.
+      // Always write to the division-specific JSON blob first — source of truth.
       await sql`
         INSERT INTO app_data (key, value, updated_at)
-        VALUES (${companyCode + ':fct_trucking'}, ${JSON.stringify(truckingEntries)}::jsonb, NOW())
+        VALUES (${blobKey}, ${JSON.stringify(truckingEntries)}::jsonb, NOW())
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
       `;
 
       // Mirror to normalized table — awaited before response so serverless doesn't kill it.
-      try { await _migrateTruckingBlob(sql, companyCode, truckingEntries); }
+      try { await _syncTrucking(sql, companyCode, division, truckingEntries); }
       catch (err) { console.error('[trucking] normalize failed:', err.message); }
 
       return res.json({ ok: true });
@@ -113,17 +112,20 @@ module.exports = async (req, res) => {
   }
 };
 
-async function _migrateTruckingBlob(sql, companyCode, list) {
+async function _syncTrucking(sql, companyCode, division, list) {
   const ids = list.map(t => t && t.id).filter(Boolean);
 
-  // Delete removed entries
   if (ids.length) {
     await sql`
       DELETE FROM trucking_entries
-      WHERE company_code = ${companyCode} AND id <> ALL(${ids})
+      WHERE company_code = ${companyCode} AND division = ${division}
+        AND id <> ALL(${ids})
     `;
   } else {
-    await sql`DELETE FROM trucking_entries WHERE company_code = ${companyCode}`;
+    await sql`
+      DELETE FROM trucking_entries
+      WHERE company_code = ${companyCode} AND division = ${division}
+    `;
     return;
   }
 
@@ -131,11 +133,11 @@ async function _migrateTruckingBlob(sql, companyCode, list) {
     if (!t || !t.id) continue;
     await sql`
       INSERT INTO trucking_entries (
-        id, company_code, tr_number, driver, truck_type, project_id,
+        id, company_code, division, tr_number, driver, truck_type, project_id,
         date, material_hauled, loads, rate, hours, status, notes,
         cost_code, sub_code, tr_row_id, status_changed_at, status_changed_by, updated_at
       ) VALUES (
-        ${t.id}, ${companyCode},
+        ${t.id}, ${companyCode}, ${division},
         ${t.tr_number        || null},
         ${t.driver           || null},
         ${t.truck_type       || null},
@@ -155,6 +157,7 @@ async function _migrateTruckingBlob(sql, companyCode, list) {
         NOW()
       )
       ON CONFLICT (id) DO UPDATE SET
+        division           = EXCLUDED.division,
         tr_number          = EXCLUDED.tr_number,
         driver             = EXCLUDED.driver,
         truck_type         = EXCLUDED.truck_type,

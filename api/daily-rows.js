@@ -72,9 +72,9 @@ function dbRowToFrontend(r) {
   return row;
 }
 
-function _rowToValues(r, projectId, companyCode) {
+function _rowToValues(r, projectId, companyCode, division) {
   return [
-    String(r.id), projectId, companyCode,
+    String(r.id), projectId, companyCode, division,
     dateOrToday(r.date), r.field_type || null, r.employee || null,
     r.cost_code || null, r.sub_code || null, r.job_class || null,
     parseFloatOrZero(r.rate), parseFloatOrZero(r.labor_hours),
@@ -89,17 +89,16 @@ function _rowToValues(r, projectId, companyCode) {
   ];
 }
 
-const BATCH_SIZE = 50; // rows per INSERT statement
+const BATCH_SIZE = 50;
 
-async function insertRows(sql, projectId, companyCode, rows) {
-  // Batch inserts: group rows into chunks and build multi-row INSERT statements
+async function insertRows(sql, projectId, companyCode, division, rows) {
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
     if (batch.length === 1) {
-      const v = _rowToValues(batch[0], projectId, companyCode);
+      const v = _rowToValues(batch[0], projectId, companyCode, division);
       await sql`
         INSERT INTO daily_tracking (
-          row_id, project_id, company_code,
+          row_id, project_id, company_code, division,
           date, field_type, employee, cost_code, sub_code, job_class,
           rate, labor_hours, equipment, equip_unit_cost, equip_hours,
           material, supplier, po_num, units_purchased, unit_cost,
@@ -109,23 +108,22 @@ async function insertRows(sql, projectId, companyCode, rows) {
           ${v[0]}, ${v[1]}, ${v[2]}, ${v[3]}, ${v[4]}, ${v[5]},
           ${v[6]}, ${v[7]}, ${v[8]}, ${v[9]}, ${v[10]}, ${v[11]},
           ${v[12]}, ${v[13]}, ${v[14]}, ${v[15]}, ${v[16]}, ${v[17]},
-          ${v[18]}, ${v[19]}, ${v[20]}, ${v[21]}, ${v[22]}, ${v[23]}
+          ${v[18]}, ${v[19]}, ${v[20]}, ${v[21]}, ${v[22]}, ${v[23]}, ${v[24]}
         )
         ON CONFLICT (row_id) DO NOTHING
       `;
     } else {
-      // Build batched VALUES via raw SQL for multi-row insert
       const params = [];
       const valueClauses = [];
       batch.forEach(r => {
-        const v = _rowToValues(r, projectId, companyCode);
+        const v = _rowToValues(r, projectId, companyCode, division);
         const offset = params.length;
         valueClauses.push(`(${v.map((_, j) => `$${offset + j + 1}`).join(',')})`);
         params.push(...v);
       });
       const query = `
         INSERT INTO daily_tracking (
-          row_id, project_id, company_code,
+          row_id, project_id, company_code, division,
           date, field_type, employee, cost_code, sub_code, job_class,
           rate, labor_hours, equipment, equip_unit_cost, equip_hours,
           material, supplier, po_num, units_purchased, unit_cost,
@@ -150,14 +148,13 @@ module.exports = async (req, res) => {
   if (!payload) return res.status(401).json({ error: 'Unauthorized — please log in' });
 
   const companyCode = payload.companyCode;
+  const division    = (req.query.division || 'turf').toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const sql = neon(process.env.DATABASE_URL);
 
   try {
     // ── GET — fetch rows ───────────────────────────────────────────────────
     if (req.method === 'GET') {
       const { projectId, since, limit: qLimit, offset: qOffset } = req.query;
-
-      // Parse pagination params (safe defaults, max 50k rows per request)
       const limitVal  = Math.min(Math.max(parseInt(qLimit)  || 10000, 1), 50000);
       const offsetVal = Math.max(parseInt(qOffset) || 0, 0);
 
@@ -169,7 +166,8 @@ module.exports = async (req, res) => {
                  material, supplier, po_num, units_purchased, unit_cost, material_cost,
                  quantity, equip_total_override, total_cost_override, num_laborers
           FROM daily_tracking
-          WHERE company_code = ${companyCode} AND project_id = ${projectId} AND date >= ${since}
+          WHERE company_code = ${companyCode} AND division = ${division}
+            AND project_id = ${projectId} AND date >= ${since}
           ORDER BY date ASC NULLS LAST, created_at ASC
           LIMIT ${limitVal} OFFSET ${offsetVal}
         `;
@@ -180,7 +178,8 @@ module.exports = async (req, res) => {
                  material, supplier, po_num, units_purchased, unit_cost, material_cost,
                  quantity, equip_total_override, total_cost_override, num_laborers
           FROM daily_tracking
-          WHERE company_code = ${companyCode} AND project_id = ${projectId}
+          WHERE company_code = ${companyCode} AND division = ${division}
+            AND project_id = ${projectId}
           ORDER BY date ASC NULLS LAST, created_at ASC
           LIMIT ${limitVal} OFFSET ${offsetVal}
         `;
@@ -191,7 +190,8 @@ module.exports = async (req, res) => {
                  material, supplier, po_num, units_purchased, unit_cost, material_cost,
                  quantity, equip_total_override, total_cost_override, num_laborers
           FROM daily_tracking
-          WHERE company_code = ${companyCode} AND date >= ${since}
+          WHERE company_code = ${companyCode} AND division = ${division}
+            AND date >= ${since}
           ORDER BY project_id, date ASC NULLS LAST, created_at ASC
           LIMIT ${limitVal} OFFSET ${offsetVal}
         `;
@@ -202,7 +202,7 @@ module.exports = async (req, res) => {
                  material, supplier, po_num, units_purchased, unit_cost, material_cost,
                  quantity, equip_total_override, total_cost_override, num_laborers
           FROM daily_tracking
-          WHERE company_code = ${companyCode}
+          WHERE company_code = ${companyCode} AND division = ${division}
           ORDER BY project_id, date ASC NULLS LAST, created_at ASC
           LIMIT ${limitVal} OFFSET ${offsetVal}
         `;
@@ -218,7 +218,7 @@ module.exports = async (req, res) => {
       const toInsert = rows || (row ? [row] : []);
       if (!toInsert.length) return res.status(400).json({ error: 'row or rows required' });
 
-      await insertRows(sql, projectId, companyCode, toInsert);
+      await insertRows(sql, projectId, companyCode, division, toInsert);
       return res.json({ ok: true });
     }
 
@@ -231,16 +231,15 @@ module.exports = async (req, res) => {
       if (!row) return res.status(400).json({ error: 'row required in body' });
 
       if (projectId) {
-        // Upsert: if the original POST failed we still save the row on first edit
         await sql`
           INSERT INTO daily_tracking (
-            row_id, project_id, company_code,
+            row_id, project_id, company_code, division,
             date, field_type, employee, cost_code, sub_code, job_class,
             rate, labor_hours, equipment, equip_unit_cost, equip_hours,
             material, supplier, po_num, units_purchased, unit_cost,
             material_cost, quantity, updated_at
           ) VALUES (
-            ${id}, ${projectId}, ${companyCode},
+            ${id}, ${projectId}, ${companyCode}, ${division},
             ${dateOrToday(row.date)}, ${row.field_type || null}, ${row.employee || null},
             ${row.cost_code || null}, ${row.sub_code || null}, ${row.job_class || null},
             ${parseFloatOrZero(row.rate)}, ${parseFloatOrZero(row.labor_hours)},
@@ -252,6 +251,7 @@ module.exports = async (req, res) => {
             NOW()
           )
           ON CONFLICT (row_id) DO UPDATE SET
+            division        = EXCLUDED.division,
             date            = EXCLUDED.date,
             field_type      = EXCLUDED.field_type,
             employee        = EXCLUDED.employee,
@@ -308,24 +308,25 @@ module.exports = async (req, res) => {
       if (id) {
         await sql`
           DELETE FROM daily_tracking
-          WHERE row_id = ${id} AND company_code = ${companyCode}
+          WHERE row_id = ${id} AND company_code = ${companyCode} AND division = ${division}
         `;
       } else if (projectId) {
         await sql`
           DELETE FROM daily_tracking
           WHERE project_id = ${projectId} AND company_code = ${companyCode}
+            AND division = ${division}
         `;
       } else if (costCode !== undefined && subCode !== undefined) {
         await sql`
           DELETE FROM daily_tracking
           WHERE cost_code = ${costCode} AND sub_code = ${subCode}
-            AND company_code = ${companyCode}
+            AND company_code = ${companyCode} AND division = ${division}
         `;
       } else if (subCode !== undefined) {
-        // Sub-code-only delete — removes across all cost codes
         await sql`
           DELETE FROM daily_tracking
           WHERE sub_code = ${subCode} AND company_code = ${companyCode}
+            AND division = ${division}
         `;
       } else {
         return res.status(400).json({ error: 'id, projectId, subCode, or costCode+subCode required' });

@@ -2900,6 +2900,7 @@
 const fctToken    = localStorage.getItem('fct_token');
 const fctUser     = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
 const fctDivision = localStorage.getItem('fct_division');
+const DIVISION    = 'paving';
 
 if (!fctToken || !fctUser) {
   window.location.replace('index.html');
@@ -2959,6 +2960,7 @@ function switchDivision() {
 async function drGetAll(opts) {
   try {
     const params = new URLSearchParams();
+    params.set('division', DIVISION);
     if (opts) {
       if (opts.since)     params.set('since',     opts.since);
       if (opts.projectId) params.set('projectId', opts.projectId);
@@ -2966,7 +2968,7 @@ async function drGetAll(opts) {
       if (opts.offset)    params.set('offset',    opts.offset);
     }
     const qs = params.toString();
-    const r = await fetch(`${API_BASE}/daily-rows${qs ? '?' + qs : ''}`, {
+    const r = await fetch(`${API_BASE}/daily-rows?${qs}`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
     if (r.status === 401) { logout(); return []; }
@@ -2982,7 +2984,7 @@ async function drGetAll(opts) {
 
 /** Insert one row into the DB (fire-and-forget). */
 function drPost(projectId, row) {
-  fetch(`${API_BASE}/daily-rows`, {
+  fetch(`${API_BASE}/daily-rows?division=${DIVISION}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ projectId, row })
@@ -3001,7 +3003,7 @@ function drPost(projectId, row) {
 
 /** Insert multiple rows at once (awaitable — used for migration and CSV import). */
 async function drPostBulk(projectId, rows) {
-  const r = await fetch(`${API_BASE}/daily-rows`, {
+  const r = await fetch(`${API_BASE}/daily-rows?division=${DIVISION}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ projectId, rows })
@@ -3034,7 +3036,7 @@ function drPutNow(rowId, row) {
 }
 
 function _drPutNow(rowId, row) {
-  fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
+  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ row, projectId: row._projectId || null })
@@ -3057,7 +3059,7 @@ function _drFlushPending() {
     clearTimeout(_drSaveTimers[rowId]);
     delete _drSaveTimers[rowId];
     try {
-      fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
+      fetch(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
         body: JSON.stringify({ row, projectId: row._projectId || null }),
@@ -3075,7 +3077,7 @@ document.addEventListener('visibilitychange', () => {
 
 /** Delete one row by its JS id. */
 function drDelete(rowId) {
-  fetch(`${API_BASE}/daily-rows?id=${encodeURIComponent(rowId)}`, {
+  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${fctToken}` }
   }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE failed:', r.status); })
@@ -3085,7 +3087,7 @@ function drDelete(rowId) {
 
 /** Delete all rows for a project (called when deleting the project itself). */
 function drDeleteByProject(projectId) {
-  fetch(`${API_BASE}/daily-rows?projectId=${encodeURIComponent(projectId)}`, {
+  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&projectId=${encodeURIComponent(projectId)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${fctToken}` }
   }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by project failed:', r.status); })
@@ -3094,7 +3096,7 @@ function drDeleteByProject(projectId) {
 
 /** Delete all rows matching a cost code + sub code across all projects. */
 function drDeleteByCode(costCode, subCode) {
-  fetch(`${API_BASE}/daily-rows?costCode=${encodeURIComponent(costCode)}&subCode=${encodeURIComponent(subCode)}`, {
+  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&costCode=${encodeURIComponent(costCode)}&subCode=${encodeURIComponent(subCode)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${fctToken}` }
   }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by code failed:', r.status); })
@@ -3103,7 +3105,7 @@ function drDeleteByCode(costCode, subCode) {
 
 /** Delete all rows matching a sub code across ALL cost codes. */
 function drDeleteBySubCode(subCode) {
-  fetch(`${API_BASE}/daily-rows?subCode=${encodeURIComponent(subCode)}`, {
+  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&subCode=${encodeURIComponent(subCode)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${fctToken}` }
   }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by subCode failed:', r.status); })
@@ -4017,7 +4019,7 @@ async function loadBoard() {
   const el = document.getElementById('board-posts');
   if (!el) return;
   try {
-    const res = await fetch('/api/board', {
+    const res = await fetch('/api/board?division=' + DIVISION, {
       headers: { 'Authorization': 'Bearer ' + fctToken }
     });
     const data = await res.json();
@@ -4064,7 +4066,7 @@ async function boardPost() {
   const msg = input.value.trim();
   if (!msg) return;
   try {
-    const res = await fetch('/api/board', {
+    const res = await fetch('/api/board?division=' + DIVISION, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
       body: JSON.stringify({ message: msg })
@@ -4080,7 +4082,7 @@ async function boardPost() {
 
 async function boardToggle(id, completed) {
   try {
-    const res = await fetch('/api/board?id=' + id, {
+    const res = await fetch('/api/board?division=' + DIVISION + '&id=' + id, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
       body: JSON.stringify({ completed })
@@ -4106,7 +4108,7 @@ async function loadDeadlines() {
   const el = document.getElementById('deadline-posts');
   if (!el) return;
   try {
-    const res = await fetch('/api/deadlines', { headers: { 'Authorization': 'Bearer ' + fctToken } });
+    const res = await fetch('/api/deadlines?division=' + DIVISION, { headers: { 'Authorization': 'Bearer ' + fctToken } });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed');
     renderDeadlinePosts(data.deadlines || []);
@@ -4152,7 +4154,7 @@ async function deadlinePost() {
   const project = document.getElementById('dl-proj')?.value;
   if (!msg) { document.getElementById('dl-input')?.focus(); return; }
   try {
-    const res = await fetch('/api/deadlines', {
+    const res = await fetch('/api/deadlines?division=' + DIVISION, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
       body: JSON.stringify({ message: msg, deadline_date: date || null, project_name: project || '' })
@@ -4171,7 +4173,7 @@ async function deadlinePost() {
 async function deadlineDelete(id) {
   if (!confirm('Delete this deadline?')) return;
   try {
-    const res = await fetch('/api/deadlines?id=' + id, {
+    const res = await fetch('/api/deadlines?division=' + DIVISION + '&id=' + id, {
       method: 'DELETE',
       headers: { 'Authorization': 'Bearer ' + fctToken }
     });
@@ -4189,7 +4191,7 @@ async function deadlineDelete(id) {
 async function boardDelete(id) {
   if (!confirm('Delete this post?')) return;
   try {
-    const res = await fetch('/api/board?id=' + id, {
+    const res = await fetch('/api/board?division=' + DIVISION + '&id=' + id, {
       method: 'DELETE',
       headers: { 'Authorization': 'Bearer ' + fctToken }
     });
@@ -4831,7 +4833,7 @@ let truckingEntries = [];
 
 async function loadTruckingEntries() {
   try {
-    const r = await fetch(`${API_BASE}/trucking`, {
+    const r = await fetch(`${API_BASE}/trucking?division=${DIVISION}`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
     if (r.status === 401) { logout(); return; }
@@ -4849,7 +4851,7 @@ async function loadTruckingEntries() {
 
 function saveTruckingEntries() {
   localStorage.setItem('fct_paving_trucking', JSON.stringify(truckingEntries));
-  fetch(`${API_BASE}/trucking`, {
+  fetch(`${API_BASE}/trucking?division=${DIVISION}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ truckingEntries })
@@ -16143,7 +16145,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollTrucking() {
-    const r = await fetch(`${API_BASE}/trucking`, {
+    const r = await fetch(`${API_BASE}/trucking?division=${DIVISION}`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
     if (!r.ok) return;
@@ -16480,7 +16482,7 @@ async function loadScheduleDeadlines() {
   try {
     const ctrl = new AbortController();
     const tid  = setTimeout(() => ctrl.abort(), 5000);
-    const r    = await fetch('/api/deadlines', { headers: { 'Authorization': 'Bearer ' + fctToken }, signal: ctrl.signal });
+    const r    = await fetch('/api/deadlines?division=' + DIVISION, { headers: { 'Authorization': 'Bearer ' + fctToken }, signal: ctrl.signal });
     clearTimeout(tid);
     if (r.ok) {
       const d = await r.json();
