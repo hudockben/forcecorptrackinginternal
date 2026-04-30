@@ -156,6 +156,13 @@
       padding: 0.18rem 0.35rem; outline: none; box-sizing: border-box;
     }
     .tr-tbl thead tr.filter-row input:focus { border-color: #555; color: var(--text); }
+    .tr-tbl thead tr.filter-row button.date-filter-btn {
+      display: block; width: 100%;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 3px;
+      color: var(--muted); font-size: 0.7rem;
+      padding: 0.18rem 0.35rem; box-sizing: border-box;
+      cursor: pointer; white-space: nowrap; line-height: normal;
+    }
 
     .tr-tbl tbody tr { border-bottom: 1px solid var(--border); }
     .tr-tbl tbody td { padding: 0.35rem 0.6rem; }
@@ -965,6 +972,25 @@
       return Math.round(mins / 60 * 100) / 100;
     }
 
+    // Updates time field in memory and refreshes hours/total display without triggering a save.
+    // Called by oninput so the display stays live while the user is still typing.
+    function _liveHours(id, field, value) {
+      const e = divEntries.find(e => e.id === id);
+      if (!e) return;
+      e[field] = value;
+      const calc = calcHours(e.actual_start, e.actual_end);
+      if (calc !== null) {
+        e.total_hours = calc;
+        const hrsEl = document.getElementById('th-hrs-' + id);
+        if (hrsEl) hrsEl.value = calc;
+        const totEl = document.getElementById('td-tot-' + id);
+        if (totEl) {
+          const tot = calc * (parseFloat(e.haul_fee) || 0);
+          totEl.textContent = '$' + tot.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+      }
+    }
+
     function updateField(id, field, value) {
       const e = divEntries.find(e => e.id === id);
       if (!e) return;
@@ -1016,10 +1042,31 @@
       renderTrackingTab();
     }
 
+    let trDateExcluded  = new Set(); // dates the user has unchecked
+    let _trDateDropOpen = false;
+
+    function _trExcludeDate(date, exclude) {
+      _trDateDropOpen = true;
+      if (exclude) trDateExcluded.add(date);
+      else         trDateExcluded.delete(date);
+      renderTrackingTab();
+    }
+
+    function _trDateSelectAll(datesJson, select) {
+      _trDateDropOpen = true;
+      const dates = JSON.parse(datesJson);
+      if (select) dates.forEach(d => trDateExcluded.delete(d));
+      else        dates.forEach(d => trDateExcluded.add(d));
+      renderTrackingTab();
+    }
+
     function applyColFilters(entries) {
+      let result = trDateExcluded.size > 0
+        ? entries.filter(e => !trDateExcluded.has(e.actual_date || ''))
+        : entries;
       const active = Object.entries(trColFilters).filter(([, v]) => v);
-      if (!active.length) return entries;
-      return entries.filter(e =>
+      if (!active.length) return result;
+      return result.filter(e =>
         active.every(([field, val]) =>
           String(e[field] || '').toLowerCase().includes(val.toLowerCase())
         )
@@ -1071,7 +1118,8 @@
         ? divEntries
         : divEntries.filter(e => (e.actual_date || '').startsWith(activeYearFilter));
 
-      const filteredEntries = applyColFilters(yearFiltered);
+      const filteredEntries = applyColFilters(yearFiltered)
+        .slice().sort((a, b) => (b.actual_date || '').localeCompare(a.actual_date || '') || (b.task_number || '').localeCompare(a.task_number || ''));
 
       // ── Totals ──
       let sumHours = 0, sumRevenue = 0;
@@ -1103,6 +1151,39 @@
         return `<input type="text" value="${esc(v)}" placeholder="filter…"
           data-filter-field="${field}"
           oninput="setColFilter('${field}',this.value)">`;
+      };
+
+      const fiDateDrop = () => {
+        const yearDates = (activeYearFilter === 'all' ? divEntries : divEntries.filter(e => (e.actual_date||'').startsWith(activeYearFilter)))
+          .map(e => e.actual_date).filter(Boolean);
+        const uniqDates = [...new Set(yearDates)].sort().reverse();
+        const hiddenCount = uniqDates.filter(d => trDateExcluded.has(d)).length;
+        const allSelected = hiddenCount === 0;
+        const btnLabel = allSelected ? 'All dates ▾' : `${uniqDates.length - hiddenCount} of ${uniqDates.length} ▾`;
+        const btnStyle = allSelected
+          ? ''
+          : 'background:rgba(251,191,36,0.12)!important;border-color:var(--yellow)!important;color:var(--yellow)!important';
+        const datesJson = esc(JSON.stringify(uniqDates));
+        const itemsHTML = uniqDates.map(d => {
+          const checked = !trDateExcluded.has(d);
+          const label   = d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) : d;
+          return `<label style="display:flex;align-items:center;gap:0.5rem;padding:0.22rem 0.75rem;cursor:pointer;font-size:0.78rem;white-space:nowrap;user-select:none">
+            <input type="checkbox" ${checked?'checked':''} onclick="event.stopPropagation();_trExcludeDate('${d}',!this.checked)">
+            ${label}
+          </label>`;
+        }).join('');
+        const dropHTML = _trDateDropOpen ? `
+          <div onclick="event.stopPropagation()" style="position:absolute;top:100%;left:0;z-index:9999;background:#1c1c1c;border:1px solid var(--border);border-radius:5px;box-shadow:0 6px 20px rgba(0,0,0,0.55);min-width:180px;max-height:280px;overflow-y:auto">
+            <label style="display:flex;align-items:center;gap:0.5rem;padding:0.32rem 0.75rem;cursor:pointer;font-size:0.78rem;font-weight:700;border-bottom:1px solid var(--border);user-select:none;white-space:nowrap">
+              <input type="checkbox" ${allSelected?'checked':''} onclick="event.stopPropagation();_trDateSelectAll('${datesJson}',this.checked)">
+              Select All
+            </label>
+            ${itemsHTML}
+          </div>` : '';
+        return `<button class="date-filter-btn" onclick="event.stopPropagation();_trDateDropOpen=!_trDateDropOpen;renderTrackingTab()"
+            style="${btnStyle}">
+            ${btnLabel}
+          </button>${dropHTML}`;
       };
 
       const invInp = (id, field, type, placeholder, val) =>
@@ -1144,8 +1225,8 @@
                 ${sel(e.id,'unit',unitOpts(e.unit))}
                 <div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>
               </td>
-              <td style="min-width:90px">${inp(e.id,'actual_start','time','',e.actual_start)}</td>
-              <td style="min-width:90px">${inp(e.id,'actual_end','time','',e.actual_end)}</td>
+              <td style="min-width:90px"><input type="time" value="${esc(e.actual_start||'')}" oninput="_liveHours('${e.id}','actual_start',this.value)" onchange="updateField('${e.id}','actual_start',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
+              <td style="min-width:90px"><input type="time" value="${esc(e.actual_end||'')}" oninput="_liveHours('${e.id}','actual_end',this.value)" onchange="updateField('${e.id}','actual_end',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
               <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)">
                 <input type="number" id="th-hrs-${e.id}" value="${esc(e.total_hours || '')}"
                   placeholder="0"
@@ -1245,7 +1326,7 @@
                 <tr class="filter-row">
                   <th></th>
                   <th>${fi('task_number')}</th>
-                  <th>${fi('actual_date')}</th>
+                  <th style="position:relative">${fiDateDrop()}</th>
                   <th>${fi('driver')}</th>
                   <th>${fi('unit')}</th>
                   <th>${fi('actual_start')}</th>
@@ -2287,6 +2368,11 @@
     }
 
     loadTrackingData();
+
+    // Close the date dropdown when clicking anywhere outside it
+    document.addEventListener('click', () => {
+      if (_trDateDropOpen) { _trDateDropOpen = false; renderTrackingTab(); }
+    });
 
     /* ═══════════════════════════════════════════
        DATA SYNC — poll shared data every 60s

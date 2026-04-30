@@ -1088,7 +1088,7 @@
         <span class="ub-rate-sym">$</span>
         <input class="ub-rate-input" type="number" id="ubRateInput"
           step="0.01" min="0" placeholder="0.00"
-          oninput="onUbRateChange(this.value)" />
+          oninput="_liveUbRate(this.value)" onchange="onUbRateChange(this.value)" />
         <span class="ub-rate-sym">/ gal</span>
       </div>
     </div>
@@ -2177,7 +2177,7 @@
             (row[f] || '').toLowerCase().includes(v))) return acc;
         acc.push(idx);
         return acc;
-      }, []);
+      }, []).sort((a, b) => (rows[b].date || '').localeCompare(rows[a].date || ''));
 
       let totVeh = 0, totUb = 0, totInv = 0, totGal = 0;
 
@@ -2280,14 +2280,14 @@
           </select></td>
           <td class="cw-veh"><select onchange="setVehicle(${idx},1,this.value)">${vehOpts(row.vehicle1)}</select></td>
           <td class="cw-unit"><input type="text" data-field="v1_unit" value="${esc(row.v1_unit||'')}" oninput="set(${idx},'v1_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="set(${idx},'v1_rate',this.value)"></td>
+          <td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="_liveSet(${idx},'v1_rate',this.value)" onchange="set(${idx},'v1_rate',this.value)"></td>
           ${calcCell(c.v1Total  ? money(c.v1Total)  : '', 'cw-vtot')}
           <td class="cw-veh"><select onchange="setVehicle(${idx},2,this.value)">${vehOpts(row.vehicle2)}</select></td>
           <td class="cw-unit"><input type="text" data-field="v2_unit" value="${esc(row.v2_unit||'')}" oninput="set(${idx},'v2_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="set(${idx},'v2_rate',this.value)"></td>
+          <td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="_liveSet(${idx},'v2_rate',this.value)" onchange="set(${idx},'v2_rate',this.value)"></td>
           ${calcCell(c.v2Total  ? money(c.v2Total)  : '', 'cw-vtot')}
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
-          <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="set(${idx},'gallons_ub',this.value)"></td>
+          <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="_liveSet(${idx},'gallons_ub',this.value)" onchange="set(${idx},'gallons_ub',this.value)"></td>
           ${calcCell(c.ubTotal  ? money(c.ubTotal)  : '', 'cw-ubt')}
           <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}${icChip}</td>
           <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
@@ -2452,6 +2452,16 @@
       rows.splice(idx, 1);
       renderTable();
       scheduleSave();
+    }
+
+    // Live display update for number inputs — no save triggered.
+    // oninput uses this so partial values mid-typing never race with the poll.
+    function _liveSet(idx, field, value) {
+      rows[idx][field] = value;
+      if (CALC_TRIGGERS.has(field)) {
+        refreshCalcCells(idx);
+        refreshAllTotals();
+      }
     }
 
     function set(idx, field, value) {
@@ -2772,10 +2782,14 @@
     /* ═══════════════════════════════════════════
        UB RATE
     ═══════════════════════════════════════════ */
-    function onUbRateChange(val) {
+    function _liveUbRate(val) {
       ubRate = parseFloat(val) || 0;
       rows.forEach((_, i) => refreshCalcCells(i));
       refreshAllTotals();
+    }
+
+    function onUbRateChange(val) {
+      _liveUbRate(val);
       scheduleSave();
     }
 

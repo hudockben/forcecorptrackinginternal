@@ -101,13 +101,25 @@ module.exports = async (req, res) => {
       const legacyLists = (blobLLegacy[0]?.value && typeof blobLLegacy[0].value === 'object') ? blobLLegacy[0].value : null;
       const blobLists = scopedLists || legacyLists || { drivers: [], customers: [], units: [] };
 
-      // If normalized tables look good (within 10% of blob count), use them.
+      // Prefer blob — PUT writes the blob synchronously so it always reflects the
+      // latest save.  The normalized tables are synced fire-and-forget and may lag
+      // behind by seconds, causing GET to return stale driver/unit/customer values
+      // that then overwrite correct in-memory data on the client.
       const normCount = entryRows.length;
       const blobCount = blobEntries.length;
-      const normalizedIsTrustworthy = (normCount > 0 || driverRows.length > 0 || customerRows.length > 0 || unitRows.length > 0)
-        && (blobCount === 0 || normCount >= blobCount * 0.9);
 
-      if (normalizedIsTrustworthy) {
+      if (blobCount > 0) {
+        // Keep normalized tables in sync in background when they're behind.
+        if (normCount < blobCount * 0.9) {
+          _syncToTables(sql, companyCode, blobEntries, blobLists).catch(err =>
+            console.error('[truck-division] re-sync from blob failed:', err.message)
+          );
+        }
+        return res.json({ entries: blobEntries, lists: blobLists });
+      }
+
+      // Blob is empty — fall back to normalized tables (first-load / migration path).
+      if (normCount > 0 || driverRows.length > 0) {
         return res.json({
           entries: entryRows.map(dbToEntry),
           lists: {
@@ -118,18 +130,7 @@ module.exports = async (req, res) => {
         });
       }
 
-      // Normalized tables are empty or stale — use blob and re-sync.
-      const entries = blobEntries;
-      const lists   = blobLists;
-
-      if (entries.length > 0 || (lists.drivers || []).length > 0
-          || (lists.customers || []).length > 0 || (lists.units || []).length > 0) {
-        _syncToTables(sql, companyCode, entries, lists).catch(err =>
-          console.error('[truck-division] re-sync from blob failed:', err.message)
-        );
-      }
-
-      return res.json({ entries, lists });
+      return res.json({ entries: [], lists: { drivers: [], customers: [], units: [] } });
     }
 
     // ── PUT ────────────────────────────────────────────────────────────────
