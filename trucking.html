@@ -1035,15 +1035,34 @@
       renderTrackingTab();
     }
 
+    let trDateExcluded  = new Set(); // dates the user has unchecked
+    let _trDateDropOpen = false;
+
+    function _trExcludeDate(date, exclude) {
+      _trDateDropOpen = true;
+      if (exclude) trDateExcluded.add(date);
+      else         trDateExcluded.delete(date);
+      renderTrackingTab();
+    }
+
+    function _trDateSelectAll(datesJson, select) {
+      _trDateDropOpen = true;
+      const dates = JSON.parse(datesJson);
+      if (select) dates.forEach(d => trDateExcluded.delete(d));
+      else        dates.forEach(d => trDateExcluded.add(d));
+      renderTrackingTab();
+    }
+
     function applyColFilters(entries) {
+      let result = trDateExcluded.size > 0
+        ? entries.filter(e => !trDateExcluded.has(e.actual_date || ''))
+        : entries;
       const active = Object.entries(trColFilters).filter(([, v]) => v);
-      if (!active.length) return entries;
-      return entries.filter(e =>
-        active.every(([field, val]) => {
-          if (field === 'actual_date_from') return (e.actual_date || '') >= val;
-          if (field === 'actual_date_to')   return (e.actual_date || '') <= val;
-          return String(e[field] || '').toLowerCase().includes(val.toLowerCase());
-        })
+      if (!active.length) return result;
+      return result.filter(e =>
+        active.every(([field, val]) =>
+          String(e[field] || '').toLowerCase().includes(val.toLowerCase())
+        )
       );
     }
 
@@ -1127,19 +1146,39 @@
           oninput="setColFilter('${field}',this.value)">`;
       };
 
-      const fiDate = () => {
-        const from = trColFilters.actual_date_from || '';
-        const to   = trColFilters.actual_date_to   || '';
-        const style = 'width:100%;background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.72rem;padding:0.15rem 0.3rem;outline:none;box-sizing:border-box';
-        return `<div style="display:flex;flex-direction:column;gap:3px;min-width:120px">
-          <div style="display:flex;align-items:center;gap:4px">
-            <span style="font-size:0.62rem;color:var(--muted);white-space:nowrap;width:22px">From</span>
-            <input type="date" value="${from}" onchange="setColFilter('actual_date_from',this.value)" style="${style}">
-          </div>
-          <div style="display:flex;align-items:center;gap:4px">
-            <span style="font-size:0.62rem;color:var(--muted);white-space:nowrap;width:22px">To</span>
-            <input type="date" value="${to}" onchange="setColFilter('actual_date_to',this.value)" style="${style}">
-          </div>
+      const fiDateDrop = () => {
+        const yearDates = (activeYearFilter === 'all' ? divEntries : divEntries.filter(e => (e.actual_date||'').startsWith(activeYearFilter)))
+          .map(e => e.actual_date).filter(Boolean);
+        const uniqDates = [...new Set(yearDates)].sort().reverse();
+        const hiddenCount = uniqDates.filter(d => trDateExcluded.has(d)).length;
+        const allSelected = hiddenCount === 0;
+        const btnLabel = allSelected ? 'All dates ▾' : `${uniqDates.length - hiddenCount} of ${uniqDates.length} ▾`;
+        const btnStyle = allSelected
+          ? 'background:var(--surface);border:1px solid var(--border);color:var(--text)'
+          : 'background:rgba(251,191,36,0.12);border:1px solid var(--yellow);color:var(--yellow)';
+        const datesJson = esc(JSON.stringify(uniqDates));
+        const itemsHTML = uniqDates.map(d => {
+          const checked = !trDateExcluded.has(d);
+          const label   = d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) : d;
+          return `<label style="display:flex;align-items:center;gap:0.5rem;padding:0.22rem 0.75rem;cursor:pointer;font-size:0.78rem;white-space:nowrap;user-select:none">
+            <input type="checkbox" ${checked?'checked':''} onclick="event.stopPropagation();_trExcludeDate('${d}',!this.checked)">
+            ${label}
+          </label>`;
+        }).join('');
+        const dropHTML = _trDateDropOpen ? `
+          <div onclick="event.stopPropagation()" style="position:absolute;top:calc(100% + 3px);left:0;z-index:9999;background:#1c1c1c;border:1px solid var(--border);border-radius:5px;box-shadow:0 6px 20px rgba(0,0,0,0.55);min-width:180px;max-height:280px;overflow-y:auto">
+            <label style="display:flex;align-items:center;gap:0.5rem;padding:0.32rem 0.75rem;cursor:pointer;font-size:0.78rem;font-weight:700;border-bottom:1px solid var(--border);user-select:none;white-space:nowrap">
+              <input type="checkbox" ${allSelected?'checked':''} onclick="event.stopPropagation();_trDateSelectAll('${datesJson}',this.checked)">
+              Select All
+            </label>
+            ${itemsHTML}
+          </div>` : '';
+        return `<div style="position:relative" onclick="event.stopPropagation()">
+          <button onclick="event.stopPropagation();_trDateDropOpen=!_trDateDropOpen;renderTrackingTab()"
+            style="${btnStyle};font-size:0.73rem;padding:0.22rem 0.55rem;border-radius:3px;cursor:pointer;white-space:nowrap;width:100%">
+            ${btnLabel}
+          </button>
+          ${dropHTML}
         </div>`;
       };
 
@@ -1283,7 +1322,7 @@
                 <tr class="filter-row">
                   <th></th>
                   <th>${fi('task_number')}</th>
-                  <th>${fiDate()}</th>
+                  <th style="position:relative">${fiDateDrop()}</th>
                   <th>${fi('driver')}</th>
                   <th>${fi('unit')}</th>
                   <th>${fi('actual_start')}</th>
@@ -2325,6 +2364,11 @@
     }
 
     loadTrackingData();
+
+    // Close the date dropdown when clicking anywhere outside it
+    document.addEventListener('click', () => {
+      if (_trDateDropOpen) { _trDateDropOpen = false; renderTrackingTab(); }
+    });
 
     /* ═══════════════════════════════════════════
        DATA SYNC — poll shared data every 60s
