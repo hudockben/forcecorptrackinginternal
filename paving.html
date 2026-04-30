@@ -4595,7 +4595,26 @@ async function loadProjects() {
     // Batch-load all project blobs in one request instead of N individual fetches
     const projKeys = index.map(id => 'fct_project_' + id);
     const batchResult = await apiBatchGet(projKeys);
-    const results = index.map(id => batchResult['fct_project_' + id]).filter(p => p && typeof p === 'object');
+    // Fall back to localStorage for any blob missing from DB (e.g. debounce not yet flushed)
+    let localFallback = null;
+    const results = index.map(id => {
+      const fromDb = batchResult['fct_project_' + id];
+      if (fromDb && typeof fromDb === 'object') return fromDb;
+      // Blob missing from DB — try localStorage
+      try {
+        if (!localFallback) {
+          const raw = JSON.parse(localStorage.getItem(PROJECTS_KEY));
+          localFallback = Array.isArray(raw) ? raw : [];
+        }
+        const local = localFallback.find(p => p && p.id === id);
+        if (local && typeof local === 'object') {
+          // Persist it to DB so it won't be missing next time
+          apiPut('fct_project_' + id, local);
+          return local;
+        }
+      } catch (_) {}
+      return null;
+    }).filter(p => p && typeof p === 'object');
     projectsList = results;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
     // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
@@ -4739,16 +4758,42 @@ async function _loadAndMigrateDailyRows() {
 
 // Save a single project blob (metadata only — dailyRows live in daily_tracking table)
 const _saveProjTimers = {};
+// Pending map: projectId → latest blob (mirrors _drSavePending pattern)
+const _saveProjPending = {};
 function saveProject(id) {
   const p = getProj(id); if (!p) return;
   try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
   // Debounce server writes — coalesces rapid field edits into one PUT per project
   clearTimeout(_saveProjTimers[id]);
+  const blob = _projBlob(p);
+  _saveProjPending[id] = blob;
   _saveProjTimers[id] = setTimeout(() => {
     delete _saveProjTimers[id];
-    apiPut('fct_project_' + id, _projBlob(p));
+    delete _saveProjPending[id];
+    apiPut('fct_project_' + id, blob);
   }, 600);
 }
+
+// Flush all pending project saves immediately (called on page unload / visibility change).
+function _projFlushPending() {
+  Object.entries(_saveProjPending).forEach(([id, blob]) => {
+    clearTimeout(_saveProjTimers[id]);
+    delete _saveProjTimers[id];
+    try {
+      fetch(`${API_BASE}/data/fct_project_${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+        body: JSON.stringify({ value: blob }),
+        keepalive: true,
+      });
+    } catch (_) {}
+  });
+  Object.keys(_saveProjPending).forEach(k => delete _saveProjPending[k]);
+}
+window.addEventListener('beforeunload', _projFlushPending);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _projFlushPending();
+});
 
 // Save the ordered list of project IDs — called when projects are added or removed
 function saveProjectIndex() {
