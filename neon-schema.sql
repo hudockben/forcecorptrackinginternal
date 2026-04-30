@@ -383,6 +383,9 @@ ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMP
 ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS status_changed_by TEXT;
 -- Drop the strict status check so any app status value is accepted
 ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check;
+-- Division column so turf and paving POs are stored separately
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS division TEXT NOT NULL DEFAULT 'turf';
+CREATE INDEX IF NOT EXISTS idx_po_company_division ON purchase_orders(company_code, division);
 
 -- trucking_entries: add tr_row_id and status audit columns
 ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS tr_row_id          TEXT;

@@ -4921,7 +4921,7 @@ let purchaseOrders = [];
 
 async function loadPurchaseOrders() {
   try {
-    const r = await fetch(`${API_BASE}/purchase-orders`, {
+    const r = await fetch(`${API_BASE}/purchase-orders?division=turf`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
     if (r.status === 401) { logout(); return; }
@@ -4957,7 +4957,7 @@ function _migratePOs() {
 }
 
 function savePurchaseOrders() {
-  fetch(`${API_BASE}/purchase-orders`, {
+  fetch(`${API_BASE}/purchase-orders?division=turf`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ purchaseOrders })
@@ -16273,7 +16273,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollPurchaseOrders() {
-    const r = await fetch(`${API_BASE}/purchase-orders`, {
+    const r = await fetch(`${API_BASE}/purchase-orders?division=turf`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
     if (!r.ok) return;
