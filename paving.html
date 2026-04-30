@@ -2563,11 +2563,22 @@
       <button class="btn btn-ghost" style="font-size:0.72rem;padding:0.2rem 0.5rem" onclick="applySqftFilter()">Apply</button>
     </div>
     <button class="btn btn-ghost" id="cost-clear-filters-btn" style="font-size:0.72rem;padding:0.2rem 0.5rem;display:none" onclick="clearAllCostFilters()">✕ Clear Filters</button>
-    <div style="margin-left:auto;display:flex;align-items:center;gap:0.35rem">
+    <div style="margin-left:auto;display:flex;align-items:center;gap:0.75rem">
       <input id="cost-sc-search" type="text" placeholder="Search sub codes…"
         oninput="renderCostTable()"
         style="width:160px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:0.2rem 0.5rem;font-size:0.75rem;outline:none;transition:border-color 0.15s"
         onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+      <div style="display:flex;align-items:center;gap:0.4rem;padding:0.2rem 0.55rem;background:var(--surface);border:1px solid var(--border);border-radius:5px;" title="Simulate all labor costs at a prevailing wage rate without changing any data">
+        <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;white-space:nowrap;font-size:0.75rem;color:var(--muted);user-select:none">
+          <input type="checkbox" id="cost-pv-toggle" onchange="pvPreviewToggle(this.checked)" style="cursor:pointer;accent-color:var(--yellow)">
+          PV Preview
+        </label>
+        <span style="color:var(--muted);font-size:0.78rem">$</span>
+        <input type="number" id="cost-pv-rate-input" placeholder="0.00" step="0.01" min="0" disabled
+          oninput="pvPreviewRateChange(this.value)"
+          style="width:58px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--yellow);font-size:0.8rem;outline:none;text-align:right;padding:0.1rem 0">
+        <span style="font-size:0.72rem;color:var(--muted)">/hr</span>
+      </div>
     </div>
   </div>
   <div class="table-wrap">
@@ -3371,6 +3382,10 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (!btn.dataset.tab) return; // non-tab buttons (Manage Lists)
     if (activeTab === 'cost' && btn.dataset.tab !== 'cost') {
       pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner();
+      const tog = document.getElementById('cost-pv-toggle');
+      const inp = document.getElementById('cost-pv-rate-input');
+      if (tog) tog.checked = false;
+      if (inp) { inp.value = ''; inp.disabled = true; }
     }
     activeTab = btn.dataset.tab;
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
@@ -3449,17 +3464,6 @@ function renderHeaderActions() {
     el.innerHTML = `
       <button class="btn btn-ghost" onclick="exportCostCSV()">Export CSV</button>
       <button class="btn btn-green" onclick="document.querySelector('.tab-btn[data-tab=info]').click()">+ Add Bid Items in Project Dashboard</button>
-      <div style="display:flex;align-items:center;gap:0.4rem;padding:0.2rem 0.55rem;background:var(--surface);border:1px solid var(--border);border-radius:5px;" title="Simulate all labor costs at a prevailing wage rate without changing any data">
-        <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;white-space:nowrap;font-size:0.75rem;color:var(--muted);user-select:none">
-          <input type="checkbox" id="pv-toggle" ${pvPreview.active ? 'checked' : ''} onchange="pvPreviewToggle(this.checked)" style="cursor:pointer;accent-color:var(--yellow)">
-          PV Preview
-        </label>
-        <span style="color:var(--muted);font-size:0.78rem">$</span>
-        <input type="number" id="pv-rate-input" placeholder="0.00" step="0.01" min="0" ${!pvPreview.active ? 'disabled' : ''} value="${pvPreview.rate || ''}"
-          oninput="pvPreviewRateChange(this.value)"
-          style="width:58px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--yellow);font-size:0.8rem;outline:none;text-align:right;padding:0.1rem 0">
-        <span style="font-size:0.72rem;color:var(--muted)">/hr</span>
-      </div>
       ${summaryBtn}
       ${switchBtn}
       ${logoutBtn}
@@ -14260,8 +14264,10 @@ let pvPreview = { active: false, rate: 0 };
 
 function pvPreviewToggle(on) {
   pvPreview.active = on;
-  const rateInput = document.getElementById('pv-rate-input');
-  if (rateInput) { rateInput.disabled = !on; if (on) rateInput.focus(); }
+  ['pv-rate-input', 'cost-pv-rate-input'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.disabled = !on; if (on) el.focus(); }
+  });
   _pvUpdateBanner();
   renderCostTable();
   if (dailyViewProjId) renderDailyTable(dailyViewProjId);
