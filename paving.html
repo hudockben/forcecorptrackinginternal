@@ -2996,6 +2996,7 @@ function drPost(projectId, row) {
     console.warn('[daily-rows] POST error:', err.message);
     _drSavePending[String(row.id)] = row;
   });
+  saveProjectIndex();
 }
 
 /** Insert multiple rows at once (awaitable — used for migration and CSV import). */
@@ -3046,6 +3047,7 @@ function _drPutNow(rowId, row) {
     console.warn('[daily-rows] PUT error:', err.message);
     _showSaveError(false);
   });
+  saveProjectIndex();
 }
 
 // Flush any pending debounced saves when the user navigates away or closes the tab.
@@ -3078,6 +3080,7 @@ function drDelete(rowId) {
     headers: { 'Authorization': `Bearer ${fctToken}` }
   }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE failed:', r.status); })
     .catch(err => console.warn('[daily-rows] DELETE error:', err.message));
+  saveProjectIndex();
 }
 
 /** Delete all rows for a project (called when deleting the project itself). */
@@ -4564,10 +4567,11 @@ renderHeaderActions();
 /* ═══════════════════════════════════════════
    PROJECTS — multi-project card system
 ═══════════════════════════════════════════ */
-const PROJECTS_KEY = 'fct_projects';
-const INFO_KEY_LEGACY = 'fct_project_info'; // for migration only
+const PROJECTS_KEY = 'fct_paving_projects';
+const INFO_KEY_LEGACY = 'fct_paving_project_info'; // for migration only
 
 let projectsList = [];
+let _lastProjIndexTs = 0;
 let projSearch   = '';
 let projPage     = 0;
 const PROJ_PAGE_SIZE = 10;
@@ -4583,13 +4587,15 @@ function _countFilledQty(data) {
 
 async function loadProjects() {
   // ── New architecture: per-project keys + a lightweight index ──
-  const index = await apiGet('fct_projects_index');
+  const _indexRaw = await apiGet('fct_paving_projects_index');
+  const index = Array.isArray(_indexRaw) ? _indexRaw : (Array.isArray(_indexRaw?.ids) ? _indexRaw.ids : null);
+  if (index) _lastProjIndexTs = _indexRaw?._ts || 0;
 
   if (Array.isArray(index) && index.length) {
     // Batch-load all project blobs in one request instead of N individual fetches
-    const projKeys = index.map(id => 'fct_project_' + id);
+    const projKeys = index.map(id => 'fct_paving_project_' + id);
     const batchResult = await apiBatchGet(projKeys);
-    const results = index.map(id => batchResult['fct_project_' + id]).filter(p => p && typeof p === 'object');
+    const results = index.map(id => batchResult['fct_paving_project_' + id]).filter(p => p && typeof p === 'object');
     projectsList = results;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
     // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
@@ -4602,7 +4608,7 @@ async function loadProjects() {
     const emptyProjects = projectsList.filter(p => p.dailyRows.length === 0);
     if (emptyProjects.length > 0) {
       try {
-        const legacy = await apiGet('fct_projects');
+        const legacy = await apiGet('fct_paving_projects');
         if (Array.isArray(legacy) && legacy.length) {
           let found = false;
           legacy.forEach(old => {
@@ -4624,7 +4630,7 @@ async function loadProjects() {
   }
 
   // ── Migration: first load after upgrade from single-blob storage ──
-  let saved = await apiGet('fct_projects');
+  let saved = await apiGet('fct_paving_projects');
   let localSaved = null;
   try {
     const raw = JSON.parse(localStorage.getItem(PROJECTS_KEY));
@@ -4643,9 +4649,9 @@ async function loadProjects() {
     // Migrate to per-project blob storage; _loadAndMigrateDailyRows handles the rows
     projectsList.forEach(p => {
       const blob = _projBlob(p);
-      apiPut('fct_project_' + p.id, blob);
+      apiPut('fct_paving_project_' + p.id, blob);
     });
-    apiPut('fct_projects_index', projectsList.map(p => p.id));
+    saveProjectIndex();
     await _loadAndMigrateDailyRows();
     try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     return;
@@ -4680,7 +4686,7 @@ async function _loadAndMigrateDailyRows() {
     try {
       await drPostBulk(p.id, p.dailyRows);
       // Re-save the blob without the embedded rows
-      await fetch(`${API_BASE}/data/fct_project_${p.id}`, {
+      await fetch(`${API_BASE}/data/fct_paving_project_${p.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
         body: JSON.stringify({ value: _projBlob(p) })
@@ -4740,19 +4746,22 @@ function saveProject(id) {
   clearTimeout(_saveProjTimers[id]);
   _saveProjTimers[id] = setTimeout(() => {
     delete _saveProjTimers[id];
-    apiPut('fct_project_' + id, _projBlob(p));
+    apiPut('fct_paving_project_' + id, _projBlob(p));
+    saveProjectIndex();
   }, 600);
 }
 
-// Save the ordered list of project IDs — called when projects are added or removed
+// Save the ordered list of project IDs — called when projects are added/removed/edited.
+// Includes _ts so the 60s poll on other clients detects the change.
 function saveProjectIndex() {
-  apiPut('fct_projects_index', projectsList.map(p => p.id));
+  _lastProjIndexTs = Date.now();
+  apiPut('fct_paving_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs });
 }
 
 // Save every project blob — only used for bulk operations that touch all projects
 function saveProjects() {
   try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
-  projectsList.forEach(p => apiPut('fct_project_' + p.id, _projBlob(p)));
+  projectsList.forEach(p => apiPut('fct_paving_project_' + p.id, _projBlob(p)));
   saveProjectIndex();
 }
 
@@ -4835,11 +4844,11 @@ async function loadTruckingEntries() {
   } catch {
     truckingEntries = [];
   }
-  localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
+  localStorage.setItem('fct_paving_trucking', JSON.stringify(truckingEntries));
 }
 
 function saveTruckingEntries() {
-  localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
+  localStorage.setItem('fct_paving_trucking', JSON.stringify(truckingEntries));
   fetch(`${API_BASE}/trucking`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
@@ -4880,13 +4889,13 @@ function _crmApplyFilter(rows, filter) {
 }
 
 async function loadCrmPeople() {
-  const saved = await apiGet('fct_crm_people');
+  const saved = await apiGet('fct_paving_crm_people');
   crmPeople = Array.isArray(saved) ? saved : [];
   if (document.getElementById('crm-panel-people')?.classList.contains('active'))     renderCrmPeopleTab();
   if (document.getElementById('crm-panel-dashboard')?.classList.contains('active'))  renderCrmDashboard();
 }
 
-function saveCrmPeople() { apiPut('fct_crm_people', crmPeople); }
+function saveCrmPeople() { apiPut('fct_paving_crm_people', crmPeople); }
 
 function addCrmPerson() {
   crmPeople.push({
@@ -5058,13 +5067,13 @@ function renderCrmPeopleTab() {
 let crmCompanies = [];
 
 async function loadCrmCompanies() {
-  const saved = await apiGet('fct_crm_companies');
+  const saved = await apiGet('fct_paving_crm_companies');
   crmCompanies = Array.isArray(saved) ? saved : [];
   if (document.getElementById('crm-panel-companies')?.classList.contains('active'))  renderCrmCompaniesTab();
   if (document.getElementById('crm-panel-dashboard')?.classList.contains('active'))  renderCrmDashboard();
 }
 
-function saveCrmCompanies() { apiPut('fct_crm_companies', crmCompanies); }
+function saveCrmCompanies() { apiPut('fct_paving_crm_companies', crmCompanies); }
 
 function addCrmCompany() {
   crmCompanies.push({
@@ -5169,13 +5178,13 @@ function renderCrmCompaniesTab() {
 let crmOpportunities = [];
 
 async function loadCrmOpportunities() {
-  const saved = await apiGet('fct_crm_opportunities');
+  const saved = await apiGet('fct_paving_crm_opportunities');
   crmOpportunities = Array.isArray(saved) ? saved : [];
   if (document.getElementById('crm-panel-opportunities')?.classList.contains('active')) renderCrmOpportunitiesTab();
   if (document.getElementById('crm-panel-dashboard')?.classList.contains('active'))     renderCrmDashboard();
 }
 
-function saveCrmOpportunities() { apiPut('fct_crm_opportunities', crmOpportunities); }
+function saveCrmOpportunities() { apiPut('fct_paving_crm_opportunities', crmOpportunities); }
 
 function addCrmOpportunity() {
   crmOpportunities.push({
@@ -5807,12 +5816,12 @@ function _crmCommitUpload(type) {
 let scaleManualEntries = [];
 
 async function loadScaleManualEntries() {
-  const saved = await apiGet('fct_scale_manual');
+  const saved = await apiGet('fct_paving_scale_manual');
   scaleManualEntries = Array.isArray(saved) ? saved : [];
 }
 
 function saveScaleManualEntries() {
-  apiPut('fct_scale_manual', scaleManualEntries);
+  apiPut('fct_paving_scale_manual', scaleManualEntries);
   _projSubAggCache = null; // invalidate so next render picks up the change
 }
 
@@ -5822,28 +5831,28 @@ let soeUnitOverrides = {};
 let _soeStats = [];  // shared cache — populated by renderScaleOfEconomy()
 
 async function loadSoeUnitOverrides() {
-  const saved = await apiGet('fct_soe_units');
+  const saved = await apiGet('fct_paving_soe_units');
   soeUnitOverrides = (saved && typeof saved === 'object' && !Array.isArray(saved)) ? saved : {};
 }
 
 function saveSoeUnitOverrides() {
-  apiPut('fct_soe_units', soeUnitOverrides);
+  apiPut('fct_paving_soe_units', soeUnitOverrides);
 }
 
 async function loadInventoryEntries() {
-  let saved = await apiGet('fct_inventory');
+  let saved = await apiGet('fct_paving_inventory');
   if (!saved || (Array.isArray(saved) && saved.length === 0)) {
     try {
-      const local = JSON.parse(localStorage.getItem('fct_inventory'));
-      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_inventory', saved); }
+      const local = JSON.parse(localStorage.getItem('fct_paving_inventory'));
+      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_paving_inventory', saved); }
     } catch {}
   }
   inventoryEntries = Array.isArray(saved) ? saved : [];
 }
 
 function saveInventoryEntries() {
-  localStorage.setItem('fct_inventory', JSON.stringify(inventoryEntries));
-  apiPut('fct_inventory', inventoryEntries);
+  localStorage.setItem('fct_paving_inventory', JSON.stringify(inventoryEntries));
+  apiPut('fct_paving_inventory', inventoryEntries);
 }
 
 function nextINVNumber() {
@@ -6997,7 +7006,7 @@ function renderProjectInfoComputed() { renderProjectsTab(); }
 /* ═══════════════════════════════════════════
    LISTS (dropdown options)
 ═══════════════════════════════════════════ */
-const LISTS_KEY = 'fct_lists';
+const LISTS_KEY = 'fct_paving_lists';
 
 const defaultLists = {
   field_types:  [],
@@ -7011,11 +7020,11 @@ const defaultLists = {
 let lists = {};
 
 async function loadLists() {
-  let saved = await apiGet('fct_lists');
+  let saved = await apiGet('fct_paving_lists');
   if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
     try {
       const local = JSON.parse(localStorage.getItem(LISTS_KEY));
-      if (local && typeof local === 'object') { saved = local; apiPut('fct_lists', saved); }
+      if (local && typeof local === 'object') { saved = local; apiPut('fct_paving_lists', saved); }
     } catch {}
   }
   lists = { ...defaultLists, ...(saved || {}) };
@@ -7031,7 +7040,7 @@ async function loadLists() {
   lists.employees = lists.employees.map(e => typeof e === 'string'
     ? { name: e, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' } : e);
 }
-function saveLists() { apiPut('fct_lists', lists); }
+function saveLists() { apiPut('fct_paving_lists', lists); }
 
 /* ── Purchase Orders Tab ── */
 let _poExpanded = new Set();   // PO ids with delivery lines visible
@@ -9222,21 +9231,21 @@ function addListItem(key) {
 /* ═══════════════════════════════════════════
    COST TRACKING  (company averages compiled from all daily data)
 ═══════════════════════════════════════════ */
-const COST_KEY = 'fct_cost_rows';
+const COST_KEY = 'fct_paving_cost_rows';
 let costRows = [];
 
 async function loadCostRows() {
-  let saved = await apiGet('fct_cost_rows');
+  let saved = await apiGet('fct_paving_cost_rows');
   if (!saved || (Array.isArray(saved) && saved.length === 0)) {
     // Try legacy localStorage key as migration fallback
     try {
-      const local = JSON.parse(localStorage.getItem('fct_rows'));
-      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_cost_rows', saved); }
+      const local = JSON.parse(localStorage.getItem('fct_paving_rows'));
+      if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_paving_cost_rows', saved); }
     } catch {}
   }
   costRows = Array.isArray(saved) ? saved : [];
 }
-function saveCostRows() { apiPut('fct_cost_rows', costRows); }
+function saveCostRows() { apiPut('fct_paving_cost_rows', costRows); }
 
 // Only store bid/plan data — actuals come from daily aggregation
 const defaultCostRow = () => ({
@@ -14368,7 +14377,7 @@ async function reloadDailyRows(projId) {
     }
     // 2. DB empty — check the legacy fct_projects blob for embedded rows
     try {
-      const legacy = await apiGet('fct_projects');
+      const legacy = await apiGet('fct_paving_projects');
       if (Array.isArray(legacy)) {
         const old = legacy.find(lp => lp && lp.id === projId);
         if (old && Array.isArray(old.dailyRows) && old.dailyRows.length > 0) {
@@ -16063,7 +16072,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
 
   async function pollLists() {
     try {
-      let saved = await apiGet('fct_lists');
+      let saved = await apiGet('fct_paving_lists');
       if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
       const incoming = { ...defaultLists, ...saved };
       incoming.suppliers = (incoming.suppliers || []).map(s =>
@@ -16098,7 +16107,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollCostRows() {
-    const saved = await apiGet('fct_cost_rows');
+    const saved = await apiGet('fct_paving_cost_rows');
     const incoming = Array.isArray(saved) ? saved : [];
     if (JSON.stringify(incoming) === JSON.stringify(costRows)) return;
     costRows = incoming;
@@ -16106,11 +16115,14 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollProjects() {
-    const index = await apiGet('fct_projects_index');
+    const _raw = await apiGet('fct_paving_projects_index');
+    const index = Array.isArray(_raw) ? _raw : (Array.isArray(_raw?.ids) ? _raw.ids : null);
     if (!Array.isArray(index)) return;
+    const incomingTs = _raw?._ts || 0;
     const curIds = projectsList.map(p => p.id).slice().sort().join(',');
     const newIds = index.slice().sort().join(',');
-    if (curIds === newIds && index.length > 0) return; // unchanged — skip expensive batch fetch
+    const tsChanged = incomingTs && incomingTs !== _lastProjIndexTs;
+    if (curIds === newIds && index.length > 0 && !tsChanged) return;
     if (_isEditing()) return;
     await loadProjects();
     if (activeTab === 'home') renderHomeTab();
@@ -16143,7 +16155,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollInventory() {
-    const saved = await apiGet('fct_inventory');
+    const saved = await apiGet('fct_paving_inventory');
     const incoming = Array.isArray(saved) ? saved : [];
     if (JSON.stringify(incoming) === JSON.stringify(inventoryEntries)) return;
     inventoryEntries = incoming;
@@ -16152,9 +16164,9 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
 
   async function _pollCrm() {
     const [pRes, cRes, oRes] = await Promise.allSettled([
-      apiGet('fct_crm_people'),
-      apiGet('fct_crm_companies'),
-      apiGet('fct_crm_opportunities'),
+      apiGet('fct_paving_crm_people'),
+      apiGet('fct_paving_crm_companies'),
+      apiGet('fct_paving_crm_opportunities'),
     ]);
     const inPeople = pRes.status === 'fulfilled' && Array.isArray(pRes.value) ? pRes.value : null;
     const inCos    = cRes.status === 'fulfilled' && Array.isArray(cRes.value) ? cRes.value : null;
@@ -16182,8 +16194,8 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
 
   async function _pollSoe() {
     const [mRes, uRes] = await Promise.allSettled([
-      apiGet('fct_scale_manual'),
-      apiGet('fct_soe_units'),
+      apiGet('fct_paving_scale_manual'),
+      apiGet('fct_paving_soe_units'),
     ]);
     const inManual = mRes.status === 'fulfilled' && Array.isArray(mRes.value) ? mRes.value : null;
     const inUnits  = uRes.status === 'fulfilled' && uRes.value && typeof uRes.value === 'object' && !Array.isArray(uRes.value) ? uRes.value : null;

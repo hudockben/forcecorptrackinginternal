@@ -3109,6 +3109,7 @@ function drPost(projectId, row) {
     console.warn('[daily-rows] POST error:', err.message);
     _drSavePending[String(row.id)] = row;
   });
+  saveProjectIndex();
 }
 
 /** Insert multiple rows at once (awaitable — used for migration and CSV import). */
@@ -3159,6 +3160,7 @@ function _drPutNow(rowId, row) {
     console.warn('[daily-rows] PUT error:', err.message);
     _showSaveError(false);
   });
+  saveProjectIndex();
 }
 
 // Flush any pending debounced saves when the user navigates away or closes the tab.
@@ -3191,6 +3193,7 @@ function drDelete(rowId) {
     headers: { 'Authorization': `Bearer ${fctToken}` }
   }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE failed:', r.status); })
     .catch(err => console.warn('[daily-rows] DELETE error:', err.message));
+  saveProjectIndex();
 }
 
 /** Delete all rows for a project (called when deleting the project itself). */
@@ -4679,6 +4682,7 @@ const PROJECTS_KEY = 'fct_projects';
 const INFO_KEY_LEGACY = 'fct_project_info'; // for migration only
 
 let projectsList = [];
+let _lastProjIndexTs = 0;
 let projSearch   = '';
 let projPage     = 0;
 const PROJ_PAGE_SIZE = 10;
@@ -4694,7 +4698,9 @@ function _countFilledQty(data) {
 
 async function loadProjects() {
   // ── New architecture: per-project keys + a lightweight index ──
-  const index = await apiGet('fct_projects_index');
+  const _indexRaw = await apiGet('fct_projects_index');
+  const index = Array.isArray(_indexRaw) ? _indexRaw : (Array.isArray(_indexRaw?.ids) ? _indexRaw.ids : null);
+  if (index) _lastProjIndexTs = _indexRaw?._ts || 0;
 
   if (Array.isArray(index) && index.length) {
     // Batch-load all project blobs in one request instead of N individual fetches
@@ -4730,6 +4736,44 @@ async function loadProjects() {
       }
     }
 
+    // ── Recovery: find projects missing from the current index.
+    // Pass 1 — legacy fct_projects blob (covers pre-migration projects).
+    // Pass 2 — orphan project IDs in the daily_tracking DB (covers post-migration projects
+    //           whose individual fct_project_* blobs still exist but were dropped from the index).
+    const _preRecoveryCount = projectsList.length;
+    const _recoveredIds     = new Set(projectsList.map(p => p.id));
+    try {
+      const legacy = await apiGet('fct_projects');
+      if (Array.isArray(legacy) && legacy.length) {
+        legacy.filter(p => p && p.id && !_recoveredIds.has(p.id)).forEach(p => {
+          if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
+          projectsList.push(p);
+          _recoveredIds.add(p.id);
+        });
+      }
+    } catch (e) { console.warn('[recovery] legacy blob check failed:', e.message); }
+    try {
+      const allDbRows = await drGetAll();
+      const orphanIds = [...new Set(allDbRows.map(r => r._projectId).filter(id => id && !_recoveredIds.has(id)))];
+      if (orphanIds.length) {
+        const batch = await apiBatchGet(orphanIds.map(id => 'fct_project_' + id));
+        orphanIds.forEach(id => {
+          const p = batch['fct_project_' + id];
+          if (p && typeof p === 'object' && p.id) {
+            if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
+            projectsList.push(p);
+            _recoveredIds.add(p.id);
+          }
+        });
+      }
+    } catch (e) { console.warn('[recovery] orphan DB check failed:', e.message); }
+    if (projectsList.length > _preRecoveryCount) {
+      console.log('[recovery] restored', projectsList.length - _preRecoveryCount, 'missing project(s)');
+      await _loadAndMigrateDailyRows();
+      projectsList.slice(_preRecoveryCount).forEach(p => apiPut('fct_project_' + p.id, _projBlob(p)));
+      saveProjectIndex();
+    }
+
     try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     return;
   }
@@ -4756,7 +4800,7 @@ async function loadProjects() {
       const blob = _projBlob(p);
       apiPut('fct_project_' + p.id, blob);
     });
-    apiPut('fct_projects_index', projectsList.map(p => p.id));
+    saveProjectIndex();
     await _loadAndMigrateDailyRows();
     try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     return;
@@ -4852,12 +4896,15 @@ function saveProject(id) {
   _saveProjTimers[id] = setTimeout(() => {
     delete _saveProjTimers[id];
     apiPut('fct_project_' + id, _projBlob(p));
+    saveProjectIndex();
   }, 600);
 }
 
-// Save the ordered list of project IDs — called when projects are added or removed
+// Save the ordered list of project IDs — called when projects are added/removed/edited.
+// Includes _ts so the 60s poll on other clients detects the change.
 function saveProjectIndex() {
-  apiPut('fct_projects_index', projectsList.map(p => p.id));
+  _lastProjIndexTs = Date.now();
+  apiPut('fct_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs });
 }
 
 // Save every project blob — only used for bulk operations that touch all projects
@@ -16211,11 +16258,14 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollProjects() {
-    const index = await apiGet('fct_projects_index');
+    const _raw = await apiGet('fct_projects_index');
+    const index = Array.isArray(_raw) ? _raw : (Array.isArray(_raw?.ids) ? _raw.ids : null);
     if (!Array.isArray(index)) return;
+    const incomingTs = _raw?._ts || 0;
     const curIds = projectsList.map(p => p.id).slice().sort().join(',');
     const newIds = index.slice().sort().join(',');
-    if (curIds === newIds && index.length > 0) return; // unchanged — skip expensive batch fetch
+    const tsChanged = incomingTs && incomingTs !== _lastProjIndexTs;
+    if (curIds === newIds && index.length > 0 && !tsChanged) return;
     if (_isEditing()) return;
     await loadProjects();
     if (activeTab === 'home') renderHomeTab();
