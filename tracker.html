@@ -4730,6 +4730,44 @@ async function loadProjects() {
       }
     }
 
+    // ── Recovery: find projects missing from the current index.
+    // Pass 1 — legacy fct_projects blob (covers pre-migration projects).
+    // Pass 2 — orphan project IDs in the daily_tracking DB (covers post-migration projects
+    //           whose individual fct_project_* blobs still exist but were dropped from the index).
+    const _preRecoveryCount = projectsList.length;
+    const _recoveredIds     = new Set(projectsList.map(p => p.id));
+    try {
+      const legacy = await apiGet('fct_projects');
+      if (Array.isArray(legacy) && legacy.length) {
+        legacy.filter(p => p && p.id && !_recoveredIds.has(p.id)).forEach(p => {
+          if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
+          projectsList.push(p);
+          _recoveredIds.add(p.id);
+        });
+      }
+    } catch (e) { console.warn('[recovery] legacy blob check failed:', e.message); }
+    try {
+      const allDbRows = await drGetAll();
+      const orphanIds = [...new Set(allDbRows.map(r => r._projectId).filter(id => id && !_recoveredIds.has(id)))];
+      if (orphanIds.length) {
+        const batch = await apiBatchGet(orphanIds.map(id => 'fct_project_' + id));
+        orphanIds.forEach(id => {
+          const p = batch['fct_project_' + id];
+          if (p && typeof p === 'object' && p.id) {
+            if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
+            projectsList.push(p);
+            _recoveredIds.add(p.id);
+          }
+        });
+      }
+    } catch (e) { console.warn('[recovery] orphan DB check failed:', e.message); }
+    if (projectsList.length > _preRecoveryCount) {
+      console.log('[recovery] restored', projectsList.length - _preRecoveryCount, 'missing project(s)');
+      await _loadAndMigrateDailyRows();
+      projectsList.slice(_preRecoveryCount).forEach(p => apiPut('fct_project_' + p.id, _projBlob(p)));
+      apiPut('fct_projects_index', projectsList.map(p => p.id));
+    }
+
     try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     return;
   }
