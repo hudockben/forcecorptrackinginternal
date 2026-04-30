@@ -1144,8 +1144,8 @@
                 ${sel(e.id,'unit',unitOpts(e.unit))}
                 <div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>
               </td>
-              <td style="min-width:90px">${inp(e.id,'actual_start','time','',e.actual_start)}</td>
-              <td style="min-width:90px">${inp(e.id,'actual_end','time','',e.actual_end)}</td>
+              <td style="min-width:90px"><input type="time" value="${esc(e.actual_start||'')}" oninput="updateField('${e.id}','actual_start',this.value)" onchange="updateField('${e.id}','actual_start',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
+              <td style="min-width:90px"><input type="time" value="${esc(e.actual_end||'')}" oninput="updateField('${e.id}','actual_end',this.value)" onchange="updateField('${e.id}','actual_end',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
               <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)">
                 <input type="number" id="th-hrs-${e.id}" value="${esc(e.total_hours || '')}"
                   placeholder="0"
