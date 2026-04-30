@@ -21,6 +21,7 @@ const {
   hasDivisionAccess,
   divisionForKey,
   normalizeDivision,
+  isSharedKey,
 } = require('../api/lib/auth');
 
 let passed = 0;
@@ -129,6 +130,12 @@ console.log('\n[hasDivisionAccess — bad inputs]');
 assert('null payload rejected',     hasDivisionAccess(null, 'paving') === false);
 assert('null division rejected',    hasDivisionAccess(pavingOnly, null) === false);
 assert('empty division rejected',   hasDivisionAccess(pavingOnly, '') === false);
+
+console.log('\n[isSharedKey — presence/heartbeat]');
+assert('fct_presence is shared',         isSharedKey('fct_presence') === true);
+assert('fct_paving_projects NOT shared', isSharedKey('fct_paving_projects') === false);
+assert('dust_routes NOT shared',         isSharedKey('dust_routes') === false);
+assert('fct_projects NOT shared',        isSharedKey('fct_projects') === false);
 
 console.log('\n[divisionForKey — blob prefix mapping]');
 assert('fct_paving_projects → paving',         divisionForKey('fct_paving_projects') === 'paving');

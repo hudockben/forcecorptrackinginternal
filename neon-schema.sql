@@ -413,24 +413,22 @@ CREATE INDEX IF NOT EXISTS idx_deadlines_division ON deadlines(company_code, div
 -- The DEFAULT 'turf' is intentionally kept for backward compatibility
 -- with tracker.html (turf), which omits ?division= in some legacy paths.
 -- New code (paving/dust/trucking/intercompany) MUST pass division explicitly.
+-- DROP-then-ADD is idempotent and safe to re-run on every deploy.
 -- ─────────────────────────────────────────────────
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'purchase_orders_division_chk') THEN
-    ALTER TABLE purchase_orders   ADD CONSTRAINT purchase_orders_division_chk   CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'trucking_entries_division_chk') THEN
-    ALTER TABLE trucking_entries  ADD CONSTRAINT trucking_entries_division_chk  CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'daily_tracking_division_chk') THEN
-    ALTER TABLE daily_tracking    ADD CONSTRAINT daily_tracking_division_chk    CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'company_board_division_chk') THEN
-    ALTER TABLE company_board     ADD CONSTRAINT company_board_division_chk     CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'deadlines_division_chk') THEN
-    ALTER TABLE deadlines         ADD CONSTRAINT deadlines_division_chk         CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
-  END IF;
-END $$;
+ALTER TABLE purchase_orders   DROP CONSTRAINT IF EXISTS purchase_orders_division_chk;
+ALTER TABLE purchase_orders   ADD  CONSTRAINT purchase_orders_division_chk   CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
+
+ALTER TABLE trucking_entries  DROP CONSTRAINT IF EXISTS trucking_entries_division_chk;
+ALTER TABLE trucking_entries  ADD  CONSTRAINT trucking_entries_division_chk  CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
+
+ALTER TABLE daily_tracking    DROP CONSTRAINT IF EXISTS daily_tracking_division_chk;
+ALTER TABLE daily_tracking    ADD  CONSTRAINT daily_tracking_division_chk    CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
+
+ALTER TABLE company_board     DROP CONSTRAINT IF EXISTS company_board_division_chk;
+ALTER TABLE company_board     ADD  CONSTRAINT company_board_division_chk     CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
+
+ALTER TABLE deadlines         DROP CONSTRAINT IF EXISTS deadlines_division_chk;
+ALTER TABLE deadlines         ADD  CONSTRAINT deadlines_division_chk         CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
 
 -- ─────────────────────────────────────────────────
 -- DUST CONTROL ENTRIES

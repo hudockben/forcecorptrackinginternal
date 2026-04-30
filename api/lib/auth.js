@@ -5,6 +5,13 @@ const jwt = require('jsonwebtoken');
 // and the values stored in users.division_roles.
 const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'intercompany'];
 
+// Keys that are intentionally shared across every division within a company
+// (any logged-in user may read/write them regardless of their division roles).
+// Examples: presence/heartbeat is a company-wide "who's online" feed.
+const SHARED_KEY_PREFIXES = [
+  'fct_presence',
+];
+
 // Blob-key prefix → division mapping. Used by api/data/[key].js to verify
 // the caller has access to a division before reading or writing its blob.
 // Order matters: most-specific prefix wins.
@@ -26,6 +33,15 @@ function divisionForKey(key) {
     if (key.startsWith(prefix)) return division;
   }
   return null;
+}
+
+/**
+ * True for keys that any authenticated user of the company may access,
+ * regardless of their division roles (e.g. presence / heartbeat).
+ */
+function isSharedKey(key) {
+  if (!key) return false;
+  return SHARED_KEY_PREFIXES.some(p => key.startsWith(p));
 }
 
 /**
@@ -123,4 +139,5 @@ module.exports = {
   hasDivisionAccess,
   normalizeDivision,
   divisionForKey,
+  isSharedKey,
 };

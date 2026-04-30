@@ -2,7 +2,7 @@
 
 const { neon }        = require('@neondatabase/serverless');
 const { syncForKey }  = require('../lib/sync-normalized');
-const { requireAuth, hasDivisionAccess, divisionForKey } = require('../lib/auth');
+const { requireAuth, hasDivisionAccess, divisionForKey, isSharedKey } = require('../lib/auth');
 
 const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory', 'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists'];
 function isAllowedKey(k) {
@@ -19,9 +19,11 @@ function isAllowedKey(k) {
 /**
  * Returns true if the JWT payload is permitted to read/write this blob key.
  * Maps key prefix → division and verifies divisionRoles[division] != 'no_access'.
+ * Shared keys (presence/heartbeat) are accessible to any authenticated user.
  * Keys without a division-specific prefix (turf-default) require turf access.
  */
 function isKeyAllowedForUser(key, payload) {
+  if (isSharedKey(key)) return true;
   const division = divisionForKey(key) || 'turf';
   return hasDivisionAccess(payload, division);
 }
