@@ -2177,7 +2177,7 @@
             (row[f] || '').toLowerCase().includes(v))) return acc;
         acc.push(idx);
         return acc;
-      }, []);
+      }, []).sort((a, b) => (rows[b].date || '').localeCompare(rows[a].date || ''));
 
       let totVeh = 0, totUb = 0, totInv = 0, totGal = 0;
 
