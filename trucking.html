@@ -156,6 +156,13 @@
       padding: 0.18rem 0.35rem; outline: none; box-sizing: border-box;
     }
     .tr-tbl thead tr.filter-row input:focus { border-color: #555; color: var(--text); }
+    .tr-tbl thead tr.filter-row button.date-filter-btn {
+      display: block; width: 100%;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 3px;
+      color: var(--muted); font-size: 0.7rem;
+      padding: 0.18rem 0.35rem; box-sizing: border-box;
+      cursor: pointer; white-space: nowrap; line-height: normal;
+    }
 
     .tr-tbl tbody tr { border-bottom: 1px solid var(--border); }
     .tr-tbl tbody td { padding: 0.35rem 0.6rem; }
@@ -1154,8 +1161,8 @@
         const allSelected = hiddenCount === 0;
         const btnLabel = allSelected ? 'All dates ▾' : `${uniqDates.length - hiddenCount} of ${uniqDates.length} ▾`;
         const btnStyle = allSelected
-          ? 'background:var(--surface);border:1px solid var(--border);color:var(--text)'
-          : 'background:rgba(251,191,36,0.12);border:1px solid var(--yellow);color:var(--yellow)';
+          ? ''
+          : 'background:rgba(251,191,36,0.12)!important;border-color:var(--yellow)!important;color:var(--yellow)!important';
         const datesJson = esc(JSON.stringify(uniqDates));
         const itemsHTML = uniqDates.map(d => {
           const checked = !trDateExcluded.has(d);
@@ -1174,8 +1181,8 @@
             ${itemsHTML}
           </div>` : '';
         return `<div style="position:relative" onclick="event.stopPropagation()">
-          <button onclick="event.stopPropagation();_trDateDropOpen=!_trDateDropOpen;renderTrackingTab()"
-            style="${btnStyle};font-size:0.73rem;padding:0.22rem 0.55rem;border-radius:3px;cursor:pointer;white-space:nowrap;width:100%">
+          <button class="date-filter-btn" onclick="event.stopPropagation();_trDateDropOpen=!_trDateDropOpen;renderTrackingTab()"
+            style="${btnStyle}">
             ${btnLabel}
           </button>
           ${dropHTML}
