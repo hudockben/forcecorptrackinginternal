@@ -547,6 +547,7 @@
     /* Fix entries that were saved before the CSV normalisation was in place.
        Safe to call on every load — no-op when data is already clean. */
     function _migrateExistingEntries() {
+      const _migrateEntryCount = divEntries.length;
       let dataChanged  = false;
       let listsChanged = false;
 
@@ -588,7 +589,9 @@
         divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
         listsChanged = true;
       }
-      if (dataChanged || listsChanged) tdDivPut();
+      // Only save if the entry count didn't drop — guards against saving a
+      // partially-loaded set that was pulled from a stale server blob.
+      if ((dataChanged || listsChanged) && divEntries.length >= _migrateEntryCount) tdDivPut();
     }
 
     async function loadTrackingData() {
@@ -610,9 +613,9 @@
         }
         if (Array.isArray(lists.equipment)) divLists.equipment = lists.equipment;
       }
+      _recoverEntriesFromIcBilling();
       _migrateExistingEntries();
       _syncStaleIcEntries();
-      _recoverEntriesFromIcBilling();
       renderDashboard();
     }
 
@@ -2305,6 +2308,13 @@
           const inDrivers   = Array.isArray(tl.drivers)   ? tl.drivers   : divTruckLists.drivers;
           const inCustomers = Array.isArray(tl.customers)  ? tl.customers : divTruckLists.customers;
           const inUnits     = Array.isArray(tl.units)      ? tl.units     : divTruckLists.units;
+          // Guard: if the server returned significantly fewer entries than we currently
+          // hold, the server blob is stale or corrupted — skip this poll cycle so we
+          // don't overwrite good in-memory data and trigger a save with the smaller set.
+          if (divEntries.length > 5 && inEntries.length < divEntries.length * 0.9) {
+            console.warn('[poll] server returned fewer entries (' + inEntries.length + ' vs ' + divEntries.length + ') — skipping update');
+            return;
+          }
           const entriesChanged = JSON.stringify(inEntries)   !== JSON.stringify(divEntries);
           const listsChanged   = JSON.stringify(inDrivers)   !== JSON.stringify(divTruckLists.drivers)   ||
                                  JSON.stringify(inCustomers) !== JSON.stringify(divTruckLists.customers) ||
