@@ -3381,6 +3381,12 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     if (!btn.dataset.tab) return; // non-tab buttons (Manage Lists)
     if (activeTab === 'cost' && btn.dataset.tab !== 'cost') {
+      // Clear the cost table DOM before hiding the panel — prevents expensive
+      // style recalculation for thousands of table rows when display:none is applied
+      const costTbody = document.getElementById('cost-tbody');
+      if (costTbody) costTbody.innerHTML = '';
+      const alertBanner = document.getElementById('cost-alert-banner');
+      if (alertBanner) { alertBanner.innerHTML = ''; alertBanner.style.display = 'none'; }
       pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner();
       const tog = document.getElementById('cost-pv-toggle');
       const inp = document.getElementById('cost-pv-rate-input');
