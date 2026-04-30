@@ -612,7 +612,46 @@
       }
       _migrateExistingEntries();
       _syncStaleIcEntries();
+      _recoverEntriesFromIcBilling();
       renderDashboard();
+    }
+
+    // Rebuild truck entries that are present in IC billing but missing from divEntries
+    // (e.g. lost when the truck-division blob was overwritten or rolled back).
+    // Uses source_id as the canonical truck entry ID so re-running is idempotent.
+    function _recoverEntriesFromIcBilling() {
+      const existingIds = new Set(divEntries.map(e => e.id));
+      const recovered = [];
+      icBillingArr.forEach(ic => {
+        if (ic.source !== 'trucking' || !ic.source_id) return;
+        if (existingIds.has(ic.source_id)) return;
+        recovered.push({
+          id:               ic.source_id,
+          task_number:      ic.task_number      || '',
+          actual_date:      ic.actual_date      || '',
+          driver:           ic.driver           || '',
+          unit:             ic.unit             || '',
+          actual_start:     ic.actual_start     || '',
+          actual_end:       ic.actual_end       || '',
+          total_hours:      ic.total_hours      || '',
+          haul_fee:         ic.haul_fee         || '',
+          customer:         ic.customer         || '',
+          description:      ic.description      || '',
+          division:         ic.division         || '',
+          notes:            ic.notes            || '',
+          qb_invoice:       ic.qb_invoice       || '',
+          invoiced_date:    ic.invoiced_date     || '',
+          invoice_sent_date: ic.invoice_sent_date || '',
+          invoice_status:   ic.invoice_status   || 'Unpaid',
+          date_paid:        ic.date_paid        || '',
+        });
+        existingIds.add(ic.source_id);
+      });
+      if (recovered.length > 0) {
+        divEntries.push(...recovered);
+        tdDivPut();
+        console.log('[recovery] restored', recovered.length, 'truck entry/entries from IC billing');
+      }
     }
 
     function _syncStaleIcEntries() {

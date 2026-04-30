@@ -18,8 +18,17 @@ function safeFloat(v) {
 
 function safeDate(v) {
   if (!v) return null;
-  const s = String(v).slice(0, 10);
-  return s.length === 10 ? s : null;
+  // Handle JS Date objects returned by Neon for DATE columns
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const s = String(v);
+  // Already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  // MM/DD/YYYY or M/D/YYYY
+  const a = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (a) return `${a[3]}-${a[1].padStart(2,'0')}-${a[2].padStart(2,'0')}`;
+  // ISO timestamp (e.g. 2026-04-15T00:00:00.000Z)
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return s.slice(0, 10);
+  return null;
 }
 
 function dbToEntry(r) {
