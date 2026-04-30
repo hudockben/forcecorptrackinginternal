@@ -1173,20 +1173,17 @@
           </label>`;
         }).join('');
         const dropHTML = _trDateDropOpen ? `
-          <div onclick="event.stopPropagation()" style="position:absolute;top:calc(100% + 3px);left:0;z-index:9999;background:#1c1c1c;border:1px solid var(--border);border-radius:5px;box-shadow:0 6px 20px rgba(0,0,0,0.55);min-width:180px;max-height:280px;overflow-y:auto">
+          <div onclick="event.stopPropagation()" style="position:absolute;top:100%;left:0;z-index:9999;background:#1c1c1c;border:1px solid var(--border);border-radius:5px;box-shadow:0 6px 20px rgba(0,0,0,0.55);min-width:180px;max-height:280px;overflow-y:auto">
             <label style="display:flex;align-items:center;gap:0.5rem;padding:0.32rem 0.75rem;cursor:pointer;font-size:0.78rem;font-weight:700;border-bottom:1px solid var(--border);user-select:none;white-space:nowrap">
               <input type="checkbox" ${allSelected?'checked':''} onclick="event.stopPropagation();_trDateSelectAll('${datesJson}',this.checked)">
               Select All
             </label>
             ${itemsHTML}
           </div>` : '';
-        return `<div style="position:relative" onclick="event.stopPropagation()">
-          <button class="date-filter-btn" onclick="event.stopPropagation();_trDateDropOpen=!_trDateDropOpen;renderTrackingTab()"
+        return `<button class="date-filter-btn" onclick="event.stopPropagation();_trDateDropOpen=!_trDateDropOpen;renderTrackingTab()"
             style="${btnStyle}">
             ${btnLabel}
-          </button>
-          ${dropHTML}
-        </div>`;
+          </button>${dropHTML}`;
       };
 
       const invInp = (id, field, type, placeholder, val) =>
