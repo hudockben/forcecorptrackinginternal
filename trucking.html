@@ -156,12 +156,17 @@
       padding: 0.18rem 0.35rem; outline: none; box-sizing: border-box;
     }
     .tr-tbl thead tr.filter-row input:focus { border-color: #555; color: var(--text); }
+    .tr-tbl thead tr.filter-row .date-filter-wrap {
+      position: relative; width: 100%;
+    }
     .tr-tbl thead tr.filter-row button.date-filter-btn {
-      display: block; width: 100%;
+      appearance: none; -webkit-appearance: none;
+      display: block; width: 100%; margin: 0;
       background: var(--surface2); border: 1px solid var(--border); border-radius: 3px;
-      color: var(--muted); font-size: 0.7rem;
+      color: var(--muted); font-family: inherit; font-size: 0.7rem;
       padding: 0.18rem 0.35rem; box-sizing: border-box;
-      cursor: pointer; white-space: nowrap; line-height: normal;
+      cursor: pointer; white-space: nowrap; line-height: 1.2;
+      text-align: left;
     }
 
     .tr-tbl tbody tr { border-bottom: 1px solid var(--border); }
@@ -1180,10 +1185,8 @@
             </label>
             ${itemsHTML}
           </div>` : '';
-        return `<button class="date-filter-btn" onclick="event.stopPropagation();_trDateDropOpen=!_trDateDropOpen;renderTrackingTab()"
-            style="${btnStyle}">
-            ${btnLabel}
-          </button>${dropHTML}`;
+        return `<div class="date-filter-wrap"><button class="date-filter-btn" onclick="event.stopPropagation();_trDateDropOpen=!_trDateDropOpen;renderTrackingTab()"
+            style="${btnStyle}">${btnLabel}</button>${dropHTML}</div>`;
       };
 
       const invInp = (id, field, type, placeholder, val) =>
@@ -1326,7 +1329,7 @@
                 <tr class="filter-row">
                   <th></th>
                   <th>${fi('task_number')}</th>
-                  <th style="position:relative">${fiDateDrop()}</th>
+                  <th>${fiDateDrop()}</th>
                   <th>${fi('driver')}</th>
                   <th>${fi('unit')}</th>
                   <th>${fi('actual_start')}</th>
