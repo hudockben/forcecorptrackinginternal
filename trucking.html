@@ -1039,9 +1039,11 @@
       const active = Object.entries(trColFilters).filter(([, v]) => v);
       if (!active.length) return entries;
       return entries.filter(e =>
-        active.every(([field, val]) =>
-          String(e[field] || '').toLowerCase().includes(val.toLowerCase())
-        )
+        active.every(([field, val]) => {
+          if (field === 'actual_date_from') return (e.actual_date || '') >= val;
+          if (field === 'actual_date_to')   return (e.actual_date || '') <= val;
+          return String(e[field] || '').toLowerCase().includes(val.toLowerCase());
+        })
       );
     }
 
@@ -1123,6 +1125,22 @@
         return `<input type="text" value="${esc(v)}" placeholder="filter…"
           data-filter-field="${field}"
           oninput="setColFilter('${field}',this.value)">`;
+      };
+
+      const fiDate = () => {
+        const from = trColFilters.actual_date_from || '';
+        const to   = trColFilters.actual_date_to   || '';
+        const style = 'width:100%;background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.72rem;padding:0.15rem 0.3rem;outline:none;box-sizing:border-box';
+        return `<div style="display:flex;flex-direction:column;gap:3px;min-width:120px">
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="font-size:0.62rem;color:var(--muted);white-space:nowrap;width:22px">From</span>
+            <input type="date" value="${from}" onchange="setColFilter('actual_date_from',this.value)" style="${style}">
+          </div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="font-size:0.62rem;color:var(--muted);white-space:nowrap;width:22px">To</span>
+            <input type="date" value="${to}" onchange="setColFilter('actual_date_to',this.value)" style="${style}">
+          </div>
+        </div>`;
       };
 
       const invInp = (id, field, type, placeholder, val) =>
@@ -1265,7 +1283,7 @@
                 <tr class="filter-row">
                   <th></th>
                   <th>${fi('task_number')}</th>
-                  <th>${fi('actual_date')}</th>
+                  <th>${fiDate()}</th>
                   <th>${fi('driver')}</th>
                   <th>${fi('unit')}</th>
                   <th>${fi('actual_start')}</th>
