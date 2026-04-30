@@ -965,6 +965,25 @@
       return Math.round(mins / 60 * 100) / 100;
     }
 
+    // Updates time field in memory and refreshes hours/total display without triggering a save.
+    // Called by oninput so the display stays live while the user is still typing.
+    function _liveHours(id, field, value) {
+      const e = divEntries.find(e => e.id === id);
+      if (!e) return;
+      e[field] = value;
+      const calc = calcHours(e.actual_start, e.actual_end);
+      if (calc !== null) {
+        e.total_hours = calc;
+        const hrsEl = document.getElementById('th-hrs-' + id);
+        if (hrsEl) hrsEl.value = calc;
+        const totEl = document.getElementById('td-tot-' + id);
+        if (totEl) {
+          const tot = calc * (parseFloat(e.haul_fee) || 0);
+          totEl.textContent = '$' + tot.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+      }
+    }
+
     function updateField(id, field, value) {
       const e = divEntries.find(e => e.id === id);
       if (!e) return;
@@ -1144,8 +1163,8 @@
                 ${sel(e.id,'unit',unitOpts(e.unit))}
                 <div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>
               </td>
-              <td style="min-width:90px"><input type="time" value="${esc(e.actual_start||'')}" oninput="updateField('${e.id}','actual_start',this.value)" onchange="updateField('${e.id}','actual_start',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
-              <td style="min-width:90px"><input type="time" value="${esc(e.actual_end||'')}" oninput="updateField('${e.id}','actual_end',this.value)" onchange="updateField('${e.id}','actual_end',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
+              <td style="min-width:90px"><input type="time" value="${esc(e.actual_start||'')}" oninput="_liveHours('${e.id}','actual_start',this.value)" onchange="updateField('${e.id}','actual_start',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
+              <td style="min-width:90px"><input type="time" value="${esc(e.actual_end||'')}" oninput="_liveHours('${e.id}','actual_end',this.value)" onchange="updateField('${e.id}','actual_end',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
               <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)">
                 <input type="number" id="th-hrs-${e.id}" value="${esc(e.total_hours || '')}"
                   placeholder="0"
