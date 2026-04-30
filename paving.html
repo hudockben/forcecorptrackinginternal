@@ -4849,7 +4849,18 @@ function _migratePOs() {
   });
 }
 
+let _savePOTimer = null;
+let _savePOPending = false;
+
 function savePurchaseOrders() {
+  _savePOPending = true;
+  clearTimeout(_savePOTimer);
+  _savePOTimer = setTimeout(_savePONow, 600);
+}
+
+function _savePONow() {
+  _savePOTimer = null;
+  _savePOPending = false;
   fetch(`${API_BASE}/purchase-orders`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
@@ -4858,6 +4869,25 @@ function savePurchaseOrders() {
     if (!r.ok) _showSaveError(r.status === 401);
   }).catch(() => _showSaveError(false));
 }
+
+function _poFlushPending() {
+  if (!_savePOPending) return;
+  clearTimeout(_savePOTimer);
+  _savePOTimer = null;
+  _savePOPending = false;
+  try {
+    fetch(`${API_BASE}/purchase-orders`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+      body: JSON.stringify({ purchaseOrders }),
+      keepalive: true,
+    });
+  } catch (_) {}
+}
+window.addEventListener('beforeunload', _poFlushPending);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _poFlushPending();
+});
 
 function nextPONumber() {
   const nums = purchaseOrders.map(po => {
@@ -4889,8 +4919,19 @@ async function loadTruckingEntries() {
   localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
 }
 
+let _saveTRTimer = null;
+let _saveTRPending = false;
+
 function saveTruckingEntries() {
   localStorage.setItem('fct_trucking', JSON.stringify(truckingEntries));
+  _saveTRPending = true;
+  clearTimeout(_saveTRTimer);
+  _saveTRTimer = setTimeout(_saveTRNow, 600);
+}
+
+function _saveTRNow() {
+  _saveTRTimer = null;
+  _saveTRPending = false;
   fetch(`${API_BASE}/trucking`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
@@ -4899,6 +4940,25 @@ function saveTruckingEntries() {
     if (!r.ok) _showSaveError(r.status === 401);
   }).catch(() => _showSaveError(false));
 }
+
+function _trFlushPending() {
+  if (!_saveTRPending) return;
+  clearTimeout(_saveTRTimer);
+  _saveTRTimer = null;
+  _saveTRPending = false;
+  try {
+    fetch(`${API_BASE}/trucking`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+      body: JSON.stringify({ truckingEntries }),
+      keepalive: true,
+    });
+  } catch (_) {}
+}
+window.addEventListener('beforeunload', _trFlushPending);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _trFlushPending();
+});
 
 function nextTRNumber() {
   const nums = truckingEntries.map(tr => {
@@ -16174,9 +16234,11 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
     if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
+    // Don't overwrite in-memory state while user is actively editing or has unsaved changes
+    if (_isEditing() || _savePOPending) return;
     purchaseOrders = incoming;
     _migratePOs();
-    if (activeTab === 'po' && !_isEditing()) renderPOTab();
+    if (activeTab === 'po') renderPOTab();
   }
 
   async function _pollTrucking() {
@@ -16187,8 +16249,9 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const data = await r.json();
     const incoming = Array.isArray(data.truckingEntries) ? data.truckingEntries : [];
     if (JSON.stringify(incoming) === JSON.stringify(truckingEntries)) return;
+    if (_isEditing() || _saveTRPending) return;
     truckingEntries = incoming;
-    if (activeTab === 'trucking' && !_isEditing()) renderTruckingTab();
+    if (activeTab === 'trucking') renderTruckingTab();
   }
 
   async function _pollInventory() {
