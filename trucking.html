@@ -1090,7 +1090,8 @@
         ? divEntries
         : divEntries.filter(e => (e.actual_date || '').startsWith(activeYearFilter));
 
-      const filteredEntries = applyColFilters(yearFiltered);
+      const filteredEntries = applyColFilters(yearFiltered)
+        .slice().sort((a, b) => (b.actual_date || '').localeCompare(a.actual_date || '') || (b.task_number || '').localeCompare(a.task_number || ''));
 
       // ── Totals ──
       let sumHours = 0, sumRevenue = 0;
