@@ -1257,11 +1257,21 @@
           }
         }
         const seenContentKeys = new Set();
+        const seenSourceIds   = new Set();
         const deduped = [];
         for (const e of raw) {
           if (e.source === 'dust' && e.source_id) {
             const jk = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
             if (bestByJobKey.get(jk) === e) deduped.push(e);
+          } else if (e.source_id) {
+            // Non-dust entries with a source_id (trucking, paving) are uniquely
+            // identified by (source, source_id). Without this branch the old
+            // content-key dedup collapsed two legit rows that happened to share
+            // date+customer+start (e.g. two trucking sends both at 05:30 AM for
+            // the same customer) — silently wiping the second one and PUTting
+            // the deduped list back to the blob, making the loss permanent.
+            const sk = `${e.source||''}|${e.source_id}`;
+            if (!seenSourceIds.has(sk)) { seenSourceIds.add(sk); deduped.push(e); }
           } else {
             const ck = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${e.actual_start||''}|${(e.location||'').toLowerCase()}|${e.source||''}`;
             if (!seenContentKeys.has(ck)) { seenContentKeys.add(ck); deduped.push(e); }
