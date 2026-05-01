@@ -835,7 +835,17 @@
       renderTrackingTab();
     }
 
-    async function sendToIntercompany(id) {
+    // Serializes IC sends across all rows so a rapid burst of clicks doesn't
+    // race: each call read-modify-writes the whole intercompany billing blob,
+    // so parallel calls would otherwise clobber each other's entries.
+    let _icSendChain = Promise.resolve();
+    function sendToIntercompany(id) {
+      const next = _icSendChain.then(() => _doSendToIntercompany(id));
+      _icSendChain = next.catch(() => {});
+      return next;
+    }
+
+    async function _doSendToIntercompany(id) {
       const e = divEntries.find(r => r.id === id);
       if (!e) return;
 
