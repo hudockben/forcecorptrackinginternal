@@ -8193,6 +8193,9 @@ function _invBreakdownHTML(year) {
       if (!e.date) return;
       if (e.project_id) return; // bags sent to a job are withdrawals, not production
       if ((parseFloat(e.units_purchased) || 0) > 0) return; // purchased rubber adds to stock but isn't processed
+      const labHrs = parseFloat(e.hours)       || 0;
+      const eqHrs  = parseFloat(e.equip_hours) || 0;
+      if (labHrs === 0 && eqHrs === 0) return; // no work logged — stock receipt, not production
       const d = new Date(e.date + 'T12:00:00');
       if (d.getFullYear() !== year || d.getMonth() !== mi) return;
       const rt = (e.rubber_type || '').trim();
@@ -8297,7 +8300,8 @@ function renderInventoryTab() {
     const ee   = rate * hrs;
     const isWithdrawal = !!e.project_id;
     const isPurchase   = (parseFloat(e.units_purchased) || 0) > 0;
-    const skipBags     = isWithdrawal || isPurchase;
+    const isProcessed  = hrs > 0 || (parseFloat(e.equip_hours) || 0) > 0;
+    const skipBags     = isWithdrawal || isPurchase || !isProcessed;
     const bags = skipBags ? 0 : (parseFloat(e.bags_produced)  || 0);
     const lbs  = skipBags ? 0 : (parseFloat(e.total_poundage) || 0);
     const euc  = parseFloat(e.equip_unit_cost) || 0, eh = parseFloat(e.equip_hours) || 0;
