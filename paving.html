@@ -5925,6 +5925,34 @@ function copyINV(id) {
 
 function downloadInvPDF(year) {
   const breakdownHTML = _invBreakdownHTML(year);
+
+  const invByType = {};
+  inventoryEntries.forEach(e => {
+    const rt = (e.rubber_type || '').trim() || '(unspecified)';
+    if (!invByType[rt]) invByType[rt] = { produced: 0, used: 0, poundage: 0 };
+    if (e.project_id) {
+      invByType[rt].used += parseFloat(e.bags_produced) || 0;
+    } else {
+      invByType[rt].produced += parseFloat(e.bags_produced)  || 0;
+      invByType[rt].poundage += parseFloat(e.total_poundage) || 0;
+    }
+  });
+  const cardsHTML = Object.keys(invByType).length === 0 ? '' : `
+    <h2>Running Inventory by Rubber Type</h2>
+    <div class="inv-cards">
+      ${Object.entries(invByType).map(([rt, v]) => {
+        const inStock    = v.produced - v.used;
+        const stockColor = inStock <= 0 ? '#b91c1c' : inStock < 50 ? '#b45309' : '#15803d';
+        return `<div class="inv-card">
+          <div class="inv-card-type">${escT(rt)}</div>
+          <div class="inv-card-stock" style="color:${stockColor}">${inStock.toLocaleString()}</div>
+          <div class="inv-card-label">bags in stock</div>
+          <div class="inv-card-meta"><span>&#8679; ${v.produced.toLocaleString()} produced</span> <span>&#8681; ${v.used.toLocaleString()} used</span></div>
+          <div class="inv-card-meta">${v.poundage.toLocaleString()} lbs total</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+
   const doc = window.open('', '_blank', 'width=1100,height=800');
   if (!doc) return;
   doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -5941,9 +5969,17 @@ function downloadInvPDF(year) {
     .year-section thead tr th { background: #e8f5e9; }
     h1 { font-size: 15px; margin: 0 0 1rem; }
     h2 { font-size: 12px; margin: 0.5rem 0 0.25rem; }
-    @media print { body { padding: 0.5rem; } }
+    .inv-cards { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 1.25rem; }
+    .inv-card { border: 1px solid #ccc; border-radius: 6px; padding: 8px 11px; min-width: 165px; background: #fafafa; }
+    .inv-card-type { font-size: 9px; color: #555; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700; margin-bottom: 3px; }
+    .inv-card-stock { font-size: 18px; font-weight: 700; line-height: 1; }
+    .inv-card-label { font-size: 9px; color: #555; margin-top: 2px; }
+    .inv-card-meta { font-size: 9px; color: #555; margin-top: 4px; display: flex; gap: 10px; }
+    @page { size: landscape; margin: 0.35in; }
+    @media print { body { padding: 0; font-size: 9px; } th, td { padding: 3px 5px; } }
   </style></head><body>
   <h1>Track Rubber Infill — Monthly &amp; Annual Breakdown &mdash; ${year}</h1>
+  ${cardsHTML}
   ${breakdownHTML}
   <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
@@ -8192,6 +8228,10 @@ function _invBreakdownHTML(year) {
     inventoryEntries.forEach(e => {
       if (!e.date) return;
       if (e.project_id) return; // bags sent to a job are withdrawals, not production
+      if ((parseFloat(e.units_purchased) || 0) > 0) return; // purchased rubber adds to stock but isn't processed
+      const labHrs = parseFloat(e.hours)       || 0;
+      const eqHrs  = parseFloat(e.equip_hours) || 0;
+      if (labHrs === 0 && eqHrs === 0) return; // no work logged — stock receipt, not production
       const d = new Date(e.date + 'T12:00:00');
       if (d.getFullYear() !== year || d.getMonth() !== mi) return;
       const rt = (e.rubber_type || '').trim();
@@ -8295,8 +8335,11 @@ function renderInventoryTab() {
     const rate = parseFloat(e.rate) || 0, hrs = parseFloat(e.hours) || 0;
     const ee   = rate * hrs;
     const isWithdrawal = !!e.project_id;
-    const bags = isWithdrawal ? 0 : (parseFloat(e.bags_produced)  || 0);
-    const lbs  = isWithdrawal ? 0 : (parseFloat(e.total_poundage) || 0);
+    const isPurchase   = (parseFloat(e.units_purchased) || 0) > 0;
+    const isProcessed  = hrs > 0 || (parseFloat(e.equip_hours) || 0) > 0;
+    const skipBags     = isWithdrawal || isPurchase || !isProcessed;
+    const bags = skipBags ? 0 : (parseFloat(e.bags_produced)  || 0);
+    const lbs  = skipBags ? 0 : (parseFloat(e.total_poundage) || 0);
     const euc  = parseFloat(e.equip_unit_cost) || 0, eh = parseFloat(e.equip_hours) || 0;
     const eq   = euc * eh;
     const uc   = parseFloat(e.unit_cost) || 0, up = parseFloat(e.units_purchased) || 0;
