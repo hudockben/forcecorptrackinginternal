@@ -15917,6 +15917,21 @@ document.addEventListener('change', e => {
   if (p.dailyRows[i][el.dataset.f] !== el.value) {
     p.dailyRows[i][el.dataset.f] = el.value;
   }
+  if (el.dataset.f === 'po_num' && el.value && p.dailyRows[i].job_class !== 'Purchase Order') {
+    p.dailyRows[i].job_class = 'Purchase Order';
+    const jcSel = document.querySelector(
+      `select[data-tab="daily"][data-proj="${el.dataset.proj}"][data-i="${i}"][data-f="job_class"]`
+    );
+    if (jcSel) {
+      if (![...jcSel.options].some(o => o.value === 'Purchase Order')) {
+        const opt = document.createElement('option');
+        opt.value = 'Purchase Order';
+        opt.textContent = 'Purchase Order';
+        jcSel.appendChild(opt);
+      }
+      jcSel.value = 'Purchase Order';
+    }
+  }
   // Always flush on blur — cancels debounce and writes now
   drPutNow(p.dailyRows[i].id, p.dailyRows[i]);
   renderDailyCalcCells(el.dataset.proj, i);
