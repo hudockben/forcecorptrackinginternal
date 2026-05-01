@@ -2167,16 +2167,20 @@
       try {
         const headers = { Authorization: `Bearer ${token}` };
 
-        // Fetch all sources in parallel — projects from both normalized table and blob for best coverage
-        const [projRes, blobRes, rowsRes, truckRes, invRes] = await Promise.all([
+        // Fetch all sources in parallel — projects from both normalized table and blob for best coverage.
+        // Daily rows + trucking are fetched per division (turf default + paving) and merged.
+        const [projRes, blobRes, rowsRes, truckRes, invRes, pavRowsRes, pavTruckRes] = await Promise.all([
           fetch(`${API_BASE}/projects`, { headers }),
           fetch(`${API_BASE}/data/fct_projects`, { headers }),
           fetch(`${API_BASE}/daily-rows?since=${startDate}&limit=50000`, { headers }),
           fetch(`${API_BASE}/trucking`, { headers }),
           fetch(`${API_BASE}/data/fct_inventory`, { headers }),
+          fetch(`${API_BASE}/daily-rows?division=paving&since=${startDate}&limit=50000`, { headers }),
+          fetch(`${API_BASE}/trucking?division=paving`, { headers }),
         ]);
 
-        // daily-rows and trucking are required
+        // daily-rows and trucking are required (turf). Paving sources are best-effort —
+        // a failure there shouldn't prevent the rest of the report from rendering.
         if (!rowsRes.ok || !truckRes.ok) {
           const failures = [];
           if (!rowsRes.ok)  failures.push('/api/daily-rows (HTTP ' + rowsRes.status + ')');
@@ -2205,6 +2209,24 @@
         const { rows: allRows }   = await rowsRes.json();
         const { truckingEntries } = await truckRes.json();
 
+        // Merge paving daily-rows + trucking entries (best-effort — non-fatal on error).
+        let pavingRows = [];
+        let pavingTrucking = [];
+        if (pavRowsRes && pavRowsRes.ok) {
+          try {
+            const pj = await pavRowsRes.json();
+            pavingRows = Array.isArray(pj.rows) ? pj.rows : [];
+          } catch { /* non-fatal */ }
+        }
+        if (pavTruckRes && pavTruckRes.ok) {
+          try {
+            const tj = await pavTruckRes.json();
+            pavingTrucking = Array.isArray(tj.truckingEntries) ? tj.truckingEntries : [];
+          } catch { /* non-fatal */ }
+        }
+        const mergedRows     = (allRows || []).concat(pavingRows);
+        const mergedTrucking = (truckingEntries || []).concat(pavingTrucking);
+
         // Parse infill inventory entries (non-fatal if unavailable)
         let allInvEntries = [];
         if (invRes.ok) {
@@ -2215,8 +2237,8 @@
         }
 
         // Filter to the exact date window
-        const dailyRows = (allRows || []).filter(r => r.date && r.date >= startDate && r.date <= endDate);
-        const truckRows = (truckingEntries || []).filter(t => t.date && t.date >= startDate && t.date <= endDate);
+        const dailyRows = mergedRows.filter(r => r.date && r.date >= startDate && r.date <= endDate);
+        const truckRows = mergedTrucking.filter(t => t.date && t.date >= startDate && t.date <= endDate);
         const invRows   = allInvEntries.filter(e => e.date && e.date >= startDate && e.date <= endDate);
 
         const byProject = {};
@@ -2300,11 +2322,15 @@
           entry.hoursWorked  += lh;
         });
 
-        // Phase 2 — batch-fetch individual project blobs for any IDs not yet in projMap
+        // Phase 2 — batch-fetch individual project blobs for any IDs not yet in projMap.
+        // Try both the turf (fct_project_*) and paving (fct_paving_project_*) blob keys
+        // so paving projects (which never sync to /api/projects) can be resolved.
         const unknownPids = Object.keys(byProject).filter(pid => !projMap[pid]);
         if (unknownPids.length) {
           try {
-            const batchKeys = unknownPids.map(pid => 'fct_project_' + pid).join(',');
+            const batchKeys = unknownPids
+              .flatMap(pid => ['fct_project_' + pid, 'fct_paving_project_' + pid])
+              .join(',');
             const batchRes2 = await fetch(
               `${API_BASE}/data/_batch?keys=${encodeURIComponent(batchKeys)}`, { headers }
             );
@@ -2312,8 +2338,10 @@
               const bj2 = await batchRes2.json();
               Object.entries(bj2.values || {}).forEach(([key, val]) => {
                 if (!val) return;
-                const pid = key.replace(/^fct_project_/, '');
-                if (pid && (val['project-name'] || val.name)) projMap[pid] = val;
+                const pid = key.replace(/^fct_paving_project_/, '').replace(/^fct_project_/, '');
+                if (pid && (val['project-name'] || val.name) && !projMap[pid]) {
+                  projMap[pid] = val;
+                }
               });
             }
           } catch { /* non-fatal */ }
