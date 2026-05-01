@@ -8294,8 +8294,9 @@ function renderInventoryTab() {
   entries.forEach(e => {
     const rate = parseFloat(e.rate) || 0, hrs = parseFloat(e.hours) || 0;
     const ee   = rate * hrs;
-    const bags = parseFloat(e.bags_produced)   || 0;
-    const lbs  = parseFloat(e.total_poundage)  || 0;
+    const isWithdrawal = !!e.project_id;
+    const bags = isWithdrawal ? 0 : (parseFloat(e.bags_produced)  || 0);
+    const lbs  = isWithdrawal ? 0 : (parseFloat(e.total_poundage) || 0);
     const euc  = parseFloat(e.equip_unit_cost) || 0, eh = parseFloat(e.equip_hours) || 0;
     const eq   = euc * eh;
     const uc   = parseFloat(e.unit_cost) || 0, up = parseFloat(e.units_purchased) || 0;
