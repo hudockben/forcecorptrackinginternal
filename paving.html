@@ -8550,7 +8550,8 @@ document.getElementById('trucking-root').addEventListener('change', e => {
 });
 
 /* ── Inventory Tab events ── */
-document.getElementById('inventory-root').addEventListener('input', e => {
+const _invRoot = document.getElementById('inventory-root');
+if (_invRoot) _invRoot.addEventListener('input', e => {
   const el = e.target;
   const id = el.dataset.invId, field = el.dataset.invField;
   if (!id || !field) return;
@@ -8591,7 +8592,7 @@ document.getElementById('inventory-root').addEventListener('input', e => {
   saveInventoryEntries();
 });
 
-document.getElementById('inventory-root').addEventListener('change', e => {
+if (_invRoot) _invRoot.addEventListener('change', e => {
   const el = e.target;
   const id = el.dataset.invId, field = el.dataset.invField;
   if (!id || !field) return;
