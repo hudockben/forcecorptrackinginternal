@@ -7759,6 +7759,7 @@ function _syncTRRowField(tr, field) {
     r.equip_unit_cost = String(parseFloat(tr.rate)  || 0);
     r.equip_hours     = String(parseFloat(tr.hours) || 0);
   }
+  r.job_class = 'Trucking';
   drPutNow(r.id, r);
   renderDailyTable(tr.project_id);
 }
@@ -15917,7 +15918,7 @@ document.addEventListener('change', e => {
   if (p.dailyRows[i][el.dataset.f] !== el.value) {
     p.dailyRows[i][el.dataset.f] = el.value;
   }
-  if (el.dataset.f === 'po_num' && el.value && p.dailyRows[i].job_class !== 'Purchase Order') {
+  if (el.dataset.f === 'po_num' && el.value && p.dailyRows[i].job_class !== 'Purchase Order' && p.dailyRows[i].job_class !== 'Trucking') {
     p.dailyRows[i].job_class = 'Purchase Order';
     const jcSel = document.querySelector(
       `select[data-tab="daily"][data-proj="${el.dataset.proj}"][data-i="${i}"][data-f="job_class"]`
