@@ -101,6 +101,87 @@ const dust1 = {
 const out4 = dedupBillingEntries([dust1, tr0610, tr0613]);
 assert('dust and both trucking rows all survive', out4.length === 3);
 
+console.log('\n[DUST — same source_id sent twice keeps the latest sent_at]');
+const dustOld = {
+  source: 'dust', source_id: 'd-100',
+  actual_date: '2026-04-15', company_name: 'Kovalchick',
+  location: 'site-a', vehicle1: '36300', start_time: '07:00',
+  total: 50, sent_at: '2026-04-15T12:00:00Z',
+};
+const dustNew = { ...dustOld, total: 75, sent_at: '2026-04-16T08:00:00Z' };
+const outDustResend = dedupBillingEntries([dustOld, dustNew]);
+assert('only one dust entry survives', outDustResend.length === 1);
+assert('the surviving entry is the latest sent_at',
+  outDustResend[0].sent_at === '2026-04-16T08:00:00Z');
+assert('the surviving entry has the new total', outDustResend[0].total === 75);
+
+console.log('\n[DUST — timeless original + timed CSV replacement collapse to one]');
+const dustTimeless = {
+  source: 'dust', source_id: 'd-200a',
+  actual_date: '2026-04-16', company_name: 'Kovalchick',
+  location: 'plant-b', vehicle1: '36400', start_time: '',
+  sent_at: '2026-04-16T10:00:00Z', total: 100,
+};
+const dustTimed = {
+  source: 'dust', source_id: 'd-200b',
+  actual_date: '2026-04-16', company_name: 'Kovalchick',
+  location: 'plant-b', vehicle1: '36400', start_time: '08:30',
+  sent_at: '2026-04-16T18:00:00Z', total: 110,
+};
+const outDustTimed = dedupBillingEntries([dustTimeless, dustTimed]);
+assert('timeless+timed dust collapse to one (existing dust behavior intact)',
+  outDustTimed.length === 1);
+assert('the timed (later sent_at) winner is kept',
+  outDustTimed[0].source_id === 'd-200b');
+
+console.log('\n[DUST — two different physical jobs survive (different vehicle1)]');
+const dustJobA = {
+  source: 'dust', source_id: 'd-300',
+  actual_date: '2026-04-17', company_name: 'Kovalchick',
+  location: 'site-z', vehicle1: '36500', start_time: '06:00',
+  sent_at: '2026-04-17T09:00:00Z',
+};
+const dustJobB = {
+  source: 'dust', source_id: 'd-301',
+  actual_date: '2026-04-17', company_name: 'Kovalchick',
+  location: 'site-z', vehicle1: '36600', start_time: '06:00',
+  sent_at: '2026-04-17T09:05:00Z',
+};
+const outDustTwo = dedupBillingEntries([dustJobA, dustJobB]);
+assert('two distinct dust jobs both survive', outDustTwo.length === 2);
+
+console.log('\n[DUST — dust without source_id falls through to content-key dedup]');
+// (Old dust rows imported before source_id was tracked.)
+const dustNoIdA = {
+  source: 'dust',
+  actual_date: '2026-04-18', company_name: 'Kovalchick',
+  actual_start: '06:30', location: 'site-q',
+  total: 80,
+};
+const dustNoIdB = { ...dustNoIdA }; // exact dup
+const dustNoIdC = { ...dustNoIdA, location: 'site-r' }; // different location → not a dup
+const outDustNoId = dedupBillingEntries([dustNoIdA, dustNoIdB, dustNoIdC]);
+assert('dust-without-source_id true dup collapses, distinct survives',
+  outDustNoId.length === 2);
+
+console.log('\n[DUST — does NOT get caught by the new non-dust source_id branch]');
+// Defensive: a dust entry with source_id should hit the dust branch first,
+// never the new (source, source_id) branch — verify by mixing cases that
+// would conflict if order were wrong.
+const dustS = {
+  source: 'dust', source_id: 'd-400',
+  actual_date: '2026-04-19', company_name: 'Co', location: 'L',
+  vehicle1: 'V1', sent_at: '2026-04-19T10:00:00Z',
+};
+const tr400 = {
+  source: 'trucking', source_id: 'd-400', // same string, different source
+  actual_date: '2026-04-19', company_name: 'Co',
+  actual_start: '07:00', driver: 'X', total: 200,
+};
+const outMixSrc = dedupBillingEntries([dustS, tr400]);
+assert('dust + trucking sharing the same source_id string both survive',
+  outMixSrc.length === 2);
+
 console.log('\n[BUG REGRESSION — old behavior would collapse tr0610+tr0613]');
 function oldDedup(raw) {
   const seen = new Set(), out = [];
