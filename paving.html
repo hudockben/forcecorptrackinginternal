@@ -6464,14 +6464,19 @@ function projForBidItem(b, actual, rqty, bidQty, bidTot, isComplete) {
 function projectedCostForProject(p) {
   const _effQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
   const projDone = (p['status'] || '') === 'Complete';
-  return (p.bidItems||[]).reduce((s,b) => {
+  const totalActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+  if (projDone) return totalActual;
+  const sumLines = (p.bidItems||[]).reduce((s,b) => {
     const bidQty = _effQty(b);
     const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
     const actual = actualForBidItem(b, p.id);
     const rqty   = runningQtyForBidItem(b, p.id);
-    const done   = projDone || !!b.is_complete;
+    const done   = !!b.is_complete;
     return s + projForBidItem(b, actual, rqty, bidQty, bidTot, done);
   }, 0);
+  // Per-line sums miss daily rows whose codes don't map to a bid item;
+  // project total must never undercut what we've already spent.
+  return Math.max(sumLines, totalActual);
 }
 
 function renderBidFooter(projId, opts = {}) {
