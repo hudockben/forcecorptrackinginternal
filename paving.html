@@ -6233,6 +6233,7 @@ function updateProjectField(id, field, value) {
   if (nameEl)  nameEl.textContent  = p['project-name'] || 'Untitled Project';
   if (metaEl)  metaEl.textContent  = [p['job-number'], p['client']].filter(Boolean).join(' · ');
   if (badgeEl) { badgeEl.className = 'proj-badge ' + statusBadgeClass(p['status']); badgeEl.textContent = p['status'] || ''; }
+  if (field === 'status') renderBidTable(id);
 }
 
 function selectAllProjectAssignment(projId, field, names, btn) {
@@ -6387,6 +6388,7 @@ function toggleBidItemComplete(projId, biId) {
   bi.is_complete = !bi.is_complete;
   saveProject(projId);
   renderScheduleTab();
+  renderBidTable(projId);
 }
 
 function actualForBidItem(b, projId) {
@@ -6444,7 +6446,8 @@ function laborerCountForBidItem(b, projId) {
   return names.size;
 }
 
-function projForBidItem(b, actual, rqty, bidQty, bidTot) {
+function projForBidItem(b, actual, rqty, bidQty, bidTot, isComplete) {
+  if (isComplete) return actual;
   if (b.start_date && b.target_date && actual > 0) {
     const now   = new Date();
     const start = new Date(b.start_date + 'T00:00:00');
@@ -6460,12 +6463,14 @@ function projForBidItem(b, actual, rqty, bidQty, bidTot) {
 
 function projectedCostForProject(p) {
   const _effQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+  const projDone = (p['status'] || '') === 'Complete';
   return (p.bidItems||[]).reduce((s,b) => {
     const bidQty = _effQty(b);
     const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
     const actual = actualForBidItem(b, p.id);
     const rqty   = runningQtyForBidItem(b, p.id);
-    return s + projForBidItem(b, actual, rqty, bidQty, bidTot);
+    const done   = projDone || !!b.is_complete;
+    return s + projForBidItem(b, actual, rqty, bidQty, bidTot, done);
   }, 0);
 }
 
@@ -6566,6 +6571,7 @@ function renderBidTable(projId, opts = {}) {
   const readonly = !!opts.readonly;
   const COLS     = readonly ? 15 : 17;
   const p = getProj(projId); if (!p) return;
+  const projDone = (p['status'] || '') === 'Complete';
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
 
@@ -6639,7 +6645,8 @@ function renderBidTable(projId, opts = {}) {
       const rqty    = runningQtyForBidItem(b, projId);
       const cumHrs  = cumulativeHoursForBidItem(b, projId);
       const numLab  = laborerCountForBidItem(b, projId);
-      const proj    = projForBidItem(b, actual, rqty, bidQty, bidTot);
+      const biDone  = projDone || !!b.is_complete;
+      const proj    = projForBidItem(b, actual, rqty, bidQty, bidTot, biDone);
       const diff    = bidTot - actual;
       const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
       const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
@@ -13176,7 +13183,8 @@ function exportBidPDF(projId, selectedCostCodes = null) {
       const rqty   = runningQtyForBidItem(b, projId);
       const cumHrs = cumulativeHoursForBidItem(b, projId);
       const numLab = laborerCountForBidItem(b, projId);
-      const proj   = projForBidItem(b, actual, rqty, bidQty, bidTot);
+      const biDone = ((p['status'] || '') === 'Complete') || !!b.is_complete;
+      const proj   = projForBidItem(b, actual, rqty, bidQty, bidTot, biDone);
       const diff   = bidTot - actual;
       const pct    = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : dash;
       const ruc    = rqty > 0 && actual ? '$' + fmt(actual / rqty) : dash;
