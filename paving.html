@@ -2554,7 +2554,7 @@
     <button class="cfb cost-cfb" id="cost-status-btn" data-f="_proj_status" style="font-size:0.75rem;padding:0.2rem 0.5rem">Status ▼</button>
     <button class="cfb cost-cfb" id="cost-fieldtype-btn" data-f="_field_type" style="font-size:0.75rem;padding:0.2rem 0.5rem">Field Type ▼</button>
     <div style="display:flex;align-items:center;gap:0.35rem">
-      <span style="font-size:0.72rem;color:var(--muted)">Sq Ft</span>
+      <span style="font-size:0.72rem;color:var(--muted)">Sq Yd</span>
       <input id="cost-sqft-min" type="number" placeholder="Min" min="0" step="1"
         style="width:72px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:0.2rem 0.35rem;font-size:0.75rem;outline:none">
       <span style="color:var(--muted)">–</span>
@@ -6512,19 +6512,19 @@ function renderBidFooter(projId, opts = {}) {
         const deltaSF   = bidSF - runningSF;
         const deltaCls  = deltaSF >= 0 ? 'color:#166534' : 'color:#991b1b';
         const deltaTxt  = deltaSF >= 0
-          ? `$${fmt(deltaSF)}/sf under bid`
-          : `$${fmt(Math.abs(deltaSF))}/sf over bid`;
+          ? `$${fmt(deltaSF)}/sy under bid`
+          : `$${fmt(Math.abs(deltaSF))}/sy over bid`;
         sqftBar.style.display = 'block';
         sqftBar.innerHTML = `
           <div style="display:flex;gap:2rem;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:0.55rem 1rem;flex-wrap:wrap;margin-bottom:0.25rem">
-            <span style="font-size:0.65rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted)">Cost / SF &nbsp;·&nbsp; ${fmt(sqft)} sf</span>
+            <span style="font-size:0.65rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted)">Cost / SY &nbsp;·&nbsp; ${fmt(sqft)} sy</span>
             <div style="display:flex;gap:0.4rem;align-items:baseline">
               <span style="font-size:0.65rem;color:var(--muted)">Bid</span>
-              <span style="font-weight:700;font-size:0.95rem">$${fmt(bidSF)}<span style="font-size:0.65rem;font-weight:400;color:var(--muted)">/sf</span></span>
+              <span style="font-weight:700;font-size:0.95rem">$${fmt(bidSF)}<span style="font-size:0.65rem;font-weight:400;color:var(--muted)">/sy</span></span>
             </div>
             <div style="display:flex;gap:0.4rem;align-items:baseline">
               <span style="font-size:0.65rem;color:var(--muted)">Running</span>
-              <span style="font-weight:700;font-size:0.95rem;color:#92400e">$${fmt(runningSF)}<span style="font-size:0.65rem;font-weight:400;color:var(--muted)">/sf</span></span>
+              <span style="font-weight:700;font-size:0.95rem;color:#92400e">$${fmt(runningSF)}<span style="font-size:0.65rem;font-weight:400;color:var(--muted)">/sy</span></span>
             </div>
             <span style="font-weight:600;font-size:0.88rem;${deltaCls}">${deltaTxt}</span>
           </div>`;
@@ -6783,8 +6783,8 @@ function projectCardHTML(p) {
         <div class="info-field"><label>Project Name</label>
           <input type="text" value="${esc(p['project-name']||'')}" placeholder="e.g. Route 9 Widening"
             oninput="updateProjectField('${p.id}','project-name',this.value)"></div>
-        <div class="info-field"><label>Field Sq Ft</label>
-          <input type="number" value="${esc(p['sqft']||'')}" placeholder="e.g. 75000" step="1" min="0"
+        <div class="info-field"><label>Field Sq Yd</label>
+          <input type="number" value="${esc(p['sqft']||'')}" placeholder="e.g. 8500" step="1" min="0"
             oninput="updateProjectField('${p.id}','sqft',this.value)"></div>
         <div class="info-field"><label>Job Number</label>
           <input type="text" value="${esc(p['job-number']||'')}" placeholder="e.g. 2025-014"
@@ -13237,15 +13237,15 @@ function exportBidPDF(projId, selectedCostCodes = null) {
     const deltaSF   = bidSF - runningSF;
     const deltaCls  = deltaSF >= 0 ? 'sqft-under' : 'sqft-over';
     const deltaTxt  = deltaSF >= 0
-      ? `$${fmt(deltaSF)}/sf under bid`
-      : `$${fmt(Math.abs(deltaSF))}/sf over bid`;
+      ? `$${fmt(deltaSF)}/sy under bid`
+      : `$${fmt(Math.abs(deltaSF))}/sy over bid`;
     return `<div class="sqft-bar">
-      <div class="sqft-metric"><div class="sqft-label">Total SF</div><div class="sqft-val">${fmt(sqft)} sf</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Total SY</div><div class="sqft-val">${fmt(sqft)} sy</div></div>
       <div class="sqft-sep"></div>
-      <div class="sqft-metric"><div class="sqft-label">Bid Cost / SF</div><div class="sqft-val">$${fmt(bidSF)}</div></div>
-      <div class="sqft-metric"><div class="sqft-label">Running Cost / SF</div><div class="sqft-val sqft-actual">$${fmt(runningSF)}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Bid Cost / SY</div><div class="sqft-val">$${fmt(bidSF)}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Running Cost / SY</div><div class="sqft-val sqft-actual">$${fmt(runningSF)}</div></div>
       <div class="sqft-sep"></div>
-      <div class="sqft-metric"><div class="sqft-label">$/SF Variance</div><div class="sqft-val ${deltaCls}">${deltaTxt}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">$/SY Variance</div><div class="sqft-val ${deltaCls}">${deltaTxt}</div></div>
     </div>`;
   })() : '';
 
