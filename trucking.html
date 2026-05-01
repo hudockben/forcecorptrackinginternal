@@ -534,14 +534,43 @@
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ entries: divEntries, lists: divTruckLists })
       }).catch(() => {});
-      if (_icBillingDirty && icBillingArr.length) {
-        _icBillingDirty = false;
-        fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
+      _flushIcBillingIfDirty();
+    }
+
+    // Flush local IC-billing edits without clobbering entries that were added
+    // concurrently (newly-sent rows, dust sends, edits from another tab). We
+    // re-fetch the server's current list, re-apply only the trucking-row field
+    // updates held in memory, then PUT the merged result.
+    async function _flushIcBillingIfDirty() {
+      if (!_icBillingDirty) return;
+      _icBillingDirty = false;
+      try {
+        const r = await fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) return;
+        const { value } = await r.json();
+        const latest = Array.isArray(value) ? value : [];
+        const updatesById = new Map();
+        icBillingArr.forEach(e => {
+          if (e.source === 'trucking' && e.source_id) updatesById.set(e.source_id, e);
+        });
+        const merged = latest.map(e => {
+          if (e.source === 'trucking' && e.source_id && updatesById.has(e.source_id)) {
+            const upd = updatesById.get(e.source_id);
+            return { ...e, total_hours: upd.total_hours, haul_fee: upd.haul_fee, total: upd.total };
+          }
+          return e;
+        });
+        icBillingArr = merged;
+        icSentMap.clear();
+        merged.forEach(e => { if (e.source === 'trucking' && e.source_id) icSentMap.set(e.source_id, e); });
+        await fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ value: icBillingArr })
-        }).catch(() => {});
-      }
+          body: JSON.stringify({ value: merged })
+        });
+      } catch { /* non-fatal */ }
     }
 
     /* Fix entries that were saved before the CSV normalisation was in place.
@@ -900,12 +929,27 @@
         };
         entries.unshift(entry);
 
-        await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+        const putRes = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ value: entries })
         });
+        if (!putRes.ok) {
+          // Surface real failures (403 from missing division access, 5xx, etc.)
+          // instead of pretending the send worked.
+          const msg = putRes.status === 403
+            ? 'No permission to write Intercompany — ask an admin.'
+            : `Save failed (HTTP ${putRes.status}).`;
+          if (status) { status.style.color = 'var(--red)'; status.textContent = msg; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 4500);
+          if (btn) btn.disabled = false;
+          return;
+        }
 
+        // Keep the in-memory IC list in sync with the server. If we don't, a
+        // later schedSave→tdDivPut that flushes _icBillingDirty would PUT a
+        // stale icBillingArr (without this entry) and silently wipe it.
+        icBillingArr = entries;
         icSentMap.set(id, entry);
         const tsEl = document.getElementById('ic-ts-' + id);
         if (tsEl) tsEl.textContent = fmtSentAt(entry?.sent_at);

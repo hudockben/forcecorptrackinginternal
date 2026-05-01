@@ -2,7 +2,15 @@
 
 const { neon }        = require('@neondatabase/serverless');
 const { syncForKey }  = require('../lib/sync-normalized');
-const { requireAuth, hasDivisionAccess, divisionForKey, isSharedKey } = require('../lib/auth');
+const {
+  requireAuth,
+  hasDivisionAccess,
+  hasAnyDivisionAccess,
+  divisionForKey,
+  isSharedKey,
+  isCrossDivisionKey,
+  CROSS_DIVISION_CONTRIBUTORS,
+} = require('../lib/auth');
 
 const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory', 'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists'];
 function isAllowedKey(k) {
@@ -24,6 +32,13 @@ function isAllowedKey(k) {
  */
 function isKeyAllowedForUser(key, payload) {
   if (isSharedKey(key)) return true;
+  // Cross-division blobs (e.g. fct_intercompany_billing_entries) aggregate
+  // rows from multiple source divisions. Source-division users have to be
+  // able to read+write them so "Send to Intercompany" actually persists,
+  // even if the user has no intercompany role.
+  if (isCrossDivisionKey(key)) {
+    return hasAnyDivisionAccess(payload, CROSS_DIVISION_CONTRIBUTORS);
+  }
   const division = divisionForKey(key) || 'turf';
   return hasDivisionAccess(payload, division);
 }

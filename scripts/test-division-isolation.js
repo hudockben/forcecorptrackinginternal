@@ -56,6 +56,12 @@ const dustViewer = {
   isPlatformAdmin: false,
 };
 
+const truckingOnly = {
+  username: 'trucking-user',
+  divisionRoles: { turf: 'no_access', dust: 'no_access', paving: 'no_access', trucking: 'level3', intercompany: 'no_access' },
+  isPlatformAdmin: false,
+};
+
 const platformAdmin = {
   username: 'platform-admin',
   divisionRoles: null,
@@ -165,6 +171,23 @@ for (const { user, allowedKey, blockedKeys } of scenarios) {
       hasDivisionAccess(user, div) === false);
   }
 }
+
+console.log('\n[Cross-division IC keys — source divisions can write]');
+const { isCrossDivisionKey, hasAnyDivisionAccess, CROSS_DIVISION_CONTRIBUTORS } = require('../api/lib/auth');
+assert('isCrossDivisionKey(fct_intercompany_billing_entries) true',
+  isCrossDivisionKey('fct_intercompany_billing_entries') === true);
+assert('isCrossDivisionKey(fct_intercompany_companies) true',
+  isCrossDivisionKey('fct_intercompany_companies') === true);
+assert('isCrossDivisionKey(fct_intercompany_billing) false (legacy/unused key)',
+  isCrossDivisionKey('fct_intercompany_billing') === false);
+assert('truckingOnly user can write IC billing (cross-division)',
+  hasAnyDivisionAccess(truckingOnly, CROSS_DIVISION_CONTRIBUTORS) === true);
+assert('dustViewer user can write IC billing (cross-division)',
+  hasAnyDivisionAccess(dustViewer, CROSS_DIVISION_CONTRIBUTORS) === true);
+assert('pavingOnly user can write IC billing (cross-division)',
+  hasAnyDivisionAccess(pavingOnly, CROSS_DIVISION_CONTRIBUTORS) === true);
+assert('turfOnly user CANNOT write IC billing (no source-division access)',
+  hasAnyDivisionAccess(turfOnly, CROSS_DIVISION_CONTRIBUTORS) === false);
 
 console.log('\n────────────────────────────────────────');
 console.log(`  ${passed} passed, ${failed} failed`);
