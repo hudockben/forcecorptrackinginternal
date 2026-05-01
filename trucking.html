@@ -929,11 +929,22 @@
         };
         entries.unshift(entry);
 
-        await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+        const putRes = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ value: entries })
         });
+        if (!putRes.ok) {
+          // Surface real failures (403 from missing division access, 5xx, etc.)
+          // instead of pretending the send worked.
+          const msg = putRes.status === 403
+            ? 'No permission to write Intercompany — ask an admin.'
+            : `Save failed (HTTP ${putRes.status}).`;
+          if (status) { status.style.color = 'var(--red)'; status.textContent = msg; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 4500);
+          if (btn) btn.disabled = false;
+          return;
+        }
 
         // Keep the in-memory IC list in sync with the server. If we don't, a
         // later schedSave→tdDivPut that flushes _icBillingDirty would PUT a

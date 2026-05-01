@@ -12,6 +12,23 @@ const SHARED_KEY_PREFIXES = [
   'fct_presence',
 ];
 
+// Cross-division keys: blobs that aggregate data from multiple source
+// divisions, so anyone with access to any of those source divisions (or to
+// intercompany itself) must be able to read and write them. The canonical
+// example is intercompany billing — a trucking/dust/paving user clicks
+// "Send to Intercompany" on a row in their division and that has to write
+// to the IC list. Without this carve-out the PUT 403s and the entry is
+// silently dropped, leaving the IC sent badge in memory only.
+const CROSS_DIVISION_KEYS = new Set([
+  'fct_intercompany_billing_entries',
+  'fct_intercompany_companies',
+]);
+const CROSS_DIVISION_CONTRIBUTORS = ['trucking', 'dust', 'paving', 'intercompany'];
+
+function isCrossDivisionKey(key) {
+  return Boolean(key) && CROSS_DIVISION_KEYS.has(key);
+}
+
 // Blob-key prefix → division mapping. Used by api/data/[key].js to verify
 // the caller has access to a division before reading or writing its blob.
 // Order matters: most-specific prefix wins.
@@ -78,6 +95,11 @@ function normalizeDivision(value) {
  * to be a value other than 'no_access'. Legacy tokens without division_roles
  * fall back to allowedDivisions, and ultimately to turf-only access.
  */
+function hasAnyDivisionAccess(payload, divisions) {
+  if (!payload || !Array.isArray(divisions)) return false;
+  return divisions.some(d => hasDivisionAccess(payload, d));
+}
+
 function hasDivisionAccess(payload, division) {
   if (!payload || !division) return false;
   if (payload.isPlatformAdmin) return true;
@@ -134,10 +156,13 @@ function requireDivision(req, res, options = {}) {
 
 module.exports = {
   ALL_DIVISIONS,
+  CROSS_DIVISION_CONTRIBUTORS,
   requireAuth,
   requireDivision,
   hasDivisionAccess,
+  hasAnyDivisionAccess,
   normalizeDivision,
   divisionForKey,
   isSharedKey,
+  isCrossDivisionKey,
 };
