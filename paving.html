@@ -8131,7 +8131,7 @@ function _invBreakdownHTML(year) {
   const dash = (n, decimals = 2) => (n === null || isNaN(n)) ? '<span style="color:var(--muted)">—</span>' : fmt(n, decimals);
 
   function aggZero() {
-    return { cnt: 0, laborHrs: 0, laborDol: 0, bags: 0, poundage: 0, equipHrs: 0, utilityDol: 0 };
+    return { cnt: 0, laborHrs: 0, laborDol: 0, bags: 0, machineBags: 0, laborBags: 0, poundage: 0, equipHrs: 0, utilityDol: 0 };
   }
   function addEntry(acc, e) {
     const lh = parseFloat(e.hours)           || 0;
@@ -8144,6 +8144,8 @@ function _invBreakdownHTML(year) {
     acc.laborHrs   += lh;
     acc.laborDol   += ld;
     acc.bags       += bg;
+    if (eh > 0) acc.machineBags += bg;
+    if (lh > 0) acc.laborBags   += bg;
     acc.poundage   += lb;
     acc.equipHrs   += eh;
     acc.utilityDol += ud;
@@ -8156,8 +8158,8 @@ function _invBreakdownHTML(year) {
 
   function typeRow(rt, v, isTotalRow, label) {
     const total       = v.laborDol + v.utilityDol;
-    const bagsMachine = v.equipHrs > 0  ? v.bags / v.equipHrs  : null;
-    const bagsLabor   = v.laborHrs > 0  ? v.bags / v.laborHrs  : null;
+    const bagsMachine = v.equipHrs > 0  ? v.machineBags / v.equipHrs  : null;
+    const bagsLabor   = v.laborHrs > 0  ? v.laborBags   / v.laborHrs  : null;
     const perPound    = v.poundage > 0  ? total  / v.poundage  : null;
     const bg = isTotalRow ? 'rgba(255,255,255,0.04)' : 'transparent';
     const fw = isTotalRow ? '700' : '400';
@@ -8189,6 +8191,7 @@ function _invBreakdownHTML(year) {
 
     inventoryEntries.forEach(e => {
       if (!e.date) return;
+      if (e.project_id) return; // bags sent to a job are withdrawals, not production
       const d = new Date(e.date + 'T12:00:00');
       if (d.getFullYear() !== year || d.getMonth() !== mi) return;
       const rt = (e.rubber_type || '').trim();
@@ -8291,8 +8294,9 @@ function renderInventoryTab() {
   entries.forEach(e => {
     const rate = parseFloat(e.rate) || 0, hrs = parseFloat(e.hours) || 0;
     const ee   = rate * hrs;
-    const bags = parseFloat(e.bags_produced)   || 0;
-    const lbs  = parseFloat(e.total_poundage)  || 0;
+    const isWithdrawal = !!e.project_id;
+    const bags = isWithdrawal ? 0 : (parseFloat(e.bags_produced)  || 0);
+    const lbs  = isWithdrawal ? 0 : (parseFloat(e.total_poundage) || 0);
     const euc  = parseFloat(e.equip_unit_cost) || 0, eh = parseFloat(e.equip_hours) || 0;
     const eq   = euc * eh;
     const uc   = parseFloat(e.unit_cost) || 0, up = parseFloat(e.units_purchased) || 0;
