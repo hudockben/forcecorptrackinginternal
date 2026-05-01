@@ -16,6 +16,15 @@ function isAllowedKey(k) {
     || /^fct_paving_[a-zA-Z0-9_-]+$/.test(k);
 }
 
+// Cross-division blobs the source divisions must be able to read/write so the
+// "Send to Intercompany" button on trucking and dust rows can append entries
+// (and look up the company list) without granting full intercompany access.
+const INTERCOMPANY_SOURCE_DIVISIONS = ['trucking', 'dust', 'intercompany'];
+const INTERCOMPANY_SHARED_KEYS = new Set([
+  'fct_intercompany_companies',
+  'fct_intercompany_billing_entries',
+]);
+
 /**
  * Returns true if the JWT payload is permitted to read/write this blob key.
  * Maps key prefix → division and verifies divisionRoles[division] != 'no_access'.
@@ -24,6 +33,9 @@ function isAllowedKey(k) {
  */
 function isKeyAllowedForUser(key, payload) {
   if (isSharedKey(key)) return true;
+  if (INTERCOMPANY_SHARED_KEYS.has(key)) {
+    return INTERCOMPANY_SOURCE_DIVISIONS.some(d => hasDivisionAccess(payload, d));
+  }
   const division = divisionForKey(key) || 'turf';
   return hasDivisionAccess(payload, division);
 }

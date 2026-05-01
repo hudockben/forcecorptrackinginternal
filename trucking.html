@@ -852,6 +852,10 @@
         const coRes = await fetch(`${API_BASE}/data/${IC_CO_KEY}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
+        if (!coRes.ok) {
+          const body = await coRes.text();
+          throw new Error(`load companies failed (${coRes.status}): ${body}`);
+        }
         const { value: companies } = await coRes.json();
         const coList = Array.isArray(companies) ? companies : [];
 
@@ -870,6 +874,10 @@
         const beRes = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
+        if (!beRes.ok) {
+          const body = await beRes.text();
+          throw new Error(`load billing entries failed (${beRes.status}): ${body}`);
+        }
         const { value: existing } = await beRes.json();
         let entries = Array.isArray(existing) ? existing : [];
 
@@ -900,11 +908,15 @@
         };
         entries.unshift(entry);
 
-        await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+        const putRes = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ value: entries })
         });
+        if (!putRes.ok) {
+          const body = await putRes.text();
+          throw new Error(`save billing entry failed (${putRes.status}): ${body}`);
+        }
 
         icSentMap.set(id, entry);
         const tsEl = document.getElementById('ic-ts-' + id);
@@ -914,8 +926,12 @@
         if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
         setTimeout(() => { if (status) status.textContent = ''; }, 3000);
       } catch (err) {
-        if (status) { status.style.color = 'var(--red)'; status.textContent = 'Error — try again.'; }
-        setTimeout(() => { if (status) status.textContent = ''; }, 3500);
+        console.error('[sendToIntercompany]', err);
+        if (status) {
+          status.style.color = 'var(--red)';
+          status.textContent = (err && err.message) ? `Error: ${err.message}` : 'Error — try again.';
+        }
+        setTimeout(() => { if (status) status.textContent = ''; }, 6000);
       }
 
       if (btn) btn.disabled = false;
