@@ -3772,7 +3772,7 @@ function renderHomeTab() {
       : 'color:var(--green)';
     const contractVal   = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
     const contractTxt   = contractVal ? '$' + fmt(contractVal) : '—';
-    const profit        = contractVal ? contractVal - projCost : null;
+    const profit        = contractVal ? contractVal - actual : null;
     const profitTxt     = profit !== null ? (profit >= 0 ? '$' + fmt(profit) : '-$' + fmt(Math.abs(profit))) : '—';
     const profitStyle   = profit === null ? 'color:var(--muted)' : profit >= 0 ? 'color:var(--green)' : 'color:var(--red)';
     const profitPct     = (profit !== null && contractVal) ? ` (${(profit / contractVal * 100).toFixed(1)}%)` : '';
