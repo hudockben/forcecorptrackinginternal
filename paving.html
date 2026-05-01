@@ -2420,7 +2420,7 @@
         <th style="width:28px"></th>
         <th>Cost Code <button class="cfb bfb" data-bf="cost_code">▼</button> / Sub Code <button class="cfb bfb" data-bf="sub_code">▼</button></th>
         <th>Unit</th><th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th><th class="num">Unit Cost</th><th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
-        <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+        <th class="num">Cost Total</th><th class="num">Actual Cost</th>
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
         <th>Start Date</th><th>Target Date</th>
@@ -4296,7 +4296,7 @@ function renderDashProjectCards() {
                     <th class="num">Bid Qty</th><th class="num">Unit Cost</th>
                     <th class="num">Running Qty</th><th class="num">Qty Completed</th>
                     <th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
-                    <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+                    <th class="num">Cost Total</th><th class="num">Actual Cost</th>
                     <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
                     <th class="num">Variance</th><th class="num">Projected Cost</th>
                   </tr></thead>
@@ -4490,7 +4490,7 @@ function renderProjectDashboard() {
                 <th class="num">Equip Cost %</th>
                 <th class="calc-hdr">Material Cost</th>
                 <th class="calc-hdr">Daily Total</th>
-                <th class="num">Bid Total</th>
+                <th class="num">Cost Total</th>
                 <th class="calc-hdr">Variance</th>
                 <th class="calc-hdr">% of Bid</th>
                 <th class="num">Quantity</th>
@@ -9656,7 +9656,7 @@ function showBidQuickEdit(costCode, subCode) {
             <th style="text-align:left;padding:0.3rem 0.5rem">Project</th>
             <th style="text-align:left;padding:0.3rem 0.5rem">Qty</th>
             <th style="text-align:left;padding:0.3rem 0.5rem">Unit Cost ($)</th>
-            <th style="text-align:left;padding:0.3rem 0.5rem">Bid Total</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem">Cost Total</th>
           </tr></thead>
           <tbody id="bqe-tbody">${rows}</tbody>
         </table>
@@ -13297,7 +13297,7 @@ function exportBidPDF(projId, selectedCostCodes = null) {
       <th>Sub Code</th><th>Unit</th>
       <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Qty Completed</th>
       <th class="num">Unit Cost</th><th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
-      <th class="num">Bid Total</th><th class="num">Actual Cost</th>
+      <th class="num">Cost Total</th><th class="num">Actual Cost</th>
       <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
       <th class="num">Variance</th><th class="num">Projected Cost</th>
       <th class="num">Start Date</th><th class="num">Target Date</th>
@@ -14023,7 +14023,7 @@ function exportSubCodePDF() {
       <th class="left">Status</th>
       <th>Budget Used</th>
       <th>Running Total</th>
-      <th>Bid Total</th>
+      <th>Cost Total</th>
       <th>Unit Cost vs Hist</th>
       <th class="center">Benchmark Confidence</th>
       <th>Days</th>
