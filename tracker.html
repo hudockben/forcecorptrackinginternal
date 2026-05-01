@@ -8321,6 +8321,7 @@ function _invBreakdownHTML(year) {
 
     inventoryEntries.forEach(e => {
       if (!e.date) return;
+      if (e.project_id) return; // bags sent to a job are withdrawals, not production
       const d = new Date(e.date + 'T12:00:00');
       if (d.getFullYear() !== year || d.getMonth() !== mi) return;
       const rt = (e.rubber_type || '').trim();
