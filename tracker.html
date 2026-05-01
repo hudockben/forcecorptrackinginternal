@@ -8261,7 +8261,7 @@ function _invBreakdownHTML(year) {
   const dash = (n, decimals = 2) => (n === null || isNaN(n)) ? '<span style="color:var(--muted)">—</span>' : fmt(n, decimals);
 
   function aggZero() {
-    return { cnt: 0, laborHrs: 0, laborDol: 0, bags: 0, poundage: 0, equipHrs: 0, utilityDol: 0 };
+    return { cnt: 0, laborHrs: 0, laborDol: 0, bags: 0, machineBags: 0, laborBags: 0, poundage: 0, equipHrs: 0, utilityDol: 0 };
   }
   function addEntry(acc, e) {
     const lh = parseFloat(e.hours)           || 0;
@@ -8274,6 +8274,8 @@ function _invBreakdownHTML(year) {
     acc.laborHrs   += lh;
     acc.laborDol   += ld;
     acc.bags       += bg;
+    if (eh > 0) acc.machineBags += bg;
+    if (lh > 0) acc.laborBags   += bg;
     acc.poundage   += lb;
     acc.equipHrs   += eh;
     acc.utilityDol += ud;
@@ -8286,8 +8288,8 @@ function _invBreakdownHTML(year) {
 
   function typeRow(rt, v, isTotalRow, label) {
     const total       = v.laborDol + v.utilityDol;
-    const bagsMachine = v.equipHrs > 0  ? v.bags / v.equipHrs  : null;
-    const bagsLabor   = v.laborHrs > 0  ? v.bags / v.laborHrs  : null;
+    const bagsMachine = v.equipHrs > 0  ? v.machineBags / v.equipHrs  : null;
+    const bagsLabor   = v.laborHrs > 0  ? v.laborBags   / v.laborHrs  : null;
     const perPound    = v.poundage > 0  ? total  / v.poundage  : null;
     const bg = isTotalRow ? 'rgba(255,255,255,0.04)' : 'transparent';
     const fw = isTotalRow ? '700' : '400';
