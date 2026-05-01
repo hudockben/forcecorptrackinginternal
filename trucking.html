@@ -918,6 +918,10 @@
           throw new Error(`save billing entry failed (${putRes.status}): ${body}`);
         }
 
+        // Mirror the server PUT into the local snapshot so that the next
+        // tdDivPut() write-back (which uses icBillingArr) doesn't clobber the
+        // entry we just persisted.
+        icBillingArr.unshift(entry);
         icSentMap.set(id, entry);
         const tsEl = document.getElementById('ic-ts-' + id);
         if (tsEl) tsEl.textContent = fmtSentAt(entry?.sent_at);
