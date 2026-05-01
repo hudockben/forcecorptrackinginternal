@@ -407,6 +407,30 @@ ALTER TABLE deadlines ADD COLUMN IF NOT EXISTS division TEXT NOT NULL DEFAULT 't
 CREATE INDEX IF NOT EXISTS idx_deadlines_division ON deadlines(company_code, division, deadline_date ASC);
 
 -- ─────────────────────────────────────────────────
+-- DIVISION VALUE GUARD
+-- A CHECK constraint on every division-aware table so a typo or stray
+-- value can never insert orphan rows that bypass the division allowlist.
+-- The DEFAULT 'turf' is intentionally kept for backward compatibility
+-- with tracker.html (turf), which omits ?division= in some legacy paths.
+-- New code (paving/dust/trucking/intercompany) MUST pass division explicitly.
+-- DROP-then-ADD is idempotent and safe to re-run on every deploy.
+-- ─────────────────────────────────────────────────
+ALTER TABLE purchase_orders   DROP CONSTRAINT IF EXISTS purchase_orders_division_chk;
+ALTER TABLE purchase_orders   ADD  CONSTRAINT purchase_orders_division_chk   CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
+
+ALTER TABLE trucking_entries  DROP CONSTRAINT IF EXISTS trucking_entries_division_chk;
+ALTER TABLE trucking_entries  ADD  CONSTRAINT trucking_entries_division_chk  CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
+
+ALTER TABLE daily_tracking    DROP CONSTRAINT IF EXISTS daily_tracking_division_chk;
+ALTER TABLE daily_tracking    ADD  CONSTRAINT daily_tracking_division_chk    CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
+
+ALTER TABLE company_board     DROP CONSTRAINT IF EXISTS company_board_division_chk;
+ALTER TABLE company_board     ADD  CONSTRAINT company_board_division_chk     CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
+
+ALTER TABLE deadlines         DROP CONSTRAINT IF EXISTS deadlines_division_chk;
+ALTER TABLE deadlines         ADD  CONSTRAINT deadlines_division_chk         CHECK (division IN ('turf','dust','paving','trucking','intercompany'));
+
+-- ─────────────────────────────────────────────────
 -- DUST CONTROL ENTRIES
 -- One row per job entry from the Dust Control tab.
 -- Computed fields (v1Total, ubTotal, invTotal) are

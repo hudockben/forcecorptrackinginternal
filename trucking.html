@@ -156,18 +156,6 @@
       padding: 0.18rem 0.35rem; outline: none; box-sizing: border-box;
     }
     .tr-tbl thead tr.filter-row input:focus { border-color: #555; color: var(--text); }
-    .tr-tbl thead tr.filter-row .date-filter-wrap {
-      position: relative; width: 100%;
-    }
-    .tr-tbl thead tr.filter-row button.date-filter-btn {
-      appearance: none; -webkit-appearance: none;
-      display: block; width: 100%; margin: 0;
-      background: var(--surface2); border: 1px solid var(--border); border-radius: 3px;
-      color: var(--muted); font-family: inherit; font-size: 0.7rem;
-      padding: 0.18rem 0.35rem; box-sizing: border-box;
-      cursor: pointer; white-space: nowrap; line-height: 1.2;
-      text-align: left;
-    }
 
     .tr-tbl tbody tr { border-bottom: 1px solid var(--border); }
     .tr-tbl tbody td { padding: 0.35rem 0.6rem; }
@@ -1047,31 +1035,10 @@
       renderTrackingTab();
     }
 
-    let trDateExcluded  = new Set(); // dates the user has unchecked
-    let _trDateDropOpen = false;
-
-    function _trExcludeDate(date, exclude) {
-      _trDateDropOpen = true;
-      if (exclude) trDateExcluded.add(date);
-      else         trDateExcluded.delete(date);
-      renderTrackingTab();
-    }
-
-    function _trDateSelectAll(datesJson, select) {
-      _trDateDropOpen = true;
-      const dates = JSON.parse(datesJson);
-      if (select) dates.forEach(d => trDateExcluded.delete(d));
-      else        dates.forEach(d => trDateExcluded.add(d));
-      renderTrackingTab();
-    }
-
     function applyColFilters(entries) {
-      let result = trDateExcluded.size > 0
-        ? entries.filter(e => !trDateExcluded.has(e.actual_date || ''))
-        : entries;
       const active = Object.entries(trColFilters).filter(([, v]) => v);
-      if (!active.length) return result;
-      return result.filter(e =>
+      if (!active.length) return entries;
+      return entries.filter(e =>
         active.every(([field, val]) =>
           String(e[field] || '').toLowerCase().includes(val.toLowerCase())
         )
@@ -1156,37 +1123,6 @@
         return `<input type="text" value="${esc(v)}" placeholder="filter…"
           data-filter-field="${field}"
           oninput="setColFilter('${field}',this.value)">`;
-      };
-
-      const fiDateDrop = () => {
-        const yearDates = (activeYearFilter === 'all' ? divEntries : divEntries.filter(e => (e.actual_date||'').startsWith(activeYearFilter)))
-          .map(e => e.actual_date).filter(Boolean);
-        const uniqDates = [...new Set(yearDates)].sort().reverse();
-        const hiddenCount = uniqDates.filter(d => trDateExcluded.has(d)).length;
-        const allSelected = hiddenCount === 0;
-        const btnLabel = allSelected ? 'All dates ▾' : `${uniqDates.length - hiddenCount} of ${uniqDates.length} ▾`;
-        const btnStyle = allSelected
-          ? ''
-          : 'background:rgba(251,191,36,0.12)!important;border-color:var(--yellow)!important;color:var(--yellow)!important';
-        const datesJson = esc(JSON.stringify(uniqDates));
-        const itemsHTML = uniqDates.map(d => {
-          const checked = !trDateExcluded.has(d);
-          const label   = d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) : d;
-          return `<label style="display:flex;align-items:center;gap:0.5rem;padding:0.22rem 0.75rem;cursor:pointer;font-size:0.78rem;white-space:nowrap;user-select:none">
-            <input type="checkbox" ${checked?'checked':''} onclick="event.stopPropagation();_trExcludeDate('${d}',!this.checked)">
-            ${label}
-          </label>`;
-        }).join('');
-        const dropHTML = _trDateDropOpen ? `
-          <div onclick="event.stopPropagation()" style="position:absolute;top:100%;left:0;z-index:9999;background:#1c1c1c;border:1px solid var(--border);border-radius:5px;box-shadow:0 6px 20px rgba(0,0,0,0.55);min-width:180px;max-height:280px;overflow-y:auto">
-            <label style="display:flex;align-items:center;gap:0.5rem;padding:0.32rem 0.75rem;cursor:pointer;font-size:0.78rem;font-weight:700;border-bottom:1px solid var(--border);user-select:none;white-space:nowrap">
-              <input type="checkbox" ${allSelected?'checked':''} onclick="event.stopPropagation();_trDateSelectAll('${datesJson}',this.checked)">
-              Select All
-            </label>
-            ${itemsHTML}
-          </div>` : '';
-        return `<div class="date-filter-wrap"><button class="date-filter-btn" onclick="event.stopPropagation();_trDateDropOpen=!_trDateDropOpen;renderTrackingTab()"
-            style="${btnStyle}">${btnLabel}</button>${dropHTML}</div>`;
       };
 
       const invInp = (id, field, type, placeholder, val) =>
@@ -1329,7 +1265,7 @@
                 <tr class="filter-row">
                   <th></th>
                   <th>${fi('task_number')}</th>
-                  <th>${fiDateDrop()}</th>
+                  <th>${fi('actual_date')}</th>
                   <th>${fi('driver')}</th>
                   <th>${fi('unit')}</th>
                   <th>${fi('actual_start')}</th>
@@ -2371,11 +2307,6 @@
     }
 
     loadTrackingData();
-
-    // Close the date dropdown when clicking anywhere outside it
-    document.addEventListener('click', () => {
-      if (_trDateDropOpen) { _trDateDropOpen = false; renderTrackingTab(); }
-    });
 
     /* ═══════════════════════════════════════════
        DATA SYNC — poll shared data every 60s
