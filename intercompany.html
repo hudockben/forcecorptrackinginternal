@@ -2256,7 +2256,7 @@
         function getOrCreate(pid) {
           if (!pid) return null;
           if (!byProject[pid]) {
-            byProject[pid] = { pid, minDate: null, maxDate: null, laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, materialCost: 0, hoursWorked: 0 };
+            byProject[pid] = { pid, minDate: null, maxDate: null, laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, hoursWorked: 0 };
           }
           return byProject[pid];
         }
@@ -2324,11 +2324,8 @@
           const rate     = parseFloat(inv.rate)            || 0;
           const euc      = parseFloat(inv.equip_unit_cost) || 0;
           const eh       = parseFloat(inv.equip_hours)     || 0;
-          const uc       = parseFloat(inv.unit_cost)       || 0;
-          const units    = parseFloat(inv.units_purchased) || 0;
           entry.laborCost    += rate * lh;
           entry.equipCost    += euc  * eh;
-          entry.materialCost += uc   * units;
           entry.hoursWorked  += lh;
         });
 
@@ -2364,12 +2361,12 @@
             if (!proj) return false; // no project record — orphaned tracking row
             // Only show if there is actual dollar cost data for the period
             return p.laborCost > 0 || p.equipCost > 0
-                   || p.lowboyCost > 0 || p.triAxleCost > 0 || p.materialCost > 0;
+                   || p.lowboyCost > 0 || p.triAxleCost > 0;
           })
           .map(p => {
             const proj  = projMap[p.pid];
             const name  = proj['project-name'] || proj.name || p.pid;
-            const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost + p.materialCost;
+            const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost;
             return { ...p, name, total };
           })
           .sort((a, b) => a.name.localeCompare(b.name));
@@ -2383,19 +2380,16 @@
             const rate  = parseFloat(inv.rate)            || 0;
             const euc   = parseFloat(inv.equip_unit_cost) || 0;
             const eh    = parseFloat(inv.equip_hours)     || 0;
-            const uc    = parseFloat(inv.unit_cost)       || 0;
-            const units = parseFloat(inv.units_purchased) || 0;
             acc.laborCost    += rate * lh;
             acc.equipCost    += euc  * eh;
-            acc.materialCost += uc   * units;
             acc.hoursWorked  += lh;
             if (inv.date) {
               if (!acc.minDate || inv.date < acc.minDate) acc.minDate = inv.date;
               if (!acc.maxDate || inv.date > acc.maxDate) acc.maxDate = inv.date;
             }
             return acc;
-          }, { laborCost: 0, equipCost: 0, materialCost: 0, hoursWorked: 0, minDate: null, maxDate: null });
-          infillRow.total = infillRow.laborCost + infillRow.equipCost + infillRow.materialCost;
+          }, { laborCost: 0, equipCost: 0, hoursWorked: 0, minDate: null, maxDate: null });
+          infillRow.total = infillRow.laborCost + infillRow.equipCost;
         }
 
         if (!reportRows.length && !infillRow) {
