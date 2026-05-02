@@ -2410,7 +2410,6 @@
         const totEquip    = reportRows.reduce((s, r) => s + r.equipCost,    0) + (infillRow ? infillRow.equipCost    : 0);
         const totLowboy   = reportRows.reduce((s, r) => s + r.lowboyCost,   0);
         const totTri      = reportRows.reduce((s, r) => s + r.triAxleCost,  0);
-        const totMaterial = reportRows.reduce((s, r) => s + r.materialCost, 0) + (infillRow ? infillRow.materialCost : 0);
         const totTotal    = reportRows.reduce((s, r) => s + r.total,        0) + (infillRow ? infillRow.total        : 0);
         const totHours    = reportRows.reduce((s, r) => s + r.hoursWorked,  0) + (infillRow ? infillRow.hoursWorked  : 0);
 
@@ -2432,7 +2431,6 @@
             + '<td class="r">' + (row.equipCost    > 0 ? fmt$(row.equipCost)    : '—') + '</td>'
             + '<td class="r">—</td>'
             + '<td class="r">—</td>'
-            + '<td class="r">' + (row.materialCost > 0 ? fmt$(row.materialCost) : '—') + '</td>'
             + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(row.total) + '</td>'
             + '<td class="r">' + row.hoursWorked.toFixed(1) + ' hrs</td>'
             + '</tr>';
@@ -2448,7 +2446,6 @@
           + '<th class="r">EQUIPMENT COSTS</th>'
           + '<th class="r">LOWBOY COSTS</th>'
           + '<th class="r">TRI AXLE COSTS</th>'
-          + '<th class="r">MATERIAL COSTS</th>'
           + '<th class="r">TOTAL AMOUNT</th>'
           + '<th class="r">HOURS WORKED</th>'
           + '</tr></thead><tbody>'
@@ -2463,7 +2460,6 @@
                 + '<td class="r">' + fmt$(r.equipCost) + '</td>'
                 + '<td class="r">' + (r.lowboyCost    > 0 ? fmt$(r.lowboyCost)    : '—') + '</td>'
                 + '<td class="r">' + (r.triAxleCost   > 0 ? fmt$(r.triAxleCost)   : '—') + '</td>'
-                + '<td class="r">' + (r.materialCost  > 0 ? fmt$(r.materialCost)  : '—') + '</td>'
                 + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(r.total) + '</td>'
                 + '<td class="r">' + r.hoursWorked.toFixed(1) + ' hrs</td>'
                 + '</tr>';
@@ -2476,7 +2472,6 @@
           + '<td class="r">' + fmt$(totEquip)    + '</td>'
           + '<td class="r">' + (totLowboy   > 0 ? fmt$(totLowboy)   : '—') + '</td>'
           + '<td class="r">' + (totTri      > 0 ? fmt$(totTri)      : '—') + '</td>'
-          + '<td class="r">' + (totMaterial > 0 ? fmt$(totMaterial) : '—') + '</td>'
           + '<td class="r">' + fmt$(totTotal)    + '</td>'
           + '<td class="r">' + totHours.toFixed(1) + ' hrs</td>'
           + '</tr></tfoot></table></div>';
