@@ -804,8 +804,9 @@
   <!-- ── Company Info ── -->
   <div class="tab-panel" id="tab-company-info">
     <div class="ci-subtab-bar">
-      <button class="ci-subtab-btn st-truck" id="ciSubTruck" onclick="switchCiDiv('trucking')">Trucking</button>
-      <button class="ci-subtab-btn"          id="ciSubDust"  onclick="switchCiDiv('dust')">Dust Control</button>
+      <button class="ci-subtab-btn st-truck" id="ciSubTruck"     onclick="switchCiDiv('trucking')">Trucking</button>
+      <button class="ci-subtab-btn"          id="ciSubDust"      onclick="switchCiDiv('dust')">Dust Control</button>
+      <button class="ci-subtab-btn"          id="ciSubDustOther" onclick="switchCiDiv('dust-other-billing')">Dust — Other Billing</button>
     </div>
     <div class="ci-toolbar">
       <div class="ci-toolbar-group">
@@ -1083,8 +1084,10 @@
 
     function switchCiDiv(div) {
       ciDivFilter = div;
-      document.getElementById('ciSubTruck').className = 'ci-subtab-btn' + (div === 'trucking' ? ' st-truck' : '');
-      document.getElementById('ciSubDust').className  = 'ci-subtab-btn' + (div === 'dust'     ? ' st-dust'  : '');
+      document.getElementById('ciSubTruck').className     = 'ci-subtab-btn' + (div === 'trucking'           ? ' st-truck' : '');
+      document.getElementById('ciSubDust').className      = 'ci-subtab-btn' + (div === 'dust'               ? ' st-dust'  : '');
+      const obBtn = document.getElementById('ciSubDustOther');
+      if (obBtn) obBtn.className = 'ci-subtab-btn' + (div === 'dust-other-billing' ? ' st-dust' : '');
       const rg = document.getElementById('ciRatesGroup');
       const dg = document.getElementById('ciDustRatesGroup');
       if (rg) rg.style.display = div === 'trucking' ? '' : 'none';
@@ -1336,13 +1339,18 @@
       count.textContent = entries.length ? `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}` : '';
 
       if (!entries.length) {
-        const divLabel  = ciDivFilter === 'dust' ? 'Dust Control' : 'Trucking';
+        const divLabel = ciDivFilter === 'dust'               ? 'Dust Control'
+                       : ciDivFilter === 'dust-other-billing' ? 'Dust — Other Billing'
+                       : 'Trucking';
+        const hint = ciDivFilter === 'dust'               ? 'dust control invoice panel'
+                   : ciDivFilter === 'dust-other-billing' ? 'dust other billing row'
+                   : 'truck tracking row';
         const hasAnyDiv = icBillingEntries.some(e => (e.source || 'trucking') === ciDivFilter);
         body.innerHTML = `<div class="ci-empty">
           <strong>No ${divLabel} Entries</strong>
           ${hasAnyDiv
             ? `No ${divLabel} entries match the current filter selection.`
-            : `No ${divLabel} billing entries yet. Use the <em>Intercompany Billing</em> button on a ${ciDivFilter === 'dust' ? 'dust control invoice panel' : 'truck tracking row'} to send jobs here.`}
+            : `No ${divLabel} billing entries yet. Use the <em>Intercompany Billing</em> button on a ${hint} to send jobs here.`}
         </div>`;
         return;
       }
@@ -1498,17 +1506,136 @@
         </div>`;
       }
 
+      // ── Dust — Other Billing section (separate shape from Dust Tracking) ──
+      function buildObSection(divRows, sectionId) {
+        const colSpan = 6; // Month | Jobs | Material | Trucking | Total | IC Total
+
+        const byMonth = {};
+        divRows.forEach(e => {
+          const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
+          const mIdx = isNaN(mRaw) ? -1 : mRaw;
+          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, matTotal: 0, trkTotal: 0, total: 0, entries: [] };
+          byMonth[mKey].jobs++;
+          byMonth[mKey].matTotal += parseFloat(e.material_total) || 0;
+          byMonth[mKey].trkTotal += parseFloat(e.trucking_total) || 0;
+          byMonth[mKey].total    += parseFloat(e.total)          || 0;
+          byMonth[mKey].entries.push(e);
+        });
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+
+        const totJobs   = divRows.length;
+        const totMat    = divRows.reduce((s, e) => s + (parseFloat(e.material_total) || 0), 0);
+        const totTrk    = divRows.reduce((s, e) => s + (parseFloat(e.trucking_total) || 0), 0);
+        const totRev    = divRows.reduce((s, e) => s + (parseFloat(e.total)          || 0), 0);
+
+        const detailHead = `<th>Date</th><th>Inv #</th><th>Material</th><th>Driver / Truck</th><th class="r">Gal/Bags</th><th class="r">Price</th><th class="r">Material $</th><th class="r">Trk Hrs</th><th class="r">Trk $/hr</th><th class="r">Trucking $</th><th class="r ic-val">Total</th><th></th>`;
+
+        const monthRows = sortedMonths.map((m, mi) => {
+          const detId = `${sectionId}-m${mi}`;
+          const sorted = [...m.entries].sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''));
+
+          const entryRows = sorted.map(e => {
+            const eid = escT(e.id || '');
+            const qty   = parseFloat(e.gallons_bags) || 0;
+            const price = parseFloat(e.price_per_unit) || 0;
+            const hrs   = parseFloat(e.trucking_hrs) || 0;
+            const rate  = parseFloat(e.trucking_rate) || 0;
+            const matT  = parseFloat(e.material_total) || (qty * price);
+            const trkT  = parseFloat(e.trucking_total) || (hrs * rate);
+            const tot   = parseFloat(e.total) || (matT + trkT);
+            const truckLine = [e.driver, e.truck_number, e.trailer_number].filter(Boolean).join(' / ');
+            return `<tr>
+              <td>${e.actual_date || '—'}</td>
+              <td>${escT(e.inv_number || '—')}</td>
+              <td>${escT(e.material   || '—')}</td>
+              <td>${escT(truckLine    || '—')}</td>
+              <td class="r">${qty   > 0 ? qty.toLocaleString(undefined,{maximumFractionDigits:2}) : '—'}</td>
+              <td class="r">${price > 0 ? fmt$(price) : '—'}</td>
+              <td class="r">${matT  > 0 ? fmt$(matT)  : '—'}</td>
+              <td class="r">${hrs   > 0 ? fmtH(hrs)   : '—'}</td>
+              <td class="r">${rate  > 0 ? fmt$(rate)  : '—'}</td>
+              <td class="r">${trkT  > 0 ? fmt$(trkT)  : '—'}</td>
+              <td class="r ic-val">${fmt$(tot)}</td>
+              <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
+            </tr>`;
+          }).join('');
+
+          return `
+            <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
+              <td><span class="ci-month-arrow">▶</span>${m.label}</td>
+              <td class="r">${m.jobs}</td>
+              <td class="r">${m.matTotal > 0 ? fmt$(m.matTotal) : '—'}</td>
+              <td class="r">${m.trkTotal > 0 ? fmt$(m.trkTotal) : '—'}</td>
+              <td class="r">${fmt$(m.total)}</td>
+              <td class="r ic-val">${fmt$(m.total)}</td>
+            </tr>
+            <tr class="ci-mdet-row" id="${detId}">
+              <td colspan="${colSpan}" class="ci-mdet-inner">
+                <table class="ci-detail-table">
+                  <thead><tr>${detailHead}</tr></thead>
+                  <tbody>${entryRows}</tbody>
+                </table>
+              </td>
+            </tr>`;
+        }).join('');
+
+        const icStat = `<div class="ci-div-stat ic-val"><strong>${fmt$(totRev)}</strong> IC</div>`;
+
+        return `
+        <div class="ci-div-section">
+          <div class="ci-div-header">
+            <span class="ci-div-label dust">Dust — Other Billing</span>
+            <div class="ci-div-stats">
+              <div class="ci-div-stat"><strong>${totJobs}</strong> job${totJobs === 1 ? '' : 's'}</div>
+              <div class="ci-div-stat"><strong>${fmt$(totMat)}</strong> material</div>
+              <div class="ci-div-stat"><strong>${fmt$(totTrk)}</strong> trucking</div>
+              ${icStat}
+            </div>
+          </div>
+          <table class="ci-month-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th class="r">Jobs</th>
+                <th class="r">Material $</th>
+                <th class="r">Trucking $</th>
+                <th class="r">Revenue</th>
+                <th class="r ic-val">IC Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${monthRows}
+              <tr class="ci-month-total">
+                <td>Total</td>
+                <td class="r">${totJobs}</td>
+                <td class="r">${totMat > 0 ? fmt$(totMat) : '—'}</td>
+                <td class="r">${totTrk > 0 ? fmt$(totTrk) : '—'}</td>
+                <td class="r">${fmt$(totRev)}</td>
+                <td class="r ic-val">${fmt$(totRev)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`;
+      }
+
+      const isObFilter = ciDivFilter === 'dust-other-billing';
+
       body.innerHTML = Object.values(byCompany).map((co, idx) => {
         const totJobs    = co.rows.length;
-        const totHours   = co.rows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
-        const totGallons = co.rows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
+        const totHours   = co.rows.reduce((s, e) => s + (parseFloat(e.trucking_hrs)|| parseFloat(e.total_hours) || 0), 0);
+        const totGallons = co.rows.reduce((s, e) => s + (parseFloat(e.gallons_bags)|| parseFloat(e.gallons_ub)  || 0), 0);
         const totRev     = co.rows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
         const totIcRev   = ciDivFilter === 'trucking'
           ? totHours * icTruckRate
-          : co.rows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * icUbRate, 0);
+          : isObFilter
+            ? totRev
+            : co.rows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * icUbRate, 0);
 
         const divSections = co.rows.length
-          ? buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`)
+          ? (isObFilter
+              ? buildObSection(co.rows, `ci-det-${idx}`)
+              : buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`))
           : '';
 
         const icStatCard = `
