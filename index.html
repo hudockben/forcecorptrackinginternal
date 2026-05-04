@@ -453,161 +453,206 @@
 
   </div>
 
-  <!-- ── Radar sweep background ────────────────────────────────────────── -->
+  <!-- ── Pennsylvania counties background ──────────────────────────────── -->
   <script>
     (function () {
       const canvas = document.getElementById('bgCanvas');
       const ctx    = canvas.getContext('2d');
-      let W, H, cx, cy, angle = 0, frame = 0;
-      const blips = [];
-      const RINGS = 5;
-      const TRAIL = Math.PI * 0.65; // sweep trail arc length
+      let W, H, cx, cy, frame = 0;
+      let features = null;
+      const INDIANA_FIPS = '063';
+      // PA bounding box (from data, with small margin)
+      const LON_MIN = -80.52, LON_MAX = -74.69;
+      const LAT_MIN = 39.72,  LAT_MAX = 42.27;
+      const LAT_MID = (LAT_MIN + LAT_MAX) / 2;
+      const COS_MID = Math.cos(LAT_MID * Math.PI / 180);
+      let scale = 1, offX = 0, offY = 0;
+      let indianaCenter = null;
 
       function resize() {
         W  = canvas.width  = window.innerWidth;
         H  = canvas.height = window.innerHeight;
         cx = W * 0.36;
         cy = H * 0.5;
+
+        // Map area: fit PA into a box centered at (cx, cy)
+        const boxW = Math.min(W * 0.5, 720);
+        const boxH = Math.min(H * 0.78, 620);
+        const lonSpan = (LON_MAX - LON_MIN) * COS_MID;
+        const latSpan = (LAT_MAX - LAT_MIN);
+        scale = Math.min(boxW / lonSpan, boxH / latSpan);
+        offX  = cx - ((LON_MIN + LON_MAX) / 2) * COS_MID * scale;
+        offY  = cy + ((LAT_MIN + LAT_MAX) / 2) * scale;
       }
 
-      function maxR() { return Math.min(W * 0.38, H * 0.44); }
+      function project(lon, lat) {
+        return [lon * COS_MID * scale + offX, -lat * scale + offY];
+      }
 
-      function spawnBlip() {
-        if (blips.length >= 18) return;
-        const R  = maxR();
-        const r  = R * (0.15 + Math.random() * 0.78);
-        const a  = Math.random() * Math.PI * 2;
-        blips.push({
-          x: cx + Math.cos(a) * r,
-          y: cy + Math.sin(a) * r,
-          age: 0,
-          life: 90 + Math.random() * 120,
-          size: 1.5 + Math.random() * 1.5,
+      function polygonCentroid(rings) {
+        // rings = array of [ [ [lon,lat], ... ] , (holes) ]
+        const outer = rings[0];
+        let a = 0, x = 0, y = 0;
+        for (let i = 0, n = outer.length, j = n - 1; i < n; j = i++) {
+          const [xi, yi] = outer[i];
+          const [xj, yj] = outer[j];
+          const f = xj * yi - xi * yj;
+          a += f;
+          x += (xj + xi) * f;
+          y += (yj + yi) * f;
+        }
+        a *= 0.5;
+        if (a === 0) return outer[0];
+        return [x / (6 * a), y / (6 * a)];
+      }
+
+      function tracePolygon(rings) {
+        rings.forEach(ring => {
+          ring.forEach((pt, i) => {
+            const [px, py] = project(pt[0], pt[1]);
+            if (i === 0) ctx.moveTo(px, py);
+            else         ctx.lineTo(px, py);
+          });
+          ctx.closePath();
         });
+      }
+
+      function traceFeature(f) {
+        const g = f.geometry;
+        if (g.type === 'Polygon')      tracePolygon(g.coordinates);
+        else if (g.type === 'MultiPolygon') g.coordinates.forEach(tracePolygon);
+      }
+
+      function computeIndianaCenter() {
+        if (!features) return;
+        const ind = features.find(f => f.properties.fips === INDIANA_FIPS);
+        if (!ind) return;
+        const g = ind.geometry;
+        let rings;
+        if (g.type === 'Polygon') rings = g.coordinates;
+        else {
+          // pick largest ring set
+          let best = g.coordinates[0], bestLen = best[0].length;
+          for (const r of g.coordinates) if (r[0].length > bestLen) { best = r; bestLen = r[0].length; }
+          rings = best;
+        }
+        const c = polygonCentroid(rings);
+        indianaCenter = project(c[0], c[1]);
       }
 
       function draw() {
         ctx.clearRect(0, 0, W, H);
         frame++;
-        const R = maxR();
 
-        // Faint vignette
-        const vig = ctx.createRadialGradient(cx, cy, R * 0.1, cx, cy, R * 1.5);
-        vig.addColorStop(0, 'rgba(34,197,94,0.03)');
+        if (!features) { requestAnimationFrame(draw); return; }
+
+        // Faint vignette behind map
+        const R = Math.max(W, H) * 0.5;
+        const vig = ctx.createRadialGradient(cx, cy, R * 0.05, cx, cy, R);
+        vig.addColorStop(0, 'rgba(34,197,94,0.04)');
         vig.addColorStop(1, 'rgba(0,0,0,0.0)');
         ctx.fillStyle = vig;
         ctx.fillRect(0, 0, W, H);
 
-        // Sweep trail (sector fill, fading)
-        const steps = 64;
-        for (let i = 0; i < steps; i++) {
-          const a1    = angle - TRAIL * (i / steps);
-          const a2    = angle - TRAIL * ((i + 1) / steps);
-          const alpha = (1 - i / steps) * 0.09;
+        // County fills (very faint) + outlines
+        ctx.lineJoin = 'round';
+        ctx.lineCap  = 'round';
+
+        // Subtle fill pass
+        ctx.fillStyle = 'rgba(34,197,94,0.025)';
+        features.forEach(f => {
           ctx.beginPath();
-          ctx.moveTo(cx, cy);
-          ctx.arc(cx, cy, R, a1, a2, true);
-          ctx.closePath();
-          ctx.fillStyle = `rgba(34,197,94,${alpha.toFixed(3)})`;
-          ctx.fill();
-        }
-
-        // Ring lines
-        for (let i = 1; i <= RINGS; i++) {
-          const r = R * (i / RINGS);
-          ctx.beginPath();
-          ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          ctx.strokeStyle = i === RINGS
-            ? 'rgba(34,197,94,0.18)'
-            : 'rgba(34,197,94,0.07)';
-          ctx.lineWidth = i === RINGS ? 1.5 : 0.8;
-          ctx.stroke();
-        }
-
-        // Cross hairs
-        ctx.setLineDash([4, 8]);
-        ctx.lineWidth = 0.8;
-        ctx.strokeStyle = 'rgba(34,197,94,0.09)';
-        for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
-          ctx.beginPath();
-          ctx.moveTo(cx, cy);
-          ctx.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
-          ctx.stroke();
-        }
-        ctx.setLineDash([]);
-
-        // Range tick marks on outer ring
-        for (let i = 0; i < 36; i++) {
-          const a = (i / 36) * Math.PI * 2;
-          const inner = R - (i % 3 === 0 ? 8 : 4);
-          ctx.beginPath();
-          ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
-          ctx.lineTo(cx + Math.cos(a) * R,     cy + Math.sin(a) * R);
-          ctx.strokeStyle = 'rgba(34,197,94,0.2)';
-          ctx.lineWidth   = i % 9 === 0 ? 1.5 : 0.8;
-          ctx.stroke();
-        }
-
-        // Sweep line
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + Math.cos(angle) * R, cy + Math.sin(angle) * R);
-        const sweepGrad = ctx.createLinearGradient(cx, cy, cx + Math.cos(angle) * R, cy + Math.sin(angle) * R);
-        sweepGrad.addColorStop(0, 'rgba(34,197,94,0.0)');
-        sweepGrad.addColorStop(0.4, 'rgba(34,197,94,0.5)');
-        sweepGrad.addColorStop(1, 'rgba(34,197,94,0.9)');
-        ctx.strokeStyle = sweepGrad;
-        ctx.lineWidth   = 1.8;
-        ctx.stroke();
-
-        // Sweep tip glow
-        ctx.beginPath();
-        ctx.arc(cx + Math.cos(angle) * R, cy + Math.sin(angle) * R, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34,197,94,0.7)';
-        ctx.fill();
-
-        // Center dot
-        ctx.beginPath();
-        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34,197,94,0.12)';
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34,197,94,0.9)';
-        ctx.fill();
-
-        // Blips — spawn when sweep passes nearby
-        blips.forEach((b, i) => {
-          b.age++;
-          if (b.age > b.life) { blips.splice(i, 1); return; }
-          const t    = b.age / b.life;
-          const life = 1 - t;
-          const pulse = 0.4 + 0.6 * Math.sin(b.age * 0.18);
-
-          // Expanding ring
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, b.size + t * 9, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(34,197,94,${(life * 0.45).toFixed(3)})`;
-          ctx.lineWidth   = 0.8;
-          ctx.stroke();
-
-          // Core dot
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(34,197,94,${(life * pulse).toFixed(3)})`;
+          traceFeature(f);
           ctx.fill();
         });
 
-        // Spawn blips roughly when sweep passes (random)
-        if (frame % 40 === 0) spawnBlip();
+        // Highlight Indiana county fill
+        const indiana = features.find(f => f.properties.fips === INDIANA_FIPS);
+        if (indiana) {
+          const pulseT = 0.5 + 0.5 * Math.sin(frame * 0.06);
+          ctx.beginPath();
+          traceFeature(indiana);
+          ctx.fillStyle = `rgba(239,68,68,${(0.10 + 0.18 * pulseT).toFixed(3)})`;
+          ctx.fill();
+        }
 
-        angle += 0.016;
+        // County borders
+        ctx.strokeStyle = 'rgba(34,197,94,0.22)';
+        ctx.lineWidth   = 0.8;
+        features.forEach(f => {
+          ctx.beginPath();
+          traceFeature(f);
+          ctx.stroke();
+        });
+
+        // State outline emphasis (draw all county outlines slightly heavier on top — cheap approximation)
+        ctx.strokeStyle = 'rgba(34,197,94,0.55)';
+        ctx.lineWidth   = 1.4;
+        features.forEach(f => {
+          ctx.beginPath();
+          traceFeature(f);
+          ctx.stroke();
+        });
+
+        // Indiana county outline (red)
+        if (indiana) {
+          ctx.beginPath();
+          traceFeature(indiana);
+          ctx.strokeStyle = 'rgba(239,68,68,0.9)';
+          ctx.lineWidth   = 1.6;
+          ctx.stroke();
+        }
+
+        // Red pulse dot at Indiana centroid
+        if (indianaCenter) {
+          const [px, py] = indianaCenter;
+          const t  = (frame % 90) / 90;       // 0..1 cycle
+          const ringR = 4 + t * 28;
+          const ringA = (1 - t) * 0.7;
+          ctx.beginPath();
+          ctx.arc(px, py, ringR, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(239,68,68,${ringA.toFixed(3)})`;
+          ctx.lineWidth   = 1.4;
+          ctx.stroke();
+
+          const t2 = ((frame + 45) % 90) / 90;
+          ctx.beginPath();
+          ctx.arc(px, py, 4 + t2 * 28, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(239,68,68,${((1 - t2) * 0.5).toFixed(3)})`;
+          ctx.lineWidth   = 1.0;
+          ctx.stroke();
+
+          // glow
+          const glow = ctx.createRadialGradient(px, py, 0, px, py, 18);
+          glow.addColorStop(0, 'rgba(239,68,68,0.55)');
+          glow.addColorStop(1, 'rgba(239,68,68,0)');
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(px, py, 18, 0, Math.PI * 2);
+          ctx.fill();
+
+          // core dot
+          ctx.beginPath();
+          ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(239,68,68,1)';
+          ctx.fill();
+        }
+
         requestAnimationFrame(draw);
       }
 
-      window.addEventListener('resize', resize);
+      window.addEventListener('resize', () => { resize(); computeIndianaCenter(); });
+
+      fetch('pa-counties.json')
+        .then(r => r.json())
+        .then(geo => {
+          features = geo.features;
+          resize();
+          computeIndianaCenter();
+        })
+        .catch(() => { /* leave canvas blank on failure */ });
+
       resize();
-      for (let i = 0; i < 10; i++) spawnBlip();
       draw();
     })();
   </script>
