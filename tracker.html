@@ -8389,16 +8389,61 @@ function _invBreakdownHTML(year, selectedMonths) {
     acc.utilityDol += ud;
   }
 
-  // Yearly totals keyed by rubber type
+  // Yearly totals keyed by rubber type — pre-computed from a full-year scan so
+  // monthly rows can compare their rates against the year-wide average.
   const yrByType = {};
   allTypes.forEach(rt => { yrByType[rt] = aggZero(); });
   const yrTotal = aggZero();
 
-  function typeRow(rt, v, isTotalRow, label) {
+  inventoryEntries.forEach(e => {
+    if (!e.date) return;
+    if (e.project_id) return;
+    if ((parseFloat(e.units_purchased) || 0) > 0) return;
+    const labHrs = parseFloat(e.hours)       || 0;
+    const eqHrs  = parseFloat(e.equip_hours) || 0;
+    if (labHrs === 0 && eqHrs === 0) return;
+    const d = new Date(e.date + 'T12:00:00');
+    if (d.getFullYear() !== year) return;
+    const rt = (e.rubber_type || '').trim();
+    if (rt && yrByType[rt]) addEntry(yrByType[rt], e);
+    addEntry(yrTotal, e);
+  });
+
+  function ratesOf(v) {
+    const total = v.laborDol + v.utilityDol;
+    return {
+      bagsMachine: v.equipHrs > 0 ? v.machineBags / v.equipHrs : null,
+      bagsLabor:   v.laborHrs > 0 ? v.laborBags   / v.laborHrs : null,
+      perPound:    v.poundage > 0 ? total          / v.poundage : null,
+    };
+  }
+  const yrAvgByType = {};
+  allTypes.forEach(rt => { yrAvgByType[rt] = ratesOf(yrByType[rt]); });
+  const yrAvgTotal = ratesOf(yrTotal);
+
+  // higherIsBetter=true → up = green; higherIsBetter=false ($/lb) → down = green.
+  function indicator(cur, avg, higherIsBetter) {
+    if (cur === null || avg === null || !avg) return '';
+    const pct = ((cur - avg) / avg) * 100;
+    const absPct = Math.abs(pct);
+    if (absPct < 5) {
+      return `<span style="color:#b45309;font-size:0.7rem;margin-left:0.3rem;font-weight:600">— ${absPct.toFixed(0)}%</span>`;
+    }
+    const isUp = pct > 0;
+    const isGood = higherIsBetter ? isUp : !isUp;
+    const color = isGood ? '#15803d' : '#b91c1c';
+    const arrow = isUp ? '▲' : '▼';
+    return `<span style="color:${color};font-size:0.7rem;margin-left:0.3rem;font-weight:600">${arrow} ${absPct.toFixed(0)}%</span>`;
+  }
+
+  function typeRow(rt, v, isTotalRow, label, yrAvg) {
     const total       = v.laborDol + v.utilityDol;
     const bagsMachine = v.equipHrs > 0  ? v.machineBags / v.equipHrs  : null;
     const bagsLabor   = v.laborHrs > 0  ? v.laborBags   / v.laborHrs  : null;
     const perPound    = v.poundage > 0  ? total  / v.poundage  : null;
+    const bmInd = yrAvg ? indicator(bagsMachine, yrAvg.bagsMachine, true)  : '';
+    const blInd = yrAvg ? indicator(bagsLabor,   yrAvg.bagsLabor,   true)  : '';
+    const ppInd = yrAvg ? indicator(perPound,    yrAvg.perPound,    false) : '';
     const bg = isTotalRow ? 'rgba(255,255,255,0.04)' : 'transparent';
     const fw = isTotalRow ? '700' : '400';
     const bdr = isTotalRow ? 'border-top:2px solid var(--border);' : '';
@@ -8416,9 +8461,9 @@ function _invBreakdownHTML(year, selectedMonths) {
       ${td('$' + dash(v.utilityDol), true, 'var(--yellow)')}
       ${td('$' + dash(total), true, 'var(--yellow)')}
       ${td(v.cnt, true)}
-      ${td(dash(bagsMachine), true)}
-      ${td(dash(bagsLabor), true)}
-      ${td(dash(perPound), true)}
+      ${td(dash(bagsMachine) + bmInd, true)}
+      ${td(dash(bagsLabor) + blInd, true)}
+      ${td(dash(perPound) + ppInd, true)}
     </tr>`;
   }
 
@@ -8437,15 +8482,14 @@ function _invBreakdownHTML(year, selectedMonths) {
       const d = new Date(e.date + 'T12:00:00');
       if (d.getFullYear() !== year || d.getMonth() !== mi) return;
       const rt = (e.rubber_type || '').trim();
-      if (rt && byType[rt]) { addEntry(byType[rt], e); addEntry(yrByType[rt], e); }
+      if (rt && byType[rt]) addEntry(byType[rt], e);
       addEntry(mTotal, e);
-      addEntry(yrTotal, e);
     });
 
     if (monthFilter && !monthFilter.has(mi)) return '';
 
-    const typeRows = allTypes.map(rt => typeRow(rt, byType[rt], false)).join('');
-    const totRow   = typeRow(null, mTotal, true, `${monthName} Total`);
+    const typeRows = allTypes.map(rt => typeRow(rt, byType[rt], false, null, yrAvgByType[rt])).join('');
+    const totRow   = typeRow(null, mTotal, true, `${monthName} Total`, yrAvgTotal);
 
     return `<div style="margin-bottom:1rem">
       <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px">
