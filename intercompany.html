@@ -1225,7 +1225,7 @@
     let icBillingEntries = [];
     const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const fmt$   = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-    const fmtH   = v => v.toFixed(1) + ' hrs';
+    const fmtH   = v => (Math.floor(v * 100) / 100).toFixed(2) + ' hrs';
 
     async function loadBillingEntries() {
       try {
