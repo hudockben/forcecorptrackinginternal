@@ -1515,6 +1515,7 @@
       <div class="modal-tabs" id="listModalTabs">
         <button class="modal-tab-btn active" data-panel="equipment">Equipment</button>
         <button class="modal-tab-btn" data-panel="companies">Companies</button>
+        <button class="modal-tab-btn" data-panel="employees">Employees</button>
         <button class="modal-tab-btn" data-panel="states">States</button>
       </div>
       <div class="modal-body">
@@ -1536,6 +1537,15 @@
           <div class="add-item-row">
             <input type="text" id="new-co-name" placeholder="Company name…" />
             <button class="btn-list-add" onclick="addListItem('companies')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- Employees -->
+        <div class="list-panel" id="lp-employees">
+          <div class="list-items" id="li-employees"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-emp-name" placeholder="Employee / driver name…" />
+            <button class="btn-list-add" onclick="addListItem('employees')">+ Add</button>
           </div>
         </div>
 
@@ -2792,7 +2802,19 @@
     function renderListPanels() {
       renderEquipmentPanel();
       renderCompaniesPanel();
+      renderEmployeesPanel();
       renderStatesPanel();
+    }
+
+    function renderEmployeesPanel() {
+      const sorted = (dustLists.employees || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+      document.getElementById('li-employees').innerHTML = sorted.length
+        ? sorted.map(name => `
+            <div class="list-item">
+              <span style="font-size:0.82rem;font-weight:600;color:var(--text);flex:1">${esc(name)}</span>
+              <button class="remove-item" onclick="removeListItem('employees','${esc(name).replace(/'/g,"\\'")}')">✕</button>
+            </div>`).join('')
+        : '<div class="empty-hint">No employees added yet.</div>';
     }
 
     function renderEquipmentPanel() {
@@ -2948,6 +2970,15 @@
           renderStatesPanel();
           renderCompaniesPanel(); // refresh state dropdowns in well pad sections
         }
+      } else if (type === 'employees') {
+        const name = document.getElementById('new-emp-name').value.trim();
+        if (!name) { document.getElementById('new-emp-name').focus(); return; }
+        if (!Array.isArray(dustLists.employees)) dustLists.employees = [];
+        if (!dustLists.employees.includes(name)) {
+          dustLists.employees.push(name);
+          document.getElementById('new-emp-name').value = '';
+          renderEmployeesPanel();
+        }
       }
       saveLists();
     }
@@ -2960,6 +2991,9 @@
         dustLists.companies.forEach(co => {
           (co.locations || []).forEach(loc => { if (loc.state === id) loc.state = ''; });
         });
+      } else if (type === 'employees') {
+        // id here is the employee name string
+        dustLists.employees = (dustLists.employees || []).filter(n => n !== id);
       } else {
         dustLists[type] = dustLists[type].filter(item => item.id !== id);
       }
@@ -3001,6 +3035,7 @@
     });
     document.getElementById('new-co-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('companies'); });
     document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
+    document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
 
     /* ═══════════════════════════════════════════
        UB RATE
@@ -4067,6 +4102,15 @@
           dustLists.states.slice().sort().map(s =>
             `<option value="${esc(s)}"${row.state===s?' selected':''}>${esc(s)}</option>`).join('');
 
+        // Build driver options from employees list. If the row has a driver
+        // value that's not in the list (e.g. legacy free-text rows), keep it
+        // as a selectable option so it doesn't get blanked on render.
+        const empList = (dustLists.employees || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+        if (row.driver && !empList.includes(row.driver)) empList.unshift(row.driver);
+        const empOpts = '<option value="">— select —</option>' +
+          empList.map(name =>
+            `<option value="${esc(name)}"${row.driver===name?' selected':''}>${esc(name)}</option>`).join('');
+
         const icTs   = obIcSent.get(row.id) || '';
         const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
 
@@ -4092,7 +4136,7 @@
           <td class="cw-expand"><button class="expand-btn${expanded?' open':''}" id="ob-expbtn-${idx}" onclick="obToggleExpand(${idx})" title="Intercompany billing">›</button></td>
           <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="obSet(${idx},'date',this.value)"></td>
           <td class="cw-unit"><input type="text" value="${esc(row.inv_number||'')}" placeholder="INV-…" oninput="obSet(${idx},'inv_number',this.value)"></td>
-          <td class="cw-cm"><input type="text" value="${esc(row.driver||'')}" oninput="obSet(${idx},'driver',this.value)"></td>
+          <td class="cw-cm"><select onchange="obSet(${idx},'driver',this.value)">${empOpts}</select></td>
           <td class="cw-unit"><input type="text" value="${esc(row.truck_number||'')}" oninput="obSet(${idx},'truck_number',this.value)"></td>
           <td class="cw-unit"><input type="text" value="${esc(row.trailer_number||'')}" oninput="obSet(${idx},'trailer_number',this.value)"></td>
           <td class="cw-co"><select onchange="obSet(${idx},'customer',this.value)">${coOpts}</select></td>
