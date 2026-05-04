@@ -494,13 +494,14 @@ CREATE TABLE IF NOT EXISTS dust_control_audit_log (
     created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
+-- Idempotent migration: must run BEFORE the source-aware index so existing
+-- audit tables (created before the column existed) get the column first.
+ALTER TABLE dust_control_audit_log ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'tracking';
+
 CREATE INDEX IF NOT EXISTS idx_dust_audit_company    ON dust_control_audit_log(company_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dust_audit_row        ON dust_control_audit_log(row_id);
 CREATE INDEX IF NOT EXISTS idx_dust_audit_company_at ON dust_control_audit_log(company_code, created_at);
 CREATE INDEX IF NOT EXISTS idx_dust_audit_company_src ON dust_control_audit_log(company_code, source, created_at DESC);
-
--- Idempotent migration for environments that already have the table without the column
-ALTER TABLE dust_control_audit_log ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'tracking';
 
 -- ─────────────────────────────────────────────────
 -- TRUCK DIVISION ENTRIES
