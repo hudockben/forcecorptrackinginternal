@@ -585,6 +585,22 @@
     .company-item { flex-direction: column; align-items: stretch; gap: 0.55rem; }
     .company-header { display: flex; align-items: center; gap: 0.5rem; }
     .company-header input { flex: 1; }
+    .company-chev {
+      flex: none; width: 22px; height: 22px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: transparent; border: none; cursor: pointer;
+      color: var(--muted); font-size: 0.85rem;
+      transition: transform 0.15s, color 0.15s;
+    }
+    .company-chev:hover { color: var(--amber); }
+    .company-chev.open { transform: rotate(90deg); color: var(--amber); }
+    .company-collapsed-meta {
+      flex: none; font-size: 0.62rem; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      white-space: nowrap;
+    }
+    .company-body { display: flex; flex-direction: column; gap: 0.55rem; }
+    .company-body[hidden] { display: none; }
     .co-men-lbl {
       font-size: 0.57rem; letter-spacing: 0.1em; text-transform: uppercase;
       color: var(--muted); margin-bottom: 0.35rem;
@@ -2836,10 +2852,21 @@
     }
 
 
+    // Tracks which companies are expanded in Manage Lists. Empty by default
+    // so the panel starts collapsed and users see a compact list.
+    const coExpanded = new Set();
+
+    function toggleCompanyExpand(coId) {
+      if (coExpanded.has(coId)) coExpanded.delete(coId);
+      else                       coExpanded.add(coId);
+      renderCompaniesPanel();
+    }
+
     function renderCompaniesPanel() {
       const sorted = dustLists.companies.slice().sort((a,b) => a.name.localeCompare(b.name));
       document.getElementById('li-companies').innerHTML = sorted.length
         ? sorted.map(co => {
+            const isOpen = coExpanded.has(co.id);
             const coMen  = (co.men || []).slice().sort((a,b) => a.name.localeCompare(b.name));
             const mensHtml = coMen.length
               ? coMen.map(m => `
@@ -2867,34 +2894,40 @@
                   </div>`).join('')
               : '<div class="empty-hint">No well pads added yet.</div>';
 
+            const meta = `${coMen.length} ${coMen.length === 1 ? 'man' : 'men'} · ${coLocs.length} pad${coLocs.length === 1 ? '' : 's'}`;
+
             return `
               <div class="list-item company-item">
                 <div class="company-header">
+                  <button class="company-chev${isOpen ? ' open' : ''}" onclick="toggleCompanyExpand('${co.id}')" title="${isOpen ? 'Collapse' : 'Expand'}">▶</button>
                   <input type="text" value="${esc(co.name)}" placeholder="Company name"
                     oninput="updateListItem('companies','${co.id}','name',this.value)" />
+                  <span class="company-collapsed-meta">${meta}</span>
                   <span class="list-item-lbl">Tier</span>
                   <input type="text" class="short" value="${esc(co.tier||'')}" placeholder="Tier"
                     oninput="updateListItem('companies','${co.id}','tier',this.value)" />
                   <button class="remove-item" onclick="removeListItem('companies','${co.id}')">✕</button>
                 </div>
-                <div class="co-locations-section">
-                  <div class="co-men-lbl">Company Men</div>
-                  <div class="co-location-items">${mensHtml}</div>
-                  <div class="add-location-row">
-                    <input type="text" class="new-man-name-co" placeholder="Company man name…" />
-                    <button class="btn-list-add" onclick="addCompanyMan('${co.id}',this)">+ Add</button>
+                <div class="company-body" ${isOpen ? '' : 'hidden'}>
+                  <div class="co-locations-section">
+                    <div class="co-men-lbl">Company Men</div>
+                    <div class="co-location-items">${mensHtml}</div>
+                    <div class="add-location-row">
+                      <input type="text" class="new-man-name-co" placeholder="Company man name…" />
+                      <button class="btn-list-add" onclick="addCompanyMan('${co.id}',this)">+ Add</button>
+                    </div>
                   </div>
-                </div>
-                <div class="co-locations-section">
-                  <div class="co-men-lbl">Well Pads / Locations</div>
-                  <div class="co-location-items">${locsHtml}</div>
-                  <div class="add-location-row">
-                    <input type="text" class="new-loc-name-co" placeholder="Well pad name…" />
-                    <select class="new-loc-state-co" style="flex:none;width:80px;padding:0.28rem 0.4rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.78rem;outline:none">
-                      <option value="">State…</option>
-                      ${stateOpts}
-                    </select>
-                    <button class="btn-list-add" onclick="addCompanyLocation('${co.id}',this)">+ Add</button>
+                  <div class="co-locations-section">
+                    <div class="co-men-lbl">Well Pads / Locations</div>
+                    <div class="co-location-items">${locsHtml}</div>
+                    <div class="add-location-row">
+                      <input type="text" class="new-loc-name-co" placeholder="Well pad name…" />
+                      <select class="new-loc-state-co" style="flex:none;width:80px;padding:0.28rem 0.4rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.78rem;outline:none">
+                        <option value="">State…</option>
+                        ${stateOpts}
+                      </select>
+                      <button class="btn-list-add" onclick="addCompanyLocation('${co.id}',this)">+ Add</button>
+                    </div>
                   </div>
                 </div>
               </div>`;
@@ -2958,8 +2991,10 @@
       } else if (type === 'companies') {
         const name = document.getElementById('new-co-name').value.trim();
         if (!name) { document.getElementById('new-co-name').focus(); return; }
-        dustLists.companies.push({ id: uid(), name, men: [], locations: [] });
+        const newCo = { id: uid(), name, men: [], locations: [] };
+        dustLists.companies.push(newCo);
         document.getElementById('new-co-name').value = '';
+        coExpanded.add(newCo.id); // auto-expand so men / pads can be added right away
         renderCompaniesPanel();
       } else if (type === 'states') {
         const abbr = document.getElementById('new-state-abbr').value.trim().toUpperCase();
