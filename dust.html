@@ -2241,7 +2241,7 @@
               <select onchange="setInvStatus(${idx},this.value)">
                 <option value=""     ${!invSt              ?'selected':''}>— select —</option>
                 <option value="unpaid"  ${'unpaid'  ===invSt?'selected':''}>Unpaid</option>
-                <option value="sent"    ${'sent'    ===invSt?'selected':''}>Sent</option>
+                <option value="sent"    ${'sent'    ===invSt?'selected':''}>Pending</option>
                 <option value="paid"    ${'paid'    ===invSt?'selected':''}>Paid</option>
                 <option value="overdue" ${'overdue' ===invSt?'selected':''}>Overdue</option>
               </select>
@@ -2272,7 +2272,14 @@
           </div>`;
 
         const missingInvoice = !row.inv_number || !row.inv_sent;
-        return `<tr data-idx="${idx}"${missingInvoice ? ' style="background:rgba(239,68,68,0.18)"' : ''}>
+        const effSt = effectiveInvStatus(row);
+        let rowBg = '';
+        if (effSt === 'paid')      rowBg = 'rgba(34,197,94,0.18)';   // green
+        else if (effSt === 'sent') rowBg = 'rgba(251,191,36,0.18)';  // yellow (Pending)
+        else if (missingInvoice)   rowBg = 'rgba(239,68,68,0.18)';   // red
+        const rowStyle    = rowBg ? ` style="background:${rowBg}"` : '';
+        const subRowStyle = rowBg ? ` background:${rowBg};`        : '';
+        return `<tr data-idx="${idx}"${rowStyle}>
           <td class="cw-expand"><button class="expand-btn" id="expbtn-${idx}" onclick="toggleInvoice(${idx})" title="Invoice details">›</button></td>
           <td class="cw-date"><input type="date" value="${esc(row.date       ||'')}" onchange="set(${idx},'date',this.value)"></td>
           <td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>
@@ -2300,7 +2307,7 @@
           <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}${icChip}</td>
           <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
         </tr>
-        <tr class="inv-row" id="inv-row-${idx}" style="display:none">
+        <tr class="inv-row" id="inv-row-${idx}" style="display:none;${subRowStyle}">
           <td colspan="22">${invPanel}</td>
         </tr>`;
       }).join('');
@@ -2381,7 +2388,7 @@
        INVOICE EXPAND
     ═══════════════════════════════════════════ */
     const expandedRowIds = new Set();
-    const INV_LABELS = { unpaid: 'Unpaid', sent: 'Sent', paid: 'Paid', overdue: 'Overdue' };
+    const INV_LABELS = { unpaid: 'Unpaid', sent: 'Pending', paid: 'Paid', overdue: 'Overdue' };
 
     /** Returns the status to display — auto-overdue if >45 days past job date and not paid/received. */
     function effectiveInvStatus(row) {
@@ -2420,6 +2427,17 @@
           const html = invBadgeHtml(rows[idx]);
           if (html) cell.insertAdjacentHTML('beforeend', html);
         }
+        // Update row background based on new status
+        const row    = rows[idx];
+        const effSt  = effectiveInvStatus(row);
+        const missingInvoice = !row.inv_number || !row.inv_sent;
+        let rowBg = '';
+        if (effSt === 'paid')      rowBg = 'rgba(34,197,94,0.18)';
+        else if (effSt === 'sent') rowBg = 'rgba(251,191,36,0.18)';
+        else if (missingInvoice)   rowBg = 'rgba(239,68,68,0.18)';
+        tr.style.background = rowBg;
+        const subTr = document.getElementById('inv-row-' + idx);
+        if (subTr) subTr.style.background = rowBg;
       }
       scheduleSave();
     }
