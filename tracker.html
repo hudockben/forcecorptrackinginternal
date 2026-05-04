@@ -2471,6 +2471,33 @@
   </div>
 </div>
 
+<!-- ══════════════ INFILL INVENTORY PDF EXPORT MODAL ══════════════ -->
+<div id="inv-pdf-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:600;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;width:420px;max-width:94vw;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,0.6);">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--border);">
+      <div>
+        <div style="font-weight:700;font-size:0.9rem;color:var(--text)">Export Inventory PDF</div>
+        <div style="font-size:0.72rem;color:var(--muted);margin-top:0.2rem">Select which months to include in the report</div>
+      </div>
+      <button class="modal-close" onclick="closeInvPDFModal()">&#10005;</button>
+    </div>
+    <div style="padding:0.6rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:0.75rem;">
+      <span id="inv-pdf-sel-count" style="font-size:0.75rem;color:var(--muted)"></span>
+      <button class="btn btn-ghost" style="font-size:0.72rem;padding:0.2rem 0.65rem;flex-shrink:0" onclick="toggleAllInvPDFMonths()">Select All / None</button>
+    </div>
+    <div id="inv-pdf-month-list" style="overflow-y:auto;flex:1;padding:0.75rem 1.25rem;display:grid;grid-template-columns:1fr 1fr;gap:0.35rem 1rem;"></div>
+    <div style="padding:0.75rem 1.25rem;border-top:1px solid var(--border);border-radius:0 0 8px 8px;">
+      <div style="font-size:0.68rem;color:var(--muted);margin-bottom:0.65rem;line-height:1.5">
+        The <strong style="color:var(--text)">yearly totals</strong> row always reflects the full year regardless of which months are shown.
+      </div>
+      <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+        <button class="btn btn-ghost" onclick="closeInvPDFModal()">Cancel</button>
+        <button class="btn btn-green" onclick="generateInvPDF()">&#8595; Generate PDF</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ══════════════ DAILY PRODUCTION RATE FULL-SCREEN ══════════════ -->
 <div id="prod-fullscreen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;flex-direction:column;">
   <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
@@ -6072,8 +6099,8 @@ function copyINV(id) {
   renderInventoryTab();
 }
 
-function downloadInvPDF(year) {
-  const breakdownHTML = _invBreakdownHTML(year);
+function downloadInvPDF(year, selectedMonths) {
+  const breakdownHTML = _invBreakdownHTML(year, selectedMonths);
 
   const invByType = {};
   inventoryEntries.forEach(e => {
@@ -6133,6 +6160,50 @@ function downloadInvPDF(year) {
   <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
   doc.document.close();
+}
+
+let _invPDFYear = null;
+function openInvPDFModal(year) {
+  _invPDFYear = year;
+  const MONTHS = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December'];
+  const list = document.getElementById('inv-pdf-month-list');
+  list.innerHTML = MONTHS.map((m, i) =>
+    `<label style="display:flex;align-items:center;gap:0.5rem;font-size:0.82rem;color:var(--text);cursor:pointer;padding:0.25rem 0.4rem;border-radius:4px">
+      <input type="checkbox" class="inv-pdf-month-cb" data-mi="${i}" checked style="cursor:pointer">
+      <span>${m}</span>
+    </label>`).join('');
+  if (!list.dataset.bound) {
+    list.addEventListener('change', _updateInvPDFCount);
+    list.dataset.bound = '1';
+  }
+  _updateInvPDFCount();
+  document.getElementById('inv-pdf-modal').style.display = 'flex';
+}
+function closeInvPDFModal() {
+  document.getElementById('inv-pdf-modal').style.display = 'none';
+}
+function toggleAllInvPDFMonths() {
+  const cbs = document.querySelectorAll('.inv-pdf-month-cb');
+  const allChecked = Array.from(cbs).every(cb => cb.checked);
+  cbs.forEach(cb => { cb.checked = !allChecked; });
+  _updateInvPDFCount();
+}
+function _updateInvPDFCount() {
+  const cbs = document.querySelectorAll('.inv-pdf-month-cb');
+  const n = Array.from(cbs).filter(cb => cb.checked).length;
+  const el = document.getElementById('inv-pdf-sel-count');
+  if (el) el.textContent = `${n} of 12 month${n === 1 ? '' : 's'} selected`;
+}
+function generateInvPDF() {
+  const cbs = document.querySelectorAll('.inv-pdf-month-cb');
+  const selected = Array.from(cbs).filter(cb => cb.checked).map(cb => parseInt(cb.dataset.mi, 10));
+  if (selected.length === 0) {
+    alert('Select at least one month to include in the PDF.');
+    return;
+  }
+  closeInvPDFModal();
+  downloadInvPDF(_invPDFYear, selected);
 }
 
 function _syncINVRowField(entry, field) {
@@ -8282,9 +8353,10 @@ function _invCopyCell(text) {
 }
 
 /* ── Inventory Tab ── */
-function _invBreakdownHTML(year) {
+function _invBreakdownHTML(year, selectedMonths) {
   const MONTHS = ['January','February','March','April','May','June',
                   'July','August','September','October','November','December'];
+  const monthFilter = Array.isArray(selectedMonths) ? new Set(selectedMonths) : null;
 
   // All distinct rubber types used in ANY entry (sorted)
   const allTypes = [...new Set(
@@ -8369,6 +8441,8 @@ function _invBreakdownHTML(year) {
       addEntry(mTotal, e);
       addEntry(yrTotal, e);
     });
+
+    if (monthFilter && !monthFilter.has(mi)) return '';
 
     const typeRows = allTypes.map(rt => typeRow(rt, byType[rt], false)).join('');
     const totRow   = typeRow(null, mTotal, true, `${monthName} Total`);
@@ -8595,7 +8669,7 @@ function renderInventoryTab() {
           <button onclick="_invYear--;renderInventoryTab()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;padding:0.15rem 0.5rem;font-size:0.8rem">&#8249;</button>
           <span style="font-size:0.85rem;font-weight:600;color:var(--text);min-width:40px;text-align:center">${_invYear}</span>
           <button onclick="_invYear++;renderInventoryTab()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;padding:0.15rem 0.5rem;font-size:0.8rem">&#8250;</button>
-          <button onclick="downloadInvPDF(${_invYear})" style="margin-left:0.25rem;background:#1d4ed8;border:none;border-radius:4px;color:#fff;cursor:pointer;padding:0.2rem 0.65rem;font-size:0.75rem;font-weight:600">&#8595; PDF</button>
+          <button onclick="openInvPDFModal(${_invYear})" style="margin-left:0.25rem;background:#1d4ed8;border:none;border-radius:4px;color:#fff;cursor:pointer;padding:0.2rem 0.65rem;font-size:0.75rem;font-weight:600">&#8595; PDF</button>
           ` : ''}
         </div>
         ${_invBreakdownOpen ? `<div style="overflow-x:auto">${_invBreakdownHTML(_invYear)}</div>` : ''}
