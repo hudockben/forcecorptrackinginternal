@@ -1,14 +1,15 @@
 'use strict';
 /**
- * GET /api/dust-audit — audit log for the dust control tracking tab.
+ * GET /api/dust-audit — audit log for the dust control division.
  *
- * Query params:
- *   limit  (optional, default 500, max 5000)
- *   action (optional: INSERT | UPDATE | DELETE)
- *   from   (optional ISO date — created_at >= from)
- *   to     (optional ISO date — created_at <= to)
+ * Query params (all optional):
+ *   limit   default 500, max 5000
+ *   action  INSERT | UPDATE | DELETE
+ *   source  tracking | other-billing
+ *   from    ISO date  — created_at >= from
+ *   to      ISO date  — created_at <= to
  *
- * Returns: { entries: [ { id, row_id, action, user_id, username,
+ * Returns: { entries: [ { id, row_id, action, source, user_id, username,
  *                         changes, snapshot, created_at } ] }
  */
 const { neon }        = require('@neondatabase/serverless');
@@ -32,11 +33,14 @@ module.exports = async (req, res) => {
   const action = ['INSERT', 'UPDATE', 'DELETE'].includes(String(q.action || '').toUpperCase())
     ? String(q.action).toUpperCase()
     : null;
-  const from = q.from ? new Date(q.from) : null;
-  const to   = q.to   ? new Date(q.to)   : null;
+  const source = ['tracking', 'other-billing'].includes(String(q.source || '').toLowerCase())
+    ? String(q.source).toLowerCase()
+    : null;
+  const fromIso = q.from ? new Date(q.from).toISOString() : null;
+  const toIso   = q.to   ? new Date(q.to).toISOString()   : null;
 
   try {
-    // Ensure table exists (idempotent) — same shape as dust-rows.js
+    // Ensure table exists with the source column.
     await sql`
       CREATE TABLE IF NOT EXISTS dust_control_audit_log (
         id            BIGSERIAL PRIMARY KEY,
@@ -47,51 +51,25 @@ module.exports = async (req, res) => {
         username      TEXT,
         changes       JSONB,
         snapshot      JSONB,
+        source        TEXT        NOT NULL DEFAULT 'tracking',
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `;
-    await sql`CREATE INDEX IF NOT EXISTS idx_dust_audit_company ON dust_control_audit_log(company_code, created_at DESC)`;
+    await sql`ALTER TABLE dust_control_audit_log ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'tracking'`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_dust_audit_company_src ON dust_control_audit_log(company_code, source, created_at DESC)`;
 
-    let rows;
-    if (action && from && to) {
-      rows = await sql`
-        SELECT id, row_id, action, user_id, username, changes, snapshot, created_at
-        FROM dust_control_audit_log
-        WHERE company_code = ${companyCode}
-          AND action       = ${action}
-          AND created_at  >= ${from.toISOString()}
-          AND created_at  <= ${to.toISOString()}
-        ORDER BY created_at DESC, id DESC
-        LIMIT ${limit}
-      `;
-    } else if (action) {
-      rows = await sql`
-        SELECT id, row_id, action, user_id, username, changes, snapshot, created_at
-        FROM dust_control_audit_log
-        WHERE company_code = ${companyCode}
-          AND action       = ${action}
-        ORDER BY created_at DESC, id DESC
-        LIMIT ${limit}
-      `;
-    } else if (from && to) {
-      rows = await sql`
-        SELECT id, row_id, action, user_id, username, changes, snapshot, created_at
-        FROM dust_control_audit_log
-        WHERE company_code = ${companyCode}
-          AND created_at  >= ${from.toISOString()}
-          AND created_at  <= ${to.toISOString()}
-        ORDER BY created_at DESC, id DESC
-        LIMIT ${limit}
-      `;
-    } else {
-      rows = await sql`
-        SELECT id, row_id, action, user_id, username, changes, snapshot, created_at
-        FROM dust_control_audit_log
-        WHERE company_code = ${companyCode}
-        ORDER BY created_at DESC, id DESC
-        LIMIT ${limit}
-      `;
-    }
+    // Single query with optional filters via COALESCE-style guards.
+    const rows = await sql`
+      SELECT id, row_id, action, source, user_id, username, changes, snapshot, created_at
+      FROM dust_control_audit_log
+      WHERE company_code = ${companyCode}
+        AND (${action}::text  IS NULL OR action     = ${action})
+        AND (${source}::text  IS NULL OR source     = ${source})
+        AND (${fromIso}::timestamptz IS NULL OR created_at >= ${fromIso})
+        AND (${toIso}::timestamptz   IS NULL OR created_at <= ${toIso})
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${limit}
+    `;
 
     return res.json({ entries: rows });
   } catch (err) {

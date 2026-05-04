@@ -94,6 +94,19 @@ module.exports = async (req, res) => {
     if (value === undefined) {
       return res.status(400).json({ error: '`value` field is required in request body' });
     }
+
+    // Dust Control Other Billing audit: capture previous blob so we can
+    // diff it against the incoming one after the upsert lands.
+    let _obOldValue = null;
+    if (key === 'dust_other_billing_rows') {
+      try {
+        const prev = await sql`SELECT value FROM app_data WHERE key = ${scopedKey}`;
+        _obOldValue = prev.length ? prev[0].value : null;
+      } catch (err) {
+        console.error('[dust-ob-audit] read prev failed:', err.message);
+      }
+    }
+
     await sql`
       INSERT INTO app_data (key, value, updated_at)
       VALUES (${scopedKey}, ${JSON.stringify(value)}, NOW())
@@ -103,6 +116,15 @@ module.exports = async (req, res) => {
     // Mirror into normalized tables — awaited before response so serverless doesn't kill it.
     try { await syncForKey(sql, payload.companyCode, key, value); }
     catch (err) { console.error('[sync-normalized] PUT', key, err.message); }
+
+    // Emit audit entries for the Dust Other Billing tab.
+    if (key === 'dust_other_billing_rows') {
+      try {
+        const { auditObChanges } = require('../lib/dust-ob-audit');
+        await auditObChanges(sql, payload, _obOldValue, value);
+      } catch (err) { console.error('[dust-ob-audit] PUT', err.message); }
+    }
+
     return res.json({ ok: true });
   }
 

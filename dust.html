@@ -162,6 +162,14 @@
     .audit-pill.INSERT { color: #22c55e; border-color: rgba(34,197,94,0.4); background: rgba(34,197,94,0.08); }
     .audit-pill.UPDATE { color: #f59e0b; border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.08); }
     .audit-pill.DELETE { color: #ef4444; border-color: rgba(239,68,68,0.4); background: rgba(239,68,68,0.08); }
+    .audit-source {
+      display: inline-block; padding: 0.15rem 0.55rem;
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em;
+      border-radius: 3px; border: 1px solid;
+      white-space: nowrap;
+    }
+    .audit-source.src-tracking { color: #fbbf24; border-color: rgba(251,191,36,0.4); background: rgba(251,191,36,0.08); }
+    .audit-source.src-ob       { color: #a78bfa; border-color: rgba(167,139,250,0.4); background: rgba(167,139,250,0.08); }
     .audit-row-id { font-family: ui-monospace, monospace; color: var(--muted); font-size: 0.68rem; }
     .audit-changes { display: flex; flex-direction: column; gap: 0.2rem; }
     .audit-change {
@@ -1477,6 +1485,14 @@
 
       <div class="reports-toolbar">
         <label>
+          Source
+          <select id="audit-filter-source" onchange="renderAuditLog()">
+            <option value="">All Tabs</option>
+            <option value="tracking">Dust Control Tracking</option>
+            <option value="other-billing">Other Billing</option>
+          </select>
+        </label>
+        <label>
           Action
           <select id="audit-filter-action" onchange="renderAuditLog()">
             <option value="">All</option>
@@ -1506,13 +1522,14 @@
             <tr class="col-row">
               <th style="width:170px">When</th>
               <th style="width:130px">User</th>
+              <th style="width:120px">Source</th>
               <th style="width:90px">Action</th>
               <th style="width:170px">Row ID</th>
               <th>Details</th>
             </tr>
           </thead>
           <tbody id="auditTbody">
-            <tr><td colspan="5" style="padding:1rem;color:var(--muted);text-align:center">Loading…</td></tr>
+            <tr><td colspan="6" style="padding:1rem;color:var(--muted);text-align:center">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -4383,7 +4400,9 @@
     let auditEntries = [];
     let auditLoading = false;
 
-    const AUDIT_FIELD_LABELS = {
+    // Field labels per audit source. Falls back to the field name verbatim
+    // if a label is missing.
+    const AUDIT_FIELD_LABELS_TRACKING = {
       date: 'Date', start_time: 'Start Time', end_time: 'End Time',
       company: 'Company', company_man: 'Company Man',
       location: 'Location', state: 'State',
@@ -4394,6 +4413,51 @@
       inv_received: 'Invoice Received', inv_status: 'Invoice Status',
       cm_approval: 'CM Approval', inv_location: 'Invoice Location',
     };
+    const AUDIT_FIELD_LABELS_OB = {
+      date: 'Date',
+      inv_number: 'Invoice #',
+      driver: 'Driver',
+      truck_number: 'Truck #',
+      trailer_number: 'Trailer #',
+      customer: 'Customer',
+      destination: 'Destination',
+      state: 'State',
+      material: 'Material',
+      gallons_bags: 'Gallons / Bags',
+      price_per_unit: 'Price per Gal/Bag',
+      trucking_hrs: 'Trucking HRS',
+      trucking_rate: 'Trucking $/hr',
+      comments: 'Comments',
+    };
+    function auditLabel(source, field) {
+      const map = source === 'other-billing' ? AUDIT_FIELD_LABELS_OB : AUDIT_FIELD_LABELS_TRACKING;
+      return map[field] || field;
+    }
+    function auditSourceLabel(source) {
+      return source === 'other-billing' ? 'Other Billing' : 'Dust Tracking';
+    }
+    function auditSnapSummary(source, s) {
+      if (!s) return '';
+      if (source === 'other-billing') {
+        return [
+          s.date && `Date: ${s.date}`,
+          s.customer && `Customer: ${s.customer}`,
+          s.destination && `Destination: ${s.destination}`,
+          s.material && `Material: ${s.material}`,
+          s.gallons_bags && `Gal/Bags: ${s.gallons_bags}`,
+          s.driver && `Driver: ${s.driver}`,
+          s.inv_number && `Inv #: ${s.inv_number}`,
+        ].filter(Boolean).join(' · ');
+      }
+      return [
+        s.date && `Date: ${s.date}`,
+        s.company && `Company: ${s.company}`,
+        s.location && `Location: ${s.location}`,
+        s.vehicle1 && `Vehicle 1: ${s.vehicle1}`,
+        s.gallons_ub && `Gallons: ${s.gallons_ub}`,
+        s.inv_number && `Inv #: ${s.inv_number}`,
+      ].filter(Boolean).join(' · ');
+    }
 
     function fmtAuditWhen(ts) {
       if (!ts) return '';
@@ -4412,7 +4476,7 @@
       const tbody = document.getElementById('auditTbody');
       if (tbody) {
         tbody.innerHTML =
-          '<tr><td colspan="5" style="padding:1rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+          '<tr><td colspan="6" style="padding:1rem;color:var(--muted);text-align:center">Loading…</td></tr>';
       }
       try {
         const r = await fetch('/api/dust-audit?limit=2000', {
@@ -4423,7 +4487,7 @@
           auditEntries = [];
           if (tbody) {
             tbody.innerHTML =
-              '<tr><td colspan="5" class="audit-empty">Could not load audit log.</td></tr>';
+              '<tr><td colspan="6" class="audit-empty">Could not load audit log.</td></tr>';
           }
           return;
         }
@@ -4433,7 +4497,7 @@
         auditEntries = [];
         if (tbody) {
           tbody.innerHTML =
-            '<tr><td colspan="5" class="audit-empty">Network error loading audit log.</td></tr>';
+            '<tr><td colspan="6" class="audit-empty">Network error loading audit log.</td></tr>';
         }
       } finally {
         auditLoading = false;
@@ -4446,6 +4510,7 @@
       const countEl = document.getElementById('auditCount');
       if (!tbody) return;
 
+      const sourceF = (document.getElementById('audit-filter-source')?.value || '').toLowerCase();
       const actionF = (document.getElementById('audit-filter-action')?.value || '').toUpperCase();
       const userF = (document.getElementById('audit-filter-user')?.value || '').trim().toLowerCase();
       const fromF = document.getElementById('audit-filter-from')?.value || '';
@@ -4454,6 +4519,8 @@
       const toTs   = toF   ? new Date(toF   + 'T23:59:59').getTime() : null;
 
       const filtered = auditEntries.filter(e => {
+        const src = e.source || 'tracking';
+        if (sourceF && src !== sourceF) return false;
         if (actionF && e.action !== actionF) return false;
         if (userF && !((e.username || '').toLowerCase().includes(userF))) return false;
         if (fromTs || toTs) {
@@ -4468,20 +4535,23 @@
 
       if (filtered.length === 0) {
         tbody.innerHTML =
-          '<tr><td colspan="5" class="audit-empty">No audit entries match the current filters.</td></tr>';
+          '<tr><td colspan="6" class="audit-empty">No audit entries match the current filters.</td></tr>';
         return;
       }
 
       tbody.innerHTML = filtered.map(e => {
+        const src  = e.source || 'tracking';
         const when = fmtAuditWhen(e.created_at);
         const who  = esc(e.username || (e.user_id != null ? `user #${e.user_id}` : 'system'));
         const act  = esc(e.action);
         const rid  = esc(e.row_id || '');
+        const srcLbl = auditSourceLabel(src);
+        const srcCls = src === 'other-billing' ? 'src-ob' : 'src-tracking';
         let details = '';
         if (e.action === 'UPDATE' && e.changes && typeof e.changes === 'object') {
           const parts = Object.keys(e.changes).map(f => {
             const ch = e.changes[f] || {};
-            const label = AUDIT_FIELD_LABELS[f] || f;
+            const label = auditLabel(src, f);
             return `<div class="audit-change">
               <span class="field">${esc(label)}:</span>
               <span class="from">${esc(ch.from || '∅')}</span>
@@ -4491,15 +4561,7 @@
           });
           details = `<div class="audit-changes">${parts.join('')}</div>`;
         } else if ((e.action === 'INSERT' || e.action === 'DELETE') && e.snapshot) {
-          const s = e.snapshot;
-          const summary = [
-            s.date && `Date: ${s.date}`,
-            s.company && `Company: ${s.company}`,
-            s.location && `Location: ${s.location}`,
-            s.vehicle1 && `Vehicle 1: ${s.vehicle1}`,
-            s.gallons_ub && `Gallons: ${s.gallons_ub}`,
-            s.inv_number && `Inv #: ${s.inv_number}`,
-          ].filter(Boolean).join(' · ');
+          const summary = auditSnapSummary(src, e.snapshot);
           details = `<div class="audit-snap-summary">${esc(summary || '(empty row)')}</div>`;
         } else {
           details = '<div class="audit-snap-summary">—</div>';
@@ -4507,6 +4569,7 @@
         return `<tr>
           <td>${esc(when)}</td>
           <td>${who}</td>
+          <td><span class="audit-source ${srcCls}">${esc(srcLbl)}</span></td>
           <td><span class="audit-pill ${act}">${act === 'INSERT' ? 'Created' : act === 'UPDATE' ? 'Edited' : 'Deleted'}</span></td>
           <td><span class="audit-row-id">${rid}</span></td>
           <td>${details}</td>
@@ -4520,13 +4583,15 @@
         return;
       }
       const rows = [
-        ['When', 'User', 'Action', 'Row ID', 'Field', 'From', 'To', 'Snapshot'],
+        ['When', 'User', 'Source', 'Action', 'Row ID', 'Field', 'From', 'To', 'Snapshot'],
       ];
       const csvEsc = v => {
         const s = String(v == null ? '' : v);
         return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
       };
       auditEntries.forEach(e => {
+        const src  = e.source || 'tracking';
+        const srcLbl = auditSourceLabel(src);
         const when = fmtAuditWhen(e.created_at);
         const who  = e.username || (e.user_id != null ? `user #${e.user_id}` : '');
         const action = e.action === 'INSERT' ? 'Created'
@@ -4536,17 +4601,17 @@
         if (e.action === 'UPDATE' && e.changes && typeof e.changes === 'object') {
           const fields = Object.keys(e.changes);
           if (fields.length === 0) {
-            rows.push([when, who, action, e.row_id || '', '', '', '', '']);
+            rows.push([when, who, srcLbl, action, e.row_id || '', '', '', '', '']);
           } else {
             fields.forEach(f => {
               const ch = e.changes[f] || {};
-              const label = AUDIT_FIELD_LABELS[f] || f;
-              rows.push([when, who, action, e.row_id || '', label, ch.from || '', ch.to || '', '']);
+              const label = auditLabel(src, f);
+              rows.push([when, who, srcLbl, action, e.row_id || '', label, ch.from || '', ch.to || '', '']);
             });
           }
         } else {
           const snap = e.snapshot ? JSON.stringify(e.snapshot) : '';
-          rows.push([when, who, action, e.row_id || '', '', '', '', snap]);
+          rows.push([when, who, srcLbl, action, e.row_id || '', '', '', '', snap]);
         }
       });
       const csv = rows.map(r => r.map(csvEsc).join(',')).join('\n');

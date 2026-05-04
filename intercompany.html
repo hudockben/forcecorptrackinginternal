@@ -1724,6 +1724,12 @@
       renderAnalytics();
     }
 
+    // Treat dust tracking and dust other-billing as a single dust bucket
+    // for top-level dashboards/analytics aggregations.
+    function _isDustSrc(e) {
+      return e && (e.source === 'dust' || e.source === 'dust-other-billing');
+    }
+
     function renderAnalytics() {
       const el = document.getElementById('analyticsBody');
       if (!el) return;
@@ -1735,16 +1741,17 @@
 
       let entries = icBillingEntries;
       if (yearFilter !== 'all') entries = entries.filter(e => (e.actual_date || '').startsWith(yearFilter));
-      if (anDivFilter !== 'all') entries = entries.filter(e => (e.source || 'trucking') === anDivFilter);
+      if (anDivFilter === 'dust') entries = entries.filter(_isDustSrc);
+      else if (anDivFilter !== 'all') entries = entries.filter(e => (e.source || 'trucking') === anDivFilter);
 
       const truckEntries = entries.filter(e => (e.source || 'trucking') === 'trucking');
-      const dustEntries  = entries.filter(e => e.source === 'dust');
+      const dustEntries  = entries.filter(_isDustSrc);
 
       function icAmt(e) {
+        // Other-billing rows already store the full per-row total at time of send.
+        if (e.source === 'dust-other-billing') return parseFloat(e.total) || 0;
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
-        // Use stored per-vehicle totals (actual rates) + current UB rate.
-        // Old entries were sent with ubRate=0 so e.total excluded UB; using
-        // v1_total+v2_total+gallons×icUbRate gives the correct amount for both.
+        // Dust tracking: use stored per-vehicle totals (actual rates) + current UB rate.
         return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
              + (parseFloat(e.gallons_ub) || 0) * icUbRate;
       }
@@ -1794,7 +1801,7 @@
       const yoyData = allYears.map(yr => {
         const yrE = icBillingEntries.filter(e => (e.actual_date || '').startsWith(yr));
         const tIc = yrE.filter(e => (e.source || 'trucking') === 'trucking').reduce((s, e) => s + icAmt(e), 0);
-        const dIc = yrE.filter(e => e.source === 'dust').reduce((s, e) => s + icAmt(e), 0);
+        const dIc = yrE.filter(_isDustSrc).reduce((s, e) => s + icAmt(e), 0);
         return { yr, tIc, dIc, total: tIc + dIc };
       });
       const maxYoy = Math.max(...yoyData.map(d => d.total), 1);
@@ -2043,13 +2050,11 @@
 
       const yrEntries    = icBillingEntries.filter(e => parseInt((e.actual_date || '').slice(0, 4), 10) === thisYr);
       const truckEntries = yrEntries.filter(e => (e.source || 'trucking') === 'trucking');
-      const dustEntries  = yrEntries.filter(e => e.source === 'dust');
+      const dustEntries  = yrEntries.filter(_isDustSrc);
 
       function icAmt(e) {
+        if (e.source === 'dust-other-billing') return parseFloat(e.total) || 0;
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
-        // Use stored per-vehicle totals (actual rates) + current UB rate.
-        // Old entries were sent with ubRate=0 so e.total excluded UB; using
-        // v1_total+v2_total+gallons×icUbRate gives the correct amount for both.
         return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
              + (parseFloat(e.gallons_ub) || 0) * icUbRate;
       }
@@ -2068,13 +2073,14 @@
       const pendingPay = yrEntries.filter(e => e.invoice_sent_date && !e.payment_received_date);
       const outstandingIc = [...noInvoice, ...pendingPay].reduce((s, e) => s + icAmt(e), 0);
 
-      // Monthly IC breakdown
+      // Monthly IC breakdown — both dust tracking and dust-other-billing
+      // contribute to the dust band.
       const monthData = Array.from({length: 12}, (_, i) => ({ label: MONTHS[i], truck: 0, dust: 0 }));
       yrEntries.forEach(e => {
         const m = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
         if (m < 0 || m > 11) return;
-        if ((e.source || 'trucking') === 'trucking') monthData[m].truck += icAmt(e);
-        else monthData[m].dust += icAmt(e);
+        if (_isDustSrc(e)) monthData[m].dust += icAmt(e);
+        else if ((e.source || 'trucking') === 'trucking') monthData[m].truck += icAmt(e);
       });
       const maxMonthV = Math.max(...monthData.map(m => m.truck + m.dust), 1);
 
@@ -2136,8 +2142,8 @@
           const invVal = esc(r.invoice_sent_date || '');
           const payVal = esc(r.payment_received_date || '');
           const amt    = icAmt(r);
-          const src    = (r.source || 'trucking') === 'dust' ? 'Dust' : 'Truck';
-          const srcCls = (r.source || 'trucking') === 'dust' ? 'dust' : 'trucking';
+          const src    = r.source === 'dust-other-billing' ? 'Dust OB' : (_isDustSrc(r) ? 'Dust' : 'Truck');
+          const srcCls = _isDustSrc(r) ? 'dust' : 'trucking';
           return '<tr>'
             + '<td><span class="icd-dot ' + dotCls + '"></span><span style="font-size:0.67rem;color:var(--muted)">' + stLbl + '</span></td>'
             + '<td>' + (r.actual_date || '—') + '</td>'
@@ -2176,8 +2182,8 @@
 
       const recentHtml = recent.length
         ? recent.map(r => {
-            const src    = (r.source || 'trucking') === 'dust' ? 'Dust' : 'Truck';
-            const srcCls = (r.source || 'trucking') === 'dust' ? 'dust' : 'trucking';
+            const src    = r.source === 'dust-other-billing' ? 'Dust OB' : (_isDustSrc(r) ? 'Dust' : 'Truck');
+            const srcCls = _isDustSrc(r) ? 'dust' : 'trucking';
             return '<div class="icd-feed-row">'
               + '<span class="icd-feed-dot"></span>'
               + '<span class="icd-feed-date">' + (r.actual_date || '—') + '</span>'
