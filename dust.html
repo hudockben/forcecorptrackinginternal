@@ -4619,9 +4619,14 @@
           const newMap    = new Map();
           const newKeyMap = new Map();
           const newLocMap = new Map();
+          const newObMap  = new Map();
           value.forEach(e => {
-            if (e.source !== 'dust') return;
             const ts  = e.sent_at || '';
+            if (e.source === 'dust-other-billing' && e.source_id) {
+              newObMap.set(e.source_id, ts);
+              return;
+            }
+            if (e.source !== 'dust') return;
             const co  = (e.company_name || '').toLowerCase();
             const dt  = e.actual_date  || '';
             const st  = e.actual_start || '';
@@ -4636,6 +4641,17 @@
               }
             }
           });
+          // Refresh OB sent map (cheap) and re-render OB tab if visible
+          const obCur = JSON.stringify([...obIcSent].sort());
+          const obNxt = JSON.stringify([...newObMap].sort());
+          if (obCur !== obNxt) {
+            obIcSent.clear();
+            for (const [k, v] of newObMap) obIcSent.set(k, v);
+            const obPanel = document.getElementById('tab-other-billing');
+            if (obPanel && obPanel.classList.contains('active') && !_isEditing()) {
+              obRenderTable();
+            }
+          }
           // Compare by serialising the sorted entries
           const cur = JSON.stringify([...icSentMapDust].sort());
           const nxt = JSON.stringify([...newMap].sort());
@@ -4647,8 +4663,21 @@
         } catch { /* non-fatal */ }
       }
 
+      async function pollObRows() {
+        try {
+          const incoming = await apiGet(OB_KEY);
+          if (!Array.isArray(incoming)) return;
+          if (JSON.stringify(incoming) === JSON.stringify(obRows)) return;
+          obRows = incoming;
+          const obPanel = document.getElementById('tab-other-billing');
+          if (obPanel && obPanel.classList.contains('active') && !_isEditing()) {
+            obRenderTable();
+          }
+        } catch { /* non-fatal */ }
+      }
+
       async function pollAll() {
-        await Promise.allSettled([pollDustConfig(), pollDustRows(), pollIcSentMap()]);
+        await Promise.allSettled([pollDustConfig(), pollDustRows(), pollIcSentMap(), pollObRows()]);
       }
 
       setInterval(pollAll, DUST_POLL_MS);
