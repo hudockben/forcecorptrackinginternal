@@ -472,6 +472,28 @@ ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS cm_approval  TEXT;
 ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS inv_location TEXT;
 
 -- ─────────────────────────────────────────────────
+-- DUST CONTROL AUDIT LOG
+-- One row per INSERT / UPDATE / DELETE on dust_control_entries.
+-- Populated by the /api/dust-rows PUT handler by diffing the
+-- incoming list against current DB state.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS dust_control_audit_log (
+    id            BIGSERIAL PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    row_id        TEXT          NOT NULL,
+    action        TEXT          NOT NULL CHECK (action IN ('INSERT','UPDATE','DELETE')),
+    user_id       INTEGER,
+    username      TEXT,
+    changes       JSONB,
+    snapshot      JSONB,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dust_audit_company    ON dust_control_audit_log(company_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dust_audit_row        ON dust_control_audit_log(row_id);
+CREATE INDEX IF NOT EXISTS idx_dust_audit_company_at ON dust_control_audit_log(company_code, created_at);
+
+-- ─────────────────────────────────────────────────
 -- TRUCK DIVISION ENTRIES
 -- One row per job entry from the Trucking Division tab.
 -- Replaces fct_truck_division JSON blob.

@@ -116,6 +116,67 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
+    /* ── Reports tab ── */
+    .reports-wrap { padding: 1.5rem; }
+    .reports-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 1rem; margin-bottom: 1.25rem;
+    }
+    .reports-eyebrow {
+      font-size: 0.58rem; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--amber); opacity: 0.75; margin-bottom: 0.25rem;
+    }
+    .reports-title {
+      font-size: 1.4rem; font-weight: 700; color: #fff; letter-spacing: -0.02em;
+    }
+    .reports-sub { color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem; }
+    .reports-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
+    .reports-toolbar {
+      display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap;
+      padding: 0.75rem 0.9rem; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 6px;
+      margin-bottom: 1rem;
+    }
+    .reports-toolbar label {
+      display: flex; flex-direction: column; gap: 0.25rem;
+      font-size: 0.6rem; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .reports-toolbar input,
+    .reports-toolbar select {
+      background: var(--surface2,#1e1e1e);
+      border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text,#eee);
+      font-size: 0.75rem; padding: 0.32rem 0.5rem;
+      outline: none; min-width: 130px;
+    }
+    .reports-toolbar input:focus,
+    .reports-toolbar select:focus { border-color: var(--amber); }
+    .audit-table td { vertical-align: top; padding: 0.45rem 0.6rem; font-size: 0.72rem; }
+    .audit-table .col-row th { text-align: left; }
+    .audit-pill {
+      display: inline-block; padding: 0.15rem 0.55rem;
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; border-radius: 3px; border: 1px solid;
+    }
+    .audit-pill.INSERT { color: #22c55e; border-color: rgba(34,197,94,0.4); background: rgba(34,197,94,0.08); }
+    .audit-pill.UPDATE { color: #f59e0b; border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.08); }
+    .audit-pill.DELETE { color: #ef4444; border-color: rgba(239,68,68,0.4); background: rgba(239,68,68,0.08); }
+    .audit-row-id { font-family: ui-monospace, monospace; color: var(--muted); font-size: 0.68rem; }
+    .audit-changes { display: flex; flex-direction: column; gap: 0.2rem; }
+    .audit-change {
+      font-family: ui-monospace, monospace; font-size: 0.68rem; line-height: 1.35;
+    }
+    .audit-change .field { color: var(--amber); margin-right: 0.4rem; }
+    .audit-change .from { color: #ef4444; text-decoration: line-through; opacity: 0.85; }
+    .audit-change .arrow { color: var(--muted); margin: 0 0.35rem; }
+    .audit-change .to { color: #22c55e; }
+    .audit-snap-summary { color: var(--muted); font-size: 0.68rem; line-height: 1.4; }
+    .audit-empty {
+      padding: 2rem 1rem; text-align: center; color: var(--muted);
+      font-size: 0.78rem;
+    }
+
     /* ── Home Dashboard ── */
     .dash-header {
       display: flex; align-items: flex-start; justify-content: space-between;
@@ -524,6 +585,22 @@
     .company-item { flex-direction: column; align-items: stretch; gap: 0.55rem; }
     .company-header { display: flex; align-items: center; gap: 0.5rem; }
     .company-header input { flex: 1; }
+    .company-chev {
+      flex: none; width: 22px; height: 22px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: transparent; border: none; cursor: pointer;
+      color: var(--muted); font-size: 0.85rem;
+      transition: transform 0.15s, color 0.15s;
+    }
+    .company-chev:hover { color: var(--amber); }
+    .company-chev.open { transform: rotate(90deg); color: var(--amber); }
+    .company-collapsed-meta {
+      flex: none; font-size: 0.62rem; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      white-space: nowrap;
+    }
+    .company-body { display: flex; flex-direction: column; gap: 0.55rem; }
+    .company-body[hidden] { display: none; }
     .co-men-lbl {
       font-size: 0.57rem; letter-spacing: 0.1em; text-transform: uppercase;
       color: var(--muted); margin-bottom: 0.35rem;
@@ -1059,6 +1136,7 @@
     <button class="tab-btn" data-tab="tracking">Dust Control Tracking</button>
     <button class="tab-btn" data-tab="other-billing">Other Billing</button>
     <button class="tab-btn" data-tab="analytics">Analytics</button>
+    <button class="tab-btn" data-tab="reports">Reports</button>
   </nav>
 
   <!-- ══════════════════════════════════════════════
@@ -1303,7 +1381,142 @@
        OTHER BILLING TAB
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-other-billing">
-    <div id="other-billing-content"></div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <button class="btn-add" onclick="obAddRow()">+ Add Row</button>
+      <input type="number" id="ob-bulk-add-count" min="1" max="100" value="1"
+        title="Number of rows to add"
+        style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2,#1e1e1e);border:1px solid var(--border,#333);border-radius:4px;color:var(--text,#eee);font-size:0.72rem;text-align:center;outline:none">
+      <div id="obYearSelector" class="year-selector"></div>
+      <span class="row-count" id="obRowCount">0 rows</span>
+    </div>
+
+    <!-- Totals bar -->
+    <div class="totals-bar">
+      <div class="tot-item">
+        <span class="tot-label">Material Total</span>
+        <span class="tot-val" id="ob-tot-mat">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Trucking Total</span>
+        <span class="tot-val" id="ob-tot-trk">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Grand Total</span>
+        <span class="tot-val" id="ob-tot-grand">—</span>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table class="sheet-table">
+        <thead>
+          <tr class="group-row">
+            <th class="cw-expand"></th>
+            <th class="g-entry"  colspan="2">Entry</th>
+            <th class="g-v1"     colspan="3">Truck</th>
+            <th class="g-cust"   colspan="3">Customer</th>
+            <th class="g-v1"     colspan="3">Material</th>
+            <th class="g-v2"     colspan="2">Trucking</th>
+            <th class="g-totals" colspan="1">Notes</th>
+            <th class="g-totals" colspan="1">Totals</th>
+            <th class="g-del"></th>
+          </tr>
+          <tr class="col-row">
+            <th class="cw-expand"></th>
+            <th class="cw-date">Date<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('date',this.value)"></th>
+            <th class="cw-unit">Invoice #</th>
+            <th class="cw-cm">Driver<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('driver',this.value)"></th>
+            <th class="cw-unit">Truck #</th>
+            <th class="cw-unit">Trailer #</th>
+            <th class="cw-co">Customer<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('customer',this.value)"></th>
+            <th class="cw-loc">Destination<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('destination',this.value)"></th>
+            <th class="cw-st">State<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('state',this.value)"></th>
+            <th class="cw-veh">Material<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('material',this.value)"></th>
+            <th class="cw-gal">Gallons / Bags</th>
+            <th class="cw-rate">Price per Gal / Bag</th>
+            <th class="cw-rate">Trucking HRS</th>
+            <th class="cw-rate">Trucking $ / hr</th>
+            <th class="cw-loc">Comments</th>
+            <th class="cw-inv calc-hdr">Total</th>
+            <th class="cw-del"></th>
+          </tr>
+        </thead>
+        <tbody id="obTbody"></tbody>
+        <tfoot>
+          <tr class="add-row-foot">
+            <td colspan="17">
+              <button class="add-row-foot-btn" onclick="obAddRow()">+ Add Row</button>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+  </div><!-- /tab-other-billing -->
+
+  <!-- ══════════════════════════════════════════════
+       REPORTS TAB — Audit Log
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-reports">
+    <div class="reports-wrap">
+      <div class="reports-header">
+        <div>
+          <div class="reports-eyebrow">Reports</div>
+          <div class="reports-title">Dust Tracking Audit Log</div>
+          <div class="reports-sub">
+            Tracks every row added, edited, or deleted in the Dust Control Tracking tab.
+          </div>
+        </div>
+        <div class="reports-actions">
+          <button class="btn-ghost" onclick="loadAuditLog()">↻ Refresh</button>
+          <button class="btn-ghost" onclick="exportAuditCsv()">↓ Export CSV</button>
+        </div>
+      </div>
+
+      <div class="reports-toolbar">
+        <label>
+          Action
+          <select id="audit-filter-action" onchange="renderAuditLog()">
+            <option value="">All</option>
+            <option value="INSERT">Created</option>
+            <option value="UPDATE">Edited</option>
+            <option value="DELETE">Deleted</option>
+          </select>
+        </label>
+        <label>
+          User
+          <input type="text" id="audit-filter-user" placeholder="username…" oninput="renderAuditLog()">
+        </label>
+        <label>
+          From
+          <input type="date" id="audit-filter-from" onchange="renderAuditLog()">
+        </label>
+        <label>
+          To
+          <input type="date" id="audit-filter-to" onchange="renderAuditLog()">
+        </label>
+        <span class="row-count" id="auditCount">0 entries</span>
+      </div>
+
+      <div class="table-wrap">
+        <table class="sheet-table audit-table">
+          <thead>
+            <tr class="col-row">
+              <th style="width:170px">When</th>
+              <th style="width:130px">User</th>
+              <th style="width:90px">Action</th>
+              <th style="width:170px">Row ID</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="auditTbody">
+            <tr><td colspan="5" style="padding:1rem;color:var(--muted);text-align:center">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- ══════════════════════════════════════════════
@@ -1318,6 +1531,7 @@
       <div class="modal-tabs" id="listModalTabs">
         <button class="modal-tab-btn active" data-panel="equipment">Equipment</button>
         <button class="modal-tab-btn" data-panel="companies">Companies</button>
+        <button class="modal-tab-btn" data-panel="employees">Employees</button>
         <button class="modal-tab-btn" data-panel="states">States</button>
       </div>
       <div class="modal-body">
@@ -1339,6 +1553,15 @@
           <div class="add-item-row">
             <input type="text" id="new-co-name" placeholder="Company name…" />
             <button class="btn-list-add" onclick="addListItem('companies')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- Employees -->
+        <div class="list-panel" id="lp-employees">
+          <div class="list-items" id="li-employees"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-emp-name" placeholder="Employee / driver name…" />
+            <button class="btn-list-add" onclick="addListItem('employees')">+ Add</button>
           </div>
         </div>
 
@@ -2595,7 +2818,19 @@
     function renderListPanels() {
       renderEquipmentPanel();
       renderCompaniesPanel();
+      renderEmployeesPanel();
       renderStatesPanel();
+    }
+
+    function renderEmployeesPanel() {
+      const sorted = (dustLists.employees || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+      document.getElementById('li-employees').innerHTML = sorted.length
+        ? sorted.map(name => `
+            <div class="list-item">
+              <span style="font-size:0.82rem;font-weight:600;color:var(--text);flex:1">${esc(name)}</span>
+              <button class="remove-item" onclick="removeListItem('employees','${esc(name).replace(/'/g,"\\'")}')">✕</button>
+            </div>`).join('')
+        : '<div class="empty-hint">No employees added yet.</div>';
     }
 
     function renderEquipmentPanel() {
@@ -2617,10 +2852,21 @@
     }
 
 
+    // Tracks which companies are expanded in Manage Lists. Empty by default
+    // so the panel starts collapsed and users see a compact list.
+    const coExpanded = new Set();
+
+    function toggleCompanyExpand(coId) {
+      if (coExpanded.has(coId)) coExpanded.delete(coId);
+      else                       coExpanded.add(coId);
+      renderCompaniesPanel();
+    }
+
     function renderCompaniesPanel() {
       const sorted = dustLists.companies.slice().sort((a,b) => a.name.localeCompare(b.name));
       document.getElementById('li-companies').innerHTML = sorted.length
         ? sorted.map(co => {
+            const isOpen = coExpanded.has(co.id);
             const coMen  = (co.men || []).slice().sort((a,b) => a.name.localeCompare(b.name));
             const mensHtml = coMen.length
               ? coMen.map(m => `
@@ -2648,34 +2894,40 @@
                   </div>`).join('')
               : '<div class="empty-hint">No well pads added yet.</div>';
 
+            const meta = `${coMen.length} ${coMen.length === 1 ? 'man' : 'men'} · ${coLocs.length} pad${coLocs.length === 1 ? '' : 's'}`;
+
             return `
               <div class="list-item company-item">
                 <div class="company-header">
+                  <button class="company-chev${isOpen ? ' open' : ''}" onclick="toggleCompanyExpand('${co.id}')" title="${isOpen ? 'Collapse' : 'Expand'}">▶</button>
                   <input type="text" value="${esc(co.name)}" placeholder="Company name"
                     oninput="updateListItem('companies','${co.id}','name',this.value)" />
+                  <span class="company-collapsed-meta">${meta}</span>
                   <span class="list-item-lbl">Tier</span>
                   <input type="text" class="short" value="${esc(co.tier||'')}" placeholder="Tier"
                     oninput="updateListItem('companies','${co.id}','tier',this.value)" />
                   <button class="remove-item" onclick="removeListItem('companies','${co.id}')">✕</button>
                 </div>
-                <div class="co-locations-section">
-                  <div class="co-men-lbl">Company Men</div>
-                  <div class="co-location-items">${mensHtml}</div>
-                  <div class="add-location-row">
-                    <input type="text" class="new-man-name-co" placeholder="Company man name…" />
-                    <button class="btn-list-add" onclick="addCompanyMan('${co.id}',this)">+ Add</button>
+                <div class="company-body" ${isOpen ? '' : 'hidden'}>
+                  <div class="co-locations-section">
+                    <div class="co-men-lbl">Company Men</div>
+                    <div class="co-location-items">${mensHtml}</div>
+                    <div class="add-location-row">
+                      <input type="text" class="new-man-name-co" placeholder="Company man name…" />
+                      <button class="btn-list-add" onclick="addCompanyMan('${co.id}',this)">+ Add</button>
+                    </div>
                   </div>
-                </div>
-                <div class="co-locations-section">
-                  <div class="co-men-lbl">Well Pads / Locations</div>
-                  <div class="co-location-items">${locsHtml}</div>
-                  <div class="add-location-row">
-                    <input type="text" class="new-loc-name-co" placeholder="Well pad name…" />
-                    <select class="new-loc-state-co" style="flex:none;width:80px;padding:0.28rem 0.4rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.78rem;outline:none">
-                      <option value="">State…</option>
-                      ${stateOpts}
-                    </select>
-                    <button class="btn-list-add" onclick="addCompanyLocation('${co.id}',this)">+ Add</button>
+                  <div class="co-locations-section">
+                    <div class="co-men-lbl">Well Pads / Locations</div>
+                    <div class="co-location-items">${locsHtml}</div>
+                    <div class="add-location-row">
+                      <input type="text" class="new-loc-name-co" placeholder="Well pad name…" />
+                      <select class="new-loc-state-co" style="flex:none;width:80px;padding:0.28rem 0.4rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.78rem;outline:none">
+                        <option value="">State…</option>
+                        ${stateOpts}
+                      </select>
+                      <button class="btn-list-add" onclick="addCompanyLocation('${co.id}',this)">+ Add</button>
+                    </div>
                   </div>
                 </div>
               </div>`;
@@ -2739,8 +2991,10 @@
       } else if (type === 'companies') {
         const name = document.getElementById('new-co-name').value.trim();
         if (!name) { document.getElementById('new-co-name').focus(); return; }
-        dustLists.companies.push({ id: uid(), name, men: [], locations: [] });
+        const newCo = { id: uid(), name, men: [], locations: [] };
+        dustLists.companies.push(newCo);
         document.getElementById('new-co-name').value = '';
+        coExpanded.add(newCo.id); // auto-expand so men / pads can be added right away
         renderCompaniesPanel();
       } else if (type === 'states') {
         const abbr = document.getElementById('new-state-abbr').value.trim().toUpperCase();
@@ -2750,6 +3004,15 @@
           document.getElementById('new-state-abbr').value = '';
           renderStatesPanel();
           renderCompaniesPanel(); // refresh state dropdowns in well pad sections
+        }
+      } else if (type === 'employees') {
+        const name = document.getElementById('new-emp-name').value.trim();
+        if (!name) { document.getElementById('new-emp-name').focus(); return; }
+        if (!Array.isArray(dustLists.employees)) dustLists.employees = [];
+        if (!dustLists.employees.includes(name)) {
+          dustLists.employees.push(name);
+          document.getElementById('new-emp-name').value = '';
+          renderEmployeesPanel();
         }
       }
       saveLists();
@@ -2763,6 +3026,9 @@
         dustLists.companies.forEach(co => {
           (co.locations || []).forEach(loc => { if (loc.state === id) loc.state = ''; });
         });
+      } else if (type === 'employees') {
+        // id here is the employee name string
+        dustLists.employees = (dustLists.employees || []).filter(n => n !== id);
       } else {
         dustLists[type] = dustLists[type].filter(item => item.id !== id);
       }
@@ -2804,6 +3070,7 @@
     });
     document.getElementById('new-co-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('companies'); });
     document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
+    document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
 
     /* ═══════════════════════════════════════════
        UB RATE
@@ -3685,8 +3952,611 @@
       ?.addEventListener('click', renderHomeDashboard);
     document.querySelector('[data-tab="analytics"]')
       ?.addEventListener('click', renderAnalytics);
+    document.querySelector('[data-tab="reports"]')
+      ?.addEventListener('click', loadAuditLog);
+    document.querySelector('[data-tab="other-billing"]')
+      ?.addEventListener('click', obRenderTable);
 
     init();
+
+    /* ═══════════════════════════════════════════
+       OTHER BILLING — tracking rows
+    ═══════════════════════════════════════════ */
+    const OB_KEY    = 'dust_other_billing_rows';
+    const OB_IC_KEY = 'fct_intercompany_billing_entries';
+
+    let obRows       = [];
+    let obFilters    = {};
+    let obSaveTimer  = null;
+    let obYear       = String(new Date().getFullYear());
+    const obExpanded = new Set();
+    const obIcSent   = new Map(); // row.id → sent_at
+
+    function obCalc(row) {
+      const qty   = parseFloat(row.gallons_bags)        || 0;
+      const price = parseFloat(row.price_per_unit)      || 0;
+      const hrs   = parseFloat(row.trucking_hrs)        || 0;
+      const rate  = parseFloat(row.trucking_rate)       || 0;
+      const matTotal = round2(qty * price);
+      const trkTotal = round2(hrs * rate);
+      const total    = round2(matTotal + trkTotal);
+      return { matTotal, trkTotal, total };
+    }
+
+    async function obLoad() {
+      try {
+        const data = await apiGet(OB_KEY);
+        obRows = Array.isArray(data) ? data : [];
+      } catch { obRows = []; }
+      // Seed IC sent-map for OB rows from the shared IC blob
+      try {
+        const ic = await apiGet(OB_IC_KEY);
+        obIcSent.clear();
+        if (Array.isArray(ic)) {
+          ic.forEach(e => {
+            if (e.source === 'dust-other-billing' && e.source_id) {
+              obIcSent.set(e.source_id, e.sent_at || '');
+            }
+          });
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    async function obSave() {
+      try { return await apiPut(OB_KEY, obRows); }
+      catch { return false; }
+    }
+
+    function obScheduleSave() {
+      setSaveState('saving');
+      clearTimeout(obSaveTimer);
+      obSaveTimer = setTimeout(async () => {
+        const ok = await obSave();
+        setSaveState(ok ? 'saved' : 'error');
+        setTimeout(() => setSaveState(''), 3000);
+      }, 900);
+    }
+
+    function obAddRow() {
+      const countEl = document.getElementById('ob-bulk-add-count');
+      const count = Math.min(Math.max(parseInt(countEl?.value) || 1, 1), 100);
+      for (let i = 0; i < count; i++) {
+        obRows.unshift({
+          id: uid(), date: todayStr(),
+          inv_number: '',
+          driver: '', truck_number: '', trailer_number: '',
+          customer: '', destination: '', state: '',
+          material: '', gallons_bags: '', price_per_unit: '',
+          trucking_hrs: '', trucking_rate: '',
+          comments: '',
+        });
+      }
+      obRenderTable();
+      obScheduleSave();
+      const tbody = document.getElementById('obTbody');
+      const first = tbody?.querySelector('tr[data-idx]');
+      if (first) {
+        first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const inp = first.querySelector('input');
+        if (inp) setTimeout(() => inp.focus(), 80);
+      }
+    }
+
+    function obDeleteRow(idx) {
+      if (!confirm('Delete this row?')) return;
+      obRows.splice(idx, 1);
+      obRenderTable();
+      obScheduleSave();
+    }
+
+    function obSet(idx, field, value) {
+      if (!obRows[idx]) return;
+      obRows[idx][field] = value;
+      if (field === 'gallons_bags' || field === 'price_per_unit'
+          || field === 'trucking_hrs' || field === 'trucking_rate') {
+        obRefreshCalcCells(idx);
+        obRefreshTotals();
+      }
+      obScheduleSave();
+    }
+
+    // Customer change: reset destination + state and rebuild the
+    // destination dropdown from the newly selected company's locations.
+    function obSetCustomer(idx, value) {
+      if (!obRows[idx]) return;
+      obRows[idx].customer    = value;
+      obRows[idx].destination = '';
+      obRows[idx].state       = '';
+      const co   = (dustLists.companies || []).find(c => c.name === value);
+      const locs = co ? (co.locations || []).slice().sort((a, b) => a.name.localeCompare(b.name)) : [];
+      const tr   = document.querySelector(`#obTbody tr[data-idx="${idx}"]`);
+      if (tr) {
+        const destSel = tr.querySelector('select[data-role="ob-dest"]');
+        if (destSel) {
+          destSel.innerHTML = '<option value="">— select —</option>' +
+            locs.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join('');
+        }
+        const stSel = tr.querySelector('td.cw-st select');
+        if (stSel) stSel.value = '';
+      }
+      obScheduleSave();
+    }
+
+    // Destination change: set destination, auto-fill state from the
+    // selected location's metadata when available.
+    function obSetDestination(idx, locationName) {
+      if (!obRows[idx]) return;
+      obRows[idx].destination = locationName;
+      const co  = (dustLists.companies || []).find(c => c.name === obRows[idx].customer);
+      const loc = co ? (co.locations || []).find(l => l.name === locationName) : null;
+      if (loc && loc.state) {
+        obRows[idx].state = loc.state;
+        const tr = document.querySelector(`#obTbody tr[data-idx="${idx}"]`);
+        const stSel = tr && tr.querySelector('td.cw-st select');
+        if (stSel) stSel.value = loc.state;
+      }
+      obScheduleSave();
+    }
+
+    function _obLiveSet(idx, field, value) {
+      if (!obRows[idx]) return;
+      obRows[idx][field] = value;
+      if (field === 'gallons_bags' || field === 'price_per_unit'
+          || field === 'trucking_hrs' || field === 'trucking_rate') {
+        obRefreshCalcCells(idx);
+        obRefreshTotals();
+      }
+    }
+
+    function obSetFilter(field, value) {
+      const v = (value || '').trim().toLowerCase();
+      if (v) obFilters[field] = v;
+      else   delete obFilters[field];
+      obRenderTable();
+    }
+
+    function obSetYear(y) { obYear = y; obRenderYearSelector(); obRenderTable(); }
+
+    function obRenderYearSelector() {
+      const years = [...new Set(
+        obRows.map(r => (r.date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort();
+      const el = document.getElementById('obYearSelector');
+      if (!el) return;
+      if (!years.length) { el.innerHTML = ''; return; }
+      if (obYear !== 'all' && !years.includes(obYear)) obYear = years[years.length - 1];
+      el.innerHTML =
+        `<button class="year-btn${obYear === 'all' ? ' active' : ''}" onclick="obSetYear('all')">All</button>` +
+        years.map(y =>
+          `<button class="year-btn${obYear === y ? ' active' : ''}" onclick="obSetYear('${y}')">${y}</button>`
+        ).join('');
+    }
+
+    function obToggleExpand(idx) {
+      const row = obRows[idx];
+      if (!row) return;
+      if (obExpanded.has(row.id)) obExpanded.delete(row.id);
+      else                         obExpanded.add(row.id);
+      const subRow = document.getElementById('ob-ic-row-' + idx);
+      const btn    = document.getElementById('ob-expbtn-' + idx);
+      if (subRow) subRow.style.display = obExpanded.has(row.id) ? '' : 'none';
+      if (btn)    btn.classList.toggle('open', obExpanded.has(row.id));
+    }
+
+    function obRenderTable() {
+      const tbody = document.getElementById('obTbody');
+      if (!tbody) return;
+
+      obRenderYearSelector();
+
+      const filterEntries = Object.entries(obFilters);
+      const visibleIdxs = obRows.reduce((acc, row, idx) => {
+        if (obYear !== 'all' && (row.date || '').slice(0, 4) !== obYear) return acc;
+        if (filterEntries.length && !filterEntries.every(([f, v]) =>
+            (row[f] || '').toLowerCase().includes(v))) return acc;
+        acc.push(idx);
+        return acc;
+      }, []).sort((a, b) => (obRows[b].date || '').localeCompare(obRows[a].date || ''));
+
+      let totMat = 0, totTrk = 0, totGrand = 0;
+
+      tbody.innerHTML = visibleIdxs.map(idx => {
+        const row = obRows[idx];
+        const c   = obCalc(row);
+        totMat   += c.matTotal;
+        totTrk   += c.trkTotal;
+        totGrand += c.total;
+
+        const coOpts = '<option value="">— select —</option>' +
+          dustLists.companies.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(co =>
+            `<option value="${esc(co.name)}"${row.customer===co.name?' selected':''}>${esc(co.name)}</option>`).join('');
+
+        const stOpts = '<option value="">—</option>' +
+          dustLists.states.slice().sort().map(s =>
+            `<option value="${esc(s)}"${row.state===s?' selected':''}>${esc(s)}</option>`).join('');
+
+        // Build driver options from employees list. If the row has a driver
+        // value that's not in the list (e.g. legacy free-text rows), keep it
+        // as a selectable option so it doesn't get blanked on render.
+        const empList = (dustLists.employees || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+        if (row.driver && !empList.includes(row.driver)) empList.unshift(row.driver);
+        const empOpts = '<option value="">— select —</option>' +
+          empList.map(name =>
+            `<option value="${esc(name)}"${row.driver===name?' selected':''}>${esc(name)}</option>`).join('');
+
+        // Truck # dropdown sourced from equipment unit numbers. Display as
+        // "unit# — name" for clarity; value stored is the unit_number string.
+        const truckList = (dustLists.equipment || [])
+          .filter(eq => eq && eq.unit_number)
+          .map(eq => ({ unit: String(eq.unit_number), name: eq.name || '' }))
+          .sort((a, b) => a.unit.localeCompare(b.unit, undefined, { numeric: true }));
+        if (row.truck_number && !truckList.some(t => t.unit === row.truck_number)) {
+          truckList.unshift({ unit: row.truck_number, name: '' });
+        }
+        const truckOpts = '<option value="">— select —</option>' +
+          truckList.map(t => {
+            const label = t.name ? `${t.unit} — ${t.name}` : t.unit;
+            return `<option value="${esc(t.unit)}"${row.truck_number===t.unit?' selected':''}>${esc(label)}</option>`;
+          }).join('');
+
+        // Destination dropdown filtered to the selected customer's locations.
+        const obSelCo = (dustLists.companies || []).find(c => c.name === row.customer);
+        const obLocs  = obSelCo ? (obSelCo.locations || []).slice().sort((a, b) => a.name.localeCompare(b.name)) : [];
+        // Preserve any out-of-list destination so it doesn't disappear on render
+        const obLocNames = obLocs.map(l => l.name);
+        if (row.destination && !obLocNames.includes(row.destination)) {
+          obLocs.unshift({ name: row.destination, state: row.state || '' });
+        }
+        const destOpts = '<option value="">— select —</option>' +
+          obLocs.map(l =>
+            `<option value="${esc(l.name)}"${row.destination===l.name?' selected':''}>${esc(l.name)}</option>`).join('');
+
+        const icTs   = obIcSent.get(row.id) || '';
+        const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
+
+        const icPanel = `
+          <div class="inv-panel">
+            <div class="inv-field" style="align-self:flex-end">
+              <label>&nbsp;</label>
+              <div style="display:flex;flex-direction:column;gap:0.28rem">
+                <div style="display:flex;align-items:center;gap:0.5rem">
+                  <button id="ic-ob-btn-${idx}" onclick="sendObToIntercompany(${idx})"
+                    style="padding:0.3rem 0.75rem;font-size:0.72rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer;white-space:nowrap">
+                    &#8644; Intercompany Billing
+                  </button>
+                  <span id="ic-ob-status-${idx}" style="font-size:0.7rem;font-weight:600;min-width:1em"></span>
+                </div>
+                <span id="ic-ob-ts-${idx}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icTs ? fmtSentAt(icTs) : ''}</span>
+              </div>
+            </div>
+          </div>`;
+
+        const expanded = obExpanded.has(row.id);
+        return `<tr data-idx="${idx}">
+          <td class="cw-expand"><button class="expand-btn${expanded?' open':''}" id="ob-expbtn-${idx}" onclick="obToggleExpand(${idx})" title="Intercompany billing">›</button></td>
+          <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="obSet(${idx},'date',this.value)"></td>
+          <td class="cw-unit"><input type="text" value="${esc(row.inv_number||'')}" placeholder="INV-…" oninput="obSet(${idx},'inv_number',this.value)"></td>
+          <td class="cw-cm"><select onchange="obSet(${idx},'driver',this.value)">${empOpts}</select></td>
+          <td class="cw-unit"><select data-role="ob-truck" onchange="obSet(${idx},'truck_number',this.value)">${truckOpts}</select></td>
+          <td class="cw-unit"><input type="text" value="${esc(row.trailer_number||'')}" oninput="obSet(${idx},'trailer_number',this.value)"></td>
+          <td class="cw-co"><select onchange="obSetCustomer(${idx},this.value)">${coOpts}</select></td>
+          <td class="cw-loc"><select data-role="ob-dest" onchange="obSetDestination(${idx},this.value)">${destOpts}</select></td>
+          <td class="cw-st"><select onchange="obSet(${idx},'state',this.value)">${stOpts}</select></td>
+          <td class="cw-veh"><input type="text" value="${esc(row.material||'')}" oninput="obSet(${idx},'material',this.value)"></td>
+          <td class="cw-gal"><input type="number" step="0.01" min="0" value="${esc(row.gallons_bags||'')}" oninput="_obLiveSet(${idx},'gallons_bags',this.value)" onchange="obSet(${idx},'gallons_bags',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.price_per_unit||'')}" oninput="_obLiveSet(${idx},'price_per_unit',this.value)" onchange="obSet(${idx},'price_per_unit',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>
+          <td class="cw-loc"><input type="text" value="${esc(row.comments||'')}" placeholder="Notes…" oninput="obSet(${idx},'comments',this.value)"></td>
+          <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}</td>
+          <td class="del-col"><button class="del-btn" onclick="obDeleteRow(${idx})" title="Delete row">✕</button></td>
+        </tr>
+        <tr class="inv-row" id="ob-ic-row-${idx}" style="display:${expanded?'':'none'}">
+          <td colspan="17">${icPanel}</td>
+        </tr>`;
+      }).join('');
+
+      document.getElementById('ob-tot-mat').textContent   = totMat   ? money(totMat)   : '—';
+      document.getElementById('ob-tot-trk').textContent   = totTrk   ? money(totTrk)   : '—';
+      document.getElementById('ob-tot-grand').textContent = totGrand ? money(totGrand) : '—';
+
+      const total = obRows.length, shown = visibleIdxs.length;
+      document.getElementById('obRowCount').textContent = shown < total
+        ? `${shown} of ${total} row${total !== 1 ? 's' : ''}`
+        : `${total} row${total !== 1 ? 's' : ''}`;
+    }
+
+    function obRefreshCalcCells(idx) {
+      const c  = obCalc(obRows[idx]);
+      const tr = document.querySelector(`#obTbody tr[data-idx="${idx}"]`);
+      if (!tr) return;
+      const totalCell = tr.querySelector('td.calc.cw-inv');
+      if (totalCell) {
+        // Preserve any IC chip that lived inside the cell
+        const chip = totalCell.querySelector('.ic-sent-chip');
+        totalCell.textContent = c.total ? money(c.total) : '—';
+        totalCell.classList.toggle('empty', !c.total);
+        if (chip) totalCell.appendChild(chip);
+      }
+    }
+
+    function obRefreshTotals() {
+      let totMat = 0, totTrk = 0, totGrand = 0;
+      obRows.forEach(row => {
+        const c = obCalc(row);
+        totMat   += c.matTotal;
+        totTrk   += c.trkTotal;
+        totGrand += c.total;
+      });
+      document.getElementById('ob-tot-mat').textContent   = totMat   ? money(totMat)   : '—';
+      document.getElementById('ob-tot-trk').textContent   = totTrk   ? money(totTrk)   : '—';
+      document.getElementById('ob-tot-grand').textContent = totGrand ? money(totGrand) : '—';
+    }
+
+    async function sendObToIntercompany(idx) {
+      const row = obRows[idx];
+      if (!row) return;
+
+      const btn    = document.getElementById('ic-ob-btn-' + idx);
+      const status = document.getElementById('ic-ob-status-' + idx);
+      if (btn) btn.disabled = true;
+      if (status) { status.style.color = 'var(--muted)'; status.textContent = 'Checking…'; }
+
+      const IC_CO_KEY = 'fct_intercompany_companies';
+
+      try {
+        const coData = await apiGet(IC_CO_KEY);
+        const coList = Array.isArray(coData) ? coData : [];
+        const coName = (row.customer || '').trim().toLowerCase();
+        const matched = coList.find(c => c.name.trim().toLowerCase() === coName
+          && (c.divisions || []).includes('dust'));
+
+        if (!matched) {
+          if (status) { status.style.color = 'var(--red)'; status.textContent = 'Customer not in Intercompany list.'; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 3500);
+          if (btn) btn.disabled = false;
+          return;
+        }
+
+        const existing = await apiGet(OB_IC_KEY);
+        let entries = Array.isArray(existing) ? existing : [];
+
+        if (obIcSent.get(row.id) || entries.some(x => x.source === 'dust-other-billing' && x.source_id === row.id)) {
+          if (status) { status.style.color = '#f59e0b'; status.textContent = 'Already sent.'; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 2500);
+          if (btn) btn.disabled = false;
+          return;
+        }
+
+        const c = obCalc(row);
+        const entry = {
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+          source: 'dust-other-billing', source_id: row.id,
+          company_id: matched.id, company_name: matched.name,
+          actual_date: row.date,
+          total: c.total,
+          driver: row.driver,
+          truck_number: row.truck_number, trailer_number: row.trailer_number,
+          destination: row.destination, state: row.state,
+          material: row.material,
+          gallons_bags: row.gallons_bags, price_per_unit: row.price_per_unit, material_total: c.matTotal,
+          trucking_hrs: row.trucking_hrs, trucking_rate: row.trucking_rate, trucking_total: c.trkTotal,
+          inv_number: row.inv_number,
+          comments: row.comments,
+          sent_at: new Date().toISOString(),
+          sent_by: (user?.username) || ''
+        };
+        entries.unshift(entry);
+        await apiPut(OB_IC_KEY, entries);
+
+        obIcSent.set(row.id, entry.sent_at);
+        const tsEl = document.getElementById('ic-ob-ts-' + idx);
+        if (tsEl) tsEl.textContent = fmtSentAt(entry.sent_at);
+        const totalCell = document.querySelector(`#obTbody tr[data-idx="${idx}"] td.calc.cw-inv`);
+        if (totalCell) {
+          let chip = totalCell.querySelector('.ic-sent-chip');
+          if (!chip) { chip = document.createElement('span'); chip.className = 'ic-sent-chip'; totalCell.appendChild(chip); }
+          chip.textContent = `⇄ IC ${fmtSentAt(entry.sent_at)}`;
+        }
+        if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
+        setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+      } catch (err) {
+        if (status) { status.style.color = 'var(--red)'; status.textContent = 'Error — try again.'; }
+        setTimeout(() => { if (status) status.textContent = ''; }, 3500);
+      }
+
+      if (btn) btn.disabled = false;
+    }
+
+    // Load Other Billing rows in the background after main init
+    obLoad().then(obRenderTable);
+
+    // Flush pending OB save on unload
+    window.addEventListener('beforeunload', () => {
+      clearTimeout(obSaveTimer);
+      if (obRows.length > 0) obSave();
+    });
+
+    /* ═══════════════════════════════════════════
+       REPORTS — Audit Log
+    ═══════════════════════════════════════════ */
+    let auditEntries = [];
+    let auditLoading = false;
+
+    const AUDIT_FIELD_LABELS = {
+      date: 'Date', start_time: 'Start Time', end_time: 'End Time',
+      company: 'Company', company_man: 'Company Man',
+      location: 'Location', state: 'State',
+      vehicle1: 'Vehicle 1', v1_unit: 'V1 Unit #', v1_rate: 'V1 Rate',
+      vehicle2: 'Vehicle 2', v2_unit: 'V2 Unit #', v2_rate: 'V2 Rate',
+      gallons_ub: 'Gallons UB',
+      inv_number: 'Invoice #', inv_sent: 'Invoice Sent',
+      inv_received: 'Invoice Received', inv_status: 'Invoice Status',
+      cm_approval: 'CM Approval', inv_location: 'Invoice Location',
+    };
+
+    function fmtAuditWhen(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      if (isNaN(d)) return String(ts);
+      const mo = d.getMonth() + 1, day = d.getDate(), yr = d.getFullYear();
+      let hr = d.getHours(), min = d.getMinutes();
+      const ampm = hr >= 12 ? 'PM' : 'AM';
+      hr = hr % 12 || 12;
+      return `${mo}/${day}/${yr} ${hr}:${String(min).padStart(2,'0')} ${ampm}`;
+    }
+
+    async function loadAuditLog() {
+      if (auditLoading) return;
+      auditLoading = true;
+      const tbody = document.getElementById('auditTbody');
+      if (tbody) {
+        tbody.innerHTML =
+          '<tr><td colspan="5" style="padding:1rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      }
+      try {
+        const r = await fetch('/api/dust-audit?limit=2000', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (r.status === 401) { signOut(); return; }
+        if (!r.ok) {
+          auditEntries = [];
+          if (tbody) {
+            tbody.innerHTML =
+              '<tr><td colspan="5" class="audit-empty">Could not load audit log.</td></tr>';
+          }
+          return;
+        }
+        const data = await r.json();
+        auditEntries = Array.isArray(data.entries) ? data.entries : [];
+      } catch (err) {
+        auditEntries = [];
+        if (tbody) {
+          tbody.innerHTML =
+            '<tr><td colspan="5" class="audit-empty">Network error loading audit log.</td></tr>';
+        }
+      } finally {
+        auditLoading = false;
+      }
+      renderAuditLog();
+    }
+
+    function renderAuditLog() {
+      const tbody = document.getElementById('auditTbody');
+      const countEl = document.getElementById('auditCount');
+      if (!tbody) return;
+
+      const actionF = (document.getElementById('audit-filter-action')?.value || '').toUpperCase();
+      const userF = (document.getElementById('audit-filter-user')?.value || '').trim().toLowerCase();
+      const fromF = document.getElementById('audit-filter-from')?.value || '';
+      const toF   = document.getElementById('audit-filter-to')?.value   || '';
+      const fromTs = fromF ? new Date(fromF + 'T00:00:00').getTime() : null;
+      const toTs   = toF   ? new Date(toF   + 'T23:59:59').getTime() : null;
+
+      const filtered = auditEntries.filter(e => {
+        if (actionF && e.action !== actionF) return false;
+        if (userF && !((e.username || '').toLowerCase().includes(userF))) return false;
+        if (fromTs || toTs) {
+          const t = new Date(e.created_at).getTime();
+          if (fromTs && t < fromTs) return false;
+          if (toTs   && t > toTs)   return false;
+        }
+        return true;
+      });
+
+      if (countEl) countEl.textContent = `${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'}`;
+
+      if (filtered.length === 0) {
+        tbody.innerHTML =
+          '<tr><td colspan="5" class="audit-empty">No audit entries match the current filters.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(e => {
+        const when = fmtAuditWhen(e.created_at);
+        const who  = esc(e.username || (e.user_id != null ? `user #${e.user_id}` : 'system'));
+        const act  = esc(e.action);
+        const rid  = esc(e.row_id || '');
+        let details = '';
+        if (e.action === 'UPDATE' && e.changes && typeof e.changes === 'object') {
+          const parts = Object.keys(e.changes).map(f => {
+            const ch = e.changes[f] || {};
+            const label = AUDIT_FIELD_LABELS[f] || f;
+            return `<div class="audit-change">
+              <span class="field">${esc(label)}:</span>
+              <span class="from">${esc(ch.from || '∅')}</span>
+              <span class="arrow">→</span>
+              <span class="to">${esc(ch.to || '∅')}</span>
+            </div>`;
+          });
+          details = `<div class="audit-changes">${parts.join('')}</div>`;
+        } else if ((e.action === 'INSERT' || e.action === 'DELETE') && e.snapshot) {
+          const s = e.snapshot;
+          const summary = [
+            s.date && `Date: ${s.date}`,
+            s.company && `Company: ${s.company}`,
+            s.location && `Location: ${s.location}`,
+            s.vehicle1 && `Vehicle 1: ${s.vehicle1}`,
+            s.gallons_ub && `Gallons: ${s.gallons_ub}`,
+            s.inv_number && `Inv #: ${s.inv_number}`,
+          ].filter(Boolean).join(' · ');
+          details = `<div class="audit-snap-summary">${esc(summary || '(empty row)')}</div>`;
+        } else {
+          details = '<div class="audit-snap-summary">—</div>';
+        }
+        return `<tr>
+          <td>${esc(when)}</td>
+          <td>${who}</td>
+          <td><span class="audit-pill ${act}">${act === 'INSERT' ? 'Created' : act === 'UPDATE' ? 'Edited' : 'Deleted'}</span></td>
+          <td><span class="audit-row-id">${rid}</span></td>
+          <td>${details}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function exportAuditCsv() {
+      if (!Array.isArray(auditEntries) || auditEntries.length === 0) {
+        alert('No audit entries to export.');
+        return;
+      }
+      const rows = [
+        ['When', 'User', 'Action', 'Row ID', 'Field', 'From', 'To', 'Snapshot'],
+      ];
+      const csvEsc = v => {
+        const s = String(v == null ? '' : v);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      auditEntries.forEach(e => {
+        const when = fmtAuditWhen(e.created_at);
+        const who  = e.username || (e.user_id != null ? `user #${e.user_id}` : '');
+        const action = e.action === 'INSERT' ? 'Created'
+                     : e.action === 'UPDATE' ? 'Edited'
+                     : e.action === 'DELETE' ? 'Deleted'
+                     : e.action;
+        if (e.action === 'UPDATE' && e.changes && typeof e.changes === 'object') {
+          const fields = Object.keys(e.changes);
+          if (fields.length === 0) {
+            rows.push([when, who, action, e.row_id || '', '', '', '', '']);
+          } else {
+            fields.forEach(f => {
+              const ch = e.changes[f] || {};
+              const label = AUDIT_FIELD_LABELS[f] || f;
+              rows.push([when, who, action, e.row_id || '', label, ch.from || '', ch.to || '', '']);
+            });
+          }
+        } else {
+          const snap = e.snapshot ? JSON.stringify(e.snapshot) : '';
+          rows.push([when, who, action, e.row_id || '', '', '', '', snap]);
+        }
+      });
+      const csv = rows.map(r => r.map(csvEsc).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `dust_audit_log_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
 
     /* ═══════════════════════════════════════════
        DUST DATA SYNC — poll all shared data every 60s

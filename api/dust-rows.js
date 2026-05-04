@@ -24,6 +24,83 @@ async function ensureColumns(sql) {
   _columnsEnsured = true;
 }
 
+let _auditEnsured = false;
+async function ensureAuditTable(sql) {
+  if (_auditEnsured) return;
+  await sql`
+    CREATE TABLE IF NOT EXISTS dust_control_audit_log (
+      id            BIGSERIAL PRIMARY KEY,
+      company_code  TEXT        NOT NULL,
+      row_id        TEXT        NOT NULL,
+      action        TEXT        NOT NULL CHECK (action IN ('INSERT','UPDATE','DELETE')),
+      user_id       INTEGER,
+      username      TEXT,
+      changes       JSONB,
+      snapshot      JSONB,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS idx_dust_audit_company ON dust_control_audit_log(company_code, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_dust_audit_row     ON dust_control_audit_log(row_id)`;
+  _auditEnsured = true;
+}
+
+// Fields tracked for change-detection in audit log
+const AUDIT_FIELDS = [
+  'date','start_time','end_time',
+  'company','company_man','location','state',
+  'vehicle1','v1_unit','v1_rate',
+  'vehicle2','v2_unit','v2_rate',
+  'gallons_ub',
+  'inv_number','inv_sent','inv_received','inv_status',
+  'cm_approval','inv_location',
+];
+
+function _normForCompare(field, v) {
+  if (v == null) return '';
+  if (field === 'date' || field === 'inv_sent' || field === 'inv_received') {
+    return safeDate(v) || '';
+  }
+  if (field === 'v1_rate' || field === 'v2_rate' || field === 'gallons_ub') {
+    const f = parseFloat(v);
+    return isNaN(f) ? '' : String(f);
+  }
+  return String(v);
+}
+
+function _diffRow(oldRow, newRow) {
+  const changes = {};
+  for (const f of AUDIT_FIELDS) {
+    const a = _normForCompare(f, oldRow ? oldRow[f] : '');
+    const b = _normForCompare(f, newRow ? newRow[f] : '');
+    if (a !== b) changes[f] = { from: a, to: b };
+  }
+  return changes;
+}
+
+function _rowSnapshot(r) {
+  if (!r) return null;
+  const out = {};
+  for (const f of AUDIT_FIELDS) out[f] = _normForCompare(f, r[f]);
+  return out;
+}
+
+async function _writeAudit(sql, companyCode, payload, action, rowId, changes, snapshot) {
+  try {
+    await sql`
+      INSERT INTO dust_control_audit_log
+        (company_code, row_id, action, user_id, username, changes, snapshot)
+      VALUES
+        (${companyCode}, ${rowId}, ${action},
+         ${payload?.userId || null}, ${payload?.username || null},
+         ${changes ? JSON.stringify(changes) : null}::jsonb,
+         ${snapshot ? JSON.stringify(snapshot) : null}::jsonb)
+    `;
+  } catch (err) {
+    console.error('[dust-rows] audit write failed (non-fatal):', err.message);
+  }
+}
+
 // One-time recovery: re-insert dust rows that were lost but exist in IC billing.
 // Runs once per cold-start; a no-op when nothing is missing.
 let _recoveryRun = false;
@@ -146,6 +223,7 @@ module.exports = async (req, res) => {
 
   try {
     await ensureColumns(sql);
+    await ensureAuditTable(sql);
     await recoverFromIcBilling(sql, companyCode);
 
     // ── GET ──────────────────────────────────────────────────────────────
@@ -169,7 +247,8 @@ module.exports = async (req, res) => {
 
       if (list.length > 0) {
         try {
-          await _upsertDustRows(sql, companyCode, list);
+          // Skip audit for one-time blob migration to avoid noise
+          await _upsertDustRows(sql, companyCode, list, null, { skipAudit: true });
           // Blob data is now in the table — remove the legacy key
           await sql`DELETE FROM app_data WHERE key = ${companyCode + ':dust_rows'}`;
         } catch (err) {
@@ -187,7 +266,7 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'dustRows array required' });
       }
 
-      await _upsertDustRows(sql, companyCode, dustRows);
+      await _upsertDustRows(sql, companyCode, dustRows, payload);
 
       return res.json({ ok: true });
     }
@@ -203,21 +282,49 @@ module.exports = async (req, res) => {
 /**
  * Upsert a list of dust rows into dust_control_entries and delete any
  * rows for this company that are no longer in the list.
+ *
+ * Writes audit entries by diffing the incoming list against the
+ * current DB state — INSERT for new ids, UPDATE for changed fields,
+ * DELETE for removed ids. Unchanged rows are not logged.
  */
-async function _upsertDustRows(sql, companyCode, list) {
+async function _upsertDustRows(sql, companyCode, list, payload, opts) {
+  const skipAudit = !!(opts && opts.skipAudit);
   const ids = list.map(r => r && r.id).filter(Boolean);
 
   // Refuse to delete everything when the client sends an empty list —
   // this prevents accidental wipes if the browser had an empty rows state.
   if (ids.length === 0) return;
 
+  // Snapshot existing DB state for diffing
+  const existingRows = skipAudit ? [] : await sql`
+    SELECT * FROM dust_control_entries WHERE company_code = ${companyCode}
+  `;
+  const existingMap = new Map();
+  for (const r of existingRows) existingMap.set(r.id, dbToRow(r));
+
+  // Find rows that will be deleted
+  const incomingIds = new Set(ids);
+  const deleted = [];
+  for (const [id, row] of existingMap) {
+    if (!incomingIds.has(id)) deleted.push({ id, row });
+  }
+
   await sql`
     DELETE FROM dust_control_entries
     WHERE company_code = ${companyCode} AND id <> ALL(${ids})
   `;
 
+  if (!skipAudit) {
+    for (const d of deleted) {
+      await _writeAudit(sql, companyCode, payload, 'DELETE', d.id, null, _rowSnapshot(d.row));
+    }
+  }
+
   for (const r of list) {
     if (!r || !r.id) continue;
+
+    const oldRow = existingMap.get(r.id) || null;
+
     await sql`
       INSERT INTO dust_control_entries (
         id, company_code,
@@ -263,5 +370,16 @@ async function _upsertDustRows(sql, companyCode, list) {
         inv_location = EXCLUDED.inv_location,
         updated_at   = NOW()
     `;
+
+    if (skipAudit) continue;
+
+    if (!oldRow) {
+      await _writeAudit(sql, companyCode, payload, 'INSERT', r.id, null, _rowSnapshot(r));
+    } else {
+      const changes = _diffRow(oldRow, r);
+      if (Object.keys(changes).length > 0) {
+        await _writeAudit(sql, companyCode, payload, 'UPDATE', r.id, changes, null);
+      }
+    }
   }
 }
