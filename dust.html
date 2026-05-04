@@ -1365,8 +1365,80 @@
        OTHER BILLING TAB
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-other-billing">
-    <div id="other-billing-content"></div>
-  </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <button class="btn-add" onclick="obAddRow()">+ Add Row</button>
+      <input type="number" id="ob-bulk-add-count" min="1" max="100" value="1"
+        title="Number of rows to add"
+        style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2,#1e1e1e);border:1px solid var(--border,#333);border-radius:4px;color:var(--text,#eee);font-size:0.72rem;text-align:center;outline:none">
+      <div id="obYearSelector" class="year-selector"></div>
+      <span class="row-count" id="obRowCount">0 rows</span>
+    </div>
+
+    <!-- Totals bar -->
+    <div class="totals-bar">
+      <div class="tot-item">
+        <span class="tot-label">Material Total</span>
+        <span class="tot-val" id="ob-tot-mat">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Trucking Total</span>
+        <span class="tot-val" id="ob-tot-trk">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Grand Total</span>
+        <span class="tot-val" id="ob-tot-grand">—</span>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table class="sheet-table">
+        <thead>
+          <tr class="group-row">
+            <th class="cw-expand"></th>
+            <th class="g-entry"  colspan="2">Entry</th>
+            <th class="g-v1"     colspan="3">Truck</th>
+            <th class="g-cust"   colspan="3">Customer</th>
+            <th class="g-v1"     colspan="3">Material</th>
+            <th class="g-v2"     colspan="2">Trucking</th>
+            <th class="g-totals" colspan="1">Notes</th>
+            <th class="g-totals" colspan="1">Totals</th>
+            <th class="g-del"></th>
+          </tr>
+          <tr class="col-row">
+            <th class="cw-expand"></th>
+            <th class="cw-date">Date<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('date',this.value)"></th>
+            <th class="cw-unit">Invoice #</th>
+            <th class="cw-cm">Driver<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('driver',this.value)"></th>
+            <th class="cw-unit">Truck #</th>
+            <th class="cw-unit">Trailer #</th>
+            <th class="cw-co">Customer<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('customer',this.value)"></th>
+            <th class="cw-loc">Destination<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('destination',this.value)"></th>
+            <th class="cw-st">State<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('state',this.value)"></th>
+            <th class="cw-veh">Material<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('material',this.value)"></th>
+            <th class="cw-gal">Gallons / Bags</th>
+            <th class="cw-rate">Price per Gal / Bag</th>
+            <th class="cw-rate">Trucking HRS</th>
+            <th class="cw-rate">Trucking $ / hr</th>
+            <th class="cw-loc">Comments</th>
+            <th class="cw-inv calc-hdr">Total</th>
+            <th class="cw-del"></th>
+          </tr>
+        </thead>
+        <tbody id="obTbody"></tbody>
+        <tfoot>
+          <tr class="add-row-foot">
+            <td colspan="17">
+              <button class="add-row-foot-btn" onclick="obAddRow()">+ Add Row</button>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+  </div><!-- /tab-other-billing -->
 
   <!-- ══════════════════════════════════════════════
        REPORTS TAB — Audit Log
@@ -3812,8 +3884,354 @@
       ?.addEventListener('click', renderAnalytics);
     document.querySelector('[data-tab="reports"]')
       ?.addEventListener('click', loadAuditLog);
+    document.querySelector('[data-tab="other-billing"]')
+      ?.addEventListener('click', obRenderTable);
 
     init();
+
+    /* ═══════════════════════════════════════════
+       OTHER BILLING — tracking rows
+    ═══════════════════════════════════════════ */
+    const OB_KEY    = 'dust_other_billing_rows';
+    const OB_IC_KEY = 'fct_intercompany_billing_entries';
+
+    let obRows       = [];
+    let obFilters    = {};
+    let obSaveTimer  = null;
+    let obYear       = String(new Date().getFullYear());
+    const obExpanded = new Set();
+    const obIcSent   = new Map(); // row.id → sent_at
+
+    function obCalc(row) {
+      const qty   = parseFloat(row.gallons_bags)        || 0;
+      const price = parseFloat(row.price_per_unit)      || 0;
+      const hrs   = parseFloat(row.trucking_hrs)        || 0;
+      const rate  = parseFloat(row.trucking_rate)       || 0;
+      const matTotal = round2(qty * price);
+      const trkTotal = round2(hrs * rate);
+      const total    = round2(matTotal + trkTotal);
+      return { matTotal, trkTotal, total };
+    }
+
+    async function obLoad() {
+      try {
+        const data = await apiGet(OB_KEY);
+        obRows = Array.isArray(data) ? data : [];
+      } catch { obRows = []; }
+      // Seed IC sent-map for OB rows from the shared IC blob
+      try {
+        const ic = await apiGet(OB_IC_KEY);
+        obIcSent.clear();
+        if (Array.isArray(ic)) {
+          ic.forEach(e => {
+            if (e.source === 'dust-other-billing' && e.source_id) {
+              obIcSent.set(e.source_id, e.sent_at || '');
+            }
+          });
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    async function obSave() {
+      try { return await apiPut(OB_KEY, obRows); }
+      catch { return false; }
+    }
+
+    function obScheduleSave() {
+      setSaveState('saving');
+      clearTimeout(obSaveTimer);
+      obSaveTimer = setTimeout(async () => {
+        const ok = await obSave();
+        setSaveState(ok ? 'saved' : 'error');
+        setTimeout(() => setSaveState(''), 3000);
+      }, 900);
+    }
+
+    function obAddRow() {
+      const countEl = document.getElementById('ob-bulk-add-count');
+      const count = Math.min(Math.max(parseInt(countEl?.value) || 1, 1), 100);
+      for (let i = 0; i < count; i++) {
+        obRows.unshift({
+          id: uid(), date: todayStr(),
+          inv_number: '',
+          driver: '', truck_number: '', trailer_number: '',
+          customer: '', destination: '', state: '',
+          material: '', gallons_bags: '', price_per_unit: '',
+          trucking_hrs: '', trucking_rate: '',
+          comments: '',
+        });
+      }
+      obRenderTable();
+      obScheduleSave();
+      const tbody = document.getElementById('obTbody');
+      const first = tbody?.querySelector('tr[data-idx]');
+      if (first) {
+        first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const inp = first.querySelector('input');
+        if (inp) setTimeout(() => inp.focus(), 80);
+      }
+    }
+
+    function obDeleteRow(idx) {
+      if (!confirm('Delete this row?')) return;
+      obRows.splice(idx, 1);
+      obRenderTable();
+      obScheduleSave();
+    }
+
+    function obSet(idx, field, value) {
+      if (!obRows[idx]) return;
+      obRows[idx][field] = value;
+      if (field === 'gallons_bags' || field === 'price_per_unit'
+          || field === 'trucking_hrs' || field === 'trucking_rate') {
+        obRefreshCalcCells(idx);
+        obRefreshTotals();
+      }
+      obScheduleSave();
+    }
+
+    function _obLiveSet(idx, field, value) {
+      if (!obRows[idx]) return;
+      obRows[idx][field] = value;
+      if (field === 'gallons_bags' || field === 'price_per_unit'
+          || field === 'trucking_hrs' || field === 'trucking_rate') {
+        obRefreshCalcCells(idx);
+        obRefreshTotals();
+      }
+    }
+
+    function obSetFilter(field, value) {
+      const v = (value || '').trim().toLowerCase();
+      if (v) obFilters[field] = v;
+      else   delete obFilters[field];
+      obRenderTable();
+    }
+
+    function obSetYear(y) { obYear = y; obRenderYearSelector(); obRenderTable(); }
+
+    function obRenderYearSelector() {
+      const years = [...new Set(
+        obRows.map(r => (r.date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort();
+      const el = document.getElementById('obYearSelector');
+      if (!el) return;
+      if (!years.length) { el.innerHTML = ''; return; }
+      if (obYear !== 'all' && !years.includes(obYear)) obYear = years[years.length - 1];
+      el.innerHTML =
+        `<button class="year-btn${obYear === 'all' ? ' active' : ''}" onclick="obSetYear('all')">All</button>` +
+        years.map(y =>
+          `<button class="year-btn${obYear === y ? ' active' : ''}" onclick="obSetYear('${y}')">${y}</button>`
+        ).join('');
+    }
+
+    function obToggleExpand(idx) {
+      const row = obRows[idx];
+      if (!row) return;
+      if (obExpanded.has(row.id)) obExpanded.delete(row.id);
+      else                         obExpanded.add(row.id);
+      const subRow = document.getElementById('ob-ic-row-' + idx);
+      const btn    = document.getElementById('ob-expbtn-' + idx);
+      if (subRow) subRow.style.display = obExpanded.has(row.id) ? '' : 'none';
+      if (btn)    btn.classList.toggle('open', obExpanded.has(row.id));
+    }
+
+    function obRenderTable() {
+      const tbody = document.getElementById('obTbody');
+      if (!tbody) return;
+
+      obRenderYearSelector();
+
+      const filterEntries = Object.entries(obFilters);
+      const visibleIdxs = obRows.reduce((acc, row, idx) => {
+        if (obYear !== 'all' && (row.date || '').slice(0, 4) !== obYear) return acc;
+        if (filterEntries.length && !filterEntries.every(([f, v]) =>
+            (row[f] || '').toLowerCase().includes(v))) return acc;
+        acc.push(idx);
+        return acc;
+      }, []).sort((a, b) => (obRows[b].date || '').localeCompare(obRows[a].date || ''));
+
+      let totMat = 0, totTrk = 0, totGrand = 0;
+
+      tbody.innerHTML = visibleIdxs.map(idx => {
+        const row = obRows[idx];
+        const c   = obCalc(row);
+        totMat   += c.matTotal;
+        totTrk   += c.trkTotal;
+        totGrand += c.total;
+
+        const coOpts = '<option value="">— select —</option>' +
+          dustLists.companies.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(co =>
+            `<option value="${esc(co.name)}"${row.customer===co.name?' selected':''}>${esc(co.name)}</option>`).join('');
+
+        const stOpts = '<option value="">—</option>' +
+          dustLists.states.slice().sort().map(s =>
+            `<option value="${esc(s)}"${row.state===s?' selected':''}>${esc(s)}</option>`).join('');
+
+        const icTs   = obIcSent.get(row.id) || '';
+        const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
+
+        const icPanel = `
+          <div class="inv-panel">
+            <div class="inv-field" style="align-self:flex-end">
+              <label>&nbsp;</label>
+              <div style="display:flex;flex-direction:column;gap:0.28rem">
+                <div style="display:flex;align-items:center;gap:0.5rem">
+                  <button id="ic-ob-btn-${idx}" onclick="sendObToIntercompany(${idx})"
+                    style="padding:0.3rem 0.75rem;font-size:0.72rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer;white-space:nowrap">
+                    &#8644; Intercompany Billing
+                  </button>
+                  <span id="ic-ob-status-${idx}" style="font-size:0.7rem;font-weight:600;min-width:1em"></span>
+                </div>
+                <span id="ic-ob-ts-${idx}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icTs ? fmtSentAt(icTs) : ''}</span>
+              </div>
+            </div>
+          </div>`;
+
+        const expanded = obExpanded.has(row.id);
+        return `<tr data-idx="${idx}">
+          <td class="cw-expand"><button class="expand-btn${expanded?' open':''}" id="ob-expbtn-${idx}" onclick="obToggleExpand(${idx})" title="Intercompany billing">›</button></td>
+          <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="obSet(${idx},'date',this.value)"></td>
+          <td class="cw-unit"><input type="text" value="${esc(row.inv_number||'')}" placeholder="INV-…" oninput="obSet(${idx},'inv_number',this.value)"></td>
+          <td class="cw-cm"><input type="text" value="${esc(row.driver||'')}" oninput="obSet(${idx},'driver',this.value)"></td>
+          <td class="cw-unit"><input type="text" value="${esc(row.truck_number||'')}" oninput="obSet(${idx},'truck_number',this.value)"></td>
+          <td class="cw-unit"><input type="text" value="${esc(row.trailer_number||'')}" oninput="obSet(${idx},'trailer_number',this.value)"></td>
+          <td class="cw-co"><select onchange="obSet(${idx},'customer',this.value)">${coOpts}</select></td>
+          <td class="cw-loc"><input type="text" value="${esc(row.destination||'')}" oninput="obSet(${idx},'destination',this.value)"></td>
+          <td class="cw-st"><select onchange="obSet(${idx},'state',this.value)">${stOpts}</select></td>
+          <td class="cw-veh"><input type="text" value="${esc(row.material||'')}" oninput="obSet(${idx},'material',this.value)"></td>
+          <td class="cw-gal"><input type="number" step="0.01" min="0" value="${esc(row.gallons_bags||'')}" oninput="_obLiveSet(${idx},'gallons_bags',this.value)" onchange="obSet(${idx},'gallons_bags',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.price_per_unit||'')}" oninput="_obLiveSet(${idx},'price_per_unit',this.value)" onchange="obSet(${idx},'price_per_unit',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>
+          <td class="cw-loc"><input type="text" value="${esc(row.comments||'')}" placeholder="Notes…" oninput="obSet(${idx},'comments',this.value)"></td>
+          <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}</td>
+          <td class="del-col"><button class="del-btn" onclick="obDeleteRow(${idx})" title="Delete row">✕</button></td>
+        </tr>
+        <tr class="inv-row" id="ob-ic-row-${idx}" style="display:${expanded?'':'none'}">
+          <td colspan="17">${icPanel}</td>
+        </tr>`;
+      }).join('');
+
+      document.getElementById('ob-tot-mat').textContent   = totMat   ? money(totMat)   : '—';
+      document.getElementById('ob-tot-trk').textContent   = totTrk   ? money(totTrk)   : '—';
+      document.getElementById('ob-tot-grand').textContent = totGrand ? money(totGrand) : '—';
+
+      const total = obRows.length, shown = visibleIdxs.length;
+      document.getElementById('obRowCount').textContent = shown < total
+        ? `${shown} of ${total} row${total !== 1 ? 's' : ''}`
+        : `${total} row${total !== 1 ? 's' : ''}`;
+    }
+
+    function obRefreshCalcCells(idx) {
+      const c  = obCalc(obRows[idx]);
+      const tr = document.querySelector(`#obTbody tr[data-idx="${idx}"]`);
+      if (!tr) return;
+      const totalCell = tr.querySelector('td.calc.cw-inv');
+      if (totalCell) {
+        // Preserve any IC chip that lived inside the cell
+        const chip = totalCell.querySelector('.ic-sent-chip');
+        totalCell.textContent = c.total ? money(c.total) : '—';
+        totalCell.classList.toggle('empty', !c.total);
+        if (chip) totalCell.appendChild(chip);
+      }
+    }
+
+    function obRefreshTotals() {
+      let totMat = 0, totTrk = 0, totGrand = 0;
+      obRows.forEach(row => {
+        const c = obCalc(row);
+        totMat   += c.matTotal;
+        totTrk   += c.trkTotal;
+        totGrand += c.total;
+      });
+      document.getElementById('ob-tot-mat').textContent   = totMat   ? money(totMat)   : '—';
+      document.getElementById('ob-tot-trk').textContent   = totTrk   ? money(totTrk)   : '—';
+      document.getElementById('ob-tot-grand').textContent = totGrand ? money(totGrand) : '—';
+    }
+
+    async function sendObToIntercompany(idx) {
+      const row = obRows[idx];
+      if (!row) return;
+
+      const btn    = document.getElementById('ic-ob-btn-' + idx);
+      const status = document.getElementById('ic-ob-status-' + idx);
+      if (btn) btn.disabled = true;
+      if (status) { status.style.color = 'var(--muted)'; status.textContent = 'Checking…'; }
+
+      const IC_CO_KEY = 'fct_intercompany_companies';
+
+      try {
+        const coData = await apiGet(IC_CO_KEY);
+        const coList = Array.isArray(coData) ? coData : [];
+        const coName = (row.customer || '').trim().toLowerCase();
+        const matched = coList.find(c => c.name.trim().toLowerCase() === coName
+          && (c.divisions || []).includes('dust'));
+
+        if (!matched) {
+          if (status) { status.style.color = 'var(--red)'; status.textContent = 'Customer not in Intercompany list.'; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 3500);
+          if (btn) btn.disabled = false;
+          return;
+        }
+
+        const existing = await apiGet(OB_IC_KEY);
+        let entries = Array.isArray(existing) ? existing : [];
+
+        if (obIcSent.get(row.id) || entries.some(x => x.source === 'dust-other-billing' && x.source_id === row.id)) {
+          if (status) { status.style.color = '#f59e0b'; status.textContent = 'Already sent.'; }
+          setTimeout(() => { if (status) status.textContent = ''; }, 2500);
+          if (btn) btn.disabled = false;
+          return;
+        }
+
+        const c = obCalc(row);
+        const entry = {
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+          source: 'dust-other-billing', source_id: row.id,
+          company_id: matched.id, company_name: matched.name,
+          actual_date: row.date,
+          total: c.total,
+          driver: row.driver,
+          truck_number: row.truck_number, trailer_number: row.trailer_number,
+          destination: row.destination, state: row.state,
+          material: row.material,
+          gallons_bags: row.gallons_bags, price_per_unit: row.price_per_unit, material_total: c.matTotal,
+          trucking_hrs: row.trucking_hrs, trucking_rate: row.trucking_rate, trucking_total: c.trkTotal,
+          inv_number: row.inv_number,
+          comments: row.comments,
+          sent_at: new Date().toISOString(),
+          sent_by: (user?.username) || ''
+        };
+        entries.unshift(entry);
+        await apiPut(OB_IC_KEY, entries);
+
+        obIcSent.set(row.id, entry.sent_at);
+        const tsEl = document.getElementById('ic-ob-ts-' + idx);
+        if (tsEl) tsEl.textContent = fmtSentAt(entry.sent_at);
+        const totalCell = document.querySelector(`#obTbody tr[data-idx="${idx}"] td.calc.cw-inv`);
+        if (totalCell) {
+          let chip = totalCell.querySelector('.ic-sent-chip');
+          if (!chip) { chip = document.createElement('span'); chip.className = 'ic-sent-chip'; totalCell.appendChild(chip); }
+          chip.textContent = `⇄ IC ${fmtSentAt(entry.sent_at)}`;
+        }
+        if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
+        setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+      } catch (err) {
+        if (status) { status.style.color = 'var(--red)'; status.textContent = 'Error — try again.'; }
+        setTimeout(() => { if (status) status.textContent = ''; }, 3500);
+      }
+
+      if (btn) btn.disabled = false;
+    }
+
+    // Load Other Billing rows in the background after main init
+    obLoad().then(obRenderTable);
+
+    // Flush pending OB save on unload
+    window.addEventListener('beforeunload', () => {
+      clearTimeout(obSaveTimer);
+      if (obRows.length > 0) obSave();
+    });
 
     /* ═══════════════════════════════════════════
        REPORTS — Audit Log
