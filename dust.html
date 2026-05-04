@@ -4025,6 +4025,44 @@
       obScheduleSave();
     }
 
+    // Customer change: reset destination + state and rebuild the
+    // destination dropdown from the newly selected company's locations.
+    function obSetCustomer(idx, value) {
+      if (!obRows[idx]) return;
+      obRows[idx].customer    = value;
+      obRows[idx].destination = '';
+      obRows[idx].state       = '';
+      const co   = (dustLists.companies || []).find(c => c.name === value);
+      const locs = co ? (co.locations || []).slice().sort((a, b) => a.name.localeCompare(b.name)) : [];
+      const tr   = document.querySelector(`#obTbody tr[data-idx="${idx}"]`);
+      if (tr) {
+        const destSel = tr.querySelector('select[data-role="ob-dest"]');
+        if (destSel) {
+          destSel.innerHTML = '<option value="">— select —</option>' +
+            locs.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join('');
+        }
+        const stSel = tr.querySelector('td.cw-st select');
+        if (stSel) stSel.value = '';
+      }
+      obScheduleSave();
+    }
+
+    // Destination change: set destination, auto-fill state from the
+    // selected location's metadata when available.
+    function obSetDestination(idx, locationName) {
+      if (!obRows[idx]) return;
+      obRows[idx].destination = locationName;
+      const co  = (dustLists.companies || []).find(c => c.name === obRows[idx].customer);
+      const loc = co ? (co.locations || []).find(l => l.name === locationName) : null;
+      if (loc && loc.state) {
+        obRows[idx].state = loc.state;
+        const tr = document.querySelector(`#obTbody tr[data-idx="${idx}"]`);
+        const stSel = tr && tr.querySelector('td.cw-st select');
+        if (stSel) stSel.value = loc.state;
+      }
+      obScheduleSave();
+    }
+
     function _obLiveSet(idx, field, value) {
       if (!obRows[idx]) return;
       obRows[idx][field] = value;
@@ -4111,6 +4149,33 @@
           empList.map(name =>
             `<option value="${esc(name)}"${row.driver===name?' selected':''}>${esc(name)}</option>`).join('');
 
+        // Truck # dropdown sourced from equipment unit numbers. Display as
+        // "unit# — name" for clarity; value stored is the unit_number string.
+        const truckList = (dustLists.equipment || [])
+          .filter(eq => eq && eq.unit_number)
+          .map(eq => ({ unit: String(eq.unit_number), name: eq.name || '' }))
+          .sort((a, b) => a.unit.localeCompare(b.unit, undefined, { numeric: true }));
+        if (row.truck_number && !truckList.some(t => t.unit === row.truck_number)) {
+          truckList.unshift({ unit: row.truck_number, name: '' });
+        }
+        const truckOpts = '<option value="">— select —</option>' +
+          truckList.map(t => {
+            const label = t.name ? `${t.unit} — ${t.name}` : t.unit;
+            return `<option value="${esc(t.unit)}"${row.truck_number===t.unit?' selected':''}>${esc(label)}</option>`;
+          }).join('');
+
+        // Destination dropdown filtered to the selected customer's locations.
+        const obSelCo = (dustLists.companies || []).find(c => c.name === row.customer);
+        const obLocs  = obSelCo ? (obSelCo.locations || []).slice().sort((a, b) => a.name.localeCompare(b.name)) : [];
+        // Preserve any out-of-list destination so it doesn't disappear on render
+        const obLocNames = obLocs.map(l => l.name);
+        if (row.destination && !obLocNames.includes(row.destination)) {
+          obLocs.unshift({ name: row.destination, state: row.state || '' });
+        }
+        const destOpts = '<option value="">— select —</option>' +
+          obLocs.map(l =>
+            `<option value="${esc(l.name)}"${row.destination===l.name?' selected':''}>${esc(l.name)}</option>`).join('');
+
         const icTs   = obIcSent.get(row.id) || '';
         const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
 
@@ -4137,10 +4202,10 @@
           <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="obSet(${idx},'date',this.value)"></td>
           <td class="cw-unit"><input type="text" value="${esc(row.inv_number||'')}" placeholder="INV-…" oninput="obSet(${idx},'inv_number',this.value)"></td>
           <td class="cw-cm"><select onchange="obSet(${idx},'driver',this.value)">${empOpts}</select></td>
-          <td class="cw-unit"><input type="text" value="${esc(row.truck_number||'')}" oninput="obSet(${idx},'truck_number',this.value)"></td>
+          <td class="cw-unit"><select data-role="ob-truck" onchange="obSet(${idx},'truck_number',this.value)">${truckOpts}</select></td>
           <td class="cw-unit"><input type="text" value="${esc(row.trailer_number||'')}" oninput="obSet(${idx},'trailer_number',this.value)"></td>
-          <td class="cw-co"><select onchange="obSet(${idx},'customer',this.value)">${coOpts}</select></td>
-          <td class="cw-loc"><input type="text" value="${esc(row.destination||'')}" oninput="obSet(${idx},'destination',this.value)"></td>
+          <td class="cw-co"><select onchange="obSetCustomer(${idx},this.value)">${coOpts}</select></td>
+          <td class="cw-loc"><select data-role="ob-dest" onchange="obSetDestination(${idx},this.value)">${destOpts}</select></td>
           <td class="cw-st"><select onchange="obSet(${idx},'state',this.value)">${stOpts}</select></td>
           <td class="cw-veh"><input type="text" value="${esc(row.material||'')}" oninput="obSet(${idx},'material',this.value)"></td>
           <td class="cw-gal"><input type="number" step="0.01" min="0" value="${esc(row.gallons_bags||'')}" oninput="_obLiveSet(${idx},'gallons_bags',this.value)" onchange="obSet(${idx},'gallons_bags',this.value)"></td>
