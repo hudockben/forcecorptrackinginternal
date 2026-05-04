@@ -116,6 +116,67 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
+    /* ── Reports tab ── */
+    .reports-wrap { padding: 1.5rem; }
+    .reports-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 1rem; margin-bottom: 1.25rem;
+    }
+    .reports-eyebrow {
+      font-size: 0.58rem; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--amber); opacity: 0.75; margin-bottom: 0.25rem;
+    }
+    .reports-title {
+      font-size: 1.4rem; font-weight: 700; color: #fff; letter-spacing: -0.02em;
+    }
+    .reports-sub { color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem; }
+    .reports-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
+    .reports-toolbar {
+      display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap;
+      padding: 0.75rem 0.9rem; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 6px;
+      margin-bottom: 1rem;
+    }
+    .reports-toolbar label {
+      display: flex; flex-direction: column; gap: 0.25rem;
+      font-size: 0.6rem; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .reports-toolbar input,
+    .reports-toolbar select {
+      background: var(--surface2,#1e1e1e);
+      border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text,#eee);
+      font-size: 0.75rem; padding: 0.32rem 0.5rem;
+      outline: none; min-width: 130px;
+    }
+    .reports-toolbar input:focus,
+    .reports-toolbar select:focus { border-color: var(--amber); }
+    .audit-table td { vertical-align: top; padding: 0.45rem 0.6rem; font-size: 0.72rem; }
+    .audit-table .col-row th { text-align: left; }
+    .audit-pill {
+      display: inline-block; padding: 0.15rem 0.55rem;
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; border-radius: 3px; border: 1px solid;
+    }
+    .audit-pill.INSERT { color: #22c55e; border-color: rgba(34,197,94,0.4); background: rgba(34,197,94,0.08); }
+    .audit-pill.UPDATE { color: #f59e0b; border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.08); }
+    .audit-pill.DELETE { color: #ef4444; border-color: rgba(239,68,68,0.4); background: rgba(239,68,68,0.08); }
+    .audit-row-id { font-family: ui-monospace, monospace; color: var(--muted); font-size: 0.68rem; }
+    .audit-changes { display: flex; flex-direction: column; gap: 0.2rem; }
+    .audit-change {
+      font-family: ui-monospace, monospace; font-size: 0.68rem; line-height: 1.35;
+    }
+    .audit-change .field { color: var(--amber); margin-right: 0.4rem; }
+    .audit-change .from { color: #ef4444; text-decoration: line-through; opacity: 0.85; }
+    .audit-change .arrow { color: var(--muted); margin: 0 0.35rem; }
+    .audit-change .to { color: #22c55e; }
+    .audit-snap-summary { color: var(--muted); font-size: 0.68rem; line-height: 1.4; }
+    .audit-empty {
+      padding: 2rem 1rem; text-align: center; color: var(--muted);
+      font-size: 0.78rem;
+    }
+
     /* ── Home Dashboard ── */
     .dash-header {
       display: flex; align-items: flex-start; justify-content: space-between;
@@ -1059,6 +1120,7 @@
     <button class="tab-btn" data-tab="tracking">Dust Control Tracking</button>
     <button class="tab-btn" data-tab="other-billing">Other Billing</button>
     <button class="tab-btn" data-tab="analytics">Analytics</button>
+    <button class="tab-btn" data-tab="reports">Reports</button>
   </nav>
 
   <!-- ══════════════════════════════════════════════
@@ -1304,6 +1366,69 @@
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-other-billing">
     <div id="other-billing-content"></div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════
+       REPORTS TAB — Audit Log
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-reports">
+    <div class="reports-wrap">
+      <div class="reports-header">
+        <div>
+          <div class="reports-eyebrow">Reports</div>
+          <div class="reports-title">Dust Tracking Audit Log</div>
+          <div class="reports-sub">
+            Tracks every row added, edited, or deleted in the Dust Control Tracking tab.
+          </div>
+        </div>
+        <div class="reports-actions">
+          <button class="btn-ghost" onclick="loadAuditLog()">↻ Refresh</button>
+          <button class="btn-ghost" onclick="exportAuditCsv()">↓ Export CSV</button>
+        </div>
+      </div>
+
+      <div class="reports-toolbar">
+        <label>
+          Action
+          <select id="audit-filter-action" onchange="renderAuditLog()">
+            <option value="">All</option>
+            <option value="INSERT">Created</option>
+            <option value="UPDATE">Edited</option>
+            <option value="DELETE">Deleted</option>
+          </select>
+        </label>
+        <label>
+          User
+          <input type="text" id="audit-filter-user" placeholder="username…" oninput="renderAuditLog()">
+        </label>
+        <label>
+          From
+          <input type="date" id="audit-filter-from" onchange="renderAuditLog()">
+        </label>
+        <label>
+          To
+          <input type="date" id="audit-filter-to" onchange="renderAuditLog()">
+        </label>
+        <span class="row-count" id="auditCount">0 entries</span>
+      </div>
+
+      <div class="table-wrap">
+        <table class="sheet-table audit-table">
+          <thead>
+            <tr class="col-row">
+              <th style="width:170px">When</th>
+              <th style="width:130px">User</th>
+              <th style="width:90px">Action</th>
+              <th style="width:170px">Row ID</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="auditTbody">
+            <tr><td colspan="5" style="padding:1rem;color:var(--muted);text-align:center">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- ══════════════════════════════════════════════
@@ -3685,8 +3810,191 @@
       ?.addEventListener('click', renderHomeDashboard);
     document.querySelector('[data-tab="analytics"]')
       ?.addEventListener('click', renderAnalytics);
+    document.querySelector('[data-tab="reports"]')
+      ?.addEventListener('click', loadAuditLog);
 
     init();
+
+    /* ═══════════════════════════════════════════
+       REPORTS — Audit Log
+    ═══════════════════════════════════════════ */
+    let auditEntries = [];
+    let auditLoading = false;
+
+    const AUDIT_FIELD_LABELS = {
+      date: 'Date', start_time: 'Start Time', end_time: 'End Time',
+      company: 'Company', company_man: 'Company Man',
+      location: 'Location', state: 'State',
+      vehicle1: 'Vehicle 1', v1_unit: 'V1 Unit #', v1_rate: 'V1 Rate',
+      vehicle2: 'Vehicle 2', v2_unit: 'V2 Unit #', v2_rate: 'V2 Rate',
+      gallons_ub: 'Gallons UB',
+      inv_number: 'Invoice #', inv_sent: 'Invoice Sent',
+      inv_received: 'Invoice Received', inv_status: 'Invoice Status',
+      cm_approval: 'CM Approval', inv_location: 'Invoice Location',
+    };
+
+    function fmtAuditWhen(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      if (isNaN(d)) return String(ts);
+      const mo = d.getMonth() + 1, day = d.getDate(), yr = d.getFullYear();
+      let hr = d.getHours(), min = d.getMinutes();
+      const ampm = hr >= 12 ? 'PM' : 'AM';
+      hr = hr % 12 || 12;
+      return `${mo}/${day}/${yr} ${hr}:${String(min).padStart(2,'0')} ${ampm}`;
+    }
+
+    async function loadAuditLog() {
+      if (auditLoading) return;
+      auditLoading = true;
+      const tbody = document.getElementById('auditTbody');
+      if (tbody) {
+        tbody.innerHTML =
+          '<tr><td colspan="5" style="padding:1rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      }
+      try {
+        const r = await fetch('/api/dust-audit?limit=2000', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (r.status === 401) { signOut(); return; }
+        if (!r.ok) {
+          auditEntries = [];
+          if (tbody) {
+            tbody.innerHTML =
+              '<tr><td colspan="5" class="audit-empty">Could not load audit log.</td></tr>';
+          }
+          return;
+        }
+        const data = await r.json();
+        auditEntries = Array.isArray(data.entries) ? data.entries : [];
+      } catch (err) {
+        auditEntries = [];
+        if (tbody) {
+          tbody.innerHTML =
+            '<tr><td colspan="5" class="audit-empty">Network error loading audit log.</td></tr>';
+        }
+      } finally {
+        auditLoading = false;
+      }
+      renderAuditLog();
+    }
+
+    function renderAuditLog() {
+      const tbody = document.getElementById('auditTbody');
+      const countEl = document.getElementById('auditCount');
+      if (!tbody) return;
+
+      const actionF = (document.getElementById('audit-filter-action')?.value || '').toUpperCase();
+      const userF = (document.getElementById('audit-filter-user')?.value || '').trim().toLowerCase();
+      const fromF = document.getElementById('audit-filter-from')?.value || '';
+      const toF   = document.getElementById('audit-filter-to')?.value   || '';
+      const fromTs = fromF ? new Date(fromF + 'T00:00:00').getTime() : null;
+      const toTs   = toF   ? new Date(toF   + 'T23:59:59').getTime() : null;
+
+      const filtered = auditEntries.filter(e => {
+        if (actionF && e.action !== actionF) return false;
+        if (userF && !((e.username || '').toLowerCase().includes(userF))) return false;
+        if (fromTs || toTs) {
+          const t = new Date(e.created_at).getTime();
+          if (fromTs && t < fromTs) return false;
+          if (toTs   && t > toTs)   return false;
+        }
+        return true;
+      });
+
+      if (countEl) countEl.textContent = `${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'}`;
+
+      if (filtered.length === 0) {
+        tbody.innerHTML =
+          '<tr><td colspan="5" class="audit-empty">No audit entries match the current filters.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(e => {
+        const when = fmtAuditWhen(e.created_at);
+        const who  = esc(e.username || (e.user_id != null ? `user #${e.user_id}` : 'system'));
+        const act  = esc(e.action);
+        const rid  = esc(e.row_id || '');
+        let details = '';
+        if (e.action === 'UPDATE' && e.changes && typeof e.changes === 'object') {
+          const parts = Object.keys(e.changes).map(f => {
+            const ch = e.changes[f] || {};
+            const label = AUDIT_FIELD_LABELS[f] || f;
+            return `<div class="audit-change">
+              <span class="field">${esc(label)}:</span>
+              <span class="from">${esc(ch.from || '∅')}</span>
+              <span class="arrow">→</span>
+              <span class="to">${esc(ch.to || '∅')}</span>
+            </div>`;
+          });
+          details = `<div class="audit-changes">${parts.join('')}</div>`;
+        } else if ((e.action === 'INSERT' || e.action === 'DELETE') && e.snapshot) {
+          const s = e.snapshot;
+          const summary = [
+            s.date && `Date: ${s.date}`,
+            s.company && `Company: ${s.company}`,
+            s.location && `Location: ${s.location}`,
+            s.vehicle1 && `Vehicle 1: ${s.vehicle1}`,
+            s.gallons_ub && `Gallons: ${s.gallons_ub}`,
+            s.inv_number && `Inv #: ${s.inv_number}`,
+          ].filter(Boolean).join(' · ');
+          details = `<div class="audit-snap-summary">${esc(summary || '(empty row)')}</div>`;
+        } else {
+          details = '<div class="audit-snap-summary">—</div>';
+        }
+        return `<tr>
+          <td>${esc(when)}</td>
+          <td>${who}</td>
+          <td><span class="audit-pill ${act}">${act === 'INSERT' ? 'Created' : act === 'UPDATE' ? 'Edited' : 'Deleted'}</span></td>
+          <td><span class="audit-row-id">${rid}</span></td>
+          <td>${details}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function exportAuditCsv() {
+      if (!Array.isArray(auditEntries) || auditEntries.length === 0) {
+        alert('No audit entries to export.');
+        return;
+      }
+      const rows = [
+        ['When', 'User', 'Action', 'Row ID', 'Field', 'From', 'To', 'Snapshot'],
+      ];
+      const csvEsc = v => {
+        const s = String(v == null ? '' : v);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      auditEntries.forEach(e => {
+        const when = fmtAuditWhen(e.created_at);
+        const who  = e.username || (e.user_id != null ? `user #${e.user_id}` : '');
+        const action = e.action === 'INSERT' ? 'Created'
+                     : e.action === 'UPDATE' ? 'Edited'
+                     : e.action === 'DELETE' ? 'Deleted'
+                     : e.action;
+        if (e.action === 'UPDATE' && e.changes && typeof e.changes === 'object') {
+          const fields = Object.keys(e.changes);
+          if (fields.length === 0) {
+            rows.push([when, who, action, e.row_id || '', '', '', '', '']);
+          } else {
+            fields.forEach(f => {
+              const ch = e.changes[f] || {};
+              const label = AUDIT_FIELD_LABELS[f] || f;
+              rows.push([when, who, action, e.row_id || '', label, ch.from || '', ch.to || '', '']);
+            });
+          }
+        } else {
+          const snap = e.snapshot ? JSON.stringify(e.snapshot) : '';
+          rows.push([when, who, action, e.row_id || '', '', '', '', snap]);
+        }
+      });
+      const csv = rows.map(r => r.map(csvEsc).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `dust_audit_log_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
 
     /* ═══════════════════════════════════════════
        DUST DATA SYNC — poll all shared data every 60s
