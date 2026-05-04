@@ -476,6 +476,10 @@ ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS inv_location TEXT;
 -- One row per INSERT / UPDATE / DELETE on dust_control_entries.
 -- Populated by the /api/dust-rows PUT handler by diffing the
 -- incoming list against current DB state.
+--
+-- The `source` column distinguishes which dust tab produced the
+-- entry: 'tracking'      = Dust Control Tracking grid
+--        'other-billing' = Other Billing grid
 -- ─────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS dust_control_audit_log (
     id            BIGSERIAL PRIMARY KEY,
@@ -486,12 +490,18 @@ CREATE TABLE IF NOT EXISTS dust_control_audit_log (
     username      TEXT,
     changes       JSONB,
     snapshot      JSONB,
+    source        TEXT          NOT NULL DEFAULT 'tracking',
     created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
+
+-- Idempotent migration: must run BEFORE the source-aware index so existing
+-- audit tables (created before the column existed) get the column first.
+ALTER TABLE dust_control_audit_log ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'tracking';
 
 CREATE INDEX IF NOT EXISTS idx_dust_audit_company    ON dust_control_audit_log(company_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dust_audit_row        ON dust_control_audit_log(row_id);
 CREATE INDEX IF NOT EXISTS idx_dust_audit_company_at ON dust_control_audit_log(company_code, created_at);
+CREATE INDEX IF NOT EXISTS idx_dust_audit_company_src ON dust_control_audit_log(company_code, source, created_at DESC);
 
 -- ─────────────────────────────────────────────────
 -- TRUCK DIVISION ENTRIES

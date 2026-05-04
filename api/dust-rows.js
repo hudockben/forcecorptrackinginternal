@@ -37,11 +37,14 @@ async function ensureAuditTable(sql) {
       username      TEXT,
       changes       JSONB,
       snapshot      JSONB,
+      source        TEXT        NOT NULL DEFAULT 'tracking',
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
-  await sql`CREATE INDEX IF NOT EXISTS idx_dust_audit_company ON dust_control_audit_log(company_code, created_at DESC)`;
-  await sql`CREATE INDEX IF NOT EXISTS idx_dust_audit_row     ON dust_control_audit_log(row_id)`;
+  await sql`ALTER TABLE dust_control_audit_log ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'tracking'`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_dust_audit_company     ON dust_control_audit_log(company_code, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_dust_audit_row         ON dust_control_audit_log(row_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_dust_audit_company_src ON dust_control_audit_log(company_code, source, created_at DESC)`;
   _auditEnsured = true;
 }
 
@@ -89,12 +92,13 @@ async function _writeAudit(sql, companyCode, payload, action, rowId, changes, sn
   try {
     await sql`
       INSERT INTO dust_control_audit_log
-        (company_code, row_id, action, user_id, username, changes, snapshot)
+        (company_code, row_id, action, user_id, username, changes, snapshot, source)
       VALUES
         (${companyCode}, ${rowId}, ${action},
          ${payload?.userId || null}, ${payload?.username || null},
          ${changes ? JSON.stringify(changes) : null}::jsonb,
-         ${snapshot ? JSON.stringify(snapshot) : null}::jsonb)
+         ${snapshot ? JSON.stringify(snapshot) : null}::jsonb,
+         'tracking')
     `;
   } catch (err) {
     console.error('[dust-rows] audit write failed (non-fatal):', err.message);
