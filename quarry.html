@@ -92,10 +92,81 @@
     .tab-btn:hover { color: var(--text); }
     .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
     .tab-bar-spacer { flex: 1; }
+    .btn-manage-lists {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--accent);
+      background: rgba(249,115,22,0.07);
+      border: 1px solid rgba(249,115,22,0.25);
+      border-radius: 4px; padding: 0.32rem 0.75rem; cursor: pointer;
+      transition: background 0.15s, border-color 0.15s; white-space: nowrap;
+      flex-shrink: 0; margin-right: 0.25rem;
+    }
+    .btn-manage-lists:hover { background: rgba(249,115,22,0.14); border-color: var(--accent); }
 
     /* ── Panels ── */
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
+
+    /* ── Manage Lists Modal ── */
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.72); z-index: 500;
+      align-items: center; justify-content: center; padding: 1.5rem;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 100%; max-width: 680px;
+      max-height: 88vh; overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1.1rem 1.5rem 0.9rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .modal-title {
+      font-size: 0.82rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #fff;
+    }
+    .modal-close {
+      background: none; border: none; color: var(--muted);
+      font-size: 1.2rem; cursor: pointer; padding: 0.1rem 0.5rem;
+      border-radius: 3px; transition: color 0.15s; line-height: 1;
+    }
+    .modal-close:hover { color: var(--text); }
+
+    .ml-subtab-bar {
+      display: flex; gap: 0; padding: 0 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      overflow-x: auto;
+    }
+    .ml-subtab-btn {
+      padding: 0.55rem 1rem;
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .ml-subtab-btn:hover { color: var(--text); }
+    .ml-subtab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .ml-body {
+      padding: 1.25rem 1.5rem 1.5rem;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .ml-panel { display: none; }
+    .ml-panel.active { display: block; }
+    .ml-empty {
+      font-size: 0.75rem; color: var(--muted); text-align: center;
+      padding: 2rem 1rem; border: 1px dashed var(--border); border-radius: 6px;
+    }
   </style>
 </head>
 <body>
@@ -120,6 +191,7 @@
     <button class="tab-btn"        data-tab="crushing" onclick="switchTab('crushing')">Crushing Tracking</button>
     <button class="tab-btn"        data-tab="sales"    onclick="switchTab('sales')">Sales Tracking</button>
     <div class="tab-bar-spacer"></div>
+    <button class="btn-manage-lists" onclick="openManageLists()">⚙ Manage Lists</button>
   </nav>
 
   <!-- ── Panels (intentionally blank) ── -->
@@ -127,6 +199,30 @@
   <div class="tab-panel"        id="tab-daily"></div>
   <div class="tab-panel"        id="tab-crushing"></div>
   <div class="tab-panel"        id="tab-sales"></div>
+
+  <!-- ── Manage Lists Modal ── -->
+  <div class="modal-backdrop" id="manageListsBackdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="manageListsTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="manageListsTitle">Manage Lists</div>
+        <button class="modal-close" onclick="closeManageLists()" aria-label="Close">✕</button>
+      </div>
+      <div class="ml-subtab-bar">
+        <button class="ml-subtab-btn active" data-list="customer"  onclick="switchListTab('customer')">Customer</button>
+        <button class="ml-subtab-btn"        data-list="product"   onclick="switchListTab('product')">Product</button>
+        <button class="ml-subtab-btn"        data-list="equipment" onclick="switchListTab('equipment')">Equipment</button>
+        <button class="ml-subtab-btn"        data-list="tasks"     onclick="switchListTab('tasks')">Tasks</button>
+        <button class="ml-subtab-btn"        data-list="employees" onclick="switchListTab('employees')">Employees</button>
+      </div>
+      <div class="ml-body">
+        <div class="ml-panel active" id="ml-customer"><div class="ml-empty">No customers yet.</div></div>
+        <div class="ml-panel"        id="ml-product"><div class="ml-empty">No products yet.</div></div>
+        <div class="ml-panel"        id="ml-equipment"><div class="ml-empty">No equipment yet.</div></div>
+        <div class="ml-panel"        id="ml-tasks"><div class="ml-empty">No tasks yet.</div></div>
+        <div class="ml-panel"        id="ml-employees"><div class="ml-empty">No employees yet.</div></div>
+      </div>
+    </div>
+  </div>
 
   <script>
     // ── Auth guard ──────────────────────────────────────────────
@@ -153,6 +249,26 @@
       localStorage.removeItem('fct_division');
       window.location.replace('divisions.html');
     }
+
+    // ── Manage Lists modal ──────────────────────────────────────
+    function openManageLists() {
+      document.getElementById('manageListsBackdrop').classList.add('open');
+    }
+    function closeManageLists() {
+      document.getElementById('manageListsBackdrop').classList.remove('open');
+    }
+    function switchListTab(list) {
+      document.querySelectorAll('.ml-subtab-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.list === list));
+      document.querySelectorAll('.ml-panel').forEach(p =>
+        p.classList.toggle('active', p.id === 'ml-' + list));
+    }
+    document.getElementById('manageListsBackdrop').addEventListener('click', function(e) {
+      if (e.target === this) closeManageLists();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeManageLists();
+    });
   </script>
 
 </body>
