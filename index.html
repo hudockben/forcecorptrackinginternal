@@ -453,31 +453,35 @@
 
   </div>
 
-  <!-- ── Pennsylvania counties background ──────────────────────────────── -->
+  <!-- ── Eastern seaboard background (states + PA counties) ────────────── -->
   <script>
     (function () {
       const canvas = document.getElementById('bgCanvas');
       const ctx    = canvas.getContext('2d');
       let W, H, cx, cy, frame = 0;
-      let features = null;
+      let states = null;       // eastern seaboard state outlines
+      let counties = null;     // PA county outlines
       const INDIANA_FIPS = '063';
-      // PA bounding box (from data, with small margin)
-      const LON_MIN = -80.52, LON_MAX = -74.69;
-      const LAT_MIN = 39.72,  LAT_MAX = 42.27;
+      // Weston, FL
+      const WESTON_LON = -80.3997, WESTON_LAT = 26.1003;
+      // Eastern seaboard bounding box (Maine to south Florida)
+      const LON_MIN = -82.5, LON_MAX = -66.5;
+      const LAT_MIN = 24.3,  LAT_MAX = 47.5;
       const LAT_MID = (LAT_MIN + LAT_MAX) / 2;
       const COS_MID = Math.cos(LAT_MID * Math.PI / 180);
       let scale = 1, offX = 0, offY = 0;
       let indianaCenter = null;
+      let westonCenter  = null;
 
       function resize() {
         W  = canvas.width  = window.innerWidth;
         H  = canvas.height = window.innerHeight;
-        cx = W * 0.36;
+        cx = W * 0.42;
         cy = H * 0.5;
 
-        // Map area: fit PA into a box centered at (cx, cy)
-        const boxW = Math.min(W * 0.5, 720);
-        const boxH = Math.min(H * 0.78, 620);
+        // Map area: fit eastern seaboard into a box centered at (cx, cy)
+        const boxW = Math.min(W * 0.62, 900);
+        const boxH = Math.min(H * 0.92, 820);
         const lonSpan = (LON_MAX - LON_MIN) * COS_MID;
         const latSpan = (LAT_MAX - LAT_MIN);
         scale = Math.min(boxW / lonSpan, boxH / latSpan);
@@ -489,20 +493,18 @@
         return [lon * COS_MID * scale + offX, -lat * scale + offY];
       }
 
-      function polygonCentroid(rings) {
-        // rings = array of [ [ [lon,lat], ... ] , (holes) ]
-        const outer = rings[0];
+      function polygonCentroid(ring) {
         let a = 0, x = 0, y = 0;
-        for (let i = 0, n = outer.length, j = n - 1; i < n; j = i++) {
-          const [xi, yi] = outer[i];
-          const [xj, yj] = outer[j];
+        for (let i = 0, n = ring.length, j = n - 1; i < n; j = i++) {
+          const [xi, yi] = ring[i];
+          const [xj, yj] = ring[j];
           const f = xj * yi - xi * yj;
           a += f;
           x += (xj + xi) * f;
           y += (yj + yi) * f;
         }
         a *= 0.5;
-        if (a === 0) return outer[0];
+        if (a === 0) return ring[0];
         return [x / (6 * a), y / (6 * a)];
       }
 
@@ -523,28 +525,57 @@
         else if (g.type === 'MultiPolygon') g.coordinates.forEach(tracePolygon);
       }
 
-      function computeIndianaCenter() {
-        if (!features) return;
-        const ind = features.find(f => f.properties.fips === INDIANA_FIPS);
-        if (!ind) return;
-        const g = ind.geometry;
-        let rings;
-        if (g.type === 'Polygon') rings = g.coordinates;
-        else {
-          // pick largest ring set
-          let best = g.coordinates[0], bestLen = best[0].length;
-          for (const r of g.coordinates) if (r[0].length > bestLen) { best = r; bestLen = r[0].length; }
-          rings = best;
+      function computeCenters() {
+        if (counties) {
+          const ind = counties.find(f => f.properties.fips === INDIANA_FIPS);
+          if (ind) {
+            const g = ind.geometry;
+            const ring = g.type === 'Polygon'
+              ? g.coordinates[0]
+              : g.coordinates.reduce((b, r) => r[0].length > b.length ? r[0] : b, g.coordinates[0][0]);
+            const c = polygonCentroid(ring);
+            indianaCenter = project(c[0], c[1]);
+          }
         }
-        const c = polygonCentroid(rings);
-        indianaCenter = project(c[0], c[1]);
+        westonCenter = project(WESTON_LON, WESTON_LAT);
+      }
+
+      function drawPulse(center, phaseOffset) {
+        if (!center) return;
+        const [px, py] = center;
+        const t  = ((frame + phaseOffset) % 90) / 90;
+        ctx.beginPath();
+        ctx.arc(px, py, 4 + t * 28, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(239,68,68,${((1 - t) * 0.7).toFixed(3)})`;
+        ctx.lineWidth   = 1.4;
+        ctx.stroke();
+
+        const t2 = ((frame + phaseOffset + 45) % 90) / 90;
+        ctx.beginPath();
+        ctx.arc(px, py, 4 + t2 * 28, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(239,68,68,${((1 - t2) * 0.5).toFixed(3)})`;
+        ctx.lineWidth   = 1.0;
+        ctx.stroke();
+
+        const glow = ctx.createRadialGradient(px, py, 0, px, py, 18);
+        glow.addColorStop(0, 'rgba(239,68,68,0.55)');
+        glow.addColorStop(1, 'rgba(239,68,68,0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(px, py, 18, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(239,68,68,1)';
+        ctx.fill();
       }
 
       function draw() {
         ctx.clearRect(0, 0, W, H);
         frame++;
 
-        if (!features) { requestAnimationFrame(draw); return; }
+        if (!states) { requestAnimationFrame(draw); return; }
 
         // Faint vignette behind map
         const R = Math.max(W, H) * 0.5;
@@ -554,103 +585,82 @@
         ctx.fillStyle = vig;
         ctx.fillRect(0, 0, W, H);
 
-        // County fills (very faint) + outlines
         ctx.lineJoin = 'round';
         ctx.lineCap  = 'round';
 
-        // Subtle fill pass
-        ctx.fillStyle = 'rgba(34,197,94,0.025)';
-        features.forEach(f => {
+        // Very faint state fills
+        ctx.fillStyle = 'rgba(34,197,94,0.02)';
+        states.forEach(f => {
           ctx.beginPath();
           traceFeature(f);
           ctx.fill();
         });
 
-        // Highlight Indiana county fill
-        const indiana = features.find(f => f.properties.fips === INDIANA_FIPS);
-        if (indiana) {
-          const pulseT = 0.5 + 0.5 * Math.sin(frame * 0.06);
-          ctx.beginPath();
-          traceFeature(indiana);
-          ctx.fillStyle = `rgba(239,68,68,${(0.10 + 0.18 * pulseT).toFixed(3)})`;
-          ctx.fill();
+        // PA county fills (slightly more visible)
+        if (counties) {
+          ctx.fillStyle = 'rgba(34,197,94,0.035)';
+          counties.forEach(f => {
+            ctx.beginPath();
+            traceFeature(f);
+            ctx.fill();
+          });
+
+          // Highlight Indiana county fill
+          const indiana = counties.find(f => f.properties.fips === INDIANA_FIPS);
+          if (indiana) {
+            const pulseT = 0.5 + 0.5 * Math.sin(frame * 0.06);
+            ctx.beginPath();
+            traceFeature(indiana);
+            ctx.fillStyle = `rgba(239,68,68,${(0.10 + 0.18 * pulseT).toFixed(3)})`;
+            ctx.fill();
+          }
+
+          // PA county borders (thin)
+          ctx.strokeStyle = 'rgba(34,197,94,0.22)';
+          ctx.lineWidth   = 0.7;
+          counties.forEach(f => {
+            ctx.beginPath();
+            traceFeature(f);
+            ctx.stroke();
+          });
+
+          // Indiana county outline (red)
+          if (indiana) {
+            ctx.beginPath();
+            traceFeature(indiana);
+            ctx.strokeStyle = 'rgba(239,68,68,0.9)';
+            ctx.lineWidth   = 1.6;
+            ctx.stroke();
+          }
         }
 
-        // County borders
-        ctx.strokeStyle = 'rgba(34,197,94,0.22)';
-        ctx.lineWidth   = 0.8;
-        features.forEach(f => {
+        // State outlines (heavier on top)
+        ctx.strokeStyle = 'rgba(34,197,94,0.6)';
+        ctx.lineWidth   = 1.3;
+        states.forEach(f => {
           ctx.beginPath();
           traceFeature(f);
           ctx.stroke();
         });
 
-        // State outline emphasis (draw all county outlines slightly heavier on top — cheap approximation)
-        ctx.strokeStyle = 'rgba(34,197,94,0.55)';
-        ctx.lineWidth   = 1.4;
-        features.forEach(f => {
-          ctx.beginPath();
-          traceFeature(f);
-          ctx.stroke();
-        });
-
-        // Indiana county outline (red)
-        if (indiana) {
-          ctx.beginPath();
-          traceFeature(indiana);
-          ctx.strokeStyle = 'rgba(239,68,68,0.9)';
-          ctx.lineWidth   = 1.6;
-          ctx.stroke();
-        }
-
-        // Red pulse dot at Indiana centroid
-        if (indianaCenter) {
-          const [px, py] = indianaCenter;
-          const t  = (frame % 90) / 90;       // 0..1 cycle
-          const ringR = 4 + t * 28;
-          const ringA = (1 - t) * 0.7;
-          ctx.beginPath();
-          ctx.arc(px, py, ringR, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(239,68,68,${ringA.toFixed(3)})`;
-          ctx.lineWidth   = 1.4;
-          ctx.stroke();
-
-          const t2 = ((frame + 45) % 90) / 90;
-          ctx.beginPath();
-          ctx.arc(px, py, 4 + t2 * 28, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(239,68,68,${((1 - t2) * 0.5).toFixed(3)})`;
-          ctx.lineWidth   = 1.0;
-          ctx.stroke();
-
-          // glow
-          const glow = ctx.createRadialGradient(px, py, 0, px, py, 18);
-          glow.addColorStop(0, 'rgba(239,68,68,0.55)');
-          glow.addColorStop(1, 'rgba(239,68,68,0)');
-          ctx.fillStyle = glow;
-          ctx.beginPath();
-          ctx.arc(px, py, 18, 0, Math.PI * 2);
-          ctx.fill();
-
-          // core dot
-          ctx.beginPath();
-          ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(239,68,68,1)';
-          ctx.fill();
-        }
+        // Pulses
+        drawPulse(indianaCenter, 0);
+        drawPulse(westonCenter, 30);
 
         requestAnimationFrame(draw);
       }
 
-      window.addEventListener('resize', () => { resize(); computeIndianaCenter(); });
+      window.addEventListener('resize', () => { resize(); computeCenters(); });
 
-      fetch('pa-counties.json')
-        .then(r => r.json())
-        .then(geo => {
-          features = geo.features;
-          resize();
-          computeIndianaCenter();
-        })
-        .catch(() => { /* leave canvas blank on failure */ });
+      Promise.all([
+        fetch('eastern-seaboard.json').then(r => r.json()).catch(() => null),
+        fetch('pa-counties.json').then(r => r.json()).catch(() => null)
+      ]).then(([statesGeo, countiesGeo]) => {
+        if (statesGeo)   states   = statesGeo.features;
+        if (countiesGeo) counties = countiesGeo.features;
+        resize();
+        computeCenters();
+      });
 
       resize();
       draw();
