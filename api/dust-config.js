@@ -1,7 +1,7 @@
 'use strict';
 /**
  * GET  /api/dust-config  — settings + lists for the company
- * PUT  /api/dust-config  — full sync: { settings: { ub_rate }, lists: { equipment, employees, companies, states } }
+ * PUT  /api/dust-config  — full sync: { settings: { ub_rate }, lists: { equipment, employees, companies, materials, states } }
  *
  * Source of truth: dust_settings, dust_equipment, dust_companies,
  *   dust_company_locations, dust_company_personnel, dropdown_lists tables.
@@ -32,12 +32,15 @@ module.exports = async (req, res) => {
   try {
     // ── GET ────────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
-      const [settingsRows, equipRows, empRows, stateRows, coRows] = await Promise.all([
+      const [settingsRows, equipRows, empRows, matRows, stateRows, coRows] = await Promise.all([
         sql`SELECT ub_rate FROM dust_settings WHERE company_code = ${companyCode}`,
         sql`SELECT * FROM dust_equipment
             WHERE company_code = ${companyCode} ORDER BY sort_order, name`,
         sql`SELECT value FROM dropdown_lists
             WHERE company_code = ${companyCode} AND list_name = 'dust_employees'
+            ORDER BY sort_order, value`,
+        sql`SELECT value FROM dropdown_lists
+            WHERE company_code = ${companyCode} AND list_name = 'dust_materials'
             ORDER BY sort_order, value`,
         sql`SELECT value FROM dropdown_lists
             WHERE company_code = ${companyCode} AND list_name = 'dust_states'
@@ -58,7 +61,7 @@ module.exports = async (req, res) => {
       const _asObj = r => (r?.value && typeof r.value === 'object') ? r.value : null;
       const blobSettingsVal = _asObj(blobSettings[0]) || _asObj(blobSettingsLegacy[0]) || { ub_rate: 0 };
       const blobListsRaw    = _asObj(blobLists[0])    || _asObj(blobListsLegacy[0]);
-      const blobListsVal    = blobListsRaw || { equipment: [], employees: [], companies: [], states: [] };
+      const blobListsVal    = blobListsRaw || { equipment: [], employees: [], companies: [], materials: [], states: [] };
 
       // Normalized is trustworthy if companies count matches blob companies count.
       const blobCoCount   = (blobListsVal.companies || []).length;
@@ -100,6 +103,7 @@ module.exports = async (req, res) => {
               vehicle_rate: e.vehicle_rate != null ? e.vehicle_rate : null,
             })),
             employees: empRows.map(r => r.value),
+            materials: matRows.map(r => r.value),
             states:    stateRows.map(r => r.value),
             companies,
           },
@@ -124,7 +128,7 @@ module.exports = async (req, res) => {
     if (req.method === 'PUT') {
       const { settings, lists } = req.body || {};
       const safeSettings = (settings && typeof settings === 'object') ? settings : { ub_rate: 0 };
-      const safeLists    = (lists    && typeof lists    === 'object') ? lists    : { equipment: [], employees: [], companies: [], states: [] };
+      const safeLists    = (lists    && typeof lists    === 'object') ? lists    : { equipment: [], employees: [], companies: [], materials: [], states: [] };
 
       // Write blobs in parallel (safety net during migration window)
       await Promise.all([
@@ -160,6 +164,7 @@ async function _syncToTables(sql, companyCode, settings, lists) {
     _syncSettings(sql, companyCode, settings),
     _syncEquipment(sql, companyCode, lists.equipment || []),
     _syncDropdownList(sql, companyCode, 'dust_employees', lists.employees || []),
+    _syncDropdownList(sql, companyCode, 'dust_materials', lists.materials || []),
     _syncDropdownList(sql, companyCode, 'dust_states',    lists.states    || []),
     _syncCompanies(sql, companyCode, lists.companies || []),
   ]);
