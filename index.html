@@ -460,8 +460,11 @@
       const ctx    = canvas.getContext('2d');
       let W, H, cx, cy, frame = 0;
       let states = null;       // eastern seaboard state outlines
-      let counties = null;     // PA county outlines
-      const INDIANA_FIPS = '063';
+      // County layers: each {features, highlightFips} — PA highlights Indiana, FL highlights Broward
+      const countyLayers = [
+        { src: 'pa-counties.json', highlightFips: '063', features: null, highlightCenter: null },
+        { src: 'fl-counties.json', highlightFips: '011', features: null, highlightCenter: null }
+      ];
       // Weston, FL
       const WESTON_LON = -80.3997, WESTON_LAT = 26.1003;
       // Eastern seaboard bounding box (Maine to south Florida)
@@ -470,7 +473,6 @@
       const LAT_MID = (LAT_MIN + LAT_MAX) / 2;
       const COS_MID = Math.cos(LAT_MID * Math.PI / 180);
       let scale = 1, offX = 0, offY = 0;
-      let indianaCenter = null;
       let westonCenter  = null;
 
       function resize() {
@@ -526,17 +528,18 @@
       }
 
       function computeCenters() {
-        if (counties) {
-          const ind = counties.find(f => f.properties.fips === INDIANA_FIPS);
-          if (ind) {
-            const g = ind.geometry;
-            const ring = g.type === 'Polygon'
-              ? g.coordinates[0]
-              : g.coordinates.reduce((b, r) => r[0].length > b.length ? r[0] : b, g.coordinates[0][0]);
-            const c = polygonCentroid(ring);
-            indianaCenter = project(c[0], c[1]);
-          }
-        }
+        countyLayers.forEach(layer => {
+          layer.highlightCenter = null;
+          if (!layer.features) return;
+          const hit = layer.features.find(f => f.properties.fips === layer.highlightFips);
+          if (!hit) return;
+          const g = hit.geometry;
+          const ring = g.type === 'Polygon'
+            ? g.coordinates[0]
+            : g.coordinates.reduce((b, r) => r[0].length > b.length ? r[0] : b, g.coordinates[0][0]);
+          const c = polygonCentroid(ring);
+          layer.highlightCenter = project(c[0], c[1]);
+        });
         westonCenter = project(WESTON_LON, WESTON_LAT);
       }
 
@@ -596,43 +599,46 @@
           ctx.fill();
         });
 
-        // PA county fills (slightly more visible)
-        if (counties) {
+        // County fills + outlines for each detail layer (PA, FL)
+        const pulseT = 0.5 + 0.5 * Math.sin(frame * 0.06);
+        countyLayers.forEach(layer => {
+          if (!layer.features) return;
+
+          // Faint county fills
           ctx.fillStyle = 'rgba(34,197,94,0.035)';
-          counties.forEach(f => {
+          layer.features.forEach(f => {
             ctx.beginPath();
             traceFeature(f);
             ctx.fill();
           });
 
-          // Highlight Indiana county fill
-          const indiana = counties.find(f => f.properties.fips === INDIANA_FIPS);
-          if (indiana) {
-            const pulseT = 0.5 + 0.5 * Math.sin(frame * 0.06);
+          // Highlighted county fill
+          const hit = layer.features.find(f => f.properties.fips === layer.highlightFips);
+          if (hit) {
             ctx.beginPath();
-            traceFeature(indiana);
+            traceFeature(hit);
             ctx.fillStyle = `rgba(239,68,68,${(0.10 + 0.18 * pulseT).toFixed(3)})`;
             ctx.fill();
           }
 
-          // PA county borders (thin)
+          // County borders (thin)
           ctx.strokeStyle = 'rgba(34,197,94,0.22)';
           ctx.lineWidth   = 0.7;
-          counties.forEach(f => {
+          layer.features.forEach(f => {
             ctx.beginPath();
             traceFeature(f);
             ctx.stroke();
           });
 
-          // Indiana county outline (red)
-          if (indiana) {
+          // Highlighted county outline (red)
+          if (hit) {
             ctx.beginPath();
-            traceFeature(indiana);
+            traceFeature(hit);
             ctx.strokeStyle = 'rgba(239,68,68,0.9)';
             ctx.lineWidth   = 1.6;
             ctx.stroke();
           }
-        }
+        });
 
         // State outlines (heavier on top)
         ctx.strokeStyle = 'rgba(34,197,94,0.6)';
@@ -643,9 +649,9 @@
           ctx.stroke();
         });
 
-        // Pulses
-        drawPulse(indianaCenter, 0);
-        drawPulse(westonCenter, 30);
+        // Pulses (one per highlighted county centroid + Weston)
+        drawPulse(countyLayers[0].highlightCenter, 0);   // Indiana, PA
+        drawPulse(westonCenter, 30);                     // Weston, FL
 
         requestAnimationFrame(draw);
       }
@@ -654,10 +660,10 @@
 
       Promise.all([
         fetch('eastern-seaboard.json').then(r => r.json()).catch(() => null),
-        fetch('pa-counties.json').then(r => r.json()).catch(() => null)
-      ]).then(([statesGeo, countiesGeo]) => {
-        if (statesGeo)   states   = statesGeo.features;
-        if (countiesGeo) counties = countiesGeo.features;
+        ...countyLayers.map(l => fetch(l.src).then(r => r.json()).catch(() => null))
+      ]).then(([statesGeo, ...layerGeos]) => {
+        if (statesGeo) states = statesGeo.features;
+        layerGeos.forEach((geo, i) => { if (geo) countyLayers[i].features = geo.features; });
         resize();
         computeCenters();
       });
