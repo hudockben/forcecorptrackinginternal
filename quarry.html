@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='%230a0f1e' stroke='%23f97316' stroke-width='6'/><circle cx='50' cy='50' r='12' fill='%23f97316'/></svg>">
+  <title>DataWatch — Quarry</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0a0a0f;
+      --surface:    #111118;
+      --surface2:   #1a1a26;
+      --border:     #2a2a3a;
+      --accent:     #f97316;
+      --accent-dim: #c2410c;
+      --text:       #e0e0e0;
+      --muted:      #666;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.6rem 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 300;
+      gap: 1rem;
+    }
+    .hdr-left { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+    .brand {
+      font-size: 0.7rem; letter-spacing: 0.3em; text-transform: uppercase;
+      color: var(--accent); font-weight: 700; flex-shrink: 0;
+    }
+    .div-label {
+      font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--muted); border-left: 1px solid var(--border);
+      padding-left: 1rem; white-space: nowrap;
+    }
+    .hdr-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
+    .user-avatar {
+      width: 30px; height: 30px; border-radius: 50%;
+      background: var(--accent-dim);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.62rem; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .user-info { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+    .user-info strong { color: var(--text); }
+    .btn-ghost {
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.32rem 0.7rem; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    .btn-ghost:hover { color: var(--text); border-color: #555; }
+
+    /* ── Tab bar ── */
+    .tab-bar {
+      display: flex;
+      align-items: center;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1rem;
+      position: sticky;
+      top: 45px;
+      z-index: 200;
+      overflow-x: auto;
+      gap: 0;
+    }
+    .tab-btn {
+      padding: 0.6rem 1.25rem;
+      font-size: 0.67rem; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-bar-spacer { flex: 1; }
+    .btn-manage-lists {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--accent);
+      background: rgba(249,115,22,0.07);
+      border: 1px solid rgba(249,115,22,0.25);
+      border-radius: 4px; padding: 0.32rem 0.75rem; cursor: pointer;
+      transition: background 0.15s, border-color 0.15s; white-space: nowrap;
+      flex-shrink: 0; margin-right: 0.25rem;
+    }
+    .btn-manage-lists:hover { background: rgba(249,115,22,0.14); border-color: var(--accent); }
+
+    /* ── Panels ── */
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Manage Lists Modal ── */
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.72); z-index: 500;
+      align-items: center; justify-content: center; padding: 1.5rem;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 100%; max-width: 680px;
+      max-height: 88vh; overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1.1rem 1.5rem 0.9rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .modal-title {
+      font-size: 0.82rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #fff;
+    }
+    .modal-close {
+      background: none; border: none; color: var(--muted);
+      font-size: 1.2rem; cursor: pointer; padding: 0.1rem 0.5rem;
+      border-radius: 3px; transition: color 0.15s; line-height: 1;
+    }
+    .modal-close:hover { color: var(--text); }
+
+    .ml-subtab-bar {
+      display: flex; gap: 0; padding: 0 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      overflow-x: auto;
+    }
+    .ml-subtab-btn {
+      padding: 0.55rem 1rem;
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .ml-subtab-btn:hover { color: var(--text); }
+    .ml-subtab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .ml-body {
+      padding: 1.25rem 1.5rem 1.5rem;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .ml-panel { display: none; }
+    .ml-panel.active { display: block; }
+    .ml-empty {
+      font-size: 0.75rem; color: var(--muted); text-align: center;
+      padding: 2rem 1rem; border: 1px dashed var(--border); border-radius: 6px;
+    }
+
+    /* Add form */
+    .ml-form {
+      display: flex; gap: 0.5rem; margin-bottom: 1rem;
+    }
+    .ml-form input[type="text"] {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.82rem;
+      padding: 0.45rem 0.7rem; outline: none; font-family: inherit;
+    }
+    .ml-form input[type="text"]:focus { border-color: var(--accent); }
+    .btn-add {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #fff;
+      background: var(--accent); border: 1px solid var(--accent);
+      border-radius: 4px; padding: 0.45rem 0.95rem; cursor: pointer;
+      transition: background 0.15s; white-space: nowrap;
+    }
+    .btn-add:hover { background: var(--accent-dim); border-color: var(--accent-dim); }
+    .btn-add:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Item rows */
+    .ml-list { display: flex; flex-direction: column; gap: 0.4rem; }
+    .ml-item {
+      display: flex; align-items: center; gap: 0.75rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.55rem 0.85rem;
+    }
+    .ml-item:hover { border-color: #3a3a4a; }
+    .ml-item-name { flex: 1; font-size: 0.82rem; color: var(--text); }
+    .btn-del {
+      font-size: 0.62rem; font-weight: 600; padding: 0.22rem 0.6rem;
+      background: none; border: 1px solid rgba(239,68,68,0.25); color: #ef4444;
+      border-radius: 3px; cursor: pointer; transition: background 0.15s;
+    }
+    .btn-del:hover { background: rgba(239,68,68,0.08); }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <header>
+    <div class="hdr-left">
+      <div class="brand">DataWatch</div>
+      <div class="div-label">Quarry</div>
+    </div>
+    <div class="hdr-right">
+      <div class="user-avatar" id="userAvatar"></div>
+      <div class="user-info" id="userInfo"></div>
+      <button class="btn-ghost" onclick="switchDivision()">Switch Division</button>
+    </div>
+  </header>
+
+  <!-- ── Tab bar ── -->
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-tab="home"     onclick="switchTab('home')">Home</button>
+    <button class="tab-btn"        data-tab="daily"    onclick="switchTab('daily')">Daily Tracking</button>
+    <button class="tab-btn"        data-tab="crushing" onclick="switchTab('crushing')">Crushing Tracking</button>
+    <button class="tab-btn"        data-tab="sales"    onclick="switchTab('sales')">Sales Tracking</button>
+    <div class="tab-bar-spacer"></div>
+    <button class="btn-manage-lists" onclick="openManageLists()">⚙ Manage Lists</button>
+  </nav>
+
+  <!-- ── Panels (intentionally blank) ── -->
+  <div class="tab-panel active" id="tab-home"></div>
+  <div class="tab-panel"        id="tab-daily"></div>
+  <div class="tab-panel"        id="tab-crushing"></div>
+  <div class="tab-panel"        id="tab-sales"></div>
+
+  <!-- ── Manage Lists Modal ── -->
+  <div class="modal-backdrop" id="manageListsBackdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="manageListsTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="manageListsTitle">Manage Lists</div>
+        <button class="modal-close" onclick="closeManageLists()" aria-label="Close">✕</button>
+      </div>
+      <div class="ml-subtab-bar">
+        <button class="ml-subtab-btn active" data-list="customer"  onclick="switchListTab('customer')">Customer</button>
+        <button class="ml-subtab-btn"        data-list="product"   onclick="switchListTab('product')">Product</button>
+        <button class="ml-subtab-btn"        data-list="equipment" onclick="switchListTab('equipment')">Equipment</button>
+        <button class="ml-subtab-btn"        data-list="tasks"     onclick="switchListTab('tasks')">Tasks</button>
+        <button class="ml-subtab-btn"        data-list="employees" onclick="switchListTab('employees')">Employees</button>
+        <button class="ml-subtab-btn"        data-list="location"  onclick="switchListTab('location')">Location</button>
+      </div>
+      <div class="ml-body">
+        <div class="ml-panel active" id="ml-customer"></div>
+        <div class="ml-panel"        id="ml-product"></div>
+        <div class="ml-panel"        id="ml-equipment"></div>
+        <div class="ml-panel"        id="ml-tasks"></div>
+        <div class="ml-panel"        id="ml-employees"></div>
+        <div class="ml-panel"        id="ml-location"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── Auth guard ──────────────────────────────────────────────
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) { window.location.replace('index.html'); }
+
+    // ── Header user info ────────────────────────────────────────
+    document.getElementById('userAvatar').textContent =
+      (user?.username || 'U').slice(0, 2).toUpperCase();
+    document.getElementById('userInfo').innerHTML =
+      `<strong>${user?.username || ''}</strong>&nbsp;·&nbsp;${user?.companyName || user?.companyCode || ''}`;
+
+    // ── Tab switching ───────────────────────────────────────────
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.tab === tab));
+      document.querySelectorAll('.tab-panel').forEach(p =>
+        p.classList.toggle('active', p.id === 'tab-' + tab));
+    }
+
+    // ── Switch division ─────────────────────────────────────────
+    function switchDivision() {
+      localStorage.removeItem('fct_division');
+      window.location.replace('divisions.html');
+    }
+
+    // ── Manage Lists modal ──────────────────────────────────────
+    const LIST_TYPES = [
+      { key: 'customer',  label: 'customer',  placeholder: 'Customer name' },
+      { key: 'product',   label: 'product',   placeholder: 'Product name' },
+      { key: 'equipment', label: 'equipment', placeholder: 'Equipment name' },
+      { key: 'tasks',     label: 'task',      placeholder: 'Task name' },
+      { key: 'employees', label: 'employee',  placeholder: 'Employee name' },
+      { key: 'location',  label: 'location',  placeholder: 'Location name' },
+    ];
+
+    const QUARRY_LISTS_KEY = 'fct_quarry_lists';
+    const LEGACY_LOCAL_KEY = `fct_quarry_lists_${user?.companyCode || 'default'}`;
+
+    function emptyLists() {
+      return Object.fromEntries(LIST_TYPES.map(t => [t.key, []]));
+    }
+    function normalizeLists(value) {
+      const out = emptyLists();
+      if (value && typeof value === 'object') {
+        LIST_TYPES.forEach(t => {
+          if (Array.isArray(value[t.key])) out[t.key] = value[t.key];
+        });
+      }
+      return out;
+    }
+
+    let quarryLists = emptyLists();
+    let listsLoaded = false;
+    let savePending = null;
+    let saveInFlight = false;
+
+    async function fetchLists() {
+      const res = await fetch(`/api/data/${QUARRY_LISTS_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_LISTS_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeLists(data.value);
+    }
+
+    async function putLists(value) {
+      const res = await fetch(`/api/data/${QUARRY_LISTS_KEY}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ value }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_LISTS_KEY} → ${res.status} ${text}`);
+      }
+    }
+
+    // Coalesces rapid edits into a single in-flight PUT.
+    function scheduleSave() {
+      savePending = quarryLists;
+      if (saveInFlight) return;
+      flushSave();
+    }
+    async function flushSave() {
+      while (savePending) {
+        const snapshot = savePending;
+        savePending = null;
+        saveInFlight = true;
+        try {
+          await putLists(snapshot);
+        } catch (err) {
+          console.error('[quarry] save failed:', err);
+          alert('Could not save changes — please check your connection and try again.');
+        } finally {
+          saveInFlight = false;
+        }
+      }
+    }
+
+    async function loadInitial() {
+      try {
+        const server = await fetchLists();
+        const serverHasData = LIST_TYPES.some(t => server[t.key].length);
+
+        // One-time migration: if the server is empty but a previous version
+        // saved items to localStorage on this browser, push them up so the
+        // user doesn't lose their data when we move to server-backed storage.
+        if (!serverHasData) {
+          try {
+            const raw = localStorage.getItem(LEGACY_LOCAL_KEY);
+            if (raw) {
+              const local = normalizeLists(JSON.parse(raw));
+              const localHasData = LIST_TYPES.some(t => local[t.key].length);
+              if (localHasData) {
+                quarryLists = local;
+                await putLists(local);
+                localStorage.removeItem(LEGACY_LOCAL_KEY);
+                listsLoaded = true;
+                renderAllPanels();
+                return;
+              }
+            }
+          } catch (err) {
+            console.warn('[quarry] legacy migration skipped:', err);
+          }
+        }
+
+        quarryLists = server;
+      } catch (err) {
+        console.error('[quarry] load failed:', err);
+        quarryLists = emptyLists();
+      } finally {
+        listsLoaded = true;
+        renderAllPanels();
+      }
+    }
+
+    function renderListPanel(type) {
+      const panel = document.getElementById('ml-' + type.key);
+      if (!listsLoaded) {
+        panel.innerHTML = `<div class="ml-empty">Loading…</div>`;
+        return;
+      }
+      const items = quarryLists[type.key] || [];
+      const itemsHtml = items.length
+        ? `<div class="ml-list">${items.map((it, i) => `
+            <div class="ml-item">
+              <div class="ml-item-name">${escapeHtml(it.name)}</div>
+              <button class="btn-del" onclick="deleteListItem('${type.key}', ${i})">Delete</button>
+            </div>`).join('')}</div>`
+        : `<div class="ml-empty">No ${type.label}s yet.</div>`;
+      panel.innerHTML = `
+        <form class="ml-form" onsubmit="addListItem(event, '${type.key}'); return false;">
+          <input type="text" id="ml-input-${type.key}" placeholder="${type.placeholder}" maxlength="120" autocomplete="off" ${listsLoaded ? '' : 'disabled'} />
+          <button type="submit" class="btn-add" ${listsLoaded ? '' : 'disabled'}>Add</button>
+        </form>
+        ${itemsHtml}
+      `;
+    }
+
+    function renderAllPanels() {
+      LIST_TYPES.forEach(renderListPanel);
+    }
+
+    function addListItem(event, key) {
+      if (event) event.preventDefault();
+      if (!listsLoaded) return;
+      const input = document.getElementById('ml-input-' + key);
+      const name = (input.value || '').trim();
+      if (!name) return;
+      quarryLists[key].push({
+        id: Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+        name,
+      });
+      scheduleSave();
+      renderListPanel(LIST_TYPES.find(t => t.key === key));
+      const newInput = document.getElementById('ml-input-' + key);
+      if (newInput) newInput.focus();
+    }
+
+    function deleteListItem(key, index) {
+      if (!listsLoaded) return;
+      quarryLists[key].splice(index, 1);
+      scheduleSave();
+      renderListPanel(LIST_TYPES.find(t => t.key === key));
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    async function openManageLists() {
+      document.getElementById('manageListsBackdrop').classList.add('open');
+      // Refetch each open so a user sees changes other devices made.
+      try {
+        const fresh = await fetchLists();
+        quarryLists = fresh;
+        listsLoaded = true;
+        renderAllPanels();
+      } catch (err) {
+        console.error('[quarry] refresh failed:', err);
+      }
+    }
+    function closeManageLists() {
+      document.getElementById('manageListsBackdrop').classList.remove('open');
+    }
+    function switchListTab(list) {
+      document.querySelectorAll('.ml-subtab-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.list === list));
+      document.querySelectorAll('.ml-panel').forEach(p =>
+        p.classList.toggle('active', p.id === 'ml-' + list));
+      const input = document.getElementById('ml-input-' + list);
+      if (input) input.focus();
+    }
+    document.getElementById('manageListsBackdrop').addEventListener('click', function(e) {
+      if (e.target === this) closeManageLists();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeManageLists();
+    });
+
+    renderAllPanels();
+    loadInitial();
+  </script>
+
+</body>
+</html>

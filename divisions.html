@@ -704,9 +704,22 @@
                   <path d="M9 14h2l2 2 2-2h2"/>
                 </svg>`,
       },
+      quarry: {
+        name:  'Quarry',
+        desc:  'Stone production, inventory, and pit operations tracking for quarry sites.',
+        color: '#f97316',
+        href:  'quarry.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 20h18"/>
+                  <path d="M3 20l4-9 5 4 4-7 5 12"/>
+                  <circle cx="8" cy="7" r="1"/>
+                  <circle cx="15" cy="5" r="1"/>
+                </svg>`,
+      },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'intercompany'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'intercompany', 'quarry'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
