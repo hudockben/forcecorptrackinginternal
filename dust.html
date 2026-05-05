@@ -2437,10 +2437,16 @@
         totInv += c.invTotal;
         totGal += c.gallons;
 
-        // Build dropdown options from lists
-        const vehOpts = val => '<option value="">— select —</option>' +
-          dustLists.equipment.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(eq =>
-            `<option value="${esc(eq.name)}"${val===eq.name?' selected':''}>${esc(eq.name)}</option>`).join('');
+        // Build dropdown options from lists. Preserve any saved vehicle name
+        // that's no longer in dustLists.equipment (e.g. renamed/removed via
+        // Manage Lists) so the row's selection isn't silently dropped.
+        const vehOpts = val => {
+          const list = dustLists.equipment.slice().sort((a,b)=>a.name.localeCompare(b.name));
+          if (val && !list.some(eq => eq.name === val)) list.unshift({ name: val });
+          return '<option value="">— select —</option>' +
+            list.map(eq =>
+              `<option value="${esc(eq.name)}"${val===eq.name?' selected':''}>${esc(eq.name)}</option>`).join('');
+        };
 
         const coOpts = '<option value="">— select —</option>' +
           dustLists.companies.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(co =>
