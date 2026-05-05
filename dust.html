@@ -1133,6 +1133,7 @@
       <span id="online-users" style="display:flex;align-items:center;gap:0.3rem;margin-right:0.25rem;"></span>
       <div class="user-avatar" id="userAvatar"></div>
       <div class="user-info" id="userInfo"></div>
+      <button class="btn-ghost" onclick="openListsModal()">Manage Lists</button>
       <button class="btn-ghost" onclick="switchDivision()">Switch Division</button>
       <button class="btn-ghost" onclick="signOut()">Sign Out</button>
     </div>
@@ -1165,7 +1166,6 @@
       <input type="number" id="bulk-add-count" min="1" max="100" value="1"
         title="Number of rows to add"
         style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2,#1e1e1e);border:1px solid var(--border,#333);border-radius:4px;color:var(--text,#eee);font-size:0.72rem;text-align:center;outline:none">
-      <button class="btn-ghost" onclick="openListsModal()">Manage Lists</button>
       <button class="btn-ghost" onclick="openImportModal()">↑ Import CSV</button>
       <button class="btn-ghost" id="repairBtn" onclick="repairListsFromRows()">⟳ Repair Lists</button>
       <div id="yearSelector" class="year-selector"></div>
@@ -1549,6 +1549,7 @@
         <button class="modal-tab-btn active" data-panel="equipment">Equipment</button>
         <button class="modal-tab-btn" data-panel="companies">Companies</button>
         <button class="modal-tab-btn" data-panel="employees">Employees</button>
+        <button class="modal-tab-btn" data-panel="materials">Materials</button>
         <button class="modal-tab-btn" data-panel="states">States</button>
       </div>
       <div class="modal-body">
@@ -1579,6 +1580,15 @@
           <div class="add-item-row">
             <input type="text" id="new-emp-name" placeholder="Employee / driver name…" />
             <button class="btn-list-add" onclick="addListItem('employees')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- Materials -->
+        <div class="list-panel" id="lp-materials">
+          <div class="list-items" id="li-materials"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-mat-name" placeholder="Material name…" />
+            <button class="btn-list-add" onclick="addListItem('materials')">+ Add</button>
           </div>
         </div>
 
@@ -1934,7 +1944,7 @@
         || null;
     }
 
-    let dustLists  = { equipment: [], employees: [], companies: [], states: [] };
+    let dustLists  = { equipment: [], employees: [], companies: [], materials: [], states: [] };
     let dustFilters = {};
 
     function setFilter(field, value) {
@@ -2842,7 +2852,19 @@
       renderEquipmentPanel();
       renderCompaniesPanel();
       renderEmployeesPanel();
+      renderMaterialsPanel();
       renderStatesPanel();
+    }
+
+    function renderMaterialsPanel() {
+      const sorted = (dustLists.materials || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+      document.getElementById('li-materials').innerHTML = sorted.length
+        ? sorted.map(name => `
+            <div class="list-item">
+              <span style="font-size:0.82rem;font-weight:600;color:var(--text);flex:1">${esc(name)}</span>
+              <button class="remove-item" onclick="removeListItem('materials','${esc(name).replace(/'/g,"\\'")}')">✕</button>
+            </div>`).join('')
+        : '<div class="empty-hint">No materials added yet.</div>';
     }
 
     function renderEmployeesPanel() {
@@ -3037,6 +3059,15 @@
           document.getElementById('new-emp-name').value = '';
           renderEmployeesPanel();
         }
+      } else if (type === 'materials') {
+        const name = document.getElementById('new-mat-name').value.trim();
+        if (!name) { document.getElementById('new-mat-name').focus(); return; }
+        if (!Array.isArray(dustLists.materials)) dustLists.materials = [];
+        if (!dustLists.materials.includes(name)) {
+          dustLists.materials.push(name);
+          document.getElementById('new-mat-name').value = '';
+          renderMaterialsPanel();
+        }
       }
       saveLists();
     }
@@ -3052,6 +3083,9 @@
       } else if (type === 'employees') {
         // id here is the employee name string
         dustLists.employees = (dustLists.employees || []).filter(n => n !== id);
+      } else if (type === 'materials') {
+        // id here is the material name string
+        dustLists.materials = (dustLists.materials || []).filter(n => n !== id);
       } else {
         dustLists[type] = dustLists[type].filter(item => item.id !== id);
       }
@@ -3094,6 +3128,7 @@
     document.getElementById('new-co-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('companies'); });
     document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
     document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
+    document.getElementById('new-mat-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('materials'); });
 
     /* ═══════════════════════════════════════════
        UB RATE
@@ -3512,6 +3547,7 @@
           dustLists.equipment = Array.isArray(lists.equipment) ? lists.equipment : [];
           dustLists.employees = Array.isArray(lists.employees) ? lists.employees : [];
           dustLists.companies = Array.isArray(lists.companies) ? lists.companies : [];
+          dustLists.materials = Array.isArray(lists.materials) ? lists.materials : [];
           dustLists.states    = Array.isArray(lists.states)    ? lists.states    : [];
           // Ensure each company has required arrays; migrate co.men strings → {id,name} objects
           dustLists.companies.forEach(co => {
@@ -4234,6 +4270,14 @@
           obLocs.map(l =>
             `<option value="${esc(l.name)}"${row.destination===l.name?' selected':''}>${esc(l.name)}</option>`).join('');
 
+        // Material dropdown sourced from the shared materials list. Preserve
+        // any saved free-text value so legacy rows don't lose their selection.
+        const matList = (dustLists.materials || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+        if (row.material && !matList.includes(row.material)) matList.unshift(row.material);
+        const matOpts = '<option value="">— select —</option>' +
+          matList.map(name =>
+            `<option value="${esc(name)}"${row.material===name?' selected':''}>${esc(name)}</option>`).join('');
+
         const icTs   = obIcSent.get(row.id) || '';
         const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
 
@@ -4265,7 +4309,7 @@
           <td class="cw-co"><select onchange="obSetCustomer(${idx},this.value)">${coOpts}</select></td>
           <td class="cw-loc"><select data-role="ob-dest" onchange="obSetDestination(${idx},this.value)">${destOpts}</select></td>
           <td class="cw-st"><select onchange="obSet(${idx},'state',this.value)">${stOpts}</select></td>
-          <td class="cw-veh"><input type="text" value="${esc(row.material||'')}" oninput="obSet(${idx},'material',this.value)"></td>
+          <td class="cw-veh"><select onchange="obSet(${idx},'material',this.value)">${matOpts}</select></td>
           <td class="cw-gal"><input type="number" step="0.01" min="0" value="${esc(row.gallons_bags||'')}" oninput="_obLiveSet(${idx},'gallons_bags',this.value)" onchange="obSet(${idx},'gallons_bags',this.value)"></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.price_per_unit||'')}" oninput="_obLiveSet(${idx},'price_per_unit',this.value)" onchange="obSet(${idx},'price_per_unit',this.value)"></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>
@@ -4651,6 +4695,7 @@
             equipment: Array.isArray(lists.equipment) ? lists.equipment : [],
             employees: Array.isArray(lists.employees) ? lists.employees : [],
             companies: Array.isArray(lists.companies) ? lists.companies : [],
+            materials: Array.isArray(lists.materials) ? lists.materials : [],
             states:    Array.isArray(lists.states)    ? lists.states    : [],
           };
           incoming.companies.forEach(co => {
