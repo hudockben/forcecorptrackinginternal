@@ -167,6 +167,42 @@
       font-size: 0.75rem; color: var(--muted); text-align: center;
       padding: 2rem 1rem; border: 1px dashed var(--border); border-radius: 6px;
     }
+
+    /* Add form */
+    .ml-form {
+      display: flex; gap: 0.5rem; margin-bottom: 1rem;
+    }
+    .ml-form input[type="text"] {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.82rem;
+      padding: 0.45rem 0.7rem; outline: none; font-family: inherit;
+    }
+    .ml-form input[type="text"]:focus { border-color: var(--accent); }
+    .btn-add {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #fff;
+      background: var(--accent); border: 1px solid var(--accent);
+      border-radius: 4px; padding: 0.45rem 0.95rem; cursor: pointer;
+      transition: background 0.15s; white-space: nowrap;
+    }
+    .btn-add:hover { background: var(--accent-dim); border-color: var(--accent-dim); }
+    .btn-add:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Item rows */
+    .ml-list { display: flex; flex-direction: column; gap: 0.4rem; }
+    .ml-item {
+      display: flex; align-items: center; gap: 0.75rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.55rem 0.85rem;
+    }
+    .ml-item:hover { border-color: #3a3a4a; }
+    .ml-item-name { flex: 1; font-size: 0.82rem; color: var(--text); }
+    .btn-del {
+      font-size: 0.62rem; font-weight: 600; padding: 0.22rem 0.6rem;
+      background: none; border: 1px solid rgba(239,68,68,0.25); color: #ef4444;
+      border-radius: 3px; cursor: pointer; transition: background 0.15s;
+    }
+    .btn-del:hover { background: rgba(239,68,68,0.08); }
   </style>
 </head>
 <body>
@@ -216,12 +252,12 @@
         <button class="ml-subtab-btn"        data-list="location"  onclick="switchListTab('location')">Location</button>
       </div>
       <div class="ml-body">
-        <div class="ml-panel active" id="ml-customer"><div class="ml-empty">No customers yet.</div></div>
-        <div class="ml-panel"        id="ml-product"><div class="ml-empty">No products yet.</div></div>
-        <div class="ml-panel"        id="ml-equipment"><div class="ml-empty">No equipment yet.</div></div>
-        <div class="ml-panel"        id="ml-tasks"><div class="ml-empty">No tasks yet.</div></div>
-        <div class="ml-panel"        id="ml-employees"><div class="ml-empty">No employees yet.</div></div>
-        <div class="ml-panel"        id="ml-location"><div class="ml-empty">No locations yet.</div></div>
+        <div class="ml-panel active" id="ml-customer"></div>
+        <div class="ml-panel"        id="ml-product"></div>
+        <div class="ml-panel"        id="ml-equipment"></div>
+        <div class="ml-panel"        id="ml-tasks"></div>
+        <div class="ml-panel"        id="ml-employees"></div>
+        <div class="ml-panel"        id="ml-location"></div>
       </div>
     </div>
   </div>
@@ -253,7 +289,83 @@
     }
 
     // ── Manage Lists modal ──────────────────────────────────────
+    const LIST_TYPES = [
+      { key: 'customer',  label: 'customer',  placeholder: 'Customer name' },
+      { key: 'product',   label: 'product',   placeholder: 'Product name' },
+      { key: 'equipment', label: 'equipment', placeholder: 'Equipment name' },
+      { key: 'tasks',     label: 'task',      placeholder: 'Task name' },
+      { key: 'employees', label: 'employee',  placeholder: 'Employee name' },
+      { key: 'location',  label: 'location',  placeholder: 'Location name' },
+    ];
+
+    const LISTS_STORAGE_KEY = `fct_quarry_lists_${user?.companyCode || 'default'}`;
+
+    function loadLists() {
+      try {
+        const raw = localStorage.getItem(LISTS_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        LIST_TYPES.forEach(t => { if (!Array.isArray(parsed[t.key])) parsed[t.key] = []; });
+        return parsed;
+      } catch {
+        return Object.fromEntries(LIST_TYPES.map(t => [t.key, []]));
+      }
+    }
+    function saveLists(lists) {
+      localStorage.setItem(LISTS_STORAGE_KEY, JSON.stringify(lists));
+    }
+
+    let quarryLists = loadLists();
+
+    function renderListPanel(type) {
+      const panel = document.getElementById('ml-' + type.key);
+      const items = quarryLists[type.key] || [];
+      const itemsHtml = items.length
+        ? `<div class="ml-list">${items.map((it, i) => `
+            <div class="ml-item">
+              <div class="ml-item-name">${escapeHtml(it.name)}</div>
+              <button class="btn-del" onclick="deleteListItem('${type.key}', ${i})">Delete</button>
+            </div>`).join('')}</div>`
+        : `<div class="ml-empty">No ${type.label}s yet.</div>`;
+      panel.innerHTML = `
+        <form class="ml-form" onsubmit="addListItem(event, '${type.key}'); return false;">
+          <input type="text" id="ml-input-${type.key}" placeholder="${type.placeholder}" maxlength="120" autocomplete="off" />
+          <button type="submit" class="btn-add">Add</button>
+        </form>
+        ${itemsHtml}
+      `;
+    }
+
+    function renderAllPanels() {
+      LIST_TYPES.forEach(renderListPanel);
+    }
+
+    function addListItem(event, key) {
+      if (event) event.preventDefault();
+      const input = document.getElementById('ml-input-' + key);
+      const name = (input.value || '').trim();
+      if (!name) return;
+      quarryLists[key].push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), name });
+      saveLists(quarryLists);
+      renderListPanel(LIST_TYPES.find(t => t.key === key));
+      const newInput = document.getElementById('ml-input-' + key);
+      if (newInput) newInput.focus();
+    }
+
+    function deleteListItem(key, index) {
+      quarryLists[key].splice(index, 1);
+      saveLists(quarryLists);
+      renderListPanel(LIST_TYPES.find(t => t.key === key));
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
     function openManageLists() {
+      quarryLists = loadLists();
+      renderAllPanels();
       document.getElementById('manageListsBackdrop').classList.add('open');
     }
     function closeManageLists() {
@@ -264,6 +376,8 @@
         b.classList.toggle('active', b.dataset.list === list));
       document.querySelectorAll('.ml-panel').forEach(p =>
         p.classList.toggle('active', p.id === 'ml-' + list));
+      const input = document.getElementById('ml-input-' + list);
+      if (input) input.focus();
     }
     document.getElementById('manageListsBackdrop').addEventListener('click', function(e) {
       if (e.target === this) closeManageLists();
@@ -271,6 +385,8 @@
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') closeManageLists();
     });
+
+    renderAllPanels();
   </script>
 
 </body>
