@@ -298,26 +298,117 @@
       { key: 'location',  label: 'location',  placeholder: 'Location name' },
     ];
 
-    const LISTS_STORAGE_KEY = `fct_quarry_lists_${user?.companyCode || 'default'}`;
+    const QUARRY_LISTS_KEY = 'fct_quarry_lists';
+    const LEGACY_LOCAL_KEY = `fct_quarry_lists_${user?.companyCode || 'default'}`;
 
-    function loadLists() {
-      try {
-        const raw = localStorage.getItem(LISTS_STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : {};
-        LIST_TYPES.forEach(t => { if (!Array.isArray(parsed[t.key])) parsed[t.key] = []; });
-        return parsed;
-      } catch {
-        return Object.fromEntries(LIST_TYPES.map(t => [t.key, []]));
+    function emptyLists() {
+      return Object.fromEntries(LIST_TYPES.map(t => [t.key, []]));
+    }
+    function normalizeLists(value) {
+      const out = emptyLists();
+      if (value && typeof value === 'object') {
+        LIST_TYPES.forEach(t => {
+          if (Array.isArray(value[t.key])) out[t.key] = value[t.key];
+        });
+      }
+      return out;
+    }
+
+    let quarryLists = emptyLists();
+    let listsLoaded = false;
+    let savePending = null;
+    let saveInFlight = false;
+
+    async function fetchLists() {
+      const res = await fetch(`/api/data/${QUARRY_LISTS_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_LISTS_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeLists(data.value);
+    }
+
+    async function putLists(value) {
+      const res = await fetch(`/api/data/${QUARRY_LISTS_KEY}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ value }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_LISTS_KEY} → ${res.status} ${text}`);
       }
     }
-    function saveLists(lists) {
-      localStorage.setItem(LISTS_STORAGE_KEY, JSON.stringify(lists));
+
+    // Coalesces rapid edits into a single in-flight PUT.
+    function scheduleSave() {
+      savePending = quarryLists;
+      if (saveInFlight) return;
+      flushSave();
+    }
+    async function flushSave() {
+      while (savePending) {
+        const snapshot = savePending;
+        savePending = null;
+        saveInFlight = true;
+        try {
+          await putLists(snapshot);
+        } catch (err) {
+          console.error('[quarry] save failed:', err);
+          alert('Could not save changes — please check your connection and try again.');
+        } finally {
+          saveInFlight = false;
+        }
+      }
     }
 
-    let quarryLists = loadLists();
+    async function loadInitial() {
+      try {
+        const server = await fetchLists();
+        const serverHasData = LIST_TYPES.some(t => server[t.key].length);
+
+        // One-time migration: if the server is empty but a previous version
+        // saved items to localStorage on this browser, push them up so the
+        // user doesn't lose their data when we move to server-backed storage.
+        if (!serverHasData) {
+          try {
+            const raw = localStorage.getItem(LEGACY_LOCAL_KEY);
+            if (raw) {
+              const local = normalizeLists(JSON.parse(raw));
+              const localHasData = LIST_TYPES.some(t => local[t.key].length);
+              if (localHasData) {
+                quarryLists = local;
+                await putLists(local);
+                localStorage.removeItem(LEGACY_LOCAL_KEY);
+                listsLoaded = true;
+                renderAllPanels();
+                return;
+              }
+            }
+          } catch (err) {
+            console.warn('[quarry] legacy migration skipped:', err);
+          }
+        }
+
+        quarryLists = server;
+      } catch (err) {
+        console.error('[quarry] load failed:', err);
+        quarryLists = emptyLists();
+      } finally {
+        listsLoaded = true;
+        renderAllPanels();
+      }
+    }
 
     function renderListPanel(type) {
       const panel = document.getElementById('ml-' + type.key);
+      if (!listsLoaded) {
+        panel.innerHTML = `<div class="ml-empty">Loading…</div>`;
+        return;
+      }
       const items = quarryLists[type.key] || [];
       const itemsHtml = items.length
         ? `<div class="ml-list">${items.map((it, i) => `
@@ -328,8 +419,8 @@
         : `<div class="ml-empty">No ${type.label}s yet.</div>`;
       panel.innerHTML = `
         <form class="ml-form" onsubmit="addListItem(event, '${type.key}'); return false;">
-          <input type="text" id="ml-input-${type.key}" placeholder="${type.placeholder}" maxlength="120" autocomplete="off" />
-          <button type="submit" class="btn-add">Add</button>
+          <input type="text" id="ml-input-${type.key}" placeholder="${type.placeholder}" maxlength="120" autocomplete="off" ${listsLoaded ? '' : 'disabled'} />
+          <button type="submit" class="btn-add" ${listsLoaded ? '' : 'disabled'}>Add</button>
         </form>
         ${itemsHtml}
       `;
@@ -341,19 +432,24 @@
 
     function addListItem(event, key) {
       if (event) event.preventDefault();
+      if (!listsLoaded) return;
       const input = document.getElementById('ml-input-' + key);
       const name = (input.value || '').trim();
       if (!name) return;
-      quarryLists[key].push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), name });
-      saveLists(quarryLists);
+      quarryLists[key].push({
+        id: Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+        name,
+      });
+      scheduleSave();
       renderListPanel(LIST_TYPES.find(t => t.key === key));
       const newInput = document.getElementById('ml-input-' + key);
       if (newInput) newInput.focus();
     }
 
     function deleteListItem(key, index) {
+      if (!listsLoaded) return;
       quarryLists[key].splice(index, 1);
-      saveLists(quarryLists);
+      scheduleSave();
       renderListPanel(LIST_TYPES.find(t => t.key === key));
     }
 
@@ -363,10 +459,17 @@
       }[c]));
     }
 
-    function openManageLists() {
-      quarryLists = loadLists();
-      renderAllPanels();
+    async function openManageLists() {
       document.getElementById('manageListsBackdrop').classList.add('open');
+      // Refetch each open so a user sees changes other devices made.
+      try {
+        const fresh = await fetchLists();
+        quarryLists = fresh;
+        listsLoaded = true;
+        renderAllPanels();
+      } catch (err) {
+        console.error('[quarry] refresh failed:', err);
+      }
     }
     function closeManageLists() {
       document.getElementById('manageListsBackdrop').classList.remove('open');
@@ -387,6 +490,7 @@
     });
 
     renderAllPanels();
+    loadInitial();
   </script>
 
 </body>

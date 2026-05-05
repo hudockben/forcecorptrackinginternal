@@ -8,8 +8,12 @@ const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'intercompany'];
 // Keys that are intentionally shared across every division within a company
 // (any logged-in user may read/write them regardless of their division roles).
 // Examples: presence/heartbeat is a company-wide "who's online" feed.
+// fct_quarry_* — Quarry division is not yet wired into divisionRoles, so
+// gate its blobs on company membership only (still namespaced by companyCode
+// in the data endpoint, so cross-company isolation is preserved).
 const SHARED_KEY_PREFIXES = [
   'fct_presence',
+  'fct_quarry_',
 ];
 
 // Cross-division keys: blobs that aggregate data from multiple source
