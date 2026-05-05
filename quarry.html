@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='%230a0f1e' stroke='%23f97316' stroke-width='6'/><circle cx='50' cy='50' r='12' fill='%23f97316'/></svg>">
+  <title>DataWatch — Quarry</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0a0a0f;
+      --surface:    #111118;
+      --surface2:   #1a1a26;
+      --border:     #2a2a3a;
+      --accent:     #f97316;
+      --accent-dim: #c2410c;
+      --text:       #e0e0e0;
+      --muted:      #666;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.6rem 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 300;
+      gap: 1rem;
+    }
+    .hdr-left { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+    .brand {
+      font-size: 0.7rem; letter-spacing: 0.3em; text-transform: uppercase;
+      color: var(--accent); font-weight: 700; flex-shrink: 0;
+    }
+    .div-label {
+      font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--muted); border-left: 1px solid var(--border);
+      padding-left: 1rem; white-space: nowrap;
+    }
+    .hdr-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
+    .user-avatar {
+      width: 30px; height: 30px; border-radius: 50%;
+      background: var(--accent-dim);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.62rem; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .user-info { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+    .user-info strong { color: var(--text); }
+    .btn-ghost {
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.32rem 0.7rem; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    .btn-ghost:hover { color: var(--text); border-color: #555; }
+
+    /* ── Tab bar ── */
+    .tab-bar {
+      display: flex;
+      align-items: center;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1rem;
+      position: sticky;
+      top: 45px;
+      z-index: 200;
+      overflow-x: auto;
+      gap: 0;
+    }
+    .tab-btn {
+      padding: 0.6rem 1.25rem;
+      font-size: 0.67rem; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-bar-spacer { flex: 1; }
+
+    /* ── Panels ── */
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <header>
+    <div class="hdr-left">
+      <div class="brand">DataWatch</div>
+      <div class="div-label">Quarry</div>
+    </div>
+    <div class="hdr-right">
+      <div class="user-avatar" id="userAvatar"></div>
+      <div class="user-info" id="userInfo"></div>
+      <button class="btn-ghost" onclick="switchDivision()">Switch Division</button>
+    </div>
+  </header>
+
+  <!-- ── Tab bar ── -->
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-tab="home"     onclick="switchTab('home')">Home</button>
+    <button class="tab-btn"        data-tab="daily"    onclick="switchTab('daily')">Daily Tracking</button>
+    <button class="tab-btn"        data-tab="crushing" onclick="switchTab('crushing')">Crushing Tracking</button>
+    <button class="tab-btn"        data-tab="sales"    onclick="switchTab('sales')">Sales Tracking</button>
+    <div class="tab-bar-spacer"></div>
+  </nav>
+
+  <!-- ── Panels (intentionally blank) ── -->
+  <div class="tab-panel active" id="tab-home"></div>
+  <div class="tab-panel"        id="tab-daily"></div>
+  <div class="tab-panel"        id="tab-crushing"></div>
+  <div class="tab-panel"        id="tab-sales"></div>
+
+  <script>
+    // ── Auth guard ──────────────────────────────────────────────
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) { window.location.replace('index.html'); }
+
+    // ── Header user info ────────────────────────────────────────
+    document.getElementById('userAvatar').textContent =
+      (user?.username || 'U').slice(0, 2).toUpperCase();
+    document.getElementById('userInfo').innerHTML =
+      `<strong>${user?.username || ''}</strong>&nbsp;·&nbsp;${user?.companyName || user?.companyCode || ''}`;
+
+    // ── Tab switching ───────────────────────────────────────────
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.tab === tab));
+      document.querySelectorAll('.tab-panel').forEach(p =>
+        p.classList.toggle('active', p.id === 'tab-' + tab));
+    }
+
+    // ── Switch division ─────────────────────────────────────────
+    function switchDivision() {
+      localStorage.removeItem('fct_division');
+      window.location.replace('divisions.html');
+    }
+  </script>
+
+</body>
+</html>
