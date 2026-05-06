@@ -215,6 +215,93 @@
       border-radius: 3px; cursor: pointer; transition: background 0.15s;
     }
     .btn-del:hover { background: rgba(239,68,68,0.08); }
+
+    /* ── Sales Tracking ── */
+    .sales-wrap { padding: 1rem 1.25rem 2rem; }
+    .sales-toolbar {
+      display: flex; align-items: center; gap: 1rem;
+      margin-bottom: 0.75rem; flex-wrap: wrap;
+    }
+    .btn-add-row {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #fff;
+      background: var(--accent); border: 1px solid var(--accent);
+      border-radius: 4px; padding: 0.45rem 0.95rem; cursor: pointer;
+      transition: background 0.15s; white-space: nowrap;
+    }
+    .btn-add-row:hover { background: var(--accent-dim); border-color: var(--accent-dim); }
+    .btn-add-row:disabled { opacity: 0.45; cursor: not-allowed; }
+    .sales-summary {
+      display: flex; gap: 1.25rem; font-size: 0.72rem; color: var(--muted);
+      letter-spacing: 0.05em;
+    }
+    .sales-summary strong { color: var(--text); font-weight: 700; margin-left: 0.35rem; }
+
+    .sales-table-wrap {
+      border: 1px solid var(--border); border-radius: 6px;
+      overflow: auto; background: var(--surface);
+      max-height: calc(100vh - 220px);
+    }
+    .sales-table {
+      width: 100%; border-collapse: separate; border-spacing: 0;
+      font-size: 0.78rem; min-width: 1000px;
+    }
+    .sales-table thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--surface2); color: var(--muted);
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.55rem 0.7rem; text-align: left;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .sales-table tbody td {
+      padding: 0; border-bottom: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      vertical-align: middle;
+    }
+    .sales-table tbody td:last-child { border-right: none; }
+    .sales-table tbody tr:hover td { background: #14141d; }
+    .sales-table tbody tr.is-empty-row td { color: var(--muted); }
+
+    .cell-input, .cell-select {
+      width: 100%; height: 100%;
+      background: transparent; border: none; outline: none;
+      color: var(--text); font-family: inherit; font-size: 0.78rem;
+      padding: 0.55rem 0.7rem;
+      box-sizing: border-box;
+    }
+    .cell-input:focus, .cell-select:focus {
+      background: rgba(249,115,22,0.08);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+    .cell-select { appearance: none; cursor: pointer; }
+    .cell-select option { background: var(--surface2); color: var(--text); }
+    .cell-input[type="number"] { text-align: right; }
+    .cell-readonly {
+      padding: 0.55rem 0.7rem; color: var(--text);
+      text-align: right; font-variant-numeric: tabular-nums;
+    }
+    .cell-readonly.is-zero { color: var(--muted); }
+
+    .col-date    { width: 7.5rem; }
+    .col-num     { width: 6.5rem; }
+    .col-payment { width: 7rem; }
+    .col-total   { width: 8rem; }
+    .col-actions { width: 3rem; }
+
+    .row-del-btn {
+      width: 100%; background: none; border: none; color: var(--muted);
+      font-size: 1rem; cursor: pointer; padding: 0.4rem 0;
+      transition: color 0.15s;
+    }
+    .row-del-btn:hover { color: #ef4444; }
+
+    .sales-empty {
+      text-align: center; padding: 2.5rem 1rem;
+      color: var(--muted); font-size: 0.8rem;
+    }
   </style>
 </head>
 <body>
@@ -247,7 +334,34 @@
   <div class="tab-panel active" id="tab-home"></div>
   <div class="tab-panel"        id="tab-daily"></div>
   <div class="tab-panel"        id="tab-crushing"></div>
-  <div class="tab-panel"        id="tab-sales"></div>
+  <div class="tab-panel"        id="tab-sales">
+    <div class="sales-wrap">
+      <div class="sales-toolbar">
+        <button class="btn-add-row" id="salesAddBtn" onclick="addSalesRow()">+ Add Row</button>
+        <div class="sales-summary" id="salesSummary"></div>
+      </div>
+      <div class="sales-table-wrap">
+        <table class="sales-table">
+          <thead>
+            <tr>
+              <th class="col-date">Date</th>
+              <th>Employee</th>
+              <th>Customer</th>
+              <th>Product</th>
+              <th class="col-num">Tons</th>
+              <th class="col-payment">Payment</th>
+              <th class="col-num">Price / Ton</th>
+              <th class="col-total">Total Sales</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody id="salesTbody">
+            <tr><td colspan="9" class="sales-empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
   <div class="tab-panel"        id="tab-analytics"></div>
 
   <!-- ── Manage Lists Modal ── -->
@@ -294,6 +408,7 @@
         b.classList.toggle('active', b.dataset.tab === tab));
       document.querySelectorAll('.tab-panel').forEach(p =>
         p.classList.toggle('active', p.id === 'tab-' + tab));
+      if (tab === 'sales') refreshSales();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -550,7 +665,257 @@
     });
 
     renderAllPanels();
-    loadInitial();
+    loadInitial().then(() => {
+      // Re-render sales after lists load so dropdowns are populated.
+      if (salesLoaded) renderSales();
+    });
+
+    // ── Sales Tracking ──────────────────────────────────────────
+    const QUARRY_SALES_KEY = 'fct_quarry_sales';
+    const PAYMENT_OPTIONS = ['Cash', 'Credit'];
+
+    let salesRows = [];
+    let salesLoaded = false;
+    let salesSavePending = null;
+    let salesSaveInFlight = false;
+    let salesFetchedOnce = false;
+
+    function todayIso() {
+      const d = new Date();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${d.getFullYear()}-${m}-${day}`;
+    }
+
+    function normalizeSalesRow(r) {
+      const row = (r && typeof r === 'object') ? r : {};
+      return {
+        id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
+        date: typeof row.date === 'string' ? row.date : '',
+        employeeId: row.employeeId || '',
+        employeeName: row.employeeName || '',
+        customerId: row.customerId || '',
+        customerName: row.customerName || '',
+        productId: row.productId || '',
+        productName: row.productName || '',
+        tons: row.tons === '' || row.tons === null || row.tons === undefined ? '' : Number(row.tons),
+        payment: row.payment === 'Cash' || row.payment === 'Credit' ? row.payment : '',
+        pricePerTon: row.pricePerTon === '' || row.pricePerTon === null || row.pricePerTon === undefined ? '' : Number(row.pricePerTon),
+      };
+    }
+
+    function normalizeSalesRows(value) {
+      if (!Array.isArray(value)) return [];
+      return value.map(normalizeSalesRow);
+    }
+
+    async function fetchSales() {
+      const res = await fetch(`/api/data/${QUARRY_SALES_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_SALES_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeSalesRows(data.value);
+    }
+
+    async function putSales(value) {
+      const res = await fetch(`/api/data/${QUARRY_SALES_KEY}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ value }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_SALES_KEY} → ${res.status} ${text}`);
+      }
+    }
+
+    function scheduleSalesSave() {
+      salesSavePending = salesRows.map(r => ({ ...r }));
+      if (salesSaveInFlight) return;
+      flushSalesSave();
+    }
+    async function flushSalesSave() {
+      while (salesSavePending) {
+        const snapshot = salesSavePending;
+        salesSavePending = null;
+        salesSaveInFlight = true;
+        try {
+          await putSales(snapshot);
+        } catch (err) {
+          console.error('[quarry] sales save failed:', err);
+          alert('Could not save sales changes — please check your connection and try again.');
+        } finally {
+          salesSaveInFlight = false;
+        }
+      }
+    }
+
+    async function refreshSales() {
+      // First open: also refresh manage lists so dropdowns reflect other devices.
+      try {
+        if (listsLoaded) {
+          fetchLists().then(fresh => { quarryLists = fresh; renderSales(); }).catch(() => {});
+        }
+        const fresh = await fetchSales();
+        salesRows = fresh;
+        salesLoaded = true;
+        salesFetchedOnce = true;
+        renderSales();
+      } catch (err) {
+        console.error('[quarry] sales refresh failed:', err);
+        if (!salesFetchedOnce) {
+          salesRows = [];
+          salesLoaded = true;
+          renderSales();
+        }
+      }
+    }
+
+    function rowTotal(row) {
+      const t = Number(row.tons);
+      const p = Number(row.pricePerTon);
+      if (!Number.isFinite(t) || !Number.isFinite(p)) return 0;
+      return t * p;
+    }
+    function formatMoney(n) {
+      if (!Number.isFinite(n)) return '$0.00';
+      return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    function formatTons(n) {
+      if (!Number.isFinite(n)) return '0';
+      return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    }
+
+    function buildOptionList(listKey, selectedId, savedName) {
+      const items = (quarryLists[listKey] || []);
+      const opts = ['<option value="">—</option>'];
+      let matched = false;
+      items.forEach(it => {
+        const sel = String(it.id) === String(selectedId) ? ' selected' : '';
+        if (sel) matched = true;
+        opts.push(`<option value="${escapeHtml(it.id)}"${sel}>${escapeHtml(it.name)}</option>`);
+      });
+      if (selectedId && !matched) {
+        const label = savedName ? `${savedName} (removed)` : '(removed)';
+        opts.push(`<option value="${escapeHtml(selectedId)}" selected>${escapeHtml(label)}</option>`);
+      }
+      return opts.join('');
+    }
+
+    function renderSales() {
+      const tbody = document.getElementById('salesTbody');
+      if (!tbody) return;
+      const addBtn = document.getElementById('salesAddBtn');
+      if (addBtn) addBtn.disabled = !salesLoaded;
+
+      if (!salesLoaded) {
+        tbody.innerHTML = `<tr><td colspan="9" class="sales-empty">Loading…</td></tr>`;
+        updateSalesSummary();
+        return;
+      }
+      if (!salesRows.length) {
+        tbody.innerHTML = `<tr><td colspan="9" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
+        updateSalesSummary();
+        return;
+      }
+
+      tbody.innerHTML = salesRows.map((row, i) => {
+        const total = rowTotal(row);
+        const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
+        const customerOpts = buildOptionList('customer',  row.customerId, row.customerName);
+        const productOpts  = buildOptionList('product',   row.productId,  row.productName);
+        const paymentOpts  = ['<option value="">—</option>'].concat(
+          PAYMENT_OPTIONS.map(p => `<option value="${p}"${row.payment === p ? ' selected' : ''}>${p}</option>`)
+        ).join('');
+        return `
+          <tr>
+            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateSalesCell(${i}, 'date', this.value)" /></td>
+            <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'employee', this)">${employeeOpts}</select></td>
+            <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'customer', this)">${customerOpts}</select></td>
+            <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'product', this)">${productOpts}</select></td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.tons === '' ? '' : row.tons}" placeholder="0" oninput="updateSalesNumber(${i}, 'tons', this.value)" /></td>
+            <td class="col-payment"><select class="cell-select" onchange="updateSalesCell(${i}, 'payment', this.value)">${paymentOpts}</select></td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.pricePerTon === '' ? '' : row.pricePerTon}" placeholder="0.00" oninput="updateSalesNumber(${i}, 'pricePerTon', this.value)" /></td>
+            <td class="col-total"><div class="cell-readonly${total ? '' : ' is-zero'}" id="sales-total-${i}">${formatMoney(total)}</div></td>
+            <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteSalesRow(${i})">✕</button></td>
+          </tr>`;
+      }).join('');
+
+      updateSalesSummary();
+    }
+
+    function updateSalesSummary() {
+      const el = document.getElementById('salesSummary');
+      if (!el) return;
+      let totalTons = 0, totalSales = 0, count = 0;
+      salesRows.forEach(r => {
+        const t = Number(r.tons);
+        const p = Number(r.pricePerTon);
+        if (Number.isFinite(t)) totalTons += t;
+        if (Number.isFinite(t) && Number.isFinite(p)) totalSales += t * p;
+        count++;
+      });
+      el.innerHTML = `Rows<strong>${count}</strong>· Total Tons<strong>${formatTons(totalTons)}</strong>· Total Sales<strong>${formatMoney(totalSales)}</strong>`;
+    }
+
+    function addSalesRow() {
+      if (!salesLoaded) return;
+      salesRows.push(normalizeSalesRow({ date: todayIso() }));
+      scheduleSalesSave();
+      renderSales();
+    }
+
+    function deleteSalesRow(index) {
+      if (!salesLoaded) return;
+      if (!salesRows[index]) return;
+      salesRows.splice(index, 1);
+      scheduleSalesSave();
+      renderSales();
+    }
+
+    function updateSalesCell(index, field, value) {
+      if (!salesLoaded || !salesRows[index]) return;
+      salesRows[index][field] = value;
+      scheduleSalesSave();
+    }
+
+    function updateSalesSelect(index, kind, selectEl) {
+      if (!salesLoaded || !salesRows[index]) return;
+      const id = selectEl.value;
+      const opt = selectEl.options[selectEl.selectedIndex];
+      const name = opt ? opt.text.replace(/ \(removed\)$/, '') : '';
+      const idField = kind + 'Id';
+      const nameField = kind + 'Name';
+      // Manage lists store 'customer'/'product'/'employees' under their own keys;
+      // map dropdown 'kind' to the list-key used by quarryLists.
+      const listKey = kind === 'employee' ? 'employees' : kind;
+      const listItem = (quarryLists[listKey] || []).find(it => String(it.id) === String(id));
+      salesRows[index][idField] = id;
+      salesRows[index][nameField] = listItem ? listItem.name : name;
+      scheduleSalesSave();
+    }
+
+    function updateSalesNumber(index, field, raw) {
+      if (!salesLoaded || !salesRows[index]) return;
+      const s = String(raw).trim();
+      salesRows[index][field] = s === '' ? '' : Number(s);
+      // Live-update the total cell + summary without a full re-render so the
+      // caret stays in the input the user is typing in.
+      const totalEl = document.getElementById('sales-total-' + index);
+      if (totalEl) {
+        const total = rowTotal(salesRows[index]);
+        totalEl.textContent = formatMoney(total);
+        totalEl.classList.toggle('is-zero', !total);
+      }
+      updateSalesSummary();
+      scheduleSalesSave();
+    }
+
+    refreshSales();
   </script>
 
 </body>
