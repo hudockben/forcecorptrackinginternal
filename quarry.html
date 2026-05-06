@@ -302,6 +302,15 @@
       text-align: center; padding: 2.5rem 1rem;
       color: var(--muted); font-size: 0.8rem;
     }
+
+    /* Crushing Tracking — reuses sales-* layout, overrides for wider grid */
+    .crush-table { min-width: 2100px; }
+    .col-comments { min-width: 14rem; }
+    .cell-readonly.is-calc {
+      background: rgba(249,115,22,0.04);
+      color: var(--text);
+    }
+    .cell-readonly.is-calc.is-zero { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -333,7 +342,42 @@
   <!-- ── Panels (intentionally blank) ── -->
   <div class="tab-panel active" id="tab-home"></div>
   <div class="tab-panel"        id="tab-daily"></div>
-  <div class="tab-panel"        id="tab-crushing"></div>
+  <div class="tab-panel"        id="tab-crushing">
+    <div class="sales-wrap">
+      <div class="sales-toolbar">
+        <button class="btn-add-row" id="crushAddBtn" onclick="addCrushRow()">+ Add Row</button>
+        <div class="sales-summary" id="crushSummary"></div>
+      </div>
+      <div class="sales-table-wrap">
+        <table class="sales-table crush-table">
+          <thead>
+            <tr>
+              <th class="col-date">Date</th>
+              <th>Employee</th>
+              <th class="col-num">Hourly Rate</th>
+              <th class="col-num">Hours</th>
+              <th class="col-total">Total Payroll</th>
+              <th class="col-num">Fuel Gallons</th>
+              <th class="col-num">Fuel Cost</th>
+              <th class="col-total">Total Fuel</th>
+              <th class="col-num">Loads to Crusher</th>
+              <th class="col-num">Tons / Load</th>
+              <th class="col-total">Estimated Tons</th>
+              <th class="col-num">Hours Crushing</th>
+              <th class="col-total">Tons / Hour</th>
+              <th class="col-total">Total Cost</th>
+              <th class="col-total">Cost / Ton</th>
+              <th class="col-comments">Comments</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody id="crushTbody">
+            <tr><td colspan="17" class="sales-empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
   <div class="tab-panel"        id="tab-sales">
     <div class="sales-wrap">
       <div class="sales-toolbar">
@@ -409,6 +453,7 @@
       document.querySelectorAll('.tab-panel').forEach(p =>
         p.classList.toggle('active', p.id === 'tab-' + tab));
       if (tab === 'sales') refreshSales();
+      if (tab === 'crushing') refreshCrush();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -916,6 +961,235 @@
     }
 
     refreshSales();
+
+    // ── Crushing Tracking ───────────────────────────────────────
+    const QUARRY_CRUSH_KEY = 'fct_quarry_crushing';
+
+    let crushRows = [];
+    let crushLoaded = false;
+    let crushSavePending = null;
+    let crushSaveInFlight = false;
+    let crushFetchedOnce = false;
+
+    const CRUSH_NUM_FIELDS = [
+      'hourlyRate', 'hours', 'fuelGallons', 'fuelCost',
+      'loadsToCrusher', 'tonsPerLoad', 'hoursCrushing',
+    ];
+
+    function normalizeCrushRow(r) {
+      const row = (r && typeof r === 'object') ? r : {};
+      const out = {
+        id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
+        date: typeof row.date === 'string' ? row.date : '',
+        employeeId: row.employeeId || '',
+        employeeName: row.employeeName || '',
+        comments: typeof row.comments === 'string' ? row.comments : '',
+      };
+      CRUSH_NUM_FIELDS.forEach(f => {
+        const v = row[f];
+        out[f] = (v === '' || v === null || v === undefined) ? '' : Number(v);
+      });
+      return out;
+    }
+    function normalizeCrushRows(value) {
+      if (!Array.isArray(value)) return [];
+      return value.map(normalizeCrushRow);
+    }
+
+    async function fetchCrush() {
+      const res = await fetch(`/api/data/${QUARRY_CRUSH_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_CRUSH_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeCrushRows(data.value);
+    }
+    async function putCrush(value) {
+      const res = await fetch(`/api/data/${QUARRY_CRUSH_KEY}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ value }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_CRUSH_KEY} → ${res.status} ${text}`);
+      }
+    }
+    function scheduleCrushSave() {
+      crushSavePending = crushRows.map(r => ({ ...r }));
+      if (crushSaveInFlight) return;
+      flushCrushSave();
+    }
+    async function flushCrushSave() {
+      while (crushSavePending) {
+        const snapshot = crushSavePending;
+        crushSavePending = null;
+        crushSaveInFlight = true;
+        try {
+          await putCrush(snapshot);
+        } catch (err) {
+          console.error('[quarry] crushing save failed:', err);
+          alert('Could not save crushing changes — please check your connection and try again.');
+        } finally {
+          crushSaveInFlight = false;
+        }
+      }
+    }
+    async function refreshCrush() {
+      try {
+        if (listsLoaded) {
+          fetchLists().then(fresh => { quarryLists = fresh; renderCrush(); }).catch(() => {});
+        }
+        const fresh = await fetchCrush();
+        crushRows = fresh;
+        crushLoaded = true;
+        crushFetchedOnce = true;
+        renderCrush();
+      } catch (err) {
+        console.error('[quarry] crushing refresh failed:', err);
+        if (!crushFetchedOnce) {
+          crushRows = [];
+          crushLoaded = true;
+          renderCrush();
+        }
+      }
+    }
+
+    function crushCalc(row) {
+      const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
+      const totalPayroll = num(row.hourlyRate) * num(row.hours);
+      const totalFuel    = num(row.fuelGallons) * num(row.fuelCost);
+      const estimatedTons = num(row.loadsToCrusher) * num(row.tonsPerLoad);
+      const hoursCrushing = num(row.hoursCrushing);
+      const tonsPerHour  = hoursCrushing > 0 ? estimatedTons / hoursCrushing : 0;
+      const totalCost    = totalPayroll + totalFuel;
+      const costPerTon   = estimatedTons > 0 ? totalCost / estimatedTons : 0;
+      return { totalPayroll, totalFuel, estimatedTons, tonsPerHour, totalCost, costPerTon };
+    }
+
+    function renderCrush() {
+      const tbody = document.getElementById('crushTbody');
+      if (!tbody) return;
+      const addBtn = document.getElementById('crushAddBtn');
+      if (addBtn) addBtn.disabled = !crushLoaded;
+
+      if (!crushLoaded) {
+        tbody.innerHTML = `<tr><td colspan="17" class="sales-empty">Loading…</td></tr>`;
+        updateCrushSummary();
+        return;
+      }
+      if (!crushRows.length) {
+        tbody.innerHTML = `<tr><td colspan="17" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        updateCrushSummary();
+        return;
+      }
+
+      tbody.innerHTML = crushRows.map((row, i) => {
+        const c = crushCalc(row);
+        const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
+        const calcCell = (id, val, money) => {
+          const z = !val ? ' is-zero' : '';
+          const txt = money ? formatMoney(val) : formatTons(val);
+          return `<div class="cell-readonly is-calc${z}" id="${id}-${i}">${txt}</div>`;
+        };
+        return `
+          <tr>
+            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value)" /></td>
+            <td><select class="cell-select" onchange="updateCrushEmployee(${i}, this)">${employeeOpts}</select></td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hourlyRate === '' ? '' : row.hourlyRate}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'hourlyRate', this.value)" /></td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateCrushNumber(${i}, 'hours', this.value)" /></td>
+            <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.fuelGallons === '' ? '' : row.fuelGallons}" placeholder="0" oninput="updateCrushNumber(${i}, 'fuelGallons', this.value)" /></td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.001" value="${row.fuelCost === '' ? '' : row.fuelCost}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'fuelCost', this.value)" /></td>
+            <td class="col-total">${calcCell('crush-totalFuel', c.totalFuel, true)}</td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="1" value="${row.loadsToCrusher === '' ? '' : row.loadsToCrusher}" placeholder="0" oninput="updateCrushNumber(${i}, 'loadsToCrusher', this.value)" /></td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.tonsPerLoad === '' ? '' : row.tonsPerLoad}" placeholder="0" oninput="updateCrushNumber(${i}, 'tonsPerLoad', this.value)" /></td>
+            <td class="col-total">${calcCell('crush-estimatedTons', c.estimatedTons, false)}</td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hoursCrushing === '' ? '' : row.hoursCrushing}" placeholder="0" oninput="updateCrushNumber(${i}, 'hoursCrushing', this.value)" /></td>
+            <td class="col-total">${calcCell('crush-tonsPerHour', c.tonsPerHour, false)}</td>
+            <td class="col-total">${calcCell('crush-totalCost', c.totalCost, true)}</td>
+            <td class="col-total">${calcCell('crush-costPerTon', c.costPerTon, true)}</td>
+            <td class="col-comments"><input class="cell-input" type="text" value="${escapeHtml(row.comments)}" placeholder="Notes…" oninput="updateCrushCell(${i}, 'comments', this.value)" /></td>
+            <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteCrushRow(${i})">✕</button></td>
+          </tr>`;
+      }).join('');
+      updateCrushSummary();
+    }
+
+    function updateCrushSummary() {
+      const el = document.getElementById('crushSummary');
+      if (!el) return;
+      let totalHours = 0, totalEstTons = 0, totalCost = 0, count = 0;
+      crushRows.forEach(r => {
+        const c = crushCalc(r);
+        const hc = Number(r.hoursCrushing);
+        if (Number.isFinite(hc)) totalHours += hc;
+        totalEstTons += c.estimatedTons;
+        totalCost += c.totalCost;
+        count++;
+      });
+      const avgCostPerTon = totalEstTons > 0 ? totalCost / totalEstTons : 0;
+      el.innerHTML = `Rows<strong>${count}</strong>· Hours Crushing<strong>${formatTons(totalHours)}</strong>· Est. Tons<strong>${formatTons(totalEstTons)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>· Avg Cost/Ton<strong>${formatMoney(avgCostPerTon)}</strong>`;
+    }
+
+    function addCrushRow() {
+      if (!crushLoaded) return;
+      crushRows.push(normalizeCrushRow({ date: todayIso() }));
+      scheduleCrushSave();
+      renderCrush();
+    }
+    function deleteCrushRow(index) {
+      if (!crushLoaded || !crushRows[index]) return;
+      crushRows.splice(index, 1);
+      scheduleCrushSave();
+      renderCrush();
+    }
+    function updateCrushCell(index, field, value) {
+      if (!crushLoaded || !crushRows[index]) return;
+      crushRows[index][field] = value;
+      scheduleCrushSave();
+    }
+    function updateCrushEmployee(index, selectEl) {
+      if (!crushLoaded || !crushRows[index]) return;
+      const id = selectEl.value;
+      const opt = selectEl.options[selectEl.selectedIndex];
+      const name = opt ? opt.text.replace(/ \(removed\)$/, '') : '';
+      const listItem = (quarryLists.employees || []).find(it => String(it.id) === String(id));
+      crushRows[index].employeeId = id;
+      crushRows[index].employeeName = listItem ? listItem.name : name;
+      const empRate = listItem && listItem.rate !== undefined && listItem.rate !== null ? Number(listItem.rate) : null;
+      if (empRate !== null && Number.isFinite(empRate)) {
+        crushRows[index].hourlyRate = empRate;
+      }
+      scheduleCrushSave();
+      renderCrush();
+    }
+    function updateCrushNumber(index, field, raw) {
+      if (!crushLoaded || !crushRows[index]) return;
+      const s = String(raw).trim();
+      crushRows[index][field] = s === '' ? '' : Number(s);
+      // Live-update calculated cells in this row without re-rendering inputs.
+      const c = crushCalc(crushRows[index]);
+      const setCalc = (key, val, money) => {
+        const elc = document.getElementById('crush-' + key + '-' + index);
+        if (!elc) return;
+        elc.textContent = money ? formatMoney(val) : formatTons(val);
+        elc.classList.toggle('is-zero', !val);
+      };
+      setCalc('totalPayroll',   c.totalPayroll,   true);
+      setCalc('totalFuel',      c.totalFuel,      true);
+      setCalc('estimatedTons',  c.estimatedTons,  false);
+      setCalc('tonsPerHour',    c.tonsPerHour,    false);
+      setCalc('totalCost',      c.totalCost,      true);
+      setCalc('costPerTon',     c.costPerTon,     true);
+      updateCrushSummary();
+      scheduleCrushSave();
+    }
+
+    refreshCrush();
   </script>
 
 </body>
