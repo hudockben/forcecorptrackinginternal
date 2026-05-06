@@ -197,6 +197,18 @@
     }
     .ml-item:hover { border-color: #3a3a4a; }
     .ml-item-name { flex: 1; font-size: 0.82rem; color: var(--text); }
+    .ml-rate-wrap {
+      display: flex; align-items: center; gap: 0.25rem;
+      font-size: 0.78rem; color: var(--text-dim, #9aa0a6);
+    }
+    .ml-rate-input {
+      width: 5.5rem; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.78rem;
+      padding: 0.3rem 0.5rem; outline: none; font-family: inherit;
+      text-align: right;
+    }
+    .ml-rate-input:focus { border-color: var(--accent); }
+    .ml-form .ml-rate-input { flex: 0 0 auto; }
     .btn-del {
       font-size: 0.62rem; font-weight: 600; padding: 0.22rem 0.6rem;
       background: none; border: 1px solid rgba(239,68,68,0.25); color: #ef4444;
@@ -405,23 +417,47 @@
       }
     }
 
+    function formatRate(rate) {
+      if (rate === null || rate === undefined || rate === '') return '';
+      const n = Number(rate);
+      if (!Number.isFinite(n)) return '';
+      return n.toFixed(2);
+    }
+
     function renderListPanel(type) {
       const panel = document.getElementById('ml-' + type.key);
       if (!listsLoaded) {
         panel.innerHTML = `<div class="ml-empty">Loading…</div>`;
         return;
       }
+      const isEmployees = type.key === 'employees';
       const items = quarryLists[type.key] || [];
       const itemsHtml = items.length
-        ? `<div class="ml-list">${items.map((it, i) => `
+        ? `<div class="ml-list">${items.map((it, i) => {
+            const rateCell = isEmployees
+              ? `<div class="ml-rate-wrap">
+                   <span>$</span>
+                   <input type="number" class="ml-rate-input" min="0" step="0.01"
+                          value="${formatRate(it.rate)}" placeholder="0.00"
+                          onchange="updateEmployeeRate(${i}, this.value)" />
+                   <span>/hr</span>
+                 </div>`
+              : '';
+            return `
             <div class="ml-item">
               <div class="ml-item-name">${escapeHtml(it.name)}</div>
+              ${rateCell}
               <button class="btn-del" onclick="deleteListItem('${type.key}', ${i})">Delete</button>
-            </div>`).join('')}</div>`
+            </div>`;
+          }).join('')}</div>`
         : `<div class="ml-empty">No ${type.label}s yet.</div>`;
+      const rateInputHtml = isEmployees
+        ? `<input type="number" id="ml-rate-${type.key}" class="ml-rate-input" min="0" step="0.01" placeholder="Rate $/hr" ${listsLoaded ? '' : 'disabled'} />`
+        : '';
       panel.innerHTML = `
         <form class="ml-form" onsubmit="addListItem(event, '${type.key}'); return false;">
           <input type="text" id="ml-input-${type.key}" placeholder="${type.placeholder}" maxlength="120" autocomplete="off" ${listsLoaded ? '' : 'disabled'} />
+          ${rateInputHtml}
           <button type="submit" class="btn-add" ${listsLoaded ? '' : 'disabled'}>Add</button>
         </form>
         ${itemsHtml}
@@ -432,16 +468,30 @@
       LIST_TYPES.forEach(renderListPanel);
     }
 
+    function parseRate(raw) {
+      if (raw === null || raw === undefined) return null;
+      const s = String(raw).trim();
+      if (!s) return null;
+      const n = Number(s);
+      if (!Number.isFinite(n) || n < 0) return null;
+      return Math.round(n * 100) / 100;
+    }
+
     function addListItem(event, key) {
       if (event) event.preventDefault();
       if (!listsLoaded) return;
       const input = document.getElementById('ml-input-' + key);
       const name = (input.value || '').trim();
       if (!name) return;
-      quarryLists[key].push({
+      const item = {
         id: Date.now() + '-' + Math.random().toString(36).slice(2, 7),
         name,
-      });
+      };
+      if (key === 'employees') {
+        const rateEl = document.getElementById('ml-rate-' + key);
+        item.rate = parseRate(rateEl ? rateEl.value : null);
+      }
+      quarryLists[key].push(item);
       scheduleSave();
       renderListPanel(LIST_TYPES.find(t => t.key === key));
       const newInput = document.getElementById('ml-input-' + key);
@@ -453,6 +503,14 @@
       quarryLists[key].splice(index, 1);
       scheduleSave();
       renderListPanel(LIST_TYPES.find(t => t.key === key));
+    }
+
+    function updateEmployeeRate(index, raw) {
+      if (!listsLoaded) return;
+      const list = quarryLists.employees;
+      if (!list || !list[index]) return;
+      list[index].rate = parseRate(raw);
+      scheduleSave();
     }
 
     function escapeHtml(s) {
