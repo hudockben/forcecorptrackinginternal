@@ -305,6 +305,7 @@
 
     /* Crushing Tracking — reuses sales-* layout, overrides for wider grid */
     .crush-table { min-width: 2100px; }
+    .daily-table { min-width: 1700px; }
     .col-comments { min-width: 14rem; }
     .cell-readonly.is-calc {
       background: rgba(249,115,22,0.04);
@@ -341,7 +342,39 @@
 
   <!-- ── Panels (intentionally blank) ── -->
   <div class="tab-panel active" id="tab-home"></div>
-  <div class="tab-panel"        id="tab-daily"></div>
+  <div class="tab-panel"        id="tab-daily">
+    <div class="sales-wrap">
+      <div class="sales-toolbar">
+        <button class="btn-add-row" id="dailyAddBtn" onclick="addDailyRow()">+ Add Row</button>
+        <div class="sales-summary" id="dailySummary"></div>
+      </div>
+      <div class="sales-table-wrap">
+        <table class="sales-table daily-table">
+          <thead>
+            <tr>
+              <th class="col-date">Date</th>
+              <th>Employee</th>
+              <th>Equipment</th>
+              <th>Task</th>
+              <th class="col-num">Hours</th>
+              <th class="col-num">Rate</th>
+              <th class="col-total">Labor Cost</th>
+              <th class="col-num">Fuel / Gallons</th>
+              <th class="col-num">PPG</th>
+              <th class="col-total">Fuel Cost</th>
+              <th class="col-total">Total Cost</th>
+              <th class="col-total">Sales / Total</th>
+              <th class="col-total">Gross P/L</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody id="dailyTbody">
+            <tr><td colspan="14" class="sales-empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
   <div class="tab-panel"        id="tab-crushing">
     <div class="sales-wrap">
       <div class="sales-toolbar">
@@ -454,6 +487,7 @@
         p.classList.toggle('active', p.id === 'tab-' + tab));
       if (tab === 'sales') refreshSales();
       if (tab === 'crushing') refreshCrush();
+      if (tab === 'daily') refreshDaily();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -1190,6 +1224,240 @@
     }
 
     refreshCrush();
+
+    // ── Daily Tracking ──────────────────────────────────────────
+    const QUARRY_DAILY_KEY = 'fct_quarry_daily';
+
+    let dailyRows = [];
+    let dailyLoaded = false;
+    let dailySavePending = null;
+    let dailySaveInFlight = false;
+    let dailyFetchedOnce = false;
+
+    const DAILY_NUM_FIELDS = ['hours', 'rate', 'fuelGallons', 'ppg', 'salesTotal'];
+
+    function normalizeDailyRow(r) {
+      const row = (r && typeof r === 'object') ? r : {};
+      const out = {
+        id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
+        date: typeof row.date === 'string' ? row.date : '',
+        employeeId: row.employeeId || '',
+        employeeName: row.employeeName || '',
+        equipmentId: row.equipmentId || '',
+        equipmentName: row.equipmentName || '',
+        taskId: row.taskId || '',
+        taskName: row.taskName || '',
+      };
+      DAILY_NUM_FIELDS.forEach(f => {
+        const v = row[f];
+        out[f] = (v === '' || v === null || v === undefined) ? '' : Number(v);
+      });
+      return out;
+    }
+    function normalizeDailyRows(value) {
+      if (!Array.isArray(value)) return [];
+      return value.map(normalizeDailyRow);
+    }
+
+    async function fetchDaily() {
+      const res = await fetch(`/api/data/${QUARRY_DAILY_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_DAILY_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeDailyRows(data.value);
+    }
+    async function putDaily(value) {
+      const res = await fetch(`/api/data/${QUARRY_DAILY_KEY}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ value }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_DAILY_KEY} → ${res.status} ${text}`);
+      }
+    }
+    function scheduleDailySave() {
+      dailySavePending = dailyRows.map(r => ({ ...r }));
+      if (dailySaveInFlight) return;
+      flushDailySave();
+    }
+    async function flushDailySave() {
+      while (dailySavePending) {
+        const snapshot = dailySavePending;
+        dailySavePending = null;
+        dailySaveInFlight = true;
+        try {
+          await putDaily(snapshot);
+        } catch (err) {
+          console.error('[quarry] daily save failed:', err);
+          alert('Could not save daily tracking changes — please check your connection and try again.');
+        } finally {
+          dailySaveInFlight = false;
+        }
+      }
+    }
+    async function refreshDaily() {
+      try {
+        if (listsLoaded) {
+          fetchLists().then(fresh => { quarryLists = fresh; renderDaily(); }).catch(() => {});
+        }
+        const fresh = await fetchDaily();
+        dailyRows = fresh;
+        dailyLoaded = true;
+        dailyFetchedOnce = true;
+        renderDaily();
+      } catch (err) {
+        console.error('[quarry] daily refresh failed:', err);
+        if (!dailyFetchedOnce) {
+          dailyRows = [];
+          dailyLoaded = true;
+          renderDaily();
+        }
+      }
+    }
+
+    function dailyCalc(row) {
+      const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
+      const laborCost = num(row.hours) * num(row.rate);
+      const fuelCost  = num(row.fuelGallons) * num(row.ppg);
+      const totalCost = laborCost + fuelCost;
+      const grossPL   = num(row.salesTotal) - totalCost;
+      return { laborCost, fuelCost, totalCost, grossPL };
+    }
+
+    function renderDaily() {
+      const tbody = document.getElementById('dailyTbody');
+      if (!tbody) return;
+      const addBtn = document.getElementById('dailyAddBtn');
+      if (addBtn) addBtn.disabled = !dailyLoaded;
+
+      if (!dailyLoaded) {
+        tbody.innerHTML = `<tr><td colspan="14" class="sales-empty">Loading…</td></tr>`;
+        updateDailySummary();
+        return;
+      }
+      if (!dailyRows.length) {
+        tbody.innerHTML = `<tr><td colspan="14" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        updateDailySummary();
+        return;
+      }
+
+      tbody.innerHTML = dailyRows.map((row, i) => {
+        const c = dailyCalc(row);
+        const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
+        const equipmentOpts = buildOptionList('equipment', row.equipmentId, row.equipmentName);
+        const taskOpts = buildOptionList('tasks', row.taskId, row.taskName);
+        const calcCell = (id, val, money) => {
+          const z = !val ? ' is-zero' : '';
+          const txt = money ? formatMoney(val) : formatTons(val);
+          return `<div class="cell-readonly is-calc${z}" id="${id}-${i}">${txt}</div>`;
+        };
+        const plClass = c.grossPL < 0 ? ' is-zero' : '';
+        return `
+          <tr>
+            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateDailyCell(${i}, 'date', this.value)" /></td>
+            <td><select class="cell-select" onchange="updateDailySelect(${i}, 'employee', this)">${employeeOpts}</select></td>
+            <td><select class="cell-select" onchange="updateDailySelect(${i}, 'equipment', this)">${equipmentOpts}</select></td>
+            <td><select class="cell-select" onchange="updateDailySelect(${i}, 'task', this)">${taskOpts}</select></td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateDailyNumber(${i}, 'hours', this.value)" /></td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.rate === '' ? '' : row.rate}" placeholder="0.00" oninput="updateDailyNumber(${i}, 'rate', this.value)" /></td>
+            <td class="col-total">${calcCell('daily-laborCost', c.laborCost, true)}</td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.fuelGallons === '' ? '' : row.fuelGallons}" placeholder="0" oninput="updateDailyNumber(${i}, 'fuelGallons', this.value)" /></td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.001" value="${row.ppg === '' ? '' : row.ppg}" placeholder="0.00" oninput="updateDailyNumber(${i}, 'ppg', this.value)" /></td>
+            <td class="col-total">${calcCell('daily-fuelCost', c.fuelCost, true)}</td>
+            <td class="col-total">${calcCell('daily-totalCost', c.totalCost, true)}</td>
+            <td class="col-total"><input class="cell-input" type="number" step="0.01" value="${row.salesTotal === '' ? '' : row.salesTotal}" placeholder="0.00" oninput="updateDailyNumber(${i}, 'salesTotal', this.value)" /></td>
+            <td class="col-total"><div class="cell-readonly is-calc${plClass}" id="daily-grossPL-${i}">${formatMoney(c.grossPL)}</div></td>
+            <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteDailyRow(${i})">✕</button></td>
+          </tr>`;
+      }).join('');
+      updateDailySummary();
+    }
+
+    function updateDailySummary() {
+      const el = document.getElementById('dailySummary');
+      if (!el) return;
+      let totalHours = 0, totalCost = 0, totalSales = 0, totalPL = 0, count = 0;
+      dailyRows.forEach(r => {
+        const c = dailyCalc(r);
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) totalHours += h;
+        totalCost  += c.totalCost;
+        totalSales += Number.isFinite(Number(r.salesTotal)) ? Number(r.salesTotal) : 0;
+        totalPL    += c.grossPL;
+        count++;
+      });
+      el.innerHTML = `Rows<strong>${count}</strong>· Hours<strong>${formatTons(totalHours)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>· Sales<strong>${formatMoney(totalSales)}</strong>· Gross P/L<strong>${formatMoney(totalPL)}</strong>`;
+    }
+
+    function addDailyRow() {
+      if (!dailyLoaded) return;
+      dailyRows.push(normalizeDailyRow({ date: todayIso() }));
+      scheduleDailySave();
+      renderDaily();
+    }
+    function deleteDailyRow(index) {
+      if (!dailyLoaded || !dailyRows[index]) return;
+      dailyRows.splice(index, 1);
+      scheduleDailySave();
+      renderDaily();
+    }
+    function updateDailyCell(index, field, value) {
+      if (!dailyLoaded || !dailyRows[index]) return;
+      dailyRows[index][field] = value;
+      scheduleDailySave();
+    }
+    function updateDailySelect(index, kind, selectEl) {
+      if (!dailyLoaded || !dailyRows[index]) return;
+      const id = selectEl.value;
+      const opt = selectEl.options[selectEl.selectedIndex];
+      const name = opt ? opt.text.replace(/ \(removed\)$/, '') : '';
+      const listKey = kind === 'employee' ? 'employees'
+                    : kind === 'task'     ? 'tasks'
+                    : kind; // equipment
+      const listItem = (quarryLists[listKey] || []).find(it => String(it.id) === String(id));
+      const idField = kind + 'Id';
+      const nameField = kind + 'Name';
+      dailyRows[index][idField] = id;
+      dailyRows[index][nameField] = listItem ? listItem.name : name;
+      if (kind === 'employee') {
+        const empRate = listItem && listItem.rate !== undefined && listItem.rate !== null ? Number(listItem.rate) : null;
+        if (empRate !== null && Number.isFinite(empRate)) {
+          dailyRows[index].rate = empRate;
+        }
+      }
+      scheduleDailySave();
+      renderDaily();
+    }
+    function updateDailyNumber(index, field, raw) {
+      if (!dailyLoaded || !dailyRows[index]) return;
+      const s = String(raw).trim();
+      dailyRows[index][field] = s === '' ? '' : Number(s);
+      const c = dailyCalc(dailyRows[index]);
+      const setCalc = (key, val, money, plMode) => {
+        const elc = document.getElementById('daily-' + key + '-' + index);
+        if (!elc) return;
+        elc.textContent = money ? formatMoney(val) : formatTons(val);
+        if (plMode) {
+          elc.classList.toggle('is-zero', val < 0);
+        } else {
+          elc.classList.toggle('is-zero', !val);
+        }
+      };
+      setCalc('laborCost', c.laborCost, true);
+      setCalc('fuelCost',  c.fuelCost,  true);
+      setCalc('totalCost', c.totalCost, true);
+      setCalc('grossPL',   c.grossPL,   true, true);
+      updateDailySummary();
+      scheduleDailySave();
+    }
+
+    refreshDaily();
   </script>
 
 </body>
