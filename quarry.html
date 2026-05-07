@@ -1482,7 +1482,7 @@
 
     function addSalesRow() {
       if (!salesLoaded) return;
-      salesRows.push(normalizeSalesRow({ date: todayIso() }));
+      salesRows.unshift(normalizeSalesRow({ date: todayIso() }));
       scheduleSalesSave();
       renderSales();
     }
@@ -1726,7 +1726,7 @@
 
     function addCrushRow() {
       if (!crushLoaded) return;
-      crushRows.push(normalizeCrushRow({ date: todayIso() }));
+      crushRows.unshift(normalizeCrushRow({ date: todayIso() }));
       scheduleCrushSave();
       renderCrush();
     }
@@ -1972,7 +1972,7 @@
 
     function addDailyRow() {
       if (!dailyLoaded) return;
-      dailyRows.push(normalizeDailyRow({ date: todayIso() }));
+      dailyRows.unshift(normalizeDailyRow({ date: todayIso() }));
       scheduleDailySave();
       renderDaily();
     }
