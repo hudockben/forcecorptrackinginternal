@@ -312,6 +312,98 @@
       color: var(--text);
     }
     .cell-readonly.is-calc.is-zero { color: var(--muted); }
+
+    /* ── Bulk Upload ── */
+    .btn-bulk-upload {
+      background: rgba(249,115,22,0.07); color: var(--accent);
+      border: 1px solid rgba(249,115,22,0.35);
+    }
+    .btn-bulk-upload:hover { background: rgba(249,115,22,0.16); border-color: var(--accent); }
+    .btn-secondary {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.45rem 0.95rem; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+      font-family: inherit;
+    }
+    .btn-secondary:hover { color: var(--text); border-color: #3a3a4a; }
+    .bulk-modal { max-width: 980px; }
+    .bulk-body {
+      padding: 1.1rem 1.5rem; overflow-y: auto; flex: 1;
+      display: flex; flex-direction: column; gap: 0.9rem;
+    }
+    .bulk-help {
+      font-size: 0.78rem; color: var(--muted); line-height: 1.5;
+    }
+    .bulk-help code {
+      background: var(--bg); border: 1px solid var(--border);
+      padding: 0.05rem 0.35rem; border-radius: 3px;
+      font-size: 0.72rem; color: var(--text);
+    }
+    .bulk-actions {
+      display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
+    }
+    .bulk-checkbox {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      font-size: 0.72rem; color: var(--muted); cursor: pointer;
+      letter-spacing: 0.02em;
+    }
+    .bulk-checkbox input { accent-color: var(--accent); }
+    .bulk-summary {
+      font-size: 0.78rem; color: var(--text);
+      display: flex; gap: 1.25rem; flex-wrap: wrap;
+      letter-spacing: 0.02em;
+    }
+    .bulk-summary .ok  { color: #4ade80; }
+    .bulk-summary .bad { color: #ef4444; }
+    .bulk-error {
+      font-size: 0.78rem; color: #ef4444;
+      background: rgba(239,68,68,0.06);
+      border: 1px solid rgba(239,68,68,0.25);
+      border-radius: 4px; padding: 0.65rem 0.85rem;
+    }
+    .bulk-preview-wrap {
+      border: 1px solid var(--border); border-radius: 6px;
+      overflow: auto; background: var(--surface);
+      max-height: 22rem;
+    }
+    .bulk-preview {
+      width: 100%; border-collapse: separate; border-spacing: 0;
+      font-size: 0.75rem; min-width: 800px;
+    }
+    .bulk-preview thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--surface2); color: var(--muted);
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.5rem 0.65rem; text-align: left;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .bulk-preview tbody td {
+      padding: 0.42rem 0.65rem; border-bottom: 1px solid var(--border);
+      color: var(--text); white-space: nowrap;
+    }
+    .bulk-preview tbody tr:last-child td { border-bottom: none; }
+    .bulk-preview tr.bad td { background: rgba(239,68,68,0.06); }
+    .bulk-preview tr.dup td { background: rgba(245,158,11,0.06); }
+    .bulk-preview td.status     { font-size: 0.68rem; }
+    .bulk-preview td.status.ok  { color: #4ade80; }
+    .bulk-preview td.status.bad { color: #ef4444; }
+    .bulk-preview td.status.dup { color: #f59e0b; }
+    .bulk-summary .dup { color: #f59e0b; }
+    .bulk-preview .new-tag {
+      color: var(--accent); font-style: normal; font-size: 0.65rem;
+      margin-left: 0.25rem;
+    }
+    .bulk-preview .empty-cell { color: var(--muted); }
+    .bulk-footer {
+      padding: 0.85rem 1.5rem;
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 0.6rem;
+      background: var(--surface);
+    }
   </style>
 </head>
 <body>
@@ -346,6 +438,7 @@
     <div class="sales-wrap">
       <div class="sales-toolbar">
         <button class="btn-add-row" id="dailyAddBtn" onclick="addDailyRow()">+ Add Row</button>
+        <button class="btn-add-row btn-bulk-upload" id="dailyBulkBtn" onclick="openBulk('daily')">⇪ Bulk Upload CSV</button>
         <div class="sales-summary" id="dailySummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -377,6 +470,7 @@
     <div class="sales-wrap">
       <div class="sales-toolbar">
         <button class="btn-add-row" id="crushAddBtn" onclick="addCrushRow()">+ Add Row</button>
+        <button class="btn-add-row btn-bulk-upload" id="crushBulkBtn" onclick="openBulk('crushing')">⇪ Bulk Upload CSV</button>
         <div class="sales-summary" id="crushSummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -413,6 +507,7 @@
     <div class="sales-wrap">
       <div class="sales-toolbar">
         <button class="btn-add-row" id="salesAddBtn" onclick="addSalesRow()">+ Add Row</button>
+        <button class="btn-add-row btn-bulk-upload" id="salesBulkBtn" onclick="openBulk('sales')">⇪ Bulk Upload CSV</button>
         <div class="sales-summary" id="salesSummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -461,6 +556,112 @@
         <div class="ml-panel"        id="ml-tasks"></div>
         <div class="ml-panel"        id="ml-employees"></div>
         <div class="ml-panel"        id="ml-location"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Bulk Upload CSV Modal ── -->
+  <div class="modal-backdrop" id="dailyUploadBackdrop">
+    <div class="modal bulk-modal" role="dialog" aria-modal="true" aria-labelledby="dailyUploadTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="dailyUploadTitle">Bulk Upload Daily Tracking</div>
+        <button class="modal-close" onclick="closeBulk('daily')" aria-label="Close">✕</button>
+      </div>
+      <div class="bulk-body">
+        <div class="bulk-help">
+          Upload a CSV with these columns (header row required):
+          <code>Date</code>, <code>Employee</code>, <code>Equipment</code>, <code>Task</code>,
+          <code>Hours</code>, <code>Rate</code>, <code>Fuel Gallons</code>, <code>PPG</code>.
+          Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
+          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code>. Labor / fuel / total cost are computed automatically.
+        </div>
+        <div class="bulk-actions">
+          <label class="btn-add-row" id="dailyUploadChooseLabel">
+            Choose CSV File
+            <input type="file" id="dailyUploadFile" accept=".csv,text/csv" style="display:none" onchange="handleBulkFile('daily', this.files[0])" />
+          </label>
+          <button class="btn-secondary" onclick="downloadBulkTemplate('daily')">Download Template</button>
+          <label class="bulk-checkbox">
+            <input type="checkbox" id="dailyUploadAutoCreate" checked />
+            Auto-add new employees / equipment / tasks
+          </label>
+        </div>
+        <div id="dailyUploadResult"></div>
+      </div>
+      <div class="bulk-footer">
+        <button class="btn-secondary" onclick="closeBulk('daily')">Cancel</button>
+        <button class="btn-add-row" id="dailyUploadConfirm" disabled onclick="confirmBulk('daily')">Import 0 Rows</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Bulk Upload CSV Modal — Crushing ── -->
+  <div class="modal-backdrop" id="crushingUploadBackdrop">
+    <div class="modal bulk-modal" role="dialog" aria-modal="true" aria-labelledby="crushingUploadTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="crushingUploadTitle">Bulk Upload Crushing Tracking</div>
+        <button class="modal-close" onclick="closeBulk('crushing')" aria-label="Close">✕</button>
+      </div>
+      <div class="bulk-body">
+        <div class="bulk-help">
+          Upload a CSV with these columns (header row required):
+          <code>Date</code>, <code>Employee</code>, <code>Hourly Rate</code>, <code>Hours</code>,
+          <code>Fuel Gallons</code>, <code>Fuel Cost</code>, <code>Loads to Crusher</code>,
+          <code>Tons / Load</code>, <code>Hours Crushing</code>, <code>Comments</code>.
+          Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
+          Total payroll, total fuel, est. tons, tons/hour, total cost, and cost/ton are computed automatically.
+        </div>
+        <div class="bulk-actions">
+          <label class="btn-add-row">
+            Choose CSV File
+            <input type="file" id="crushingUploadFile" accept=".csv,text/csv" style="display:none" onchange="handleBulkFile('crushing', this.files[0])" />
+          </label>
+          <button class="btn-secondary" onclick="downloadBulkTemplate('crushing')">Download Template</button>
+          <label class="bulk-checkbox">
+            <input type="checkbox" id="crushingUploadAutoCreate" checked />
+            Auto-add new employees
+          </label>
+        </div>
+        <div id="crushingUploadResult"></div>
+      </div>
+      <div class="bulk-footer">
+        <button class="btn-secondary" onclick="closeBulk('crushing')">Cancel</button>
+        <button class="btn-add-row" id="crushingUploadConfirm" disabled onclick="confirmBulk('crushing')">Import 0 Rows</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Bulk Upload CSV Modal — Sales ── -->
+  <div class="modal-backdrop" id="salesUploadBackdrop">
+    <div class="modal bulk-modal" role="dialog" aria-modal="true" aria-labelledby="salesUploadTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="salesUploadTitle">Bulk Upload Sales Tracking</div>
+        <button class="modal-close" onclick="closeBulk('sales')" aria-label="Close">✕</button>
+      </div>
+      <div class="bulk-body">
+        <div class="bulk-help">
+          Upload a CSV with these columns (header row required):
+          <code>Date</code>, <code>Employee</code>, <code>Customer</code>, <code>Product</code>,
+          <code>Tons</code>, <code>Payment</code>, <code>Price / Ton</code>.
+          Required: <strong>Date</strong>, <strong>Customer</strong>, <strong>Product</strong>, <strong>Tons</strong>, <strong>Price / Ton</strong>.
+          Payment must be <code>Cash</code> or <code>Credit</code>. Total sales is computed automatically.
+        </div>
+        <div class="bulk-actions">
+          <label class="btn-add-row">
+            Choose CSV File
+            <input type="file" id="salesUploadFile" accept=".csv,text/csv" style="display:none" onchange="handleBulkFile('sales', this.files[0])" />
+          </label>
+          <button class="btn-secondary" onclick="downloadBulkTemplate('sales')">Download Template</button>
+          <label class="bulk-checkbox">
+            <input type="checkbox" id="salesUploadAutoCreate" checked />
+            Auto-add new employees / customers / products
+          </label>
+        </div>
+        <div id="salesUploadResult"></div>
+      </div>
+      <div class="bulk-footer">
+        <button class="btn-secondary" onclick="closeBulk('sales')">Cancel</button>
+        <button class="btn-add-row" id="salesUploadConfirm" disabled onclick="confirmBulk('sales')">Import 0 Rows</button>
       </div>
     </div>
   </div>
@@ -888,6 +1089,8 @@
       if (!tbody) return;
       const addBtn = document.getElementById('salesAddBtn');
       if (addBtn) addBtn.disabled = !salesLoaded;
+      const bulkBtn = document.getElementById('salesBulkBtn');
+      if (bulkBtn) bulkBtn.disabled = !salesLoaded;
 
       if (!salesLoaded) {
         tbody.innerHTML = `<tr><td colspan="9" class="sales-empty">Loading…</td></tr>`;
@@ -1107,6 +1310,8 @@
       if (!tbody) return;
       const addBtn = document.getElementById('crushAddBtn');
       if (addBtn) addBtn.disabled = !crushLoaded;
+      const bulkBtn = document.getElementById('crushBulkBtn');
+      if (bulkBtn) bulkBtn.disabled = !crushLoaded;
 
       if (!crushLoaded) {
         tbody.innerHTML = `<tr><td colspan="17" class="sales-empty">Loading…</td></tr>`;
@@ -1332,6 +1537,8 @@
       if (!tbody) return;
       const addBtn = document.getElementById('dailyAddBtn');
       if (addBtn) addBtn.disabled = !dailyLoaded;
+      const bulkBtn = document.getElementById('dailyBulkBtn');
+      if (bulkBtn) bulkBtn.disabled = !dailyLoaded;
 
       if (!dailyLoaded) {
         tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">Loading…</td></tr>`;
@@ -1443,6 +1650,421 @@
       updateDailySummary();
       scheduleDailySave();
     }
+
+    // ── Quarry Bulk CSV Upload (generic for daily, crushing, sales) ──
+    const BULK_CONFIGS = {
+      daily: {
+        title: 'Daily Tracking',
+        fields: [
+          { name: 'date',        label: 'Date',         aliases: ['date'],                            required: true, type: 'date', outKey: 'date' },
+          { name: 'employee',    label: 'Employee',     aliases: ['employee', 'employeename'],        required: true, type: 'list', list: 'employees', idKey: 'employeeId',  nameKey: 'employeeName' },
+          { name: 'equipment',   label: 'Equipment',    aliases: ['equipment', 'equipmentname'],                      type: 'list', list: 'equipment', idKey: 'equipmentId', nameKey: 'equipmentName' },
+          { name: 'task',        label: 'Task',         aliases: ['task', 'taskname'],                                type: 'list', list: 'tasks',     idKey: 'taskId',      nameKey: 'taskName' },
+          { name: 'hours',       label: 'Hours',        aliases: ['hours'],                           required: true, type: 'num',  outKey: 'hours' },
+          { name: 'rate',        label: 'Rate',         aliases: ['rate', 'hourlyrate'],                              type: 'num',  outKey: 'rate', fillFromEmployee: 'rate' },
+          { name: 'fuelGallons', label: 'Fuel Gallons', aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],       type: 'num',  outKey: 'fuelGallons' },
+          { name: 'ppg',         label: 'PPG',          aliases: ['ppg', 'pricepergallon'],                           type: 'num',  outKey: 'ppg' },
+        ],
+        sample: () => [todayIso(), 'Jim Zimmerman', 'Loader', 'Loading', '1.75', '26', '10', '3.5'],
+        state: {
+          isLoaded: () => dailyLoaded,
+          rows:      () => dailyRows,
+          push:      (r) => dailyRows.push(r),
+          normalize: (o) => normalizeDailyRow(o),
+          save:      () => scheduleDailySave(),
+          render:    () => renderDaily(),
+        },
+      },
+      crushing: {
+        title: 'Crushing Tracking',
+        fields: [
+          { name: 'date',           label: 'Date',             aliases: ['date'],                          required: true, type: 'date', outKey: 'date' },
+          { name: 'employee',       label: 'Employee',         aliases: ['employee', 'employeename'],      required: true, type: 'list', list: 'employees', idKey: 'employeeId', nameKey: 'employeeName' },
+          { name: 'hourlyRate',     label: 'Hourly Rate',      aliases: ['hourlyrate', 'rate'],                            type: 'num',  outKey: 'hourlyRate', fillFromEmployee: 'rate' },
+          { name: 'hours',          label: 'Hours',            aliases: ['hours'],                         required: true, type: 'num',  outKey: 'hours' },
+          { name: 'fuelGallons',    label: 'Fuel Gallons',     aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],     type: 'num',  outKey: 'fuelGallons' },
+          { name: 'fuelCost',       label: 'Fuel Cost',        aliases: ['fuelcost'],                                      type: 'num',  outKey: 'fuelCost' },
+          { name: 'loadsToCrusher', label: 'Loads to Crusher', aliases: ['loadstocrusher', 'loads'],                       type: 'num',  outKey: 'loadsToCrusher' },
+          { name: 'tonsPerLoad',    label: 'Tons / Load',      aliases: ['tonsperload', 'tonsload'],                       type: 'num',  outKey: 'tonsPerLoad' },
+          { name: 'hoursCrushing',  label: 'Hours Crushing',   aliases: ['hourscrushing'],                                 type: 'num',  outKey: 'hoursCrushing' },
+          { name: 'comments',       label: 'Comments',         aliases: ['comments', 'comment', 'notes'],                  type: 'text', outKey: 'comments' },
+        ],
+        sample: () => [todayIso(), 'Jim Zimmerman', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
+        state: {
+          isLoaded: () => crushLoaded,
+          rows:      () => crushRows,
+          push:      (r) => crushRows.push(r),
+          normalize: (o) => normalizeCrushRow(o),
+          save:      () => scheduleCrushSave(),
+          render:    () => renderCrush(),
+        },
+      },
+      sales: {
+        title: 'Sales Tracking',
+        fields: [
+          { name: 'date',        label: 'Date',        aliases: ['date'],                       required: true, type: 'date', outKey: 'date' },
+          { name: 'employee',    label: 'Employee',    aliases: ['employee', 'employeename'],                   type: 'list', list: 'employees', idKey: 'employeeId', nameKey: 'employeeName' },
+          { name: 'customer',    label: 'Customer',    aliases: ['customer', 'customername'],   required: true, type: 'list', list: 'customer',  idKey: 'customerId', nameKey: 'customerName' },
+          { name: 'product',     label: 'Product',     aliases: ['product', 'productname'],     required: true, type: 'list', list: 'product',   idKey: 'productId',  nameKey: 'productName' },
+          { name: 'tons',        label: 'Tons',        aliases: ['tons'],                       required: true, type: 'num',  outKey: 'tons' },
+          { name: 'payment',     label: 'Payment',     aliases: ['payment'],                                    type: 'enum', options: ['Cash', 'Credit'], outKey: 'payment' },
+          { name: 'pricePerTon', label: 'Price / Ton', aliases: ['priceperton', 'price'],       required: true, type: 'num',  outKey: 'pricePerTon' },
+        ],
+        sample: () => [todayIso(), 'Jim Zimmerman', 'ACME Corp', 'Crushed Stone', '25.5', 'Cash', '12.00'],
+        state: {
+          isLoaded: () => salesLoaded,
+          rows:      () => salesRows,
+          push:      (r) => salesRows.push(r),
+          normalize: (o) => normalizeSalesRow(o),
+          save:      () => scheduleSalesSave(),
+          render:    () => renderSales(),
+        },
+      },
+    };
+
+    const bulkParsed = {};
+
+    function bulkBackdropId(key)   { return key + 'UploadBackdrop'; }
+    function bulkFileId(key)       { return key + 'UploadFile'; }
+    function bulkAutoCreateId(key) { return key + 'UploadAutoCreate'; }
+    function bulkResultId(key)     { return key + 'UploadResult'; }
+    function bulkConfirmId(key)    { return key + 'UploadConfirm'; }
+
+    function normHeader(h) {
+      return String(h || '').trim().toLowerCase().replace(/[\s/_\-().]+/g, '');
+    }
+
+    function parseCSV(text) {
+      const rows = [];
+      let cur = [], field = '', inQuotes = false, i = 0;
+      if (text.charCodeAt(0) === 0xFEFF) i = 1;
+      while (i < text.length) {
+        const ch = text[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+            inQuotes = false; i++; continue;
+          }
+          field += ch; i++; continue;
+        }
+        if (ch === '"') { inQuotes = true; i++; continue; }
+        if (ch === ',') { cur.push(field); field = ''; i++; continue; }
+        if (ch === '\r') { i++; continue; }
+        if (ch === '\n') { cur.push(field); field = ''; rows.push(cur); cur = []; i++; continue; }
+        field += ch; i++;
+      }
+      if (field !== '' || cur.length) { cur.push(field); rows.push(cur); }
+      while (rows.length && rows[rows.length - 1].every(c => String(c).trim() === '')) rows.pop();
+      return rows;
+    }
+
+    function parseAnyDate(s) {
+      const str = String(s || '').trim();
+      if (!str) return '';
+      let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+      m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+      if (m) {
+        let yr = m[3];
+        if (yr.length === 2) yr = (Number(yr) >= 50 ? '19' : '20') + yr;
+        return `${yr}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+      }
+      return null;
+    }
+
+    function parseAnyNum(s) {
+      if (s === '' || s === null || s === undefined) return '';
+      const cleaned = String(s).replace(/[$,\s]/g, '');
+      if (cleaned === '') return '';
+      const n = Number(cleaned);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    // Signature for duplicate detection. Names compared case-insensitively;
+    // numerics compared by value (so "1.5" matches 1.5); empty stays distinct
+    // from 0; comments/text trimmed and lowercased.
+    function bulkRowSig(cfg, parts) {
+      const norm = s => String(s || '').trim().toLowerCase();
+      const num  = v => (v === '' || v === null || v === undefined) ? '' : String(Number(v));
+      return cfg.fields.map(f => {
+        const v = parts[f.name];
+        if (f.type === 'date') return String(v || '');
+        if (f.type === 'num')  return num(v);
+        return norm(v); // list, enum, text
+      }).join('|');
+    }
+
+    function existingRowSigParts(cfg, row) {
+      const out = {};
+      cfg.fields.forEach(f => {
+        out[f.name] = f.type === 'list' ? row[f.nameKey] : row[f.outKey];
+      });
+      return out;
+    }
+
+    function openBulk(key) {
+      const cfg = BULK_CONFIGS[key];
+      if (!cfg.state.isLoaded()) return;
+      document.getElementById(bulkBackdropId(key)).classList.add('open');
+      resetBulk(key);
+    }
+    function closeBulk(key) {
+      const el = document.getElementById(bulkBackdropId(key));
+      if (el) el.classList.remove('open');
+    }
+    function resetBulk(key) {
+      bulkParsed[key] = null;
+      const fileEl = document.getElementById(bulkFileId(key));
+      if (fileEl) fileEl.value = '';
+      const result = document.getElementById(bulkResultId(key));
+      if (result) result.innerHTML = '';
+      const btn = document.getElementById(bulkConfirmId(key));
+      if (btn) { btn.disabled = true; btn.textContent = 'Import 0 Rows'; }
+    }
+
+    function downloadBulkTemplate(key) {
+      const cfg = BULK_CONFIGS[key];
+      const csvCell = v => /[,"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+      const headers = cfg.fields.map(f => f.label);
+      const sample  = cfg.sample();
+      const csv = headers.map(csvCell).join(',') + '\n' + sample.map(csvCell).join(',') + '\n';
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${key}-tracking-template.csv`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function handleBulkFile(key, file) {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload  = e => parseBulk(key, String(e.target.result || ''));
+      reader.onerror = () => showBulkError(key, 'Could not read file. Please try again.');
+      reader.readAsText(file);
+    }
+
+    function showBulkError(key, msg) {
+      const result = document.getElementById(bulkResultId(key));
+      result.innerHTML = `<div class="bulk-error">${escapeHtml(msg)}</div>`;
+      const btn = document.getElementById(bulkConfirmId(key));
+      btn.disabled = true; btn.textContent = 'Import 0 Rows';
+      bulkParsed[key] = null;
+    }
+
+    function parseBulk(key, text) {
+      const cfg = BULK_CONFIGS[key];
+      const rows = parseCSV(text);
+      if (!rows.length) { showBulkError(key, 'CSV file is empty.'); return; }
+      const headerRow = rows[0].map(normHeader);
+      const colIdx = {};
+      cfg.fields.forEach(f => {
+        for (const a of f.aliases) {
+          const idx = headerRow.indexOf(a);
+          if (idx !== -1) { colIdx[f.name] = idx; break; }
+        }
+      });
+      const missing = cfg.fields.filter(f => f.required && colIdx[f.name] === undefined).map(f => f.label);
+      if (missing.length) {
+        const expected = cfg.fields.map(f => f.label).join(', ');
+        showBulkError(key, `Missing required column(s): ${missing.join(', ')}. Expected headers: ${expected}.`);
+        return;
+      }
+
+      const parsed = [];
+      for (let r = 1; r < rows.length; r++) {
+        const raw = rows[r];
+        if (raw.every(c => String(c).trim() === '')) continue;
+        const get = name => colIdx[name] !== undefined ? String(raw[colIdx[name]] ?? '').trim() : '';
+        const errors = [];
+        const out = { rowNum: r + 1, errors, duplicate: false };
+
+        cfg.fields.forEach(f => {
+          const cell = get(f.name);
+          if (f.type === 'date') {
+            const d = parseAnyDate(cell);
+            if (d === null) errors.push(`Invalid ${f.label.toLowerCase()} "${cell}"`);
+            else if (!d && f.required) errors.push(`${f.label} is required`);
+            out[f.name] = d || '';
+          } else if (f.type === 'num') {
+            const n = parseAnyNum(cell);
+            if (n === null) errors.push(`Invalid ${f.label.toLowerCase()} "${cell}"`);
+            else if (n === '' && f.required) errors.push(`${f.label} is required`);
+            out[f.name] = n === null ? '' : n;
+          } else if (f.type === 'list') {
+            if (!cell && f.required) errors.push(`${f.label} is required`);
+            out[f.name] = cell;
+          } else if (f.type === 'enum') {
+            if (!cell) {
+              if (f.required) errors.push(`${f.label} is required`);
+              out[f.name] = '';
+            } else {
+              const match = (f.options || []).find(o => o.toLowerCase() === cell.toLowerCase());
+              if (!match) errors.push(`Invalid ${f.label.toLowerCase()} "${cell}" (use ${f.options.join('/')})`);
+              out[f.name] = match || '';
+            }
+          } else { // text
+            if (!cell && f.required) errors.push(`${f.label} is required`);
+            out[f.name] = cell;
+          }
+        });
+        parsed.push(out);
+      }
+
+      // Flag duplicates against rows already in the database, and against
+      // earlier valid rows in this same CSV.
+      const existingSigs = new Set(cfg.state.rows().map(r => bulkRowSig(cfg, existingRowSigParts(cfg, r))));
+      const seenSigs = new Set();
+      parsed.forEach(p => {
+        if (p.errors.length) return;
+        const sig = bulkRowSig(cfg, p);
+        if (existingSigs.has(sig) || seenSigs.has(sig)) p.duplicate = true;
+        else seenSigs.add(sig);
+      });
+
+      bulkParsed[key] = { parsed };
+      renderBulkPreview(key);
+    }
+
+    function renderBulkPreview(key) {
+      const cfg = BULK_CONFIGS[key];
+      const data = bulkParsed[key];
+      const result = document.getElementById(bulkResultId(key));
+      if (!data) { result.innerHTML = ''; return; }
+
+      const importable = data.parsed.filter(r => !r.errors.length && !r.duplicate).length;
+      const dupCount   = data.parsed.filter(r => !r.errors.length &&  r.duplicate).length;
+      const errCount   = data.parsed.filter(r =>  r.errors.length).length;
+
+      const listMaps = {};
+      cfg.fields.forEach(f => {
+        if (f.type !== 'list' || listMaps[f.list]) return;
+        listMaps[f.list] = new Map((quarryLists[f.list] || []).map(it => [String(it.name).trim().toLowerCase(), it]));
+      });
+      const newByList = {};
+      cfg.fields.forEach(f => { if (f.type === 'list') newByList[f.list] = new Set(); });
+      data.parsed.forEach(p => {
+        if (p.errors.length || p.duplicate) return;
+        cfg.fields.forEach(f => {
+          if (f.type !== 'list') return;
+          const v = p[f.name];
+          if (v && !listMaps[f.list].has(v.toLowerCase())) newByList[f.list].add(v);
+        });
+      });
+      const newCount = Object.values(newByList).reduce((sum, s) => sum + s.size, 0);
+
+      const summary = `
+        <div class="bulk-summary">
+          <span class="ok">✓ ${importable} valid row${importable === 1 ? '' : 's'}</span>
+          ${dupCount ? `<span class="dup">⚠ ${dupCount} duplicate row${dupCount === 1 ? '' : 's'} (skipped)</span>` : ''}
+          ${errCount ? `<span class="bad">✕ ${errCount} row${errCount === 1 ? '' : 's'} with errors (skipped)</span>` : ''}
+          ${newCount ? `<span>+ ${newCount} new list item${newCount === 1 ? '' : 's'} will be added</span>` : ''}
+        </div>`;
+
+      const cellName = (name, listKey) => {
+        if (!name) return '<span class="empty-cell">—</span>';
+        return listMaps[listKey].has(name.toLowerCase())
+          ? escapeHtml(name)
+          : `${escapeHtml(name)}<em class="new-tag">(new)</em>`;
+      };
+      const cellVal = v => v === '' || v === undefined || v === null
+        ? '<span class="empty-cell">—</span>'
+        : escapeHtml(String(v));
+
+      const headRow = ['<th>Row</th>', ...cfg.fields.map(f => `<th>${escapeHtml(f.label)}</th>`), '<th>Status</th>'].join('');
+      const rowsHtml = data.parsed.map(p => {
+        let cls = '', status;
+        if (p.errors.length) {
+          cls = 'bad';
+          status = `<td class="status bad" title="${escapeHtml(p.errors.join('; '))}">${escapeHtml(p.errors[0])}</td>`;
+        } else if (p.duplicate) {
+          cls = 'dup';
+          status = `<td class="status dup" title="Already in ${escapeHtml(cfg.title)}">Duplicate</td>`;
+        } else {
+          status = `<td class="status ok">OK</td>`;
+        }
+        const cells = cfg.fields.map(f => {
+          const v = p[f.name];
+          if (f.type === 'list') return `<td>${cellName(v, f.list)}</td>`;
+          return `<td>${cellVal(v)}</td>`;
+        }).join('');
+        return `<tr class="${cls}"><td>${p.rowNum}</td>${cells}${status}</tr>`;
+      }).join('');
+
+      result.innerHTML = summary + `
+        <div class="bulk-preview-wrap">
+          <table class="bulk-preview">
+            <thead><tr>${headRow}</tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>`;
+
+      const btn = document.getElementById(bulkConfirmId(key));
+      btn.disabled = importable === 0;
+      btn.textContent = `Import ${importable} Row${importable === 1 ? '' : 's'}`;
+    }
+
+    function confirmBulk(key) {
+      const cfg = BULK_CONFIGS[key];
+      if (!bulkParsed[key] || !cfg.state.isLoaded()) return;
+      const autoCreate = document.getElementById(bulkAutoCreateId(key))?.checked !== false;
+      const valid = bulkParsed[key].parsed.filter(r => !r.errors.length && !r.duplicate);
+      if (!valid.length) return;
+
+      const ensureItem = (listKey, name) => {
+        if (!name) return { item: null, created: false };
+        const lower = name.toLowerCase();
+        const list = quarryLists[listKey] || (quarryLists[listKey] = []);
+        const found = list.find(it => String(it.name).trim().toLowerCase() === lower);
+        if (found) return { item: found, created: false };
+        if (!autoCreate) return { item: null, created: false };
+        const item = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), name };
+        if (listKey === 'employees') item.rate = null;
+        list.push(item);
+        return { item, created: true };
+      };
+
+      let listsChanged = false;
+      valid.forEach(p => {
+        const out = {};
+        const ensured = {};
+        cfg.fields.forEach(f => {
+          if (f.type === 'list') {
+            const e = ensureItem(f.list, p[f.name]);
+            ensured[f.name] = e;
+            if (e.created) listsChanged = true;
+            out[f.idKey]   = e.item ? e.item.id   : '';
+            out[f.nameKey] = e.item ? e.item.name : (p[f.name] || '');
+          } else {
+            let v = p[f.name];
+            if (f.fillFromEmployee && (v === '' || v === undefined || v === null)) {
+              const emp = ensured.employee && ensured.employee.item;
+              if (emp && Number.isFinite(Number(emp[f.fillFromEmployee]))) {
+                v = Number(emp[f.fillFromEmployee]);
+              }
+            }
+            out[f.outKey] = v === undefined ? '' : v;
+          }
+        });
+        cfg.state.push(cfg.state.normalize(out));
+      });
+
+      if (listsChanged) scheduleSave();
+      cfg.state.save();
+      cfg.state.render();
+      closeBulk(key);
+    }
+
+    Object.keys(BULK_CONFIGS).forEach(key => {
+      const backdrop = document.getElementById(bulkBackdropId(key));
+      if (backdrop) backdrop.addEventListener('click', function (e) {
+        if (e.target === this) closeBulk(key);
+      });
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      Object.keys(BULK_CONFIGS).forEach(key => closeBulk(key));
+    });
 
     refreshDaily();
   </script>
