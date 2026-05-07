@@ -312,6 +312,95 @@
       color: var(--text);
     }
     .cell-readonly.is-calc.is-zero { color: var(--muted); }
+
+    /* ── Bulk Upload ── */
+    .btn-bulk-upload {
+      background: rgba(249,115,22,0.07); color: var(--accent);
+      border: 1px solid rgba(249,115,22,0.35);
+    }
+    .btn-bulk-upload:hover { background: rgba(249,115,22,0.16); border-color: var(--accent); }
+    .btn-secondary {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.45rem 0.95rem; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+      font-family: inherit;
+    }
+    .btn-secondary:hover { color: var(--text); border-color: #3a3a4a; }
+    .bulk-modal { max-width: 980px; }
+    .bulk-body {
+      padding: 1.1rem 1.5rem; overflow-y: auto; flex: 1;
+      display: flex; flex-direction: column; gap: 0.9rem;
+    }
+    .bulk-help {
+      font-size: 0.78rem; color: var(--muted); line-height: 1.5;
+    }
+    .bulk-help code {
+      background: var(--bg); border: 1px solid var(--border);
+      padding: 0.05rem 0.35rem; border-radius: 3px;
+      font-size: 0.72rem; color: var(--text);
+    }
+    .bulk-actions {
+      display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
+    }
+    .bulk-checkbox {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      font-size: 0.72rem; color: var(--muted); cursor: pointer;
+      letter-spacing: 0.02em;
+    }
+    .bulk-checkbox input { accent-color: var(--accent); }
+    .bulk-summary {
+      font-size: 0.78rem; color: var(--text);
+      display: flex; gap: 1.25rem; flex-wrap: wrap;
+      letter-spacing: 0.02em;
+    }
+    .bulk-summary .ok  { color: #4ade80; }
+    .bulk-summary .bad { color: #ef4444; }
+    .bulk-error {
+      font-size: 0.78rem; color: #ef4444;
+      background: rgba(239,68,68,0.06);
+      border: 1px solid rgba(239,68,68,0.25);
+      border-radius: 4px; padding: 0.65rem 0.85rem;
+    }
+    .bulk-preview-wrap {
+      border: 1px solid var(--border); border-radius: 6px;
+      overflow: auto; background: var(--surface);
+      max-height: 22rem;
+    }
+    .bulk-preview {
+      width: 100%; border-collapse: separate; border-spacing: 0;
+      font-size: 0.75rem; min-width: 800px;
+    }
+    .bulk-preview thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--surface2); color: var(--muted);
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.5rem 0.65rem; text-align: left;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .bulk-preview tbody td {
+      padding: 0.42rem 0.65rem; border-bottom: 1px solid var(--border);
+      color: var(--text); white-space: nowrap;
+    }
+    .bulk-preview tbody tr:last-child td { border-bottom: none; }
+    .bulk-preview tr.bad td { background: rgba(239,68,68,0.06); }
+    .bulk-preview td.status     { font-size: 0.68rem; }
+    .bulk-preview td.status.ok  { color: #4ade80; }
+    .bulk-preview td.status.bad { color: #ef4444; }
+    .bulk-preview .new-tag {
+      color: var(--accent); font-style: normal; font-size: 0.65rem;
+      margin-left: 0.25rem;
+    }
+    .bulk-preview .empty-cell { color: var(--muted); }
+    .bulk-footer {
+      padding: 0.85rem 1.5rem;
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 0.6rem;
+      background: var(--surface);
+    }
   </style>
 </head>
 <body>
@@ -346,6 +435,7 @@
     <div class="sales-wrap">
       <div class="sales-toolbar">
         <button class="btn-add-row" id="dailyAddBtn" onclick="addDailyRow()">+ Add Row</button>
+        <button class="btn-add-row btn-bulk-upload" id="dailyBulkBtn" onclick="openDailyUpload()">⇪ Bulk Upload CSV</button>
         <div class="sales-summary" id="dailySummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -461,6 +551,41 @@
         <div class="ml-panel"        id="ml-tasks"></div>
         <div class="ml-panel"        id="ml-employees"></div>
         <div class="ml-panel"        id="ml-location"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Bulk Upload CSV Modal ── -->
+  <div class="modal-backdrop" id="dailyUploadBackdrop">
+    <div class="modal bulk-modal" role="dialog" aria-modal="true" aria-labelledby="dailyUploadTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="dailyUploadTitle">Bulk Upload Daily Tracking</div>
+        <button class="modal-close" onclick="closeDailyUpload()" aria-label="Close">✕</button>
+      </div>
+      <div class="bulk-body">
+        <div class="bulk-help">
+          Upload a CSV with these columns (header row required):
+          <code>Date</code>, <code>Employee</code>, <code>Equipment</code>, <code>Task</code>,
+          <code>Hours</code>, <code>Rate</code>, <code>Fuel Gallons</code>, <code>PPG</code>.
+          Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
+          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code>. Labor / fuel / total cost are computed automatically.
+        </div>
+        <div class="bulk-actions">
+          <label class="btn-add-row" id="dailyUploadChooseLabel">
+            Choose CSV File
+            <input type="file" id="dailyUploadFile" accept=".csv,text/csv" style="display:none" onchange="handleDailyFile(this.files[0])" />
+          </label>
+          <button class="btn-secondary" onclick="downloadDailyTemplate()">Download Template</button>
+          <label class="bulk-checkbox">
+            <input type="checkbox" id="dailyUploadAutoCreate" checked />
+            Auto-add new employees / equipment / tasks
+          </label>
+        </div>
+        <div id="dailyUploadResult"></div>
+      </div>
+      <div class="bulk-footer">
+        <button class="btn-secondary" onclick="closeDailyUpload()">Cancel</button>
+        <button class="btn-add-row" id="dailyUploadConfirm" disabled onclick="confirmDailyUpload()">Import 0 Rows</button>
       </div>
     </div>
   </div>
@@ -1332,6 +1457,8 @@
       if (!tbody) return;
       const addBtn = document.getElementById('dailyAddBtn');
       if (addBtn) addBtn.disabled = !dailyLoaded;
+      const bulkBtn = document.getElementById('dailyBulkBtn');
+      if (bulkBtn) bulkBtn.disabled = !dailyLoaded;
 
       if (!dailyLoaded) {
         tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">Loading…</td></tr>`;
@@ -1443,6 +1570,310 @@
       updateDailySummary();
       scheduleDailySave();
     }
+
+    // ── Daily Tracking Bulk CSV Upload ─────────────────────────
+    const DAILY_UPLOAD_HEADERS = {
+      date:        { aliases: ['date'],                                 required: true },
+      employee:    { aliases: ['employee', 'employeename'],             required: true },
+      equipment:   { aliases: ['equipment', 'equipmentname'] },
+      task:        { aliases: ['task', 'taskname'] },
+      hours:       { aliases: ['hours'],                                required: true },
+      rate:        { aliases: ['rate', 'hourlyrate'] },
+      fuelGallons: { aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'] },
+      ppg:         { aliases: ['ppg', 'pricepergallon'] },
+    };
+
+    let dailyUploadParsed = null;
+
+    function normHeader(h) {
+      return String(h || '').trim().toLowerCase().replace(/[\s/_\-().]+/g, '');
+    }
+
+    function parseCSV(text) {
+      const rows = [];
+      let cur = [], field = '', inQuotes = false, i = 0;
+      if (text.charCodeAt(0) === 0xFEFF) i = 1;
+      while (i < text.length) {
+        const ch = text[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+            inQuotes = false; i++; continue;
+          }
+          field += ch; i++; continue;
+        }
+        if (ch === '"') { inQuotes = true; i++; continue; }
+        if (ch === ',') { cur.push(field); field = ''; i++; continue; }
+        if (ch === '\r') { i++; continue; }
+        if (ch === '\n') { cur.push(field); field = ''; rows.push(cur); cur = []; i++; continue; }
+        field += ch; i++;
+      }
+      if (field !== '' || cur.length) { cur.push(field); rows.push(cur); }
+      while (rows.length && rows[rows.length - 1].every(c => String(c).trim() === '')) rows.pop();
+      return rows;
+    }
+
+    function parseDailyDate(s) {
+      const str = String(s || '').trim();
+      if (!str) return '';
+      let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+      m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+      if (m) {
+        let yr = m[3];
+        if (yr.length === 2) yr = (Number(yr) >= 50 ? '19' : '20') + yr;
+        return `${yr}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+      }
+      return null;
+    }
+
+    function parseDailyNum(s) {
+      if (s === '' || s === null || s === undefined) return '';
+      const cleaned = String(s).replace(/[$,\s]/g, '');
+      if (cleaned === '') return '';
+      const n = Number(cleaned);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function openDailyUpload() {
+      if (!dailyLoaded) return;
+      document.getElementById('dailyUploadBackdrop').classList.add('open');
+      resetDailyUpload();
+    }
+    function closeDailyUpload() {
+      document.getElementById('dailyUploadBackdrop').classList.remove('open');
+    }
+    function resetDailyUpload() {
+      dailyUploadParsed = null;
+      const fileInput = document.getElementById('dailyUploadFile');
+      if (fileInput) fileInput.value = '';
+      const result = document.getElementById('dailyUploadResult');
+      if (result) result.innerHTML = '';
+      const btn = document.getElementById('dailyUploadConfirm');
+      if (btn) { btn.disabled = true; btn.textContent = 'Import 0 Rows'; }
+    }
+
+    function downloadDailyTemplate() {
+      const headers = ['Date', 'Employee', 'Equipment', 'Task', 'Hours', 'Rate', 'Fuel Gallons', 'PPG'];
+      const sample  = [todayIso(), 'Jim Zimmerman', 'Loader', 'Loading', '1.75', '26', '10', '3.5'];
+      const csv = headers.join(',') + '\n' + sample.join(',') + '\n';
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'daily-tracking-template.csv';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function handleDailyFile(file) {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload  = e => parseDailyUpload(String(e.target.result || ''));
+      reader.onerror = () => showDailyUploadError('Could not read file. Please try again.');
+      reader.readAsText(file);
+    }
+
+    function showDailyUploadError(msg) {
+      const result = document.getElementById('dailyUploadResult');
+      result.innerHTML = `<div class="bulk-error">${escapeHtml(msg)}</div>`;
+      const btn = document.getElementById('dailyUploadConfirm');
+      btn.disabled = true; btn.textContent = 'Import 0 Rows';
+      dailyUploadParsed = null;
+    }
+
+    function parseDailyUpload(text) {
+      const rows = parseCSV(text);
+      if (!rows.length) { showDailyUploadError('CSV file is empty.'); return; }
+      const headerRow = rows[0].map(normHeader);
+      const colIndex = {};
+      Object.keys(DAILY_UPLOAD_HEADERS).forEach(field => {
+        for (const alias of DAILY_UPLOAD_HEADERS[field].aliases) {
+          const idx = headerRow.indexOf(alias);
+          if (idx !== -1) { colIndex[field] = idx; break; }
+        }
+      });
+      const missing = Object.keys(DAILY_UPLOAD_HEADERS)
+        .filter(f => DAILY_UPLOAD_HEADERS[f].required && colIndex[f] === undefined);
+      if (missing.length) {
+        showDailyUploadError(
+          `Missing required column(s): ${missing.join(', ')}. ` +
+          `Expected headers: Date, Employee, Equipment, Task, Hours, Rate, Fuel Gallons, PPG.`
+        );
+        return;
+      }
+
+      const parsed = [];
+      for (let r = 1; r < rows.length; r++) {
+        const raw = rows[r];
+        if (raw.every(c => String(c).trim() === '')) continue;
+        const get = field => colIndex[field] !== undefined ? String(raw[colIndex[field]] ?? '').trim() : '';
+        const errors = [];
+
+        const dateRaw = get('date');
+        const date = parseDailyDate(dateRaw);
+        if (date === null) errors.push(`Invalid date "${dateRaw}"`);
+        else if (!date) errors.push('Date is required');
+
+        const empName = get('employee');
+        if (!empName) errors.push('Employee is required');
+
+        const equipName = get('equipment');
+        const taskName  = get('task');
+
+        const hoursNum = parseDailyNum(get('hours'));
+        if (hoursNum === null) errors.push(`Invalid hours "${get('hours')}"`);
+        else if (hoursNum === '') errors.push('Hours is required');
+
+        const rateNum = parseDailyNum(get('rate'));
+        if (rateNum === null) errors.push(`Invalid rate "${get('rate')}"`);
+        const fuelNum = parseDailyNum(get('fuelGallons'));
+        if (fuelNum === null) errors.push(`Invalid fuel gallons "${get('fuelGallons')}"`);
+        const ppgNum  = parseDailyNum(get('ppg'));
+        if (ppgNum === null) errors.push(`Invalid PPG "${get('ppg')}"`);
+
+        parsed.push({
+          rowNum: r + 1,
+          date: date || '',
+          empName, equipName, taskName,
+          hours:       hoursNum === null ? '' : hoursNum,
+          rate:        rateNum  === null ? '' : rateNum,
+          fuelGallons: fuelNum  === null ? '' : fuelNum,
+          ppg:         ppgNum   === null ? '' : ppgNum,
+          errors,
+        });
+      }
+      dailyUploadParsed = { parsed };
+      renderDailyUploadPreview();
+    }
+
+    function renderDailyUploadPreview() {
+      const result = document.getElementById('dailyUploadResult');
+      const data = dailyUploadParsed;
+      if (!data) { result.innerHTML = ''; return; }
+      const validCount = data.parsed.filter(r => !r.errors.length).length;
+      const invalidCount = data.parsed.length - validCount;
+
+      const empMap   = new Map((quarryLists.employees || []).map(it => [String(it.name).trim().toLowerCase(), it]));
+      const equipMap = new Map((quarryLists.equipment || []).map(it => [String(it.name).trim().toLowerCase(), it]));
+      const taskMap  = new Map((quarryLists.tasks     || []).map(it => [String(it.name).trim().toLowerCase(), it]));
+
+      const newEmps  = new Set();
+      const newEquip = new Set();
+      const newTasks = new Set();
+      data.parsed.forEach(p => {
+        if (p.errors.length) return;
+        if (p.empName   && !empMap.has(p.empName.toLowerCase()))     newEmps.add(p.empName);
+        if (p.equipName && !equipMap.has(p.equipName.toLowerCase())) newEquip.add(p.equipName);
+        if (p.taskName  && !taskMap.has(p.taskName.toLowerCase()))   newTasks.add(p.taskName);
+      });
+      const newCount = newEmps.size + newEquip.size + newTasks.size;
+
+      const summary = `
+        <div class="bulk-summary">
+          <span class="ok">✓ ${validCount} valid row${validCount === 1 ? '' : 's'}</span>
+          ${invalidCount ? `<span class="bad">✕ ${invalidCount} row${invalidCount === 1 ? '' : 's'} with errors (skipped)</span>` : ''}
+          ${newCount ? `<span>+ ${newCount} new list item${newCount === 1 ? '' : 's'} will be added</span>` : ''}
+        </div>`;
+
+      const cellName = (name, map) => {
+        if (!name) return '<span class="empty-cell">—</span>';
+        return map.has(name.toLowerCase())
+          ? escapeHtml(name)
+          : `${escapeHtml(name)}<em class="new-tag">(new)</em>`;
+      };
+      const cellNum = v => v === '' || v === undefined || v === null
+        ? '<span class="empty-cell">—</span>'
+        : escapeHtml(String(v));
+
+      const rowsHtml = data.parsed.map(p => {
+        const status = p.errors.length
+          ? `<td class="status bad" title="${escapeHtml(p.errors.join('; '))}">${escapeHtml(p.errors[0])}</td>`
+          : `<td class="status ok">OK</td>`;
+        return `<tr class="${p.errors.length ? 'bad' : ''}">
+          <td>${p.rowNum}</td>
+          <td>${escapeHtml(p.date || '')}</td>
+          <td>${cellName(p.empName, empMap)}</td>
+          <td>${cellName(p.equipName, equipMap)}</td>
+          <td>${cellName(p.taskName, taskMap)}</td>
+          <td>${cellNum(p.hours)}</td>
+          <td>${cellNum(p.rate)}</td>
+          <td>${cellNum(p.fuelGallons)}</td>
+          <td>${cellNum(p.ppg)}</td>
+          ${status}
+        </tr>`;
+      }).join('');
+
+      result.innerHTML = summary + `
+        <div class="bulk-preview-wrap">
+          <table class="bulk-preview">
+            <thead><tr>
+              <th>Row</th><th>Date</th><th>Employee</th><th>Equipment</th><th>Task</th>
+              <th>Hours</th><th>Rate</th><th>Fuel Gal</th><th>PPG</th><th>Status</th>
+            </tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>`;
+
+      const btn = document.getElementById('dailyUploadConfirm');
+      btn.disabled = validCount === 0;
+      btn.textContent = `Import ${validCount} Row${validCount === 1 ? '' : 's'}`;
+    }
+
+    function confirmDailyUpload() {
+      if (!dailyUploadParsed || !dailyLoaded) return;
+      const autoCreate = document.getElementById('dailyUploadAutoCreate')?.checked !== false;
+      const valid = dailyUploadParsed.parsed.filter(r => !r.errors.length);
+      if (!valid.length) return;
+
+      const ensureItem = (listKey, name) => {
+        if (!name) return { item: null, created: false };
+        const lower = name.toLowerCase();
+        const list = quarryLists[listKey] || (quarryLists[listKey] = []);
+        const found = list.find(it => String(it.name).trim().toLowerCase() === lower);
+        if (found) return { item: found, created: false };
+        if (!autoCreate) return { item: null, created: false };
+        const item = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), name };
+        if (listKey === 'employees') item.rate = null;
+        list.push(item);
+        return { item, created: true };
+      };
+
+      let listsChanged = false;
+      valid.forEach(p => {
+        const e = ensureItem('employees', p.empName);
+        const q = ensureItem('equipment', p.equipName);
+        const t = ensureItem('tasks',     p.taskName);
+        if (e.created || q.created || t.created) listsChanged = true;
+
+        const empRate = e.item && Number.isFinite(Number(e.item.rate)) ? Number(e.item.rate) : '';
+        const row = normalizeDailyRow({
+          date: p.date,
+          employeeId:    e.item ? e.item.id   : '',
+          employeeName:  e.item ? e.item.name : p.empName,
+          equipmentId:   q.item ? q.item.id   : '',
+          equipmentName: q.item ? q.item.name : p.equipName,
+          taskId:        t.item ? t.item.id   : '',
+          taskName:      t.item ? t.item.name : p.taskName,
+          hours:       p.hours,
+          rate:        p.rate !== '' ? p.rate : empRate,
+          fuelGallons: p.fuelGallons,
+          ppg:         p.ppg,
+        });
+        dailyRows.push(row);
+      });
+
+      if (listsChanged) scheduleSave();
+      scheduleDailySave();
+      renderDaily();
+      closeDailyUpload();
+    }
+
+    document.getElementById('dailyUploadBackdrop').addEventListener('click', function (e) {
+      if (e.target === this) closeDailyUpload();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeDailyUpload();
+    });
 
     refreshDaily();
   </script>
