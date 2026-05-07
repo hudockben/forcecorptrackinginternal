@@ -252,6 +252,142 @@
     .year-filter-select:focus { border-color: var(--accent); }
     .year-filter-select:disabled { opacity: 0.45; cursor: not-allowed; }
 
+    /* ── Home dashboard ── */
+    .home-wrap { padding: 1rem 1.25rem 2rem; }
+    .home-toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem;
+    }
+    .home-toolbar .home-title {
+      font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text);
+    }
+    .home-toolbar .home-sub {
+      font-size: 0.7rem; color: var(--muted);
+      letter-spacing: 0.04em; margin-top: 0.15rem;
+    }
+
+    .kpi-grid {
+      display: grid; gap: 0.85rem;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-bottom: 1.1rem;
+    }
+    @media (max-width: 1100px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .kpi-tile {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.95rem 1.05rem;
+      display: flex; flex-direction: column; gap: 0.3rem;
+    }
+    .kpi-tile.is-accent { border-left: 3px solid var(--accent); padding-left: calc(1.05rem - 2px); }
+    .kpi-label {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .kpi-value {
+      font-size: 1.55rem; font-weight: 700; color: var(--text);
+      font-variant-numeric: tabular-nums; line-height: 1.1;
+    }
+    .kpi-value.is-positive { color: #4ade80; }
+    .kpi-value.is-negative { color: #ef4444; }
+    .kpi-sub {
+      font-size: 0.66rem; color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+
+    .home-row {
+      display: grid; gap: 0.85rem;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-bottom: 1.1rem;
+    }
+    @media (max-width: 900px) { .home-row { grid-template-columns: 1fr; } }
+    .home-panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1rem 1.1rem;
+    }
+    .home-panel-title {
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: 0.7rem;
+    }
+    .home-rank-list { display: flex; flex-direction: column; gap: 0.45rem; }
+    .home-rank {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; padding: 0.55rem 0.7rem;
+      display: flex; flex-direction: column; gap: 0.35rem;
+    }
+    .home-rank-head {
+      display: flex; align-items: baseline; gap: 0.6rem;
+      justify-content: space-between; font-size: 0.78rem;
+    }
+    .home-rank-head .name {
+      color: var(--text); overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; flex: 1;
+    }
+    .home-rank-head .value {
+      color: var(--text); font-weight: 700;
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .home-rank-bar {
+      position: relative; height: 4px;
+      background: rgba(249,115,22,0.10); border-radius: 2px; overflow: hidden;
+    }
+    .home-rank-bar > span {
+      position: absolute; inset: 0 100% 0 0;
+      background: var(--accent); border-radius: 2px;
+    }
+    .home-rank .secondary {
+      color: var(--muted); font-size: 0.68rem; letter-spacing: 0.02em;
+    }
+
+    .home-yoy {
+      width: 100%; border-collapse: separate; border-spacing: 0;
+      font-size: 0.78rem;
+    }
+    .home-yoy thead th {
+      padding: 0.5rem 0.7rem; text-align: right;
+      background: var(--surface2);
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .home-yoy thead th:first-child { text-align: left; }
+    .home-yoy tbody td {
+      padding: 0.5rem 0.7rem; text-align: right;
+      border-bottom: 1px solid var(--border);
+      color: var(--text); font-variant-numeric: tabular-nums;
+    }
+    .home-yoy tbody td:first-child {
+      text-align: left; font-weight: 700;
+    }
+    .home-yoy tbody tr:last-child td { border-bottom: none; }
+    .home-yoy tbody td.pos { color: #4ade80; }
+    .home-yoy tbody td.neg { color: #ef4444; }
+
+    .home-feed { display: flex; flex-direction: column; gap: 0.4rem; }
+    .home-feed-item {
+      display: flex; align-items: center; gap: 0.65rem;
+      padding: 0.5rem 0.7rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; font-size: 0.74rem;
+    }
+    .home-feed-item .badge {
+      font-size: 0.55rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.5rem; border-radius: 3px;
+      white-space: nowrap;
+    }
+    .home-feed-item .badge.daily    { background: rgba(96,165,250,0.12); color: #60a5fa; border: 1px solid rgba(96,165,250,0.25); }
+    .home-feed-item .badge.crushing { background: rgba(167,139,250,0.12); color: #a78bfa; border: 1px solid rgba(167,139,250,0.25); }
+    .home-feed-item .badge.sales    { background: rgba(74,222,128,0.12); color: #4ade80; border: 1px solid rgba(74,222,128,0.25); }
+    .home-feed-item .date  { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 5.5rem; }
+    .home-feed-item .desc  { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .home-feed-item .amount { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+    .home-empty {
+      text-align: center; padding: 1.4rem 1rem;
+      color: var(--muted); font-size: 0.78rem;
+    }
+
     .sales-table-wrap {
       border: 1px solid var(--border); border-radius: 6px;
       overflow: auto; background: var(--surface);
@@ -448,7 +584,112 @@
   </nav>
 
   <!-- ── Panels (intentionally blank) ── -->
-  <div class="tab-panel active" id="tab-home"></div>
+  <div class="tab-panel active" id="tab-home">
+    <div class="home-wrap">
+      <div class="home-toolbar">
+        <div>
+          <div class="home-title">Quarry Overview</div>
+          <div class="home-sub" id="homeSubtitle">Loading…</div>
+        </div>
+        <div class="year-filter-wrap">
+          Year
+          <select class="year-filter-select" id="homeYearFilter" onchange="setYearFilter('home', this.value)" disabled></select>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile is-accent">
+          <div class="kpi-label">Total Sales</div>
+          <div class="kpi-value" id="homeKpiSales">$0.00</div>
+          <div class="kpi-sub" id="homeKpiSalesSub">0 tons sold</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Total Cost</div>
+          <div class="kpi-value" id="homeKpiCost">$0.00</div>
+          <div class="kpi-sub" id="homeKpiCostSub">Daily $0 · Crushing $0</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Gross Margin</div>
+          <div class="kpi-value" id="homeKpiMargin">$0.00</div>
+          <div class="kpi-sub" id="homeKpiMarginSub">Sales − Cost</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Margin %</div>
+          <div class="kpi-value" id="homeKpiMarginPct">0.0%</div>
+          <div class="kpi-sub">Of total sales</div>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile">
+          <div class="kpi-label">Tons Sold</div>
+          <div class="kpi-value" id="homeKpiTonsSold">0</div>
+          <div class="kpi-sub" id="homeKpiTonsSoldSub">Across 0 sales</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Tons Crushed</div>
+          <div class="kpi-value" id="homeKpiTonsCrushed">0</div>
+          <div class="kpi-sub" id="homeKpiTonsCrushedSub">Estimated · 0 hrs crushing</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Hours Worked</div>
+          <div class="kpi-value" id="homeKpiHours">0</div>
+          <div class="kpi-sub" id="homeKpiHoursSub">Daily 0 · Crushing 0</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Avg Cost / Ton</div>
+          <div class="kpi-value" id="homeKpiAvgCpT">$0.00</div>
+          <div class="kpi-sub">Crushing cost ÷ tons crushed</div>
+        </div>
+      </div>
+
+      <div class="home-row">
+        <div class="home-panel">
+          <div class="home-panel-title">Top Customers (by sales)</div>
+          <div class="home-rank-list" id="homeTopCustomers"></div>
+        </div>
+        <div class="home-panel">
+          <div class="home-panel-title">Top Products (by tons sold)</div>
+          <div class="home-rank-list" id="homeTopProducts"></div>
+        </div>
+      </div>
+
+      <div class="home-row">
+        <div class="home-panel">
+          <div class="home-panel-title">Sales by Location</div>
+          <div class="home-rank-list" id="homeSalesByLocation"></div>
+        </div>
+        <div class="home-panel">
+          <div class="home-panel-title">Cost by Location</div>
+          <div class="home-rank-list" id="homeCostByLocation"></div>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Year over Year</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="homeYoyTable">
+            <thead>
+              <tr>
+                <th>Year</th>
+                <th>Sales</th>
+                <th>Cost</th>
+                <th>Margin</th>
+                <th>Tons Sold</th>
+                <th>Tons Crushed</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title">Recent Activity</div>
+        <div class="home-feed" id="homeRecentActivity"></div>
+      </div>
+    </div>
+  </div>
   <div class="tab-panel"        id="tab-daily">
     <div class="sales-wrap">
       <div class="sales-toolbar">
@@ -717,6 +958,7 @@
       if (tab === 'sales') refreshSales();
       if (tab === 'crushing') refreshCrush();
       if (tab === 'daily') refreshDaily();
+      if (tab === 'home') refreshHome();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -1103,7 +1345,7 @@
     // ── Per-tab year filter ─────────────────────────────────────
     // Default each tab to the current year so users land on this
     // year's data. Selecting "All Years" shows everything.
-    const yearFilters = { daily: null, crushing: null, sales: null };
+    const yearFilters = { daily: null, crushing: null, sales: null, home: null };
 
     function getRowYear(dateStr) {
       if (!dateStr || typeof dateStr !== 'string') return null;
@@ -1122,9 +1364,10 @@
     }
     function setYearFilter(tab, value) {
       yearFilters[tab] = value;
-      if (tab === 'daily')    renderDaily();
+      if (tab === 'daily')         renderDaily();
       else if (tab === 'crushing') renderCrush();
       else if (tab === 'sales')    renderSales();
+      else if (tab === 'home')     renderHome();
     }
     function renderYearFilterOptions(tab, rows) {
       const sel = document.getElementById(tab + 'YearFilter');
@@ -2202,7 +2445,270 @@
       Object.keys(BULK_CONFIGS).forEach(key => closeBulk(key));
     });
 
-    refreshDaily();
+    // ── Home dashboard ─────────────────────────────────────────
+    async function refreshHome() {
+      // Show whatever's already in memory immediately, then fetch the
+      // missing tabs and re-render once they arrive.
+      renderHome();
+      const tasks = [];
+      if (!dailyFetchedOnce) tasks.push(refreshDaily());
+      if (!crushFetchedOnce) tasks.push(refreshCrush());
+      if (!salesFetchedOnce) tasks.push(refreshSales());
+      if (tasks.length) {
+        await Promise.allSettled(tasks);
+        renderHome();
+      }
+    }
+
+    function homeRowSales(r) {
+      const t = Number(r.tons), p = Number(r.pricePerTon);
+      return (Number.isFinite(t) && Number.isFinite(p)) ? t * p : 0;
+    }
+
+    function renderHome() {
+      const sub = document.getElementById('homeSubtitle');
+      const allRows = [...dailyRows, ...crushRows, ...salesRows];
+      renderYearFilterOptions('home', allRows);
+
+      const matches = (r) => rowMatchesYear('home', r);
+      const visibleDaily = dailyRows.filter(matches);
+      const visibleCrush = crushRows.filter(matches);
+      const visibleSales = salesRows.filter(matches);
+
+      // ── KPIs ──
+      let totalSales = 0, totalTonsSold = 0, salesCount = 0;
+      visibleSales.forEach(r => {
+        const t = Number(r.tons);
+        totalSales += homeRowSales(r);
+        if (Number.isFinite(t)) totalTonsSold += t;
+        salesCount++;
+      });
+
+      let dailyHours = 0, dailyCost = 0;
+      visibleDaily.forEach(r => {
+        const c = dailyCalc(r);
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) dailyHours += h;
+        dailyCost += c.totalCost;
+      });
+
+      let crushHours = 0, crushTonsCrushed = 0, crushCost = 0;
+      visibleCrush.forEach(r => {
+        const c = crushCalc(r);
+        const h = Number(r.hoursCrushing);
+        if (Number.isFinite(h)) crushHours += h;
+        crushTonsCrushed += c.estimatedTons;
+        crushCost += c.totalCost;
+      });
+
+      const totalCost   = dailyCost + crushCost;
+      const grossMargin = totalSales - totalCost;
+      const marginPct   = totalSales > 0 ? (grossMargin / totalSales) * 100 : 0;
+      const totalHours  = dailyHours + crushHours;
+      const avgCostPerTon = crushTonsCrushed > 0 ? crushCost / crushTonsCrushed : 0;
+
+      const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      setText('homeKpiSales',  formatMoney(totalSales));
+      setText('homeKpiSalesSub', `${formatTons(totalTonsSold)} tons sold across ${salesCount} sale${salesCount === 1 ? '' : 's'}`);
+      setText('homeKpiCost',   formatMoney(totalCost));
+      setText('homeKpiCostSub', `Daily ${formatMoney(dailyCost)} · Crushing ${formatMoney(crushCost)}`);
+      const marginEl = document.getElementById('homeKpiMargin');
+      if (marginEl) {
+        marginEl.textContent = formatMoney(grossMargin);
+        marginEl.classList.toggle('is-positive', grossMargin > 0.0001);
+        marginEl.classList.toggle('is-negative', grossMargin < -0.0001);
+      }
+      const marginPctEl = document.getElementById('homeKpiMarginPct');
+      if (marginPctEl) {
+        marginPctEl.textContent = (Number.isFinite(marginPct) ? marginPct.toFixed(1) : '0.0') + '%';
+        marginPctEl.classList.toggle('is-positive', marginPct > 0.05);
+        marginPctEl.classList.toggle('is-negative', marginPct < -0.05);
+      }
+
+      setText('homeKpiTonsSold',    formatTons(totalTonsSold));
+      setText('homeKpiTonsSoldSub', `Across ${salesCount} sale${salesCount === 1 ? '' : 's'}`);
+      setText('homeKpiTonsCrushed', formatTons(crushTonsCrushed));
+      setText('homeKpiTonsCrushedSub', `Estimated · ${formatTons(crushHours)} hrs crushing`);
+      setText('homeKpiHours',       formatTons(totalHours));
+      setText('homeKpiHoursSub',    `Daily ${formatTons(dailyHours)} · Crushing ${formatTons(crushHours)}`);
+      setText('homeKpiAvgCpT',      formatMoney(avgCostPerTon));
+
+      if (sub) {
+        const yr = yearFilterLabel('home');
+        const totalDataset = allRows.length;
+        const visibleCount = visibleDaily.length + visibleCrush.length + visibleSales.length;
+        sub.textContent = totalDataset
+          ? `${visibleCount} entr${visibleCount === 1 ? 'y' : 'ies'} for ${yr}`
+          : 'Add entries on Daily, Crushing, or Sales to populate this dashboard.';
+      }
+
+      // ── Top customers (by sales $) ──
+      const customerAgg = new Map();
+      visibleSales.forEach(r => {
+        const key = (r.customerName || '').trim() || '— No customer —';
+        const cur = customerAgg.get(key) || { name: key, total: 0, tons: 0 };
+        cur.total += homeRowSales(r);
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) cur.tons += t;
+        customerAgg.set(key, cur);
+      });
+      renderHomeRanked('homeTopCustomers',
+        [...customerAgg.values()].sort((a, b) => b.total - a.total).slice(0, 5),
+        it => ({ name: it.name, value: formatMoney(it.total), secondary: `${formatTons(it.tons)} tons`, weight: it.total })
+      );
+
+      // ── Top products (by tons sold) ──
+      const productAgg = new Map();
+      visibleSales.forEach(r => {
+        const key = (r.productName || '').trim() || '— No product —';
+        const cur = productAgg.get(key) || { name: key, tons: 0, sales: 0 };
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) cur.tons += t;
+        cur.sales += homeRowSales(r);
+        productAgg.set(key, cur);
+      });
+      renderHomeRanked('homeTopProducts',
+        [...productAgg.values()].sort((a, b) => b.tons - a.tons).slice(0, 5),
+        it => ({ name: it.name, value: `${formatTons(it.tons)} tons`, secondary: formatMoney(it.sales), weight: it.tons })
+      );
+
+      // ── Sales by location ──
+      const salesLocAgg = new Map();
+      visibleSales.forEach(r => {
+        const key = (r.locationName || '').trim() || '— No location —';
+        const cur = salesLocAgg.get(key) || { name: key, total: 0, tons: 0 };
+        cur.total += homeRowSales(r);
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) cur.tons += t;
+        salesLocAgg.set(key, cur);
+      });
+      renderHomeRanked('homeSalesByLocation',
+        [...salesLocAgg.values()].sort((a, b) => b.total - a.total).slice(0, 5),
+        it => ({ name: it.name, value: formatMoney(it.total), secondary: `${formatTons(it.tons)} tons`, weight: it.total })
+      );
+
+      // ── Cost by location (daily + crushing combined) ──
+      const costLocAgg = new Map();
+      const addLocCost = (name, cost) => {
+        const key = (name || '').trim() || '— No location —';
+        const cur = costLocAgg.get(key) || { name: key, cost: 0 };
+        cur.cost += cost;
+        costLocAgg.set(key, cur);
+      };
+      visibleDaily.forEach(r => addLocCost(r.locationName, dailyCalc(r).totalCost));
+      visibleCrush.forEach(r => addLocCost(r.locationName, crushCalc(r).totalCost));
+      renderHomeRanked('homeCostByLocation',
+        [...costLocAgg.values()].sort((a, b) => b.cost - a.cost).slice(0, 5),
+        it => ({ name: it.name, value: formatMoney(it.cost), weight: it.cost })
+      );
+
+      // ── Year over year (always uses the full dataset) ──
+      const yearAgg = new Map();
+      const ensureYearEntry = (y) => {
+        if (!yearAgg.has(y)) yearAgg.set(y, { year: y, sales: 0, cost: 0, tonsSold: 0, tonsCrushed: 0 });
+        return yearAgg.get(y);
+      };
+      salesRows.forEach(r => {
+        const y = getRowYear(r.date); if (!y) return;
+        const e = ensureYearEntry(y);
+        const t = Number(r.tons);
+        e.sales += homeRowSales(r);
+        if (Number.isFinite(t)) e.tonsSold += t;
+      });
+      dailyRows.forEach(r => {
+        const y = getRowYear(r.date); if (!y) return;
+        ensureYearEntry(y).cost += dailyCalc(r).totalCost;
+      });
+      crushRows.forEach(r => {
+        const y = getRowYear(r.date); if (!y) return;
+        const e = ensureYearEntry(y);
+        const c = crushCalc(r);
+        e.cost += c.totalCost;
+        e.tonsCrushed += c.estimatedTons;
+      });
+      renderHomeYoy([...yearAgg.values()].sort((a, b) => b.year - a.year));
+
+      // ── Recent activity (last 12 entries across tabs, year-filtered) ──
+      const feed = [];
+      visibleDaily.forEach(r => feed.push({ kind: 'daily', date: r.date || '', row: r }));
+      visibleCrush.forEach(r => feed.push({ kind: 'crushing', date: r.date || '', row: r }));
+      visibleSales.forEach(r => feed.push({ kind: 'sales', date: r.date || '', row: r }));
+      feed.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      renderHomeFeed(feed.slice(0, 12));
+    }
+
+    function renderHomeRanked(elId, items, mapper) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      if (!items.length) { el.innerHTML = `<div class="home-empty">No data yet.</div>`; return; }
+      const max = Math.max(...items.map(it => mapper(it).weight || 0)) || 1;
+      el.innerHTML = items.map(it => {
+        const m = mapper(it);
+        const pct = Math.max(0, Math.min(100, ((m.weight || 0) / max) * 100));
+        return `<div class="home-rank">
+          <div class="home-rank-head">
+            <div class="name" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
+            <div class="value">${escapeHtml(m.value)}</div>
+          </div>
+          <div class="home-rank-bar"><span style="right: ${(100 - pct).toFixed(1)}%"></span></div>
+          ${m.secondary ? `<div class="secondary">${escapeHtml(m.secondary)}</div>` : ''}
+        </div>`;
+      }).join('');
+    }
+
+    function renderHomeYoy(rows) {
+      const tbody = document.querySelector('#homeYoyTable tbody');
+      if (!tbody) return;
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="home-empty">No data yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(r => {
+        const margin = r.sales - r.cost;
+        const cls = margin > 0.0001 ? 'pos' : margin < -0.0001 ? 'neg' : '';
+        return `<tr>
+          <td>${r.year}</td>
+          <td>${formatMoney(r.sales)}</td>
+          <td>${formatMoney(r.cost)}</td>
+          <td class="${cls}">${formatMoney(margin)}</td>
+          <td>${formatTons(r.tonsSold)}</td>
+          <td>${formatTons(r.tonsCrushed)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderHomeFeed(items) {
+      const el = document.getElementById('homeRecentActivity');
+      if (!el) return;
+      if (!items.length) { el.innerHTML = `<div class="home-empty">No recent activity.</div>`; return; }
+      el.innerHTML = items.map(it => {
+        const r = it.row;
+        let desc = '', amount = '';
+        if (it.kind === 'daily') {
+          const parts = [r.employeeName, r.equipmentName || r.taskName].filter(Boolean);
+          desc = parts.join(' · ') || '—';
+          if (r.locationName) desc += ' @ ' + r.locationName;
+          amount = formatMoney(dailyCalc(r).totalCost);
+        } else if (it.kind === 'crushing') {
+          desc = r.employeeName || '—';
+          if (r.locationName) desc += ' @ ' + r.locationName;
+          amount = formatMoney(crushCalc(r).totalCost);
+        } else {
+          const parts = [r.customerName, r.productName].filter(Boolean);
+          desc = parts.join(' · ') || '—';
+          if (r.locationName) desc += ' @ ' + r.locationName;
+          amount = formatMoney(homeRowSales(r));
+        }
+        return `<div class="home-feed-item">
+          <span class="badge ${it.kind}">${it.kind}</span>
+          <span class="date">${escapeHtml(it.date || '—')}</span>
+          <span class="desc" title="${escapeHtml(desc)}">${escapeHtml(desc)}</span>
+          <span class="amount">${amount}</span>
+        </div>`;
+      }).join('');
+    }
+
+    refreshHome();
   </script>
 
 </body>
