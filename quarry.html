@@ -387,9 +387,12 @@
     }
     .bulk-preview tbody tr:last-child td { border-bottom: none; }
     .bulk-preview tr.bad td { background: rgba(239,68,68,0.06); }
+    .bulk-preview tr.dup td { background: rgba(245,158,11,0.06); }
     .bulk-preview td.status     { font-size: 0.68rem; }
     .bulk-preview td.status.ok  { color: #4ade80; }
     .bulk-preview td.status.bad { color: #ef4444; }
+    .bulk-preview td.status.dup { color: #f59e0b; }
+    .bulk-summary .dup { color: #f59e0b; }
     .bulk-preview .new-tag {
       color: var(--accent); font-style: normal; font-size: 0.65rem;
       margin-left: 0.25rem;
@@ -1635,6 +1638,24 @@
       return Number.isFinite(n) ? n : null;
     }
 
+    // Signature used to detect duplicate daily entries on bulk upload.
+    // Names compared case-insensitively; numerics compared by value (so "1.5"
+    // matches 1.5); empty stays distinct from 0.
+    function dailyRowSig(parts) {
+      const norm = s => String(s || '').trim().toLowerCase();
+      const num  = v => (v === '' || v === null || v === undefined) ? '' : String(Number(v));
+      return [
+        String(parts.date || ''),
+        norm(parts.empName),
+        norm(parts.equipName),
+        norm(parts.taskName),
+        num(parts.hours),
+        num(parts.rate),
+        num(parts.fuelGallons),
+        num(parts.ppg),
+      ].join('|');
+    }
+
     function openDailyUpload() {
       if (!dailyLoaded) return;
       document.getElementById('dailyUploadBackdrop').classList.add('open');
@@ -1740,8 +1761,28 @@
           fuelGallons: fuelNum  === null ? '' : fuelNum,
           ppg:         ppgNum   === null ? '' : ppgNum,
           errors,
+          duplicate: false,
         });
       }
+
+      // Flag duplicates against rows already in the database, and against
+      // earlier rows in this same CSV (so the same line repeated only imports once).
+      const existingSigs = new Set(dailyRows.map(r => dailyRowSig({
+        date: r.date,
+        empName:   r.employeeName,
+        equipName: r.equipmentName,
+        taskName:  r.taskName,
+        hours: r.hours, rate: r.rate,
+        fuelGallons: r.fuelGallons, ppg: r.ppg,
+      })));
+      const seenSigs = new Set();
+      parsed.forEach(p => {
+        if (p.errors.length) return;
+        const sig = dailyRowSig(p);
+        if (existingSigs.has(sig) || seenSigs.has(sig)) p.duplicate = true;
+        else seenSigs.add(sig);
+      });
+
       dailyUploadParsed = { parsed };
       renderDailyUploadPreview();
     }
@@ -1750,8 +1791,9 @@
       const result = document.getElementById('dailyUploadResult');
       const data = dailyUploadParsed;
       if (!data) { result.innerHTML = ''; return; }
-      const validCount = data.parsed.filter(r => !r.errors.length).length;
-      const invalidCount = data.parsed.length - validCount;
+      const importableCount = data.parsed.filter(r => !r.errors.length && !r.duplicate).length;
+      const dupCount        = data.parsed.filter(r => !r.errors.length &&  r.duplicate).length;
+      const errorCount      = data.parsed.filter(r =>  r.errors.length).length;
 
       const empMap   = new Map((quarryLists.employees || []).map(it => [String(it.name).trim().toLowerCase(), it]));
       const equipMap = new Map((quarryLists.equipment || []).map(it => [String(it.name).trim().toLowerCase(), it]));
@@ -1761,7 +1803,7 @@
       const newEquip = new Set();
       const newTasks = new Set();
       data.parsed.forEach(p => {
-        if (p.errors.length) return;
+        if (p.errors.length || p.duplicate) return;
         if (p.empName   && !empMap.has(p.empName.toLowerCase()))     newEmps.add(p.empName);
         if (p.equipName && !equipMap.has(p.equipName.toLowerCase())) newEquip.add(p.equipName);
         if (p.taskName  && !taskMap.has(p.taskName.toLowerCase()))   newTasks.add(p.taskName);
@@ -1770,8 +1812,9 @@
 
       const summary = `
         <div class="bulk-summary">
-          <span class="ok">✓ ${validCount} valid row${validCount === 1 ? '' : 's'}</span>
-          ${invalidCount ? `<span class="bad">✕ ${invalidCount} row${invalidCount === 1 ? '' : 's'} with errors (skipped)</span>` : ''}
+          <span class="ok">✓ ${importableCount} valid row${importableCount === 1 ? '' : 's'}</span>
+          ${dupCount ? `<span class="dup">⚠ ${dupCount} duplicate row${dupCount === 1 ? '' : 's'} (skipped)</span>` : ''}
+          ${errorCount ? `<span class="bad">✕ ${errorCount} row${errorCount === 1 ? '' : 's'} with errors (skipped)</span>` : ''}
           ${newCount ? `<span>+ ${newCount} new list item${newCount === 1 ? '' : 's'} will be added</span>` : ''}
         </div>`;
 
@@ -1786,10 +1829,18 @@
         : escapeHtml(String(v));
 
       const rowsHtml = data.parsed.map(p => {
-        const status = p.errors.length
-          ? `<td class="status bad" title="${escapeHtml(p.errors.join('; '))}">${escapeHtml(p.errors[0])}</td>`
-          : `<td class="status ok">OK</td>`;
-        return `<tr class="${p.errors.length ? 'bad' : ''}">
+        let status;
+        let cls = '';
+        if (p.errors.length) {
+          cls = 'bad';
+          status = `<td class="status bad" title="${escapeHtml(p.errors.join('; '))}">${escapeHtml(p.errors[0])}</td>`;
+        } else if (p.duplicate) {
+          cls = 'dup';
+          status = `<td class="status dup" title="Already in Daily Tracking">Duplicate</td>`;
+        } else {
+          status = `<td class="status ok">OK</td>`;
+        }
+        return `<tr class="${cls}">
           <td>${p.rowNum}</td>
           <td>${escapeHtml(p.date || '')}</td>
           <td>${cellName(p.empName, empMap)}</td>
@@ -1815,14 +1866,14 @@
         </div>`;
 
       const btn = document.getElementById('dailyUploadConfirm');
-      btn.disabled = validCount === 0;
-      btn.textContent = `Import ${validCount} Row${validCount === 1 ? '' : 's'}`;
+      btn.disabled = importableCount === 0;
+      btn.textContent = `Import ${importableCount} Row${importableCount === 1 ? '' : 's'}`;
     }
 
     function confirmDailyUpload() {
       if (!dailyUploadParsed || !dailyLoaded) return;
       const autoCreate = document.getElementById('dailyUploadAutoCreate')?.checked !== false;
-      const valid = dailyUploadParsed.parsed.filter(r => !r.errors.length);
+      const valid = dailyUploadParsed.parsed.filter(r => !r.errors.length && !r.duplicate);
       if (!valid.length) return;
 
       const ensureItem = (listKey, name) => {
