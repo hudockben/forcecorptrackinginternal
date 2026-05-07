@@ -2087,7 +2087,7 @@
           { name: 'product',     label: 'Product',     aliases: ['product', 'productname'],     required: true, type: 'list', list: 'product',   idKey: 'productId',  nameKey: 'productName' },
           { name: 'tons',        label: 'Tons',        aliases: ['tons'],                       required: true, type: 'num',  outKey: 'tons' },
           { name: 'payment',     label: 'Payment',     aliases: ['payment'],                                    type: 'enum', options: ['Cash', 'Credit'], outKey: 'payment' },
-          { name: 'pricePerTon', label: 'Price / Ton', aliases: ['priceperton', 'price'],       required: true, type: 'num',  outKey: 'pricePerTon' },
+          { name: 'pricePerTon', label: 'Price / Ton', aliases: ['priceperton', 'priceton', 'price'], required: true, type: 'num',  outKey: 'pricePerTon' },
         ],
         sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'ACME Corp', 'Crushed Stone', '25.5', 'Cash', '12.00'],
         state: {
@@ -2238,7 +2238,12 @@
       const headerRow = rows[0].map(normHeader);
       const colIdx = {};
       cfg.fields.forEach(f => {
-        for (const a of f.aliases) {
+        // Always allow the normalized label as a header match so the
+        // generated template round-trips even if the alias list misses
+        // a variant (e.g. "Price / Ton" → "priceton").
+        const labelAlias = normHeader(f.label);
+        const aliases = [...new Set([labelAlias, ...f.aliases])];
+        for (const a of aliases) {
           const idx = headerRow.indexOf(a);
           if (idx !== -1) { colIdx[f.name] = idx; break; }
         }
