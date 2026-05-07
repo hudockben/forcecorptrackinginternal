@@ -237,6 +237,21 @@
     }
     .sales-summary strong { color: var(--text); font-weight: 700; margin-left: 0.35rem; }
 
+    .year-filter-wrap {
+      display: inline-flex; align-items: center; gap: 0.45rem;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .year-filter-select {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text);
+      font-family: inherit; font-size: 0.78rem;
+      padding: 0.38rem 0.6rem; cursor: pointer; outline: none;
+    }
+    .year-filter-select:hover,
+    .year-filter-select:focus { border-color: var(--accent); }
+    .year-filter-select:disabled { opacity: 0.45; cursor: not-allowed; }
+
     .sales-table-wrap {
       border: 1px solid var(--border); border-radius: 6px;
       overflow: auto; background: var(--surface);
@@ -439,6 +454,10 @@
       <div class="sales-toolbar">
         <button class="btn-add-row" id="dailyAddBtn" onclick="addDailyRow()">+ Add Row</button>
         <button class="btn-add-row btn-bulk-upload" id="dailyBulkBtn" onclick="openBulk('daily')">⇪ Bulk Upload CSV</button>
+        <div class="year-filter-wrap">
+          Year
+          <select class="year-filter-select" id="dailyYearFilter" onchange="setYearFilter('daily', this.value)" disabled></select>
+        </div>
         <div class="sales-summary" id="dailySummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -446,6 +465,7 @@
           <thead>
             <tr>
               <th class="col-date">Date</th>
+              <th>Location</th>
               <th>Employee</th>
               <th>Equipment</th>
               <th>Task</th>
@@ -460,7 +480,7 @@
             </tr>
           </thead>
           <tbody id="dailyTbody">
-            <tr><td colspan="12" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="13" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -471,6 +491,10 @@
       <div class="sales-toolbar">
         <button class="btn-add-row" id="crushAddBtn" onclick="addCrushRow()">+ Add Row</button>
         <button class="btn-add-row btn-bulk-upload" id="crushBulkBtn" onclick="openBulk('crushing')">⇪ Bulk Upload CSV</button>
+        <div class="year-filter-wrap">
+          Year
+          <select class="year-filter-select" id="crushingYearFilter" onchange="setYearFilter('crushing', this.value)" disabled></select>
+        </div>
         <div class="sales-summary" id="crushSummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -478,6 +502,7 @@
           <thead>
             <tr>
               <th class="col-date">Date</th>
+              <th>Location</th>
               <th>Employee</th>
               <th class="col-num">Hourly Rate</th>
               <th class="col-num">Hours</th>
@@ -497,7 +522,7 @@
             </tr>
           </thead>
           <tbody id="crushTbody">
-            <tr><td colspan="17" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="18" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -508,6 +533,10 @@
       <div class="sales-toolbar">
         <button class="btn-add-row" id="salesAddBtn" onclick="addSalesRow()">+ Add Row</button>
         <button class="btn-add-row btn-bulk-upload" id="salesBulkBtn" onclick="openBulk('sales')">⇪ Bulk Upload CSV</button>
+        <div class="year-filter-wrap">
+          Year
+          <select class="year-filter-select" id="salesYearFilter" onchange="setYearFilter('sales', this.value)" disabled></select>
+        </div>
         <div class="sales-summary" id="salesSummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -515,6 +544,7 @@
           <thead>
             <tr>
               <th class="col-date">Date</th>
+              <th>Location</th>
               <th>Employee</th>
               <th>Customer</th>
               <th>Product</th>
@@ -526,7 +556,7 @@
             </tr>
           </thead>
           <tbody id="salesTbody">
-            <tr><td colspan="9" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="10" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -570,7 +600,7 @@
       <div class="bulk-body">
         <div class="bulk-help">
           Upload a CSV with these columns (header row required):
-          <code>Date</code>, <code>Employee</code>, <code>Equipment</code>, <code>Task</code>,
+          <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Equipment</code>, <code>Task</code>,
           <code>Hours</code>, <code>Rate</code>, <code>Fuel Gallons</code>, <code>PPG</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
           Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code>. Labor / fuel / total cost are computed automatically.
@@ -583,7 +613,7 @@
           <button class="btn-secondary" onclick="downloadBulkTemplate('daily')">Download Template</button>
           <label class="bulk-checkbox">
             <input type="checkbox" id="dailyUploadAutoCreate" checked />
-            Auto-add new employees / equipment / tasks
+            Auto-add new locations / employees / equipment / tasks
           </label>
         </div>
         <div id="dailyUploadResult"></div>
@@ -605,7 +635,7 @@
       <div class="bulk-body">
         <div class="bulk-help">
           Upload a CSV with these columns (header row required):
-          <code>Date</code>, <code>Employee</code>, <code>Hourly Rate</code>, <code>Hours</code>,
+          <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Hourly Rate</code>, <code>Hours</code>,
           <code>Fuel Gallons</code>, <code>Fuel Cost</code>, <code>Loads to Crusher</code>,
           <code>Tons / Load</code>, <code>Hours Crushing</code>, <code>Comments</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
@@ -619,7 +649,7 @@
           <button class="btn-secondary" onclick="downloadBulkTemplate('crushing')">Download Template</button>
           <label class="bulk-checkbox">
             <input type="checkbox" id="crushingUploadAutoCreate" checked />
-            Auto-add new employees
+            Auto-add new locations / employees
           </label>
         </div>
         <div id="crushingUploadResult"></div>
@@ -641,7 +671,7 @@
       <div class="bulk-body">
         <div class="bulk-help">
           Upload a CSV with these columns (header row required):
-          <code>Date</code>, <code>Employee</code>, <code>Customer</code>, <code>Product</code>,
+          <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Customer</code>, <code>Product</code>,
           <code>Tons</code>, <code>Payment</code>, <code>Price / Ton</code>.
           Required: <strong>Date</strong>, <strong>Customer</strong>, <strong>Product</strong>, <strong>Tons</strong>, <strong>Price / Ton</strong>.
           Payment must be <code>Cash</code> or <code>Credit</code>. Total sales is computed automatically.
@@ -654,7 +684,7 @@
           <button class="btn-secondary" onclick="downloadBulkTemplate('sales')">Download Template</button>
           <label class="bulk-checkbox">
             <input type="checkbox" id="salesUploadAutoCreate" checked />
-            Auto-add new employees / customers / products
+            Auto-add new locations / employees / customers / products
           </label>
         </div>
         <div id="salesUploadResult"></div>
@@ -970,6 +1000,8 @@
       return {
         id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
         date: typeof row.date === 'string' ? row.date : '',
+        locationId: row.locationId || '',
+        locationName: row.locationName || '',
         employeeId: row.employeeId || '',
         employeeName: row.employeeName || '',
         customerId: row.customerId || '',
@@ -1068,6 +1100,57 @@
       return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
     }
 
+    // ── Per-tab year filter ─────────────────────────────────────
+    // Default each tab to the current year so users land on this
+    // year's data. Selecting "All Years" shows everything.
+    const yearFilters = { daily: null, crushing: null, sales: null };
+
+    function getRowYear(dateStr) {
+      if (!dateStr || typeof dateStr !== 'string') return null;
+      const m = dateStr.match(/^(\d{4})/);
+      return m ? Number(m[1]) : null;
+    }
+    function ensureYearFilter(tab) {
+      if (yearFilters[tab] === null) {
+        yearFilters[tab] = String(new Date().getFullYear());
+      }
+    }
+    function rowMatchesYear(tab, row) {
+      const f = yearFilters[tab];
+      if (!f || f === 'all') return true;
+      return String(getRowYear(row && row.date)) === f;
+    }
+    function setYearFilter(tab, value) {
+      yearFilters[tab] = value;
+      if (tab === 'daily')    renderDaily();
+      else if (tab === 'crushing') renderCrush();
+      else if (tab === 'sales')    renderSales();
+    }
+    function renderYearFilterOptions(tab, rows) {
+      const sel = document.getElementById(tab + 'YearFilter');
+      if (!sel) return;
+      ensureYearFilter(tab);
+      const currentYear = new Date().getFullYear();
+      const years = new Set([currentYear]);
+      rows.forEach(r => { const y = getRowYear(r.date); if (y) years.add(y); });
+      const sorted = [...years].sort((a, b) => b - a);
+      sel.innerHTML = ['<option value="all">All Years</option>']
+        .concat(sorted.map(y => `<option value="${y}">${y}</option>`))
+        .join('');
+      const desired = yearFilters[tab];
+      if (desired === 'all' || sorted.includes(Number(desired))) {
+        sel.value = desired;
+      } else {
+        sel.value = String(currentYear);
+        yearFilters[tab] = sel.value;
+      }
+      sel.disabled = false;
+    }
+    function yearFilterLabel(tab) {
+      const v = yearFilters[tab];
+      return v === 'all' ? 'all years' : v;
+    }
+
     function buildOptionList(listKey, selectedId, savedName) {
       const items = (quarryLists[listKey] || []);
       const opts = ['<option value="">—</option>'];
@@ -1093,18 +1176,28 @@
       if (bulkBtn) bulkBtn.disabled = !salesLoaded;
 
       if (!salesLoaded) {
-        tbody.innerHTML = `<tr><td colspan="9" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">Loading…</td></tr>`;
         updateSalesSummary();
         return;
       }
+      renderYearFilterOptions('sales', salesRows);
       if (!salesRows.length) {
-        tbody.innerHTML = `<tr><td colspan="9" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
+        updateSalesSummary();
+        return;
+      }
+      const visibleEntries = salesRows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .filter(({ row }) => rowMatchesYear('sales', row));
+      if (!visibleEntries.length) {
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))}. Pick a different year above.</td></tr>`;
         updateSalesSummary();
         return;
       }
 
-      tbody.innerHTML = salesRows.map((row, i) => {
+      tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const total = rowTotal(row);
+        const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
         const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
         const customerOpts = buildOptionList('customer',  row.customerId, row.customerName);
         const productOpts  = buildOptionList('product',   row.productId,  row.productName);
@@ -1114,6 +1207,7 @@
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateSalesCell(${i}, 'date', this.value)" /></td>
+            <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'location', this)">${locationOpts}</select></td>
             <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'employee', this)">${employeeOpts}</select></td>
             <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'customer', this)">${customerOpts}</select></td>
             <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'product', this)">${productOpts}</select></td>
@@ -1133,6 +1227,7 @@
       if (!el) return;
       let totalTons = 0, totalSales = 0, count = 0;
       salesRows.forEach(r => {
+        if (!rowMatchesYear('sales', r)) return;
         const t = Number(r.tons);
         const p = Number(r.pricePerTon);
         if (Number.isFinite(t)) totalTons += t;
@@ -1216,6 +1311,8 @@
       const out = {
         id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
         date: typeof row.date === 'string' ? row.date : '',
+        locationId: row.locationId || '',
+        locationName: row.locationName || '',
         employeeId: row.employeeId || '',
         employeeName: row.employeeName || '',
         comments: typeof row.comments === 'string' ? row.comments : '',
@@ -1314,18 +1411,28 @@
       if (bulkBtn) bulkBtn.disabled = !crushLoaded;
 
       if (!crushLoaded) {
-        tbody.innerHTML = `<tr><td colspan="17" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">Loading…</td></tr>`;
         updateCrushSummary();
         return;
       }
+      renderYearFilterOptions('crushing', crushRows);
       if (!crushRows.length) {
-        tbody.innerHTML = `<tr><td colspan="17" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        updateCrushSummary();
+        return;
+      }
+      const visibleEntries = crushRows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .filter(({ row }) => rowMatchesYear('crushing', row));
+      if (!visibleEntries.length) {
+        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))}. Pick a different year above.</td></tr>`;
         updateCrushSummary();
         return;
       }
 
-      tbody.innerHTML = crushRows.map((row, i) => {
+      tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const c = crushCalc(row);
+        const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
         const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
         const calcCell = (id, val, money) => {
           const z = !val ? ' is-zero' : '';
@@ -1335,6 +1442,7 @@
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value)" /></td>
+            <td><select class="cell-select" onchange="updateCrushLocation(${i}, this)">${locationOpts}</select></td>
             <td><select class="cell-select" onchange="updateCrushEmployee(${i}, this)">${employeeOpts}</select></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hourlyRate === '' ? '' : row.hourlyRate}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'hourlyRate', this.value)" /></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateCrushNumber(${i}, 'hours', this.value)" /></td>
@@ -1361,6 +1469,7 @@
       if (!el) return;
       let totalHours = 0, totalEstTons = 0, totalCost = 0, count = 0;
       crushRows.forEach(r => {
+        if (!rowMatchesYear('crushing', r)) return;
         const c = crushCalc(r);
         const hc = Number(r.hoursCrushing);
         if (Number.isFinite(hc)) totalHours += hc;
@@ -1404,6 +1513,16 @@
       scheduleCrushSave();
       renderCrush();
     }
+    function updateCrushLocation(index, selectEl) {
+      if (!crushLoaded || !crushRows[index]) return;
+      const id = selectEl.value;
+      const opt = selectEl.options[selectEl.selectedIndex];
+      const name = opt ? opt.text.replace(/ \(removed\)$/, '') : '';
+      const listItem = (quarryLists.location || []).find(it => String(it.id) === String(id));
+      crushRows[index].locationId = id;
+      crushRows[index].locationName = listItem ? listItem.name : name;
+      scheduleCrushSave();
+    }
     function updateCrushNumber(index, field, raw) {
       if (!crushLoaded || !crushRows[index]) return;
       const s = String(raw).trim();
@@ -1444,6 +1563,8 @@
       const out = {
         id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
         date: typeof row.date === 'string' ? row.date : '',
+        locationId: row.locationId || '',
+        locationName: row.locationName || '',
         employeeId: row.employeeId || '',
         employeeName: row.employeeName || '',
         equipmentId: row.equipmentId || '',
@@ -1541,18 +1662,28 @@
       if (bulkBtn) bulkBtn.disabled = !dailyLoaded;
 
       if (!dailyLoaded) {
-        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">Loading…</td></tr>`;
         updateDailySummary();
         return;
       }
+      renderYearFilterOptions('daily', dailyRows);
       if (!dailyRows.length) {
-        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        updateDailySummary();
+        return;
+      }
+      const visibleEntries = dailyRows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .filter(({ row }) => rowMatchesYear('daily', row));
+      if (!visibleEntries.length) {
+        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries for ${escapeHtml(yearFilterLabel('daily'))}. Pick a different year above.</td></tr>`;
         updateDailySummary();
         return;
       }
 
-      tbody.innerHTML = dailyRows.map((row, i) => {
+      tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const c = dailyCalc(row);
+        const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
         const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
         const equipmentOpts = buildOptionList('equipment', row.equipmentId, row.equipmentName);
         const taskOpts = buildOptionList('tasks', row.taskId, row.taskName);
@@ -1564,6 +1695,7 @@
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateDailyCell(${i}, 'date', this.value)" /></td>
+            <td><select class="cell-select" onchange="updateDailySelect(${i}, 'location', this)">${locationOpts}</select></td>
             <td><select class="cell-select" onchange="updateDailySelect(${i}, 'employee', this)">${employeeOpts}</select></td>
             <td><select class="cell-select" onchange="updateDailySelect(${i}, 'equipment', this)">${equipmentOpts}</select></td>
             <td><select class="cell-select" onchange="updateDailySelect(${i}, 'task', this)">${taskOpts}</select></td>
@@ -1585,6 +1717,7 @@
       if (!el) return;
       let totalHours = 0, totalCost = 0, count = 0;
       dailyRows.forEach(r => {
+        if (!rowMatchesYear('daily', r)) return;
         const c = dailyCalc(r);
         const h = Number(r.hours);
         if (Number.isFinite(h)) totalHours += h;
@@ -1657,6 +1790,7 @@
         title: 'Daily Tracking',
         fields: [
           { name: 'date',        label: 'Date',         aliases: ['date'],                            required: true, type: 'date', outKey: 'date' },
+          { name: 'location',    label: 'Location',     aliases: ['location', 'locationname'],                        type: 'list', list: 'location',  idKey: 'locationId',  nameKey: 'locationName' },
           { name: 'employee',    label: 'Employee',     aliases: ['employee', 'employeename'],        required: true, type: 'list', list: 'employees', idKey: 'employeeId',  nameKey: 'employeeName' },
           { name: 'equipment',   label: 'Equipment',    aliases: ['equipment', 'equipmentname'],                      type: 'list', list: 'equipment', idKey: 'equipmentId', nameKey: 'equipmentName' },
           { name: 'task',        label: 'Task',         aliases: ['task', 'taskname'],                                type: 'list', list: 'tasks',     idKey: 'taskId',      nameKey: 'taskName' },
@@ -1665,7 +1799,7 @@
           { name: 'fuelGallons', label: 'Fuel Gallons', aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],       type: 'num',  outKey: 'fuelGallons' },
           { name: 'ppg',         label: 'PPG',          aliases: ['ppg', 'pricepergallon'],                           type: 'num',  outKey: 'ppg' },
         ],
-        sample: () => [todayIso(), 'Jim Zimmerman', 'Loader', 'Loading', '1.75', '26', '10', '3.5'],
+        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'Loader', 'Loading', '1.75', '26', '10', '3.5'],
         state: {
           isLoaded: () => dailyLoaded,
           rows:      () => dailyRows,
@@ -1679,6 +1813,7 @@
         title: 'Crushing Tracking',
         fields: [
           { name: 'date',           label: 'Date',             aliases: ['date'],                          required: true, type: 'date', outKey: 'date' },
+          { name: 'location',       label: 'Location',         aliases: ['location', 'locationname'],                      type: 'list', list: 'location',  idKey: 'locationId', nameKey: 'locationName' },
           { name: 'employee',       label: 'Employee',         aliases: ['employee', 'employeename'],      required: true, type: 'list', list: 'employees', idKey: 'employeeId', nameKey: 'employeeName' },
           { name: 'hourlyRate',     label: 'Hourly Rate',      aliases: ['hourlyrate', 'rate'],                            type: 'num',  outKey: 'hourlyRate', fillFromEmployee: 'rate' },
           { name: 'hours',          label: 'Hours',            aliases: ['hours'],                         required: true, type: 'num',  outKey: 'hours' },
@@ -1689,7 +1824,7 @@
           { name: 'hoursCrushing',  label: 'Hours Crushing',   aliases: ['hourscrushing'],                                 type: 'num',  outKey: 'hoursCrushing' },
           { name: 'comments',       label: 'Comments',         aliases: ['comments', 'comment', 'notes'],                  type: 'text', outKey: 'comments' },
         ],
-        sample: () => [todayIso(), 'Jim Zimmerman', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
+        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
         state: {
           isLoaded: () => crushLoaded,
           rows:      () => crushRows,
@@ -1703,6 +1838,7 @@
         title: 'Sales Tracking',
         fields: [
           { name: 'date',        label: 'Date',        aliases: ['date'],                       required: true, type: 'date', outKey: 'date' },
+          { name: 'location',    label: 'Location',    aliases: ['location', 'locationname'],                   type: 'list', list: 'location',  idKey: 'locationId', nameKey: 'locationName' },
           { name: 'employee',    label: 'Employee',    aliases: ['employee', 'employeename'],                   type: 'list', list: 'employees', idKey: 'employeeId', nameKey: 'employeeName' },
           { name: 'customer',    label: 'Customer',    aliases: ['customer', 'customername'],   required: true, type: 'list', list: 'customer',  idKey: 'customerId', nameKey: 'customerName' },
           { name: 'product',     label: 'Product',     aliases: ['product', 'productname'],     required: true, type: 'list', list: 'product',   idKey: 'productId',  nameKey: 'productName' },
@@ -1710,7 +1846,7 @@
           { name: 'payment',     label: 'Payment',     aliases: ['payment'],                                    type: 'enum', options: ['Cash', 'Credit'], outKey: 'payment' },
           { name: 'pricePerTon', label: 'Price / Ton', aliases: ['priceperton', 'price'],       required: true, type: 'num',  outKey: 'pricePerTon' },
         ],
-        sample: () => [todayIso(), 'Jim Zimmerman', 'ACME Corp', 'Crushed Stone', '25.5', 'Cash', '12.00'],
+        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'ACME Corp', 'Crushed Stone', '25.5', 'Cash', '12.00'],
         state: {
           isLoaded: () => salesLoaded,
           rows:      () => salesRows,
