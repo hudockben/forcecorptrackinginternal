@@ -127,6 +127,7 @@
       padding: 1.1rem 1.5rem 0.9rem;
       border-bottom: 1px solid var(--border);
       background: var(--surface);
+      flex-shrink: 0;
     }
     .modal-title {
       font-size: 0.82rem; font-weight: 700; text-transform: uppercase;
@@ -144,6 +145,7 @@
       border-bottom: 1px solid var(--border);
       background: var(--surface);
       overflow-x: auto;
+      flex-shrink: 0;
     }
     .ml-subtab-btn {
       padding: 0.55rem 1rem;
@@ -160,6 +162,7 @@
       padding: 1.25rem 1.5rem 1.5rem;
       overflow-y: auto;
       flex: 1;
+      min-height: 0;
     }
     .ml-panel { display: none; }
     .ml-panel.active { display: block; }
@@ -470,6 +473,17 @@
       border: 1px solid rgba(249,115,22,0.35);
     }
     .btn-bulk-upload:hover { background: rgba(249,115,22,0.16); border-color: var(--accent); }
+    .btn-danger {
+      background: rgba(239,68,68,0.07); color: #ef4444;
+      border: 1px solid rgba(239,68,68,0.35);
+    }
+    .btn-danger:hover:not(:disabled) {
+      background: rgba(239,68,68,0.16); border-color: #ef4444;
+    }
+    .btn-danger:disabled {
+      background: none; color: var(--muted);
+      border-color: var(--border); opacity: 0.55;
+    }
     .btn-secondary {
       font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
       text-transform: uppercase; color: var(--muted);
@@ -483,6 +497,7 @@
     .bulk-body {
       padding: 1.1rem 1.5rem; overflow-y: auto; flex: 1;
       display: flex; flex-direction: column; gap: 0.9rem;
+      min-height: 0;
     }
     .bulk-help {
       font-size: 0.78rem; color: var(--muted); line-height: 1.5;
@@ -554,6 +569,7 @@
       border-top: 1px solid var(--border);
       display: flex; justify-content: flex-end; gap: 0.6rem;
       background: var(--surface);
+      flex-shrink: 0;
     }
   </style>
 </head>
@@ -703,6 +719,7 @@
           Location
           <select class="year-filter-select" id="dailyLocationFilter" onchange="setLocationFilter('daily', this.value)" disabled></select>
         </div>
+        <button class="btn-add-row btn-danger" id="dailyDeleteFilteredBtn" onclick="deleteFilteredRows('daily')" disabled>Delete 0 Rows</button>
         <div class="sales-summary" id="dailySummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -744,6 +761,7 @@
           Location
           <select class="year-filter-select" id="crushingLocationFilter" onchange="setLocationFilter('crushing', this.value)" disabled></select>
         </div>
+        <button class="btn-add-row btn-danger" id="crushingDeleteFilteredBtn" onclick="deleteFilteredRows('crushing')" disabled>Delete 0 Rows</button>
         <div class="sales-summary" id="crushSummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -790,6 +808,7 @@
           Location
           <select class="year-filter-select" id="salesLocationFilter" onchange="setLocationFilter('sales', this.value)" disabled></select>
         </div>
+        <button class="btn-add-row btn-danger" id="salesDeleteFilteredBtn" onclick="deleteFilteredRows('sales')" disabled>Delete 0 Rows</button>
         <div class="sales-summary" id="salesSummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -854,9 +873,10 @@
         <div class="bulk-help">
           Upload a CSV with these columns (header row required):
           <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Equipment</code>, <code>Task</code>,
-          <code>Hours</code>, <code>Rate</code>, <code>Fuel Gallons</code>, <code>PPG</code>.
+          <code>Hours</code>, <code>Rate</code>, <code>Fuel / Gallons</code>, <code>PPG</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
-          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code>. Labor / fuel / total cost are computed automatically.
+          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code>. Labor / fuel / total cost columns are
+          included in the downloaded template for layout but are recomputed on import.
         </div>
         <div class="bulk-actions">
           <label class="btn-add-row" id="dailyUploadChooseLabel">
@@ -892,7 +912,9 @@
           <code>Fuel Gallons</code>, <code>Fuel Cost</code>, <code>Loads to Crusher</code>,
           <code>Tons / Load</code>, <code>Hours Crushing</code>, <code>Comments</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
-          Total payroll, total fuel, est. tons, tons/hour, total cost, and cost/ton are computed automatically.
+          The downloaded template also includes the computed columns (Total Payroll, Total Fuel,
+          Estimated Tons, Tons/Hour, Total Cost, Cost/Ton) so column positions line up with the tracker —
+          values in those columns are recomputed on import.
         </div>
         <div class="bulk-actions">
           <label class="btn-add-row">
@@ -1457,6 +1479,71 @@
       return v;
     }
 
+    // ── Bulk delete filtered rows (repair tool) ──────────────────
+    const TRACKING_DELETE_CFG = {
+      daily: {
+        label: 'Daily Tracking',
+        getRows: () => dailyRows,
+        setRows: (v) => { dailyRows = v; },
+        save:    () => scheduleDailySave(),
+        render:  () => renderDaily(),
+      },
+      crushing: {
+        label: 'Crushing Tracking',
+        getRows: () => crushRows,
+        setRows: (v) => { crushRows = v; },
+        save:    () => scheduleCrushSave(),
+        render:  () => renderCrush(),
+      },
+      sales: {
+        label: 'Sales Tracking',
+        getRows: () => salesRows,
+        setRows: (v) => { salesRows = v; },
+        save:    () => scheduleSalesSave(),
+        render:  () => renderSales(),
+      },
+    };
+
+    function visibleRowCount(tab) {
+      const cfg = TRACKING_DELETE_CFG[tab];
+      if (!cfg) return 0;
+      const rows = cfg.getRows();
+      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesLocation(tab, r)).length;
+    }
+
+    function refreshDeleteFilteredBtn(tab) {
+      const btnId = (tab === 'crushing') ? 'crushingDeleteFilteredBtn'
+                  : (tab === 'sales')    ? 'salesDeleteFilteredBtn'
+                  : 'dailyDeleteFilteredBtn';
+      const btn = document.getElementById(btnId);
+      if (!btn) return;
+      const count = visibleRowCount(tab);
+      btn.textContent = `Delete ${count} Row${count === 1 ? '' : 's'}`;
+      btn.disabled = count === 0;
+    }
+
+    function deleteFilteredRows(tab) {
+      const cfg = TRACKING_DELETE_CFG[tab];
+      if (!cfg) return;
+      const rows = cfg.getRows();
+      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesLocation(tab, r);
+      const toDelete = rows.filter(matches);
+      if (!toDelete.length) return;
+
+      const yr  = yearFilterLabel(tab);
+      const loc = locationFilterLabel(tab);
+      const ok = window.confirm(
+        `Delete ${toDelete.length} ${cfg.label} row${toDelete.length === 1 ? '' : 's'} ` +
+        `matching ${yr} · ${loc}?\n\n` +
+        `This cannot be undone. Tip: re-upload the corrected CSV after deleting.`
+      );
+      if (!ok) return;
+
+      cfg.setRows(rows.filter(r => !matches(r)));
+      cfg.save();
+      cfg.render();
+    }
+
     function buildOptionList(listKey, selectedId, savedName) {
       const items = (quarryLists[listKey] || []);
       const opts = ['<option value="">—</option>'];
@@ -1543,6 +1630,7 @@
         count++;
       });
       el.innerHTML = `Rows<strong>${count}</strong>· Total Tons<strong>${formatTons(totalTons)}</strong>· Total Sales<strong>${formatMoney(totalSales)}</strong>`;
+      refreshDeleteFilteredBtn('sales');
     }
 
     function addSalesRow() {
@@ -1789,6 +1877,7 @@
       });
       const avgCostPerTon = totalEstTons > 0 ? totalCost / totalEstTons : 0;
       el.innerHTML = `Rows<strong>${count}</strong>· Hours Crushing<strong>${formatTons(totalHours)}</strong>· Est. Tons<strong>${formatTons(totalEstTons)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>· Avg Cost/Ton<strong>${formatMoney(avgCostPerTon)}</strong>`;
+      refreshDeleteFilteredBtn('crushing');
     }
 
     function addCrushRow() {
@@ -2037,6 +2126,7 @@
         count++;
       });
       el.innerHTML = `Rows<strong>${count}</strong>· Hours<strong>${formatTons(totalHours)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>`;
+      refreshDeleteFilteredBtn('daily');
     }
 
     function addDailyRow() {
@@ -2108,10 +2198,21 @@
           { name: 'task',        label: 'Task',         aliases: ['task', 'taskname'],                                type: 'list', list: 'tasks',     idKey: 'taskId',      nameKey: 'taskName' },
           { name: 'hours',       label: 'Hours',        aliases: ['hours'],                           required: true, type: 'num',  outKey: 'hours' },
           { name: 'rate',        label: 'Rate',         aliases: ['rate', 'hourlyrate'],                              type: 'num',  outKey: 'rate', fillFromEmployee: 'rate' },
-          { name: 'fuelGallons', label: 'Fuel Gallons', aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],       type: 'num',  outKey: 'fuelGallons' },
+          { name: 'fuelGallons', label: 'Fuel / Gallons', aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],     type: 'num',  outKey: 'fuelGallons' },
           { name: 'ppg',         label: 'PPG',          aliases: ['ppg', 'pricepergallon'],                           type: 'num',  outKey: 'ppg' },
         ],
         sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'Loader', 'Loading', '1.75', '26', '10', '3.5'],
+        // Template layout mirrors the tracker UI column order; entries
+        // in {label, computed: true} form are computed by the app and
+        // included only so positions line up with the tracker — values
+        // in those columns are ignored on import.
+        templateLayout: [
+          'date', 'location', 'employee', 'equipment', 'task', 'hours', 'rate',
+          { label: 'Labor Cost',    computed: true },
+          'fuelGallons', 'ppg',
+          { label: 'Fuel Cost',     computed: true },
+          { label: 'Total Cost',    computed: true },
+        ],
         state: {
           isLoaded: () => dailyLoaded,
           rows:      () => dailyRows,
@@ -2137,6 +2238,19 @@
           { name: 'comments',       label: 'Comments',         aliases: ['comments', 'comment', 'notes'],                  type: 'text', outKey: 'comments' },
         ],
         sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
+        templateLayout: [
+          'date', 'location', 'employee', 'hourlyRate', 'hours',
+          { label: 'Total Payroll',  computed: true },
+          'fuelGallons', 'fuelCost',
+          { label: 'Total Fuel',     computed: true },
+          'loadsToCrusher', 'tonsPerLoad',
+          { label: 'Estimated Tons', computed: true },
+          'hoursCrushing',
+          { label: 'Tons / Hour',    computed: true },
+          { label: 'Total Cost',     computed: true },
+          { label: 'Cost / Ton',     computed: true },
+          'comments',
+        ],
         state: {
           isLoaded: () => crushLoaded,
           rows:      () => crushRows,
@@ -2159,6 +2273,10 @@
           { name: 'pricePerTon', label: 'Price / Ton', aliases: ['priceperton', 'priceton', 'price'], required: true, type: 'num',  outKey: 'pricePerTon' },
         ],
         sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'ACME Corp', 'Crushed Stone', '25.5', 'Cash', '12.00'],
+        templateLayout: [
+          'date', 'location', 'employee', 'customer', 'product', 'tons', 'payment', 'pricePerTon',
+          { label: 'Total Sales', computed: true },
+        ],
         state: {
           isLoaded: () => salesLoaded,
           rows:      () => salesRows,
@@ -2273,9 +2391,30 @@
     function downloadBulkTemplate(key) {
       const cfg = BULK_CONFIGS[key];
       const csvCell = v => /[,"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
-      const headers = cfg.fields.map(f => f.label);
-      const sample  = cfg.sample();
-      const csv = headers.map(csvCell).join(',') + '\n' + sample.map(csvCell).join(',') + '\n';
+
+      const sampleByName = {};
+      const sample = cfg.sample();
+      cfg.fields.forEach((f, i) => { sampleByName[f.name] = sample[i]; });
+
+      let headerLabels, sampleRow;
+      if (cfg.templateLayout) {
+        headerLabels = cfg.templateLayout.map(item => {
+          if (typeof item === 'string') {
+            const f = cfg.fields.find(x => x.name === item);
+            return f ? f.label : item;
+          }
+          return item.label;
+        });
+        sampleRow = cfg.templateLayout.map(item => {
+          if (typeof item === 'string') return sampleByName[item] !== undefined ? sampleByName[item] : '';
+          return ''; // computed column placeholder
+        });
+      } else {
+        headerLabels = cfg.fields.map(f => f.label);
+        sampleRow = sample;
+      }
+
+      const csv = headerLabels.map(csvCell).join(',') + '\n' + sampleRow.map(csvCell).join(',') + '\n';
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
