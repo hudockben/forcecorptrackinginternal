@@ -237,6 +237,21 @@
     }
     .sales-summary strong { color: var(--text); font-weight: 700; margin-left: 0.35rem; }
 
+    .year-filter-wrap {
+      display: inline-flex; align-items: center; gap: 0.45rem;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .year-filter-select {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text);
+      font-family: inherit; font-size: 0.78rem;
+      padding: 0.38rem 0.6rem; cursor: pointer; outline: none;
+    }
+    .year-filter-select:hover,
+    .year-filter-select:focus { border-color: var(--accent); }
+    .year-filter-select:disabled { opacity: 0.45; cursor: not-allowed; }
+
     .sales-table-wrap {
       border: 1px solid var(--border); border-radius: 6px;
       overflow: auto; background: var(--surface);
@@ -439,6 +454,10 @@
       <div class="sales-toolbar">
         <button class="btn-add-row" id="dailyAddBtn" onclick="addDailyRow()">+ Add Row</button>
         <button class="btn-add-row btn-bulk-upload" id="dailyBulkBtn" onclick="openBulk('daily')">⇪ Bulk Upload CSV</button>
+        <div class="year-filter-wrap">
+          Year
+          <select class="year-filter-select" id="dailyYearFilter" onchange="setYearFilter('daily', this.value)" disabled></select>
+        </div>
         <div class="sales-summary" id="dailySummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -472,6 +491,10 @@
       <div class="sales-toolbar">
         <button class="btn-add-row" id="crushAddBtn" onclick="addCrushRow()">+ Add Row</button>
         <button class="btn-add-row btn-bulk-upload" id="crushBulkBtn" onclick="openBulk('crushing')">⇪ Bulk Upload CSV</button>
+        <div class="year-filter-wrap">
+          Year
+          <select class="year-filter-select" id="crushingYearFilter" onchange="setYearFilter('crushing', this.value)" disabled></select>
+        </div>
         <div class="sales-summary" id="crushSummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -510,6 +533,10 @@
       <div class="sales-toolbar">
         <button class="btn-add-row" id="salesAddBtn" onclick="addSalesRow()">+ Add Row</button>
         <button class="btn-add-row btn-bulk-upload" id="salesBulkBtn" onclick="openBulk('sales')">⇪ Bulk Upload CSV</button>
+        <div class="year-filter-wrap">
+          Year
+          <select class="year-filter-select" id="salesYearFilter" onchange="setYearFilter('sales', this.value)" disabled></select>
+        </div>
         <div class="sales-summary" id="salesSummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -1073,6 +1100,57 @@
       return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
     }
 
+    // ── Per-tab year filter ─────────────────────────────────────
+    // Default each tab to the current year so users land on this
+    // year's data. Selecting "All Years" shows everything.
+    const yearFilters = { daily: null, crushing: null, sales: null };
+
+    function getRowYear(dateStr) {
+      if (!dateStr || typeof dateStr !== 'string') return null;
+      const m = dateStr.match(/^(\d{4})/);
+      return m ? Number(m[1]) : null;
+    }
+    function ensureYearFilter(tab) {
+      if (yearFilters[tab] === null) {
+        yearFilters[tab] = String(new Date().getFullYear());
+      }
+    }
+    function rowMatchesYear(tab, row) {
+      const f = yearFilters[tab];
+      if (!f || f === 'all') return true;
+      return String(getRowYear(row && row.date)) === f;
+    }
+    function setYearFilter(tab, value) {
+      yearFilters[tab] = value;
+      if (tab === 'daily')    renderDaily();
+      else if (tab === 'crushing') renderCrush();
+      else if (tab === 'sales')    renderSales();
+    }
+    function renderYearFilterOptions(tab, rows) {
+      const sel = document.getElementById(tab + 'YearFilter');
+      if (!sel) return;
+      ensureYearFilter(tab);
+      const currentYear = new Date().getFullYear();
+      const years = new Set([currentYear]);
+      rows.forEach(r => { const y = getRowYear(r.date); if (y) years.add(y); });
+      const sorted = [...years].sort((a, b) => b - a);
+      sel.innerHTML = ['<option value="all">All Years</option>']
+        .concat(sorted.map(y => `<option value="${y}">${y}</option>`))
+        .join('');
+      const desired = yearFilters[tab];
+      if (desired === 'all' || sorted.includes(Number(desired))) {
+        sel.value = desired;
+      } else {
+        sel.value = String(currentYear);
+        yearFilters[tab] = sel.value;
+      }
+      sel.disabled = false;
+    }
+    function yearFilterLabel(tab) {
+      const v = yearFilters[tab];
+      return v === 'all' ? 'all years' : v;
+    }
+
     function buildOptionList(listKey, selectedId, savedName) {
       const items = (quarryLists[listKey] || []);
       const opts = ['<option value="">—</option>'];
@@ -1102,13 +1180,22 @@
         updateSalesSummary();
         return;
       }
+      renderYearFilterOptions('sales', salesRows);
       if (!salesRows.length) {
         tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
         updateSalesSummary();
         return;
       }
+      const visibleEntries = salesRows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .filter(({ row }) => rowMatchesYear('sales', row));
+      if (!visibleEntries.length) {
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))}. Pick a different year above.</td></tr>`;
+        updateSalesSummary();
+        return;
+      }
 
-      tbody.innerHTML = salesRows.map((row, i) => {
+      tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const total = rowTotal(row);
         const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
         const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
@@ -1140,6 +1227,7 @@
       if (!el) return;
       let totalTons = 0, totalSales = 0, count = 0;
       salesRows.forEach(r => {
+        if (!rowMatchesYear('sales', r)) return;
         const t = Number(r.tons);
         const p = Number(r.pricePerTon);
         if (Number.isFinite(t)) totalTons += t;
@@ -1327,13 +1415,22 @@
         updateCrushSummary();
         return;
       }
+      renderYearFilterOptions('crushing', crushRows);
       if (!crushRows.length) {
         tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateCrushSummary();
         return;
       }
+      const visibleEntries = crushRows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .filter(({ row }) => rowMatchesYear('crushing', row));
+      if (!visibleEntries.length) {
+        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))}. Pick a different year above.</td></tr>`;
+        updateCrushSummary();
+        return;
+      }
 
-      tbody.innerHTML = crushRows.map((row, i) => {
+      tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const c = crushCalc(row);
         const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
         const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
@@ -1372,6 +1469,7 @@
       if (!el) return;
       let totalHours = 0, totalEstTons = 0, totalCost = 0, count = 0;
       crushRows.forEach(r => {
+        if (!rowMatchesYear('crushing', r)) return;
         const c = crushCalc(r);
         const hc = Number(r.hoursCrushing);
         if (Number.isFinite(hc)) totalHours += hc;
@@ -1568,13 +1666,22 @@
         updateDailySummary();
         return;
       }
+      renderYearFilterOptions('daily', dailyRows);
       if (!dailyRows.length) {
         tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateDailySummary();
         return;
       }
+      const visibleEntries = dailyRows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .filter(({ row }) => rowMatchesYear('daily', row));
+      if (!visibleEntries.length) {
+        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries for ${escapeHtml(yearFilterLabel('daily'))}. Pick a different year above.</td></tr>`;
+        updateDailySummary();
+        return;
+      }
 
-      tbody.innerHTML = dailyRows.map((row, i) => {
+      tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const c = dailyCalc(row);
         const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
         const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
@@ -1610,6 +1717,7 @@
       if (!el) return;
       let totalHours = 0, totalCost = 0, count = 0;
       dailyRows.forEach(r => {
+        if (!rowMatchesYear('daily', r)) return;
         const c = dailyCalc(r);
         const h = Number(r.hours);
         if (Number.isFinite(h)) totalHours += h;
