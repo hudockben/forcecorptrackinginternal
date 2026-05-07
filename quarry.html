@@ -854,9 +854,10 @@
         <div class="bulk-help">
           Upload a CSV with these columns (header row required):
           <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Equipment</code>, <code>Task</code>,
-          <code>Hours</code>, <code>Rate</code>, <code>Fuel Gallons</code>, <code>PPG</code>.
+          <code>Hours</code>, <code>Rate</code>, <code>Fuel / Gallons</code>, <code>PPG</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
-          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code>. Labor / fuel / total cost are computed automatically.
+          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code>. Labor / fuel / total cost columns are
+          included in the downloaded template for layout but are recomputed on import.
         </div>
         <div class="bulk-actions">
           <label class="btn-add-row" id="dailyUploadChooseLabel">
@@ -892,7 +893,9 @@
           <code>Fuel Gallons</code>, <code>Fuel Cost</code>, <code>Loads to Crusher</code>,
           <code>Tons / Load</code>, <code>Hours Crushing</code>, <code>Comments</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
-          Total payroll, total fuel, est. tons, tons/hour, total cost, and cost/ton are computed automatically.
+          The downloaded template also includes the computed columns (Total Payroll, Total Fuel,
+          Estimated Tons, Tons/Hour, Total Cost, Cost/Ton) so column positions line up with the tracker —
+          values in those columns are recomputed on import.
         </div>
         <div class="bulk-actions">
           <label class="btn-add-row">
@@ -2108,10 +2111,21 @@
           { name: 'task',        label: 'Task',         aliases: ['task', 'taskname'],                                type: 'list', list: 'tasks',     idKey: 'taskId',      nameKey: 'taskName' },
           { name: 'hours',       label: 'Hours',        aliases: ['hours'],                           required: true, type: 'num',  outKey: 'hours' },
           { name: 'rate',        label: 'Rate',         aliases: ['rate', 'hourlyrate'],                              type: 'num',  outKey: 'rate', fillFromEmployee: 'rate' },
-          { name: 'fuelGallons', label: 'Fuel Gallons', aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],       type: 'num',  outKey: 'fuelGallons' },
+          { name: 'fuelGallons', label: 'Fuel / Gallons', aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],     type: 'num',  outKey: 'fuelGallons' },
           { name: 'ppg',         label: 'PPG',          aliases: ['ppg', 'pricepergallon'],                           type: 'num',  outKey: 'ppg' },
         ],
         sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'Loader', 'Loading', '1.75', '26', '10', '3.5'],
+        // Template layout mirrors the tracker UI column order; entries
+        // in {label, computed: true} form are computed by the app and
+        // included only so positions line up with the tracker — values
+        // in those columns are ignored on import.
+        templateLayout: [
+          'date', 'location', 'employee', 'equipment', 'task', 'hours', 'rate',
+          { label: 'Labor Cost',    computed: true },
+          'fuelGallons', 'ppg',
+          { label: 'Fuel Cost',     computed: true },
+          { label: 'Total Cost',    computed: true },
+        ],
         state: {
           isLoaded: () => dailyLoaded,
           rows:      () => dailyRows,
@@ -2137,6 +2151,19 @@
           { name: 'comments',       label: 'Comments',         aliases: ['comments', 'comment', 'notes'],                  type: 'text', outKey: 'comments' },
         ],
         sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
+        templateLayout: [
+          'date', 'location', 'employee', 'hourlyRate', 'hours',
+          { label: 'Total Payroll',  computed: true },
+          'fuelGallons', 'fuelCost',
+          { label: 'Total Fuel',     computed: true },
+          'loadsToCrusher', 'tonsPerLoad',
+          { label: 'Estimated Tons', computed: true },
+          'hoursCrushing',
+          { label: 'Tons / Hour',    computed: true },
+          { label: 'Total Cost',     computed: true },
+          { label: 'Cost / Ton',     computed: true },
+          'comments',
+        ],
         state: {
           isLoaded: () => crushLoaded,
           rows:      () => crushRows,
@@ -2159,6 +2186,10 @@
           { name: 'pricePerTon', label: 'Price / Ton', aliases: ['priceperton', 'priceton', 'price'], required: true, type: 'num',  outKey: 'pricePerTon' },
         ],
         sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'ACME Corp', 'Crushed Stone', '25.5', 'Cash', '12.00'],
+        templateLayout: [
+          'date', 'location', 'employee', 'customer', 'product', 'tons', 'payment', 'pricePerTon',
+          { label: 'Total Sales', computed: true },
+        ],
         state: {
           isLoaded: () => salesLoaded,
           rows:      () => salesRows,
@@ -2273,9 +2304,30 @@
     function downloadBulkTemplate(key) {
       const cfg = BULK_CONFIGS[key];
       const csvCell = v => /[,"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
-      const headers = cfg.fields.map(f => f.label);
-      const sample  = cfg.sample();
-      const csv = headers.map(csvCell).join(',') + '\n' + sample.map(csvCell).join(',') + '\n';
+
+      const sampleByName = {};
+      const sample = cfg.sample();
+      cfg.fields.forEach((f, i) => { sampleByName[f.name] = sample[i]; });
+
+      let headerLabels, sampleRow;
+      if (cfg.templateLayout) {
+        headerLabels = cfg.templateLayout.map(item => {
+          if (typeof item === 'string') {
+            const f = cfg.fields.find(x => x.name === item);
+            return f ? f.label : item;
+          }
+          return item.label;
+        });
+        sampleRow = cfg.templateLayout.map(item => {
+          if (typeof item === 'string') return sampleByName[item] !== undefined ? sampleByName[item] : '';
+          return ''; // computed column placeholder
+        });
+      } else {
+        headerLabels = cfg.fields.map(f => f.label);
+        sampleRow = sample;
+      }
+
+      const csv = headerLabels.map(csvCell).join(',') + '\n' + sampleRow.map(csvCell).join(',') + '\n';
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
