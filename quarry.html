@@ -127,6 +127,7 @@
       padding: 1.1rem 1.5rem 0.9rem;
       border-bottom: 1px solid var(--border);
       background: var(--surface);
+      flex-shrink: 0;
     }
     .modal-title {
       font-size: 0.82rem; font-weight: 700; text-transform: uppercase;
@@ -144,6 +145,7 @@
       border-bottom: 1px solid var(--border);
       background: var(--surface);
       overflow-x: auto;
+      flex-shrink: 0;
     }
     .ml-subtab-btn {
       padding: 0.55rem 1rem;
@@ -160,6 +162,7 @@
       padding: 1.25rem 1.5rem 1.5rem;
       overflow-y: auto;
       flex: 1;
+      min-height: 0;
     }
     .ml-panel { display: none; }
     .ml-panel.active { display: block; }
@@ -483,6 +486,7 @@
     .bulk-body {
       padding: 1.1rem 1.5rem; overflow-y: auto; flex: 1;
       display: flex; flex-direction: column; gap: 0.9rem;
+      min-height: 0;
     }
     .bulk-help {
       font-size: 0.78rem; color: var(--muted); line-height: 1.5;
@@ -554,6 +558,7 @@
       border-top: 1px solid var(--border);
       display: flex; justify-content: flex-end; gap: 0.6rem;
       background: var(--surface);
+      flex-shrink: 0;
     }
   </style>
 </head>
