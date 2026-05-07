@@ -699,6 +699,10 @@
           Year
           <select class="year-filter-select" id="dailyYearFilter" onchange="setYearFilter('daily', this.value)" disabled></select>
         </div>
+        <div class="year-filter-wrap">
+          Location
+          <select class="year-filter-select" id="dailyLocationFilter" onchange="setLocationFilter('daily', this.value)" disabled></select>
+        </div>
         <div class="sales-summary" id="dailySummary"></div>
       </div>
       <div class="sales-table-wrap">
@@ -735,6 +739,10 @@
         <div class="year-filter-wrap">
           Year
           <select class="year-filter-select" id="crushingYearFilter" onchange="setYearFilter('crushing', this.value)" disabled></select>
+        </div>
+        <div class="year-filter-wrap">
+          Location
+          <select class="year-filter-select" id="crushingLocationFilter" onchange="setLocationFilter('crushing', this.value)" disabled></select>
         </div>
         <div class="sales-summary" id="crushSummary"></div>
       </div>
@@ -777,6 +785,10 @@
         <div class="year-filter-wrap">
           Year
           <select class="year-filter-select" id="salesYearFilter" onchange="setYearFilter('sales', this.value)" disabled></select>
+        </div>
+        <div class="year-filter-wrap">
+          Location
+          <select class="year-filter-select" id="salesLocationFilter" onchange="setLocationFilter('sales', this.value)" disabled></select>
         </div>
         <div class="sales-summary" id="salesSummary"></div>
       </div>
@@ -1394,6 +1406,57 @@
       return v === 'all' ? 'all years' : v;
     }
 
+    // ── Per-tab location filter ─────────────────────────────────
+    const locationFilters = { daily: 'all', crushing: 'all', sales: 'all' };
+
+    function getRowLocation(row) {
+      return (row && row.locationName) ? String(row.locationName).trim() : '';
+    }
+    function rowMatchesLocation(tab, row) {
+      const f = locationFilters[tab];
+      if (!f || f === 'all') return true;
+      const loc = getRowLocation(row);
+      if (f === '__none__') return loc === '';
+      return loc.toLowerCase() === f.toLowerCase();
+    }
+    function setLocationFilter(tab, value) {
+      locationFilters[tab] = value;
+      if (tab === 'daily')         renderDaily();
+      else if (tab === 'crushing') renderCrush();
+      else if (tab === 'sales')    renderSales();
+    }
+    function renderLocationFilterOptions(tab, rows) {
+      const sel = document.getElementById(tab + 'LocationFilter');
+      if (!sel) return;
+      let hasNone = false;
+      const set = new Set();
+      rows.forEach(r => {
+        const l = getRowLocation(r);
+        if (!l) hasNone = true;
+        else set.add(l);
+      });
+      const sorted = [...set].sort((a, b) => a.localeCompare(b));
+      let html = '<option value="all">All Locations</option>';
+      if (hasNone) html += '<option value="__none__">— No Location —</option>';
+      html += sorted.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
+      sel.innerHTML = html;
+      const desired = locationFilters[tab];
+      const valid = new Set(['all', ...(hasNone ? ['__none__'] : []), ...sorted]);
+      if (valid.has(desired)) {
+        sel.value = desired;
+      } else {
+        sel.value = 'all';
+        locationFilters[tab] = 'all';
+      }
+      sel.disabled = false;
+    }
+    function locationFilterLabel(tab) {
+      const v = locationFilters[tab];
+      if (v === 'all') return 'all locations';
+      if (v === '__none__') return 'no location';
+      return v;
+    }
+
     function buildOptionList(listKey, selectedId, savedName) {
       const items = (quarryLists[listKey] || []);
       const opts = ['<option value="">—</option>'];
@@ -1424,6 +1487,7 @@
         return;
       }
       renderYearFilterOptions('sales', salesRows);
+      renderLocationFilterOptions('sales', salesRows);
       if (!salesRows.length) {
         tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
         updateSalesSummary();
@@ -1431,9 +1495,9 @@
       }
       const visibleEntries = salesRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('sales', row));
+        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesLocation('sales', row));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))}. Pick a different year above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
         updateSalesSummary();
         return;
       }
@@ -1471,6 +1535,7 @@
       let totalTons = 0, totalSales = 0, count = 0;
       salesRows.forEach(r => {
         if (!rowMatchesYear('sales', r)) return;
+        if (!rowMatchesLocation('sales', r)) return;
         const t = Number(r.tons);
         const p = Number(r.pricePerTon);
         if (Number.isFinite(t)) totalTons += t;
@@ -1659,6 +1724,7 @@
         return;
       }
       renderYearFilterOptions('crushing', crushRows);
+      renderLocationFilterOptions('crushing', crushRows);
       if (!crushRows.length) {
         tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateCrushSummary();
@@ -1666,9 +1732,9 @@
       }
       const visibleEntries = crushRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('crushing', row));
+        .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesLocation('crushing', row));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))}. Pick a different year above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))} · ${escapeHtml(locationFilterLabel('crushing'))}. Adjust the filters above.</td></tr>`;
         updateCrushSummary();
         return;
       }
@@ -1713,6 +1779,7 @@
       let totalHours = 0, totalEstTons = 0, totalCost = 0, count = 0;
       crushRows.forEach(r => {
         if (!rowMatchesYear('crushing', r)) return;
+        if (!rowMatchesLocation('crushing', r)) return;
         const c = crushCalc(r);
         const hc = Number(r.hoursCrushing);
         if (Number.isFinite(hc)) totalHours += hc;
@@ -1910,6 +1977,7 @@
         return;
       }
       renderYearFilterOptions('daily', dailyRows);
+      renderLocationFilterOptions('daily', dailyRows);
       if (!dailyRows.length) {
         tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateDailySummary();
@@ -1917,9 +1985,9 @@
       }
       const visibleEntries = dailyRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('daily', row));
+        .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesLocation('daily', row));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries for ${escapeHtml(yearFilterLabel('daily'))}. Pick a different year above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries for ${escapeHtml(yearFilterLabel('daily'))} · ${escapeHtml(locationFilterLabel('daily'))}. Adjust the filters above.</td></tr>`;
         updateDailySummary();
         return;
       }
@@ -1961,6 +2029,7 @@
       let totalHours = 0, totalCost = 0, count = 0;
       dailyRows.forEach(r => {
         if (!rowMatchesYear('daily', r)) return;
+        if (!rowMatchesLocation('daily', r)) return;
         const c = dailyCalc(r);
         const h = Number(r.hours);
         if (Number.isFinite(h)) totalHours += h;
