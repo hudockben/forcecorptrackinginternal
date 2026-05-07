@@ -446,6 +446,7 @@
           <thead>
             <tr>
               <th class="col-date">Date</th>
+              <th>Location</th>
               <th>Employee</th>
               <th>Equipment</th>
               <th>Task</th>
@@ -460,7 +461,7 @@
             </tr>
           </thead>
           <tbody id="dailyTbody">
-            <tr><td colspan="12" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="13" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -478,6 +479,7 @@
           <thead>
             <tr>
               <th class="col-date">Date</th>
+              <th>Location</th>
               <th>Employee</th>
               <th class="col-num">Hourly Rate</th>
               <th class="col-num">Hours</th>
@@ -497,7 +499,7 @@
             </tr>
           </thead>
           <tbody id="crushTbody">
-            <tr><td colspan="17" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="18" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -571,7 +573,7 @@
       <div class="bulk-body">
         <div class="bulk-help">
           Upload a CSV with these columns (header row required):
-          <code>Date</code>, <code>Employee</code>, <code>Equipment</code>, <code>Task</code>,
+          <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Equipment</code>, <code>Task</code>,
           <code>Hours</code>, <code>Rate</code>, <code>Fuel Gallons</code>, <code>PPG</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
           Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code>. Labor / fuel / total cost are computed automatically.
@@ -584,7 +586,7 @@
           <button class="btn-secondary" onclick="downloadBulkTemplate('daily')">Download Template</button>
           <label class="bulk-checkbox">
             <input type="checkbox" id="dailyUploadAutoCreate" checked />
-            Auto-add new employees / equipment / tasks
+            Auto-add new locations / employees / equipment / tasks
           </label>
         </div>
         <div id="dailyUploadResult"></div>
@@ -606,7 +608,7 @@
       <div class="bulk-body">
         <div class="bulk-help">
           Upload a CSV with these columns (header row required):
-          <code>Date</code>, <code>Employee</code>, <code>Hourly Rate</code>, <code>Hours</code>,
+          <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Hourly Rate</code>, <code>Hours</code>,
           <code>Fuel Gallons</code>, <code>Fuel Cost</code>, <code>Loads to Crusher</code>,
           <code>Tons / Load</code>, <code>Hours Crushing</code>, <code>Comments</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
@@ -620,7 +622,7 @@
           <button class="btn-secondary" onclick="downloadBulkTemplate('crushing')">Download Template</button>
           <label class="bulk-checkbox">
             <input type="checkbox" id="crushingUploadAutoCreate" checked />
-            Auto-add new employees
+            Auto-add new locations / employees
           </label>
         </div>
         <div id="crushingUploadResult"></div>
@@ -1221,6 +1223,8 @@
       const out = {
         id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
         date: typeof row.date === 'string' ? row.date : '',
+        locationId: row.locationId || '',
+        locationName: row.locationName || '',
         employeeId: row.employeeId || '',
         employeeName: row.employeeName || '',
         comments: typeof row.comments === 'string' ? row.comments : '',
@@ -1319,18 +1323,19 @@
       if (bulkBtn) bulkBtn.disabled = !crushLoaded;
 
       if (!crushLoaded) {
-        tbody.innerHTML = `<tr><td colspan="17" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">Loading…</td></tr>`;
         updateCrushSummary();
         return;
       }
       if (!crushRows.length) {
-        tbody.innerHTML = `<tr><td colspan="17" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateCrushSummary();
         return;
       }
 
       tbody.innerHTML = crushRows.map((row, i) => {
         const c = crushCalc(row);
+        const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
         const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
         const calcCell = (id, val, money) => {
           const z = !val ? ' is-zero' : '';
@@ -1340,6 +1345,7 @@
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value)" /></td>
+            <td><select class="cell-select" onchange="updateCrushLocation(${i}, this)">${locationOpts}</select></td>
             <td><select class="cell-select" onchange="updateCrushEmployee(${i}, this)">${employeeOpts}</select></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hourlyRate === '' ? '' : row.hourlyRate}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'hourlyRate', this.value)" /></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateCrushNumber(${i}, 'hours', this.value)" /></td>
@@ -1409,6 +1415,16 @@
       scheduleCrushSave();
       renderCrush();
     }
+    function updateCrushLocation(index, selectEl) {
+      if (!crushLoaded || !crushRows[index]) return;
+      const id = selectEl.value;
+      const opt = selectEl.options[selectEl.selectedIndex];
+      const name = opt ? opt.text.replace(/ \(removed\)$/, '') : '';
+      const listItem = (quarryLists.location || []).find(it => String(it.id) === String(id));
+      crushRows[index].locationId = id;
+      crushRows[index].locationName = listItem ? listItem.name : name;
+      scheduleCrushSave();
+    }
     function updateCrushNumber(index, field, raw) {
       if (!crushLoaded || !crushRows[index]) return;
       const s = String(raw).trim();
@@ -1449,6 +1465,8 @@
       const out = {
         id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
         date: typeof row.date === 'string' ? row.date : '',
+        locationId: row.locationId || '',
+        locationName: row.locationName || '',
         employeeId: row.employeeId || '',
         employeeName: row.employeeName || '',
         equipmentId: row.equipmentId || '',
@@ -1546,18 +1564,19 @@
       if (bulkBtn) bulkBtn.disabled = !dailyLoaded;
 
       if (!dailyLoaded) {
-        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">Loading…</td></tr>`;
         updateDailySummary();
         return;
       }
       if (!dailyRows.length) {
-        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateDailySummary();
         return;
       }
 
       tbody.innerHTML = dailyRows.map((row, i) => {
         const c = dailyCalc(row);
+        const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
         const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
         const equipmentOpts = buildOptionList('equipment', row.equipmentId, row.equipmentName);
         const taskOpts = buildOptionList('tasks', row.taskId, row.taskName);
@@ -1569,6 +1588,7 @@
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateDailyCell(${i}, 'date', this.value)" /></td>
+            <td><select class="cell-select" onchange="updateDailySelect(${i}, 'location', this)">${locationOpts}</select></td>
             <td><select class="cell-select" onchange="updateDailySelect(${i}, 'employee', this)">${employeeOpts}</select></td>
             <td><select class="cell-select" onchange="updateDailySelect(${i}, 'equipment', this)">${equipmentOpts}</select></td>
             <td><select class="cell-select" onchange="updateDailySelect(${i}, 'task', this)">${taskOpts}</select></td>
@@ -1662,6 +1682,7 @@
         title: 'Daily Tracking',
         fields: [
           { name: 'date',        label: 'Date',         aliases: ['date'],                            required: true, type: 'date', outKey: 'date' },
+          { name: 'location',    label: 'Location',     aliases: ['location', 'locationname'],                        type: 'list', list: 'location',  idKey: 'locationId',  nameKey: 'locationName' },
           { name: 'employee',    label: 'Employee',     aliases: ['employee', 'employeename'],        required: true, type: 'list', list: 'employees', idKey: 'employeeId',  nameKey: 'employeeName' },
           { name: 'equipment',   label: 'Equipment',    aliases: ['equipment', 'equipmentname'],                      type: 'list', list: 'equipment', idKey: 'equipmentId', nameKey: 'equipmentName' },
           { name: 'task',        label: 'Task',         aliases: ['task', 'taskname'],                                type: 'list', list: 'tasks',     idKey: 'taskId',      nameKey: 'taskName' },
@@ -1670,7 +1691,7 @@
           { name: 'fuelGallons', label: 'Fuel Gallons', aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],       type: 'num',  outKey: 'fuelGallons' },
           { name: 'ppg',         label: 'PPG',          aliases: ['ppg', 'pricepergallon'],                           type: 'num',  outKey: 'ppg' },
         ],
-        sample: () => [todayIso(), 'Jim Zimmerman', 'Loader', 'Loading', '1.75', '26', '10', '3.5'],
+        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'Loader', 'Loading', '1.75', '26', '10', '3.5'],
         state: {
           isLoaded: () => dailyLoaded,
           rows:      () => dailyRows,
@@ -1684,6 +1705,7 @@
         title: 'Crushing Tracking',
         fields: [
           { name: 'date',           label: 'Date',             aliases: ['date'],                          required: true, type: 'date', outKey: 'date' },
+          { name: 'location',       label: 'Location',         aliases: ['location', 'locationname'],                      type: 'list', list: 'location',  idKey: 'locationId', nameKey: 'locationName' },
           { name: 'employee',       label: 'Employee',         aliases: ['employee', 'employeename'],      required: true, type: 'list', list: 'employees', idKey: 'employeeId', nameKey: 'employeeName' },
           { name: 'hourlyRate',     label: 'Hourly Rate',      aliases: ['hourlyrate', 'rate'],                            type: 'num',  outKey: 'hourlyRate', fillFromEmployee: 'rate' },
           { name: 'hours',          label: 'Hours',            aliases: ['hours'],                         required: true, type: 'num',  outKey: 'hours' },
@@ -1694,7 +1716,7 @@
           { name: 'hoursCrushing',  label: 'Hours Crushing',   aliases: ['hourscrushing'],                                 type: 'num',  outKey: 'hoursCrushing' },
           { name: 'comments',       label: 'Comments',         aliases: ['comments', 'comment', 'notes'],                  type: 'text', outKey: 'comments' },
         ],
-        sample: () => [todayIso(), 'Jim Zimmerman', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
+        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
         state: {
           isLoaded: () => crushLoaded,
           rows:      () => crushRows,
