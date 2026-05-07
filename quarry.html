@@ -515,6 +515,7 @@
           <thead>
             <tr>
               <th class="col-date">Date</th>
+              <th>Location</th>
               <th>Employee</th>
               <th>Customer</th>
               <th>Product</th>
@@ -526,7 +527,7 @@
             </tr>
           </thead>
           <tbody id="salesTbody">
-            <tr><td colspan="9" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="10" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -641,7 +642,7 @@
       <div class="bulk-body">
         <div class="bulk-help">
           Upload a CSV with these columns (header row required):
-          <code>Date</code>, <code>Employee</code>, <code>Customer</code>, <code>Product</code>,
+          <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Customer</code>, <code>Product</code>,
           <code>Tons</code>, <code>Payment</code>, <code>Price / Ton</code>.
           Required: <strong>Date</strong>, <strong>Customer</strong>, <strong>Product</strong>, <strong>Tons</strong>, <strong>Price / Ton</strong>.
           Payment must be <code>Cash</code> or <code>Credit</code>. Total sales is computed automatically.
@@ -654,7 +655,7 @@
           <button class="btn-secondary" onclick="downloadBulkTemplate('sales')">Download Template</button>
           <label class="bulk-checkbox">
             <input type="checkbox" id="salesUploadAutoCreate" checked />
-            Auto-add new employees / customers / products
+            Auto-add new locations / employees / customers / products
           </label>
         </div>
         <div id="salesUploadResult"></div>
@@ -970,6 +971,8 @@
       return {
         id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
         date: typeof row.date === 'string' ? row.date : '',
+        locationId: row.locationId || '',
+        locationName: row.locationName || '',
         employeeId: row.employeeId || '',
         employeeName: row.employeeName || '',
         customerId: row.customerId || '',
@@ -1093,18 +1096,19 @@
       if (bulkBtn) bulkBtn.disabled = !salesLoaded;
 
       if (!salesLoaded) {
-        tbody.innerHTML = `<tr><td colspan="9" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">Loading…</td></tr>`;
         updateSalesSummary();
         return;
       }
       if (!salesRows.length) {
-        tbody.innerHTML = `<tr><td colspan="9" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
         updateSalesSummary();
         return;
       }
 
       tbody.innerHTML = salesRows.map((row, i) => {
         const total = rowTotal(row);
+        const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
         const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
         const customerOpts = buildOptionList('customer',  row.customerId, row.customerName);
         const productOpts  = buildOptionList('product',   row.productId,  row.productName);
@@ -1114,6 +1118,7 @@
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateSalesCell(${i}, 'date', this.value)" /></td>
+            <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'location', this)">${locationOpts}</select></td>
             <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'employee', this)">${employeeOpts}</select></td>
             <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'customer', this)">${customerOpts}</select></td>
             <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'product', this)">${productOpts}</select></td>
@@ -1703,6 +1708,7 @@
         title: 'Sales Tracking',
         fields: [
           { name: 'date',        label: 'Date',        aliases: ['date'],                       required: true, type: 'date', outKey: 'date' },
+          { name: 'location',    label: 'Location',    aliases: ['location', 'locationname'],                   type: 'list', list: 'location',  idKey: 'locationId', nameKey: 'locationName' },
           { name: 'employee',    label: 'Employee',    aliases: ['employee', 'employeename'],                   type: 'list', list: 'employees', idKey: 'employeeId', nameKey: 'employeeName' },
           { name: 'customer',    label: 'Customer',    aliases: ['customer', 'customername'],   required: true, type: 'list', list: 'customer',  idKey: 'customerId', nameKey: 'customerName' },
           { name: 'product',     label: 'Product',     aliases: ['product', 'productname'],     required: true, type: 'list', list: 'product',   idKey: 'productId',  nameKey: 'productName' },
@@ -1710,7 +1716,7 @@
           { name: 'payment',     label: 'Payment',     aliases: ['payment'],                                    type: 'enum', options: ['Cash', 'Credit'], outKey: 'payment' },
           { name: 'pricePerTon', label: 'Price / Ton', aliases: ['priceperton', 'price'],       required: true, type: 'num',  outKey: 'pricePerTon' },
         ],
-        sample: () => [todayIso(), 'Jim Zimmerman', 'ACME Corp', 'Crushed Stone', '25.5', 'Cash', '12.00'],
+        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'ACME Corp', 'Crushed Stone', '25.5', 'Cash', '12.00'],
         state: {
           isLoaded: () => salesLoaded,
           rows:      () => salesRows,
