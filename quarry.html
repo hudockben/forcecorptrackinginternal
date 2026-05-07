@@ -363,13 +363,11 @@
               <th class="col-num">PPG</th>
               <th class="col-total">Fuel Cost</th>
               <th class="col-total">Total Cost</th>
-              <th class="col-total">Sales / Total</th>
-              <th class="col-total">Gross P/L</th>
               <th class="col-actions"></th>
             </tr>
           </thead>
           <tbody id="dailyTbody">
-            <tr><td colspan="14" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="12" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1234,7 +1232,7 @@
     let dailySaveInFlight = false;
     let dailyFetchedOnce = false;
 
-    const DAILY_NUM_FIELDS = ['hours', 'rate', 'fuelGallons', 'ppg', 'salesTotal'];
+    const DAILY_NUM_FIELDS = ['hours', 'rate', 'fuelGallons', 'ppg'];
 
     function normalizeDailyRow(r) {
       const row = (r && typeof r === 'object') ? r : {};
@@ -1326,8 +1324,7 @@
       const laborCost = num(row.hours) * num(row.rate);
       const fuelCost  = num(row.fuelGallons) * num(row.ppg);
       const totalCost = laborCost + fuelCost;
-      const grossPL   = num(row.salesTotal) - totalCost;
-      return { laborCost, fuelCost, totalCost, grossPL };
+      return { laborCost, fuelCost, totalCost };
     }
 
     function renderDaily() {
@@ -1337,12 +1334,12 @@
       if (addBtn) addBtn.disabled = !dailyLoaded;
 
       if (!dailyLoaded) {
-        tbody.innerHTML = `<tr><td colspan="14" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">Loading…</td></tr>`;
         updateDailySummary();
         return;
       }
       if (!dailyRows.length) {
-        tbody.innerHTML = `<tr><td colspan="14" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateDailySummary();
         return;
       }
@@ -1357,7 +1354,6 @@
           const txt = money ? formatMoney(val) : formatTons(val);
           return `<div class="cell-readonly is-calc${z}" id="${id}-${i}">${txt}</div>`;
         };
-        const plClass = c.grossPL < 0 ? ' is-zero' : '';
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateDailyCell(${i}, 'date', this.value)" /></td>
@@ -1371,8 +1367,6 @@
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.001" value="${row.ppg === '' ? '' : row.ppg}" placeholder="0.00" oninput="updateDailyNumber(${i}, 'ppg', this.value)" /></td>
             <td class="col-total">${calcCell('daily-fuelCost', c.fuelCost, true)}</td>
             <td class="col-total">${calcCell('daily-totalCost', c.totalCost, true)}</td>
-            <td class="col-total"><input class="cell-input" type="number" step="0.01" value="${row.salesTotal === '' ? '' : row.salesTotal}" placeholder="0.00" oninput="updateDailyNumber(${i}, 'salesTotal', this.value)" /></td>
-            <td class="col-total"><div class="cell-readonly is-calc${plClass}" id="daily-grossPL-${i}">${formatMoney(c.grossPL)}</div></td>
             <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteDailyRow(${i})">✕</button></td>
           </tr>`;
       }).join('');
@@ -1382,17 +1376,15 @@
     function updateDailySummary() {
       const el = document.getElementById('dailySummary');
       if (!el) return;
-      let totalHours = 0, totalCost = 0, totalSales = 0, totalPL = 0, count = 0;
+      let totalHours = 0, totalCost = 0, count = 0;
       dailyRows.forEach(r => {
         const c = dailyCalc(r);
         const h = Number(r.hours);
         if (Number.isFinite(h)) totalHours += h;
-        totalCost  += c.totalCost;
-        totalSales += Number.isFinite(Number(r.salesTotal)) ? Number(r.salesTotal) : 0;
-        totalPL    += c.grossPL;
+        totalCost += c.totalCost;
         count++;
       });
-      el.innerHTML = `Rows<strong>${count}</strong>· Hours<strong>${formatTons(totalHours)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>· Sales<strong>${formatMoney(totalSales)}</strong>· Gross P/L<strong>${formatMoney(totalPL)}</strong>`;
+      el.innerHTML = `Rows<strong>${count}</strong>· Hours<strong>${formatTons(totalHours)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>`;
     }
 
     function addDailyRow() {
@@ -1439,20 +1431,15 @@
       const s = String(raw).trim();
       dailyRows[index][field] = s === '' ? '' : Number(s);
       const c = dailyCalc(dailyRows[index]);
-      const setCalc = (key, val, money, plMode) => {
+      const setCalc = (key, val, money) => {
         const elc = document.getElementById('daily-' + key + '-' + index);
         if (!elc) return;
         elc.textContent = money ? formatMoney(val) : formatTons(val);
-        if (plMode) {
-          elc.classList.toggle('is-zero', val < 0);
-        } else {
-          elc.classList.toggle('is-zero', !val);
-        }
+        elc.classList.toggle('is-zero', !val);
       };
       setCalc('laborCost', c.laborCost, true);
       setCalc('fuelCost',  c.fuelCost,  true);
       setCalc('totalCost', c.totalCost, true);
-      setCalc('grossPL',   c.grossPL,   true, true);
       updateDailySummary();
       scheduleDailySave();
     }
