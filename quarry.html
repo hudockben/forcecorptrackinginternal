@@ -391,6 +391,11 @@
       color: var(--muted); font-size: 0.78rem;
     }
 
+    .analytics-toolbar-actions {
+      display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap;
+    }
+    #analyticsPdfBtn { display: inline-flex; align-items: center; gap: 0.4rem; }
+
     .sales-table-wrap {
       border: 1px solid var(--border); border-radius: 6px;
       overflow: auto; background: var(--surface);
@@ -834,7 +839,269 @@
       </div>
     </div>
   </div>
-  <div class="tab-panel"        id="tab-analytics"></div>
+  <div class="tab-panel"        id="tab-analytics">
+    <div class="home-wrap">
+      <div class="home-toolbar">
+        <div>
+          <div class="home-title">Quarry Analytics</div>
+          <div class="home-sub" id="analyticsSubtitle">Loading…</div>
+        </div>
+        <div class="analytics-toolbar-actions">
+          <div class="year-filter-wrap">
+            Year
+            <select class="year-filter-select" id="analyticsYearFilter" onchange="setYearFilter('analytics', this.value)" disabled></select>
+          </div>
+          <button class="btn-add-row btn-bulk-upload" id="analyticsPdfBtn" onclick="downloadAnalyticsPDF()">⇩ Download PDF</button>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile is-accent">
+          <div class="kpi-label">Total Sales</div>
+          <div class="kpi-value" id="anKpiSales">$0.00</div>
+          <div class="kpi-sub" id="anKpiSalesSub">0 tons sold</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Total Cost</div>
+          <div class="kpi-value" id="anKpiCost">$0.00</div>
+          <div class="kpi-sub" id="anKpiCostSub">Daily $0 · Crushing $0</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Gross Margin</div>
+          <div class="kpi-value" id="anKpiMargin">$0.00</div>
+          <div class="kpi-sub" id="anKpiMarginSub">Sales − Cost</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Margin %</div>
+          <div class="kpi-value" id="anKpiMarginPct">0.0%</div>
+          <div class="kpi-sub">Of total sales</div>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile">
+          <div class="kpi-label">Tons Sold</div>
+          <div class="kpi-value" id="anKpiTonsSold">0</div>
+          <div class="kpi-sub" id="anKpiTonsSoldSub">Across 0 sales</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Tons Crushed</div>
+          <div class="kpi-value" id="anKpiTonsCrushed">0</div>
+          <div class="kpi-sub" id="anKpiTonsCrushedSub">Estimated · 0 hrs crushing</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Hours Worked</div>
+          <div class="kpi-value" id="anKpiHours">0</div>
+          <div class="kpi-sub" id="anKpiHoursSub">Daily 0 · Crushing 0</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Avg Cost / Ton</div>
+          <div class="kpi-value" id="anKpiAvgCpT">$0.00</div>
+          <div class="kpi-sub">Crushing cost ÷ tons crushed</div>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile">
+          <div class="kpi-label">Avg Sale Price / Ton</div>
+          <div class="kpi-value" id="anKpiAvgPricePerTon">$0.00</div>
+          <div class="kpi-sub" id="anKpiAvgPricePerTonSub">Sales ÷ tons sold</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Cash vs Credit</div>
+          <div class="kpi-value" id="anKpiCashPct">0%</div>
+          <div class="kpi-sub" id="anKpiCashPctSub">Cash $0 · Credit $0</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Active Locations</div>
+          <div class="kpi-value" id="anKpiLocations">0</div>
+          <div class="kpi-sub" id="anKpiLocationsSub">Across all entries</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Active Customers</div>
+          <div class="kpi-value" id="anKpiCustomers">0</div>
+          <div class="kpi-sub" id="anKpiCustomersSub">Unique buyers</div>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Monthly Performance</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsMonthlyTable">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th>Sales</th>
+                <th>Cost</th>
+                <th>Margin</th>
+                <th>Margin %</th>
+                <th>Tons Sold</th>
+                <th>Tons Crushed</th>
+                <th>Hours</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Sales by Customer</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsCustomerTable">
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Sales</th>
+                <th>Tons</th>
+                <th>Avg $/Ton</th>
+                <th>Orders</th>
+                <th>% of Sales</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Sales by Product</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsProductTable">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Tons Sold</th>
+                <th>Sales</th>
+                <th>Avg $/Ton</th>
+                <th>Orders</th>
+                <th>% of Tons</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Performance by Location</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsLocationTable">
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th>Sales</th>
+                <th>Cost</th>
+                <th>Margin</th>
+                <th>Tons Sold</th>
+                <th>Tons Crushed</th>
+                <th>Hours</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Equipment Utilization (Daily Tracking)</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsEquipmentTable">
+            <thead>
+              <tr>
+                <th>Equipment</th>
+                <th>Hours</th>
+                <th>Labor Cost</th>
+                <th>Fuel Cost</th>
+                <th>Total Cost</th>
+                <th>Entries</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Task Breakdown (Daily Tracking)</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsTaskTable">
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>Hours</th>
+                <th>Labor Cost</th>
+                <th>Fuel Cost</th>
+                <th>Total Cost</th>
+                <th>Entries</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Employee Hours &amp; Payroll</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsEmployeeTable">
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th>Daily Hours</th>
+                <th>Crushing Hours</th>
+                <th>Total Hours</th>
+                <th>Labor Cost</th>
+                <th>Entries</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Crushing Production Summary</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsCrushTable">
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th>Loads</th>
+                <th>Est. Tons</th>
+                <th>Hours Crushing</th>
+                <th>Tons / Hour</th>
+                <th>Total Cost</th>
+                <th>Cost / Ton</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title">Year over Year</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsYoyTable">
+            <thead>
+              <tr>
+                <th>Year</th>
+                <th>Sales</th>
+                <th>Cost</th>
+                <th>Margin</th>
+                <th>Margin %</th>
+                <th>Tons Sold</th>
+                <th>Tons Crushed</th>
+                <th>Hours</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ── Manage Lists Modal ── -->
   <div class="modal-backdrop" id="manageListsBackdrop">
@@ -993,6 +1260,7 @@
       if (tab === 'crushing') refreshCrush();
       if (tab === 'daily') refreshDaily();
       if (tab === 'home') refreshHome();
+      if (tab === 'analytics') refreshAnalytics();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -1379,7 +1647,7 @@
     // ── Per-tab year filter ─────────────────────────────────────
     // Default each tab to the current year so users land on this
     // year's data. Selecting "All Years" shows everything.
-    const yearFilters = { daily: null, crushing: null, sales: null, home: null };
+    const yearFilters = { daily: null, crushing: null, sales: null, home: null, analytics: null };
 
     function getRowYear(dateStr) {
       if (!dateStr || typeof dateStr !== 'string') return null;
@@ -1402,6 +1670,7 @@
       else if (tab === 'crushing') renderCrush();
       else if (tab === 'sales')    renderSales();
       else if (tab === 'home')     renderHome();
+      else if (tab === 'analytics') renderAnalytics();
     }
     function renderYearFilterOptions(tab, rows) {
       const sel = document.getElementById(tab + 'YearFilter');
@@ -2922,6 +3191,623 @@
     }
 
     refreshHome();
+
+    // ── Analytics dashboard ────────────────────────────────────
+    const MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    function getRowMonth(dateStr) {
+      if (!dateStr || typeof dateStr !== 'string') return null;
+      const m = dateStr.match(/^\d{4}-(\d{2})/);
+      return m ? Number(m[1]) - 1 : null;
+    }
+
+    async function refreshAnalytics() {
+      renderAnalytics();
+      const tasks = [];
+      if (!dailyFetchedOnce) tasks.push(refreshDaily());
+      if (!crushFetchedOnce) tasks.push(refreshCrush());
+      if (!salesFetchedOnce) tasks.push(refreshSales());
+      if (tasks.length) {
+        await Promise.allSettled(tasks);
+        renderAnalytics();
+      }
+    }
+
+    function computeAnalytics() {
+      const allRows = [...dailyRows, ...crushRows, ...salesRows];
+      const matches = (r) => rowMatchesYear('analytics', r);
+      const visibleDaily = dailyRows.filter(matches);
+      const visibleCrush = crushRows.filter(matches);
+      const visibleSales = salesRows.filter(matches);
+
+      let totalSales = 0, totalTonsSold = 0, salesCount = 0;
+      let cashSales = 0, creditSales = 0;
+      visibleSales.forEach(r => {
+        const t = Number(r.tons);
+        const s = homeRowSales(r);
+        totalSales += s;
+        if (Number.isFinite(t)) totalTonsSold += t;
+        salesCount++;
+        if (r.payment === 'Cash') cashSales += s;
+        else if (r.payment === 'Credit') creditSales += s;
+      });
+
+      let dailyHours = 0, dailyCost = 0, dailyLabor = 0, dailyFuel = 0;
+      visibleDaily.forEach(r => {
+        const c = dailyCalc(r);
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) dailyHours += h;
+        dailyCost += c.totalCost;
+        dailyLabor += c.laborCost;
+        dailyFuel += c.fuelCost;
+      });
+
+      let crushHours = 0, crushTonsCrushed = 0, crushCost = 0, crushPayroll = 0, crushFuel = 0, crushLoads = 0;
+      visibleCrush.forEach(r => {
+        const c = crushCalc(r);
+        const h = Number(r.hoursCrushing);
+        if (Number.isFinite(h)) crushHours += h;
+        crushTonsCrushed += c.estimatedTons;
+        crushCost += c.totalCost;
+        crushPayroll += c.totalPayroll;
+        crushFuel += c.totalFuel;
+        const l = Number(r.loadsToCrusher);
+        if (Number.isFinite(l)) crushLoads += l;
+      });
+
+      const totalCost   = dailyCost + crushCost;
+      const grossMargin = totalSales - totalCost;
+      const marginPct   = totalSales > 0 ? (grossMargin / totalSales) * 100 : 0;
+      const totalHours  = dailyHours + crushHours;
+      const avgCostPerTon  = crushTonsCrushed > 0 ? crushCost / crushTonsCrushed : 0;
+      const avgPricePerTon = totalTonsSold > 0 ? totalSales / totalTonsSold : 0;
+      const cashCreditTotal = cashSales + creditSales;
+      const cashPct = cashCreditTotal > 0 ? (cashSales / cashCreditTotal) * 100 : 0;
+
+      const locSet = new Set();
+      visibleSales.forEach(r => { if (r.locationName) locSet.add(r.locationName.trim()); });
+      visibleDaily.forEach(r => { if (r.locationName) locSet.add(r.locationName.trim()); });
+      visibleCrush.forEach(r => { if (r.locationName) locSet.add(r.locationName.trim()); });
+      const custSet = new Set();
+      visibleSales.forEach(r => { if (r.customerName) custSet.add(r.customerName.trim()); });
+
+      return {
+        allRows, visibleDaily, visibleCrush, visibleSales,
+        totalSales, totalTonsSold, salesCount,
+        cashSales, creditSales, cashPct, cashCreditTotal,
+        dailyHours, dailyCost, dailyLabor, dailyFuel,
+        crushHours, crushTonsCrushed, crushCost, crushPayroll, crushFuel, crushLoads,
+        totalCost, grossMargin, marginPct, totalHours, avgCostPerTon, avgPricePerTon,
+        locationCount: locSet.size, customerCount: custSet.size,
+      };
+    }
+
+    function renderAnalytics() {
+      const sub = document.getElementById('analyticsSubtitle');
+      const allRows = [...dailyRows, ...crushRows, ...salesRows];
+      renderYearFilterOptions('analytics', allRows);
+
+      const a = computeAnalytics();
+      const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+
+      setText('anKpiSales', formatMoney(a.totalSales));
+      setText('anKpiSalesSub', `${formatTons(a.totalTonsSold)} tons sold across ${a.salesCount} sale${a.salesCount === 1 ? '' : 's'}`);
+      setText('anKpiCost',  formatMoney(a.totalCost));
+      setText('anKpiCostSub', `Daily ${formatMoney(a.dailyCost)} · Crushing ${formatMoney(a.crushCost)}`);
+      const marginEl = document.getElementById('anKpiMargin');
+      if (marginEl) {
+        marginEl.textContent = formatMoney(a.grossMargin);
+        marginEl.classList.toggle('is-positive', a.grossMargin > 0.0001);
+        marginEl.classList.toggle('is-negative', a.grossMargin < -0.0001);
+      }
+      const marginPctEl = document.getElementById('anKpiMarginPct');
+      if (marginPctEl) {
+        marginPctEl.textContent = (Number.isFinite(a.marginPct) ? a.marginPct.toFixed(1) : '0.0') + '%';
+        marginPctEl.classList.toggle('is-positive', a.marginPct > 0.05);
+        marginPctEl.classList.toggle('is-negative', a.marginPct < -0.05);
+      }
+
+      setText('anKpiTonsSold',     formatTons(a.totalTonsSold));
+      setText('anKpiTonsSoldSub',  `Across ${a.salesCount} sale${a.salesCount === 1 ? '' : 's'}`);
+      setText('anKpiTonsCrushed',  formatTons(a.crushTonsCrushed));
+      setText('anKpiTonsCrushedSub', `Estimated · ${formatTons(a.crushHours)} hrs crushing`);
+      setText('anKpiHours',        formatTons(a.totalHours));
+      setText('anKpiHoursSub',     `Daily ${formatTons(a.dailyHours)} · Crushing ${formatTons(a.crushHours)}`);
+      setText('anKpiAvgCpT',       formatMoney(a.avgCostPerTon));
+
+      setText('anKpiAvgPricePerTon', formatMoney(a.avgPricePerTon));
+      setText('anKpiAvgPricePerTonSub', a.totalTonsSold > 0 ? `Across ${formatTons(a.totalTonsSold)} tons` : 'No sales yet');
+      setText('anKpiCashPct',     (Number.isFinite(a.cashPct) ? a.cashPct.toFixed(0) : '0') + '%');
+      setText('anKpiCashPctSub',  `Cash ${formatMoney(a.cashSales)} · Credit ${formatMoney(a.creditSales)}`);
+      setText('anKpiLocations',   String(a.locationCount));
+      setText('anKpiLocationsSub','Across all entries');
+      setText('anKpiCustomers',   String(a.customerCount));
+      setText('anKpiCustomersSub','Unique buyers');
+
+      if (sub) {
+        const yr = yearFilterLabel('analytics');
+        const visibleCount = a.visibleDaily.length + a.visibleCrush.length + a.visibleSales.length;
+        sub.textContent = allRows.length
+          ? `${visibleCount} entr${visibleCount === 1 ? 'y' : 'ies'} for ${yr} · sourced from Daily, Crushing, and Sales tabs`
+          : 'Add entries on Daily, Crushing, or Sales to populate analytics.';
+      }
+
+      renderAnalyticsMonthly(a);
+      renderAnalyticsCustomer(a);
+      renderAnalyticsProduct(a);
+      renderAnalyticsLocation(a);
+      renderAnalyticsEquipment(a);
+      renderAnalyticsTask(a);
+      renderAnalyticsEmployee(a);
+      renderAnalyticsCrush(a);
+      renderAnalyticsYoy();
+    }
+
+    function renderAnalyticsMonthly(a) {
+      const tbody = document.querySelector('#analyticsMonthlyTable tbody');
+      if (!tbody) return;
+      const months = Array.from({length:12}, () => ({
+        sales:0, cost:0, tonsSold:0, tonsCrushed:0, hours:0,
+      }));
+      a.visibleSales.forEach(r => {
+        const m = getRowMonth(r.date); if (m === null) return;
+        const t = Number(r.tons);
+        months[m].sales += homeRowSales(r);
+        if (Number.isFinite(t)) months[m].tonsSold += t;
+      });
+      a.visibleDaily.forEach(r => {
+        const m = getRowMonth(r.date); if (m === null) return;
+        const c = dailyCalc(r);
+        months[m].cost += c.totalCost;
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) months[m].hours += h;
+      });
+      a.visibleCrush.forEach(r => {
+        const m = getRowMonth(r.date); if (m === null) return;
+        const c = crushCalc(r);
+        months[m].cost += c.totalCost;
+        months[m].tonsCrushed += c.estimatedTons;
+        const h = Number(r.hoursCrushing);
+        if (Number.isFinite(h)) months[m].hours += h;
+      });
+      const anyData = months.some(m => m.sales || m.cost || m.tonsSold || m.tonsCrushed || m.hours);
+      if (!anyData) {
+        tbody.innerHTML = `<tr><td colspan="8" class="home-empty">No data yet.</td></tr>`;
+        return;
+      }
+      let totS=0, totC=0, totTS=0, totTC=0, totH=0;
+      let html = months.map((mo, idx) => {
+        const margin = mo.sales - mo.cost;
+        const mpct = mo.sales > 0 ? (margin / mo.sales) * 100 : 0;
+        const cls = margin > 0.0001 ? 'pos' : margin < -0.0001 ? 'neg' : '';
+        totS += mo.sales; totC += mo.cost; totTS += mo.tonsSold; totTC += mo.tonsCrushed; totH += mo.hours;
+        return `<tr>
+          <td>${MONTH_LABELS[idx]}</td>
+          <td>${formatMoney(mo.sales)}</td>
+          <td>${formatMoney(mo.cost)}</td>
+          <td class="${cls}">${formatMoney(margin)}</td>
+          <td class="${cls}">${mo.sales > 0 ? mpct.toFixed(1) + '%' : '—'}</td>
+          <td>${formatTons(mo.tonsSold)}</td>
+          <td>${formatTons(mo.tonsCrushed)}</td>
+          <td>${formatTons(mo.hours)}</td>
+        </tr>`;
+      }).join('');
+      const totMargin = totS - totC;
+      const totPct = totS > 0 ? (totMargin / totS) * 100 : 0;
+      const totCls = totMargin > 0.0001 ? 'pos' : totMargin < -0.0001 ? 'neg' : '';
+      html += `<tr style="border-top:2px solid var(--border);font-weight:700">
+        <td>Total</td>
+        <td>${formatMoney(totS)}</td>
+        <td>${formatMoney(totC)}</td>
+        <td class="${totCls}">${formatMoney(totMargin)}</td>
+        <td class="${totCls}">${totS > 0 ? totPct.toFixed(1) + '%' : '—'}</td>
+        <td>${formatTons(totTS)}</td>
+        <td>${formatTons(totTC)}</td>
+        <td>${formatTons(totH)}</td>
+      </tr>`;
+      tbody.innerHTML = html;
+    }
+
+    function renderAnalyticsCustomer(a) {
+      const tbody = document.querySelector('#analyticsCustomerTable tbody');
+      if (!tbody) return;
+      const map = new Map();
+      a.visibleSales.forEach(r => {
+        const key = (r.customerName || '').trim() || '— No customer —';
+        const cur = map.get(key) || { name: key, sales: 0, tons: 0, count: 0 };
+        cur.sales += homeRowSales(r);
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) cur.tons += t;
+        cur.count++;
+        map.set(key, cur);
+      });
+      const rows = [...map.values()].sort((x, y) => y.sales - x.sales);
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="home-empty">No sales yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(r => {
+        const avg = r.tons > 0 ? r.sales / r.tons : 0;
+        const pct = a.totalSales > 0 ? (r.sales / a.totalSales) * 100 : 0;
+        return `<tr>
+          <td>${escapeHtml(r.name)}</td>
+          <td>${formatMoney(r.sales)}</td>
+          <td>${formatTons(r.tons)}</td>
+          <td>${formatMoney(avg)}</td>
+          <td>${r.count}</td>
+          <td>${pct.toFixed(1)}%</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderAnalyticsProduct(a) {
+      const tbody = document.querySelector('#analyticsProductTable tbody');
+      if (!tbody) return;
+      const map = new Map();
+      a.visibleSales.forEach(r => {
+        const key = (r.productName || '').trim() || '— No product —';
+        const cur = map.get(key) || { name: key, sales: 0, tons: 0, count: 0 };
+        cur.sales += homeRowSales(r);
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) cur.tons += t;
+        cur.count++;
+        map.set(key, cur);
+      });
+      const rows = [...map.values()].sort((x, y) => y.tons - x.tons);
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="home-empty">No sales yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(r => {
+        const avg = r.tons > 0 ? r.sales / r.tons : 0;
+        const pct = a.totalTonsSold > 0 ? (r.tons / a.totalTonsSold) * 100 : 0;
+        return `<tr>
+          <td>${escapeHtml(r.name)}</td>
+          <td>${formatTons(r.tons)}</td>
+          <td>${formatMoney(r.sales)}</td>
+          <td>${formatMoney(avg)}</td>
+          <td>${r.count}</td>
+          <td>${pct.toFixed(1)}%</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderAnalyticsLocation(a) {
+      const tbody = document.querySelector('#analyticsLocationTable tbody');
+      if (!tbody) return;
+      const map = new Map();
+      const ensure = (name) => {
+        const key = (name || '').trim() || '— No location —';
+        if (!map.has(key)) map.set(key, { name: key, sales: 0, cost: 0, tonsSold: 0, tonsCrushed: 0, hours: 0 });
+        return map.get(key);
+      };
+      a.visibleSales.forEach(r => {
+        const e = ensure(r.locationName);
+        e.sales += homeRowSales(r);
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) e.tonsSold += t;
+      });
+      a.visibleDaily.forEach(r => {
+        const e = ensure(r.locationName);
+        const c = dailyCalc(r);
+        e.cost += c.totalCost;
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) e.hours += h;
+      });
+      a.visibleCrush.forEach(r => {
+        const e = ensure(r.locationName);
+        const c = crushCalc(r);
+        e.cost += c.totalCost;
+        e.tonsCrushed += c.estimatedTons;
+        const h = Number(r.hoursCrushing);
+        if (Number.isFinite(h)) e.hours += h;
+      });
+      const rows = [...map.values()].sort((x, y) => (y.sales - y.cost) - (x.sales - x.cost));
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="7" class="home-empty">No data yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(r => {
+        const margin = r.sales - r.cost;
+        const cls = margin > 0.0001 ? 'pos' : margin < -0.0001 ? 'neg' : '';
+        return `<tr>
+          <td>${escapeHtml(r.name)}</td>
+          <td>${formatMoney(r.sales)}</td>
+          <td>${formatMoney(r.cost)}</td>
+          <td class="${cls}">${formatMoney(margin)}</td>
+          <td>${formatTons(r.tonsSold)}</td>
+          <td>${formatTons(r.tonsCrushed)}</td>
+          <td>${formatTons(r.hours)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderAnalyticsEquipment(a) {
+      const tbody = document.querySelector('#analyticsEquipmentTable tbody');
+      if (!tbody) return;
+      const map = new Map();
+      a.visibleDaily.forEach(r => {
+        const key = (r.equipmentName || '').trim() || '— No equipment —';
+        const cur = map.get(key) || { name: key, hours: 0, labor: 0, fuel: 0, total: 0, count: 0 };
+        const c = dailyCalc(r);
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) cur.hours += h;
+        cur.labor += c.laborCost;
+        cur.fuel += c.fuelCost;
+        cur.total += c.totalCost;
+        cur.count++;
+        map.set(key, cur);
+      });
+      const rows = [...map.values()].sort((x, y) => y.total - x.total);
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="home-empty">No daily entries yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td>${escapeHtml(r.name)}</td>
+          <td>${formatTons(r.hours)}</td>
+          <td>${formatMoney(r.labor)}</td>
+          <td>${formatMoney(r.fuel)}</td>
+          <td>${formatMoney(r.total)}</td>
+          <td>${r.count}</td>
+        </tr>`).join('');
+    }
+
+    function renderAnalyticsTask(a) {
+      const tbody = document.querySelector('#analyticsTaskTable tbody');
+      if (!tbody) return;
+      const map = new Map();
+      a.visibleDaily.forEach(r => {
+        const key = (r.taskName || '').trim() || '— No task —';
+        const cur = map.get(key) || { name: key, hours: 0, labor: 0, fuel: 0, total: 0, count: 0 };
+        const c = dailyCalc(r);
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) cur.hours += h;
+        cur.labor += c.laborCost;
+        cur.fuel += c.fuelCost;
+        cur.total += c.totalCost;
+        cur.count++;
+        map.set(key, cur);
+      });
+      const rows = [...map.values()].sort((x, y) => y.total - x.total);
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="home-empty">No daily entries yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td>${escapeHtml(r.name)}</td>
+          <td>${formatTons(r.hours)}</td>
+          <td>${formatMoney(r.labor)}</td>
+          <td>${formatMoney(r.fuel)}</td>
+          <td>${formatMoney(r.total)}</td>
+          <td>${r.count}</td>
+        </tr>`).join('');
+    }
+
+    function renderAnalyticsEmployee(a) {
+      const tbody = document.querySelector('#analyticsEmployeeTable tbody');
+      if (!tbody) return;
+      const map = new Map();
+      const ensure = (name) => {
+        const key = (name || '').trim() || '— No employee —';
+        if (!map.has(key)) map.set(key, { name: key, dailyHours: 0, crushHours: 0, labor: 0, count: 0 });
+        return map.get(key);
+      };
+      a.visibleDaily.forEach(r => {
+        const e = ensure(r.employeeName);
+        const c = dailyCalc(r);
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) e.dailyHours += h;
+        e.labor += c.laborCost;
+        e.count++;
+      });
+      a.visibleCrush.forEach(r => {
+        const e = ensure(r.employeeName);
+        const c = crushCalc(r);
+        const h = Number(r.hoursCrushing);
+        if (Number.isFinite(h)) e.crushHours += h;
+        e.labor += c.totalPayroll;
+        e.count++;
+      });
+      const rows = [...map.values()].sort((x, y) => (y.dailyHours + y.crushHours) - (x.dailyHours + x.crushHours));
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="home-empty">No entries yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td>${escapeHtml(r.name)}</td>
+          <td>${formatTons(r.dailyHours)}</td>
+          <td>${formatTons(r.crushHours)}</td>
+          <td>${formatTons(r.dailyHours + r.crushHours)}</td>
+          <td>${formatMoney(r.labor)}</td>
+          <td>${r.count}</td>
+        </tr>`).join('');
+    }
+
+    function renderAnalyticsCrush(a) {
+      const tbody = document.querySelector('#analyticsCrushTable tbody');
+      if (!tbody) return;
+      const map = new Map();
+      a.visibleCrush.forEach(r => {
+        const key = (r.locationName || '').trim() || '— No location —';
+        const cur = map.get(key) || { name: key, loads: 0, tons: 0, hours: 0, cost: 0 };
+        const c = crushCalc(r);
+        const l = Number(r.loadsToCrusher);
+        if (Number.isFinite(l)) cur.loads += l;
+        cur.tons += c.estimatedTons;
+        const h = Number(r.hoursCrushing);
+        if (Number.isFinite(h)) cur.hours += h;
+        cur.cost += c.totalCost;
+        map.set(key, cur);
+      });
+      const rows = [...map.values()].sort((x, y) => y.tons - x.tons);
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="7" class="home-empty">No crushing entries yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(r => {
+        const tph = r.hours > 0 ? r.tons / r.hours : 0;
+        const cpt = r.tons > 0 ? r.cost / r.tons : 0;
+        return `<tr>
+          <td>${escapeHtml(r.name)}</td>
+          <td>${formatTons(r.loads)}</td>
+          <td>${formatTons(r.tons)}</td>
+          <td>${formatTons(r.hours)}</td>
+          <td>${formatTons(tph)}</td>
+          <td>${formatMoney(r.cost)}</td>
+          <td>${formatMoney(cpt)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderAnalyticsYoy() {
+      const tbody = document.querySelector('#analyticsYoyTable tbody');
+      if (!tbody) return;
+      const yearAgg = new Map();
+      const ensureYearEntry = (y) => {
+        if (!yearAgg.has(y)) yearAgg.set(y, { year: y, sales: 0, cost: 0, tonsSold: 0, tonsCrushed: 0, hours: 0 });
+        return yearAgg.get(y);
+      };
+      salesRows.forEach(r => {
+        const y = getRowYear(r.date); if (!y) return;
+        const e = ensureYearEntry(y);
+        const t = Number(r.tons);
+        e.sales += homeRowSales(r);
+        if (Number.isFinite(t)) e.tonsSold += t;
+      });
+      dailyRows.forEach(r => {
+        const y = getRowYear(r.date); if (!y) return;
+        const e = ensureYearEntry(y);
+        e.cost += dailyCalc(r).totalCost;
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) e.hours += h;
+      });
+      crushRows.forEach(r => {
+        const y = getRowYear(r.date); if (!y) return;
+        const e = ensureYearEntry(y);
+        const c = crushCalc(r);
+        e.cost += c.totalCost;
+        e.tonsCrushed += c.estimatedTons;
+        const h = Number(r.hoursCrushing);
+        if (Number.isFinite(h)) e.hours += h;
+      });
+      const rows = [...yearAgg.values()].sort((x, y) => y.year - x.year);
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="8" class="home-empty">No data yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(r => {
+        const margin = r.sales - r.cost;
+        const mpct = r.sales > 0 ? (margin / r.sales) * 100 : 0;
+        const cls = margin > 0.0001 ? 'pos' : margin < -0.0001 ? 'neg' : '';
+        return `<tr>
+          <td>${r.year}</td>
+          <td>${formatMoney(r.sales)}</td>
+          <td>${formatMoney(r.cost)}</td>
+          <td class="${cls}">${formatMoney(margin)}</td>
+          <td class="${cls}">${r.sales > 0 ? mpct.toFixed(1) + '%' : '—'}</td>
+          <td>${formatTons(r.tonsSold)}</td>
+          <td>${formatTons(r.tonsCrushed)}</td>
+          <td>${formatTons(r.hours)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // ── Analytics PDF download ─────────────────────────────────
+    function downloadAnalyticsPDF() {
+      const a = computeAnalytics();
+      const yr = yearFilterLabel('analytics');
+      const yrTitle = (yr === 'all years') ? 'All Years' : yr;
+      const generated = new Date().toLocaleString();
+
+      const cloneTable = (selector, title) => {
+        const tbl = document.querySelector(selector);
+        if (!tbl) return '';
+        const tbody = tbl.querySelector('tbody');
+        const hasData = tbody && tbody.children.length && !tbody.querySelector('.home-empty');
+        if (!hasData) return `<h2>${title}</h2><div class="empty-note">No data for this period.</div>`;
+        return `<h2>${title}</h2><table class="rep">${tbl.innerHTML}</table>`;
+      };
+
+      const kpiCard = (label, value, sub) => `
+        <div class="kpi">
+          <div class="kpi-l">${label}</div>
+          <div class="kpi-v">${value}</div>
+          ${sub ? `<div class="kpi-s">${sub}</div>` : ''}
+        </div>`;
+
+      const kpis = `
+        <div class="kpi-grid">
+          ${kpiCard('Total Sales', formatMoney(a.totalSales), `${formatTons(a.totalTonsSold)} tons sold · ${a.salesCount} sales`)}
+          ${kpiCard('Total Cost', formatMoney(a.totalCost), `Daily ${formatMoney(a.dailyCost)} · Crushing ${formatMoney(a.crushCost)}`)}
+          ${kpiCard('Gross Margin', formatMoney(a.grossMargin), 'Sales − Cost')}
+          ${kpiCard('Margin %', (Number.isFinite(a.marginPct) ? a.marginPct.toFixed(1) : '0.0') + '%', 'Of total sales')}
+          ${kpiCard('Tons Sold', formatTons(a.totalTonsSold), `Across ${a.salesCount} sales`)}
+          ${kpiCard('Tons Crushed', formatTons(a.crushTonsCrushed), `${formatTons(a.crushHours)} hrs crushing`)}
+          ${kpiCard('Hours Worked', formatTons(a.totalHours), `Daily ${formatTons(a.dailyHours)} · Crushing ${formatTons(a.crushHours)}`)}
+          ${kpiCard('Avg Cost / Ton', formatMoney(a.avgCostPerTon), 'Crushing cost ÷ tons crushed')}
+          ${kpiCard('Avg Sale Price / Ton', formatMoney(a.avgPricePerTon), 'Sales ÷ tons sold')}
+          ${kpiCard('Cash vs Credit', (Number.isFinite(a.cashPct) ? a.cashPct.toFixed(0) : '0') + '%', `Cash ${formatMoney(a.cashSales)} · Credit ${formatMoney(a.creditSales)}`)}
+          ${kpiCard('Active Locations', String(a.locationCount), 'Across all entries')}
+          ${kpiCard('Active Customers', String(a.customerCount), 'Unique buyers')}
+        </div>`;
+
+      const sections = [
+        cloneTable('#analyticsMonthlyTable',  'Monthly Performance'),
+        cloneTable('#analyticsCustomerTable', 'Sales by Customer'),
+        cloneTable('#analyticsProductTable',  'Sales by Product'),
+        cloneTable('#analyticsLocationTable', 'Performance by Location'),
+        cloneTable('#analyticsEquipmentTable','Equipment Utilization (Daily Tracking)'),
+        cloneTable('#analyticsTaskTable',     'Task Breakdown (Daily Tracking)'),
+        cloneTable('#analyticsEmployeeTable', 'Employee Hours & Payroll'),
+        cloneTable('#analyticsCrushTable',    'Crushing Production Summary'),
+        cloneTable('#analyticsYoyTable',      'Year over Year'),
+      ].join('');
+
+      const doc = window.open('', '_blank', 'width=1100,height=800');
+      if (!doc) {
+        alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
+        return;
+      }
+      doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Quarry Analytics — ${yrTitle}</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.25rem; }
+  h1 { font-size: 17px; margin: 0 0 0.15rem; }
+  h2 { font-size: 12px; margin: 1rem 0 0.4rem; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+  .meta { font-size: 10px; color: #555; margin-bottom: 1rem; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 0.8rem; }
+  .kpi { border: 1px solid #ccc; border-radius: 5px; padding: 6px 8px; background: #fafafa; }
+  .kpi-l { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #555; }
+  .kpi-v { font-size: 14px; font-weight: 700; margin-top: 2px; }
+  .kpi-s { font-size: 8.5px; color: #666; margin-top: 2px; }
+  table.rep { width: 100%; border-collapse: collapse; margin-bottom: 0.5rem; }
+  table.rep th, table.rep td { border: 1px solid #ccc; padding: 4px 6px; text-align: right; white-space: nowrap; font-size: 10px; }
+  table.rep th:first-child, table.rep td:first-child { text-align: left; }
+  table.rep thead th { background: #f0f0f0; font-weight: 700; font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+  table.rep tbody tr:nth-child(even) { background: #fafafa; }
+  table.rep td.pos { color: #15803d; }
+  table.rep td.neg { color: #b91c1c; }
+  .empty-note { font-size: 10px; color: #888; padding: 6px 0; }
+  @page { size: landscape; margin: 0.4in; }
+  @media print { body { padding: 0.1in; } }
+</style></head><body>
+<h1>Quarry Analytics &mdash; ${yrTitle}</h1>
+<div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking</div>
+${kpis}
+${sections}
+<script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>
+</body></html>`);
+      doc.document.close();
+    }
+
+    // Refresh whenever the analytics tab data may have changed
+    if (window.location && /quarry/i.test(document.title)) {
+      // No-op guard; data is fetched on first switch into the tab.
+    }
   </script>
 
 </body>
