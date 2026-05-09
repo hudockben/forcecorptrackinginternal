@@ -470,6 +470,165 @@ async function buildProjectsPortfolio(sql, companyCode) {
   });
 }
 
+// ── Per-project detail (page 3+) ─────────────────────────────────────
+// Returns the top 6 active projects with full header info plus
+// section blocks (bid items, weekly trucking activity). Quarry and
+// dust sections are intentionally omitted until quarry data lands
+// and dust gains a project linkage. Each per-project sub-query runs
+// in parallel and is independently safe-wrapped.
+async function buildProjectDetails(sql, companyCode) {
+  const projects = await safeRun('details.list', async () => {
+    return await sql`
+      SELECT
+        p.id,
+        p.name,
+        p.job_number,
+        p.status,
+        p.start_date::text       AS start_date,
+        p.end_date::text         AS end_date,
+        p.contract_amount::float AS contract_amount
+      FROM projects p
+      WHERE p.company_code = ${companyCode}
+        AND p.status IN ('Active', 'At Risk', 'On Hold')
+      ORDER BY p.start_date ASC NULLS LAST, p.name ASC
+      LIMIT 6
+    `;
+  });
+
+  if (!projects || !projects.length) return null;
+
+  const detailed = await Promise.all(projects.map(async (p) => {
+    const [bidItems, weeks, booked] = await Promise.all([
+      safeRun(`details.bid.${p.id}`, async () => {
+        return await sql`
+          SELECT cost_code, sub_code, description, quantity, unit, status
+            FROM bid_items
+           WHERE company_code = ${companyCode}
+             AND project_id   = ${p.id}
+           ORDER BY cost_code, sub_code
+           LIMIT 8
+        `;
+      }),
+      safeRun(`details.weeks.${p.id}`, async () => {
+        return await sql`
+          SELECT
+            date_trunc('week', date)::date::text                                AS week_start,
+            COALESCE(SUM(loads),  0)::float                                     AS loads,
+            COALESCE(SUM(hours),  0)::float                                     AS hours,
+            COALESCE(SUM(COALESCE(loads,0) * COALESCE(rate,0)), 0)::float       AS dollars
+          FROM trucking_entries
+          WHERE company_code = ${companyCode}
+            AND project_id   = ${p.id}
+          GROUP BY date_trunc('week', date)
+          ORDER BY week_start DESC
+          LIMIT 4
+        `;
+      }),
+      safeRun(`details.booked.${p.id}`, async () => {
+        const rows = await sql`
+          SELECT
+            COALESCE(SUM(
+              COALESCE(total_cost_override,
+                COALESCE(labor_hours, 0) * COALESCE(rate, 0)
+                + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
+                + COALESCE(material_cost, 0)
+              )
+            ), 0)::float AS booked
+          FROM daily_tracking
+          WHERE company_code = ${companyCode}
+            AND project_id   = ${p.id}
+        `;
+        return rows[0]?.booked ?? 0;
+      }),
+    ]);
+
+    return buildDetailObject(p, bidItems, weeks, booked);
+  }));
+
+  return detailed.filter(Boolean);
+}
+
+function buildDetailObject(p, bidItems, weeks, booked) {
+  const startMs = p.start_date ? new Date(p.start_date + 'T00:00:00Z').getTime() : null;
+  const endMs   = p.end_date   ? new Date(p.end_date   + 'T00:00:00Z').getTime() : null;
+  const todayMs = Date.now();
+
+  let pctComplete = '—';
+  if (startMs != null && endMs != null && endMs > startMs) {
+    const elapsed = Math.max(0, Math.min(todayMs, endMs) - startMs);
+    pctComplete = Math.round((elapsed / (endMs - startMs)) * 100) + '%';
+  }
+
+  const fmtDate = iso =>
+    iso
+      ? new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      : '—';
+
+  const sections = {};
+
+  if (Array.isArray(bidItems) && bidItems.length) {
+    sections.bidItems = {
+      color: '#22c55e',
+      cols:  ['Item', 'Qty', 'Status'],
+      rows:  bidItems.map(b => [
+        b.description || b.cost_code || '—',
+        b.quantity != null
+          ? `${Number(b.quantity).toLocaleString('en-US')} ${b.unit || ''}`.trim()
+          : '—',
+        b.status || 'Active',
+      ]),
+    };
+  }
+
+  if (Array.isArray(weeks) && weeks.length) {
+    const sorted       = [...weeks].sort((a, b) => String(a.week_start).localeCompare(String(b.week_start)));
+    const totalLoads   = sorted.reduce((s, w) => s + (Number(w.loads)   || 0), 0);
+    const totalHours   = sorted.reduce((s, w) => s + (Number(w.hours)   || 0), 0);
+    const totalDollars = sorted.reduce((s, w) => s + (Number(w.dollars) || 0), 0);
+    const fmtWeek = iso =>
+      new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+    sections.trucking = {
+      color: '#ef4444',
+      cols:  ['Week', 'Loads', 'Hours', '$'],
+      rows: [
+        ...sorted.map(w => [
+          fmtWeek(w.week_start),
+          Math.round(Number(w.loads) || 0).toLocaleString('en-US'),
+          Math.round(Number(w.hours) || 0).toLocaleString('en-US'),
+          fmtCurrency(w.dollars),
+        ]),
+        [
+          'Total to date',
+          Math.round(totalLoads).toLocaleString('en-US'),
+          Math.round(totalHours).toLocaleString('en-US'),
+          fmtCurrency(totalDollars),
+        ],
+      ],
+    };
+  }
+
+  const status      = String(p.status || 'Active');
+  const statusColor =
+    status === 'On Hold' ? 'mute' :
+    status === 'At Risk' ? 'amber' :
+    'green';
+
+  return {
+    name:        p.name || '(unnamed)',
+    jobNumber:   p.job_number || '—',
+    division:    'turf',
+    status,
+    statusColor,
+    start:       fmtDate(p.start_date),
+    target:      fmtDate(p.end_date),
+    contract:    p.contract_amount != null ? fmtCurrency(p.contract_amount) : '—',
+    bookedCost:  booked != null ? fmtCurrency(booked) : '—',
+    pctComplete,
+    sections,
+  };
+}
+
 async function buildIntercompanyTile(sql, companyCode) {
   const unbilledTrucking = await safeRun('ic.unbilled_trucking', async () => {
     const rows = await sql`
@@ -846,16 +1005,24 @@ module.exports = async (req, res) => {
       return tile;
     });
 
-    // Active project portfolio (page 2). If the live build returns rows,
-    // they replace the mock entirely. If it errors or returns no rows,
-    // we keep the mock so the page never goes blank.
-    try {
-      const livePortfolio = await buildProjectsPortfolio(sql, company);
-      if (Array.isArray(livePortfolio) && livePortfolio.length) {
-        report.projects = livePortfolio;
-      }
-    } catch (err) {
-      console.error('[executive/report] portfolio build failed:', err.message);
+    // Active project portfolio (page 2) and per-project detail (page 3+).
+    // Both run in parallel; either falling back to mock on error keeps
+    // the page rendering even if one query has issues.
+    const [livePortfolio, liveDetails] = await Promise.all([
+      buildProjectsPortfolio(sql, company).catch(err => {
+        console.error('[executive/report] portfolio build failed:', err.message);
+        return null;
+      }),
+      buildProjectDetails(sql, company).catch(err => {
+        console.error('[executive/report] details build failed:', err.message);
+        return null;
+      }),
+    ]);
+    if (Array.isArray(livePortfolio) && livePortfolio.length) {
+      report.projects = livePortfolio;
+    }
+    if (Array.isArray(liveDetails) && liveDetails.length) {
+      report.details = liveDetails;
     }
   }
 
