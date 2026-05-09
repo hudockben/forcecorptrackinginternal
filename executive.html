@@ -324,7 +324,111 @@
       margin-top: 0.15rem;
     }
 
-    /* ── Project timeline ── */
+    /* ── Projects financial table ── */
+    .ptable-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.5rem 0.25rem;
+      overflow-x: auto;
+    }
+    .ptable {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.78rem;
+      min-width: 1100px;
+    }
+    .ptable th {
+      text-align: left;
+      padding: 0.85rem 0.85rem 0.6rem;
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .ptable td {
+      padding: 0.7rem 0.85rem;
+      border-bottom: 1px solid rgba(42,42,58,0.4);
+      vertical-align: middle;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .ptable tr:last-child td { border-bottom: none; }
+    .ptable .pname {
+      display: flex;
+      flex-direction: column;
+      gap: 0.18rem;
+    }
+    .ptable .pname-main {
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+      font-size: 0.85rem;
+    }
+    .ptable .pname-sub {
+      font-size: 0.65rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .ptable .pstatus {
+      font-size: 0.65rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .ptable .pprogress {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      min-width: 140px;
+    }
+    .ptable .pprogress-track {
+      flex: 1;
+      height: 7px;
+      background: rgba(42,42,58,0.5);
+      border-radius: 4px;
+      overflow: hidden;
+      min-width: 80px;
+    }
+    .ptable .pprogress-fill {
+      height: 100%;
+      background: var(--green);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+    .ptable .pprogress-pct {
+      font-size: 0.7rem;
+      color: var(--muted);
+      font-weight: 600;
+      min-width: 32px;
+      text-align: right;
+    }
+    .ptable .col-num   { text-align: right; }
+    .ptable .v-contract  { color: #60a5fa; }      /* blue */
+    .ptable .v-bid       { color: #22c55e; }      /* green */
+    .ptable .v-actual    { color: var(--text); }
+    .ptable .v-projected { color: #fbbf24; }      /* amber */
+    .ptable .v-variance-under { color: #22c55e; }
+    .ptable .v-variance-over  { color: #ef4444; }
+    .ptable .v-profit-pos     { color: #22c55e; }
+    .ptable .v-profit-neg     { color: #ef4444; }
+    .ptable .v-profit-pct {
+      color: var(--muted);
+      font-size: 0.68rem;
+      margin-left: 0.25rem;
+    }
+    .ptable .v-mute      { color: var(--muted); }
+    .ptable .pstar       {
+      color: #22c55e;
+      font-size: 0.95rem;
+      text-align: center;
+      width: 24px;
+    }
+    .ptable .pstar.off   { color: rgba(42,42,58,0.7); }
+
+    /* ── Project timeline (legacy — kept for any future use) ── */
     .timeline-wrap {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -607,6 +711,16 @@
       .timeline-bar { background: #eee; }
       .timeline-grid { border-color: #eee; min-width: 0; }
       .timeline-grid.head { border-color: #ccc; }
+      .ptable-wrap { background: #fff; border: 1px solid #ccc; }
+      .ptable      { min-width: 0; font-size: 0.7rem; }
+      .ptable th   { color: #555; border-color: #ccc; }
+      .ptable td   { border-color: #eee; color: #000; }
+      .ptable .pname-main, .ptable .v-actual { color: #000; }
+      .ptable .pname-sub, .ptable .pstatus,
+      .ptable .pprogress-pct, .ptable .v-mute,
+      .ptable .v-profit-pct { color: #555; }
+      .ptable .pstar.off { color: #ddd; }
+      .ptable .pprogress-track { background: #eee; }
       .pd-head { border-color: #ccc; }
       .timeline-today { background: #000; box-shadow: none; }
       .timeline-today::after { color: #000; }
@@ -682,31 +796,31 @@
         <div class="div-grid" id="divGrid"></div>
       </div>
 
-      <!-- ─────────── PAGE 2: ACTIVE PROJECT PORTFOLIO ─────────── -->
+      <!-- ─────────── PAGE 2: PROJECTS (FINANCIAL OVERVIEW) ─────────── -->
       <div class="section page-break">
         <div class="section-head">
-          <div class="section-title">Active Project Portfolio</div>
-          <div class="section-sub">Turf &amp; Paving · Active / At Risk / On Hold</div>
+          <div class="section-title">Projects</div>
+          <div class="section-sub" id="projectsSub">—</div>
         </div>
 
-        <div class="filters">
-          <span class="filter-label">Status</span>
-          <button class="filter-chip on" data-filter="all">All</button>
-          <button class="filter-chip on" data-filter="active">Active</button>
-          <button class="filter-chip on" data-filter="atrisk">At Risk</button>
-          <button class="filter-chip on" data-filter="hold">On Hold</button>
-          <span class="filter-label" style="margin-left: 1rem;">Division</span>
-          <button class="filter-chip on" data-filter="turf">Turf</button>
-          <button class="filter-chip on" data-filter="paving">Paving</button>
-        </div>
-
-        <div class="timeline-wrap" id="timelineWrap">
-          <div class="timeline-grid head">
-            <div class="timeline-head-label">Project</div>
-            <div class="timeline-head-label">Timeline (Jan — Aug 2026)</div>
-            <div class="timeline-head-label" style="text-align: right;">Snapshot</div>
-          </div>
-          <div id="timelineRows"></div>
+        <div class="ptable-wrap">
+          <table class="ptable" id="projectsTable">
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th class="col-num">Contract</th>
+                <th class="col-num">Bid</th>
+                <th class="col-num">Actual</th>
+                <th class="col-num">Variance</th>
+                <th class="col-num">Projected</th>
+                <th class="col-num">Profit</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="projectsBody"></tbody>
+          </table>
         </div>
       </div>
 
@@ -781,37 +895,73 @@
       `;
     }
 
-    function renderTimelineRow(p) {
-      const ticks = Array(8).fill('<div class="axis-tick"></div>').join('');
-      const fillKind = p.bar?.kind ? ` ${esc(p.bar.kind)}` : '';
-      const icons = (p.icons || []).map(i =>
-        `<div class="timeline-icons" style="left: ${Number(i.leftPct)}%;"><span class="tl-icon ${esc(i.kind)}">${esc(i.kind.toUpperCase())}</span></div>`
-      ).join('');
-      const mini = (p.mini || []).map(m => `
-        <div class="timeline-mini-label">${esc(m.label)}</div>
-        <div class="timeline-mini-val"${m.color ? ` style="color: var(--${esc(m.color)});"` : ''}>${esc(m.value)}</div>
-      `).join('');
-      const divPill = p.division
-        ? `<span class="div-pill ${esc(p.division)}">${esc(p.division)}</span>`
-        : '';
+    // Currency formatter — "$12,345.67" or "—" for null/zero
+    function fmtMoney(n, opts = {}) {
+      if (n == null || (opts.zeroDash && Math.abs(Number(n)) < 0.005)) return '—';
+      const v = Number(n);
+      if (!isFinite(v)) return '—';
+      return (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString('en-US', {
+        minimumFractionDigits: 2, maximumFractionDigits: 2,
+      });
+    }
+
+    function renderProjectRow(p) {
+      const progressPct = Math.max(0, Math.min(100, Number(p.progressPct) || 0));
+      const progressColor =
+        progressPct >= 100 ? '#60a5fa' :
+        progressPct >=  85 ? '#fbbf24' :
+        '#22c55e';
+
+      // Variance: + = under bid (green), − = over bid (red)
+      let varCell;
+      if (!p.bid) {
+        varCell = `<td class="col-num v-mute">—</td>`;
+      } else if (p.variance >= 0) {
+        varCell = `<td class="col-num v-variance-under">${esc(fmtMoney(p.variance))} <span class="v-profit-pct">under</span></td>`;
+      } else {
+        varCell = `<td class="col-num v-variance-over">${esc(fmtMoney(Math.abs(p.variance)))} <span class="v-profit-pct">over</span></td>`;
+      }
+
+      // Profit: contract − projected
+      let profitCell;
+      if (p.profit == null) {
+        profitCell = `<td class="col-num v-mute">—</td>`;
+      } else {
+        const cls = p.profit >= 0 ? 'v-profit-pos' : 'v-profit-neg';
+        const pct = p.profitPct != null
+          ? ` <span class="v-profit-pct">(${(p.profitPct >= 0 ? '+' : '−')}${Math.abs(p.profitPct).toFixed(1)}%)</span>`
+          : '';
+        profitCell = `<td class="col-num ${cls}">${esc(fmtMoney(p.profit))}${pct}</td>`;
+      }
+
+      const star = p.pinned ? '★' : '☆';
+      const starCls = p.pinned ? 'pstar' : 'pstar off';
+
       return `
-        <div class="timeline-grid">
-          <div class="timeline-proj-info">
-            <div class="timeline-proj-name">${esc(p.name)}</div>
-            <div class="timeline-proj-meta">
-              ${divPill}
-              <span>Job #${esc(p.jobNumber)} · ${esc(p.status)}</span>
+        <tr>
+          <td>
+            <div class="pname">
+              <span class="pname-main">${esc(p.name)}</span>
+              <span class="pname-sub">${esc(p.jobNumber)}</span>
             </div>
-          </div>
-          <div class="timeline-bar">
-            <div class="timeline-bar-axis">${ticks}</div>
-            <div class="timeline-bar-fill${fillKind}" style="left: ${Number(p.bar?.leftPct || 0)}%; width: ${Number(p.bar?.widthPct || 0)}%;"></div>
-            ${p.bar?.progressPct ? `<div class="timeline-bar-progress" style="left: ${Number(p.bar.leftPct)}%; width: ${Number(p.bar.progressPct)}%;"></div>` : ''}
-            ${icons}
-            <div class="timeline-today" style="left: ${Number(p.bar?.todayPct || 0)}%;"></div>
-          </div>
-          <div class="timeline-mini">${mini}</div>
-        </div>
+          </td>
+          <td><span class="pstatus">${esc(p.status)}</span></td>
+          <td>
+            <div class="pprogress">
+              <div class="pprogress-track">
+                <div class="pprogress-fill" style="width: ${progressPct}%; background: ${progressColor};"></div>
+              </div>
+              <span class="pprogress-pct">${progressPct}%</span>
+            </div>
+          </td>
+          <td class="col-num v-contract">${esc(fmtMoney(p.contract, { zeroDash: true }))}</td>
+          <td class="col-num v-bid">${esc(fmtMoney(p.bid,      { zeroDash: true }))}</td>
+          <td class="col-num v-actual">${esc(fmtMoney(p.actual, { zeroDash: true }))}</td>
+          ${varCell}
+          <td class="col-num v-projected">${esc(fmtMoney(p.projected, { zeroDash: true }))}</td>
+          ${profitCell}
+          <td class="${starCls}">${star}</td>
+        </tr>
       `;
     }
 
@@ -873,13 +1023,30 @@
     function renderReport(data) {
       document.getElementById('heroKpis').innerHTML       = renderHero(data.snapshot?.hero || []);
       document.getElementById('divGrid').innerHTML        = (data.snapshot?.divisions || []).map(renderDivisionTile).join('');
-      document.getElementById('timelineRows').innerHTML   = (data.projects || []).map(renderTimelineRow).join('');
-      document.getElementById('projectDetails').innerHTML = (data.details  || []).map(renderDetail).join('');
 
-      // Filter chips (visual only for now; will drive client-side filtering when wired)
-      document.querySelectorAll('.filter-chip').forEach(chip => {
-        chip.addEventListener('click', () => chip.classList.toggle('on'));
-      });
+      // Projects financial table — accepts either { summary, rows } or
+      // a flat array (legacy mock).
+      const projData    = data.projects;
+      const projRows    = Array.isArray(projData) ? projData : (projData?.rows || []);
+      const projSummary = (!Array.isArray(projData) && projData?.summary) || null;
+      document.getElementById('projectsBody').innerHTML = projRows.map(renderProjectRow).join('') ||
+        '<tr><td colspan="10" style="padding:1.5rem;text-align:center;color:var(--muted)">No active projects.</td></tr>';
+
+      const subEl = document.getElementById('projectsSub');
+      if (subEl) {
+        if (projSummary && projSummary.total > 0) {
+          const parts = [];
+          if (projSummary.pinned) parts.push(`${projSummary.pinned} pinned`);
+          if (projSummary.recent) parts.push(`${projSummary.recent} most recent`);
+          subEl.textContent = parts.length ? `(${parts.join(' · ')})` : `${projSummary.total} active`;
+        } else if (projRows.length) {
+          subEl.textContent = `${projRows.length} active`;
+        } else {
+          subEl.textContent = 'No active projects';
+        }
+      }
+
+      document.getElementById('projectDetails').innerHTML = (data.details || []).map(renderDetail).join('');
     }
 
     // ── Fetch ──
