@@ -148,6 +148,254 @@ async function buildHero(sql, companyCode) {
   ];
 }
 
+// ── Division tile builders ────────────────────────────────────────────
+// Each builder returns the full tile object the front-end expects (key,
+// name, accent, status, statusKind, kpis). Paving and Quarry are not
+// wired here — their data shape is still in flux — so they fall through
+// to mockReport() unchanged.
+
+async function buildTurfTile(sql, companyCode, weekStart, weekEnd) {
+  const active = await safeRun('turf.active', async () => {
+    const rows = await sql`
+      SELECT COUNT(*)::int AS n
+        FROM projects
+       WHERE company_code = ${companyCode}
+         AND status IN ('Active', 'At Risk', 'On Hold')
+    `;
+    return rows[0]?.n ?? 0;
+  });
+  const atRisk = await safeRun('turf.at_risk', async () => {
+    const rows = await sql`
+      SELECT COUNT(*)::int AS n
+        FROM projects
+       WHERE company_code = ${companyCode}
+         AND status = 'At Risk'
+    `;
+    return rows[0]?.n ?? 0;
+  });
+  const laborHrs = await safeRun('turf.labor_hrs', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(labor_hours), 0)::float AS v
+        FROM daily_tracking
+       WHERE company_code = ${companyCode}
+         AND division = 'turf'
+         AND date >= ${weekStart}
+         AND date <  ${weekEnd}
+    `;
+    return rows[0]?.v ?? 0;
+  });
+  const equipHrs = await safeRun('turf.equip_hrs', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(equip_hours), 0)::float AS v
+        FROM daily_tracking
+       WHERE company_code = ${companyCode}
+         AND division = 'turf'
+         AND date >= ${weekStart}
+         AND date <  ${weekEnd}
+    `;
+    return rows[0]?.v ?? 0;
+  });
+
+  return {
+    key: 'turf', name: 'Turf Management', accent: '#22c55e',
+    status: atRisk > 0 ? `${atRisk} At Risk` : 'On Track',
+    statusKind: atRisk > 0 ? 'amber' : 'green',
+    kpis: [
+      {
+        label: 'Active Projects',
+        value: active != null ? String(active) : '—',
+        sub:   atRisk > 0 ? `${atRisk} at risk` : null,
+      },
+      { label: 'Labor Hrs · Wk',  value: laborHrs != null ? String(Math.round(laborHrs))  : '—' },
+      { label: 'Equipment Hrs',   value: equipHrs != null ? String(Math.round(equipHrs))  : '—' },
+      { label: 'Cost vs Bid',     value: '—', sub: 'pending wiring' },
+    ].filter(k => !(k.sub === null)).map(k => { if (k.sub === null) delete k.sub; return k; }),
+  };
+}
+
+async function buildTruckingTile(sql, companyCode, weekStart, weekEnd) {
+  const activeHauls = await safeRun('trucking.active_hauls', async () => {
+    const rows = await sql`
+      SELECT COUNT(DISTINCT project_id)::int AS n
+        FROM trucking_entries
+       WHERE company_code = ${companyCode}
+         AND project_id IS NOT NULL
+         AND date >= (CURRENT_DATE - INTERVAL '7 days')
+    `;
+    return rows[0]?.n ?? 0;
+  });
+  const loadsWk = await safeRun('trucking.loads_wk', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(loads), 0)::float AS v
+        FROM trucking_entries
+       WHERE company_code = ${companyCode}
+         AND date >= ${weekStart}
+         AND date <  ${weekEnd}
+    `;
+    return rows[0]?.v ?? 0;
+  });
+  const invoicedWk = await safeRun('trucking.invoiced_wk', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(haul_fee), 0)::float AS v
+        FROM truck_division_entries
+       WHERE company_code = ${companyCode}
+         AND invoice_sent_date >= ${weekStart}
+         AND invoice_sent_date <  ${weekEnd}
+    `;
+    return rows[0]?.v ?? 0;
+  });
+  const unbilled = await safeRun('trucking.unbilled', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(haul_fee), 0)::float AS amt,
+             COUNT(*)::int                     AS n
+        FROM truck_division_entries
+       WHERE company_code = ${companyCode}
+         AND invoice_sent_date IS NULL
+    `;
+    return { amt: rows[0]?.amt ?? 0, n: rows[0]?.n ?? 0 };
+  });
+
+  return {
+    key: 'trucking', name: 'Trucking', accent: '#ef4444',
+    status: 'On Track', statusKind: 'green',
+    kpis: [
+      { label: 'Active Hauls',  value: activeHauls != null ? String(activeHauls)             : '—' },
+      { label: 'Loads · Wk',    value: loadsWk     != null ? Math.round(loadsWk).toLocaleString('en-US') : '—' },
+      { label: 'Invoiced · Wk', value: invoicedWk  != null ? fmtCurrency(invoicedWk)         : '—' },
+      {
+        label: 'Unbilled',
+        value: unbilled?.amt != null ? fmtCurrency(unbilled.amt) : '—',
+        sub:   unbilled?.n   ? `${unbilled.n} entries` : null,
+      },
+    ].map(k => { if (k.sub == null) delete k.sub; return k; }),
+  };
+}
+
+async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
+  const activeRoutes = await safeRun('dust.active_routes', async () => {
+    const rows = await sql`
+      SELECT COUNT(DISTINCT company)::int AS n
+        FROM dust_control_entries
+       WHERE company_code = ${companyCode}
+         AND date >= (CURRENT_DATE - INTERVAL '30 days')
+         AND company IS NOT NULL
+         AND TRIM(company) <> ''
+    `;
+    return rows[0]?.n ?? 0;
+  });
+  const gallonsWk = await safeRun('dust.gallons_wk', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(gallons_ub), 0)::float AS v
+        FROM dust_control_entries
+       WHERE company_code = ${companyCode}
+         AND date >= ${weekStart}
+         AND date <  ${weekEnd}
+    `;
+    return rows[0]?.v ?? 0;
+  });
+  const ar60 = await safeRun('dust.ar_60', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(total), 0)::float AS v
+        FROM intercompany_billing_entries
+       WHERE company_code = ${companyCode}
+         AND source = 'dust'
+         AND invoice_sent_date IS NOT NULL
+         AND invoice_sent_date < (CURRENT_DATE - INTERVAL '60 days')
+         AND date_paid IS NULL
+         AND (invoice_status IS NULL OR LOWER(invoice_status) NOT LIKE 'paid%')
+    `;
+    return rows[0]?.v ?? 0;
+  });
+  const cmPending = await safeRun('dust.cm_pending', async () => {
+    const rows = await sql`
+      SELECT COUNT(*)::int AS n
+        FROM dust_control_entries
+       WHERE company_code = ${companyCode}
+         AND date >= (CURRENT_DATE - INTERVAL '30 days')
+         AND (cm_approval IS NULL OR TRIM(cm_approval) = '')
+    `;
+    return rows[0]?.n ?? 0;
+  });
+
+  return {
+    key: 'dust', name: 'Dust Control', accent: '#fbbf24',
+    status: cmPending > 0 ? `${cmPending} CM Pending` : 'On Track',
+    statusKind: cmPending > 0 ? 'amber' : 'green',
+    kpis: [
+      { label: 'Active Routes',       value: activeRoutes != null ? String(activeRoutes) : '—' },
+      { label: 'Gallons · Wk',        value: gallonsWk    != null ? Math.round(gallonsWk).toLocaleString('en-US') : '—' },
+      { label: 'AR · 60+ Days',       value: ar60         != null ? fmtCurrency(ar60)    : '—' },
+      { label: 'CM Approval Pending', value: cmPending    != null ? String(cmPending)    : '—' },
+    ],
+  };
+}
+
+async function buildIntercompanyTile(sql, companyCode) {
+  const unbilledTrucking = await safeRun('ic.unbilled_trucking', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(total), 0)::float AS v
+        FROM intercompany_billing_entries
+       WHERE company_code = ${companyCode}
+         AND source = 'trucking'
+         AND (qb_invoice IS NULL OR TRIM(qb_invoice) = '')
+    `;
+    return rows[0]?.v ?? 0;
+  });
+  const unbilledDust = await safeRun('ic.unbilled_dust', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(total), 0)::float AS v
+        FROM intercompany_billing_entries
+       WHERE company_code = ${companyCode}
+         AND source = 'dust'
+         AND (qb_invoice IS NULL OR TRIM(qb_invoice) = '')
+    `;
+    return rows[0]?.v ?? 0;
+  });
+  const ar30 = await safeRun('ic.ar_30', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(total), 0)::float AS v
+        FROM intercompany_billing_entries
+       WHERE company_code = ${companyCode}
+         AND invoice_sent_date IS NOT NULL
+         AND invoice_sent_date < (CURRENT_DATE - INTERVAL '30 days')
+         AND date_paid IS NULL
+         AND (invoice_status IS NULL OR LOWER(invoice_status) NOT LIKE 'paid%')
+    `;
+    return rows[0]?.v ?? 0;
+  });
+  const top = await safeRun('ic.top_customer', async () => {
+    const rows = await sql`
+      SELECT company_name, COALESCE(SUM(total), 0)::float AS v
+        FROM intercompany_billing_entries
+       WHERE company_code = ${companyCode}
+         AND date_paid IS NULL
+         AND company_name IS NOT NULL
+         AND TRIM(company_name) <> ''
+       GROUP BY company_name
+       ORDER BY v DESC
+       LIMIT 1
+    `;
+    return rows[0] || null;
+  });
+
+  return {
+    key: 'intercompany', name: 'Intercompany Billing', accent: '#a78bfa',
+    status: ar30 > 0 ? 'Aging' : 'On Track',
+    statusKind: ar30 > 0 ? 'amber' : 'green',
+    kpis: [
+      { label: 'Unbilled · Trucking', value: unbilledTrucking != null ? fmtCurrency(unbilledTrucking) : '—' },
+      { label: 'Unbilled · Dust',     value: unbilledDust     != null ? fmtCurrency(unbilledDust)     : '—' },
+      { label: 'AR 30+ Days',         value: ar30             != null ? fmtCurrency(ar30)             : '—' },
+      top && top.company_name ? {
+        label: 'Top Customer',
+        value: String(top.company_name),
+        sub:   `${fmtCurrency(top.v)} outstanding`,
+        small: true,
+      } : { label: 'Top Customer', value: '—' },
+    ],
+  };
+}
+
 // Mock fallback — used only if the entire hero build throws.
 function mockHero() {
   return [
@@ -411,16 +659,52 @@ module.exports = async (req, res) => {
 
   const report = mockReport();
 
-  // Live hero KPIs (scoped to the caller's primary companyCode).
-  // If the entire hero build throws — DB unreachable, missing config —
-  // we fall back to '—' placeholders so the rest of the page still renders.
+  // Live KPIs scoped to the caller's primary companyCode. Each builder
+  // wraps its own queries in safeRun() so a single failure degrades to
+  // '—' rather than blanking the report. If the entire build throws —
+  // DB unreachable, missing config — we keep the mock placeholders.
   if (payload.companyCode && process.env.DATABASE_URL) {
+    const sql       = neon(process.env.DATABASE_URL);
+    const company   = payload.companyCode;
+    const weekStart = startOfWeekISO(new Date());
+    const weekEnd   = addDaysISO(weekStart, 7);
+
     try {
-      const sql = neon(process.env.DATABASE_URL);
-      report.snapshot.hero = await buildHero(sql, payload.companyCode);
+      report.snapshot.hero = await buildHero(sql, company);
     } catch (err) {
       console.error('[executive/report] hero build failed:', err.message);
     }
+
+    // Division tiles: turf, trucking, dust, intercompany are wired live.
+    // Paving and quarry preserve their mock entries (data shape pending).
+    const liveTiles = await Promise.all([
+      buildTurfTile(sql, company, weekStart, weekEnd).catch(e => {
+        console.error('[executive/report] turf tile failed:', e.message);
+        return null;
+      }),
+      buildTruckingTile(sql, company, weekStart, weekEnd).catch(e => {
+        console.error('[executive/report] trucking tile failed:', e.message);
+        return null;
+      }),
+      buildDustTile(sql, company, weekStart, weekEnd).catch(e => {
+        console.error('[executive/report] dust tile failed:', e.message);
+        return null;
+      }),
+      buildIntercompanyTile(sql, company).catch(e => {
+        console.error('[executive/report] intercompany tile failed:', e.message);
+        return null;
+      }),
+    ]);
+    const [turfLive, truckingLive, dustLive, icLive] = liveTiles;
+
+    // Replace tiles in place, preserving order & any failed tile's mock.
+    report.snapshot.divisions = report.snapshot.divisions.map(tile => {
+      if (tile.key === 'turf'         && turfLive)     return turfLive;
+      if (tile.key === 'trucking'     && truckingLive) return truckingLive;
+      if (tile.key === 'dust'         && dustLive)     return dustLive;
+      if (tile.key === 'intercompany' && icLive)       return icLive;
+      return tile;
+    });
   }
 
   report.generatedAt = new Date().toISOString();
