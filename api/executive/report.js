@@ -170,105 +170,160 @@ async function buildHero(sql, companyCode) {
 // wired here — their data shape is still in flux — so they fall through
 // to mockReport() unchanged.
 
-async function buildTurfTile(sql, companyCode, weekStart, weekEnd) {
-  const active = await safeRun('turf.active', async () => {
-    const rows = await sql`
-      SELECT COUNT(*)::int AS n
-        FROM projects
-       WHERE company_code = ${companyCode}
-         AND status IN ('Active', 'At Risk', 'On Hold')
-    `;
-    return rows[0]?.n ?? 0;
-  });
-  const atRisk = await safeRun('turf.at_risk', async () => {
-    const rows = await sql`
-      SELECT COUNT(*)::int AS n
-        FROM projects
-       WHERE company_code = ${companyCode}
-         AND status = 'At Risk'
-    `;
-    return rows[0]?.n ?? 0;
-  });
-  const laborHrs = await safeRun('turf.labor_hrs', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(labor_hours), 0)::float AS v
-        FROM daily_tracking
-       WHERE company_code = ${companyCode}
-         AND division = 'turf'
-         AND date >= ${weekStart}
-         AND date <  ${weekEnd}
-    `;
-    return rows[0]?.v ?? 0;
-  });
-  const equipHrs = await safeRun('turf.equip_hrs', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(equip_hours), 0)::float AS v
-        FROM daily_tracking
-       WHERE company_code = ${companyCode}
-         AND division = 'turf'
-         AND date >= ${weekStart}
-         AND date <  ${weekEnd}
-    `;
-    return rows[0]?.v ?? 0;
-  });
-
-  // Cost vs Bid — aggregate across all active projects:
-  // SUM(booked) / SUM(bid) where booked comes from daily_tracking and
-  // bid comes from bid_items. Limited to projects whose status is in
-  // the active set so completed projects don't drag the ratio.
-  const cvb = await safeRun('turf.cost_vs_bid', async () => {
-    const rows = await sql`
-      WITH active_proj AS (
-        SELECT id
-          FROM projects
-         WHERE company_code = ${companyCode}
-           AND status IN ('Active', 'At Risk', 'On Hold')
-      ),
-      bid AS (
-        SELECT COALESCE(SUM(COALESCE(quantity, 0) * COALESCE(unit_cost, 0)), 0)::float AS v
+// Turf — financial-status focused: Active / Cost vs Bid / Projected / Profit.
+// Pulls each active project's contract, bid, booked, and dates in one query
+// and aggregates in JS so the projected-cost extrapolation is easy to read.
+//
+// Projected cost per project (time-based extrapolation):
+//   - if not started yet     → use bid (or contract) as the best estimate
+//   - if past target end     → use booked (project ran over its window)
+//   - otherwise              → booked / pct_time_elapsed
+//
+// Profit = SUM(contract) − SUM(projected) across all active projects.
+async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */) {
+  const rows = await safeRun('turf.projects_financials', async () => {
+    return await sql`
+      SELECT
+        p.id,
+        p.status,
+        p.contract_amount::float AS contract_amount,
+        p.start_date::text       AS start_date,
+        p.end_date::text         AS end_date,
+        COALESCE(b.bid_total,    0)::float AS bid_total,
+        COALESCE(c.booked_total, 0)::float AS booked_total
+      FROM projects p
+      LEFT JOIN (
+        SELECT project_id,
+               SUM(COALESCE(quantity, 0) * COALESCE(unit_cost, 0))::float AS bid_total
           FROM bid_items
          WHERE company_code = ${companyCode}
-           AND project_id IN (SELECT id FROM active_proj)
-      ),
-      booked AS (
-        SELECT COALESCE(SUM(
+         GROUP BY project_id
+      ) b ON b.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id,
+               SUM(
                  COALESCE(total_cost_override,
                    COALESCE(labor_hours, 0) * COALESCE(rate, 0)
                    + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
                    + COALESCE(material_cost, 0)
                  )
-               ), 0)::float AS v
+               )::float AS booked_total
           FROM daily_tracking
          WHERE company_code = ${companyCode}
-           AND project_id IN (SELECT id FROM active_proj)
-      )
-      SELECT (SELECT v FROM bid)    AS bid_total,
-             (SELECT v FROM booked) AS booked_total
+           AND project_id IS NOT NULL
+           AND project_id <> ''
+         GROUP BY project_id
+      ) c ON c.project_id = p.id
+      WHERE p.company_code = ${companyCode}
+        AND p.status IN ('Active', 'At Risk', 'On Hold')
     `;
-    return rows[0] || null;
   });
-  const cvbFmt = cvb && cvb.bid_total > 0
-    ? fmtCostVsBid(cvb.booked_total, cvb.bid_total)
+
+  if (!rows) return null; // total fail — caller falls back to mock
+
+  const todayMs = Date.now();
+  let active = 0;
+  let atRisk = 0;
+  let totalContract  = 0;
+  let totalBid       = 0;
+  let totalBooked    = 0;
+  let totalProjected = 0;
+
+  for (const r of rows) {
+    active += 1;
+    if (r.status === 'At Risk') atRisk += 1;
+
+    const contract = Number(r.contract_amount) || 0;
+    const bid      = Number(r.bid_total)       || 0;
+    const booked   = Number(r.booked_total)    || 0;
+
+    totalContract += contract;
+    totalBid      += bid;
+    totalBooked   += booked;
+
+    const startMs = r.start_date ? new Date(r.start_date + 'T00:00:00Z').getTime() : null;
+    const endMs   = r.end_date   ? new Date(r.end_date   + 'T00:00:00Z').getTime() : null;
+
+    let projected;
+    if (startMs && endMs && endMs > startMs) {
+      if (todayMs <= startMs) {
+        projected = bid > 0 ? bid : contract;
+      } else if (todayMs >= endMs) {
+        projected = booked > 0 ? booked : (bid || contract);
+      } else {
+        const pctTime = (todayMs - startMs) / (endMs - startMs);
+        projected = pctTime > 0 && booked > 0 ? booked / pctTime : (bid || contract);
+      }
+    } else {
+      projected = bid > 0 ? bid : contract;
+    }
+    totalProjected += projected;
+  }
+
+  // Cost vs Bid (aggregate)
+  const cvbFmt = totalBid > 0
+    ? fmtCostVsBid(totalBooked, totalBid)
     : { text: '—', color: 'mute' };
-  const cvbSub = cvb && cvb.bid_total > 0
+  const cvbSub = totalBid > 0
     ? (cvbFmt.color === 'red'   ? 'Over bid'
       : cvbFmt.color === 'green' ? 'Under bid'
       : 'On plan')
-    : null;
+    : undefined;
+
+  // Profit text
+  let profitText = '—';
+  let profitSub  = undefined;
+  if (totalContract > 0 && totalProjected > 0) {
+    const profit = totalContract - totalProjected;
+    if (Math.abs(profit) < 1) {
+      profitText = '$0';
+      profitSub  = 'Break-even';
+    } else if (profit > 0) {
+      profitText = fmtCurrency(profit);
+      profitSub  = `${((profit / totalContract) * 100).toFixed(1)}% margin`;
+    } else {
+      profitText = `−${fmtCurrency(Math.abs(profit))}`;
+      profitSub  = `${(Math.abs(profit / totalContract) * 100).toFixed(1)}% loss`;
+    }
+  }
+
+  // Status pill: amber if any At Risk OR projected loss, otherwise green.
+  let status, statusKind;
+  if (atRisk > 0) {
+    status = `${atRisk} At Risk`;
+    statusKind = 'amber';
+  } else if (totalContract > 0 && totalProjected > totalContract) {
+    status = 'Margin Risk';
+    statusKind = 'amber';
+  } else {
+    status = 'On Track';
+    statusKind = 'green';
+  }
 
   return {
     key: 'turf', name: 'Turf Management', accent: '#22c55e',
-    status: atRisk > 0 ? `${atRisk} At Risk` : 'On Track',
-    statusKind: atRisk > 0 ? 'amber' : 'green',
+    status, statusKind,
     kpis: [
       {
         label: 'Active Projects',
-        value: active != null ? String(active) : '—',
+        value: String(active),
         sub:   atRisk > 0 ? `${atRisk} at risk` : undefined,
       },
-      { label: 'Labor Hrs · Wk',  value: laborHrs != null ? String(Math.round(laborHrs))  : '—' },
-      { label: 'Equipment Hrs',   value: equipHrs != null ? String(Math.round(equipHrs))  : '—' },
-      { label: 'Cost vs Bid',     value: cvbFmt.text, sub: cvbSub || undefined },
+      {
+        label: 'Cost vs Bid',
+        value: cvbFmt.text,
+        sub:   cvbSub,
+      },
+      {
+        label: 'Projected',
+        value: totalProjected > 0 ? fmtCurrency(totalProjected) : '—',
+        sub:   totalContract > 0  ? `vs ${fmtCurrency(totalContract)} contract` : undefined,
+      },
+      {
+        label: 'Profit',
+        value: profitText,
+        sub:   profitSub,
+      },
     ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
   };
 }
@@ -331,7 +386,81 @@ async function buildTruckingTile(sql, companyCode, weekStart, weekEnd) {
   };
 }
 
+// Dust — simplified to revenue-focused per executive feedback.
+// Revenue is computed canonically from dust_control_entries:
+//   v1_rate × hours + v2_rate × hours + gallons_ub × dust_settings.ub_rate
+// Hours are derived from start_time/end_time (HH:MM strings); rows with
+// malformed times contribute 0 hours to the rate fees but their gallons
+// still count toward the UB fee. GREATEST(0, ...) guards against
+// overnight time wraparound producing negative intervals.
 async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
+  // Revenue · This Week
+  const revWk = await safeRun('dust.revenue_wk', async () => {
+    const rows = await sql`
+      SELECT
+        COALESCE(SUM(
+          COALESCE(v1_rate, 0)     * GREATEST(0, hrs)
+          + COALESCE(v2_rate, 0)   * GREATEST(0, hrs)
+          + COALESCE(gallons_ub, 0)
+            * COALESCE((SELECT ub_rate::float FROM dust_settings WHERE company_code = ${companyCode}), 0)
+        ), 0)::float AS v
+      FROM (
+        SELECT
+          v1_rate, v2_rate, gallons_ub,
+          CASE
+            WHEN start_time ~ '^[0-9]{1,2}:[0-9]{2}'
+             AND end_time   ~ '^[0-9]{1,2}:[0-9]{2}'
+            THEN EXTRACT(EPOCH FROM (end_time::time - start_time::time)) / 3600.0
+            ELSE 0
+          END AS hrs
+        FROM dust_control_entries
+        WHERE company_code = ${companyCode}
+          AND date >= ${weekStart}
+          AND date <  ${weekEnd}
+      ) e
+    `;
+    return rows[0]?.v ?? 0;
+  });
+
+  // Revenue · This Month (calendar month, not last 30 days)
+  const revMo = await safeRun('dust.revenue_mo', async () => {
+    const rows = await sql`
+      SELECT
+        COALESCE(SUM(
+          COALESCE(v1_rate, 0)     * GREATEST(0, hrs)
+          + COALESCE(v2_rate, 0)   * GREATEST(0, hrs)
+          + COALESCE(gallons_ub, 0)
+            * COALESCE((SELECT ub_rate::float FROM dust_settings WHERE company_code = ${companyCode}), 0)
+        ), 0)::float AS v
+      FROM (
+        SELECT
+          v1_rate, v2_rate, gallons_ub,
+          CASE
+            WHEN start_time ~ '^[0-9]{1,2}:[0-9]{2}'
+             AND end_time   ~ '^[0-9]{1,2}:[0-9]{2}'
+            THEN EXTRACT(EPOCH FROM (end_time::time - start_time::time)) / 3600.0
+            ELSE 0
+          END AS hrs
+        FROM dust_control_entries
+        WHERE company_code = ${companyCode}
+          AND date >= date_trunc('month', CURRENT_DATE)
+          AND date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+      ) e
+    `;
+    return rows[0]?.v ?? 0;
+  });
+
+  // Activity context
+  const gallonsWk = await safeRun('dust.gallons_wk', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(gallons_ub), 0)::float AS v
+        FROM dust_control_entries
+       WHERE company_code = ${companyCode}
+         AND date >= ${weekStart}
+         AND date <  ${weekEnd}
+    `;
+    return rows[0]?.v ?? 0;
+  });
   const activeRoutes = await safeRun('dust.active_routes', async () => {
     const rows = await sql`
       SELECT COUNT(DISTINCT company)::int AS n
@@ -343,49 +472,15 @@ async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
     `;
     return rows[0]?.n ?? 0;
   });
-  const gallonsWk = await safeRun('dust.gallons_wk', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(gallons_ub), 0)::float AS v
-        FROM dust_control_entries
-       WHERE company_code = ${companyCode}
-         AND date >= ${weekStart}
-         AND date <  ${weekEnd}
-    `;
-    return rows[0]?.v ?? 0;
-  });
-  const ar60 = await safeRun('dust.ar_60', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(total), 0)::float AS v
-        FROM intercompany_billing_entries
-       WHERE company_code = ${companyCode}
-         AND source = 'dust'
-         AND invoice_sent_date IS NOT NULL
-         AND invoice_sent_date < (CURRENT_DATE - INTERVAL '60 days')
-         AND date_paid IS NULL
-         AND (invoice_status IS NULL OR LOWER(invoice_status) NOT LIKE 'paid%')
-    `;
-    return rows[0]?.v ?? 0;
-  });
-  const cmPending = await safeRun('dust.cm_pending', async () => {
-    const rows = await sql`
-      SELECT COUNT(*)::int AS n
-        FROM dust_control_entries
-       WHERE company_code = ${companyCode}
-         AND date >= (CURRENT_DATE - INTERVAL '30 days')
-         AND (cm_approval IS NULL OR TRIM(cm_approval) = '')
-    `;
-    return rows[0]?.n ?? 0;
-  });
 
   return {
     key: 'dust', name: 'Dust Control', accent: '#fbbf24',
-    status: cmPending > 0 ? `${cmPending} CM Pending` : 'On Track',
-    statusKind: cmPending > 0 ? 'amber' : 'green',
+    status: 'On Track', statusKind: 'green',
     kpis: [
-      { label: 'Active Routes',       value: activeRoutes != null ? String(activeRoutes) : '—' },
-      { label: 'Gallons · Wk',        value: gallonsWk    != null ? Math.round(gallonsWk).toLocaleString('en-US') : '—' },
-      { label: 'AR · 60+ Days',       value: ar60         != null ? fmtCurrency(ar60)    : '—' },
-      { label: 'CM Approval Pending', value: cmPending    != null ? String(cmPending)    : '—' },
+      { label: 'Revenue · Wk',  value: revWk        != null ? fmtCurrency(revWk) : '—' },
+      { label: 'Revenue · Mo',  value: revMo        != null ? fmtCurrency(revMo) : '—' },
+      { label: 'Gallons · Wk',  value: gallonsWk    != null ? Math.round(gallonsWk).toLocaleString('en-US') : '—' },
+      { label: 'Active Routes', value: activeRoutes != null ? String(activeRoutes) : '—' },
     ],
   };
 }
@@ -812,13 +907,16 @@ function mockReport() {
           ],
         },
         {
+          // Mirrors the live Turf tile shape (Active / Cost vs Bid /
+          // Projected / Profit) so the row pairs visually. Wired up
+          // when paving project data normalizes out of its JSONB blob.
           key: 'paving', name: 'Paving', accent: '#60a5fa',
-          status: '1 At Risk', statusKind: 'amber',
+          status: 'Data Pending', statusKind: 'mute',
           kpis: [
-            { label: 'Active Projects',  value: '4',     sub: '1 on hold' },
-            { label: 'Tons Placed · Wk', value: '1,840' },
-            { label: 'Material $/ton',   value: '$78.40', sub: 'vs $76 budget' },
-            { label: 'Schedule Var',     value: '+3 days' },
+            { label: 'Active Projects', value: '—', sub: 'awaiting normalization' },
+            { label: 'Cost vs Bid',     value: '—' },
+            { label: 'Projected',       value: '—' },
+            { label: 'Profit',          value: '—' },
           ],
         },
         {
