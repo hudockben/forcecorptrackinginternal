@@ -20,7 +20,9 @@ const { requireAuth } = require('../lib/auth');
 // active — including null/empty, 'Bidding', 'Awarded', 'In Progress',
 // 'Substantially Complete', 'On Hold'. The home page status dropdown
 // (tracker.html line 7050) is the source of truth for valid values.
-const ACTIVE_STATUS_DONE = ['complete', 'closed'];
+// SQL fragments inline `NOT IN ('complete', 'closed')` after a
+// LOWER(COALESCE(status, '')) so binding never relies on Postgres
+// array support.
 
 // ── Date / formatting helpers ────────────────────────────────────────────
 function startOfWeekISO(d) {
@@ -76,6 +78,95 @@ async function safeRun(label, fn) {
   }
 }
 
+// Smoke-test the live SQL surface area when ?debug=1 is set. Returns
+// pass/fail per probe with a sample row so we can see what's happening
+// without server logs. Read-only — runs simple queries that don't touch
+// the main report.
+async function runDiagnostics(sql, companyCode) {
+  const probes = [
+    {
+      label: 'projects.count_all',
+      fn: async () => {
+        const r = await sql`SELECT COUNT(*)::int AS n FROM projects WHERE company_code = ${companyCode}`;
+        return { count: r[0]?.n };
+      },
+    },
+    {
+      label: 'projects.count_active',
+      fn: async () => {
+        const r = await sql`
+          SELECT COUNT(*)::int AS n
+            FROM projects
+           WHERE company_code = ${companyCode}
+             AND LOWER(COALESCE(status, '')) NOT IN ('complete', 'closed')
+        `;
+        return { count: r[0]?.n };
+      },
+    },
+    {
+      label: 'projects.distinct_statuses',
+      fn: async () => {
+        const r = await sql`
+          SELECT COALESCE(status, '<null>') AS status, COUNT(*)::int AS n
+            FROM projects
+           WHERE company_code = ${companyCode}
+           GROUP BY status
+           ORDER BY n DESC
+           LIMIT 20
+        `;
+        return { statuses: r };
+      },
+    },
+    {
+      label: 'projects.sample_columns',
+      fn: async () => {
+        // Confirm the columns the report relies on actually exist.
+        const r = await sql`
+          SELECT id, name, job_number, status, contract_amount,
+                 start_date, end_date, pinned, updated_at
+            FROM projects
+           WHERE company_code = ${companyCode}
+           ORDER BY updated_at DESC NULLS LAST
+           LIMIT 1
+        `;
+        return { sample: r[0] || null };
+      },
+    },
+    {
+      label: 'projects.pinned_count',
+      fn: async () => {
+        const r = await sql`SELECT COUNT(*)::int AS n FROM projects WHERE company_code = ${companyCode} AND pinned = TRUE`;
+        return { count: r[0]?.n };
+      },
+    },
+    {
+      label: 'bid_items.count',
+      fn: async () => {
+        const r = await sql`SELECT COUNT(*)::int AS n FROM bid_items WHERE company_code = ${companyCode}`;
+        return { count: r[0]?.n };
+      },
+    },
+    {
+      label: 'daily_tracking.count',
+      fn: async () => {
+        const r = await sql`SELECT COUNT(*)::int AS n FROM daily_tracking WHERE company_code = ${companyCode}`;
+        return { count: r[0]?.n };
+      },
+    },
+  ];
+
+  const out = [];
+  for (const p of probes) {
+    try {
+      const data = await p.fn();
+      out.push({ label: p.label, ok: true, ...data });
+    } catch (err) {
+      out.push({ label: p.label, ok: false, error: err.message, code: err.code });
+    }
+  }
+  return out;
+}
+
 // Live hero KPIs scoped to the platform admin's primary companyCode.
 async function buildHero(sql, companyCode) {
   const today          = new Date();
@@ -89,7 +180,7 @@ async function buildHero(sql, companyCode) {
       SELECT COUNT(*)::int AS n
         FROM projects
        WHERE company_code = ${companyCode}
-         AND LOWER(COALESCE(status, '')) <> ALL(${ACTIVE_STATUS_DONE})
+         AND LOWER(COALESCE(status, '')) NOT IN ('complete', 'closed')
     `;
     return rows[0]?.n ?? 0;
   });
@@ -147,7 +238,7 @@ async function buildHero(sql, companyCode) {
     {
       label:    'Active Projects',
       value:    activeProjects != null ? String(activeProjects) : '—',
-      delta:    'Active / At Risk / On Hold',
+      delta:    'Excludes Complete / Closed',
       deltaDir: 'flat',
     },
     {
@@ -189,7 +280,7 @@ async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */)
       SELECT COUNT(*)::int AS n
         FROM projects
        WHERE company_code = ${companyCode}
-         AND LOWER(COALESCE(status, '')) <> ALL(${ACTIVE_STATUS_DONE})
+         AND LOWER(COALESCE(status, '')) NOT IN ('complete', 'closed')
     `;
     return r[0]?.n ?? 0;
   });
@@ -218,7 +309,7 @@ async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */)
         SELECT id, contract_amount
           FROM projects
          WHERE company_code = ${companyCode}
-           AND LOWER(COALESCE(status, '')) <> ALL(${ACTIVE_STATUS_DONE})
+           AND LOWER(COALESCE(status, '')) NOT IN ('complete', 'closed')
       ),
       bid_per_item AS (
         SELECT
@@ -542,7 +633,7 @@ async function buildProjectsPortfolio(sql, companyCode) {
                contract_amount, pinned, updated_at
           FROM projects
          WHERE company_code = ${companyCode}
-           AND (LOWER(COALESCE(status, '')) <> ALL(${ACTIVE_STATUS_DONE})
+           AND (LOWER(COALESCE(status, '')) NOT IN ('complete', 'closed')
                 OR pinned = TRUE)
          ORDER BY pinned DESC NULLS LAST, updated_at DESC NULLS LAST
          LIMIT 12
@@ -691,7 +782,7 @@ async function buildProjectDetails(sql, companyCode) {
         p.contract_amount::float AS contract_amount
       FROM projects p
       WHERE p.company_code = ${companyCode}
-        AND LOWER(COALESCE(p.status, '')) <> ALL(${ACTIVE_STATUS_DONE})
+        AND LOWER(COALESCE(p.status, '')) NOT IN ('complete', 'closed')
       ORDER BY p.start_date ASC NULLS LAST, p.name ASC
       LIMIT 6
     `;
@@ -1094,6 +1185,8 @@ module.exports = async (req, res) => {
   }
 
   const report = mockReport();
+  const debug  = req.query?.debug === '1' || req.query?.debug === 'true';
+  const diag   = debug ? [] : null;
 
   // Live KPIs scoped to the caller's primary companyCode. Each builder
   // wraps its own queries in safeRun() so a single failure degrades to
@@ -1115,20 +1208,16 @@ module.exports = async (req, res) => {
     // Paving and quarry preserve their mock entries (data shape pending).
     const liveTiles = await Promise.all([
       buildTurfTile(sql, company, weekStart, weekEnd).catch(e => {
-        console.error('[executive/report] turf tile failed:', e.message);
-        return null;
+        console.error('[executive/report] turf tile failed:', e.message); return null;
       }),
       buildTruckingTile(sql, company, weekStart, weekEnd).catch(e => {
-        console.error('[executive/report] trucking tile failed:', e.message);
-        return null;
+        console.error('[executive/report] trucking tile failed:', e.message); return null;
       }),
       buildDustTile(sql, company, weekStart, weekEnd).catch(e => {
-        console.error('[executive/report] dust tile failed:', e.message);
-        return null;
+        console.error('[executive/report] dust tile failed:', e.message); return null;
       }),
       buildIntercompanyTile(sql, company).catch(e => {
-        console.error('[executive/report] intercompany tile failed:', e.message);
-        return null;
+        console.error('[executive/report] intercompany tile failed:', e.message); return null;
       }),
     ]);
     const [turfLive, truckingLive, dustLive, icLive] = liveTiles;
@@ -1147,12 +1236,10 @@ module.exports = async (req, res) => {
     // the page rendering even if one query has issues.
     const [livePortfolio, liveDetails] = await Promise.all([
       buildProjectsPortfolio(sql, company).catch(err => {
-        console.error('[executive/report] portfolio build failed:', err.message);
-        return null;
+        console.error('[executive/report] portfolio build failed:', err.message); return null;
       }),
       buildProjectDetails(sql, company).catch(err => {
-        console.error('[executive/report] details build failed:', err.message);
-        return null;
+        console.error('[executive/report] details build failed:', err.message); return null;
       }),
     ]);
     if (livePortfolio && Array.isArray(livePortfolio.rows) && livePortfolio.rows.length) {
@@ -1160,6 +1247,13 @@ module.exports = async (req, res) => {
     }
     if (Array.isArray(liveDetails) && liveDetails.length) {
       report.details = liveDetails;
+    }
+
+    // Diagnostics — only when ?debug=1. Helps identify missing
+    // columns, status mismatches, empty tables, etc. without server
+    // logs. Returned as report._diag.
+    if (debug) {
+      report._diag = await runDiagnostics(sql, company);
     }
   }
 
