@@ -5,13 +5,158 @@
 // Cross-division roll-up for the Executive Division dashboard.
 // Platform admins only.
 //
-// First cut: returns mock JSON in the response shape the front-end
-// renders against. The shape is what we'll commit to before wiring
-// real SQL in a follow-up — division KPI tiles, the active project
-// portfolio with cross-division activity overlays, and per-project
-// detail blocks.
+// Wiring is incremental: the 4 hero KPIs (Active Projects, Revenue
+// This Week, AR 30+ Days, Unbilled Intercompany) come from live SQL
+// scoped to the caller's company_code. Division tiles, the project
+// portfolio, and per-project detail are still mock until subsequent
+// passes. Each hero query runs independently and falls back to '—'
+// on failure so a single bad query can't blank the report.
 
+const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('../lib/auth');
+
+// ── Date / formatting helpers ────────────────────────────────────────────
+function startOfWeekISO(d) {
+  // Sunday-anchored week, returned as YYYY-MM-DD
+  const day = d.getDay();
+  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - day);
+  return start.toISOString().slice(0, 10);
+}
+function addDaysISO(iso, n) {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function fmtCurrency(n) {
+  const v = Math.round(Number(n) || 0);
+  return '$' + v.toLocaleString('en-US');
+}
+function fmtRevenueDelta(curr, prev) {
+  const c = Number(curr) || 0;
+  const p = Number(prev) || 0;
+  const diff = c - p;
+  if (Math.abs(diff) < 1) return { delta: 'flat', deltaDir: 'flat' };
+  const sign = diff > 0 ? '+' : '−';
+  const abs  = Math.abs(diff);
+  const txt  = abs >= 1000
+    ? `${sign}$${Math.round(abs / 1000)}k vs last week`
+    : `${sign}$${Math.round(abs).toLocaleString('en-US')} vs last week`;
+  return { delta: txt, deltaDir: diff > 0 ? 'up' : 'down' };
+}
+
+// Each KPI runs independently; one failure must not poison the response.
+async function safeRun(label, fn) {
+  try { return await fn(); }
+  catch (err) {
+    console.error(`[executive/report] ${label} failed:`, err.message);
+    return null;
+  }
+}
+
+// Live hero KPIs scoped to the platform admin's primary companyCode.
+async function buildHero(sql, companyCode) {
+  const today          = new Date();
+  const weekStart      = startOfWeekISO(today);
+  const weekEnd        = addDaysISO(weekStart, 7);
+  const lastWeekStart  = addDaysISO(weekStart, -7);
+  const lastWeekEnd    = weekStart;
+
+  const activeProjects = await safeRun('active_projects', async () => {
+    const rows = await sql`
+      SELECT COUNT(*)::int AS n
+        FROM projects
+       WHERE company_code = ${companyCode}
+         AND status IN ('Active', 'At Risk', 'On Hold')
+    `;
+    return rows[0]?.n ?? 0;
+  });
+
+  const revNow = await safeRun('revenue_this_week', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(total), 0)::float AS v
+        FROM intercompany_billing_entries
+       WHERE company_code = ${companyCode}
+         AND sent_at >= ${weekStart}
+         AND sent_at <  ${weekEnd}
+    `;
+    return rows[0]?.v ?? 0;
+  });
+
+  const revPrev = await safeRun('revenue_last_week', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(total), 0)::float AS v
+        FROM intercompany_billing_entries
+       WHERE company_code = ${companyCode}
+         AND sent_at >= ${lastWeekStart}
+         AND sent_at <  ${lastWeekEnd}
+    `;
+    return rows[0]?.v ?? 0;
+  });
+
+  const ar30 = await safeRun('ar_30', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(total), 0)::float AS v
+        FROM intercompany_billing_entries
+       WHERE company_code = ${companyCode}
+         AND invoice_sent_date IS NOT NULL
+         AND invoice_sent_date < (CURRENT_DATE - INTERVAL '30 days')
+         AND date_paid IS NULL
+         AND (invoice_status IS NULL OR LOWER(invoice_status) NOT LIKE 'paid%')
+    `;
+    return rows[0]?.v ?? 0;
+  });
+
+  const unbilledIc = await safeRun('unbilled_ic', async () => {
+    const rows = await sql`
+      SELECT COALESCE(SUM(total), 0)::float AS v
+        FROM intercompany_billing_entries
+       WHERE company_code = ${companyCode}
+         AND (qb_invoice IS NULL OR TRIM(qb_invoice) = '')
+    `;
+    return rows[0]?.v ?? 0;
+  });
+
+  const revDelta = (revNow != null && revPrev != null)
+    ? fmtRevenueDelta(revNow, revPrev)
+    : { delta: '—', deltaDir: 'flat' };
+
+  return [
+    {
+      label:    'Active Projects',
+      value:    activeProjects != null ? String(activeProjects) : '—',
+      delta:    'Active / At Risk / On Hold',
+      deltaDir: 'flat',
+    },
+    {
+      label:    'Revenue · This Week',
+      value:    revNow != null ? fmtCurrency(revNow) : '—',
+      delta:    revDelta.delta,
+      deltaDir: revDelta.deltaDir,
+    },
+    {
+      label:    'AR · 30+ Days',
+      value:    ar30 != null ? fmtCurrency(ar30) : '—',
+      delta:    'Outstanding past 30d',
+      deltaDir: 'flat',
+    },
+    {
+      label:    'Unbilled Intercompany',
+      value:    unbilledIc != null ? fmtCurrency(unbilledIc) : '—',
+      delta:    'Sent · no QB invoice',
+      deltaDir: 'flat',
+    },
+  ];
+}
+
+// Mock fallback — used only if the entire hero build throws.
+function mockHero() {
+  return [
+    { label: 'Active Projects',       value: '—', delta: '—', deltaDir: 'flat' },
+    { label: 'Revenue · This Week',   value: '—', delta: '—', deltaDir: 'flat' },
+    { label: 'AR · 30+ Days',         value: '—', delta: '—', deltaDir: 'flat' },
+    { label: 'Unbilled Intercompany', value: '—', delta: '—', deltaDir: 'flat' },
+  ];
+}
 
 function mockReport() {
   return {
@@ -19,12 +164,7 @@ function mockReport() {
     generatedAt: new Date().toISOString(),
 
     snapshot: {
-      hero: [
-        { label: 'Active Projects',       value: '14',       delta: '+2 vs last week',   deltaDir: 'up'   },
-        { label: 'Revenue · This Week',   value: '$284,510', delta: '+8.4%',             deltaDir: 'up'   },
-        { label: 'AR · 30+ Days',         value: '$92,840',  delta: '+$12k vs last week', deltaDir: 'down' },
-        { label: 'Unbilled Intercompany', value: '$48,210',  delta: 'flat',              deltaDir: 'flat' },
-      ],
+      hero: mockHero(),
 
       divisions: [
         {
@@ -254,7 +394,7 @@ function mockReport() {
   };
 }
 
-module.exports = (req, res) => {
+module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -269,5 +409,20 @@ module.exports = (req, res) => {
     return res.status(403).json({ error: 'Executive report is platform admin only' });
   }
 
-  return res.json(mockReport());
+  const report = mockReport();
+
+  // Live hero KPIs (scoped to the caller's primary companyCode).
+  // If the entire hero build throws — DB unreachable, missing config —
+  // we fall back to '—' placeholders so the rest of the page still renders.
+  if (payload.companyCode && process.env.DATABASE_URL) {
+    try {
+      const sql = neon(process.env.DATABASE_URL);
+      report.snapshot.hero = await buildHero(sql, payload.companyCode);
+    } catch (err) {
+      console.error('[executive/report] hero build failed:', err.message);
+    }
+  }
+
+  report.generatedAt = new Date().toISOString();
+  return res.json(report);
 };
