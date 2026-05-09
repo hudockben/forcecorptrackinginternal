@@ -313,6 +313,82 @@
       align-items: center;
       justify-content: center;
       padding: 4rem 1.5rem;
+      position: relative;
+    }
+
+    /* ── Executive Division entry (platform admins only) ── */
+    .exec-entry {
+      position: absolute;
+      top: 1.5rem;
+      left: 1.75rem;
+      display: none; /* shown via JS only for platform admins */
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.7rem 1rem 0.7rem 0.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s, background 0.18s;
+      max-width: 260px;
+    }
+    .exec-entry:hover {
+      border-color: #a78bfa;
+      background: rgba(167,139,250,0.04);
+      transform: translateY(-2px);
+      box-shadow: 0 0 0 1px rgba(167,139,250,0.25),
+                  0 10px 30px rgba(167,139,250,0.10);
+    }
+    .exec-entry-logo {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      background: var(--surface2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .exec-entry-logo img {
+      width: 30px;
+      height: 30px;
+      object-fit: contain;
+    }
+    .exec-entry-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      line-height: 1.1;
+    }
+    .exec-entry-eyebrow {
+      font-size: 0.52rem;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #a78bfa;
+    }
+    .exec-entry-name {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+    }
+    .exec-entry-sub {
+      font-size: 0.62rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+
+    @media (max-width: 900px) {
+      .exec-entry {
+        position: static;
+        margin: 0 auto 1.5rem;
+        max-width: 320px;
+        width: 100%;
+        justify-content: center;
+      }
     }
 
     .welcome {
@@ -616,6 +692,17 @@
   </div>
 
   <main>
+    <a href="executive.html" class="exec-entry" id="execEntry" aria-label="Open Executive Division">
+      <div class="exec-entry-logo">
+        <img src="datawatch-helmet.png" alt="" />
+      </div>
+      <div class="exec-entry-text">
+        <div class="exec-entry-eyebrow">Cross-Division</div>
+        <div class="exec-entry-name">Executive Division</div>
+        <div class="exec-entry-sub">Roll-up reporting across all 6 divisions</div>
+      </div>
+    </a>
+
     <div class="welcome">
       <div class="welcome-eyebrow">Force Corp Operations</div>
       <div class="welcome-heading" id="welcomeHeading">Select a Division</div>
@@ -774,6 +861,12 @@
         document.getElementById('welcomeSub').textContent =
           'You have platform-wide access. Select a division to enter.';
       }
+    }
+
+    // ── Executive Division entry (platform admins only) ─────────────────────
+    if (isPlatformAdmin) {
+      const execEntry = document.getElementById('execEntry');
+      if (execEntry) execEntry.style.display = 'flex';
     }
 
     // ── Render cards ────────────────────────────────────────────────────────
