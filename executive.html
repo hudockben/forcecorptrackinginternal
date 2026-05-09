@@ -657,516 +657,66 @@
     </div>
   </div>
 
-  <main class="report">
+  <main class="report" id="report">
 
-    <!-- ─────────── PAGE 1: COMPANY SNAPSHOT ─────────── -->
-    <div class="section">
-      <div class="section-head">
-        <div class="section-title">Company Snapshot</div>
-        <div class="section-sub">All divisions · This week</div>
-      </div>
-
-      <!-- Hero KPIs -->
-      <div class="hero-kpis">
-        <div class="hero-kpi">
-          <div class="hero-kpi-label">Active Projects</div>
-          <div class="hero-kpi-value">14</div>
-          <div class="hero-kpi-delta delta-up">+2 vs last week</div>
-        </div>
-        <div class="hero-kpi">
-          <div class="hero-kpi-label">Revenue · This Week</div>
-          <div class="hero-kpi-value">$284,510</div>
-          <div class="hero-kpi-delta delta-up">+8.4%</div>
-        </div>
-        <div class="hero-kpi">
-          <div class="hero-kpi-label">AR · 30+ Days</div>
-          <div class="hero-kpi-value">$92,840</div>
-          <div class="hero-kpi-delta delta-down">+$12k vs last week</div>
-        </div>
-        <div class="hero-kpi">
-          <div class="hero-kpi-label">Unbilled Intercompany</div>
-          <div class="hero-kpi-value">$48,210</div>
-          <div class="hero-kpi-delta delta-flat">flat</div>
-        </div>
-      </div>
-
-      <!-- Division tiles -->
-      <div class="div-grid">
-
-        <div class="div-tile" style="--accent: var(--green);">
-          <div class="div-tile-head">
-            <div class="div-tile-name">Turf Management</div>
-            <span class="div-tile-status status-green">On Track</span>
-          </div>
-          <div class="div-tile-kpis">
-            <div>
-              <div class="div-kpi-label">Active Projects</div>
-              <div class="div-kpi-value">5</div>
-              <div class="div-kpi-sub">1 at risk</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Cost vs Bid</div>
-              <div class="div-kpi-value">+2.1%</div>
-              <div class="div-kpi-sub">Slightly over</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Labor Hrs · Wk</div>
-              <div class="div-kpi-value">412</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Equipment Hrs</div>
-              <div class="div-kpi-value">186</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="div-tile" style="--accent: var(--blue);">
-          <div class="div-tile-head">
-            <div class="div-tile-name">Paving</div>
-            <span class="div-tile-status status-amber">1 At Risk</span>
-          </div>
-          <div class="div-tile-kpis">
-            <div>
-              <div class="div-kpi-label">Active Projects</div>
-              <div class="div-kpi-value">4</div>
-              <div class="div-kpi-sub">1 on hold</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Tons Placed · Wk</div>
-              <div class="div-kpi-value">1,840</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Material $/ton</div>
-              <div class="div-kpi-value">$78.40</div>
-              <div class="div-kpi-sub">vs $76 budget</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Schedule Var</div>
-              <div class="div-kpi-value">+3 days</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="div-tile" style="--accent: var(--red);">
-          <div class="div-tile-head">
-            <div class="div-tile-name">Trucking</div>
-            <span class="div-tile-status status-green">On Track</span>
-          </div>
-          <div class="div-tile-kpis">
-            <div>
-              <div class="div-kpi-label">Active Hauls</div>
-              <div class="div-kpi-value">28</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Loads · Wk</div>
-              <div class="div-kpi-value">312</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Invoiced · Wk</div>
-              <div class="div-kpi-value">$74,200</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Unbilled</div>
-              <div class="div-kpi-value">$18,400</div>
-              <div class="div-kpi-sub">12 entries</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="div-tile" style="--accent: var(--amber);">
-          <div class="div-tile-head">
-            <div class="div-tile-name">Dust Control</div>
-            <span class="div-tile-status status-green">On Track</span>
-          </div>
-          <div class="div-tile-kpis">
-            <div>
-              <div class="div-kpi-label">Active Routes</div>
-              <div class="div-kpi-value">9</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Gallons · Wk</div>
-              <div class="div-kpi-value">42,180</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">AR · 60+ Days</div>
-              <div class="div-kpi-value">$8,420</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">CM Approval Pending</div>
-              <div class="div-kpi-value">3</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="div-tile" style="--accent: var(--orange);">
-          <div class="div-tile-head">
-            <div class="div-tile-name">Quarry</div>
-            <span class="div-tile-status status-mute">Data Loading</span>
-          </div>
-          <div class="div-tile-kpis">
-            <div>
-              <div class="div-kpi-label">Inventory · Top SKU</div>
-              <div class="div-kpi-value">— ton</div>
-              <div class="div-kpi-sub">awaiting upload</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Production · Wk</div>
-              <div class="div-kpi-value">—</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Avg $/ton</div>
-              <div class="div-kpi-value">—</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Active Pits</div>
-              <div class="div-kpi-value">—</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="div-tile" style="--accent: var(--purple);">
-          <div class="div-tile-head">
-            <div class="div-tile-name">Intercompany Billing</div>
-            <span class="div-tile-status status-amber">Aging</span>
-          </div>
-          <div class="div-tile-kpis">
-            <div>
-              <div class="div-kpi-label">Unbilled · Trucking</div>
-              <div class="div-kpi-value">$28,400</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Unbilled · Dust</div>
-              <div class="div-kpi-value">$19,810</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">AR 30+ Days</div>
-              <div class="div-kpi-value">$92,840</div>
-            </div>
-            <div>
-              <div class="div-kpi-label">Top Customer</div>
-              <div class="div-kpi-value" style="font-size: 0.78rem;">Acme Aggregates</div>
-              <div class="div-kpi-sub">$31,200 outstanding</div>
-            </div>
-          </div>
-        </div>
-
-      </div>
+    <!-- Loading / error overlays (hidden once data renders) -->
+    <div id="reportLoading" style="text-align:center;padding:4rem 1rem;color:var(--muted);font-size:0.85rem;letter-spacing:0.04em;">
+      Loading executive report…
+    </div>
+    <div id="reportError" style="display:none;text-align:center;padding:3rem 1rem;color:var(--red);font-size:0.85rem;">
+      <div style="margin-bottom:0.6rem;font-weight:700;">Couldn't load the executive report.</div>
+      <div id="reportErrorMsg" style="color:var(--muted);font-size:0.75rem;margin-bottom:1rem;"></div>
+      <button class="btn" onclick="loadReport()">Retry</button>
     </div>
 
-    <!-- ─────────── PAGE 2: ACTIVE PROJECT PORTFOLIO ─────────── -->
-    <div class="section page-break">
-      <div class="section-head">
-        <div class="section-title">Active Project Portfolio</div>
-        <div class="section-sub">Turf &amp; Paving · Active / At Risk / On Hold</div>
+    <!-- Body sections (populated by JS from /api/executive/report) -->
+    <div id="reportBody" style="display:none;">
+
+      <!-- ─────────── PAGE 1: COMPANY SNAPSHOT ─────────── -->
+      <div class="section">
+        <div class="section-head">
+          <div class="section-title">Company Snapshot</div>
+          <div class="section-sub">All divisions · This week</div>
+        </div>
+        <div class="hero-kpis" id="heroKpis"></div>
+        <div class="div-grid" id="divGrid"></div>
       </div>
 
-      <div class="filters">
-        <span class="filter-label">Status</span>
-        <button class="filter-chip on" data-filter="all">All</button>
-        <button class="filter-chip on" data-filter="active">Active</button>
-        <button class="filter-chip on" data-filter="atrisk">At Risk</button>
-        <button class="filter-chip on" data-filter="hold">On Hold</button>
-        <span class="filter-label" style="margin-left: 1rem;">Division</span>
-        <button class="filter-chip on" data-filter="turf">Turf</button>
-        <button class="filter-chip on" data-filter="paving">Paving</button>
-      </div>
-
-      <div class="timeline-wrap">
-        <div class="timeline-grid head">
-          <div class="timeline-head-label">Project</div>
-          <div class="timeline-head-label">Timeline (Jan — Aug 2026)</div>
-          <div class="timeline-head-label" style="text-align: right;">Snapshot</div>
+      <!-- ─────────── PAGE 2: ACTIVE PROJECT PORTFOLIO ─────────── -->
+      <div class="section page-break">
+        <div class="section-head">
+          <div class="section-title">Active Project Portfolio</div>
+          <div class="section-sub">Turf &amp; Paving · Active / At Risk / On Hold</div>
         </div>
 
-        <!-- Project rows (mock) -->
-        <div class="timeline-grid">
-          <div class="timeline-proj-info">
-            <div class="timeline-proj-name">Riverbend Industrial Park</div>
-            <div class="timeline-proj-meta">
-              <span class="div-pill paving">Paving</span>
-              <span>Job #P-2406 · Active</span>
-            </div>
-          </div>
-          <div class="timeline-bar">
-            <div class="timeline-bar-axis">
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-            </div>
-            <div class="timeline-bar-fill" style="left: 12%; width: 55%;"></div>
-            <div class="timeline-bar-progress" style="left: 12%; width: 32%;"></div>
-            <div class="timeline-icons" style="left: 22%;"><span class="tl-icon t" title="Trucking">T</span></div>
-            <div class="timeline-icons" style="left: 35%;"><span class="tl-icon q" title="Quarry">Q</span></div>
-            <div class="timeline-today" style="left: 44%;"></div>
-          </div>
-          <div class="timeline-mini">
-            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">58%</div>
-            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$24,600</div>
-            <div class="timeline-mini-label">Quarry tons</div><div class="timeline-mini-val">920</div>
-            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--green);">−1.2%</div>
-          </div>
+        <div class="filters">
+          <span class="filter-label">Status</span>
+          <button class="filter-chip on" data-filter="all">All</button>
+          <button class="filter-chip on" data-filter="active">Active</button>
+          <button class="filter-chip on" data-filter="atrisk">At Risk</button>
+          <button class="filter-chip on" data-filter="hold">On Hold</button>
+          <span class="filter-label" style="margin-left: 1rem;">Division</span>
+          <button class="filter-chip on" data-filter="turf">Turf</button>
+          <button class="filter-chip on" data-filter="paving">Paving</button>
         </div>
 
-        <div class="timeline-grid">
-          <div class="timeline-proj-info">
-            <div class="timeline-proj-name">Maple Heights Resurface</div>
-            <div class="timeline-proj-meta">
-              <span class="div-pill paving">Paving</span>
-              <span>Job #P-2411 · At Risk</span>
-            </div>
+        <div class="timeline-wrap" id="timelineWrap">
+          <div class="timeline-grid head">
+            <div class="timeline-head-label">Project</div>
+            <div class="timeline-head-label">Timeline (Jan — Aug 2026)</div>
+            <div class="timeline-head-label" style="text-align: right;">Snapshot</div>
           </div>
-          <div class="timeline-bar">
-            <div class="timeline-bar-axis">
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-            </div>
-            <div class="timeline-bar-fill atrisk" style="left: 28%; width: 30%;"></div>
-            <div class="timeline-bar-progress" style="left: 28%; width: 12%;"></div>
-            <div class="timeline-icons" style="left: 33%;"><span class="tl-icon t">T</span></div>
-            <div class="timeline-today" style="left: 44%;"></div>
-          </div>
-          <div class="timeline-mini">
-            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">40%</div>
-            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$8,200</div>
-            <div class="timeline-mini-label">Quarry tons</div><div class="timeline-mini-val">280</div>
-            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--red);">+6.8%</div>
-          </div>
-        </div>
-
-        <div class="timeline-grid">
-          <div class="timeline-proj-info">
-            <div class="timeline-proj-name">Brookline Commons Lot</div>
-            <div class="timeline-proj-meta">
-              <span class="div-pill paving">Paving</span>
-              <span>Job #P-2418 · Active</span>
-            </div>
-          </div>
-          <div class="timeline-bar">
-            <div class="timeline-bar-axis">
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-            </div>
-            <div class="timeline-bar-fill" style="left: 38%; width: 40%;"></div>
-            <div class="timeline-bar-progress" style="left: 38%; width: 8%;"></div>
-            <div class="timeline-icons" style="left: 41%;"><span class="tl-icon d">D</span></div>
-            <div class="timeline-today" style="left: 44%;"></div>
-          </div>
-          <div class="timeline-mini">
-            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">15%</div>
-            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$3,400</div>
-            <div class="timeline-mini-label">Dust passes</div><div class="timeline-mini-val">2</div>
-            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--muted);">on plan</div>
-          </div>
-        </div>
-
-        <div class="timeline-grid">
-          <div class="timeline-proj-info">
-            <div class="timeline-proj-name">Cedar Park Athletics — Sod &amp; Drainage</div>
-            <div class="timeline-proj-meta">
-              <span class="div-pill turf">Turf</span>
-              <span>Job #T-2403 · Active</span>
-            </div>
-          </div>
-          <div class="timeline-bar">
-            <div class="timeline-bar-axis">
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-            </div>
-            <div class="timeline-bar-fill turf" style="left: 5%; width: 60%;"></div>
-            <div class="timeline-bar-progress" style="left: 5%; width: 38%;"></div>
-            <div class="timeline-icons" style="left: 18%;"><span class="tl-icon t">T</span></div>
-            <div class="timeline-today" style="left: 44%;"></div>
-          </div>
-          <div class="timeline-mini">
-            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">63%</div>
-            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$11,800</div>
-            <div class="timeline-mini-label">Labor hrs</div><div class="timeline-mini-val">684</div>
-            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--green);">−0.4%</div>
-          </div>
-        </div>
-
-        <div class="timeline-grid">
-          <div class="timeline-proj-info">
-            <div class="timeline-proj-name">Westgate Logistics Phase 2</div>
-            <div class="timeline-proj-meta">
-              <span class="div-pill paving">Paving</span>
-              <span>Job #P-2421 · On Hold</span>
-            </div>
-          </div>
-          <div class="timeline-bar">
-            <div class="timeline-bar-axis">
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-              <div class="axis-tick"></div><div class="axis-tick"></div>
-            </div>
-            <div class="timeline-bar-fill hold" style="left: 50%; width: 35%;"></div>
-            <div class="timeline-today" style="left: 44%;"></div>
-          </div>
-          <div class="timeline-mini">
-            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">0%</div>
-            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$0</div>
-            <div class="timeline-mini-label">Hold reason</div><div class="timeline-mini-val">Permit</div>
-            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--muted);">—</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ─────────── PAGE 3+: PER-PROJECT DETAIL ─────────── -->
-    <div class="section page-break">
-      <div class="section-head">
-        <div class="section-title">Project Detail</div>
-        <div class="section-sub">One page per active project</div>
-      </div>
-
-      <!-- Project 1 detail -->
-      <div class="project-detail">
-        <div class="pd-head">
-          <div>
-            <div class="pd-name">Riverbend Industrial Park <span class="div-pill paving" style="vertical-align: middle; margin-left: 0.4rem;">Paving</span></div>
-            <div class="pd-meta">
-              <span><strong>Job #</strong> P-2406</span>
-              <span><strong>Start</strong> Feb 14, 2026</span>
-              <span><strong>Target</strong> Jul 30, 2026</span>
-              <span><strong>Status</strong> <span style="color: var(--green);">Active</span></span>
-            </div>
-          </div>
-          <div class="pd-totals">
-            <div>
-              <div class="pd-total-label">Contract</div>
-              <div class="pd-total-val">$842,000</div>
-            </div>
-            <div>
-              <div class="pd-total-label">Booked Cost</div>
-              <div class="pd-total-val">$486,210</div>
-            </div>
-            <div>
-              <div class="pd-total-label">% Complete</div>
-              <div class="pd-total-val">58%</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="pd-grid">
-          <div>
-            <div class="pd-block-title"><span class="dot" style="background: var(--blue);"></span>Bid Items</div>
-            <table class="pd-table">
-              <thead>
-                <tr><th>Item</th><th class="num">Qty</th><th class="num">% Done</th></tr>
-              </thead>
-              <tbody>
-                <tr><td>Mill &amp; Overlay</td><td class="num">12,400 SY</td><td class="num">72%</td></tr>
-                <tr><td>Base Repair</td><td class="num">3,200 SY</td><td class="num">48%</td></tr>
-                <tr><td>Striping</td><td class="num">8,100 LF</td><td class="num">12%</td></tr>
-                <tr><td>Concrete Curb</td><td class="num">1,840 LF</td><td class="num">88%</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div>
-            <div class="pd-block-title"><span class="dot" style="background: var(--red);"></span>Trucking Activity</div>
-            <table class="pd-table">
-              <thead>
-                <tr><th>Week</th><th class="num">Loads</th><th class="num">Hours</th><th class="num">$</th></tr>
-              </thead>
-              <tbody>
-                <tr><td>Apr 27</td><td class="num">42</td><td class="num">68</td><td class="num">$5,840</td></tr>
-                <tr><td>May 4</td><td class="num">38</td><td class="num">61</td><td class="num">$5,210</td></tr>
-                <tr><td>Total to date</td><td class="num">186</td><td class="num">298</td><td class="num">$24,600</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div>
-            <div class="pd-block-title"><span class="dot" style="background: var(--orange);"></span>Quarry Materials Drawn</div>
-            <table class="pd-table">
-              <thead>
-                <tr><th>Material</th><th>Source Pit</th><th class="num">Tons</th></tr>
-              </thead>
-              <tbody>
-                <tr><td>#57 Limestone</td><td>Pit 3 — Hollidaysburg</td><td class="num">540</td></tr>
-                <tr><td>2A Modified</td><td>Pit 1 — Altoona</td><td class="num">280</td></tr>
-                <tr><td>Surge</td><td>Pit 3 — Hollidaysburg</td><td class="num">100</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div>
-            <div class="pd-block-title"><span class="dot" style="background: var(--amber);"></span>Dust Control Applications</div>
-            <table class="pd-table">
-              <thead>
-                <tr><th>Date</th><th>Location</th><th class="num">Gallons</th></tr>
-              </thead>
-              <tbody>
-                <tr><td>Apr 18</td><td>Haul road N</td><td class="num">2,100</td></tr>
-                <tr><td>Apr 30</td><td>Haul road N</td><td class="num">1,950</td></tr>
-                <tr><td colspan="2" style="color: var(--muted);">Total to date</td><td class="num">4,050</td></tr>
-              </tbody>
-            </table>
-          </div>
+          <div id="timelineRows"></div>
         </div>
       </div>
 
-      <!-- Project 2 detail (compact placeholder) -->
-      <div class="project-detail">
-        <div class="pd-head">
-          <div>
-            <div class="pd-name">Cedar Park Athletics — Sod &amp; Drainage <span class="div-pill turf" style="vertical-align: middle; margin-left: 0.4rem;">Turf</span></div>
-            <div class="pd-meta">
-              <span><strong>Job #</strong> T-2403</span>
-              <span><strong>Start</strong> Jan 22, 2026</span>
-              <span><strong>Target</strong> Jun 12, 2026</span>
-              <span><strong>Status</strong> <span style="color: var(--green);">Active</span></span>
-            </div>
-          </div>
-          <div class="pd-totals">
-            <div>
-              <div class="pd-total-label">Contract</div>
-              <div class="pd-total-val">$318,400</div>
-            </div>
-            <div>
-              <div class="pd-total-label">Booked Cost</div>
-              <div class="pd-total-val">$198,720</div>
-            </div>
-            <div>
-              <div class="pd-total-label">% Complete</div>
-              <div class="pd-total-val">63%</div>
-            </div>
-          </div>
+      <!-- ─────────── PAGE 3+: PER-PROJECT DETAIL ─────────── -->
+      <div class="section page-break">
+        <div class="section-head">
+          <div class="section-title">Project Detail</div>
+          <div class="section-sub">One page per active project</div>
         </div>
-
-        <div class="pd-grid">
-          <div>
-            <div class="pd-block-title"><span class="dot" style="background: var(--green);"></span>Bid Items</div>
-            <table class="pd-table">
-              <thead><tr><th>Item</th><th class="num">Qty</th><th class="num">% Done</th></tr></thead>
-              <tbody>
-                <tr><td>Sod Installation</td><td class="num">42,000 SF</td><td class="num">81%</td></tr>
-                <tr><td>French Drain</td><td class="num">680 LF</td><td class="num">95%</td></tr>
-                <tr><td>Topsoil</td><td class="num">340 CY</td><td class="num">52%</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div>
-            <div class="pd-block-title"><span class="dot" style="background: var(--red);"></span>Trucking Activity</div>
-            <table class="pd-table">
-              <thead><tr><th>Week</th><th class="num">Loads</th><th class="num">$</th></tr></thead>
-              <tbody>
-                <tr><td>Apr 27</td><td class="num">22</td><td class="num">$2,840</td></tr>
-                <tr><td>May 4</td><td class="num">18</td><td class="num">$2,310</td></tr>
-                <tr><td>Total to date</td><td class="num">94</td><td class="num">$11,800</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <div id="projectDetails"></div>
       </div>
 
     </div>
@@ -1187,16 +737,187 @@
       window.location.replace('divisions.html');
     }
 
-    // ── Report date ──
-    const d = new Date();
-    const fmt = d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const dateEl = document.getElementById('reportDate');
-    if (dateEl) dateEl.textContent = `Generated ${fmt}`;
+    // ── Tiny HTML helpers ──
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
 
-    // ── Filter chips (visual toggle for mockup; wiring comes with real data) ──
-    document.querySelectorAll('.filter-chip').forEach(chip => {
-      chip.addEventListener('click', () => chip.classList.toggle('on'));
-    });
+    function setReportDate(iso) {
+      const d = iso ? new Date(iso) : new Date();
+      const fmt = d.toLocaleDateString('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+      });
+      const el = document.getElementById('reportDate');
+      if (el) el.textContent = `Generated ${fmt}`;
+    }
+
+    // ── Renderers ──
+    function renderHero(items) {
+      return items.map(k => `
+        <div class="hero-kpi">
+          <div class="hero-kpi-label">${esc(k.label)}</div>
+          <div class="hero-kpi-value">${esc(k.value)}</div>
+          <div class="hero-kpi-delta delta-${esc(k.deltaDir || 'flat')}">${esc(k.delta || '')}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderDivisionTile(div) {
+      const kpis = (div.kpis || []).map(k => `
+        <div>
+          <div class="div-kpi-label">${esc(k.label)}</div>
+          <div class="div-kpi-value"${k.small ? ' style="font-size: 0.78rem;"' : ''}>${esc(k.value)}</div>
+          ${k.sub ? `<div class="div-kpi-sub">${esc(k.sub)}</div>` : ''}
+        </div>
+      `).join('');
+      return `
+        <div class="div-tile" style="--accent: ${esc(div.accent)};">
+          <div class="div-tile-head">
+            <div class="div-tile-name">${esc(div.name)}</div>
+            <span class="div-tile-status status-${esc(div.statusKind || 'mute')}">${esc(div.status)}</span>
+          </div>
+          <div class="div-tile-kpis">${kpis}</div>
+        </div>
+      `;
+    }
+
+    function renderTimelineRow(p) {
+      const ticks = Array(8).fill('<div class="axis-tick"></div>').join('');
+      const fillKind = p.bar?.kind ? ` ${esc(p.bar.kind)}` : '';
+      const icons = (p.icons || []).map(i =>
+        `<div class="timeline-icons" style="left: ${Number(i.leftPct)}%;"><span class="tl-icon ${esc(i.kind)}">${esc(i.kind.toUpperCase())}</span></div>`
+      ).join('');
+      const mini = (p.mini || []).map(m => `
+        <div class="timeline-mini-label">${esc(m.label)}</div>
+        <div class="timeline-mini-val"${m.color ? ` style="color: var(--${esc(m.color)});"` : ''}>${esc(m.value)}</div>
+      `).join('');
+      const divPill = p.division
+        ? `<span class="div-pill ${esc(p.division)}">${esc(p.division)}</span>`
+        : '';
+      return `
+        <div class="timeline-grid">
+          <div class="timeline-proj-info">
+            <div class="timeline-proj-name">${esc(p.name)}</div>
+            <div class="timeline-proj-meta">
+              ${divPill}
+              <span>Job #${esc(p.jobNumber)} · ${esc(p.status)}</span>
+            </div>
+          </div>
+          <div class="timeline-bar">
+            <div class="timeline-bar-axis">${ticks}</div>
+            <div class="timeline-bar-fill${fillKind}" style="left: ${Number(p.bar?.leftPct || 0)}%; width: ${Number(p.bar?.widthPct || 0)}%;"></div>
+            ${p.bar?.progressPct ? `<div class="timeline-bar-progress" style="left: ${Number(p.bar.leftPct)}%; width: ${Number(p.bar.progressPct)}%;"></div>` : ''}
+            ${icons}
+            <div class="timeline-today" style="left: ${Number(p.bar?.todayPct || 0)}%;"></div>
+          </div>
+          <div class="timeline-mini">${mini}</div>
+        </div>
+      `;
+    }
+
+    function renderDetailSection(title, dot, block) {
+      if (!block) return '';
+      const head = (block.cols || []).map(c => `<th${/^\d|\$|%|tons|hours|loads|qty|gallons/i.test(c) ? ' class="num"' : ''}>${esc(c)}</th>`).join('');
+      const rows = (block.rows || []).map(r => {
+        const tds = r.map((cell, i) => {
+          const isNum = /^\d|\$|%|^—$/.test(String(cell));
+          return `<td${isNum ? ' class="num"' : ''}>${esc(cell)}</td>`;
+        }).join('');
+        return `<tr>${tds}</tr>`;
+      }).join('');
+      return `
+        <div>
+          <div class="pd-block-title"><span class="dot" style="background: ${esc(dot)};"></span>${esc(title)}</div>
+          <table class="pd-table">
+            <thead><tr>${head}</tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderDetail(p) {
+      const s = p.sections || {};
+      const blocks = [
+        renderDetailSection('Bid Items',                  s.bidItems?.color || '#60a5fa', s.bidItems),
+        renderDetailSection('Trucking Activity',          s.trucking?.color || '#ef4444', s.trucking),
+        renderDetailSection('Quarry Materials Drawn',     s.quarry?.color   || '#f97316', s.quarry),
+        renderDetailSection('Dust Control Applications',  s.dust?.color     || '#fbbf24', s.dust),
+      ].join('');
+      const divPill = p.division
+        ? `<span class="div-pill ${esc(p.division)}" style="vertical-align: middle; margin-left: 0.4rem;">${esc(p.division)}</span>`
+        : '';
+      return `
+        <div class="project-detail">
+          <div class="pd-head">
+            <div>
+              <div class="pd-name">${esc(p.name)} ${divPill}</div>
+              <div class="pd-meta">
+                <span><strong>Job #</strong> ${esc(p.jobNumber)}</span>
+                <span><strong>Start</strong> ${esc(p.start)}</span>
+                <span><strong>Target</strong> ${esc(p.target)}</span>
+                <span><strong>Status</strong> <span style="color: var(--${esc(p.statusColor || 'green')});">${esc(p.status)}</span></span>
+              </div>
+            </div>
+            <div class="pd-totals">
+              <div><div class="pd-total-label">Contract</div>    <div class="pd-total-val">${esc(p.contract)}</div></div>
+              <div><div class="pd-total-label">Booked Cost</div> <div class="pd-total-val">${esc(p.bookedCost)}</div></div>
+              <div><div class="pd-total-label">% Complete</div>  <div class="pd-total-val">${esc(p.pctComplete)}</div></div>
+            </div>
+          </div>
+          <div class="pd-grid">${blocks}</div>
+        </div>
+      `;
+    }
+
+    function renderReport(data) {
+      document.getElementById('heroKpis').innerHTML       = renderHero(data.snapshot?.hero || []);
+      document.getElementById('divGrid').innerHTML        = (data.snapshot?.divisions || []).map(renderDivisionTile).join('');
+      document.getElementById('timelineRows').innerHTML   = (data.projects || []).map(renderTimelineRow).join('');
+      document.getElementById('projectDetails').innerHTML = (data.details  || []).map(renderDetail).join('');
+
+      // Filter chips (visual only for now; will drive client-side filtering when wired)
+      document.querySelectorAll('.filter-chip').forEach(chip => {
+        chip.addEventListener('click', () => chip.classList.toggle('on'));
+      });
+    }
+
+    // ── Fetch ──
+    async function loadReport() {
+      const loadingEl = document.getElementById('reportLoading');
+      const errorEl   = document.getElementById('reportError');
+      const errorMsg  = document.getElementById('reportErrorMsg');
+      const bodyEl    = document.getElementById('reportBody');
+      loadingEl.style.display = '';
+      errorEl.style.display   = 'none';
+      bodyEl.style.display    = 'none';
+
+      try {
+        const res = await fetch('/api/executive/report', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) {
+          let msg = `HTTP ${res.status}`;
+          try { const j = await res.json(); if (j.error) msg = j.error; } catch {}
+          throw new Error(msg);
+        }
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Report unavailable');
+
+        setReportDate(data.generatedAt);
+        renderReport(data);
+
+        loadingEl.style.display = 'none';
+        bodyEl.style.display    = '';
+      } catch (err) {
+        loadingEl.style.display = 'none';
+        errorMsg.textContent    = err.message;
+        errorEl.style.display   = '';
+      }
+    }
+
+    setReportDate();
+    loadReport();
 
     function signOut() {
       localStorage.removeItem('fct_token');
