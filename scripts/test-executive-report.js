@@ -35,6 +35,32 @@ const FAKE_DAILY = [
   { project_id: 'p3', cost_code: '03', sub_code: '',  labor_hours: 0,   rate: 0,  equip_hours: 0, equip_unit_cost: 0, material_cost: 98289.27, quantity: 1,  total_cost_override: null },
 ];
 
+// Two paving projects in app_data blob storage. pv1 active w/ bid + actual,
+// pv2 marked Complete so it's filtered out.
+const FAKE_PAVING = [
+  {
+    id: 'pv1', 'project-name': 'Main St Mill & Overlay', 'job-number': 'P-26001',
+    status: 'Active', 'contract-amount': '420000',
+    bidItems: [
+      { quantity: 1000, bid_item_cost: 75 },
+      { quantity: 500,  bid_item_cost: 50 },
+    ],
+  },
+  {
+    id: 'pv2', 'project-name': 'Closed Lot', 'job-number': 'P-26002',
+    status: 'Complete', 'contract-amount': '90000', bidItems: [],
+  },
+];
+const FAKE_PAVING_DAILY_TOTAL = 42000; // sum of paving daily_tracking actuals
+
+// Quarry sales blob: mix of this-week + this-month entries.
+const todayIso = new Date().toISOString().slice(0, 10);
+const FAKE_QUARRY_SALES = [
+  { date: todayIso, locationName: 'Pit 1 — Altoona',       productName: '#57 Limestone', tons: 25, pricePerTon: 18 },
+  { date: todayIso, locationName: 'Pit 3 — Hollidaysburg', productName: '2A Modified',   tons: 15, pricePerTon: 22 },
+  { date: todayIso, locationName: 'Pit 1 — Altoona',       productName: '#57 Limestone', tons: 10, pricePerTon: 18 },
+];
+
 const isDone = s => ['complete','closed'].includes(String(s || '').toLowerCase());
 const calcDailyCost = d => d.total_cost_override ?? (d.labor_hours * d.rate + d.equip_hours * d.equip_unit_cost + d.material_cost);
 
@@ -107,6 +133,34 @@ function fakeSql(strings, ...values) {
     const projId = values[1];
     const booked = FAKE_DAILY.filter(d => d.project_id === projId).reduce((s, d) => s + calcDailyCost(d), 0);
     return Promise.resolve([{ booked }]);
+  }
+
+  // app_data lookups — paving index, paving project blobs, quarry sales blob
+  if (lower.startsWith('select value from app_data where key =')) {
+    const key = values[0];
+    if (key === `${COMPANY}:fct_paving_projects_index`) {
+      return Promise.resolve([{ value: { ids: FAKE_PAVING.map(p => p.id) } }]);
+    }
+    if (key === `${COMPANY}:fct_quarry_sales`) {
+      return Promise.resolve([{ value: FAKE_QUARRY_SALES }]);
+    }
+    return Promise.resolve([]);
+  }
+  if (lower.startsWith('select key, value from app_data where key = any')) {
+    const keys = values[0];
+    const rows = [];
+    for (const k of (Array.isArray(keys) ? keys : [])) {
+      const m = String(k).match(/^[^:]+:fct_paving_project_(.+)$/);
+      if (m) {
+        const proj = FAKE_PAVING.find(p => p.id === m[1]);
+        if (proj) rows.push({ key: k, value: proj });
+      }
+    }
+    return Promise.resolve(rows);
+  }
+  // Paving actuals aggregate (filtered by division='paving' AND project_id ANY(ids))
+  if (lower.includes("division = 'paving'") && lower.includes('as actual')) {
+    return Promise.resolve([{ actual: FAKE_PAVING_DAILY_TOTAL }]);
   }
 
   // Other-division queries (trucking / dust / IC / etc.) — return zeros
@@ -191,6 +245,29 @@ const res = {
     const dashes = turf.kpis.filter(k => k.value === '—').length;
     if (dashes === turf.kpis.length) fail(`turf tile is ALL dashes (${dashes}/${turf.kpis.length})`);
     else pass(`turf tile has ${turf.kpis.length - dashes} live values out of ${turf.kpis.length}`);
+  }
+
+  const paving = payload.snapshot.divisions.find(d => d.key === 'paving');
+  if (!paving) fail('paving tile missing');
+  else {
+    const active = paving.kpis.find(k => k.label === 'Active Projects');
+    if (!active || active.value !== '1') fail(`paving Active Projects = ${active && active.value} (expected 1 — pv2 'Complete' should be filtered)`);
+    else pass(`paving tile shows 1 active project (pv2 filtered)`);
+    const cvb = paving.kpis.find(k => k.label === 'Cost vs Bid');
+    // bid = 1000*75 + 500*50 = $100k, actual = $42k → (42-100)/100 = -58.0%
+    if (!cvb || cvb.value !== '−58.0%') fail(`paving Cost vs Bid = ${cvb && cvb.value} (expected −58.0%)`);
+    else pass(`paving Cost vs Bid = ${cvb.value}`);
+  }
+
+  const quarry = payload.snapshot.divisions.find(d => d.key === 'quarry');
+  if (!quarry) fail('quarry tile missing');
+  else {
+    const rev = quarry.kpis.find(k => k.label === 'Revenue · Wk');
+    if (!rev || rev.value === '—') fail('quarry Revenue · Wk is — (sales blob not read)');
+    else pass(`quarry Revenue · Wk = ${rev.value}`);
+    const top = quarry.kpis.find(k => k.label === 'Top Product');
+    if (!top || top.value !== '#57 Limestone') fail(`quarry Top Product = ${top && top.value} (expected #57 Limestone)`);
+    else pass(`quarry Top Product = #57 Limestone`);
   }
 
   if (!payload.projects?.rows?.length) fail('projects portfolio is empty');

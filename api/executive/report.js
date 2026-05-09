@@ -988,6 +988,193 @@ async function buildIntercompanyTile(sql, companyCode) {
   };
 }
 
+// ── Paving tile ──────────────────────────────────────────────────────
+// Paving projects live in JSONB blobs (one per project under
+// fct_paving_project_<id>, with an index at fct_paving_projects_index)
+// rather than the normalized `projects` table. Daily costs land in
+// daily_tracking with division='paving' and project_id matching the
+// blob's id. We pull the blobs, count active vs complete, sum bid totals
+// from blob.bidItems, then aggregate actuals from daily_tracking and
+// derive Cost vs Bid / Projected / Profit the same way buildTurfTile
+// does so the two tiles read consistently.
+//
+// Status taxonomy (paving.html line 5526): 'Complete' | 'Active' |
+// 'At Risk' | 'On Hold' | '' — anything not 'Complete' is active.
+async function buildPavingTile(sql, companyCode) {
+  const blobs = await safeRun('paving.blobs', async () => {
+    const idxRow = await sql`
+      SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_paving_projects_index`}
+    `;
+    const idx = idxRow[0]?.value;
+    const ids = Array.isArray(idx) ? idx : (Array.isArray(idx?.ids) ? idx.ids : []);
+    if (!ids.length) return [];
+
+    const keys = ids.map(id => `${companyCode}:fct_paving_project_${id}`);
+    const rows = await sql`SELECT key, value FROM app_data WHERE key = ANY(${keys})`;
+    return rows.map(r => r.value).filter(v => v && typeof v === 'object');
+  });
+  const projects = Array.isArray(blobs) ? blobs : [];
+  const isComplete = p => String(p['status'] || '').toLowerCase() === 'complete';
+  const isOnHold   = p => String(p['status'] || '').toLowerCase() === 'on hold';
+  const active     = projects.filter(p => !isComplete(p));
+  const onHold     = active.filter(isOnHold).length;
+
+  const num = v => {
+    if (v == null || v === '') return 0;
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  };
+  const totalContract = active.reduce((s, p) => s + num(p['contract-amount'] || p['revised-amount']), 0);
+  const totalBid      = active.reduce((s, p) => {
+    const items = Array.isArray(p.bidItems) ? p.bidItems : [];
+    return s + items.reduce((a, b) => a + num(b.quantity) * num(b.bid_item_cost || b.unit_cost), 0);
+  }, 0);
+
+  const activeIds = active.map(p => p.id).filter(Boolean);
+  let totalActual = 0;
+  if (activeIds.length) {
+    const actualRows = await safeRun('paving.actuals', async () => {
+      return await sql`
+        SELECT COALESCE(SUM(
+          COALESCE(total_cost_override,
+            COALESCE(labor_hours, 0) * COALESCE(rate, 0)
+            + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
+            + COALESCE(material_cost, 0)
+          )
+        ), 0)::float AS actual
+        FROM daily_tracking
+        WHERE company_code = ${companyCode}
+          AND division     = 'paving'
+          AND project_id   = ANY(${activeIds})
+      `;
+    });
+    totalActual = actualRows && actualRows[0] ? Number(actualRows[0].actual) || 0 : 0;
+  }
+
+  // Projected: scale actuals by bid burn rate (matches turf logic at the
+  // tile aggregate level — finer per-bid-item scaling isn't worth it here
+  // since paving bid items don't carry start/target dates).
+  const totalProjected = totalBid > 0 && totalActual > 0
+    ? Math.max(totalActual, totalBid)
+    : (totalBid > 0 ? totalBid : totalActual);
+
+  const cvbFmt = totalBid > 0 ? fmtCostVsBid(totalActual, totalBid) : { text: '—', color: 'mute' };
+  const cvbSub = totalBid > 0
+    ? (cvbFmt.color === 'red'   ? 'Over bid'
+      : cvbFmt.color === 'green' ? 'Under bid'
+      : 'On plan')
+    : undefined;
+
+  let profitText = '—';
+  let profitSub;
+  if (totalContract > 0 && totalProjected > 0) {
+    const profit = totalContract - totalProjected;
+    if (Math.abs(profit) < 1) {
+      profitText = '$0';
+      profitSub  = 'Break-even';
+    } else if (profit > 0) {
+      profitText = fmtCurrency(profit);
+      profitSub  = `${((profit / totalContract) * 100).toFixed(1)}% margin`;
+    } else {
+      profitText = `−${fmtCurrency(Math.abs(profit))}`;
+      profitSub  = `${(Math.abs(profit / totalContract) * 100).toFixed(1)}% loss`;
+    }
+  }
+
+  let status, statusKind;
+  if (!projects.length) { status = 'No Projects'; statusKind = 'mute'; }
+  else if (onHold > 0)  { status = `${onHold} On Hold`; statusKind = 'amber'; }
+  else if (totalContract > 0 && totalProjected > totalContract) { status = 'Margin Risk'; statusKind = 'amber'; }
+  else                  { status = 'On Track'; statusKind = 'green'; }
+
+  return {
+    key: 'paving', name: 'Paving', accent: '#60a5fa',
+    status, statusKind,
+    kpis: [
+      {
+        label: 'Active Projects',
+        value: String(active.length),
+        sub:   onHold > 0 ? `${onHold} on hold` : undefined,
+      },
+      { label: 'Cost vs Bid', value: cvbFmt.text, sub: cvbSub },
+      {
+        label: 'Projected',
+        value: totalProjected > 0 ? fmtCurrency(totalProjected) : '—',
+        sub:   totalContract > 0  ? `vs ${fmtCurrency(totalContract)} contract` : undefined,
+      },
+      { label: 'Profit', value: profitText, sub: profitSub },
+    ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
+  };
+}
+
+// ── Quarry tile ──────────────────────────────────────────────────────
+// Quarry data lives entirely in JSONB blobs (no normalized tables yet):
+//   fct_quarry_sales    → [{ date, locationName, productName, tons, pricePerTon, payment }]
+//   fct_quarry_daily    → [{ date, locationName, hours, rate, ... }]
+//   fct_quarry_crushing → [{ date, locationName, tons, ... }]
+// We compute weekly revenue (sum tons*pricePerTon for the current Sun-anchored
+// week) and monthly tons sold, plus the top product and active pit count.
+async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
+  const blob = await safeRun('quarry.sales_blob', async () => {
+    const r = await sql`
+      SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_sales`}
+    `;
+    return r[0]?.value;
+  });
+  const sales = Array.isArray(blob) ? blob : [];
+
+  const monthStartIso = (() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+  })();
+
+  const num = v => {
+    if (v == null || v === '') return 0;
+    const n = parseFloat(String(v));
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  let revenueWk = 0, tonsMo = 0;
+  const productTons = new Map();
+  const activePits  = new Set();
+  for (const r of sales) {
+    if (!r || typeof r !== 'object') continue;
+    const date = typeof r.date === 'string' ? r.date : '';
+    if (!date) continue;
+    const tons  = num(r.tons);
+    const price = num(r.pricePerTon);
+    if (date >= weekStart && date < weekEnd) revenueWk += tons * price;
+    if (date >= monthStartIso) {
+      tonsMo += tons;
+      const name = String(r.productName || '').trim();
+      if (name) productTons.set(name, (productTons.get(name) || 0) + tons);
+      const pit = String(r.locationName || '').trim();
+      if (pit) activePits.add(pit);
+    }
+  }
+
+  let topProduct = null, topProductTons = 0;
+  for (const [name, t] of productTons) {
+    if (t > topProductTons) { topProduct = name; topProductTons = t; }
+  }
+
+  const status = sales.length ? 'On Track' : 'No Data';
+  const statusKind = sales.length ? 'green' : 'mute';
+
+  return {
+    key: 'quarry', name: 'Quarry', accent: '#f97316',
+    status, statusKind,
+    kpis: [
+      { label: 'Revenue · Wk', value: revenueWk > 0 ? fmtCurrency(revenueWk) : '—' },
+      { label: 'Tons · Mo',    value: tonsMo > 0 ? Math.round(tonsMo).toLocaleString('en-US') : '—' },
+      topProduct
+        ? { label: 'Top Product', value: topProduct, sub: `${Math.round(topProductTons).toLocaleString('en-US')} tons` }
+        : { label: 'Top Product', value: '—' },
+      { label: 'Active Pits',  value: activePits.size > 0 ? String(activePits.size) : '—' },
+    ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
+  };
+}
+
 // Mock fallback — used only if the entire hero build throws.
 function mockHero() {
   return [
@@ -1021,13 +1208,10 @@ function mockReport() {
           ],
         },
         {
-          // Mirrors the live Turf tile shape (Active / Cost vs Bid /
-          // Projected / Profit) so the row pairs visually. Wired up
-          // when paving project data normalizes out of its JSONB blob.
           key: 'paving', name: 'Paving', accent: '#60a5fa',
-          status: 'Data Pending', statusKind: 'mute',
+          status: '—', statusKind: 'mute',
           kpis: [
-            { label: 'Active Projects', value: '—', sub: 'awaiting normalization' },
+            { label: 'Active Projects', value: '—' },
             { label: 'Cost vs Bid',     value: '—' },
             { label: 'Projected',       value: '—' },
             { label: 'Profit',          value: '—' },
@@ -1035,42 +1219,42 @@ function mockReport() {
         },
         {
           key: 'trucking', name: 'Trucking', accent: '#ef4444',
-          status: 'On Track', statusKind: 'green',
+          status: '—', statusKind: 'mute',
           kpis: [
-            { label: 'Active Hauls',  value: '28' },
-            { label: 'Loads · Wk',    value: '312' },
-            { label: 'Invoiced · Wk', value: '$74,200' },
-            { label: 'Unbilled',      value: '$18,400', sub: '12 entries' },
+            { label: 'Active Hauls',  value: '—' },
+            { label: 'Loads · Wk',    value: '—' },
+            { label: 'Invoiced · Wk', value: '—' },
+            { label: 'Unbilled',      value: '—' },
           ],
         },
         {
           key: 'dust', name: 'Dust Control', accent: '#fbbf24',
-          status: 'On Track', statusKind: 'green',
+          status: '—', statusKind: 'mute',
           kpis: [
-            { label: 'Active Routes',        value: '9' },
-            { label: 'Gallons · Wk',         value: '42,180' },
-            { label: 'AR · 60+ Days',        value: '$8,420' },
-            { label: 'CM Approval Pending',  value: '3' },
+            { label: 'Revenue · Wk',  value: '—' },
+            { label: 'Revenue · Mo',  value: '—' },
+            { label: 'Gallons · Wk',  value: '—' },
+            { label: 'Active Routes', value: '—' },
           ],
         },
         {
           key: 'quarry', name: 'Quarry', accent: '#f97316',
-          status: 'Data Loading', statusKind: 'mute',
+          status: '—', statusKind: 'mute',
           kpis: [
-            { label: 'Inventory · Top SKU', value: '— ton', sub: 'awaiting upload' },
-            { label: 'Production · Wk',     value: '—' },
-            { label: 'Avg $/ton',           value: '—' },
-            { label: 'Active Pits',         value: '—' },
+            { label: 'Revenue · Wk', value: '—' },
+            { label: 'Tons · Mo',    value: '—' },
+            { label: 'Top Product',  value: '—' },
+            { label: 'Active Pits',  value: '—' },
           ],
         },
         {
           key: 'intercompany', name: 'Intercompany Billing', accent: '#a78bfa',
-          status: 'Aging', statusKind: 'amber',
+          status: '—', statusKind: 'mute',
           kpis: [
-            { label: 'Unbilled · Trucking', value: '$28,400' },
-            { label: 'Unbilled · Dust',     value: '$19,810' },
-            { label: 'AR 30+ Days',         value: '$92,840' },
-            { label: 'Top Customer',        value: 'Acme Aggregates', sub: '$31,200 outstanding', small: true },
+            { label: 'Unbilled · Trucking', value: '—' },
+            { label: 'Unbilled · Dust',     value: '—' },
+            { label: 'AR 30+ Days',         value: '—' },
+            { label: 'Top Customer',        value: '—' },
           ],
         },
       ],
@@ -1081,91 +1265,7 @@ function mockReport() {
       rows: [],
     },
 
-    details: [
-      {
-        name: 'Riverbend Industrial Park',
-        jobNumber: 'P-2406',
-        division: 'paving',
-        status: 'Active',
-        statusColor: 'green',
-        start: 'Feb 14, 2026',
-        target: 'Jul 30, 2026',
-        contract: '$842,000',
-        bookedCost: '$486,210',
-        pctComplete: '58%',
-        sections: {
-          bidItems: {
-            color: '#60a5fa',
-            cols: ['Item', 'Qty', '% Done'],
-            rows: [
-              ['Mill & Overlay', '12,400 SY', '72%'],
-              ['Base Repair',    '3,200 SY',  '48%'],
-              ['Striping',       '8,100 LF',  '12%'],
-              ['Concrete Curb',  '1,840 LF',  '88%'],
-            ],
-          },
-          trucking: {
-            color: '#ef4444',
-            cols: ['Week', 'Loads', 'Hours', '$'],
-            rows: [
-              ['Apr 27',        '42',  '68',  '$5,840'],
-              ['May 4',         '38',  '61',  '$5,210'],
-              ['Total to date', '186', '298', '$24,600'],
-            ],
-          },
-          quarry: {
-            color: '#f97316',
-            cols: ['Material', 'Source Pit', 'Tons'],
-            rows: [
-              ['#57 Limestone', 'Pit 3 — Hollidaysburg', '540'],
-              ['2A Modified',   'Pit 1 — Altoona',       '280'],
-              ['Surge',         'Pit 3 — Hollidaysburg', '100'],
-            ],
-          },
-          dust: {
-            color: '#fbbf24',
-            cols: ['Date', 'Location', 'Gallons'],
-            rows: [
-              ['Apr 18',        'Haul road N', '2,100'],
-              ['Apr 30',        'Haul road N', '1,950'],
-              ['Total to date', '',            '4,050'],
-            ],
-          },
-        },
-      },
-      {
-        name: 'Cedar Park Athletics — Sod & Drainage',
-        jobNumber: 'T-2403',
-        division: 'turf',
-        status: 'Active',
-        statusColor: 'green',
-        start: 'Jan 22, 2026',
-        target: 'Jun 12, 2026',
-        contract: '$318,400',
-        bookedCost: '$198,720',
-        pctComplete: '63%',
-        sections: {
-          bidItems: {
-            color: '#22c55e',
-            cols: ['Item', 'Qty', '% Done'],
-            rows: [
-              ['Sod Installation', '42,000 SF', '81%'],
-              ['French Drain',     '680 LF',    '95%'],
-              ['Topsoil',          '340 CY',    '52%'],
-            ],
-          },
-          trucking: {
-            color: '#ef4444',
-            cols: ['Week', 'Loads', '$'],
-            rows: [
-              ['Apr 27',        '22', '$2,840'],
-              ['May 4',         '18', '$2,310'],
-              ['Total to date', '94', '$11,800'],
-            ],
-          },
-        },
-      },
-    ],
+    details: [],
   };
 }
 
@@ -1204,11 +1304,15 @@ module.exports = async (req, res) => {
       console.error('[executive/report] hero build failed:', err.message);
     }
 
-    // Division tiles: turf, trucking, dust, intercompany are wired live.
-    // Paving and quarry preserve their mock entries (data shape pending).
+    // All six division tiles are wired live. A failed builder leaves the
+    // mock '—' placeholder for that tile (rather than overwriting it with
+    // null) so the grid layout stays intact.
     const liveTiles = await Promise.all([
       buildTurfTile(sql, company, weekStart, weekEnd).catch(e => {
         console.error('[executive/report] turf tile failed:', e.message); return null;
+      }),
+      buildPavingTile(sql, company).catch(e => {
+        console.error('[executive/report] paving tile failed:', e.message); return null;
       }),
       buildTruckingTile(sql, company, weekStart, weekEnd).catch(e => {
         console.error('[executive/report] trucking tile failed:', e.message); return null;
@@ -1216,24 +1320,29 @@ module.exports = async (req, res) => {
       buildDustTile(sql, company, weekStart, weekEnd).catch(e => {
         console.error('[executive/report] dust tile failed:', e.message); return null;
       }),
+      buildQuarryTile(sql, company, weekStart, weekEnd).catch(e => {
+        console.error('[executive/report] quarry tile failed:', e.message); return null;
+      }),
       buildIntercompanyTile(sql, company).catch(e => {
         console.error('[executive/report] intercompany tile failed:', e.message); return null;
       }),
     ]);
-    const [turfLive, truckingLive, dustLive, icLive] = liveTiles;
+    const [turfLive, pavingLive, truckingLive, dustLive, quarryLive, icLive] = liveTiles;
 
-    // Replace tiles in place, preserving order & any failed tile's mock.
     report.snapshot.divisions = report.snapshot.divisions.map(tile => {
       if (tile.key === 'turf'         && turfLive)     return turfLive;
+      if (tile.key === 'paving'       && pavingLive)   return pavingLive;
       if (tile.key === 'trucking'     && truckingLive) return truckingLive;
       if (tile.key === 'dust'         && dustLive)     return dustLive;
+      if (tile.key === 'quarry'       && quarryLive)   return quarryLive;
       if (tile.key === 'intercompany' && icLive)       return icLive;
       return tile;
     });
 
     // Active project portfolio (page 2) and per-project detail (page 3+).
-    // Both run in parallel; either falling back to mock on error keeps
-    // the page rendering even if one query has issues.
+    // The builders return null on error or when there are no active
+    // projects — both cases leave the mock's empty placeholders, which
+    // now contain no fake project entries.
     const [livePortfolio, liveDetails] = await Promise.all([
       buildProjectsPortfolio(sql, company).catch(err => {
         console.error('[executive/report] portfolio build failed:', err.message); return null;
@@ -1242,10 +1351,10 @@ module.exports = async (req, res) => {
         console.error('[executive/report] details build failed:', err.message); return null;
       }),
     ]);
-    if (livePortfolio && Array.isArray(livePortfolio.rows) && livePortfolio.rows.length) {
+    if (livePortfolio && Array.isArray(livePortfolio.rows)) {
       report.projects = livePortfolio;
     }
-    if (Array.isArray(liveDetails) && liveDetails.length) {
+    if (Array.isArray(liveDetails)) {
       report.details = liveDetails;
     }
 
