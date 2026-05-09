@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='%230a0f1e' stroke='%23a78bfa' stroke-width='6'/><circle cx='50' cy='50' r='12' fill='%23a78bfa'/></svg>">
+  <title>DataWatch — Executive Division</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #111118;
+      --surface2:  #1a1a26;
+      --border:    #2a2a3a;
+      --text:      #e0e0e0;
+      --muted:     #666;
+      --green:     #22c55e;
+      --green-dim: #16a34a;
+      --blue:      #60a5fa;
+      --red:       #ef4444;
+      --amber:     #fbbf24;
+      --orange:    #f97316;
+      --purple:    #a78bfa;
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.875rem 1.75rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .brand {
+      font-size: 0.68rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--purple);
+      font-weight: 700;
+    }
+    .brand-sub {
+      font-size: 0.55rem;
+      letter-spacing: 0.2em;
+      color: var(--muted);
+      margin-left: 0.6rem;
+      text-transform: uppercase;
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    .header-link {
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.38rem 0.8rem;
+      cursor: pointer;
+      text-decoration: none;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .header-link:hover { color: var(--text); border-color: #555; }
+    .header-link.primary {
+      color: var(--purple);
+      border-color: rgba(167,139,250,0.4);
+    }
+    .header-link.primary:hover {
+      background: rgba(167,139,250,0.08);
+      border-color: var(--purple);
+    }
+
+    /* ── Action bar ── */
+    .action-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.5rem 2rem;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .page-title {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .page-title-logo {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      background: var(--surface2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .page-title-logo img { width: 34px; height: 34px; object-fit: contain; }
+    .page-title-text { display: flex; flex-direction: column; gap: 0.2rem; }
+    .page-title-eyebrow {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--purple);
+    }
+    .page-title-h {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+    .page-title-sub {
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .action-btns { display: flex; gap: 0.6rem; }
+    .btn {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.6rem 1.1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .btn:hover { border-color: #555; }
+    .btn.primary {
+      background: var(--purple);
+      color: #0a0a0f;
+      border-color: var(--purple);
+    }
+    .btn.primary:hover { background: #8b6fe0; border-color: #8b6fe0; }
+    .btn svg { width: 14px; height: 14px; }
+
+    /* ── Report container (this is what gets printed) ── */
+    .report {
+      max-width: 1200px;
+      margin: 0 auto 3rem;
+      padding: 0 2rem;
+    }
+
+    /* ── Filters ── */
+    .filters {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .filter-label {
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-right: 0.4rem;
+    }
+    .filter-chip {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 0.35rem 0.8rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.15s;
+      letter-spacing: 0.02em;
+    }
+    .filter-chip.on {
+      color: var(--text);
+      border-color: var(--purple);
+      background: rgba(167,139,250,0.08);
+    }
+
+    /* ── Section ── */
+    .section {
+      margin-bottom: 2.5rem;
+    }
+    .section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 1rem;
+      padding-bottom: 0.6rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+    }
+    .section-sub {
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+
+    /* ── Hero KPIs ── */
+    .hero-kpis {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    .hero-kpi {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.1rem 1.25rem;
+    }
+    .hero-kpi-label {
+      font-size: 0.58rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.55rem;
+    }
+    .hero-kpi-value {
+      font-size: 1.7rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+    }
+    .hero-kpi-delta {
+      font-size: 0.7rem;
+      margin-top: 0.4rem;
+      letter-spacing: 0.02em;
+    }
+    .delta-up   { color: var(--green); }
+    .delta-down { color: var(--red); }
+    .delta-flat { color: var(--muted); }
+
+    /* ── Division tiles ── */
+    .div-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+    }
+    .div-tile {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent, var(--border));
+      border-radius: 10px;
+      padding: 1.1rem 1.2rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+    .div-tile-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .div-tile-name {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+    }
+    .div-tile-status {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.5rem;
+      border-radius: 3px;
+    }
+    .status-green { background: rgba(34,197,94,0.12);  color: var(--green); border:1px solid rgba(34,197,94,0.25); }
+    .status-amber { background: rgba(251,191,36,0.12); color: var(--amber); border:1px solid rgba(251,191,36,0.25); }
+    .status-red   { background: rgba(239,68,68,0.12);  color: var(--red);   border:1px solid rgba(239,68,68,0.25); }
+    .status-mute  { background: rgba(100,116,139,0.1); color: #94a3b8;     border:1px solid rgba(100,116,139,0.2); }
+
+    .div-tile-kpis {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem 1rem;
+    }
+    .div-kpi-label {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.2rem;
+    }
+    .div-kpi-value {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+      line-height: 1.1;
+    }
+    .div-kpi-sub {
+      font-size: 0.62rem;
+      color: var(--muted);
+      margin-top: 0.15rem;
+    }
+
+    /* ── Project timeline ── */
+    .timeline-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem 1.25rem 0.5rem;
+      overflow-x: auto;
+    }
+    .timeline-grid {
+      display: grid;
+      grid-template-columns: 280px 1fr 220px;
+      gap: 1rem;
+      align-items: center;
+      padding: 0.7rem 0;
+      border-bottom: 1px solid rgba(42,42,58,0.5);
+      min-width: 900px;
+    }
+    .timeline-grid.head {
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0.4rem;
+      padding-bottom: 0.6rem;
+    }
+    .timeline-grid:last-child { border-bottom: none; }
+    .timeline-head-label {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .timeline-proj-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .timeline-proj-name {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+    }
+    .timeline-proj-meta {
+      font-size: 0.65rem;
+      color: var(--muted);
+      display: flex;
+      gap: 0.6rem;
+      align-items: center;
+    }
+    .div-pill {
+      font-size: 0.5rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.12rem 0.45rem;
+      border-radius: 3px;
+    }
+    .div-pill.turf   { background: rgba(34,197,94,0.12); color: var(--green); }
+    .div-pill.paving { background: rgba(96,165,250,0.12); color: var(--blue); }
+
+    .timeline-bar {
+      position: relative;
+      height: 28px;
+      background: rgba(42,42,58,0.4);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .timeline-bar-axis {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      pointer-events: none;
+    }
+    .axis-tick {
+      flex: 1;
+      border-right: 1px dashed rgba(42,42,58,0.6);
+    }
+    .axis-tick:last-child { border-right: none; }
+    .timeline-bar-fill {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: linear-gradient(90deg, rgba(96,165,250,0.55), rgba(96,165,250,0.85));
+      border-radius: 5px;
+    }
+    .timeline-bar-fill.turf {
+      background: linear-gradient(90deg, rgba(34,197,94,0.55), rgba(34,197,94,0.85));
+    }
+    .timeline-bar-fill.atrisk {
+      background: linear-gradient(90deg, rgba(251,191,36,0.55), rgba(251,191,36,0.85));
+    }
+    .timeline-bar-fill.hold {
+      background: linear-gradient(90deg, rgba(100,116,139,0.4), rgba(100,116,139,0.65));
+    }
+    .timeline-bar-progress {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: rgba(255,255,255,0.18);
+    }
+    .timeline-today {
+      position: absolute;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      background: #fff;
+      box-shadow: 0 0 6px rgba(255,255,255,0.6);
+    }
+    .timeline-today::after {
+      content: 'TODAY';
+      position: absolute;
+      top: -14px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.5rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      color: #fff;
+    }
+    .timeline-icons {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.7rem;
+      letter-spacing: 0.04em;
+      color: rgba(255,255,255,0.85);
+      display: flex;
+      gap: 0.3rem;
+      pointer-events: none;
+    }
+    .tl-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.55rem;
+      font-weight: 800;
+      color: #0a0a0f;
+    }
+    .tl-icon.t { background: var(--red); }
+    .tl-icon.q { background: var(--orange); }
+    .tl-icon.d { background: var(--amber); }
+
+    .timeline-mini {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem 0.8rem;
+      font-size: 0.65rem;
+    }
+    .timeline-mini-label { color: var(--muted); }
+    .timeline-mini-val { color: var(--text); font-weight: 600; text-align: right; }
+
+    /* ── Per-project detail ── */
+    .project-detail {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .pd-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 1.25rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .pd-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+      margin-bottom: 0.4rem;
+    }
+    .pd-meta {
+      font-size: 0.7rem;
+      color: var(--muted);
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .pd-meta strong { color: var(--text); font-weight: 600; }
+    .pd-totals {
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+    .pd-total-label {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.2rem;
+    }
+    .pd-total-val {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+    }
+
+    .pd-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+    }
+    .pd-block-title {
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.7rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .pd-block-title .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .pd-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.72rem;
+    }
+    .pd-table th {
+      text-align: left;
+      padding: 0.4rem 0.5rem;
+      font-size: 0.55rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      font-weight: 700;
+    }
+    .pd-table td {
+      padding: 0.45rem 0.5rem;
+      border-bottom: 1px solid rgba(42,42,58,0.4);
+    }
+    .pd-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      padding: 1.5rem;
+      font-size: 0.62rem;
+      color: #2a2a3a;
+      letter-spacing: 0.04em;
+      border-top: 1px solid var(--border);
+    }
+
+    /* ── Print ── */
+    @media print {
+      @page { size: letter landscape; margin: 0.4in; }
+      body { background: #fff; color: #000; }
+      header, .action-bar, footer, .filters { display: none !important; }
+      .report { max-width: none; margin: 0; padding: 0; }
+      .hero-kpi, .div-tile, .timeline-wrap, .project-detail {
+        background: #fff;
+        border: 1px solid #ccc;
+        color: #000;
+        box-shadow: none;
+      }
+      .div-tile-name, .timeline-proj-name, .pd-name,
+      .hero-kpi-value, .div-kpi-value, .pd-total-val,
+      .section-title { color: #000; }
+      .hero-kpi-label, .div-kpi-label, .pd-total-label,
+      .section-sub, .timeline-proj-meta, .div-kpi-sub,
+      .pd-meta, .pd-block-title, .pd-table th { color: #555; }
+      .div-kpi-sub { color: #777; }
+      .section-head { border-color: #ccc; }
+      .pd-table th { border-color: #ccc; }
+      .pd-table td { border-color: #eee; color: #000; }
+      .timeline-bar { background: #eee; }
+      .timeline-grid { border-color: #eee; min-width: 0; }
+      .timeline-grid.head { border-color: #ccc; }
+      .pd-head { border-color: #ccc; }
+      .timeline-today { background: #000; box-shadow: none; }
+      .timeline-today::after { color: #000; }
+      .page-break { break-before: page; page-break-before: always; }
+      .project-detail { break-inside: avoid; page-break-inside: avoid; }
+    }
+
+    @media (max-width: 900px) {
+      .hero-kpis { grid-template-columns: repeat(2, 1fr); }
+      .div-grid { grid-template-columns: 1fr; }
+      .pd-grid { grid-template-columns: 1fr; }
+      .action-bar { padding: 1rem; }
+      .report { padding: 0 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div>
+      <span class="brand">DataWatch</span>
+      <span class="brand-sub">Executive Division</span>
+    </div>
+    <div class="header-right">
+      <a href="divisions.html" class="header-link">← Divisions</a>
+      <button class="header-link" onclick="signOut()">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="action-bar">
+    <div class="page-title">
+      <div class="page-title-logo"><img src="datawatch-helmet.png" alt="" /></div>
+      <div class="page-title-text">
+        <div class="page-title-eyebrow">Cross-Division Roll-Up</div>
+        <div class="page-title-h">Executive Report</div>
+        <div class="page-title-sub" id="reportDate">—</div>
+      </div>
+    </div>
+    <div class="action-btns">
+      <button class="btn primary" onclick="window.print()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 6 2 18 2 18 9"/>
+          <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+          <rect x="6" y="14" width="12" height="8"/>
+        </svg>
+        Generate Report (PDF)
+      </button>
+    </div>
+  </div>
+
+  <main class="report">
+
+    <!-- ─────────── PAGE 1: COMPANY SNAPSHOT ─────────── -->
+    <div class="section">
+      <div class="section-head">
+        <div class="section-title">Company Snapshot</div>
+        <div class="section-sub">All divisions · This week</div>
+      </div>
+
+      <!-- Hero KPIs -->
+      <div class="hero-kpis">
+        <div class="hero-kpi">
+          <div class="hero-kpi-label">Active Projects</div>
+          <div class="hero-kpi-value">14</div>
+          <div class="hero-kpi-delta delta-up">+2 vs last week</div>
+        </div>
+        <div class="hero-kpi">
+          <div class="hero-kpi-label">Revenue · This Week</div>
+          <div class="hero-kpi-value">$284,510</div>
+          <div class="hero-kpi-delta delta-up">+8.4%</div>
+        </div>
+        <div class="hero-kpi">
+          <div class="hero-kpi-label">AR · 30+ Days</div>
+          <div class="hero-kpi-value">$92,840</div>
+          <div class="hero-kpi-delta delta-down">+$12k vs last week</div>
+        </div>
+        <div class="hero-kpi">
+          <div class="hero-kpi-label">Unbilled Intercompany</div>
+          <div class="hero-kpi-value">$48,210</div>
+          <div class="hero-kpi-delta delta-flat">flat</div>
+        </div>
+      </div>
+
+      <!-- Division tiles -->
+      <div class="div-grid">
+
+        <div class="div-tile" style="--accent: var(--green);">
+          <div class="div-tile-head">
+            <div class="div-tile-name">Turf Management</div>
+            <span class="div-tile-status status-green">On Track</span>
+          </div>
+          <div class="div-tile-kpis">
+            <div>
+              <div class="div-kpi-label">Active Projects</div>
+              <div class="div-kpi-value">5</div>
+              <div class="div-kpi-sub">1 at risk</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Cost vs Bid</div>
+              <div class="div-kpi-value">+2.1%</div>
+              <div class="div-kpi-sub">Slightly over</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Labor Hrs · Wk</div>
+              <div class="div-kpi-value">412</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Equipment Hrs</div>
+              <div class="div-kpi-value">186</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="div-tile" style="--accent: var(--blue);">
+          <div class="div-tile-head">
+            <div class="div-tile-name">Paving</div>
+            <span class="div-tile-status status-amber">1 At Risk</span>
+          </div>
+          <div class="div-tile-kpis">
+            <div>
+              <div class="div-kpi-label">Active Projects</div>
+              <div class="div-kpi-value">4</div>
+              <div class="div-kpi-sub">1 on hold</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Tons Placed · Wk</div>
+              <div class="div-kpi-value">1,840</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Material $/ton</div>
+              <div class="div-kpi-value">$78.40</div>
+              <div class="div-kpi-sub">vs $76 budget</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Schedule Var</div>
+              <div class="div-kpi-value">+3 days</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="div-tile" style="--accent: var(--red);">
+          <div class="div-tile-head">
+            <div class="div-tile-name">Trucking</div>
+            <span class="div-tile-status status-green">On Track</span>
+          </div>
+          <div class="div-tile-kpis">
+            <div>
+              <div class="div-kpi-label">Active Hauls</div>
+              <div class="div-kpi-value">28</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Loads · Wk</div>
+              <div class="div-kpi-value">312</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Invoiced · Wk</div>
+              <div class="div-kpi-value">$74,200</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Unbilled</div>
+              <div class="div-kpi-value">$18,400</div>
+              <div class="div-kpi-sub">12 entries</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="div-tile" style="--accent: var(--amber);">
+          <div class="div-tile-head">
+            <div class="div-tile-name">Dust Control</div>
+            <span class="div-tile-status status-green">On Track</span>
+          </div>
+          <div class="div-tile-kpis">
+            <div>
+              <div class="div-kpi-label">Active Routes</div>
+              <div class="div-kpi-value">9</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Gallons · Wk</div>
+              <div class="div-kpi-value">42,180</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">AR · 60+ Days</div>
+              <div class="div-kpi-value">$8,420</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">CM Approval Pending</div>
+              <div class="div-kpi-value">3</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="div-tile" style="--accent: var(--orange);">
+          <div class="div-tile-head">
+            <div class="div-tile-name">Quarry</div>
+            <span class="div-tile-status status-mute">Data Loading</span>
+          </div>
+          <div class="div-tile-kpis">
+            <div>
+              <div class="div-kpi-label">Inventory · Top SKU</div>
+              <div class="div-kpi-value">— ton</div>
+              <div class="div-kpi-sub">awaiting upload</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Production · Wk</div>
+              <div class="div-kpi-value">—</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Avg $/ton</div>
+              <div class="div-kpi-value">—</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Active Pits</div>
+              <div class="div-kpi-value">—</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="div-tile" style="--accent: var(--purple);">
+          <div class="div-tile-head">
+            <div class="div-tile-name">Intercompany Billing</div>
+            <span class="div-tile-status status-amber">Aging</span>
+          </div>
+          <div class="div-tile-kpis">
+            <div>
+              <div class="div-kpi-label">Unbilled · Trucking</div>
+              <div class="div-kpi-value">$28,400</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Unbilled · Dust</div>
+              <div class="div-kpi-value">$19,810</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">AR 30+ Days</div>
+              <div class="div-kpi-value">$92,840</div>
+            </div>
+            <div>
+              <div class="div-kpi-label">Top Customer</div>
+              <div class="div-kpi-value" style="font-size: 0.78rem;">Acme Aggregates</div>
+              <div class="div-kpi-sub">$31,200 outstanding</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ─────────── PAGE 2: ACTIVE PROJECT PORTFOLIO ─────────── -->
+    <div class="section page-break">
+      <div class="section-head">
+        <div class="section-title">Active Project Portfolio</div>
+        <div class="section-sub">Turf &amp; Paving · Active / At Risk / On Hold</div>
+      </div>
+
+      <div class="filters">
+        <span class="filter-label">Status</span>
+        <button class="filter-chip on" data-filter="all">All</button>
+        <button class="filter-chip on" data-filter="active">Active</button>
+        <button class="filter-chip on" data-filter="atrisk">At Risk</button>
+        <button class="filter-chip on" data-filter="hold">On Hold</button>
+        <span class="filter-label" style="margin-left: 1rem;">Division</span>
+        <button class="filter-chip on" data-filter="turf">Turf</button>
+        <button class="filter-chip on" data-filter="paving">Paving</button>
+      </div>
+
+      <div class="timeline-wrap">
+        <div class="timeline-grid head">
+          <div class="timeline-head-label">Project</div>
+          <div class="timeline-head-label">Timeline (Jan — Aug 2026)</div>
+          <div class="timeline-head-label" style="text-align: right;">Snapshot</div>
+        </div>
+
+        <!-- Project rows (mock) -->
+        <div class="timeline-grid">
+          <div class="timeline-proj-info">
+            <div class="timeline-proj-name">Riverbend Industrial Park</div>
+            <div class="timeline-proj-meta">
+              <span class="div-pill paving">Paving</span>
+              <span>Job #P-2406 · Active</span>
+            </div>
+          </div>
+          <div class="timeline-bar">
+            <div class="timeline-bar-axis">
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+            </div>
+            <div class="timeline-bar-fill" style="left: 12%; width: 55%;"></div>
+            <div class="timeline-bar-progress" style="left: 12%; width: 32%;"></div>
+            <div class="timeline-icons" style="left: 22%;"><span class="tl-icon t" title="Trucking">T</span></div>
+            <div class="timeline-icons" style="left: 35%;"><span class="tl-icon q" title="Quarry">Q</span></div>
+            <div class="timeline-today" style="left: 44%;"></div>
+          </div>
+          <div class="timeline-mini">
+            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">58%</div>
+            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$24,600</div>
+            <div class="timeline-mini-label">Quarry tons</div><div class="timeline-mini-val">920</div>
+            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--green);">−1.2%</div>
+          </div>
+        </div>
+
+        <div class="timeline-grid">
+          <div class="timeline-proj-info">
+            <div class="timeline-proj-name">Maple Heights Resurface</div>
+            <div class="timeline-proj-meta">
+              <span class="div-pill paving">Paving</span>
+              <span>Job #P-2411 · At Risk</span>
+            </div>
+          </div>
+          <div class="timeline-bar">
+            <div class="timeline-bar-axis">
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+            </div>
+            <div class="timeline-bar-fill atrisk" style="left: 28%; width: 30%;"></div>
+            <div class="timeline-bar-progress" style="left: 28%; width: 12%;"></div>
+            <div class="timeline-icons" style="left: 33%;"><span class="tl-icon t">T</span></div>
+            <div class="timeline-today" style="left: 44%;"></div>
+          </div>
+          <div class="timeline-mini">
+            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">40%</div>
+            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$8,200</div>
+            <div class="timeline-mini-label">Quarry tons</div><div class="timeline-mini-val">280</div>
+            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--red);">+6.8%</div>
+          </div>
+        </div>
+
+        <div class="timeline-grid">
+          <div class="timeline-proj-info">
+            <div class="timeline-proj-name">Brookline Commons Lot</div>
+            <div class="timeline-proj-meta">
+              <span class="div-pill paving">Paving</span>
+              <span>Job #P-2418 · Active</span>
+            </div>
+          </div>
+          <div class="timeline-bar">
+            <div class="timeline-bar-axis">
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+            </div>
+            <div class="timeline-bar-fill" style="left: 38%; width: 40%;"></div>
+            <div class="timeline-bar-progress" style="left: 38%; width: 8%;"></div>
+            <div class="timeline-icons" style="left: 41%;"><span class="tl-icon d">D</span></div>
+            <div class="timeline-today" style="left: 44%;"></div>
+          </div>
+          <div class="timeline-mini">
+            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">15%</div>
+            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$3,400</div>
+            <div class="timeline-mini-label">Dust passes</div><div class="timeline-mini-val">2</div>
+            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--muted);">on plan</div>
+          </div>
+        </div>
+
+        <div class="timeline-grid">
+          <div class="timeline-proj-info">
+            <div class="timeline-proj-name">Cedar Park Athletics — Sod &amp; Drainage</div>
+            <div class="timeline-proj-meta">
+              <span class="div-pill turf">Turf</span>
+              <span>Job #T-2403 · Active</span>
+            </div>
+          </div>
+          <div class="timeline-bar">
+            <div class="timeline-bar-axis">
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+            </div>
+            <div class="timeline-bar-fill turf" style="left: 5%; width: 60%;"></div>
+            <div class="timeline-bar-progress" style="left: 5%; width: 38%;"></div>
+            <div class="timeline-icons" style="left: 18%;"><span class="tl-icon t">T</span></div>
+            <div class="timeline-today" style="left: 44%;"></div>
+          </div>
+          <div class="timeline-mini">
+            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">63%</div>
+            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$11,800</div>
+            <div class="timeline-mini-label">Labor hrs</div><div class="timeline-mini-val">684</div>
+            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--green);">−0.4%</div>
+          </div>
+        </div>
+
+        <div class="timeline-grid">
+          <div class="timeline-proj-info">
+            <div class="timeline-proj-name">Westgate Logistics Phase 2</div>
+            <div class="timeline-proj-meta">
+              <span class="div-pill paving">Paving</span>
+              <span>Job #P-2421 · On Hold</span>
+            </div>
+          </div>
+          <div class="timeline-bar">
+            <div class="timeline-bar-axis">
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+              <div class="axis-tick"></div><div class="axis-tick"></div>
+            </div>
+            <div class="timeline-bar-fill hold" style="left: 50%; width: 35%;"></div>
+            <div class="timeline-today" style="left: 44%;"></div>
+          </div>
+          <div class="timeline-mini">
+            <div class="timeline-mini-label">% Complete</div><div class="timeline-mini-val">0%</div>
+            <div class="timeline-mini-label">Trucking $</div><div class="timeline-mini-val">$0</div>
+            <div class="timeline-mini-label">Hold reason</div><div class="timeline-mini-val">Permit</div>
+            <div class="timeline-mini-label">Cost vs Bid</div><div class="timeline-mini-val" style="color: var(--muted);">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─────────── PAGE 3+: PER-PROJECT DETAIL ─────────── -->
+    <div class="section page-break">
+      <div class="section-head">
+        <div class="section-title">Project Detail</div>
+        <div class="section-sub">One page per active project</div>
+      </div>
+
+      <!-- Project 1 detail -->
+      <div class="project-detail">
+        <div class="pd-head">
+          <div>
+            <div class="pd-name">Riverbend Industrial Park <span class="div-pill paving" style="vertical-align: middle; margin-left: 0.4rem;">Paving</span></div>
+            <div class="pd-meta">
+              <span><strong>Job #</strong> P-2406</span>
+              <span><strong>Start</strong> Feb 14, 2026</span>
+              <span><strong>Target</strong> Jul 30, 2026</span>
+              <span><strong>Status</strong> <span style="color: var(--green);">Active</span></span>
+            </div>
+          </div>
+          <div class="pd-totals">
+            <div>
+              <div class="pd-total-label">Contract</div>
+              <div class="pd-total-val">$842,000</div>
+            </div>
+            <div>
+              <div class="pd-total-label">Booked Cost</div>
+              <div class="pd-total-val">$486,210</div>
+            </div>
+            <div>
+              <div class="pd-total-label">% Complete</div>
+              <div class="pd-total-val">58%</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pd-grid">
+          <div>
+            <div class="pd-block-title"><span class="dot" style="background: var(--blue);"></span>Bid Items</div>
+            <table class="pd-table">
+              <thead>
+                <tr><th>Item</th><th class="num">Qty</th><th class="num">% Done</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Mill &amp; Overlay</td><td class="num">12,400 SY</td><td class="num">72%</td></tr>
+                <tr><td>Base Repair</td><td class="num">3,200 SY</td><td class="num">48%</td></tr>
+                <tr><td>Striping</td><td class="num">8,100 LF</td><td class="num">12%</td></tr>
+                <tr><td>Concrete Curb</td><td class="num">1,840 LF</td><td class="num">88%</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div>
+            <div class="pd-block-title"><span class="dot" style="background: var(--red);"></span>Trucking Activity</div>
+            <table class="pd-table">
+              <thead>
+                <tr><th>Week</th><th class="num">Loads</th><th class="num">Hours</th><th class="num">$</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Apr 27</td><td class="num">42</td><td class="num">68</td><td class="num">$5,840</td></tr>
+                <tr><td>May 4</td><td class="num">38</td><td class="num">61</td><td class="num">$5,210</td></tr>
+                <tr><td>Total to date</td><td class="num">186</td><td class="num">298</td><td class="num">$24,600</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div>
+            <div class="pd-block-title"><span class="dot" style="background: var(--orange);"></span>Quarry Materials Drawn</div>
+            <table class="pd-table">
+              <thead>
+                <tr><th>Material</th><th>Source Pit</th><th class="num">Tons</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>#57 Limestone</td><td>Pit 3 — Hollidaysburg</td><td class="num">540</td></tr>
+                <tr><td>2A Modified</td><td>Pit 1 — Altoona</td><td class="num">280</td></tr>
+                <tr><td>Surge</td><td>Pit 3 — Hollidaysburg</td><td class="num">100</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div>
+            <div class="pd-block-title"><span class="dot" style="background: var(--amber);"></span>Dust Control Applications</div>
+            <table class="pd-table">
+              <thead>
+                <tr><th>Date</th><th>Location</th><th class="num">Gallons</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Apr 18</td><td>Haul road N</td><td class="num">2,100</td></tr>
+                <tr><td>Apr 30</td><td>Haul road N</td><td class="num">1,950</td></tr>
+                <tr><td colspan="2" style="color: var(--muted);">Total to date</td><td class="num">4,050</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Project 2 detail (compact placeholder) -->
+      <div class="project-detail">
+        <div class="pd-head">
+          <div>
+            <div class="pd-name">Cedar Park Athletics — Sod &amp; Drainage <span class="div-pill turf" style="vertical-align: middle; margin-left: 0.4rem;">Turf</span></div>
+            <div class="pd-meta">
+              <span><strong>Job #</strong> T-2403</span>
+              <span><strong>Start</strong> Jan 22, 2026</span>
+              <span><strong>Target</strong> Jun 12, 2026</span>
+              <span><strong>Status</strong> <span style="color: var(--green);">Active</span></span>
+            </div>
+          </div>
+          <div class="pd-totals">
+            <div>
+              <div class="pd-total-label">Contract</div>
+              <div class="pd-total-val">$318,400</div>
+            </div>
+            <div>
+              <div class="pd-total-label">Booked Cost</div>
+              <div class="pd-total-val">$198,720</div>
+            </div>
+            <div>
+              <div class="pd-total-label">% Complete</div>
+              <div class="pd-total-val">63%</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pd-grid">
+          <div>
+            <div class="pd-block-title"><span class="dot" style="background: var(--green);"></span>Bid Items</div>
+            <table class="pd-table">
+              <thead><tr><th>Item</th><th class="num">Qty</th><th class="num">% Done</th></tr></thead>
+              <tbody>
+                <tr><td>Sod Installation</td><td class="num">42,000 SF</td><td class="num">81%</td></tr>
+                <tr><td>French Drain</td><td class="num">680 LF</td><td class="num">95%</td></tr>
+                <tr><td>Topsoil</td><td class="num">340 CY</td><td class="num">52%</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <div class="pd-block-title"><span class="dot" style="background: var(--red);"></span>Trucking Activity</div>
+            <table class="pd-table">
+              <thead><tr><th>Week</th><th class="num">Loads</th><th class="num">$</th></tr></thead>
+              <tbody>
+                <tr><td>Apr 27</td><td class="num">22</td><td class="num">$2,840</td></tr>
+                <tr><td>May 4</td><td class="num">18</td><td class="num">$2,310</td></tr>
+                <tr><td>Total to date</td><td class="num">94</td><td class="num">$11,800</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <footer>© DataWatch · Force Corp · Executive Division · All rights reserved</footer>
+
+  <script>
+    // ── Auth guard: platform admins only ──
+    const token = localStorage.getItem('fct_token');
+    let user = null;
+    try { user = JSON.parse(localStorage.getItem('fct_user')); } catch {}
+
+    if (!token || !user) {
+      window.location.replace('index.html');
+    } else if (!user.isPlatformAdmin) {
+      window.location.replace('divisions.html');
+    }
+
+    // ── Report date ──
+    const d = new Date();
+    const fmt = d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const dateEl = document.getElementById('reportDate');
+    if (dateEl) dateEl.textContent = `Generated ${fmt}`;
+
+    // ── Filter chips (visual toggle for mockup; wiring comes with real data) ──
+    document.querySelectorAll('.filter-chip').forEach(chip => {
+      chip.addEventListener('click', () => chip.classList.toggle('on'));
+    });
+
+    function signOut() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+  </script>
+
+</body>
+</html>
