@@ -330,6 +330,146 @@ async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
   };
 }
 
+// ── Project portfolio (page 2) ───────────────────────────────────────
+// Returns up to 12 active turf/paving projects (status in Active /
+// At Risk / On Hold) with cross-division roll-ups joined in:
+//   - Trucking $ from trucking_entries.loads × rate
+//   - Labor hrs from daily_tracking
+//   - hasTrucking flag for the timeline icon
+// Paving projects only appear here once paving normalizes into the
+// projects table; for now this is effectively turf-only.
+async function buildProjectsPortfolio(sql, companyCode) {
+  const projects = await safeRun('projects.list', async () => {
+    return await sql`
+      SELECT
+        p.id,
+        p.name,
+        p.job_number,
+        p.status,
+        p.start_date::text   AS start_date,
+        p.end_date::text     AS end_date,
+        COALESCE(t.trucking_dollars, 0)::float AS trucking_dollars,
+        COALESCE(t.has_trucking, false)        AS has_trucking,
+        COALESCE(d.labor_hours, 0)::float      AS labor_hours
+      FROM projects p
+      LEFT JOIN (
+        SELECT project_id,
+               SUM(COALESCE(loads, 0) * COALESCE(rate, 0))::float AS trucking_dollars,
+               (COUNT(*) > 0)                                    AS has_trucking
+          FROM trucking_entries
+         WHERE company_code = ${companyCode}
+           AND project_id IS NOT NULL
+         GROUP BY project_id
+      ) t ON t.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id,
+               SUM(COALESCE(labor_hours, 0))::float AS labor_hours
+          FROM daily_tracking
+         WHERE company_code = ${companyCode}
+           AND project_id IS NOT NULL
+           AND project_id <> ''
+         GROUP BY project_id
+      ) d ON d.project_id = p.id
+      WHERE p.company_code = ${companyCode}
+        AND p.status IN ('Active', 'At Risk', 'On Hold')
+      ORDER BY
+        p.start_date ASC NULLS LAST,
+        p.name       ASC
+      LIMIT 12
+    `;
+  });
+
+  if (!projects || !projects.length) return null;
+
+  // Compute timeline window: min start to max end across the visible set,
+  // padded slightly so bars don't touch the edges. Falls back to a 9-month
+  // window centered on today if dates are missing.
+  const today    = new Date();
+  const todayMs  = today.getTime();
+  let minStart = Infinity, maxEnd = -Infinity;
+  for (const p of projects) {
+    if (p.start_date) {
+      const t = new Date(p.start_date + 'T00:00:00Z').getTime();
+      if (t < minStart) minStart = t;
+    }
+    if (p.end_date) {
+      const t = new Date(p.end_date + 'T00:00:00Z').getTime();
+      if (t > maxEnd) maxEnd = t;
+    }
+  }
+  const sixMonths = 1000 * 60 * 60 * 24 * 30 * 6;
+  if (!isFinite(minStart)) minStart = todayMs - sixMonths;
+  if (!isFinite(maxEnd))   maxEnd   = todayMs + sixMonths;
+  if (maxEnd <= minStart)  maxEnd   = minStart + sixMonths;
+  // Add 5% padding on each side
+  const span    = maxEnd - minStart;
+  const winStart = minStart - span * 0.05;
+  const winEnd   = maxEnd   + span * 0.05;
+  const winSpan  = winEnd - winStart;
+
+  const pct = ms => Math.max(0, Math.min(100, ((ms - winStart) / winSpan) * 100));
+
+  return projects.map(p => {
+    const startMs = p.start_date ? new Date(p.start_date + 'T00:00:00Z').getTime() : null;
+    const endMs   = p.end_date   ? new Date(p.end_date   + 'T00:00:00Z').getTime() : null;
+
+    const leftPct  = startMs != null ? pct(startMs) : 5;
+    const rightPct = endMs   != null ? pct(endMs)   : leftPct + 30;
+    const widthPct = Math.max(2, rightPct - leftPct);
+    const todayPct = pct(todayMs);
+
+    // Time-based progress: how far into the bar today is.
+    let progressPct = 0;
+    if (startMs && endMs && todayMs > startMs) {
+      const elapsed = Math.min(todayMs, endMs) - startMs;
+      const total   = endMs - startMs;
+      progressPct = total > 0 ? (elapsed / total) * widthPct : 0;
+    }
+
+    // Pct complete (time-based) for the mini stats column.
+    let pctCompleteText = '—';
+    if (startMs && endMs) {
+      const total   = endMs - startMs;
+      const elapsed = Math.max(0, Math.min(todayMs, endMs) - startMs);
+      const pctComplete = total > 0 ? Math.round((elapsed / total) * 100) : 0;
+      pctCompleteText = `${pctComplete}%`;
+    }
+
+    const status = String(p.status || 'Active');
+    const barKind =
+      status === 'On Hold' ? 'hold' :
+      status === 'At Risk' ? 'atrisk' :
+      'turf';  // green by default (paving projects will use 'paving' once wired)
+
+    const division = 'turf'; // schema doesn't yet split projects by division
+    const icons = [];
+    if (p.has_trucking) {
+      icons.push({ kind: 't', leftPct: Math.min(95, leftPct + 5) });
+    }
+
+    return {
+      name:      p.name || '(unnamed)',
+      jobNumber: p.job_number || '—',
+      division,
+      status,
+      bar: {
+        leftPct:     +leftPct.toFixed(1),
+        widthPct:    +widthPct.toFixed(1),
+        kind:        barKind,
+        progressPct: +progressPct.toFixed(1),
+        todayPct:    +todayPct.toFixed(1),
+      },
+      icons,
+      mini: [
+        { label: '% Complete',  value: pctCompleteText },
+        { label: 'Trucking $',  value: fmtCurrency(p.trucking_dollars || 0) },
+        { label: 'Labor hrs',   value: Math.round(p.labor_hours || 0).toLocaleString('en-US') },
+        { label: 'Cost vs Bid', value: '—', color: 'mute' },
+      ],
+    };
+  });
+}
+
 async function buildIntercompanyTile(sql, companyCode) {
   const unbilledTrucking = await safeRun('ic.unbilled_trucking', async () => {
     const rows = await sql`
@@ -705,6 +845,18 @@ module.exports = async (req, res) => {
       if (tile.key === 'intercompany' && icLive)       return icLive;
       return tile;
     });
+
+    // Active project portfolio (page 2). If the live build returns rows,
+    // they replace the mock entirely. If it errors or returns no rows,
+    // we keep the mock so the page never goes blank.
+    try {
+      const livePortfolio = await buildProjectsPortfolio(sql, company);
+      if (Array.isArray(livePortfolio) && livePortfolio.length) {
+        report.projects = livePortfolio;
+      }
+    } catch (err) {
+      console.error('[executive/report] portfolio build failed:', err.message);
+    }
   }
 
   report.generatedAt = new Date().toISOString();
