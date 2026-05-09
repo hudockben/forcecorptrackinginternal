@@ -486,170 +486,156 @@ async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
 }
 
 // ── Project portfolio (page 2) ───────────────────────────────────────
-// Returns up to 12 active turf/paving projects (status in Active /
-// At Risk / On Hold) with cross-division roll-ups joined in:
-//   - Trucking $ from trucking_entries.loads × rate
-//   - Labor hrs from daily_tracking
-//   - hasTrucking flag for the timeline icon
-// Paving projects only appear here once paving normalizes into the
-// projects table; for now this is effectively turf-only.
+// Mirrors the per-project financial table shown on the turf & paving
+// home pages: Project · Status · Progress · Contract · Bid · Actual ·
+// Variance · Projected · Profit · Pinned.
+//
+// Per-bid-item projection formula matches tracker.html projForBidItem():
+//   - if start/target dates set AND actual > 0 AND elapsed > 0
+//       projected = max(actual, actual/elapsed × total_days)  (time scale)
+//   - else if running_qty > 0
+//       projected = (actual / running_qty) × bid_qty           (qty scale)
+//   - else
+//       projected = bid_total                                  (use bid)
+//
+// Then summed per project. progress %, variance, profit are derived
+// from the totals in JS.
 async function buildProjectsPortfolio(sql, companyCode) {
-  const projects = await safeRun('projects.list', async () => {
+  const rows = await safeRun('projects.portfolio', async () => {
     return await sql`
+      WITH target_projects AS (
+        SELECT id, name, job_number, status,
+               contract_amount, pinned, updated_at
+          FROM projects
+         WHERE company_code = ${companyCode}
+           AND (status IN ('Active', 'At Risk', 'On Hold', 'In Progress')
+                OR pinned = TRUE)
+         ORDER BY pinned DESC NULLS LAST, updated_at DESC NULLS LAST
+         LIMIT 12
+      ),
+      bid_per_item AS (
+        SELECT
+          bi.project_id,
+          bi.cost_code,
+          COALESCE(bi.sub_code, '')                                       AS sub_code,
+          COALESCE(bi.quantity,  0)                                       AS bid_qty,
+          COALESCE(bi.quantity,  0) * COALESCE(bi.unit_cost, 0)::float    AS bid_total,
+          bi.start_date,
+          bi.target_date
+          FROM bid_items bi
+         WHERE bi.company_code = ${companyCode}
+           AND bi.project_id IN (SELECT id FROM target_projects)
+      ),
+      daily_per_match AS (
+        SELECT
+          project_id,
+          cost_code,
+          COALESCE(sub_code, '') AS sub_code,
+          SUM(
+            COALESCE(total_cost_override,
+              COALESCE(labor_hours, 0) * COALESCE(rate, 0)
+              + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
+              + COALESCE(material_cost, 0)
+            )
+          )::float                            AS actual,
+          SUM(COALESCE(quantity, 0))::float   AS rqty
+          FROM daily_tracking
+         WHERE company_code = ${companyCode}
+           AND project_id IN (SELECT id FROM target_projects)
+           AND project_id <> ''
+         GROUP BY project_id, cost_code, COALESCE(sub_code, '')
+      ),
+      projected_per_item AS (
+        SELECT
+          bp.project_id,
+          bp.bid_total,
+          COALESCE(d.actual, 0) AS actual,
+          CASE
+            WHEN bp.start_date IS NOT NULL
+             AND bp.target_date IS NOT NULL
+             AND COALESCE(d.actual, 0) > 0
+             AND CURRENT_DATE > bp.start_date
+             AND bp.target_date > bp.start_date
+            THEN GREATEST(
+              d.actual,
+              d.actual
+                * EXTRACT(EPOCH FROM (bp.target_date - bp.start_date))
+                / NULLIF(EXTRACT(EPOCH FROM (CURRENT_DATE - bp.start_date)), 0)
+            )
+            WHEN COALESCE(d.rqty, 0) > 0
+            THEN (d.actual / d.rqty) * bp.bid_qty
+            ELSE bp.bid_total
+          END AS projected
+        FROM bid_per_item bp
+        LEFT JOIN daily_per_match d
+               ON d.project_id = bp.project_id
+              AND d.cost_code  = bp.cost_code
+              AND d.sub_code   = bp.sub_code
+      ),
+      project_totals AS (
+        SELECT
+          project_id,
+          SUM(bid_total)::float AS bid,
+          SUM(actual)::float    AS actual,
+          SUM(projected)::float AS projected
+          FROM projected_per_item
+         GROUP BY project_id
+      )
       SELECT
-        p.id,
-        p.name,
-        p.job_number,
-        p.status,
-        p.start_date::text   AS start_date,
-        p.end_date::text     AS end_date,
-        COALESCE(t.trucking_dollars, 0)::float AS trucking_dollars,
-        COALESCE(t.has_trucking, false)        AS has_trucking,
-        COALESCE(d.labor_hours, 0)::float      AS labor_hours,
-        COALESCE(b.bid_total, 0)::float        AS bid_total,
-        COALESCE(c.booked_total, 0)::float     AS booked_total
-      FROM projects p
-      LEFT JOIN (
-        SELECT project_id,
-               SUM(COALESCE(loads, 0) * COALESCE(rate, 0))::float AS trucking_dollars,
-               (COUNT(*) > 0)                                    AS has_trucking
-          FROM trucking_entries
-         WHERE company_code = ${companyCode}
-           AND project_id IS NOT NULL
-         GROUP BY project_id
-      ) t ON t.project_id = p.id
-      LEFT JOIN (
-        SELECT project_id,
-               SUM(COALESCE(labor_hours, 0))::float AS labor_hours
-          FROM daily_tracking
-         WHERE company_code = ${companyCode}
-           AND project_id IS NOT NULL
-           AND project_id <> ''
-         GROUP BY project_id
-      ) d ON d.project_id = p.id
-      LEFT JOIN (
-        SELECT project_id,
-               SUM(COALESCE(quantity, 0) * COALESCE(unit_cost, 0))::float AS bid_total
-          FROM bid_items
-         WHERE company_code = ${companyCode}
-         GROUP BY project_id
-      ) b ON b.project_id = p.id
-      LEFT JOIN (
-        SELECT project_id,
-               SUM(
-                 COALESCE(total_cost_override,
-                   COALESCE(labor_hours, 0) * COALESCE(rate, 0)
-                   + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
-                   + COALESCE(material_cost, 0)
-                 )
-               )::float AS booked_total
-          FROM daily_tracking
-         WHERE company_code = ${companyCode}
-           AND project_id IS NOT NULL
-           AND project_id <> ''
-         GROUP BY project_id
-      ) c ON c.project_id = p.id
-      WHERE p.company_code = ${companyCode}
-        AND p.status IN ('Active', 'At Risk', 'On Hold')
-      ORDER BY
-        p.start_date ASC NULLS LAST,
-        p.name       ASC
-      LIMIT 12
+        tp.id,
+        tp.name,
+        tp.job_number,
+        tp.status,
+        tp.contract_amount::float          AS contract,
+        tp.pinned,
+        COALESCE(pt.bid,       0)::float   AS bid,
+        COALESCE(pt.actual,    0)::float   AS actual,
+        COALESCE(pt.projected, 0)::float   AS projected
+      FROM target_projects tp
+      LEFT JOIN project_totals pt ON pt.project_id = tp.id
+      ORDER BY tp.pinned DESC NULLS LAST, tp.updated_at DESC NULLS LAST
     `;
   });
 
-  if (!projects || !projects.length) return null;
+  if (!rows || !rows.length) return null;
 
-  // Compute timeline window: min start to max end across the visible set,
-  // padded slightly so bars don't touch the edges. Falls back to a 9-month
-  // window centered on today if dates are missing.
-  const today    = new Date();
-  const todayMs  = today.getTime();
-  let minStart = Infinity, maxEnd = -Infinity;
-  for (const p of projects) {
-    if (p.start_date) {
-      const t = new Date(p.start_date + 'T00:00:00Z').getTime();
-      if (t < minStart) minStart = t;
-    }
-    if (p.end_date) {
-      const t = new Date(p.end_date + 'T00:00:00Z').getTime();
-      if (t > maxEnd) maxEnd = t;
-    }
-  }
-  const sixMonths = 1000 * 60 * 60 * 24 * 30 * 6;
-  if (!isFinite(minStart)) minStart = todayMs - sixMonths;
-  if (!isFinite(maxEnd))   maxEnd   = todayMs + sixMonths;
-  if (maxEnd <= minStart)  maxEnd   = minStart + sixMonths;
-  // Add 5% padding on each side
-  const span    = maxEnd - minStart;
-  const winStart = minStart - span * 0.05;
-  const winEnd   = maxEnd   + span * 0.05;
-  const winSpan  = winEnd - winStart;
+  const pinnedCount = rows.filter(r => r.pinned).length;
+  const recentCount = rows.length - pinnedCount;
 
-  const pct = ms => Math.max(0, Math.min(100, ((ms - winStart) / winSpan) * 100));
+  return {
+    summary: {
+      pinned: pinnedCount,
+      recent: recentCount,
+      total:  rows.length,
+    },
+    rows: rows.map(r => {
+      const contract  = Number(r.contract)  || 0;
+      const bid       = Number(r.bid)       || 0;
+      const actual    = Number(r.actual)    || 0;
+      const projected = Number(r.projected) || 0;
 
-  return projects.map(p => {
-    const startMs = p.start_date ? new Date(p.start_date + 'T00:00:00Z').getTime() : null;
-    const endMs   = p.end_date   ? new Date(p.end_date   + 'T00:00:00Z').getTime() : null;
+      const progressPct = bid > 0 ? Math.min(Math.round((actual / bid) * 100), 100) : 0;
+      const variance    = bid - actual; // positive = under, negative = over
+      const profit      = contract > 0 && projected > 0 ? contract - projected : null;
+      const profitPct   = profit != null && contract > 0 ? (profit / contract) * 100 : null;
 
-    const leftPct  = startMs != null ? pct(startMs) : 5;
-    const rightPct = endMs   != null ? pct(endMs)   : leftPct + 30;
-    const widthPct = Math.max(2, rightPct - leftPct);
-    const todayPct = pct(todayMs);
-
-    // Time-based progress: how far into the bar today is.
-    let progressPct = 0;
-    if (startMs && endMs && todayMs > startMs) {
-      const elapsed = Math.min(todayMs, endMs) - startMs;
-      const total   = endMs - startMs;
-      progressPct = total > 0 ? (elapsed / total) * widthPct : 0;
-    }
-
-    // Pct complete (time-based) for the mini stats column.
-    let pctCompleteText = '—';
-    if (startMs && endMs) {
-      const total   = endMs - startMs;
-      const elapsed = Math.max(0, Math.min(todayMs, endMs) - startMs);
-      const pctComplete = total > 0 ? Math.round((elapsed / total) * 100) : 0;
-      pctCompleteText = `${pctComplete}%`;
-    }
-
-    const status = String(p.status || 'Active');
-    const barKind =
-      status === 'On Hold' ? 'hold' :
-      status === 'At Risk' ? 'atrisk' :
-      'turf';  // green by default (paving projects will use 'paving' once wired)
-
-    const division = 'turf'; // schema doesn't yet split projects by division
-    const icons = [];
-    if (p.has_trucking) {
-      icons.push({ kind: 't', leftPct: Math.min(95, leftPct + 5) });
-    }
-
-    return {
-      name:      p.name || '(unnamed)',
-      jobNumber: p.job_number || '—',
-      division,
-      status,
-      bar: {
-        leftPct:     +leftPct.toFixed(1),
-        widthPct:    +widthPct.toFixed(1),
-        kind:        barKind,
-        progressPct: +progressPct.toFixed(1),
-        todayPct:    +todayPct.toFixed(1),
-      },
-      icons,
-      mini: [
-        { label: '% Complete',  value: pctCompleteText },
-        { label: 'Trucking $',  value: fmtCurrency(p.trucking_dollars || 0) },
-        { label: 'Labor hrs',   value: Math.round(p.labor_hours || 0).toLocaleString('en-US') },
-        (() => {
-          const cvb = fmtCostVsBid(p.booked_total, p.bid_total);
-          return { label: 'Cost vs Bid', value: cvb.text, color: cvb.color };
-        })(),
-      ],
-    };
-  });
+      return {
+        name:        r.name || '(unnamed)',
+        jobNumber:   r.job_number || '—',
+        division:    'turf', // projects table is effectively turf-only today
+        status:      r.status || 'In Progress',
+        pinned:      Boolean(r.pinned),
+        progressPct,
+        contract,
+        bid,
+        actual,
+        variance,
+        projected,
+        profit,
+        profitPct,
+      };
+    }),
+  };
 }
 
 // ── Per-project detail (page 3+) ─────────────────────────────────────
@@ -962,81 +948,10 @@ function mockReport() {
       ],
     },
 
-    projects: [
-      {
-        name: 'Riverbend Industrial Park',
-        jobNumber: 'P-2406',
-        division: 'paving',
-        status: 'Active',
-        bar: { leftPct: 12, widthPct: 55, kind: 'paving', progressPct: 32, todayPct: 44 },
-        icons: [
-          { kind: 't', leftPct: 22 },
-          { kind: 'q', leftPct: 35 },
-        ],
-        mini: [
-          { label: '% Complete',  value: '58%' },
-          { label: 'Trucking $',  value: '$24,600' },
-          { label: 'Quarry tons', value: '920' },
-          { label: 'Cost vs Bid', value: '−1.2%', color: 'green' },
-        ],
-      },
-      {
-        name: 'Maple Heights Resurface',
-        jobNumber: 'P-2411',
-        division: 'paving',
-        status: 'At Risk',
-        bar: { leftPct: 28, widthPct: 30, kind: 'atrisk', progressPct: 12, todayPct: 44 },
-        icons: [{ kind: 't', leftPct: 33 }],
-        mini: [
-          { label: '% Complete',  value: '40%' },
-          { label: 'Trucking $',  value: '$8,200' },
-          { label: 'Quarry tons', value: '280' },
-          { label: 'Cost vs Bid', value: '+6.8%', color: 'red' },
-        ],
-      },
-      {
-        name: 'Brookline Commons Lot',
-        jobNumber: 'P-2418',
-        division: 'paving',
-        status: 'Active',
-        bar: { leftPct: 38, widthPct: 40, kind: 'paving', progressPct: 8, todayPct: 44 },
-        icons: [{ kind: 'd', leftPct: 41 }],
-        mini: [
-          { label: '% Complete',  value: '15%' },
-          { label: 'Trucking $',  value: '$3,400' },
-          { label: 'Dust passes', value: '2' },
-          { label: 'Cost vs Bid', value: 'on plan', color: 'mute' },
-        ],
-      },
-      {
-        name: 'Cedar Park Athletics — Sod & Drainage',
-        jobNumber: 'T-2403',
-        division: 'turf',
-        status: 'Active',
-        bar: { leftPct: 5, widthPct: 60, kind: 'turf', progressPct: 38, todayPct: 44 },
-        icons: [{ kind: 't', leftPct: 18 }],
-        mini: [
-          { label: '% Complete',  value: '63%' },
-          { label: 'Trucking $',  value: '$11,800' },
-          { label: 'Labor hrs',   value: '684' },
-          { label: 'Cost vs Bid', value: '−0.4%', color: 'green' },
-        ],
-      },
-      {
-        name: 'Westgate Logistics Phase 2',
-        jobNumber: 'P-2421',
-        division: 'paving',
-        status: 'On Hold',
-        bar: { leftPct: 50, widthPct: 35, kind: 'hold', progressPct: 0, todayPct: 44 },
-        icons: [],
-        mini: [
-          { label: '% Complete',  value: '0%' },
-          { label: 'Trucking $',  value: '$0' },
-          { label: 'Hold reason', value: 'Permit' },
-          { label: 'Cost vs Bid', value: '—', color: 'mute' },
-        ],
-      },
-    ],
+    projects: {
+      summary: { pinned: 0, recent: 0, total: 0 },
+      rows: [],
+    },
 
     details: [
       {
@@ -1203,7 +1118,7 @@ module.exports = async (req, res) => {
         return null;
       }),
     ]);
-    if (Array.isArray(livePortfolio) && livePortfolio.length) {
+    if (livePortfolio && Array.isArray(livePortfolio.rows) && livePortfolio.rows.length) {
       report.projects = livePortfolio;
     }
     if (Array.isArray(liveDetails) && liveDetails.length) {
