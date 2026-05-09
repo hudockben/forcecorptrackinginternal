@@ -15,6 +15,11 @@
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('../lib/auth');
 
+// Project statuses that count as "active" on the home page. Includes
+// 'In Progress' which is the catch-all status tracker.html actually
+// uses for ongoing projects.
+const ACTIVE_STATUSES_SQL_ARRAY = ['Active', 'At Risk', 'On Hold', 'In Progress'];
+
 // ── Date / formatting helpers ────────────────────────────────────────────
 function startOfWeekISO(d) {
   // Sunday-anchored week, returned as YYYY-MM-DD
@@ -82,7 +87,7 @@ async function buildHero(sql, companyCode) {
       SELECT COUNT(*)::int AS n
         FROM projects
        WHERE company_code = ${companyCode}
-         AND status IN ('Active', 'At Risk', 'On Hold')
+         AND status = ANY(${ACTIVE_STATUSES_SQL_ARRAY})
     `;
     return rows[0]?.n ?? 0;
   });
@@ -171,98 +176,122 @@ async function buildHero(sql, companyCode) {
 // to mockReport() unchanged.
 
 // Turf — financial-status focused: Active / Cost vs Bid / Projected / Profit.
-// Pulls each active project's contract, bid, booked, and dates in one query
-// and aggregates in JS so the projected-cost extrapolation is easy to read.
-//
-// Projected cost per project (time-based extrapolation):
-//   - if not started yet     → use bid (or contract) as the best estimate
-//   - if past target end     → use booked (project ran over its window)
-//   - otherwise              → booked / pct_time_elapsed
-//
-// Profit = SUM(contract) − SUM(projected) across all active projects.
+// Each query is independent under safeRun so a single failing query
+// (e.g., a missing column on a fresh DB) only blanks one KPI rather
+// than the whole tile. Always returns a tile object — never null —
+// so the front-end shows the new labels even if every query fails.
 async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */) {
-  const rows = await safeRun('turf.projects_financials', async () => {
+  // ── Active count ─────────────────────────────────────────────
+  const active = await safeRun('turf.active', async () => {
+    const r = await sql`
+      SELECT COUNT(*)::int AS n
+        FROM projects
+       WHERE company_code = ${companyCode}
+         AND status = ANY(${ACTIVE_STATUSES_SQL_ARRAY})
+    `;
+    return r[0]?.n ?? 0;
+  });
+
+  // ── At Risk count ────────────────────────────────────────────
+  const atRisk = await safeRun('turf.at_risk', async () => {
+    const r = await sql`
+      SELECT COUNT(*)::int AS n
+        FROM projects
+       WHERE company_code = ${companyCode}
+         AND status = 'At Risk'
+    `;
+    return r[0]?.n ?? 0;
+  });
+
+  // ── Per-project financials (bid, actual, projected) ──────────
+  // Per-bid-item projection formula matches tracker.html's
+  // projForBidItem() so the aggregate matches what users see on
+  // the project pages.
+  const financials = await safeRun('turf.financials', async () => {
     return await sql`
-      SELECT
-        p.id,
-        p.status,
-        p.contract_amount::float AS contract_amount,
-        p.start_date::text       AS start_date,
-        p.end_date::text         AS end_date,
-        COALESCE(b.bid_total,    0)::float AS bid_total,
-        COALESCE(c.booked_total, 0)::float AS booked_total
-      FROM projects p
-      LEFT JOIN (
-        SELECT project_id,
-               SUM(COALESCE(quantity, 0) * COALESCE(unit_cost, 0))::float AS bid_total
-          FROM bid_items
+      WITH active_proj AS (
+        SELECT id, contract_amount
+          FROM projects
          WHERE company_code = ${companyCode}
-         GROUP BY project_id
-      ) b ON b.project_id = p.id
-      LEFT JOIN (
-        SELECT project_id,
-               SUM(
-                 COALESCE(total_cost_override,
-                   COALESCE(labor_hours, 0) * COALESCE(rate, 0)
-                   + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
-                   + COALESCE(material_cost, 0)
-                 )
-               )::float AS booked_total
+           AND status = ANY(${ACTIVE_STATUSES_SQL_ARRAY})
+      ),
+      bid_per_item AS (
+        SELECT
+          bi.project_id,
+          bi.cost_code,
+          COALESCE(bi.sub_code, '') AS sub_code,
+          COALESCE(bi.quantity, 0) AS bid_qty,
+          COALESCE(bi.quantity, 0) * COALESCE(bi.unit_cost, 0)::float AS bid_total,
+          bi.start_date,
+          bi.target_date
+          FROM bid_items bi
+         WHERE bi.company_code = ${companyCode}
+           AND bi.project_id IN (SELECT id FROM active_proj)
+      ),
+      daily_per_match AS (
+        SELECT
+          project_id,
+          cost_code,
+          COALESCE(sub_code, '') AS sub_code,
+          SUM(
+            COALESCE(total_cost_override,
+              COALESCE(labor_hours, 0) * COALESCE(rate, 0)
+              + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
+              + COALESCE(material_cost, 0)
+            )
+          )::float                          AS actual,
+          SUM(COALESCE(quantity, 0))::float AS rqty
           FROM daily_tracking
          WHERE company_code = ${companyCode}
-           AND project_id IS NOT NULL
+           AND project_id IN (SELECT id FROM active_proj)
            AND project_id <> ''
-         GROUP BY project_id
-      ) c ON c.project_id = p.id
-      WHERE p.company_code = ${companyCode}
-        AND p.status IN ('Active', 'At Risk', 'On Hold')
+         GROUP BY project_id, cost_code, COALESCE(sub_code, '')
+      ),
+      projected_per_item AS (
+        SELECT
+          bp.project_id,
+          bp.bid_total,
+          COALESCE(d.actual, 0) AS actual,
+          CASE
+            WHEN bp.start_date IS NOT NULL
+             AND bp.target_date IS NOT NULL
+             AND COALESCE(d.actual, 0) > 0
+             AND CURRENT_DATE > bp.start_date
+             AND bp.target_date > bp.start_date
+            THEN GREATEST(
+              d.actual,
+              d.actual
+                * EXTRACT(EPOCH FROM (bp.target_date - bp.start_date))
+                / NULLIF(EXTRACT(EPOCH FROM (CURRENT_DATE - bp.start_date)), 0)
+            )
+            WHEN COALESCE(d.rqty, 0) > 0
+            THEN (d.actual / d.rqty) * bp.bid_qty
+            ELSE bp.bid_total
+          END AS projected
+        FROM bid_per_item bp
+        LEFT JOIN daily_per_match d
+               ON d.project_id = bp.project_id
+              AND d.cost_code  = bp.cost_code
+              AND d.sub_code   = bp.sub_code
+      )
+      SELECT
+        COALESCE(SUM(ap.contract_amount), 0)::float AS contract_total,
+        COALESCE((SELECT SUM(bid_total)::float FROM bid_per_item),       0) AS bid_total,
+        COALESCE((SELECT SUM(actual)::float    FROM projected_per_item), 0) AS actual_total,
+        COALESCE((SELECT SUM(projected)::float FROM projected_per_item), 0) AS projected_total
+      FROM active_proj ap
     `;
   });
 
-  if (!rows) return null; // total fail — caller falls back to mock
-
-  const todayMs = Date.now();
-  let active = 0;
-  let atRisk = 0;
-  let totalContract  = 0;
-  let totalBid       = 0;
-  let totalBooked    = 0;
-  let totalProjected = 0;
-
-  for (const r of rows) {
-    active += 1;
-    if (r.status === 'At Risk') atRisk += 1;
-
-    const contract = Number(r.contract_amount) || 0;
-    const bid      = Number(r.bid_total)       || 0;
-    const booked   = Number(r.booked_total)    || 0;
-
-    totalContract += contract;
-    totalBid      += bid;
-    totalBooked   += booked;
-
-    const startMs = r.start_date ? new Date(r.start_date + 'T00:00:00Z').getTime() : null;
-    const endMs   = r.end_date   ? new Date(r.end_date   + 'T00:00:00Z').getTime() : null;
-
-    let projected;
-    if (startMs && endMs && endMs > startMs) {
-      if (todayMs <= startMs) {
-        projected = bid > 0 ? bid : contract;
-      } else if (todayMs >= endMs) {
-        projected = booked > 0 ? booked : (bid || contract);
-      } else {
-        const pctTime = (todayMs - startMs) / (endMs - startMs);
-        projected = pctTime > 0 && booked > 0 ? booked / pctTime : (bid || contract);
-      }
-    } else {
-      projected = bid > 0 ? bid : contract;
-    }
-    totalProjected += projected;
-  }
+  const f = financials && financials[0] ? financials[0] : null;
+  const totalContract  = f ? Number(f.contract_total)  || 0 : 0;
+  const totalBid       = f ? Number(f.bid_total)       || 0 : 0;
+  const totalActual    = f ? Number(f.actual_total)    || 0 : 0;
+  const totalProjected = f ? Number(f.projected_total) || 0 : 0;
 
   // Cost vs Bid (aggregate)
   const cvbFmt = totalBid > 0
-    ? fmtCostVsBid(totalBooked, totalBid)
+    ? fmtCostVsBid(totalActual, totalBid)
     : { text: '—', color: 'mute' };
   const cvbSub = totalBid > 0
     ? (cvbFmt.color === 'red'   ? 'Over bid'
@@ -270,9 +299,9 @@ async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */)
       : 'On plan')
     : undefined;
 
-  // Profit text
+  // Profit
   let profitText = '—';
-  let profitSub  = undefined;
+  let profitSub;
   if (totalContract > 0 && totalProjected > 0) {
     const profit = totalContract - totalProjected;
     if (Math.abs(profit) < 1) {
@@ -287,9 +316,9 @@ async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */)
     }
   }
 
-  // Status pill: amber if any At Risk OR projected loss, otherwise green.
+  // Status pill
   let status, statusKind;
-  if (atRisk > 0) {
+  if (atRisk && atRisk > 0) {
     status = `${atRisk} At Risk`;
     statusKind = 'amber';
   } else if (totalContract > 0 && totalProjected > totalContract) {
@@ -306,8 +335,8 @@ async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */)
     kpis: [
       {
         label: 'Active Projects',
-        value: String(active),
-        sub:   atRisk > 0 ? `${atRisk} at risk` : undefined,
+        value: active != null ? String(active) : '—',
+        sub:   (atRisk && atRisk > 0) ? `${atRisk} at risk` : undefined,
       },
       {
         label: 'Cost vs Bid',
@@ -657,7 +686,7 @@ async function buildProjectDetails(sql, companyCode) {
         p.contract_amount::float AS contract_amount
       FROM projects p
       WHERE p.company_code = ${companyCode}
-        AND p.status IN ('Active', 'At Risk', 'On Hold')
+        AND p.status = ANY(${ACTIVE_STATUSES_SQL_ARRAY})
       ORDER BY p.start_date ASC NULLS LAST, p.name ASC
       LIMIT 6
     `;
@@ -883,13 +912,16 @@ function mockReport() {
 
       divisions: [
         {
+          // Mirrors the live Turf tile shape (Active / Cost vs Bid /
+          // Projected / Profit) so the fallback layout still reads as
+          // intended even when DB is unreachable.
           key: 'turf', name: 'Turf Management', accent: '#22c55e',
           status: 'On Track', statusKind: 'green',
           kpis: [
-            { label: 'Active Projects', value: '5',    sub: '1 at risk' },
-            { label: 'Cost vs Bid',     value: '+2.1%', sub: 'Slightly over' },
-            { label: 'Labor Hrs · Wk',  value: '412' },
-            { label: 'Equipment Hrs',   value: '186' },
+            { label: 'Active Projects', value: '—' },
+            { label: 'Cost vs Bid',     value: '—' },
+            { label: 'Projected',       value: '—' },
+            { label: 'Profit',          value: '—' },
           ],
         },
         {
