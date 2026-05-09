@@ -69,6 +69,95 @@ function fmtRevenueDelta(curr, prev) {
   return { delta: txt, deltaDir: diff > 0 ? 'up' : 'down' };
 }
 
+// ── Blob readers ─────────────────────────────────────────────────────
+// The Turf and Paving home pages persist their project state to
+// app_data JSONB blobs (one per project, keyed by
+// "{companyCode}:{prefix}{projectId}", with a lightweight index at
+// "{companyCode}:{indexKey}"). The legacy single-array blob at
+// "{companyCode}:fct_projects" / "fct_paving_projects" is also still
+// written as a backup. The normalized `projects` table is incomplete:
+// syncProjects only writes id/name/job_number/start_date/pinned (no
+// status, no contract_amount, no end_date), so reading from there
+// would leave the executive tile blank for any company whose schema
+// pre-dates those columns. Reading the blob is what the home pages do
+// and is therefore the only source guaranteed to match what the user
+// sees on screen.
+async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legacyArrayKey) {
+  const idxRow = await sql`
+    SELECT value FROM app_data WHERE key = ${`${companyCode}:${indexKey}`}
+  `;
+  const idx = idxRow[0]?.value;
+  const ids = Array.isArray(idx)
+    ? idx
+    : (idx && Array.isArray(idx.ids) ? idx.ids : []);
+
+  if (ids.length) {
+    const keys = ids.map(id => `${companyCode}:${projKeyPrefix}${id}`);
+    const rows = await sql`SELECT key, value FROM app_data WHERE key = ANY(${keys})`;
+    const byKey = new Map(rows.map(r => [r.key, r.value]));
+    // Preserve index order (pinned-first / most-recent-first depending on
+    // how the home page maintains it) so the executive surfaces the same
+    // ordering users see in the tracker.
+    return ids
+      .map(id => byKey.get(`${companyCode}:${projKeyPrefix}${id}`))
+      .filter(v => v && typeof v === 'object');
+  }
+
+  if (legacyArrayKey) {
+    const r = await sql`
+      SELECT value FROM app_data WHERE key = ${`${companyCode}:${legacyArrayKey}`}
+    `;
+    const v = r[0]?.value;
+    return Array.isArray(v) ? v.filter(p => p && typeof p === 'object') : [];
+  }
+  return [];
+}
+
+const readTurfProjects   = (sql, cc) => readProjectBlobs(sql, cc, 'fct_projects_index',        'fct_project_',        'fct_projects');
+const readPavingProjects = (sql, cc) => readProjectBlobs(sql, cc, 'fct_paving_projects_index', 'fct_paving_project_', 'fct_paving_projects');
+
+// Project-shape helpers (turf and paving blobs share the same dashed-key
+// naming convention — 'project-name', 'job-number', 'contract-amount',
+// 'start-date', 'end-date'/'target-completion'). Paving uses 'Complete'/'Active';
+// turf uses tracker.html's status taxonomy ('In Progress', 'Complete',
+// 'Closed', 'On Hold', 'Bidding', 'Awarded', 'Substantially Complete'),
+// matching home page isDone() inverse.
+const projName = p => String(p['project-name'] || p.name || '').trim() || 'Untitled';
+const projJob  = p => String(p['job-number']   || p.job_number || '').trim();
+const projStatus = p => String(p['status'] || p.status || '').trim();
+const projIsComplete = p => ['complete','closed'].includes(projStatus(p).toLowerCase());
+const projIsOnHold   = p => projStatus(p).toLowerCase() === 'on hold';
+const projStartDate  = p => p['start-date'] || p.start_date || null;
+const projEndDate    = p => p['end-date']   || p.end_date   || p['target-completion'] || p.target_completion || null;
+const projPinned     = p => p.pinned === true;
+
+function projNum(v) {
+  if (v == null || v === '') return 0;
+  const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+const projContract = p => projNum(p['contract-amount'] || p.contract_amount || p['revised-amount'] || p.revised_amount);
+
+// Bid totals per project. Each bid item carries quantity + unit_cost
+// (paving uses bid_item_cost as an alias). Returns the total bid dollars
+// AND a per-(cost_code, sub_code) breakdown for finer projection scaling
+// when daily actuals are joined back.
+function projBidLines(p) {
+  const items = Array.isArray(p.bidItems) ? p.bidItems : [];
+  return items.map(b => ({
+    cost_code: String(b.cost_code || b.costCode || ''),
+    sub_code:  String(b.sub_code  || b.subCode  || ''),
+    quantity:  projNum(b.quantity),
+    unit_cost: projNum(b.unit_cost ?? b.unitCost ?? b.bid_item_cost ?? b.bidItemCost),
+    start_date:  b.start_date  || b.startDate  || null,
+    target_date: b.target_date || b.targetDate || null,
+    description: b.description || '',
+    unit:        b.unit || '',
+    status:      b.status || 'Active',
+  }));
+}
+const projBidTotal = p => projBidLines(p).reduce((s, b) => s + b.quantity * b.unit_cost, 0);
+
 // Each KPI runs independently; one failure must not poison the response.
 async function safeRun(label, fn) {
   try { return await fn(); }
@@ -175,14 +264,16 @@ async function buildHero(sql, companyCode) {
   const lastWeekStart  = addDaysISO(weekStart, -7);
   const lastWeekEnd    = weekStart;
 
+  // Active projects = Turf + Paving blobs whose status isn't Complete/Closed.
+  // We read both divisions' blobs in parallel and sum the active counts so
+  // the hero KPI mirrors what users see across both home pages.
   const activeProjects = await safeRun('active_projects', async () => {
-    const rows = await sql`
-      SELECT COUNT(*)::int AS n
-        FROM projects
-       WHERE company_code = ${companyCode}
-         AND LOWER(COALESCE(status, '')) NOT IN ('complete', 'closed')
-    `;
-    return rows[0]?.n ?? 0;
+    const [turf, paving] = await Promise.all([
+      readTurfProjects(sql, companyCode).catch(() => []),
+      readPavingProjects(sql, companyCode).catch(() => []),
+    ]);
+    return turf.filter(p => !projIsComplete(p)).length
+         + paving.filter(p => !projIsComplete(p)).length;
   });
 
   const revNow = await safeRun('revenue_this_week', async () => {
@@ -264,140 +355,105 @@ async function buildHero(sql, companyCode) {
 
 // ── Division tile builders ────────────────────────────────────────────
 // Each builder returns the full tile object the front-end expects (key,
-// name, accent, status, statusKind, kpis). Paving and Quarry are not
-// wired here — their data shape is still in flux — so they fall through
-// to mockReport() unchanged.
+// name, accent, status, statusKind, kpis). Project-driven tiles (Turf,
+// Paving) read their state from JSONB blobs and join actuals from
+// daily_tracking by project_id + division. The other tiles
+// (Trucking / Dust / IC) read from their own normalized tables.
 
-// Turf — financial-status focused: Active / Cost vs Bid / Projected / Profit.
-// Each query is independent under safeRun so a single failing query
-// (e.g., a missing column on a fresh DB) only blanks one KPI rather
-// than the whole tile. Always returns a tile object — never null —
-// so the front-end shows the new labels even if every query fails.
-async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */) {
-  // ── Active count (anything not Complete/Closed) ──────────────
-  const active = await safeRun('turf.active', async () => {
-    const r = await sql`
-      SELECT COUNT(*)::int AS n
-        FROM projects
-       WHERE company_code = ${companyCode}
-         AND LOWER(COALESCE(status, '')) NOT IN ('complete', 'closed')
-    `;
-    return r[0]?.n ?? 0;
-  });
-
-  // ── On Hold count (the closest "needs attention" signal in the
-  //    home-page status taxonomy; replaces the previous At Risk
-  //    count which referenced a status value that doesn't exist
-  //    in the production data) ────────────────────────────────────
-  const onHold = await safeRun('turf.on_hold', async () => {
-    const r = await sql`
-      SELECT COUNT(*)::int AS n
-        FROM projects
-       WHERE company_code = ${companyCode}
-         AND LOWER(COALESCE(status, '')) = 'on hold'
-    `;
-    return r[0]?.n ?? 0;
-  });
-
-  // ── Per-project financials (bid, actual, projected) ──────────
-  // Per-bid-item projection formula matches tracker.html's
-  // projForBidItem() so the aggregate matches what users see on
-  // the project pages.
-  const financials = await safeRun('turf.financials', async () => {
-    return await sql`
-      WITH active_proj AS (
-        SELECT id, contract_amount
-          FROM projects
-         WHERE company_code = ${companyCode}
-           AND LOWER(COALESCE(status, '')) NOT IN ('complete', 'closed')
-      ),
-      bid_per_item AS (
-        SELECT
-          bi.project_id,
-          bi.cost_code,
-          COALESCE(bi.sub_code, '') AS sub_code,
-          COALESCE(bi.quantity, 0) AS bid_qty,
-          COALESCE(bi.quantity, 0) * COALESCE(bi.unit_cost, 0)::float AS bid_total,
-          bi.start_date,
-          bi.target_date
-          FROM bid_items bi
-         WHERE bi.company_code = ${companyCode}
-           AND bi.project_id IN (SELECT id FROM active_proj)
-      ),
-      daily_per_match AS (
-        SELECT
-          project_id,
-          cost_code,
-          COALESCE(sub_code, '') AS sub_code,
-          SUM(
-            COALESCE(total_cost_override,
-              COALESCE(labor_hours, 0) * COALESCE(rate, 0)
-              + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
-              + COALESCE(material_cost, 0)
-            )
-          )::float                          AS actual,
-          SUM(COALESCE(quantity, 0))::float AS rqty
-          FROM daily_tracking
-         WHERE company_code = ${companyCode}
-           AND project_id IN (SELECT id FROM active_proj)
-           AND project_id <> ''
-         GROUP BY project_id, cost_code, COALESCE(sub_code, '')
-      ),
-      projected_per_item AS (
-        SELECT
-          bp.project_id,
-          bp.bid_total,
-          COALESCE(d.actual, 0) AS actual,
-          CASE
-            WHEN bp.start_date IS NOT NULL
-             AND bp.target_date IS NOT NULL
-             AND COALESCE(d.actual, 0) > 0
-             AND CURRENT_DATE > bp.start_date
-             AND bp.target_date > bp.start_date
-            THEN GREATEST(
-              d.actual,
-              d.actual
-                * EXTRACT(EPOCH FROM (bp.target_date - bp.start_date))
-                / NULLIF(EXTRACT(EPOCH FROM (CURRENT_DATE - bp.start_date)), 0)
-            )
-            WHEN COALESCE(d.rqty, 0) > 0
-            THEN (d.actual / d.rqty) * bp.bid_qty
-            ELSE bp.bid_total
-          END AS projected
-        FROM bid_per_item bp
-        LEFT JOIN daily_per_match d
-               ON d.project_id = bp.project_id
-              AND d.cost_code  = bp.cost_code
-              AND d.sub_code   = bp.sub_code
-      )
+// Aggregate per-bid-item projection that mirrors tracker.html's
+// projForBidItem(): if the item has start/target dates and any actuals,
+// scale by elapsed-vs-total time; else if a running quantity exists,
+// scale by qty burn rate; else fall back to the bid total. Inputs:
+//   projects: array of blob objects (already filtered to "active")
+//   division: 'turf' | 'paving' — used to scope daily_tracking
+async function buildFinancials(sql, companyCode, division, projects) {
+  const ids = projects.map(p => p.id).filter(Boolean);
+  let actualByMatch = new Map();
+  if (ids.length) {
+    const rows = await sql`
       SELECT
-        COALESCE(SUM(ap.contract_amount), 0)::float AS contract_total,
-        COALESCE((SELECT SUM(bid_total)::float FROM bid_per_item),       0) AS bid_total,
-        COALESCE((SELECT SUM(actual)::float    FROM projected_per_item), 0) AS actual_total,
-        COALESCE((SELECT SUM(projected)::float FROM projected_per_item), 0) AS projected_total
-      FROM active_proj ap
+        project_id,
+        cost_code,
+        COALESCE(sub_code, '') AS sub_code,
+        SUM(
+          COALESCE(total_cost_override,
+            COALESCE(labor_hours, 0) * COALESCE(rate, 0)
+            + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
+            + COALESCE(material_cost, 0)
+          )
+        )::float                           AS actual,
+        SUM(COALESCE(quantity, 0))::float  AS rqty
+      FROM daily_tracking
+      WHERE company_code = ${companyCode}
+        AND division     = ${division}
+        AND project_id   = ANY(${ids})
+      GROUP BY project_id, cost_code, COALESCE(sub_code, '')
     `;
-  });
+    actualByMatch = new Map(rows.map(r => [
+      `${r.project_id} ${r.cost_code || ''} ${r.sub_code || ''}`,
+      { actual: Number(r.actual) || 0, rqty: Number(r.rqty) || 0 },
+    ]));
+  }
 
-  const f = financials && financials[0] ? financials[0] : null;
-  const totalContract  = f ? Number(f.contract_total)  || 0 : 0;
-  const totalBid       = f ? Number(f.bid_total)       || 0 : 0;
-  const totalActual    = f ? Number(f.actual_total)    || 0 : 0;
-  const totalProjected = f ? Number(f.projected_total) || 0 : 0;
+  const today = Date.now();
+  const perProject = new Map();
+  let contract_total = 0, bid_total = 0, actual_total = 0, projected_total = 0;
 
-  // Cost vs Bid (aggregate)
-  const cvbFmt = totalBid > 0
-    ? fmtCostVsBid(totalActual, totalBid)
-    : { text: '—', color: 'mute' };
+  for (const p of projects) {
+    contract_total += projContract(p);
+    let bid = 0, actual = 0, projected = 0;
+    for (const b of projBidLines(p)) {
+      const key = `${p.id} ${b.cost_code} ${b.sub_code}`;
+      const m   = actualByMatch.get(key);
+      const a   = m ? m.actual : 0;
+      const rq  = m ? m.rqty   : 0;
+      const itemBid = b.quantity * b.unit_cost;
+      bid    += itemBid;
+      actual += a;
+
+      let proj;
+      const startMs  = b.start_date  ? new Date(b.start_date  + 'T00:00:00Z').getTime() : null;
+      const targetMs = b.target_date ? new Date(b.target_date + 'T00:00:00Z').getTime() : null;
+      if (a > 0 && startMs != null && targetMs != null && today > startMs && targetMs > startMs) {
+        const total   = targetMs - startMs;
+        const elapsed = today - startMs;
+        proj = Math.max(a, a * (total / elapsed));
+      } else if (rq > 0 && b.quantity > 0) {
+        proj = (a / rq) * b.quantity;
+      } else {
+        proj = itemBid;
+      }
+      projected += proj;
+    }
+    bid_total       += bid;
+    actual_total    += actual;
+    projected_total += projected;
+    perProject.set(p.id, { bid, actual, projected });
+  }
+  return { contract_total, bid_total, actual_total, projected_total, perProject };
+}
+
+// Build a financial tile (Turf or Paving) from the active blob set + a
+// per-project financial breakdown. Common shape so both divisions read
+// consistently and the row pairs visually.
+function makeFinancialTile({ key, name, accent, projects, financials }) {
+  const active   = projects.filter(p => !projIsComplete(p));
+  const onHold   = active.filter(projIsOnHold).length;
+  const f        = financials || { contract_total: 0, bid_total: 0, actual_total: 0, projected_total: 0 };
+
+  const totalContract  = Number(f.contract_total)  || 0;
+  const totalBid       = Number(f.bid_total)       || 0;
+  const totalActual    = Number(f.actual_total)    || 0;
+  const totalProjected = Number(f.projected_total) || 0;
+
+  const cvbFmt = totalBid > 0 ? fmtCostVsBid(totalActual, totalBid) : { text: '—', color: 'mute' };
   const cvbSub = totalBid > 0
     ? (cvbFmt.color === 'red'   ? 'Over bid'
       : cvbFmt.color === 'green' ? 'Under bid'
       : 'On plan')
     : undefined;
 
-  // Profit
-  let profitText = '—';
-  let profitSub;
+  let profitText = '—', profitSub;
   if (totalContract > 0 && totalProjected > 0) {
     const profit = totalContract - totalProjected;
     if (Math.abs(profit) < 1) {
@@ -412,45 +468,49 @@ async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */)
     }
   }
 
-  // Status pill — On Hold > Margin Risk > On Track
   let status, statusKind;
-  if (onHold && onHold > 0) {
-    status = `${onHold} On Hold`;
-    statusKind = 'amber';
-  } else if (totalContract > 0 && totalProjected > totalContract) {
-    status = 'Margin Risk';
-    statusKind = 'amber';
-  } else {
-    status = 'On Track';
-    statusKind = 'green';
-  }
+  if (!projects.length)                                                    { status = 'No Projects'; statusKind = 'mute'; }
+  else if (onHold > 0)                                                     { status = `${onHold} On Hold`; statusKind = 'amber'; }
+  else if (totalContract > 0 && totalProjected > totalContract)            { status = 'Margin Risk'; statusKind = 'amber'; }
+  else                                                                     { status = 'On Track'; statusKind = 'green'; }
 
   return {
-    key: 'turf', name: 'Turf Management', accent: '#22c55e',
+    key, name, accent,
     status, statusKind,
     kpis: [
       {
         label: 'Active Projects',
-        value: active != null ? String(active) : '—',
-        sub:   (onHold && onHold > 0) ? `${onHold} on hold` : undefined,
+        value: String(active.length),
+        sub:   onHold > 0 ? `${onHold} on hold` : undefined,
       },
-      {
-        label: 'Cost vs Bid',
-        value: cvbFmt.text,
-        sub:   cvbSub,
-      },
+      { label: 'Cost vs Bid', value: cvbFmt.text, sub: cvbSub },
       {
         label: 'Projected',
         value: totalProjected > 0 ? fmtCurrency(totalProjected) : '—',
         sub:   totalContract > 0  ? `vs ${fmtCurrency(totalContract)} contract` : undefined,
       },
-      {
-        label: 'Profit',
-        value: profitText,
-        sub:   profitSub,
-      },
+      { label: 'Profit', value: profitText, sub: profitSub },
     ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
   };
+}
+
+// Turf — financial-status focused: Active / Cost vs Bid / Projected / Profit.
+// Reads project state from fct_projects_index + per-project blobs and
+// joins actuals from daily_tracking.division='turf'. See readProjectBlobs
+// for why we read blobs instead of the projects table.
+async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */) {
+  const blobs = await readTurfProjects(sql, companyCode);
+  const active = blobs.filter(p => !projIsComplete(p));
+  const financials = await safeRun('turf.financials', async () => {
+    return await buildFinancials(sql, companyCode, 'turf', active);
+  });
+  return makeFinancialTile({
+    key:      'turf',
+    name:     'Turf Management',
+    accent:   '#22c55e',
+    projects: blobs,
+    financials,
+  });
 }
 
 async function buildTruckingTile(sql, companyCode, weekStart, weekEnd) {
@@ -611,155 +671,82 @@ async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
 }
 
 // ── Project portfolio (page 2) ───────────────────────────────────────
-// Mirrors the per-project financial table shown on the turf & paving
-// home pages: Project · Status · Progress · Contract · Bid · Actual ·
-// Variance · Projected · Profit · Pinned.
-//
-// Per-bid-item projection formula matches tracker.html projForBidItem():
-//   - if start/target dates set AND actual > 0 AND elapsed > 0
-//       projected = max(actual, actual/elapsed × total_days)  (time scale)
-//   - else if running_qty > 0
-//       projected = (actual / running_qty) × bid_qty           (qty scale)
-//   - else
-//       projected = bid_total                                  (use bid)
-//
-// Then summed per project. progress %, variance, profit are derived
-// from the totals in JS.
+// Cross-division roll-up: top 12 active-or-pinned projects from Turf +
+// Paving blobs, with bid/actual/projected joined from daily_tracking
+// for the matching division. Mirrors the financial table users see on
+// each home page (Project · Status · Progress · Contract · Bid · Actual ·
+// Variance · Projected · Profit · Pinned).
 async function buildProjectsPortfolio(sql, companyCode) {
-  const rows = await safeRun('projects.portfolio', async () => {
-    return await sql`
-      WITH target_projects AS (
-        SELECT id, name, job_number, status,
-               contract_amount, pinned, updated_at
-          FROM projects
-         WHERE company_code = ${companyCode}
-           AND (LOWER(COALESCE(status, '')) NOT IN ('complete', 'closed')
-                OR pinned = TRUE)
-         ORDER BY pinned DESC NULLS LAST, updated_at DESC NULLS LAST
-         LIMIT 12
-      ),
-      bid_per_item AS (
-        SELECT
-          bi.project_id,
-          bi.cost_code,
-          COALESCE(bi.sub_code, '')                                       AS sub_code,
-          COALESCE(bi.quantity,  0)                                       AS bid_qty,
-          COALESCE(bi.quantity,  0) * COALESCE(bi.unit_cost, 0)::float    AS bid_total,
-          bi.start_date,
-          bi.target_date
-          FROM bid_items bi
-         WHERE bi.company_code = ${companyCode}
-           AND bi.project_id IN (SELECT id FROM target_projects)
-      ),
-      daily_per_match AS (
-        SELECT
-          project_id,
-          cost_code,
-          COALESCE(sub_code, '') AS sub_code,
-          SUM(
-            COALESCE(total_cost_override,
-              COALESCE(labor_hours, 0) * COALESCE(rate, 0)
-              + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
-              + COALESCE(material_cost, 0)
-            )
-          )::float                            AS actual,
-          SUM(COALESCE(quantity, 0))::float   AS rqty
-          FROM daily_tracking
-         WHERE company_code = ${companyCode}
-           AND project_id IN (SELECT id FROM target_projects)
-           AND project_id <> ''
-         GROUP BY project_id, cost_code, COALESCE(sub_code, '')
-      ),
-      projected_per_item AS (
-        SELECT
-          bp.project_id,
-          bp.bid_total,
-          COALESCE(d.actual, 0) AS actual,
-          CASE
-            WHEN bp.start_date IS NOT NULL
-             AND bp.target_date IS NOT NULL
-             AND COALESCE(d.actual, 0) > 0
-             AND CURRENT_DATE > bp.start_date
-             AND bp.target_date > bp.start_date
-            THEN GREATEST(
-              d.actual,
-              d.actual
-                * EXTRACT(EPOCH FROM (bp.target_date - bp.start_date))
-                / NULLIF(EXTRACT(EPOCH FROM (CURRENT_DATE - bp.start_date)), 0)
-            )
-            WHEN COALESCE(d.rqty, 0) > 0
-            THEN (d.actual / d.rqty) * bp.bid_qty
-            ELSE bp.bid_total
-          END AS projected
-        FROM bid_per_item bp
-        LEFT JOIN daily_per_match d
-               ON d.project_id = bp.project_id
-              AND d.cost_code  = bp.cost_code
-              AND d.sub_code   = bp.sub_code
-      ),
-      project_totals AS (
-        SELECT
-          project_id,
-          SUM(bid_total)::float AS bid,
-          SUM(actual)::float    AS actual,
-          SUM(projected)::float AS projected
-          FROM projected_per_item
-         GROUP BY project_id
-      )
-      SELECT
-        tp.id,
-        tp.name,
-        tp.job_number,
-        tp.status,
-        tp.contract_amount::float          AS contract,
-        tp.pinned,
-        COALESCE(pt.bid,       0)::float   AS bid,
-        COALESCE(pt.actual,    0)::float   AS actual,
-        COALESCE(pt.projected, 0)::float   AS projected
-      FROM target_projects tp
-      LEFT JOIN project_totals pt ON pt.project_id = tp.id
-      ORDER BY tp.pinned DESC NULLS LAST, tp.updated_at DESC NULLS LAST
-    `;
+  const [turfBlobs, pavingBlobs] = await Promise.all([
+    readTurfProjects(sql, companyCode).catch(err => {
+      console.error('[executive/report] portfolio turf blobs failed:', err.message); return [];
+    }),
+    readPavingProjects(sql, companyCode).catch(err => {
+      console.error('[executive/report] portfolio paving blobs failed:', err.message); return [];
+    }),
+  ]);
+
+  const tagged = [
+    ...turfBlobs.map(p   => ({ p, division: 'turf' })),
+    ...pavingBlobs.map(p => ({ p, division: 'paving' })),
+  ].filter(({ p }) => !projIsComplete(p) || projPinned(p))
+   .sort((a, b) => Number(projPinned(b.p)) - Number(projPinned(a.p)))
+   .slice(0, 12);
+
+  if (!tagged.length) return { summary: { pinned: 0, recent: 0, total: 0 }, rows: [] };
+
+  // Bucket projects by division so each financial query stays scoped.
+  const byDiv = { turf: [], paving: [] };
+  tagged.forEach(({ p, division }) => byDiv[division].push(p));
+
+  const [turfFin, pavingFin] = await Promise.all([
+    byDiv.turf.length   ? buildFinancials(sql, companyCode, 'turf',   byDiv.turf)   : Promise.resolve(null),
+    byDiv.paving.length ? buildFinancials(sql, companyCode, 'paving', byDiv.paving) : Promise.resolve(null),
+  ].map(p => p.catch(err => { console.error('[executive/report] portfolio fin:', err.message); return null; })));
+
+  const finByProject = new Map();
+  for (const f of [turfFin, pavingFin]) {
+    if (!f) continue;
+    for (const [pid, vals] of f.perProject) finByProject.set(pid, vals);
+  }
+
+  const rows = tagged.map(({ p, division }) => {
+    const fin       = finByProject.get(p.id) || { bid: 0, actual: 0, projected: 0 };
+    const contract  = projContract(p);
+    const bid       = fin.bid;
+    const actual    = fin.actual;
+    const projected = fin.projected;
+
+    const progressPct = bid > 0 ? Math.min(Math.round((actual / bid) * 100), 100) : 0;
+    const variance    = bid - actual;
+    const profit      = contract > 0 && projected > 0 ? contract - projected : null;
+    const profitPct   = profit != null && contract > 0 ? (profit / contract) * 100 : null;
+
+    return {
+      name:        projName(p),
+      jobNumber:   projJob(p) || '—',
+      division,
+      status:      projStatus(p) || 'In Progress',
+      pinned:      projPinned(p),
+      progressPct,
+      contract,
+      bid,
+      actual,
+      variance,
+      projected,
+      profit,
+      profitPct,
+    };
   });
 
-  if (!rows || !rows.length) return null;
-
   const pinnedCount = rows.filter(r => r.pinned).length;
-  const recentCount = rows.length - pinnedCount;
-
   return {
     summary: {
       pinned: pinnedCount,
-      recent: recentCount,
+      recent: rows.length - pinnedCount,
       total:  rows.length,
     },
-    rows: rows.map(r => {
-      const contract  = Number(r.contract)  || 0;
-      const bid       = Number(r.bid)       || 0;
-      const actual    = Number(r.actual)    || 0;
-      const projected = Number(r.projected) || 0;
-
-      const progressPct = bid > 0 ? Math.min(Math.round((actual / bid) * 100), 100) : 0;
-      const variance    = bid - actual; // positive = under, negative = over
-      const profit      = contract > 0 && projected > 0 ? contract - projected : null;
-      const profitPct   = profit != null && contract > 0 ? (profit / contract) * 100 : null;
-
-      return {
-        name:        r.name || '(unnamed)',
-        jobNumber:   r.job_number || '—',
-        division:    'turf', // projects table is effectively turf-only today
-        status:      r.status || 'In Progress',
-        pinned:      Boolean(r.pinned),
-        progressPct,
-        contract,
-        bid,
-        actual,
-        variance,
-        projected,
-        profit,
-        profitPct,
-      };
-    }),
+    rows,
   };
 }
 
@@ -769,39 +756,34 @@ async function buildProjectsPortfolio(sql, companyCode) {
 // dust sections are intentionally omitted until quarry data lands
 // and dust gains a project linkage. Each per-project sub-query runs
 // in parallel and is independently safe-wrapped.
+// Per-project detail (page 3+): top 6 active across Turf + Paving by
+// earliest start date. Bid items come from the blob, booked cost +
+// weekly trucking come from the normalized tables joined by project_id.
 async function buildProjectDetails(sql, companyCode) {
-  const projects = await safeRun('details.list', async () => {
-    return await sql`
-      SELECT
-        p.id,
-        p.name,
-        p.job_number,
-        p.status,
-        p.start_date::text       AS start_date,
-        p.end_date::text         AS end_date,
-        p.contract_amount::float AS contract_amount
-      FROM projects p
-      WHERE p.company_code = ${companyCode}
-        AND LOWER(COALESCE(p.status, '')) NOT IN ('complete', 'closed')
-      ORDER BY p.start_date ASC NULLS LAST, p.name ASC
-      LIMIT 6
-    `;
-  });
+  const [turfBlobs, pavingBlobs] = await Promise.all([
+    readTurfProjects(sql, companyCode).catch(() => []),
+    readPavingProjects(sql, companyCode).catch(() => []),
+  ]);
 
-  if (!projects || !projects.length) return null;
+  const tagged = [
+    ...turfBlobs.map(p   => ({ p, division: 'turf'   })),
+    ...pavingBlobs.map(p => ({ p, division: 'paving' })),
+  ].filter(({ p }) => !projIsComplete(p))
+   .sort((a, b) => {
+     const sa = projStartDate(a.p) || '';
+     const sb = projStartDate(b.p) || '';
+     // empty start dates sort last
+     if (!sa && !sb) return projName(a.p).localeCompare(projName(b.p));
+     if (!sa) return 1;
+     if (!sb) return -1;
+     return sa.localeCompare(sb);
+   })
+   .slice(0, 6);
 
-  const detailed = await Promise.all(projects.map(async (p) => {
-    const [bidItems, weeks, booked] = await Promise.all([
-      safeRun(`details.bid.${p.id}`, async () => {
-        return await sql`
-          SELECT cost_code, sub_code, description, quantity, unit, status
-            FROM bid_items
-           WHERE company_code = ${companyCode}
-             AND project_id   = ${p.id}
-           ORDER BY cost_code, sub_code
-           LIMIT 8
-        `;
-      }),
+  if (!tagged.length) return [];
+
+  return Promise.all(tagged.map(async ({ p, division }) => {
+    const [weeks, booked] = await Promise.all([
       safeRun(`details.weeks.${p.id}`, async () => {
         return await sql`
           SELECT
@@ -829,21 +811,22 @@ async function buildProjectDetails(sql, companyCode) {
             ), 0)::float AS booked
           FROM daily_tracking
           WHERE company_code = ${companyCode}
+            AND division     = ${division}
             AND project_id   = ${p.id}
         `;
         return rows[0]?.booked ?? 0;
       }),
     ]);
 
-    return buildDetailObject(p, bidItems, weeks, booked);
+    return buildDetailObject(p, division, projBidLines(p), weeks, booked);
   }));
-
-  return detailed.filter(Boolean);
 }
 
-function buildDetailObject(p, bidItems, weeks, booked) {
-  const startMs = p.start_date ? new Date(p.start_date + 'T00:00:00Z').getTime() : null;
-  const endMs   = p.end_date   ? new Date(p.end_date   + 'T00:00:00Z').getTime() : null;
+function buildDetailObject(p, division, bidItems, weeks, booked) {
+  const start = projStartDate(p);
+  const end   = projEndDate(p);
+  const startMs = start ? new Date(start + 'T00:00:00Z').getTime() : null;
+  const endMs   = end   ? new Date(end   + 'T00:00:00Z').getTime() : null;
   const todayMs = Date.now();
 
   let pctComplete = '—';
@@ -860,12 +843,13 @@ function buildDetailObject(p, bidItems, weeks, booked) {
   const sections = {};
 
   if (Array.isArray(bidItems) && bidItems.length) {
+    const accent = division === 'paving' ? '#60a5fa' : '#22c55e';
     sections.bidItems = {
-      color: '#22c55e',
+      color: accent,
       cols:  ['Item', 'Qty', 'Status'],
-      rows:  bidItems.map(b => [
+      rows:  bidItems.slice(0, 8).map(b => [
         b.description || b.cost_code || '—',
-        b.quantity != null
+        b.quantity > 0
           ? `${Number(b.quantity).toLocaleString('en-US')} ${b.unit || ''}`.trim()
           : '—',
         b.status || 'Active',
@@ -901,21 +885,22 @@ function buildDetailObject(p, bidItems, weeks, booked) {
     };
   }
 
-  const status      = String(p.status || 'Active');
+  const status = projStatus(p) || 'Active';
   const statusColor =
     status === 'On Hold' ? 'mute' :
     status === 'At Risk' ? 'amber' :
     'green';
 
+  const contract = projContract(p);
   return {
-    name:        p.name || '(unnamed)',
-    jobNumber:   p.job_number || '—',
-    division:    'turf',
+    name:        projName(p),
+    jobNumber:   projJob(p) || '—',
+    division,
     status,
     statusColor,
-    start:       fmtDate(p.start_date),
-    target:      fmtDate(p.end_date),
-    contract:    p.contract_amount != null ? fmtCurrency(p.contract_amount) : '—',
+    start:       fmtDate(start),
+    target:      fmtDate(end),
+    contract:    contract > 0 ? fmtCurrency(contract) : '—',
     bookedCost:  booked != null ? fmtCurrency(booked) : '—',
     pctComplete,
     sections,
@@ -988,123 +973,21 @@ async function buildIntercompanyTile(sql, companyCode) {
   };
 }
 
-// ── Paving tile ──────────────────────────────────────────────────────
-// Paving projects live in JSONB blobs (one per project under
-// fct_paving_project_<id>, with an index at fct_paving_projects_index)
-// rather than the normalized `projects` table. Daily costs land in
-// daily_tracking with division='paving' and project_id matching the
-// blob's id. We pull the blobs, count active vs complete, sum bid totals
-// from blob.bidItems, then aggregate actuals from daily_tracking and
-// derive Cost vs Bid / Projected / Profit the same way buildTurfTile
-// does so the two tiles read consistently.
-//
-// Status taxonomy (paving.html line 5526): 'Complete' | 'Active' |
-// 'At Risk' | 'On Hold' | '' — anything not 'Complete' is active.
+// Paving — same shape as Turf, sourced from fct_paving_projects_index +
+// per-project blobs and joined to daily_tracking.division='paving'.
 async function buildPavingTile(sql, companyCode) {
-  const blobs = await safeRun('paving.blobs', async () => {
-    const idxRow = await sql`
-      SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_paving_projects_index`}
-    `;
-    const idx = idxRow[0]?.value;
-    const ids = Array.isArray(idx) ? idx : (Array.isArray(idx?.ids) ? idx.ids : []);
-    if (!ids.length) return [];
-
-    const keys = ids.map(id => `${companyCode}:fct_paving_project_${id}`);
-    const rows = await sql`SELECT key, value FROM app_data WHERE key = ANY(${keys})`;
-    return rows.map(r => r.value).filter(v => v && typeof v === 'object');
+  const blobs  = await readPavingProjects(sql, companyCode);
+  const active = blobs.filter(p => !projIsComplete(p));
+  const financials = await safeRun('paving.financials', async () => {
+    return await buildFinancials(sql, companyCode, 'paving', active);
   });
-  const projects = Array.isArray(blobs) ? blobs : [];
-  const isComplete = p => String(p['status'] || '').toLowerCase() === 'complete';
-  const isOnHold   = p => String(p['status'] || '').toLowerCase() === 'on hold';
-  const active     = projects.filter(p => !isComplete(p));
-  const onHold     = active.filter(isOnHold).length;
-
-  const num = v => {
-    if (v == null || v === '') return 0;
-    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
-    return Number.isFinite(n) ? n : 0;
-  };
-  const totalContract = active.reduce((s, p) => s + num(p['contract-amount'] || p['revised-amount']), 0);
-  const totalBid      = active.reduce((s, p) => {
-    const items = Array.isArray(p.bidItems) ? p.bidItems : [];
-    return s + items.reduce((a, b) => a + num(b.quantity) * num(b.bid_item_cost || b.unit_cost), 0);
-  }, 0);
-
-  const activeIds = active.map(p => p.id).filter(Boolean);
-  let totalActual = 0;
-  if (activeIds.length) {
-    const actualRows = await safeRun('paving.actuals', async () => {
-      return await sql`
-        SELECT COALESCE(SUM(
-          COALESCE(total_cost_override,
-            COALESCE(labor_hours, 0) * COALESCE(rate, 0)
-            + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
-            + COALESCE(material_cost, 0)
-          )
-        ), 0)::float AS actual
-        FROM daily_tracking
-        WHERE company_code = ${companyCode}
-          AND division     = 'paving'
-          AND project_id   = ANY(${activeIds})
-      `;
-    });
-    totalActual = actualRows && actualRows[0] ? Number(actualRows[0].actual) || 0 : 0;
-  }
-
-  // Projected: scale actuals by bid burn rate (matches turf logic at the
-  // tile aggregate level — finer per-bid-item scaling isn't worth it here
-  // since paving bid items don't carry start/target dates).
-  const totalProjected = totalBid > 0 && totalActual > 0
-    ? Math.max(totalActual, totalBid)
-    : (totalBid > 0 ? totalBid : totalActual);
-
-  const cvbFmt = totalBid > 0 ? fmtCostVsBid(totalActual, totalBid) : { text: '—', color: 'mute' };
-  const cvbSub = totalBid > 0
-    ? (cvbFmt.color === 'red'   ? 'Over bid'
-      : cvbFmt.color === 'green' ? 'Under bid'
-      : 'On plan')
-    : undefined;
-
-  let profitText = '—';
-  let profitSub;
-  if (totalContract > 0 && totalProjected > 0) {
-    const profit = totalContract - totalProjected;
-    if (Math.abs(profit) < 1) {
-      profitText = '$0';
-      profitSub  = 'Break-even';
-    } else if (profit > 0) {
-      profitText = fmtCurrency(profit);
-      profitSub  = `${((profit / totalContract) * 100).toFixed(1)}% margin`;
-    } else {
-      profitText = `−${fmtCurrency(Math.abs(profit))}`;
-      profitSub  = `${(Math.abs(profit / totalContract) * 100).toFixed(1)}% loss`;
-    }
-  }
-
-  let status, statusKind;
-  if (!projects.length) { status = 'No Projects'; statusKind = 'mute'; }
-  else if (onHold > 0)  { status = `${onHold} On Hold`; statusKind = 'amber'; }
-  else if (totalContract > 0 && totalProjected > totalContract) { status = 'Margin Risk'; statusKind = 'amber'; }
-  else                  { status = 'On Track'; statusKind = 'green'; }
-
-  return {
-    key: 'paving', name: 'Paving', accent: '#60a5fa',
-    status, statusKind,
-    kpis: [
-      {
-        label: 'Active Projects',
-        value: String(active.length),
-        sub:   onHold > 0 ? `${onHold} on hold` : undefined,
-      },
-      { label: 'Cost vs Bid', value: cvbFmt.text, sub: cvbSub },
-      {
-        label: 'Projected',
-        value: totalProjected > 0 ? fmtCurrency(totalProjected) : '—',
-        sub:   totalContract > 0  ? `vs ${fmtCurrency(totalContract)} contract` : undefined,
-      },
-      { label: 'Profit', value: profitText, sub: profitSub },
-    ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
-  };
+  return makeFinancialTile({
+    key:      'paving',
+    name:     'Paving',
+    accent:   '#60a5fa',
+    projects: blobs,
+    financials,
+  });
 }
 
 // ── Quarry tile ──────────────────────────────────────────────────────
