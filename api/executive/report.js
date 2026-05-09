@@ -15,10 +15,12 @@
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('../lib/auth');
 
-// Project statuses that count as "active" on the home page. Includes
-// 'In Progress' which is the catch-all status tracker.html actually
-// uses for ongoing projects.
-const ACTIVE_STATUSES_SQL_ARRAY = ['Active', 'At Risk', 'On Hold', 'In Progress'];
+// "Active" mirrors tracker.html's isDone() inverse: anything whose
+// status is NOT 'complete' or 'closed' (case-insensitive) counts as
+// active — including null/empty, 'Bidding', 'Awarded', 'In Progress',
+// 'Substantially Complete', 'On Hold'. The home page status dropdown
+// (tracker.html line 7050) is the source of truth for valid values.
+const ACTIVE_STATUS_DONE = ['complete', 'closed'];
 
 // ── Date / formatting helpers ────────────────────────────────────────────
 function startOfWeekISO(d) {
@@ -87,7 +89,7 @@ async function buildHero(sql, companyCode) {
       SELECT COUNT(*)::int AS n
         FROM projects
        WHERE company_code = ${companyCode}
-         AND status = ANY(${ACTIVE_STATUSES_SQL_ARRAY})
+         AND LOWER(COALESCE(status, '')) <> ALL(${ACTIVE_STATUS_DONE})
     `;
     return rows[0]?.n ?? 0;
   });
@@ -181,24 +183,27 @@ async function buildHero(sql, companyCode) {
 // than the whole tile. Always returns a tile object — never null —
 // so the front-end shows the new labels even if every query fails.
 async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */) {
-  // ── Active count ─────────────────────────────────────────────
+  // ── Active count (anything not Complete/Closed) ──────────────
   const active = await safeRun('turf.active', async () => {
     const r = await sql`
       SELECT COUNT(*)::int AS n
         FROM projects
        WHERE company_code = ${companyCode}
-         AND status = ANY(${ACTIVE_STATUSES_SQL_ARRAY})
+         AND LOWER(COALESCE(status, '')) <> ALL(${ACTIVE_STATUS_DONE})
     `;
     return r[0]?.n ?? 0;
   });
 
-  // ── At Risk count ────────────────────────────────────────────
-  const atRisk = await safeRun('turf.at_risk', async () => {
+  // ── On Hold count (the closest "needs attention" signal in the
+  //    home-page status taxonomy; replaces the previous At Risk
+  //    count which referenced a status value that doesn't exist
+  //    in the production data) ────────────────────────────────────
+  const onHold = await safeRun('turf.on_hold', async () => {
     const r = await sql`
       SELECT COUNT(*)::int AS n
         FROM projects
        WHERE company_code = ${companyCode}
-         AND status = 'At Risk'
+         AND LOWER(COALESCE(status, '')) = 'on hold'
     `;
     return r[0]?.n ?? 0;
   });
@@ -213,7 +218,7 @@ async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */)
         SELECT id, contract_amount
           FROM projects
          WHERE company_code = ${companyCode}
-           AND status = ANY(${ACTIVE_STATUSES_SQL_ARRAY})
+           AND LOWER(COALESCE(status, '')) <> ALL(${ACTIVE_STATUS_DONE})
       ),
       bid_per_item AS (
         SELECT
@@ -316,10 +321,10 @@ async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */)
     }
   }
 
-  // Status pill
+  // Status pill — On Hold > Margin Risk > On Track
   let status, statusKind;
-  if (atRisk && atRisk > 0) {
-    status = `${atRisk} At Risk`;
+  if (onHold && onHold > 0) {
+    status = `${onHold} On Hold`;
     statusKind = 'amber';
   } else if (totalContract > 0 && totalProjected > totalContract) {
     status = 'Margin Risk';
@@ -336,7 +341,7 @@ async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */)
       {
         label: 'Active Projects',
         value: active != null ? String(active) : '—',
-        sub:   (atRisk && atRisk > 0) ? `${atRisk} at risk` : undefined,
+        sub:   (onHold && onHold > 0) ? `${onHold} on hold` : undefined,
       },
       {
         label: 'Cost vs Bid',
@@ -537,7 +542,7 @@ async function buildProjectsPortfolio(sql, companyCode) {
                contract_amount, pinned, updated_at
           FROM projects
          WHERE company_code = ${companyCode}
-           AND (status IN ('Active', 'At Risk', 'On Hold', 'In Progress')
+           AND (LOWER(COALESCE(status, '')) <> ALL(${ACTIVE_STATUS_DONE})
                 OR pinned = TRUE)
          ORDER BY pinned DESC NULLS LAST, updated_at DESC NULLS LAST
          LIMIT 12
@@ -686,7 +691,7 @@ async function buildProjectDetails(sql, companyCode) {
         p.contract_amount::float AS contract_amount
       FROM projects p
       WHERE p.company_code = ${companyCode}
-        AND p.status = ANY(${ACTIVE_STATUSES_SQL_ARRAY})
+        AND LOWER(COALESCE(p.status, '')) <> ALL(${ACTIVE_STATUS_DONE})
       ORDER BY p.start_date ASC NULLS LAST, p.name ASC
       LIMIT 6
     `;
