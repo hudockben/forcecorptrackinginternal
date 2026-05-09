@@ -31,6 +31,22 @@ function fmtCurrency(n) {
   const v = Math.round(Number(n) || 0);
   return '$' + v.toLocaleString('en-US');
 }
+// Format a cost-vs-bid variance as a signed pct ("+2.1%", "−0.4%").
+// Returns { text, color } where color is 'green' for under bid (negative
+// variance) and 'red' for over bid. Uses a true minus sign (U+2212) to
+// match the existing UI style.
+function fmtCostVsBid(booked, bid) {
+  const b = Number(booked) || 0;
+  const k = Number(bid)    || 0;
+  if (k <= 0) return { text: '—', color: 'mute' };
+  const variance = (b - k) / k;
+  const pct = variance * 100;
+  if (Math.abs(pct) < 0.1) return { text: 'on plan', color: 'mute' };
+  const sign = pct > 0 ? '+' : '−';
+  const txt = `${sign}${Math.abs(pct).toFixed(1)}%`;
+  return { text: txt, color: pct > 0 ? 'red' : 'green' };
+}
+
 function fmtRevenueDelta(curr, prev) {
   const c = Number(curr) || 0;
   const p = Number(prev) || 0;
@@ -196,6 +212,50 @@ async function buildTurfTile(sql, companyCode, weekStart, weekEnd) {
     return rows[0]?.v ?? 0;
   });
 
+  // Cost vs Bid — aggregate across all active projects:
+  // SUM(booked) / SUM(bid) where booked comes from daily_tracking and
+  // bid comes from bid_items. Limited to projects whose status is in
+  // the active set so completed projects don't drag the ratio.
+  const cvb = await safeRun('turf.cost_vs_bid', async () => {
+    const rows = await sql`
+      WITH active_proj AS (
+        SELECT id
+          FROM projects
+         WHERE company_code = ${companyCode}
+           AND status IN ('Active', 'At Risk', 'On Hold')
+      ),
+      bid AS (
+        SELECT COALESCE(SUM(COALESCE(quantity, 0) * COALESCE(unit_cost, 0)), 0)::float AS v
+          FROM bid_items
+         WHERE company_code = ${companyCode}
+           AND project_id IN (SELECT id FROM active_proj)
+      ),
+      booked AS (
+        SELECT COALESCE(SUM(
+                 COALESCE(total_cost_override,
+                   COALESCE(labor_hours, 0) * COALESCE(rate, 0)
+                   + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
+                   + COALESCE(material_cost, 0)
+                 )
+               ), 0)::float AS v
+          FROM daily_tracking
+         WHERE company_code = ${companyCode}
+           AND project_id IN (SELECT id FROM active_proj)
+      )
+      SELECT (SELECT v FROM bid)    AS bid_total,
+             (SELECT v FROM booked) AS booked_total
+    `;
+    return rows[0] || null;
+  });
+  const cvbFmt = cvb && cvb.bid_total > 0
+    ? fmtCostVsBid(cvb.booked_total, cvb.bid_total)
+    : { text: '—', color: 'mute' };
+  const cvbSub = cvb && cvb.bid_total > 0
+    ? (cvbFmt.color === 'red'   ? 'Over bid'
+      : cvbFmt.color === 'green' ? 'Under bid'
+      : 'On plan')
+    : null;
+
   return {
     key: 'turf', name: 'Turf Management', accent: '#22c55e',
     status: atRisk > 0 ? `${atRisk} At Risk` : 'On Track',
@@ -204,12 +264,12 @@ async function buildTurfTile(sql, companyCode, weekStart, weekEnd) {
       {
         label: 'Active Projects',
         value: active != null ? String(active) : '—',
-        sub:   atRisk > 0 ? `${atRisk} at risk` : null,
+        sub:   atRisk > 0 ? `${atRisk} at risk` : undefined,
       },
       { label: 'Labor Hrs · Wk',  value: laborHrs != null ? String(Math.round(laborHrs))  : '—' },
       { label: 'Equipment Hrs',   value: equipHrs != null ? String(Math.round(equipHrs))  : '—' },
-      { label: 'Cost vs Bid',     value: '—', sub: 'pending wiring' },
-    ].filter(k => !(k.sub === null)).map(k => { if (k.sub === null) delete k.sub; return k; }),
+      { label: 'Cost vs Bid',     value: cvbFmt.text, sub: cvbSub || undefined },
+    ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
   };
 }
 
@@ -350,7 +410,9 @@ async function buildProjectsPortfolio(sql, companyCode) {
         p.end_date::text     AS end_date,
         COALESCE(t.trucking_dollars, 0)::float AS trucking_dollars,
         COALESCE(t.has_trucking, false)        AS has_trucking,
-        COALESCE(d.labor_hours, 0)::float      AS labor_hours
+        COALESCE(d.labor_hours, 0)::float      AS labor_hours,
+        COALESCE(b.bid_total, 0)::float        AS bid_total,
+        COALESCE(c.booked_total, 0)::float     AS booked_total
       FROM projects p
       LEFT JOIN (
         SELECT project_id,
@@ -370,6 +432,28 @@ async function buildProjectsPortfolio(sql, companyCode) {
            AND project_id <> ''
          GROUP BY project_id
       ) d ON d.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id,
+               SUM(COALESCE(quantity, 0) * COALESCE(unit_cost, 0))::float AS bid_total
+          FROM bid_items
+         WHERE company_code = ${companyCode}
+         GROUP BY project_id
+      ) b ON b.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id,
+               SUM(
+                 COALESCE(total_cost_override,
+                   COALESCE(labor_hours, 0) * COALESCE(rate, 0)
+                   + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
+                   + COALESCE(material_cost, 0)
+                 )
+               )::float AS booked_total
+          FROM daily_tracking
+         WHERE company_code = ${companyCode}
+           AND project_id IS NOT NULL
+           AND project_id <> ''
+         GROUP BY project_id
+      ) c ON c.project_id = p.id
       WHERE p.company_code = ${companyCode}
         AND p.status IN ('Active', 'At Risk', 'On Hold')
       ORDER BY
@@ -464,7 +548,10 @@ async function buildProjectsPortfolio(sql, companyCode) {
         { label: '% Complete',  value: pctCompleteText },
         { label: 'Trucking $',  value: fmtCurrency(p.trucking_dollars || 0) },
         { label: 'Labor hrs',   value: Math.round(p.labor_hours || 0).toLocaleString('en-US') },
-        { label: 'Cost vs Bid', value: '—', color: 'mute' },
+        (() => {
+          const cvb = fmtCostVsBid(p.booked_total, p.bid_total);
+          return { label: 'Cost vs Bid', value: cvb.text, color: cvb.color };
+        })(),
       ],
     };
   });
