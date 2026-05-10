@@ -344,17 +344,17 @@
       width: 38px;
       height: 38px;
       border-radius: 8px;
-      background: var(--surface2);
+      background: rgba(34,197,94,0.1);
+      border: 1px solid rgba(34,197,94,0.25);
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
       overflow: hidden;
     }
-    .exec-entry-logo img {
-      width: 30px;
-      height: 30px;
-      object-fit: contain;
+    .exec-entry-logo svg {
+      width: 19px;
+      height: 19px;
     }
     .exec-entry-text {
       display: flex;
@@ -694,7 +694,9 @@
   <main>
     <a href="executive.html" class="exec-entry" id="execEntry" aria-label="Open Executive Division">
       <div class="exec-entry-logo">
-        <img src="datawatch-helmet.png" alt="" />
+        <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
       </div>
       <div class="exec-entry-text">
         <div class="exec-entry-eyebrow">Cross-Division</div>
