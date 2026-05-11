@@ -59,6 +59,20 @@
     }
     .user-info { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
     .user-info strong { color: var(--text); }
+
+    /* Who's online presence */
+    .online-avatar-wrap { position: relative; display: inline-flex; }
+    .online-avatar-wrap .user-avatar { opacity: 0.9; }
+    .online-dot {
+      position: absolute; bottom: -1px; right: -1px;
+      width: 8px; height: 8px; background: #22c55e;
+      border-radius: 50%; border: 1.5px solid #0a0a0a;
+    }
+    .online-users-label {
+      font-size: 0.65rem; color: #555;
+      letter-spacing: 0.04em; white-space: nowrap;
+    }
+    #online-users { display: flex; align-items: center; gap: 0.3rem; margin-right: 0.25rem; }
     .btn-ghost {
       font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
       text-transform: uppercase; color: var(--muted);
@@ -587,6 +601,7 @@
       <div class="div-label">Quarry</div>
     </div>
     <div class="hdr-right">
+      <span id="online-users"></span>
       <div class="user-avatar" id="userAvatar"></div>
       <div class="user-info" id="userInfo"></div>
       <button class="btn-ghost" onclick="switchDivision()">Switch Division</button>
@@ -3808,6 +3823,83 @@ ${sections}
     if (window.location && /quarry/i.test(document.title)) {
       // No-op guard; data is fetched on first switch into the tab.
     }
+
+    /* ═══════════════════════════════════════════
+       WHO'S ONLINE — presence heartbeat
+       Mirrors the pattern used in paving/trucking/etc.
+       Each user writes to shared key fct_presence every 30s.
+       Users active within 2 min are shown as avatars in the header.
+    ═══════════════════════════════════════════ */
+    (function () {
+      if (!user || !token) return;
+
+      const PRESENCE_KEY = 'fct_presence';
+      const HEARTBEAT_MS = 30_000;
+      const POLL_MS      = 30_000;
+      const STALE_MS     = 120_000;
+
+      const myId   = String(user.userId || user.username);
+      const myName = user.name || user.username || '';
+      const myUser = user.username || '';
+      const parts  = myName.trim().split(/\s+/);
+      const myInit = parts.length >= 2
+        ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+        : myName.slice(0, 2).toUpperCase() || '?';
+      const palette = ['#2ecc71','#3498db','#9b59b6','#e67e22','#e74c3c','#1abc9c','#f39c12','#16a085'];
+      let h = 0;
+      for (let i = 0; i < myName.length; i++) h = (h * 31 + myName.charCodeAt(i)) & 0xffff;
+      const myColor = palette[h % palette.length];
+
+      async function presenceGet() {
+        try {
+          const res = await fetch(`/api/data/${PRESENCE_KEY}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!res.ok) return {};
+          const data = await res.json();
+          return (data && typeof data.value === 'object' && data.value) || {};
+        } catch { return {}; }
+      }
+
+      async function presencePut(data) {
+        try {
+          await fetch(`/api/data/${PRESENCE_KEY}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ value: data })
+          });
+        } catch { /* best-effort */ }
+      }
+
+      function renderOnline(data) {
+        const el = document.getElementById('online-users');
+        if (!el) return;
+        const now    = Date.now();
+        const others = Object.entries(data)
+          .filter(([id, u]) => id !== myId && (now - (u.ts || 0)) < STALE_MS)
+          .sort((a, b) => (a[1].username || '').localeCompare(b[1].username || ''));
+        if (!others.length) { el.innerHTML = ''; return; }
+        el.innerHTML =
+          '<span class="online-users-label">Online:</span>' +
+          others.map(([, u]) =>
+            `<span class="online-avatar-wrap">` +
+              `<span class="user-avatar" style="background:${u.color||'#555'};width:26px;height:26px;font-size:0.62rem;" title="${u.username||''}">${u.initials||'?'}</span>` +
+              `<span class="online-dot"></span>` +
+            `</span>`
+          ).join('');
+      }
+
+      async function heartbeat() {
+        const data = await presenceGet();
+        data[myId] = { username: myUser, initials: myInit, color: myColor, ts: Date.now() };
+        await presencePut(data);
+        renderOnline(data);
+      }
+
+      heartbeat();
+      setInterval(heartbeat, HEARTBEAT_MS);
+      setInterval(async () => renderOnline(await presenceGet()), POLL_MS);
+    })();
   </script>
 
 </body>
