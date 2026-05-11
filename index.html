@@ -42,6 +42,15 @@
       user-select: none;
     }
 
+    .brand-logo {
+      width: clamp(72px, 7vw, 110px);
+      height: auto;
+      display: block;
+      margin-bottom: 1.5rem;
+      mix-blend-mode: screen;
+      filter: drop-shadow(0 6px 24px rgba(34,197,94,0.18));
+    }
+
     .brand-kicker {
       display: flex;
       align-items: center;
@@ -202,6 +211,10 @@
       object-fit: contain;
     }
 
+    .card-logo-mark img {
+      mix-blend-mode: screen;
+    }
+
     .card-logo-name {
       font-size: 0.62rem;
       font-weight: 700;
@@ -360,6 +373,8 @@
 
     <!-- Left: bare text branding -->
     <div class="brand">
+      <img class="brand-logo" src="datawatch-tower.png" alt="DataWatch" />
+
       <div class="brand-kicker">
         <div class="brand-kicker-line"></div>
         <span class="brand-kicker-text">Workforce Intelligence</span>
