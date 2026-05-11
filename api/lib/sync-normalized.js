@@ -595,6 +595,325 @@ async function syncIntercompanyBillingEntries(sql, companyCode, value) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// QUARRY LISTS  (fct_quarry_lists → quarry_{locations,products,customers,employees,equipment,tasks})
+// Blob shape: { location: [...], product: [...], customer: [...],
+//               employees: [...], equipment: [...], tasks: [...] }
+// Each item: { id, name, rate? }
+// Delete-then-reinsert by company so removals propagate.
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncQuarryLists(sql, companyCode, value) {
+  const lists = (value && typeof value === 'object') ? value : {};
+
+  const buckets = [
+    { key: 'location',  table: 'quarry_locations', hasRate: false },
+    { key: 'product',   table: 'quarry_products',  hasRate: false },
+    { key: 'customer',  table: 'quarry_customers', hasRate: false },
+    { key: 'employees', table: 'quarry_employees', hasRate: true  },
+    { key: 'equipment', table: 'quarry_equipment', hasRate: false },
+    { key: 'tasks',     table: 'quarry_tasks',     hasRate: false },
+  ];
+
+  const stats = {
+    quarry_locations: 0, quarry_products: 0, quarry_customers: 0,
+    quarry_employees: 0, quarry_equipment: 0, quarry_tasks: 0,
+  };
+
+  for (const b of buckets) {
+    const items = Array.isArray(lists[b.key]) ? lists[b.key] : [];
+    const ids = items.map(it => it && it.id).filter(Boolean);
+
+    // Wipe rows no longer in the list
+    if (b.table === 'quarry_locations') {
+      if (ids.length) await sql`DELETE FROM quarry_locations WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
+      else            await sql`DELETE FROM quarry_locations WHERE company_code = ${companyCode}`;
+    } else if (b.table === 'quarry_products') {
+      if (ids.length) await sql`DELETE FROM quarry_products WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
+      else            await sql`DELETE FROM quarry_products WHERE company_code = ${companyCode}`;
+    } else if (b.table === 'quarry_customers') {
+      if (ids.length) await sql`DELETE FROM quarry_customers WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
+      else            await sql`DELETE FROM quarry_customers WHERE company_code = ${companyCode}`;
+    } else if (b.table === 'quarry_employees') {
+      if (ids.length) await sql`DELETE FROM quarry_employees WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
+      else            await sql`DELETE FROM quarry_employees WHERE company_code = ${companyCode}`;
+    } else if (b.table === 'quarry_equipment') {
+      if (ids.length) await sql`DELETE FROM quarry_equipment WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
+      else            await sql`DELETE FROM quarry_equipment WHERE company_code = ${companyCode}`;
+    } else if (b.table === 'quarry_tasks') {
+      if (ids.length) await sql`DELETE FROM quarry_tasks WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
+      else            await sql`DELETE FROM quarry_tasks WHERE company_code = ${companyCode}`;
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!it || !it.id || !it.name) continue;
+
+      if (b.table === 'quarry_locations') {
+        await sql`
+          INSERT INTO quarry_locations (id, company_code, name, sort_order, updated_at)
+          VALUES (${it.id}, ${companyCode}, ${it.name}, ${i}, NOW())
+          ON CONFLICT (company_code, id) DO UPDATE SET
+            name = EXCLUDED.name, sort_order = EXCLUDED.sort_order, updated_at = NOW()
+        `;
+      } else if (b.table === 'quarry_products') {
+        await sql`
+          INSERT INTO quarry_products (id, company_code, name, sort_order, updated_at)
+          VALUES (${it.id}, ${companyCode}, ${it.name}, ${i}, NOW())
+          ON CONFLICT (company_code, id) DO UPDATE SET
+            name = EXCLUDED.name, sort_order = EXCLUDED.sort_order, updated_at = NOW()
+        `;
+      } else if (b.table === 'quarry_customers') {
+        await sql`
+          INSERT INTO quarry_customers (id, company_code, name, sort_order, updated_at)
+          VALUES (${it.id}, ${companyCode}, ${it.name}, ${i}, NOW())
+          ON CONFLICT (company_code, id) DO UPDATE SET
+            name = EXCLUDED.name, sort_order = EXCLUDED.sort_order, updated_at = NOW()
+        `;
+      } else if (b.table === 'quarry_employees') {
+        await sql`
+          INSERT INTO quarry_employees (id, company_code, name, rate, sort_order, updated_at)
+          VALUES (${it.id}, ${companyCode}, ${it.name}, ${safeFloat(it.rate)}, ${i}, NOW())
+          ON CONFLICT (company_code, id) DO UPDATE SET
+            name = EXCLUDED.name, rate = EXCLUDED.rate,
+            sort_order = EXCLUDED.sort_order, updated_at = NOW()
+        `;
+      } else if (b.table === 'quarry_equipment') {
+        await sql`
+          INSERT INTO quarry_equipment (id, company_code, name, sort_order, updated_at)
+          VALUES (${it.id}, ${companyCode}, ${it.name}, ${i}, NOW())
+          ON CONFLICT (company_code, id) DO UPDATE SET
+            name = EXCLUDED.name, sort_order = EXCLUDED.sort_order, updated_at = NOW()
+        `;
+      } else if (b.table === 'quarry_tasks') {
+        await sql`
+          INSERT INTO quarry_tasks (id, company_code, name, sort_order, updated_at)
+          VALUES (${it.id}, ${companyCode}, ${it.name}, ${i}, NOW())
+          ON CONFLICT (company_code, id) DO UPDATE SET
+            name = EXCLUDED.name, sort_order = EXCLUDED.sort_order, updated_at = NOW()
+        `;
+      }
+      stats[b.table]++;
+    }
+  }
+
+  return stats;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QUARRY DAILY  (fct_quarry_daily → quarry_daily_entries)
+// Computed totals (labor_cost, fuel_cost, total_cost) are stored on each
+// row so SQL reports can read them directly. Recomputed from base fields
+// to avoid drift if the UI ever sends stale derived values.
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncQuarryDaily(sql, companyCode, value) {
+  const list = Array.isArray(value) ? value : [];
+
+  const ids = list.map(r => r && r.id).filter(Boolean);
+  if (ids.length) {
+    await sql`DELETE FROM quarry_daily_entries WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
+  } else {
+    await sql`DELETE FROM quarry_daily_entries WHERE company_code = ${companyCode}`;
+  }
+
+  let quarry_daily_entries = 0;
+  for (const r of list) {
+    if (!r || !r.id) continue;
+
+    const hours        = safeFloat(r.hours);
+    const rate         = safeFloat(r.rate);
+    const fuelGallons  = safeFloat(r.fuelGallons);
+    const ppg          = safeFloat(r.ppg);
+    const laborCost    = (hours != null && rate != null) ? hours * rate : null;
+    const fuelCost     = (fuelGallons != null && ppg != null) ? fuelGallons * ppg : null;
+    const totalCost    = (laborCost != null || fuelCost != null)
+      ? (laborCost || 0) + (fuelCost || 0)
+      : null;
+
+    await sql`
+      INSERT INTO quarry_daily_entries (
+        id, company_code, date, location_id, location_name,
+        employee_id, employee_name, equipment_id, equipment_name,
+        task_id, task_name, hours, rate, fuel_gallons, ppg,
+        labor_cost, fuel_cost, total_cost, updated_at
+      ) VALUES (
+        ${r.id}, ${companyCode}, ${safeDate(r.date)},
+        ${r.locationId || null}, ${r.locationName || null},
+        ${r.employeeId || null}, ${r.employeeName || null},
+        ${r.equipmentId || null}, ${r.equipmentName || null},
+        ${r.taskId || null}, ${r.taskName || null},
+        ${hours}, ${rate}, ${fuelGallons}, ${ppg},
+        ${laborCost}, ${fuelCost}, ${totalCost},
+        NOW()
+      )
+      ON CONFLICT (company_code, id) DO UPDATE SET
+        date           = EXCLUDED.date,
+        location_id    = EXCLUDED.location_id,
+        location_name  = EXCLUDED.location_name,
+        employee_id    = EXCLUDED.employee_id,
+        employee_name  = EXCLUDED.employee_name,
+        equipment_id   = EXCLUDED.equipment_id,
+        equipment_name = EXCLUDED.equipment_name,
+        task_id        = EXCLUDED.task_id,
+        task_name      = EXCLUDED.task_name,
+        hours          = EXCLUDED.hours,
+        rate           = EXCLUDED.rate,
+        fuel_gallons   = EXCLUDED.fuel_gallons,
+        ppg            = EXCLUDED.ppg,
+        labor_cost     = EXCLUDED.labor_cost,
+        fuel_cost      = EXCLUDED.fuel_cost,
+        total_cost     = EXCLUDED.total_cost,
+        updated_at     = NOW()
+    `;
+    quarry_daily_entries++;
+  }
+
+  return { quarry_daily_entries };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QUARRY CRUSHING  (fct_quarry_crushing → quarry_crushing_entries)
+// Stored computed fields: total_payroll, total_fuel, estimated_tons,
+// tons_per_hour, total_cost, cost_per_ton.
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncQuarryCrushing(sql, companyCode, value) {
+  const list = Array.isArray(value) ? value : [];
+
+  const ids = list.map(r => r && r.id).filter(Boolean);
+  if (ids.length) {
+    await sql`DELETE FROM quarry_crushing_entries WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
+  } else {
+    await sql`DELETE FROM quarry_crushing_entries WHERE company_code = ${companyCode}`;
+  }
+
+  let quarry_crushing_entries = 0;
+  for (const r of list) {
+    if (!r || !r.id) continue;
+
+    const hourlyRate     = safeFloat(r.hourlyRate);
+    const hours          = safeFloat(r.hours);
+    const hoursCrushing  = safeFloat(r.hoursCrushing);
+    const fuelGallons    = safeFloat(r.fuelGallons);
+    const fuelCost       = safeFloat(r.fuelCost);
+    const loadsToCrusher = safeFloat(r.loadsToCrusher);
+    const tonsPerLoad    = safeFloat(r.tonsPerLoad);
+
+    const totalPayroll   = (hours != null && hourlyRate != null) ? hours * hourlyRate : null;
+    const totalFuel      = fuelCost;
+    const estimatedTons  = (loadsToCrusher != null && tonsPerLoad != null) ? loadsToCrusher * tonsPerLoad : null;
+    const tonsPerHour    = (estimatedTons != null && hoursCrushing != null && hoursCrushing > 0)
+      ? estimatedTons / hoursCrushing
+      : null;
+    const totalCost      = (totalPayroll != null || totalFuel != null)
+      ? (totalPayroll || 0) + (totalFuel || 0)
+      : null;
+    const costPerTon     = (totalCost != null && estimatedTons != null && estimatedTons > 0)
+      ? totalCost / estimatedTons
+      : null;
+
+    await sql`
+      INSERT INTO quarry_crushing_entries (
+        id, company_code, date, location_id, location_name,
+        employee_id, employee_name, hourly_rate, hours, hours_crushing,
+        fuel_gallons, fuel_cost, loads_to_crusher, tons_per_load, comments,
+        total_payroll, total_fuel, estimated_tons, tons_per_hour,
+        total_cost, cost_per_ton, updated_at
+      ) VALUES (
+        ${r.id}, ${companyCode}, ${safeDate(r.date)},
+        ${r.locationId || null}, ${r.locationName || null},
+        ${r.employeeId || null}, ${r.employeeName || null},
+        ${hourlyRate}, ${hours}, ${hoursCrushing},
+        ${fuelGallons}, ${fuelCost}, ${loadsToCrusher}, ${tonsPerLoad},
+        ${r.comments || null},
+        ${totalPayroll}, ${totalFuel}, ${estimatedTons}, ${tonsPerHour},
+        ${totalCost}, ${costPerTon}, NOW()
+      )
+      ON CONFLICT (company_code, id) DO UPDATE SET
+        date             = EXCLUDED.date,
+        location_id      = EXCLUDED.location_id,
+        location_name    = EXCLUDED.location_name,
+        employee_id      = EXCLUDED.employee_id,
+        employee_name    = EXCLUDED.employee_name,
+        hourly_rate      = EXCLUDED.hourly_rate,
+        hours            = EXCLUDED.hours,
+        hours_crushing   = EXCLUDED.hours_crushing,
+        fuel_gallons     = EXCLUDED.fuel_gallons,
+        fuel_cost        = EXCLUDED.fuel_cost,
+        loads_to_crusher = EXCLUDED.loads_to_crusher,
+        tons_per_load    = EXCLUDED.tons_per_load,
+        comments         = EXCLUDED.comments,
+        total_payroll    = EXCLUDED.total_payroll,
+        total_fuel       = EXCLUDED.total_fuel,
+        estimated_tons   = EXCLUDED.estimated_tons,
+        tons_per_hour    = EXCLUDED.tons_per_hour,
+        total_cost       = EXCLUDED.total_cost,
+        cost_per_ton     = EXCLUDED.cost_per_ton,
+        updated_at       = NOW()
+    `;
+    quarry_crushing_entries++;
+  }
+
+  return { quarry_crushing_entries };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QUARRY SALES  (fct_quarry_sales → quarry_sales_entries)
+// Stored computed field: total = tons * price_per_ton.
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncQuarrySales(sql, companyCode, value) {
+  const list = Array.isArray(value) ? value : [];
+
+  const ids = list.map(r => r && r.id).filter(Boolean);
+  if (ids.length) {
+    await sql`DELETE FROM quarry_sales_entries WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
+  } else {
+    await sql`DELETE FROM quarry_sales_entries WHERE company_code = ${companyCode}`;
+  }
+
+  let quarry_sales_entries = 0;
+  for (const r of list) {
+    if (!r || !r.id) continue;
+
+    const tons        = safeFloat(r.tons);
+    const pricePerTon = safeFloat(r.pricePerTon);
+    const total       = (tons != null && pricePerTon != null) ? tons * pricePerTon : null;
+
+    await sql`
+      INSERT INTO quarry_sales_entries (
+        id, company_code, date, location_id, location_name,
+        employee_id, employee_name, customer_id, customer_name,
+        product_id, product_name, tons, price_per_ton, payment, total,
+        updated_at
+      ) VALUES (
+        ${r.id}, ${companyCode}, ${safeDate(r.date)},
+        ${r.locationId || null}, ${r.locationName || null},
+        ${r.employeeId || null}, ${r.employeeName || null},
+        ${r.customerId || null}, ${r.customerName || null},
+        ${r.productId  || null}, ${r.productName  || null},
+        ${tons}, ${pricePerTon}, ${r.payment || null}, ${total},
+        NOW()
+      )
+      ON CONFLICT (company_code, id) DO UPDATE SET
+        date           = EXCLUDED.date,
+        location_id    = EXCLUDED.location_id,
+        location_name  = EXCLUDED.location_name,
+        employee_id    = EXCLUDED.employee_id,
+        employee_name  = EXCLUDED.employee_name,
+        customer_id    = EXCLUDED.customer_id,
+        customer_name  = EXCLUDED.customer_name,
+        product_id     = EXCLUDED.product_id,
+        product_name   = EXCLUDED.product_name,
+        tons           = EXCLUDED.tons,
+        price_per_ton  = EXCLUDED.price_per_ton,
+        payment        = EXCLUDED.payment,
+        total          = EXCLUDED.total,
+        updated_at     = NOW()
+    `;
+    quarry_sales_entries++;
+  }
+
+  return { quarry_sales_entries };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ROUTE DISPATCHER
 // Given a bare key (no company prefix) and its value, runs the right sync(s).
 // Returns a stats object (may be empty if the key doesn't map to any table).
@@ -644,6 +963,22 @@ async function syncForKey(sql, companyCode, key, value) {
     return syncIntercompanyBillingEntries(sql, companyCode, value);
   }
 
+  if (key === 'fct_quarry_lists') {
+    return syncQuarryLists(sql, companyCode, value);
+  }
+
+  if (key === 'fct_quarry_daily') {
+    return syncQuarryDaily(sql, companyCode, value);
+  }
+
+  if (key === 'fct_quarry_crushing') {
+    return syncQuarryCrushing(sql, companyCode, value);
+  }
+
+  if (key === 'fct_quarry_sales') {
+    return syncQuarrySales(sql, companyCode, value);
+  }
+
   return {};
 }
 
@@ -651,5 +986,6 @@ module.exports = {
   syncProjects, syncLists, syncPurchaseOrders, syncInventory,
   syncCostRows, syncTrucking, syncScaleManual,
   syncIntercompanyCompanies, syncIntercompanyBillingEntries,
+  syncQuarryLists, syncQuarryDaily, syncQuarryCrushing, syncQuarrySales,
   syncForKey,
 };
