@@ -3,7 +3,7 @@
 const { neon }  = require('@neondatabase/serverless');
 const bcrypt    = require('bcryptjs');
 
-const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'intercompany'];
+const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany'];
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');

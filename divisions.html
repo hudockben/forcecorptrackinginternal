@@ -599,6 +599,7 @@
                 <th>Dust</th>
                 <th>Paving</th>
                 <th>Trucking</th>
+                <th>Quarry</th>
                 <th>Billing</th>
                 <th></th>
               </tr>
@@ -662,6 +663,16 @@
             <div class="div-role-row">
               <span class="div-role-label">Trucking</span>
               <select id="mu-role-trucking">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3">Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Quarry</span>
+              <select id="mu-role-quarry">
                 <option value="no_access" selected>No Access</option>
                 <option value="level1">Level 1 — View only</option>
                 <option value="level2">Level 2 — Insert &amp; edit</option>
@@ -808,7 +819,7 @@
       },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'intercompany', 'quarry'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -930,7 +941,7 @@
       level1:    'View',
       no_access: '—',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'intercompany'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany'];
 
     function openUserModal() {
       document.getElementById('userModalBackdrop').classList.add('open');
@@ -953,7 +964,7 @@
 
     async function loadUserList() {
       const tbody = document.getElementById('userListBody');
-      tbody.innerHTML = '<tr><td colspan="7" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
       try {
         const res  = await fetch('/api/company/users', {
           headers: { Authorization: `Bearer ${token}` }
@@ -961,7 +972,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Failed');
         if (!data.users.length) {
-          tbody.innerHTML = '<tr><td colspan="7" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
           return;
         }
         tbody.innerHTML = data.users.map(u => {
@@ -971,6 +982,7 @@
           const dust         = dr.dust         || 'no_access';
           const paving       = dr.paving       || 'no_access';
           const trucking     = dr.trucking     || 'no_access';
+          const quarry       = dr.quarry       || 'no_access';
           const intercompany = dr.intercompany || 'no_access';
           const isSelf       = String(u.id) === String(user.userId);
           return `
@@ -980,6 +992,7 @@
               <td>${divRoleBadge(dust)}</td>
               <td>${divRoleBadge(paving)}</td>
               <td>${divRoleBadge(trucking)}</td>
+              <td>${divRoleBadge(quarry)}</td>
               <td>${divRoleBadge(intercompany)}</td>
               <td style="text-align:right;white-space:nowrap">
                 <button class="user-edit-btn" onclick='editUser(${JSON.stringify(u)})'>Edit</button>
@@ -990,7 +1003,7 @@
             </tr>`;
         }).join('');
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="7" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
       }
     }
 
@@ -1010,6 +1023,7 @@
       document.getElementById('mu-role-dust').value         = dr.dust         || 'no_access';
       document.getElementById('mu-role-paving').value       = dr.paving       || 'no_access';
       document.getElementById('mu-role-trucking').value     = dr.trucking     || 'no_access';
+      document.getElementById('mu-role-quarry').value       = dr.quarry       || 'no_access';
       document.getElementById('mu-role-intercompany').value = dr.intercompany || 'no_access';
 
       document.getElementById('mu-result').textContent = '';
@@ -1029,6 +1043,7 @@
       document.getElementById('mu-role-dust').value         = 'no_access';
       document.getElementById('mu-role-paving').value       = 'no_access';
       document.getElementById('mu-role-trucking').value     = 'no_access';
+      document.getElementById('mu-role-quarry').value       = 'no_access';
       document.getElementById('mu-role-intercompany').value = 'no_access';
       document.getElementById('mu-result').textContent  = '';
     }
@@ -1057,6 +1072,7 @@
         dust:         document.getElementById('mu-role-dust').value,
         paving:       document.getElementById('mu-role-paving').value,
         trucking:     document.getElementById('mu-role-trucking').value,
+        quarry:       document.getElementById('mu-role-quarry').value,
         intercompany: document.getElementById('mu-role-intercompany').value,
       };
 
