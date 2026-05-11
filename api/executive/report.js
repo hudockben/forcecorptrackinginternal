@@ -136,7 +136,16 @@ function projNum(v) {
   const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
   return Number.isFinite(n) ? n : 0;
 }
-const projContract = p => projNum(p['contract-amount'] || p.contract_amount || p['revised-amount'] || p.revised_amount);
+// Read order mirrors tracker.html / paving.html (line 3911 / 3773):
+// revised contract amount > original contract amount > contract value.
+// `contract-value` is the field shown in the project header info card,
+// which many users fill in without ever opening the secondary
+// "Contract & Financials" panel that holds contract-amount / revised-amount.
+const projContract = p => projNum(
+  p['revised-amount']  || p.revised_amount  ||
+  p['contract-amount'] || p.contract_amount ||
+  p['contract-value']  || p.contract_value
+);
 
 // Bid totals per project. Each bid item carries quantity + unit_cost
 // (paving uses bid_item_cost as an alias). Returns the total bid dollars
