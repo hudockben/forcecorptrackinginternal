@@ -3,17 +3,13 @@ const jwt = require('jsonwebtoken');
 
 // Canonical division list. MUST match the divisions exposed in divisions.html
 // and the values stored in users.division_roles.
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'intercompany'];
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany'];
 
 // Keys that are intentionally shared across every division within a company
 // (any logged-in user may read/write them regardless of their division roles).
 // Examples: presence/heartbeat is a company-wide "who's online" feed.
-// fct_quarry_* — Quarry division is not yet wired into divisionRoles, so
-// gate its blobs on company membership only (still namespaced by companyCode
-// in the data endpoint, so cross-company isolation is preserved).
 const SHARED_KEY_PREFIXES = [
   'fct_presence',
-  'fct_quarry_',
 ];
 
 // Cross-division keys: blobs that aggregate data from multiple source
@@ -40,6 +36,7 @@ const KEY_PREFIX_DIVISION = [
   ['fct_paving_',       'paving'],
   ['fct_trucking',      'trucking'],
   ['fct_truck_division','trucking'],
+  ['fct_quarry_',       'quarry'],
   ['fct_intercompany',  'intercompany'],
   ['dust_',             'dust'],
 ];
