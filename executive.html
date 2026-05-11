@@ -110,7 +110,8 @@
       overflow: hidden;
       flex-shrink: 0;
     }
-    .page-title-logo img { width: 34px; height: 34px; object-fit: contain; }
+    .page-title-logo img,
+    .page-title-logo svg { width: 34px; height: 34px; object-fit: contain; color: var(--purple); }
     .page-title-text { display: flex; flex-direction: column; gap: 0.2rem; }
     .page-title-eyebrow {
       font-size: 0.55rem;
@@ -752,7 +753,14 @@
 
   <div class="action-bar">
     <div class="page-title">
-      <div class="page-title-logo"><img src="datawatch-helmet.png" alt="" /></div>
+      <div class="page-title-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 3v18h18" />
+          <rect x="7" y="12" width="3" height="6" />
+          <rect x="12" y="8" width="3" height="10" />
+          <rect x="17" y="4" width="3" height="14" />
+        </svg>
+      </div>
       <div class="page-title-text">
         <div class="page-title-eyebrow">Cross-Division Roll-Up</div>
         <div class="page-title-h">Executive Report</div>
