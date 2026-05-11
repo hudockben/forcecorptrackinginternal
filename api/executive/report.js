@@ -127,6 +127,29 @@ const projJob  = p => String(p['job-number']   || p.job_number || '').trim();
 const projStatus = p => String(p['status'] || p.status || '').trim();
 const projIsComplete = p => ['complete','closed'].includes(projStatus(p).toLowerCase());
 const projIsOnHold   = p => projStatus(p).toLowerCase() === 'on hold';
+
+// Executive rollup cutoff: legacy / preloaded projects have job numbers
+// below this threshold. Real production projects start at Saint Edmunds
+// (job # 25019), so excluding anything below that keeps the rollup honest.
+const EXEC_MIN_JOB_NUMBER = 25019;
+function projJobInt(p) {
+  // Concatenate every digit (handles "2026-0220", "26-022-0", "26 0220",
+  // "JOB-260220", etc.) instead of just the leading run. Job numbers in
+  // tracker.html are free-text (placeholder "e.g. 2025-014") so hyphens
+  // are expected.
+  const digits = String(projJob(p) || '').replace(/\D/g, '');
+  return digits ? parseInt(digits, 10) : NaN;
+}
+// Per-project opt-out toggle set in tracker.html / paving.html
+// ("Executive Report" select on the project info card).
+const projExcludedFromExec = p =>
+  p && (p['exclude-from-executive'] === true || p.exclude_from_executive === true);
+
+const projMeetsExecCutoff = p => {
+  if (projExcludedFromExec(p)) return false;
+  const n = projJobInt(p);
+  return Number.isFinite(n) && n >= EXEC_MIN_JOB_NUMBER;
+};
 const projStartDate  = p => p['start-date'] || p.start_date || null;
 const projEndDate    = p => p['end-date']   || p.end_date   || p['target-completion'] || p.target_completion || null;
 const projPinned     = p => p.pinned === true;
@@ -136,7 +159,16 @@ function projNum(v) {
   const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
   return Number.isFinite(n) ? n : 0;
 }
-const projContract = p => projNum(p['contract-amount'] || p.contract_amount || p['revised-amount'] || p.revised_amount);
+// Read order mirrors tracker.html / paving.html (line 3911 / 3773):
+// revised contract amount > original contract amount > contract value.
+// `contract-value` is the field shown in the project header info card,
+// which many users fill in without ever opening the secondary
+// "Contract & Financials" panel that holds contract-amount / revised-amount.
+const projContract = p => projNum(
+  p['revised-amount']  || p.revised_amount  ||
+  p['contract-amount'] || p.contract_amount ||
+  p['contract-value']  || p.contract_value
+);
 
 // Bid totals per project. Each bid item carries quantity + unit_cost
 // (paving uses bid_item_cost as an alias). Returns the total bid dollars
@@ -272,8 +304,8 @@ async function buildHero(sql, companyCode) {
       readTurfProjects(sql, companyCode).catch(() => []),
       readPavingProjects(sql, companyCode).catch(() => []),
     ]);
-    return turf.filter(p => !projIsComplete(p)).length
-         + paving.filter(p => !projIsComplete(p)).length;
+    return turf.filter(p => projMeetsExecCutoff(p) && !projIsComplete(p)).length
+         + paving.filter(p => projMeetsExecCutoff(p) && !projIsComplete(p)).length;
   });
 
   const revNow = await safeRun('revenue_this_week', async () => {
@@ -499,7 +531,7 @@ function makeFinancialTile({ key, name, accent, projects, financials }) {
 // joins actuals from daily_tracking.division='turf'. See readProjectBlobs
 // for why we read blobs instead of the projects table.
 async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */) {
-  const blobs = await readTurfProjects(sql, companyCode);
+  const blobs  = (await readTurfProjects(sql, companyCode)).filter(projMeetsExecCutoff);
   const active = blobs.filter(p => !projIsComplete(p));
   const financials = await safeRun('turf.financials', async () => {
     return await buildFinancials(sql, companyCode, 'turf', active);
@@ -689,7 +721,7 @@ async function buildProjectsPortfolio(sql, companyCode) {
   const tagged = [
     ...turfBlobs.map(p   => ({ p, division: 'turf' })),
     ...pavingBlobs.map(p => ({ p, division: 'paving' })),
-  ].filter(({ p }) => !projIsComplete(p) || projPinned(p))
+  ].filter(({ p }) => projMeetsExecCutoff(p) && (!projIsComplete(p) || projPinned(p)))
    .sort((a, b) => Number(projPinned(b.p)) - Number(projPinned(a.p)))
    .slice(0, 12);
 
@@ -768,7 +800,7 @@ async function buildProjectDetails(sql, companyCode) {
   const tagged = [
     ...turfBlobs.map(p   => ({ p, division: 'turf'   })),
     ...pavingBlobs.map(p => ({ p, division: 'paving' })),
-  ].filter(({ p }) => !projIsComplete(p))
+  ].filter(({ p }) => projMeetsExecCutoff(p) && !projIsComplete(p))
    .sort((a, b) => {
      const sa = projStartDate(a.p) || '';
      const sb = projStartDate(b.p) || '';
@@ -976,7 +1008,7 @@ async function buildIntercompanyTile(sql, companyCode) {
 // Paving — same shape as Turf, sourced from fct_paving_projects_index +
 // per-project blobs and joined to daily_tracking.division='paving'.
 async function buildPavingTile(sql, companyCode) {
-  const blobs  = await readPavingProjects(sql, companyCode);
+  const blobs  = (await readPavingProjects(sql, companyCode)).filter(projMeetsExecCutoff);
   const active = blobs.filter(p => !projIsComplete(p));
   const financials = await safeRun('paving.financials', async () => {
     return await buildFinancials(sql, companyCode, 'paving', active);
