@@ -129,13 +129,16 @@ const projIsComplete = p => ['complete','closed'].includes(projStatus(p).toLower
 const projIsOnHold   = p => projStatus(p).toLowerCase() === 'on hold';
 
 // Executive rollup cutoff: legacy / preloaded projects have job numbers
-// below this threshold (e.g. 26004, 26034, 26045). Real production
-// projects start at "Saint Edmunds" — job # 260220 — so excluding
-// anything below that keeps the rollup honest.
-const EXEC_MIN_JOB_NUMBER = 260220;
+// below this threshold. Real production projects start at Saint Edmunds
+// (job # 25019), so excluding anything below that keeps the rollup honest.
+const EXEC_MIN_JOB_NUMBER = 25019;
 function projJobInt(p) {
-  const m = String(projJob(p) || '').match(/\d+/);
-  return m ? parseInt(m[0], 10) : NaN;
+  // Concatenate every digit (handles "2026-0220", "26-022-0", "26 0220",
+  // "JOB-260220", etc.) instead of just the leading run. Job numbers in
+  // tracker.html are free-text (placeholder "e.g. 2025-014") so hyphens
+  // are expected.
+  const digits = String(projJob(p) || '').replace(/\D/g, '');
+  return digits ? parseInt(digits, 10) : NaN;
 }
 const projMeetsExecCutoff = p => {
   const n = projJobInt(p);
