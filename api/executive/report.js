@@ -140,7 +140,13 @@ function projJobInt(p) {
   const digits = String(projJob(p) || '').replace(/\D/g, '');
   return digits ? parseInt(digits, 10) : NaN;
 }
+// Per-project opt-out toggle set in tracker.html / paving.html
+// ("Executive Report" select on the project info card).
+const projExcludedFromExec = p =>
+  p && (p['exclude-from-executive'] === true || p.exclude_from_executive === true);
+
 const projMeetsExecCutoff = p => {
+  if (projExcludedFromExec(p)) return false;
   const n = projJobInt(p);
   return Number.isFinite(n) && n >= EXEC_MIN_JOB_NUMBER;
 };
