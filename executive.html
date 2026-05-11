@@ -221,6 +221,23 @@
       color: var(--muted);
       letter-spacing: 0.02em;
     }
+    .section-head-projects {
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .section-head-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.18rem;
+      min-width: 0;
+    }
+    .section-action-btn {
+      font-size: 0.65rem;
+      padding: 0.5rem 0.85rem;
+      flex-shrink: 0;
+    }
+    .pdf-export .section-action-btn { display: none; }
 
     /* ── Hero KPIs ── */
     .hero-kpis {
@@ -703,17 +720,21 @@
       background: #ffffff;
       border: 1px solid #cbd5e1;
       box-shadow: none;
+      overflow: visible;
     }
-    .pdf-export .ptable { min-width: 0; font-size: 0.72rem; }
-    .pdf-export .ptable th { background: #f1f5f9; }
+    .pdf-export .ptable { min-width: 0; font-size: 0.7rem; }
+    .pdf-export .ptable th { background: #f1f5f9; color: #475569; }
+    .pdf-export .ptable td { border-color: #e2e8f0; }
+    .pdf-export .ptable .pname-main { color: #0f172a; }
     .pdf-export .ptable .pstar.off { color: #cbd5e1; }
     .pdf-export .ptable .pprogress-track { background: #e2e8f0; }
+    .pdf-export .ptable .v-contract { color: #2563eb; }
 
     /* ── Print ── */
     @media print {
       @page { size: letter landscape; margin: 0.4in; }
       body { background: #fff; color: #000; }
-      header, .action-bar, footer, .filters { display: none !important; }
+      header, .action-bar, footer, .filters, .section-action-btn { display: none !important; }
       .report { max-width: none; margin: 0; padding: 0; }
       .hero-kpi, .div-tile, .timeline-wrap, .project-detail {
         background: #fff;
@@ -783,14 +804,6 @@
       </div>
     </div>
     <div class="action-btns">
-      <button class="btn" id="downloadProjectsBtn" onclick="downloadProjectsPdf()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="7 10 12 15 17 10"/>
-          <line x1="12" y1="15" x2="12" y2="3"/>
-        </svg>
-        Projects PDF
-      </button>
       <button class="btn primary" onclick="window.print()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 6 2 18 2 18 9"/>
@@ -829,9 +842,19 @@
 
       <!-- ─────────── PAGE 2: PROJECTS (FINANCIAL OVERVIEW) ─────────── -->
       <div class="section page-break" id="projectsSection">
-        <div class="section-head">
-          <div class="section-title">Projects</div>
-          <div class="section-sub" id="projectsSub">—</div>
+        <div class="section-head section-head-projects">
+          <div class="section-head-text">
+            <div class="section-title">Projects</div>
+            <div class="section-sub" id="projectsSub">—</div>
+          </div>
+          <button class="btn section-action-btn" id="downloadProjectsBtn" onclick="downloadProjectsPdf()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Download PDF
+          </button>
         </div>
 
         <div class="ptable-wrap">
