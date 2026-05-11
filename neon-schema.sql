@@ -687,3 +687,154 @@ CREATE INDEX IF NOT EXISTS idx_ic_be_company      ON intercompany_billing_entrie
 CREATE INDEX IF NOT EXISTS idx_ic_be_company_date ON intercompany_billing_entries(company_code, actual_date);
 CREATE INDEX IF NOT EXISTS idx_ic_be_source       ON intercompany_billing_entries(company_code, source);
 CREATE INDEX IF NOT EXISTS idx_ic_be_ic_company   ON intercompany_billing_entries(company_code, company_id);
+
+-- ─────────────────────────────────────────────────
+-- QUARRY DIVISION
+-- Mirrors fct_quarry_daily, fct_quarry_crushing,
+-- fct_quarry_sales, and fct_quarry_lists JSON blobs.
+-- Computed totals are stored on each row (computed
+-- in the sync layer) so SQL reports don't need to
+-- redo the math. The JSON blob in app_data remains
+-- the write path; these tables shadow it for reporting.
+-- ─────────────────────────────────────────────────
+
+-- Lists: locations, products, customers, employees, equipment, tasks
+CREATE TABLE IF NOT EXISTS quarry_locations (
+    id           TEXT NOT NULL,
+    company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    sort_order   INTEGER       NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, id)
+);
+CREATE INDEX IF NOT EXISTS idx_quarry_loc_company ON quarry_locations(company_code);
+
+CREATE TABLE IF NOT EXISTS quarry_products (
+    id           TEXT NOT NULL,
+    company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    sort_order   INTEGER       NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, id)
+);
+CREATE INDEX IF NOT EXISTS idx_quarry_prod_company ON quarry_products(company_code);
+
+CREATE TABLE IF NOT EXISTS quarry_customers (
+    id           TEXT NOT NULL,
+    company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    sort_order   INTEGER       NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, id)
+);
+CREATE INDEX IF NOT EXISTS idx_quarry_cust_company ON quarry_customers(company_code);
+
+CREATE TABLE IF NOT EXISTS quarry_employees (
+    id           TEXT NOT NULL,
+    company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    rate         NUMERIC(10,4),
+    sort_order   INTEGER       NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, id)
+);
+CREATE INDEX IF NOT EXISTS idx_quarry_emp_company ON quarry_employees(company_code);
+
+CREATE TABLE IF NOT EXISTS quarry_equipment (
+    id           TEXT NOT NULL,
+    company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    sort_order   INTEGER       NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, id)
+);
+CREATE INDEX IF NOT EXISTS idx_quarry_equip_company ON quarry_equipment(company_code);
+
+CREATE TABLE IF NOT EXISTS quarry_tasks (
+    id           TEXT NOT NULL,
+    company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    sort_order   INTEGER       NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, id)
+);
+CREATE INDEX IF NOT EXISTS idx_quarry_task_company ON quarry_tasks(company_code);
+
+-- Daily Tracking
+CREATE TABLE IF NOT EXISTS quarry_daily_entries (
+    id              TEXT NOT NULL,
+    company_code    TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    date            DATE,
+    location_id     TEXT,
+    location_name   TEXT,
+    employee_id     TEXT,
+    employee_name   TEXT,
+    equipment_id    TEXT,
+    equipment_name  TEXT,
+    task_id         TEXT,
+    task_name       TEXT,
+    hours           NUMERIC(14,4),
+    rate            NUMERIC(14,4),
+    fuel_gallons    NUMERIC(14,4),
+    ppg             NUMERIC(14,4),
+    labor_cost      NUMERIC(14,4),
+    fuel_cost       NUMERIC(14,4),
+    total_cost      NUMERIC(14,4),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, id)
+);
+CREATE INDEX IF NOT EXISTS idx_qd_company_date ON quarry_daily_entries(company_code, date);
+CREATE INDEX IF NOT EXISTS idx_qd_company_loc  ON quarry_daily_entries(company_code, location_name);
+
+-- Crushing Tracking
+CREATE TABLE IF NOT EXISTS quarry_crushing_entries (
+    id                 TEXT NOT NULL,
+    company_code       TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    date               DATE,
+    location_id        TEXT,
+    location_name      TEXT,
+    employee_id        TEXT,
+    employee_name      TEXT,
+    hourly_rate        NUMERIC(14,4),
+    hours              NUMERIC(14,4),
+    hours_crushing     NUMERIC(14,4),
+    fuel_gallons       NUMERIC(14,4),
+    fuel_cost          NUMERIC(14,4),
+    loads_to_crusher   NUMERIC(14,4),
+    tons_per_load      NUMERIC(14,4),
+    comments           TEXT,
+    total_payroll      NUMERIC(14,4),
+    total_fuel         NUMERIC(14,4),
+    estimated_tons     NUMERIC(14,4),
+    tons_per_hour      NUMERIC(14,4),
+    total_cost         NUMERIC(14,4),
+    cost_per_ton       NUMERIC(14,4),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, id)
+);
+CREATE INDEX IF NOT EXISTS idx_qc_company_date ON quarry_crushing_entries(company_code, date);
+CREATE INDEX IF NOT EXISTS idx_qc_company_loc  ON quarry_crushing_entries(company_code, location_name);
+
+-- Sales Tracking
+CREATE TABLE IF NOT EXISTS quarry_sales_entries (
+    id              TEXT NOT NULL,
+    company_code    TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    date            DATE,
+    location_id     TEXT,
+    location_name   TEXT,
+    employee_id     TEXT,
+    employee_name   TEXT,
+    customer_id     TEXT,
+    customer_name   TEXT,
+    product_id      TEXT,
+    product_name    TEXT,
+    tons            NUMERIC(14,4),
+    price_per_ton   NUMERIC(14,4),
+    payment         TEXT,
+    total           NUMERIC(14,4),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, id)
+);
+CREATE INDEX IF NOT EXISTS idx_qs_company_date     ON quarry_sales_entries(company_code, date);
+CREATE INDEX IF NOT EXISTS idx_qs_company_customer ON quarry_sales_entries(company_code, customer_name);
+CREATE INDEX IF NOT EXISTS idx_qs_company_product  ON quarry_sales_entries(company_code, product_name);
