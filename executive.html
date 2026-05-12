@@ -1367,7 +1367,7 @@
           // left edge, clipping the project-name / status / progress columns.
           html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
           jsPDF: { unit: 'in', format: [14, pageHeightIn], orientation },
-          pagebreak: { mode: ['avoid-all', 'css'] }
+          pagebreak: { mode: ['css'], avoid: 'tr' }
         }).from(wrapper).save();
       } catch (err) {
         console.error('PDF generation failed', err);
