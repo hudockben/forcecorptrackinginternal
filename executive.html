@@ -722,19 +722,24 @@
       box-shadow: none;
       overflow: visible;
     }
-    .pdf-export .ptable { min-width: 0; font-size: 0.68rem; table-layout: auto; }
+    .pdf-export .ptable { min-width: 0; font-size: 0.58rem; table-layout: auto; }
     .pdf-export .ptable th {
       background: #f1f5f9;
       color: #475569;
-      padding: 0.55rem 0.45rem 0.4rem;
+      padding: 0.45rem 0.35rem 0.35rem;
+      font-size: 0.5rem;
     }
     .pdf-export .ptable td {
       border-color: #e2e8f0;
-      padding: 0.5rem 0.45rem;
+      padding: 0.4rem 0.35rem;
     }
-    .pdf-export .ptable .pname-main { font-size: 0.78rem; }
-    .pdf-export .ptable .pprogress { min-width: 110px; }
-    .pdf-export .ptable .pname-main { color: #0f172a; }
+    .pdf-export .ptable .pname-main { color: #0f172a; font-size: 0.68rem; }
+    .pdf-export .ptable .pname-sub { font-size: 0.55rem; }
+    .pdf-export .ptable .pstatus,
+    .pdf-export .ptable .pprogress-pct,
+    .pdf-export .ptable .v-profit-pct { font-size: 0.55rem; }
+    .pdf-export .ptable .pprogress { min-width: 90px; gap: 0.4rem; }
+    .pdf-export .ptable .pprogress-track { min-width: 55px; }
     .pdf-export .ptable .pstar.off { color: #cbd5e1; }
     .pdf-export .ptable .pprogress-track { background: #e2e8f0; }
     .pdf-export .ptable .v-contract { color: #2563eb; }
@@ -1195,7 +1200,7 @@
         // report 0 height and render a blank PDF. flex-shrink:0 keeps the
         // body's flex column layout from squashing it.
         'flex-shrink:0',
-        'width:13.4in', 'padding:0.3in 0.25in',
+        'width:13.2in', 'padding:0.3in 0.3in',
         'background:#ffffff', 'color:#0f172a',
         'font-family:"Segoe UI",system-ui,-apple-system,sans-serif',
         'font-size:11px'
@@ -1229,22 +1234,28 @@
       document.body.style.overflow = 'hidden';
 
       // Give layout/paint a beat to settle before html2canvas reads it.
+      // Two RAFs + a small timeout lets new pdf-export CSS, web fonts and
+      // the logo image finish before we measure the rendered height.
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await new Promise(r => setTimeout(r, 80));
 
       const today = new Date().toISOString().slice(0, 10);
       try {
         // Size the page to the rendered wrapper so every pinned project row
         // fits on a single page. Width stays 14" (wider than letter landscape
         // so all ten columns including Profit + pin star fit); height grows
-        // to fit however many rows are pinned, with a floor of 11".
+        // to fit however many rows are pinned, with a floor of 11" and a
+        // 0.5" safety buffer so an off-by-a-pixel measurement can't clip
+        // the last row.
         const margin = 0.3;
-        const heightIn = wrapper.offsetHeight / 96;
-        const pageHeightIn = Math.max(11, heightIn + margin * 2);
+        const measuredPx = Math.max(wrapper.offsetHeight, wrapper.scrollHeight);
+        const heightIn = measuredPx / 96;
+        const pageHeightIn = Math.max(11, heightIn + margin * 2 + 0.5);
         await html2pdf().set({
           margin,
           filename: `datawatch-projects-${today}.pdf`,
           image: { type: 'jpeg', quality: 0.95 },
-          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
+          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false, windowWidth: wrapper.offsetWidth },
           jsPDF: { unit: 'in', format: [14, pageHeightIn], orientation: 'portrait' },
           pagebreak: { mode: ['avoid-all', 'css'] }
         }).from(wrapper).save();
