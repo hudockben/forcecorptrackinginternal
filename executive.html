@@ -1181,10 +1181,11 @@
       // html2canvas computes 0 height for fixed elements, producing blank
       // PDFs). The full-screen modal above hides it from the user.
       const wrapper = document.createElement('div');
-      // Positioned absolutely off-screen so the body's flex column layout
-      // can't influence the rendered height that html2canvas reads.
       wrapper.style.cssText = [
-        'position:absolute', 'left:-10000px', 'top:0',
+        // Must stay in normal flow — position:fixed/absolute makes html2canvas
+        // report 0 height and render a blank PDF. flex-shrink:0 keeps the
+        // body's flex column layout from squashing it.
+        'flex-shrink:0',
         'width:13.2in', 'padding:0.3in 0.4in',
         'background:#ffffff', 'color:#0f172a',
         'font-family:"Segoe UI",system-ui,-apple-system,sans-serif',
