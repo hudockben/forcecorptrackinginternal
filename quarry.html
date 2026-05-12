@@ -1414,8 +1414,12 @@
       }
       const isEmployees = type.key === 'employees';
       const items = quarryLists[type.key] || [];
-      const itemsHtml = items.length
-        ? `<div class="ml-list">${items.map((it, i) => {
+      const sortedItems = [...items].sort((a, b) =>
+        String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' })
+      );
+      const itemsHtml = sortedItems.length
+        ? `<div class="ml-list">${sortedItems.map((it) => {
+            const i = items.indexOf(it);
             const rateCell = isEmployees
               ? `<div class="ml-rate-wrap">
                    <span>$</span>
