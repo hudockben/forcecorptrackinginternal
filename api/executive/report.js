@@ -116,6 +116,17 @@ async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legac
 const readTurfProjects   = (sql, cc) => readProjectBlobs(sql, cc, 'fct_projects_index',        'fct_project_',        'fct_projects');
 const readPavingProjects = (sql, cc) => readProjectBlobs(sql, cc, 'fct_paving_projects_index', 'fct_paving_project_', 'fct_paving_projects');
 
+// Rubber inventory blob — same shape as the home page's `inventoryEntries`.
+// Entries with project_id are treated as "used by a project", entries without
+// project_id are stock-add (produced). Mirrors tracker.html ~line 3756.
+async function readInventoryEntries(sql, companyCode) {
+  const rows = await sql`
+    SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_inventory`}
+  `;
+  const v = rows[0]?.value;
+  return Array.isArray(v) ? v.filter(e => e && typeof e === 'object') : [];
+}
+
 // Project-shape helpers (turf and paving blobs share the same dashed-key
 // naming convention — 'project-name', 'job-number', 'contract-amount',
 // 'start-date', 'end-date'/'target-completion'). Paving uses 'Complete'/'Active';
@@ -1027,6 +1038,33 @@ async function buildIntercompanyTile(sql, companyCode) {
   };
 }
 
+// Rubber inventory summary — one row per rubber type with produced / used /
+// in_stock / lbs_total. Mirrors the home page's per-type aggregation so the
+// executive PDF surfaces the same numbers users see on the tracker.
+async function buildRubberInventory(sql, companyCode) {
+  const entries = await readInventoryEntries(sql, companyCode);
+  const byType = new Map();
+  for (const e of entries) {
+    const rt = String(e.rubber_type || '').trim() || '(unspecified)';
+    if (!byType.has(rt)) byType.set(rt, { produced: 0, used: 0, lbs_total: 0 });
+    const row  = byType.get(rt);
+    const bags = Number(e.bags_produced) || 0;
+    if (e.project_id) {
+      row.used += bags;
+    } else {
+      row.produced += bags;
+      row.lbs_total += Number(e.total_poundage) || 0;
+    }
+  }
+  return [...byType.entries()].map(([rubber_type, v]) => ({
+    rubber_type,
+    produced:  v.produced,
+    used:      v.used,
+    in_stock:  v.produced - v.used,
+    lbs_total: v.lbs_total,
+  }));
+}
+
 // Paving — same shape as Turf, sourced from fct_paving_projects_index +
 // per-project blobs and joined to daily_tracking.division='paving'.
 async function buildPavingTile(sql, companyCode) {
@@ -1280,12 +1318,15 @@ module.exports = async (req, res) => {
     // The builders return null on error or when there are no active
     // projects — both cases leave the mock's empty placeholders, which
     // now contain no fake project entries.
-    const [livePortfolio, liveDetails] = await Promise.all([
+    const [livePortfolio, liveDetails, liveInventory] = await Promise.all([
       buildProjectsPortfolio(sql, company).catch(err => {
         console.error('[executive/report] portfolio build failed:', err.message); return null;
       }),
       buildProjectDetails(sql, company).catch(err => {
         console.error('[executive/report] details build failed:', err.message); return null;
+      }),
+      buildRubberInventory(sql, company).catch(err => {
+        console.error('[executive/report] inventory build failed:', err.message); return null;
       }),
     ]);
     if (livePortfolio && Array.isArray(livePortfolio.rows)) {
@@ -1293,6 +1334,9 @@ module.exports = async (req, res) => {
     }
     if (Array.isArray(liveDetails)) {
       report.details = liveDetails;
+    }
+    if (Array.isArray(liveInventory)) {
+      report.inventory = liveInventory;
     }
 
     // Diagnostics — only when ?debug=1. Helps identify missing

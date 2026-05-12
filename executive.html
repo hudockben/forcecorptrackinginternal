@@ -342,6 +342,53 @@
       margin-top: 0.15rem;
     }
 
+    /* ── Rubber inventory strip (on Projects page + PDF) ── */
+    .inv-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 0.6rem;
+      margin-bottom: 1rem;
+    }
+    .inv-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.7rem 0.85rem;
+    }
+    .inv-type {
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.3rem;
+    }
+    .inv-stock {
+      font-size: 1.35rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .inv-stock.lo  { color: var(--red); }
+    .inv-stock.mid { color: var(--amber); }
+    .inv-stock.ok  { color: var(--green); }
+    .inv-stock-lbl {
+      font-size: 0.62rem;
+      color: var(--muted);
+      margin-top: 0.15rem;
+    }
+    .inv-meta {
+      display: flex;
+      gap: 0.7rem;
+      font-size: 0.62rem;
+      color: var(--muted);
+      margin-top: 0.45rem;
+    }
+    .inv-lbs {
+      font-size: 0.62rem;
+      color: var(--muted);
+      margin-top: 0.18rem;
+    }
+
     /* ── Projects financial table ── */
     .ptable-wrap {
       background: var(--surface);
@@ -743,6 +790,17 @@
     .pdf-export .ptable .pstar.off { color: #cbd5e1; }
     .pdf-export .ptable .pprogress-track { background: #e2e8f0; }
     .pdf-export .ptable .v-contract { color: #2563eb; }
+    .pdf-export .inv-strip { gap: 0.5rem; margin-bottom: 0.85rem; }
+    .pdf-export .inv-card {
+      background: #ffffff;
+      border-color: #cbd5e1;
+      padding: 0.55rem 0.7rem;
+    }
+    .pdf-export .inv-type { color: #475569; font-size: 0.55rem; }
+    .pdf-export .inv-stock { font-size: 1.1rem; }
+    .pdf-export .inv-stock-lbl,
+    .pdf-export .inv-meta,
+    .pdf-export .inv-lbs { color: #64748b; font-size: 0.55rem; }
 
     /* ── Print ── */
     @media print {
@@ -869,6 +927,11 @@
             </svg>
             Download PDF
           </button>
+        </div>
+
+        <div id="rubberInventoryWrap" style="display:none;">
+          <div class="div-kpi-label" style="margin:0 0 0.5rem;">Rubber Inventory</div>
+          <div class="inv-strip" id="rubberInventoryStrip"></div>
         </div>
 
         <div class="ptable-wrap">
@@ -1115,6 +1178,35 @@
       }
 
       document.getElementById('projectDetails').innerHTML = (data.details || []).map(renderDetail).join('');
+
+      renderRubberInventory(Array.isArray(data.inventory) ? data.inventory : []);
+    }
+
+    // Mirrors the home page's per-rubber-type stock cards so the executive
+    // PDF (which clones #projectsSection) carries the same inventory snapshot.
+    function renderRubberInventory(rows) {
+      const wrap  = document.getElementById('rubberInventoryWrap');
+      const strip = document.getElementById('rubberInventoryStrip');
+      if (!wrap || !strip) return;
+      if (!rows.length) { wrap.style.display = 'none'; strip.innerHTML = ''; return; }
+      const fmt = n => Number(n || 0).toLocaleString();
+      strip.innerHTML = rows.map(r => {
+        const stock     = Number(r.in_stock) || 0;
+        const stockCls  = stock <= 0 ? 'lo' : stock < 50 ? 'mid' : 'ok';
+        return `
+          <div class="inv-card">
+            <div class="inv-type">${esc(r.rubber_type)}</div>
+            <div class="inv-stock ${stockCls}">${fmt(stock)}</div>
+            <div class="inv-stock-lbl">bags in stock</div>
+            <div class="inv-meta">
+              <span>&#8679; ${fmt(r.produced)} produced</span>
+              <span>&#8681; ${fmt(r.used)} used</span>
+            </div>
+            <div class="inv-lbs">${fmt(r.lbs_total)} lbs total</div>
+          </div>
+        `;
+      }).join('');
+      wrap.style.display = '';
     }
 
     // ── Fetch ──
