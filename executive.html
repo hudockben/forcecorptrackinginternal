@@ -1225,6 +1225,9 @@
 
       const clone = section.cloneNode(true);
       clone.classList.add('pdf-export');
+      // Drop .page-break (only meaningful under @media print, but stripped
+      // to remove any chance html2pdf treats it as a forced page break).
+      clone.classList.remove('page-break');
       wrapper.appendChild(clone);
       document.body.appendChild(wrapper);
 
@@ -1234,34 +1237,23 @@
       document.body.style.overflow = 'hidden';
 
       // Give layout/paint a beat to settle before html2canvas reads it.
-      // Two RAFs + a small timeout lets new pdf-export CSS, web fonts and
-      // the logo image finish before we measure the rendered height.
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-      await new Promise(r => setTimeout(r, 80));
 
       const today = new Date().toISOString().slice(0, 10);
       try {
-        // Size the page to the rendered wrapper so every pinned project row
-        // fits on a single page. Width stays 14" (wider than letter landscape
-        // so all ten columns including Profit + pin star fit); height grows
-        // to fit however many rows are pinned, with a floor of 11" and a
-        // 0.5" safety buffer so an off-by-a-pixel measurement can't clip
-        // the last row. jsPDF normalizes [w,h] based on orientation
-        // ("portrait" puts the smaller side first), so pick the orientation
-        // that keeps the 14" dimension as the page width.
-        const margin = 0.3;
-        const pageWidthIn = 14;
-        const measuredPx = Math.max(wrapper.offsetHeight, wrapper.scrollHeight);
-        const heightIn = measuredPx / 96;
-        const pageHeightIn = Math.max(11, heightIn + margin * 2 + 0.5);
-        const orientation = pageHeightIn > pageWidthIn ? 'portrait' : 'landscape';
+        // Fixed 14"x11" landscape: wide enough that all ten columns fit and
+        // tall enough that a dozen+ project rows fit on a single page. We
+        // deliberately don't size the page dynamically — measurement timing
+        // and per-browser font metrics made that fragile and occasionally
+        // split rows across pages. Keeping the page fixed and letting
+        // pagebreak avoid splitting individual rows is reliable.
         await html2pdf().set({
-          margin,
+          margin: 0.3,
           filename: `datawatch-projects-${today}.pdf`,
           image: { type: 'jpeg', quality: 0.95 },
           html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
-          jsPDF: { unit: 'in', format: [pageWidthIn, pageHeightIn], orientation },
-          pagebreak: { mode: ['avoid-all', 'css'] }
+          jsPDF: { unit: 'in', format: [14, 11], orientation: 'landscape' },
+          pagebreak: { mode: ['css'], avoid: 'tr' }
         }).from(wrapper).save();
       } catch (err) {
         console.error('PDF generation failed', err);
