@@ -722,10 +722,24 @@
       box-shadow: none;
       overflow: visible;
     }
-    .pdf-export .ptable { min-width: 0; font-size: 0.7rem; }
-    .pdf-export .ptable th { background: #f1f5f9; color: #475569; }
-    .pdf-export .ptable td { border-color: #e2e8f0; }
-    .pdf-export .ptable .pname-main { color: #0f172a; }
+    .pdf-export .ptable { min-width: 0; font-size: 0.58rem; table-layout: auto; }
+    .pdf-export .ptable th {
+      background: #f1f5f9;
+      color: #475569;
+      padding: 0.45rem 0.35rem 0.35rem;
+      font-size: 0.5rem;
+    }
+    .pdf-export .ptable td {
+      border-color: #e2e8f0;
+      padding: 0.4rem 0.35rem;
+    }
+    .pdf-export .ptable .pname-main { color: #0f172a; font-size: 0.68rem; }
+    .pdf-export .ptable .pname-sub { font-size: 0.55rem; }
+    .pdf-export .ptable .pstatus,
+    .pdf-export .ptable .pprogress-pct,
+    .pdf-export .ptable .v-profit-pct { font-size: 0.55rem; }
+    .pdf-export .ptable .pprogress { min-width: 90px; gap: 0.4rem; }
+    .pdf-export .ptable .pprogress-track { min-width: 55px; }
     .pdf-export .ptable .pstar.off { color: #cbd5e1; }
     .pdf-export .ptable .pprogress-track { background: #e2e8f0; }
     .pdf-export .ptable .v-contract { color: #2563eb; }
@@ -1182,7 +1196,11 @@
       // PDFs). The full-screen modal above hides it from the user.
       const wrapper = document.createElement('div');
       wrapper.style.cssText = [
-        'width:13.2in', 'padding:0.3in 0.4in',
+        // Must stay in normal flow — position:fixed/absolute makes html2canvas
+        // report 0 height and render a blank PDF. flex-shrink:0 keeps the
+        // body's flex column layout from squashing it.
+        'flex-shrink:0',
+        'width:13.2in', 'padding:0.3in 0.3in',
         'background:#ffffff', 'color:#0f172a',
         'font-family:"Segoe UI",system-ui,-apple-system,sans-serif',
         'font-size:11px'
@@ -1207,6 +1225,9 @@
 
       const clone = section.cloneNode(true);
       clone.classList.add('pdf-export');
+      // Drop .page-break (only meaningful under @media print, but stripped
+      // to remove any chance html2pdf treats it as a forced page break).
+      clone.classList.remove('page-break');
       wrapper.appendChild(clone);
       document.body.appendChild(wrapper);
 
@@ -1220,15 +1241,19 @@
 
       const today = new Date().toISOString().slice(0, 10);
       try {
-        // Page format is custom 14"x11" (wider than letter landscape) so all
-        // ten projects columns — including Profit and the pin star — fit.
+        // Fixed 14"x11" landscape: wide enough that all ten columns fit and
+        // tall enough that a dozen+ project rows fit on a single page. We
+        // deliberately don't size the page dynamically — measurement timing
+        // and per-browser font metrics made that fragile and occasionally
+        // split rows across pages. Keeping the page fixed and letting
+        // pagebreak avoid splitting individual rows is reliable.
         await html2pdf().set({
           margin: 0.3,
           filename: `datawatch-projects-${today}.pdf`,
           image: { type: 'jpeg', quality: 0.95 },
           html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
-          jsPDF: { unit: 'in', format: [11, 14], orientation: 'landscape' },
-          pagebreak: { mode: ['avoid-all', 'css'] }
+          jsPDF: { unit: 'in', format: [14, 11], orientation: 'landscape' },
+          pagebreak: { mode: ['css'], avoid: 'tr' }
         }).from(wrapper).save();
       } catch (err) {
         console.error('PDF generation failed', err);
