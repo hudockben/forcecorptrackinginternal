@@ -1246,17 +1246,21 @@
         // so all ten columns including Profit + pin star fit); height grows
         // to fit however many rows are pinned, with a floor of 11" and a
         // 0.5" safety buffer so an off-by-a-pixel measurement can't clip
-        // the last row.
+        // the last row. jsPDF normalizes [w,h] based on orientation
+        // ("portrait" puts the smaller side first), so pick the orientation
+        // that keeps the 14" dimension as the page width.
         const margin = 0.3;
+        const pageWidthIn = 14;
         const measuredPx = Math.max(wrapper.offsetHeight, wrapper.scrollHeight);
         const heightIn = measuredPx / 96;
         const pageHeightIn = Math.max(11, heightIn + margin * 2 + 0.5);
+        const orientation = pageHeightIn > pageWidthIn ? 'portrait' : 'landscape';
         await html2pdf().set({
           margin,
           filename: `datawatch-projects-${today}.pdf`,
           image: { type: 'jpeg', quality: 0.95 },
-          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false, windowWidth: wrapper.offsetWidth },
-          jsPDF: { unit: 'in', format: [14, pageHeightIn], orientation: 'portrait' },
+          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
+          jsPDF: { unit: 'in', format: [pageWidthIn, pageHeightIn], orientation },
           pagebreak: { mode: ['avoid-all', 'css'] }
         }).from(wrapper).save();
       } catch (err) {
