@@ -1348,16 +1348,22 @@
         // 5+ once the rubber-inventory strip pushed the table down. The
         // 0.6" buffer covers font-metric slop so the last row can't be
         // shaved off by a fractional-pixel measurement.
+        //
+        // Orientation must match the page aspect or jsPDF silently swaps the
+        // dimensions (portrait expects height>=width, landscape the opposite),
+        // which made an 11"-tall page render as 11×14 portrait and clip the
+        // table's left columns off the page.
         const margin = 0.3;
         const measuredPx = Math.max(wrapper.offsetHeight, wrapper.scrollHeight);
         const heightIn = measuredPx / 96;
         const pageHeightIn = Math.max(11, heightIn + margin * 2 + 0.6);
+        const orientation = pageHeightIn > 14 ? 'portrait' : 'landscape';
         await html2pdf().set({
           margin,
           filename: `datawatch-projects-${today}.pdf`,
           image: { type: 'jpeg', quality: 0.95 },
           html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false, windowWidth: wrapper.offsetWidth },
-          jsPDF: { unit: 'in', format: [14, pageHeightIn], orientation: 'portrait' },
+          jsPDF: { unit: 'in', format: [14, pageHeightIn], orientation },
           pagebreak: { mode: ['avoid-all', 'css'] }
         }).from(wrapper).save();
       } catch (err) {
