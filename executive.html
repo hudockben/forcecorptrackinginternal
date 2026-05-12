@@ -1331,24 +1331,34 @@
       const prevOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
 
-      // Give layout/paint a beat to settle before html2canvas reads it.
+      // Give layout/paint a beat to settle, then wait for the logo image so
+      // the wrapper height we measure below is the final rendered height.
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await Promise.all(Array.from(wrapper.querySelectorAll('img')).map(img =>
+        img.complete && img.naturalHeight !== 0
+          ? Promise.resolve()
+          : new Promise(r => { img.onload = img.onerror = r; })
+      ));
+      await new Promise(r => setTimeout(r, 120));
 
       const today = new Date().toISOString().slice(0, 10);
       try {
-        // Fixed 14"x11" landscape: wide enough that all ten columns fit and
-        // tall enough that a dozen+ project rows fit on a single page. We
-        // deliberately don't size the page dynamically — measurement timing
-        // and per-browser font metrics made that fragile and occasionally
-        // split rows across pages. Keeping the page fixed and letting
-        // pagebreak avoid splitting individual rows is reliable.
+        // Width is fixed at 14" so all ten columns fit. Height grows to fit
+        // however many projects are pinned — a fixed 11" page clipped rows
+        // 5+ once the rubber-inventory strip pushed the table down. The
+        // 0.6" buffer covers font-metric slop so the last row can't be
+        // shaved off by a fractional-pixel measurement.
+        const margin = 0.3;
+        const measuredPx = Math.max(wrapper.offsetHeight, wrapper.scrollHeight);
+        const heightIn = measuredPx / 96;
+        const pageHeightIn = Math.max(11, heightIn + margin * 2 + 0.6);
         await html2pdf().set({
-          margin: 0.3,
+          margin,
           filename: `datawatch-projects-${today}.pdf`,
           image: { type: 'jpeg', quality: 0.95 },
-          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
-          jsPDF: { unit: 'in', format: [14, 11], orientation: 'landscape' },
-          pagebreak: { mode: ['css'], avoid: 'tr' }
+          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false, windowWidth: wrapper.offsetWidth },
+          jsPDF: { unit: 'in', format: [14, pageHeightIn], orientation: 'portrait' },
+          pagebreak: { mode: ['avoid-all', 'css'] }
         }).from(wrapper).save();
       } catch (err) {
         console.error('PDF generation failed', err);
