@@ -116,6 +116,17 @@ async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legac
 const readTurfProjects   = (sql, cc) => readProjectBlobs(sql, cc, 'fct_projects_index',        'fct_project_',        'fct_projects');
 const readPavingProjects = (sql, cc) => readProjectBlobs(sql, cc, 'fct_paving_projects_index', 'fct_paving_project_', 'fct_paving_projects');
 
+// Rubber inventory blob — same shape as the home page's `inventoryEntries`.
+// Entries with project_id are treated as "used by a project", entries without
+// project_id are stock-add (produced). Mirrors tracker.html ~line 3756.
+async function readInventoryEntries(sql, companyCode) {
+  const rows = await sql`
+    SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_inventory`}
+  `;
+  const v = rows[0]?.value;
+  return Array.isArray(v) ? v.filter(e => e && typeof e === 'object') : [];
+}
+
 // Project-shape helpers (turf and paving blobs share the same dashed-key
 // naming convention — 'project-name', 'job-number', 'contract-amount',
 // 'start-date', 'end-date'/'target-completion'). Paving uses 'Complete'/'Active';
@@ -460,7 +471,7 @@ async function buildFinancials(sql, companyCode, division, projects) {
     bid_total       += bid;
     actual_total    += actual;
     projected_total += projected;
-    perProject.set(p.id, { bid, actual, projected });
+    perProject.set(p.id, { contract: projContract(p), bid, actual, projected });
   }
   return { contract_total, bid_total, actual_total, projected_total, perProject };
 }
@@ -473,10 +484,27 @@ function makeFinancialTile({ key, name, accent, projects, financials }) {
   const onHold   = active.filter(projIsOnHold).length;
   const f        = financials || { contract_total: 0, bid_total: 0, actual_total: 0, projected_total: 0 };
 
-  const totalContract  = Number(f.contract_total)  || 0;
   const totalBid       = Number(f.bid_total)       || 0;
   const totalActual    = Number(f.actual_total)    || 0;
-  const totalProjected = Number(f.projected_total) || 0;
+
+  // Profit/margin must only compare projects that have BOTH a contract amount
+  // AND a projected cost. "Awarded" projects often carry a full bid (which
+  // drives a large projected cost) before the contract value is entered, so
+  // summing total projected against total contract produces a phantom loss.
+  // tracker.html mirrors this per-project: contractVal ? contractVal - projCost : null.
+  let matchedContract = 0, matchedProjected = 0, pendingContractCount = 0;
+  if (f.perProject) {
+    for (const row of f.perProject.values()) {
+      const c  = Number(row.contract)  || 0;
+      const pj = Number(row.projected) || 0;
+      if (c > 0 && pj > 0) {
+        matchedContract  += c;
+        matchedProjected += pj;
+      } else if (pj > 0 && c <= 0) {
+        pendingContractCount += 1;
+      }
+    }
+  }
 
   const cvbFmt = totalBid > 0 ? fmtCostVsBid(totalActual, totalBid) : { text: '—', color: 'mute' };
   const cvbSub = totalBid > 0
@@ -486,24 +514,29 @@ function makeFinancialTile({ key, name, accent, projects, financials }) {
     : undefined;
 
   let profitText = '—', profitSub;
-  if (totalContract > 0 && totalProjected > 0) {
-    const profit = totalContract - totalProjected;
+  if (matchedContract > 0 && matchedProjected > 0) {
+    const profit = matchedContract - matchedProjected;
     if (Math.abs(profit) < 1) {
       profitText = '$0';
       profitSub  = 'Break-even';
     } else if (profit > 0) {
       profitText = fmtCurrency(profit);
-      profitSub  = `${((profit / totalContract) * 100).toFixed(1)}% margin`;
+      profitSub  = `${((profit / matchedContract) * 100).toFixed(1)}% margin`;
     } else {
       profitText = `−${fmtCurrency(Math.abs(profit))}`;
-      profitSub  = `${(Math.abs(profit / totalContract) * 100).toFixed(1)}% loss`;
+      profitSub  = `${(Math.abs(profit / matchedContract) * 100).toFixed(1)}% loss`;
     }
+    if (pendingContractCount > 0) {
+      profitSub += ` · ${pendingContractCount} pending contract`;
+    }
+  } else if (pendingContractCount > 0) {
+    profitSub = `${pendingContractCount} pending contract`;
   }
 
   let status, statusKind;
   if (!projects.length)                                                    { status = 'No Projects'; statusKind = 'mute'; }
   else if (onHold > 0)                                                     { status = `${onHold} On Hold`; statusKind = 'amber'; }
-  else if (totalContract > 0 && totalProjected > totalContract)            { status = 'Margin Risk'; statusKind = 'amber'; }
+  else if (matchedContract > 0 && matchedProjected > matchedContract)      { status = 'Margin Risk'; statusKind = 'amber'; }
   else                                                                     { status = 'On Track'; statusKind = 'green'; }
 
   return {
@@ -518,8 +551,8 @@ function makeFinancialTile({ key, name, accent, projects, financials }) {
       { label: 'Cost vs Bid', value: cvbFmt.text, sub: cvbSub },
       {
         label: 'Projected',
-        value: totalProjected > 0 ? fmtCurrency(totalProjected) : '—',
-        sub:   totalContract > 0  ? `vs ${fmtCurrency(totalContract)} contract` : undefined,
+        value: matchedProjected > 0 ? fmtCurrency(matchedProjected) : '—',
+        sub:   matchedContract > 0  ? `vs ${fmtCurrency(matchedContract)} contract` : undefined,
       },
       { label: 'Profit', value: profitText, sub: profitSub },
     ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
@@ -1005,6 +1038,37 @@ async function buildIntercompanyTile(sql, companyCode) {
   };
 }
 
+// Rubber inventory summary — one row per rubber type with produced / used /
+// in_stock / lbs_total. Mirrors the home page's per-type aggregation so the
+// executive PDF surfaces the same numbers users see on the tracker.
+async function buildRubberInventory(sql, companyCode) {
+  const entries = await readInventoryEntries(sql, companyCode);
+  const byType = new Map();
+  for (const e of entries) {
+    const rt = String(e.rubber_type || '').trim() || '(unspecified)';
+    if (!byType.has(rt)) byType.set(rt, { produced: 0, used: 0, lbs_total: 0 });
+    const row  = byType.get(rt);
+    const bags = Number(e.bags_produced) || 0;
+    if (e.project_id) {
+      row.used += bags;
+    } else {
+      row.produced += bags;
+      row.lbs_total += Number(e.total_poundage) || 0;
+    }
+  }
+  return [...byType.entries()]
+    // Push TOTES (non-rubber containers) to the end so the rubber types
+    // line up next to each other on the home page / exec PDF.
+    .sort(([a], [b]) => Number(/tote/i.test(a)) - Number(/tote/i.test(b)))
+    .map(([rubber_type, v]) => ({
+      rubber_type,
+      produced:  v.produced,
+      used:      v.used,
+      in_stock:  v.produced - v.used,
+      lbs_total: v.lbs_total,
+    }));
+}
+
 // Paving — same shape as Turf, sourced from fct_paving_projects_index +
 // per-project blobs and joined to daily_tracking.division='paving'.
 async function buildPavingTile(sql, companyCode) {
@@ -1258,12 +1322,15 @@ module.exports = async (req, res) => {
     // The builders return null on error or when there are no active
     // projects — both cases leave the mock's empty placeholders, which
     // now contain no fake project entries.
-    const [livePortfolio, liveDetails] = await Promise.all([
+    const [livePortfolio, liveDetails, liveInventory] = await Promise.all([
       buildProjectsPortfolio(sql, company).catch(err => {
         console.error('[executive/report] portfolio build failed:', err.message); return null;
       }),
       buildProjectDetails(sql, company).catch(err => {
         console.error('[executive/report] details build failed:', err.message); return null;
+      }),
+      buildRubberInventory(sql, company).catch(err => {
+        console.error('[executive/report] inventory build failed:', err.message); return null;
       }),
     ]);
     if (livePortfolio && Array.isArray(livePortfolio.rows)) {
@@ -1271,6 +1338,9 @@ module.exports = async (req, res) => {
     }
     if (Array.isArray(liveDetails)) {
       report.details = liveDetails;
+    }
+    if (Array.isArray(liveInventory)) {
+      report.inventory = liveInventory;
     }
 
     // Diagnostics — only when ?debug=1. Helps identify missing
