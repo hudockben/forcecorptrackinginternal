@@ -1056,13 +1056,17 @@ async function buildRubberInventory(sql, companyCode) {
       row.lbs_total += Number(e.total_poundage) || 0;
     }
   }
-  return [...byType.entries()].map(([rubber_type, v]) => ({
-    rubber_type,
-    produced:  v.produced,
-    used:      v.used,
-    in_stock:  v.produced - v.used,
-    lbs_total: v.lbs_total,
-  }));
+  return [...byType.entries()]
+    // Push TOTES (non-rubber containers) to the end so the rubber types
+    // line up next to each other on the home page / exec PDF.
+    .sort(([a], [b]) => Number(/tote/i.test(a)) - Number(/tote/i.test(b)))
+    .map(([rubber_type, v]) => ({
+      rubber_type,
+      produced:  v.produced,
+      used:      v.used,
+      in_stock:  v.produced - v.used,
+      lbs_total: v.lbs_total,
+    }));
 }
 
 // Paving — same shape as Turf, sourced from fct_paving_projects_index +

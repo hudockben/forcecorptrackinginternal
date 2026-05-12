@@ -3768,7 +3768,7 @@ function renderHomeTab() {
   const invSectionHTML = Object.keys(invByType).length === 0 ? '' : `
     <p class="home-section-title">Rubber Inventory</p>
     <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-bottom:2rem">
-      ${Object.entries(invByType).map(([rt, v]) => {
+      ${Object.entries(invByType).sort(([a], [b]) => Number(/tote/i.test(a)) - Number(/tote/i.test(b))).map(([rt, v]) => {
         const inStock    = v.produced - v.used;
         const stockColor = inStock <= 0 ? 'var(--red)' : inStock < 50 ? 'var(--yellow)' : 'var(--green)';
         return `<div onclick="document.querySelector('.tab-btn[data-tab=inventory]').click()"
@@ -6116,7 +6116,7 @@ function downloadInvPDF(year, selectedMonths) {
   const cardsHTML = Object.keys(invByType).length === 0 ? '' : `
     <h2>Running Inventory by Rubber Type</h2>
     <div class="inv-cards">
-      ${Object.entries(invByType).map(([rt, v]) => {
+      ${Object.entries(invByType).sort(([a], [b]) => Number(/tote/i.test(a)) - Number(/tote/i.test(b))).map(([rt, v]) => {
         const inStock    = v.produced - v.used;
         const stockColor = inStock <= 0 ? '#b91c1c' : inStock < 50 ? '#b45309' : '#15803d';
         return `<div class="inv-card">
@@ -8558,7 +8558,7 @@ function renderInventoryTab() {
 
   const summaryHTML = Object.keys(invByType).length === 0
     ? `<p style="color:var(--muted);font-size:0.85rem;margin:0">No entries yet — add your first entry below.</p>`
-    : Object.entries(invByType).map(([rt, v]) => {
+    : Object.entries(invByType).sort(([a], [b]) => Number(/tote/i.test(a)) - Number(/tote/i.test(b))).map(([rt, v]) => {
         const inStock    = v.produced - v.used;
         const stockColor = inStock <= 0 ? 'var(--red)' : inStock < 50 ? 'var(--yellow)' : 'var(--green)';
         return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.9rem 1.1rem;min-width:175px">
