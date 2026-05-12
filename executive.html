@@ -722,9 +722,18 @@
       box-shadow: none;
       overflow: visible;
     }
-    .pdf-export .ptable { min-width: 0; font-size: 0.7rem; }
-    .pdf-export .ptable th { background: #f1f5f9; color: #475569; }
-    .pdf-export .ptable td { border-color: #e2e8f0; }
+    .pdf-export .ptable { min-width: 0; font-size: 0.68rem; table-layout: auto; }
+    .pdf-export .ptable th {
+      background: #f1f5f9;
+      color: #475569;
+      padding: 0.55rem 0.45rem 0.4rem;
+    }
+    .pdf-export .ptable td {
+      border-color: #e2e8f0;
+      padding: 0.5rem 0.45rem;
+    }
+    .pdf-export .ptable .pname-main { font-size: 0.78rem; }
+    .pdf-export .ptable .pprogress { min-width: 110px; }
     .pdf-export .ptable .pname-main { color: #0f172a; }
     .pdf-export .ptable .pstar.off { color: #cbd5e1; }
     .pdf-export .ptable .pprogress-track { background: #e2e8f0; }
@@ -1186,7 +1195,7 @@
         // report 0 height and render a blank PDF. flex-shrink:0 keeps the
         // body's flex column layout from squashing it.
         'flex-shrink:0',
-        'width:13.2in', 'padding:0.3in 0.4in',
+        'width:13.4in', 'padding:0.3in 0.25in',
         'background:#ffffff', 'color:#0f172a',
         'font-family:"Segoe UI",system-ui,-apple-system,sans-serif',
         'font-size:11px'
