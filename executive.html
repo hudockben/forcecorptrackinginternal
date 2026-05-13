@@ -237,7 +237,6 @@
       padding: 0.5rem 0.85rem;
       flex-shrink: 0;
     }
-    .pdf-export .section-action-btn { display: none; }
 
     /* ── Hero KPIs ── */
     .hero-kpis {
@@ -753,58 +752,6 @@
       border-top: 1px solid var(--border);
     }
 
-    /* ── PDF export (off-screen render via html2pdf) ── */
-    .pdf-export {
-      --bg: #ffffff;
-      --surface: #ffffff;
-      --surface2: #f8fafc;
-      --border: #cbd5e1;
-      --text: #0f172a;
-      --muted: #64748b;
-      background: #ffffff;
-      color: #0f172a;
-    }
-    .pdf-export .section-title { color: #0f172a; font-size: 1.05rem; }
-    .pdf-export .ptable-wrap {
-      background: #ffffff;
-      border: 1px solid #cbd5e1;
-      box-shadow: none;
-      overflow: visible;
-    }
-    .pdf-export .ptable { min-width: 0; font-size: 0.58rem; table-layout: auto; }
-    .pdf-export .ptable th {
-      background: #f1f5f9;
-      color: #475569;
-      padding: 0.45rem 0.35rem 0.35rem;
-      font-size: 0.5rem;
-    }
-    .pdf-export .ptable td {
-      border-color: #e2e8f0;
-      padding: 0.4rem 0.35rem;
-    }
-    .pdf-export .ptable .pname-main { color: #0f172a; font-size: 0.68rem; }
-    .pdf-export .ptable .pname-sub { font-size: 0.55rem; }
-    .pdf-export .ptable .pstatus,
-    .pdf-export .ptable .pprogress-pct,
-    .pdf-export .ptable .v-profit-pct { font-size: 0.55rem; }
-    .pdf-export .ptable .pprogress { min-width: 90px; gap: 0.4rem; }
-    .pdf-export .ptable .pprogress-track { min-width: 55px; }
-    .pdf-export .ptable .pstar.off { color: #cbd5e1; }
-    .pdf-export .ptable .pprogress-track { background: #e2e8f0; }
-    .pdf-export .ptable .v-contract { color: #2563eb; }
-    .pdf-export .inv-strip { gap: 0.35rem; margin-bottom: 0.55rem; }
-    .pdf-export .inv-card {
-      background: #ffffff;
-      border-color: #cbd5e1;
-      padding: 0.35rem 0.5rem;
-      min-width: 110px;
-    }
-    .pdf-export .inv-type { color: #475569; font-size: 0.5rem; margin-bottom: 0.15rem; }
-    .pdf-export .inv-stock { font-size: 0.95rem; }
-    .pdf-export .inv-stock-lbl { font-size: 0.5rem; margin-top: 0.05rem; }
-    .pdf-export .inv-meta { font-size: 0.5rem; gap: 0.5rem; margin-top: 0.25rem; color: #64748b; }
-    .pdf-export .inv-lbs { font-size: 0.5rem; margin-top: 0.1rem; color: #64748b; }
-
     /* ── Print ── */
     @media print {
       @page { size: letter landscape; margin: 0.4in; }
@@ -845,6 +792,19 @@
       .timeline-today::after { color: #000; }
       .page-break { break-before: page; page-break-before: always; }
       .project-detail { break-inside: avoid; page-break-inside: avoid; }
+
+      /* Projects-only print scope: when the Projects "Download PDF" button
+         is clicked, body.printing-projects-only is added and everything
+         outside #projectsSection is hidden so the browser's native
+         print-to-PDF renders just that section. */
+      body.printing-projects-only .page-title-wrap,
+      body.printing-projects-only #reportBody > .section:not(#projectsSection) {
+        display: none !important;
+      }
+      body.printing-projects-only #projectsSection {
+        break-before: auto !important;
+        page-break-before: auto !important;
+      }
     }
 
     @media (max-width: 900px) {
@@ -1154,13 +1114,7 @@
       `;
     }
 
-    // Cached report payload so the PDF export can rebuild its content
-    // from data (instead of cloning live, dark-themed DOM nodes through
-    // html2canvas — that route produced inconsistent / blank PDFs).
-    let lastReportData = null;
-
     function renderReport(data) {
-      lastReportData = data;
       document.getElementById('heroKpis').innerHTML       = renderHero(data.snapshot?.hero || []);
       document.getElementById('divGrid').innerHTML        = (data.snapshot?.divisions || []).map(renderDivisionTile).join('');
 
@@ -1262,241 +1216,22 @@
       window.location.replace('index.html');
     }
 
-    // ── PDF: build content from cached data (no DOM cloning) ──
-    // Earlier iterations cloned #projectsSection into an off-screen wrapper
-    // and re-coloured it via .pdf-export rules. html2canvas rendered that
-    // tree inconsistently (blank table / missing inventory). Building the
-    // PDF tree fresh from lastReportData with only inline styles removes
-    // every cascade / variable / clone-state pitfall.
-
-    function pdfBuildInventoryStrip(inventory) {
-      if (!Array.isArray(inventory) || inventory.length === 0) return '';
-      const fmt = n => Number(n || 0).toLocaleString();
-      const cards = inventory.map(r => {
-        const stock    = Number(r.in_stock) || 0;
-        const stockCol = stock <= 0 ? '#ef4444' : stock < 50 ? '#fbbf24' : '#22c55e';
-        return `
-          <div style="flex:1 1 150px;min-width:110px;background:#ffffff;border:1px solid #cbd5e1;border-radius:8px;padding:0.35rem 0.5rem;box-sizing:border-box;">
-            <div style="font-size:0.5rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#475569;margin-bottom:0.15rem;">${esc(r.rubber_type)}</div>
-            <div style="font-size:0.95rem;font-weight:700;line-height:1;color:${stockCol};">${fmt(stock)}</div>
-            <div style="font-size:0.5rem;color:#64748b;margin-top:0.05rem;">bags in stock</div>
-            <div style="display:flex;gap:0.5rem;font-size:0.5rem;color:#64748b;margin-top:0.25rem;">
-              <span>&#8679; ${fmt(r.produced)} produced</span>
-              <span>&#8681; ${fmt(r.used)} used</span>
-            </div>
-            <div style="font-size:0.5rem;color:#64748b;margin-top:0.1rem;">${fmt(r.lbs_total)} lbs total</div>
-          </div>
-        `;
-      }).join('');
-      return `
-        <div style="margin-bottom:0.55rem;">
-          <div style="font-size:0.55rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#64748b;margin:0 0 0.5rem;">Rubber Inventory</div>
-          <div style="display:flex;flex-wrap:wrap;gap:0.35rem;">${cards}</div>
-        </div>
-      `;
+    // ── PDF: native browser print, scoped to #projectsSection ──
+    // Mirrors the top-of-page "Generate Report (PDF)" button (which
+    // calls window.print()) — adding body.printing-projects-only hides
+    // every other section via the @media print rules so the user gets
+    // a Projects-only PDF from their browser's Save as PDF flow.
+    function downloadProjectsPdf() {
+      document.body.classList.add('printing-projects-only');
+      const cleanup = () => {
+        document.body.classList.remove('printing-projects-only');
+        window.removeEventListener('afterprint', cleanup);
+      };
+      window.addEventListener('afterprint', cleanup);
+      window.print();
     }
 
-    function pdfBuildProjectsTable(rows) {
-      const cellPad = 'padding:0.4rem 0.35rem;border-bottom:1px solid #e2e8f0;vertical-align:middle;white-space:nowrap;font-variant-numeric:tabular-nums;font-size:0.58rem;';
-      const numCell = `${cellPad}text-align:right;`;
-      const muteCell = `${numCell}color:#64748b;`;
-
-      const trs = rows.map(p => {
-        const progressPct = Math.max(0, Math.min(100, Number(p.progressPct) || 0));
-        const progressColor = progressPct >= 100 ? '#60a5fa' : progressPct >= 85 ? '#fbbf24' : '#22c55e';
-
-        let varCell;
-        if (!p.bid) {
-          varCell = `<td style="${muteCell}">—</td>`;
-        } else if (p.variance >= 0) {
-          varCell = `<td style="${numCell}color:#22c55e;">${esc(fmtMoney(p.variance))} <span style="color:#64748b;font-size:0.55rem;margin-left:0.25rem;">under</span></td>`;
-        } else {
-          varCell = `<td style="${numCell}color:#ef4444;">${esc(fmtMoney(Math.abs(p.variance)))} <span style="color:#64748b;font-size:0.55rem;margin-left:0.25rem;">over</span></td>`;
-        }
-
-        let profitCell;
-        if (p.profit == null) {
-          profitCell = `<td style="${muteCell}">—</td>`;
-        } else {
-          const col = p.profit >= 0 ? '#22c55e' : '#ef4444';
-          const pct = p.profitPct != null
-            ? ` <span style="color:#64748b;font-size:0.55rem;margin-left:0.25rem;">(${(p.profitPct >= 0 ? '+' : '−')}${Math.abs(p.profitPct).toFixed(1)}%)</span>`
-            : '';
-          profitCell = `<td style="${numCell}color:${col};">${esc(fmtMoney(p.profit))}${pct}</td>`;
-        }
-
-        const star    = p.pinned ? '★' : '☆';
-        const starCol = p.pinned ? '#22c55e' : '#cbd5e1';
-
-        return `
-          <tr>
-            <td style="${cellPad}">
-              <div style="display:flex;flex-direction:column;gap:0.18rem;">
-                <span style="font-weight:700;color:#0f172a;font-size:0.68rem;letter-spacing:-0.01em;">${esc(p.name)}</span>
-                <span style="font-size:0.55rem;color:#64748b;letter-spacing:0.02em;">${esc(p.jobNumber)}</span>
-              </div>
-            </td>
-            <td style="${cellPad}"><span style="font-size:0.55rem;color:#64748b;letter-spacing:0.02em;">${esc(p.status)}</span></td>
-            <td style="${cellPad}">
-              <div style="display:flex;align-items:center;gap:0.4rem;min-width:90px;">
-                <div style="flex:1;height:7px;background:#e2e8f0;border-radius:4px;overflow:hidden;min-width:55px;">
-                  <div style="height:100%;width:${progressPct}%;background:${progressColor};border-radius:4px;"></div>
-                </div>
-                <span style="color:#64748b;font-size:0.55rem;font-weight:600;min-width:32px;text-align:right;">${progressPct}%</span>
-              </div>
-            </td>
-            <td style="${numCell}color:#2563eb;">${esc(fmtMoney(p.contract, { zeroDash: true }))}</td>
-            <td style="${numCell}color:#22c55e;">${esc(fmtMoney(p.bid,      { zeroDash: true }))}</td>
-            <td style="${numCell}color:#0f172a;">${esc(fmtMoney(p.actual,   { zeroDash: true }))}</td>
-            ${varCell}
-            <td style="${numCell}color:#fbbf24;">${esc(fmtMoney(p.projected, { zeroDash: true }))}</td>
-            ${profitCell}
-            <td style="${cellPad}text-align:center;width:24px;color:${starCol};font-size:0.95rem;">${star}</td>
-          </tr>
-        `;
-      }).join('');
-
-      const thStyle = 'text-align:left;background:#f1f5f9;color:#475569;padding:0.45rem 0.35rem 0.35rem;font-size:0.5rem;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;border-bottom:1px solid #cbd5e1;white-space:nowrap;';
-      const thNum   = `${thStyle}text-align:right;`;
-
-      const empty = `<tr><td colspan="10" style="${cellPad}text-align:center;color:#64748b;padding:1.5rem 0.35rem;">No active projects.</td></tr>`;
-
-      return `
-        <div style="background:#ffffff;border:1px solid #cbd5e1;border-radius:10px;padding:0.5rem 0.25rem;">
-          <table style="width:100%;border-collapse:collapse;font-size:0.58rem;table-layout:auto;">
-            <thead>
-              <tr>
-                <th style="${thStyle}">Project</th>
-                <th style="${thStyle}">Status</th>
-                <th style="${thStyle}">Progress</th>
-                <th style="${thNum}">Contract</th>
-                <th style="${thNum}">Bid</th>
-                <th style="${thNum}">Actual</th>
-                <th style="${thNum}">Variance</th>
-                <th style="${thNum}">Projected</th>
-                <th style="${thNum}">Profit</th>
-                <th style="${thStyle}"></th>
-              </tr>
-            </thead>
-            <tbody>${rows.length ? trs : empty}</tbody>
-          </table>
-        </div>
-      `;
-    }
-
-    async function downloadProjectsPdf() {
-      const btn = document.getElementById('downloadProjectsBtn');
-      if (!btn) return;
-      if (typeof html2pdf === 'undefined') {
-        alert('PDF library is still loading. Please try again in a moment.');
-        return;
-      }
-      if (!lastReportData) {
-        alert('Report is still loading — please wait a moment and try again.');
-        return;
-      }
-      const original = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = 'Generating…';
-
-      const dateStr = document.getElementById('reportDate').textContent || '';
-      const subStr  = document.getElementById('projectsSub').textContent || '';
-
-      const projData = lastReportData.projects;
-      const projRows = Array.isArray(projData) ? projData : (projData?.rows || []);
-      const inventory = Array.isArray(lastReportData.inventory) ? lastReportData.inventory : [];
-
-      // Covering modal so the user sees a spinner-style message instead of
-      // the temporarily on-screen white render target.
-      const modal = document.createElement('div');
-      modal.style.cssText = [
-        'position:fixed', 'inset:0',
-        'background:rgba(8,8,14,0.94)',
-        'z-index:99999',
-        'display:flex', 'align-items:center', 'justify-content:center',
-        'color:#e2e8f0', 'font-size:0.85rem',
-        'letter-spacing:0.18em', 'text-transform:uppercase',
-        'font-family:"Segoe UI",system-ui,sans-serif'
-      ].join(';');
-      modal.textContent = 'Generating PDF…';
-      document.body.appendChild(modal);
-
-      // Render target stays in body's normal flow (flex-shrink:0 keeps the
-      // body's flex column layout from squashing it). Building inline-styled
-      // markup means we don't depend on the host page's class cascade.
-      const wrapper = document.createElement('div');
-      wrapper.style.cssText = [
-        'flex-shrink:0',
-        'width:13.2in', 'padding:0.3in 0.3in',
-        'background:#ffffff', 'color:#0f172a',
-        'font-family:"Segoe UI",system-ui,-apple-system,sans-serif',
-        'font-size:11px',
-        'box-sizing:border-box'
-      ].join(';');
-
-      wrapper.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #cbd5e1;padding-bottom:0.55rem;margin-bottom:1rem;">
-          <div style="display:flex;align-items:center;gap:0.7rem;">
-            <img src="datawatch-tower.png" style="width:46px;height:46px;object-fit:contain;" />
-            <div>
-              <div style="font-size:0.62rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#7c3aed;">Cross-Division Roll-Up</div>
-              <div style="font-size:1.15rem;font-weight:800;color:#0f172a;letter-spacing:-0.02em;">Projects — Executive Report</div>
-              <div style="font-size:0.7rem;color:#64748b;margin-top:0.1rem;">${esc(dateStr)}</div>
-            </div>
-          </div>
-          <div style="text-align:right;font-size:0.65rem;color:#64748b;letter-spacing:0.04em;">
-            <div style="font-weight:700;color:#0f172a;letter-spacing:0.16em;text-transform:uppercase;">DataWatch</div>
-            <div style="margin-top:0.15rem;">${esc(subStr)}</div>
-          </div>
-        </div>
-        <div style="font-size:0.95rem;font-weight:700;color:#0f172a;letter-spacing:-0.01em;margin-bottom:0.55rem;">Projects</div>
-        ${pdfBuildInventoryStrip(inventory)}
-        ${pdfBuildProjectsTable(projRows)}
-      `;
-
-      document.body.appendChild(wrapper);
-
-      // Lock body scroll so the briefly-appended wrapper can't push the page
-      // around behind the modal.
-      const prevOverflow = document.body.style.overflow;
-      document.body.style.overflow = 'hidden';
-
-      // Wait for layout/paint AND the tower logo to finish loading. An
-      // un-decoded image was a likely culprit when the wrapper's first
-      // child was the only element to render.
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const logo = wrapper.querySelector('img');
-      if (logo && !logo.complete) {
-        await new Promise(resolve => {
-          logo.addEventListener('load',  resolve, { once: true });
-          logo.addEventListener('error', resolve, { once: true });
-        });
-      }
-
-      const today = new Date().toISOString().slice(0, 10);
-      try {
-        await html2pdf().set({
-          margin: 0.3,
-          filename: `datawatch-projects-${today}.pdf`,
-          image: { type: 'jpeg', quality: 0.95 },
-          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
-          jsPDF: { unit: 'in', format: [14, 11], orientation: 'landscape' },
-          pagebreak: { mode: ['css'], avoid: 'tr' }
-        }).from(wrapper).save();
-      } catch (err) {
-        console.error('PDF generation failed', err);
-        alert('Could not generate PDF: ' + (err && err.message ? err.message : err));
-      } finally {
-        wrapper.remove();
-        modal.remove();
-        document.body.style.overflow = prevOverflow;
-        btn.disabled = false;
-        btn.innerHTML = original;
-      }
-    }
   </script>
-
-  <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js"></script>
 
 </body>
 </html>
