@@ -521,6 +521,8 @@
     .row-btn.edit:hover    { color: var(--accent); border-color: var(--accent); }
     .row-btn.approve { color: var(--green); border-color: rgba(34,197,94,0.35); }
     .row-btn.approve:hover { background: rgba(34,197,94,0.08); }
+    .row-btn.delete { color: var(--red); border-color: rgba(239,68,68,0.3); }
+    .row-btn.delete:hover { background: rgba(239,68,68,0.08); }
 
     /* ── Edit modal ── */
     .modal-backdrop {
@@ -1213,6 +1215,7 @@
             <td class="td-actions">
               <button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>
               ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
+              <button class="row-btn delete"  onclick="deleteEntry('${e.id}')">Delete</button>
             </td>
           </tr>
         `;
@@ -1312,6 +1315,29 @@
       const idxF = filtered.findIndex(e => e.id === updated.id);
       if (idxF >= 0) filtered[idxF] = updated;
       else           filtered.unshift(updated);
+    }
+
+    async function deleteEntry(id) {
+      const e = filtered.find(x => x.id === id);
+      if (!e) return;
+      const labelDate = prettyDate(e.work_date);
+      const labelStatus = e.status === 'approved' ? ' (currently APPROVED)' : '';
+      if (!confirm(`Delete ${e.username}'s entry for ${labelDate}${labelStatus}?\n\nThis cannot be undone. The audit log will record the deletion.`)) return;
+      try {
+        const res = await fetch('/api/timesheet-entries?id=' + encodeURIComponent(id), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+        // Optimistic local removal — no refetch needed
+        allEntries = allEntries.filter(x => x.id !== id);
+        filtered   = filtered.filter(x => x.id !== id);
+        selectedIds.delete(id);
+        renderRows();
+        renderStats();
+      } catch (err) {
+        alert(err.message);
+      }
     }
 
     async function approveOne(id) {
