@@ -1154,7 +1154,13 @@
       `;
     }
 
+    // Cached report payload so the PDF export can rebuild its content
+    // from data (instead of cloning live, dark-themed DOM nodes through
+    // html2canvas — that route produced inconsistent / blank PDFs).
+    let lastReportData = null;
+
     function renderReport(data) {
+      lastReportData = data;
       document.getElementById('heroKpis').innerHTML       = renderHero(data.snapshot?.hero || []);
       document.getElementById('divGrid').innerHTML        = (data.snapshot?.divisions || []).map(renderDivisionTile).join('');
 
@@ -1256,12 +1262,137 @@
       window.location.replace('index.html');
     }
 
+    // ── PDF: build content from cached data (no DOM cloning) ──
+    // Earlier iterations cloned #projectsSection into an off-screen wrapper
+    // and re-coloured it via .pdf-export rules. html2canvas rendered that
+    // tree inconsistently (blank table / missing inventory). Building the
+    // PDF tree fresh from lastReportData with only inline styles removes
+    // every cascade / variable / clone-state pitfall.
+
+    function pdfBuildInventoryStrip(inventory) {
+      if (!Array.isArray(inventory) || inventory.length === 0) return '';
+      const fmt = n => Number(n || 0).toLocaleString();
+      const cards = inventory.map(r => {
+        const stock    = Number(r.in_stock) || 0;
+        const stockCol = stock <= 0 ? '#ef4444' : stock < 50 ? '#fbbf24' : '#22c55e';
+        return `
+          <div style="flex:1 1 150px;min-width:110px;background:#ffffff;border:1px solid #cbd5e1;border-radius:8px;padding:0.35rem 0.5rem;box-sizing:border-box;">
+            <div style="font-size:0.5rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#475569;margin-bottom:0.15rem;">${esc(r.rubber_type)}</div>
+            <div style="font-size:0.95rem;font-weight:700;line-height:1;color:${stockCol};">${fmt(stock)}</div>
+            <div style="font-size:0.5rem;color:#64748b;margin-top:0.05rem;">bags in stock</div>
+            <div style="display:flex;gap:0.5rem;font-size:0.5rem;color:#64748b;margin-top:0.25rem;">
+              <span>&#8679; ${fmt(r.produced)} produced</span>
+              <span>&#8681; ${fmt(r.used)} used</span>
+            </div>
+            <div style="font-size:0.5rem;color:#64748b;margin-top:0.1rem;">${fmt(r.lbs_total)} lbs total</div>
+          </div>
+        `;
+      }).join('');
+      return `
+        <div style="margin-bottom:0.55rem;">
+          <div style="font-size:0.55rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#64748b;margin:0 0 0.5rem;">Rubber Inventory</div>
+          <div style="display:flex;flex-wrap:wrap;gap:0.35rem;">${cards}</div>
+        </div>
+      `;
+    }
+
+    function pdfBuildProjectsTable(rows) {
+      const cellPad = 'padding:0.4rem 0.35rem;border-bottom:1px solid #e2e8f0;vertical-align:middle;white-space:nowrap;font-variant-numeric:tabular-nums;font-size:0.58rem;';
+      const numCell = `${cellPad}text-align:right;`;
+      const muteCell = `${numCell}color:#64748b;`;
+
+      const trs = rows.map(p => {
+        const progressPct = Math.max(0, Math.min(100, Number(p.progressPct) || 0));
+        const progressColor = progressPct >= 100 ? '#60a5fa' : progressPct >= 85 ? '#fbbf24' : '#22c55e';
+
+        let varCell;
+        if (!p.bid) {
+          varCell = `<td style="${muteCell}">—</td>`;
+        } else if (p.variance >= 0) {
+          varCell = `<td style="${numCell}color:#22c55e;">${esc(fmtMoney(p.variance))} <span style="color:#64748b;font-size:0.55rem;margin-left:0.25rem;">under</span></td>`;
+        } else {
+          varCell = `<td style="${numCell}color:#ef4444;">${esc(fmtMoney(Math.abs(p.variance)))} <span style="color:#64748b;font-size:0.55rem;margin-left:0.25rem;">over</span></td>`;
+        }
+
+        let profitCell;
+        if (p.profit == null) {
+          profitCell = `<td style="${muteCell}">—</td>`;
+        } else {
+          const col = p.profit >= 0 ? '#22c55e' : '#ef4444';
+          const pct = p.profitPct != null
+            ? ` <span style="color:#64748b;font-size:0.55rem;margin-left:0.25rem;">(${(p.profitPct >= 0 ? '+' : '−')}${Math.abs(p.profitPct).toFixed(1)}%)</span>`
+            : '';
+          profitCell = `<td style="${numCell}color:${col};">${esc(fmtMoney(p.profit))}${pct}</td>`;
+        }
+
+        const star    = p.pinned ? '★' : '☆';
+        const starCol = p.pinned ? '#22c55e' : '#cbd5e1';
+
+        return `
+          <tr>
+            <td style="${cellPad}">
+              <div style="display:flex;flex-direction:column;gap:0.18rem;">
+                <span style="font-weight:700;color:#0f172a;font-size:0.68rem;letter-spacing:-0.01em;">${esc(p.name)}</span>
+                <span style="font-size:0.55rem;color:#64748b;letter-spacing:0.02em;">${esc(p.jobNumber)}</span>
+              </div>
+            </td>
+            <td style="${cellPad}"><span style="font-size:0.55rem;color:#64748b;letter-spacing:0.02em;">${esc(p.status)}</span></td>
+            <td style="${cellPad}">
+              <div style="display:flex;align-items:center;gap:0.4rem;min-width:90px;">
+                <div style="flex:1;height:7px;background:#e2e8f0;border-radius:4px;overflow:hidden;min-width:55px;">
+                  <div style="height:100%;width:${progressPct}%;background:${progressColor};border-radius:4px;"></div>
+                </div>
+                <span style="color:#64748b;font-size:0.55rem;font-weight:600;min-width:32px;text-align:right;">${progressPct}%</span>
+              </div>
+            </td>
+            <td style="${numCell}color:#2563eb;">${esc(fmtMoney(p.contract, { zeroDash: true }))}</td>
+            <td style="${numCell}color:#22c55e;">${esc(fmtMoney(p.bid,      { zeroDash: true }))}</td>
+            <td style="${numCell}color:#0f172a;">${esc(fmtMoney(p.actual,   { zeroDash: true }))}</td>
+            ${varCell}
+            <td style="${numCell}color:#fbbf24;">${esc(fmtMoney(p.projected, { zeroDash: true }))}</td>
+            ${profitCell}
+            <td style="${cellPad}text-align:center;width:24px;color:${starCol};font-size:0.95rem;">${star}</td>
+          </tr>
+        `;
+      }).join('');
+
+      const thStyle = 'text-align:left;background:#f1f5f9;color:#475569;padding:0.45rem 0.35rem 0.35rem;font-size:0.5rem;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;border-bottom:1px solid #cbd5e1;white-space:nowrap;';
+      const thNum   = `${thStyle}text-align:right;`;
+
+      const empty = `<tr><td colspan="10" style="${cellPad}text-align:center;color:#64748b;padding:1.5rem 0.35rem;">No active projects.</td></tr>`;
+
+      return `
+        <div style="background:#ffffff;border:1px solid #cbd5e1;border-radius:10px;padding:0.5rem 0.25rem;">
+          <table style="width:100%;border-collapse:collapse;font-size:0.58rem;table-layout:auto;">
+            <thead>
+              <tr>
+                <th style="${thStyle}">Project</th>
+                <th style="${thStyle}">Status</th>
+                <th style="${thStyle}">Progress</th>
+                <th style="${thNum}">Contract</th>
+                <th style="${thNum}">Bid</th>
+                <th style="${thNum}">Actual</th>
+                <th style="${thNum}">Variance</th>
+                <th style="${thNum}">Projected</th>
+                <th style="${thNum}">Profit</th>
+                <th style="${thStyle}"></th>
+              </tr>
+            </thead>
+            <tbody>${rows.length ? trs : empty}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
     async function downloadProjectsPdf() {
       const btn = document.getElementById('downloadProjectsBtn');
-      const section = document.getElementById('projectsSection');
-      if (!section) return;
+      if (!btn) return;
       if (typeof html2pdf === 'undefined') {
         alert('PDF library is still loading. Please try again in a moment.');
+        return;
+      }
+      if (!lastReportData) {
+        alert('Report is still loading — please wait a moment and try again.');
         return;
       }
       const original = btn.innerHTML;
@@ -1270,6 +1401,10 @@
 
       const dateStr = document.getElementById('reportDate').textContent || '';
       const subStr  = document.getElementById('projectsSub').textContent || '';
+
+      const projData = lastReportData.projects;
+      const projRows = Array.isArray(projData) ? projData : (projData?.rows || []);
+      const inventory = Array.isArray(lastReportData.inventory) ? lastReportData.inventory : [];
 
       // Covering modal so the user sees a spinner-style message instead of
       // the temporarily on-screen white render target.
@@ -1286,19 +1421,17 @@
       modal.textContent = 'Generating PDF…';
       document.body.appendChild(modal);
 
-      // Render target is appended in normal flow (NOT position:fixed —
-      // html2canvas computes 0 height for fixed elements, producing blank
-      // PDFs). The full-screen modal above hides it from the user.
+      // Render target stays in body's normal flow (flex-shrink:0 keeps the
+      // body's flex column layout from squashing it). Building inline-styled
+      // markup means we don't depend on the host page's class cascade.
       const wrapper = document.createElement('div');
       wrapper.style.cssText = [
-        // Must stay in normal flow — position:fixed/absolute makes html2canvas
-        // report 0 height and render a blank PDF. flex-shrink:0 keeps the
-        // body's flex column layout from squashing it.
         'flex-shrink:0',
         'width:13.2in', 'padding:0.3in 0.3in',
         'background:#ffffff', 'color:#0f172a',
         'font-family:"Segoe UI",system-ui,-apple-system,sans-serif',
-        'font-size:11px'
+        'font-size:11px',
+        'box-sizing:border-box'
       ].join(';');
 
       wrapper.innerHTML = `
@@ -1308,22 +1441,19 @@
             <div>
               <div style="font-size:0.62rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#7c3aed;">Cross-Division Roll-Up</div>
               <div style="font-size:1.15rem;font-weight:800;color:#0f172a;letter-spacing:-0.02em;">Projects — Executive Report</div>
-              <div style="font-size:0.7rem;color:#64748b;margin-top:0.1rem;">${dateStr}</div>
+              <div style="font-size:0.7rem;color:#64748b;margin-top:0.1rem;">${esc(dateStr)}</div>
             </div>
           </div>
           <div style="text-align:right;font-size:0.65rem;color:#64748b;letter-spacing:0.04em;">
             <div style="font-weight:700;color:#0f172a;letter-spacing:0.16em;text-transform:uppercase;">DataWatch</div>
-            <div style="margin-top:0.15rem;">${subStr}</div>
+            <div style="margin-top:0.15rem;">${esc(subStr)}</div>
           </div>
         </div>
+        <div style="font-size:0.95rem;font-weight:700;color:#0f172a;letter-spacing:-0.01em;margin-bottom:0.55rem;">Projects</div>
+        ${pdfBuildInventoryStrip(inventory)}
+        ${pdfBuildProjectsTable(projRows)}
       `;
 
-      const clone = section.cloneNode(true);
-      clone.classList.add('pdf-export');
-      // Drop .page-break (only meaningful under @media print, but stripped
-      // to remove any chance html2pdf treats it as a forced page break).
-      clone.classList.remove('page-break');
-      wrapper.appendChild(clone);
       document.body.appendChild(wrapper);
 
       // Lock body scroll so the briefly-appended wrapper can't push the page
@@ -1331,24 +1461,30 @@
       const prevOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
 
-      // Give layout/paint a beat to settle before html2canvas reads it.
+      // Wait for layout/paint AND the tower logo to finish loading. An
+      // un-decoded image was a likely culprit when the wrapper's first
+      // child was the only element to render.
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const logo = wrapper.querySelector('img');
+      if (logo && !logo.complete) {
+        await new Promise(resolve => {
+          logo.addEventListener('load',  resolve, { once: true });
+          logo.addEventListener('error', resolve, { once: true });
+        });
+      }
 
       const today = new Date().toISOString().slice(0, 10);
       try {
-        // Fixed 14"x11" landscape: wide enough that all ten columns fit and
-        // tall enough that a dozen+ project rows fit on a single page. We
-        // deliberately don't size the page dynamically — measurement timing
-        // and per-browser font metrics made that fragile and occasionally
-        // split rows across pages. Keeping the page fixed and letting
-        // pagebreak avoid splitting individual rows is reliable.
         await html2pdf().set({
           margin: 0.3,
           filename: `datawatch-projects-${today}.pdf`,
           image: { type: 'jpeg', quality: 0.95 },
-          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
+          // windowWidth pins the rendering viewport to the wrapper's CSS
+          // pixel width (13.2in × 96 ≈ 1267px) so percent-based layout
+          // math is stable across browsers.
+          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false, windowWidth: 1267 },
           jsPDF: { unit: 'in', format: [14, 11], orientation: 'landscape' },
-          pagebreak: { mode: ['css'], avoid: 'tr' }
+          pagebreak: { mode: ['css', 'legacy'], avoid: 'tr' }
         }).from(wrapper).save();
       } catch (err) {
         console.error('PDF generation failed', err);
