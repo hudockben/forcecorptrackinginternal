@@ -415,7 +415,10 @@ module.exports = async (req, res) => {
       return res.json({ ok: true, entry: dbToEntry(updated) });
     }
 
-    // ── DELETE own draft ──────────────────────────────────────────────────
+    // ── DELETE ────────────────────────────────────────────────────────────
+    // Field user: their OWN drafts only.
+    // Payroll admin: any entry regardless of status (recorded as DELETE in
+    // the audit log with the full pre-delete snapshot).
     if (req.method === 'DELETE') {
       const id = safeInt(req.query.id);
       if (!id) return res.status(400).json({ error: 'id is required' });
@@ -425,11 +428,10 @@ module.exports = async (req, res) => {
         WHERE id = ${id} AND company_code = ${companyCode}
       `;
       if (!existing) return res.status(404).json({ error: 'Entry not found' });
-      if (existing.user_id !== userId) {
-        return res.status(403).json({ error: 'You can only delete your own entries' });
-      }
-      if (existing.status !== 'draft') {
-        return res.status(409).json({ error: 'Only draft entries can be deleted' });
+
+      const isOwnDraft = existing.user_id === userId && existing.status === 'draft';
+      if (!isOwnDraft && !canAdmin) {
+        return res.status(403).json({ error: 'You do not have permission to delete this entry' });
       }
 
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;

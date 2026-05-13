@@ -13,7 +13,8 @@
  *   turf      → `app_data` JSON blobs (fct_project_<id>) anchored to the
  *                fct_projects_index so orphan blobs don't leak through
  *   paving    → same pattern with fct_paving_project_<id> + index
- *   trucking  → same turf blobs (trucking entries reference turf projects)
+ *   trucking  → `dropdown_lists` rows where list_name = 'truck_customers'
+ *                (the Trucking division's customer roster)
  *   dust      → `dust_companies` (customer-level — no status, show all)
  *   quarry    → `quarry_locations` (no status, show all)
  *
@@ -83,8 +84,37 @@ async function turfOrTruckingJobs(sql, companyCode) {
   return projectsFromBlobs(sql, companyCode, 'fct_project_', 'fct_projects_index');
 }
 
+async function turfJobs(sql, companyCode) {
+  return projectsFromBlobs(sql, companyCode, 'fct_project_', 'fct_projects_index');
+}
+
 async function pavingJobs(sql, companyCode) {
   return projectsFromBlobs(sql, companyCode, 'fct_paving_project_', 'fct_paving_projects_index');
+}
+
+async function truckingJobs(sql, companyCode) {
+  // Trucking's "jobs" are its customer roster — the people they haul for.
+  // Source of truth is the dropdown_lists table; the same data is also
+  // mirrored in fct_truck_division_lists but the table is the canonical
+  // form (see api/truck-division.js).
+  const rows = await sql`
+    SELECT value, sort_order FROM dropdown_lists
+    WHERE  company_code = ${companyCode}
+      AND  list_name    = 'truck_customers'
+    ORDER  BY sort_order ASC, value ASC
+  `;
+  const seen = new Set();
+  const jobs = [];
+  for (const r of rows) {
+    const name = (r.value || '').trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // No stable id — customer name is the identifier in the trucking model.
+    jobs.push({ id: name, label: name });
+  }
+  return jobs;
 }
 
 async function dustJobs(sql, companyCode) {
@@ -136,10 +166,11 @@ module.exports = async (req, res) => {
 
   try {
     let jobs = [];
-    if (division === 'turf' || division === 'trucking') jobs = await turfOrTruckingJobs(sql, payload.companyCode);
-    else if (division === 'paving')                     jobs = await pavingJobs(sql, payload.companyCode);
-    else if (division === 'dust')                       jobs = await dustJobs(sql, payload.companyCode);
-    else if (division === 'quarry')                     jobs = await quarryJobs(sql, payload.companyCode);
+    if      (division === 'turf')     jobs = await turfJobs(sql, payload.companyCode);
+    else if (division === 'paving')   jobs = await pavingJobs(sql, payload.companyCode);
+    else if (division === 'trucking') jobs = await truckingJobs(sql, payload.companyCode);
+    else if (division === 'dust')     jobs = await dustJobs(sql, payload.companyCode);
+    else if (division === 'quarry')   jobs = await quarryJobs(sql, payload.companyCode);
 
     return res.json({ jobs });
   } catch (err) {

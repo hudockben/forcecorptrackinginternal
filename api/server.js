@@ -59,6 +59,7 @@ app.all('/api/dust-config', require('./dust-config'));
 app.all('/api/timesheet-entries',     require('./timesheet-entries'));
 app.all('/api/timesheet-jobs',        require('./timesheet-jobs'));
 app.all('/api/timesheet-supervisors', require('./timesheet-supervisors'));
+app.all('/api/timesheet-audit-log',   require('./timesheet-audit-log'));
 
 /** Company board */
 app.all('/api/board', require('./board'));

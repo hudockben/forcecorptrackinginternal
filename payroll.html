@@ -183,7 +183,14 @@
       gap: 0.4rem;
       border-bottom: 1px solid var(--border);
       padding: 0 0.5rem;
+      overflow-x: auto;
+      flex-wrap: nowrap;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
     }
+    .tabs::-webkit-scrollbar { height: 6px; }
+    .tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .tab { flex-shrink: 0; }
     .tab {
       padding: 0.7rem 1.25rem 0.85rem;
       background: none;
@@ -233,6 +240,206 @@
       color: var(--blue);
       border-bottom-color: var(--blue);
     }
+    .tab.auditlog.active {
+      color: var(--yellow);
+      border-bottom-color: var(--yellow);
+    }
+    .tab.analytics.active {
+      color: #fb923c;
+      border-bottom-color: #fb923c;
+    }
+
+    /* ── Analytics layout ── */
+    .ana-grid {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(12, 1fr);
+    }
+    .ana-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+      grid-column: span 12;
+    }
+    .ana-block.half { grid-column: span 6; }
+    .ana-block.thin { grid-column: span 12; }
+    @media (max-width: 900px) {
+      .ana-block.half { grid-column: span 12; }
+    }
+    .ana-title {
+      font-size: 0.66rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 0.8rem;
+    }
+    .ana-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.85rem;
+      grid-column: span 12;
+    }
+    .ana-stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.9rem 1rem;
+    }
+    .ana-stat-label {
+      font-size: 0.6rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .ana-stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      margin-top: 0.25rem;
+    }
+    .ana-stat-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 0.2rem;
+    }
+    .ana-stat.hours .ana-stat-value     { color: #fb923c; }
+    .ana-stat.approved .ana-stat-value  { color: var(--green); }
+    .ana-stat.pending .ana-stat-value   { color: var(--blue); }
+
+    .ana-block table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .ana-block thead th {
+      text-align: left;
+      padding: 0.5rem 0.65rem;
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .ana-block tbody td {
+      padding: 0.55rem 0.65rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      font-variant-numeric: tabular-nums;
+    }
+    .ana-block tbody td.name { font-weight: 600; font-variant-numeric: normal; }
+    .ana-block tbody td.num  { text-align: right; }
+    .ana-block tr.total td {
+      border-top: 2px solid var(--border);
+      font-weight: 700;
+      color: var(--text);
+      background: var(--surface2);
+    }
+    .ana-empty {
+      padding: 2rem 1rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    /* Horizontal bar (used for division + month breakdowns) */
+    .ana-bar-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 110px;
+      align-items: center;
+      gap: 0.7rem;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid rgba(42,42,58,0.4);
+    }
+    .ana-bar-row:last-child { border-bottom: none; }
+    .ana-bar-label {
+      font-size: 0.82rem;
+      color: var(--text);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ana-bar-track {
+      background: var(--surface2);
+      border-radius: 4px;
+      height: 14px;
+      overflow: hidden;
+      position: relative;
+    }
+    .ana-bar-fill {
+      height: 100%;
+      background: #fb923c;
+      border-radius: 4px;
+      transition: width 0.18s ease;
+    }
+    .ana-bar-fill.approved { background: var(--green); }
+    .ana-bar-fill.pending  { background: var(--blue); }
+    .ana-bar-value {
+      font-size: 0.82rem;
+      color: var(--muted);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .ana-bar-value strong { color: var(--text); font-weight: 600; }
+
+    /* ── Audit log layout ── */
+    .audit-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .audit-head {
+      padding: 0.9rem 1.1rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.85rem;
+      flex-wrap: wrap;
+    }
+    .audit-head .title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .audit-head .sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    .audit-action {
+      display: inline-block;
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .audit-INSERT     { background: rgba(34,197,94,0.12);  color: var(--green); }
+    .audit-UPDATE     { background: rgba(96,165,250,0.12); color: var(--blue); }
+    .audit-SUBMIT     { background: rgba(96,165,250,0.18); color: var(--blue); }
+    .audit-APPROVE    { background: rgba(34,197,94,0.18);  color: var(--green); }
+    .audit-ADMIN_EDIT { background: rgba(236,72,153,0.15); color: var(--accent); }
+    .audit-DELETE     { background: rgba(239,68,68,0.15);  color: var(--red); }
+    .audit-empty {
+      padding: 2.5rem 1rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .audit-row-detail {
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.5;
+    }
+    .audit-row-detail strong { color: var(--text); font-weight: 600; }
 
     /* ── Quick ranges ── */
     .quick-ranges {
@@ -368,13 +575,15 @@
       font-size: 0.9rem;
     }
 
-    /* ── Print: hide everything except the report ── */
+    /* ── Print: hide everything except the active report / audit log ── */
     @media print {
       @page { margin: 0.5in; }
       body { background: white !important; color: black !important; }
       header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
       .modal-backdrop, .btn-print { display: none !important; }
       main { max-width: none !important; padding: 0 !important; }
+
+      /* Reports tab */
       .report {
         background: white !important;
         border: none !important;
@@ -404,6 +613,46 @@
       .pill-pending { background: #fde68a !important; color: #6b3a00 !important; }
       .pill-clear   { background: #d1fae5 !important; color: #064e3b !important; }
       .report tr.has-pending td.name::before { color: #b45309 !important; }
+
+      /* Audit Log tab */
+      .audit-wrap {
+        background: white !important;
+        border: none !important;
+      }
+      .audit-head {
+        border-bottom: 2px solid #000 !important;
+        margin-bottom: 0.3in !important;
+        padding: 0 0 0.25in 0 !important;
+      }
+      .audit-head .title { color: #000 !important; font-size: 14pt; }
+      .audit-head .sub   { color: #555 !important; }
+      .audit-wrap table { font-size: 9.5pt; width: 100%; border-collapse: collapse; }
+      .audit-wrap thead th {
+        background: #f3f3f3 !important;
+        color: #000 !important;
+        border-bottom: 1px solid #000 !important;
+        padding: 0.5rem 0.6rem !important;
+      }
+      .audit-wrap tbody td {
+        color: #000 !important;
+        border-bottom: 1px solid #ddd !important;
+        padding: 0.45rem 0.6rem !important;
+        vertical-align: top;
+      }
+      .audit-action { border: 1px solid #999 !important; }
+      .audit-INSERT     { background: #d1fae5 !important; color: #064e3b !important; }
+      .audit-UPDATE     { background: #dbeafe !important; color: #1e3a8a !important; }
+      .audit-SUBMIT     { background: #dbeafe !important; color: #1e3a8a !important; }
+      .audit-APPROVE    { background: #d1fae5 !important; color: #064e3b !important; }
+      .audit-ADMIN_EDIT { background: #fce7f3 !important; color: #831843 !important; }
+      .audit-DELETE     { background: #fee2e2 !important; color: #7f1d1d !important; }
+      .audit-row-detail { color: #555 !important; }
+      .audit-row-detail strong { color: #000 !important; }
+
+      /* Avoid page-break inside individual table rows */
+      .audit-wrap tbody tr,
+      .report tbody tr,
+      .report tfoot tr { page-break-inside: avoid; }
     }
 
     /* ── Bulk bar (appears when entries are selected) ── */
@@ -451,8 +700,10 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 8px;
-      overflow: hidden;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
     }
+    .audit-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -521,6 +772,8 @@
     .row-btn.edit:hover    { color: var(--accent); border-color: var(--accent); }
     .row-btn.approve { color: var(--green); border-color: rgba(34,197,94,0.35); }
     .row-btn.approve:hover { background: rgba(34,197,94,0.08); }
+    .row-btn.delete { color: var(--red); border-color: rgba(239,68,68,0.3); }
+    .row-btn.delete:hover { background: rgba(239,68,68,0.08); }
 
     /* ── Edit modal ── */
     .modal-backdrop {
@@ -636,10 +889,23 @@
 
     /* ── Mobile ── */
     @media (max-width: 800px) {
-      .filters { grid-template-columns: 1fr 1fr; }
+      header { padding: 0.7rem 1rem; flex-wrap: wrap; gap: 0.5rem; }
+      .filters { grid-template-columns: 1fr 1fr !important; }
+      .filters .filter-actions { grid-column: span 2; justify-content: stretch; }
       .stats   { grid-template-columns: repeat(2, 1fr); }
+      .ana-stats { grid-template-columns: repeat(2, 1fr); }
       .modal-grid { grid-template-columns: 1fr; }
       thead th, tbody td { padding: 0.5rem 0.6rem; }
+      .bulk { flex-direction: column; align-items: stretch; }
+      .bulk .btn-approve { width: 100%; }
+      .ana-bar-row { grid-template-columns: 90px 1fr 95px; gap: 0.45rem; }
+      .ana-bar-label, .ana-bar-value { font-size: 0.78rem; }
+      main { padding: 1rem 0.85rem; }
+    }
+    @media (max-width: 480px) {
+      .stats, .ana-stats { grid-template-columns: 1fr 1fr; }
+      .ana-stat-value { font-size: 1.3rem; }
+      .stat-value     { font-size: 1.3rem; }
     }
 
     /* ── No-access screen ── */
@@ -728,7 +994,7 @@
       </div>
     </div>
 
-    <!-- ── Pending / Approved / Reports tabs ── -->
+    <!-- ── Pending / Approved / Reports / Audit Log / Analytics tabs ── -->
     <div class="tabs">
       <button class="tab active" data-tab="pending" onclick="switchTab('pending')">
         Pending Review <span class="tab-count" id="tab-pending-count">0</span>
@@ -738,6 +1004,12 @@
       </button>
       <button class="tab reports" data-tab="reports" onclick="switchTab('reports')">
         Reports
+      </button>
+      <button class="tab auditlog" data-tab="auditlog" onclick="switchTab('auditlog')">
+        Audit Log
+      </button>
+      <button class="tab analytics" data-tab="analytics" onclick="switchTab('analytics')">
+        Analytics
       </button>
     </div>
 
@@ -760,6 +1032,22 @@
 
     <!-- ── Report container (Reports tab) ── -->
     <div id="reportWrap" style="display:none"></div>
+
+    <!-- ── Audit log container (Audit Log tab) ── -->
+    <div id="auditLogWrap" style="display:none"></div>
+
+    <!-- ── Analytics-specific quick ranges (only on Analytics tab) ── -->
+    <div class="quick-ranges" id="analyticsRanges" style="display:none">
+      <span class="qr-label">Quick range:</span>
+      <button class="qr-btn" onclick="setAnalyticsRange('this_month')">This Month</button>
+      <button class="qr-btn" onclick="setAnalyticsRange('last_month')">Last Month</button>
+      <button class="qr-btn" onclick="setAnalyticsRange('ytd')">Year to Date</button>
+      <button class="qr-btn" onclick="setAnalyticsRange('last_year')">Last Year</button>
+      <button class="qr-btn" onclick="setAnalyticsRange('all_time')">All Time</button>
+    </div>
+
+    <!-- ── Analytics container ── -->
+    <div id="analyticsWrap" style="display:none"></div>
 
     <!-- ── Table ── -->
     <div class="table-wrap">
@@ -857,7 +1145,7 @@
     }
 
     function switchTab(tab) {
-      if (!['pending', 'approved', 'reports'].includes(tab)) return;
+      if (!['pending', 'approved', 'reports', 'auditlog', 'analytics'].includes(tab)) return;
       currentTab = tab;
       document.querySelectorAll('.tab').forEach(t => {
         t.classList.toggle('active', t.dataset.tab === tab);
@@ -865,12 +1153,22 @@
 
       const tableWrap  = document.querySelector('.table-wrap');
       const reportWrap = document.getElementById('reportWrap');
+      const auditWrap  = document.getElementById('auditLogWrap');
+      const anaWrap    = document.getElementById('analyticsWrap');
       const bulkBar    = document.getElementById('bulkBar');
       const quick      = document.getElementById('quickRanges');
+      const anaQuick   = document.getElementById('analyticsRanges');
+
+      // Default-hide everything; show only the active surface below
+      if (tableWrap)  tableWrap.style.display  = 'none';
+      if (reportWrap) reportWrap.style.display = 'none';
+      if (auditWrap)  auditWrap.style.display  = 'none';
+      if (anaWrap)    anaWrap.style.display    = 'none';
+      if (bulkBar)    bulkBar.classList.remove('open');
+      if (quick)      quick.style.display      = 'none';
+      if (anaQuick)   anaQuick.style.display   = 'none';
 
       if (tab === 'reports') {
-        if (tableWrap)  tableWrap.style.display  = 'none';
-        if (bulkBar)    bulkBar.classList.remove('open');
         if (reportWrap) reportWrap.style.display = '';
         if (quick)      quick.style.display      = 'flex';
         selectedIds.clear();
@@ -878,9 +1176,22 @@
         return;
       }
 
-      if (tableWrap)  tableWrap.style.display  = '';
-      if (reportWrap) reportWrap.style.display = 'none';
-      if (quick)      quick.style.display      = 'none';
+      if (tab === 'auditlog') {
+        if (auditWrap) auditWrap.style.display = '';
+        selectedIds.clear();
+        loadAuditLog();
+        return;
+      }
+
+      if (tab === 'analytics') {
+        if (anaWrap)   anaWrap.style.display   = '';
+        if (anaQuick)  anaQuick.style.display  = 'flex';
+        selectedIds.clear();
+        loadAnalytics();
+        return;
+      }
+
+      if (tableWrap) tableWrap.style.display = '';
       if (tab !== 'pending') selectedIds.clear();
       renderRows();
       renderStats();
@@ -971,6 +1282,13 @@
     }
 
     async function applyFilters() {
+      // Audit Log tab has its own fetch path; everything else reads from
+      // /api/timesheet-entries.
+      if (currentTab === 'auditlog') {
+        await loadAuditLog();
+        return;
+      }
+
       // Always fetch both submitted + approved — the tabs split them client-side.
       const from     = document.getElementById('flt-from').value;
       const to       = document.getElementById('flt-to').value;
@@ -1003,6 +1321,10 @@
         : allEntries;
       if (currentTab === 'reports') {
         renderReport();
+      } else if (currentTab === 'auditlog') {
+        renderAuditLog();
+      } else if (currentTab === 'analytics') {
+        renderAnalytics();
       } else {
         renderRows();
         renderStats();
@@ -1150,6 +1472,541 @@
       window.print();
     }
 
+    // ── CSV export ───────────────────────────────────────────────────────
+    // Compliance-style fixed-column export of the audit log. Every event
+    // produces a row with the same 21 columns in the same order — empty
+    // string where a field doesn't apply (e.g. start_time on a time-off
+    // event). Filenames embed the company code + ISO date so multiple
+    // exports for different scopes don't collide on the supervisor's disk.
+    const CSV_HEADERS = [
+      'Event ID', 'Timestamp (ISO)', 'Action',
+      'Entry ID', 'Entry Owner', 'Entry Status',
+      'Performed By', 'Performed By User ID',
+      'Work Date', 'Type', 'Division', 'Job',
+      'Start Time', 'End Time', 'Hours',
+      'Lunch Break', 'Operated Equipment', 'Supervisor',
+      'Time Off Type', 'Notes', 'Changes (JSON)',
+    ];
+
+    function csvEscape(v) {
+      if (v == null) return '';
+      let s = String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+        s = '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    }
+
+    function yn(v) {
+      if (v === true)  return 'Y';
+      if (v === false) return 'N';
+      return '';
+    }
+
+    function buildAuditCsv(events) {
+      const lines = [CSV_HEADERS.map(csvEscape).join(',')];
+      for (const ev of events) {
+        const snap = ev.snapshot || {};
+        const row = [
+          ev.id,
+          ev.created_at,                            // ISO-8601 from Postgres TIMESTAMPTZ
+          ev.action,
+          ev.entry_id,
+          snap.username || '',
+          snap.status || '',
+          ev.username || '',
+          ev.user_id || '',
+          snap.work_date || '',
+          snap.entry_type || '',
+          snap.division || '',
+          snap.job_label || '',
+          snap.start_time || '',
+          snap.end_time || '',
+          snap.computed_hours != null ? Number(snap.computed_hours).toFixed(2) : '',
+          yn(snap.lunch_break),
+          yn(snap.operated_equipment),
+          snap.supervisor_name || '',
+          snap.time_off_type || '',
+          snap.notes || '',
+          ev.changes ? JSON.stringify(ev.changes) : '',
+        ];
+        lines.push(row.map(csvEscape).join(','));
+      }
+      // CRLF line endings + UTF-8 BOM so Excel opens the file cleanly.
+      return '﻿' + lines.join('\r\n');
+    }
+
+    function downloadFile(filename, content, mime) {
+      const blob = new Blob([content], { type: mime });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // ── Analytics tab ────────────────────────────────────────────────────
+    // Operates on the same `filtered` set the rest of the page uses, so it
+    // respects the date / division / employee filters. Defaults to a wider
+    // time window than the other tabs since meaningful aggregations need
+    // more than a single week of data.
+    async function loadAnalytics() {
+      // If the current date range is the default 14-day window (set on
+      // init), expand it to year-to-date the first time the user lands on
+      // the analytics tab — keeps the analytics view useful out of the
+      // box without ever clobbering an explicit choice.
+      const wrap = document.getElementById('analyticsWrap');
+      wrap.innerHTML = '<div class="ana-empty">Loading analytics…</div>';
+      await applyFilters();
+    }
+
+    function setAnalyticsRange(kind) {
+      const today = new Date();
+      const y = today.getFullYear(), m = today.getMonth();
+      let from, to;
+      if (kind === 'this_month') {
+        from = new Date(y, m, 1);
+        to   = new Date(y, m + 1, 0); // last day of this month
+      } else if (kind === 'last_month') {
+        from = new Date(y, m - 1, 1);
+        to   = new Date(y, m, 0);
+      } else if (kind === 'ytd') {
+        from = new Date(y, 0, 1);
+        to   = today;
+      } else if (kind === 'last_year') {
+        from = new Date(y - 1, 0, 1);
+        to   = new Date(y - 1, 11, 31);
+      } else if (kind === 'all_time') {
+        from = new Date(2020, 0, 1);
+        to   = new Date(y + 1, 0, 1);
+      } else {
+        return;
+      }
+      document.getElementById('flt-from').value = ymd(from);
+      document.getElementById('flt-to').value   = ymd(to);
+      applyFilters();
+    }
+
+    function renderAnalytics() {
+      const wrap = document.getElementById('analyticsWrap');
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const div  = document.getElementById('flt-division').value;
+      const userQ= document.getElementById('flt-user').value.trim();
+
+      // Daily entries drive hours; time-off entries are counted separately.
+      const dailyEv  = filtered.filter(e => e.entry_type === 'daily');
+      const offEv    = filtered.filter(e => e.entry_type === 'time_off');
+
+      // ── Aggregations ──────────────────────────────────────────────────
+      const byEmp = new Map(); // username → { pending, approved, days:Set, entries, off }
+      const bySup = new Map(); // supervisor_name → { hours, entries, employees:Set }
+      const byDiv = new Map(); // division → { hours, pending, approved, entries }
+      const byMon = new Map(); // 'YYYY-MM' → { hours, pending, approved, off }
+      const offByType = new Map(); // type → count
+
+      let totalHours = 0;
+      let totalPending = 0;
+      let totalApproved = 0;
+
+      for (const e of dailyEv) {
+        const h = Number(e.computed_hours || 0);
+        totalHours += h;
+        if (e.status === 'submitted') totalPending  += h;
+        if (e.status === 'approved')  totalApproved += h;
+
+        const emp = e.username || '—';
+        if (!byEmp.has(emp)) byEmp.set(emp, { pending: 0, approved: 0, days: new Set(), entries: 0, off: 0 });
+        const eEmp = byEmp.get(emp);
+        if (e.status === 'submitted') eEmp.pending  += h;
+        if (e.status === 'approved')  eEmp.approved += h;
+        if (e.work_date) eEmp.days.add(e.work_date);
+        eEmp.entries++;
+
+        const sup = (e.supervisor_name || '').trim() || '—';
+        if (!bySup.has(sup)) bySup.set(sup, { hours: 0, entries: 0, employees: new Set() });
+        const eSup = bySup.get(sup);
+        eSup.hours += h;
+        eSup.entries++;
+        eSup.employees.add(emp);
+
+        const d = e.division || '—';
+        if (!byDiv.has(d)) byDiv.set(d, { hours: 0, pending: 0, approved: 0, entries: 0 });
+        const eDiv = byDiv.get(d);
+        eDiv.hours += h;
+        if (e.status === 'submitted') eDiv.pending  += h;
+        if (e.status === 'approved')  eDiv.approved += h;
+        eDiv.entries++;
+
+        if (e.work_date) {
+          const mo = e.work_date.slice(0, 7); // YYYY-MM
+          if (!byMon.has(mo)) byMon.set(mo, { hours: 0, pending: 0, approved: 0, off: 0 });
+          const eMo = byMon.get(mo);
+          eMo.hours += h;
+          if (e.status === 'submitted') eMo.pending  += h;
+          if (e.status === 'approved')  eMo.approved += h;
+        }
+      }
+
+      for (const e of offEv) {
+        const emp = e.username || '—';
+        if (!byEmp.has(emp)) byEmp.set(emp, { pending: 0, approved: 0, days: new Set(), entries: 0, off: 0 });
+        byEmp.get(emp).off++;
+        const t = e.time_off_type || 'other';
+        offByType.set(t, (offByType.get(t) || 0) + 1);
+        if (e.work_date) {
+          const mo = e.work_date.slice(0, 7);
+          if (!byMon.has(mo)) byMon.set(mo, { hours: 0, pending: 0, approved: 0, off: 0 });
+          byMon.get(mo).off++;
+        }
+      }
+
+      // ── Scope header ──────────────────────────────────────────────────
+      const scopeBits = [];
+      if (from && to)      scopeBits.push(`${from} → ${to}`);
+      else if (from)       scopeBits.push(`from ${from}`);
+      else if (to)         scopeBits.push(`through ${to}`);
+      if (div)             scopeBits.push(`${prettyDiv(div)} division`);
+      if (userQ)           scopeBits.push(`employee "${userQ}"`);
+      const scopeLine = scopeBits.length ? scopeBits.join(' · ') : 'All entries';
+      const approvedPct = totalHours > 0
+        ? ((totalApproved / totalHours) * 100).toFixed(1) + '%'
+        : '—';
+
+      // ── Empty state ───────────────────────────────────────────────────
+      if (!filtered.length) {
+        wrap.innerHTML = `
+          <div class="ana-grid">
+            <div class="ana-block" style="grid-column:span 12">
+              <div class="ana-title">Analytics</div>
+              <div class="ana-empty">No timesheet entries in this range.<br/>
+                Try expanding the date range or use one of the quick-range buttons above.</div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      // ── Build per-employee table ──────────────────────────────────────
+      const empRows = Array.from(byEmp.entries())
+        .map(([username, v]) => ({
+          username, pending: v.pending, approved: v.approved,
+          total: v.pending + v.approved,
+          days: v.days.size,
+          avg: v.days.size ? (v.pending + v.approved) / v.days.size : 0,
+          off: v.off,
+        }))
+        .sort((a, b) => b.total - a.total);
+
+      const empBody = empRows.map(r => `
+        <tr>
+          <td class="name">${escapeHtml(r.username)}</td>
+          <td class="num">${r.pending.toFixed(2)}</td>
+          <td class="num">${r.approved.toFixed(2)}</td>
+          <td class="num"><strong>${r.total.toFixed(2)}</strong></td>
+          <td class="num">${r.days}</td>
+          <td class="num">${r.avg.toFixed(2)}</td>
+          <td class="num">${r.off || ''}</td>
+        </tr>
+      `).join('');
+
+      // ── Build per-supervisor table ────────────────────────────────────
+      const supRows = Array.from(bySup.entries())
+        .map(([name, v]) => ({ name, hours: v.hours, entries: v.entries, emps: v.employees.size }))
+        .sort((a, b) => b.hours - a.hours);
+
+      const supBody = supRows.map(r => `
+        <tr>
+          <td class="name">${escapeHtml(r.name)}</td>
+          <td class="num"><strong>${r.hours.toFixed(2)}</strong></td>
+          <td class="num">${r.emps}</td>
+          <td class="num">${r.entries}</td>
+        </tr>
+      `).join('');
+
+      // ── Division bars ─────────────────────────────────────────────────
+      const divRows = Array.from(byDiv.entries())
+        .map(([name, v]) => ({ name, hours: v.hours, pending: v.pending, approved: v.approved, entries: v.entries }))
+        .sort((a, b) => b.hours - a.hours);
+      const divMax = divRows.reduce((m, r) => Math.max(m, r.hours), 0) || 1;
+
+      const divBars = divRows.map(r => {
+        const pct = (r.hours / divMax) * 100;
+        const pctOfTotal = totalHours > 0 ? ((r.hours / totalHours) * 100).toFixed(1) + '%' : '—';
+        return `
+          <div class="ana-bar-row">
+            <div class="ana-bar-label">${escapeHtml(prettyDiv(r.name))}</div>
+            <div class="ana-bar-track"><div class="ana-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+            <div class="ana-bar-value"><strong>${r.hours.toFixed(2)} h</strong> · ${pctOfTotal}</div>
+          </div>
+        `;
+      }).join('');
+
+      // ── Monthly bars ──────────────────────────────────────────────────
+      const monRows = Array.from(byMon.entries())
+        .map(([mo, v]) => ({ mo, ...v }))
+        .sort((a, b) => a.mo.localeCompare(b.mo));
+      const monMax = monRows.reduce((m, r) => Math.max(m, r.hours), 0) || 1;
+
+      function prettyMonth(yyyymm) {
+        const [y, m] = yyyymm.split('-').map(Number);
+        return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+      }
+
+      const monBars = monRows.map(r => {
+        const pct = (r.hours / monMax) * 100;
+        return `
+          <div class="ana-bar-row">
+            <div class="ana-bar-label">${escapeHtml(prettyMonth(r.mo))}</div>
+            <div class="ana-bar-track"><div class="ana-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+            <div class="ana-bar-value"><strong>${r.hours.toFixed(2)} h</strong>${r.off ? ` · ${r.off} off` : ''}</div>
+          </div>
+        `;
+      }).join('');
+
+      // ── Render ────────────────────────────────────────────────────────
+      wrap.innerHTML = `
+        <div class="ana-grid">
+          <div class="ana-stats">
+            <div class="ana-stat hours">
+              <div class="ana-stat-label">Total Hours</div>
+              <div class="ana-stat-value">${totalHours.toFixed(2)}</div>
+              <div class="ana-stat-sub">across ${dailyEv.length} ${dailyEv.length === 1 ? 'entry' : 'entries'}</div>
+            </div>
+            <div class="ana-stat pending">
+              <div class="ana-stat-label">Pending Hours</div>
+              <div class="ana-stat-value">${totalPending.toFixed(2)}</div>
+              <div class="ana-stat-sub">awaiting review</div>
+            </div>
+            <div class="ana-stat approved">
+              <div class="ana-stat-label">Approved Hours</div>
+              <div class="ana-stat-value">${totalApproved.toFixed(2)}</div>
+              <div class="ana-stat-sub">${approvedPct} of total</div>
+            </div>
+            <div class="ana-stat">
+              <div class="ana-stat-label">Active Employees</div>
+              <div class="ana-stat-value">${empRows.length}</div>
+              <div class="ana-stat-sub">${supRows.length} supervisor${supRows.length === 1 ? '' : 's'} · ${offEv.length} time-off ${offEv.length === 1 ? 'event' : 'events'}</div>
+            </div>
+          </div>
+
+          <div class="ana-block">
+            <div class="ana-title">Scope · ${escapeHtml(scopeLine)}</div>
+            <div style="font-size:0.78rem;color:var(--muted);line-height:1.55">
+              All numbers are pulled from <strong style="color:var(--text)">timesheet_entries</strong> filtered by the active date range and division/employee filters. Time-off events are counted as discrete events (one per day requested).
+            </div>
+          </div>
+
+          <div class="ana-block">
+            <div class="ana-title">Hours by Employee</div>
+            ${empRows.length ? `
+              <table>
+                <thead><tr>
+                  <th>Employee</th>
+                  <th style="text-align:right">Pending</th>
+                  <th style="text-align:right">Approved</th>
+                  <th style="text-align:right">Total Hours</th>
+                  <th style="text-align:right">Days Worked</th>
+                  <th style="text-align:right">Avg / Day</th>
+                  <th style="text-align:right">Time Off</th>
+                </tr></thead>
+                <tbody>${empBody}</tbody>
+                <tfoot><tr class="total">
+                  <td class="name">Totals (${empRows.length})</td>
+                  <td class="num">${totalPending.toFixed(2)}</td>
+                  <td class="num">${totalApproved.toFixed(2)}</td>
+                  <td class="num">${totalHours.toFixed(2)}</td>
+                  <td class="num">—</td>
+                  <td class="num">—</td>
+                  <td class="num">${offEv.length || ''}</td>
+                </tr></tfoot>
+              </table>
+            ` : `<div class="ana-empty">No daily hour entries in this range.</div>`}
+          </div>
+
+          <div class="ana-block half">
+            <div class="ana-title">Hours by Supervisor</div>
+            ${supRows.length ? `
+              <table>
+                <thead><tr>
+                  <th>Supervisor</th>
+                  <th style="text-align:right">Hours Overseen</th>
+                  <th style="text-align:right">Employees</th>
+                  <th style="text-align:right">Entries</th>
+                </tr></thead>
+                <tbody>${supBody}</tbody>
+              </table>
+            ` : `<div class="ana-empty">No supervisor data.</div>`}
+          </div>
+
+          <div class="ana-block half">
+            <div class="ana-title">Hours by Division</div>
+            ${divRows.length ? divBars : `<div class="ana-empty">No division data.</div>`}
+          </div>
+
+          <div class="ana-block">
+            <div class="ana-title">Hours by Month</div>
+            ${monRows.length ? monBars : `<div class="ana-empty">No monthly data.</div>`}
+          </div>
+        </div>
+      `;
+    }
+
+    function exportAuditCsv() {
+      // Use the same client-side filter the table renders from so the CSV
+      // matches what the supervisor is looking at on screen.
+      const userQ = (document.getElementById('flt-user').value || '').toLowerCase().trim();
+      const filteredEv = userQ
+        ? auditCache.filter(ev => {
+            const a = (ev.username || '').toLowerCase();
+            const b = (ev.snapshot && ev.snapshot.username || '').toLowerCase();
+            return a.includes(userQ) || b.includes(userQ);
+          })
+        : auditCache;
+      if (!filteredEv.length) {
+        alert('No audit events to export in the current view.');
+        return;
+      }
+      const csv = buildAuditCsv(filteredEv);
+      const companyCode = (user && user.companyCode) || 'audit';
+      const stamp = ymd(new Date());
+      downloadFile(`timesheet-audit-${companyCode}-${stamp}.csv`, csv, 'text/csv;charset=utf-8');
+    }
+
+    // ── Audit Log tab ────────────────────────────────────────────────────
+    let auditCache = [];   // raw events from /api/timesheet-audit-log
+
+    async function loadAuditLog() {
+      const wrap = document.getElementById('auditLogWrap');
+      wrap.innerHTML = '<div class="audit-empty">Loading audit log…</div>';
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to)   params.set('to',   to);
+      params.set('limit', 500);
+      try {
+        const res = await fetch('/api/timesheet-audit-log?' + params.toString(), { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        auditCache = Array.isArray(data.events) ? data.events : [];
+        renderAuditLog();
+      } catch (err) {
+        wrap.innerHTML = `<div class="audit-empty">Error: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderAuditLog() {
+      const wrap = document.getElementById('auditLogWrap');
+      const userQ = (document.getElementById('flt-user').value || '').toLowerCase().trim();
+
+      // Filter client-side by employee match — includes both the editor's
+      // username and the entry's owner (snapshot.username) so searching for
+      // the field worker who created an entry finds all related events.
+      const filteredEv = userQ
+        ? auditCache.filter(ev => {
+            const a = (ev.username || '').toLowerCase();
+            const b = (ev.snapshot && ev.snapshot.username || '').toLowerCase();
+            return a.includes(userQ) || b.includes(userQ);
+          })
+        : auditCache;
+
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const scopeBits = [];
+      if (from && to)      scopeBits.push(`${from} → ${to}`);
+      else if (from)       scopeBits.push(`from ${from}`);
+      else if (to)         scopeBits.push(`through ${to}`);
+      if (userQ)           scopeBits.push(`employee "${userQ}"`);
+      const scopeLine = scopeBits.length ? scopeBits.join(' · ') : 'All events';
+
+      if (!filteredEv.length) {
+        wrap.innerHTML = `
+          <div class="audit-wrap">
+            <div class="audit-head">
+              <div>
+                <div class="title">Audit Log</div>
+                <div class="sub">${escapeHtml(scopeLine)} · 0 events</div>
+              </div>
+            </div>
+            <div class="audit-empty">No audit events in this range.</div>
+          </div>
+        `;
+        return;
+      }
+
+      const bodyRows = filteredEv.map(ev => {
+        const when = fmtTimestamp(ev.created_at);
+        const snap = ev.snapshot || {};
+        const ownerName = snap.username || '—';
+        const workDate  = snap.work_date ? prettyDate(snap.work_date) : '';
+        const entryLabel = workDate
+          ? `<strong>${escapeHtml(ownerName)}</strong> · ${escapeHtml(workDate)}`
+          : `<strong>${escapeHtml(ownerName)}</strong>`;
+        const detailBits = [];
+        if (snap.entry_type === 'time_off') {
+          detailBits.push(`Time Off · ${prettyOff(snap.time_off_type)}`);
+        } else if (snap.entry_type === 'daily') {
+          if (snap.division) detailBits.push(prettyDiv(snap.division));
+          if (snap.job_label) detailBits.push(escapeHtml(snap.job_label));
+          if (snap.start_time && snap.end_time) detailBits.push(`${snap.start_time}–${snap.end_time}`);
+          if (snap.computed_hours != null) detailBits.push(`${Number(snap.computed_hours).toFixed(2)} h`);
+        }
+        const detail = detailBits.length
+          ? `<div class="audit-row-detail">${detailBits.join(' · ')}</div>`
+          : '';
+        return `
+          <tr>
+            <td style="white-space:nowrap">${escapeHtml(when)}</td>
+            <td><span class="audit-action audit-${escapeHtml(ev.action)}">${escapeHtml(ev.action.replace('_',' '))}</span></td>
+            <td>${entryLabel}${detail}</td>
+            <td><strong>${escapeHtml(ev.username || '—')}</strong></td>
+            <td style="color:var(--muted)">#${escapeHtml(String(ev.entry_id))}</td>
+          </tr>
+        `;
+      }).join('');
+
+      const companyName = (user && (user.companyName || user.companyCode)) || '';
+      const gen = new Date().toLocaleString(undefined, {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+
+      wrap.innerHTML = `
+        <div class="audit-wrap">
+          <div class="audit-head">
+            <div>
+              <div class="title">Audit Log</div>
+              <div class="sub">
+                <strong>${escapeHtml(companyName)}</strong><br/>
+                ${escapeHtml(scopeLine)} · ${filteredEv.length} event${filteredEv.length === 1 ? '' : 's'}<br/>
+                Newest first · capped at 500 · Generated ${escapeHtml(gen)}
+              </div>
+            </div>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+              <button class="btn-print" style="background:transparent;color:var(--green);border:1px solid rgba(34,197,94,0.5)" onclick="exportAuditCsv()">Export CSV</button>
+              <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Action</th>
+                <th>Entry</th>
+                <th>By</th>
+                <th>Entry #</th>
+              </tr>
+            </thead>
+            <tbody>${bodyRows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
     function renderStats() {
       // Counts across the CURRENT filtered set (date/division/employee scope)
       let s = 0, a = 0, hours = 0;
@@ -1213,6 +2070,7 @@
             <td class="td-actions">
               <button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>
               ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
+              <button class="row-btn delete"  onclick="deleteEntry('${e.id}')">Delete</button>
             </td>
           </tr>
         `;
@@ -1312,6 +2170,29 @@
       const idxF = filtered.findIndex(e => e.id === updated.id);
       if (idxF >= 0) filtered[idxF] = updated;
       else           filtered.unshift(updated);
+    }
+
+    async function deleteEntry(id) {
+      const e = filtered.find(x => x.id === id);
+      if (!e) return;
+      const labelDate = prettyDate(e.work_date);
+      const labelStatus = e.status === 'approved' ? ' (currently APPROVED)' : '';
+      if (!confirm(`Delete ${e.username}'s entry for ${labelDate}${labelStatus}?\n\nThis cannot be undone. The audit log will record the deletion.`)) return;
+      try {
+        const res = await fetch('/api/timesheet-entries?id=' + encodeURIComponent(id), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+        // Optimistic local removal — no refetch needed
+        allEntries = allEntries.filter(x => x.id !== id);
+        filtered   = filtered.filter(x => x.id !== id);
+        selectedIds.delete(id);
+        renderRows();
+        renderStats();
+      } catch (err) {
+        alert(err.message);
+      }
     }
 
     async function approveOne(id) {

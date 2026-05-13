@@ -8,15 +8,24 @@ const { syncProjects, syncLists, syncPurchaseOrders, syncInventory } = require('
 // All divisions the platform supports — order determines display order on the selector
 const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
 
+// Restrictive divisions — must NEVER be granted implicitly via the legacy
+// fallback path (company allowed_divisions / user.divisions). They require
+// an explicit non-no_access entry in users.division_roles.
+const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll']);
+
 /**
  * Compute the effective divisions a user can access.
  * Platform admins always get everything.
  * Otherwise: user.divisions (if set) overrides the company's allowed_divisions.
+ * Restrictive divisions (timesheet, payroll) are stripped from any implicit
+ * grant — those are only available through an explicit divisionRoles entry.
  */
 function effectiveDivisions(isPlatformAdmin, userDivisions, companyDivisions) {
   if (isPlatformAdmin) return ALL_DIVISIONS;
-  if (userDivisions && userDivisions.length > 0) return userDivisions;
-  return companyDivisions && companyDivisions.length > 0 ? companyDivisions : ['turf'];
+  const base = (userDivisions && userDivisions.length > 0)
+    ? userDivisions
+    : (companyDivisions && companyDivisions.length > 0 ? companyDivisions : ['turf']);
+  return base.filter(d => !RESTRICTED_DIVISIONS.has(d));
 }
 
 /**
