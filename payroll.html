@@ -237,6 +237,148 @@
       color: var(--yellow);
       border-bottom-color: var(--yellow);
     }
+    .tab.analytics.active {
+      color: #fb923c;
+      border-bottom-color: #fb923c;
+    }
+
+    /* ── Analytics layout ── */
+    .ana-grid {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(12, 1fr);
+    }
+    .ana-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+      grid-column: span 12;
+    }
+    .ana-block.half { grid-column: span 6; }
+    .ana-block.thin { grid-column: span 12; }
+    @media (max-width: 900px) {
+      .ana-block.half { grid-column: span 12; }
+    }
+    .ana-title {
+      font-size: 0.66rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 0.8rem;
+    }
+    .ana-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.85rem;
+      grid-column: span 12;
+    }
+    .ana-stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.9rem 1rem;
+    }
+    .ana-stat-label {
+      font-size: 0.6rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .ana-stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      margin-top: 0.25rem;
+    }
+    .ana-stat-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 0.2rem;
+    }
+    .ana-stat.hours .ana-stat-value     { color: #fb923c; }
+    .ana-stat.approved .ana-stat-value  { color: var(--green); }
+    .ana-stat.pending .ana-stat-value   { color: var(--blue); }
+
+    .ana-block table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .ana-block thead th {
+      text-align: left;
+      padding: 0.5rem 0.65rem;
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .ana-block tbody td {
+      padding: 0.55rem 0.65rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      font-variant-numeric: tabular-nums;
+    }
+    .ana-block tbody td.name { font-weight: 600; font-variant-numeric: normal; }
+    .ana-block tbody td.num  { text-align: right; }
+    .ana-block tr.total td {
+      border-top: 2px solid var(--border);
+      font-weight: 700;
+      color: var(--text);
+      background: var(--surface2);
+    }
+    .ana-empty {
+      padding: 2rem 1rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    /* Horizontal bar (used for division + month breakdowns) */
+    .ana-bar-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 110px;
+      align-items: center;
+      gap: 0.7rem;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid rgba(42,42,58,0.4);
+    }
+    .ana-bar-row:last-child { border-bottom: none; }
+    .ana-bar-label {
+      font-size: 0.82rem;
+      color: var(--text);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ana-bar-track {
+      background: var(--surface2);
+      border-radius: 4px;
+      height: 14px;
+      overflow: hidden;
+      position: relative;
+    }
+    .ana-bar-fill {
+      height: 100%;
+      background: #fb923c;
+      border-radius: 4px;
+      transition: width 0.18s ease;
+    }
+    .ana-bar-fill.approved { background: var(--green); }
+    .ana-bar-fill.pending  { background: var(--blue); }
+    .ana-bar-value {
+      font-size: 0.82rem;
+      color: var(--muted);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .ana-bar-value strong { color: var(--text); font-weight: 600; }
 
     /* ── Audit log layout ── */
     .audit-wrap {
@@ -830,7 +972,7 @@
       </div>
     </div>
 
-    <!-- ── Pending / Approved / Reports / Audit Log tabs ── -->
+    <!-- ── Pending / Approved / Reports / Audit Log / Analytics tabs ── -->
     <div class="tabs">
       <button class="tab active" data-tab="pending" onclick="switchTab('pending')">
         Pending Review <span class="tab-count" id="tab-pending-count">0</span>
@@ -843,6 +985,9 @@
       </button>
       <button class="tab auditlog" data-tab="auditlog" onclick="switchTab('auditlog')">
         Audit Log
+      </button>
+      <button class="tab analytics" data-tab="analytics" onclick="switchTab('analytics')">
+        Analytics
       </button>
     </div>
 
@@ -868,6 +1013,19 @@
 
     <!-- ── Audit log container (Audit Log tab) ── -->
     <div id="auditLogWrap" style="display:none"></div>
+
+    <!-- ── Analytics-specific quick ranges (only on Analytics tab) ── -->
+    <div class="quick-ranges" id="analyticsRanges" style="display:none">
+      <span class="qr-label">Quick range:</span>
+      <button class="qr-btn" onclick="setAnalyticsRange('this_month')">This Month</button>
+      <button class="qr-btn" onclick="setAnalyticsRange('last_month')">Last Month</button>
+      <button class="qr-btn" onclick="setAnalyticsRange('ytd')">Year to Date</button>
+      <button class="qr-btn" onclick="setAnalyticsRange('last_year')">Last Year</button>
+      <button class="qr-btn" onclick="setAnalyticsRange('all_time')">All Time</button>
+    </div>
+
+    <!-- ── Analytics container ── -->
+    <div id="analyticsWrap" style="display:none"></div>
 
     <!-- ── Table ── -->
     <div class="table-wrap">
@@ -965,7 +1123,7 @@
     }
 
     function switchTab(tab) {
-      if (!['pending', 'approved', 'reports', 'auditlog'].includes(tab)) return;
+      if (!['pending', 'approved', 'reports', 'auditlog', 'analytics'].includes(tab)) return;
       currentTab = tab;
       document.querySelectorAll('.tab').forEach(t => {
         t.classList.toggle('active', t.dataset.tab === tab);
@@ -974,15 +1132,19 @@
       const tableWrap  = document.querySelector('.table-wrap');
       const reportWrap = document.getElementById('reportWrap');
       const auditWrap  = document.getElementById('auditLogWrap');
+      const anaWrap    = document.getElementById('analyticsWrap');
       const bulkBar    = document.getElementById('bulkBar');
       const quick      = document.getElementById('quickRanges');
+      const anaQuick   = document.getElementById('analyticsRanges');
 
       // Default-hide everything; show only the active surface below
       if (tableWrap)  tableWrap.style.display  = 'none';
       if (reportWrap) reportWrap.style.display = 'none';
       if (auditWrap)  auditWrap.style.display  = 'none';
+      if (anaWrap)    anaWrap.style.display    = 'none';
       if (bulkBar)    bulkBar.classList.remove('open');
       if (quick)      quick.style.display      = 'none';
+      if (anaQuick)   anaQuick.style.display   = 'none';
 
       if (tab === 'reports') {
         if (reportWrap) reportWrap.style.display = '';
@@ -996,6 +1158,14 @@
         if (auditWrap) auditWrap.style.display = '';
         selectedIds.clear();
         loadAuditLog();
+        return;
+      }
+
+      if (tab === 'analytics') {
+        if (anaWrap)   anaWrap.style.display   = '';
+        if (anaQuick)  anaQuick.style.display  = 'flex';
+        selectedIds.clear();
+        loadAnalytics();
         return;
       }
 
@@ -1131,6 +1301,8 @@
         renderReport();
       } else if (currentTab === 'auditlog') {
         renderAuditLog();
+      } else if (currentTab === 'analytics') {
+        renderAnalytics();
       } else {
         renderRows();
         renderStats();
@@ -1352,6 +1524,313 @@
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+    }
+
+    // ── Analytics tab ────────────────────────────────────────────────────
+    // Operates on the same `filtered` set the rest of the page uses, so it
+    // respects the date / division / employee filters. Defaults to a wider
+    // time window than the other tabs since meaningful aggregations need
+    // more than a single week of data.
+    async function loadAnalytics() {
+      // If the current date range is the default 14-day window (set on
+      // init), expand it to year-to-date the first time the user lands on
+      // the analytics tab — keeps the analytics view useful out of the
+      // box without ever clobbering an explicit choice.
+      const wrap = document.getElementById('analyticsWrap');
+      wrap.innerHTML = '<div class="ana-empty">Loading analytics…</div>';
+      await applyFilters();
+    }
+
+    function setAnalyticsRange(kind) {
+      const today = new Date();
+      const y = today.getFullYear(), m = today.getMonth();
+      let from, to;
+      if (kind === 'this_month') {
+        from = new Date(y, m, 1);
+        to   = new Date(y, m + 1, 0); // last day of this month
+      } else if (kind === 'last_month') {
+        from = new Date(y, m - 1, 1);
+        to   = new Date(y, m, 0);
+      } else if (kind === 'ytd') {
+        from = new Date(y, 0, 1);
+        to   = today;
+      } else if (kind === 'last_year') {
+        from = new Date(y - 1, 0, 1);
+        to   = new Date(y - 1, 11, 31);
+      } else if (kind === 'all_time') {
+        from = new Date(2020, 0, 1);
+        to   = new Date(y + 1, 0, 1);
+      } else {
+        return;
+      }
+      document.getElementById('flt-from').value = ymd(from);
+      document.getElementById('flt-to').value   = ymd(to);
+      applyFilters();
+    }
+
+    function renderAnalytics() {
+      const wrap = document.getElementById('analyticsWrap');
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const div  = document.getElementById('flt-division').value;
+      const userQ= document.getElementById('flt-user').value.trim();
+
+      // Daily entries drive hours; time-off entries are counted separately.
+      const dailyEv  = filtered.filter(e => e.entry_type === 'daily');
+      const offEv    = filtered.filter(e => e.entry_type === 'time_off');
+
+      // ── Aggregations ──────────────────────────────────────────────────
+      const byEmp = new Map(); // username → { pending, approved, days:Set, entries, off }
+      const bySup = new Map(); // supervisor_name → { hours, entries, employees:Set }
+      const byDiv = new Map(); // division → { hours, pending, approved, entries }
+      const byMon = new Map(); // 'YYYY-MM' → { hours, pending, approved, off }
+      const offByType = new Map(); // type → count
+
+      let totalHours = 0;
+      let totalPending = 0;
+      let totalApproved = 0;
+
+      for (const e of dailyEv) {
+        const h = Number(e.computed_hours || 0);
+        totalHours += h;
+        if (e.status === 'submitted') totalPending  += h;
+        if (e.status === 'approved')  totalApproved += h;
+
+        const emp = e.username || '—';
+        if (!byEmp.has(emp)) byEmp.set(emp, { pending: 0, approved: 0, days: new Set(), entries: 0, off: 0 });
+        const eEmp = byEmp.get(emp);
+        if (e.status === 'submitted') eEmp.pending  += h;
+        if (e.status === 'approved')  eEmp.approved += h;
+        if (e.work_date) eEmp.days.add(e.work_date);
+        eEmp.entries++;
+
+        const sup = (e.supervisor_name || '').trim() || '—';
+        if (!bySup.has(sup)) bySup.set(sup, { hours: 0, entries: 0, employees: new Set() });
+        const eSup = bySup.get(sup);
+        eSup.hours += h;
+        eSup.entries++;
+        eSup.employees.add(emp);
+
+        const d = e.division || '—';
+        if (!byDiv.has(d)) byDiv.set(d, { hours: 0, pending: 0, approved: 0, entries: 0 });
+        const eDiv = byDiv.get(d);
+        eDiv.hours += h;
+        if (e.status === 'submitted') eDiv.pending  += h;
+        if (e.status === 'approved')  eDiv.approved += h;
+        eDiv.entries++;
+
+        if (e.work_date) {
+          const mo = e.work_date.slice(0, 7); // YYYY-MM
+          if (!byMon.has(mo)) byMon.set(mo, { hours: 0, pending: 0, approved: 0, off: 0 });
+          const eMo = byMon.get(mo);
+          eMo.hours += h;
+          if (e.status === 'submitted') eMo.pending  += h;
+          if (e.status === 'approved')  eMo.approved += h;
+        }
+      }
+
+      for (const e of offEv) {
+        const emp = e.username || '—';
+        if (!byEmp.has(emp)) byEmp.set(emp, { pending: 0, approved: 0, days: new Set(), entries: 0, off: 0 });
+        byEmp.get(emp).off++;
+        const t = e.time_off_type || 'other';
+        offByType.set(t, (offByType.get(t) || 0) + 1);
+        if (e.work_date) {
+          const mo = e.work_date.slice(0, 7);
+          if (!byMon.has(mo)) byMon.set(mo, { hours: 0, pending: 0, approved: 0, off: 0 });
+          byMon.get(mo).off++;
+        }
+      }
+
+      // ── Scope header ──────────────────────────────────────────────────
+      const scopeBits = [];
+      if (from && to)      scopeBits.push(`${from} → ${to}`);
+      else if (from)       scopeBits.push(`from ${from}`);
+      else if (to)         scopeBits.push(`through ${to}`);
+      if (div)             scopeBits.push(`${prettyDiv(div)} division`);
+      if (userQ)           scopeBits.push(`employee "${userQ}"`);
+      const scopeLine = scopeBits.length ? scopeBits.join(' · ') : 'All entries';
+      const approvedPct = totalHours > 0
+        ? ((totalApproved / totalHours) * 100).toFixed(1) + '%'
+        : '—';
+
+      // ── Empty state ───────────────────────────────────────────────────
+      if (!filtered.length) {
+        wrap.innerHTML = `
+          <div class="ana-grid">
+            <div class="ana-block" style="grid-column:span 12">
+              <div class="ana-title">Analytics</div>
+              <div class="ana-empty">No timesheet entries in this range.<br/>
+                Try expanding the date range or use one of the quick-range buttons above.</div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      // ── Build per-employee table ──────────────────────────────────────
+      const empRows = Array.from(byEmp.entries())
+        .map(([username, v]) => ({
+          username, pending: v.pending, approved: v.approved,
+          total: v.pending + v.approved,
+          days: v.days.size,
+          avg: v.days.size ? (v.pending + v.approved) / v.days.size : 0,
+          off: v.off,
+        }))
+        .sort((a, b) => b.total - a.total);
+
+      const empBody = empRows.map(r => `
+        <tr>
+          <td class="name">${escapeHtml(r.username)}</td>
+          <td class="num">${r.pending.toFixed(2)}</td>
+          <td class="num">${r.approved.toFixed(2)}</td>
+          <td class="num"><strong>${r.total.toFixed(2)}</strong></td>
+          <td class="num">${r.days}</td>
+          <td class="num">${r.avg.toFixed(2)}</td>
+          <td class="num">${r.off || ''}</td>
+        </tr>
+      `).join('');
+
+      // ── Build per-supervisor table ────────────────────────────────────
+      const supRows = Array.from(bySup.entries())
+        .map(([name, v]) => ({ name, hours: v.hours, entries: v.entries, emps: v.employees.size }))
+        .sort((a, b) => b.hours - a.hours);
+
+      const supBody = supRows.map(r => `
+        <tr>
+          <td class="name">${escapeHtml(r.name)}</td>
+          <td class="num"><strong>${r.hours.toFixed(2)}</strong></td>
+          <td class="num">${r.emps}</td>
+          <td class="num">${r.entries}</td>
+        </tr>
+      `).join('');
+
+      // ── Division bars ─────────────────────────────────────────────────
+      const divRows = Array.from(byDiv.entries())
+        .map(([name, v]) => ({ name, hours: v.hours, pending: v.pending, approved: v.approved, entries: v.entries }))
+        .sort((a, b) => b.hours - a.hours);
+      const divMax = divRows.reduce((m, r) => Math.max(m, r.hours), 0) || 1;
+
+      const divBars = divRows.map(r => {
+        const pct = (r.hours / divMax) * 100;
+        const pctOfTotal = totalHours > 0 ? ((r.hours / totalHours) * 100).toFixed(1) + '%' : '—';
+        return `
+          <div class="ana-bar-row">
+            <div class="ana-bar-label">${escapeHtml(prettyDiv(r.name))}</div>
+            <div class="ana-bar-track"><div class="ana-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+            <div class="ana-bar-value"><strong>${r.hours.toFixed(2)} h</strong> · ${pctOfTotal}</div>
+          </div>
+        `;
+      }).join('');
+
+      // ── Monthly bars ──────────────────────────────────────────────────
+      const monRows = Array.from(byMon.entries())
+        .map(([mo, v]) => ({ mo, ...v }))
+        .sort((a, b) => a.mo.localeCompare(b.mo));
+      const monMax = monRows.reduce((m, r) => Math.max(m, r.hours), 0) || 1;
+
+      function prettyMonth(yyyymm) {
+        const [y, m] = yyyymm.split('-').map(Number);
+        return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+      }
+
+      const monBars = monRows.map(r => {
+        const pct = (r.hours / monMax) * 100;
+        return `
+          <div class="ana-bar-row">
+            <div class="ana-bar-label">${escapeHtml(prettyMonth(r.mo))}</div>
+            <div class="ana-bar-track"><div class="ana-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+            <div class="ana-bar-value"><strong>${r.hours.toFixed(2)} h</strong>${r.off ? ` · ${r.off} off` : ''}</div>
+          </div>
+        `;
+      }).join('');
+
+      // ── Render ────────────────────────────────────────────────────────
+      wrap.innerHTML = `
+        <div class="ana-grid">
+          <div class="ana-stats">
+            <div class="ana-stat hours">
+              <div class="ana-stat-label">Total Hours</div>
+              <div class="ana-stat-value">${totalHours.toFixed(2)}</div>
+              <div class="ana-stat-sub">across ${dailyEv.length} ${dailyEv.length === 1 ? 'entry' : 'entries'}</div>
+            </div>
+            <div class="ana-stat pending">
+              <div class="ana-stat-label">Pending Hours</div>
+              <div class="ana-stat-value">${totalPending.toFixed(2)}</div>
+              <div class="ana-stat-sub">awaiting review</div>
+            </div>
+            <div class="ana-stat approved">
+              <div class="ana-stat-label">Approved Hours</div>
+              <div class="ana-stat-value">${totalApproved.toFixed(2)}</div>
+              <div class="ana-stat-sub">${approvedPct} of total</div>
+            </div>
+            <div class="ana-stat">
+              <div class="ana-stat-label">Active Employees</div>
+              <div class="ana-stat-value">${empRows.length}</div>
+              <div class="ana-stat-sub">${supRows.length} supervisor${supRows.length === 1 ? '' : 's'} · ${offEv.length} time-off ${offEv.length === 1 ? 'event' : 'events'}</div>
+            </div>
+          </div>
+
+          <div class="ana-block">
+            <div class="ana-title">Scope · ${escapeHtml(scopeLine)}</div>
+            <div style="font-size:0.78rem;color:var(--muted);line-height:1.55">
+              All numbers are pulled from <strong style="color:var(--text)">timesheet_entries</strong> filtered by the active date range and division/employee filters. Time-off events are counted as discrete events (one per day requested).
+            </div>
+          </div>
+
+          <div class="ana-block">
+            <div class="ana-title">Hours by Employee</div>
+            ${empRows.length ? `
+              <table>
+                <thead><tr>
+                  <th>Employee</th>
+                  <th style="text-align:right">Pending</th>
+                  <th style="text-align:right">Approved</th>
+                  <th style="text-align:right">Total Hours</th>
+                  <th style="text-align:right">Days Worked</th>
+                  <th style="text-align:right">Avg / Day</th>
+                  <th style="text-align:right">Time Off</th>
+                </tr></thead>
+                <tbody>${empBody}</tbody>
+                <tfoot><tr class="total">
+                  <td class="name">Totals (${empRows.length})</td>
+                  <td class="num">${totalPending.toFixed(2)}</td>
+                  <td class="num">${totalApproved.toFixed(2)}</td>
+                  <td class="num">${totalHours.toFixed(2)}</td>
+                  <td class="num">—</td>
+                  <td class="num">—</td>
+                  <td class="num">${offEv.length || ''}</td>
+                </tr></tfoot>
+              </table>
+            ` : `<div class="ana-empty">No daily hour entries in this range.</div>`}
+          </div>
+
+          <div class="ana-block half">
+            <div class="ana-title">Hours by Supervisor</div>
+            ${supRows.length ? `
+              <table>
+                <thead><tr>
+                  <th>Supervisor</th>
+                  <th style="text-align:right">Hours Overseen</th>
+                  <th style="text-align:right">Employees</th>
+                  <th style="text-align:right">Entries</th>
+                </tr></thead>
+                <tbody>${supBody}</tbody>
+              </table>
+            ` : `<div class="ana-empty">No supervisor data.</div>`}
+          </div>
+
+          <div class="ana-block half">
+            <div class="ana-title">Hours by Division</div>
+            ${divRows.length ? divBars : `<div class="ana-empty">No division data.</div>`}
+          </div>
+
+          <div class="ana-block">
+            <div class="ana-title">Hours by Month</div>
+            ${monRows.length ? monBars : `<div class="ana-empty">No monthly data.</div>`}
+          </div>
+        </div>
+      `;
     }
 
     function exportAuditCsv() {
