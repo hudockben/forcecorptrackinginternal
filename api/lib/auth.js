@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 
 // Canonical division list. MUST match the divisions exposed in divisions.html
 // and the values stored in users.division_roles.
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany'];
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive'];
 
 // Keys that are intentionally shared across every division within a company
 // (any logged-in user may read/write them regardless of their division roles).

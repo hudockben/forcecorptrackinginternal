@@ -601,11 +601,12 @@
                 <th>Trucking</th>
                 <th>Quarry</th>
                 <th>Billing</th>
+                <th>Executive</th>
                 <th></th>
               </tr>
             </thead>
             <tbody id="userListBody">
-              <tr><td colspan="7" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+              <tr><td colspan="8" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -683,6 +684,16 @@
             <div class="div-role-row">
               <span class="div-role-label">Intercompany Billing</span>
               <select id="mu-role-intercompany">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3">Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Executive</span>
+              <select id="mu-role-executive">
                 <option value="no_access" selected>No Access</option>
                 <option value="level1">Level 1 — View only</option>
                 <option value="level2">Level 2 — Insert &amp; edit</option>
@@ -819,7 +830,7 @@
       },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -842,7 +853,12 @@
     // Platform admins always see the selector so they can switch between divisions.
     if (!isPlatformAdmin && visibleDivisions.length === 1) {
       const only = visibleDivisions[0];
-      if (DIVISION_CATALOG[only] && DIVISION_CATALOG[only].built) {
+      if (only === 'executive') {
+        // Executive lives outside DIVISION_CATALOG (it's a top-of-page entry,
+        // not a grid card); route directly to its page.
+        localStorage.setItem('fct_division', 'executive');
+        window.location.replace('executive.html');
+      } else if (DIVISION_CATALOG[only] && DIVISION_CATALOG[only].built) {
         localStorage.setItem('fct_division', only);
         window.location.replace(DIVISION_CATALOG[only].href);
       }
@@ -876,17 +892,22 @@
       }
     }
 
-    // ── Executive Division entry (platform admins only) ─────────────────────
-    if (isPlatformAdmin) {
+    // ── Executive Division entry — platform admins + users with executive access ──
+    const execRole = user && user.divisionRoles && user.divisionRoles.executive;
+    const hasExecAccess = isPlatformAdmin || (execRole && execRole !== 'no_access');
+    if (hasExecAccess) {
       const execEntry = document.getElementById('execEntry');
       if (execEntry) execEntry.style.display = 'flex';
     }
 
     // ── Render cards ────────────────────────────────────────────────────────
+    // Executive lives outside DIVISION_CATALOG (its own entry above the grid),
+    // so don't count it toward the grid's column layout.
     const grid = document.getElementById('cardsGrid');
-    grid.classList.add(`count-${Math.min(visibleDivisions.length, 5)}`);
+    const cardDivisions = visibleDivisions.filter(k => DIVISION_CATALOG[k]);
+    grid.classList.add(`count-${Math.min(cardDivisions.length, 5)}`);
 
-    visibleDivisions.forEach(key => {
+    cardDivisions.forEach(key => {
       const def = DIVISION_CATALOG[key];
       if (!def) return;
 
@@ -941,7 +962,7 @@
       level1:    'View',
       no_access: '—',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive'];
 
     function openUserModal() {
       document.getElementById('userModalBackdrop').classList.add('open');
@@ -964,7 +985,7 @@
 
     async function loadUserList() {
       const tbody = document.getElementById('userListBody');
-      tbody.innerHTML = '<tr><td colspan="8" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
       try {
         const res  = await fetch('/api/company/users', {
           headers: { Authorization: `Bearer ${token}` }
@@ -972,7 +993,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Failed');
         if (!data.users.length) {
-          tbody.innerHTML = '<tr><td colspan="8" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="9" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
           return;
         }
         tbody.innerHTML = data.users.map(u => {
@@ -984,6 +1005,7 @@
           const trucking     = dr.trucking     || 'no_access';
           const quarry       = dr.quarry       || 'no_access';
           const intercompany = dr.intercompany || 'no_access';
+          const executive    = dr.executive    || 'no_access';
           const isSelf       = String(u.id) === String(user.userId);
           return `
             <tr>
@@ -994,6 +1016,7 @@
               <td>${divRoleBadge(trucking)}</td>
               <td>${divRoleBadge(quarry)}</td>
               <td>${divRoleBadge(intercompany)}</td>
+              <td>${divRoleBadge(executive)}</td>
               <td style="text-align:right;white-space:nowrap">
                 <button class="user-edit-btn" onclick='editUser(${JSON.stringify(u)})'>Edit</button>
                 ${!isSelf
@@ -1003,7 +1026,7 @@
             </tr>`;
         }).join('');
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="8" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
       }
     }
 
@@ -1025,6 +1048,7 @@
       document.getElementById('mu-role-trucking').value     = dr.trucking     || 'no_access';
       document.getElementById('mu-role-quarry').value       = dr.quarry       || 'no_access';
       document.getElementById('mu-role-intercompany').value = dr.intercompany || 'no_access';
+      document.getElementById('mu-role-executive').value    = dr.executive    || 'no_access';
 
       document.getElementById('mu-result').textContent = '';
       // Scroll form into view
@@ -1045,6 +1069,7 @@
       document.getElementById('mu-role-trucking').value     = 'no_access';
       document.getElementById('mu-role-quarry').value       = 'no_access';
       document.getElementById('mu-role-intercompany').value = 'no_access';
+      document.getElementById('mu-role-executive').value    = 'no_access';
       document.getElementById('mu-result').textContent  = '';
     }
 
@@ -1074,6 +1099,7 @@
         trucking:     document.getElementById('mu-role-trucking').value,
         quarry:       document.getElementById('mu-role-quarry').value,
         intercompany: document.getElementById('mu-role-intercompany').value,
+        executive:    document.getElementById('mu-role-executive').value,
       };
 
       const body = { username, division_roles };
