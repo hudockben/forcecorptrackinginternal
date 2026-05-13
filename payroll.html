@@ -751,10 +751,9 @@
     <!-- ── Payroll-cycle quick ranges (only on Reports tab) ── -->
     <div class="quick-ranges" id="quickRanges" style="display:none">
       <span class="qr-label">Quick payroll cycle:</span>
-      <button class="qr-btn" onclick="setRange('this_week')">This Week</button>
-      <button class="qr-btn" onclick="setRange('last_week')">Last Week</button>
-      <button class="qr-btn" onclick="setRange('this_pay_period')">Current Pay Period</button>
+      <button class="qr-btn" onclick="setRange('current_pay_period')">Current Pay Period</button>
       <button class="qr-btn" onclick="setRange('last_pay_period')">Last Pay Period</button>
+      <button class="qr-btn" onclick="setRange('last_two_weeks')">Last 2 Weeks</button>
     </div>
 
     <!-- ── Report container (Reports tab) ── -->
@@ -890,10 +889,11 @@
     }
 
     // ── Quick payroll-cycle ranges ────────────────────────────────────────
+    // Payroll cycle is weekly Monday → Sunday. The cycle that ends Sunday is
+    // paid the following Friday (e.g. cycle ending Sun May 10 pays Fri May 15).
     function setRange(kind) {
       const today = new Date();
       const todayMs = today.getTime();
-      // Week starts Monday for payroll convention (Sun=0 → Mon=1)
       const dayOfWeek = today.getDay();              // 0=Sun..6=Sat
       const offsetToMonday = (dayOfWeek + 6) % 7;     // Mon=0, Tue=1, ..., Sun=6
       const thisMonday = new Date(todayMs);
@@ -901,22 +901,18 @@
       thisMonday.setHours(0, 0, 0, 0);
 
       let from, to;
-      if (kind === 'this_week') {
+      if (kind === 'current_pay_period') {
+        // The week currently being worked (Mon-Sun of this week)
         from = new Date(thisMonday);
         to   = new Date(thisMonday); to.setDate(thisMonday.getDate() + 6);
-      } else if (kind === 'last_week') {
+      } else if (kind === 'last_pay_period') {
+        // The completed week being paid this Friday (Mon-Sun previous week)
         from = new Date(thisMonday); from.setDate(thisMonday.getDate() - 7);
         to   = new Date(thisMonday); to.setDate(thisMonday.getDate() - 1);
-      } else if (kind === 'this_pay_period') {
-        // Biweekly cycle anchored to thisMonday — most recent pay-period start
-        // is thisMonday if current week is "week 1" of the cycle, otherwise the
-        // Monday a week before. Without a configured anchor, default to a
-        // 2-week window ending today.
-        from = new Date(thisMonday); from.setDate(thisMonday.getDate() - 7);
-        to   = new Date(thisMonday); to.setDate(thisMonday.getDate() + 6);
-      } else if (kind === 'last_pay_period') {
-        from = new Date(thisMonday); from.setDate(thisMonday.getDate() - 21);
-        to   = new Date(thisMonday); to.setDate(thisMonday.getDate() - 8);
+      } else if (kind === 'last_two_weeks') {
+        // Catch-up window: previous 2 completed weeks (Mon → Sun)
+        from = new Date(thisMonday); from.setDate(thisMonday.getDate() - 14);
+        to   = new Date(thisMonday); to.setDate(thisMonday.getDate() - 1);
       } else {
         return;
       }
