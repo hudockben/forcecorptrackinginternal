@@ -941,6 +941,44 @@
       window.location.replace('index.html');
     }
 
+    // Refresh permissions from the server before rendering, so role changes
+    // made after the user's last login take effect without a sign-out cycle.
+    // Fire-and-forget: if it errors out we just fall back to the cached payload.
+    (async () => {
+      try {
+        const res  = await fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${token}` } });
+        if (res.status === 401) {
+          localStorage.removeItem('fct_token');
+          localStorage.removeItem('fct_user');
+          localStorage.removeItem('fct_division');
+          window.location.replace('index.html');
+          return;
+        }
+        const data = await res.json();
+        if (res.ok && data.ok && data.user) {
+          const before = JSON.stringify({
+            divisionRoles:    user.divisionRoles,
+            allowedDivisions: user.allowedDivisions,
+            isPlatformAdmin:  user.isPlatformAdmin,
+          });
+          const after = JSON.stringify({
+            divisionRoles:    data.user.divisionRoles,
+            allowedDivisions: data.user.allowedDivisions,
+            isPlatformAdmin:  data.user.isPlatformAdmin,
+          });
+          if (before !== after) {
+            // Persist the merged user object so other pages see fresh data too,
+            // then reload to re-render with the latest permissions.
+            const merged = Object.assign({}, user, data.user);
+            localStorage.setItem('fct_user', JSON.stringify(merged));
+            window.location.reload();
+          }
+        }
+      } catch {
+        // Network or server error — keep using the cached payload.
+      }
+    })();
+
     const isPlatformAdmin  = Boolean(user && user.isPlatformAdmin);
     // Explicit "no_access" in division_roles hides the tile even for platform
     // admins — lets a company admin tidy their own selector without giving up
