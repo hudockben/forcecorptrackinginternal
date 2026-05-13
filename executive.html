@@ -935,14 +935,19 @@
   <footer>© DataWatch · Force Corp · Executive Division · All rights reserved</footer>
 
   <script>
-    // ── Auth guard: platform admins only ──
+    // ── Auth guard: platform admins or users with executive division access ──
     const token = localStorage.getItem('fct_token');
     let user = null;
     try { user = JSON.parse(localStorage.getItem('fct_user')); } catch {}
 
+    const execRole = user && user.divisionRoles && user.divisionRoles.executive;
+    const hasExecAccess = Boolean(user) && (
+      user.isPlatformAdmin || (execRole && execRole !== 'no_access')
+    );
+
     if (!token || !user) {
       window.location.replace('index.html');
-    } else if (!user.isPlatformAdmin) {
+    } else if (!hasExecAccess) {
       window.location.replace('divisions.html');
     }
 

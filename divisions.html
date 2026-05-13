@@ -853,7 +853,12 @@
     // Platform admins always see the selector so they can switch between divisions.
     if (!isPlatformAdmin && visibleDivisions.length === 1) {
       const only = visibleDivisions[0];
-      if (DIVISION_CATALOG[only] && DIVISION_CATALOG[only].built) {
+      if (only === 'executive') {
+        // Executive lives outside DIVISION_CATALOG (it's a top-of-page entry,
+        // not a grid card); route directly to its page.
+        localStorage.setItem('fct_division', 'executive');
+        window.location.replace('executive.html');
+      } else if (DIVISION_CATALOG[only] && DIVISION_CATALOG[only].built) {
         localStorage.setItem('fct_division', only);
         window.location.replace(DIVISION_CATALOG[only].href);
       }
@@ -887,17 +892,22 @@
       }
     }
 
-    // ── Executive Division entry (platform admins only) ─────────────────────
-    if (isPlatformAdmin) {
+    // ── Executive Division entry — platform admins + users with executive access ──
+    const execRole = user && user.divisionRoles && user.divisionRoles.executive;
+    const hasExecAccess = isPlatformAdmin || (execRole && execRole !== 'no_access');
+    if (hasExecAccess) {
       const execEntry = document.getElementById('execEntry');
       if (execEntry) execEntry.style.display = 'flex';
     }
 
     // ── Render cards ────────────────────────────────────────────────────────
+    // Executive lives outside DIVISION_CATALOG (its own entry above the grid),
+    // so don't count it toward the grid's column layout.
     const grid = document.getElementById('cardsGrid');
-    grid.classList.add(`count-${Math.min(visibleDivisions.length, 5)}`);
+    const cardDivisions = visibleDivisions.filter(k => DIVISION_CATALOG[k]);
+    grid.classList.add(`count-${Math.min(cardDivisions.length, 5)}`);
 
-    visibleDivisions.forEach(key => {
+    cardDivisions.forEach(key => {
       const def = DIVISION_CATALOG[key];
       if (!def) return;
 

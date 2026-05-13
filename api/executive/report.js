@@ -3,7 +3,8 @@
 // GET /api/executive/report
 //
 // Cross-division roll-up for the Executive Division dashboard.
-// Platform admins only.
+// Access: platform admins, or any user whose divisionRoles.executive
+// is not 'no_access' (gated by hasDivisionAccess below).
 //
 // Wiring is incremental: the 4 hero KPIs (Active Projects, Revenue
 // This Week, AR 30+ Days, Unbilled Intercompany) come from live SQL
@@ -12,8 +13,8 @@
 // passes. Each hero query runs independently and falls back to '—'
 // on failure so a single bad query can't blank the report.
 
-const { neon }        = require('@neondatabase/serverless');
-const { requireAuth } = require('../lib/auth');
+const { neon }                          = require('@neondatabase/serverless');
+const { requireAuth, hasDivisionAccess } = require('../lib/auth');
 
 // "Active" mirrors tracker.html's isDone() inverse: anything whose
 // status is NOT 'complete' or 'closed' (case-insensitive) counts as
@@ -1259,8 +1260,8 @@ module.exports = async (req, res) => {
   const payload = requireAuth(req, res);
   if (!payload) return;
 
-  if (!payload.isPlatformAdmin) {
-    return res.status(403).json({ error: 'Executive report is platform admin only' });
+  if (!hasDivisionAccess(payload, 'executive')) {
+    return res.status(403).json({ error: 'You do not have access to the Executive Division' });
   }
 
   const report = mockReport();
