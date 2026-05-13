@@ -207,6 +207,15 @@
     }
     .btn-approve:hover { filter: brightness(1.1); }
     .btn-approve:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-approve.alt {
+      background: transparent;
+      color: var(--green);
+      border: 1px solid rgba(34,197,94,0.5);
+    }
+    .btn-approve.alt:hover:not(:disabled) {
+      background: rgba(34,197,94,0.08);
+      border-color: var(--green);
+    }
 
     /* ── Table ── */
     .table-wrap {
@@ -498,7 +507,8 @@
     <!-- ── Bulk approve bar ── -->
     <div class="bulk" id="bulkBar">
       <div class="bulk-count" id="bulkCount">0 selected</div>
-      <button class="btn-approve" onclick="bulkApprove()">Approve Selected</button>
+      <button class="btn-approve alt" id="approveSelectedBtn" onclick="bulkApprove()">Approve Selected</button>
+      <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
     </div>
 
     <!-- ── Table ── -->
@@ -731,10 +741,24 @@
       renderRows();
     }
     function updateBulk() {
-      const bar = document.getElementById('bulkBar');
-      const count = selectedIds.size;
-      bar.classList.toggle('open', count > 0);
-      document.getElementById('bulkCount').textContent = `${count} selected`;
+      const bar         = document.getElementById('bulkBar');
+      const selCount    = selectedIds.size;
+      const submittedIn = filtered.filter(e => e.status === 'submitted').length;
+      // Show the bar whenever there's anything actionable in view
+      bar.classList.toggle('open', selCount > 0 || submittedIn > 0);
+      document.getElementById('bulkCount').textContent =
+        submittedIn > 0
+          ? `${selCount} selected · ${submittedIn} submitted in view`
+          : `${selCount} selected`;
+      const selBtn = document.getElementById('approveSelectedBtn');
+      const allBtn = document.getElementById('approveAllBtn');
+      if (selBtn) selBtn.disabled = selCount === 0;
+      if (allBtn) {
+        allBtn.disabled = submittedIn === 0;
+        allBtn.textContent = submittedIn > 0
+          ? `Approve All ${submittedIn} Submitted`
+          : 'Approve All Submitted';
+      }
     }
 
     // Optimistic-update an entry in both allEntries and filtered so the row
@@ -771,7 +795,34 @@
       const ids = Array.from(selectedIds);
       if (!ids.length) return;
       if (!confirm(`Approve ${ids.length} entries?`)) return;
+      await runApprovals(ids);
+    }
+
+    async function approveAllSubmitted() {
+      const ids = filtered.filter(e => e.status === 'submitted').map(e => e.id);
+      if (!ids.length) return;
+      // Build a quick scope summary so the supervisor knows what they're signing off on
+      const from   = document.getElementById('flt-from').value;
+      const to     = document.getElementById('flt-to').value;
+      const userQ  = (document.getElementById('flt-user').value || '').trim();
+      const divQ   = document.getElementById('flt-division').value;
+      const scopeBits = [];
+      if (from && to)      scopeBits.push(`${from} → ${to}`);
+      else if (from)       scopeBits.push(`from ${from}`);
+      else if (to)         scopeBits.push(`through ${to}`);
+      if (userQ)           scopeBits.push(`employee "${userQ}"`);
+      if (divQ)            scopeBits.push(`${divQ} division`);
+      const scope = scopeBits.length ? `\n\nScope: ${scopeBits.join(' · ')}` : '';
+      if (!confirm(`Approve ALL ${ids.length} submitted entries in the current view?${scope}`)) return;
+      await runApprovals(ids);
+    }
+
+    async function runApprovals(ids) {
       let errors = 0;
+      const btnSel = document.getElementById('approveSelectedBtn');
+      const btnAll = document.getElementById('approveAllBtn');
+      if (btnSel) btnSel.disabled = true;
+      if (btnAll) btnAll.disabled = true;
       for (const id of ids) {
         try {
           const res = await fetch('/api/timesheet-entries?action=approve&id=' + encodeURIComponent(id), {
