@@ -10,9 +10,9 @@
  * existing division's data — it only queries what's already there.
  *
  * Each division stores its "jobs" differently; the strategy per division:
- *   turf      → `projects` table, filtered by status
- *   paving    → `app_data` JSON blobs (fct_paving_project_<id>), filtered by status
- *   trucking  → same `projects` table as turf (trucking_entries.project_id FKs to it)
+ *   turf      → `app_data` JSON blobs (fct_project_<id>) — the source tracker.html reads
+ *   paving    → `app_data` JSON blobs (fct_paving_project_<id>)
+ *   trucking  → same turf blobs (trucking entries reference turf projects)
  *   dust      → `dust_companies` (customer-level — no status, show all)
  *   quarry    → `quarry_locations` (no status, show all)
  *
@@ -27,50 +27,43 @@ const { requireAuth, hasDivisionAccess } = require('./lib/auth');
 const SUPPORTED = ['turf', 'dust', 'paving', 'trucking', 'quarry'];
 const ACTIVE_PROJECT_STATUSES = ['Awarded', 'In Progress', 'Substantially Complete'];
 
-async function turfOrTruckingJobs(sql, companyCode) {
-  const rows = await sql`
-    SELECT id, name, status
-    FROM   projects
-    WHERE  company_code = ${companyCode}
-      AND  (
-            status IS NULL
-         OR status = ''
-         OR status = ANY(${ACTIVE_PROJECT_STATUSES})
-      )
-    ORDER BY name ASC
-  `;
-  return rows.map(r => ({
-    id:    r.id,
-    label: r.name || '(unnamed project)',
-  }));
-}
-
-async function pavingJobs(sql, companyCode) {
-  // Paving projects live in app_data JSON blobs:
-  //   "<company>:fct_paving_project_<projectId>"
-  // The index lives at "<company>:fct_paving_projects_index".
-  // We deliberately read only the per-project blobs (skipping the index) and
-  // never touch the paving frontend's storage.
+/**
+ * Read project blobs from app_data and return active/awarded ones.
+ * `prefix` is the blob-key prefix (e.g. "fct_project_" for turf,
+ * "fct_paving_project_" for paving). We deliberately exclude the index
+ * blob ("fct_projects_index", "fct_paving_projects_index") which lives
+ * under a similar prefix but isn't a project itself.
+ */
+async function projectsFromBlobs(sql, companyCode, prefix) {
+  // The trailing "s_" excludes both *_index AND legacy *_projects blobs.
+  const indexLikePrefix = companyCode + ':' + prefix.replace(/project_$/, 'projects');
   const rows = await sql`
     SELECT key, value FROM app_data
-    WHERE key LIKE ${companyCode + ':fct_paving_project_%'}
-      AND key NOT LIKE ${companyCode + ':fct_paving_projects_%'}
+    WHERE key LIKE ${companyCode + ':' + prefix + '%'}
+      AND key NOT LIKE ${indexLikePrefix + '%'}
   `;
   const jobs = [];
   for (const r of rows) {
     const blob = r.value;
     if (!blob || typeof blob !== 'object') continue;
-    const id     = blob.id || r.key.split(':fct_paving_project_')[1];
+    const id     = blob.id || r.key.split(':' + prefix)[1];
+    if (!id) continue;
     const name   = blob['project-name'] || blob.name || '(unnamed project)';
-    const status = blob.status || '';
-    const isActive =
-      !status ||
-      ACTIVE_PROJECT_STATUSES.includes(status);
+    const status = (blob.status || '').trim();
+    const isActive = !status || ACTIVE_PROJECT_STATUSES.includes(status);
     if (!isActive) continue;
     jobs.push({ id: String(id), label: String(name) });
   }
   jobs.sort((a, b) => a.label.localeCompare(b.label));
   return jobs;
+}
+
+async function turfOrTruckingJobs(sql, companyCode) {
+  return projectsFromBlobs(sql, companyCode, 'fct_project_');
+}
+
+async function pavingJobs(sql, companyCode) {
+  return projectsFromBlobs(sql, companyCode, 'fct_paving_project_');
 }
 
 async function dustJobs(sql, companyCode) {
