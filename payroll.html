@@ -775,6 +775,25 @@
     .row-btn.delete { color: var(--red); border-color: rgba(239,68,68,0.3); }
     .row-btn.delete:hover { background: rgba(239,68,68,0.08); }
 
+    /* Clickable supervisor name in row — one-click filter */
+    .sup-chip {
+      background: none;
+      border: 1px dashed rgba(34,197,94,0.25);
+      color: var(--text);
+      padding: 0.18rem 0.55rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .sup-chip:hover {
+      color: var(--green);
+      border-color: var(--green);
+      border-style: solid;
+      background: rgba(34,197,94,0.08);
+    }
+
     /* ── Edit modal ── */
     .modal-backdrop {
       display: none;
@@ -964,7 +983,7 @@
     </div>
 
     <!-- ── Filters ── -->
-    <div class="filters" style="grid-template-columns: repeat(4, 1fr) auto">
+    <div class="filters" style="grid-template-columns: repeat(5, 1fr) auto">
       <div class="filter-field">
         <label for="flt-from">From</label>
         <input type="date" id="flt-from" />
@@ -983,6 +1002,10 @@
           <option value="trucking">Trucking</option>
           <option value="quarry">Quarry</option>
         </select>
+      </div>
+      <div class="filter-field">
+        <label for="flt-supervisor">Supervisor</label>
+        <input type="text" id="flt-supervisor" placeholder="Supervisor name…" />
       </div>
       <div class="filter-field">
         <label for="flt-user">Employee</label>
@@ -1117,6 +1140,18 @@
       return String(s == null ? '' : s)
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    // For values embedded inside a single-quoted attribute string (e.g.
+    // onclick="...('val')"). Backslash-escapes single quotes and backslashes
+    // and HTML-encodes ampersand/lt/gt so HTML parsing + JS parsing both succeed.
+    function escapeJsAttr(s) {
+      return String(s == null ? '' : s)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g,  "\\'")
+        .replace(/&/g,  '&amp;')
+        .replace(/</g,  '&lt;')
+        .replace(/>/g,  '&gt;');
     }
 
     function authHeaders(json) {
@@ -1277,6 +1312,7 @@
       document.getElementById('flt-from').value   = '';
       document.getElementById('flt-to').value     = '';
       document.getElementById('flt-division').value = '';
+      document.getElementById('flt-supervisor').value = '';
       document.getElementById('flt-user').value   = '';
       applyFilters();
     }
@@ -1316,9 +1352,12 @@
 
     function filterAndRender() {
       const userQ = (document.getElementById('flt-user').value || '').toLowerCase().trim();
-      filtered = userQ
-        ? allEntries.filter(e => (e.username || '').toLowerCase().includes(userQ))
-        : allEntries;
+      const supQ  = (document.getElementById('flt-supervisor').value || '').toLowerCase().trim();
+      filtered = allEntries.filter(e => {
+        if (userQ && !(e.username || '').toLowerCase().includes(userQ)) return false;
+        if (supQ  && !(e.supervisor_name || '').toLowerCase().includes(supQ))  return false;
+        return true;
+      });
       if (currentTab === 'reports') {
         renderReport();
       } else if (currentTab === 'auditlog') {
@@ -1330,7 +1369,17 @@
         renderStats();
       }
     }
-    document.getElementById('flt-user').addEventListener('input', () => filterAndRender());
+    document.getElementById('flt-user').addEventListener('input',       () => filterAndRender());
+    document.getElementById('flt-supervisor').addEventListener('input', () => filterAndRender());
+
+    // One-click filter: clicking a supervisor's name in any row narrows the
+    // view to entries assigned to that supervisor.
+    function filterBySupervisor(name) {
+      const el = document.getElementById('flt-supervisor');
+      el.value = name || '';
+      filterAndRender();
+      el.focus();
+    }
 
     // ── Report tab ───────────────────────────────────────────────────────
     function renderReport() {
@@ -2065,7 +2114,9 @@
             <td>${escapeHtml(job)}</td>
             <td>${escapeHtml(time)}</td>
             <td style="font-variant-numeric:tabular-nums">${hours}</td>
-            <td>${escapeHtml(sup)}</td>
+            <td>${e.entry_type === 'time_off' || !e.supervisor_name
+              ? escapeHtml(sup)
+              : `<button class="sup-chip" title="Filter to this supervisor" onclick="filterBySupervisor('${escapeJsAttr(e.supervisor_name)}')">${escapeHtml(sup)}</button>`}</td>
             <td><span class="badge badge-${e.status}">${e.status}</span>${statusMetaHtml(e)}</td>
             <td class="td-actions">
               <button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>
