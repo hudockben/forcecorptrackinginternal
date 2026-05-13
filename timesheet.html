@@ -524,8 +524,16 @@
 
     <!-- ── Past entries ── -->
     <section class="card">
-      <div class="card-title">My Recent Entries</div>
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:0.6rem;flex-wrap:wrap">
+        <div class="card-title">My Recent Entries</div>
+        <div id="entriesScope" class="card-sub" style="font-size:0.72rem"></div>
+      </div>
       <div id="entriesList"><div class="entry-empty">Loading…</div></div>
+      <div style="text-align:center">
+        <button id="toggleScopeBtn" class="btn btn-secondary"
+          style="display:none;font-size:0.78rem;padding:0.55rem 1.2rem;flex:0 0 auto"
+          onclick="toggleScope()">Show older entries</button>
+      </div>
     </section>
 
   </main>
@@ -689,17 +697,78 @@
     }
 
     // ── Entries list ──────────────────────────────────────────────────────
+    // Default window covers the current pay period (Mon of last week through
+    // Sun of this week — 14 days) so a field worker isn't scrolling through
+    // months of history. Drafts are always loaded regardless of date so
+    // unfinished work never silently disappears. The "Show older entries"
+    // button lifts the cap on demand.
+    let scopeUnbounded = false;
+
+    function payPeriodWindow() {
+      const today = new Date();
+      const dayOfWeek = today.getDay();              // 0=Sun..6=Sat
+      const offsetToMonday = (dayOfWeek + 6) % 7;    // Mon=0, ..., Sun=6
+      const thisMon = new Date(today);
+      thisMon.setDate(today.getDate() - offsetToMonday);
+      thisMon.setHours(0, 0, 0, 0);
+      const from = new Date(thisMon); from.setDate(thisMon.getDate() - 7);   // Mon last week
+      const to   = new Date(thisMon); to.setDate(thisMon.getDate() + 6);     // Sun this week
+      return { from, to };
+    }
+
+    function ymd(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${dd}`;
+    }
+
     async function loadEntries() {
-      const list = document.getElementById('entriesList');
+      const list  = document.getElementById('entriesList');
+      const scope = document.getElementById('entriesScope');
+      const btn   = document.getElementById('toggleScopeBtn');
       list.innerHTML = '<div class="entry-empty">Loading…</div>';
       try {
-        const res = await fetch('/api/timesheet-entries', { headers: authHeaders() });
-        const data = await res.json();
-        entriesCache = Array.isArray(data.entries) ? data.entries : [];
+        let entries;
+        if (scopeUnbounded) {
+          const res = await fetch('/api/timesheet-entries', { headers: authHeaders() });
+          const data = await res.json();
+          entries = Array.isArray(data.entries) ? data.entries : [];
+          scope.textContent = 'All entries';
+          if (btn) { btn.textContent = 'Show recent only'; btn.style.display = ''; }
+        } else {
+          const { from, to } = payPeriodWindow();
+          const fromS = ymd(from), toS = ymd(to);
+          const [draftsRes, recentRes] = await Promise.all([
+            // Drafts always show — a forgotten draft from an earlier window
+            // would otherwise become invisible to the field worker.
+            fetch('/api/timesheet-entries?status=draft', { headers: authHeaders() }),
+            fetch(`/api/timesheet-entries?status=submitted_approved&from=${fromS}&to=${toS}`, { headers: authHeaders() }),
+          ]);
+          const drafts = ((await draftsRes.json()).entries) || [];
+          const recent = ((await recentRes.json()).entries) || [];
+          const byId = new Map();
+          for (const e of drafts) byId.set(e.id, e);
+          for (const e of recent) if (!byId.has(e.id)) byId.set(e.id, e);
+          entries = Array.from(byId.values());
+          scope.textContent = `${fmtScopeDate(from)} – ${fmtScopeDate(to)} (+ all drafts)`;
+          if (btn) { btn.textContent = 'Show older entries'; btn.style.display = ''; }
+        }
+        entries.sort((a, b) => (b.work_date || '').localeCompare(a.work_date || ''));
+        entriesCache = entries;
         renderEntries();
       } catch (err) {
         list.innerHTML = `<div class="entry-empty">Error loading entries.</div>`;
       }
+    }
+
+    function fmtScopeDate(d) {
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+
+    function toggleScope() {
+      scopeUnbounded = !scopeUnbounded;
+      loadEntries();
     }
 
     function renderEntries() {
