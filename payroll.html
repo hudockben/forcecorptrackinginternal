@@ -469,9 +469,10 @@
       <div class="filter-field">
         <label for="flt-status">Status</label>
         <select id="flt-status">
-          <option value="submitted" selected>Submitted</option>
-          <option value="draft">Draft</option>
-          <option value="approved">Approved</option>
+          <option value="submitted_approved" selected>Submitted + Approved</option>
+          <option value="submitted">Submitted Only</option>
+          <option value="approved">Approved Only</option>
+          <option value="draft">Drafts</option>
           <option value="">All</option>
         </select>
       </div>
@@ -612,7 +613,7 @@
     }
 
     function clearFilters() {
-      document.getElementById('flt-status').value = 'submitted';
+      document.getElementById('flt-status').value = 'submitted_approved';
       document.getElementById('flt-from').value   = '';
       document.getElementById('flt-to').value     = '';
       document.getElementById('flt-division').value = '';

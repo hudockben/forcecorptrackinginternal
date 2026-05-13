@@ -229,31 +229,39 @@ module.exports = async (req, res) => {
     // ── GET ────────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
       const q = req.query || {};
-      const statusF    = ['draft', 'submitted', 'approved'].includes(q.status) ? q.status : '';
-      const fromF      = safeDate(q.from) || '1900-01-01';
-      const toF        = safeDate(q.to)   || '9999-12-31';
-      const userF      = canAdmin ? safeInt(q.user_id) : userId;
-      const divF       = canAdmin && VALID_DIVISIONS.includes(q.division) ? q.division : '';
+      // Status filter accepts a single value, the combined sentinel
+      // "submitted_approved" (payroll's default view), or '' for all.
+      let statusList;
+      if (q.status === 'submitted_approved')              statusList = ['submitted', 'approved'];
+      else if (['draft','submitted','approved'].includes(q.status)) statusList = [q.status];
+      else                                                statusList = []; // match all
 
-      // Field users only see their own; admins can pass user_id to filter
+      const fromF = safeDate(q.from) || '1900-01-01';
+      const toF   = safeDate(q.to)   || '9999-12-31';
+      const userF = canAdmin ? safeInt(q.user_id) : userId;
+      const divF  = canAdmin && VALID_DIVISIONS.includes(q.division) ? q.division : '';
+
+      // Empty array sentinel — Postgres treats array_length(empty,1) as NULL,
+      // so we pass a marker that's never a real status to express "no filter".
+      const statusFilter = statusList.length ? statusList : ['__all__'];
+
       let rows;
       if (userF != null) {
         rows = await sql`
           SELECT * FROM timesheet_entries
           WHERE company_code = ${companyCode}
             AND user_id      = ${userF}
-            AND (${statusF} = '' OR status = ${statusF})
+            AND ('__all__' = ANY(${statusFilter}) OR status = ANY(${statusFilter}))
             AND work_date >= ${fromF}::date
             AND work_date <= ${toF}::date
             AND (${divF} = '' OR division = ${divF})
           ORDER BY work_date DESC, created_at DESC
         `;
       } else {
-        // Admin without user filter — all entries in company
         rows = await sql`
           SELECT * FROM timesheet_entries
           WHERE company_code = ${companyCode}
-            AND (${statusF} = '' OR status = ${statusF})
+            AND ('__all__' = ANY(${statusFilter}) OR status = ANY(${statusFilter}))
             AND work_date >= ${fromF}::date
             AND work_date <= ${toF}::date
             AND (${divF} = '' OR division = ${divF})
