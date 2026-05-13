@@ -10,7 +10,7 @@
 
     body {
       min-height: 100vh;
-      background: #04090f;
+      background: #ffffff;
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
       color: #e2e8f0;
       overflow: hidden;
@@ -84,6 +84,16 @@
     .brand-wordmark em {
       font-style: normal;
       color: #22c55e;
+    }
+
+    .brand-wordmark .brand-data {
+      -webkit-text-stroke: 2px #000;
+      paint-order: stroke fill;
+      text-shadow:
+        -1px -1px 0 #000,
+         1px -1px 0 #000,
+        -1px  1px 0 #000,
+         1px  1px 0 #000;
     }
 
     .brand-desc {
@@ -375,7 +385,7 @@
         <span class="brand-kicker-text">Workforce Intelligence</span>
       </div>
 
-      <div class="brand-wordmark">Data<br><em>Watch</em></div>
+      <div class="brand-wordmark"><span class="brand-data">Data</span><br><em>Watch</em></div>
 
       <p class="brand-desc">
         Real-time cost tracking and project analytics for modern construction operations.
@@ -632,7 +642,7 @@
           }
 
           // County borders (thin)
-          ctx.strokeStyle = 'rgba(34,197,94,0.22)';
+          ctx.strokeStyle = 'rgba(0,0,0,0.55)';
           ctx.lineWidth   = 0.7;
           layer.features.forEach(f => {
             ctx.beginPath();
@@ -651,7 +661,7 @@
         });
 
         // State outlines (heavier on top)
-        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
         ctx.lineWidth   = 1.3;
         states.forEach(f => {
           ctx.beginPath();
