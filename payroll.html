@@ -233,6 +233,64 @@
       color: var(--blue);
       border-bottom-color: var(--blue);
     }
+    .tab.auditlog.active {
+      color: var(--yellow);
+      border-bottom-color: var(--yellow);
+    }
+
+    /* ── Audit log layout ── */
+    .audit-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .audit-head {
+      padding: 0.9rem 1.1rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.85rem;
+      flex-wrap: wrap;
+    }
+    .audit-head .title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .audit-head .sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    .audit-action {
+      display: inline-block;
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .audit-INSERT     { background: rgba(34,197,94,0.12);  color: var(--green); }
+    .audit-UPDATE     { background: rgba(96,165,250,0.12); color: var(--blue); }
+    .audit-SUBMIT     { background: rgba(96,165,250,0.18); color: var(--blue); }
+    .audit-APPROVE    { background: rgba(34,197,94,0.18);  color: var(--green); }
+    .audit-ADMIN_EDIT { background: rgba(236,72,153,0.15); color: var(--accent); }
+    .audit-DELETE     { background: rgba(239,68,68,0.15);  color: var(--red); }
+    .audit-empty {
+      padding: 2.5rem 1rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .audit-row-detail {
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.5;
+    }
+    .audit-row-detail strong { color: var(--text); font-weight: 600; }
 
     /* ── Quick ranges ── */
     .quick-ranges {
@@ -730,7 +788,7 @@
       </div>
     </div>
 
-    <!-- ── Pending / Approved / Reports tabs ── -->
+    <!-- ── Pending / Approved / Reports / Audit Log tabs ── -->
     <div class="tabs">
       <button class="tab active" data-tab="pending" onclick="switchTab('pending')">
         Pending Review <span class="tab-count" id="tab-pending-count">0</span>
@@ -740,6 +798,9 @@
       </button>
       <button class="tab reports" data-tab="reports" onclick="switchTab('reports')">
         Reports
+      </button>
+      <button class="tab auditlog" data-tab="auditlog" onclick="switchTab('auditlog')">
+        Audit Log
       </button>
     </div>
 
@@ -762,6 +823,9 @@
 
     <!-- ── Report container (Reports tab) ── -->
     <div id="reportWrap" style="display:none"></div>
+
+    <!-- ── Audit log container (Audit Log tab) ── -->
+    <div id="auditLogWrap" style="display:none"></div>
 
     <!-- ── Table ── -->
     <div class="table-wrap">
@@ -859,7 +923,7 @@
     }
 
     function switchTab(tab) {
-      if (!['pending', 'approved', 'reports'].includes(tab)) return;
+      if (!['pending', 'approved', 'reports', 'auditlog'].includes(tab)) return;
       currentTab = tab;
       document.querySelectorAll('.tab').forEach(t => {
         t.classList.toggle('active', t.dataset.tab === tab);
@@ -867,12 +931,18 @@
 
       const tableWrap  = document.querySelector('.table-wrap');
       const reportWrap = document.getElementById('reportWrap');
+      const auditWrap  = document.getElementById('auditLogWrap');
       const bulkBar    = document.getElementById('bulkBar');
       const quick      = document.getElementById('quickRanges');
 
+      // Default-hide everything; show only the active surface below
+      if (tableWrap)  tableWrap.style.display  = 'none';
+      if (reportWrap) reportWrap.style.display = 'none';
+      if (auditWrap)  auditWrap.style.display  = 'none';
+      if (bulkBar)    bulkBar.classList.remove('open');
+      if (quick)      quick.style.display      = 'none';
+
       if (tab === 'reports') {
-        if (tableWrap)  tableWrap.style.display  = 'none';
-        if (bulkBar)    bulkBar.classList.remove('open');
         if (reportWrap) reportWrap.style.display = '';
         if (quick)      quick.style.display      = 'flex';
         selectedIds.clear();
@@ -880,9 +950,14 @@
         return;
       }
 
-      if (tableWrap)  tableWrap.style.display  = '';
-      if (reportWrap) reportWrap.style.display = 'none';
-      if (quick)      quick.style.display      = 'none';
+      if (tab === 'auditlog') {
+        if (auditWrap) auditWrap.style.display = '';
+        selectedIds.clear();
+        loadAuditLog();
+        return;
+      }
+
+      if (tableWrap) tableWrap.style.display = '';
       if (tab !== 'pending') selectedIds.clear();
       renderRows();
       renderStats();
@@ -973,6 +1048,13 @@
     }
 
     async function applyFilters() {
+      // Audit Log tab has its own fetch path; everything else reads from
+      // /api/timesheet-entries.
+      if (currentTab === 'auditlog') {
+        await loadAuditLog();
+        return;
+      }
+
       // Always fetch both submitted + approved — the tabs split them client-side.
       const from     = document.getElementById('flt-from').value;
       const to       = document.getElementById('flt-to').value;
@@ -1005,6 +1087,8 @@
         : allEntries;
       if (currentTab === 'reports') {
         renderReport();
+      } else if (currentTab === 'auditlog') {
+        renderAuditLog();
       } else {
         renderRows();
         renderStats();
@@ -1150,6 +1234,124 @@
 
     function printReport() {
       window.print();
+    }
+
+    // ── Audit Log tab ────────────────────────────────────────────────────
+    let auditCache = [];   // raw events from /api/timesheet-audit-log
+
+    async function loadAuditLog() {
+      const wrap = document.getElementById('auditLogWrap');
+      wrap.innerHTML = '<div class="audit-empty">Loading audit log…</div>';
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to)   params.set('to',   to);
+      params.set('limit', 500);
+      try {
+        const res = await fetch('/api/timesheet-audit-log?' + params.toString(), { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        auditCache = Array.isArray(data.events) ? data.events : [];
+        renderAuditLog();
+      } catch (err) {
+        wrap.innerHTML = `<div class="audit-empty">Error: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderAuditLog() {
+      const wrap = document.getElementById('auditLogWrap');
+      const userQ = (document.getElementById('flt-user').value || '').toLowerCase().trim();
+
+      // Filter client-side by employee match — includes both the editor's
+      // username and the entry's owner (snapshot.username) so searching for
+      // the field worker who created an entry finds all related events.
+      const filteredEv = userQ
+        ? auditCache.filter(ev => {
+            const a = (ev.username || '').toLowerCase();
+            const b = (ev.snapshot && ev.snapshot.username || '').toLowerCase();
+            return a.includes(userQ) || b.includes(userQ);
+          })
+        : auditCache;
+
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const scopeBits = [];
+      if (from && to)      scopeBits.push(`${from} → ${to}`);
+      else if (from)       scopeBits.push(`from ${from}`);
+      else if (to)         scopeBits.push(`through ${to}`);
+      if (userQ)           scopeBits.push(`employee "${userQ}"`);
+      const scopeLine = scopeBits.length ? scopeBits.join(' · ') : 'All events';
+
+      if (!filteredEv.length) {
+        wrap.innerHTML = `
+          <div class="audit-wrap">
+            <div class="audit-head">
+              <div>
+                <div class="title">Audit Log</div>
+                <div class="sub">${escapeHtml(scopeLine)} · 0 events</div>
+              </div>
+            </div>
+            <div class="audit-empty">No audit events in this range.</div>
+          </div>
+        `;
+        return;
+      }
+
+      const bodyRows = filteredEv.map(ev => {
+        const when = fmtTimestamp(ev.created_at);
+        const snap = ev.snapshot || {};
+        const ownerName = snap.username || '—';
+        const workDate  = snap.work_date ? prettyDate(snap.work_date) : '';
+        const entryLabel = workDate
+          ? `<strong>${escapeHtml(ownerName)}</strong> · ${escapeHtml(workDate)}`
+          : `<strong>${escapeHtml(ownerName)}</strong>`;
+        const detailBits = [];
+        if (snap.entry_type === 'time_off') {
+          detailBits.push(`Time Off · ${prettyOff(snap.time_off_type)}`);
+        } else if (snap.entry_type === 'daily') {
+          if (snap.division) detailBits.push(prettyDiv(snap.division));
+          if (snap.job_label) detailBits.push(escapeHtml(snap.job_label));
+          if (snap.start_time && snap.end_time) detailBits.push(`${snap.start_time}–${snap.end_time}`);
+          if (snap.computed_hours != null) detailBits.push(`${Number(snap.computed_hours).toFixed(2)} h`);
+        }
+        const detail = detailBits.length
+          ? `<div class="audit-row-detail">${detailBits.join(' · ')}</div>`
+          : '';
+        return `
+          <tr>
+            <td style="white-space:nowrap">${escapeHtml(when)}</td>
+            <td><span class="audit-action audit-${escapeHtml(ev.action)}">${escapeHtml(ev.action.replace('_',' '))}</span></td>
+            <td>${entryLabel}${detail}</td>
+            <td><strong>${escapeHtml(ev.username || '—')}</strong></td>
+            <td style="color:var(--muted)">#${escapeHtml(String(ev.entry_id))}</td>
+          </tr>
+        `;
+      }).join('');
+
+      wrap.innerHTML = `
+        <div class="audit-wrap">
+          <div class="audit-head">
+            <div>
+              <div class="title">Audit Log</div>
+              <div class="sub">${escapeHtml(scopeLine)} · ${filteredEv.length} event${filteredEv.length === 1 ? '' : 's'}</div>
+            </div>
+            <div class="sub">Newest first · capped at 500</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Action</th>
+                <th>Entry</th>
+                <th>By</th>
+                <th>Entry #</th>
+              </tr>
+            </thead>
+            <tbody>${bodyRows}</tbody>
+          </table>
+        </div>
+      `;
     }
 
     function renderStats() {
