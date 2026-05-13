@@ -426,13 +426,15 @@
       font-size: 0.9rem;
     }
 
-    /* ── Print: hide everything except the report ── */
+    /* ── Print: hide everything except the active report / audit log ── */
     @media print {
       @page { margin: 0.5in; }
       body { background: white !important; color: black !important; }
       header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
       .modal-backdrop, .btn-print { display: none !important; }
       main { max-width: none !important; padding: 0 !important; }
+
+      /* Reports tab */
       .report {
         background: white !important;
         border: none !important;
@@ -462,6 +464,46 @@
       .pill-pending { background: #fde68a !important; color: #6b3a00 !important; }
       .pill-clear   { background: #d1fae5 !important; color: #064e3b !important; }
       .report tr.has-pending td.name::before { color: #b45309 !important; }
+
+      /* Audit Log tab */
+      .audit-wrap {
+        background: white !important;
+        border: none !important;
+      }
+      .audit-head {
+        border-bottom: 2px solid #000 !important;
+        margin-bottom: 0.3in !important;
+        padding: 0 0 0.25in 0 !important;
+      }
+      .audit-head .title { color: #000 !important; font-size: 14pt; }
+      .audit-head .sub   { color: #555 !important; }
+      .audit-wrap table { font-size: 9.5pt; width: 100%; border-collapse: collapse; }
+      .audit-wrap thead th {
+        background: #f3f3f3 !important;
+        color: #000 !important;
+        border-bottom: 1px solid #000 !important;
+        padding: 0.5rem 0.6rem !important;
+      }
+      .audit-wrap tbody td {
+        color: #000 !important;
+        border-bottom: 1px solid #ddd !important;
+        padding: 0.45rem 0.6rem !important;
+        vertical-align: top;
+      }
+      .audit-action { border: 1px solid #999 !important; }
+      .audit-INSERT     { background: #d1fae5 !important; color: #064e3b !important; }
+      .audit-UPDATE     { background: #dbeafe !important; color: #1e3a8a !important; }
+      .audit-SUBMIT     { background: #dbeafe !important; color: #1e3a8a !important; }
+      .audit-APPROVE    { background: #d1fae5 !important; color: #064e3b !important; }
+      .audit-ADMIN_EDIT { background: #fce7f3 !important; color: #831843 !important; }
+      .audit-DELETE     { background: #fee2e2 !important; color: #7f1d1d !important; }
+      .audit-row-detail { color: #555 !important; }
+      .audit-row-detail strong { color: #000 !important; }
+
+      /* Avoid page-break inside individual table rows */
+      .audit-wrap tbody tr,
+      .report tbody tr,
+      .report tfoot tr { page-break-inside: avoid; }
     }
 
     /* ── Bulk bar (appears when entries are selected) ── */
@@ -1329,14 +1371,24 @@
         `;
       }).join('');
 
+      const companyName = (user && (user.companyName || user.companyCode)) || '';
+      const gen = new Date().toLocaleString(undefined, {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+
       wrap.innerHTML = `
         <div class="audit-wrap">
           <div class="audit-head">
             <div>
               <div class="title">Audit Log</div>
-              <div class="sub">${escapeHtml(scopeLine)} · ${filteredEv.length} event${filteredEv.length === 1 ? '' : 's'}</div>
+              <div class="sub">
+                <strong>${escapeHtml(companyName)}</strong><br/>
+                ${escapeHtml(scopeLine)} · ${filteredEv.length} event${filteredEv.length === 1 ? '' : 's'}<br/>
+                Newest first · capped at 500 · Generated ${escapeHtml(gen)}
+              </div>
             </div>
-            <div class="sub">Newest first · capped at 500</div>
+            <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
           </div>
           <table>
             <thead>
