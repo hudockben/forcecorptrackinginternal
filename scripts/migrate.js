@@ -76,6 +76,66 @@ async function migrate() {
   await sql`ALTER TABLE dust_control_entries ADD COLUMN IF NOT EXISTS inv_location TEXT`;
   console.log('  ✓ dust_control_entries cm_approval, inv_location');
 
+  // ── employees.is_supervisor (for Timesheet supervisor dropdown) ──────────
+  await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_supervisor BOOLEAN NOT NULL DEFAULT FALSE`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_employees_supervisor ON employees(company_code, is_supervisor) WHERE is_supervisor = TRUE`;
+  console.log('  ✓ employees.is_supervisor');
+
+  // ── timesheet_entries ─────────────────────────────────────────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS timesheet_entries (
+      id                  BIGSERIAL PRIMARY KEY,
+      company_code        TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+      user_id             INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      username            TEXT          NOT NULL,
+      employee_id         INTEGER,
+      entry_type          TEXT          NOT NULL CHECK (entry_type IN ('daily','time_off')),
+      work_date           DATE          NOT NULL,
+      status              TEXT          NOT NULL DEFAULT 'draft'
+                                         CHECK (status IN ('draft','submitted','approved')),
+      division            TEXT,
+      job_id              TEXT,
+      job_label           TEXT,
+      start_time          TEXT,
+      end_time            TEXT,
+      computed_hours      NUMERIC(6,2),
+      lunch_break         BOOLEAN,
+      operated_equipment  BOOLEAN,
+      supervisor_id       INTEGER,
+      supervisor_name     TEXT,
+      notes               TEXT,
+      time_off_type       TEXT          CHECK (time_off_type IN ('vacation','sick','jury_duty','bereavement','holiday')),
+      submitted_at        TIMESTAMPTZ,
+      approved_at         TIMESTAMPTZ,
+      approved_by_user_id INTEGER,
+      approved_by_name    TEXT,
+      created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS idx_ts_company_user_date ON timesheet_entries(company_code, user_id, work_date DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_ts_company_status    ON timesheet_entries(company_code, status, work_date DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_ts_company_div_job   ON timesheet_entries(company_code, division, job_id)`;
+  console.log('  ✓ timesheet_entries');
+
+  // ── timesheet_audit_log ───────────────────────────────────────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS timesheet_audit_log (
+      id            BIGSERIAL PRIMARY KEY,
+      company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+      entry_id      BIGINT        NOT NULL,
+      action        TEXT          NOT NULL CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','ADMIN_EDIT','DELETE')),
+      user_id       INTEGER,
+      username      TEXT,
+      changes       JSONB,
+      snapshot      JSONB,
+      created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS idx_ts_audit_company ON timesheet_audit_log(company_code, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_ts_audit_entry   ON timesheet_audit_log(entry_id, created_at DESC)`;
+  console.log('  ✓ timesheet_audit_log');
+
   console.log('\nAll migrations applied successfully.');
 }
 

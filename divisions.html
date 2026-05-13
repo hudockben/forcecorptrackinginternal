@@ -602,11 +602,13 @@
                 <th>Quarry</th>
                 <th>Billing</th>
                 <th>Executive</th>
+                <th>Timesheet</th>
+                <th>Payroll</th>
                 <th></th>
               </tr>
             </thead>
             <tbody id="userListBody">
-              <tr><td colspan="8" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+              <tr><td colspan="11" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -699,6 +701,20 @@
                 <option value="level2">Level 2 — Insert &amp; edit</option>
                 <option value="level3">Level 3 — Full access</option>
                 <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Timesheet <span style="text-transform:none;color:var(--muted)">(field entry)</span></span>
+              <select id="mu-role-timesheet">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — Submit own time</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Payroll <span style="text-transform:none;color:var(--muted)">(admin review)</span></span>
+              <select id="mu-role-payroll">
+                <option value="no_access" selected>No Access</option>
+                <option value="level3">Level 3 — Review &amp; approve</option>
               </select>
             </div>
           </div>
@@ -828,9 +844,36 @@
                   <circle cx="15" cy="5" r="1"/>
                 </svg>`,
       },
+      timesheet: {
+        name:  'Timesheet',
+        desc:  'Daily time entry and time-off requests for field employees. Submissions feed the Payroll review queue.',
+        color: '#14b8a6',
+        href:  'timesheet.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#14b8a6" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="4" width="18" height="17" rx="2"/>
+                  <line x1="3" y1="9" x2="21" y2="9"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                  <polyline points="9 14 11 16 15 12"/>
+                </svg>`,
+      },
+      payroll: {
+        name:  'Payroll',
+        desc:  'Review, edit, and approve field employee timesheet submissions before payroll processing.',
+        color: '#ec4899',
+        href:  'payroll.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#ec4899" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="6" width="20" height="12" rx="2"/>
+                  <circle cx="12" cy="12" r="3"/>
+                  <line x1="6" y1="12" x2="6.01" y2="12"/>
+                  <line x1="18" y1="12" x2="18.01" y2="12"/>
+                </svg>`,
+      },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -962,7 +1005,7 @@
       level1:    'View',
       no_access: '—',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
 
     function openUserModal() {
       document.getElementById('userModalBackdrop').classList.add('open');
@@ -993,7 +1036,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Failed');
         if (!data.users.length) {
-          tbody.innerHTML = '<tr><td colspan="9" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="11" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
           return;
         }
         tbody.innerHTML = data.users.map(u => {
@@ -1006,6 +1049,8 @@
           const quarry       = dr.quarry       || 'no_access';
           const intercompany = dr.intercompany || 'no_access';
           const executive    = dr.executive    || 'no_access';
+          const timesheet    = dr.timesheet    || 'no_access';
+          const payroll      = dr.payroll      || 'no_access';
           const isSelf       = String(u.id) === String(user.userId);
           return `
             <tr>
@@ -1017,6 +1062,8 @@
               <td>${divRoleBadge(quarry)}</td>
               <td>${divRoleBadge(intercompany)}</td>
               <td>${divRoleBadge(executive)}</td>
+              <td>${divRoleBadge(timesheet)}</td>
+              <td>${divRoleBadge(payroll)}</td>
               <td style="text-align:right;white-space:nowrap">
                 <button class="user-edit-btn" onclick='editUser(${JSON.stringify(u)})'>Edit</button>
                 ${!isSelf
@@ -1026,7 +1073,7 @@
             </tr>`;
         }).join('');
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="9" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
       }
     }
 
@@ -1049,6 +1096,8 @@
       document.getElementById('mu-role-quarry').value       = dr.quarry       || 'no_access';
       document.getElementById('mu-role-intercompany').value = dr.intercompany || 'no_access';
       document.getElementById('mu-role-executive').value    = dr.executive    || 'no_access';
+      document.getElementById('mu-role-timesheet').value    = dr.timesheet    || 'no_access';
+      document.getElementById('mu-role-payroll').value      = dr.payroll      || 'no_access';
 
       document.getElementById('mu-result').textContent = '';
       // Scroll form into view
@@ -1070,6 +1119,8 @@
       document.getElementById('mu-role-quarry').value       = 'no_access';
       document.getElementById('mu-role-intercompany').value = 'no_access';
       document.getElementById('mu-role-executive').value    = 'no_access';
+      document.getElementById('mu-role-timesheet').value    = 'no_access';
+      document.getElementById('mu-role-payroll').value      = 'no_access';
       document.getElementById('mu-result').textContent  = '';
     }
 
@@ -1100,6 +1151,8 @@
         quarry:       document.getElementById('mu-role-quarry').value,
         intercompany: document.getElementById('mu-role-intercompany').value,
         executive:    document.getElementById('mu-role-executive').value,
+        timesheet:    document.getElementById('mu-role-timesheet').value,
+        payroll:      document.getElementById('mu-role-payroll').value,
       };
 
       const body = { username, division_roles };
