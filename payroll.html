@@ -1278,6 +1278,103 @@
       window.print();
     }
 
+    // ── CSV export ───────────────────────────────────────────────────────
+    // Compliance-style fixed-column export of the audit log. Every event
+    // produces a row with the same 21 columns in the same order — empty
+    // string where a field doesn't apply (e.g. start_time on a time-off
+    // event). Filenames embed the company code + ISO date so multiple
+    // exports for different scopes don't collide on the supervisor's disk.
+    const CSV_HEADERS = [
+      'Event ID', 'Timestamp (ISO)', 'Action',
+      'Entry ID', 'Entry Owner', 'Entry Status',
+      'Performed By', 'Performed By User ID',
+      'Work Date', 'Type', 'Division', 'Job',
+      'Start Time', 'End Time', 'Hours',
+      'Lunch Break', 'Operated Equipment', 'Supervisor',
+      'Time Off Type', 'Notes', 'Changes (JSON)',
+    ];
+
+    function csvEscape(v) {
+      if (v == null) return '';
+      let s = String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+        s = '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    }
+
+    function yn(v) {
+      if (v === true)  return 'Y';
+      if (v === false) return 'N';
+      return '';
+    }
+
+    function buildAuditCsv(events) {
+      const lines = [CSV_HEADERS.map(csvEscape).join(',')];
+      for (const ev of events) {
+        const snap = ev.snapshot || {};
+        const row = [
+          ev.id,
+          ev.created_at,                            // ISO-8601 from Postgres TIMESTAMPTZ
+          ev.action,
+          ev.entry_id,
+          snap.username || '',
+          snap.status || '',
+          ev.username || '',
+          ev.user_id || '',
+          snap.work_date || '',
+          snap.entry_type || '',
+          snap.division || '',
+          snap.job_label || '',
+          snap.start_time || '',
+          snap.end_time || '',
+          snap.computed_hours != null ? Number(snap.computed_hours).toFixed(2) : '',
+          yn(snap.lunch_break),
+          yn(snap.operated_equipment),
+          snap.supervisor_name || '',
+          snap.time_off_type || '',
+          snap.notes || '',
+          ev.changes ? JSON.stringify(ev.changes) : '',
+        ];
+        lines.push(row.map(csvEscape).join(','));
+      }
+      // CRLF line endings + UTF-8 BOM so Excel opens the file cleanly.
+      return '﻿' + lines.join('\r\n');
+    }
+
+    function downloadFile(filename, content, mime) {
+      const blob = new Blob([content], { type: mime });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function exportAuditCsv() {
+      // Use the same client-side filter the table renders from so the CSV
+      // matches what the supervisor is looking at on screen.
+      const userQ = (document.getElementById('flt-user').value || '').toLowerCase().trim();
+      const filteredEv = userQ
+        ? auditCache.filter(ev => {
+            const a = (ev.username || '').toLowerCase();
+            const b = (ev.snapshot && ev.snapshot.username || '').toLowerCase();
+            return a.includes(userQ) || b.includes(userQ);
+          })
+        : auditCache;
+      if (!filteredEv.length) {
+        alert('No audit events to export in the current view.');
+        return;
+      }
+      const csv = buildAuditCsv(filteredEv);
+      const companyCode = (user && user.companyCode) || 'audit';
+      const stamp = ymd(new Date());
+      downloadFile(`timesheet-audit-${companyCode}-${stamp}.csv`, csv, 'text/csv;charset=utf-8');
+    }
+
     // ── Audit Log tab ────────────────────────────────────────────────────
     let auditCache = [];   // raw events from /api/timesheet-audit-log
 
@@ -1388,7 +1485,10 @@
                 Newest first · capped at 500 · Generated ${escapeHtml(gen)}
               </div>
             </div>
-            <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+              <button class="btn-print" style="background:transparent;color:var(--green);border:1px solid rgba(34,197,94,0.5)" onclick="exportAuditCsv()">Export CSV</button>
+              <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
+            </div>
           </div>
           <table>
             <thead>
