@@ -237,7 +237,6 @@
       padding: 0.5rem 0.85rem;
       flex-shrink: 0;
     }
-    .pdf-export .section-action-btn { display: none; }
 
     /* ── Hero KPIs ── */
     .hero-kpis {
@@ -753,58 +752,6 @@
       border-top: 1px solid var(--border);
     }
 
-    /* ── PDF export (off-screen render via html2pdf) ── */
-    .pdf-export {
-      --bg: #ffffff;
-      --surface: #ffffff;
-      --surface2: #f8fafc;
-      --border: #cbd5e1;
-      --text: #0f172a;
-      --muted: #64748b;
-      background: #ffffff;
-      color: #0f172a;
-    }
-    .pdf-export .section-title { color: #0f172a; font-size: 1.05rem; }
-    .pdf-export .ptable-wrap {
-      background: #ffffff;
-      border: 1px solid #cbd5e1;
-      box-shadow: none;
-      overflow: visible;
-    }
-    .pdf-export .ptable { min-width: 0; font-size: 0.58rem; table-layout: auto; }
-    .pdf-export .ptable th {
-      background: #f1f5f9;
-      color: #475569;
-      padding: 0.45rem 0.35rem 0.35rem;
-      font-size: 0.5rem;
-    }
-    .pdf-export .ptable td {
-      border-color: #e2e8f0;
-      padding: 0.4rem 0.35rem;
-    }
-    .pdf-export .ptable .pname-main { color: #0f172a; font-size: 0.68rem; }
-    .pdf-export .ptable .pname-sub { font-size: 0.55rem; }
-    .pdf-export .ptable .pstatus,
-    .pdf-export .ptable .pprogress-pct,
-    .pdf-export .ptable .v-profit-pct { font-size: 0.55rem; }
-    .pdf-export .ptable .pprogress { min-width: 90px; gap: 0.4rem; }
-    .pdf-export .ptable .pprogress-track { min-width: 55px; }
-    .pdf-export .ptable .pstar.off { color: #cbd5e1; }
-    .pdf-export .ptable .pprogress-track { background: #e2e8f0; }
-    .pdf-export .ptable .v-contract { color: #2563eb; }
-    .pdf-export .inv-strip { gap: 0.35rem; margin-bottom: 0.55rem; }
-    .pdf-export .inv-card {
-      background: #ffffff;
-      border-color: #cbd5e1;
-      padding: 0.35rem 0.5rem;
-      min-width: 110px;
-    }
-    .pdf-export .inv-type { color: #475569; font-size: 0.5rem; margin-bottom: 0.15rem; }
-    .pdf-export .inv-stock { font-size: 0.95rem; }
-    .pdf-export .inv-stock-lbl { font-size: 0.5rem; margin-top: 0.05rem; }
-    .pdf-export .inv-meta { font-size: 0.5rem; gap: 0.5rem; margin-top: 0.25rem; color: #64748b; }
-    .pdf-export .inv-lbs { font-size: 0.5rem; margin-top: 0.1rem; color: #64748b; }
-
     /* ── Print ── */
     @media print {
       @page { size: letter landscape; margin: 0.4in; }
@@ -830,21 +777,35 @@
       .timeline-bar { background: #eee; }
       .timeline-grid { border-color: #eee; min-width: 0; }
       .timeline-grid.head { border-color: #ccc; }
-      .ptable-wrap { background: #fff; border: 1px solid #ccc; }
-      .ptable      { min-width: 0; font-size: 0.7rem; }
-      .ptable th   { color: #555; border-color: #ccc; }
-      .ptable td   { border-color: #eee; color: #000; }
-      .ptable .pname-main, .ptable .v-actual { color: #000; }
+      .ptable-wrap { background: #fff; border: 1px solid #ccc; overflow: visible; }
+      .ptable      { min-width: 0; font-size: 0.55rem; table-layout: auto; }
+      .ptable th   { color: #555; border-color: #ccc; padding: 0.35rem 0.3rem; font-size: 0.5rem; }
+      .ptable td   { border-color: #eee; color: #000; padding: 0.3rem 0.3rem; }
+      .ptable .pname-main { color: #000; font-size: 0.65rem; }
+      .ptable .v-actual   { color: #000; }
       .ptable .pname-sub, .ptable .pstatus,
       .ptable .pprogress-pct, .ptable .v-mute,
-      .ptable .v-profit-pct { color: #555; }
+      .ptable .v-profit-pct { color: #555; font-size: 0.5rem; }
       .ptable .pstar.off { color: #ddd; }
-      .ptable .pprogress-track { background: #eee; }
+      .ptable .pprogress { min-width: 70px; gap: 0.3rem; }
+      .ptable .pprogress-track { background: #eee; min-width: 40px; }
       .pd-head { border-color: #ccc; }
       .timeline-today { background: #000; box-shadow: none; }
       .timeline-today::after { color: #000; }
       .page-break { break-before: page; page-break-before: always; }
       .project-detail { break-inside: avoid; page-break-inside: avoid; }
+
+      /* Projects-only print scope: when the Projects "Download PDF" button
+         is clicked, body.printing-projects-only is added and everything
+         outside #projectsSection is hidden so the browser's native
+         print-to-PDF renders just that section. */
+      body.printing-projects-only #reportBody > .section:not(#projectsSection) {
+        display: none !important;
+      }
+      body.printing-projects-only #projectsSection {
+        break-before: auto !important;
+        page-break-before: auto !important;
+      }
     }
 
     @media (max-width: 900px) {
@@ -1256,114 +1217,30 @@
       window.location.replace('index.html');
     }
 
-    async function downloadProjectsPdf() {
-      const btn = document.getElementById('downloadProjectsBtn');
-      const section = document.getElementById('projectsSection');
-      if (!section) return;
-      if (typeof html2pdf === 'undefined') {
-        alert('PDF library is still loading. Please try again in a moment.');
-        return;
-      }
-      const original = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = 'Generating…';
-
-      const dateStr = document.getElementById('reportDate').textContent || '';
-      const subStr  = document.getElementById('projectsSub').textContent || '';
-
-      // Covering modal so the user sees a spinner-style message instead of
-      // the temporarily on-screen white render target.
-      const modal = document.createElement('div');
-      modal.style.cssText = [
-        'position:fixed', 'inset:0',
-        'background:rgba(8,8,14,0.94)',
-        'z-index:99999',
-        'display:flex', 'align-items:center', 'justify-content:center',
-        'color:#e2e8f0', 'font-size:0.85rem',
-        'letter-spacing:0.18em', 'text-transform:uppercase',
-        'font-family:"Segoe UI",system-ui,sans-serif'
-      ].join(';');
-      modal.textContent = 'Generating PDF…';
-      document.body.appendChild(modal);
-
-      // Render target is appended in normal flow (NOT position:fixed —
-      // html2canvas computes 0 height for fixed elements, producing blank
-      // PDFs). The full-screen modal above hides it from the user.
-      const wrapper = document.createElement('div');
-      wrapper.style.cssText = [
-        // Must stay in normal flow — position:fixed/absolute makes html2canvas
-        // report 0 height and render a blank PDF. flex-shrink:0 keeps the
-        // body's flex column layout from squashing it.
-        'flex-shrink:0',
-        'width:13.2in', 'padding:0.3in 0.3in',
-        'background:#ffffff', 'color:#0f172a',
-        'font-family:"Segoe UI",system-ui,-apple-system,sans-serif',
-        'font-size:11px'
-      ].join(';');
-
-      wrapper.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #cbd5e1;padding-bottom:0.55rem;margin-bottom:1rem;">
-          <div style="display:flex;align-items:center;gap:0.7rem;">
-            <img src="datawatch-tower.png" style="width:46px;height:46px;object-fit:contain;" />
-            <div>
-              <div style="font-size:0.62rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#7c3aed;">Cross-Division Roll-Up</div>
-              <div style="font-size:1.15rem;font-weight:800;color:#0f172a;letter-spacing:-0.02em;">Projects — Executive Report</div>
-              <div style="font-size:0.7rem;color:#64748b;margin-top:0.1rem;">${dateStr}</div>
-            </div>
-          </div>
-          <div style="text-align:right;font-size:0.65rem;color:#64748b;letter-spacing:0.04em;">
-            <div style="font-weight:700;color:#0f172a;letter-spacing:0.16em;text-transform:uppercase;">DataWatch</div>
-            <div style="margin-top:0.15rem;">${subStr}</div>
-          </div>
-        </div>
-      `;
-
-      const clone = section.cloneNode(true);
-      clone.classList.add('pdf-export');
-      // Drop .page-break (only meaningful under @media print, but stripped
-      // to remove any chance html2pdf treats it as a forced page break).
-      clone.classList.remove('page-break');
-      wrapper.appendChild(clone);
-      document.body.appendChild(wrapper);
-
-      // Lock body scroll so the briefly-appended wrapper can't push the page
-      // around behind the modal.
-      const prevOverflow = document.body.style.overflow;
-      document.body.style.overflow = 'hidden';
-
-      // Give layout/paint a beat to settle before html2canvas reads it.
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
-      const today = new Date().toISOString().slice(0, 10);
-      try {
-        // Fixed 14"x11" landscape: wide enough that all ten columns fit and
-        // tall enough that a dozen+ project rows fit on a single page. We
-        // deliberately don't size the page dynamically — measurement timing
-        // and per-browser font metrics made that fragile and occasionally
-        // split rows across pages. Keeping the page fixed and letting
-        // pagebreak avoid splitting individual rows is reliable.
-        await html2pdf().set({
-          margin: 0.3,
-          filename: `datawatch-projects-${today}.pdf`,
-          image: { type: 'jpeg', quality: 0.95 },
-          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
-          jsPDF: { unit: 'in', format: [14, 11], orientation: 'landscape' },
-          pagebreak: { mode: ['css'], avoid: 'tr' }
-        }).from(wrapper).save();
-      } catch (err) {
-        console.error('PDF generation failed', err);
-        alert('Could not generate PDF: ' + (err && err.message ? err.message : err));
-      } finally {
-        wrapper.remove();
-        modal.remove();
-        document.body.style.overflow = prevOverflow;
-        btn.disabled = false;
-        btn.innerHTML = original;
-      }
+    // ── PDF: native browser print, scoped to #projectsSection ──
+    // Mirrors the top-of-page "Generate Report (PDF)" button (which
+    // calls window.print()) — adding body.printing-projects-only hides
+    // every other section via the @media print rules so the user gets
+    // a Projects-only PDF from their browser's Save as PDF flow.
+    function downloadProjectsPdf() {
+      document.body.classList.add('printing-projects-only');
+      // Two-path cleanup so the scope class can't linger and break the
+      // top-of-page "Generate Report (PDF)" button: afterprint covers
+      // Chrome/Firefox/Edge/Safari 14+, the matchMedia('print') change
+      // event covers older Safari / iOS that don't fire afterprint.
+      const mql = window.matchMedia('print');
+      const cleanup = () => {
+        document.body.classList.remove('printing-projects-only');
+        window.removeEventListener('afterprint', cleanup);
+        mql.removeEventListener?.('change', onMqlChange);
+      };
+      const onMqlChange = e => { if (!e.matches) cleanup(); };
+      window.addEventListener('afterprint', cleanup, { once: true });
+      mql.addEventListener?.('change', onMqlChange);
+      window.print();
     }
-  </script>
 
-  <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js"></script>
+  </script>
 
 </body>
 </html>
