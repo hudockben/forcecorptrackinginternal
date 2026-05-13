@@ -979,22 +979,29 @@
       }
     })();
 
-    const isPlatformAdmin  = Boolean(user && user.isPlatformAdmin);
-    // Explicit "no_access" in division_roles hides the tile even for platform
-    // admins — lets a company admin tidy their own selector without giving up
-    // platform-admin emergency access (API-side bypass still applies).
-    const userRoles = (user && user.divisionRoles) || null;
-    const explicitlyDenied = new Set(
-      userRoles && typeof userRoles === 'object'
-        ? Object.entries(userRoles).filter(([, v]) => v === 'no_access').map(([k]) => k)
-        : []
-    );
-    const visibleDivisions = (isPlatformAdmin
-      ? ALL_DIVISIONS
-      : (user && Array.isArray(user.allowedDivisions) && user.allowedDivisions.length
-          ? user.allowedDivisions
-          : ['turf'])
-    ).filter(d => !explicitlyDenied.has(d));
+    const isPlatformAdmin = Boolean(user && user.isPlatformAdmin);
+    // Rule: an explicit division_roles object is the source of truth for tile
+    // visibility — even for platform admins. The platform-admin "see all"
+    // default only kicks in when division_roles is null/empty (legacy users
+    // who've never been edited through Manage Users). API-side platform-admin
+    // bypass is unaffected; navigating directly to a division URL still works.
+    const userRoles = (user && user.divisionRoles && typeof user.divisionRoles === 'object')
+      ? user.divisionRoles
+      : null;
+    const hasExplicitRoles = userRoles && Object.keys(userRoles).length > 0;
+
+    let visibleDivisions;
+    if (hasExplicitRoles) {
+      visibleDivisions = Object.entries(userRoles)
+        .filter(([, v]) => v && v !== 'no_access')
+        .map(([k]) => k);
+    } else if (isPlatformAdmin) {
+      visibleDivisions = ALL_DIVISIONS;
+    } else if (user && Array.isArray(user.allowedDivisions) && user.allowedDivisions.length) {
+      visibleDivisions = user.allowedDivisions;
+    } else {
+      visibleDivisions = ['turf'];
+    }
 
     // ── Auto-skip for single-division, non-admin accounts ──────────────────
     // If a company only has one division and it's built, send them straight in.
@@ -1040,12 +1047,14 @@
       }
     }
 
-    // ── Executive Division entry — platform admins + users with executive access ──
-    // An explicit 'no_access' on executive hides the entry even for platform admins,
-    // matching the rule applied to the grid cards above.
-    const execRole = user && user.divisionRoles && user.divisionRoles.executive;
-    const hasExecAccess = execRole !== 'no_access'
-      && (isPlatformAdmin || (execRole && execRole !== 'no_access'));
+    // ── Executive Division entry — same rule as grid cards above:
+    // if division_roles is set, executive access requires an explicit
+    // non-no_access entry. Platform-admin default only applies when
+    // division_roles is null/empty.
+    const execRole = userRoles && userRoles.executive;
+    const hasExecAccess = hasExplicitRoles
+      ? Boolean(execRole && execRole !== 'no_access')
+      : isPlatformAdmin;
     if (hasExecAccess) {
       const execEntry = document.getElementById('execEntry');
       if (execEntry) execEntry.style.display = 'flex';
