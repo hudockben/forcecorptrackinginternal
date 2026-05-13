@@ -321,6 +321,14 @@
     .badge-draft     { background: rgba(136,136,136,0.15); color: var(--muted); }
     .badge-submitted { background: rgba(96,165,250,0.15); color: var(--blue); }
     .badge-approved  { background: rgba(34,197,94,0.15);  color: var(--green); }
+    .status-meta {
+      font-size: 0.62rem;
+      color: var(--muted);
+      line-height: 1.45;
+      margin-top: 0.35rem;
+      white-space: nowrap;
+    }
+    .status-meta strong { color: var(--text); font-weight: 600; }
 
     /* ── Row action buttons ── */
     .row-btn {
@@ -594,6 +602,7 @@
         <div class="modal-title" id="editTitle">Edit Entry</div>
         <button class="modal-close" onclick="closeEdit()">&#10005;</button>
       </div>
+      <div id="editHistory" style="display:none"></div>
       <div class="modal-grid" id="editGrid">
         <!-- populated by JS based on entry_type -->
       </div>
@@ -781,7 +790,7 @@
             <td>${escapeHtml(time)}</td>
             <td style="font-variant-numeric:tabular-nums">${hours}</td>
             <td>${escapeHtml(sup)}</td>
-            <td><span class="badge badge-${e.status}">${e.status}</span></td>
+            <td><span class="badge badge-${e.status}">${e.status}</span>${statusMetaHtml(e)}</td>
             <td class="td-actions">
               <button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>
               ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
@@ -804,6 +813,35 @@
     function prettyOff(t) {
       const map = { vacation:'Vacation', sick:'Sick', jury_duty:'Jury Duty', bereavement:'Bereavement', holiday:'Holiday' };
       return map[t] || t;
+    }
+    function fmtTimestamp(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+    }
+    function statusMetaHtml(e) {
+      // Compact audit caption shown under the status badge.
+      // - submitted entries: "Submitted <when> by <who>"
+      // - approved entries:  shows both approval and original submission
+      if (e.status === 'submitted') {
+        const when = fmtTimestamp(e.submitted_at);
+        if (!when) return '';
+        return `<div class="status-meta">Submitted <strong>${escapeHtml(when)}</strong><br/>by ${escapeHtml(e.username || '—')}</div>`;
+      }
+      if (e.status === 'approved') {
+        const aWhen = fmtTimestamp(e.approved_at);
+        const sWhen = fmtTimestamp(e.submitted_at);
+        const lines = [];
+        if (aWhen) lines.push(`Approved <strong>${escapeHtml(aWhen)}</strong><br/>by ${escapeHtml(e.approved_by_name || '—')}`);
+        if (sWhen) lines.push(`<span style="opacity:0.7">Submitted ${escapeHtml(sWhen)}<br/>by ${escapeHtml(e.username || '—')}</span>`);
+        if (!lines.length) return '';
+        return `<div class="status-meta">${lines.join('<div style="height:0.3rem"></div>')}</div>`;
+      }
+      return '';
     }
 
     // ── Selection ─────────────────────────────────────────────────────────
@@ -930,6 +968,27 @@
       const titleSuffix = e.status === 'approved' ? ' · ⚠ already approved' : '';
       document.getElementById('editTitle').textContent = `Edit — ${e.username} · ${prettyDate(e.work_date)}${titleSuffix}`;
       document.getElementById('editMsg').textContent   = '';
+
+      // History panel: submitted-by/at and approved-by/at, if present
+      const hist = document.getElementById('editHistory');
+      const histRows = [];
+      const subWhen = fmtTimestamp(e.submitted_at);
+      const appWhen = fmtTimestamp(e.approved_at);
+      if (subWhen) histRows.push(`<div><strong style="color:var(--blue)">Submitted</strong> ${escapeHtml(subWhen)} by <strong>${escapeHtml(e.username || '—')}</strong></div>`);
+      if (appWhen) histRows.push(`<div><strong style="color:var(--green)">Approved</strong> ${escapeHtml(appWhen)} by <strong>${escapeHtml(e.approved_by_name || '—')}</strong></div>`);
+      if (histRows.length) {
+        hist.style.display = '';
+        hist.style.background = 'var(--surface2)';
+        hist.style.border = '1px solid var(--border)';
+        hist.style.borderRadius = '6px';
+        hist.style.padding = '0.7rem 0.9rem';
+        hist.style.fontSize = '0.78rem';
+        hist.style.color = 'var(--muted)';
+        hist.style.lineHeight = '1.6';
+        hist.innerHTML = histRows.join('');
+      } else {
+        hist.style.display = 'none';
+      }
 
       const grid = document.getElementById('editGrid');
       if (e.entry_type === 'time_off') {

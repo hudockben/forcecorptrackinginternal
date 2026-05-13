@@ -345,6 +345,14 @@
       font-size: 0.85rem;
       padding: 1.5rem 1rem;
     }
+    .entry-audit {
+      font-size: 0.7rem;
+      color: var(--muted);
+      padding-top: 0.45rem;
+      margin-top: 0.2rem;
+      border-top: 1px dashed var(--border);
+      line-height: 1.4;
+    }
 
     /* ── Toast / inline message ── */
     .msg {
@@ -708,6 +716,7 @@
         const hours = e.entry_type === 'daily' && e.computed_hours != null
           ? `${Number(e.computed_hours).toFixed(2)} h`
           : '';
+        const audit = entryAuditLine(e);
         return `
           <div class="entry ${isDraft ? 'draft' : ''}" ${isDraft ? `onclick="editEntry('${e.id}')"` : ''}>
             <div class="entry-head">
@@ -718,9 +727,30 @@
               <div class="entry-meta">${meta}</div>
               ${hours ? `<div class="entry-hours">${hours}</div>` : ''}
             </div>
+            ${audit ? `<div class="entry-audit">${audit}</div>` : ''}
           </div>
         `;
       }).join('');
+    }
+
+    function entryAuditLine(e) {
+      if (!e || e.status === 'draft') return '';
+      const sub = fmtTs(e.submitted_at);
+      const app = fmtTs(e.approved_at);
+      const bits = [];
+      if (sub) bits.push(`Submitted ${sub}`);
+      if (e.status === 'approved' && app) bits.push(`Approved ${app} by ${escapeHtml(e.approved_by_name || '—')}`);
+      return bits.join(' · ');
+    }
+
+    function fmtTs(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
     }
 
     function prettyDate(s) {
