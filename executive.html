@@ -777,16 +777,18 @@
       .timeline-bar { background: #eee; }
       .timeline-grid { border-color: #eee; min-width: 0; }
       .timeline-grid.head { border-color: #ccc; }
-      .ptable-wrap { background: #fff; border: 1px solid #ccc; }
-      .ptable      { min-width: 0; font-size: 0.7rem; }
-      .ptable th   { color: #555; border-color: #ccc; }
-      .ptable td   { border-color: #eee; color: #000; }
-      .ptable .pname-main, .ptable .v-actual { color: #000; }
+      .ptable-wrap { background: #fff; border: 1px solid #ccc; overflow: visible; }
+      .ptable      { min-width: 0; font-size: 0.55rem; table-layout: auto; }
+      .ptable th   { color: #555; border-color: #ccc; padding: 0.35rem 0.3rem; font-size: 0.5rem; }
+      .ptable td   { border-color: #eee; color: #000; padding: 0.3rem 0.3rem; }
+      .ptable .pname-main { color: #000; font-size: 0.65rem; }
+      .ptable .v-actual   { color: #000; }
       .ptable .pname-sub, .ptable .pstatus,
       .ptable .pprogress-pct, .ptable .v-mute,
-      .ptable .v-profit-pct { color: #555; }
+      .ptable .v-profit-pct { color: #555; font-size: 0.5rem; }
       .ptable .pstar.off { color: #ddd; }
-      .ptable .pprogress-track { background: #eee; }
+      .ptable .pprogress { min-width: 70px; gap: 0.3rem; }
+      .ptable .pprogress-track { background: #eee; min-width: 40px; }
       .pd-head { border-color: #ccc; }
       .timeline-today { background: #000; box-shadow: none; }
       .timeline-today::after { color: #000; }
