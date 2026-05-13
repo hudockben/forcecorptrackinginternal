@@ -799,7 +799,6 @@
          is clicked, body.printing-projects-only is added and everything
          outside #projectsSection is hidden so the browser's native
          print-to-PDF renders just that section. */
-      body.printing-projects-only .page-title-wrap,
       body.printing-projects-only #reportBody > .section:not(#projectsSection) {
         display: none !important;
       }
@@ -1225,11 +1224,19 @@
     // a Projects-only PDF from their browser's Save as PDF flow.
     function downloadProjectsPdf() {
       document.body.classList.add('printing-projects-only');
+      // Two-path cleanup so the scope class can't linger and break the
+      // top-of-page "Generate Report (PDF)" button: afterprint covers
+      // Chrome/Firefox/Edge/Safari 14+, the matchMedia('print') change
+      // event covers older Safari / iOS that don't fire afterprint.
+      const mql = window.matchMedia('print');
       const cleanup = () => {
         document.body.classList.remove('printing-projects-only');
         window.removeEventListener('afterprint', cleanup);
+        mql.removeEventListener?.('change', onMqlChange);
       };
-      window.addEventListener('afterprint', cleanup);
+      const onMqlChange = e => { if (!e.matches) cleanup(); };
+      window.addEventListener('afterprint', cleanup, { once: true });
+      mql.addEventListener?.('change', onMqlChange);
       window.print();
     }
 
