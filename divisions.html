@@ -1303,18 +1303,20 @@
         tbody.innerHTML = '<tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">No employees match.</td></tr>';
         return;
       }
-      tbody.innerHTML = list.map(e => `
+      tbody.innerHTML = list.map(e => {
+        const srcLabel = e.source && e.source !== 'employees' ? ` <span style="color:var(--muted);font-size:0.65rem;letter-spacing:0.06em;text-transform:uppercase">· ${e.source}</span>` : '';
+        return `
         <tr>
-          <td style="font-weight:600">${escSupHtml(e.name)}</td>
+          <td style="font-weight:600">${escSupHtml(e.name)}${srcLabel}</td>
           <td style="color:var(--muted)">${escSupHtml(e.job_class || '—')}</td>
           <td style="text-align:right">
             <label class="sup-toggle" title="Toggle supervisor">
-              <input type="checkbox" data-emp-id="${e.id}" ${e.is_supervisor ? 'checked' : ''} onchange="toggleSupervisor(this)" />
+              <input type="checkbox" data-emp-name="${escSupHtml(e.name)}" ${e.is_supervisor ? 'checked' : ''} onchange="toggleSupervisor(this)" />
               <span class="slider"></span>
             </label>
           </td>
-        </tr>
-      `).join('');
+        </tr>`;
+      }).join('');
     }
 
     function escSupHtml(s) {
@@ -1324,14 +1326,14 @@
     }
 
     async function toggleSupervisor(el) {
-      const id      = parseInt(el.dataset.empId, 10);
+      const name    = el.dataset.empName || '';
       const checked = el.checked;
       const result  = document.getElementById('sup-result');
       el.disabled   = true;
       result.style.color = 'var(--muted)';
       result.textContent = 'Saving…';
       try {
-        const res = await fetch('/api/employees?id=' + encodeURIComponent(id), {
+        const res = await fetch('/api/employees?name=' + encodeURIComponent(name), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ is_supervisor: checked }),
@@ -1339,10 +1341,10 @@
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed');
         // Update the in-memory list so the "Supervisors only" filter stays accurate
-        const emp = supEmployees.find(e => e.id === id);
+        const emp = supEmployees.find(e => (e.name || '').toLowerCase() === name.toLowerCase());
         if (emp) emp.is_supervisor = checked;
         result.style.color = 'var(--green)';
-        result.textContent = (data.employee?.name || 'Employee') +
+        result.textContent = (data.employee?.name || name || 'Employee') +
           (checked ? ' is now a supervisor.' : ' is no longer a supervisor.');
         setTimeout(() => { if (result.textContent.endsWith('supervisor.')) result.textContent = ''; }, 2500);
       } catch (err) {
