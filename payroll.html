@@ -177,6 +177,59 @@
     }
     .btn-clear:hover { color: var(--text); border-color: #555; }
 
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      gap: 0.4rem;
+      border-bottom: 1px solid var(--border);
+      padding: 0 0.5rem;
+    }
+    .tab {
+      padding: 0.7rem 1.25rem 0.85rem;
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      letter-spacing: 0.01em;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .tab.approved.active {
+      color: var(--green);
+      border-bottom-color: var(--green);
+    }
+    .tab-count {
+      display: inline-block;
+      font-size: 0.7rem;
+      background: var(--surface2);
+      color: var(--text);
+      padding: 0.12rem 0.5rem;
+      border-radius: 10px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      min-width: 22px;
+      text-align: center;
+    }
+    .tab.active .tab-count {
+      background: var(--accent);
+      color: #fff;
+    }
+    .tab.approved.active .tab-count {
+      background: var(--green);
+      color: #052;
+    }
+
     /* ── Bulk bar (appears when entries are selected) ── */
     .bulk {
       display: none;
@@ -445,11 +498,7 @@
   <main id="mainContent">
 
     <!-- ── Stats ── -->
-    <div class="stats">
-      <div class="stat draft">
-        <div class="stat-label">Drafts (in field)</div>
-        <div class="stat-value" id="stat-draft">0</div>
-      </div>
+    <div class="stats" style="grid-template-columns: repeat(3, 1fr)">
       <div class="stat submitted">
         <div class="stat-label">Awaiting Review</div>
         <div class="stat-value" id="stat-submitted">0</div>
@@ -465,17 +514,7 @@
     </div>
 
     <!-- ── Filters ── -->
-    <div class="filters">
-      <div class="filter-field">
-        <label for="flt-status">Status</label>
-        <select id="flt-status">
-          <option value="submitted_approved" selected>Submitted + Approved</option>
-          <option value="submitted">Submitted Only</option>
-          <option value="approved">Approved Only</option>
-          <option value="draft">Drafts</option>
-          <option value="">All</option>
-        </select>
-      </div>
+    <div class="filters" style="grid-template-columns: repeat(4, 1fr) auto">
       <div class="filter-field">
         <label for="flt-from">From</label>
         <input type="date" id="flt-from" />
@@ -503,6 +542,16 @@
         <button class="btn-clear"  onclick="clearFilters()">Reset</button>
         <button class="btn-filter" onclick="applyFilters()">Apply</button>
       </div>
+    </div>
+
+    <!-- ── Pending / Approved tabs ── -->
+    <div class="tabs">
+      <button class="tab active" data-tab="pending" onclick="switchTab('pending')">
+        Pending Review <span class="tab-count" id="tab-pending-count">0</span>
+      </button>
+      <button class="tab approved" data-tab="approved" onclick="switchTab('approved')">
+        Approved <span class="tab-count" id="tab-approved-count">0</span>
+      </button>
     </div>
 
     <!-- ── Bulk approve bar ── -->
@@ -588,12 +637,13 @@
     }
 
     // ── State ─────────────────────────────────────────────────────────────
-    let allEntries = [];      // current API result
-    let filtered   = [];      // after client-side username filter
-    let selectedIds = new Set();
-    let supervisors = [];
-    let jobsCache  = {};
+    let allEntries   = [];          // current API result
+    let filtered     = [];          // after client-side username filter
+    let selectedIds  = new Set();
+    let supervisors  = [];
+    let jobsCache    = {};
     let editingEntry = null;
+    let currentTab   = 'pending';   // 'pending' | 'approved'
 
     function init() {
       // Default range: last 14 days through today
@@ -605,6 +655,22 @@
       applyFilters();
     }
 
+    function switchTab(tab) {
+      if (tab !== 'pending' && tab !== 'approved') return;
+      currentTab = tab;
+      document.querySelectorAll('.tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.tab === tab);
+      });
+      // Selections only make sense on the Pending tab
+      if (tab !== 'pending') selectedIds.clear();
+      renderRows();
+      renderStats();
+    }
+
+    function tabStatus() {
+      return currentTab === 'approved' ? 'approved' : 'submitted';
+    }
+
     function ymd(d) {
       const y = d.getFullYear();
       const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -613,7 +679,6 @@
     }
 
     function clearFilters() {
-      document.getElementById('flt-status').value = 'submitted_approved';
       document.getElementById('flt-from').value   = '';
       document.getElementById('flt-to').value     = '';
       document.getElementById('flt-division').value = '';
@@ -622,13 +687,13 @@
     }
 
     async function applyFilters() {
-      const status   = document.getElementById('flt-status').value;
+      // Always fetch both submitted + approved — the tabs split them client-side.
       const from     = document.getElementById('flt-from').value;
       const to       = document.getElementById('flt-to').value;
       const division = document.getElementById('flt-division').value;
 
       const params = new URLSearchParams();
-      if (status)   params.set('status',   status);
+      params.set('status', 'submitted_approved');
       if (from)     params.set('from',     from);
       if (to)       params.set('to',       to);
       if (division) params.set('division', division);
@@ -658,17 +723,15 @@
     document.getElementById('flt-user').addEventListener('input', () => filterAndRender());
 
     function renderStats() {
-      // Counts across CURRENT result set (the user's filter is the implicit "scope")
-      let d=0, s=0, a=0, hours=0;
+      // Counts across the CURRENT filtered set (date/division/employee scope)
+      let s = 0, a = 0, hours = 0;
       for (const e of filtered) {
-        if (e.status === 'draft')     d++;
         if (e.status === 'submitted') s++;
         if (e.status === 'approved') {
           a++;
           if (e.computed_hours != null) hours += Number(e.computed_hours);
         }
       }
-      document.getElementById('stat-draft').textContent     = d;
       document.getElementById('stat-submitted').textContent = s;
       document.getElementById('stat-approved').textContent  = a;
       document.getElementById('stat-hours').textContent     = hours.toFixed(2);
@@ -676,14 +739,28 @@
 
     function renderRows() {
       const tbody = document.getElementById('rowsBody');
-      if (!filtered.length) {
-        tbody.innerHTML = '<tr class="empty-row"><td colspan="11">No entries match those filters.</td></tr>';
-        selectedIds.clear(); updateBulk();
+      const status = tabStatus();
+      const rows = filtered.filter(e => e.status === status);
+
+      // Refresh tab counts from the current filtered set
+      document.getElementById('tab-pending-count').textContent  =
+        filtered.filter(e => e.status === 'submitted').length;
+      document.getElementById('tab-approved-count').textContent =
+        filtered.filter(e => e.status === 'approved').length;
+
+      const isPending = currentTab === 'pending';
+      const emptyMsg  = isPending
+        ? 'Nothing to review in this range — everything has been approved or no entries have been submitted yet.'
+        : 'No approved entries in this range yet.';
+
+      if (!rows.length) {
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="11">${emptyMsg}</td></tr>`;
+        if (isPending) selectedIds.clear();
+        updateBulk();
         return;
       }
-      tbody.innerHTML = filtered.map(e => {
-        const isSubmitted = e.status === 'submitted';
-        const canSelect   = isSubmitted;
+
+      tbody.innerHTML = rows.map(e => {
         const sel = selectedIds.has(e.id);
         const type = e.entry_type === 'time_off'
           ? `Time Off · ${prettyOff(e.time_off_type)}`
@@ -695,7 +772,7 @@
         const sup      = e.entry_type === 'time_off' ? '—' : (e.supervisor_name || '—');
         return `
           <tr class="${sel ? 'selected' : ''}">
-            <td class="td-narrow">${canSelect ? `<input type="checkbox" data-id="${e.id}" ${sel ? 'checked' : ''} onchange="toggleRow('${e.id}')" />` : ''}</td>
+            <td class="td-narrow">${isPending ? `<input type="checkbox" data-id="${e.id}" ${sel ? 'checked' : ''} onchange="toggleRow('${e.id}')" />` : ''}</td>
             <td><strong>${escapeHtml(e.username)}</strong></td>
             <td>${prettyDate(e.work_date)}</td>
             <td>${type}</td>
@@ -706,8 +783,8 @@
             <td>${escapeHtml(sup)}</td>
             <td><span class="badge badge-${e.status}">${e.status}</span></td>
             <td class="td-actions">
-              ${isSubmitted ? `<button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>` : ''}
-              ${isSubmitted ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
+              ${isPending ? `<button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>` : ''}
+              ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
             </td>
           </tr>
         `;
@@ -736,20 +813,25 @@
       renderRows();
     }
     function toggleAll() {
+      if (currentTab !== 'pending') return;
       const check = document.getElementById('selectAll').checked;
       if (check) filtered.filter(e => e.status === 'submitted').forEach(e => selectedIds.add(e.id));
       else selectedIds.clear();
       renderRows();
     }
     function updateBulk() {
-      const bar         = document.getElementById('bulkBar');
+      const bar = document.getElementById('bulkBar');
+      // Bulk approvals only apply to the Pending tab
+      if (currentTab !== 'pending') {
+        bar.classList.remove('open');
+        return;
+      }
       const selCount    = selectedIds.size;
       const submittedIn = filtered.filter(e => e.status === 'submitted').length;
-      // Show the bar whenever there's anything actionable in view
       bar.classList.toggle('open', selCount > 0 || submittedIn > 0);
       document.getElementById('bulkCount').textContent =
         submittedIn > 0
-          ? `${selCount} selected · ${submittedIn} submitted in view`
+          ? `${selCount} selected · ${submittedIn} pending in view`
           : `${selCount} selected`;
       const selBtn = document.getElementById('approveSelectedBtn');
       const allBtn = document.getElementById('approveAllBtn');
@@ -757,8 +839,8 @@
       if (allBtn) {
         allBtn.disabled = submittedIn === 0;
         allBtn.textContent = submittedIn > 0
-          ? `Approve All ${submittedIn} Submitted`
-          : 'Approve All Submitted';
+          ? `Approve All ${submittedIn} Pending`
+          : 'Approve All Pending';
       }
     }
 
@@ -814,7 +896,7 @@
       if (userQ)           scopeBits.push(`employee "${userQ}"`);
       if (divQ)            scopeBits.push(`${divQ} division`);
       const scope = scopeBits.length ? `\n\nScope: ${scopeBits.join(' · ')}` : '';
-      if (!confirm(`Approve ALL ${ids.length} submitted entries in the current view?${scope}`)) return;
+      if (!confirm(`Approve ALL ${ids.length} pending entries in the current view?${scope}`)) return;
       await runApprovals(ids);
     }
 
