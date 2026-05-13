@@ -4,6 +4,9 @@ const jwt        = require('jsonwebtoken');
 const { neon }   = require('@neondatabase/serverless');
 
 const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
+// timesheet/payroll require an explicit positive grant in division_roles —
+// they're never granted implicitly through user.divisions or company.allowed_divisions.
+const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll']);
 
 /**
  * Verify the bearer token AND return the user's current division roles
@@ -53,13 +56,17 @@ module.exports = async (req, res) => {
       if (isPlatformAdmin) {
         allowedDivisions = ALL_DIVISIONS;
       } else if (divisionRoles && typeof divisionRoles === 'object') {
+        // Explicit per-division roles — restricted divisions are honored
+        // both ways: visible only when set to a non-no_access role.
         allowedDivisions = Object.entries(divisionRoles)
           .filter(([, v]) => v !== 'no_access')
           .map(([k]) => k);
       } else if (Array.isArray(rows[0].divisions) && rows[0].divisions.length) {
-        allowedDivisions = rows[0].divisions;
+        // Legacy fallback — strip restricted divisions; require explicit grant
+        allowedDivisions = rows[0].divisions.filter(d => !RESTRICTED_DIVISIONS.has(d));
       } else if (Array.isArray(rows[0].allowed_divisions) && rows[0].allowed_divisions.length) {
-        allowedDivisions = rows[0].allowed_divisions;
+        // Company-licensed defaults — strip restricted divisions for same reason
+        allowedDivisions = rows[0].allowed_divisions.filter(d => !RESTRICTED_DIVISIONS.has(d));
       } else {
         allowedDivisions = ['turf'];
       }
