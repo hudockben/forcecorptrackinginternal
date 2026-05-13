@@ -737,6 +737,19 @@
       document.getElementById('bulkCount').textContent = `${count} selected`;
     }
 
+    // Optimistic-update an entry in both allEntries and filtered so the row
+    // stays visible after approval (instead of being filtered out by a
+    // submitted-only status filter). Re-render to refresh the badge + counts.
+    function applyEntryUpdate(updated) {
+      if (!updated || !updated.id) return;
+      const idxAll = allEntries.findIndex(e => e.id === updated.id);
+      if (idxAll >= 0) allEntries[idxAll] = updated;
+      else             allEntries.unshift(updated);
+      const idxF = filtered.findIndex(e => e.id === updated.id);
+      if (idxF >= 0) filtered[idxF] = updated;
+      else           filtered.unshift(updated);
+    }
+
     async function approveOne(id) {
       if (!confirm('Approve this entry?')) return;
       try {
@@ -746,7 +759,9 @@
         const j = await res.json();
         if (!res.ok || !j.ok) throw new Error(j.error || 'Approve failed');
         selectedIds.delete(id);
-        await applyFilters();
+        applyEntryUpdate(j.entry);
+        renderRows();
+        renderStats();
       } catch (err) {
         alert(err.message);
       }
@@ -763,11 +778,13 @@
             method: 'POST', headers: authHeaders(),
           });
           const j = await res.json();
-          if (!res.ok || !j.ok) errors++;
+          if (!res.ok || !j.ok) { errors++; continue; }
+          applyEntryUpdate(j.entry);
         } catch { errors++; }
       }
       selectedIds.clear();
-      await applyFilters();
+      renderRows();
+      renderStats();
       if (errors) alert(`${errors} approval(s) failed. Refresh and retry.`);
     }
 
