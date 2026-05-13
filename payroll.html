@@ -229,6 +229,182 @@
       background: var(--green);
       color: #052;
     }
+    .tab.reports.active {
+      color: var(--blue);
+      border-bottom-color: var(--blue);
+    }
+
+    /* ── Quick ranges ── */
+    .quick-ranges {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      padding: 0.25rem 0.25rem 0;
+    }
+    .qr-label {
+      font-size: 0.62rem;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+      margin-right: 0.25rem;
+    }
+    .qr-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.4rem 0.85rem;
+      border-radius: 5px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      letter-spacing: 0.01em;
+    }
+    .qr-btn:hover { border-color: var(--blue); color: var(--blue); }
+
+    /* ── Report layout ── */
+    .report {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+    }
+    .report-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1rem;
+    }
+    .report-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: 0.01em;
+    }
+    .report-sub {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+      line-height: 1.55;
+    }
+    .btn-print {
+      padding: 0.5rem 1.1rem;
+      background: var(--blue);
+      color: #013;
+      font-weight: 700;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn-print:hover { filter: brightness(1.1); }
+    .report table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.83rem;
+    }
+    .report thead th {
+      text-align: left;
+      padding: 0.6rem 0.7rem;
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+      white-space: nowrap;
+    }
+    .report tbody td {
+      padding: 0.65rem 0.7rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      font-variant-numeric: tabular-nums;
+    }
+    .report tbody td.name { font-weight: 600; font-variant-numeric: normal; }
+    .report tbody td.num  { text-align: right; }
+    .report tr.total td {
+      border-top: 2px solid var(--border);
+      border-bottom: none;
+      font-weight: 700;
+      color: var(--text);
+      background: var(--surface2);
+      padding-top: 0.85rem;
+      padding-bottom: 0.85rem;
+    }
+    .report tr.has-pending td.name::before {
+      content: '⚠';
+      color: var(--yellow);
+      margin-right: 0.35rem;
+    }
+    .report .pill {
+      display: inline-block;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.55rem;
+      border-radius: 4px;
+    }
+    .pill-pending {
+      background: rgba(234,179,8,0.12);
+      color: var(--yellow);
+    }
+    .pill-clear {
+      background: rgba(34,197,94,0.12);
+      color: var(--green);
+    }
+    .report-empty {
+      padding: 3rem 1rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    /* ── Print: hide everything except the report ── */
+    @media print {
+      @page { margin: 0.5in; }
+      body { background: white !important; color: black !important; }
+      header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
+      .modal-backdrop, .btn-print { display: none !important; }
+      main { max-width: none !important; padding: 0 !important; }
+      .report {
+        background: white !important;
+        border: none !important;
+        padding: 0 !important;
+      }
+      .report-head {
+        border-bottom: 2px solid #000 !important;
+        margin-bottom: 0.4in !important;
+        padding-bottom: 0.25in !important;
+      }
+      .report-title { color: #000 !important; font-size: 14pt; }
+      .report-sub   { color: #555 !important; }
+      .report table { font-size: 10pt; }
+      .report thead th {
+        background: #f3f3f3 !important;
+        color: #000 !important;
+        border-bottom: 1px solid #000 !important;
+      }
+      .report tbody td {
+        color: #000 !important;
+        border-bottom: 1px solid #ccc !important;
+      }
+      .report tr.total td {
+        background: #f7f7f7 !important;
+        border-top: 2px solid #000 !important;
+      }
+      .pill-pending { background: #fde68a !important; color: #6b3a00 !important; }
+      .pill-clear   { background: #d1fae5 !important; color: #064e3b !important; }
+      .report tr.has-pending td.name::before { color: #b45309 !important; }
+    }
 
     /* ── Bulk bar (appears when entries are selected) ── */
     .bulk {
@@ -552,13 +728,16 @@
       </div>
     </div>
 
-    <!-- ── Pending / Approved tabs ── -->
+    <!-- ── Pending / Approved / Reports tabs ── -->
     <div class="tabs">
       <button class="tab active" data-tab="pending" onclick="switchTab('pending')">
         Pending Review <span class="tab-count" id="tab-pending-count">0</span>
       </button>
       <button class="tab approved" data-tab="approved" onclick="switchTab('approved')">
         Approved <span class="tab-count" id="tab-approved-count">0</span>
+      </button>
+      <button class="tab reports" data-tab="reports" onclick="switchTab('reports')">
+        Reports
       </button>
     </div>
 
@@ -568,6 +747,18 @@
       <button class="btn-approve alt" id="approveSelectedBtn" onclick="bulkApprove()">Approve Selected</button>
       <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
     </div>
+
+    <!-- ── Payroll-cycle quick ranges (only on Reports tab) ── -->
+    <div class="quick-ranges" id="quickRanges" style="display:none">
+      <span class="qr-label">Quick payroll cycle:</span>
+      <button class="qr-btn" onclick="setRange('this_week')">This Week</button>
+      <button class="qr-btn" onclick="setRange('last_week')">Last Week</button>
+      <button class="qr-btn" onclick="setRange('this_pay_period')">Current Pay Period</button>
+      <button class="qr-btn" onclick="setRange('last_pay_period')">Last Pay Period</button>
+    </div>
+
+    <!-- ── Report container (Reports tab) ── -->
+    <div id="reportWrap" style="display:none"></div>
 
     <!-- ── Table ── -->
     <div class="table-wrap">
@@ -665,12 +856,30 @@
     }
 
     function switchTab(tab) {
-      if (tab !== 'pending' && tab !== 'approved') return;
+      if (!['pending', 'approved', 'reports'].includes(tab)) return;
       currentTab = tab;
       document.querySelectorAll('.tab').forEach(t => {
         t.classList.toggle('active', t.dataset.tab === tab);
       });
-      // Selections only make sense on the Pending tab
+
+      const tableWrap  = document.querySelector('.table-wrap');
+      const reportWrap = document.getElementById('reportWrap');
+      const bulkBar    = document.getElementById('bulkBar');
+      const quick      = document.getElementById('quickRanges');
+
+      if (tab === 'reports') {
+        if (tableWrap)  tableWrap.style.display  = 'none';
+        if (bulkBar)    bulkBar.classList.remove('open');
+        if (reportWrap) reportWrap.style.display = '';
+        if (quick)      quick.style.display      = 'flex';
+        selectedIds.clear();
+        renderReport();
+        return;
+      }
+
+      if (tableWrap)  tableWrap.style.display  = '';
+      if (reportWrap) reportWrap.style.display = 'none';
+      if (quick)      quick.style.display      = 'none';
       if (tab !== 'pending') selectedIds.clear();
       renderRows();
       renderStats();
@@ -678,6 +887,42 @@
 
     function tabStatus() {
       return currentTab === 'approved' ? 'approved' : 'submitted';
+    }
+
+    // ── Quick payroll-cycle ranges ────────────────────────────────────────
+    function setRange(kind) {
+      const today = new Date();
+      const todayMs = today.getTime();
+      // Week starts Monday for payroll convention (Sun=0 → Mon=1)
+      const dayOfWeek = today.getDay();              // 0=Sun..6=Sat
+      const offsetToMonday = (dayOfWeek + 6) % 7;     // Mon=0, Tue=1, ..., Sun=6
+      const thisMonday = new Date(todayMs);
+      thisMonday.setDate(today.getDate() - offsetToMonday);
+      thisMonday.setHours(0, 0, 0, 0);
+
+      let from, to;
+      if (kind === 'this_week') {
+        from = new Date(thisMonday);
+        to   = new Date(thisMonday); to.setDate(thisMonday.getDate() + 6);
+      } else if (kind === 'last_week') {
+        from = new Date(thisMonday); from.setDate(thisMonday.getDate() - 7);
+        to   = new Date(thisMonday); to.setDate(thisMonday.getDate() - 1);
+      } else if (kind === 'this_pay_period') {
+        // Biweekly cycle anchored to thisMonday — most recent pay-period start
+        // is thisMonday if current week is "week 1" of the cycle, otherwise the
+        // Monday a week before. Without a configured anchor, default to a
+        // 2-week window ending today.
+        from = new Date(thisMonday); from.setDate(thisMonday.getDate() - 7);
+        to   = new Date(thisMonday); to.setDate(thisMonday.getDate() + 6);
+      } else if (kind === 'last_pay_period') {
+        from = new Date(thisMonday); from.setDate(thisMonday.getDate() - 21);
+        to   = new Date(thisMonday); to.setDate(thisMonday.getDate() - 8);
+      } else {
+        return;
+      }
+      document.getElementById('flt-from').value = ymd(from);
+      document.getElementById('flt-to').value   = ymd(to);
+      applyFilters();
     }
 
     function ymd(d) {
@@ -726,10 +971,154 @@
       filtered = userQ
         ? allEntries.filter(e => (e.username || '').toLowerCase().includes(userQ))
         : allEntries;
-      renderRows();
-      renderStats();
+      if (currentTab === 'reports') {
+        renderReport();
+      } else {
+        renderRows();
+        renderStats();
+      }
     }
     document.getElementById('flt-user').addEventListener('input', () => filterAndRender());
+
+    // ── Report tab ───────────────────────────────────────────────────────
+    function renderReport() {
+      const wrap = document.getElementById('reportWrap');
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const div  = document.getElementById('flt-division').value;
+      const userQ= document.getElementById('flt-user').value.trim();
+
+      // Aggregate by username
+      const byUser = new Map();
+      for (const e of filtered) {
+        const u = e.username || '—';
+        if (!byUser.has(u)) byUser.set(u, {
+          username:      u,
+          pendingHours:  0,
+          approvedHours: 0,
+          pendingOff:    0,
+          approvedOff:   0,
+        });
+        const acc = byUser.get(u);
+        if (e.entry_type === 'daily') {
+          const h = Number(e.computed_hours || 0);
+          if (e.status === 'submitted') acc.pendingHours  += h;
+          if (e.status === 'approved')  acc.approvedHours += h;
+        } else if (e.entry_type === 'time_off') {
+          if (e.status === 'submitted') acc.pendingOff++;
+          if (e.status === 'approved')  acc.approvedOff++;
+        }
+      }
+      const rows = Array.from(byUser.values())
+        .sort((a, b) => a.username.localeCompare(b.username));
+
+      // Totals
+      const tot = rows.reduce((acc, r) => ({
+        pendingHours:  acc.pendingHours  + r.pendingHours,
+        approvedHours: acc.approvedHours + r.approvedHours,
+        pendingOff:    acc.pendingOff    + r.pendingOff,
+        approvedOff:   acc.approvedOff   + r.approvedOff,
+      }), { pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
+
+      // Header subtitle
+      const scopeBits = [];
+      if (from && to)      scopeBits.push(`${from} → ${to}`);
+      else if (from)       scopeBits.push(`from ${from}`);
+      else if (to)         scopeBits.push(`through ${to}`);
+      if (div)             scopeBits.push(`${prettyDiv(div)} division`);
+      if (userQ)           scopeBits.push(`employee filter "${userQ}"`);
+      const scopeLine = scopeBits.length ? scopeBits.join(' · ') : 'All entries (no date range set)';
+      const gen = new Date().toLocaleString(undefined, {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+      const companyName = (user && (user.companyName || user.companyCode)) || '';
+
+      // Empty state
+      if (!rows.length) {
+        wrap.innerHTML = `
+          <div class="report">
+            <div class="report-head">
+              <div>
+                <div class="report-title">Payroll Hours Report</div>
+                <div class="report-sub">${escapeHtml(scopeLine)}<br/>${escapeHtml(companyName)} · Generated ${escapeHtml(gen)}</div>
+              </div>
+              <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
+            </div>
+            <div class="report-empty">No timesheet entries in this range.</div>
+          </div>
+        `;
+        return;
+      }
+
+      const bodyRows = rows.map(r => {
+        const total = r.pendingHours + r.approvedHours;
+        const hasPending = r.pendingHours > 0.001;
+        const off = (r.pendingOff || r.approvedOff)
+          ? `${r.pendingOff} pending / ${r.approvedOff} approved`
+          : '—';
+        const status = hasPending
+          ? `<span class="pill pill-pending">${r.pendingHours.toFixed(2)} h pending</span>`
+          : `<span class="pill pill-clear">All approved</span>`;
+        return `
+          <tr class="${hasPending ? 'has-pending' : ''}">
+            <td class="name">${escapeHtml(r.username)}</td>
+            <td class="num">${r.pendingHours.toFixed(2)}</td>
+            <td class="num">${r.approvedHours.toFixed(2)}</td>
+            <td class="num">${total.toFixed(2)}</td>
+            <td>${escapeHtml(off)}</td>
+            <td>${status}</td>
+          </tr>
+        `;
+      }).join('');
+
+      const totalAll = tot.pendingHours + tot.approvedHours;
+
+      wrap.innerHTML = `
+        <div class="report">
+          <div class="report-head">
+            <div>
+              <div class="report-title">Payroll Hours Report</div>
+              <div class="report-sub">
+                <strong>${escapeHtml(companyName)}</strong><br/>
+                ${escapeHtml(scopeLine)}<br/>
+                Generated ${escapeHtml(gen)}
+              </div>
+            </div>
+            <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th style="text-align:right">Pending Hours</th>
+                <th style="text-align:right">Approved Hours</th>
+                <th style="text-align:right">Total Hours</th>
+                <th>Time Off</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>${bodyRows}</tbody>
+            <tfoot>
+              <tr class="total">
+                <td class="name">Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})</td>
+                <td class="num">${tot.pendingHours.toFixed(2)}</td>
+                <td class="num">${tot.approvedHours.toFixed(2)}</td>
+                <td class="num">${totalAll.toFixed(2)}</td>
+                <td>${tot.pendingOff} pending / ${tot.approvedOff} approved</td>
+                <td>${tot.pendingHours > 0.001
+                  ? `<span class="pill pill-pending">${tot.pendingHours.toFixed(2)} h still pending</span>`
+                  : `<span class="pill pill-clear">All approved</span>`}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      `;
+    }
+
+    function printReport() {
+      window.print();
+    }
 
     function renderStats() {
       // Counts across the CURRENT filtered set (date/division/employee scope)
