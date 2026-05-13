@@ -56,6 +56,7 @@ async function projectsFromBlobs(sql, companyCode, projectPrefix, indexKey) {
   `;
 
   // Map blob → job; skip nameless / inactive / dup-id rows.
+  // Label shape: "Name · 26045" when a job number exists; just "Name" otherwise.
   const seen = new Set();
   const jobs = [];
   for (const r of rows) {
@@ -68,8 +69,10 @@ async function projectsFromBlobs(sql, companyCode, projectPrefix, indexKey) {
     const status = (blob.status || '').trim();
     const isActive = !status || ACTIVE_PROJECT_STATUSES.includes(status);
     if (!isActive) continue;
+    const jobNum = String(blob['job-number'] || blob.job_number || '').trim();
+    const label  = jobNum ? `${name} · ${jobNum}` : name;
     seen.add(id);
-    jobs.push({ id: String(id), label: name });
+    jobs.push({ id: String(id), label });
   }
 
   jobs.sort((a, b) => a.label.localeCompare(b.label));
