@@ -1479,12 +1479,9 @@
           margin: 0.3,
           filename: `datawatch-projects-${today}.pdf`,
           image: { type: 'jpeg', quality: 0.95 },
-          // windowWidth pins the rendering viewport to the wrapper's CSS
-          // pixel width (13.2in × 96 ≈ 1267px) so percent-based layout
-          // math is stable across browsers.
-          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false, windowWidth: 1267 },
+          html2canvas: { scale: 2, backgroundColor: '#ffffff', logging: false },
           jsPDF: { unit: 'in', format: [14, 11], orientation: 'landscape' },
-          pagebreak: { mode: ['css', 'legacy'], avoid: 'tr' }
+          pagebreak: { mode: ['css'], avoid: 'tr' }
         }).from(wrapper).save();
       } catch (err) {
         console.error('PDF generation failed', err);
