@@ -376,8 +376,10 @@ module.exports = async (req, res) => {
       `;
       if (!existing) return res.status(404).json({ error: 'Entry not found' });
 
-      const isOwnDraft        = existing.user_id === userId && existing.status === 'draft';
-      const isAdminEditable   = canAdmin && existing.status === 'submitted';
+      const isOwnDraft      = existing.user_id === userId && existing.status === 'draft';
+      // Payroll admins may correct mistakes on both submitted AND approved
+      // entries — the audit log records the prior snapshot either way.
+      const isAdminEditable = canAdmin && (existing.status === 'submitted' || existing.status === 'approved');
       if (!isOwnDraft && !isAdminEditable) {
         return res.status(403).json({ error: 'This entry cannot be edited from your account' });
       }

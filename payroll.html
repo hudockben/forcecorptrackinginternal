@@ -783,7 +783,7 @@
             <td>${escapeHtml(sup)}</td>
             <td><span class="badge badge-${e.status}">${e.status}</span></td>
             <td class="td-actions">
-              ${isPending ? `<button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>` : ''}
+              <button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>
               ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
             </td>
           </tr>
@@ -927,7 +927,8 @@
       const e = filtered.find(x => x.id === id);
       if (!e) return;
       editingEntry = e;
-      document.getElementById('editTitle').textContent = `Edit — ${e.username} · ${prettyDate(e.work_date)}`;
+      const titleSuffix = e.status === 'approved' ? ' · ⚠ already approved' : '';
+      document.getElementById('editTitle').textContent = `Edit — ${e.username} · ${prettyDate(e.work_date)}${titleSuffix}`;
       document.getElementById('editMsg').textContent   = '';
 
       const grid = document.getElementById('editGrid');
@@ -1056,6 +1057,9 @@
 
     async function saveEdit() {
       if (!editingEntry) return;
+      if (editingEntry.status === 'approved') {
+        if (!confirm('This entry has already been approved. Save your edits anyway?\n\nThe entry stays approved and the audit log will record this admin edit.')) return;
+      }
       const msg = document.getElementById('editMsg');
       msg.className = 'modal-msg';
 
