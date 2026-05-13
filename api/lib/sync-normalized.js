@@ -108,17 +108,19 @@ async function syncLists(sql, companyCode, lists) {
     const rate      = typeof e === 'object' ? safeFloat(e.rate)                     : null;
     const pwRate    = typeof e === 'object' ? safeFloat(e.pw_rate    ?? e.pwRate)   : null;
     const nonPwRate = typeof e === 'object' ? safeFloat(e.non_pw_rate ?? e.nonPwRate): null;
+    const isSup     = typeof e === 'object' ? Boolean(e.is_supervisor)              : false;
 
     await sql`
-      INSERT INTO employees (company_code, name, job_class, rate, pw_rate, non_pw_rate, sort_order, updated_at)
-      VALUES (${companyCode}, ${name}, ${jobClass}, ${rate}, ${pwRate}, ${nonPwRate}, ${i}, NOW())
+      INSERT INTO employees (company_code, name, job_class, rate, pw_rate, non_pw_rate, is_supervisor, sort_order, updated_at)
+      VALUES (${companyCode}, ${name}, ${jobClass}, ${rate}, ${pwRate}, ${nonPwRate}, ${isSup}, ${i}, NOW())
       ON CONFLICT (company_code, name) DO UPDATE SET
-        job_class   = EXCLUDED.job_class,
-        rate        = EXCLUDED.rate,
-        pw_rate     = EXCLUDED.pw_rate,
-        non_pw_rate = EXCLUDED.non_pw_rate,
-        sort_order  = EXCLUDED.sort_order,
-        updated_at  = NOW()
+        job_class     = EXCLUDED.job_class,
+        rate          = EXCLUDED.rate,
+        pw_rate       = EXCLUDED.pw_rate,
+        non_pw_rate   = EXCLUDED.non_pw_rate,
+        is_supervisor = EXCLUDED.is_supervisor,
+        sort_order    = EXCLUDED.sort_order,
+        updated_at    = NOW()
     `;
     employees++;
   }

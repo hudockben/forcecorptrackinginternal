@@ -20,8 +20,9 @@ module.exports = async (req, res) => {
     if (req.method === 'GET') {
       const rows = await sql`
         SELECT id, name, job_class,
-               pw_rate      AS prevailing_rate,
-               non_pw_rate  AS non_prevailing_rate,
+               pw_rate       AS prevailing_rate,
+               non_pw_rate   AS non_prevailing_rate,
+               is_supervisor,
                sort_order
         FROM   employees
         WHERE  company_code = ${companyCode} AND active = TRUE
@@ -52,19 +53,21 @@ module.exports = async (req, res) => {
       for (const e of incoming) {
         const pwRate    = parseFloat(e.prevailing_rate    ?? e.pw_rate)    || null;
         const nonPwRate = parseFloat(e.non_prevailing_rate ?? e.non_pw_rate) || null;
+        const isSup     = Boolean(e.is_supervisor);
         await sql`
-          INSERT INTO employees (company_code, name, job_class, pw_rate, non_pw_rate, sort_order, active, updated_at)
+          INSERT INTO employees (company_code, name, job_class, pw_rate, non_pw_rate, is_supervisor, sort_order, active, updated_at)
           VALUES (
             ${companyCode}, ${e.name.trim()}, ${e.job_class || null},
-            ${pwRate}, ${nonPwRate}, ${e._i}, TRUE, NOW()
+            ${pwRate}, ${nonPwRate}, ${isSup}, ${e._i}, TRUE, NOW()
           )
           ON CONFLICT (company_code, name) DO UPDATE SET
-            job_class   = EXCLUDED.job_class,
-            pw_rate     = EXCLUDED.pw_rate,
-            non_pw_rate = EXCLUDED.non_pw_rate,
-            sort_order  = EXCLUDED.sort_order,
-            active      = TRUE,
-            updated_at  = NOW()
+            job_class     = EXCLUDED.job_class,
+            pw_rate       = EXCLUDED.pw_rate,
+            non_pw_rate   = EXCLUDED.non_pw_rate,
+            is_supervisor = EXCLUDED.is_supervisor,
+            sort_order    = EXCLUDED.sort_order,
+            active        = TRUE,
+            updated_at    = NOW()
         `;
       }
       return res.json({ ok: true });
@@ -72,26 +75,29 @@ module.exports = async (req, res) => {
 
     // ── POST (single create) ──────────────────────────────────────────────
     if (req.method === 'POST') {
-      const { name, job_class, prevailing_rate, non_prevailing_rate } = req.body || {};
+      const { name, job_class, prevailing_rate, non_prevailing_rate, is_supervisor } = req.body || {};
       if (!name?.trim()) return res.status(400).json({ error: 'name required' });
 
       const [row] = await sql`
-        INSERT INTO employees (company_code, name, job_class, pw_rate, non_pw_rate, sort_order, active, updated_at)
+        INSERT INTO employees (company_code, name, job_class, pw_rate, non_pw_rate, is_supervisor, sort_order, active, updated_at)
         VALUES (
           ${companyCode}, ${name.trim()}, ${job_class || null},
           ${parseFloat(prevailing_rate) || null},
           ${parseFloat(non_prevailing_rate) || null},
+          ${Boolean(is_supervisor)},
           (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM employees WHERE company_code = ${companyCode}),
           TRUE, NOW()
         )
         ON CONFLICT (company_code, name) DO UPDATE SET
-          job_class   = EXCLUDED.job_class,
-          pw_rate     = EXCLUDED.pw_rate,
-          non_pw_rate = EXCLUDED.non_pw_rate,
-          active      = TRUE,
-          updated_at  = NOW()
+          job_class     = EXCLUDED.job_class,
+          pw_rate       = EXCLUDED.pw_rate,
+          non_pw_rate   = EXCLUDED.non_pw_rate,
+          is_supervisor = EXCLUDED.is_supervisor,
+          active        = TRUE,
+          updated_at    = NOW()
         RETURNING id, name, job_class,
                   pw_rate AS prevailing_rate, non_pw_rate AS non_prevailing_rate,
+                  is_supervisor,
                   sort_order
       `;
       return res.status(201).json({ employee: row });
