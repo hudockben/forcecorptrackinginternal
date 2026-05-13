@@ -1339,15 +1339,30 @@
           ? Promise.resolve()
           : new Promise(r => { img.onload = img.onerror = r; })
       ));
-      await new Promise(r => setTimeout(r, 120));
+      // Also wait for any web fonts to settle — font metrics shift row height
+      // by a few pixels, and on systems without Segoe UI the fallback can
+      // render taller than the measurement implies.
+      if (document.fonts && document.fonts.ready) {
+        try { await document.fonts.ready; } catch {}
+      }
+      await new Promise(r => setTimeout(r, 250));
 
       const today = new Date().toISOString().slice(0, 10);
       try {
         // Width is fixed at 14" so all ten columns fit. Height grows to fit
         // however many projects are pinned — a fixed 11" page clipped rows
-        // 5+ once the rubber-inventory strip pushed the table down. The
-        // 0.6" buffer covers font-metric slop so the last row can't be
-        // shaved off by a fractional-pixel measurement.
+        // 5+ once the rubber-inventory strip pushed the table down.
+        //
+        // The page-height calculation has two safeguards:
+        //  • A measured-height path: wrapper.offsetHeight + a 1.5" buffer.
+        //    The buffer covers font-metric drift (Segoe UI vs fallback can
+        //    push each row 1–2px taller, which compounds across 7+ rows).
+        //  • A row-count path: assume up to 0.55" per row plus 3.5" of
+        //    fixed header / inventory / table-header overhead. This protects
+        //    against scenarios where offsetHeight is read before the cloned
+        //    section has fully settled (we've seen browsers report a
+        //    several-row underestimate when fonts swap mid-measurement).
+        // We take the larger of the two so we never underestimate.
         //
         // Orientation must match the page aspect or jsPDF silently swaps the
         // dimensions (portrait expects height>=width, landscape the opposite),
@@ -1355,8 +1370,16 @@
         // table's left columns off the page.
         const margin = 0.3;
         const measuredPx = Math.max(wrapper.offsetHeight, wrapper.scrollHeight);
-        const heightIn = measuredPx / 96;
-        const pageHeightIn = Math.max(11, heightIn + margin * 2 + 0.6);
+        const measuredIn = measuredPx / 96;
+        const numRows = wrapper.querySelectorAll('.ptable tbody tr').length;
+        // Pessimistic estimate: ~5" of fixed overhead (page header, section
+        // head, rubber-inventory strip, table header, paddings) plus 0.75"
+        // per row. Production systems have rendered rows taller than the
+        // local browser measurement implies (font fallback / DPI quirks),
+        // so taking the larger of measured and estimated avoids overflow.
+        const estimatedIn = 5 + numRows * 0.75;
+        const heightIn = Math.max(measuredIn, estimatedIn);
+        const pageHeightIn = Math.max(11, heightIn + margin * 2 + 1.5);
         const orientation = pageHeightIn > 14 ? 'portrait' : 'landscape';
         await html2pdf().set({
           margin,
