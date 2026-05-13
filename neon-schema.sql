@@ -838,3 +838,83 @@ CREATE TABLE IF NOT EXISTS quarry_sales_entries (
 CREATE INDEX IF NOT EXISTS idx_qs_company_date     ON quarry_sales_entries(company_code, date);
 CREATE INDEX IF NOT EXISTS idx_qs_company_customer ON quarry_sales_entries(company_code, customer_name);
 CREATE INDEX IF NOT EXISTS idx_qs_company_product  ON quarry_sales_entries(company_code, product_name);
+
+-- ─────────────────────────────────────────────────
+-- EMPLOYEES — is_supervisor flag for Timesheet supervisor dropdown
+-- ─────────────────────────────────────────────────
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_supervisor BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_employees_supervisor ON employees(company_code, is_supervisor)
+  WHERE is_supervisor = TRUE;
+
+-- ─────────────────────────────────────────────────
+-- TIMESHEET ENTRIES
+-- Field-employee time entries. Two row shapes share one table,
+-- discriminated by entry_type:
+--   'daily'    → day-of-work entry: division, job, start/end time, etc.
+--   'time_off' → vacation/sick/etc., with time_off_type + date only.
+--
+-- Field users (divisionRoles.timesheet) own the create/edit path for
+-- their own rows up through 'submitted'. Once submitted, only payroll
+-- admins (divisionRoles.payroll) may edit or approve. This data is
+-- INTENTIONALLY separate from daily_tracking.labor_hours and
+-- dust_control_entries — payroll consumes timesheet_entries only.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS timesheet_entries (
+    id                  BIGSERIAL PRIMARY KEY,
+    company_code        TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id             INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    username            TEXT          NOT NULL,
+    employee_id         INTEGER,                  -- optional FK to employees (filled in later)
+    entry_type          TEXT          NOT NULL CHECK (entry_type IN ('daily','time_off')),
+    work_date           DATE          NOT NULL,
+    status              TEXT          NOT NULL DEFAULT 'draft'
+                                       CHECK (status IN ('draft','submitted','approved')),
+
+    -- Daily fields (nullable for time_off)
+    division            TEXT,                     -- 'turf' | 'dust' | 'paving' | 'trucking' | 'quarry'
+    job_id              TEXT,                     -- division-specific ID
+    job_label           TEXT,                     -- denormalized at submit time so it never breaks
+    start_time          TEXT,                     -- "HH:MM"
+    end_time            TEXT,                     -- "HH:MM"
+    computed_hours      NUMERIC(6,2),             -- server-computed from start_time/end_time
+    lunch_break         BOOLEAN,
+    operated_equipment  BOOLEAN,
+    supervisor_id       INTEGER,                  -- references employees.id
+    supervisor_name     TEXT,                     -- denormalized
+    notes               TEXT,
+
+    -- Time off fields (nullable for daily)
+    time_off_type       TEXT          CHECK (time_off_type IN ('vacation','sick','jury_duty','bereavement','holiday')),
+
+    -- Workflow audit
+    submitted_at        TIMESTAMPTZ,
+    approved_at         TIMESTAMPTZ,
+    approved_by_user_id INTEGER,
+    approved_by_name    TEXT,
+
+    created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ts_company_user_date ON timesheet_entries(company_code, user_id, work_date DESC);
+CREATE INDEX IF NOT EXISTS idx_ts_company_status    ON timesheet_entries(company_code, status, work_date DESC);
+CREATE INDEX IF NOT EXISTS idx_ts_company_div_job   ON timesheet_entries(company_code, division, job_id);
+
+-- ─────────────────────────────────────────────────
+-- TIMESHEET AUDIT LOG
+-- One row per state-changing action on timesheet_entries.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS timesheet_audit_log (
+    id            BIGSERIAL PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    entry_id      BIGINT        NOT NULL,
+    action        TEXT          NOT NULL CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','ADMIN_EDIT','DELETE')),
+    user_id       INTEGER,
+    username      TEXT,
+    changes       JSONB,
+    snapshot      JSONB,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ts_audit_company    ON timesheet_audit_log(company_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ts_audit_entry      ON timesheet_audit_log(entry_id, created_at DESC);

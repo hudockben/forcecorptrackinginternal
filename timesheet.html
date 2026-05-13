@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2314b8a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='17' rx='2'/><line x1='3' y1='9' x2='21' y2='9'/><line x1='8' y1='2' x2='8' y2='6'/><line x1='16' y1='2' x2='16' y2='6'/></svg>" />
+  <title>Timesheet — Submit Time</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #14141d;
+      --surface2:  #1c1c28;
+      --border:    #2a2a3a;
+      --accent:    #14b8a6;
+      --accent-d:  #0d9488;
+      --text:      #e8e8ee;
+      --muted:     #888;
+      --red:       #ef4444;
+      --yellow:    #eab308;
+      --green:     #22c55e;
+      --blue:      #60a5fa;
+    }
+
+    html, body { height: 100%; overscroll-behavior-y: none; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.4;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.9rem 1rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      padding-top: calc(0.9rem + env(safe-area-inset-top, 0));
+    }
+    .brand {
+      font-size: 0.65rem;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    .user-chip {
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    .user-chip strong { color: var(--text); font-weight: 600; }
+    .icon-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 0.5rem 0.7rem;
+      border-radius: 6px;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .icon-btn:active { color: var(--text); border-color: #555; }
+
+    main {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    /* ── Section card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+    .card-title {
+      font-size: 0.66rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .card-sub {
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    /* ── Type toggle (Daily / Time Off) ── */
+    .toggle {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.35rem;
+    }
+    .toggle button {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      letter-spacing: 0.01em;
+      transition: background 0.15s, color 0.15s;
+    }
+    .toggle button.active {
+      background: var(--accent);
+      color: #003;
+    }
+
+    /* ── Form fields ── */
+    .row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+    .row-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.7rem;
+    }
+    label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    input, select, textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1rem;
+      padding: 0.85rem 0.8rem;
+      font-family: inherit;
+      outline: none;
+      min-height: 48px;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+    select {
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'><polyline points='6 9 12 15 18 9'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 0.6rem center;
+      background-size: 18px;
+      padding-right: 2rem;
+    }
+    textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+
+    /* ── Yes/No segmented pill ── */
+    .seg {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.3rem;
+    }
+    .seg button {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 0.65rem;
+      border-radius: 7px;
+      cursor: pointer;
+      min-height: 42px;
+    }
+    .seg button.on   { background: var(--accent); color: #003; }
+    .seg button.off  { background: var(--border); color: var(--text); }
+
+    /* ── Time-off type radio grid ── */
+    .pills {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+    }
+    .pill {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.9rem 0.7rem;
+      text-align: center;
+      font-size: 0.92rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--text);
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .pill.active {
+      background: var(--accent);
+      color: #003;
+      border-color: var(--accent);
+    }
+
+    /* ── Computed hours display ── */
+    .computed {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.7rem 0.85rem;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+    }
+    .computed .label {
+      font-size: 0.66rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .computed .value {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── Action buttons ── */
+    .btn-row {
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .btn {
+      flex: 1;
+      min-height: 50px;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #003;
+    }
+    .btn-primary:active { background: var(--accent-d); }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:active { background: var(--border); }
+    .btn-danger {
+      background: rgba(239,68,68,0.12);
+      color: var(--red);
+      border: 1px solid rgba(239,68,68,0.3);
+    }
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* ── Status badges ── */
+    .badge {
+      display: inline-block;
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.55rem;
+      border-radius: 4px;
+    }
+    .badge-draft     { background: rgba(136,136,136,0.15); color: var(--muted); }
+    .badge-submitted { background: rgba(96,165,250,0.15); color: var(--blue); }
+    .badge-approved  { background: rgba(34,197,94,0.15);  color: var(--green); }
+
+    /* ── Entries list ── */
+    .entry {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .entry.draft { cursor: pointer; }
+    .entry.draft:active { background: var(--surface2); }
+    .entry-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem;
+    }
+    .entry-date {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .entry-meta {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .entry-hours {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+    .entry-empty {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+      padding: 1.5rem 1rem;
+    }
+    .entry-audit {
+      font-size: 0.7rem;
+      color: var(--muted);
+      padding-top: 0.45rem;
+      margin-top: 0.2rem;
+      border-top: 1px dashed var(--border);
+      line-height: 1.4;
+    }
+
+    /* ── Toast / inline message ── */
+    .msg {
+      font-size: 0.85rem;
+      min-height: 1.2em;
+      padding: 0.1rem 0.2rem;
+    }
+    .msg.error   { color: var(--red); }
+    .msg.success { color: var(--green); }
+
+    /* ── No-access screen ── */
+    .no-access {
+      max-width: 420px;
+      margin: 4rem auto;
+      padding: 2rem 1.25rem;
+      text-align: center;
+    }
+    .no-access h2 {
+      font-size: 1.3rem;
+      color: var(--text);
+      margin-bottom: 0.6rem;
+    }
+    .no-access p {
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin-bottom: 1.5rem;
+    }
+
+    .hidden { display: none !important; }
+
+    /* ── Tablet+ ── */
+    @media (min-width: 720px) {
+      main { padding: 1.5rem; }
+      .row-2 { gap: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">Timesheet</div>
+    <div class="header-right">
+      <div class="user-chip" id="userChip"></div>
+      <button class="icon-btn" id="switchBtn" style="display:none" onclick="goToDivisions()">Switch</button>
+      <button class="icon-btn" onclick="signOut()">Sign Out</button>
+    </div>
+  </header>
+
+  <main id="mainContent">
+
+    <!-- ── Entry form ── -->
+    <section class="card" id="formCard">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="card-title" id="formTitle">New Entry</div>
+        <span class="badge" id="formBadge" style="display:none"></span>
+      </div>
+
+      <!-- Type toggle -->
+      <div class="toggle" role="tablist" aria-label="Entry type">
+        <button id="tab-daily"    class="active" onclick="setType('daily')">Daily</button>
+        <button id="tab-time-off"            onclick="setType('time_off')">Time Off</button>
+      </div>
+
+      <!-- Daily fields -->
+      <div id="dailyFields" style="display:flex;flex-direction:column;gap:0.85rem">
+        <div class="row">
+          <label for="f-date">Date</label>
+          <input type="date" id="f-date" />
+        </div>
+
+        <div class="row-2">
+          <div class="row">
+            <label for="f-division">Division</label>
+            <select id="f-division" onchange="onDivisionChange()">
+              <option value="">— pick —</option>
+              <option value="turf">Turf</option>
+              <option value="dust">Dust</option>
+              <option value="paving">Paving</option>
+              <option value="trucking">Trucking</option>
+              <option value="quarry">Quarry</option>
+            </select>
+          </div>
+          <div class="row">
+            <label for="f-job">Job</label>
+            <select id="f-job" disabled>
+              <option value="">— pick division first —</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row-2">
+          <div class="row">
+            <label for="f-start">Start time</label>
+            <input type="time" id="f-start" onchange="updateHours()" oninput="updateHours()" />
+          </div>
+          <div class="row">
+            <label for="f-end">End time</label>
+            <input type="time" id="f-end" onchange="updateHours()" oninput="updateHours()" />
+          </div>
+        </div>
+
+        <div class="computed">
+          <span class="label">Hours</span>
+          <span class="value" id="f-hours">0.00</span>
+        </div>
+
+        <div class="row">
+          <label>Lunch break?</label>
+          <div class="seg" id="seg-lunch">
+            <button type="button" data-val="true"  onclick="setSeg('lunch', true)">Yes</button>
+            <button type="button" data-val="false" onclick="setSeg('lunch', false)">No</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <label>Operated equipment?</label>
+          <div class="seg" id="seg-equip">
+            <button type="button" data-val="true"  onclick="setSeg('equip', true)">Yes</button>
+            <button type="button" data-val="false" onclick="setSeg('equip', false)">No</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <label for="f-supervisor">Supervisor</label>
+          <select id="f-supervisor">
+            <option value="">— pick —</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <label for="f-notes">Notes <span style="text-transform:none;font-weight:400">(optional)</span></label>
+          <textarea id="f-notes" placeholder="Anything the office should know"></textarea>
+        </div>
+      </div>
+
+      <!-- Time off fields -->
+      <div id="timeOffFields" style="display:none;flex-direction:column;gap:0.85rem">
+        <div class="row">
+          <label>Type</label>
+          <div class="pills" id="off-pills">
+            <div class="pill" data-val="vacation"   onclick="setOffType('vacation')">Vacation</div>
+            <div class="pill" data-val="sick"       onclick="setOffType('sick')">Sick</div>
+            <div class="pill" data-val="jury_duty"  onclick="setOffType('jury_duty')">Jury Duty</div>
+            <div class="pill" data-val="bereavement"onclick="setOffType('bereavement')">Bereavement</div>
+            <div class="pill" data-val="holiday"    onclick="setOffType('holiday')">Holiday</div>
+          </div>
+        </div>
+        <div class="row">
+          <label for="f-off-date">Date</label>
+          <input type="date" id="f-off-date" />
+        </div>
+        <div class="row">
+          <label for="f-off-notes">Notes <span style="text-transform:none;font-weight:400">(optional)</span></label>
+          <textarea id="f-off-notes" placeholder="Anything the office should know"></textarea>
+        </div>
+      </div>
+
+      <div class="msg" id="formMsg"></div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" id="btn-reset" onclick="resetForm()">Reset</button>
+        <button class="btn btn-secondary" id="btn-save"  onclick="saveDraft()">Save Draft</button>
+        <button class="btn btn-primary"   id="btn-submit"onclick="submitEntry()">Submit</button>
+      </div>
+      <div class="btn-row" id="row-delete" style="display:none">
+        <button class="btn btn-danger" onclick="deleteDraft()">Delete Draft</button>
+      </div>
+    </section>
+
+    <!-- ── Past entries ── -->
+    <section class="card">
+      <div class="card-title">My Recent Entries</div>
+      <div id="entriesList"><div class="entry-empty">Loading…</div></div>
+    </section>
+
+  </main>
+
+  <!-- ── No-access fallback ── -->
+  <div id="noAccess" class="no-access hidden">
+    <h2>No Timesheet Access</h2>
+    <p>Your account doesn't have permission to submit time entries. Ask a company admin to grant you Timesheet access.</p>
+    <button class="btn btn-secondary" style="max-width:240px;margin:0 auto" onclick="goToDivisions()">Back to Divisions</button>
+  </div>
+
+  <script>
+    // ── Auth + access guard ────────────────────────────────────────────────
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) window.location.replace('index.html');
+
+    const isPlatformAdmin = Boolean(user && user.isPlatformAdmin);
+    const allowedDivisions = Array.isArray(user && user.allowedDivisions) ? user.allowedDivisions : [];
+    const hasTimesheet = isPlatformAdmin || allowedDivisions.includes('timesheet');
+    const otherDivisions = allowedDivisions.filter(d => d !== 'timesheet');
+
+    if (!hasTimesheet) {
+      document.getElementById('mainContent').classList.add('hidden');
+      document.getElementById('noAccess').classList.remove('hidden');
+    } else {
+      // Show "Switch" only when this user has more than just timesheet
+      if (isPlatformAdmin || otherDivisions.length > 0) {
+        document.getElementById('switchBtn').style.display = '';
+      }
+      document.getElementById('userChip').innerHTML =
+        `<strong>${escapeHtml(user.username)}</strong>`;
+      init();
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    // ── State ──────────────────────────────────────────────────────────────
+    let currentType   = 'daily';
+    let lunchVal      = null;
+    let equipVal      = null;
+    let offType       = null;
+    let editingId     = null;     // null = new entry; else editing this draft
+    let supervisors   = [];
+    let jobsCache     = {};       // { division: [{id, label}] }
+    let entriesCache  = [];
+
+    async function init() {
+      const today = todayStr();
+      document.getElementById('f-date').value     = today;
+      document.getElementById('f-off-date').value = today;
+
+      await Promise.all([loadSupervisors(), loadEntries()]);
+    }
+
+    function todayStr() {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm   = String(d.getMonth() + 1).padStart(2, '0');
+      const dd   = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    // ── Type toggle ────────────────────────────────────────────────────────
+    function setType(t) {
+      currentType = t;
+      document.getElementById('tab-daily').classList.toggle('active',    t === 'daily');
+      document.getElementById('tab-time-off').classList.toggle('active', t === 'time_off');
+      document.getElementById('dailyFields').style.display   = t === 'daily'    ? 'flex' : 'none';
+      document.getElementById('timeOffFields').style.display = t === 'time_off' ? 'flex' : 'none';
+    }
+
+    function setSeg(which, val) {
+      const segId = which === 'lunch' ? 'seg-lunch' : 'seg-equip';
+      const seg = document.getElementById(segId);
+      seg.querySelectorAll('button').forEach(b => {
+        const v = b.dataset.val === 'true';
+        b.classList.toggle('on',  v === val);
+        b.classList.toggle('off', v !== val);
+      });
+      if (which === 'lunch') lunchVal = val;
+      else                   equipVal = val;
+    }
+
+    function clearSeg(which) {
+      const segId = which === 'lunch' ? 'seg-lunch' : 'seg-equip';
+      const seg = document.getElementById(segId);
+      seg.querySelectorAll('button').forEach(b => b.classList.remove('on', 'off'));
+      if (which === 'lunch') lunchVal = null;
+      else                   equipVal = null;
+    }
+
+    function setOffType(t) {
+      offType = t;
+      document.querySelectorAll('#off-pills .pill').forEach(p => {
+        p.classList.toggle('active', p.dataset.val === t);
+      });
+    }
+
+    // ── Compute hours live ─────────────────────────────────────────────────
+    function updateHours() {
+      const s = document.getElementById('f-start').value;
+      const e = document.getElementById('f-end').value;
+      const out = document.getElementById('f-hours');
+      if (!s || !e) { out.textContent = '0.00'; return; }
+      const [sh, sm] = s.split(':').map(Number);
+      const [eh, em] = e.split(':').map(Number);
+      let mins = (eh * 60 + em) - (sh * 60 + sm);
+      if (mins < 0) mins += 24 * 60;
+      if (mins > 24 * 60) mins = 24 * 60;
+      out.textContent = (mins / 60).toFixed(2);
+    }
+
+    // ── Load supervisors + jobs ───────────────────────────────────────────
+    async function loadSupervisors() {
+      try {
+        const res = await fetch('/api/timesheet-supervisors', { headers: authHeaders() });
+        const data = await res.json();
+        supervisors = Array.isArray(data.supervisors) ? data.supervisors : [];
+      } catch { supervisors = []; }
+      const sel = document.getElementById('f-supervisor');
+      sel.innerHTML = '<option value="">— pick —</option>' +
+        supervisors.map(s => `<option value="${s.id}" data-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
+    }
+
+    async function onDivisionChange() {
+      const div = document.getElementById('f-division').value;
+      const jobSel = document.getElementById('f-job');
+      if (!div) {
+        jobSel.innerHTML = '<option value="">— pick division first —</option>';
+        jobSel.disabled = true;
+        return;
+      }
+      jobSel.innerHTML = '<option value="">Loading jobs…</option>';
+      jobSel.disabled = true;
+      try {
+        if (!jobsCache[div]) {
+          const res = await fetch('/api/timesheet-jobs?division=' + encodeURIComponent(div), {
+            headers: authHeaders(),
+          });
+          const data = await res.json();
+          jobsCache[div] = Array.isArray(data.jobs) ? data.jobs : [];
+        }
+        const jobs = jobsCache[div];
+        if (!jobs.length) {
+          jobSel.innerHTML = '<option value="">(no active jobs)</option>';
+          jobSel.disabled = true;
+          return;
+        }
+        jobSel.innerHTML = '<option value="">— pick —</option>' +
+          jobs.map(j => `<option value="${escapeHtml(j.id)}" data-label="${escapeHtml(j.label)}">${escapeHtml(j.label)}</option>`).join('');
+        jobSel.disabled = false;
+      } catch (err) {
+        jobSel.innerHTML = '<option value="">(error loading)</option>';
+        jobSel.disabled = true;
+      }
+    }
+
+    // ── Entries list ──────────────────────────────────────────────────────
+    async function loadEntries() {
+      const list = document.getElementById('entriesList');
+      list.innerHTML = '<div class="entry-empty">Loading…</div>';
+      try {
+        const res = await fetch('/api/timesheet-entries', { headers: authHeaders() });
+        const data = await res.json();
+        entriesCache = Array.isArray(data.entries) ? data.entries : [];
+        renderEntries();
+      } catch (err) {
+        list.innerHTML = `<div class="entry-empty">Error loading entries.</div>`;
+      }
+    }
+
+    function renderEntries() {
+      const list = document.getElementById('entriesList');
+      if (!entriesCache.length) {
+        list.innerHTML = '<div class="entry-empty">No entries yet. Use the form above to submit your first one.</div>';
+        return;
+      }
+      list.innerHTML = entriesCache.map(e => {
+        const isDraft = e.status === 'draft';
+        const meta = e.entry_type === 'time_off'
+          ? `Time Off — ${prettyOffType(e.time_off_type)}`
+          : `${prettyDivision(e.division)} · ${escapeHtml(e.job_label || '')}${e.start_time && e.end_time ? ` · ${e.start_time}–${e.end_time}` : ''}`;
+        const hours = e.entry_type === 'daily' && e.computed_hours != null
+          ? `${Number(e.computed_hours).toFixed(2)} h`
+          : '';
+        const audit = entryAuditLine(e);
+        return `
+          <div class="entry ${isDraft ? 'draft' : ''}" ${isDraft ? `onclick="editEntry('${e.id}')"` : ''}>
+            <div class="entry-head">
+              <div class="entry-date">${prettyDate(e.work_date)}</div>
+              <span class="badge badge-${e.status}">${e.status}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:flex-end">
+              <div class="entry-meta">${meta}</div>
+              ${hours ? `<div class="entry-hours">${hours}</div>` : ''}
+            </div>
+            ${audit ? `<div class="entry-audit">${audit}</div>` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function entryAuditLine(e) {
+      if (!e || e.status === 'draft') return '';
+      const sub = fmtTs(e.submitted_at);
+      const app = fmtTs(e.approved_at);
+      const bits = [];
+      if (sub) bits.push(`Submitted ${sub}`);
+      if (e.status === 'approved' && app) bits.push(`Approved ${app} by ${escapeHtml(e.approved_by_name || '—')}`);
+      return bits.join(' · ');
+    }
+
+    function fmtTs(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+    }
+
+    function prettyDate(s) {
+      if (!s) return '';
+      const d = new Date(s + 'T00:00:00');
+      return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+    function prettyDivision(d) {
+      if (!d) return '';
+      return d.charAt(0).toUpperCase() + d.slice(1);
+    }
+    function prettyOffType(t) {
+      if (!t) return '';
+      const map = { vacation: 'Vacation', sick: 'Sick', jury_duty: 'Jury Duty', bereavement: 'Bereavement', holiday: 'Holiday' };
+      return map[t] || t;
+    }
+
+    // ── Edit a draft ──────────────────────────────────────────────────────
+    async function editEntry(id) {
+      const e = entriesCache.find(x => x.id === id);
+      if (!e) return;
+      editingId = id;
+      document.getElementById('formTitle').textContent = 'Edit Draft';
+      const badge = document.getElementById('formBadge');
+      badge.textContent = 'draft';
+      badge.className = 'badge badge-draft';
+      badge.style.display = '';
+      document.getElementById('row-delete').style.display = '';
+
+      setType(e.entry_type);
+      if (e.entry_type === 'daily') {
+        document.getElementById('f-date').value     = e.work_date || '';
+        document.getElementById('f-division').value = e.division  || '';
+        await onDivisionChange();
+        document.getElementById('f-job').value = e.job_id || '';
+        document.getElementById('f-start').value = e.start_time || '';
+        document.getElementById('f-end').value   = e.end_time   || '';
+        updateHours();
+        if (e.lunch_break === true || e.lunch_break === false) setSeg('lunch', e.lunch_break);
+        else clearSeg('lunch');
+        if (e.operated_equipment === true || e.operated_equipment === false) setSeg('equip', e.operated_equipment);
+        else clearSeg('equip');
+        document.getElementById('f-supervisor').value = e.supervisor_id || '';
+        document.getElementById('f-notes').value = e.notes || '';
+      } else {
+        offType = e.time_off_type || null;
+        document.querySelectorAll('#off-pills .pill').forEach(p => {
+          p.classList.toggle('active', p.dataset.val === offType);
+        });
+        document.getElementById('f-off-date').value = e.work_date || '';
+        document.getElementById('f-off-notes').value = e.notes || '';
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function resetForm() {
+      editingId = null;
+      document.getElementById('formTitle').textContent = 'New Entry';
+      document.getElementById('formBadge').style.display = 'none';
+      document.getElementById('row-delete').style.display = 'none';
+      setType('daily');
+      document.getElementById('f-date').value     = todayStr();
+      document.getElementById('f-division').value = '';
+      const jobSel = document.getElementById('f-job');
+      jobSel.innerHTML = '<option value="">— pick division first —</option>';
+      jobSel.disabled = true;
+      document.getElementById('f-start').value = '';
+      document.getElementById('f-end').value   = '';
+      updateHours();
+      clearSeg('lunch');
+      clearSeg('equip');
+      document.getElementById('f-supervisor').value = '';
+      document.getElementById('f-notes').value = '';
+      offType = null;
+      document.querySelectorAll('#off-pills .pill').forEach(p => p.classList.remove('active'));
+      document.getElementById('f-off-date').value = todayStr();
+      document.getElementById('f-off-notes').value = '';
+      document.getElementById('formMsg').textContent = '';
+    }
+
+    // ── Build payload from current form state ─────────────────────────────
+    function buildPayload() {
+      if (currentType === 'time_off') {
+        if (!offType) return { error: 'Pick a time-off type.' };
+        const d = document.getElementById('f-off-date').value;
+        if (!d) return { error: 'Pick a date.' };
+        return { data: {
+          entry_type: 'time_off',
+          work_date: d,
+          time_off_type: offType,
+          notes: document.getElementById('f-off-notes').value || '',
+        }};
+      }
+      // daily
+      const d = document.getElementById('f-date').value;
+      if (!d) return { error: 'Pick a date.' };
+      const div = document.getElementById('f-division').value;
+      if (!div) return { error: 'Pick a division.' };
+      const jobSel = document.getElementById('f-job');
+      const jobId = jobSel.value;
+      if (!jobId) return { error: 'Pick a job.' };
+      const jobOpt = jobSel.options[jobSel.selectedIndex];
+      const jobLabel = jobOpt ? jobOpt.dataset.label || jobOpt.textContent : '';
+      const start = document.getElementById('f-start').value;
+      const end   = document.getElementById('f-end').value;
+      if (!start || !end) return { error: 'Pick start and end times.' };
+      if (lunchVal == null) return { error: 'Lunch break? Yes or No.' };
+      if (equipVal == null) return { error: 'Operated equipment? Yes or No.' };
+      const supSel = document.getElementById('f-supervisor');
+      const supId  = supSel.value;
+      if (!supId) return { error: 'Pick a supervisor.' };
+      const supOpt = supSel.options[supSel.selectedIndex];
+      const supName = supOpt ? supOpt.dataset.name || supOpt.textContent : '';
+      return { data: {
+        entry_type: 'daily',
+        work_date: d,
+        division: div,
+        job_id: jobId,
+        job_label: jobLabel,
+        start_time: start,
+        end_time:   end,
+        lunch_break: lunchVal,
+        operated_equipment: equipVal,
+        supervisor_id: supId,
+        supervisor_name: supName,
+        notes: document.getElementById('f-notes').value || '',
+      }};
+    }
+
+    // ── Save / submit / delete ────────────────────────────────────────────
+    async function saveDraft() {
+      const { data, error } = buildPayload();
+      const msg = document.getElementById('formMsg');
+      msg.className = 'msg';
+      if (error) { msg.textContent = error; msg.classList.add('error'); return; }
+
+      const btn = document.getElementById('btn-save');
+      btn.disabled = true;
+      try {
+        const saved = await writeEntry(data);
+        msg.textContent = 'Saved as draft.';
+        msg.classList.add('success');
+        editingId = saved.id;
+        document.getElementById('formTitle').textContent = 'Edit Draft';
+        const badge = document.getElementById('formBadge');
+        badge.textContent = 'draft';
+        badge.className = 'badge badge-draft';
+        badge.style.display = '';
+        document.getElementById('row-delete').style.display = '';
+        await loadEntries();
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.classList.add('error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function submitEntry() {
+      const { data, error } = buildPayload();
+      const msg = document.getElementById('formMsg');
+      msg.className = 'msg';
+      if (error) { msg.textContent = error; msg.classList.add('error'); return; }
+
+      if (!confirm("Submit this entry? You won't be able to edit it after this — only an admin can.")) return;
+
+      const btn = document.getElementById('btn-submit');
+      btn.disabled = true;
+      try {
+        const saved = await writeEntry(data);
+        const res2 = await fetch('/api/timesheet-entries?action=submit&id=' + encodeURIComponent(saved.id), {
+          method: 'POST', headers: authHeaders(),
+        });
+        const j2 = await res2.json();
+        if (!res2.ok || !j2.ok) throw new Error(j2.error || 'Submit failed');
+        msg.textContent = 'Submitted ✓';
+        msg.classList.add('success');
+        resetForm();
+        await loadEntries();
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.classList.add('error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function deleteDraft() {
+      if (!editingId) return;
+      if (!confirm('Delete this draft entry? This cannot be undone.')) return;
+      try {
+        const res = await fetch('/api/timesheet-entries?id=' + encodeURIComponent(editingId), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+        resetForm();
+        await loadEntries();
+      } catch (err) {
+        const msg = document.getElementById('formMsg');
+        msg.className = 'msg error';
+        msg.textContent = err.message;
+      }
+    }
+
+    async function writeEntry(data) {
+      let res;
+      if (editingId) {
+        res = await fetch('/api/timesheet-entries?id=' + encodeURIComponent(editingId), {
+          method: 'PUT', headers: authHeaders(true), body: JSON.stringify(data),
+        });
+      } else {
+        res = await fetch('/api/timesheet-entries', {
+          method: 'POST', headers: authHeaders(true), body: JSON.stringify(data),
+        });
+      }
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+      return j.entry;
+    }
+
+    function authHeaders(json) {
+      const h = { Authorization: `Bearer ${token}` };
+      if (json) h['Content-Type'] = 'application/json';
+      return h;
+    }
+
+    function goToDivisions() {
+      window.location.replace('divisions.html');
+    }
+    function signOut() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+  </script>
+</body>
+</html>

@@ -109,6 +109,9 @@ async function syncLists(sql, companyCode, lists) {
     const pwRate    = typeof e === 'object' ? safeFloat(e.pw_rate    ?? e.pwRate)   : null;
     const nonPwRate = typeof e === 'object' ? safeFloat(e.non_pw_rate ?? e.nonPwRate): null;
 
+    // is_supervisor is intentionally NOT in the UPDATE SET — that flag is managed
+    // globally via divisions.html "Manage Supervisors" and must survive every
+    // sync of the per-division employee list blob.
     await sql`
       INSERT INTO employees (company_code, name, job_class, rate, pw_rate, non_pw_rate, sort_order, updated_at)
       VALUES (${companyCode}, ${name}, ${jobClass}, ${rate}, ${pwRate}, ${nonPwRate}, ${i}, NOW())
