@@ -304,6 +304,22 @@
       margin-left: 0.5rem;
     }
     .mu-cancel-btn:hover { color: var(--text); border-color: #555; }
+    .sup-toggle {
+      position: relative; display: inline-block; width: 44px; height: 22px; cursor: pointer;
+    }
+    .sup-toggle input { opacity: 0; width: 0; height: 0; }
+    .sup-toggle .slider {
+      position: absolute; inset: 0; background: var(--border); border-radius: 22px;
+      transition: background 0.18s;
+    }
+    .sup-toggle .slider::before {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 18px; height: 18px; border-radius: 50%; background: #fff;
+      transition: transform 0.18s;
+    }
+    .sup-toggle input:checked + .slider { background: var(--green); }
+    .sup-toggle input:checked + .slider::before { transform: translateX(22px); }
+    .sup-toggle input:disabled + .slider { opacity: 0.5; cursor: not-allowed; }
 
     /* ── Main ── */
     main {
@@ -574,7 +590,8 @@
         <div class="user-label" id="userLabel"></div>
         <span class="platform-badge" id="platformBadge" style="display:none">Platform Admin</span>
       </div>
-      <button class="add-user-btn" id="addUserBtn" style="display:none" onclick="openUserModal()">+ Manage Users</button>
+      <button class="add-user-btn" id="addUserBtn"        style="display:none" onclick="openUserModal()">+ Manage Users</button>
+      <button class="add-user-btn" id="manageSupervisorsBtn" style="display:none" onclick="openSupervisorsModal()">+ Manage Supervisors</button>
       <button class="sign-out-btn" onclick="signOut()">Sign Out</button>
     </div>
   </header>
@@ -726,6 +743,47 @@
           <button class="mu-cancel-btn" id="mu-cancel-btn" style="display:none" onclick="resetUserForm()">Cancel</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ── Manage Supervisors modal ── -->
+  <div class="modal-backdrop" id="supervisorsModalBackdrop">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title">Manage Supervisors</div>
+        <button class="modal-close" onclick="closeSupervisorsModal()">&#10005;</button>
+      </div>
+
+      <div style="font-size:0.78rem;color:var(--muted);line-height:1.55">
+        Flag any employee as a supervisor to make them selectable in the
+        field-employee Timesheet form. Changes apply company-wide and save
+        immediately.
+      </div>
+
+      <div style="display:flex;gap:0.6rem;align-items:center">
+        <input type="text" id="sup-search" placeholder="Search employees…"
+          style="flex:1" oninput="renderSupervisorList()" />
+        <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;cursor:pointer">
+          <input type="checkbox" id="sup-only" onchange="renderSupervisorList()" /> Supervisors only
+        </label>
+      </div>
+
+      <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;max-height:55vh;overflow-y:auto">
+        <table class="user-table">
+          <thead>
+            <tr>
+              <th>Employee</th>
+              <th>Job Class</th>
+              <th style="text-align:right">Supervisor</th>
+            </tr>
+          </thead>
+          <tbody id="supListBody">
+            <tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div id="sup-result" class="modal-result"></div>
     </div>
   </div>
 
@@ -992,9 +1050,10 @@
       }
     }
 
-    // ── Show Manage Users button for admins ─────────────────────────────────
+    // ── Show admin-only buttons ─────────────────────────────────────────────
     if (user && (user.role === 'admin' || isPlatformAdmin)) {
       document.getElementById('addUserBtn').style.display = '';
+      document.getElementById('manageSupervisorsBtn').style.display = '';
     }
 
     // ── User modal ──────────────────────────────────────────────────────────
@@ -1197,6 +1256,102 @@
         else alert(data.error || 'Error removing user.');
       } catch (err) {
         alert(err.message);
+      }
+    }
+
+    // ── Manage Supervisors modal ────────────────────────────────────────────
+    let supEmployees = []; // full list from /api/employees
+
+    function openSupervisorsModal() {
+      document.getElementById('supervisorsModalBackdrop').classList.add('open');
+      document.getElementById('sup-search').value = '';
+      document.getElementById('sup-only').checked = false;
+      document.getElementById('sup-result').textContent = '';
+      loadSupervisorList();
+    }
+    function closeSupervisorsModal() {
+      document.getElementById('supervisorsModalBackdrop').classList.remove('open');
+    }
+    document.getElementById('supervisorsModalBackdrop').addEventListener('click', function(e) {
+      if (e.target === this) closeSupervisorsModal();
+    });
+
+    async function loadSupervisorList() {
+      const tbody = document.getElementById('supListBody');
+      tbody.innerHTML = '<tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      try {
+        const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token}` } });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        supEmployees = Array.isArray(data.employees) ? data.employees : [];
+        renderSupervisorList();
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="3" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+      }
+    }
+
+    function renderSupervisorList() {
+      const tbody = document.getElementById('supListBody');
+      const q     = (document.getElementById('sup-search').value || '').toLowerCase().trim();
+      const onlySups = document.getElementById('sup-only').checked;
+
+      let list = supEmployees;
+      if (q)        list = list.filter(e => (e.name || '').toLowerCase().includes(q));
+      if (onlySups) list = list.filter(e => e.is_supervisor === true);
+
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">No employees match.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = list.map(e => `
+        <tr>
+          <td style="font-weight:600">${escSupHtml(e.name)}</td>
+          <td style="color:var(--muted)">${escSupHtml(e.job_class || '—')}</td>
+          <td style="text-align:right">
+            <label class="sup-toggle" title="Toggle supervisor">
+              <input type="checkbox" data-emp-id="${e.id}" ${e.is_supervisor ? 'checked' : ''} onchange="toggleSupervisor(this)" />
+              <span class="slider"></span>
+            </label>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function escSupHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    async function toggleSupervisor(el) {
+      const id      = parseInt(el.dataset.empId, 10);
+      const checked = el.checked;
+      const result  = document.getElementById('sup-result');
+      el.disabled   = true;
+      result.style.color = 'var(--muted)';
+      result.textContent = 'Saving…';
+      try {
+        const res = await fetch('/api/employees?id=' + encodeURIComponent(id), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ is_supervisor: checked }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed');
+        // Update the in-memory list so the "Supervisors only" filter stays accurate
+        const emp = supEmployees.find(e => e.id === id);
+        if (emp) emp.is_supervisor = checked;
+        result.style.color = 'var(--green)';
+        result.textContent = (data.employee?.name || 'Employee') +
+          (checked ? ' is now a supervisor.' : ' is no longer a supervisor.');
+        setTimeout(() => { if (result.textContent.endsWith('supervisor.')) result.textContent = ''; }, 2500);
+      } catch (err) {
+        // Roll back the checkbox
+        el.checked = !checked;
+        result.style.color = '#ef4444';
+        result.textContent = err.message;
+      } finally {
+        el.disabled = false;
       }
     }
 

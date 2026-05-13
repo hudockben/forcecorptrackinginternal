@@ -944,8 +944,6 @@
       flex: 0 0 100px; text-align: right; color: #86efac;
     }
     .list-item-label { font-size: 0.7rem; color: var(--muted); white-space: nowrap; }
-    .emp-sup-label { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.72rem; color: var(--muted); white-space: nowrap; cursor: pointer; }
-    .emp-sup-label input[type="checkbox"] { width: 14px; height: 14px; margin: 0; cursor: pointer; accent-color: var(--green); }
     .list-item .remove-item {
       background: none; border: none; color: #555;
       cursor: pointer; font-size: 13px; padding: 0 2px;
@@ -2906,7 +2904,6 @@
           <input type="number" id="new-emp-np-rate"  placeholder="Non-PW Rate" class="cost-new" step="any" />
           <input type="number" id="new-emp-pw-rate"  placeholder="PW Rate"     class="cost-new" step="any" />
           <select id="new-emp-job-class" class="cost-new"><option value="">— Job Class —</option></select>
-          <label class="emp-sup-label" title="Field employees can pick this person from the Timesheet supervisor dropdown"><input type="checkbox" id="new-emp-supervisor" /> Sup</label>
           <button class="btn btn-green" onclick="addListItem('employees')">+ Add</button>
         </div>
       </div>
@@ -9388,7 +9385,7 @@ function renderAllListPanels() {
     });
   });
 
-  // Employees (name, non-prevailing rate, prevailing rate, job class, supervisor flag)
+  // Employees (name, non-prevailing rate, prevailing rate, job class)
   const empContainer = document.getElementById('items-employees');
   empContainer.innerHTML = '';
   lists.employees.forEach((emp, idx) => {
@@ -9404,7 +9401,6 @@ function renderAllListPanels() {
       <span class="list-item-label">PW:</span>
       <input type="number" value="${emp.prevailing_rate || ''}"      data-key="employees" data-idx="${idx}" data-field="prevailing_rate"     class="cost-input" step="any" placeholder="0.00" />
       <select data-key="employees" data-idx="${idx}" data-field="job_class">${jcOpts}</select>
-      <label class="emp-sup-label" title="Available in the Timesheet supervisor dropdown for field employees"><input type="checkbox" data-key="employees" data-idx="${idx}" data-field="is_supervisor" ${emp.is_supervisor ? 'checked' : ''} /> Sup</label>
       <button class="remove-item" data-key="employees" data-idx="${idx}">&#10005;</button>
     `;
     empContainer.appendChild(div);
@@ -9450,8 +9446,6 @@ function _modalFieldUpdate(el) {
     if (!lists.employees[idx]) return;
     if (field === 'non_prevailing_rate' || field === 'prevailing_rate') {
       lists.employees[idx][field] = parseFloat(el.value) || 0;
-    } else if (field === 'is_supervisor') {
-      lists.employees[idx][field] = el.checked === true;
     } else {
       lists.employees[idx][field] = el.value;
     }
@@ -9529,15 +9523,13 @@ function addListItem(key) {
     const npRate   = parseFloat(document.getElementById('new-emp-np-rate').value)  || 0;
     const pwRate   = parseFloat(document.getElementById('new-emp-pw-rate').value)  || 0;
     const jobClass = document.getElementById('new-emp-job-class').value;
-    const isSup    = document.getElementById('new-emp-supervisor').checked === true;
     if (!lists.employees.find(e => e.name === name)) {
-      lists.employees.push({ name, non_prevailing_rate: npRate, prevailing_rate: pwRate, job_class: jobClass, is_supervisor: isSup });
+      lists.employees.push({ name, non_prevailing_rate: npRate, prevailing_rate: pwRate, job_class: jobClass });
     }
     document.getElementById('new-employees').value   = '';
     document.getElementById('new-emp-np-rate').value = '';
     document.getElementById('new-emp-pw-rate').value = '';
     document.getElementById('new-emp-job-class').value = '';
-    document.getElementById('new-emp-supervisor').checked = false;
   } else {
     const input = document.getElementById('new-' + key);
     const val = input.value.trim();

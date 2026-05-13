@@ -1,9 +1,12 @@
 'use strict';
 /**
- * GET    /api/employees         — list all active employees for the company
- * PUT    /api/employees         — full replace: sync entire employee array
- * POST   /api/employees         — create a single employee
- * DELETE /api/employees?id=N    — hard-delete one employee by id
+ * GET    /api/employees                 — list all active employees for the company
+ * PUT    /api/employees                 — full replace: sync entire employee array
+ * POST   /api/employees                 — create a single employee
+ * PATCH  /api/employees?id=N            — partial update of one employee (currently
+ *                                         only `is_supervisor`; used by the global
+ *                                         "Manage Supervisors" UI on divisions.html)
+ * DELETE /api/employees?id=N            — hard-delete one employee by id
  */
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
@@ -101,6 +104,31 @@ module.exports = async (req, res) => {
                   sort_order
       `;
       return res.status(201).json({ employee: row });
+    }
+
+    // ── PATCH (partial update by id) ──────────────────────────────────────
+    // Only company admins or platform admins may flip is_supervisor.
+    if (req.method === 'PATCH') {
+      if (payload.role !== 'admin' && !payload.isPlatformAdmin) {
+        return res.status(403).json({ error: 'Company admin access required' });
+      }
+      const id = parseInt(req.query.id, 10);
+      if (!id) return res.status(400).json({ error: 'id required' });
+
+      const fields = req.body || {};
+      if (typeof fields.is_supervisor === 'undefined') {
+        return res.status(400).json({ error: 'is_supervisor field required' });
+      }
+      const isSup = Boolean(fields.is_supervisor);
+
+      const [row] = await sql`
+        UPDATE employees
+        SET is_supervisor = ${isSup}, updated_at = NOW()
+        WHERE id = ${id} AND company_code = ${companyCode}
+        RETURNING id, name, is_supervisor
+      `;
+      if (!row) return res.status(404).json({ error: 'Employee not found' });
+      return res.json({ ok: true, employee: row });
     }
 
     // ── DELETE ────────────────────────────────────────────────────────────
