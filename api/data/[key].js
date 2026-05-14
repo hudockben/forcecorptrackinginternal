@@ -79,7 +79,15 @@ module.exports = async (req, res) => {
   }
 
   if (!isKeyAllowedForUser(key, payload)) {
-    return res.status(403).json({ error: 'You do not have access to this division\'s data' });
+    // Read-only escape hatch: intercompany users can GET fct_quarry_daily
+    // so the IC Quarry sub-tab can render labor hours without granting
+    // them broader quarry-division access.
+    const icReadOnly = req.method === 'GET'
+      && key === 'fct_quarry_daily'
+      && hasDivisionAccess(payload, 'intercompany');
+    if (!icReadOnly) {
+      return res.status(403).json({ error: 'You do not have access to this division\'s data' });
+    }
   }
 
   // Namespace the DB key by company so each company's data is isolated
