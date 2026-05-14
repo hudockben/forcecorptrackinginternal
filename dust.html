@@ -1224,11 +1224,9 @@
             <th class="cw-loc">Location<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('location',this.value)"></th>
             <th class="cw-st">State<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('state',this.value)"></th>
             <th class="cw-veh">Vehicle 1<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('vehicle1',this.value)"></th>
-            <th class="cw-unit">Unit&nbsp;#</th>
             <th class="cw-rate">Vehicle Rate</th>
             <th class="cw-vtot calc-hdr">Vehicle&nbsp;#1 Total</th>
             <th class="cw-veh">Vehicle 2<input class="col-filter" type="text" placeholder="filter…" oninput="setFilter('vehicle2',this.value)"></th>
-            <th class="cw-unit">Unit&nbsp;#</th>
             <th class="cw-rate">Vehicle Rate</th>
             <th class="cw-vtot calc-hdr">Vehicle&nbsp;#2 Total</th>
             <th class="cw-vgrt calc-hdr">Vehicle Total&nbsp;$</th>
@@ -2550,11 +2548,9 @@
               `<option value="${esc(s)}"${row.state===s?' selected':''}>${esc(s)}</option>`).join('')}
           </select></td>
           <td class="cw-veh"><select onchange="setVehicle(${idx},1,this.value)">${vehOpts(row.vehicle1)}</select></td>
-          <td class="cw-unit"><input type="text" data-field="v1_unit" value="${esc(row.v1_unit||'')}" oninput="set(${idx},'v1_unit',this.value)"></td>
           <td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="_liveSet(${idx},'v1_rate',this.value)" onchange="set(${idx},'v1_rate',this.value)"></td>
           ${calcCell(c.v1Total  ? money(c.v1Total)  : '', 'cw-vtot')}
           <td class="cw-veh"><select onchange="setVehicle(${idx},2,this.value)">${vehOpts(row.vehicle2)}</select></td>
-          <td class="cw-unit"><input type="text" data-field="v2_unit" value="${esc(row.v2_unit||'')}" oninput="set(${idx},'v2_unit',this.value)"></td>
           <td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="_liveSet(${idx},'v2_rate',this.value)" onchange="set(${idx},'v2_rate',this.value)"></td>
           ${calcCell(c.v2Total  ? money(c.v2Total)  : '', 'cw-vtot')}
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
