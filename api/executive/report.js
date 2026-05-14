@@ -39,6 +39,9 @@ function addDaysISO(iso, n) {
 }
 function fmtCurrency(n) {
   const v = Math.round(Number(n) || 0);
+  // Prefix the minus before the $ ("−$1,234" not "$-1,234") so loss values
+  // read cleanly on KPI tiles. Uses U+2212 to match fmtCostVsBid's style.
+  if (v < 0) return '−$' + Math.abs(v).toLocaleString('en-US');
   return '$' + v.toLocaleString('en-US');
 }
 // Format a cost-vs-bid variance as a signed pct ("+2.1%", "−0.4%").
@@ -1173,7 +1176,10 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     key: 'quarry', name: 'Quarry', accent: '#f97316',
     status, statusKind,
     kpis: [
-      { label: 'Profit · Wk',  value: revenueWk > 0 ? fmtCurrency(profitWk) : '—' },
+      // Show the profit value whenever the week saw any activity (sales OR
+      // costs). A pit that ran daily/crushing hours without recording sales
+      // is a real loss week worth surfacing rather than masking with '—'.
+      { label: 'Profit · Wk',  value: (revenueWk > 0 || costWk > 0) ? fmtCurrency(profitWk) : '—' },
       { label: 'Tons · Mo',    value: tonsMo > 0 ? Math.round(tonsMo).toLocaleString('en-US') : '—' },
       topProduct
         ? { label: 'Top Product', value: topProduct, sub: `${Math.round(topProductTons).toLocaleString('en-US')} tons` }
