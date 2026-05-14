@@ -274,9 +274,9 @@ const res = {
   const quarry = payload.snapshot.divisions.find(d => d.key === 'quarry');
   if (!quarry) fail('quarry tile missing');
   else {
-    const rev = quarry.kpis.find(k => k.label === 'Revenue · Wk');
-    if (!rev || rev.value === '—') fail('quarry Revenue · Wk is — (sales blob not read)');
-    else pass(`quarry Revenue · Wk = ${rev.value}`);
+    const rev = quarry.kpis.find(k => k.label === 'Profit · Wk');
+    if (!rev || rev.value === '—') fail('quarry Profit · Wk is — (sales blob not read)');
+    else pass(`quarry Profit · Wk = ${rev.value}`);
     const top = quarry.kpis.find(k => k.label === 'Top Product');
     if (!top || top.value !== '#57 Limestone') fail(`quarry Top Product = ${top && top.value} (expected #57 Limestone)`);
     else pass(`quarry Top Product = #57 Limestone`);

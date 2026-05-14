@@ -390,6 +390,69 @@
       margin-top: 0.18rem;
     }
 
+    /* ── Division summary strip (Quarry + Dust on the Projects PDF) ── */
+    /* Inherits inv-card spacing so the row sits flush above the projects
+       table in both screen view and the Projects-only print scope. */
+    .divsum-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin-bottom: 1rem;
+    }
+    .divsum-card {
+      flex: 1 1 320px;
+      min-width: 280px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.7rem 0.85rem;
+    }
+    .divsum-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 0.55rem;
+    }
+    .divsum-name {
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .divsum-status {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.42rem;
+      border-radius: 999px;
+    }
+    .divsum-status.green { background: rgba(34,197,94,0.12);   color: var(--green); }
+    .divsum-status.amber { background: rgba(245,158,11,0.12);  color: var(--amber); }
+    .divsum-status.red   { background: rgba(239,68,68,0.12);   color: var(--red);   }
+    .divsum-status.mute  { background: rgba(148,163,184,0.12); color: var(--muted); }
+    .divsum-kpis {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.45rem 0.85rem;
+    }
+    .divsum-kpi-label {
+      font-size: 0.58rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .divsum-kpi-value {
+      font-size: 0.95rem;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+    .divsum-kpi-sub {
+      font-size: 0.6rem;
+      color: var(--muted);
+      margin-top: 0.1rem;
+    }
+
     /* ── Projects financial table ── */
     .ptable-wrap {
       background: var(--surface);
@@ -777,6 +840,18 @@
       .timeline-bar { background: #eee; }
       .timeline-grid { border-color: #eee; min-width: 0; }
       .timeline-grid.head { border-color: #ccc; }
+      /* Division summary cards inherit print colors so they match the rest
+         of the Projects PDF (black text on white background, light borders). */
+      .divsum-card    { background: #fff; border: 1px solid #ccc; color: #000; }
+      .divsum-name,
+      .divsum-kpi-value { color: #000; }
+      .divsum-kpi-label,
+      .divsum-kpi-sub   { color: #555; }
+      .divsum-status.green { background: #e8f7ec; color: #166534; }
+      .divsum-status.amber { background: #fdf3d6; color: #92400e; }
+      .divsum-status.red   { background: #fce8e8; color: #991b1b; }
+      .divsum-status.mute  { background: #eee;    color: #555;    }
+
       .ptable-wrap { background: #fff; border: 1px solid #ccc; overflow: visible; }
       .ptable      { min-width: 0; font-size: 0.55rem; table-layout: auto; }
       .ptable th   { color: #555; border-color: #ccc; padding: 0.35rem 0.3rem; font-size: 0.5rem; }
@@ -896,6 +971,14 @@
         <div id="rubberInventoryWrap" style="display:none;">
           <div class="div-kpi-label" style="margin:0 0 0.5rem;">Rubber Inventory</div>
           <div class="inv-strip" id="rubberInventoryStrip"></div>
+        </div>
+
+        <!-- Quarry + Dust summary cards. Populated by renderDivSummaries from
+             the same /api/executive/report payload used by the Company
+             Snapshot, so the Projects-only PDF still carries those numbers. -->
+        <div id="divSummariesWrap" style="display:none;">
+          <div class="div-kpi-label" style="margin:0 0 0.5rem;">Quarry &amp; Dust Control</div>
+          <div class="divsum-strip" id="divSummariesStrip"></div>
         </div>
 
         <div class="ptable-wrap">
@@ -1149,6 +1232,42 @@
       document.getElementById('projectDetails').innerHTML = (data.details || []).map(renderDetail).join('');
 
       renderRubberInventory(Array.isArray(data.inventory) ? data.inventory : []);
+      renderDivSummaries(data.snapshot?.divisions || []);
+    }
+
+    // Render compact Quarry + Dust Control cards inside the Projects section
+    // so the Projects-only PDF (and the screen view) carry their KPIs.
+    // Reuses the per-tile KPI list the API already builds for the Company
+    // Snapshot — no extra fetches, no duplicated math.
+    function renderDivSummaries(divisions) {
+      const wrap  = document.getElementById('divSummariesWrap');
+      const strip = document.getElementById('divSummariesStrip');
+      if (!wrap || !strip) return;
+      const wanted = ['quarry', 'dust'];
+      const byKey  = new Map((divisions || []).map(d => [d.key, d]));
+      const tiles  = wanted.map(k => byKey.get(k)).filter(Boolean);
+      if (!tiles.length) { wrap.style.display = 'none'; strip.innerHTML = ''; return; }
+
+      strip.innerHTML = tiles.map(t => {
+        const kpis = Array.isArray(t.kpis) ? t.kpis : [];
+        const kpiCells = kpis.map(k => `
+          <div>
+            <div class="divsum-kpi-label">${esc(k.label)}</div>
+            <div class="divsum-kpi-value">${esc(k.value)}</div>
+            ${k.sub ? `<div class="divsum-kpi-sub">${esc(k.sub)}</div>` : ''}
+          </div>`).join('');
+        const statusKind = t.statusKind || 'mute';
+        const status     = t.status     || '—';
+        return `
+          <div class="divsum-card">
+            <div class="divsum-head">
+              <div class="divsum-name">${esc(t.name || t.key)}</div>
+              <div class="divsum-status ${esc(statusKind)}">${esc(status)}</div>
+            </div>
+            <div class="divsum-kpis">${kpiCells}</div>
+          </div>`;
+      }).join('');
+      wrap.style.display = '';
     }
 
     // Mirrors the home page's per-rubber-type stock cards so the executive
