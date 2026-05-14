@@ -3358,7 +3358,7 @@ const perm = (() => {
     canDeleteProject: ['admin', 'level3'].includes(r),
     // tabs visible to this role (null = all)
     visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'trucking'])
-               : (r === 'level2') ? new Set(['home', 'schedule', 'info', 'po', 'trucking'])
+               : (r === 'level2') ? new Set(['info', 'schedule', 'po', 'trucking'])
                : null,
   };
 })();
