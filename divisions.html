@@ -220,6 +220,29 @@
     }
     .modal-submit:hover { background: var(--green-dim); }
     .modal-result { font-size: 0.8rem; min-height: 1.2em; }
+    .mu-subtabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-top: -0.4rem;
+    }
+    .mu-subtab-btn {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.55rem 1.1rem;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .mu-subtab-btn:hover { color: var(--text); }
+    .mu-subtab-btn.active { color: var(--green); border-bottom-color: var(--green); }
+    .mu-panel { display: none; flex-direction: column; gap: 1.25rem; }
+    .mu-panel.active { display: flex; }
     .user-table {
       width: 100%;
       border-collapse: collapse;
@@ -591,18 +614,25 @@
         <span class="platform-badge" id="platformBadge" style="display:none">Platform Admin</span>
       </div>
       <button class="add-user-btn" id="addUserBtn"        style="display:none" onclick="openUserModal()">+ Manage Users</button>
-      <button class="add-user-btn" id="manageSupervisorsBtn" style="display:none" onclick="openSupervisorsModal()">+ Manage Supervisors</button>
       <button class="sign-out-btn" onclick="signOut()">Sign Out</button>
     </div>
   </header>
 
-  <!-- ── Manage Users modal ── -->
+  <!-- ── Manage Users modal (with Supervisors sub-tab) ── -->
   <div class="modal-backdrop" id="userModalBackdrop">
     <div class="modal" onclick="event.stopPropagation()">
       <div class="modal-header">
         <div class="modal-title">Manage Users</div>
         <button class="modal-close" onclick="closeUserModal()">&#10005;</button>
       </div>
+
+      <div class="mu-subtabs">
+        <button class="mu-subtab-btn active" id="muTabBtnUsers"       onclick="switchUserSubTab('users')">Users</button>
+        <button class="mu-subtab-btn"        id="muTabBtnSupervisors" onclick="switchUserSubTab('supervisors')">Supervisors</button>
+      </div>
+
+      <!-- ── Users sub-panel ── -->
+      <div class="mu-panel active" id="mu-panel-users">
 
       <!-- User list -->
       <div>
@@ -743,47 +773,43 @@
           <button class="mu-cancel-btn" id="mu-cancel-btn" style="display:none" onclick="resetUserForm()">Cancel</button>
         </div>
       </div>
-    </div>
-  </div>
 
-  <!-- ── Manage Supervisors modal ── -->
-  <div class="modal-backdrop" id="supervisorsModalBackdrop">
-    <div class="modal" onclick="event.stopPropagation()">
-      <div class="modal-header">
-        <div class="modal-title">Manage Supervisors</div>
-        <button class="modal-close" onclick="closeSupervisorsModal()">&#10005;</button>
-      </div>
+      </div><!-- /#mu-panel-users -->
 
-      <div style="font-size:0.78rem;color:var(--muted);line-height:1.55">
-        Flag any employee as a supervisor to make them selectable in the
-        field-employee Timesheet form. Changes apply company-wide and save
-        immediately.
-      </div>
+      <!-- ── Supervisors sub-panel ── -->
+      <div class="mu-panel" id="mu-panel-supervisors">
+        <div style="font-size:0.78rem;color:var(--muted);line-height:1.55">
+          Flag any employee as a supervisor to make them selectable in the
+          field-employee Timesheet form. Changes apply company-wide and save
+          immediately.
+        </div>
 
-      <div style="display:flex;gap:0.6rem;align-items:center">
-        <input type="text" id="sup-search" placeholder="Search employees…"
-          style="flex:1" oninput="renderSupervisorList()" />
-        <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;cursor:pointer">
-          <input type="checkbox" id="sup-only" onchange="renderSupervisorList()" /> Supervisors only
-        </label>
-      </div>
+        <div style="display:flex;gap:0.6rem;align-items:center">
+          <input type="text" id="sup-search" placeholder="Search employees…"
+            style="flex:1" oninput="renderSupervisorList()" />
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;cursor:pointer">
+            <input type="checkbox" id="sup-only" onchange="renderSupervisorList()" /> Supervisors only
+          </label>
+        </div>
 
-      <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;max-height:55vh;overflow-y:auto">
-        <table class="user-table">
-          <thead>
-            <tr>
-              <th>Employee</th>
-              <th>Job Class</th>
-              <th style="text-align:right">Supervisor</th>
-            </tr>
-          </thead>
-          <tbody id="supListBody">
-            <tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
-          </tbody>
-        </table>
-      </div>
+        <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;max-height:55vh;overflow-y:auto">
+          <table class="user-table">
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th>Job Class</th>
+                <th style="text-align:right">Supervisor</th>
+              </tr>
+            </thead>
+            <tbody id="supListBody">
+              <tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-      <div id="sup-result" class="modal-result"></div>
+        <div id="sup-result" class="modal-result"></div>
+      </div><!-- /#mu-panel-supervisors -->
+
     </div>
   </div>
 
@@ -1112,7 +1138,6 @@
     // ── Show admin-only buttons ─────────────────────────────────────────────
     if (user && (user.role === 'admin' || isPlatformAdmin)) {
       document.getElementById('addUserBtn').style.display = '';
-      document.getElementById('manageSupervisorsBtn').style.display = '';
     }
 
     // ── User modal ──────────────────────────────────────────────────────────
@@ -1125,14 +1150,40 @@
     };
     const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
 
+    // Tracks which sub-tab is active and whether the supervisors panel has
+    // been hydrated yet (lazy-loaded on first visit to skip the
+    // /api/employees roundtrip when only the Users tab is needed).
+    let muActiveSubTab     = 'users';
+    let supervisorsLoaded  = false;
+
     function openUserModal() {
       document.getElementById('userModalBackdrop').classList.add('open');
+      switchUserSubTab('users');
       loadUserList();
     }
 
     function closeUserModal() {
       document.getElementById('userModalBackdrop').classList.remove('open');
       resetUserForm();
+    }
+
+    function switchUserSubTab(tab) {
+      muActiveSubTab = tab;
+      const isUsers = tab === 'users';
+      document.getElementById('muTabBtnUsers').classList.toggle('active', isUsers);
+      document.getElementById('muTabBtnSupervisors').classList.toggle('active', !isUsers);
+      document.getElementById('mu-panel-users').classList.toggle('active', isUsers);
+      document.getElementById('mu-panel-supervisors').classList.toggle('active', !isUsers);
+      if (!isUsers && !supervisorsLoaded) {
+        supervisorsLoaded = true;
+        const search = document.getElementById('sup-search');
+        const only   = document.getElementById('sup-only');
+        const result = document.getElementById('sup-result');
+        if (search) search.value = '';
+        if (only)   only.checked = false;
+        if (result) result.textContent = '';
+        loadSupervisorList();
+      }
     }
 
     document.getElementById('userModalBackdrop').addEventListener('click', function(e) {
@@ -1318,22 +1369,8 @@
       }
     }
 
-    // ── Manage Supervisors modal ────────────────────────────────────────────
+    // ── Supervisors sub-panel (inside Manage Users modal) ───────────────────
     let supEmployees = []; // full list from /api/employees
-
-    function openSupervisorsModal() {
-      document.getElementById('supervisorsModalBackdrop').classList.add('open');
-      document.getElementById('sup-search').value = '';
-      document.getElementById('sup-only').checked = false;
-      document.getElementById('sup-result').textContent = '';
-      loadSupervisorList();
-    }
-    function closeSupervisorsModal() {
-      document.getElementById('supervisorsModalBackdrop').classList.remove('open');
-    }
-    document.getElementById('supervisorsModalBackdrop').addEventListener('click', function(e) {
-      if (e.target === this) closeSupervisorsModal();
-    });
 
     async function loadSupervisorList() {
       const tbody = document.getElementById('supListBody');
