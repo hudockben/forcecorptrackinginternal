@@ -1090,18 +1090,29 @@ async function buildPavingTile(sql, companyCode) {
 // ── Quarry tile ──────────────────────────────────────────────────────
 // Quarry data lives entirely in JSONB blobs (no normalized tables yet):
 //   fct_quarry_sales    → [{ date, locationName, productName, tons, pricePerTon, payment }]
-//   fct_quarry_daily    → [{ date, locationName, hours, rate, ... }]
-//   fct_quarry_crushing → [{ date, locationName, tons, ... }]
-// We compute weekly revenue (sum tons*pricePerTon for the current Sun-anchored
-// week) and monthly tons sold, plus the top product and active pit count.
+//   fct_quarry_daily    → [{ date, locationName, hours, rate, fuelGallons, ppg }]
+//   fct_quarry_crushing → [{ date, locationName, hourlyRate, hours, fuelGallons, fuelCost, ... }]
+// We compute weekly PROFIT (sales revenue − daily labor/fuel costs − crushing
+// payroll/fuel costs, all scoped to the current Sun-anchored week) and
+// monthly tons sold, plus the top product and active pit count.
 async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
-  const blob = await safeRun('quarry.sales_blob', async () => {
-    const r = await sql`
-      SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_sales`}
-    `;
-    return r[0]?.value;
-  });
-  const sales = Array.isArray(blob) ? blob : [];
+  const [salesBlob, dailyBlob, crushBlob] = await Promise.all([
+    safeRun('quarry.sales_blob', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_sales`}`;
+      return r[0]?.value;
+    }),
+    safeRun('quarry.daily_blob', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_daily`}`;
+      return r[0]?.value;
+    }),
+    safeRun('quarry.crush_blob', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_crushing`}`;
+      return r[0]?.value;
+    }),
+  ]);
+  const sales = Array.isArray(salesBlob) ? salesBlob : [];
+  const daily = Array.isArray(dailyBlob) ? dailyBlob : [];
+  const crush = Array.isArray(crushBlob) ? crushBlob : [];
 
   const monthStartIso = (() => {
     const d = new Date();
@@ -1114,7 +1125,11 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     return Number.isFinite(n) ? n : 0;
   };
 
-  let revenueWk = 0, tonsMo = 0;
+  // Week scoped: revenue from sales, costs from daily + crushing.
+  // Profit formula mirrors quarry.html's per-row calcs:
+  //   daily row    cost = hours*rate + fuelGallons*ppg
+  //   crushing row cost = hourlyRate*hours + fuelGallons*fuelCost
+  let revenueWk = 0, costWk = 0, tonsMo = 0;
   const productTons = new Map();
   const activePits  = new Set();
   for (const r of sales) {
@@ -1132,6 +1147,19 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
       if (pit) activePits.add(pit);
     }
   }
+  for (const r of daily) {
+    if (!r || typeof r !== 'object') continue;
+    const date = typeof r.date === 'string' ? r.date : '';
+    if (!date || date < weekStart || date >= weekEnd) continue;
+    costWk += num(r.hours) * num(r.rate) + num(r.fuelGallons) * num(r.ppg);
+  }
+  for (const r of crush) {
+    if (!r || typeof r !== 'object') continue;
+    const date = typeof r.date === 'string' ? r.date : '';
+    if (!date || date < weekStart || date >= weekEnd) continue;
+    costWk += num(r.hourlyRate) * num(r.hours) + num(r.fuelGallons) * num(r.fuelCost);
+  }
+  const profitWk = revenueWk - costWk;
 
   let topProduct = null, topProductTons = 0;
   for (const [name, t] of productTons) {
@@ -1145,7 +1173,7 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     key: 'quarry', name: 'Quarry', accent: '#f97316',
     status, statusKind,
     kpis: [
-      { label: 'Revenue · Wk', value: revenueWk > 0 ? fmtCurrency(revenueWk) : '—' },
+      { label: 'Profit · Wk',  value: revenueWk > 0 ? fmtCurrency(profitWk) : '—' },
       { label: 'Tons · Mo',    value: tonsMo > 0 ? Math.round(tonsMo).toLocaleString('en-US') : '—' },
       topProduct
         ? { label: 'Top Product', value: topProduct, sub: `${Math.round(topProductTons).toLocaleString('en-US')} tons` }
