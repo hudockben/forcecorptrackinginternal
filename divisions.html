@@ -1376,10 +1376,45 @@
       const tbody = document.getElementById('supListBody');
       tbody.innerHTML = '<tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
       try {
-        const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token}` } });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed');
-        supEmployees = Array.isArray(data.employees) ? data.employees : [];
+        // Pull employees (field rosters) AND company users in parallel. Users
+        // are merged in so admins like Shelly Palmer or Nate Brewer — who
+        // don't have an employee record because they aren't on field jobs —
+        // can still be flagged as supervisors and appear in the field
+        // Timesheet supervisor picker. The PATCH below upserts an employees
+        // row by name, so flipping the toggle on a user account is enough.
+        const [empRes, usrRes] = await Promise.all([
+          fetch('/api/employees',     { headers: { Authorization: `Bearer ${token}` } }),
+          fetch('/api/company/users', { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        const empData = await empRes.json();
+        if (!empRes.ok) throw new Error(empData.error || 'Failed');
+        const employees = Array.isArray(empData.employees) ? empData.employees : [];
+
+        // /api/company/users may 403 for non-admins; treat as non-fatal so
+        // the supervisor list still renders with whatever employees we have.
+        let users = [];
+        if (usrRes.ok) {
+          const usrData = await usrRes.json();
+          users = Array.isArray(usrData.users) ? usrData.users : [];
+        }
+
+        // Skip users whose username matches an existing employee row (already
+        // covered) and any without a username string we can use as the name.
+        const employeeNames = new Set(employees.map(e => (e.name || '').toLowerCase()));
+        const userRows = users
+          .filter(u => u.username && !employeeNames.has(String(u.username).toLowerCase()))
+          .map(u => ({
+            id:                  null,
+            name:                u.username,
+            job_class:           null,
+            prevailing_rate:     null,
+            non_prevailing_rate: null,
+            is_supervisor:       false,
+            source:              'user',
+          }));
+
+        supEmployees = [...employees, ...userRows]
+          .sort((a, b) => a.name.localeCompare(b.name));
         renderSupervisorList();
       } catch (err) {
         tbody.innerHTML = `<tr><td colspan="3" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
