@@ -190,6 +190,7 @@
     }
     .div-tag.trucking { background: rgba(239,68,68,0.12); color: #ef4444; border: 1px solid rgba(239,68,68,0.2); }
     .div-tag.dust     { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.2); }
+    .div-tag.quarry   { background: rgba(6,182,212,0.10);  color: #06b6d4; border: 1px solid rgba(6,182,212,0.22); }
     .div-tag.turf     { background: rgba(34,197,94,0.10);  color: #22c55e; border: 1px solid rgba(34,197,94,0.2); }
     .co-item-notes { font-size: 0.72rem; color: var(--muted); }
     .co-item-actions { display: flex; flex-direction: column; gap: 0.3rem; flex-shrink: 0; }
@@ -357,6 +358,7 @@
     }
     .ci-div-label.trucking { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
     .ci-div-label.dust     { background: rgba(251,191,36,0.12); color: #f59e0b; border: 1px solid rgba(251,191,36,0.3); }
+    .ci-div-label.quarry   { background: rgba(6,182,212,0.14);  color: #06b6d4; border: 1px solid rgba(6,182,212,0.32); }
     .ci-div-stats { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-left: auto; }
     .ci-div-stat  { font-size: 0.65rem; color: var(--muted); }
     .ci-div-stat strong { color: var(--text); font-weight: 600; }
@@ -378,8 +380,9 @@
       white-space: nowrap;
     }
     .ci-subtab-btn:hover { color: var(--text); }
-    .ci-subtab-btn.st-truck { color: #ef4444; border-bottom-color: #ef4444; }
-    .ci-subtab-btn.st-dust  { color: #f59e0b; border-bottom-color: #f59e0b; }
+    .ci-subtab-btn.st-truck  { color: #ef4444; border-bottom-color: #ef4444; }
+    .ci-subtab-btn.st-dust   { color: #f59e0b; border-bottom-color: #f59e0b; }
+    .ci-subtab-btn.st-quarry { color: #06b6d4; border-bottom-color: #06b6d4; }
 
     /* ── Pending billing card (Dust Control) ── */
     .ci-pending-card {
@@ -807,6 +810,7 @@
       <button class="ci-subtab-btn st-truck" id="ciSubTruck"     onclick="switchCiDiv('trucking')">Trucking</button>
       <button class="ci-subtab-btn"          id="ciSubDust"      onclick="switchCiDiv('dust')">Dust Control</button>
       <button class="ci-subtab-btn"          id="ciSubDustOther" onclick="switchCiDiv('dust-other-billing')">Dust — Other Billing</button>
+      <button class="ci-subtab-btn"          id="ciSubQuarry"    onclick="switchCiDiv('quarry')">Quarry</button>
     </div>
     <div class="ci-toolbar">
       <div class="ci-toolbar-group">
@@ -856,6 +860,17 @@
             <span class="rate-pre">$</span>
             <input type="number" id="ciUbRate" value="0" min="0" step="0.01" oninput="onRateChange()">
             <span class="rate-suf">/gal</span>
+          </div>
+        </div>
+      </div>
+      <div class="ci-rates-group" id="ciQuarryRatesGroup" style="display:none">
+        <span class="rates-label">IC Rates</span>
+        <div class="rate-field">
+          <label for="ciQuarryLaborRate">Labor</label>
+          <div class="ci-rate-wrap">
+            <span class="rate-pre">$</span>
+            <input type="number" id="ciQuarryLaborRate" value="121" min="0" step="0.01" oninput="onRateChange()">
+            <span class="rate-suf">/hr</span>
           </div>
         </div>
       </div>
@@ -958,6 +973,9 @@
               <input type="checkbox" id="co-div-dust"> Dust Control
             </label>
             <label class="div-check-item">
+              <input type="checkbox" id="co-div-quarry"> Quarry
+            </label>
+            <label class="div-check-item">
               <input type="checkbox" id="co-div-turf"> Turf
             </label>
           </div>
@@ -1013,20 +1031,23 @@
 
     // ── Intercompany rates (server-persisted, shared across all users) ──
     const IC_RATES_KEY = 'fct_ic_rates';
-    let icTruckRate = parseFloat(localStorage.getItem('ic_truck_rate') ?? '121') || 121;
-    let icLaborRate = parseFloat(localStorage.getItem('ic_labor_rate') ?? '121') || 121;
-    let icDustRate  = parseFloat(localStorage.getItem('ic_dust_rate')  ?? '121') || 121;
-    let icUbRate    = parseFloat(localStorage.getItem('ic_ub_rate')    ?? '0')   || 0;
+    let icTruckRate       = parseFloat(localStorage.getItem('ic_truck_rate')        ?? '121') || 121;
+    let icLaborRate       = parseFloat(localStorage.getItem('ic_labor_rate')        ?? '121') || 121;
+    let icDustRate        = parseFloat(localStorage.getItem('ic_dust_rate')         ?? '121') || 121;
+    let icUbRate          = parseFloat(localStorage.getItem('ic_ub_rate')           ?? '0')   || 0;
+    let icQuarryLaborRate = parseFloat(localStorage.getItem('ic_quarry_labor_rate') ?? '121') || 121;
 
     function initRateInputs() {
-      const tr = document.getElementById('ciTruckRate');
-      const lr = document.getElementById('ciLaborRate');
-      const dr = document.getElementById('ciDustRate');
-      const ur = document.getElementById('ciUbRate');
-      if (tr) tr.value = icTruckRate;
-      if (lr) lr.value = icLaborRate;
-      if (dr) dr.value = icDustRate;
-      if (ur) ur.value = icUbRate;
+      const tr  = document.getElementById('ciTruckRate');
+      const lr  = document.getElementById('ciLaborRate');
+      const dr  = document.getElementById('ciDustRate');
+      const ur  = document.getElementById('ciUbRate');
+      const qlr = document.getElementById('ciQuarryLaborRate');
+      if (tr)  tr.value  = icTruckRate;
+      if (lr)  lr.value  = icLaborRate;
+      if (dr)  dr.value  = icDustRate;
+      if (ur)  ur.value  = icUbRate;
+      if (qlr) qlr.value = icQuarryLaborRate;
     }
     initRateInputs();
 
@@ -1053,6 +1074,7 @@
             if (value.dust  != null) icDustRate  = parseFloat(value.dust)  || icDustRate;
             // Only override dust UB rate if it was explicitly saved here (non-zero)
             if (value.ub    != null && parseFloat(value.ub) > 0) icUbRate = parseFloat(value.ub);
+            if (value.quarryLabor != null) icQuarryLaborRate = parseFloat(value.quarryLabor) || icQuarryLaborRate;
           }
         }
 
@@ -1061,11 +1083,16 @@
     }
 
     function saveRates() {
-      const payload = { truck: icTruckRate, labor: icLaborRate, dust: icDustRate, ub: icUbRate };
-      localStorage.setItem('ic_truck_rate', icTruckRate);
-      localStorage.setItem('ic_labor_rate', icLaborRate);
-      localStorage.setItem('ic_dust_rate',  icDustRate);
-      localStorage.setItem('ic_ub_rate',    icUbRate);
+      const payload = {
+        truck: icTruckRate, labor: icLaborRate,
+        dust: icDustRate, ub: icUbRate,
+        quarryLabor: icQuarryLaborRate,
+      };
+      localStorage.setItem('ic_truck_rate',        icTruckRate);
+      localStorage.setItem('ic_labor_rate',        icLaborRate);
+      localStorage.setItem('ic_dust_rate',         icDustRate);
+      localStorage.setItem('ic_ub_rate',           icUbRate);
+      localStorage.setItem('ic_quarry_labor_rate', icQuarryLaborRate);
       fetch(`${API_BASE}/data/${IC_RATES_KEY}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -1074,10 +1101,12 @@
     }
 
     function onRateChange() {
-      icTruckRate = parseFloat(document.getElementById('ciTruckRate').value) || 0;
-      icLaborRate = parseFloat(document.getElementById('ciLaborRate').value) || 0;
-      icDustRate  = parseFloat(document.getElementById('ciDustRate').value)  || 0;
-      icUbRate    = parseFloat(document.getElementById('ciUbRate').value)    || 0;
+      icTruckRate       = parseFloat(document.getElementById('ciTruckRate').value)       || 0;
+      icLaborRate       = parseFloat(document.getElementById('ciLaborRate').value)       || 0;
+      icDustRate        = parseFloat(document.getElementById('ciDustRate').value)        || 0;
+      icUbRate          = parseFloat(document.getElementById('ciUbRate').value)          || 0;
+      const qlrEl       = document.getElementById('ciQuarryLaborRate');
+      if (qlrEl) icQuarryLaborRate = parseFloat(qlrEl.value) || 0;
       saveRates();
       renderCompanyInfo();
     }
@@ -1087,11 +1116,19 @@
       document.getElementById('ciSubTruck').className     = 'ci-subtab-btn' + (div === 'trucking'           ? ' st-truck' : '');
       document.getElementById('ciSubDust').className      = 'ci-subtab-btn' + (div === 'dust'               ? ' st-dust'  : '');
       const obBtn = document.getElementById('ciSubDustOther');
-      if (obBtn) obBtn.className = 'ci-subtab-btn' + (div === 'dust-other-billing' ? ' st-dust' : '');
+      if (obBtn) obBtn.className = 'ci-subtab-btn' + (div === 'dust-other-billing' ? ' st-dust'   : '');
+      const qBtn  = document.getElementById('ciSubQuarry');
+      if (qBtn)  qBtn.className  = 'ci-subtab-btn' + (div === 'quarry'             ? ' st-quarry' : '');
       const rg = document.getElementById('ciRatesGroup');
       const dg = document.getElementById('ciDustRatesGroup');
+      const qg = document.getElementById('ciQuarryRatesGroup');
       if (rg) rg.style.display = div === 'trucking' ? '' : 'none';
       if (dg) dg.style.display = div === 'dust'     ? '' : 'none';
+      if (qg) qg.style.display = div === 'quarry'   ? '' : 'none';
+      // Rebuild filter dropdowns. Year options come from whichever source
+      // backs this tab; company list flips to quarry locations on Quarry.
+      buildYearFilterOptions();
+      buildCompanyFilterOptions();
       renderCompanyInfo();
     }
 
@@ -1130,7 +1167,7 @@
         return;
       }
 
-      const DIV_LABELS = { trucking: 'Trucking', dust: 'Dust Control', turf: 'Turf' };
+      const DIV_LABELS = { trucking: 'Trucking', dust: 'Dust Control', quarry: 'Quarry', turf: 'Turf' };
       body.innerHTML = icCompanies.map(co => {
         const divTags = (co.divisions || []).map(d =>
           `<span class="div-tag ${d}">${DIV_LABELS[d] || d}</span>`
@@ -1164,7 +1201,7 @@
         return;
       }
 
-      const divisions = ['trucking', 'dust', 'turf'].filter(d =>
+      const divisions = ['trucking', 'dust', 'quarry', 'turf'].filter(d =>
         document.getElementById(`co-div-${d}`).checked
       );
 
@@ -1189,7 +1226,7 @@
       document.getElementById('coEditId').value    = co.id;
       document.getElementById('coNameInput').value  = co.name;
       document.getElementById('coNotesInput').value = co.notes || '';
-      ['trucking', 'dust', 'turf'].forEach(d => {
+      ['trucking', 'dust', 'quarry', 'turf'].forEach(d => {
         document.getElementById(`co-div-${d}`).checked = (co.divisions || []).includes(d);
       });
       document.getElementById('coFormHeading').textContent = `Edit — ${co.name}`;
@@ -1212,7 +1249,7 @@
       document.getElementById('coEditId').value    = '';
       document.getElementById('coNameInput').value  = '';
       document.getElementById('coNotesInput').value = '';
-      ['trucking', 'dust', 'turf'].forEach(d => {
+      ['trucking', 'dust', 'quarry', 'turf'].forEach(d => {
         document.getElementById(`co-div-${d}`).checked = false;
       });
       document.getElementById('coFormHeading').textContent = 'Add Company';
@@ -1221,11 +1258,44 @@
     }
 
     // ── Billing entries ─────────────────────────────────────────
-    const IC_BILLING_KEY = 'fct_intercompany_billing_entries';
+    const IC_BILLING_KEY     = 'fct_intercompany_billing_entries';
+    const QUARRY_DAILY_KEY   = 'fct_quarry_daily';
     let icBillingEntries = [];
+    let quarryDailyRows  = [];
     const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const fmt$   = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     const fmtH   = v => (Math.floor(v * 100) / 100).toFixed(2) + ' hrs';
+
+    // ── Quarry daily (auto-pulled from quarry division for IC Quarry tab) ──
+    async function loadQuarryDaily() {
+      try {
+        const r = await fetch(`${API_BASE}/data/${QUARRY_DAILY_KEY}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) { quarryDailyRows = []; return; }
+        const { value } = await r.json();
+        const rows = Array.isArray(value) ? value : [];
+        quarryDailyRows = rows.map(r => {
+          const hrs  = parseFloat(r && r.hours)    || 0;
+          const rate = parseFloat(r && r.rate)     || 0;
+          return {
+            id:            r && r.id ? String(r.id) : '',
+            actual_date:   r && typeof r.date === 'string' ? r.date : '',
+            location_id:   r && r.locationId   ? String(r.locationId) : '',
+            location_name: r && r.locationName ? String(r.locationName) : '',
+            employee_id:   r && r.employeeId   ? String(r.employeeId) : '',
+            employee_name: r && r.employeeName ? String(r.employeeName) : '',
+            equipment_id:  r && r.equipmentId  ? String(r.equipmentId) : '',
+            equipment_name:r && r.equipmentName? String(r.equipmentName) : '',
+            task_id:       r && r.taskId       ? String(r.taskId) : '',
+            task_name:     r && r.taskName     ? String(r.taskName) : '',
+            total_hours:   hrs,
+            rate:          rate,
+            labor_cost:    hrs * rate,
+          };
+        });
+      } catch { quarryDailyRows = []; }
+    }
 
     async function loadBillingEntries() {
       try {
@@ -1296,39 +1366,79 @@
     async function loadAndRenderCompanyInfo() {
       document.getElementById('ciBody').innerHTML =
         '<div class="ci-empty"><strong>Loading</strong>Fetching billing entries…</div>';
-      await Promise.all([loadCompanies(), loadBillingEntries(), loadRates()]);
+      await Promise.all([loadCompanies(), loadBillingEntries(), loadQuarryDaily(), loadRates()]);
 
-      // Build year options from entry dates
-      const years = [...new Set(
-        icBillingEntries.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
-      )].sort().reverse();
+      buildYearFilterOptions();
+      buildCompanyFilterOptions();
+
+      renderCompanyInfo();
+    }
+
+    // Builds the year-filter dropdown from whichever data source backs the
+    // active sub-tab (quarry daily rows on Quarry, IC billing entries on the
+    // others). Preserves the user's prior year if it still has data, falls
+    // back to the current year, then "all".
+    function buildYearFilterOptions() {
       const yearSel = document.getElementById('ciYearFilter');
+      if (!yearSel) return;
+      const dateBucket = ciDivFilter === 'quarry' ? quarryDailyRows : icBillingEntries;
+      const years = [...new Set(
+        dateBucket.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort().reverse();
       const prevYear = yearSel.value;
       yearSel.innerHTML = '<option value="all">All Years</option>' +
         years.map(y => `<option value="${y}">${y}</option>`).join('');
       const curYear = String(new Date().getFullYear());
       yearSel.value = years.includes(prevYear) ? prevYear :
                       (years.includes(curYear) ? curYear : 'all');
+    }
 
-      // Build company options from entries + icCompanies list
+    // Populates the "Company" filter dropdown. On the Quarry sub-tab the
+    // dropdown lists quarry locations (since quarry daily rows have no
+    // customer/company field); every other sub-tab lists IC companies.
+    function buildCompanyFilterOptions() {
       const coSel = document.getElementById('ciCoFilter');
+      if (!coSel) return;
       const prevCo = coSel.value;
-      const seenIds = [...new Set(icBillingEntries.map(e => e.company_id).filter(Boolean))];
-      coSel.innerHTML = '<option value="all">All Companies</option>' +
-        seenIds.map(id => {
-          const co = icCompanies.find(c => c.id === id);
-          const name = co ? co.name : (icBillingEntries.find(e => e.company_id === id)?.company_name || id);
-          return `<option value="${escT(id)}">${escT(name)}</option>`;
-        }).join('');
-      if (seenIds.includes(prevCo)) coSel.value = prevCo;
-
-      renderCompanyInfo();
+      let opts;
+      if (ciDivFilter === 'quarry') {
+        const seen = new Map();
+        quarryDailyRows.forEach(r => {
+          const id = r.location_id || r.location_name;
+          if (!id) return;
+          if (!seen.has(id)) seen.set(id, r.location_name || id);
+        });
+        const allLabel = 'All Locations';
+        opts = `<option value="all">${allLabel}</option>` +
+          [...seen.entries()].map(([id, name]) =>
+            `<option value="${escT(id)}">${escT(name)}</option>`
+          ).join('');
+      } else {
+        const seenIds = [...new Set(icBillingEntries.map(e => e.company_id).filter(Boolean))];
+        opts = '<option value="all">All Companies</option>' +
+          seenIds.map(id => {
+            const co = icCompanies.find(c => c.id === id);
+            const name = co ? co.name : (icBillingEntries.find(e => e.company_id === id)?.company_name || id);
+            return `<option value="${escT(id)}">${escT(name)}</option>`;
+          }).join('');
+      }
+      coSel.innerHTML = opts;
+      // Keep prior selection if still valid; otherwise default to "all".
+      const validValues = new Set(Array.from(coSel.options).map(o => o.value));
+      coSel.value = prevCo && validValues.has(prevCo) ? prevCo : 'all';
     }
 
     function renderCompanyInfo() {
       const body      = document.getElementById('ciBody');
       const yearFilter = document.getElementById('ciYearFilter').value;
       const coFilter   = document.getElementById('ciCoFilter').value;
+
+      // ── Quarry sub-tab: auto-pulled from fct_quarry_daily, grouped by
+      //    location (since quarry rows have no customer/company field). ──
+      if (ciDivFilter === 'quarry') {
+        renderQuarryCompanyInfo(body, yearFilter, coFilter);
+        return;
+      }
 
       let entries = icBillingEntries;
       if (yearFilter !== 'all') entries = entries.filter(e => (e.actual_date || '').startsWith(yearFilter));
@@ -1665,6 +1775,178 @@
             </div>
           </div>
           ${divSections}
+        </div>`;
+      }).join('');
+    }
+
+    // ── Quarry Company Info renderer ────────────────────────────
+    //  Mirrors the Trucking rollup: per-location card → month-by-month
+    //  totals → expandable detail rows. Driven entirely off
+    //  quarryDailyRows (loaded from fct_quarry_daily); does not touch
+    //  icBillingEntries.
+    function renderQuarryCompanyInfo(body, yearFilter, locationFilter) {
+      let rows = quarryDailyRows;
+      if (yearFilter !== 'all') rows = rows.filter(r => (r.actual_date || '').startsWith(yearFilter));
+      if (locationFilter !== 'all') {
+        rows = rows.filter(r => (r.location_id || r.location_name) === locationFilter);
+      }
+
+      const count = document.getElementById('ciCount');
+      count.textContent = rows.length ? `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}` : '';
+
+      if (!rows.length) {
+        const hasAny = quarryDailyRows.length > 0;
+        body.innerHTML = `<div class="ci-empty">
+          <strong>No Quarry Entries</strong>
+          ${hasAny
+            ? `No quarry daily entries match the current filter selection.`
+            : `No quarry daily entries found. Add rows in the <em>Quarry → Daily Tracking</em> tab and they'll appear here automatically.`}
+        </div>`;
+        return;
+      }
+
+      // Group by location (location is the closest analog to "company" for quarry).
+      const byLocation = {};
+      rows.forEach(r => {
+        const key = r.location_id || r.location_name || 'unknown';
+        if (!byLocation[key]) byLocation[key] = { name: r.location_name || 'Unspecified Location', id: r.location_id, rows: [] };
+        byLocation[key].rows.push(r);
+      });
+
+      function buildQuarrySection(locRows, sectionId) {
+        const byMonth = {};
+        locRows.forEach(r => {
+          const mRaw = parseInt((r.actual_date || '').slice(5, 7), 10) - 1;
+          const mIdx = isNaN(mRaw) ? -1 : mRaw;
+          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, labor: 0, icTotal: 0, entries: [] };
+          byMonth[mKey].jobs++;
+          byMonth[mKey].hours   += parseFloat(r.total_hours) || 0;
+          byMonth[mKey].labor   += parseFloat(r.labor_cost)  || 0;
+          byMonth[mKey].icTotal += (parseFloat(r.total_hours) || 0) * icQuarryLaborRate;
+          byMonth[mKey].entries.push(r);
+        });
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+
+        const totJobs  = locRows.length;
+        const totHours = locRows.reduce((s, r) => s + (parseFloat(r.total_hours) || 0), 0);
+        const totLabor = locRows.reduce((s, r) => s + (parseFloat(r.labor_cost)  || 0), 0);
+        const totIc    = totHours * icQuarryLaborRate;
+
+        const detailHead = `<th>Date</th><th>Employee</th><th>Equipment</th><th>Task</th><th class="r">Labor Hours</th><th class="r">Rate</th><th class="r">Labor Cost</th><th class="r ic-val">IC Total</th>`;
+
+        const monthRows = sortedMonths.map((m, mi) => {
+          const detId = `${sectionId}-m${mi}`;
+          const sorted = [...m.entries].sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''));
+
+          const entryRows = sorted.map(r => {
+            const hrs   = parseFloat(r.total_hours) || 0;
+            const rate  = parseFloat(r.rate)        || 0;
+            const labor = parseFloat(r.labor_cost)  || 0;
+            const icAmt = hrs * icQuarryLaborRate;
+            return `<tr>
+              <td>${r.actual_date || '—'}</td>
+              <td>${escT(r.employee_name  || '—')}</td>
+              <td>${escT(r.equipment_name || '—')}</td>
+              <td>${escT(r.task_name      || '—')}</td>
+              <td class="r">${fmtH(hrs)}</td>
+              <td class="r">${rate > 0 ? fmt$(rate) + '/hr' : '—'}</td>
+              <td class="r">${labor > 0 ? fmt$(labor) : '—'}</td>
+              <td class="r ic-val">${fmt$(icAmt)}</td>
+            </tr>`;
+          }).join('');
+
+          return `
+            <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
+              <td><span class="ci-month-arrow">▶</span>${m.label}</td>
+              <td class="r">${m.jobs}</td>
+              <td class="r">${fmtH(m.hours)}</td>
+              <td class="r">${m.labor > 0 ? fmt$(m.labor) : '—'}</td>
+              <td class="r ic-val">${fmt$(m.icTotal)}</td>
+            </tr>
+            <tr class="ci-mdet-row" id="${detId}">
+              <td colspan="5" class="ci-mdet-inner">
+                <table class="ci-detail-table">
+                  <thead><tr>${detailHead}</tr></thead>
+                  <tbody>${entryRows}</tbody>
+                </table>
+              </td>
+            </tr>`;
+        }).join('');
+
+        return `
+        <div class="ci-div-section">
+          <div class="ci-div-header">
+            <span class="ci-div-label quarry">Quarry</span>
+            <div class="ci-div-stats">
+              <div class="ci-div-stat"><strong>${totJobs}</strong> entr${totJobs === 1 ? 'y' : 'ies'}</div>
+              <div class="ci-div-stat"><strong>${fmtH(totHours)}</strong></div>
+              <div class="ci-div-stat"><strong>${fmt$(totLabor)}</strong></div>
+              <div class="ci-div-stat ic-val"><strong>${fmt$(totIc)}</strong> IC</div>
+            </div>
+          </div>
+          <table class="ci-month-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th class="r">Entries</th>
+                <th class="r">Labor Hours</th>
+                <th class="r">Labor Cost</th>
+                <th class="r ic-val">IC Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${monthRows}
+              <tr class="ci-month-total">
+                <td>Total</td>
+                <td class="r">${totJobs}</td>
+                <td class="r">${fmtH(totHours)}</td>
+                <td class="r">${totLabor > 0 ? fmt$(totLabor) : '—'}</td>
+                <td class="r ic-val">${fmt$(totIc)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`;
+      }
+
+      // Sort cards by total IC total descending so the biggest location is first.
+      const cards = Object.values(byLocation)
+        .map(loc => {
+          const hrs   = loc.rows.reduce((s, r) => s + (parseFloat(r.total_hours) || 0), 0);
+          const labor = loc.rows.reduce((s, r) => s + (parseFloat(r.labor_cost)  || 0), 0);
+          const ic    = hrs * icQuarryLaborRate;
+          return { ...loc, totHours: hrs, totLabor: labor, totIc: ic };
+        })
+        .sort((a, b) => b.totIc - a.totIc);
+
+      body.innerHTML = cards.map((loc, idx) => {
+        const section = buildQuarrySection(loc.rows, `ci-qd-${idx}`);
+        const icStatCard = `
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val ic-val">${fmt$(loc.totIc)}</div>
+                <div class="ci-co-stat-lbl">Intercompany</div>
+              </div>`;
+        return `
+        <div class="ci-co-card">
+          <div class="ci-co-header">
+            <div class="ci-co-name">${escT(loc.name)}</div>
+            <div class="ci-co-meta">
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${loc.rows.length}</div>
+                <div class="ci-co-stat-lbl">Entries</div>
+              </div>
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${fmtH(loc.totHours)}</div>
+                <div class="ci-co-stat-lbl">Labor Hours</div>
+              </div>
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${fmt$(loc.totLabor)}</div>
+                <div class="ci-co-stat-lbl">Labor Cost</div>
+              </div>
+              ${icStatCard}
+            </div>
+          </div>
+          ${section}
         </div>`;
       }).join('');
     }
@@ -2689,7 +2971,17 @@
         } catch { /* non-fatal */ }
       }
 
-      setInterval(() => Promise.allSettled([pollBillingEntries(), pollCompanies()]), POLL_MS);
+      async function pollQuarryDaily() {
+        // Only poll when the Quarry sub-tab is the one being viewed — saves a
+        // round-trip otherwise. Compares a quick hash before re-rendering.
+        if (_activeTabId() !== 'company-info' || ciDivFilter !== 'quarry') return;
+        const prev = JSON.stringify(quarryDailyRows);
+        await loadQuarryDaily();
+        if (JSON.stringify(quarryDailyRows) === prev) return;
+        if (!_isEditing()) renderCompanyInfo();
+      }
+
+      setInterval(() => Promise.allSettled([pollBillingEntries(), pollCompanies(), pollQuarryDaily()]), POLL_MS);
     })();
 
     /* ═══════════════════════════════════════════
