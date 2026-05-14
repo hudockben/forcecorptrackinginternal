@@ -1208,8 +1208,8 @@
             <th class="cw-expand"></th>
             <th class="g-entry"  colspan="4">Entry</th>
             <th class="g-cust"   colspan="4">Customer</th>
-            <th class="g-v1"     colspan="4">Vehicle 1</th>
-            <th class="g-v2"     colspan="4">Vehicle 2</th>
+            <th class="g-v1"     colspan="3">Vehicle 1</th>
+            <th class="g-v2"     colspan="3">Vehicle 2</th>
             <th class="g-totals" colspan="4">Totals</th>
             <th class="g-del"></th>
           </tr>
@@ -1239,7 +1239,7 @@
         <tbody id="dustTbody"></tbody>
         <tfoot>
           <tr class="add-row-foot">
-            <td colspan="22">
+            <td colspan="20">
               <button class="add-row-foot-btn" onclick="addRow()">+ Add Row</button>
             </td>
           </tr>
@@ -2560,7 +2560,7 @@
           <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
         </tr>
         <tr class="inv-row" id="inv-row-${idx}" style="display:none;${subRowStyle}">
-          <td colspan="22">${invPanel}</td>
+          <td colspan="20">${invPanel}</td>
         </tr>`;
       }).join('');
 
