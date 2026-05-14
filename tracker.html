@@ -3382,6 +3382,19 @@ const perm = (() => {
       if (wrap) wrap.style.display = 'none';
     }
 
+    // Hide analytics dropdown items this role cannot see
+    const analyticsItems = ['equip', 'labor', 'scale', 'subcode', 'calc'];
+    analyticsItems.forEach(t => {
+      const item = document.getElementById('analytics-item-' + t);
+      if (item && !perm.visibleTabs.has(t)) item.style.display = 'none';
+    });
+    // Hide the entire Analytics dropdown if no items are accessible
+    const anyAnalyticsVisible = analyticsItems.some(t => perm.visibleTabs.has(t));
+    if (!anyAnalyticsVisible) {
+      const wrap = document.querySelector('.analytics-dropdown-wrap');
+      if (wrap) wrap.style.display = 'none';
+    }
+
     // Activate the first visible tab
     const firstTab = [...perm.visibleTabs][0];
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -7021,9 +7034,9 @@ function projectCardHTML(p) {
       ${contractValue && totalActual ? (()=>{ const profit=contractValue-totalActual; const pct=(profit/contractValue*100).toFixed(1); return `<span class="proj-badge ${profit>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${profit>=0?'$'+fmt(profit,0)+' profit':'$'+fmt(Math.abs(profit),0)+' loss'} (${pct}%)</span>`; })() : (totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff,0)+' under bid':'$'+fmt(Math.abs(diff),0)+' over bid'}</span>` : '')}
     </div>
     <span style="width:1px;background:var(--border);align-self:stretch;margin:0 0.35rem;flex-shrink:0"></span>
-    ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.3rem 0.85rem;background:#166534;color:#fff;border:1px solid #16a34a;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>` : ''}
+    ${perm.canEdit ? `<button class="btn" style="font-size:0.75rem;padding:0.3rem 0.85rem;background:#166534;color:#fff;border:1px solid #16a34a;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>` : ''}
     <button class="btn btn-green" style="font-size:0.75rem;padding:0.3rem 0.85rem;" onclick="event.stopPropagation();openDailyView('${p.id}')">Daily Tracking &#8594;</button>
-    ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.3rem 0.85rem;background:#9a3412;color:#fff;border:1px solid #f97316;" onclick="event.stopPropagation();openProductionRateView('${p.id}')">Daily Production Rate &#8594;</button>` : ''}
+    ${perm.canEdit ? `<button class="btn" style="font-size:0.75rem;padding:0.3rem 0.85rem;background:#9a3412;color:#fff;border:1px solid #f97316;" onclick="event.stopPropagation();openProductionRateView('${p.id}')">Daily Production Rate &#8594;</button>` : ''}
     <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
       title="${p.pinned ? 'Unpin from Home' : 'Pin to Home'}"
       style="color:${p.pinned ? 'var(--green)' : 'var(--muted)'};font-size:0.8rem;padding:0.25rem 0.5rem">
