@@ -1846,14 +1846,28 @@
       if (btn) btn.disabled = false;
     }
 
-    /** Save dust rows to normalized REST endpoint (writes blob first internally). */
+    /**
+     * Save dust rows. Sends both the upserts AND an explicit list of deleted
+     * row ids, so the backend never has to guess which rows the user removed.
+     * This prevents the old failure mode where a stale or partial in-memory
+     * `rows` array silently caused server-side rows to be wiped.
+     *
+     * Snapshot the deletedRowIds set before the request so any deletes that
+     * happen while we're awaiting don't get cleared out below.
+     */
     async function saveDustRows(dustRows) {
+      const sentDeleted = Array.from(deletedRowIds);
       try {
         const r = await fetch('/api/dust-rows', {
           method: 'PUT',
           headers: AUTH_HDR(),
-          body: JSON.stringify({ dustRows }),
+          body: JSON.stringify({ dustRows, deletedIds: sentDeleted }),
         });
+        if (r.ok) {
+          // Only clear ids we actually sent — newly deleted rows during the
+          // round-trip stay queued for the next save.
+          sentDeleted.forEach(id => deletedRowIds.delete(id));
+        }
         return r.ok;
       } catch { return false; }
     }
@@ -1888,6 +1902,11 @@
     let rows       = [];
     let ubRate     = 0;
     let saveTimer  = null;
+    let isSaving   = false; // true while a saveDustRows request is in flight
+    // Ids the user explicitly deleted but haven't been confirmed by the
+    // server yet. Sent to the backend on the next save so it knows to
+    // remove them. Cleared as each save round-trip succeeds.
+    const deletedRowIds = new Set();
     let activeYear = String(new Date().getFullYear());
     let icSentMapDust    = new Map(); // row.id → sent_at
     let icSentMapDustKey = new Map(); // "date|company|start_time" → sent_at (fallback when row IDs changed)
@@ -2348,10 +2367,16 @@
       setSaveState('saving');
       clearTimeout(saveTimer);
       saveTimer = setTimeout(async () => {
-        const ok = await saveDustRows(rows);
-        dustConfigPut();
-        setSaveState(ok ? 'saved' : 'error');
-        setTimeout(() => setSaveState(''), 3000);
+        saveTimer = null;
+        isSaving  = true;
+        try {
+          const ok = await saveDustRows(rows);
+          dustConfigPut();
+          setSaveState(ok ? 'saved' : 'error');
+          setTimeout(() => setSaveState(''), 3000);
+        } finally {
+          isSaving = false;
+        }
       }, 900);
     }
 
@@ -2456,16 +2481,31 @@
               `<option value="${esc(eq.name)}"${val===eq.name?' selected':''}>${esc(eq.name)}</option>`).join('');
         };
 
+        // Preserve any saved value that's no longer in the active list as a
+        // stranded option so the user can still see it (matches the vehicle
+        // dropdown pattern). Without this, a renamed/removed company —
+        // or a row whose value was set before the lists existed — would
+        // appear as "— select —" and look like the data was lost.
+        const coList = dustLists.companies.slice().sort((a,b)=>a.name.localeCompare(b.name));
+        if (row.company && !coList.some(co => co.name === row.company)) {
+          coList.unshift({ name: row.company, men: [], locations: [] });
+        }
         const coOpts = '<option value="">— select —</option>' +
-          dustLists.companies.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(co =>
+          coList.map(co =>
             `<option value="${esc(co.name)}"${row.company===co.name?' selected':''}>${esc(co.name)}</option>`).join('');
 
         const selCo  = dustLists.companies.find(c => c.name === row.company);
         const coMen  = selCo ? (selCo.men || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
+        if (row.company_man && !coMen.some(m => m.name === row.company_man)) {
+          coMen.unshift({ name: row.company_man });
+        }
         const cmOpts = '<option value="">— select —</option>' +
           coMen.map(m => `<option value="${esc(m.name)}"${row.company_man===m.name?' selected':''}>${esc(m.name)}</option>`).join('');
 
         const coLocs = selCo ? (selCo.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
+        if (row.location && !coLocs.some(l => l.name === row.location)) {
+          coLocs.unshift({ name: row.location });
+        }
         const locOpts = '<option value="">— select —</option>' +
           coLocs.map(loc => `<option value="${esc(loc.name)}"${row.location===loc.name?' selected':''}>${esc(loc.name)}</option>`).join('');
 
@@ -2727,6 +2767,8 @@
 
     function deleteRow(idx) {
       if (!confirm('Delete this row?')) return;
+      const removed = rows[idx];
+      if (removed && removed.id) deletedRowIds.add(removed.id);
       rows.splice(idx, 1);
       renderTable();
       scheduleSave();
@@ -2752,35 +2794,60 @@
     }
 
     function setCompany(idx, value) {
-      rows[idx].company     = value;
-      rows[idx].company_man = '';
-      rows[idx].location    = '';
-      rows[idx].state       = '';
+      const oldValue = rows[idx].company || '';
+      // Bail out on no-op selections — prevents wiping linked fields when
+      // the dropdown re-fires with the same value (re-render, focus, etc.)
+      if (value === oldValue) return;
+
+      rows[idx].company = value;
+
       const co = dustLists.companies.find(c => c.name === value);
-      // Rebuild company man dropdown in-place (no full re-render)
+
+      // Only clear linked fields when their existing values are NOT valid
+      // for the new company. This preserves user data on accidental
+      // dropdown changes — at worst the dropdown will show the value as a
+      // stranded option until the user updates it intentionally.
+      const validMen  = co ? (co.men       || []).map(m => m.name) : [];
+      const validLocs = co ? (co.locations || []).map(l => l.name) : [];
+      if (rows[idx].company_man && !validMen.includes(rows[idx].company_man)) {
+        rows[idx].company_man = '';
+      }
+      if (rows[idx].location && !validLocs.includes(rows[idx].location)) {
+        rows[idx].location = '';
+        rows[idx].state    = ''; // state is derived from location
+      }
+
+      // Rebuild dependent dropdowns in-place. Preserve any saved value that
+      // isn't in the new company's list as a "stranded" option so it stays
+      // visible (matches the vehicle dropdown pattern).
       const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
       if (tr) {
         const cmSel = tr.querySelector('select[data-role="cm"]');
         if (cmSel) {
           const men = co ? (co.men || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
+          const cmCur = rows[idx].company_man || '';
+          if (cmCur && !men.some(m => m.name === cmCur)) men.unshift({ name: cmCur });
           cmSel.innerHTML = '<option value="">— select —</option>' +
-            men.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+            men.map(m => `<option value="${esc(m.name)}"${cmCur === m.name ? ' selected' : ''}>${esc(m.name)}</option>`).join('');
         }
-        // Rebuild location dropdown filtered to this company's well pads
         const locSel = tr.querySelector('select[data-role="location"]');
         if (locSel) {
           const locs = co ? (co.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
+          const locCur = rows[idx].location || '';
+          if (locCur && !locs.some(l => l.name === locCur)) locs.unshift({ name: locCur });
           locSel.innerHTML = '<option value="">— select —</option>' +
-            locs.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join('');
+            locs.map(l => `<option value="${esc(l.name)}"${locCur === l.name ? ' selected' : ''}>${esc(l.name)}</option>`).join('');
         }
-        // Clear state
         const stSel = tr.querySelector('select[data-role="state"]');
-        if (stSel) stSel.value = '';
+        if (stSel) stSel.value = rows[idx].state || '';
       }
       scheduleSave();
     }
 
     function setLocation(idx, locationName) {
+      // No-op guard: re-selecting the same location must not change state.
+      if ((rows[idx].location || '') === locationName) return;
+
       rows[idx].location = locationName;
       // Look up location within the row's selected company
       const co  = dustLists.companies.find(c => c.name === rows[idx].company);
@@ -2798,6 +2865,9 @@
       const vField = num === 1 ? 'vehicle1' : 'vehicle2';
       const uField = num === 1 ? 'v1_unit'  : 'v2_unit';
       const rField = num === 1 ? 'v1_rate'  : 'v2_rate';
+      // No-op guard: re-selecting the same vehicle must not blow away a
+      // unit # or rate the user manually edited for this row.
+      if ((rows[idx][vField] || '') === vehicleName) return;
       rows[idx][vField] = vehicleName;
       // Auto-fill unit # and vehicle rate from equipment list
       const eq      = dustLists.equipment.find(e => e.name === vehicleName);
@@ -3469,68 +3539,13 @@
       ]);
 
       if (Array.isArray(savedRows)) {
-        // Pass 1: exact dedup — same date+company+start_time+vehicle1+location.
-        const seen = new Set();
-        let deduped = savedRows.filter(r => {
-          const key = `${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-
-        // Pass 2: time-tolerant dedup.
-        // If a timed row exists for date+company+vehicle1+location, drop any
-        // time-less row for the same combo. This cleans up the pattern where
-        // manually-entered rows had no times and a later CSV import added the
-        // same rows with times, creating doubles because the key didn't match.
-        const timedKeys = new Set(
-          deduped
-            .filter(r => r.start_time)
-            .map(r => `${r.date}|${(r.company||'').toLowerCase()}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`)
-        );
-        deduped = deduped.filter(r => {
-          if (r.start_time) return true;
-          const key = `${r.date}|${(r.company||'').toLowerCase()}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
-          return !timedKeys.has(key);
-        });
-
-        rows = deduped;
-        if (deduped.length < savedRows.length) {
-          console.warn(`[dust] removed ${savedRows.length - deduped.length} duplicate row(s)`);
-
-          // Remap IC billing source_ids from removed row IDs → replacement row IDs
-          // so the ID-based IC chip lookup works after dedup changes which row is kept.
-          try {
-            const contentKey = r => `${r.date}|${(r.company||'').toLowerCase()}|${(r.vehicle1||'').toLowerCase()}|${(r.location||'').toLowerCase()}`;
-            const keptByContent = new Map(deduped.map(r => [contentKey(r), r]));
-            const idRemap = new Map();
-            savedRows.forEach(r => {
-              if (!deduped.find(d => d.id === r.id)) {
-                const rep = keptByContent.get(contentKey(r));
-                if (rep && rep.id !== r.id) idRemap.set(r.id, rep.id);
-              }
-            });
-            if (idRemap.size > 0) {
-              const icData = await apiGet('fct_intercompany_billing_entries');
-              if (Array.isArray(icData)) {
-                let changed = false;
-                const updated = icData.map(e => {
-                  if (e.source === 'dust' && idRemap.has(e.source_id)) {
-                    changed = true;
-                    return { ...e, source_id: idRemap.get(e.source_id) };
-                  }
-                  return e;
-                });
-                if (changed) {
-                  await apiPut('fct_intercompany_billing_entries', updated);
-                  await loadIcSentMapDust();
-                }
-              }
-            }
-          } catch { /* non-fatal */ }
-
-          saveDustRows(rows);
-        }
+        // IMPORTANT: do not silently drop "duplicate" rows on load.
+        // The previous logic deduped by date+company+start_time+vehicle1+location
+        // and then called saveDustRows(), which propagated the removal to the
+        // database — destroying real entries that happened to share those five
+        // fields. If duplicates exist, leave them visible so the user can
+        // review and remove them manually with the row delete button.
+        rows = savedRows;
       }
 
       if (config) {
@@ -4682,8 +4697,22 @@
         return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
       }
 
+      function _hasPendingSave() {
+        // saveTimer = debounce window open; isSaving = request in flight;
+        // deletedRowIds = local deletions waiting to be acked by the server.
+        return saveTimer != null || isSaving || deletedRowIds.size > 0;
+      }
+
+      function _listsModalOpen() {
+        const m = document.getElementById('listsModal');
+        return !!(m && m.classList.contains('open'));
+      }
+
       async function pollDustConfig() {
         try {
+          // Don't overwrite dustLists while the user is editing the list
+          // modal or anywhere else — their unsaved typing would be wiped.
+          if (_isEditing() || _listsModalOpen()) return;
           const config = await dustConfigGet();
           if (!config || !config.lists) return;
           const { lists } = config;
@@ -4701,22 +4730,22 @@
           });
           if (JSON.stringify(incoming) === JSON.stringify(dustLists)) return;
           Object.assign(dustLists, incoming);
-          const listsModal = document.getElementById('listsModal');
-          if (listsModal && listsModal.classList.contains('open')) renderListPanels();
         } catch { /* non-fatal */ }
       }
 
       async function pollDustRows() {
         try {
+          // Skip the assignment entirely when the user has unsynced local
+          // state — otherwise pending edits in the debounce window get
+          // silently overwritten by the server snapshot.
+          if (_isEditing() || _hasPendingSave()) return;
           const incoming = await loadDustRows();
           if (!Array.isArray(incoming)) return;
           if (JSON.stringify(incoming) === JSON.stringify(rows)) return;
           rows = incoming;
-          if (!_isEditing()) {
-            renderYearSelector();
-            renderTable();
-            renderHomeDashboard();
-          }
+          renderYearSelector();
+          renderTable();
+          renderHomeDashboard();
         } catch { /* non-fatal */ }
       }
 
@@ -4777,12 +4806,15 @@
 
       async function pollObRows() {
         try {
+          // Same protection as pollDustRows — never replace the in-memory
+          // array while the user could have unsaved edits.
+          if (_isEditing()) return;
           const incoming = await apiGet(OB_KEY);
           if (!Array.isArray(incoming)) return;
           if (JSON.stringify(incoming) === JSON.stringify(obRows)) return;
           obRows = incoming;
           const obPanel = document.getElementById('tab-other-billing');
-          if (obPanel && obPanel.classList.contains('active') && !_isEditing()) {
+          if (obPanel && obPanel.classList.contains('active')) {
             obRenderTable();
           }
         } catch { /* non-fatal */ }
