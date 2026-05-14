@@ -779,13 +779,13 @@
       <!-- ── Supervisors sub-panel ── -->
       <div class="mu-panel" id="mu-panel-supervisors">
         <div style="font-size:0.78rem;color:var(--muted);line-height:1.55">
-          Flag any employee as a supervisor to make them selectable in the
-          field-employee Timesheet form. Changes apply company-wide and save
-          immediately.
+          Flag a user account as a supervisor to make them selectable in the
+          field-employee Timesheet form. The toggle attaches the supervisor
+          flag to the user's username, not to any individual job entry.
         </div>
 
         <div style="display:flex;gap:0.6rem;align-items:center">
-          <input type="text" id="sup-search" placeholder="Search employees…"
+          <input type="text" id="sup-search" placeholder="Search users…"
             style="flex:1" oninput="renderSupervisorList()" />
           <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;cursor:pointer">
             <input type="checkbox" id="sup-only" onchange="renderSupervisorList()" /> Supervisors only
@@ -796,13 +796,12 @@
           <table class="user-table">
             <thead>
               <tr>
-                <th>Employee</th>
-                <th>Job Class</th>
+                <th>Username</th>
                 <th style="text-align:right">Supervisor</th>
               </tr>
             </thead>
             <tbody id="supListBody">
-              <tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+              <tr><td colspan="2" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -1374,50 +1373,43 @@
 
     async function loadSupervisorList() {
       const tbody = document.getElementById('supListBody');
-      tbody.innerHTML = '<tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="2" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
       try {
-        // Pull employees (field rosters) AND company users in parallel. Users
-        // are merged in so admins like Shelly Palmer or Nate Brewer — who
-        // don't have an employee record because they aren't on field jobs —
-        // can still be flagged as supervisors and appear in the field
-        // Timesheet supervisor picker. The PATCH below upserts an employees
-        // row by name, so flipping the toggle on a user account is enough.
-        const [empRes, usrRes] = await Promise.all([
-          fetch('/api/employees',     { headers: { Authorization: `Bearer ${token}` } }),
+        // Drives the list off /api/company/users so the toggle is tied to a
+        // specific user account, not to job-derived employee entries. We
+        // still hit /api/employees to surface which usernames are currently
+        // flagged — the field Timesheet picker reads from that table, so we
+        // PATCH it by username when a toggle changes (the endpoint upserts).
+        const [usrRes, empRes] = await Promise.all([
           fetch('/api/company/users', { headers: { Authorization: `Bearer ${token}` } }),
+          fetch('/api/employees',     { headers: { Authorization: `Bearer ${token}` } }),
         ]);
-        const empData = await empRes.json();
-        if (!empRes.ok) throw new Error(empData.error || 'Failed');
-        const employees = Array.isArray(empData.employees) ? empData.employees : [];
+        const usrData = await usrRes.json();
+        if (!usrRes.ok) throw new Error(usrData.error || 'Failed to load users');
+        const users = Array.isArray(usrData.users) ? usrData.users : [];
 
-        // /api/company/users may 403 for non-admins; treat as non-fatal so
-        // the supervisor list still renders with whatever employees we have.
-        let users = [];
-        if (usrRes.ok) {
-          const usrData = await usrRes.json();
-          users = Array.isArray(usrData.users) ? usrData.users : [];
+        // Employees fetch is non-fatal — if it fails we still show usernames
+        // with all toggles in their default off state.
+        const flagged = new Set();
+        if (empRes.ok) {
+          const empData = await empRes.json();
+          const employees = Array.isArray(empData.employees) ? empData.employees : [];
+          employees.forEach(e => {
+            if (e.is_supervisor && e.name) flagged.add(String(e.name).toLowerCase());
+          });
         }
 
-        // Skip users whose username matches an existing employee row (already
-        // covered) and any without a username string we can use as the name.
-        const employeeNames = new Set(employees.map(e => (e.name || '').toLowerCase()));
-        const userRows = users
-          .filter(u => u.username && !employeeNames.has(String(u.username).toLowerCase()))
+        supEmployees = users
+          .filter(u => u.username)
           .map(u => ({
-            id:                  null,
-            name:                u.username,
-            job_class:           null,
-            prevailing_rate:     null,
-            non_prevailing_rate: null,
-            is_supervisor:       false,
-            source:              'user',
-          }));
-
-        supEmployees = [...employees, ...userRows]
+            id:            u.id,
+            name:          u.username,
+            is_supervisor: flagged.has(String(u.username).toLowerCase()),
+          }))
           .sort((a, b) => a.name.localeCompare(b.name));
         renderSupervisorList();
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="3" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="2" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
       }
     }
 
@@ -1431,23 +1423,19 @@
       if (onlySups) list = list.filter(e => e.is_supervisor === true);
 
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="3" style="padding:0.75rem;color:var(--muted);text-align:center">No employees match.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="2" style="padding:0.75rem;color:var(--muted);text-align:center">No users match.</td></tr>';
         return;
       }
-      tbody.innerHTML = list.map(e => {
-        const srcLabel = e.source && e.source !== 'employees' ? ` <span style="color:var(--muted);font-size:0.65rem;letter-spacing:0.06em;text-transform:uppercase">· ${e.source}</span>` : '';
-        return `
+      tbody.innerHTML = list.map(e => `
         <tr>
-          <td style="font-weight:600">${escSupHtml(e.name)}${srcLabel}</td>
-          <td style="color:var(--muted)">${escSupHtml(e.job_class || '—')}</td>
+          <td style="font-weight:600">${escSupHtml(e.name)}</td>
           <td style="text-align:right">
             <label class="sup-toggle" title="Toggle supervisor">
               <input type="checkbox" data-emp-name="${escSupHtml(e.name)}" ${e.is_supervisor ? 'checked' : ''} onchange="toggleSupervisor(this)" />
               <span class="slider"></span>
             </label>
           </td>
-        </tr>`;
-      }).join('');
+        </tr>`).join('');
     }
 
     function escSupHtml(s) {
