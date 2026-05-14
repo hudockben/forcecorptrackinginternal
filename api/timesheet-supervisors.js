@@ -5,8 +5,12 @@
  *   GET /api/timesheet-supervisors
  *     → { supervisors: [{ id, name }, ...] }
  *
- * Source: the existing `employees` table, filtered by is_supervisor = TRUE.
- * No new table — admins flag supervisors directly on the employee row.
+ * Source: employees rows flagged is_supervisor = TRUE, INNER JOINed to the
+ * users table on username so only user accounts surface in the dropdown.
+ * The Supervisors sub-tab on divisions.html drives the toggle off the users
+ * list, and the field-employee Timesheet picker matches it 1:1. Stale
+ * supervisor rows whose name doesn't correspond to a user (e.g. carryover
+ * from when the roster sourced the list) are silently filtered out.
  */
 
 const { neon } = require('@neondatabase/serverless');
@@ -34,14 +38,21 @@ module.exports = async (req, res) => {
 
   try {
     // Tolerate fresh deploys where the column hasn't been migrated yet.
+    // We surface u.username (not e.name) so the dropdown always reads
+    // straight from the user account — even if the employees row's name
+    // drifted in casing or trailing whitespace from when the toggle wrote.
     let rows;
     try {
       rows = await sql`
-        SELECT id, name FROM employees
-        WHERE company_code  = ${payload.companyCode}
-          AND is_supervisor = TRUE
-          AND (active = TRUE OR active IS NULL)
-        ORDER BY name ASC
+        SELECT e.id, u.username AS name
+        FROM   employees e
+        INNER JOIN users u
+          ON LOWER(u.username) = LOWER(e.name)
+         AND u.company_code   = e.company_code
+        WHERE  e.company_code  = ${payload.companyCode}
+          AND  e.is_supervisor = TRUE
+          AND (e.active = TRUE OR e.active IS NULL)
+        ORDER BY u.username ASC
       `;
     } catch {
       rows = [];
