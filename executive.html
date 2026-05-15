@@ -1343,10 +1343,11 @@
     loadReport();
 
     // ── Email Report ──
-    // Captures the currently-rendered report body + the page's <style>
-    // blocks (CSS variables resolved to literal hex values so email
-    // clients render colors even when they strip <style>) and opens the
-    // shared recipient-picker modal from report-email.js.
+    // Captures the Projects section only (same scope the "Download PDF"
+    // button on the Projects card uses) + the page's <style> blocks (CSS
+    // variables resolved to literal hex values so email clients render
+    // colors even when they strip <style>) and opens the shared
+    // recipient-picker modal from report-email.js.
     function emailExecutiveReport() {
       if (typeof window.openReportEmailModal !== 'function') {
         alert('Email module is still loading — please try again in a moment.');
@@ -1355,6 +1356,11 @@
       const bodyEl = document.getElementById('reportBody');
       if (!bodyEl || bodyEl.style.display === 'none') {
         alert('The report is still loading.');
+        return;
+      }
+      const projectsEl = document.getElementById('projectsSection');
+      if (!projectsEl) {
+        alert('Projects section not found on this report.');
         return;
       }
       // Resolve CSS variables to literal values so the email keeps colors
@@ -1378,13 +1384,13 @@
       const wrapped = `
 <div style="background:#fff;color:#111;padding:1.5rem;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;">
   <style>${styles}\n:root { ${resolved} }</style>
-  <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.2rem;">Executive Report</div>
+  <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.2rem;">Executive Report — Projects</div>
   <div style="font-size:0.78rem;color:#555;margin-bottom:1rem;">${reportDate}</div>
-  ${bodyEl.outerHTML}
+  ${projectsEl.outerHTML}
 </div>`;
       window.openReportEmailModal({
         reportType: 'executive',
-        defaultSubject: `Executive Report — ${new Date().toLocaleDateString()}`,
+        defaultSubject: `Executive Projects Report — ${new Date().toLocaleDateString()}`,
         getHTML: () => wrapped,
       });
     }
