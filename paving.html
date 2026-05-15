@@ -4990,8 +4990,22 @@ function saveProject(id) {
 // tab hide so date edits aren't lost inside the 600ms window). Uses
 // keepalive:true so the requests survive the navigation.
 function _flushPendingProjectSaves() {
+  // Flush per-bid-item PUTs first. Each payload is ~500 bytes so dozens
+  // of in-flight requests can comfortably share the 64KB keepalive
+  // budget, unlike a single full-blob PUT which can exceed it alone on
+  // projects with 100+ bid items.
+  const biIds = Object.keys(_biSavePending);
+  biIds.forEach(biId => {
+    const projId = _biSavePending[biId];
+    clearTimeout(_biSaveTimers[biId]);
+    delete _biSaveTimers[biId];
+    delete _biSavePending[biId];
+    _doBidItemPut(projId, biId, true);
+  });
+  // Flush any pending full-project saves (covers add/remove bid items,
+  // project metadata changes, change orders, group renames).
   const ids = Object.keys(_saveProjTimers);
-  if (!ids.length) return;
+  if (!ids.length && !biIds.length) return;
   ids.forEach(id => {
     clearTimeout(_saveProjTimers[id]);
     delete _saveProjTimers[id];
@@ -5005,6 +5019,61 @@ window.addEventListener('beforeunload', _flushPendingProjectSaves);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') _flushPendingProjectSaves();
 });
+
+// ── Per-bid-item PUT (small payload, fits keepalive cap) ──────────────
+// updateBidItem routes field-level edits here instead of through the
+// full-project saveProject path. Each PUT carries only ~500 bytes so a
+// large project (200 bid items, ~80KB full blob) no longer exceeds the
+// browser's 64KB keepalive cap on the unload-flush path.
+const _biSaveTimers  = {}; // biId -> setTimeout handle
+const _biSavePending = {}; // biId -> projId (for the unload flush)
+function patchBidItem(projId, biId) {
+  _biSavePending[biId] = projId;
+  clearTimeout(_biSaveTimers[biId]);
+  _biSaveTimers[biId] = setTimeout(() => {
+    delete _biSaveTimers[biId];
+    delete _biSavePending[biId];
+    _doBidItemPut(projId, biId, false);
+  }, 600);
+}
+function _doBidItemPut(projId, biId, keepalive) {
+  const p = getProj(projId); if (!p) return;
+  const item = (p.bidItems || []).find(b => b.id === biId);
+  if (!item) return;
+  const projectKey = 'fct_paving_project_' + projId;
+  // Share the index _ts with the server so our own next poll sees a
+  // matching value and skips a spurious loadProjects().
+  const ts = Date.now();
+  _lastProjIndexTs = ts;
+  const init = {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${fctToken}`,
+    },
+    body: JSON.stringify({ bidItem: item, ts }),
+  };
+  if (keepalive) init.keepalive = true;
+  const url = `${API_BASE}/bid-items`
+    + `?id=${encodeURIComponent(biId)}`
+    + `&projectId=${encodeURIComponent(projId)}`
+    + `&projectKey=${encodeURIComponent(projectKey)}`;
+  fetch(url, init).then(async r => {
+    if (r.ok) return;
+    console.warn(`[bid-items] PUT ${biId} failed: HTTP ${r.status}`);
+    if (r.status === 401) { _showSaveError(true); return; }
+    // 404 = blob doesn't exist yet (newly created project hasn't been
+    // saved). Fall back to the full saveProject path which creates it.
+    if (r.status === 404) { saveProject(projId); return; }
+    _showSaveError(false);
+  }).catch(err => {
+    // Network failure — keep the localStorage backup and surface the
+    // banner. Don't fall back to full-blob save here because if we're
+    // on the unload path that would just exceed the keepalive cap.
+    console.warn(`[bid-items] PUT ${biId} error:`, err.message);
+    _showSaveError(false);
+  });
+}
 
 // Save the ordered list of project IDs — called when projects are added/removed/edited.
 // Includes _ts so the 60s poll on other clients detects the change.
@@ -6601,7 +6670,12 @@ function updateBidItem(projId, itemId, field, value) {
   const p = getProj(projId); if (!p) return;
   const item = p.bidItems.find(b => b.id === itemId); if (!item) return;
   item[field] = value;
-  saveProject(projId);
+  // localStorage backup — saves regardless of which network path is used
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
+  // Use the per-bid-item endpoint so the network payload is ~500 bytes
+  // instead of the full project blob (which can exceed the 64KB keepalive
+  // cap on large projects with 100+ bid items).
+  patchBidItem(projId, itemId);
   // Refresh just this row's calculated cells + footer totals
   const qty = parseFloat(item.quantity) || 0;
   const uc  = parseFloat(item.unit_cost) || 0;
