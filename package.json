@@ -4,7 +4,9 @@
     "@neondatabase/serverless": "^0.10.4",
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.5",
-    "jsonwebtoken": "^9.0.3",
+    "jsonwebtoken": "^9.0.3"
+  },
+  "devDependencies": {
     "pg": "^8.20.0"
   }
 }
