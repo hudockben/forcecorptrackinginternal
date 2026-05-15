@@ -2505,7 +2505,19 @@
             (row[f] || '').toLowerCase().includes(v))) return acc;
         acc.push(idx);
         return acc;
-      }, []).sort((a, b) => (rows[b].date || '').localeCompare(rows[a].date || ''));
+      }, []).sort((a, b) => {
+        // Primary: most recent date first.
+        const dateCmp = (rows[b].date || '').localeCompare(rows[a].date || '');
+        if (dateCmp !== 0) return dateCmp;
+        // Tie-break: newest row first within the same date. Row ids are
+        // Date.now()-based (see uid()), so lexicographic id order matches
+        // creation order. Without this tie-break, a freshly-added row
+        // would drop to the bottom of its date group after the first
+        // server roundtrip — the server returns rows ORDER BY created_at
+        // ASC, so the new row lands at the end of the array, and the
+        // (stable) date sort preserves that position.
+        return (rows[b].id || '').localeCompare(rows[a].id || '');
+      });
 
       let totVeh = 0, totUb = 0, totInv = 0, totGal = 0;
 
