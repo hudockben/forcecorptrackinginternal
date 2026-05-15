@@ -1370,15 +1370,17 @@
       return normalizeLists(data.value);
     }
 
-    async function putLists(value) {
-      const res = await fetch(`/api/data/${QUARRY_LISTS_KEY}`, {
+    async function putLists(value, opts = {}) {
+      const init = {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ value }),
-      });
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_LISTS_KEY}`, init);
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new Error(`PUT ${QUARRY_LISTS_KEY} → ${res.status} ${text}`);
@@ -1637,15 +1639,17 @@
       return normalizeSalesRows(data.value);
     }
 
-    async function putSales(value) {
-      const res = await fetch(`/api/data/${QUARRY_SALES_KEY}`, {
+    async function putSales(value, opts = {}) {
+      const init = {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ value }),
-      });
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_SALES_KEY}`, init);
       if (!res.ok) {
         // 409 = backend bulk-wipe protection refused the save (e.g. empty
         // list against a non-trivial existing table). Surface the detail.
@@ -2273,15 +2277,17 @@
       const data = await res.json();
       return normalizeCrushRows(data.value);
     }
-    async function putCrush(value) {
-      const res = await fetch(`/api/data/${QUARRY_CRUSH_KEY}`, {
+    async function putCrush(value, opts = {}) {
+      const init = {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ value }),
-      });
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_CRUSH_KEY}`, init);
       if (!res.ok) {
         if (res.status === 409) {
           let detail = 'The server refused this save to prevent accidental data loss.';
@@ -2546,15 +2552,17 @@
       const data = await res.json();
       return normalizeDailyRows(data.value);
     }
-    async function putDaily(value) {
-      const res = await fetch(`/api/data/${QUARRY_DAILY_KEY}`, {
+    async function putDaily(value, opts = {}) {
+      const init = {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ value }),
-      });
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_DAILY_KEY}`, init);
       if (!res.ok) {
         if (res.status === 409) {
           let detail = 'The server refused this save to prevent accidental data loss.';
@@ -2591,6 +2599,36 @@
         }
       }
     }
+
+    // Flush any pending or in-flight saves immediately on page unload.
+    // Without keepalive the browser cancels in-flight fetches when the
+    // page tears down, dropping the last edit. We fire a fresh keepalive
+    // PUT carrying the current local state for any save type that has
+    // pending or in-flight work — server-side it's an idempotent overwrite.
+    function _quarryFlushOnUnload() {
+      try {
+        if (savePending || saveInFlight) {
+          putLists(quarryLists, { keepalive: true }).catch(() => {});
+          savePending = null;
+        }
+        if (salesSavePending || salesSaveInFlight) {
+          putSales(salesRows.map(r => ({ ...r })), { keepalive: true }).catch(() => {});
+          salesSavePending = null;
+        }
+        if (crushSavePending || crushSaveInFlight) {
+          putCrush(crushRows.map(r => ({ ...r })), { keepalive: true }).catch(() => {});
+          crushSavePending = null;
+        }
+        if (dailySavePending || dailySaveInFlight) {
+          putDaily(dailyRows.map(r => ({ ...r })), { keepalive: true }).catch(() => {});
+          dailySavePending = null;
+        }
+      } catch (_) { /* best-effort on unload */ }
+    }
+    window.addEventListener('beforeunload', _quarryFlushOnUnload);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') _quarryFlushOnUnload();
+    });
     async function refreshDaily() {
       try {
         if (listsLoaded) {

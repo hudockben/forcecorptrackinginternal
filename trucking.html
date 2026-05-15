@@ -627,7 +627,7 @@
       if (opts.keepalive) init.keepalive = true;
       fetch(`${API_BASE}/truck-division`, init)
         .then(r => _handleSaveResponse(r, 'tdDivPut')).catch(() => _showSaveError(false));
-      _flushIcBillingIfDirty();
+      _flushIcBillingIfDirty(opts);
     }
 
     // Flush any pending debounced save immediately. Hooked to beforeunload
@@ -651,10 +651,14 @@
     // concurrently (newly-sent rows, dust sends, edits from another tab). We
     // re-fetch the server's current list, re-apply only the trucking-row field
     // updates held in memory, then PUT the merged result.
-    async function _flushIcBillingIfDirty() {
+    async function _flushIcBillingIfDirty(opts = {}) {
       if (!_icBillingDirty) return;
       _icBillingDirty = false;
       try {
+        // GET cannot run reliably from a page-unload context — it has to
+        // complete before the merged PUT can be built. On unload paths
+        // we skip the merge dance and let the next session reconcile.
+        if (opts.keepalive) return;
         const r = await fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
           headers: { Authorization: `Bearer ${token}` }
         });

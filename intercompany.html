@@ -1126,7 +1126,11 @@
       _showSaveError(r.status === 401);
     }
 
-    function saveRates() {
+    // Track the latest payload so the unload flush can re-fire any save
+    // that was in flight without keepalive — keystroke-triggered saves
+    // race with page navigation otherwise.
+    let _pendingRatesPayload = null;
+    function saveRates(opts = {}) {
       const payload = {
         truck: icTruckRate, labor: icLaborRate,
         dust: icDustRate, ub: icUbRate,
@@ -1137,11 +1141,16 @@
       localStorage.setItem('ic_dust_rate',         icDustRate);
       localStorage.setItem('ic_ub_rate',           icUbRate);
       localStorage.setItem('ic_quarry_labor_rate', icQuarryLaborRate);
-      fetch(`${API_BASE}/data/${IC_RATES_KEY}`, {
+      _pendingRatesPayload = payload;
+      const init = {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ value: payload })
-      }).then(r => _handleSaveResponse(r, 'rates')).catch(() => _showSaveError(false));
+      };
+      if (opts.keepalive) init.keepalive = true;
+      fetch(`${API_BASE}/data/${IC_RATES_KEY}`, init)
+        .then(r => { _pendingRatesPayload = null; return _handleSaveResponse(r, 'rates'); })
+        .catch(() => _showSaveError(false));
     }
 
     function onRateChange() {
@@ -1195,13 +1204,51 @@
       } catch { icCompanies = []; }
     }
 
-    function saveCompanies() {
-      fetch(`${API_BASE}/data/${IC_COMPANIES_KEY}`, {
+    let _pendingCompaniesSave = false;
+    function saveCompanies(opts = {}) {
+      _pendingCompaniesSave = true;
+      const init = {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ value: icCompanies })
-      }).then(r => _handleSaveResponse(r, 'companies')).catch(() => _showSaveError(false));
+      };
+      if (opts.keepalive) init.keepalive = true;
+      fetch(`${API_BASE}/data/${IC_COMPANIES_KEY}`, init)
+        .then(r => { _pendingCompaniesSave = false; return _handleSaveResponse(r, 'companies'); })
+        .catch(() => _showSaveError(false));
     }
+
+    // Flush any save that may still be in flight or queued — without
+    // keepalive the browser cancels the fetch on navigation, dropping
+    // rate edits typed seconds before clicking away.
+    function _flushIcSavesOnUnload() {
+      try {
+        if (_pendingRatesPayload) {
+          const init = {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ value: _pendingRatesPayload }),
+            keepalive: true,
+          };
+          fetch(`${API_BASE}/data/${IC_RATES_KEY}`, init).catch(() => {});
+          _pendingRatesPayload = null;
+        }
+        if (_pendingCompaniesSave) {
+          const init = {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ value: icCompanies }),
+            keepalive: true,
+          };
+          fetch(`${API_BASE}/data/${IC_COMPANIES_KEY}`, init).catch(() => {});
+          _pendingCompaniesSave = false;
+        }
+      } catch (_) { /* best-effort on unload */ }
+    }
+    window.addEventListener('beforeunload', _flushIcSavesOnUnload);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') _flushIcSavesOnUnload();
+    });
 
     // ── Render company list ─────────────────────────────────────
     function renderCoList() {
