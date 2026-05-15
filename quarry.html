@@ -1647,6 +1647,15 @@
         body: JSON.stringify({ value }),
       });
       if (!res.ok) {
+        // 409 = backend bulk-wipe protection refused the save (e.g. empty
+        // list against a non-trivial existing table). Surface the detail.
+        if (res.status === 409) {
+          let detail = 'The server refused this save to prevent accidental data loss.';
+          try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch {}
+          const err = new Error(detail);
+          err.refused = true;
+          throw err;
+        }
         const text = await res.text().catch(() => '');
         throw new Error(`PUT ${QUARRY_SALES_KEY} → ${res.status} ${text}`);
       }
@@ -1666,7 +1675,11 @@
           await putSales(snapshot);
         } catch (err) {
           console.error('[quarry] sales save failed:', err);
-          alert('Could not save sales changes — please check your connection and try again.');
+          if (err && err.refused) {
+            alert('Sales save refused:\n\n' + err.message + '\n\nYour edits are kept locally. To force the save, contact an admin.');
+          } else {
+            alert('Could not save sales changes — please check your connection and try again.');
+          }
         } finally {
           salesSaveInFlight = false;
         }
@@ -2270,6 +2283,13 @@
         body: JSON.stringify({ value }),
       });
       if (!res.ok) {
+        if (res.status === 409) {
+          let detail = 'The server refused this save to prevent accidental data loss.';
+          try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch {}
+          const err = new Error(detail);
+          err.refused = true;
+          throw err;
+        }
         const text = await res.text().catch(() => '');
         throw new Error(`PUT ${QUARRY_CRUSH_KEY} → ${res.status} ${text}`);
       }
@@ -2288,7 +2308,11 @@
           await putCrush(snapshot);
         } catch (err) {
           console.error('[quarry] crushing save failed:', err);
-          alert('Could not save crushing changes — please check your connection and try again.');
+          if (err && err.refused) {
+            alert('Crushing save refused:\n\n' + err.message + '\n\nYour edits are kept locally. To force the save, contact an admin.');
+          } else {
+            alert('Could not save crushing changes — please check your connection and try again.');
+          }
         } finally {
           crushSaveInFlight = false;
         }
@@ -2532,6 +2556,13 @@
         body: JSON.stringify({ value }),
       });
       if (!res.ok) {
+        if (res.status === 409) {
+          let detail = 'The server refused this save to prevent accidental data loss.';
+          try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch {}
+          const err = new Error(detail);
+          err.refused = true;
+          throw err;
+        }
         const text = await res.text().catch(() => '');
         throw new Error(`PUT ${QUARRY_DAILY_KEY} → ${res.status} ${text}`);
       }
@@ -2550,7 +2581,11 @@
           await putDaily(snapshot);
         } catch (err) {
           console.error('[quarry] daily save failed:', err);
-          alert('Could not save daily tracking changes — please check your connection and try again.');
+          if (err && err.refused) {
+            alert('Daily tracking save refused:\n\n' + err.message + '\n\nYour edits are kept locally. To force the save, contact an admin.');
+          } else {
+            alert('Could not save daily tracking changes — please check your connection and try again.');
+          }
         } finally {
           dailySaveInFlight = false;
         }
