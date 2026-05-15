@@ -2942,12 +2942,14 @@
           const { value } = await r.json();
           const incoming = Array.isArray(value) ? value : [];
           if (JSON.stringify(incoming) === JSON.stringify(icBillingEntries)) return;
+          // Skip the cycle when the user is editing — otherwise the next
+          // save would echo this polled snapshot back to the server,
+          // wiping intercompany billing edits in progress.
+          if (_isEditing()) return;
           icBillingEntries = incoming;
-          if (!_isEditing()) {
-            if (_activeTabId() === 'dashboard')    renderDashboard();
-            if (_activeTabId() === 'company-info') renderCompanyInfo();
-            if (_activeTabId() === 'analytics')    renderAnalytics();
-          }
+          if (_activeTabId() === 'dashboard')    renderDashboard();
+          if (_activeTabId() === 'company-info') renderCompanyInfo();
+          if (_activeTabId() === 'analytics')    renderAnalytics();
         } catch { /* non-fatal */ }
       }
 
@@ -2960,14 +2962,15 @@
           const { value } = await r.json();
           const incoming = Array.isArray(value) ? value : [];
           if (JSON.stringify(incoming) === JSON.stringify(icCompanies)) return;
+          // Skip while the user is editing the company list — otherwise
+          // their unsaved typing would be replaced by the server snapshot.
+          if (_isEditing()) return;
           icCompanies = incoming;
           const listsBackdrop = document.getElementById('listsBackdrop');
           if (listsBackdrop && listsBackdrop.classList.contains('open')) renderCoList();
-          if (!_isEditing()) {
-            if (_activeTabId() === 'dashboard')    renderDashboard();
-            if (_activeTabId() === 'company-info') renderCompanyInfo();
-            if (_activeTabId() === 'analytics')    renderAnalytics();
-          }
+          if (_activeTabId() === 'dashboard')    renderDashboard();
+          if (_activeTabId() === 'company-info') renderCompanyInfo();
+          if (_activeTabId() === 'analytics')    renderAnalytics();
         } catch { /* non-fatal */ }
       }
 

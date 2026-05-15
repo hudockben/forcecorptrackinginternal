@@ -16223,8 +16223,13 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const saved = await apiGet('fct_paving_cost_rows');
     const incoming = Array.isArray(saved) ? saved : [];
     if (JSON.stringify(incoming) === JSON.stringify(costRows)) return;
+    // Don't overwrite the in-memory array while the user is typing — the
+    // next save would otherwise echo this polled snapshot back to the
+    // server, wiping any pending edits. Skip the whole cycle; the next
+    // poll (or a focus change) will pick it up.
+    if (_isEditing()) return;
     costRows = incoming;
-    if (activeTab === 'cost' && !_isEditing()) renderCostTable();
+    if (activeTab === 'cost') renderCostTable();
   }
 
   async function _pollProjects() {
@@ -16250,9 +16255,10 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
     if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
+    if (_isEditing()) return; // don't overwrite pending edits
     purchaseOrders = incoming;
     _migratePOs();
-    if (activeTab === 'po' && !_isEditing()) renderPOTab();
+    if (activeTab === 'po') renderPOTab();
   }
 
   async function _pollTrucking() {
@@ -16263,16 +16269,18 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const data = await r.json();
     const incoming = Array.isArray(data.truckingEntries) ? data.truckingEntries : [];
     if (JSON.stringify(incoming) === JSON.stringify(truckingEntries)) return;
+    if (_isEditing()) return; // don't overwrite pending edits
     truckingEntries = incoming;
-    if (activeTab === 'trucking' && !_isEditing()) renderTruckingTab();
+    if (activeTab === 'trucking') renderTruckingTab();
   }
 
   async function _pollInventory() {
     const saved = await apiGet('fct_paving_inventory');
     const incoming = Array.isArray(saved) ? saved : [];
     if (JSON.stringify(incoming) === JSON.stringify(inventoryEntries)) return;
+    if (_isEditing()) return; // don't overwrite pending edits
     inventoryEntries = incoming;
-    if (activeTab === 'inventory' && !_isEditing()) renderInventoryTab();
+    if (activeTab === 'inventory') renderInventoryTab();
   }
 
   async function _pollCrm() {
@@ -16284,12 +16292,15 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const inPeople = pRes.status === 'fulfilled' && Array.isArray(pRes.value) ? pRes.value : null;
     const inCos    = cRes.status === 'fulfilled' && Array.isArray(cRes.value) ? cRes.value : null;
     const inOpps   = oRes.status === 'fulfilled' && Array.isArray(oRes.value) ? oRes.value : null;
-    // Always update state; only re-render if CRM tab is active and user isn't editing
+    // Skip the whole cycle if the user is editing — otherwise the next
+    // save would echo this polled snapshot back to the server, losing
+    // pending edits to a CRM person / company / opportunity.
+    if (_isEditing()) return;
     let peopleChanged = false, cosChanged = false, oppsChanged = false;
     if (inPeople && JSON.stringify(inPeople) !== JSON.stringify(crmPeople))         { crmPeople        = inPeople;  peopleChanged = true; }
     if (inCos    && JSON.stringify(inCos)    !== JSON.stringify(crmCompanies))      { crmCompanies     = inCos;     cosChanged    = true; }
     if (inOpps   && JSON.stringify(inOpps)   !== JSON.stringify(crmOpportunities))  { crmOpportunities = inOpps;    oppsChanged   = true; }
-    if (activeTab !== 'crm' || _isEditing()) return;
+    if (activeTab !== 'crm') return;
     const activePanel = document.querySelector('.crm-sub-panel.active')?.id;
     if (peopleChanged) {
       if (activePanel === 'crm-panel-people')    renderCrmPeopleTab();
@@ -16312,10 +16323,11 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     ]);
     const inManual = mRes.status === 'fulfilled' && Array.isArray(mRes.value) ? mRes.value : null;
     const inUnits  = uRes.status === 'fulfilled' && uRes.value && typeof uRes.value === 'object' && !Array.isArray(uRes.value) ? uRes.value : null;
+    if (_isEditing()) return; // don't overwrite pending edits on the Scale of Economy tab
     let changed = false;
     if (inManual && JSON.stringify(inManual) !== JSON.stringify(scaleManualEntries)) { scaleManualEntries = inManual; changed = true; }
     if (inUnits  && JSON.stringify(inUnits)  !== JSON.stringify(soeUnitOverrides))   { soeUnitOverrides  = inUnits;  changed = true; }
-    if (changed && activeTab === 'scale' && !_isEditing()) renderScaleOfEconomy();
+    if (changed && activeTab === 'scale') renderScaleOfEconomy();
   }
 
   // Board and deadlines live on the home tab; refresh them more frequently

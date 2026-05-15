@@ -2392,11 +2392,15 @@
                                  JSON.stringify(inCustomers) !== JSON.stringify(divTruckLists.customers) ||
                                  JSON.stringify(inUnits)     !== JSON.stringify(divTruckLists.units);
           if (!entriesChanged && !listsChanged) return;
+          // Skip the cycle entirely while the user is typing — otherwise
+          // we replace the in-memory entries/lists with the server
+          // snapshot and the next save echoes that snapshot back,
+          // wiping the user's pending edits.
+          if (_isEditing()) return;
           divEntries = inEntries;
           if (Array.isArray(tl.drivers))   divTruckLists.drivers   = tl.drivers;
           if (Array.isArray(tl.customers)) divTruckLists.customers = tl.customers;
           if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
-          if (_isEditing()) return;
           const tab = _activeTabId();
           if (tab === 'dashboard')      renderDashboard();
           if (tab === 'truck-tracking') renderTrackingTab();
