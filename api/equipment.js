@@ -37,8 +37,19 @@ module.exports = async (req, res) => {
         .filter(e => e.name?.trim());
       const incomingNames = new Set(incoming.map(e => e.name.trim()));
 
-      // Remove deleted items
+      // Bulk-wipe protection: refuse to wipe the equipment list on an empty
+      // PUT against a non-trivial table. Single-item deletes still work via
+      // DELETE /api/equipment?id=.
       const existing = await sql`SELECT name FROM equipment_list WHERE company_code = ${companyCode}`;
+      if (incoming.length === 0 && existing.length > 1 && req.query.force !== '1') {
+        console.warn(`[equipment] refused empty PUT: ${existing.length} items would have been wiped for ${companyCode}`);
+        return res.status(409).json({
+          error: 'Refusing to wipe equipment',
+          detail: `Cannot replace ${existing.length} items with an empty list. Use DELETE /api/equipment?id= for single removals, or pass ?force=1 to override.`,
+        });
+      }
+
+      // Remove deleted items
       for (const { name } of existing) {
         if (!incomingNames.has(name)) {
           await sql`DELETE FROM equipment_list WHERE company_code = ${companyCode} AND name = ${name}`;

@@ -181,7 +181,17 @@ async function _syncSettings(sql, companyCode, settings) {
 
 async function _syncEquipment(sql, companyCode, equipment) {
   const ids = equipment.map(e => e && e.id).filter(Boolean);
+  // Bulk-wipe protection: refuse to wipe the equipment table when the
+  // incoming list is empty but the table has multiple existing rows.
+  // Single-item deletes still work (count==1 case proceeds with wipe).
   if (ids.length === 0) {
+    const [{ count }] = await sql`
+      SELECT COUNT(*)::int AS count FROM dust_equipment WHERE company_code = ${companyCode}
+    `;
+    if (count > 1) {
+      console.warn(`[dust-config] refused empty equipment sync: ${count} rows would have been wiped for ${companyCode}`);
+      return;
+    }
     await sql`DELETE FROM dust_equipment WHERE company_code = ${companyCode}`;
     return;
   }
@@ -203,6 +213,19 @@ async function _syncEquipment(sql, companyCode, equipment) {
 }
 
 async function _syncDropdownList(sql, companyCode, listName, values) {
+  // Bulk-wipe protection: refuse to wipe a dropdown list when the incoming
+  // values are empty but the table has multiple existing entries — almost
+  // always indicates a stale-state bug. Single-item deletes still work.
+  if (!Array.isArray(values) || values.length === 0) {
+    const [{ count }] = await sql`
+      SELECT COUNT(*)::int AS count FROM dropdown_lists
+      WHERE company_code = ${companyCode} AND list_name = ${listName}
+    `;
+    if (count > 1) {
+      console.warn(`[dust-config] refused empty ${listName} sync: ${count} rows would have been wiped for ${companyCode}`);
+      return;
+    }
+  }
   await sql`
     DELETE FROM dropdown_lists WHERE company_code = ${companyCode} AND list_name = ${listName}
   `;
@@ -218,8 +241,19 @@ async function _syncDropdownList(sql, companyCode, listName, values) {
 
 async function _syncCompanies(sql, companyCode, companies) {
   const ids = companies.map(c => c && c.id).filter(Boolean);
+  // Bulk-wipe protection: refuse to wipe the entire dust_companies table
+  // (and its cascading locations + personnel) when the incoming list is
+  // empty but multiple companies exist. This is the same class of bug as
+  // the row-data wipes — a stale or partial client state would silently
+  // destroy all company records along with every well pad and company man.
   if (ids.length === 0) {
-    // Cascade deletes locations + personnel via FK
+    const [{ count }] = await sql`
+      SELECT COUNT(*)::int AS count FROM dust_companies WHERE company_code = ${companyCode}
+    `;
+    if (count > 1) {
+      console.warn(`[dust-config] refused empty companies sync: ${count} companies would have been wiped (with cascading locations + personnel) for ${companyCode}`);
+      return;
+    }
     await sql`DELETE FROM dust_companies WHERE company_code = ${companyCode}`;
     return;
   }
@@ -238,12 +272,19 @@ async function _syncCompanies(sql, companyCode, companies) {
         sort_order = EXCLUDED.sort_order
     `;
 
-    // Locations
+    // Locations — bulk-wipe protection per company.
     const locIds = (co.locations || []).map(l => l && l.id).filter(Boolean);
     if (locIds.length > 0) {
       await sql`DELETE FROM dust_company_locations WHERE dust_company_id = ${co.id} AND id <> ALL(${locIds})`;
     } else {
-      await sql`DELETE FROM dust_company_locations WHERE dust_company_id = ${co.id}`;
+      const [{ count }] = await sql`
+        SELECT COUNT(*)::int AS count FROM dust_company_locations WHERE dust_company_id = ${co.id}
+      `;
+      if (count > 1) {
+        console.warn(`[dust-config] refused empty locations for company ${co.id}: ${count} would have been wiped`);
+      } else if (count === 1) {
+        await sql`DELETE FROM dust_company_locations WHERE dust_company_id = ${co.id}`;
+      }
     }
     for (let li = 0; li < (co.locations || []).length; li++) {
       const loc = co.locations[li];
@@ -258,12 +299,19 @@ async function _syncCompanies(sql, companyCode, companies) {
       `;
     }
 
-    // Personnel
+    // Personnel — bulk-wipe protection per company.
     const persIds = (co.men || []).map(p => p && p.id).filter(Boolean);
     if (persIds.length > 0) {
       await sql`DELETE FROM dust_company_personnel WHERE dust_company_id = ${co.id} AND id <> ALL(${persIds})`;
     } else {
-      await sql`DELETE FROM dust_company_personnel WHERE dust_company_id = ${co.id}`;
+      const [{ count }] = await sql`
+        SELECT COUNT(*)::int AS count FROM dust_company_personnel WHERE dust_company_id = ${co.id}
+      `;
+      if (count > 1) {
+        console.warn(`[dust-config] refused empty personnel for company ${co.id}: ${count} would have been wiped`);
+      } else if (count === 1) {
+        await sql`DELETE FROM dust_company_personnel WHERE dust_company_id = ${co.id}`;
+      }
     }
     for (let pi = 0; pi < (co.men || []).length; pi++) {
       const p = co.men[pi];

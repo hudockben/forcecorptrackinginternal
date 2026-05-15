@@ -143,6 +143,25 @@ module.exports = async (req, res) => {
         ? lists
         : { drivers: [], customers: [], units: [] };
 
+      // Bulk-wipe protection: an empty incoming entries list against an
+      // existing non-trivial table is almost always a client bug (race,
+      // stale poll, network blip) and would silently destroy the user's
+      // truck division data via the blob+normalized writes below.
+      // Single-row deletes still work. Override with ?force=1.
+      if (entries.length === 0 && req.query.force !== '1') {
+        const existing = await sql`
+          SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division'}
+        `;
+        const existingArr = Array.isArray(existing[0]?.value) ? existing[0].value : null;
+        if (existingArr && existingArr.length > 1) {
+          console.warn(`[truck-division] refused empty PUT: would have wiped ${existingArr.length} entries for ${companyCode}`);
+          return res.status(409).json({
+            error: 'Refusing to wipe truck division entries',
+            detail: `Cannot replace ${existingArr.length} entries with an empty list. Pass ?force=1 to override.`,
+          });
+        }
+      }
+
       // Write blobs in parallel with the normalized sync so neither blocks the response
       await Promise.all([
         sql`
@@ -185,10 +204,11 @@ async function _syncToTables(sql, companyCode, entries, lists) {
 async function _syncEntries(sql, companyCode, entries) {
   const ids = entries.map(e => e && e.id).filter(Boolean);
 
-  if (ids.length === 0) {
-    await sql`DELETE FROM truck_division_entries WHERE company_code = ${companyCode}`;
-    return;
-  }
+  // Defense in depth: even if an empty list slips past the upstream guard
+  // (e.g. during the legacy migration path), refuse to wipe the mirror
+  // table. The blob is the source of truth — leaving the mirror intact
+  // preserves a recovery option.
+  if (ids.length === 0) return;
 
   await sql`
     DELETE FROM truck_division_entries

@@ -625,25 +625,24 @@ async function syncQuarryLists(sql, companyCode, value) {
     const items = Array.isArray(lists[b.key]) ? lists[b.key] : [];
     const ids = items.map(it => it && it.id).filter(Boolean);
 
+    // Defense in depth: if an empty list slips through, refuse to wipe the
+    // mirror table for this bucket. The blob is the source of truth so
+    // leaving the mirror intact preserves a recovery option.
+    if (ids.length === 0) continue;
+
     // Wipe rows no longer in the list
     if (b.table === 'quarry_locations') {
-      if (ids.length) await sql`DELETE FROM quarry_locations WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
-      else            await sql`DELETE FROM quarry_locations WHERE company_code = ${companyCode}`;
+      await sql`DELETE FROM quarry_locations WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
     } else if (b.table === 'quarry_products') {
-      if (ids.length) await sql`DELETE FROM quarry_products WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
-      else            await sql`DELETE FROM quarry_products WHERE company_code = ${companyCode}`;
+      await sql`DELETE FROM quarry_products WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
     } else if (b.table === 'quarry_customers') {
-      if (ids.length) await sql`DELETE FROM quarry_customers WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
-      else            await sql`DELETE FROM quarry_customers WHERE company_code = ${companyCode}`;
+      await sql`DELETE FROM quarry_customers WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
     } else if (b.table === 'quarry_employees') {
-      if (ids.length) await sql`DELETE FROM quarry_employees WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
-      else            await sql`DELETE FROM quarry_employees WHERE company_code = ${companyCode}`;
+      await sql`DELETE FROM quarry_employees WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
     } else if (b.table === 'quarry_equipment') {
-      if (ids.length) await sql`DELETE FROM quarry_equipment WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
-      else            await sql`DELETE FROM quarry_equipment WHERE company_code = ${companyCode}`;
+      await sql`DELETE FROM quarry_equipment WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
     } else if (b.table === 'quarry_tasks') {
-      if (ids.length) await sql`DELETE FROM quarry_tasks WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
-      else            await sql`DELETE FROM quarry_tasks WHERE company_code = ${companyCode}`;
+      await sql`DELETE FROM quarry_tasks WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
     }
 
     for (let i = 0; i < items.length; i++) {
@@ -711,11 +710,11 @@ async function syncQuarryDaily(sql, companyCode, value) {
   const list = Array.isArray(value) ? value : [];
 
   const ids = list.map(r => r && r.id).filter(Boolean);
-  if (ids.length) {
-    await sql`DELETE FROM quarry_daily_entries WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
-  } else {
-    await sql`DELETE FROM quarry_daily_entries WHERE company_code = ${companyCode}`;
-  }
+  // Defense in depth: if an empty list slips through, refuse to wipe the
+  // mirror table. The blob is the source of truth — leave this intact so
+  // recovery is possible if the blob itself was corrupted.
+  if (ids.length === 0) return { quarry_daily_entries: 0 };
+  await sql`DELETE FROM quarry_daily_entries WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
 
   let quarry_daily_entries = 0;
   for (const r of list) {
@@ -781,11 +780,9 @@ async function syncQuarryCrushing(sql, companyCode, value) {
   const list = Array.isArray(value) ? value : [];
 
   const ids = list.map(r => r && r.id).filter(Boolean);
-  if (ids.length) {
-    await sql`DELETE FROM quarry_crushing_entries WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
-  } else {
-    await sql`DELETE FROM quarry_crushing_entries WHERE company_code = ${companyCode}`;
-  }
+  // Defense in depth — see syncQuarryDaily.
+  if (ids.length === 0) return { quarry_crushing_entries: 0 };
+  await sql`DELETE FROM quarry_crushing_entries WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
 
   let quarry_crushing_entries = 0;
   for (const r of list) {
@@ -865,11 +862,9 @@ async function syncQuarrySales(sql, companyCode, value) {
   const list = Array.isArray(value) ? value : [];
 
   const ids = list.map(r => r && r.id).filter(Boolean);
-  if (ids.length) {
-    await sql`DELETE FROM quarry_sales_entries WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
-  } else {
-    await sql`DELETE FROM quarry_sales_entries WHERE company_code = ${companyCode}`;
-  }
+  // Defense in depth — see syncQuarryDaily.
+  if (ids.length === 0) return { quarry_sales_entries: 0 };
+  await sql`DELETE FROM quarry_sales_entries WHERE company_code = ${companyCode} AND id <> ALL(${ids})`;
 
   let quarry_sales_entries = 0;
   for (const r of list) {

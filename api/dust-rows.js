@@ -1,7 +1,13 @@
 'use strict';
 /**
  * GET /api/dust-rows  — all dust control entries for the company
- * PUT /api/dust-rows  — full sync: { dustRows: [...] }
+ * PUT /api/dust-rows  — upsert rows: { dustRows: [...], deletedIds?: [...] }
+ *
+ * If `deletedIds` is provided in the payload, only those rows are deleted
+ * (safe partial-update mode used by current frontend).
+ * If `deletedIds` is omitted, falls back to legacy full-sync behavior
+ * (deletes any row whose id is not in `dustRows`) for backwards
+ * compatibility with older clients and the one-time blob migration.
  *
  * Source of truth: dust_control_entries normalized table.
  * Legacy migration: on first GET, if the table is empty, reads the
@@ -263,14 +269,21 @@ module.exports = async (req, res) => {
       return res.json({ dustRows: list });
     }
 
-    // ── PUT (full sync) ───────────────────────────────────────────────────
+    // ── PUT (upsert + explicit deletes) ───────────────────────────────────
     if (req.method === 'PUT') {
-      const { dustRows } = req.body || {};
+      const { dustRows, deletedIds } = req.body || {};
       if (!Array.isArray(dustRows)) {
         return res.status(400).json({ error: 'dustRows array required' });
       }
 
-      await _upsertDustRows(sql, companyCode, dustRows, payload);
+      // When the client passes `deletedIds`, run in safe partial-update mode:
+      // only the explicitly listed ids are removed. Otherwise fall back to the
+      // legacy full-sync behavior so older clients continue to work.
+      const opts = Array.isArray(deletedIds)
+        ? { deletedIds: deletedIds.filter(Boolean) }
+        : undefined;
+
+      await _upsertDustRows(sql, companyCode, dustRows, payload, opts);
 
       return res.json({ ok: true });
     }
@@ -284,20 +297,28 @@ module.exports = async (req, res) => {
 };
 
 /**
- * Upsert a list of dust rows into dust_control_entries and delete any
- * rows for this company that are no longer in the list.
+ * Upsert a list of dust rows into dust_control_entries.
+ *
+ * Two delete modes:
+ *  - opts.deletedIds (preferred): only the listed ids are removed.
+ *    Rows present in the DB but missing from `list` are left alone.
+ *    This prevents data loss when the client's in-memory state is
+ *    out of sync (concurrent edits, polling races, partial loads).
+ *  - legacy (no deletedIds): full-sync — removes any DB row whose id
+ *    is not in `list`. Kept for backwards compatibility.
  *
  * Writes audit entries by diffing the incoming list against the
  * current DB state — INSERT for new ids, UPDATE for changed fields,
  * DELETE for removed ids. Unchanged rows are not logged.
  */
 async function _upsertDustRows(sql, companyCode, list, payload, opts) {
-  const skipAudit = !!(opts && opts.skipAudit);
+  const skipAudit       = !!(opts && opts.skipAudit);
+  const explicitDeletes = !!(opts && Array.isArray(opts.deletedIds));
+  const deletedIds      = explicitDeletes ? opts.deletedIds : [];
   const ids = list.map(r => r && r.id).filter(Boolean);
 
-  // Refuse to delete everything when the client sends an empty list —
-  // this prevents accidental wipes if the browser had an empty rows state.
-  if (ids.length === 0) return;
+  // Nothing to do — no upserts and no explicit deletes.
+  if (ids.length === 0 && (!explicitDeletes || deletedIds.length === 0)) return;
 
   // Snapshot existing DB state for diffing
   const existingRows = skipAudit ? [] : await sql`
@@ -306,17 +327,35 @@ async function _upsertDustRows(sql, companyCode, list, payload, opts) {
   const existingMap = new Map();
   for (const r of existingRows) existingMap.set(r.id, dbToRow(r));
 
-  // Find rows that will be deleted
-  const incomingIds = new Set(ids);
+  // Determine which ids will actually be deleted
   const deleted = [];
-  for (const [id, row] of existingMap) {
-    if (!incomingIds.has(id)) deleted.push({ id, row });
+  if (explicitDeletes) {
+    // Safe mode: only delete what the client explicitly asked to delete,
+    // and never delete an id that's also in the upsert list (defensive).
+    const incomingIds = new Set(ids);
+    for (const id of deletedIds) {
+      if (!id || incomingIds.has(id)) continue;
+      const row = existingMap.get(id);
+      if (row) deleted.push({ id, row });
+    }
+    if (deleted.length > 0) {
+      const delIds = deleted.map(d => d.id);
+      await sql`
+        DELETE FROM dust_control_entries
+        WHERE company_code = ${companyCode} AND id = ANY(${delIds})
+      `;
+    }
+  } else {
+    // Legacy full-sync mode
+    const incomingIds = new Set(ids);
+    for (const [id, row] of existingMap) {
+      if (!incomingIds.has(id)) deleted.push({ id, row });
+    }
+    await sql`
+      DELETE FROM dust_control_entries
+      WHERE company_code = ${companyCode} AND id <> ALL(${ids})
+    `;
   }
-
-  await sql`
-    DELETE FROM dust_control_entries
-    WHERE company_code = ${companyCode} AND id <> ALL(${ids})
-  `;
 
   if (!skipAudit) {
     for (const d of deleted) {

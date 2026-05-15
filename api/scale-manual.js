@@ -45,7 +45,10 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'scaleManualEntries array required' });
       }
 
-      // Delete removed entries
+      // Delete removed entries — with bulk-wipe protection.
+      // Empty incoming list against a non-trivial existing table is almost
+      // always a client bug. Single-row deletes still work (count==1 case
+      // proceeds with wipe).
       const incomingIds = scaleManualEntries.map(e => e && e.id).filter(Boolean);
       if (incomingIds.length) {
         await sql`
@@ -53,6 +56,18 @@ module.exports = async (req, res) => {
           WHERE company_code = ${companyCode} AND id <> ALL(${incomingIds})
         `;
       } else {
+        if (req.query.force !== '1') {
+          const [{ count }] = await sql`
+            SELECT COUNT(*)::int AS count FROM scale_manual_entries WHERE company_code = ${companyCode}
+          `;
+          if (count > 1) {
+            console.warn(`[scale-manual] refused empty PUT: ${count} entries would have been wiped for ${companyCode}`);
+            return res.status(409).json({
+              error: 'Refusing to wipe scale manual entries',
+              detail: `Cannot replace ${count} entries with an empty list. Pass ?force=1 to override.`,
+            });
+          }
+        }
         await sql`DELETE FROM scale_manual_entries WHERE company_code = ${companyCode}`;
       }
 

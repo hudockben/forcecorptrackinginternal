@@ -105,14 +105,42 @@ module.exports = async (req, res) => {
     }
 
     // Dust Control Other Billing audit: capture previous blob so we can
-    // diff it against the incoming one after the upsert lands.
-    let _obOldValue = null;
-    if (key === 'dust_other_billing_rows') {
+    // diff it against the incoming one after the upsert lands. Reused
+    // below for the bulk-wipe protection check so we only read once.
+    let _prevValue = null;
+    let _prevValueLoaded = false;
+    async function _loadPrev() {
+      if (_prevValueLoaded) return _prevValue;
       try {
         const prev = await sql`SELECT value FROM app_data WHERE key = ${scopedKey}`;
-        _obOldValue = prev.length ? prev[0].value : null;
+        _prevValue = prev.length ? prev[0].value : null;
       } catch (err) {
-        console.error('[dust-ob-audit] read prev failed:', err.message);
+        console.error('[data] read prev failed:', err.message);
+      }
+      _prevValueLoaded = true;
+      return _prevValue;
+    }
+
+    let _obOldValue = null;
+    if (key === 'dust_other_billing_rows') {
+      _obOldValue = await _loadPrev();
+    }
+
+    // Bulk-wipe protection: refuse to overwrite a non-trivial existing
+    // array blob with an empty array. This is the single catastrophic
+    // failure mode for all the division blobs (paving cost rows, POs,
+    // trucking, quarry daily/crushing/sales, dust other billing, etc.) —
+    // a frontend race or stale poll that submits `[]` would silently
+    // wipe everything. Single-row deletes still work because the count==1
+    // case is allowed. Pass `?force=1` to override for genuine wipes.
+    if (Array.isArray(value) && value.length === 0 && req.query.force !== '1') {
+      const prev = await _loadPrev();
+      if (Array.isArray(prev) && prev.length > 1) {
+        console.warn(`[data] refused empty-array PUT for ${scopedKey}: ${prev.length} items would have been wiped`);
+        return res.status(409).json({
+          error: 'Refusing to wipe data',
+          detail: `Cannot replace ${prev.length} items in "${key}" with an empty array. Pass ?force=1 to override.`,
+        });
       }
     }
 

@@ -51,6 +51,25 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'costRows array required' });
       }
 
+      // Bulk-wipe protection: refuse to replace many rows with nothing.
+      // An empty incoming array against a non-trivial existing table is
+      // almost certainly a client bug (race, stale state, network blip)
+      // and would otherwise silently destroy the user's cost data. Single-
+      // row deletes still work: the count check allows wipes when only
+      // one row remains. Pass `?force=1` to override for genuine wipes.
+      if (costRows.length === 0 && req.query.force !== '1') {
+        const [{ count }] = await sql`
+          SELECT COUNT(*)::int AS count FROM cost_items WHERE company_code = ${companyCode}
+        `;
+        if (count > 1) {
+          console.warn(`[cost-rows] refused empty PUT: would have wiped ${count} rows for ${companyCode}`);
+          return res.status(409).json({
+            error: 'Refusing to wipe cost rows',
+            detail: `Cannot replace ${count} rows with an empty list. Pass ?force=1 to override.`,
+          });
+        }
+      }
+
       // Full delete-then-reinsert: cost rows have no stable UUID
       await sql`DELETE FROM cost_items WHERE company_code = ${companyCode}`;
 

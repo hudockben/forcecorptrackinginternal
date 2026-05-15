@@ -118,8 +118,20 @@ module.exports = async (req, res) => {
         .filter(e => e.name?.trim());
       const incomingNames = new Set(incoming.map(e => e.name.trim()));
 
-      // Remove deleted employees
+      // Bulk-wipe protection: an empty incoming list against a non-trivial
+      // employees table is almost always a client bug (race / stale state)
+      // and would silently destroy the company's payroll roster.
+      // Single-employee deletes still work via DELETE /api/employees?id=.
       const existing = await sql`SELECT name FROM employees WHERE company_code = ${companyCode}`;
+      if (incoming.length === 0 && existing.length > 1 && req.query.force !== '1') {
+        console.warn(`[employees] refused empty PUT: ${existing.length} employees would have been wiped for ${companyCode}`);
+        return res.status(409).json({
+          error: 'Refusing to wipe employees',
+          detail: `Cannot replace ${existing.length} employees with an empty list. Use DELETE /api/employees?id= for single removals, or pass ?force=1 to override.`,
+        });
+      }
+
+      // Remove deleted employees
       for (const { name } of existing) {
         if (!incomingNames.has(name)) {
           await sql`DELETE FROM employees WHERE company_code = ${companyCode} AND name = ${name}`;

@@ -115,6 +115,21 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'purchaseOrders array required' });
       }
 
+      // Bulk-wipe protection: empty incoming list against an existing
+      // non-trivial blob is almost always a client bug. Single-row deletes
+      // still work. Override with ?force=1 for genuine wipes.
+      if (purchaseOrders.length === 0 && req.query.force !== '1') {
+        const existing = await sql`SELECT value FROM app_data WHERE key = ${blobKey}`;
+        const existingArr = Array.isArray(existing[0]?.value) ? existing[0].value : null;
+        if (existingArr && existingArr.length > 1) {
+          console.warn(`[purchase-orders] refused empty PUT: would have wiped ${existingArr.length} POs for ${blobKey}`);
+          return res.status(409).json({
+            error: 'Refusing to wipe purchase orders',
+            detail: `Cannot replace ${existingArr.length} POs with an empty list. Pass ?force=1 to override.`,
+          });
+        }
+      }
+
       // Always write to the division-specific JSON blob first — source of truth.
       await sql`
         INSERT INTO app_data (key, value, updated_at)
@@ -140,20 +155,16 @@ module.exports = async (req, res) => {
 async function _syncPOs(sql, companyCode, division, list) {
   const incomingIds = list.map(p => p && p.id).filter(Boolean);
 
+  // Defense in depth: even if an empty list slips past the upstream guard,
+  // refuse to wipe the mirror table — leaves a recovery option intact.
+  if (incomingIds.length === 0) return;
+
   // Remove POs for this division that are no longer in the list
-  if (incomingIds.length) {
-    await sql`
-      DELETE FROM purchase_orders
-      WHERE company_code = ${companyCode} AND division = ${division}
-        AND id <> ALL(${incomingIds})
-    `;
-  } else {
-    await sql`
-      DELETE FROM purchase_orders
-      WHERE company_code = ${companyCode} AND division = ${division}
-    `;
-    return;
-  }
+  await sql`
+    DELETE FROM purchase_orders
+    WHERE company_code = ${companyCode} AND division = ${division}
+      AND id <> ALL(${incomingIds})
+  `;
 
   for (const po of list) {
     if (!po || !po.id) continue;
@@ -194,9 +205,26 @@ async function _syncPOs(sql, companyCode, division, list) {
         updated_at         = NOW()
     `;
 
-    await sql`DELETE FROM po_deliveries WHERE po_id = ${po.id} AND company_code = ${companyCode}`;
-
+    // Bulk-wipe protection for delivery records: only wipe-and-reinsert
+    // when we actually have lines to write back. If lines is empty against
+    // a PO with multiple existing deliveries, that's almost always a bug
+    // (PO was edited without loading its full lines) and would silently
+    // destroy the user's delivery history. The count==1 case still wipes
+    // so a genuine "delete last delivery" still works.
     const lines = Array.isArray(po.lines) ? po.lines : [];
+    if (lines.length > 0) {
+      await sql`DELETE FROM po_deliveries WHERE po_id = ${po.id} AND company_code = ${companyCode}`;
+    } else {
+      const [{ count }] = await sql`
+        SELECT COUNT(*)::int AS count FROM po_deliveries
+        WHERE po_id = ${po.id} AND company_code = ${companyCode}
+      `;
+      if (count > 1) {
+        console.warn(`[purchase-orders] refused empty lines for PO ${po.id}: ${count} deliveries would have been wiped`);
+      } else if (count === 1) {
+        await sql`DELETE FROM po_deliveries WHERE po_id = ${po.id} AND company_code = ${companyCode}`;
+      }
+    }
     for (const line of lines) {
       if (!line) continue;
       const qty = safeFloat(line.qty)       ?? 0;
