@@ -1118,6 +1118,53 @@
     .online-avatar-wrap .user-avatar { opacity:0.9; }
     .online-dot { position:absolute; bottom:-1px; right:-1px; width:8px; height:8px; background:#22c55e; border-radius:50%; border:1.5px solid #0a0a0a; }
     .online-users-label { font-size:0.65rem; color:#555; letter-spacing:0.04em; white-space:nowrap; }
+
+    /* Typeahead combobox — replaces native <select> for the dust tracking
+       row dropdowns. Filters as you type; up/down to navigate; enter/tab to
+       commit; esc to revert; click outside to close.
+       Solves the "Antero switched to another company" bug where native
+       <select> keyboard typeahead jumped to the wrong option on slow typing. */
+    .cb { position: relative; width: 100%; }
+    .cb-input {
+      width: 100%;
+      padding: 0.28rem 0.4rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.78rem;
+      outline: none;
+      font-family: inherit;
+    }
+    .cb-input:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
+    .cb-input::placeholder { color: #6b7280; }
+    .cb-menu {
+      position: absolute;
+      top: calc(100% + 2px);
+      left: 0;
+      min-width: 100%;
+      max-width: 260px;
+      z-index: 1000;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      max-height: 220px;
+      overflow-y: auto;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+    }
+    .cb-menu[hidden] { display: none; }
+    .cb-opt {
+      padding: 0.32rem 0.5rem;
+      font-size: 0.78rem;
+      color: var(--text);
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
+    .cb-opt-empty { padding: 0.32rem 0.5rem; font-size: 0.74rem; color: #6b7280; font-style: italic; }
+    .cb-opt-clear { color: #9ca3af; font-style: italic; }
   </style>
 </head>
 <body>
@@ -2470,44 +2517,13 @@
         totInv += c.invTotal;
         totGal += c.gallons;
 
-        // Build dropdown options from lists. Preserve any saved vehicle name
-        // that's no longer in dustLists.equipment (e.g. renamed/removed via
-        // Manage Lists) so the row's selection isn't silently dropped.
-        const vehOpts = val => {
-          const list = dustLists.equipment.slice().sort((a,b)=>a.name.localeCompare(b.name));
-          if (val && !list.some(eq => eq.name === val)) list.unshift({ name: val });
-          return '<option value="">— select —</option>' +
-            list.map(eq =>
-              `<option value="${esc(eq.name)}"${val===eq.name?' selected':''}>${esc(eq.name)}</option>`).join('');
-        };
-
-        // Preserve any saved value that's no longer in the active list as a
-        // stranded option so the user can still see it (matches the vehicle
-        // dropdown pattern). Without this, a renamed/removed company —
-        // or a row whose value was set before the lists existed — would
-        // appear as "— select —" and look like the data was lost.
-        const coList = dustLists.companies.slice().sort((a,b)=>a.name.localeCompare(b.name));
-        if (row.company && !coList.some(co => co.name === row.company)) {
-          coList.unshift({ name: row.company, men: [], locations: [] });
-        }
-        const coOpts = '<option value="">— select —</option>' +
-          coList.map(co =>
-            `<option value="${esc(co.name)}"${row.company===co.name?' selected':''}>${esc(co.name)}</option>`).join('');
-
-        const selCo  = dustLists.companies.find(c => c.name === row.company);
-        const coMen  = selCo ? (selCo.men || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
-        if (row.company_man && !coMen.some(m => m.name === row.company_man)) {
-          coMen.unshift({ name: row.company_man });
-        }
-        const cmOpts = '<option value="">— select —</option>' +
-          coMen.map(m => `<option value="${esc(m.name)}"${row.company_man===m.name?' selected':''}>${esc(m.name)}</option>`).join('');
-
-        const coLocs = selCo ? (selCo.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
-        if (row.location && !coLocs.some(l => l.name === row.location)) {
-          coLocs.unshift({ name: row.location });
-        }
-        const locOpts = '<option value="">— select —</option>' +
-          coLocs.map(loc => `<option value="${esc(loc.name)}"${row.location===loc.name?' selected':''}>${esc(loc.name)}</option>`).join('');
+        // The row's company / company_man / location / state / vehicle1 /
+        // vehicle2 dropdowns are now typeahead comboboxes (cbHtml). The
+        // <input> value attribute carries the saved value as-is, so any
+        // stranded / renamed / typo'd entries stay visible without needing
+        // pre-built option lists. Options are fetched lazily on focus by
+        // cbOptionsFor() so the company_man / location menus always reflect
+        // the row's currently-selected company.
 
         const invSt    = row.inv_status || '';
         const badge    = invBadgeHtml(row);
@@ -2579,18 +2595,14 @@
           <td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>
           <td class="cw-time"><input type="time" value="${esc(row.end_time   ||'')}" onchange="set(${idx},'end_time',this.value)"></td>
           ${calcCell(c.totalHours ? c.totalHours.toFixed(2) : '', 'cw-ttim')}
-          <td class="cw-co"><select onchange="setCompany(${idx},this.value)">${coOpts}</select></td>
-          <td class="cw-cm"><select data-role="cm" onchange="set(${idx},'company_man',this.value)">${cmOpts}</select></td>
-          <td class="cw-loc"><select data-role="location" onchange="setLocation(${idx},this.value)">${locOpts}</select></td>
-          <td class="cw-st"><select data-role="state" onchange="set(${idx},'state',this.value)">
-            <option value="">—</option>
-            ${dustLists.states.slice().sort().map(s=>
-              `<option value="${esc(s)}"${row.state===s?' selected':''}>${esc(s)}</option>`).join('')}
-          </select></td>
-          <td class="cw-veh"><select onchange="setVehicle(${idx},1,this.value)">${vehOpts(row.vehicle1)}</select></td>
+          <td class="cw-co">${cbHtml(idx, 'company',     row.company||'',     '— select —')}</td>
+          <td class="cw-cm">${cbHtml(idx, 'company_man', row.company_man||'', '— select —')}</td>
+          <td class="cw-loc">${cbHtml(idx, 'location',   row.location||'',    '— select —')}</td>
+          <td class="cw-st">${cbHtml(idx, 'state',       row.state||'',       '—')}</td>
+          <td class="cw-veh">${cbHtml(idx, 'vehicle1',   row.vehicle1||'',    '— select —')}</td>
           <td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="_liveSet(${idx},'v1_rate',this.value)" onchange="set(${idx},'v1_rate',this.value)"></td>
           ${calcCell(c.v1Total  ? money(c.v1Total)  : '', 'cw-vtot')}
-          <td class="cw-veh"><select onchange="setVehicle(${idx},2,this.value)">${vehOpts(row.vehicle2)}</select></td>
+          <td class="cw-veh">${cbHtml(idx, 'vehicle2',   row.vehicle2||'',    '— select —')}</td>
           <td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="_liveSet(${idx},'v2_rate',this.value)" onchange="set(${idx},'v2_rate',this.value)"></td>
           ${calcCell(c.v2Total  ? money(c.v2Total)  : '', 'cw-vtot')}
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
@@ -2793,6 +2805,215 @@
       scheduleSave();
     }
 
+    /* ═══════════════════════════════════════════
+       TYPEAHEAD COMBOBOX
+       Replaces native <select> for the dust tracking row dropdowns. Native
+       <select> typeahead jumps to the first option matching the typed
+       letter and resets after ~500ms — that's the root cause of users
+       reporting "Antero switched to another company" when typing slowly.
+       This combobox filters as the user types and only commits the choice
+       they actually pick (Enter / Tab / click). Free-text entries are
+       preserved as stranded values so renamed/typo'd companies don't
+       silently vanish from rows.
+    ═══════════════════════════════════════════ */
+    const _cbState = new WeakMap(); // input element → { options, filtered, highlight, originalValue }
+
+    /** HTML for a typeahead combobox cell.
+     *  field = 'company' | 'company_man' | 'location' | 'state' | 'vehicle1' | 'vehicle2'
+     *  Options are fetched lazily on focus via cbOptionsFor(idx, field) — keeps
+     *  the rendered table HTML small and lets the menu reflect the row's
+     *  current company when the user opens the company_man / location dropdown.
+     */
+    function cbHtml(idx, field, currentValue, placeholder, extraDataAttrs) {
+      const ph = placeholder == null ? '— select —' : placeholder;
+      const extra = extraDataAttrs ? ' ' + extraDataAttrs : '';
+      return `<div class="cb" data-idx="${idx}" data-field="${field}"${extra}>` +
+        `<input type="text" class="cb-input" value="${esc(currentValue || '')}" ` +
+          `placeholder="${esc(ph)}" autocomplete="off" spellcheck="false" ` +
+          `onfocus="cbOnFocus(this)" oninput="cbOnInput(this)" ` +
+          `onkeydown="cbOnKey(event, this)" onblur="cbOnBlur(this)">` +
+        `<div class="cb-menu" hidden></div>` +
+      `</div>`;
+    }
+
+    /** Returns the list of options for a given (idx, field) at this moment. */
+    function cbOptionsFor(idx, field) {
+      const row = rows[idx];
+      if (!row) return [];
+      if (field === 'company') {
+        return dustLists.companies.map(c => c.name).slice().sort((a, b) => a.localeCompare(b));
+      }
+      if (field === 'company_man') {
+        const co = dustLists.companies.find(c => c.name === row.company);
+        return co ? (co.men || []).map(m => m.name).slice().sort((a, b) => a.localeCompare(b)) : [];
+      }
+      if (field === 'location') {
+        const co = dustLists.companies.find(c => c.name === row.company);
+        return co ? (co.locations || []).map(l => l.name).slice().sort((a, b) => a.localeCompare(b)) : [];
+      }
+      if (field === 'state') {
+        return dustLists.states.slice().sort();
+      }
+      if (field === 'vehicle1' || field === 'vehicle2') {
+        return dustLists.equipment.map(e => e.name).slice().sort((a, b) => a.localeCompare(b));
+      }
+      return [];
+    }
+
+    function cbOnFocus(input) {
+      const cb = input.closest('.cb');
+      if (!cb) return;
+      const idx = +cb.dataset.idx;
+      const field = cb.dataset.field;
+      const options = cbOptionsFor(idx, field);
+      _cbState.set(input, {
+        options,
+        filtered: options,
+        highlight: Math.max(0, options.indexOf(input.value)),
+        originalValue: input.value,
+      });
+      cbRenderMenu(input);
+      input.select();
+    }
+
+    function cbOnInput(input) {
+      const state = _cbState.get(input);
+      if (!state) return;
+      const q = input.value.trim().toLowerCase();
+      state.filtered = q
+        ? state.options.filter(o => o.toLowerCase().includes(q))
+        : state.options;
+      // Highlight an exact match first, else the first filtered option.
+      const exact = state.filtered.findIndex(o => o.toLowerCase() === q);
+      state.highlight = exact >= 0 ? exact : (state.filtered.length ? 0 : -1);
+      cbRenderMenu(input);
+    }
+
+    function cbOnKey(event, input) {
+      const state = _cbState.get(input);
+      if (!state) return;
+      const list = state.filtered;
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (list.length) {
+          state.highlight = (state.highlight + 1) % list.length;
+          cbRenderMenu(input);
+          cbScrollHighlightIntoView(input);
+        }
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (list.length) {
+          state.highlight = (state.highlight - 1 + list.length) % list.length;
+          cbRenderMenu(input);
+          cbScrollHighlightIntoView(input);
+        }
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        const pick = list[state.highlight];
+        if (pick != null) input.value = pick;
+        cbCommit(input);
+        input.blur();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        input.value = state.originalValue;
+        cbClose(input);
+        input.blur();
+      } else if (event.key === 'Tab') {
+        // Auto-accept the highlighted match on Tab so users can fly through fields
+        const pick = list[state.highlight];
+        if (pick != null) input.value = pick;
+        cbCommit(input); // commit before tab moves focus
+      }
+    }
+
+    function cbOnBlur(input) {
+      // Delay so a mousedown on a menu option can fire first.
+      setTimeout(() => {
+        if (document.activeElement === input) return; // refocused, ignore
+        cbCommit(input);
+      }, 120);
+    }
+
+    function cbRenderMenu(input) {
+      const state = _cbState.get(input);
+      const menu = input.nextElementSibling;
+      if (!state || !menu) return;
+      if (state.filtered.length === 0) {
+        menu.innerHTML = '<div class="cb-opt-empty">No matches — value will be saved as typed</div>';
+      } else {
+        menu.innerHTML = state.filtered.map((opt, i) =>
+          `<div class="cb-opt${i === state.highlight ? ' hi' : ''}" data-val="${esc(opt)}">${esc(opt)}</div>`
+        ).join('');
+      }
+      menu.hidden = false;
+    }
+
+    function cbScrollHighlightIntoView(input) {
+      const menu = input.nextElementSibling;
+      if (!menu) return;
+      const hi = menu.querySelector('.cb-opt.hi');
+      if (hi) hi.scrollIntoView({ block: 'nearest' });
+    }
+
+    function cbClose(input) {
+      const menu = input.nextElementSibling;
+      if (menu) menu.hidden = true;
+      _cbState.delete(input);
+    }
+
+    /** Commit the input's current value via the matching domain setter. The
+     *  setters (setCompany / setLocation / setVehicle / set) carry the
+     *  no-op guards and linked-field rules, so we route through them. */
+    function cbCommit(input) {
+      const cb = input.closest('.cb');
+      if (!cb) return;
+      const idx = +cb.dataset.idx;
+      const field = cb.dataset.field;
+      const value = input.value.trim();
+      cbClose(input);
+      if (field === 'company')        setCompany(idx, value);
+      else if (field === 'location')  setLocation(idx, value);
+      else if (field === 'vehicle1')  setVehicle(idx, 1, value);
+      else if (field === 'vehicle2')  setVehicle(idx, 2, value);
+      else                            set(idx, field, value);
+    }
+
+    // Click on a menu option commits it. mousedown (not click) so the
+    // input's blur handler can see the selection happened.
+    document.addEventListener('mousedown', (e) => {
+      const opt = e.target.closest('.cb-opt');
+      if (opt) {
+        const menu = opt.closest('.cb-menu');
+        if (!menu) return;
+        e.preventDefault(); // keep focus on the input until we commit
+        const input = menu.previousElementSibling;
+        if (input) {
+          input.value = opt.dataset.val || '';
+          cbCommit(input);
+          input.blur();
+        }
+        return;
+      }
+      // Close any other open menus when clicking outside.
+      const cb = e.target.closest('.cb');
+      document.querySelectorAll('.cb-menu:not([hidden])').forEach(m => {
+        if (m.closest('.cb') !== cb) {
+          const input = m.previousElementSibling;
+          if (input) cbClose(input);
+        }
+      });
+    });
+
+    /** Set a row input's displayed value without firing change handlers.
+     *  Used by setCompany / setLocation / setVehicle when they alter
+     *  linked fields. */
+    function _cbSyncInput(idx, field, value) {
+      const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
+      if (!tr) return;
+      const el = tr.querySelector(`.cb[data-field="${field}"] .cb-input`);
+      if (el) el.value = value || '';
+    }
+
     function setCompany(idx, value) {
       const oldValue = rows[idx].company || '';
       // Bail out on no-op selections — prevents wiping linked fields when
@@ -2817,30 +3038,12 @@
         rows[idx].state    = ''; // state is derived from location
       }
 
-      // Rebuild dependent dropdowns in-place. Preserve any saved value that
-      // isn't in the new company's list as a "stranded" option so it stays
-      // visible (matches the vehicle dropdown pattern).
-      const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
-      if (tr) {
-        const cmSel = tr.querySelector('select[data-role="cm"]');
-        if (cmSel) {
-          const men = co ? (co.men || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
-          const cmCur = rows[idx].company_man || '';
-          if (cmCur && !men.some(m => m.name === cmCur)) men.unshift({ name: cmCur });
-          cmSel.innerHTML = '<option value="">— select —</option>' +
-            men.map(m => `<option value="${esc(m.name)}"${cmCur === m.name ? ' selected' : ''}>${esc(m.name)}</option>`).join('');
-        }
-        const locSel = tr.querySelector('select[data-role="location"]');
-        if (locSel) {
-          const locs = co ? (co.locations || []).slice().sort((a,b) => a.name.localeCompare(b.name)) : [];
-          const locCur = rows[idx].location || '';
-          if (locCur && !locs.some(l => l.name === locCur)) locs.unshift({ name: locCur });
-          locSel.innerHTML = '<option value="">— select —</option>' +
-            locs.map(l => `<option value="${esc(l.name)}"${locCur === l.name ? ' selected' : ''}>${esc(l.name)}</option>`).join('');
-        }
-        const stSel = tr.querySelector('select[data-role="state"]');
-        if (stSel) stSel.value = rows[idx].state || '';
-      }
+      // Sync displayed values in the linked combobox inputs (the options
+      // themselves are fetched lazily on focus, so no menu rebuild needed).
+      _cbSyncInput(idx, 'company',     rows[idx].company);
+      _cbSyncInput(idx, 'company_man', rows[idx].company_man);
+      _cbSyncInput(idx, 'location',    rows[idx].location);
+      _cbSyncInput(idx, 'state',       rows[idx].state);
       scheduleSave();
     }
 
@@ -2849,14 +3052,13 @@
       if ((rows[idx].location || '') === locationName) return;
 
       rows[idx].location = locationName;
+      _cbSyncInput(idx, 'location', locationName);
       // Look up location within the row's selected company
       const co  = dustLists.companies.find(c => c.name === rows[idx].company);
       const loc = co ? (co.locations || []).find(l => l.name === locationName) : null;
       if (loc && loc.state) {
         rows[idx].state = loc.state;
-        const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
-        const stSel = tr && tr.querySelector('select[data-role="state"]');
-        if (stSel) stSel.value = loc.state;
+        _cbSyncInput(idx, 'state', loc.state);
       }
       scheduleSave();
     }
@@ -2869,6 +3071,7 @@
       // unit # or rate the user manually edited for this row.
       if ((rows[idx][vField] || '') === vehicleName) return;
       rows[idx][vField] = vehicleName;
+      _cbSyncInput(idx, vField, vehicleName);
       // Auto-fill unit # and vehicle rate from equipment list
       const eq      = dustLists.equipment.find(e => e.name === vehicleName);
       const unitVal = eq?.unit_number || '';
