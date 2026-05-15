@@ -59,7 +59,8 @@ async function syncProjects(sql, companyCode, value) {
       await sql`
         INSERT INTO bid_items (
           id, project_id, company_code, cost_code, sub_code, description,
-          quantity, unit, unit_cost, status, start_date, target_date, updated_at
+          quantity, unit, unit_cost, status, start_date, target_date,
+          is_complete, change_orders, updated_at
         ) VALUES (
           ${item.id}, ${p.id}, ${companyCode},
           ${item.cost_code   || item.costCode   || ''},
@@ -71,19 +72,23 @@ async function syncProjects(sql, companyCode, value) {
           ${item.status || 'Active'},
           ${safeDate(item.start_date  || item.startDate)},
           ${safeDate(item.target_date || item.targetDate)},
+          ${item.is_complete === true},
+          ${JSON.stringify(Array.isArray(item.change_orders) ? item.change_orders : [])}::jsonb,
           NOW()
         )
         ON CONFLICT (id) DO UPDATE SET
-          cost_code   = EXCLUDED.cost_code,
-          sub_code    = EXCLUDED.sub_code,
-          description = EXCLUDED.description,
-          quantity    = EXCLUDED.quantity,
-          unit        = EXCLUDED.unit,
-          unit_cost   = EXCLUDED.unit_cost,
-          status      = EXCLUDED.status,
-          start_date  = EXCLUDED.start_date,
-          target_date = EXCLUDED.target_date,
-          updated_at  = NOW()
+          cost_code     = EXCLUDED.cost_code,
+          sub_code      = EXCLUDED.sub_code,
+          description   = EXCLUDED.description,
+          quantity      = EXCLUDED.quantity,
+          unit          = EXCLUDED.unit,
+          unit_cost     = EXCLUDED.unit_cost,
+          status        = EXCLUDED.status,
+          start_date    = EXCLUDED.start_date,
+          target_date   = EXCLUDED.target_date,
+          is_complete   = EXCLUDED.is_complete,
+          change_orders = EXCLUDED.change_orders,
+          updated_at    = NOW()
       `;
       bid_items++;
     }

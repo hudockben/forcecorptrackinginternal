@@ -188,8 +188,13 @@ module.exports = async (req, res) => {
           updated_at    = NOW()
       `;
     } catch (mirrorErr) {
-      // Non-fatal — the blob was updated. Log for observability.
-      console.warn('[bid-items] normalized mirror failed:', mirrorErr.message);
+      // Non-fatal — the blob was updated. Log with identifiers so the
+      // divergence is traceable; the next saveProject's syncProjects
+      // will reconcile.
+      console.warn(
+        `[bid-items] normalized mirror failed for company=${companyCode} ` +
+        `project=${projectId} bidItem=${item.id}: ${mirrorErr.message}`
+      );
     }
 
     return res.json({ ok: true });
