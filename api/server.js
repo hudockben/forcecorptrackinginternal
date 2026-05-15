@@ -70,6 +70,10 @@ app.all('/api/deadlines', require('./deadlines'));
 /** Sync JSON blobs → normalized tables */
 app.post('/api/admin/sync-db', require('./admin/sync-db'));
 
+/** Report email sender + saved recipient groups */
+app.all('/api/email/send-report',       require('./email/send-report'));
+app.all('/api/email/recipient-groups',  require('./email/recipient-groups'));
+
 /** AI schedule analysis */
 app.post('/api/ai/schedule-analysis', require('./ai/schedule-analysis'));
 
