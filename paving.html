@@ -2232,6 +2232,52 @@
       .tab-btn[data-tab="mob-entry"] { display: none !important; }
       #mob-proj-cards { display: none !important; }
     }
+
+    /* Typeahead combobox — replaces native <select> for the data-entry
+       dropdowns where the user types names (supplier, employee, driver,
+       truck_type). Native <select> typeahead jumps to the first option
+       starting with the typed letter and resets after ~500ms, so typing
+       slowly lands on the wrong option without warning. */
+    .cb { position: relative; width: 100%; }
+    .cb-input {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--text);
+      font-size: 0.8rem;
+      padding: 0.1rem 0.25rem;
+      outline: none;
+      font-family: inherit;
+    }
+    .cb-input:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
+    .cb-input::placeholder { color: var(--muted, #6b7280); }
+    .cb-menu {
+      position: absolute;
+      top: calc(100% + 2px);
+      left: 0;
+      min-width: 100%;
+      max-width: 280px;
+      z-index: 1000;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      max-height: 220px;
+      overflow-y: auto;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+    }
+    .cb-menu[hidden] { display: none; }
+    .cb-opt {
+      padding: 0.3rem 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text);
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
+    .cb-opt-empty { padding: 0.3rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
 </head>
@@ -3274,7 +3320,7 @@ async function apiGet(key) {
   }
 }
 
-function _showSaveError(isAuth) {
+function _showSaveError(isAuth, customMsg) {
   const banner = document.getElementById('save-error-banner');
   if (!banner) return;
   const msg   = document.getElementById('save-error-msg');
@@ -3282,6 +3328,11 @@ function _showSaveError(isAuth) {
   if (isAuth) {
     if (msg)  msg.textContent  = '⚠ Your session has expired — changes could not be saved. Your edits are kept locally.';
     if (link) link.hidden = false;
+  } else if (customMsg) {
+    // Pass-through for backend conflict detail (e.g. the bulk-wipe
+    // protection's "Cannot replace N items with an empty list" message).
+    if (msg)  msg.textContent  = '⚠ ' + customMsg + ' Your edits are kept locally.';
+    if (link) link.hidden = true;
   } else {
     if (msg)  msg.textContent  = '⚠ Changes could not be saved to the server. Your edits are kept locally.';
     if (link) link.hidden = true;
@@ -3332,17 +3383,182 @@ function apiPut(key, value) {
       'Authorization': `Bearer ${fctToken}`,
     },
     body: JSON.stringify({ value })
-  }).then(r => {
-    if (!r.ok) {
-      console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
-      // Show banner but do NOT auto-logout — data is safe in localStorage
-      _showSaveError(r.status === 401);
+  }).then(async r => {
+    if (r.ok) return;
+    console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
+    // 409 = backend bulk-wipe protection refused the request. The server
+    // returns a JSON body with a `detail` field explaining what would
+    // have been wiped — surface that to the user so they know which save
+    // was refused and can decide whether to retry per-row.
+    if (r.status === 409) {
+      let detail = 'A save was refused to prevent accidental data loss.';
+      try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
+      _showSaveError(false, detail);
+      return;
     }
+    _showSaveError(r.status === 401);
   }).catch(err => {
     console.warn(`[DB] PUT ${key} failed:`, err.message);
     _showSaveError(false);
   });
 }
+
+/* ═══════════════════════════════════════════
+   TYPEAHEAD COMBOBOX
+   Replaces native <select> for high-risk data-entry dropdowns
+   (supplier, employee, driver, truck_type). Native <select> typeahead
+   jumps to the first option starting with the typed letter and resets
+   after ~500ms, so typing slowly lands on the wrong option without
+   warning — the same bug that caused "Antero switched to another
+   company" in dust control.
+
+   Passthrough mode: cbCommitInput fires a synthetic `change` event on
+   the input, so the existing delegated handlers (data-tab change
+   listener, trucking-root change listener, etc.) consume it just like
+   they consume a native <select> change. The combobox only owns the
+   look + typeahead filtering — the data update path is unchanged.
+═══════════════════════════════════════════ */
+const _cbState = new WeakMap();
+const _cbEsc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+/** Render a typeahead combobox.
+ *  listKey: which list to pull options from (resolved by cbOptionsFor).
+ *  passthroughAttrs: HTML attributes (string) applied to the inner
+ *    <input> so existing delegated change listeners can consume the
+ *    commit. Example: 'data-tab="daily" data-i="3" data-f="supplier"'. */
+function cbHtml(listKey, currentValue, placeholder, passthroughAttrs) {
+  const ph = placeholder == null ? '— select —' : placeholder;
+  const passAttrs = passthroughAttrs ? ' ' + passthroughAttrs : '';
+  const passFlag  = passthroughAttrs ? ' data-passthrough="1"' : '';
+  return `<div class="cb" data-list="${_cbEsc(listKey)}"${passFlag}>` +
+    `<input type="text" class="cb-input" value="${_cbEsc(currentValue || '')}" ` +
+      `placeholder="${_cbEsc(ph)}" autocomplete="off" spellcheck="false" ` +
+      `onfocus="cbOnFocus(this)" oninput="cbOnInput(event, this)" ` +
+      `onkeydown="cbOnKey(event, this)" onblur="cbOnBlur(this)"${passAttrs}>` +
+    `<div class="cb-menu" hidden></div>` +
+  `</div>`;
+}
+
+function cbOptionsFor(listKey) {
+  if (listKey === 'suppliers') return (lists.suppliers || []).map(s => s && s.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
+  if (listKey === 'employees') return (lists.employees || []).map(e => e && e.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
+  if (listKey === 'equipment') return (lists.equipment || []).map(e => e && e.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
+  return [];
+}
+
+function cbOnFocus(input) {
+  const cb = input.closest('.cb');
+  if (!cb) return;
+  const options = cbOptionsFor(cb.dataset.list);
+  _cbState.set(input, {
+    options,
+    filtered: options,
+    highlight: Math.max(0, options.indexOf(input.value)),
+    originalValue: input.value,
+  });
+  cbRenderMenu(input);
+  input.select();
+}
+function cbOnInput(event, input) {
+  // Stop propagation so the document-level `input` listener (which
+  // auto-saves typed values for cost/daily/etc.) doesn't see partial
+  // typing as a commit. The real commit happens via cbCommitInput,
+  // which fires a synthetic `change` event that the existing change
+  // listener consumes.
+  if (event && event.stopPropagation) event.stopPropagation();
+  const state = _cbState.get(input);
+  if (!state) return;
+  const q = input.value.trim().toLowerCase();
+  state.filtered = q ? state.options.filter(o => o.toLowerCase().includes(q)) : state.options;
+  const exact = state.filtered.findIndex(o => o.toLowerCase() === q);
+  state.highlight = exact >= 0 ? exact : (state.filtered.length ? 0 : -1);
+  cbRenderMenu(input);
+}
+function cbOnKey(event, input) {
+  const state = _cbState.get(input);
+  if (!state) return;
+  const list = state.filtered;
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    if (list.length) { state.highlight = (state.highlight + 1) % list.length; cbRenderMenu(input); cbScrollHi(input); }
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    if (list.length) { state.highlight = (state.highlight - 1 + list.length) % list.length; cbRenderMenu(input); cbScrollHi(input); }
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    const pick = list[state.highlight];
+    if (pick != null) input.value = pick;
+    cbCommitInput(input);
+    input.blur();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    input.value = state.originalValue;
+    cbClose(input);
+    input.blur();
+  } else if (event.key === 'Tab') {
+    const pick = list[state.highlight];
+    if (pick != null) input.value = pick;
+    cbCommitInput(input);
+  }
+}
+function cbOnBlur(input) {
+  setTimeout(() => { if (document.activeElement !== input) cbCommitInput(input); }, 120);
+}
+function cbRenderMenu(input) {
+  const state = _cbState.get(input);
+  const menu = input.nextElementSibling;
+  if (!state || !menu) return;
+  if (state.filtered.length === 0) {
+    menu.innerHTML = '<div class="cb-opt-empty">No matches — value will be saved as typed</div>';
+  } else {
+    menu.innerHTML = state.filtered.map((opt, i) =>
+      `<div class="cb-opt${i === state.highlight ? ' hi' : ''}" data-val="${_cbEsc(opt)}">${_cbEsc(opt)}</div>`
+    ).join('');
+  }
+  menu.hidden = false;
+}
+function cbScrollHi(input) {
+  const hi = input.nextElementSibling && input.nextElementSibling.querySelector('.cb-opt.hi');
+  if (hi) hi.scrollIntoView({ block: 'nearest' });
+}
+function cbClose(input) {
+  const menu = input.nextElementSibling;
+  if (menu) menu.hidden = true;
+  _cbState.delete(input);
+}
+/** Commit: if passthrough is set, fire a synthetic change event so the
+ *  existing delegated handler does the actual data update. Otherwise no
+ *  domain handler is wired (this codebase always uses passthrough). */
+function cbCommitInput(input) {
+  const cb = input.closest('.cb');
+  if (!cb) return;
+  cbClose(input);
+  if (cb.dataset.passthrough === '1') {
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}
+document.addEventListener('mousedown', (e) => {
+  const opt = e.target.closest('.cb-opt');
+  if (opt) {
+    const menu = opt.closest('.cb-menu');
+    if (!menu) return;
+    e.preventDefault();
+    const input = menu.previousElementSibling;
+    if (input) {
+      input.value = opt.dataset.val || '';
+      cbCommitInput(input);
+      input.blur();
+    }
+    return;
+  }
+  const cb = e.target.closest('.cb');
+  document.querySelectorAll('.cb-menu:not([hidden])').forEach(m => {
+    if (m.closest('.cb') !== cb) {
+      const input = m.previousElementSibling;
+      if (input) cbClose(input);
+    }
+  });
+});
 
 /* ═══════════════════════════════════════════
    SHARED UTILITIES
@@ -4814,8 +5030,15 @@ function savePurchaseOrders() {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ purchaseOrders })
-  }).then(r => {
-    if (!r.ok) _showSaveError(r.status === 401);
+  }).then(async r => {
+    if (r.ok) return;
+    if (r.status === 409) {
+      let detail = 'A purchase-order save was refused to prevent accidental data loss.';
+      try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
+      _showSaveError(false, detail);
+      return;
+    }
+    _showSaveError(r.status === 401);
   }).catch(() => _showSaveError(false));
 }
 
@@ -4855,8 +5078,15 @@ function saveTruckingEntries() {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ truckingEntries })
-  }).then(r => {
-    if (!r.ok) _showSaveError(r.status === 401);
+  }).then(async r => {
+    if (r.ok) return;
+    if (r.status === 409) {
+      let detail = 'A trucking save was refused to prevent accidental data loss.';
+      try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
+      _showSaveError(false, detail);
+      return;
+    }
+    _showSaveError(r.status === 401);
   }).catch(() => _showSaveError(false));
 }
 
@@ -8031,8 +8261,8 @@ function renderTruckingTab() {
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(tr.tr_number)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${sel('sub_code_sel', _trSubCodeOpts(tr))}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('driver', driverOpts)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:140px">${sel('truck_type', truckOpts)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('employees', tr.driver || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="driver"`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('equipment', tr.truck_type || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="truck_type"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:150px">${inp('material_hauled', 'text', 'placeholder="Material hauled"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:65px">${inp('loads', 'number', 'step="any" placeholder="0"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:85px">${inp('rate', 'number', 'step="any" placeholder="0.00"')}</td>
@@ -13009,19 +13239,19 @@ function renderDailyTable(projId) {
       <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="date"           value="${esc(row.date)}"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', ai, 'field_type',      projId)}</td>
-      <td>${makeSelect(employeeOpts,  row.employee,         'daily', ai, 'employee',         projId)}</td>
+      <td>${cbHtml('employees', row.employee || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="employee"`)}</td>
       <td>${makeSelect(ccOpts,        row.cost_code,        'daily', ai, 'cost_code',        projId)}</td>
       <td>${makeSelect(row.cost_code ? ['', ...getSubCodes(projId, row.cost_code).slice().sort((a,b) => a.localeCompare(b))] : scOpts, row.sub_code, 'daily', ai, 'sub_code', projId)}</td>
       <td>${makeSelect(jobClassOpts,  row.job_class,        'daily', ai, 'job_class',        projId)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="rate"            value="${row.rate}"            step="any" placeholder="0.00"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="labor_hours"     value="${row.labor_hours}"     step="any" placeholder="0"></td>
       <td class="calc">$${fmt(c.labor_cost)}</td>
-      <td>${makeSelect(equipOpts, row.equipment, 'daily', ai, 'equipment', projId)}</td>
+      <td>${cbHtml('equipment', row.equipment || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="equipment"`)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="equip_unit_cost" value="${row.equip_unit_cost}" step="any" placeholder="0.00"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="equip_hours"     value="${row.equip_hours}"     step="any" placeholder="0"></td>
       <td class="calc">$${fmt(c.equip_total)}</td>
       <td><input type="text"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="material"        value="${esc(row.material)}"   placeholder="Description&hellip;"></td>
-      <td>${makeSelect(supplierOpts, row.supplier, 'daily', ai, 'supplier', projId)}</td>
+      <td>${cbHtml('suppliers', row.supplier || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="supplier"`)}</td>
       <td>${makePOSelect(projId, row.po_num, ai)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="units_purchased" value="${row.units_purchased}" step="any" placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
@@ -16223,8 +16453,13 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const saved = await apiGet('fct_paving_cost_rows');
     const incoming = Array.isArray(saved) ? saved : [];
     if (JSON.stringify(incoming) === JSON.stringify(costRows)) return;
+    // Don't overwrite the in-memory array while the user is typing — the
+    // next save would otherwise echo this polled snapshot back to the
+    // server, wiping any pending edits. Skip the whole cycle; the next
+    // poll (or a focus change) will pick it up.
+    if (_isEditing()) return;
     costRows = incoming;
-    if (activeTab === 'cost' && !_isEditing()) renderCostTable();
+    if (activeTab === 'cost') renderCostTable();
   }
 
   async function _pollProjects() {
@@ -16250,9 +16485,10 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
     if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
+    if (_isEditing()) return; // don't overwrite pending edits
     purchaseOrders = incoming;
     _migratePOs();
-    if (activeTab === 'po' && !_isEditing()) renderPOTab();
+    if (activeTab === 'po') renderPOTab();
   }
 
   async function _pollTrucking() {
@@ -16263,16 +16499,18 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const data = await r.json();
     const incoming = Array.isArray(data.truckingEntries) ? data.truckingEntries : [];
     if (JSON.stringify(incoming) === JSON.stringify(truckingEntries)) return;
+    if (_isEditing()) return; // don't overwrite pending edits
     truckingEntries = incoming;
-    if (activeTab === 'trucking' && !_isEditing()) renderTruckingTab();
+    if (activeTab === 'trucking') renderTruckingTab();
   }
 
   async function _pollInventory() {
     const saved = await apiGet('fct_paving_inventory');
     const incoming = Array.isArray(saved) ? saved : [];
     if (JSON.stringify(incoming) === JSON.stringify(inventoryEntries)) return;
+    if (_isEditing()) return; // don't overwrite pending edits
     inventoryEntries = incoming;
-    if (activeTab === 'inventory' && !_isEditing()) renderInventoryTab();
+    if (activeTab === 'inventory') renderInventoryTab();
   }
 
   async function _pollCrm() {
@@ -16284,12 +16522,15 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     const inPeople = pRes.status === 'fulfilled' && Array.isArray(pRes.value) ? pRes.value : null;
     const inCos    = cRes.status === 'fulfilled' && Array.isArray(cRes.value) ? cRes.value : null;
     const inOpps   = oRes.status === 'fulfilled' && Array.isArray(oRes.value) ? oRes.value : null;
-    // Always update state; only re-render if CRM tab is active and user isn't editing
+    // Skip the whole cycle if the user is editing — otherwise the next
+    // save would echo this polled snapshot back to the server, losing
+    // pending edits to a CRM person / company / opportunity.
+    if (_isEditing()) return;
     let peopleChanged = false, cosChanged = false, oppsChanged = false;
     if (inPeople && JSON.stringify(inPeople) !== JSON.stringify(crmPeople))         { crmPeople        = inPeople;  peopleChanged = true; }
     if (inCos    && JSON.stringify(inCos)    !== JSON.stringify(crmCompanies))      { crmCompanies     = inCos;     cosChanged    = true; }
     if (inOpps   && JSON.stringify(inOpps)   !== JSON.stringify(crmOpportunities))  { crmOpportunities = inOpps;    oppsChanged   = true; }
-    if (activeTab !== 'crm' || _isEditing()) return;
+    if (activeTab !== 'crm') return;
     const activePanel = document.querySelector('.crm-sub-panel.active')?.id;
     if (peopleChanged) {
       if (activePanel === 'crm-panel-people')    renderCrmPeopleTab();
@@ -16312,10 +16553,11 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     ]);
     const inManual = mRes.status === 'fulfilled' && Array.isArray(mRes.value) ? mRes.value : null;
     const inUnits  = uRes.status === 'fulfilled' && uRes.value && typeof uRes.value === 'object' && !Array.isArray(uRes.value) ? uRes.value : null;
+    if (_isEditing()) return; // don't overwrite pending edits on the Scale of Economy tab
     let changed = false;
     if (inManual && JSON.stringify(inManual) !== JSON.stringify(scaleManualEntries)) { scaleManualEntries = inManual; changed = true; }
     if (inUnits  && JSON.stringify(inUnits)  !== JSON.stringify(soeUnitOverrides))   { soeUnitOverrides  = inUnits;  changed = true; }
-    if (changed && activeTab === 'scale' && !_isEditing()) renderScaleOfEconomy();
+    if (changed && activeTab === 'scale') renderScaleOfEconomy();
   }
 
   // Board and deadlines live on the home tab; refresh them more frequently

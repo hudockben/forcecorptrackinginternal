@@ -590,6 +590,52 @@
       background: var(--surface);
       flex-shrink: 0;
     }
+
+    /* Typeahead combobox — replaces native <select> for the data-entry
+       dropdowns (location / employee / equipment / task / customer /
+       product). Native <select> typeahead jumps to the first option
+       starting with the typed letter and resets after ~500ms, so typing
+       slowly lands on the wrong option without warning. */
+    .cb { position: relative; width: 100%; }
+    .cb-input {
+      width: 100%;
+      padding: 0.28rem 0.4rem;
+      background: var(--surface2, var(--surface));
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.8rem;
+      outline: none;
+      font-family: inherit;
+    }
+    .cb-input:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
+    .cb-input::placeholder { color: var(--muted, #6b7280); }
+    .cb-menu {
+      position: absolute;
+      top: calc(100% + 2px);
+      left: 0;
+      min-width: 100%;
+      max-width: 260px;
+      z-index: 1000;
+      background: var(--surface2, var(--surface));
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      max-height: 220px;
+      overflow-y: auto;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+    }
+    .cb-menu[hidden] { display: none; }
+    .cb-opt {
+      padding: 0.32rem 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text);
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
+    .cb-opt-empty { padding: 0.32rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
   </style>
 </head>
 <body>
@@ -1601,6 +1647,15 @@
         body: JSON.stringify({ value }),
       });
       if (!res.ok) {
+        // 409 = backend bulk-wipe protection refused the save (e.g. empty
+        // list against a non-trivial existing table). Surface the detail.
+        if (res.status === 409) {
+          let detail = 'The server refused this save to prevent accidental data loss.';
+          try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch {}
+          const err = new Error(detail);
+          err.refused = true;
+          throw err;
+        }
         const text = await res.text().catch(() => '');
         throw new Error(`PUT ${QUARRY_SALES_KEY} → ${res.status} ${text}`);
       }
@@ -1620,7 +1675,11 @@
           await putSales(snapshot);
         } catch (err) {
           console.error('[quarry] sales save failed:', err);
-          alert('Could not save sales changes — please check your connection and try again.');
+          if (err && err.refused) {
+            alert('Sales save refused:\n\n' + err.message + '\n\nYour edits are kept locally. To force the save, contact an admin.');
+          } else {
+            alert('Could not save sales changes — please check your connection and try again.');
+          }
         } finally {
           salesSaveInFlight = false;
         }
@@ -1848,6 +1907,198 @@
       return opts.join('');
     }
 
+    /* ═══════════════════════════════════════════
+       TYPEAHEAD COMBOBOX
+       Replaces native <select> typeahead (which jumps to wrong options
+       on slow typing) with a filter-as-you-type menu. Engine is shared
+       by sales / crushing / daily rows; per-row state is keyed by
+       uid = "<tab>:<rowIndex>" so each table can map back to the right
+       data-store. cbOptionsFor returns the option names, cbDispatch
+       commits the user's selection via the existing setters.
+    ═══════════════════════════════════════════ */
+    const _cbState = new WeakMap();
+
+    function cbHtml(uid, field, currentValue, placeholder) {
+      const ph = placeholder == null ? '— select —' : placeholder;
+      return `<div class="cb" data-uid="${escapeHtml(String(uid))}" data-field="${escapeHtml(field)}">` +
+        `<input type="text" class="cb-input" value="${escapeHtml(currentValue || '')}" ` +
+          `placeholder="${escapeHtml(ph)}" autocomplete="off" spellcheck="false" ` +
+          `onfocus="cbOnFocus(this)" oninput="cbOnInput(this)" ` +
+          `onkeydown="cbOnKey(event, this)" onblur="cbOnBlur(this)">` +
+        `<div class="cb-menu" hidden></div>` +
+      `</div>`;
+    }
+
+    /** Names list for the dropdown identified by (uid, field).
+     *  uid = "sales:<idx>" | "crush:<idx>" | "daily:<idx>"
+     *  field = location | employee | equipment | task | customer | product */
+    function cbOptionsFor(uid, field) {
+      const listKey = field === 'employee' ? 'employees'
+                    : field === 'task'     ? 'tasks'
+                    : field; // location / equipment / customer / product
+      const items = (quarryLists[listKey] || []).slice();
+      items.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      return items.map(it => it.name).filter(Boolean);
+    }
+
+    /** Commit the user's selection. Routes through the existing setter
+     *  functions for each tab; if the typed value doesn't match a known
+     *  list item, we still save the row's id field as the typed string
+     *  so free-text entries aren't lost. */
+    function cbDispatch(uid, field, value) {
+      const [tab, idxStr] = uid.split(':');
+      const idx = parseInt(idxStr, 10);
+      if (!Number.isFinite(idx)) return;
+      const listKey = field === 'employee' ? 'employees'
+                    : field === 'task'     ? 'tasks'
+                    : field;
+      const item = (quarryLists[listKey] || []).find(it => it.name === value);
+      const idField   = field + 'Id';
+      const nameField = field + 'Name';
+      if (tab === 'sales') {
+        if (!salesLoaded || !salesRows[idx]) return;
+        const oldId = String(salesRows[idx][idField] || '');
+        const newId = item ? String(item.id || '') : '';
+        // No-op guard
+        if (oldId === newId && (salesRows[idx][nameField] || '') === value) return;
+        salesRows[idx][idField]   = item ? item.id : '';
+        salesRows[idx][nameField] = value;
+        scheduleSalesSave();
+      } else if (tab === 'crush') {
+        if (!crushLoaded || !crushRows[idx]) return;
+        const oldId = String(crushRows[idx][idField] || '');
+        const newId = item ? String(item.id || '') : '';
+        if (oldId === newId && (crushRows[idx][nameField] || '') === value) return;
+        crushRows[idx][idField]   = item ? item.id : '';
+        crushRows[idx][nameField] = value;
+        // Employee auto-fills hourlyRate, but only when the rate is
+        // actually known on the list item — preserve any manual override.
+        if (field === 'employee' && item && item.rate !== undefined && item.rate !== null) {
+          const empRate = Number(item.rate);
+          if (Number.isFinite(empRate)) crushRows[idx].hourlyRate = empRate;
+        }
+        scheduleCrushSave();
+        renderCrush();
+      } else if (tab === 'daily') {
+        if (!dailyLoaded || !dailyRows[idx]) return;
+        const oldId = String(dailyRows[idx][idField] || '');
+        const newId = item ? String(item.id || '') : '';
+        if (oldId === newId && (dailyRows[idx][nameField] || '') === value) return;
+        dailyRows[idx][idField]   = item ? item.id : '';
+        dailyRows[idx][nameField] = value;
+        if (field === 'employee' && item && item.rate !== undefined && item.rate !== null) {
+          const empRate = Number(item.rate);
+          if (Number.isFinite(empRate)) dailyRows[idx].rate = empRate;
+        }
+        scheduleDailySave();
+        renderDaily();
+      }
+    }
+
+    function cbOnFocus(input) {
+      const cb = input.closest('.cb');
+      if (!cb) return;
+      const options = cbOptionsFor(cb.dataset.uid, cb.dataset.field);
+      _cbState.set(input, {
+        options,
+        filtered: options,
+        highlight: Math.max(0, options.indexOf(input.value)),
+        originalValue: input.value,
+      });
+      cbRenderMenu(input);
+      input.select();
+    }
+    function cbOnInput(input) {
+      const state = _cbState.get(input);
+      if (!state) return;
+      const q = input.value.trim().toLowerCase();
+      state.filtered = q ? state.options.filter(o => o.toLowerCase().includes(q)) : state.options;
+      const exact = state.filtered.findIndex(o => o.toLowerCase() === q);
+      state.highlight = exact >= 0 ? exact : (state.filtered.length ? 0 : -1);
+      cbRenderMenu(input);
+    }
+    function cbOnKey(event, input) {
+      const state = _cbState.get(input);
+      if (!state) return;
+      const list = state.filtered;
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (list.length) { state.highlight = (state.highlight + 1) % list.length; cbRenderMenu(input); cbScrollHi(input); }
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (list.length) { state.highlight = (state.highlight - 1 + list.length) % list.length; cbRenderMenu(input); cbScrollHi(input); }
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        const pick = list[state.highlight];
+        if (pick != null) input.value = pick;
+        cbCommitInput(input);
+        input.blur();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        input.value = state.originalValue;
+        cbClose(input);
+        input.blur();
+      } else if (event.key === 'Tab') {
+        const pick = list[state.highlight];
+        if (pick != null) input.value = pick;
+        cbCommitInput(input);
+      }
+    }
+    function cbOnBlur(input) {
+      setTimeout(() => { if (document.activeElement !== input) cbCommitInput(input); }, 120);
+    }
+    function cbRenderMenu(input) {
+      const state = _cbState.get(input);
+      const menu = input.nextElementSibling;
+      if (!state || !menu) return;
+      if (state.filtered.length === 0) {
+        menu.innerHTML = '<div class="cb-opt-empty">No matches — value will be saved as typed</div>';
+      } else {
+        menu.innerHTML = state.filtered.map((opt, i) =>
+          `<div class="cb-opt${i === state.highlight ? ' hi' : ''}" data-val="${escapeHtml(opt)}">${escapeHtml(opt)}</div>`
+        ).join('');
+      }
+      menu.hidden = false;
+    }
+    function cbScrollHi(input) {
+      const hi = input.nextElementSibling && input.nextElementSibling.querySelector('.cb-opt.hi');
+      if (hi) hi.scrollIntoView({ block: 'nearest' });
+    }
+    function cbClose(input) {
+      const menu = input.nextElementSibling;
+      if (menu) menu.hidden = true;
+      _cbState.delete(input);
+    }
+    function cbCommitInput(input) {
+      const cb = input.closest('.cb');
+      if (!cb) return;
+      const value = input.value.trim();
+      cbClose(input);
+      cbDispatch(cb.dataset.uid, cb.dataset.field, value);
+    }
+    document.addEventListener('mousedown', (e) => {
+      const opt = e.target.closest('.cb-opt');
+      if (opt) {
+        const menu = opt.closest('.cb-menu');
+        if (!menu) return;
+        e.preventDefault();
+        const input = menu.previousElementSibling;
+        if (input) {
+          input.value = opt.dataset.val || '';
+          cbCommitInput(input);
+          input.blur();
+        }
+        return;
+      }
+      const cb = e.target.closest('.cb');
+      document.querySelectorAll('.cb-menu:not([hidden])').forEach(m => {
+        if (m.closest('.cb') !== cb) {
+          const input = m.previousElementSibling;
+          if (input) cbClose(input);
+        }
+      });
+    });
+
     function renderSales() {
       const tbody = document.getElementById('salesTbody');
       if (!tbody) return;
@@ -1879,20 +2130,19 @@
 
       tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const total = rowTotal(row);
-        const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
-        const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
-        const customerOpts = buildOptionList('customer',  row.customerId, row.customerName);
-        const productOpts  = buildOptionList('product',   row.productId,  row.productName);
+        // (Old `buildOptionList` calls retained below as no-ops in case
+        // any other render path still depends on them — the actual cell
+        // markup uses cbHtml() comboboxes instead of native <select>.)
         const paymentOpts  = ['<option value="">—</option>'].concat(
           PAYMENT_OPTIONS.map(p => `<option value="${p}"${row.payment === p ? ' selected' : ''}>${p}</option>`)
         ).join('');
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateSalesCell(${i}, 'date', this.value)" /></td>
-            <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'location', this)">${locationOpts}</select></td>
-            <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'employee', this)">${employeeOpts}</select></td>
-            <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'customer', this)">${customerOpts}</select></td>
-            <td><select class="cell-select" onchange="updateSalesSelect(${i}, 'product', this)">${productOpts}</select></td>
+            <td>${cbHtml('sales:' + i, 'location', row.locationName || '')}</td>
+            <td>${cbHtml('sales:' + i, 'employee', row.employeeName || '')}</td>
+            <td>${cbHtml('sales:' + i, 'customer', row.customerName || '')}</td>
+            <td>${cbHtml('sales:' + i, 'product',  row.productName  || '')}</td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.tons === '' ? '' : row.tons}" placeholder="0" oninput="updateSalesNumber(${i}, 'tons', this.value)" /></td>
             <td class="col-payment"><select class="cell-select" onchange="updateSalesCell(${i}, 'payment', this.value)">${paymentOpts}</select></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.pricePerTon === '' ? '' : row.pricePerTon}" placeholder="0.00" oninput="updateSalesNumber(${i}, 'pricePerTon', this.value)" /></td>
@@ -2033,6 +2283,13 @@
         body: JSON.stringify({ value }),
       });
       if (!res.ok) {
+        if (res.status === 409) {
+          let detail = 'The server refused this save to prevent accidental data loss.';
+          try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch {}
+          const err = new Error(detail);
+          err.refused = true;
+          throw err;
+        }
         const text = await res.text().catch(() => '');
         throw new Error(`PUT ${QUARRY_CRUSH_KEY} → ${res.status} ${text}`);
       }
@@ -2051,7 +2308,11 @@
           await putCrush(snapshot);
         } catch (err) {
           console.error('[quarry] crushing save failed:', err);
-          alert('Could not save crushing changes — please check your connection and try again.');
+          if (err && err.refused) {
+            alert('Crushing save refused:\n\n' + err.message + '\n\nYour edits are kept locally. To force the save, contact an admin.');
+          } else {
+            alert('Could not save crushing changes — please check your connection and try again.');
+          }
         } finally {
           crushSaveInFlight = false;
         }
@@ -2120,8 +2381,7 @@
 
       tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const c = crushCalc(row);
-        const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
-        const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
+        // Crushing row dropdowns are typeahead comboboxes (see cbHtml).
         const calcCell = (id, val, money) => {
           const z = !val ? ' is-zero' : '';
           const txt = money ? formatMoney(val) : formatTons(val);
@@ -2130,8 +2390,8 @@
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value)" /></td>
-            <td><select class="cell-select" onchange="updateCrushLocation(${i}, this)">${locationOpts}</select></td>
-            <td><select class="cell-select" onchange="updateCrushEmployee(${i}, this)">${employeeOpts}</select></td>
+            <td>${cbHtml('crush:' + i, 'location', row.locationName || '')}</td>
+            <td>${cbHtml('crush:' + i, 'employee', row.employeeName || '')}</td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hourlyRate === '' ? '' : row.hourlyRate}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'hourlyRate', this.value)" /></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateCrushNumber(${i}, 'hours', this.value)" /></td>
             <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
@@ -2296,6 +2556,13 @@
         body: JSON.stringify({ value }),
       });
       if (!res.ok) {
+        if (res.status === 409) {
+          let detail = 'The server refused this save to prevent accidental data loss.';
+          try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch {}
+          const err = new Error(detail);
+          err.refused = true;
+          throw err;
+        }
         const text = await res.text().catch(() => '');
         throw new Error(`PUT ${QUARRY_DAILY_KEY} → ${res.status} ${text}`);
       }
@@ -2314,7 +2581,11 @@
           await putDaily(snapshot);
         } catch (err) {
           console.error('[quarry] daily save failed:', err);
-          alert('Could not save daily tracking changes — please check your connection and try again.');
+          if (err && err.refused) {
+            alert('Daily tracking save refused:\n\n' + err.message + '\n\nYour edits are kept locally. To force the save, contact an admin.');
+          } else {
+            alert('Could not save daily tracking changes — please check your connection and try again.');
+          }
         } finally {
           dailySaveInFlight = false;
         }
@@ -2379,10 +2650,7 @@
 
       tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const c = dailyCalc(row);
-        const locationOpts = buildOptionList('location',  row.locationId, row.locationName);
-        const employeeOpts = buildOptionList('employees', row.employeeId, row.employeeName);
-        const equipmentOpts = buildOptionList('equipment', row.equipmentId, row.equipmentName);
-        const taskOpts = buildOptionList('tasks', row.taskId, row.taskName);
+        // Daily row dropdowns are typeahead comboboxes (see cbHtml).
         const calcCell = (id, val, money) => {
           const z = !val ? ' is-zero' : '';
           const txt = money ? formatMoney(val) : formatTons(val);
@@ -2391,10 +2659,10 @@
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateDailyCell(${i}, 'date', this.value)" /></td>
-            <td><select class="cell-select" onchange="updateDailySelect(${i}, 'location', this)">${locationOpts}</select></td>
-            <td><select class="cell-select" onchange="updateDailySelect(${i}, 'employee', this)">${employeeOpts}</select></td>
-            <td><select class="cell-select" onchange="updateDailySelect(${i}, 'equipment', this)">${equipmentOpts}</select></td>
-            <td><select class="cell-select" onchange="updateDailySelect(${i}, 'task', this)">${taskOpts}</select></td>
+            <td>${cbHtml('daily:' + i, 'location',  row.locationName  || '')}</td>
+            <td>${cbHtml('daily:' + i, 'employee',  row.employeeName  || '')}</td>
+            <td>${cbHtml('daily:' + i, 'equipment', row.equipmentName || '')}</td>
+            <td>${cbHtml('daily:' + i, 'task',      row.taskName      || '')}</td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateDailyNumber(${i}, 'hours', this.value)" /></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.rate === '' ? '' : row.rate}" placeholder="0.00" oninput="updateDailyNumber(${i}, 'rate', this.value)" /></td>
             <td class="col-total">${calcCell('daily-laborCost', c.laborCost, true)}</td>
