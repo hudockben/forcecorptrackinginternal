@@ -616,14 +616,36 @@
       } catch { return null; }
     }
 
-    function tdDivPut() {
-      fetch(`${API_BASE}/truck-division`, {
+    function tdDivPut(opts = {}) {
+      const init = {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ entries: divEntries, lists: divTruckLists })
-      }).then(r => _handleSaveResponse(r, 'tdDivPut')).catch(() => _showSaveError(false));
+      };
+      // Page-unload flushes need keepalive:true so the browser doesn't
+      // cancel the request when the tab navigates away.
+      if (opts.keepalive) init.keepalive = true;
+      fetch(`${API_BASE}/truck-division`, init)
+        .then(r => _handleSaveResponse(r, 'tdDivPut')).catch(() => _showSaveError(false));
       _flushIcBillingIfDirty();
     }
+
+    // Flush any pending debounced save immediately. Hooked to beforeunload
+    // and visibilitychange so edits within the 600ms schedSave debounce
+    // window aren't dropped on navigation.
+    function _flushPendingDivSave() {
+      if (!_saveTimer) return;
+      clearTimeout(_saveTimer);
+      _saveTimer = null;
+      tdDivPut({ keepalive: true });
+      _isSaved = true;
+      const el = document.getElementById('save-status');
+      if (el) el.style.display = '';
+    }
+    window.addEventListener('beforeunload', _flushPendingDivSave);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') _flushPendingDivSave();
+    });
 
     // Flush local IC-billing edits without clobbering entries that were added
     // concurrently (newly-sent rows, dust sends, edits from another tab). We

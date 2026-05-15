@@ -3374,16 +3374,20 @@ function apiPatch(key, fields) {
   });
 }
 
-function apiPut(key, value) {
-  // Fire-and-forget — UI is already updated in memory and in localStorage
-  fetch(`${API_BASE}/data/${key}`, {
+function apiPut(key, value, opts = {}) {
+  // Fire-and-forget — UI is already updated in memory and in localStorage.
+  // Pass { keepalive: true } when flushing on page unload so the browser
+  // keeps the request alive after navigation.
+  const init = {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${fctToken}`,
     },
     body: JSON.stringify({ value })
-  }).then(async r => {
+  };
+  if (opts.keepalive) init.keepalive = true;
+  fetch(`${API_BASE}/data/${key}`, init).then(async r => {
     if (r.ok) return;
     console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
     // 409 = backend bulk-wipe protection refused the request. The server
@@ -4981,6 +4985,26 @@ function saveProject(id) {
     saveProjectIndex();
   }, 600);
 }
+
+// Flush any pending debounced project saves immediately (used on page unload /
+// tab hide so date edits aren't lost inside the 600ms window). Uses
+// keepalive:true so the requests survive the navigation.
+function _flushPendingProjectSaves() {
+  const ids = Object.keys(_saveProjTimers);
+  if (!ids.length) return;
+  ids.forEach(id => {
+    clearTimeout(_saveProjTimers[id]);
+    delete _saveProjTimers[id];
+    const p = getProj(id);
+    if (p) apiPut('fct_paving_project_' + id, _projBlob(p), { keepalive: true });
+  });
+  _lastProjIndexTs = Date.now();
+  apiPut('fct_paving_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs }, { keepalive: true });
+}
+window.addEventListener('beforeunload', _flushPendingProjectSaves);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _flushPendingProjectSaves();
+});
 
 // Save the ordered list of project IDs — called when projects are added/removed/edited.
 // Includes _ts so the 60s poll on other clients detects the change.
@@ -14757,6 +14781,10 @@ function openBidView(projId) {
 }
 
 function closeBidView() {
+  // Flush any in-flight debounced bid-item edits (start/target dates, qty,
+  // unit cost) before the view closes — otherwise navigating back within
+  // the 600ms debounce window drops the save.
+  _flushPendingProjectSaves();
   document.getElementById('bid-fullscreen').style.display = 'none';
   document.getElementById('bid-filter-dd').style.display = 'none';
   bidFilters = {};

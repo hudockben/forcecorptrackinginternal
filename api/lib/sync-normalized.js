@@ -59,7 +59,7 @@ async function syncProjects(sql, companyCode, value) {
       await sql`
         INSERT INTO bid_items (
           id, project_id, company_code, cost_code, sub_code, description,
-          quantity, unit, unit_cost, status, target_date, updated_at
+          quantity, unit, unit_cost, status, start_date, target_date, updated_at
         ) VALUES (
           ${item.id}, ${p.id}, ${companyCode},
           ${item.cost_code   || item.costCode   || ''},
@@ -69,6 +69,7 @@ async function syncProjects(sql, companyCode, value) {
           ${item.unit || null},
           ${safeFloat(item.unit_cost ?? item.unitCost)         ?? 0},
           ${item.status || 'Active'},
+          ${safeDate(item.start_date  || item.startDate)},
           ${safeDate(item.target_date || item.targetDate)},
           NOW()
         )
@@ -80,6 +81,7 @@ async function syncProjects(sql, companyCode, value) {
           unit        = EXCLUDED.unit,
           unit_cost   = EXCLUDED.unit_cost,
           status      = EXCLUDED.status,
+          start_date  = EXCLUDED.start_date,
           target_date = EXCLUDED.target_date,
           updated_at  = NOW()
       `;
