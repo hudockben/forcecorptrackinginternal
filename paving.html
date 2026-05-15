@@ -3462,9 +3462,12 @@ function cbOnFocus(input) {
 function cbOnInput(event, input) {
   // Stop propagation so the document-level `input` listener (which
   // auto-saves typed values for cost/daily/etc.) doesn't see partial
-  // typing as a commit. The real commit happens via cbCommitInput,
-  // which fires a synthetic `change` event that the existing change
-  // listener consumes.
+  // typing as a commit. EXCEPTION: when cbCommitInput dispatches a
+  // synthetic input event with the _cbBypassFilter flag set, let it
+  // through — that's the explicit commit that needs to trigger the
+  // existing input handler's auto-fill logic (employee → rate,
+  // equipment → unit_cost, etc.).
+  if (input._cbBypassFilter) return;
   if (event && event.stopPropagation) event.stopPropagation();
   const state = _cbState.get(input);
   if (!state) return;
@@ -3526,15 +3529,25 @@ function cbClose(input) {
   if (menu) menu.hidden = true;
   _cbState.delete(input);
 }
-/** Commit: if passthrough is set, fire a synthetic change event so the
- *  existing delegated handler does the actual data update. Otherwise no
- *  domain handler is wired (this codebase always uses passthrough). */
+/** Commit: if passthrough is set, fire BOTH a synthetic input AND a
+ *  synthetic change event so the existing delegated handlers all run.
+ *  The input handler carries the auto-fill logic (employee → rate,
+ *  equipment → unit_cost, sub_code filtering, material cost calc) that
+ *  the change handler does NOT duplicate. The _cbBypassFilter flag
+ *  tells cbOnInput to let the synthetic input through instead of
+ *  stopping its propagation. */
 function cbCommitInput(input) {
   const cb = input.closest('.cb');
   if (!cb) return;
   cbClose(input);
   if (cb.dataset.passthrough === '1') {
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input._cbBypassFilter = true;
+    try {
+      input.dispatchEvent(new Event('input',  { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    } finally {
+      delete input._cbBypassFilter;
+    }
   }
 }
 document.addEventListener('mousedown', (e) => {
