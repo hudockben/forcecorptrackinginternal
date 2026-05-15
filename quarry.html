@@ -1945,9 +1945,12 @@
     function updateSalesSelect(index, kind, selectEl) {
       if (!salesLoaded || !salesRows[index]) return;
       const id = selectEl.value;
+      const idField = kind + 'Id';
+      // No-op guard: re-selecting the same option must not re-fire writes
+      // (and risk overwriting concurrent edits).
+      if (String(salesRows[index][idField] || '') === String(id || '')) return;
       const opt = selectEl.options[selectEl.selectedIndex];
       const name = opt ? opt.text.replace(/ \(removed\)$/, '') : '';
-      const idField = kind + 'Id';
       const nameField = kind + 'Name';
       // Manage lists store 'customer'/'product'/'employees' under their own keys;
       // map dropdown 'kind' to the list-key used by quarryLists.
@@ -2188,6 +2191,9 @@
     function updateCrushEmployee(index, selectEl) {
       if (!crushLoaded || !crushRows[index]) return;
       const id = selectEl.value;
+      // No-op guard: re-selecting the same employee must not blow away a
+      // manually-edited hourlyRate by re-running the auto-fill below.
+      if (String(crushRows[index].employeeId || '') === String(id || '')) return;
       const opt = selectEl.options[selectEl.selectedIndex];
       const name = opt ? opt.text.replace(/ \(removed\)$/, '') : '';
       const listItem = (quarryLists.employees || []).find(it => String(it.id) === String(id));
@@ -2203,6 +2209,8 @@
     function updateCrushLocation(index, selectEl) {
       if (!crushLoaded || !crushRows[index]) return;
       const id = selectEl.value;
+      // No-op guard: re-selecting the same location must not re-fire writes.
+      if (String(crushRows[index].locationId || '') === String(id || '')) return;
       const opt = selectEl.options[selectEl.selectedIndex];
       const name = opt ? opt.text.replace(/ \(removed\)$/, '') : '';
       const listItem = (quarryLists.location || []).find(it => String(it.id) === String(id));
@@ -2437,13 +2445,17 @@
     function updateDailySelect(index, kind, selectEl) {
       if (!dailyLoaded || !dailyRows[index]) return;
       const id = selectEl.value;
+      const idField = kind + 'Id';
+      // No-op guard: re-selecting the same option must not re-fire the
+      // employee-rate auto-fill below — a user who manually overrode
+      // an employee's rate would lose it on every dropdown re-render.
+      if (String(dailyRows[index][idField] || '') === String(id || '')) return;
       const opt = selectEl.options[selectEl.selectedIndex];
       const name = opt ? opt.text.replace(/ \(removed\)$/, '') : '';
       const listKey = kind === 'employee' ? 'employees'
                     : kind === 'task'     ? 'tasks'
                     : kind; // equipment
       const listItem = (quarryLists[listKey] || []).find(it => String(it.id) === String(id));
-      const idField = kind + 'Id';
       const nameField = kind + 'Name';
       dailyRows[index][idField] = id;
       dailyRows[index][nameField] = listItem ? listItem.name : name;

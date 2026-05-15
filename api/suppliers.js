@@ -38,8 +38,19 @@ module.exports = async (req, res) => {
         .filter(s => s.name?.trim());
       const incomingNames = new Set(incoming.map(s => s.name.trim()));
 
-      // Delete rows that were removed from the list
+      // Bulk-wipe protection: refuse to wipe the supplier roster on an
+      // empty PUT against a non-trivial table — almost always a stale-state
+      // bug. Single-supplier deletes still work via DELETE /api/suppliers?id=.
       const existing = await sql`SELECT name FROM suppliers WHERE company_code = ${companyCode}`;
+      if (incoming.length === 0 && existing.length > 1 && req.query.force !== '1') {
+        console.warn(`[suppliers] refused empty PUT: ${existing.length} suppliers would have been wiped for ${companyCode}`);
+        return res.status(409).json({
+          error: 'Refusing to wipe suppliers',
+          detail: `Cannot replace ${existing.length} suppliers with an empty list. Use DELETE /api/suppliers?id= for single removals, or pass ?force=1 to override.`,
+        });
+      }
+
+      // Delete rows that were removed from the list
       for (const { name } of existing) {
         if (!incomingNames.has(name)) {
           await sql`DELETE FROM suppliers WHERE company_code = ${companyCode} AND name = ${name}`;
