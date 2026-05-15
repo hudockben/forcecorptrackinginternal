@@ -174,7 +174,7 @@ async function upsertProject(sql, p, companyCode, sortOrder) {
       updated_at         = NOW()
   `;
 
-  // Sync bid items: delete removed, upsert kept/new
+  // Sync bid items: delete removed, upsert kept/new.
   const bidItems = Array.isArray(p.bidItems) ? p.bidItems : [];
   const incomingBidIds = bidItems.map(b => b.id).filter(Boolean);
   if (incomingBidIds.length) {
@@ -182,7 +182,19 @@ async function upsertProject(sql, p, companyCode, sortOrder) {
       DELETE FROM bid_items WHERE project_id = ${p.id} AND id <> ALL(${incomingBidIds})
     `;
   } else {
-    await sql`DELETE FROM bid_items WHERE project_id = ${p.id}`;
+    // Bulk-wipe protection: an empty incoming list against a project with
+    // multiple existing bid items is almost always a stale-state bug
+    // (race, partial load) and would silently destroy line items.
+    // Single-row deletes still work — the count==1 case still wipes,
+    // which is the normal "delete last row" flow.
+    const [{ count }] = await sql`
+      SELECT COUNT(*)::int AS count FROM bid_items WHERE project_id = ${p.id}
+    `;
+    if (count > 1) {
+      console.warn(`[projects] refused empty bidItems for project ${p.id}: ${count} would have been wiped`);
+    } else {
+      await sql`DELETE FROM bid_items WHERE project_id = ${p.id}`;
+    }
   }
   for (const bi of bidItems) {
     if (!bi || !bi.id) continue;

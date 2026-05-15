@@ -90,6 +90,22 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'truckingEntries array required' });
       }
 
+      // Bulk-wipe protection: an empty incoming list against an existing
+      // non-trivial blob is almost always a client bug and would silently
+      // destroy this division's trucking data. Single-row deletes still
+      // work. Override with ?force=1 for genuine wipes.
+      if (truckingEntries.length === 0 && req.query.force !== '1') {
+        const existing = await sql`SELECT value FROM app_data WHERE key = ${blobKey}`;
+        const existingArr = Array.isArray(existing[0]?.value) ? existing[0].value : null;
+        if (existingArr && existingArr.length > 1) {
+          console.warn(`[trucking] refused empty PUT: would have wiped ${existingArr.length} entries for ${blobKey}`);
+          return res.status(409).json({
+            error: 'Refusing to wipe trucking entries',
+            detail: `Cannot replace ${existingArr.length} entries with an empty list. Pass ?force=1 to override.`,
+          });
+        }
+      }
+
       // Always write to the division-specific JSON blob first — source of truth.
       await sql`
         INSERT INTO app_data (key, value, updated_at)
@@ -115,19 +131,15 @@ module.exports = async (req, res) => {
 async function _syncTrucking(sql, companyCode, division, list) {
   const ids = list.map(t => t && t.id).filter(Boolean);
 
-  if (ids.length) {
-    await sql`
-      DELETE FROM trucking_entries
-      WHERE company_code = ${companyCode} AND division = ${division}
-        AND id <> ALL(${ids})
-    `;
-  } else {
-    await sql`
-      DELETE FROM trucking_entries
-      WHERE company_code = ${companyCode} AND division = ${division}
-    `;
-    return;
-  }
+  // Defense in depth: even if an empty list slips past the upstream guard,
+  // refuse to wipe the mirror table — leaves a recovery option intact.
+  if (ids.length === 0) return;
+
+  await sql`
+    DELETE FROM trucking_entries
+    WHERE company_code = ${companyCode} AND division = ${division}
+      AND id <> ALL(${ids})
+  `;
 
   for (const t of list) {
     if (!t || !t.id) continue;
