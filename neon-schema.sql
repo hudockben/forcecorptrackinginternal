@@ -168,6 +168,10 @@ CREATE TABLE IF NOT EXISTS bid_items (
     updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE bid_items ADD COLUMN IF NOT EXISTS start_date    DATE;
+ALTER TABLE bid_items ADD COLUMN IF NOT EXISTS is_complete   BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE bid_items ADD COLUMN IF NOT EXISTS change_orders JSONB   NOT NULL DEFAULT '[]'::jsonb;
+
 CREATE INDEX IF NOT EXISTS idx_bid_items_project    ON bid_items(project_id);
 CREATE INDEX IF NOT EXISTS idx_bid_items_company_cc ON bid_items(company_code, cost_code, sub_code);
 

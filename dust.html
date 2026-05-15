@@ -1791,13 +1791,17 @@
       } catch { return null; }
     }
 
-    async function apiPut(key, value) {
+    async function apiPut(key, value, opts = {}) {
+      const init = {
+        method: 'PUT',
+        headers: AUTH_HDR(),
+        body: JSON.stringify({ value }),
+      };
+      // Page-unload flushes need keepalive:true so the browser doesn't
+      // cancel the request when the tab navigates away.
+      if (opts.keepalive) init.keepalive = true;
       try {
-        const r = await fetch(`/api/data/${key}`, {
-          method: 'PUT',
-          headers: AUTH_HDR(),
-          body: JSON.stringify({ value }),
-        });
+        const r = await fetch(`/api/data/${key}`, init);
         return r.ok;
       } catch { return false; }
     }
@@ -1902,14 +1906,18 @@
      * Snapshot the deletedRowIds set before the request so any deletes that
      * happen while we're awaiting don't get cleared out below.
      */
-    async function saveDustRows(dustRows) {
+    async function saveDustRows(dustRows, opts = {}) {
       const sentDeleted = Array.from(deletedRowIds);
+      const init = {
+        method: 'PUT',
+        headers: AUTH_HDR(),
+        body: JSON.stringify({ dustRows, deletedIds: sentDeleted }),
+      };
+      // Page-unload flushes need keepalive:true so the browser doesn't
+      // cancel the request when the tab navigates away.
+      if (opts.keepalive) init.keepalive = true;
       try {
-        const r = await fetch('/api/dust-rows', {
-          method: 'PUT',
-          headers: AUTH_HDR(),
-          body: JSON.stringify({ dustRows, deletedIds: sentDeleted }),
-        });
+        const r = await fetch('/api/dust-rows', init);
         if (r.ok) {
           // Only clear ids we actually sent — newly deleted rows during the
           // round-trip stay queued for the next save.
@@ -1932,15 +1940,18 @@
     }
 
     /** Save dust config (settings + lists) to normalized endpoint. */
-    function dustConfigPut() {
-      return fetch('/api/dust-config', {
+    function dustConfigPut(opts = {}) {
+      const init = {
         method: 'PUT',
         headers: AUTH_HDR(),
         body: JSON.stringify({
           settings: { ub_rate: ubRate },
           lists: dustLists,
         }),
-      }).then(r => r.ok ? r.json() : null).catch(() => null);
+      };
+      if (opts.keepalive) init.keepalive = true;
+      return fetch('/api/dust-config', init)
+        .then(r => r.ok ? r.json() : null).catch(() => null);
     }
 
     /* ═══════════════════════════════════════════
@@ -3796,11 +3807,17 @@
       renderHomeDashboard();
     }
 
-    // Flush pending save on unload
-    window.addEventListener('beforeunload', () => {
+    // Flush pending save on unload — keepalive lets the request survive
+    // the navigation; without it the browser may cancel it mid-flight.
+    function _flushDustOnUnload() {
       clearTimeout(saveTimer);
-      saveDustRows(rows);
-      dustConfigPut();
+      saveTimer = null;
+      saveDustRows(rows, { keepalive: true });
+      dustConfigPut({ keepalive: true });
+    }
+    window.addEventListener('beforeunload', _flushDustOnUnload);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') _flushDustOnUnload();
     });
 
     /* ═══════════════════════════════════════════
@@ -4287,8 +4304,8 @@
       } catch { /* non-fatal */ }
     }
 
-    async function obSave() {
-      try { return await apiPut(OB_KEY, obRows); }
+    async function obSave(opts = {}) {
+      try { return await apiPut(OB_KEY, obRows, opts); }
       catch { return false; }
     }
 
@@ -4664,10 +4681,16 @@
     // Load Other Billing rows in the background after main init
     obLoad().then(obRenderTable);
 
-    // Flush pending OB save on unload
-    window.addEventListener('beforeunload', () => {
+    // Flush pending OB save on unload — keepalive lets the request survive
+    // the navigation; without it the browser may cancel it mid-flight.
+    function _flushObOnUnload() {
       clearTimeout(obSaveTimer);
-      if (obRows.length > 0) obSave();
+      obSaveTimer = null;
+      if (obRows.length > 0) obSave({ keepalive: true });
+    }
+    window.addEventListener('beforeunload', _flushObOnUnload);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') _flushObOnUnload();
     });
 
     /* ═══════════════════════════════════════════
