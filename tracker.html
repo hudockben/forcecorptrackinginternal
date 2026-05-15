@@ -3595,6 +3595,10 @@ function cbOnFocus(input) {
   input.select();
 }
 function cbOnInput(event, input) {
+  // See paving.html cbOnInput — synthetic input from cbCommitInput must
+  // pass through so the document `input` handler's auto-fill logic
+  // (employee → rate, equipment → unit_cost, etc.) runs on commit.
+  if (input._cbBypassFilter) return;
   if (event && event.stopPropagation) event.stopPropagation();
   const state = _cbState.get(input);
   if (!state) return;
@@ -3661,7 +3665,16 @@ function cbCommitInput(input) {
   if (!cb) return;
   cbClose(input);
   if (cb.dataset.passthrough === '1') {
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+    // Fire BOTH input and change so all existing delegated handlers
+    // run (the input handler carries the auto-fill side effects that
+    // the change handler does not duplicate).
+    input._cbBypassFilter = true;
+    try {
+      input.dispatchEvent(new Event('input',  { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    } finally {
+      delete input._cbBypassFilter;
+    }
   }
 }
 document.addEventListener('mousedown', (e) => {
