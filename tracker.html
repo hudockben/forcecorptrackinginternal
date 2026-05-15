@@ -3427,7 +3427,7 @@ async function apiGet(key) {
   }
 }
 
-function _showSaveError(isAuth) {
+function _showSaveError(isAuth, customMsg) {
   const banner = document.getElementById('save-error-banner');
   if (!banner) return;
   const msg   = document.getElementById('save-error-msg');
@@ -3435,6 +3435,11 @@ function _showSaveError(isAuth) {
   if (isAuth) {
     if (msg)  msg.textContent  = '⚠ Your session has expired — changes could not be saved. Your edits are kept locally.';
     if (link) link.hidden = false;
+  } else if (customMsg) {
+    // Pass-through for backend conflict detail (e.g. the bulk-wipe
+    // protection's "Cannot replace N items with an empty list" message).
+    if (msg)  msg.textContent  = '⚠ ' + customMsg + ' Your edits are kept locally.';
+    if (link) link.hidden = true;
   } else {
     if (msg)  msg.textContent  = '⚠ Changes could not be saved to the server. Your edits are kept locally.';
     if (link) link.hidden = true;
@@ -3485,12 +3490,18 @@ function apiPut(key, value) {
       'Authorization': `Bearer ${fctToken}`,
     },
     body: JSON.stringify({ value })
-  }).then(r => {
-    if (!r.ok) {
-      console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
-      // Show banner but do NOT auto-logout — data is safe in localStorage
-      _showSaveError(r.status === 401);
+  }).then(async r => {
+    if (r.ok) return;
+    console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
+    // 409 = backend bulk-wipe protection refused the request. Surface
+    // the detail message so the user knows which save was refused.
+    if (r.status === 409) {
+      let detail = 'A save was refused to prevent accidental data loss.';
+      try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
+      _showSaveError(false, detail);
+      return;
     }
+    _showSaveError(r.status === 401);
   }).catch(err => {
     console.warn(`[DB] PUT ${key} failed:`, err.message);
     _showSaveError(false);
@@ -5003,8 +5014,15 @@ function savePurchaseOrders() {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ purchaseOrders })
-  }).then(r => {
-    if (!r.ok) _showSaveError(r.status === 401);
+  }).then(async r => {
+    if (r.ok) return;
+    if (r.status === 409) {
+      let detail = 'A purchase-order save was refused to prevent accidental data loss.';
+      try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
+      _showSaveError(false, detail);
+      return;
+    }
+    _showSaveError(r.status === 401);
   }).catch(() => _showSaveError(false));
 }
 
@@ -5044,8 +5062,15 @@ function saveTruckingEntries() {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ truckingEntries })
-  }).then(r => {
-    if (!r.ok) _showSaveError(r.status === 401);
+  }).then(async r => {
+    if (r.ok) return;
+    if (r.status === 409) {
+      let detail = 'A trucking save was refused to prevent accidental data loss.';
+      try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
+      _showSaveError(false, detail);
+      return;
+    }
+    _showSaveError(r.status === 401);
   }).catch(() => _showSaveError(false));
 }
 

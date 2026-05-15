@@ -775,6 +775,15 @@
 </head>
 <body>
 
+  <!-- Save-error banner. Surfaces backend failures (auth, network, 409
+       bulk-wipe protection) so users know when an edit didn't reach the
+       server. Hidden by default; shown by _showSaveError() in the script. -->
+  <div id="save-error-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#b91c1c;color:#fff;font-size:0.85rem;padding:0.5rem 1rem;text-align:center;">
+    <span id="save-error-msg">⚠ Changes could not be saved to the server. Your edits are kept locally.</span>
+    &nbsp;<a href="index.html" style="color:#fff;font-weight:600;text-decoration:underline;" id="save-error-login-link" hidden>Log in again</a>
+    <button onclick="document.getElementById('save-error-banner').style.display='none'" style="margin-left:1rem;background:rgba(255,255,255,0.2);border:none;color:#fff;cursor:pointer;padding:0.15rem 0.5rem;border-radius:3px;">Dismiss</button>
+  </div>
+
   <!-- ── Header ── -->
   <header>
     <div class="hdr-left">
@@ -1082,6 +1091,41 @@
       } catch { /* keep localStorage fallback values */ }
     }
 
+    /** Show the save-error banner. `customMsg` lets backend conflict
+     *  detail (e.g. the bulk-wipe protection's response body) flow
+     *  through to the user. */
+    function _showSaveError(isAuth, customMsg) {
+      const banner = document.getElementById('save-error-banner');
+      if (!banner) return;
+      const msgEl = document.getElementById('save-error-msg');
+      const link  = document.getElementById('save-error-login-link');
+      if (isAuth) {
+        if (msgEl) msgEl.textContent = '⚠ Your session has expired — changes could not be saved. Your edits are kept locally.';
+        if (link)  link.hidden = false;
+      } else if (customMsg) {
+        if (msgEl) msgEl.textContent = '⚠ ' + customMsg + ' Your edits are kept locally.';
+        if (link)  link.hidden = true;
+      } else {
+        if (msgEl) msgEl.textContent = '⚠ Changes could not be saved to the server. Your edits are kept locally.';
+        if (link)  link.hidden = true;
+      }
+      banner.style.display = '';
+    }
+
+    /** Standard error handler for a PUT response — surfaces 409 conflict
+     *  detail and 401 auth issues via the save-error banner. */
+    async function _handleSaveResponse(r, fallbackLabel) {
+      if (r.ok) return;
+      console.warn(`[${fallbackLabel}] PUT failed: HTTP ${r.status}`);
+      if (r.status === 409) {
+        let detail = 'A save was refused to prevent accidental data loss.';
+        try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
+        _showSaveError(false, detail);
+        return;
+      }
+      _showSaveError(r.status === 401);
+    }
+
     function saveRates() {
       const payload = {
         truck: icTruckRate, labor: icLaborRate,
@@ -1097,7 +1141,7 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ value: payload })
-      }).catch(() => {});
+      }).then(r => _handleSaveResponse(r, 'rates')).catch(() => _showSaveError(false));
     }
 
     function onRateChange() {
@@ -1156,7 +1200,7 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ value: icCompanies })
-      }).catch(() => {});
+      }).then(r => _handleSaveResponse(r, 'companies')).catch(() => _showSaveError(false));
     }
 
     // ── Render company list ─────────────────────────────────────
@@ -1962,12 +2006,16 @@
       if (!confirm('Remove this billing entry?')) return;
       icBillingEntries = icBillingEntries.filter(e => e.id !== id);
       try {
-        await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+        const r = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ value: icBillingEntries })
         });
-      } catch (err) { console.error('[deleteIcEntry]', err.message); }
+        await _handleSaveResponse(r, 'deleteIcEntry');
+      } catch (err) {
+        console.error('[deleteIcEntry]', err.message);
+        _showSaveError(false);
+      }
       renderCompanyInfo();
     }
 
@@ -2306,12 +2354,16 @@
       if (!entry) return;
       entry[field] = value || null;
       try {
-        await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
+        const r = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ value: icBillingEntries })
         });
-      } catch (err) { console.error('[setIcInvDate]', err.message); }
+        await _handleSaveResponse(r, 'setIcInvDate');
+      } catch (err) {
+        console.error('[setIcInvDate]', err.message);
+        _showSaveError(false);
+      }
       renderDashboard();
     }
 
