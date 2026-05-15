@@ -922,3 +922,28 @@ CREATE TABLE IF NOT EXISTS timesheet_audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_ts_audit_company    ON timesheet_audit_log(company_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ts_audit_entry      ON timesheet_audit_log(entry_id, created_at DESC);
+
+-- ─────────────────────────────────────────────────
+-- REPORT RECIPIENT GROUPS
+-- Saved email distribution lists for the "Email Report" button on
+-- the Executive, Turf, and Paving reports. Company-scoped (visible
+-- to every user in the company). project_id is optional — when set,
+-- the group floats to the top of the modal when emailing that
+-- project's report. report_type is optional — when set, the group
+-- only appears for that report variant.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS report_recipient_groups (
+    id            BIGSERIAL PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    name          TEXT          NOT NULL,
+    emails        JSONB         NOT NULL DEFAULT '[]'::jsonb,
+    project_id    TEXT,
+    report_type   TEXT,
+    created_by    INTEGER,
+    created_by_username TEXT,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rrg_company         ON report_recipient_groups(company_code, name);
+CREATE INDEX IF NOT EXISTS idx_rrg_company_project ON report_recipient_groups(company_code, project_id);

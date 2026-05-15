@@ -891,6 +891,7 @@
       .report { padding: 0 1rem; }
     }
   </style>
+  <script src="report-email.js" defer></script>
 </head>
 <body>
 
@@ -915,6 +916,13 @@
       </div>
     </div>
     <div class="action-btns">
+      <button class="btn" onclick="emailExecutiveReport()" title="Email this report to a recipient list">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+          <polyline points="22,6 12,13 2,6"/>
+        </svg>
+        Email Report
+      </button>
       <button class="btn primary" onclick="window.print()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 6 2 18 2 18 9"/>
@@ -1333,6 +1341,53 @@
 
     setReportDate();
     loadReport();
+
+    // ── Email Report ──
+    // Captures the currently-rendered report body + the page's <style>
+    // blocks (CSS variables resolved to literal hex values so email
+    // clients render colors even when they strip <style>) and opens the
+    // shared recipient-picker modal from report-email.js.
+    function emailExecutiveReport() {
+      if (typeof window.openReportEmailModal !== 'function') {
+        alert('Email module is still loading — please try again in a moment.');
+        return;
+      }
+      const bodyEl = document.getElementById('reportBody');
+      if (!bodyEl || bodyEl.style.display === 'none') {
+        alert('The report is still loading.');
+        return;
+      }
+      // Resolve CSS variables to literal values so the email keeps colors
+      // even when the email client strips <style> tags.
+      const cs = getComputedStyle(document.documentElement);
+      const vars = ['--bg','--surface','--surface2','--text','--muted','--border','--green','--red','--amber','--blue'];
+      const resolved = vars
+        .map(v => `${v}: ${cs.getPropertyValue(v).trim()};`)
+        .join(' ');
+      const styles = Array.from(document.querySelectorAll('style'))
+        .map(s => s.innerHTML)
+        .join('\n');
+      const reportDate = document.getElementById('reportDate')?.textContent || '';
+      // Order matters: include the page's original <style> blocks first, then
+      // an override block that resolves :root CSS variables to literal hex
+      // values. This way email clients that respect <style> get the same
+      // theme variables (resolved values overriding the variables that
+      // would otherwise need :root to resolve). Email clients that strip
+      // <style> entirely fall back to plain text with the inline styles
+      // already present on most elements.
+      const wrapped = `
+<div style="background:#fff;color:#111;padding:1.5rem;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;">
+  <style>${styles}\n:root { ${resolved} }</style>
+  <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.2rem;">Executive Report</div>
+  <div style="font-size:0.78rem;color:#555;margin-bottom:1rem;">${reportDate}</div>
+  ${bodyEl.outerHTML}
+</div>`;
+      window.openReportEmailModal({
+        reportType: 'executive',
+        defaultSubject: `Executive Report — ${new Date().toLocaleDateString()}`,
+        getHTML: () => wrapped,
+      });
+    }
 
     function signOut() {
       localStorage.removeItem('fct_token');
