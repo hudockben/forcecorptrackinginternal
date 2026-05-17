@@ -195,16 +195,13 @@
     .tagline .gt { color: var(--green); margin-right: 0.5rem; }
 
     .specs {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 1px;
-      background: var(--line);
+      display: inline-block;
       border: 1px solid var(--line);
-      max-width: 460px;
     }
     .spec {
       background: rgba(8,10,14,0.7);
-      padding: 14px 16px;
+      padding: 14px 20px;
+      min-width: 200px;
     }
     .spec-label {
       font-family: var(--mono);
@@ -528,9 +525,9 @@
     <div class="hud-group">
       <div class="hud-item"><span class="hud-dim">REGION</span><span class="hud-val">US-EAST</span></div>
       <div class="hud-sep"></div>
-      <div class="hud-item"><span class="hud-dim">LAT</span><span class="hud-val">40.5°N</span></div>
+      <div class="hud-item"><span class="hud-dim">LAT</span><span class="hud-val">40.6215°N</span></div>
       <div class="hud-sep"></div>
-      <div class="hud-item"><span class="hud-dim">LON</span><span class="hud-val">−79.2°W</span></div>
+      <div class="hud-item"><span class="hud-dim">LON</span><span class="hud-val">−79.1525°W</span></div>
     </div>
     <div class="hud-group">
       <div class="hud-item"><span class="hud-dim">©</span><span class="hud-val">FORCE CORP</span></div>
@@ -554,20 +551,8 @@
 
       <div class="specs">
         <div class="spec">
-          <div class="spec-label">Projects</div>
-          <div class="spec-value" id="specProjects">142<span class="unit">active</span></div>
-        </div>
-        <div class="spec">
-          <div class="spec-label">Crews</div>
-          <div class="spec-value" id="specCrews">38<span class="unit">deployed</span></div>
-        </div>
-        <div class="spec">
           <div class="spec-label">Regions</div>
           <div class="spec-value">PA<span class="unit">·</span>FL</div>
-        </div>
-        <div class="spec">
-          <div class="spec-label">Uptime</div>
-          <div class="spec-value">99.98<span class="unit">%</span></div>
         </div>
       </div>
     </div>
