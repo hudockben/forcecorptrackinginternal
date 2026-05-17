@@ -1039,7 +1039,7 @@
     let ciDivFilter = 'trucking';
 
     // ── Intercompany rates (server-persisted, shared across all users) ──
-    const IC_RATES_KEY = 'fct_ic_rates';
+    const IC_RATES_KEY = 'fct_intercompany_rates';
     let icTruckRate       = parseFloat(localStorage.getItem('ic_truck_rate')        ?? '121') || 121;
     let icLaborRate       = parseFloat(localStorage.getItem('ic_labor_rate')        ?? '121') || 121;
     let icDustRate        = parseFloat(localStorage.getItem('ic_dust_rate')         ?? '121') || 121;
