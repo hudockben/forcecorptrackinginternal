@@ -604,6 +604,17 @@
       background: var(--calc); color: #86efac; text-align: right;
       padding: 0 0.5rem; font-variant-numeric: tabular-nums; white-space: nowrap;
     }
+    /* Hide native number-input spinners in the daily tracker
+       (users type values; arrow keys are repurposed for cell navigation). */
+    .daily-inner-table td input[type="number"] {
+      -moz-appearance: textfield;
+      appearance: textfield;
+    }
+    .daily-inner-table td input[type="number"]::-webkit-outer-spin-button,
+    .daily-inner-table td input[type="number"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
     /* Fill-handle (drag-to-fill) */
     .fill-handle {
       position: absolute; bottom: 1px; right: 1px;
@@ -13713,6 +13724,61 @@ document.addEventListener('mouseup', () => {
         renderDailyCalcCells(projId, i);
       }
     }
+  }
+});
+
+/* ══════════════════════════════════════════════
+   ARROW-KEY NAVIGATION (Excel/Sheets-style)
+   ↑/↓ (and Enter) move between rows in the same
+   column. ←/→ move between cells on the same row
+   when focused on a <select>; for text/number/date
+   inputs ←/→ keep their native caret behavior so
+   users can still edit within a value. The combo-
+   box (.cb-input) already binds ↑/↓ to its own
+   menu, so we bail when defaultPrevented.
+══════════════════════════════════════════════ */
+document.addEventListener('keydown', e => {
+  if (e.defaultPrevented) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const key = e.key;
+  if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'ArrowLeft' && key !== 'ArrowRight' && key !== 'Enter') return;
+
+  const target = e.target;
+  if (!target || !target.dataset || !target.dataset.f) return;
+  const field = target.dataset.f;
+  const tr = target.closest('tr');
+  if (!tr) return;
+  const tbody = tr.parentElement;
+  if (!tbody || !tbody.id || tbody.id.indexOf('daily-tbody-') !== 0) return;
+
+  const isSelect = target.tagName === 'SELECT';
+
+  let dir = null;
+  if (key === 'ArrowUp') dir = 'up';
+  else if (key === 'ArrowDown' || key === 'Enter') dir = 'down';
+  else if (key === 'ArrowLeft' && isSelect) dir = 'left';
+  else if (key === 'ArrowRight' && isSelect) dir = 'right';
+  if (!dir) return;
+
+  let nextEl = null;
+  if (dir === 'up' || dir === 'down') {
+    let sib = dir === 'up' ? tr.previousElementSibling : tr.nextElementSibling;
+    while (sib) {
+      const cand = sib.querySelector(`[data-f="${field}"]`);
+      if (cand && cand.offsetParent !== null) { nextEl = cand; break; }
+      sib = dir === 'up' ? sib.previousElementSibling : sib.nextElementSibling;
+    }
+  } else {
+    const cells = [...tr.querySelectorAll('input[data-f], select[data-f]')];
+    const idx = cells.indexOf(target);
+    if (idx >= 0) nextEl = dir === 'left' ? cells[idx - 1] : cells[idx + 1];
+  }
+  if (!nextEl) return;
+
+  e.preventDefault();
+  nextEl.focus();
+  if (typeof nextEl.select === 'function') {
+    try { nextEl.select(); } catch (_) {}
   }
 });
 
