@@ -1214,29 +1214,25 @@
         if (reportWrap) reportWrap.style.display = '';
         if (quick)      quick.style.display      = 'flex';
         selectedIds.clear();
-        renderReport();
-        return;
-      }
-
-      if (tab === 'auditlog') {
+      } else if (tab === 'auditlog') {
         if (auditWrap) auditWrap.style.display = '';
         selectedIds.clear();
-        loadAuditLog();
-        return;
-      }
-
-      if (tab === 'analytics') {
+      } else if (tab === 'analytics') {
         if (anaWrap)   anaWrap.style.display   = '';
         if (anaQuick)  anaQuick.style.display  = 'flex';
         selectedIds.clear();
-        loadAnalytics();
-        return;
+        if (anaWrap)   anaWrap.innerHTML = '<div class="ana-empty">Loading analytics…</div>';
+      } else {
+        // pending or approved
+        if (tableWrap) tableWrap.style.display = '';
+        if (tab !== 'pending') selectedIds.clear();
       }
 
-      if (tableWrap) tableWrap.style.display = '';
-      if (tab !== 'pending') selectedIds.clear();
-      renderRows();
-      renderStats();
+      // Always refetch on tab switch so a new submission shows up immediately
+      // regardless of which tab the admin clicks. applyFilters() dispatches
+      // to the right renderer based on currentTab (and to the audit-log
+      // endpoint when the audit log tab is active).
+      applyFilters();
     }
 
     function tabStatus() {
