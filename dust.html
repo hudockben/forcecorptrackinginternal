@@ -3067,22 +3067,29 @@
         rows[idx].state    = ''; // state is derived from location
       }
 
-      // Prefill Vehicle 1 / Vehicle 2 rate from the company's defaults, but
-      // only when the row's current rate is blank — never overwrite a rate
-      // the user already entered.
+      // Prefill Vehicle 1 / Vehicle 2 rate from the new company's defaults.
+      // We replace the row's current rate when it's blank OR when it still
+      // matches the *previous* company's default (i.e. it was auto-prefilled,
+      // not hand-edited). A rate that doesn't match either is treated as a
+      // manual edit and left alone.
+      const oldCo = oldValue ? dustLists.companies.find(c => c.name === oldValue) : null;
       const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
       let ratesChanged = false;
-      [['v1_rate', co?.v1_rate], ['v2_rate', co?.v2_rate]].forEach(([field, coRate]) => {
+      [['v1_rate', co?.v1_rate, oldCo?.v1_rate],
+       ['v2_rate', co?.v2_rate, oldCo?.v2_rate]].forEach(([field, newRate, oldRate]) => {
         const cur = rows[idx][field];
-        const isBlank = (cur === '' || cur == null);
-        if (isBlank && coRate != null) {
-          rows[idx][field] = coRate;
-          if (tr) {
-            const inp = tr.querySelector(`input[data-field="${field}"]`);
-            if (inp) inp.value = coRate;
-          }
-          ratesChanged = true;
+        const isBlank      = (cur === '' || cur == null);
+        const matchesOldCo = (oldRate != null && cur != null && cur !== '' &&
+                              parseFloat(cur) === parseFloat(oldRate));
+        if (!isBlank && !matchesOldCo) return; // manual edit — preserve
+        const next = newRate != null ? newRate : '';
+        if (next === cur) return;
+        rows[idx][field] = next;
+        if (tr) {
+          const inp = tr.querySelector(`input[data-field="${field}"]`);
+          if (inp) inp.value = next;
         }
+        ratesChanged = true;
       });
 
       // Sync displayed values in the linked combobox inputs (the options
