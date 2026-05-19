@@ -1183,7 +1183,17 @@
       document.getElementById('flt-from').value = ymd(from);
       document.getElementById('flt-to').value   = ymd(to);
       loadSupervisors();
-      applyFilters();
+      // Defer the first fetch by one event-loop tick so any pending layout /
+      // style work has settled before we trigger the render. Re-call
+      // filterAndRender once the fetch resolves as a safety net in case the
+      // first render didn't paint into rowsBody for any reason.
+      setTimeout(() => {
+        applyFilters().then(() => {
+          if (currentTab === 'pending' || currentTab === 'approved') {
+            filterAndRender();
+          }
+        }).catch(() => {});
+      }, 0);
     }
 
     function switchTab(tab) {
