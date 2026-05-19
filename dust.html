@@ -593,6 +593,12 @@
     .company-item { flex-direction: column; align-items: stretch; gap: 0.55rem; }
     .company-header { display: flex; align-items: center; gap: 0.5rem; }
     .company-header input { flex: 1; }
+    .company-header input.short { flex: none; width: 90px; text-align: right; }
+    .company-rates-row {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding-left: 30px; /* align under the company name (past the chevron) */
+    }
+    .company-rates-row input.short { flex: none; width: 90px; text-align: right; }
     .company-chev {
       flex: none; width: 22px; height: 22px;
       display: inline-flex; align-items: center; justify-content: center;
@@ -3272,13 +3278,15 @@
                   <span class="list-item-lbl">Tier</span>
                   <input type="text" class="short" value="${esc(co.tier||'')}" placeholder="Tier"
                     oninput="updateListItem('companies','${co.id}','tier',this.value)" />
-                  <span class="list-item-lbl">V1 Rate $</span>
+                  <button class="remove-item" onclick="removeListItem('companies','${co.id}')">✕</button>
+                </div>
+                <div class="company-rates-row">
+                  <span class="list-item-lbl">V1 Default $</span>
                   <input type="number" class="short" value="${co.v1_rate != null ? co.v1_rate : ''}" placeholder="0.00" min="0" step="0.01"
                     oninput="updateCompanyRate('${co.id}','v1_rate',this.value)" />
-                  <span class="list-item-lbl">V2 Rate $</span>
+                  <span class="list-item-lbl">V2 Default $</span>
                   <input type="number" class="short" value="${co.v2_rate != null ? co.v2_rate : ''}" placeholder="0.00" min="0" step="0.01"
                     oninput="updateCompanyRate('${co.id}','v2_rate',this.value)" />
-                  <button class="remove-item" onclick="removeListItem('companies','${co.id}')">✕</button>
                 </div>
                 <div class="company-body" ${isOpen ? '' : 'hidden'}>
                   <div class="co-locations-section">
