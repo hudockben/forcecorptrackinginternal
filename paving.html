@@ -3509,7 +3509,9 @@ function cbOnKey(event, input) {
     const pick = list[state.highlight];
     if (pick != null) input.value = pick;
     cbCommitInput(input);
-    input.blur();
+    // In the daily tracker, advance focus to the cell below (Excel-style)
+    // so the user can keep navigating. Elsewhere, blur as before.
+    if (!dailyNavFromEl(input, 'down')) input.blur();
   } else if (event.key === 'Escape') {
     event.preventDefault();
     input.value = state.originalValue;
@@ -3577,7 +3579,8 @@ document.addEventListener('mousedown', (e) => {
     if (input) {
       input.value = opt.dataset.val || '';
       cbCommitInput(input);
-      input.blur();
+      // Same advance-on-commit behavior as keyboard Enter (see cbOnKey).
+      if (!dailyNavFromEl(input, 'down')) input.blur();
     }
     return;
   }
@@ -13528,8 +13531,39 @@ document.addEventListener('mouseup', () => {
    and other types where the browser doesn't
    expose a caret position, ←/→ always navigate.
    The combobox (.cb-input) already binds ↑/↓ to
-   its own menu, so we bail when defaultPrevented.
+   its own menu, so we bail when defaultPrevented;
+   on commit (Enter or menu click) the combobox
+   calls dailyNavFromEl(input, 'down') so the user
+   keeps a focused cell to navigate from.
 ══════════════════════════════════════════════ */
+function dailyNavFromEl(currentEl, dir) {
+  if (!currentEl || !currentEl.dataset || !currentEl.dataset.f) return false;
+  const tr = currentEl.closest('tr');
+  if (!tr) return false;
+  const tbody = tr.parentElement;
+  if (!tbody || !tbody.id || tbody.id.indexOf('daily-tbody-') !== 0) return false;
+  const field = currentEl.dataset.f;
+  let nextEl = null;
+  if (dir === 'up' || dir === 'down') {
+    let sib = dir === 'up' ? tr.previousElementSibling : tr.nextElementSibling;
+    while (sib) {
+      const cand = sib.querySelector(`[data-f="${field}"]`);
+      if (cand && cand.offsetParent !== null) { nextEl = cand; break; }
+      sib = dir === 'up' ? sib.previousElementSibling : sib.nextElementSibling;
+    }
+  } else {
+    const cells = [...tr.querySelectorAll('input[data-f], select[data-f]')];
+    const idx = cells.indexOf(currentEl);
+    if (idx >= 0) nextEl = dir === 'left' ? cells[idx - 1] : cells[idx + 1];
+  }
+  if (!nextEl) return false;
+  nextEl.focus();
+  if (typeof nextEl.select === 'function') {
+    try { nextEl.select(); } catch (_) {}
+  }
+  return true;
+}
+
 document.addEventListener('keydown', e => {
   if (e.defaultPrevented) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -13538,7 +13572,6 @@ document.addEventListener('keydown', e => {
 
   const target = e.target;
   if (!target || !target.dataset || !target.dataset.f) return;
-  const field = target.dataset.f;
   const tr = target.closest('tr');
   if (!tr) return;
   const tbody = tr.parentElement;
@@ -13571,26 +13604,7 @@ document.addEventListener('keydown', e => {
   }
   if (!dir) return;
 
-  let nextEl = null;
-  if (dir === 'up' || dir === 'down') {
-    let sib = dir === 'up' ? tr.previousElementSibling : tr.nextElementSibling;
-    while (sib) {
-      const cand = sib.querySelector(`[data-f="${field}"]`);
-      if (cand && cand.offsetParent !== null) { nextEl = cand; break; }
-      sib = dir === 'up' ? sib.previousElementSibling : sib.nextElementSibling;
-    }
-  } else {
-    const cells = [...tr.querySelectorAll('input[data-f], select[data-f]')];
-    const idx = cells.indexOf(target);
-    if (idx >= 0) nextEl = dir === 'left' ? cells[idx - 1] : cells[idx + 1];
-  }
-  if (!nextEl) return;
-
-  e.preventDefault();
-  nextEl.focus();
-  if (typeof nextEl.select === 'function') {
-    try { nextEl.select(); } catch (_) {}
-  }
+  if (dailyNavFromEl(target, dir)) e.preventDefault();
 });
 
 let _bidPDFProjId = null;
