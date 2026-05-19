@@ -13522,11 +13522,13 @@ document.addEventListener('mouseup', () => {
    ARROW-KEY NAVIGATION (Excel/Sheets-style)
    ↑/↓ (and Enter) move between rows in the same
    column. ←/→ move between cells on the same row
-   when focused on a <select>; for text/number/date
-   inputs ←/→ keep their native caret behavior so
-   users can still edit within a value. The combo-
-   box (.cb-input) already binds ↑/↓ to its own
-   menu, so we bail when defaultPrevented.
+   for <select>, and for inputs when the caret is
+   at the value's edge (so you can still edit
+   mid-value with ←/→). For <input type="number">
+   and other types where the browser doesn't
+   expose a caret position, ←/→ always navigate.
+   The combobox (.cb-input) already binds ↑/↓ to
+   its own menu, so we bail when defaultPrevented.
 ══════════════════════════════════════════════ */
 document.addEventListener('keydown', e => {
   if (e.defaultPrevented) return;
@@ -13543,12 +13545,30 @@ document.addEventListener('keydown', e => {
   if (!tbody || !tbody.id || tbody.id.indexOf('daily-tbody-') !== 0) return;
 
   const isSelect = target.tagName === 'SELECT';
+  const caretAt = (el) => {
+    try {
+      const s = el.selectionStart, en = el.selectionEnd;
+      // null = browser doesn't expose caret (number, date, etc.) — treat as both edges
+      if (s === null || en === null) return 'both';
+      if (s !== en) return 'range'; // selection — let browser collapse it
+      const len = (el.value || '').length;
+      if (len === 0) return 'both';
+      if (s === 0) return 'start';
+      if (s === len) return 'end';
+      return 'middle';
+    } catch (_) { return 'both'; }
+  };
 
   let dir = null;
   if (key === 'ArrowUp') dir = 'up';
   else if (key === 'ArrowDown' || key === 'Enter') dir = 'down';
-  else if (key === 'ArrowLeft' && isSelect) dir = 'left';
-  else if (key === 'ArrowRight' && isSelect) dir = 'right';
+  else if (key === 'ArrowLeft') {
+    if (isSelect) dir = 'left';
+    else { const c = caretAt(target); if (c === 'start' || c === 'both') dir = 'left'; }
+  } else if (key === 'ArrowRight') {
+    if (isSelect) dir = 'right';
+    else { const c = caretAt(target); if (c === 'end' || c === 'both') dir = 'right'; }
+  }
   if (!dir) return;
 
   let nextEl = null;
