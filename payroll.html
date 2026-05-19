@@ -734,6 +734,13 @@
       padding: 2rem 1rem;
       color: var(--muted);
     }
+    .empty-diag {
+      margin-top: 0.75rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.7rem;
+      color: #555;
+      letter-spacing: 0.02em;
+    }
 
     /* ── Badge ── */
     .badge {
@@ -1207,29 +1214,25 @@
         if (reportWrap) reportWrap.style.display = '';
         if (quick)      quick.style.display      = 'flex';
         selectedIds.clear();
-        renderReport();
-        return;
-      }
-
-      if (tab === 'auditlog') {
+      } else if (tab === 'auditlog') {
         if (auditWrap) auditWrap.style.display = '';
         selectedIds.clear();
-        loadAuditLog();
-        return;
-      }
-
-      if (tab === 'analytics') {
+      } else if (tab === 'analytics') {
         if (anaWrap)   anaWrap.style.display   = '';
         if (anaQuick)  anaQuick.style.display  = 'flex';
         selectedIds.clear();
-        loadAnalytics();
-        return;
+        if (anaWrap)   anaWrap.innerHTML = '<div class="ana-empty">Loading analytics…</div>';
+      } else {
+        // pending or approved
+        if (tableWrap) tableWrap.style.display = '';
+        if (tab !== 'pending') selectedIds.clear();
       }
 
-      if (tableWrap) tableWrap.style.display = '';
-      if (tab !== 'pending') selectedIds.clear();
-      renderRows();
-      renderStats();
+      // Always refetch on tab switch so a new submission shows up immediately
+      // regardless of which tab the admin clicks. applyFilters() dispatches
+      // to the right renderer based on currentTab (and to the audit-log
+      // endpoint when the audit log tab is active).
+      applyFilters();
     }
 
     function tabStatus() {
@@ -1340,10 +1343,14 @@
       tbody.innerHTML = '<tr class="empty-row"><td colspan="11">Loading…</td></tr>';
 
       try {
-        const res = await fetch('/api/timesheet-entries?' + params.toString(), { headers: authHeaders() });
+        const url = '/api/timesheet-entries?' + params.toString();
+        const res = await fetch(url, { headers: authHeaders() });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed');
         allEntries = Array.isArray(data.entries) ? data.entries : [];
+        // Diagnostic log so the empty-Pending case is easy to debug from DevTools.
+        console.log('[payroll] GET', url, '→', res.status, 'entries:', allEntries.length,
+          'statuses:', allEntries.reduce((m, e) => { m[e.status]=(m[e.status]||0)+1; return m; }, {}));
         filterAndRender();
       } catch (err) {
         tbody.innerHTML = `<tr class="empty-row"><td colspan="11">Error: ${escapeHtml(err.message)}</td></tr>`;
@@ -2083,9 +2090,26 @@
         filtered.filter(e => e.status === 'approved').length;
 
       const isPending = currentTab === 'pending';
+      // Build a diagnostic line so an empty Pending tab can be debugged
+      // without DevTools: distinguish "server returned 0" from "server
+      // returned N but everything got filtered out".
+      const total      = allEntries.length;
+      const subCount   = allEntries.filter(e => e.status === 'submitted').length;
+      const appCount   = allEntries.filter(e => e.status === 'approved').length;
+      const from       = document.getElementById('flt-from').value || '(any)';
+      const to         = document.getElementById('flt-to').value   || '(any)';
+      const div        = document.getElementById('flt-division').value;
+      const userQ      = document.getElementById('flt-user').value;
+      const supQ       = document.getElementById('flt-supervisor').value;
+      const activeFlts = [
+        div   ? `division=${div}`        : null,
+        userQ ? `employee~"${userQ}"`    : null,
+        supQ  ? `supervisor~"${supQ}"`   : null,
+      ].filter(Boolean).join(', ') || 'none';
+      const diag = `Server returned ${total} entries (${subCount} submitted, ${appCount} approved) · Range ${from} → ${to} · Filters: ${activeFlts}`;
       const emptyMsg  = isPending
-        ? 'Nothing to review in this range — everything has been approved or no entries have been submitted yet.'
-        : 'No approved entries in this range yet.';
+        ? `Nothing to review in this range — everything has been approved or no entries have been submitted yet.<div class="empty-diag">${escapeHtml(diag)}</div>`
+        : `No approved entries in this range yet.<div class="empty-diag">${escapeHtml(diag)}</div>`;
 
       if (!rows.length) {
         tbody.innerHTML = `<tr class="empty-row"><td colspan="11">${emptyMsg}</td></tr>`;

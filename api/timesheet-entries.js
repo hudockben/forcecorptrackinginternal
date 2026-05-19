@@ -239,19 +239,17 @@ module.exports = async (req, res) => {
       const q = req.query || {};
       // Status filter accepts a single value, the combined sentinel
       // "submitted_approved" (payroll's default view), or '' for all.
-      let statusList;
-      if (q.status === 'submitted_approved')              statusList = ['submitted', 'approved'];
-      else if (['draft','submitted','approved'].includes(q.status)) statusList = [q.status];
-      else                                                statusList = []; // match all
+      // Unrolled into two discrete slots so the SQL can use plain equality
+      // instead of ANY(array) — some neon-serverless code paths mis-bind
+      // a JS array parameter for ANY(), making the query hang.
+      let s1 = '__none__', s2 = '__none__', matchAll = true;
+      if (q.status === 'submitted_approved')                    { s1 = 'submitted'; s2 = 'approved'; matchAll = false; }
+      else if (['draft','submitted','approved'].includes(q.status)) { s1 = q.status; matchAll = false; }
 
       const fromF = safeDate(q.from) || '1900-01-01';
       const toF   = safeDate(q.to)   || '9999-12-31';
       const userF = canAdmin ? safeInt(q.user_id) : userId;
       const divF  = canAdmin && VALID_DIVISIONS.includes(q.division) ? q.division : '';
-
-      // Empty array sentinel — Postgres treats array_length(empty,1) as NULL,
-      // so we pass a marker that's never a real status to express "no filter".
-      const statusFilter = statusList.length ? statusList : ['__all__'];
 
       let rows;
       if (userF != null) {
@@ -259,7 +257,7 @@ module.exports = async (req, res) => {
           SELECT * FROM timesheet_entries
           WHERE company_code = ${companyCode}
             AND user_id      = ${userF}
-            AND ('__all__' = ANY(${statusFilter}) OR status = ANY(${statusFilter}))
+            AND (${matchAll}::boolean OR status = ${s1} OR status = ${s2})
             AND work_date >= ${fromF}::date
             AND work_date <= ${toF}::date
             AND (${divF} = '' OR division = ${divF})
@@ -269,7 +267,7 @@ module.exports = async (req, res) => {
         rows = await sql`
           SELECT * FROM timesheet_entries
           WHERE company_code = ${companyCode}
-            AND ('__all__' = ANY(${statusFilter}) OR status = ANY(${statusFilter}))
+            AND (${matchAll}::boolean OR status = ${s1} OR status = ${s2})
             AND work_date >= ${fromF}::date
             AND work_date <= ${toF}::date
             AND (${divF} = '' OR division = ${divF})
