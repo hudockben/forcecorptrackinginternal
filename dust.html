@@ -3061,12 +3061,35 @@
         rows[idx].state    = ''; // state is derived from location
       }
 
+      // Prefill Vehicle 1 / Vehicle 2 rate from the company's defaults, but
+      // only when the row's current rate is blank — never overwrite a rate
+      // the user already entered.
+      const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
+      let ratesChanged = false;
+      [['v1_rate', co?.v1_rate], ['v2_rate', co?.v2_rate]].forEach(([field, coRate]) => {
+        const cur = rows[idx][field];
+        const isBlank = (cur === '' || cur == null);
+        if (isBlank && coRate != null) {
+          rows[idx][field] = coRate;
+          if (tr) {
+            const inp = tr.querySelector(`input[data-field="${field}"]`);
+            if (inp) inp.value = coRate;
+          }
+          ratesChanged = true;
+        }
+      });
+
       // Sync displayed values in the linked combobox inputs (the options
       // themselves are fetched lazily on focus, so no menu rebuild needed).
       _cbSyncInput(idx, 'company',     rows[idx].company);
       _cbSyncInput(idx, 'company_man', rows[idx].company_man);
       _cbSyncInput(idx, 'location',    rows[idx].location);
       _cbSyncInput(idx, 'state',       rows[idx].state);
+
+      if (ratesChanged) {
+        refreshCalcCells(idx);
+        refreshAllTotals();
+      }
       scheduleSave();
     }
 
@@ -3095,10 +3118,16 @@
       if ((rows[idx][vField] || '') === vehicleName) return;
       rows[idx][vField] = vehicleName;
       _cbSyncInput(idx, vField, vehicleName);
-      // Auto-fill unit # and vehicle rate from equipment list
+      // Auto-fill unit # from equipment. Rate prefers the row's company
+      // default — company wins over equipment — and only falls back to the
+      // equipment rate when the company has none set.
       const eq      = dustLists.equipment.find(e => e.name === vehicleName);
+      const co      = dustLists.companies.find(c => c.name === rows[idx].company);
+      const coRate  = co ? co[rField] : null;
       const unitVal = eq?.unit_number || '';
-      const rateVal = eq?.vehicle_rate != null ? eq.vehicle_rate : '';
+      const rateVal = coRate != null
+        ? coRate
+        : (eq?.vehicle_rate != null ? eq.vehicle_rate : '');
       rows[idx][uField] = unitVal;
       rows[idx][rField] = rateVal;
       const tr = document.querySelector(`#dustTbody tr[data-idx="${idx}"]`);
@@ -3243,6 +3272,12 @@
                   <span class="list-item-lbl">Tier</span>
                   <input type="text" class="short" value="${esc(co.tier||'')}" placeholder="Tier"
                     oninput="updateListItem('companies','${co.id}','tier',this.value)" />
+                  <span class="list-item-lbl">V1 Rate $</span>
+                  <input type="number" class="short" value="${co.v1_rate != null ? co.v1_rate : ''}" placeholder="0.00" min="0" step="0.01"
+                    oninput="updateCompanyRate('${co.id}','v1_rate',this.value)" />
+                  <span class="list-item-lbl">V2 Rate $</span>
+                  <input type="number" class="short" value="${co.v2_rate != null ? co.v2_rate : ''}" placeholder="0.00" min="0" step="0.01"
+                    oninput="updateCompanyRate('${co.id}','v2_rate',this.value)" />
                   <button class="remove-item" onclick="removeListItem('companies','${co.id}')">✕</button>
                 </div>
                 <div class="company-body" ${isOpen ? '' : 'hidden'}>
@@ -3388,6 +3423,21 @@
     function updateListItem(type, id, field, value) {
       const item = dustLists[type].find(i => i.id === id);
       if (item) item[field] = value;
+      saveLists();
+    }
+
+    // Company-level V1/V2 default rates. Blank input → null so the prefill
+    // logic on setCompany() can distinguish "no default set" from a real 0.
+    function updateCompanyRate(coId, field, rawValue) {
+      const co = dustLists.companies.find(c => c.id === coId);
+      if (!co) return;
+      const trimmed = (rawValue == null ? '' : String(rawValue)).trim();
+      if (trimmed === '') {
+        co[field] = null;
+      } else {
+        const f = parseFloat(trimmed);
+        co[field] = isNaN(f) ? null : f;
+      }
       saveLists();
     }
 
