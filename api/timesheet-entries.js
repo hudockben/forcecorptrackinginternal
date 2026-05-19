@@ -177,9 +177,17 @@ function normalizeEntryBody(body) {
   const end_time   = safeTime(body.end_time);
   if (!start_time || !end_time) return { error: 'start_time and end_time (HH:MM) are required' };
 
-  const computed_hours = computeHours(start_time, end_time);
+  const lunch_break = safeBool(body.lunch_break);
+
+  // Lunch deduction: when the worker checked "Yes" for lunch, subtract a
+  // 30-minute unpaid break from the gross start→end span. Clamp at 0 so a
+  // sub-30-minute span with lunch=yes doesn't produce a negative.
+  let computed_hours = computeHours(start_time, end_time);
   if (computed_hours == null || computed_hours <= 0) {
     return { error: 'start_time/end_time produced 0 hours — check the values' };
+  }
+  if (lunch_break === true) {
+    computed_hours = Math.max(0, Math.round((computed_hours - 0.5) * 100) / 100);
   }
 
   const supervisor_id   = safeInt(body.supervisor_id);
@@ -196,7 +204,7 @@ function normalizeEntryBody(body) {
       start_time,
       end_time,
       computed_hours,
-      lunch_break:        safeBool(body.lunch_break),
+      lunch_break,
       operated_equipment: safeBool(body.operated_equipment),
       supervisor_id,
       supervisor_name,
