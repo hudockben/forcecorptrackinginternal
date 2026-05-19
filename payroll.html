@@ -1183,7 +1183,12 @@
       document.getElementById('flt-from').value = ymd(from);
       document.getElementById('flt-to').value   = ymd(to);
       loadSupervisors();
-      applyFilters();
+      // Route initial render through switchTab so the exact same code path
+      // runs as when the user clicks the Pending tab. Previously init() only
+      // called applyFilters(), which differed from tab clicks just enough to
+      // leave the Pending tab empty until the user clicked any other tab.
+      console.log('[payroll] init → switchTab(pending)');
+      switchTab('pending');
     }
 
     function switchTab(tab) {
@@ -2082,6 +2087,7 @@
       const tbody = document.getElementById('rowsBody');
       const status = tabStatus();
       const rows = filtered.filter(e => e.status === status);
+      console.log('[payroll] renderRows', { currentTab, status, filtered: filtered.length, rows: rows.length });
 
       // Refresh tab counts from the current filtered set
       document.getElementById('tab-pending-count').textContent  =
