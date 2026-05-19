@@ -590,9 +590,14 @@ CREATE TABLE IF NOT EXISTS dust_companies (
     company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
     name          TEXT          NOT NULL,
     tier          TEXT          NOT NULL DEFAULT '',
+    v1_rate       NUMERIC(10,4),                 -- default Vehicle 1 rate for this customer
+    v2_rate       NUMERIC(10,4),                 -- default Vehicle 2 rate for this customer
     sort_order    INTEGER       NOT NULL DEFAULT 0,
     UNIQUE (company_code, name)
 );
+
+ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS v1_rate NUMERIC(10,4);
+ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS v2_rate NUMERIC(10,4);
 
 CREATE INDEX IF NOT EXISTS idx_dust_co_company ON dust_companies(company_code);
 

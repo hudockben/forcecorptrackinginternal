@@ -618,16 +618,16 @@
         b.classList.toggle('on',  v === val);
         b.classList.toggle('off', v !== val);
       });
-      if (which === 'lunch') lunchVal = val;
-      else                   equipVal = val;
+      if (which === 'lunch') { lunchVal = val; updateHours(); }
+      else                     equipVal = val;
     }
 
     function clearSeg(which) {
       const segId = which === 'lunch' ? 'seg-lunch' : 'seg-equip';
       const seg = document.getElementById(segId);
       seg.querySelectorAll('button').forEach(b => b.classList.remove('on', 'off'));
-      if (which === 'lunch') lunchVal = null;
-      else                   equipVal = null;
+      if (which === 'lunch') { lunchVal = null; updateHours(); }
+      else                     equipVal = null;
     }
 
     function setOffType(t) {
@@ -638,6 +638,9 @@
     }
 
     // ── Compute hours live ─────────────────────────────────────────────────
+    // Mirrors the server's deduction in api/timesheet-entries.js: if the
+    // worker selected "Yes" for the lunch question, subtract 30 minutes
+    // from the gross start→end span (clamped at 0).
     function updateHours() {
       const s = document.getElementById('f-start').value;
       const e = document.getElementById('f-end').value;
@@ -648,6 +651,7 @@
       let mins = (eh * 60 + em) - (sh * 60 + sm);
       if (mins < 0) mins += 24 * 60;
       if (mins > 24 * 60) mins = 24 * 60;
+      if (lunchVal === true) mins = Math.max(0, mins - 30);
       out.textContent = (mins / 60).toFixed(2);
     }
 
