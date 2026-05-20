@@ -1092,13 +1092,15 @@
             <th>Job</th>
             <th>Time</th>
             <th>Hours</th>
+            <th>Travel</th>
+            <th>Total</th>
             <th>Supervisor</th>
             <th>Status</th>
             <th></th>
           </tr>
         </thead>
         <tbody id="rowsBody">
-          <tr class="empty-row"><td colspan="11">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="13">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1350,7 +1352,7 @@
       if (division) params.set('division', division);
 
       const tbody = document.getElementById('rowsBody');
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="11">Loading…</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="13">Loading…</td></tr>';
 
       try {
         const url = '/api/timesheet-entries?' + params.toString();
@@ -1363,7 +1365,7 @@
           'statuses:', allEntries.reduce((m, e) => { m[e.status]=(m[e.status]||0)+1; return m; }, {}));
         filterAndRender();
       } catch (err) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="11">Error: ${escapeHtml(err.message)}</td></tr>`;
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="13">Error: ${escapeHtml(err.message)}</td></tr>`;
       }
     }
 
@@ -2129,7 +2131,7 @@
         : `No approved entries in this range yet.<div class="empty-diag">${escapeHtml(diag)}</div>`;
 
       if (!rows.length) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="11">${emptyMsg}</td></tr>`;
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="13">${emptyMsg}</td></tr>`;
         if (isPending) selectedIds.clear();
         updateBulk();
         return;
@@ -2153,12 +2155,17 @@
           ? `<div style="font-size:0.78rem;opacity:0.75">${travelLegs.join(' · ')}</div>`
           : '';
         const time     = e.entry_type === 'time_off' ? '—' : `${e.start_time || ''}–${e.end_time || ''}${travelDetail}`;
-        const travelH  = e.entry_type === 'daily' && e.travel_hours != null && e.travel_hours > 0
-          ? `<div style="font-size:0.78rem;opacity:0.75">+${Number(e.travel_hours).toFixed(2)} travel</div>`
-          : '';
-        const hours    = e.entry_type === 'time_off'
+        const workH    = e.entry_type === 'daily' && e.computed_hours != null ? Number(e.computed_hours) : null;
+        const travelH  = e.entry_type === 'daily' && e.travel_hours != null   ? Number(e.travel_hours)   : null;
+        const hours    = e.entry_type === 'time_off' ? '—' : (workH   != null ? workH.toFixed(2)   : '');
+        const travel   = e.entry_type === 'time_off' ? '—' : (travelH != null ? travelH.toFixed(2) : '');
+        // Total = on-site hours + travel hours. Either component may be null
+        // (no travel logged, time-off entry, etc.); fall back to the other
+        // side rather than printing 0.00 when only travel exists.
+        const totalH   = (workH || 0) + (travelH || 0);
+        const total    = e.entry_type === 'time_off'
           ? '—'
-          : `${e.computed_hours != null ? Number(e.computed_hours).toFixed(2) : ''}${travelH}`;
+          : (workH != null || travelH != null ? totalH.toFixed(2) : '');
         const sup      = e.entry_type === 'time_off' ? '—' : (e.supervisor_name || '—');
         return `
           <tr class="${sel ? 'selected' : ''}">
@@ -2170,6 +2177,8 @@
             <td>${escapeHtml(job)}</td>
             <td>${escapeHtml(time)}</td>
             <td style="font-variant-numeric:tabular-nums">${hours}</td>
+            <td style="font-variant-numeric:tabular-nums">${travel}</td>
+            <td style="font-variant-numeric:tabular-nums"><strong>${total}</strong></td>
             <td>${e.entry_type === 'time_off' || !e.supervisor_name
               ? escapeHtml(sup)
               : `<button class="sup-chip" title="Filter to this supervisor" onclick="filterBySupervisor('${escapeJsAttr(e.supervisor_name)}')">${escapeHtml(sup)}</button>`}</td>
