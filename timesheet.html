@@ -566,7 +566,10 @@
       }
       document.getElementById('userChip').innerHTML =
         `<strong>${escapeHtml(user.username)}</strong>`;
-      init();
+      // Defer to a microtask so the `let` declarations further down in
+      // this script (scopeUnbounded, supervisors, etc.) finish their TDZ
+      // before init() / loadEntries() read them.
+      queueMicrotask(init);
     }
 
     function escapeHtml(s) {
