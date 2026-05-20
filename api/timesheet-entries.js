@@ -105,6 +105,9 @@ function dbToEntry(r) {
     start_time:          r.start_time || '',
     end_time:            r.end_time || '',
     computed_hours:      r.computed_hours != null ? Number(r.computed_hours) : null,
+    travel_start_time:   r.travel_start_time || '',
+    travel_end_time:     r.travel_end_time || '',
+    travel_hours:        r.travel_hours != null ? Number(r.travel_hours) : null,
     lunch_break:         r.lunch_break,
     operated_equipment:  r.operated_equipment,
     supervisor_id:       r.supervisor_id,
@@ -155,6 +158,9 @@ function normalizeEntryBody(body) {
         start_time:         null,
         end_time:           null,
         computed_hours:     null,
+        travel_start_time:  null,
+        travel_end_time:    null,
+        travel_hours:       null,
         lunch_break:        null,
         operated_equipment: null,
         supervisor_id:      null,
@@ -194,6 +200,17 @@ function normalizeEntryBody(body) {
   const supervisor_name = safeStr(body.supervisor_name, 200);
   if (!supervisor_name) return { error: 'supervisor_name is required' };
 
+  // Travel time is optional. Accept either both sides or neither; ignore
+  // half-filled values rather than 400'ing — the field worker may not have
+  // travel to log on a given day. Travel hours are NOT lunch-deducted: the
+  // 30-minute break only applies to the on-site work span.
+  const travel_start_time = safeTime(body.travel_start_time);
+  const travel_end_time   = safeTime(body.travel_end_time);
+  let travel_hours = null;
+  if (travel_start_time && travel_end_time) {
+    travel_hours = computeHours(travel_start_time, travel_end_time);
+  }
+
   return {
     data: {
       entry_type,
@@ -204,6 +221,9 @@ function normalizeEntryBody(body) {
       start_time,
       end_time,
       computed_hours,
+      travel_start_time: (travel_start_time && travel_end_time) ? travel_start_time : null,
+      travel_end_time:   (travel_start_time && travel_end_time) ? travel_end_time   : null,
+      travel_hours,
       lunch_break,
       operated_equipment: safeBool(body.operated_equipment),
       supervisor_id,
@@ -292,6 +312,7 @@ module.exports = async (req, res) => {
           company_code, user_id, username, entry_type, work_date, status,
           division, job_id, job_label,
           start_time, end_time, computed_hours,
+          travel_start_time, travel_end_time, travel_hours,
           lunch_break, operated_equipment,
           supervisor_id, supervisor_name,
           notes, time_off_type
@@ -299,6 +320,7 @@ module.exports = async (req, res) => {
           ${companyCode}, ${userId}, ${username}, ${data.entry_type}, ${data.work_date}, 'draft',
           ${data.division}, ${data.job_id}, ${data.job_label},
           ${data.start_time}, ${data.end_time}, ${data.computed_hours},
+          ${data.travel_start_time}, ${data.travel_end_time}, ${data.travel_hours},
           ${data.lunch_break}, ${data.operated_equipment},
           ${data.supervisor_id}, ${data.supervisor_name},
           ${data.notes}, ${data.time_off_type}
@@ -403,6 +425,9 @@ module.exports = async (req, res) => {
           start_time         = ${data.start_time},
           end_time           = ${data.end_time},
           computed_hours     = ${data.computed_hours},
+          travel_start_time  = ${data.travel_start_time},
+          travel_end_time    = ${data.travel_end_time},
+          travel_hours       = ${data.travel_hours},
           lunch_break        = ${data.lunch_break},
           operated_equipment = ${data.operated_equipment},
           supervisor_id      = ${data.supervisor_id},

@@ -1550,6 +1550,7 @@
       'Performed By', 'Performed By User ID',
       'Work Date', 'Type', 'Division', 'Job',
       'Start Time', 'End Time', 'Hours',
+      'Travel Start', 'Travel End', 'Travel Hours',
       'Lunch Break', 'Operated Equipment', 'Supervisor',
       'Time Off Type', 'Notes', 'Changes (JSON)',
     ];
@@ -1589,6 +1590,9 @@
           snap.start_time || '',
           snap.end_time || '',
           snap.computed_hours != null ? Number(snap.computed_hours).toFixed(2) : '',
+          snap.travel_start_time || '',
+          snap.travel_end_time || '',
+          snap.travel_hours != null ? Number(snap.travel_hours).toFixed(2) : '',
           yn(snap.lunch_break),
           yn(snap.operated_equipment),
           snap.supervisor_name || '',
@@ -2020,6 +2024,8 @@
           if (snap.job_label) detailBits.push(escapeHtml(snap.job_label));
           if (snap.start_time && snap.end_time) detailBits.push(`${snap.start_time}–${snap.end_time}`);
           if (snap.computed_hours != null) detailBits.push(`${Number(snap.computed_hours).toFixed(2)} h`);
+          if (snap.travel_start_time && snap.travel_end_time) detailBits.push(`travel ${snap.travel_start_time}–${snap.travel_end_time}`);
+          if (snap.travel_hours != null && Number(snap.travel_hours) > 0) detailBits.push(`+${Number(snap.travel_hours).toFixed(2)} h travel`);
         }
         const detail = detailBits.length
           ? `<div class="audit-row-detail">${detailBits.join(' · ')}</div>`
@@ -2135,8 +2141,16 @@
           : 'Daily';
         const division = e.entry_type === 'time_off' ? '—' : prettyDiv(e.division);
         const job      = e.entry_type === 'time_off' ? '—' : (e.job_label || '—');
-        const time     = e.entry_type === 'time_off' ? '—' : `${e.start_time || ''}–${e.end_time || ''}`;
-        const hours    = e.entry_type === 'time_off' ? '—' : (e.computed_hours != null ? Number(e.computed_hours).toFixed(2) : '');
+        const travelTime = e.entry_type === 'daily' && e.travel_start_time && e.travel_end_time
+          ? `<div style="font-size:0.78rem;opacity:0.75">travel ${e.travel_start_time}–${e.travel_end_time}</div>`
+          : '';
+        const time     = e.entry_type === 'time_off' ? '—' : `${e.start_time || ''}–${e.end_time || ''}${travelTime}`;
+        const travelH  = e.entry_type === 'daily' && e.travel_hours != null && e.travel_hours > 0
+          ? `<div style="font-size:0.78rem;opacity:0.75">+${Number(e.travel_hours).toFixed(2)} travel</div>`
+          : '';
+        const hours    = e.entry_type === 'time_off'
+          ? '—'
+          : `${e.computed_hours != null ? Number(e.computed_hours).toFixed(2) : ''}${travelH}`;
         const sup      = e.entry_type === 'time_off' ? '—' : (e.supervisor_name || '—');
         return `
           <tr class="${sel ? 'selected' : ''}">
@@ -2424,6 +2438,14 @@
             <select id="em-job"></select>
           </div>
           <div>
+            <label>Travel start time</label>
+            <input type="time" id="em-travel-start" />
+          </div>
+          <div>
+            <label>Travel end time</label>
+            <input type="time" id="em-travel-end" />
+          </div>
+          <div>
             <label>Start time</label>
             <input type="time" id="em-start" />
           </div>
@@ -2472,6 +2494,8 @@
         } else {
           jobSel.value = e.job_id || '';
         }
+        document.getElementById('em-travel-start').value = e.travel_start_time || '';
+        document.getElementById('em-travel-end').value   = e.travel_end_time   || '';
         document.getElementById('em-start').value = e.start_time || '';
         document.getElementById('em-end').value   = e.end_time   || '';
         document.getElementById('em-lunch').value = e.lunch_break === true ? 'true' : 'false';
@@ -2528,6 +2552,8 @@
           job_label: jobOpt ? (jobOpt.dataset.label || jobOpt.textContent) : '',
           start_time: document.getElementById('em-start').value,
           end_time:   document.getElementById('em-end').value,
+          travel_start_time: document.getElementById('em-travel-start').value,
+          travel_end_time:   document.getElementById('em-travel-end').value,
           lunch_break:        document.getElementById('em-lunch').value === 'true',
           operated_equipment: document.getElementById('em-equip').value === 'true',
           supervisor_id:   supSel.value,
