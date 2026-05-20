@@ -1421,7 +1421,9 @@
         });
         const acc = byUser.get(u);
         if (e.entry_type === 'daily') {
-          const h = Number(e.computed_hours || 0);
+          // Payroll report figures are work + travel — that's the total each
+          // worker is owed for the day.
+          const h = Number(e.computed_hours || 0) + Number(e.travel_hours || 0);
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
         } else if (e.entry_type === 'time_off') {
@@ -1685,7 +1687,9 @@
       let totalApproved = 0;
 
       for (const e of dailyEv) {
-        const h = Number(e.computed_hours || 0);
+        // Analytics totals match the Payroll Report (work + travel) so the
+        // top-line numbers reconcile across tabs.
+        const h = Number(e.computed_hours || 0) + Number(e.travel_hours || 0);
         totalHours += h;
         if (e.status === 'submitted') totalPending  += h;
         if (e.status === 'approved')  totalApproved += h;
@@ -2083,13 +2087,16 @@
     }
 
     function renderStats() {
-      // Counts across the CURRENT filtered set (date/division/employee scope)
+      // Counts across the CURRENT filtered set (date/division/employee scope).
+      // The Total Hours stat is on-site hours + travel hours so the headline
+      // figure matches the Total column in the per-entry table below.
       let s = 0, a = 0, hours = 0;
       for (const e of filtered) {
         if (e.status === 'submitted') s++;
         if (e.status === 'approved') {
           a++;
           if (e.computed_hours != null) hours += Number(e.computed_hours);
+          if (e.travel_hours   != null) hours += Number(e.travel_hours);
         }
       }
       document.getElementById('stat-submitted').textContent = s;
