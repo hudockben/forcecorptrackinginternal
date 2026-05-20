@@ -110,6 +110,26 @@
       state.groups = Array.isArray(j.groups) ? j.groups : [];
       state.serverIsAdmin = Boolean(j.isAdmin);
       renderGroups();
+      // On first load only, auto-populate recipients from any saved group
+      // tied to this project so users don't hit "Add at least one recipient"
+      // when a project group is clearly intended for the send.
+      if (!state.didAutoAdd) {
+        state.didAutoAdd = true;
+        if (state.projectId && !state.recipients.length) {
+          const matched = state.groups.filter(g => g.project_id === state.projectId);
+          let added = 0;
+          for (const g of matched) {
+            for (const e of (g.emails || [])) {
+              const lc = String(e || '').trim().toLowerCase();
+              if (!isValidEmail(lc)) continue;
+              if (state.recipients.includes(lc)) continue;
+              state.recipients.push(lc);
+              added++;
+            }
+          }
+          if (added) renderChips();
+        }
+      }
     } catch (err) {
       list.innerHTML = `<div style="padding:0.5rem;color:#f87171;font-size:0.75rem">Couldn't load groups: ${esc(err.message)}</div>`;
     }
@@ -429,6 +449,7 @@
       groups:         [],
       serverIsAdmin:  false,
       sending:        false,
+      didAutoAdd:     false,
     };
     buildModal();
   }
