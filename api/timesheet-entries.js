@@ -90,6 +90,16 @@ function safeInt(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// Parse a decimal-hour leg (travel time). Anything non-numeric, negative,
+// or beyond 24h is treated as "not provided" — null. Rounded to 0.01h so
+// the value matches the NUMERIC(6,2) column without surprising truncation.
+function safeHours(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > 24) return null;
+  return Math.round(n * 100) / 100;
+}
+
 function dbToEntry(r) {
   return {
     id:                  String(r.id),
@@ -104,8 +114,11 @@ function dbToEntry(r) {
     job_label:           r.job_label || '',
     start_time:          r.start_time || '',
     end_time:            r.end_time || '',
-    computed_hours:      r.computed_hours != null ? Number(r.computed_hours) : null,
-    lunch_break:         r.lunch_break,
+    computed_hours:        r.computed_hours != null ? Number(r.computed_hours) : null,
+    travel_to_site_hours:  r.travel_to_site_hours != null ? Number(r.travel_to_site_hours) : null,
+    travel_to_shop_hours:  r.travel_to_shop_hours != null ? Number(r.travel_to_shop_hours) : null,
+    travel_hours:          r.travel_hours != null ? Number(r.travel_hours) : null,
+    lunch_break:           r.lunch_break,
     operated_equipment:  r.operated_equipment,
     supervisor_id:       r.supervisor_id,
     supervisor_name:     r.supervisor_name || '',
@@ -149,17 +162,20 @@ function normalizeEntryBody(body) {
       data: {
         entry_type,
         work_date,
-        division:           null,
-        job_id:             null,
-        job_label:          null,
-        start_time:         null,
-        end_time:           null,
-        computed_hours:     null,
-        lunch_break:        null,
-        operated_equipment: null,
-        supervisor_id:      null,
-        supervisor_name:    null,
-        notes:              safeStr(body.notes, 2000),
+        division:             null,
+        job_id:               null,
+        job_label:            null,
+        start_time:           null,
+        end_time:             null,
+        computed_hours:       null,
+        travel_to_site_hours: null,
+        travel_to_shop_hours: null,
+        travel_hours:         null,
+        lunch_break:          null,
+        operated_equipment:   null,
+        supervisor_id:        null,
+        supervisor_name:      null,
+        notes:                safeStr(body.notes, 2000),
         time_off_type,
       },
     };
@@ -194,6 +210,19 @@ function normalizeEntryBody(body) {
   const supervisor_name = safeStr(body.supervisor_name, 200);
   if (!supervisor_name) return { error: 'supervisor_name is required' };
 
+  // Travel time is captured as two optional decimal-hour legs: time spent
+  // driving to the site, and time spent driving back to the shop. Either
+  // leg may be omitted (worker drove home from the site, day started at the
+  // shop with no return trip yet, etc.). travel_hours is the sum and is
+  // computed server-side so the client can't disagree with itself. Travel
+  // hours are NOT lunch-deducted — the 30-minute break only applies to the
+  // on-site work span.
+  const travel_to_site_hours = safeHours(body.travel_to_site_hours);
+  const travel_to_shop_hours = safeHours(body.travel_to_shop_hours);
+  const travel_hours = (travel_to_site_hours == null && travel_to_shop_hours == null)
+    ? null
+    : Math.round(((travel_to_site_hours || 0) + (travel_to_shop_hours || 0)) * 100) / 100;
+
   return {
     data: {
       entry_type,
@@ -204,6 +233,9 @@ function normalizeEntryBody(body) {
       start_time,
       end_time,
       computed_hours,
+      travel_to_site_hours,
+      travel_to_shop_hours,
+      travel_hours,
       lunch_break,
       operated_equipment: safeBool(body.operated_equipment),
       supervisor_id,
@@ -292,6 +324,7 @@ module.exports = async (req, res) => {
           company_code, user_id, username, entry_type, work_date, status,
           division, job_id, job_label,
           start_time, end_time, computed_hours,
+          travel_to_site_hours, travel_to_shop_hours, travel_hours,
           lunch_break, operated_equipment,
           supervisor_id, supervisor_name,
           notes, time_off_type
@@ -299,6 +332,7 @@ module.exports = async (req, res) => {
           ${companyCode}, ${userId}, ${username}, ${data.entry_type}, ${data.work_date}, 'draft',
           ${data.division}, ${data.job_id}, ${data.job_label},
           ${data.start_time}, ${data.end_time}, ${data.computed_hours},
+          ${data.travel_to_site_hours}, ${data.travel_to_shop_hours}, ${data.travel_hours},
           ${data.lunch_break}, ${data.operated_equipment},
           ${data.supervisor_id}, ${data.supervisor_name},
           ${data.notes}, ${data.time_off_type}
@@ -402,7 +436,10 @@ module.exports = async (req, res) => {
           job_label          = ${data.job_label},
           start_time         = ${data.start_time},
           end_time           = ${data.end_time},
-          computed_hours     = ${data.computed_hours},
+          computed_hours       = ${data.computed_hours},
+          travel_to_site_hours = ${data.travel_to_site_hours},
+          travel_to_shop_hours = ${data.travel_to_shop_hours},
+          travel_hours         = ${data.travel_hours},
           lunch_break        = ${data.lunch_break},
           operated_equipment = ${data.operated_equipment},
           supervisor_id      = ${data.supervisor_id},

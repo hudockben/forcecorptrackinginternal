@@ -886,6 +886,9 @@ CREATE TABLE IF NOT EXISTS timesheet_entries (
     start_time          TEXT,                     -- "HH:MM"
     end_time            TEXT,                     -- "HH:MM"
     computed_hours      NUMERIC(6,2),             -- server-computed from start_time/end_time
+    travel_to_site_hours NUMERIC(6,2),            -- decimal hours spent driving to the job
+    travel_to_shop_hours NUMERIC(6,2),            -- decimal hours spent driving back to the shop
+    travel_hours        NUMERIC(6,2),             -- server-computed = travel_to_site_hours + travel_to_shop_hours
     lunch_break         BOOLEAN,
     operated_equipment  BOOLEAN,
     supervisor_id       INTEGER,                  -- references employees.id
@@ -908,6 +911,19 @@ CREATE TABLE IF NOT EXISTS timesheet_entries (
 CREATE INDEX IF NOT EXISTS idx_ts_company_user_date ON timesheet_entries(company_code, user_id, work_date DESC);
 CREATE INDEX IF NOT EXISTS idx_ts_company_status    ON timesheet_entries(company_code, status, work_date DESC);
 CREATE INDEX IF NOT EXISTS idx_ts_company_div_job   ON timesheet_entries(company_code, division, job_id);
+
+-- Travel-time columns (added after initial release). Idempotent so existing
+-- deployments pick them up the next time run-schema executes.
+--
+-- Travel time is captured as two decimal-hour legs (to-site + to-shop) rather
+-- than clock-time spans — that's how the field crew reports it ("2 hours to
+-- the site, 2 hours back"). The earlier travel_start_time / travel_end_time
+-- columns are dropped because no production data was ever written to them.
+ALTER TABLE timesheet_entries DROP COLUMN IF EXISTS travel_start_time;
+ALTER TABLE timesheet_entries DROP COLUMN IF EXISTS travel_end_time;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_to_site_hours NUMERIC(6,2);
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_to_shop_hours NUMERIC(6,2);
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_hours         NUMERIC(6,2);
 
 -- ─────────────────────────────────────────────────
 -- TIMESHEET AUDIT LOG

@@ -1092,13 +1092,15 @@
             <th>Job</th>
             <th>Time</th>
             <th>Hours</th>
+            <th>Travel</th>
+            <th>Total</th>
             <th>Supervisor</th>
             <th>Status</th>
             <th></th>
           </tr>
         </thead>
         <tbody id="rowsBody">
-          <tr class="empty-row"><td colspan="11">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="13">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1350,7 +1352,7 @@
       if (division) params.set('division', division);
 
       const tbody = document.getElementById('rowsBody');
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="11">Loading…</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="13">Loading…</td></tr>';
 
       try {
         const url = '/api/timesheet-entries?' + params.toString();
@@ -1363,7 +1365,7 @@
           'statuses:', allEntries.reduce((m, e) => { m[e.status]=(m[e.status]||0)+1; return m; }, {}));
         filterAndRender();
       } catch (err) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="11">Error: ${escapeHtml(err.message)}</td></tr>`;
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="13">Error: ${escapeHtml(err.message)}</td></tr>`;
       }
     }
 
@@ -1419,7 +1421,9 @@
         });
         const acc = byUser.get(u);
         if (e.entry_type === 'daily') {
-          const h = Number(e.computed_hours || 0);
+          // Payroll report figures are work + travel — that's the total each
+          // worker is owed for the day.
+          const h = Number(e.computed_hours || 0) + Number(e.travel_hours || 0);
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
         } else if (e.entry_type === 'time_off') {
@@ -1549,7 +1553,8 @@
       'Entry ID', 'Entry Owner', 'Entry Status',
       'Performed By', 'Performed By User ID',
       'Work Date', 'Type', 'Division', 'Job',
-      'Start Time', 'End Time', 'Hours',
+      'Site Start Time', 'Site End Time', 'Hours',
+      'Travel to Site (h)', 'Travel to Shop (h)', 'Travel Hours',
       'Lunch Break', 'Operated Equipment', 'Supervisor',
       'Time Off Type', 'Notes', 'Changes (JSON)',
     ];
@@ -1589,6 +1594,9 @@
           snap.start_time || '',
           snap.end_time || '',
           snap.computed_hours != null ? Number(snap.computed_hours).toFixed(2) : '',
+          snap.travel_to_site_hours != null ? Number(snap.travel_to_site_hours).toFixed(2) : '',
+          snap.travel_to_shop_hours != null ? Number(snap.travel_to_shop_hours).toFixed(2) : '',
+          snap.travel_hours != null ? Number(snap.travel_hours).toFixed(2) : '',
           yn(snap.lunch_break),
           yn(snap.operated_equipment),
           snap.supervisor_name || '',
@@ -1679,7 +1687,9 @@
       let totalApproved = 0;
 
       for (const e of dailyEv) {
-        const h = Number(e.computed_hours || 0);
+        // Analytics totals match the Payroll Report (work + travel) so the
+        // top-line numbers reconcile across tabs.
+        const h = Number(e.computed_hours || 0) + Number(e.travel_hours || 0);
         totalHours += h;
         if (e.status === 'submitted') totalPending  += h;
         if (e.status === 'approved')  totalApproved += h;
@@ -2020,6 +2030,9 @@
           if (snap.job_label) detailBits.push(escapeHtml(snap.job_label));
           if (snap.start_time && snap.end_time) detailBits.push(`${snap.start_time}–${snap.end_time}`);
           if (snap.computed_hours != null) detailBits.push(`${Number(snap.computed_hours).toFixed(2)} h`);
+          if (snap.travel_to_site_hours != null && Number(snap.travel_to_site_hours) > 0) detailBits.push(`${Number(snap.travel_to_site_hours).toFixed(2)}h to site`);
+          if (snap.travel_to_shop_hours != null && Number(snap.travel_to_shop_hours) > 0) detailBits.push(`${Number(snap.travel_to_shop_hours).toFixed(2)}h to shop`);
+          if (snap.travel_hours != null && Number(snap.travel_hours) > 0) detailBits.push(`+${Number(snap.travel_hours).toFixed(2)} h travel`);
         }
         const detail = detailBits.length
           ? `<div class="audit-row-detail">${detailBits.join(' · ')}</div>`
@@ -2074,13 +2087,16 @@
     }
 
     function renderStats() {
-      // Counts across the CURRENT filtered set (date/division/employee scope)
+      // Counts across the CURRENT filtered set (date/division/employee scope).
+      // The Total Hours stat is on-site hours + travel hours so the headline
+      // figure matches the Total column in the per-entry table below.
       let s = 0, a = 0, hours = 0;
       for (const e of filtered) {
         if (e.status === 'submitted') s++;
         if (e.status === 'approved') {
           a++;
           if (e.computed_hours != null) hours += Number(e.computed_hours);
+          if (e.travel_hours   != null) hours += Number(e.travel_hours);
         }
       }
       document.getElementById('stat-submitted').textContent = s;
@@ -2122,7 +2138,7 @@
         : `No approved entries in this range yet.<div class="empty-diag">${escapeHtml(diag)}</div>`;
 
       if (!rows.length) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="11">${emptyMsg}</td></tr>`;
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="13">${emptyMsg}</td></tr>`;
         if (isPending) selectedIds.clear();
         updateBulk();
         return;
@@ -2135,8 +2151,33 @@
           : 'Daily';
         const division = e.entry_type === 'time_off' ? '—' : prettyDiv(e.division);
         const job      = e.entry_type === 'time_off' ? '—' : (e.job_label || '—');
-        const time     = e.entry_type === 'time_off' ? '—' : `${e.start_time || ''}–${e.end_time || ''}`;
-        const hours    = e.entry_type === 'time_off' ? '—' : (e.computed_hours != null ? Number(e.computed_hours).toFixed(2) : '');
+        const travelLegs = [];
+        if (e.entry_type === 'daily' && e.travel_to_site_hours != null && Number(e.travel_to_site_hours) > 0) {
+          travelLegs.push(`${Number(e.travel_to_site_hours).toFixed(2)}h to site`);
+        }
+        if (e.entry_type === 'daily' && e.travel_to_shop_hours != null && Number(e.travel_to_shop_hours) > 0) {
+          travelLegs.push(`${Number(e.travel_to_shop_hours).toFixed(2)}h to shop`);
+        }
+        const travelDetail = travelLegs.length
+          ? `<div style="font-size:0.78rem;opacity:0.75">${travelLegs.join(' · ')}</div>`
+          : '';
+        // Split punches from the travel-leg <div>: the punches go through
+        // escapeHtml (they're plain text), the <div> is already trusted HTML
+        // built from server-validated numbers. Concatenating them through
+        // escapeHtml together would render the markup as literal text.
+        const timePunches = e.entry_type === 'time_off' ? '—' : `${e.start_time || ''}–${e.end_time || ''}`;
+        const timeCell    = e.entry_type === 'time_off' ? '—' : `${escapeHtml(timePunches)}${travelDetail}`;
+        const workH    = e.entry_type === 'daily' && e.computed_hours != null ? Number(e.computed_hours) : null;
+        const travelH  = e.entry_type === 'daily' && e.travel_hours != null   ? Number(e.travel_hours)   : null;
+        const hours    = e.entry_type === 'time_off' ? '—' : (workH   != null ? workH.toFixed(2)   : '');
+        const travel   = e.entry_type === 'time_off' ? '—' : (travelH != null ? travelH.toFixed(2) : '');
+        // Total = on-site hours + travel hours. Either component may be null
+        // (no travel logged, time-off entry, etc.); fall back to the other
+        // side rather than printing 0.00 when only travel exists.
+        const totalH   = (workH || 0) + (travelH || 0);
+        const total    = e.entry_type === 'time_off'
+          ? '—'
+          : (workH != null || travelH != null ? totalH.toFixed(2) : '');
         const sup      = e.entry_type === 'time_off' ? '—' : (e.supervisor_name || '—');
         return `
           <tr class="${sel ? 'selected' : ''}">
@@ -2146,8 +2187,10 @@
             <td>${type}</td>
             <td>${escapeHtml(division)}</td>
             <td>${escapeHtml(job)}</td>
-            <td>${escapeHtml(time)}</td>
+            <td>${timeCell}</td>
             <td style="font-variant-numeric:tabular-nums">${hours}</td>
+            <td style="font-variant-numeric:tabular-nums">${travel}</td>
+            <td style="font-variant-numeric:tabular-nums"><strong>${total}</strong></td>
             <td>${e.entry_type === 'time_off' || !e.supervisor_name
               ? escapeHtml(sup)
               : `<button class="sup-chip" title="Filter to this supervisor" onclick="filterBySupervisor('${escapeJsAttr(e.supervisor_name)}')">${escapeHtml(sup)}</button>`}</td>
@@ -2424,11 +2467,19 @@
             <select id="em-job"></select>
           </div>
           <div>
-            <label>Start time</label>
+            <label>Travel Time to Site (hours)</label>
+            <input type="number" inputmode="decimal" min="0" max="24" step="0.25" id="em-travel-to-site" />
+          </div>
+          <div>
+            <label>Travel Time to Shop (hours)</label>
+            <input type="number" inputmode="decimal" min="0" max="24" step="0.25" id="em-travel-to-shop" />
+          </div>
+          <div>
+            <label>Site Start Time</label>
             <input type="time" id="em-start" />
           </div>
           <div>
-            <label>End time</label>
+            <label>Site End Time</label>
             <input type="time" id="em-end" />
           </div>
           <div>
@@ -2472,6 +2523,8 @@
         } else {
           jobSel.value = e.job_id || '';
         }
+        document.getElementById('em-travel-to-site').value = e.travel_to_site_hours != null ? e.travel_to_site_hours : '';
+        document.getElementById('em-travel-to-shop').value = e.travel_to_shop_hours != null ? e.travel_to_shop_hours : '';
         document.getElementById('em-start').value = e.start_time || '';
         document.getElementById('em-end').value   = e.end_time   || '';
         document.getElementById('em-lunch').value = e.lunch_break === true ? 'true' : 'false';
@@ -2528,6 +2581,8 @@
           job_label: jobOpt ? (jobOpt.dataset.label || jobOpt.textContent) : '',
           start_time: document.getElementById('em-start').value,
           end_time:   document.getElementById('em-end').value,
+          travel_to_site_hours: document.getElementById('em-travel-to-site').value,
+          travel_to_shop_hours: document.getElementById('em-travel-to-shop').value,
           lunch_break:        document.getElementById('em-lunch').value === 'true',
           operated_equipment: document.getElementById('em-equip').value === 'true',
           supervisor_id:   supSel.value,
