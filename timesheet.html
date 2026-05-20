@@ -445,12 +445,14 @@
 
         <div class="row-2">
           <div class="row">
-            <label for="f-travel-start">Travel Time to Site</label>
-            <input type="time" id="f-travel-start" onchange="updateTravelHours()" oninput="updateTravelHours()" />
+            <label for="f-travel-to-site">Travel Time to Site (hours)</label>
+            <input type="number" inputmode="decimal" min="0" max="24" step="0.25" placeholder="0"
+                   id="f-travel-to-site" oninput="updateTravelHours()" onchange="updateTravelHours()" />
           </div>
           <div class="row">
-            <label for="f-travel-end">Travel Time to Shop</label>
-            <input type="time" id="f-travel-end" onchange="updateTravelHours()" oninput="updateTravelHours()" />
+            <label for="f-travel-to-shop">Travel Time to Shop (hours)</label>
+            <input type="number" inputmode="decimal" min="0" max="24" step="0.25" placeholder="0"
+                   id="f-travel-to-shop" oninput="updateTravelHours()" onchange="updateTravelHours()" />
           </div>
         </div>
 
@@ -674,19 +676,18 @@
       out.textContent = (mins / 60).toFixed(2);
     }
 
-    // Travel hours are tracked separately from the on-site shift — no lunch
-    // deduction applies to a travel span.
+    // Travel is logged as two decimal-hour legs (to-site + to-shop). The
+    // displayed total is just the sum — no lunch deduction applies.
+    function parseTravelLeg(id) {
+      const raw = document.getElementById(id).value;
+      if (raw === '' || raw == null) return 0;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) return 0;
+      return Math.min(n, 24);
+    }
     function updateTravelHours() {
-      const s = document.getElementById('f-travel-start').value;
-      const e = document.getElementById('f-travel-end').value;
-      const out = document.getElementById('f-travel-hours');
-      if (!s || !e) { out.textContent = '0.00'; return; }
-      const [sh, sm] = s.split(':').map(Number);
-      const [eh, em] = e.split(':').map(Number);
-      let mins = (eh * 60 + em) - (sh * 60 + sm);
-      if (mins < 0) mins += 24 * 60;
-      if (mins > 24 * 60) mins = 24 * 60;
-      out.textContent = (mins / 60).toFixed(2);
+      const total = parseTravelLeg('f-travel-to-site') + parseTravelLeg('f-travel-to-shop');
+      document.getElementById('f-travel-hours').textContent = total.toFixed(2);
     }
 
     // ── Load supervisors + jobs ───────────────────────────────────────────
@@ -852,12 +853,9 @@
       }
       list.innerHTML = entriesCache.map(e => {
         const isDraft = e.status === 'draft';
-        const travelMeta = e.entry_type === 'daily' && e.travel_start_time && e.travel_end_time
-          ? ` · travel ${e.travel_start_time}–${e.travel_end_time}`
-          : '';
         const meta = e.entry_type === 'time_off'
           ? `Time Off — ${prettyOffType(e.time_off_type)}`
-          : `${prettyDivision(e.division)} · ${escapeHtml(e.job_label || '')}${e.start_time && e.end_time ? ` · ${e.start_time}–${e.end_time}` : ''}${travelMeta}`;
+          : `${prettyDivision(e.division)} · ${escapeHtml(e.job_label || '')}${e.start_time && e.end_time ? ` · ${e.start_time}–${e.end_time}` : ''}`;
         const hoursParts = [];
         if (e.entry_type === 'daily' && e.computed_hours != null) hoursParts.push(`${Number(e.computed_hours).toFixed(2)} h`);
         if (e.entry_type === 'daily' && e.travel_hours != null && e.travel_hours > 0) hoursParts.push(`+${Number(e.travel_hours).toFixed(2)} h travel`);
@@ -932,8 +930,8 @@
         document.getElementById('f-division').value = e.division  || '';
         await onDivisionChange();
         document.getElementById('f-job').value = e.job_id || '';
-        document.getElementById('f-travel-start').value = e.travel_start_time || '';
-        document.getElementById('f-travel-end').value   = e.travel_end_time   || '';
+        document.getElementById('f-travel-to-site').value = e.travel_to_site_hours != null ? e.travel_to_site_hours : '';
+        document.getElementById('f-travel-to-shop').value = e.travel_to_shop_hours != null ? e.travel_to_shop_hours : '';
         updateTravelHours();
         document.getElementById('f-start').value = e.start_time || '';
         document.getElementById('f-end').value   = e.end_time   || '';
@@ -966,8 +964,8 @@
       const jobSel = document.getElementById('f-job');
       jobSel.innerHTML = '<option value="">— pick division first —</option>';
       jobSel.disabled = true;
-      document.getElementById('f-travel-start').value = '';
-      document.getElementById('f-travel-end').value   = '';
+      document.getElementById('f-travel-to-site').value = '';
+      document.getElementById('f-travel-to-shop').value = '';
       updateTravelHours();
       document.getElementById('f-start').value = '';
       document.getElementById('f-end').value   = '';
@@ -1016,10 +1014,10 @@
       if (!supId) return { error: 'Pick a supervisor.' };
       const supOpt = supSel.options[supSel.selectedIndex];
       const supName = supOpt ? supOpt.dataset.name || supOpt.textContent : '';
-      // Travel times are optional. Sent as empty string if not filled —
-      // the API drops them to NULL unless both sides are present.
-      const travelStart = document.getElementById('f-travel-start').value;
-      const travelEnd   = document.getElementById('f-travel-end').value;
+      // Travel legs are optional decimal hours. Empty inputs are sent as
+      // empty strings; the API treats them as null.
+      const travelToSite = document.getElementById('f-travel-to-site').value;
+      const travelToShop = document.getElementById('f-travel-to-shop').value;
       return { data: {
         entry_type: 'daily',
         work_date: d,
@@ -1028,8 +1026,8 @@
         job_label: jobLabel,
         start_time: start,
         end_time:   end,
-        travel_start_time: travelStart,
-        travel_end_time:   travelEnd,
+        travel_to_site_hours: travelToSite,
+        travel_to_shop_hours: travelToShop,
         lunch_break: lunchVal,
         operated_equipment: equipVal,
         supervisor_id: supId,
