@@ -727,42 +727,77 @@
       return `${y}-${m}-${dd}`;
     }
 
+    // Fetch one slice of the entries list. Resolves to { entries: [...] }
+    // on success, or { error: '...' } on any failure (network, non-2xx,
+    // non-JSON body). Never throws — callers can branch on the result so
+    // a single broken slice doesn't blank the whole list.
+    async function fetchEntriesSlice(url, label) {
+      try {
+        const res = await fetch(url, { headers: authHeaders() });
+        let body = null;
+        try { body = await res.json(); } catch { /* non-JSON body */ }
+        if (!res.ok) {
+          const msg = (body && body.error) || `HTTP ${res.status}`;
+          console.error(`[timesheet] ${label} failed:`, msg, body);
+          return { error: msg };
+        }
+        return { entries: Array.isArray(body && body.entries) ? body.entries : [] };
+      } catch (err) {
+        console.error(`[timesheet] ${label} threw:`, err);
+        return { error: err && err.message ? err.message : 'network error' };
+      }
+    }
+
     async function loadEntries() {
       const list  = document.getElementById('entriesList');
       const scope = document.getElementById('entriesScope');
       const btn   = document.getElementById('toggleScopeBtn');
       list.innerHTML = '<div class="entry-empty">Loading…</div>';
+
+      let entries = [];
+      let failures = [];
+
+      if (scopeUnbounded) {
+        const r = await fetchEntriesSlice('/api/timesheet-entries', 'all-entries');
+        if (r.error) failures.push(r.error); else entries = r.entries;
+        scope.textContent = 'All entries';
+        if (btn) { btn.textContent = 'Show recent only'; btn.style.display = ''; }
+      } else {
+        const { from, to } = payPeriodWindow();
+        const fromS = ymd(from), toS = ymd(to);
+        // Drafts always show — a forgotten draft from an earlier window
+        // would otherwise become invisible to the field worker.
+        const [draftsR, recentR] = await Promise.all([
+          fetchEntriesSlice('/api/timesheet-entries?status=draft', 'drafts'),
+          fetchEntriesSlice(`/api/timesheet-entries?status=submitted_approved&from=${fromS}&to=${toS}`, 'recent'),
+        ]);
+        const byId = new Map();
+        if (draftsR.error) failures.push(`drafts: ${draftsR.error}`);
+        else for (const e of draftsR.entries) byId.set(e.id, e);
+        if (recentR.error) failures.push(`recent: ${recentR.error}`);
+        else for (const e of recentR.entries) if (!byId.has(e.id)) byId.set(e.id, e);
+        entries = Array.from(byId.values());
+        scope.textContent = `${fmtScopeDate(from)} – ${fmtScopeDate(to)} (+ all drafts)`;
+        if (btn) { btn.textContent = 'Show older entries'; btn.style.display = ''; }
+      }
+
+      entries.sort((a, b) => (b.work_date || '').localeCompare(a.work_date || ''));
+      entriesCache = entries;
+
       try {
-        let entries;
-        if (scopeUnbounded) {
-          const res = await fetch('/api/timesheet-entries', { headers: authHeaders() });
-          const data = await res.json();
-          entries = Array.isArray(data.entries) ? data.entries : [];
-          scope.textContent = 'All entries';
-          if (btn) { btn.textContent = 'Show recent only'; btn.style.display = ''; }
-        } else {
-          const { from, to } = payPeriodWindow();
-          const fromS = ymd(from), toS = ymd(to);
-          const [draftsRes, recentRes] = await Promise.all([
-            // Drafts always show — a forgotten draft from an earlier window
-            // would otherwise become invisible to the field worker.
-            fetch('/api/timesheet-entries?status=draft', { headers: authHeaders() }),
-            fetch(`/api/timesheet-entries?status=submitted_approved&from=${fromS}&to=${toS}`, { headers: authHeaders() }),
-          ]);
-          const drafts = ((await draftsRes.json()).entries) || [];
-          const recent = ((await recentRes.json()).entries) || [];
-          const byId = new Map();
-          for (const e of drafts) byId.set(e.id, e);
-          for (const e of recent) if (!byId.has(e.id)) byId.set(e.id, e);
-          entries = Array.from(byId.values());
-          scope.textContent = `${fmtScopeDate(from)} – ${fmtScopeDate(to)} (+ all drafts)`;
-          if (btn) { btn.textContent = 'Show older entries'; btn.style.display = ''; }
-        }
-        entries.sort((a, b) => (b.work_date || '').localeCompare(a.work_date || ''));
-        entriesCache = entries;
         renderEntries();
       } catch (err) {
-        list.innerHTML = `<div class="entry-empty">Error loading entries.</div>`;
+        console.error('[timesheet] renderEntries threw:', err);
+        failures.push(`render: ${err && err.message ? err.message : 'render error'}`);
+      }
+
+      // Surface a non-empty failure note BELOW any rows we did manage to
+      // load, so the worker still sees their drafts even if (say) the
+      // pay-period slice timed out.
+      if (failures.length) {
+        const note = `<div class="entry-empty">Couldn't load some entries (${escapeHtml(failures.join('; '))}).</div>`;
+        if (!entriesCache.length) list.innerHTML = note;
+        else list.insertAdjacentHTML('beforeend', note);
       }
     }
 
