@@ -1414,6 +1414,8 @@
         const u = e.username || '—';
         if (!byUser.has(u)) byUser.set(u, {
           username:      u,
+          workHours:     0,
+          travelHours:   0,
           pendingHours:  0,
           approvedHours: 0,
           pendingOff:    0,
@@ -1421,9 +1423,15 @@
         });
         const acc = byUser.get(u);
         if (e.entry_type === 'daily') {
+          const work   = Number(e.computed_hours || 0);
+          const travel = Number(e.travel_hours   || 0);
           // Payroll report figures are work + travel — that's the total each
           // worker is owed for the day.
-          const h = Number(e.computed_hours || 0) + Number(e.travel_hours || 0);
+          const h = work + travel;
+          if (e.status === 'submitted' || e.status === 'approved') {
+            acc.workHours   += work;
+            acc.travelHours += travel;
+          }
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
         } else if (e.entry_type === 'time_off') {
@@ -1436,11 +1444,13 @@
 
       // Totals
       const tot = rows.reduce((acc, r) => ({
+        workHours:     acc.workHours     + r.workHours,
+        travelHours:   acc.travelHours   + r.travelHours,
         pendingHours:  acc.pendingHours  + r.pendingHours,
         approvedHours: acc.approvedHours + r.approvedHours,
         pendingOff:    acc.pendingOff    + r.pendingOff,
         approvedOff:   acc.approvedOff   + r.approvedOff,
-      }), { pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
+      }), { workHours: 0, travelHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
 
       // Header subtitle
       const scopeBits = [];
@@ -1485,9 +1495,11 @@
         return `
           <tr class="${hasPending ? 'has-pending' : ''}">
             <td class="name">${escapeHtml(r.username)}</td>
+            <td class="num">${r.workHours.toFixed(2)}</td>
+            <td class="num">${r.travelHours.toFixed(2)}</td>
+            <td class="num">${total.toFixed(2)}</td>
             <td class="num">${r.pendingHours.toFixed(2)}</td>
             <td class="num">${r.approvedHours.toFixed(2)}</td>
-            <td class="num">${total.toFixed(2)}</td>
             <td>${escapeHtml(off)}</td>
             <td>${status}</td>
           </tr>
@@ -1513,9 +1525,11 @@
             <thead>
               <tr>
                 <th>Employee</th>
+                <th style="text-align:right">Hours</th>
+                <th style="text-align:right">Travel</th>
+                <th style="text-align:right">Total</th>
                 <th style="text-align:right">Pending Hours</th>
                 <th style="text-align:right">Approved Hours</th>
-                <th style="text-align:right">Total Hours</th>
                 <th>Time Off</th>
                 <th>Status</th>
               </tr>
@@ -1524,9 +1538,11 @@
             <tfoot>
               <tr class="total">
                 <td class="name">Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})</td>
+                <td class="num">${tot.workHours.toFixed(2)}</td>
+                <td class="num">${tot.travelHours.toFixed(2)}</td>
+                <td class="num">${totalAll.toFixed(2)}</td>
                 <td class="num">${tot.pendingHours.toFixed(2)}</td>
                 <td class="num">${tot.approvedHours.toFixed(2)}</td>
-                <td class="num">${totalAll.toFixed(2)}</td>
                 <td>${tot.pendingOff} pending / ${tot.approvedOff} approved</td>
                 <td>${tot.pendingHours > 0.001
                   ? `<span class="pill pill-pending">${tot.pendingHours.toFixed(2)} h still pending</span>`
