@@ -1189,6 +1189,82 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   };
 }
 
+// ── Payroll pay-period summary ───────────────────────────────────────
+// Aggregates submitted + approved timesheet_entries into a per-employee
+// total-hours roll-up for the current biweekly pay period. The period
+// is anchored on the same Sun May 10, 2026 end-date the payroll page
+// uses (payroll.html ~line 1259), so cycles roll forward by 14 days and
+// always match the "Current Biweekly" button on the payroll review screen.
+function biweeklyPayPeriod(today) {
+  const DAY_MS = 86400 * 1000;
+  // Anchor: Sun May 10, 2026 — the last day of its cycle. Stored as a
+  // UTC midnight so day math is safe across DST boundaries.
+  const anchor = new Date(Date.UTC(2026, 4, 10));
+  const t = new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()));
+  const daysSinceAnchor = Math.round((t - anchor) / DAY_MS);
+  const n = Math.ceil(daysSinceAnchor / 14);
+  const end = new Date(anchor); end.setUTCDate(anchor.getUTCDate() + 14 * n);
+  const start = new Date(end);  start.setUTCDate(end.getUTCDate() - 13);
+  return {
+    startIso: start.toISOString().slice(0, 10),
+    endIso:   end.toISOString().slice(0, 10),
+  };
+}
+
+async function buildPayrollSummary(sql, companyCode) {
+  const { startIso, endIso } = biweeklyPayPeriod(new Date());
+
+  const rows = await safeRun('payroll.summary', async () => {
+    return await sql`
+      SELECT
+        user_id,
+        username,
+        COUNT(*) FILTER (WHERE entry_type = 'daily')::int                                     AS daily_entries,
+        COUNT(DISTINCT work_date) FILTER (WHERE entry_type = 'daily')::int                    AS days_worked,
+        COUNT(*) FILTER (WHERE entry_type = 'time_off')::int                                  AS time_off_entries,
+        COALESCE(SUM(computed_hours), 0)::float                                               AS work_hours,
+        COALESCE(SUM(travel_hours),   0)::float                                               AS travel_hours,
+        COALESCE(SUM(COALESCE(computed_hours, 0) + COALESCE(travel_hours, 0)), 0)::float      AS total_hours,
+        COUNT(*) FILTER (WHERE status = 'submitted')::int                                     AS submitted_count,
+        COUNT(*) FILTER (WHERE status = 'approved')::int                                      AS approved_count
+      FROM timesheet_entries
+      WHERE company_code = ${companyCode}
+        AND status IN ('submitted', 'approved')
+        AND work_date >= ${startIso}::date
+        AND work_date <= ${endIso}::date
+      GROUP BY user_id, username
+      ORDER BY username ASC
+    `;
+  });
+
+  const employees = (rows || []).map(r => ({
+    userId:          r.user_id,
+    username:        r.username || '—',
+    daysWorked:      r.days_worked     || 0,
+    workHours:       Number(r.work_hours)   || 0,
+    travelHours:     Number(r.travel_hours) || 0,
+    totalHours:      Number(r.total_hours)  || 0,
+    timeOffEntries:  r.time_off_entries || 0,
+    submittedCount:  r.submitted_count  || 0,
+    approvedCount:   r.approved_count   || 0,
+  }));
+
+  const totals = employees.reduce((acc, e) => ({
+    employees:    acc.employees + 1,
+    workHours:    acc.workHours + e.workHours,
+    travelHours:  acc.travelHours + e.travelHours,
+    totalHours:   acc.totalHours + e.totalHours,
+    daysWorked:   acc.daysWorked + e.daysWorked,
+  }), { employees: 0, workHours: 0, travelHours: 0, totalHours: 0, daysWorked: 0 });
+
+  return {
+    periodStart: startIso,
+    periodEnd:   endIso,
+    employees,
+    totals,
+  };
+}
+
 // Mock fallback — used only if the entire hero build throws.
 function mockHero() {
   return [
@@ -1280,6 +1356,13 @@ function mockReport() {
     },
 
     details: [],
+
+    payroll: {
+      periodStart: null,
+      periodEnd:   null,
+      employees:   [],
+      totals:      { employees: 0, workHours: 0, travelHours: 0, totalHours: 0, daysWorked: 0 },
+    },
   };
 }
 
@@ -1357,7 +1440,7 @@ module.exports = async (req, res) => {
     // The builders return null on error or when there are no active
     // projects — both cases leave the mock's empty placeholders, which
     // now contain no fake project entries.
-    const [livePortfolio, liveDetails, liveInventory] = await Promise.all([
+    const [livePortfolio, liveDetails, liveInventory, livePayroll] = await Promise.all([
       buildProjectsPortfolio(sql, company).catch(err => {
         console.error('[executive/report] portfolio build failed:', err.message); return null;
       }),
@@ -1366,6 +1449,9 @@ module.exports = async (req, res) => {
       }),
       buildRubberInventory(sql, company).catch(err => {
         console.error('[executive/report] inventory build failed:', err.message); return null;
+      }),
+      buildPayrollSummary(sql, company).catch(err => {
+        console.error('[executive/report] payroll summary failed:', err.message); return null;
       }),
     ]);
     if (livePortfolio && Array.isArray(livePortfolio.rows)) {
@@ -1376,6 +1462,9 @@ module.exports = async (req, res) => {
     }
     if (Array.isArray(liveInventory)) {
       report.inventory = liveInventory;
+    }
+    if (livePayroll && Array.isArray(livePayroll.employees)) {
+      report.payroll = livePayroll;
     }
 
     // Diagnostics — only when ?debug=1. Helps identify missing
