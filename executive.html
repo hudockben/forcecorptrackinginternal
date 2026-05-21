@@ -874,7 +874,7 @@
          is clicked, body.printing-projects-only is added and everything
          outside #projectsSection is hidden so the browser's native
          print-to-PDF renders just that section. */
-      body.printing-projects-only #reportBody > .section:not(#projectsSection) {
+      body.printing-projects-only #reportBody > .section:not(#projectsSection):not(#payrollSection) {
         display: none !important;
       }
       body.printing-projects-only #projectsSection {
@@ -1446,10 +1446,10 @@
     loadReport();
 
     // ── Email Report ──
-    // Captures the Projects section only (same scope the "Download PDF"
-    // button on the Projects card uses) + the page's <style> blocks (CSS
-    // variables resolved to literal hex values so email clients render
-    // colors even when they strip <style>) and opens the shared
+    // Captures the Projects + Payroll sections (same scope the "Download
+    // PDF" button on the Projects card uses) + the page's <style> blocks
+    // (CSS variables resolved to literal hex values so email clients
+    // render colors even when they strip <style>) and opens the shared
     // recipient-picker modal from report-email.js.
     function emailExecutiveReport() {
       if (typeof window.openReportEmailModal !== 'function') {
@@ -1462,6 +1462,7 @@
         return;
       }
       const projectsEl = document.getElementById('projectsSection');
+      const payrollEl  = document.getElementById('payrollSection');
       if (!projectsEl) {
         alert('Projects section not found on this report.');
         return;
@@ -1490,6 +1491,7 @@
   <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.2rem;">Executive Report — Projects</div>
   <div style="font-size:0.78rem;color:#555;margin-bottom:1rem;">${reportDate}</div>
   ${projectsEl.outerHTML}
+  ${payrollEl ? payrollEl.outerHTML : ''}
 </div>`;
       window.openReportEmailModal({
         reportType: 'executive',
