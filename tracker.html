@@ -10482,8 +10482,17 @@ function renderCostTable() {
     const bq       = b.qty;
     const btotal   = b.total;
     const buc      = bq ? btotal / bq : 0;
+    const projEntries = Object.keys(scProjAgg).filter(pk => pk.startsWith(sc + '||'));
+    const hasProjects = projEntries.length > 0;
     const rqty     = a.running_qty;
-    const avg_qty  = a.qty_count ? rqty / a.qty_count : 0;
+    // Avg Qty at parent = sum of per-project avg qty (each project's avg represents its
+    // completed-to-date), not a re-average across daily entries which distorts when jobs
+    // have differing entry counts.
+    const sumProjAvgQty = projEntries.reduce((s, pk) => {
+      const pa = scProjAgg[pk];
+      return s + (pa.qty_count ? pa.running_qty / pa.qty_count : 0);
+    }, 0);
+    const avg_qty  = sumProjAvgQty || (a.qty_count ? rqty / a.qty_count : 0);
     const rtotal   = a.total_cost;
     const past_avg = avg_qty ? rtotal / avg_qty : 0;
     const days     = a.dates.size;
@@ -10493,9 +10502,6 @@ function renderCostTable() {
     const eq_cph   = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
     const mu_eq    = a.equip_hours ? rqty / a.equip_hours : 0;
     const actualTotal = (pvPreview.active && pvPreview.rate > 0) ? rtotal : (a.imported_total || rtotal);
-
-    const projEntries = Object.keys(scProjAgg).filter(pk => pk.startsWith(sc + '||'));
-    const hasProjects = projEntries.length > 0;
 
     // ── Sub code header row (level 1) — clickable, shows all data columns ──
     const scTr = document.createElement('tr');
