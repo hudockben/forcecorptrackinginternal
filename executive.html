@@ -874,7 +874,7 @@
          is clicked, body.printing-projects-only is added and everything
          outside #projectsSection is hidden so the browser's native
          print-to-PDF renders just that section. */
-      body.printing-projects-only #reportBody > .section:not(#projectsSection) {
+      body.printing-projects-only #reportBody > .section:not(#projectsSection):not(#payrollSection) {
         display: none !important;
       }
       body.printing-projects-only #projectsSection {
@@ -1010,7 +1010,32 @@
         </div>
       </div>
 
-      <!-- ─────────── PAGE 3+: PER-PROJECT DETAIL ─────────── -->
+      <!-- ─────────── PAGE 3: PAYROLL PAY PERIOD SUMMARY ─────────── -->
+      <div class="section page-break" id="payrollSection">
+        <div class="section-head">
+          <div class="section-title">Payroll · Pay Period Summary</div>
+          <div class="section-sub" id="payrollSub">—</div>
+        </div>
+        <div class="ptable-wrap">
+          <table class="ptable" id="payrollTable">
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th class="col-num">Days</th>
+                <th class="col-num">Work Hours</th>
+                <th class="col-num">Travel Hours</th>
+                <th class="col-num">Total Hours</th>
+                <th class="col-num">Time Off</th>
+                <th class="col-num">Status</th>
+              </tr>
+            </thead>
+            <tbody id="payrollBody"></tbody>
+            <tfoot id="payrollFoot"></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <!-- ─────────── PAGE 4+: PER-PROJECT DETAIL ─────────── -->
       <div class="section page-break">
         <div class="section-head">
           <div class="section-title">Project Detail</div>
@@ -1241,6 +1266,84 @@
 
       renderRubberInventory(Array.isArray(data.inventory) ? data.inventory : []);
       renderDivSummaries(data.snapshot?.divisions || []);
+      renderPayrollSummary(data.payroll || null);
+    }
+
+    // Render the payroll pay-period summary table. Aggregates submitted +
+    // approved timesheet_entries per employee for the current biweekly
+    // cycle (Mon → Sun, anchored on the same date payroll.html uses) so
+    // executives see a one-line total per worker instead of every entry.
+    function renderPayrollSummary(payroll) {
+      const sub  = document.getElementById('payrollSub');
+      const body = document.getElementById('payrollBody');
+      const foot = document.getElementById('payrollFoot');
+      if (!sub || !body || !foot) return;
+
+      const employees = Array.isArray(payroll?.employees) ? payroll.employees : [];
+      const totals    = payroll?.totals || { employees: 0, workHours: 0, travelHours: 0, totalHours: 0, daysWorked: 0 };
+
+      const fmtHrs = n => {
+        const v = Number(n) || 0;
+        return v ? v.toFixed(2) : '—';
+      };
+      const fmtRangeIso = (a, b) => {
+        if (!a || !b) return '—';
+        const da = new Date(a + 'T00:00:00Z');
+        const db = new Date(b + 'T00:00:00Z');
+        const opts = { month: 'short', day: 'numeric' };
+        const yOpts = { month: 'short', day: 'numeric', year: 'numeric' };
+        return `${da.toLocaleDateString('en-US', opts)} – ${db.toLocaleDateString('en-US', yOpts)}`;
+      };
+
+      sub.textContent = employees.length
+        ? `${fmtRangeIso(payroll.periodStart, payroll.periodEnd)} · ${employees.length} employee${employees.length === 1 ? '' : 's'} · ${(totals.totalHours || 0).toFixed(2)} total hours`
+        : `${fmtRangeIso(payroll?.periodStart, payroll?.periodEnd)} · No submitted entries`;
+
+      if (!employees.length) {
+        body.innerHTML = '<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--muted)">No submitted timesheets in this pay period.</td></tr>';
+        foot.innerHTML = '';
+        return;
+      }
+
+      body.innerHTML = employees.map(e => {
+        let status;
+        if (e.submittedCount && e.approvedCount) {
+          status = `<span class="pstatus" style="color: var(--amber);">${e.approvedCount} approved · ${e.submittedCount} pending</span>`;
+        } else if (e.submittedCount) {
+          status = `<span class="pstatus" style="color: var(--amber);">${e.submittedCount} pending</span>`;
+        } else if (e.approvedCount) {
+          status = `<span class="pstatus" style="color: var(--green);">${e.approvedCount} approved</span>`;
+        } else {
+          status = '<span class="pstatus">—</span>';
+        }
+        return `
+          <tr>
+            <td>
+              <div class="pname">
+                <span class="pname-main">${esc(e.username)}</span>
+              </div>
+            </td>
+            <td class="col-num v-actual">${e.daysWorked || '—'}</td>
+            <td class="col-num v-actual">${esc(fmtHrs(e.workHours))}</td>
+            <td class="col-num v-mute">${esc(fmtHrs(e.travelHours))}</td>
+            <td class="col-num v-profit-pos">${esc(fmtHrs(e.totalHours))}</td>
+            <td class="col-num v-mute">${e.timeOffEntries || '—'}</td>
+            <td class="col-num">${status}</td>
+          </tr>
+        `;
+      }).join('');
+
+      foot.innerHTML = `
+        <tr style="border-top: 1px solid var(--border);">
+          <td style="font-weight: 700;">Total · ${totals.employees} employee${totals.employees === 1 ? '' : 's'}</td>
+          <td class="col-num" style="font-weight: 700;">${totals.daysWorked || '—'}</td>
+          <td class="col-num v-actual" style="font-weight: 700;">${esc(fmtHrs(totals.workHours))}</td>
+          <td class="col-num v-mute" style="font-weight: 700;">${esc(fmtHrs(totals.travelHours))}</td>
+          <td class="col-num v-profit-pos" style="font-weight: 700;">${esc(fmtHrs(totals.totalHours))}</td>
+          <td class="col-num"></td>
+          <td class="col-num"></td>
+        </tr>
+      `;
     }
 
     // Render compact Quarry + Dust Control cards inside the Projects section
@@ -1343,10 +1446,10 @@
     loadReport();
 
     // ── Email Report ──
-    // Captures the Projects section only (same scope the "Download PDF"
-    // button on the Projects card uses) + the page's <style> blocks (CSS
-    // variables resolved to literal hex values so email clients render
-    // colors even when they strip <style>) and opens the shared
+    // Captures the Projects + Payroll sections (same scope the "Download
+    // PDF" button on the Projects card uses) + the page's <style> blocks
+    // (CSS variables resolved to literal hex values so email clients
+    // render colors even when they strip <style>) and opens the shared
     // recipient-picker modal from report-email.js.
     function emailExecutiveReport() {
       if (typeof window.openReportEmailModal !== 'function') {
@@ -1359,6 +1462,7 @@
         return;
       }
       const projectsEl = document.getElementById('projectsSection');
+      const payrollEl  = document.getElementById('payrollSection');
       if (!projectsEl) {
         alert('Projects section not found on this report.');
         return;
@@ -1387,6 +1491,7 @@
   <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.2rem;">Executive Report — Projects</div>
   <div style="font-size:0.78rem;color:#555;margin-bottom:1rem;">${reportDate}</div>
   ${projectsEl.outerHTML}
+  ${payrollEl ? payrollEl.outerHTML : ''}
 </div>`;
       window.openReportEmailModal({
         reportType: 'executive',
