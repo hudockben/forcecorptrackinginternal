@@ -6563,8 +6563,15 @@ function deleteDailyRowsBySubCode(costCode, subCode) {
     if (dailyCount) {
       projectsList.forEach(p => {
         if (!Array.isArray(p.dailyRows)) return;
-        p.dailyRows = p.dailyRows.filter(r => r.sub_code !== subCode);
+        // Preserve auto-injected rows: a sub_code removed from the bid items
+        // should NOT wipe payroll-approved labor history. Those rows stay
+        // locked + badged in the daily tab; payroll can resplit if needed.
+        p.dailyRows = p.dailyRows.filter(r =>
+          r.sub_code !== subCode ||
+          (r.timesheet_entry_id != null && r.timesheet_entry_id !== '')
+        );
       });
+      // API also skips injected rows (timesheet_entry_id IS NULL clause).
       drDeleteBySubCode(subCode);
       projectsList.forEach(p => renderDailyTable(p.id));
     }

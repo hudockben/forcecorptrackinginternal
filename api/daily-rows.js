@@ -344,16 +344,27 @@ module.exports = async (req, res) => {
             AND division = ${division}
         `;
       } else if (costCode !== undefined && subCode !== undefined) {
+        // Bulk delete by cost_code + sub_code is invoked from the division
+        // tab when a supervisor removes a cost/sub code from the bid items.
+        // We intentionally exclude auto-injected rows (timesheet_entry_id IS
+        // NOT NULL) so that payroll-approved labor history is preserved even
+        // if a sub_code is later removed or renamed. Those rows remain
+        // visible in cost tracking (locked + badged) and can still be
+        // managed via payroll.html.
         await sql`
           DELETE FROM daily_tracking
           WHERE cost_code = ${costCode} AND sub_code = ${subCode}
             AND company_code = ${companyCode} AND division = ${division}
+            AND timesheet_entry_id IS NULL
         `;
       } else if (subCode !== undefined) {
+        // Same preservation rule for bulk-by-subCode (delete a sub code
+        // across all cost codes). Injected rows survive.
         await sql`
           DELETE FROM daily_tracking
           WHERE sub_code = ${subCode} AND company_code = ${companyCode}
             AND division = ${division}
+            AND timesheet_entry_id IS NULL
         `;
       } else {
         return res.status(400).json({ error: 'id, projectId, subCode, or costCode+subCode required' });
