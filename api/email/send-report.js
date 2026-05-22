@@ -34,11 +34,12 @@ const {
 
 // Each report type → which division the caller must have access to.
 const REPORT_TYPES = {
-  executive:            { division: 'executive', label: 'Executive Report'     },
-  turf_daily_pm:        { division: 'turf',      label: 'Daily PM Report'      },
-  turf_daily_summary:   { division: 'turf',      label: 'Daily Summary Report' },
-  paving_daily_pm:      { division: 'paving',    label: 'Daily PM Report'      },
-  paving_daily_summary: { division: 'paving',    label: 'Daily Summary Report' },
+  executive:            { division: 'executive', label: 'Executive Report'                 },
+  turf_daily_pm:        { division: 'turf',      label: 'Daily PM Report'                  },
+  turf_daily_summary:   { division: 'turf',      label: 'Daily Summary Report'             },
+  turf_bid_items:       { division: 'turf',      label: 'Bid Line Items vs Actuals — Turf' },
+  paving_daily_pm:      { division: 'paving',    label: 'Daily PM Report'                  },
+  paving_daily_summary: { division: 'paving',    label: 'Daily Summary Report'             },
 };
 
 module.exports = async (req, res) => {
