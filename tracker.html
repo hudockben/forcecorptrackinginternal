@@ -590,6 +590,30 @@
     .daily-inner-table td.del-cell .del-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
     .daily-inner-table td.del-cell .copy-row-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--accent); cursor: pointer; margin-top: 2px; }
     .daily-inner-table td.del-cell .copy-row-btn:hover { color: #fff; background: var(--accent); }
+
+    /* Auto-injected rows from payroll approval — partially locked.
+       Hours / employee / equipment / date came from payroll and are
+       disabled (greyed out). Categorization fields (cost_code, sub_code,
+       job_class, quantity) stay editable. */
+    tr.injected-row { background: rgba(59,130,246,0.04); }
+    tr.injected-row td input:disabled,
+    tr.injected-row td select:disabled,
+    tr.injected-row td textarea:disabled {
+      background: rgba(59,130,246,0.06);
+      color: var(--muted);
+      cursor: not-allowed;
+    }
+    .row-badge-injected {
+      display: inline-block;
+      background: rgba(59,130,246,0.18);
+      color: #60a5fa;
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      padding: 0.12rem 0.32rem;
+      border-radius: 3px;
+      cursor: help;
+    }
     .inv-cc-cell:hover .inv-cc-btn { opacity: 0.7 !important; }
     .inv-cc-btn:hover { opacity: 1 !important; color: var(--green) !important; }
     .daily-inner-table td input,
@@ -3097,6 +3121,13 @@ const fctToken    = localStorage.getItem('fct_token');
 const fctUser     = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
 const fctDivision = localStorage.getItem('fct_division');
 const DIVISION    = 'turf';
+
+// Fields on an auto-injected daily row (from payroll approval) that the
+// supervisor IS allowed to edit directly in the cost tracking tab. These
+// are categorization decisions — moving a row to a different cost code or
+// sub code, fixing a job_class, attributing production quantity. Anything
+// not in this set stays locked because it came from payroll's approval.
+const INJECTED_EDITABLE_FIELDS = new Set(['cost_code', 'sub_code', 'job_class', 'quantity']);
 
 if (!fctToken || !fctUser) {
   window.location.replace('index.html');
@@ -6750,8 +6781,15 @@ function deleteDailyRowsBySubCode(costCode, subCode) {
     if (dailyCount) {
       projectsList.forEach(p => {
         if (!Array.isArray(p.dailyRows)) return;
-        p.dailyRows = p.dailyRows.filter(r => r.sub_code !== subCode);
+        // Preserve auto-injected rows: a sub_code removed from the bid items
+        // should NOT wipe payroll-approved labor history. Those rows stay
+        // locked + badged in the daily tab; payroll can resplit if needed.
+        p.dailyRows = p.dailyRows.filter(r =>
+          r.sub_code !== subCode ||
+          (r.timesheet_entry_id != null && r.timesheet_entry_id !== '')
+        );
       });
+      // API also skips injected rows (timesheet_entry_id IS NULL clause).
       drDeleteBySubCode(subCode);
       projectsList.forEach(p => renderDailyTable(p.id));
     }
@@ -13573,11 +13611,20 @@ function renderDailyTable(projId) {
   rows.forEach((row, _filteredIdx) => {
     const ai = allRows.indexOf(row); // actual index in p.dailyRows (unaffected by filters)
     const c  = calcDaily(row);
+    // Rows auto-injected from payroll approval carry a timesheet_entry_id and
+    // must NOT be editable in this tab — the supervisor edits them via
+    // payroll.html (Edit Split / Un-approve). We still render them so the
+    // cost tracking totals stay accurate.
+    const isInjected = row.timesheet_entry_id != null && row.timesheet_entry_id !== '';
     const tr = document.createElement('tr');
+    if (isInjected) tr.classList.add('injected-row');
     tr.innerHTML = `
       <td class="del-cell">
-        ${perm.canEdit ? `<button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${ai}">&#10005;</button>` : ''}
-        ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${ai})">&#10697;</button>` : ''}
+        ${isInjected
+          ? `<span class="row-badge-injected" title="Injected from payroll approval (timesheet entry #${esc(row.timesheet_entry_id)}). Cost code, sub code, job class &amp; quantity are editable here; hours / employee / equipment / date must be changed via Payroll.">TS</span>`
+          : `${perm.canEdit ? `<button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${ai}">&#10005;</button>` : ''}
+             ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${ai})">&#10697;</button>` : ''}`
+        }
       </td>
       <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="date"           value="${esc(row.date)}"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
@@ -13602,7 +13649,22 @@ function renderDailyTable(projId) {
       <td class="calc">$${fmt(c.total_cost)}</td>
     `;
     tbody.appendChild(tr);
-    if (perm.canEdit) {
+    if (isInjected) {
+      // Auto-injected rows are partially locked. Categorization fields stay
+      // editable so supervisors can re-classify time (e.g. move a row from
+      // sub_code A to sub_code B) without round-tripping through payroll.
+      // The labor-truth fields are locked because they came from payroll's
+      // approval — to change those, the timesheet must be re-split.
+      // cbHtml comboboxes forward data-f onto the inner input via
+      // passthroughAttrs, so this single selector covers both plain inputs
+      // and combobox-wrapped ones.
+      tr.querySelectorAll('input[data-f], select[data-f], textarea[data-f]').forEach(el => {
+        if (INJECTED_EDITABLE_FIELDS.has(el.dataset.f)) return;
+        el.readOnly = true;
+        el.disabled = true;
+        el.tabIndex = -1;
+      });
+    } else if (perm.canEdit) {
       tr.querySelectorAll('td').forEach(td => {
         const el = td.querySelector('input[data-f], select[data-f]');
         if (!el) return;
@@ -13724,6 +13786,11 @@ document.addEventListener('mouseup', () => {
   for (let i = srcIdx + 1; i <= endIdx; i++) {
     const row = (p.dailyRows || [])[i];
     if (!row) continue;
+    // Auto-injected rows: only allow fill-drag for whitelisted fields
+    // (cost_code / sub_code / job_class / quantity). Locked fields can't be
+    // bulk-overwritten by a drag — those changes must come from payroll.
+    const isInj = row.timesheet_entry_id != null && row.timesheet_entry_id !== '';
+    if (isInj && !INJECTED_EDITABLE_FIELDS.has(field)) continue;
     row[field] = value;
     drPutNow(row.id, row);
     if (tbody) {
@@ -16699,6 +16766,13 @@ document.addEventListener('input', e => {
     const projId = el.dataset.proj;
     const p = getProj(projId); if (!p) return;
     if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
+    // Defense-in-depth for auto-injected rows: only the whitelisted
+    // categorization fields are mutable here. Server-side enforces the
+    // same rule (api/daily-rows.js PUT), so a tampered client can't
+    // overwrite payroll-controlled data either way.
+    const _r = p.dailyRows[i];
+    const _isInj = _r.timesheet_entry_id != null && _r.timesheet_entry_id !== '';
+    if (_isInj && !INJECTED_EDITABLE_FIELDS.has(f)) return;
     p.dailyRows[i][f] = el.value;
     // Filter sub_code dropdown to only show sub codes for the selected cost code
     if (f === 'cost_code') {
@@ -16772,6 +16846,11 @@ document.addEventListener('change', e => {
   if (isNaN(i)) return;
   const p = getProj(el.dataset.proj); if (!p) return;
   if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
+  // Defense-in-depth: only whitelisted fields are mutable on auto-injected
+  // rows. Hours/employee/date/equipment changes go through payroll.html.
+  const _r = p.dailyRows[i];
+  const _isInj = _r.timesheet_entry_id != null && _r.timesheet_entry_id !== '';
+  if (_isInj && !INJECTED_EDITABLE_FIELDS.has(el.dataset.f)) return;
   if (p.dailyRows[i][el.dataset.f] !== el.value) {
     p.dailyRows[i][el.dataset.f] = el.value;
   }

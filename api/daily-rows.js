@@ -35,6 +35,11 @@ function dbRowToFrontend(r) {
   const row = {
     id:              r.row_id,
     _projectId:      r.project_id,
+    // When non-null, this row was auto-injected from payroll approval of
+    // timesheet_entries.id = this value. The division cost tracking tab
+    // renders these rows with a badge and locks them — edits happen only
+    // through payroll.html. NULL means a normal manually-entered row.
+    timesheet_entry_id: r.timesheet_entry_id != null ? String(r.timesheet_entry_id) : null,
     date:            _isoDate(r.date),
     field_type:      r.field_type      || '',
     employee:        r.employee        || '',
@@ -152,7 +157,8 @@ module.exports = async (req, res) => {
           SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
                  job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
                  material, supplier, po_num, units_purchased, unit_cost, material_cost,
-                 quantity, equip_total_override, total_cost_override, num_laborers
+                 quantity, equip_total_override, total_cost_override, num_laborers,
+                 timesheet_entry_id
           FROM daily_tracking
           WHERE company_code = ${companyCode} AND division = ${division}
             AND project_id = ${projectId} AND date >= ${since}
@@ -164,7 +170,8 @@ module.exports = async (req, res) => {
           SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
                  job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
                  material, supplier, po_num, units_purchased, unit_cost, material_cost,
-                 quantity, equip_total_override, total_cost_override, num_laborers
+                 quantity, equip_total_override, total_cost_override, num_laborers,
+                 timesheet_entry_id
           FROM daily_tracking
           WHERE company_code = ${companyCode} AND division = ${division}
             AND project_id = ${projectId}
@@ -176,7 +183,8 @@ module.exports = async (req, res) => {
           SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
                  job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
                  material, supplier, po_num, units_purchased, unit_cost, material_cost,
-                 quantity, equip_total_override, total_cost_override, num_laborers
+                 quantity, equip_total_override, total_cost_override, num_laborers,
+                 timesheet_entry_id
           FROM daily_tracking
           WHERE company_code = ${companyCode} AND division = ${division}
             AND date >= ${since}
@@ -188,7 +196,8 @@ module.exports = async (req, res) => {
           SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
                  job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
                  material, supplier, po_num, units_purchased, unit_cost, material_cost,
-                 quantity, equip_total_override, total_cost_override, num_laborers
+                 quantity, equip_total_override, total_cost_override, num_laborers,
+                 timesheet_entry_id
           FROM daily_tracking
           WHERE company_code = ${companyCode} AND division = ${division}
           ORDER BY project_id, date ASC NULLS LAST, created_at ASC
@@ -217,6 +226,36 @@ module.exports = async (req, res) => {
 
       const { row, projectId } = req.body;
       if (!row) return res.status(400).json({ error: 'row required in body' });
+
+      // Auto-injected rows (linked to a timesheet_entry_id) are partially
+      // editable from the division cost tracking tab — supervisors may
+      // re-categorize them (cost_code, sub_code, job_class, quantity) but
+      // the labor-truth fields (date, employee, hours, equipment, rate,
+      // material/PO columns) are locked because they came from payroll's
+      // approval. Hours-affecting changes still must go through
+      // payroll.html (resplit).
+      const [existingDt] = await sql`
+        SELECT timesheet_entry_id FROM daily_tracking
+        WHERE row_id = ${id} AND company_code = ${companyCode} AND division = ${division}
+      `;
+      if (existingDt && existingDt.timesheet_entry_id != null) {
+        // Targeted update — only the whitelisted categorization fields are
+        // applied. Other fields in the body are silently ignored even if
+        // the client sends them, so a tampered request can't overwrite
+        // payroll-approved data.
+        await sql`
+          UPDATE daily_tracking SET
+            cost_code  = ${row.cost_code || null},
+            sub_code   = ${row.sub_code  || null},
+            job_class  = ${row.job_class || null},
+            quantity   = ${parseFloatOrZero(row.quantity)},
+            updated_at = NOW()
+          WHERE row_id = ${id} AND company_code = ${companyCode}
+            AND division = ${division}
+            AND timesheet_entry_id IS NOT NULL
+        `;
+        return res.json({ ok: true, partial: true });
+      }
 
       if (projectId) {
         await sql`
@@ -295,6 +334,19 @@ module.exports = async (req, res) => {
       const { id, projectId, costCode, subCode } = req.query;
 
       if (id) {
+        // Block single-row deletes against auto-injected rows — they belong
+        // to the payroll workflow and must be removed by un-approving the
+        // timesheet entry, not from the division cost tracking tab.
+        const [existingDt] = await sql`
+          SELECT timesheet_entry_id FROM daily_tracking
+          WHERE row_id = ${id} AND company_code = ${companyCode} AND division = ${division}
+        `;
+        if (existingDt && existingDt.timesheet_entry_id != null) {
+          return res.status(409).json({
+            error: 'This row was auto-injected from a payroll-approved timesheet and cannot be deleted from the division tab. Un-approve the timesheet entry in payroll.html instead.',
+            timesheet_entry_id: String(existingDt.timesheet_entry_id),
+          });
+        }
         await sql`
           DELETE FROM daily_tracking
           WHERE row_id = ${id} AND company_code = ${companyCode} AND division = ${division}
@@ -306,16 +358,27 @@ module.exports = async (req, res) => {
             AND division = ${division}
         `;
       } else if (costCode !== undefined && subCode !== undefined) {
+        // Bulk delete by cost_code + sub_code is invoked from the division
+        // tab when a supervisor removes a cost/sub code from the bid items.
+        // We intentionally exclude auto-injected rows (timesheet_entry_id IS
+        // NOT NULL) so that payroll-approved labor history is preserved even
+        // if a sub_code is later removed or renamed. Those rows remain
+        // visible in cost tracking (locked + badged) and can still be
+        // managed via payroll.html.
         await sql`
           DELETE FROM daily_tracking
           WHERE cost_code = ${costCode} AND sub_code = ${subCode}
             AND company_code = ${companyCode} AND division = ${division}
+            AND timesheet_entry_id IS NULL
         `;
       } else if (subCode !== undefined) {
+        // Same preservation rule for bulk-by-subCode (delete a sub code
+        // across all cost codes). Injected rows survive.
         await sql`
           DELETE FROM daily_tracking
           WHERE sub_code = ${subCode} AND company_code = ${companyCode}
             AND division = ${division}
+            AND timesheet_entry_id IS NULL
         `;
       } else {
         return res.status(400).json({ error: 'id, projectId, subCode, or costCode+subCode required' });

@@ -22,7 +22,25 @@
  *     Field-user only, must own the row, row must be in 'draft'.
  *
  *   POST   /api/timesheet-entries?action=approve&id=N   — submitted → approved
- *     Payroll-admin only, row must be in 'submitted'.
+ *     Payroll-admin only, row must be in 'submitted'. For turf/paving daily
+ *     entries the body MUST include a `split: [...]` array — each element is
+ *     { cost_code, sub_code, equipment, labor_hours, equip_hours, is_travel }.
+ *     sum(labor_hours) across the array must equal computed_hours + travel_hours.
+ *     On success, one daily_tracking row is inserted per split element, tagged
+ *     with timesheet_entry_id. Other divisions: legacy behavior (flip status only).
+ *
+ *   POST   /api/timesheet-entries?action=resplit&id=N   — replace injected rows
+ *     Payroll-admin only, row must already be 'approved'. Same body shape as
+ *     approve. Deletes the prior injected daily_tracking rows for this entry,
+ *     then inserts the new split. Status stays 'approved'.
+ *
+ *   POST   /api/timesheet-entries?action=unapprove&id=N — approved → submitted
+ *     Payroll-admin only. Deletes any injected daily_tracking rows and reverts
+ *     status. Used when an approval needs to be re-done from scratch.
+ *
+ *   GET    /api/timesheet-entries?action=split&id=N     — current injected rows
+ *     Returns the existing split (one element per daily_tracking row linked to
+ *     this entry) so the payroll modal can pre-fill when re-editing.
  *
  *   DELETE /api/timesheet-entries?id=N                  — delete own draft
  *     Field-user only, must own the row, row must be in 'draft'.
@@ -41,6 +59,11 @@ const { requireAuth, hasDivisionAccess } = require('./lib/auth');
 
 const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry'];
 const VALID_TIME_OFF  = ['vacation', 'sick', 'jury_duty', 'bereavement', 'holiday'];
+
+// Auto-inject is only meaningful for divisions whose cost tracking lives in
+// daily_tracking (rows per project). Turf and paving qualify; the other
+// divisions either store labor elsewhere or don't track per-project cost.
+const AUTO_INJECT_DIVISIONS = ['turf', 'paving'];
 
 function safeDate(v) {
   if (!v) return null;
@@ -131,6 +154,134 @@ function dbToEntry(r) {
     created_at:          r.created_at,
     updated_at:          r.updated_at,
   };
+}
+
+// ── Split helpers (timesheet → daily_tracking auto-injection) ─────────────
+// A "split" is the supervisor's breakdown of a single approved timesheet
+// entry into one or more daily_tracking rows. The supervisor picks cost
+// codes, sub codes, equipment and hours; each split row becomes a
+// daily_tracking row tagged with the timesheet_entry_id.
+
+// Round to 0.01 to match NUMERIC(14,4) without surprising precision drift.
+function _r2(n) { return Math.round(Number(n) * 100) / 100; }
+
+/**
+ * Normalize one split row from the request body. Returns { row, error }.
+ * Each row contributes either labor_hours (>0) and/or equip_hours (>0).
+ * is_travel is a UI-only marker that we forward to a flag column —
+ * server-side it has no special validation beyond "you can mark it".
+ */
+function normalizeSplitRow(raw, idx) {
+  if (!raw || typeof raw !== 'object') {
+    return { error: `split[${idx}] must be an object` };
+  }
+  const cost_code = safeStr(raw.cost_code, 255);
+  const sub_code  = safeStr(raw.sub_code,  255);
+  const equipment = safeStr(raw.equipment, 255);
+  const labor_hours = raw.labor_hours == null || raw.labor_hours === '' ? 0 : Number(raw.labor_hours);
+  const equip_hours = raw.equip_hours == null || raw.equip_hours === '' ? 0 : Number(raw.equip_hours);
+  if (!Number.isFinite(labor_hours) || labor_hours < 0 || labor_hours > 24) {
+    return { error: `split[${idx}].labor_hours must be between 0 and 24` };
+  }
+  if (!Number.isFinite(equip_hours) || equip_hours < 0 || equip_hours > 24) {
+    return { error: `split[${idx}].equip_hours must be between 0 and 24` };
+  }
+  if (labor_hours <= 0 && equip_hours <= 0) {
+    return { error: `split[${idx}] must have labor_hours or equip_hours greater than 0` };
+  }
+  if (!cost_code && !sub_code) {
+    return { error: `split[${idx}] needs at least a cost code or sub code` };
+  }
+  return {
+    row: {
+      cost_code,
+      sub_code,
+      equipment,
+      labor_hours: _r2(labor_hours),
+      equip_hours: _r2(equip_hours),
+      is_travel:   raw.is_travel === true,
+    },
+  };
+}
+
+/**
+ * Validate the full split against the timesheet entry hours.
+ * sum(labor_hours across all split rows) must equal computed_hours + travel_hours
+ * exactly (to the cent). Returns { rows, error }.
+ */
+function validateSplit(rawSplit, entry) {
+  if (!Array.isArray(rawSplit) || rawSplit.length === 0) {
+    return { error: 'split must be a non-empty array of rows' };
+  }
+  if (rawSplit.length > 50) {
+    return { error: 'split may not contain more than 50 rows' };
+  }
+  const rows = [];
+  for (let i = 0; i < rawSplit.length; i++) {
+    const { row, error } = normalizeSplitRow(rawSplit[i], i);
+    if (error) return { error };
+    rows.push(row);
+  }
+  const work   = Number(entry.computed_hours) || 0;
+  const travel = Number(entry.travel_hours)   || 0;
+  const expected = _r2(work + travel);
+  const actual   = _r2(rows.reduce((s, r) => s + r.labor_hours, 0));
+  if (Math.abs(actual - expected) > 0.001) {
+    return {
+      error: `split labor_hours total (${actual.toFixed(2)}) must equal computed_hours + travel_hours (${expected.toFixed(2)})`,
+    };
+  }
+  return { rows };
+}
+
+/**
+ * Insert split rows into daily_tracking. The caller is responsible for first
+ * deleting any prior injected rows for this entry (resplit case) — this
+ * function only inserts. row_id is generated server-side (UUID-ish) so
+ * the daily_tracking unique constraint never collides.
+ */
+async function insertSplitRows(sql, splitRows, entry, division, companyCode, employeeName) {
+  // Pull the row_id naming pattern used by the existing daily-rows.js layer
+  // (timestamp + random tail). This is a TEXT column with a UNIQUE constraint;
+  // never collides because we mint a fresh value per call.
+  const baseStamp = Date.now();
+  // entry.work_date from a SELECT * is a JS Date in neon-serverless; coerce
+  // to YYYY-MM-DD so the date column always receives a normalized string.
+  const workDate = safeDate(entry.work_date)
+    || (entry.work_date instanceof Date ? entry.work_date.toISOString().slice(0, 10) : null);
+  for (let i = 0; i < splitRows.length; i++) {
+    const r = splitRows[i];
+    const rowId = `ts${entry.id}-${baseStamp}-${i}-${Math.floor(Math.random() * 1e6)}`;
+    await sql`
+      INSERT INTO daily_tracking (
+        row_id, project_id, company_code, division,
+        date, field_type, employee, cost_code, sub_code, job_class,
+        rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+        material, supplier, po_num, units_purchased, unit_cost,
+        material_cost, quantity, timesheet_entry_id
+      ) VALUES (
+        ${rowId},
+        ${entry.job_id},
+        ${companyCode},
+        ${division},
+        ${workDate},
+        ${r.is_travel ? 'Travel' : null},
+        ${employeeName},
+        ${r.cost_code || null},
+        ${r.sub_code || null},
+        ${null},
+        ${0},
+        ${r.labor_hours},
+        ${r.equipment || null},
+        ${0},
+        ${r.equip_hours},
+        ${null}, ${null}, ${null}, ${0}, ${0},
+        ${0}, ${0},
+        ${entry.id}
+      )
+      ON CONFLICT (row_id) DO NOTHING
+    `;
+  }
 }
 
 async function writeAudit(sql, companyCode, payload, entryId, action, changes, snapshot) {
@@ -375,6 +526,17 @@ module.exports = async (req, res) => {
     }
 
     // ── POST ?action=approve — submitted → approved (payroll admin) ───────
+    // For turf/paving daily entries, the body MUST include a `split` array
+    // that breaks the entry's hours into one or more daily_tracking rows.
+    // The split is validated (sum(labor_hours) must equal work+travel hours)
+    // before any DB write happens; once validated the entry transitions to
+    // 'approved' AND the daily_tracking rows are inserted in the same code
+    // path. If the insert fails the approval is rolled back manually
+    // (status flipped back to 'submitted') so payroll sees the pending row
+    // again rather than an approved-but-uninjected entry.
+    //
+    // For divisions outside AUTO_INJECT_DIVISIONS the legacy behavior is
+    // preserved: approval flips status only, no daily_tracking write.
     if (req.method === 'POST' && req.query.action === 'approve') {
       if (!canAdmin) {
         return res.status(403).json({ error: 'Payroll admin access is required' });
@@ -391,6 +553,20 @@ module.exports = async (req, res) => {
         return res.status(409).json({ error: `Cannot approve an entry that is ${existing.status}` });
       }
 
+      const needsSplit =
+        existing.entry_type === 'daily' &&
+        AUTO_INJECT_DIVISIONS.includes(existing.division);
+
+      let splitRows = null;
+      if (needsSplit) {
+        if (!existing.job_id) {
+          return res.status(400).json({ error: 'Cannot inject: entry has no job_id (project)' });
+        }
+        const { rows, error } = validateSplit((req.body && req.body.split) || [], existing);
+        if (error) return res.status(400).json({ error });
+        splitRows = rows;
+      }
+
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status              = 'approved',
@@ -401,8 +577,171 @@ module.exports = async (req, res) => {
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
       `;
-      await writeAudit(sql, companyCode, payload, id, 'APPROVE', null, dbToEntry(updated));
+
+      if (splitRows) {
+        try {
+          await insertSplitRows(
+            sql, splitRows, updated, updated.division, companyCode, updated.username,
+          );
+        } catch (injErr) {
+          // Rollback the approval so payroll sees the row as pending again
+          // and can retry. Without this we'd have an approved entry with
+          // zero injected rows — invisible to the cost tracking tab.
+          console.error('[timesheet-entries] split insert failed, rolling back approval:', injErr.message);
+          await sql`
+            UPDATE timesheet_entries
+            SET status              = 'submitted',
+                approved_at         = NULL,
+                approved_by_user_id = NULL,
+                approved_by_name    = NULL,
+                updated_at          = NOW()
+            WHERE id = ${id} AND company_code = ${companyCode}
+          `;
+          return res.status(500).json({
+            error: 'Approval rolled back: failed to write cost tracking rows',
+            detail: injErr.message,
+          });
+        }
+      }
+
+      await writeAudit(
+        sql, companyCode, payload, id, 'APPROVE',
+        splitRows ? { split_row_count: splitRows.length } : null,
+        dbToEntry(updated),
+      );
       return res.json({ ok: true, entry: dbToEntry(updated) });
+    }
+
+    // ── POST ?action=resplit — re-author the split on an approved entry ──
+    // Payroll's "edit the cost-tracking breakdown" path for an already
+    // approved entry. Deletes the prior injected rows for this entry, then
+    // inserts the new split. Same validation as approve. Status stays
+    // 'approved' — this is purely the breakdown, not the approval state.
+    if (req.method === 'POST' && req.query.action === 'resplit') {
+      if (!canAdmin) {
+        return res.status(403).json({ error: 'Payroll admin access is required' });
+      }
+      const id = safeInt(req.query.id);
+      if (!id) return res.status(400).json({ error: 'id is required' });
+
+      const [existing] = await sql`
+        SELECT * FROM timesheet_entries
+        WHERE id = ${id} AND company_code = ${companyCode}
+      `;
+      if (!existing) return res.status(404).json({ error: 'Entry not found' });
+      if (existing.status !== 'approved') {
+        return res.status(409).json({ error: 'Resplit is only allowed on approved entries' });
+      }
+      if (existing.entry_type !== 'daily' || !AUTO_INJECT_DIVISIONS.includes(existing.division)) {
+        return res.status(400).json({ error: 'Resplit applies only to daily entries in turf/paving' });
+      }
+      if (!existing.job_id) {
+        return res.status(400).json({ error: 'Cannot inject: entry has no job_id (project)' });
+      }
+
+      const { rows: splitRows, error } = validateSplit((req.body && req.body.split) || [], existing);
+      if (error) return res.status(400).json({ error });
+
+      // Delete the prior injected rows for this entry, then insert the new
+      // split. We don't wrap this in a transaction (neon-serverless has
+      // limited multi-statement transaction support) — the delete is safe
+      // to retry because it's keyed on timesheet_entry_id, and the insert
+      // is idempotent on row_id.
+      await sql`
+        DELETE FROM daily_tracking
+        WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
+      `;
+      try {
+        await insertSplitRows(
+          sql, splitRows, existing, existing.division, companyCode, existing.username,
+        );
+      } catch (injErr) {
+        console.error('[timesheet-entries] resplit insert failed:', injErr.message);
+        return res.status(500).json({
+          error: 'Resplit failed: prior rows deleted but new rows could not be written. Retry.',
+          detail: injErr.message,
+        });
+      }
+
+      await writeAudit(
+        sql, companyCode, payload, id, 'ADMIN_EDIT',
+        { resplit: true, split_row_count: splitRows.length },
+        dbToEntry(existing),
+      );
+      return res.json({ ok: true, entry: dbToEntry(existing) });
+    }
+
+    // ── POST ?action=unapprove — approved → submitted (payroll admin) ────
+    // Reverses an approval. Deletes any injected daily_tracking rows so
+    // the cost tracking tab reflects reality (entry is no longer approved
+    // → its cost rows must go away). Audit log records the action with the
+    // count of removed rows.
+    if (req.method === 'POST' && req.query.action === 'unapprove') {
+      if (!canAdmin) {
+        return res.status(403).json({ error: 'Payroll admin access is required' });
+      }
+      const id = safeInt(req.query.id);
+      if (!id) return res.status(400).json({ error: 'id is required' });
+
+      const [existing] = await sql`
+        SELECT * FROM timesheet_entries
+        WHERE id = ${id} AND company_code = ${companyCode}
+      `;
+      if (!existing) return res.status(404).json({ error: 'Entry not found' });
+      if (existing.status !== 'approved') {
+        return res.status(409).json({ error: 'Only approved entries can be un-approved' });
+      }
+
+      // Count first so the audit log captures it.
+      const [{ cnt }] = await sql`
+        SELECT COUNT(*)::int AS cnt FROM daily_tracking
+        WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
+      `;
+      await sql`
+        DELETE FROM daily_tracking
+        WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
+      `;
+      const [updated] = await sql`
+        UPDATE timesheet_entries
+        SET status              = 'submitted',
+            approved_at         = NULL,
+            approved_by_user_id = NULL,
+            approved_by_name    = NULL,
+            updated_at          = NOW()
+        WHERE id = ${id} AND company_code = ${companyCode}
+        RETURNING *
+      `;
+      await writeAudit(
+        sql, companyCode, payload, id, 'ADMIN_EDIT',
+        { unapprove: true, removed_split_rows: cnt },
+        dbToEntry(updated),
+      );
+      return res.json({ ok: true, entry: dbToEntry(updated), removed_split_rows: cnt });
+    }
+
+    // ── GET ?action=split&id=N — fetch existing injected rows ────────────
+    // Used by the payroll modal when re-editing the split for an already
+    // approved entry.
+    if (req.method === 'GET' && req.query.action === 'split') {
+      const id = safeInt(req.query.id);
+      if (!id) return res.status(400).json({ error: 'id is required' });
+      const rows = await sql`
+        SELECT row_id, project_id, date, cost_code, sub_code, equipment,
+               labor_hours, equip_hours, field_type
+        FROM daily_tracking
+        WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
+        ORDER BY id ASC
+      `;
+      return res.json({
+        split: rows.map(r => ({
+          cost_code:   r.cost_code   || '',
+          sub_code:    r.sub_code    || '',
+          equipment:   r.equipment   || '',
+          labor_hours: r.labor_hours != null ? Number(r.labor_hours) : 0,
+          equip_hours: r.equip_hours != null ? Number(r.equip_hours) : 0,
+          is_travel:   r.field_type === 'Travel',
+        })),
+      });
     }
 
     // ── PUT — update fields ───────────────────────────────────────────────
@@ -422,6 +761,24 @@ module.exports = async (req, res) => {
       const isAdminEditable = canAdmin && (existing.status === 'submitted' || existing.status === 'approved');
       if (!isOwnDraft && !isAdminEditable) {
         return res.status(403).json({ error: 'This entry cannot be edited from your account' });
+      }
+
+      // If this is an admin edit on an approved entry that already has
+      // injected cost rows, refuse — otherwise the timesheet's hours and
+      // the daily_tracking split go out of sync silently. The admin must
+      // un-approve first (which removes the split), edit, then re-approve
+      // with a fresh split.
+      if (canAdmin && existing.status === 'approved') {
+        const [{ cnt }] = await sql`
+          SELECT COUNT(*)::int AS cnt FROM daily_tracking
+          WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
+        `;
+        if (cnt > 0) {
+          return res.status(409).json({
+            error: 'This entry has cost tracking rows injected from approval. Un-approve it first, edit, then re-approve with a fresh split.',
+            injected_row_count: cnt,
+          });
+        }
       }
 
       const { data, error } = normalizeEntryBody(req.body || {});
@@ -477,9 +834,29 @@ module.exports = async (req, res) => {
         return res.status(403).json({ error: 'You do not have permission to delete this entry' });
       }
 
+      // Cascade-remove any injected daily_tracking rows. The FK is ON DELETE
+      // SET NULL — relying on that would leave the cost rows alive as
+      // "manual" rows, which is invisible and surprising. Explicit DELETE
+      // keeps payroll deletion symmetric with the approval/un-approval flow.
+      let removedSplitRows = 0;
+      if (existing.status === 'approved') {
+        const [{ cnt }] = await sql`
+          SELECT COUNT(*)::int AS cnt FROM daily_tracking
+          WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
+        `;
+        removedSplitRows = cnt;
+        await sql`
+          DELETE FROM daily_tracking
+          WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
+        `;
+      }
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;
-      await writeAudit(sql, companyCode, payload, id, 'DELETE', null, dbToEntry(existing));
-      return res.json({ ok: true });
+      await writeAudit(
+        sql, companyCode, payload, id, 'DELETE',
+        removedSplitRows ? { removed_split_rows: removedSplitRows } : null,
+        dbToEntry(existing),
+      );
+      return res.json({ ok: true, removed_split_rows: removedSplitRows });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
