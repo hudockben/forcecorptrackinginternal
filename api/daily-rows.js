@@ -227,20 +227,34 @@ module.exports = async (req, res) => {
       const { row, projectId } = req.body;
       if (!row) return res.status(400).json({ error: 'row required in body' });
 
-      // Auto-injected rows (linked to a timesheet_entry_id) are read-only
-      // from the division cost tracking tab. They can only be modified via
-      // payroll.html (which uses /api/timesheet-entries?action=resplit).
-      // Existing-row check: if there's already a row with this id and it
-      // has a timesheet_entry_id, refuse the update.
+      // Auto-injected rows (linked to a timesheet_entry_id) are partially
+      // editable from the division cost tracking tab — supervisors may
+      // re-categorize them (cost_code, sub_code, job_class, quantity) but
+      // the labor-truth fields (date, employee, hours, equipment, rate,
+      // material/PO columns) are locked because they came from payroll's
+      // approval. Hours-affecting changes still must go through
+      // payroll.html (resplit).
       const [existingDt] = await sql`
         SELECT timesheet_entry_id FROM daily_tracking
         WHERE row_id = ${id} AND company_code = ${companyCode} AND division = ${division}
       `;
       if (existingDt && existingDt.timesheet_entry_id != null) {
-        return res.status(409).json({
-          error: 'This row was auto-injected from a payroll-approved timesheet and can only be edited in payroll.html.',
-          timesheet_entry_id: String(existingDt.timesheet_entry_id),
-        });
+        // Targeted update — only the whitelisted categorization fields are
+        // applied. Other fields in the body are silently ignored even if
+        // the client sends them, so a tampered request can't overwrite
+        // payroll-approved data.
+        await sql`
+          UPDATE daily_tracking SET
+            cost_code  = ${row.cost_code || null},
+            sub_code   = ${row.sub_code  || null},
+            job_class  = ${row.job_class || null},
+            quantity   = ${parseFloatOrZero(row.quantity)},
+            updated_at = NOW()
+          WHERE row_id = ${id} AND company_code = ${companyCode}
+            AND division = ${division}
+            AND timesheet_entry_id IS NOT NULL
+        `;
+        return res.json({ ok: true, partial: true });
       }
 
       if (projectId) {
