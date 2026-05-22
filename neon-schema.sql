@@ -926,6 +926,24 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_to_shop_hours NUME
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_hours         NUMERIC(6,2);
 
 -- ─────────────────────────────────────────────────
+-- TIMESHEET → DAILY TRACKING bridge
+-- daily_tracking.timesheet_entry_id links a cost-tracking row back to the
+-- payroll approval that produced it. NULL = manually entered in the
+-- division cost tab (legacy path, fully editable). NOT NULL = auto-injected
+-- on payroll approval and managed exclusively from payroll.html.
+-- ON DELETE SET NULL keeps the historical cost row if a timesheet entry is
+-- later deleted; the row becomes a manual row at that point.
+-- Defined AFTER the timesheet_entries CREATE TABLE so a fresh-DB run-schema
+-- has a target for the FK.
+-- ─────────────────────────────────────────────────
+ALTER TABLE daily_tracking
+  ADD COLUMN IF NOT EXISTS timesheet_entry_id BIGINT
+    REFERENCES timesheet_entries(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_dt_ts_entry
+  ON daily_tracking(timesheet_entry_id)
+  WHERE timesheet_entry_id IS NOT NULL;
+
+-- ─────────────────────────────────────────────────
 -- TIMESHEET AUDIT LOG
 -- One row per state-changing action on timesheet_entries.
 -- ─────────────────────────────────────────────────

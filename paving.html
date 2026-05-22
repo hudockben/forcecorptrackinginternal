@@ -590,6 +590,27 @@
     .daily-inner-table td.del-cell .del-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
     .daily-inner-table td.del-cell .copy-row-btn { font-size: 0.65rem; padding: 0.15rem 0.3rem; background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--accent); cursor: pointer; margin-top: 2px; }
     .daily-inner-table td.del-cell .copy-row-btn:hover { color: #fff; background: var(--accent); }
+
+    /* Auto-injected rows from payroll approval — read-only in this tab */
+    tr.injected-row { background: rgba(59,130,246,0.04); }
+    tr.injected-row td input,
+    tr.injected-row td select,
+    tr.injected-row td textarea {
+      background: rgba(59,130,246,0.06);
+      color: var(--muted);
+      cursor: not-allowed;
+    }
+    .row-badge-injected {
+      display: inline-block;
+      background: rgba(59,130,246,0.18);
+      color: #60a5fa;
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      padding: 0.12rem 0.32rem;
+      border-radius: 3px;
+      cursor: help;
+    }
     .inv-cc-cell:hover .inv-cc-btn { opacity: 0.7 !important; }
     .inv-cc-btn:hover { opacity: 1 !important; color: var(--green) !important; }
     .daily-inner-table td input,
@@ -13357,11 +13378,20 @@ function renderDailyTable(projId) {
   rows.forEach((row, _filteredIdx) => {
     const ai = allRows.indexOf(row); // actual index in p.dailyRows (unaffected by filters)
     const c  = calcDaily(row);
+    // Rows auto-injected from payroll approval carry a timesheet_entry_id and
+    // must NOT be editable in this tab — the supervisor edits them via
+    // payroll.html (Edit Split / Un-approve). We still render them so the
+    // cost tracking totals stay accurate.
+    const isInjected = row.timesheet_entry_id != null && row.timesheet_entry_id !== '';
     const tr = document.createElement('tr');
+    if (isInjected) tr.classList.add('injected-row');
     tr.innerHTML = `
       <td class="del-cell">
-        ${perm.canEdit ? `<button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${ai}">&#10005;</button>` : ''}
-        ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${ai})">&#10697;</button>` : ''}
+        ${isInjected
+          ? `<span class="row-badge-injected" title="Injected from payroll approval (timesheet entry #${esc(row.timesheet_entry_id)}). Edit in Payroll.">TS</span>`
+          : `${perm.canEdit ? `<button class="del-btn" data-tab="daily" data-proj="${projId}" data-i="${ai}">&#10005;</button>` : ''}
+             ${perm.canEdit ? `<button class="copy-row-btn" title="Copy row" onclick="copyDailyRow('${projId}',${ai})">&#10697;</button>` : ''}`
+        }
       </td>
       <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="date"           value="${esc(row.date)}"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
@@ -13386,7 +13416,17 @@ function renderDailyTable(projId) {
       <td class="calc">$${fmt(c.total_cost)}</td>
     `;
     tbody.appendChild(tr);
-    if (perm.canEdit) {
+    if (isInjected) {
+      // Lock every editable field in this row. We don't strip the inputs —
+      // the existing event-delegation listeners on cell inputs would break
+      // if we did — but we mark them readonly/disabled so user keystrokes
+      // and the fill-handle drag can't mutate them.
+      tr.querySelectorAll('input, select, textarea').forEach(el => {
+        el.readOnly = true;
+        el.disabled = true;
+        el.tabIndex = -1;
+      });
+    } else if (perm.canEdit) {
       tr.querySelectorAll('td').forEach(td => {
         const el = td.querySelector('input[data-f], select[data-f]');
         if (!el) return;
@@ -13508,6 +13548,8 @@ document.addEventListener('mouseup', () => {
   for (let i = srcIdx + 1; i <= endIdx; i++) {
     const row = (p.dailyRows || [])[i];
     if (!row) continue;
+    // Skip auto-injected rows — they're managed by payroll, not editable here.
+    if (row.timesheet_entry_id != null && row.timesheet_entry_id !== '') continue;
     row[field] = value;
     drPutNow(row.id, row);
     if (tbody) {
@@ -16430,6 +16472,9 @@ document.addEventListener('input', e => {
     const projId = el.dataset.proj;
     const p = getProj(projId); if (!p) return;
     if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
+    // Defense-in-depth: never mutate an auto-injected row from this tab.
+    const _r = p.dailyRows[i];
+    if (_r.timesheet_entry_id != null && _r.timesheet_entry_id !== '') return;
     p.dailyRows[i][f] = el.value;
     // Filter sub_code dropdown to only show sub codes for the selected cost code
     if (f === 'cost_code') {
@@ -16503,6 +16548,9 @@ document.addEventListener('change', e => {
   if (isNaN(i)) return;
   const p = getProj(el.dataset.proj); if (!p) return;
   if (!Array.isArray(p.dailyRows) || !p.dailyRows[i]) return;
+  // Defense-in-depth: auto-injected rows are read-only here.
+  const _r = p.dailyRows[i];
+  if (_r.timesheet_entry_id != null && _r.timesheet_entry_id !== '') return;
   if (p.dailyRows[i][el.dataset.f] !== el.value) {
     p.dailyRows[i][el.dataset.f] = el.value;
   }
