@@ -38,8 +38,9 @@ const REPORT_TYPES = {
   turf_daily_pm:        { division: 'turf',      label: 'Daily PM Report'                  },
   turf_daily_summary:   { division: 'turf',      label: 'Daily Summary Report'             },
   turf_bid_items:       { division: 'turf',      label: 'Bid Line Items vs Actuals — Turf' },
-  paving_daily_pm:      { division: 'paving',    label: 'Daily PM Report'                  },
-  paving_daily_summary: { division: 'paving',    label: 'Daily Summary Report'             },
+  paving_daily_pm:      { division: 'paving',    label: 'Daily PM Report'                    },
+  paving_daily_summary: { division: 'paving',    label: 'Daily Summary Report'               },
+  paving_bid_items:     { division: 'paving',    label: 'Bid Line Items vs Actuals — Paving' },
 };
 
 module.exports = async (req, res) => {

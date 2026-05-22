@@ -432,6 +432,7 @@
     turf_bid_items:       'Bid Line Items vs Actuals — Turf',
     paving_daily_pm:      'Daily PM Report — Paving',
     paving_daily_summary: 'Daily Summary — Paving',
+    paving_bid_items:     'Bid Line Items vs Actuals — Paving',
   };
 
   function openReportEmailModal(opts) {
