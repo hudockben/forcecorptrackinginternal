@@ -429,6 +429,7 @@
     executive:            'Executive Report',
     turf_daily_pm:        'Daily PM Report — Turf',
     turf_daily_summary:   'Daily Summary — Turf',
+    turf_bid_items:       'Bid Line Items vs Actuals — Turf',
     paving_daily_pm:      'Daily PM Report — Paving',
     paving_daily_summary: 'Daily Summary — Paving',
   };

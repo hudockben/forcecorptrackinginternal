@@ -2465,6 +2465,7 @@
     <button class="btn btn-ghost" onclick="closeBidView()">&#8592; Back</button>
     <span id="bid-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
     <div style="margin-left:auto;display:flex;gap:0.5rem">
+      <button class="btn btn-ghost" id="bid-fs-email">&#9993; Email</button>
       <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
       <button class="btn btn-green" id="bid-fs-add">+ Add Item</button>
     </div>
@@ -2503,7 +2504,7 @@
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;width:480px;max-width:94vw;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,0.6);">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--border);">
       <div>
-        <div style="font-weight:700;font-size:0.9rem;color:var(--text)">Export PDF Report</div>
+        <div id="bid-pdf-modal-title" style="font-weight:700;font-size:0.9rem;color:var(--text)">Export PDF Report</div>
         <div style="font-size:0.72rem;color:var(--muted);margin-top:0.2rem">Select which cost codes to include in the report</div>
       </div>
       <button class="modal-close" onclick="closeBidPDFModal()">&#10005;</button>
@@ -2519,7 +2520,7 @@
       </div>
       <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
         <button class="btn btn-ghost" onclick="closeBidPDFModal()">Cancel</button>
-        <button class="btn btn-green" onclick="generateBidPDF()">&#8595; Generate PDF</button>
+        <button class="btn btn-green" id="bid-pdf-modal-action" onclick="generateBidPDF()">&#8595; Generate PDF</button>
       </div>
     </div>
   </div>
@@ -13823,10 +13824,28 @@ document.addEventListener('keydown', e => {
 });
 
 let _bidPDFProjId = null;
+let _bidPDFMode   = 'pdf';
 
-function showBidPDFOptions(projId) {
+function showBidPDFOptions(projId, mode = 'pdf') {
   const p = getProj(projId); if (!p) return;
   _bidPDFProjId = projId;
+  _bidPDFMode   = mode;
+
+  const titleEl  = document.getElementById('bid-pdf-modal-title');
+  const actionEl = document.getElementById('bid-pdf-modal-action');
+  if (mode === 'email') {
+    if (titleEl)  titleEl.textContent = 'Email Bid Items Report';
+    if (actionEl) {
+      actionEl.innerHTML = '✉ Send Email';
+      actionEl.setAttribute('onclick', 'generateBidEmail()');
+    }
+  } else {
+    if (titleEl)  titleEl.textContent = 'Export PDF Report';
+    if (actionEl) {
+      actionEl.innerHTML = '↓ Generate PDF';
+      actionEl.setAttribute('onclick', 'generateBidPDF()');
+    }
+  }
 
   const costCodes = [];
   const seen = new Set();
@@ -13853,6 +13872,7 @@ function showBidPDFOptions(projId) {
 function closeBidPDFModal() {
   document.getElementById('bid-pdf-modal').style.display = 'none';
   _bidPDFProjId = null;
+  _bidPDFMode   = 'pdf';
 }
 
 function _updateBidPDFCount() {
@@ -13879,7 +13899,34 @@ function generateBidPDF() {
   exportBidPDF(projId, selected);
 }
 
-function exportBidPDF(projId, selectedCostCodes = null) {
+function generateBidEmail() {
+  if (!_bidPDFProjId) return;
+  if (typeof window.openReportEmailModal !== 'function') {
+    alert('Email module is still loading — please try again in a moment.');
+    return;
+  }
+  const projId = _bidPDFProjId;
+  const selected = new Set(
+    [...document.querySelectorAll('.bid-pdf-cc-chk:checked')].map(cb => cb.value)
+  );
+  closeBidPDFModal();
+  const p = getProj(projId); if (!p) return;
+  const projName = p['project-name'] || 'Project';
+  const jobNo    = p['job-number'] || null;
+  const built = exportBidPDF(projId, selected, { returnHtml: true });
+  if (!built) return;
+  const emailHtml = built.html.replace(/<script>window\.onload\s*=\s*\(\)\s*=>\s*\{\s*window\.print\(\);?\s*\}<\/script>/i, '');
+  const subject = 'Bid Line Items vs Actuals — ' + projName + (jobNo ? ' (' + jobNo + ')' : '');
+  window.openReportEmailModal({
+    reportType:     'turf_bid_items',
+    projectId:      projId,
+    projectName:    projName,
+    defaultSubject: subject,
+    getHTML:        () => emailHtml,
+  });
+}
+
+function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   const p = getProj(projId); if (!p) return;
   const name  = p['project-name'] || 'Project';
   const jobNo = p['job-number'] ? ` — ${p['job-number']}` : '';
@@ -14001,8 +14048,7 @@ function exportBidPDF(projId, selectedCostCodes = null) {
     </div>`;
   })() : '';
 
-  const win = window.open('', '_blank');
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>${name} — Bid Line Items vs Actuals</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -14059,8 +14105,15 @@ function exportBidPDF(projId, selectedCostCodes = null) {
     </tr></tfoot>
   </table>
   <script>window.onload = () => { window.print(); }<\/script>
-  </body></html>`);
+  </body></html>`;
+
+  if (opts && opts.returnHtml) {
+    return { html: _html, name, jobNo };
+  }
+  const win = window.open('', '_blank');
+  win.document.write(_html);
   win.document.close();
+  return null;
 }
 
 function exportDailyCSV(projId) {
@@ -15162,7 +15215,8 @@ function openBidView(projId) {
   document.getElementById('bid-fs-title').textContent =
     (p['project-name'] || 'Untitled Project') + ' — Bid Line Items vs Actuals';
   document.getElementById('bid-fs-add').onclick = () => { addBidItem(projId); };
-  document.getElementById('bid-fs-pdf').onclick = () => showBidPDFOptions(projId);
+  document.getElementById('bid-fs-pdf').onclick = () => showBidPDFOptions(projId, 'pdf');
+  document.getElementById('bid-fs-email').onclick = () => showBidPDFOptions(projId, 'email');
   // Point the generic tbody/tfoot ids to the fullscreen elements
   document.getElementById('bid-fs-tbody').id = 'btbody-' + projId;
   document.getElementById('bid-fs-tfoot').id = 'bfoot-' + projId;
