@@ -1156,9 +1156,9 @@
       return `
         <tr>
           <td>
-            <div class="pname" style="display:block;">
-              <span class="pname-main" style="display:block;font-weight:700;font-size:0.85rem;letter-spacing:-0.01em;">${esc(p.name)}</span>
-              <span class="pname-sub" style="display:block;font-size:0.65rem;letter-spacing:0.02em;opacity:0.7;margin-top:0.18rem;">${esc(p.jobNumber)}</span>
+            <div class="pname">
+              <span class="pname-main">${esc(p.name)}</span>
+              <span class="pname-sub">${esc(p.jobNumber)}</span>
             </div>
           </td>
           <td><span class="pstatus">${esc(p.status)}</span></td>
@@ -1478,6 +1478,31 @@
         .map(s => s.innerHTML)
         .join('\n');
       const reportDate = document.getElementById('reportDate')?.textContent || '';
+      // Clone the captured sections so we can apply email-safe inline
+      // styles without mutating the live in-page report. The page CSS
+      // uses color:#fff for headings/names (dark theme), which becomes
+      // white-on-white on the email's light background — and selector
+      // specificity beats the wrapper's inline color. Forcing color via
+      // inline style on the clones guarantees the text shows up even
+      // when the email client strips <style> blocks.
+      const projectsClone = projectsEl.cloneNode(true);
+      const payrollClone  = payrollEl ? payrollEl.cloneNode(true) : null;
+      const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .hero-kpi-value, .div-tile-name, .div-kpi-value, .timeline-proj-name, .timeline-label, .pd-name, .pd-total-val';
+      [projectsClone, payrollClone].forEach(root => {
+        if (!root) return;
+        root.querySelectorAll(darkTextSel).forEach(el => {
+          const isMuted = el.classList.contains('pname-sub') || el.classList.contains('timeline-label');
+          el.style.color = isMuted ? '#555' : '#111';
+        });
+        // Stack name + job-number vertically even when <style> is stripped
+        // (the on-page layout relies on flex column on .pname).
+        root.querySelectorAll('.pname').forEach(el => {
+          el.style.display = 'block';
+        });
+        root.querySelectorAll('.pname-main, .pname-sub').forEach(el => {
+          el.style.display = 'block';
+        });
+      });
       // Order matters: include the page's original <style> blocks first, then
       // an override block that resolves :root CSS variables to literal hex
       // values. This way email clients that respect <style> get the same
@@ -1490,8 +1515,8 @@
   <style>${styles}\n:root { ${resolved} }</style>
   <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.2rem;">Executive Report — Projects</div>
   <div style="font-size:0.78rem;color:#555;margin-bottom:1rem;">${reportDate}</div>
-  ${projectsEl.outerHTML}
-  ${payrollEl ? payrollEl.outerHTML : ''}
+  ${projectsClone.outerHTML}
+  ${payrollClone ? payrollClone.outerHTML : ''}
 </div>`;
       window.openReportEmailModal({
         reportType: 'executive',
