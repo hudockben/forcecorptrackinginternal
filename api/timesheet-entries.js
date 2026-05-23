@@ -24,7 +24,7 @@
  *   POST   /api/timesheet-entries?action=approve&id=N   — submitted → approved
  *     Payroll-admin only, row must be in 'submitted'. For turf/paving daily
  *     entries the body MUST include a `split: [...]` array — each element is
- *     { cost_code, sub_code, equipment, labor_hours, equip_hours, is_travel }.
+ *     { cost_code, sub_code, equipment, labor_hours, equip_hours, quantity, is_travel }.
  *     sum(labor_hours) across the array must equal computed_hours + travel_hours.
  *     On success, one daily_tracking row is inserted per split element, tagged
  *     with timesheet_entry_id. Other divisions: legacy behavior (flip status only).
@@ -180,11 +180,15 @@ function normalizeSplitRow(raw, idx) {
   const equipment = safeStr(raw.equipment, 255);
   const labor_hours = raw.labor_hours == null || raw.labor_hours === '' ? 0 : Number(raw.labor_hours);
   const equip_hours = raw.equip_hours == null || raw.equip_hours === '' ? 0 : Number(raw.equip_hours);
+  const quantity    = raw.quantity    == null || raw.quantity    === '' ? 0 : Number(raw.quantity);
   if (!Number.isFinite(labor_hours) || labor_hours < 0 || labor_hours > 24) {
     return { error: `split[${idx}].labor_hours must be between 0 and 24` };
   }
   if (!Number.isFinite(equip_hours) || equip_hours < 0 || equip_hours > 24) {
     return { error: `split[${idx}].equip_hours must be between 0 and 24` };
+  }
+  if (!Number.isFinite(quantity) || quantity < 0) {
+    return { error: `split[${idx}].quantity must be a non-negative number` };
   }
   if (labor_hours <= 0 && equip_hours <= 0) {
     return { error: `split[${idx}] must have labor_hours or equip_hours greater than 0` };
@@ -199,6 +203,7 @@ function normalizeSplitRow(raw, idx) {
       equipment,
       labor_hours: _r2(labor_hours),
       equip_hours: _r2(equip_hours),
+      quantity:    Math.round(quantity * 10000) / 10000,
       is_travel:   raw.is_travel === true,
     },
   };
@@ -276,7 +281,7 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${0},
         ${r.equip_hours},
         ${null}, ${null}, ${null}, ${0}, ${0},
-        ${0}, ${0},
+        ${0}, ${r.quantity || 0},
         ${entry.id}
       )
       ON CONFLICT (row_id) DO NOTHING
@@ -727,7 +732,7 @@ module.exports = async (req, res) => {
       if (!id) return res.status(400).json({ error: 'id is required' });
       const rows = await sql`
         SELECT row_id, project_id, date, cost_code, sub_code, equipment,
-               labor_hours, equip_hours, field_type
+               labor_hours, equip_hours, quantity, field_type
         FROM daily_tracking
         WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
         ORDER BY id ASC
@@ -739,6 +744,7 @@ module.exports = async (req, res) => {
           equipment:   r.equipment   || '',
           labor_hours: r.labor_hours != null ? Number(r.labor_hours) : 0,
           equip_hours: r.equip_hours != null ? Number(r.equip_hours) : 0,
+          quantity:    r.quantity    != null ? Number(r.quantity)    : 0,
           is_travel:   r.field_type === 'Travel',
         })),
       });
