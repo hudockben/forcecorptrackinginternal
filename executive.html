@@ -1156,9 +1156,9 @@
       return `
         <tr>
           <td>
-            <div class="pname">
-              <span class="pname-main">${esc(p.name)}</span>
-              <span class="pname-sub">${esc(p.jobNumber)}</span>
+            <div class="pname" style="display:block;">
+              <span class="pname-main" style="display:block;font-weight:700;font-size:0.85rem;letter-spacing:-0.01em;">${esc(p.name)}</span>
+              <span class="pname-sub" style="display:block;font-size:0.65rem;letter-spacing:0.02em;opacity:0.7;margin-top:0.18rem;">${esc(p.jobNumber)}</span>
             </div>
           </td>
           <td><span class="pstatus">${esc(p.status)}</span></td>
