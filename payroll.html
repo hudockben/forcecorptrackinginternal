@@ -1241,6 +1241,7 @@
               <th style="width:40px">#</th>
               <th>Cost Code</th>
               <th>Sub Code</th>
+              <th style="width:90px">Sub Qty</th>
               <th>Equipment</th>
               <th style="width:90px">Labor h</th>
               <th style="width:90px">Equip h</th>
@@ -2940,6 +2941,7 @@
         splitRows = existing.map(r => ({
           cost_code:   r.cost_code   || '',
           sub_code:    r.sub_code    || '',
+          quantity:    r.quantity    != null ? Number(r.quantity)    : 0,
           equipment:   r.equipment   || '',
           labor_hours: r.labor_hours != null ? Number(r.labor_hours) : 0,
           equip_hours: r.equip_hours != null ? Number(r.equip_hours) : 0,
@@ -2968,6 +2970,7 @@
       return {
         cost_code:   '',
         sub_code:    '',
+        quantity:    0,
         equipment:   '',
         labor_hours: 0,
         equip_hours: 0,
@@ -3014,7 +3017,7 @@
     function renderSplitRows() {
       const tbody = document.getElementById('splitTbody');
       if (!splitRows.length) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:1.2rem">No rows yet — add a labor or travel row above.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:1.2rem">No rows yet — add a labor or travel row above.</td></tr>';
         return;
       }
       tbody.innerHTML = splitRows.map((r, i) => `
@@ -3022,6 +3025,7 @@
           <td style="color:var(--muted);font-variant-numeric:tabular-nums">${i + 1}</td>
           <td><select onchange="splitOnChange(${i},'cost_code',this.value)">${_ccOptions(r.cost_code)}</select></td>
           <td><select onchange="splitOnChange(${i},'sub_code',this.value)">${_scOptions(r.cost_code, r.sub_code)}</select></td>
+          <td><input type="number" class="num" min="0" step="0.01" value="${num2(r.quantity)}" oninput="splitOnChange(${i},'quantity',this.value)"></td>
           <td><select onchange="splitOnChange(${i},'equipment',this.value)">${_eqOptions(r.equipment)}</select></td>
           <td><input type="number" class="num" min="0" max="24" step="0.25" value="${num2(r.labor_hours)}" oninput="splitOnChange(${i},'labor_hours',this.value)"></td>
           <td><input type="number" class="num" min="0" max="24" step="0.25" value="${num2(r.equip_hours)}" oninput="splitOnChange(${i},'equip_hours',this.value)"></td>
@@ -3036,7 +3040,7 @@
     function splitOnChange(idx, field, value) {
       const r = splitRows[idx];
       if (!r) return;
-      if (field === 'labor_hours' || field === 'equip_hours') {
+      if (field === 'labor_hours' || field === 'equip_hours' || field === 'quantity') {
         const n = Number(value);
         r[field] = Number.isFinite(n) && n >= 0 ? n : 0;
       } else if (field === 'is_travel') {
