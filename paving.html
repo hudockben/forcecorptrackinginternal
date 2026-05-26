@@ -2689,7 +2689,7 @@
     <span><span class="dot dot-calc"></span> Computed from all daily tracking entries</span>
     <span><span class="dot dot-warn"></span> Running cost &gt;80% of bid</span>
     <span><span class="dot dot-over"></span> Over budget (&gt;100% of bid)</span>
-    <span>Production Rate = Running Total ÷ Avg Qty (company average cost per unit across all jobs)</span>
+    <span>Production Rate = Running Total ÷ Running Qty (company average cost per unit across all jobs)</span>
     <span>Dim rows = cost codes found in daily tracking with no bid entry yet</span>
   </div>
 </div>
@@ -3797,7 +3797,7 @@ function renderMobileProjCards() {
   el.innerHTML = `<div class="mob-section-title">Projects</div>` + sorted.map(p => {
     const _eb = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
     const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b)*(parseFloat(b.unit_cost)||0), 0);
-    const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+    const actual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
     const variance = bid - actual;
     const pct    = bid ? Math.min(actual / bid * 100, 100) : 0;
     const barColor = !bid ? 'var(--muted)' : actual/bid >= 1 ? 'var(--red)' : actual/bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
@@ -3856,7 +3856,7 @@ function renderHomeTab() {
   projectsList.forEach(p => {
     const _effBidQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
     const projBid    = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b) * (parseFloat(b.unit_cost)||0), 0);
-    const projActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+    const projActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
     const projected  = projectedCostForProject(p);
     totalBid       += projBid;
     totalActual    += projActual;
@@ -3879,13 +3879,13 @@ function renderHomeTab() {
     .filter(p => {
       const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
       const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
-      const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+      const actual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
       return bid > 0 && actual > bid * 1.10;
     })
     .map(p => {
       const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
       const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
-      const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+      const actual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
       return { id: p.id, name: p['project-name'] || 'Untitled', pct: ((actual / bid - 1) * 100).toFixed(1), over: actual - bid };
     });
 
@@ -3946,7 +3946,7 @@ function renderHomeTab() {
     : displayProjects.map(p => {
         const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
         const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
-        const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+        const actual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
         const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
         const variance  = bid - actual;
         const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
@@ -4039,7 +4039,7 @@ function renderHomeTab() {
   const projectTableRows = displayProjects.map(p => {
     const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
     const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
-    const actual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+    const actual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
     const pct    = bid ? Math.min((actual / bid) * 100, 100) : 0;
     const variance  = bid - actual;
     const varStyle  = variance >= 0 ? 'color:var(--green)' : 'color:var(--red)';
@@ -4140,7 +4140,7 @@ function renderHomeTab() {
   allDaily.forEach(r => {
     if (!r.date || r.date < weekAgo) return;
     const key = r.cost_code ? esc(r.cost_code) : '(none)';
-    costTotals[key] = (costTotals[key] || 0) + calcDaily(r).total_cost;
+    costTotals[key] = (costTotals[key] || 0) + dailyRowCost(r);
   });
   const costSorted = Object.entries(costTotals).sort((a, b) => b[1] - a[1]).slice(0, 6);
   const costMax    = costSorted.length ? costSorted[0][1] : 1;
@@ -4539,7 +4539,7 @@ function renderDashProjectCards() {
 
   container.innerHTML = paginationHTML + pageItems.map(p => {
     const totalBid    = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
-    const totalActual = (p.dailyRows||[]).reduce((s,r)=>s+calcDaily(r).total_cost,0);
+    const totalActual = (p.dailyRows||[]).reduce((s,r)=>s+dailyRowCost(r),0);
     const diff = totalBid - totalActual;
     const diffStyle = diff >= 0 ? 'color:var(--green)' : 'color:var(--red)';
     const diffTxt   = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '';
@@ -6830,8 +6830,7 @@ function actualForBidItem(b, projId) {
   return rows.reduce((s, r) => {
     if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
         (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
-      const c = calcDaily(r);
-      return s + c.total_cost;
+      return s + dailyRowCost(r);
     }
     return s;
   }, 0);
@@ -6896,7 +6895,7 @@ function projForBidItem(b, actual, rqty, bidQty, bidTot, isComplete) {
 function projectedCostForProject(p) {
   const _effQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
   const projDone = (p['status'] || '') === 'Complete';
-  const totalActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+  const totalActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
   if (projDone) return totalActual;
   const sumLines = (p.bidItems||[]).reduce((s,b) => {
     const bidQty = _effQty(b);
@@ -6918,7 +6917,7 @@ function renderBidFooter(projId, opts = {}) {
   const footEl = document.getElementById(footId); if (!footEl) return;
   const _effQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
   const totalBid    = (p.bidItems||[]).reduce((s,b) => s + _effQty(b)*(parseFloat(b.unit_cost)||0), 0);
-  const totalActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+  const totalActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
   const totalProj   = projectedCostForProject(p);
   const diff = totalBid - totalActual;
   const diffCls = diff >= 0 ? 'foot-under' : 'foot-over';
@@ -7188,7 +7187,7 @@ function projectCardHTML(p) {
   const status = p['status'] || '';
   const totalBid      = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
   // Sum ALL daily rows so PO-inserted rows (no cost code) are included in the badge
-  const totalActual   = (p.dailyRows||[]).reduce((s,r)=>s+calcDaily(r).total_cost,0);
+  const totalActual   = (p.dailyRows||[]).reduce((s,r)=>s+dailyRowCost(r),0);
   const contractValue = parseFloat(p['contract-value']) || 0;
   const diff          = totalBid - totalActual;
   const uniqueDates = new Set((p.dailyRows||[]).map(r => r.date).filter(Boolean));
@@ -9777,7 +9776,8 @@ function buildDailyAgg() {
     const nl = parseFloat(row.num_laborers) || 0;
     a.running_qty        += q;
     if (q) a.qty_count++;
-    a.total_cost         += importedCost > 0 ? importedCost : c.total_cost;
+    const _rowCost = (pvPreview.active && pvPreview.rate > 0) ? c.total_cost : (importedCost > 0 ? importedCost : c.total_cost);
+    a.total_cost         += _rowCost;
     a.imported_total     += importedCost;
     a.labor_hours        += parseFloat(row.labor_hours)   || 0;
     a.equip_hours        += parseFloat(row.equip_hours)   || 0;
@@ -9826,7 +9826,7 @@ function buildProjectSubCodeAgg() {
       const d     = projAgg[key];
       const c     = calcDaily(row);
       const importedCost = parseFloat(row.total_cost) || 0;
-      const rowCost = importedCost > 0 ? importedCost : c.total_cost;
+      const rowCost = (pvPreview.active && pvPreview.rate > 0) ? c.total_cost : (importedCost > 0 ? importedCost : c.total_cost);
       const qty   = parseFloat(row.quantity)    || 0;
       const lh    = parseFloat(row.labor_hours) || 0;
       const eh    = parseFloat(row.equip_hours) || 0;
@@ -13306,6 +13306,12 @@ function calcDaily(row) {
   return { labor_cost, equip_total, total_cost };
 }
 
+function dailyRowCost(row) {
+  const c = calcDaily(row);
+  const importedCost = parseFloat(row.total_cost) || 0;
+  return (pvPreview.active && pvPreview.rate > 0) ? c.total_cost : (importedCost > 0 ? importedCost : c.total_cost);
+}
+
 function makeSelect(options, selected, dataTab, dataI, dataF, dataProj) {
   const proj = dataProj ? ` data-proj="${dataProj}"` : '';
   // Always include the current saved value as an option so existing rows
@@ -13795,7 +13801,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   // Pre-compute full-project grand totals (always all cost codes, regardless of filter)
   const _eff = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
   const grandBid    = items.reduce((s,b) => s + _eff(b)*(parseFloat(b.unit_cost)||0), 0);
-  const grandActual = (p.dailyRows||[]).reduce((s,r) => s + calcDaily(r).total_cost, 0);
+  const grandActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
   const grandProj   = projectedCostForProject(p);
   const grandHrs    = items.reduce((s,b) => s + cumulativeHoursForBidItem(b, projId), 0);
 
@@ -17410,7 +17416,7 @@ function _schedPaceForProject(proj) {
     a.running_qty  += qty;
     a.labor_hours  += parseFloat(row.labor_hours) || 0;
     a.equip_hours  += parseFloat(row.equip_hours) || 0;
-    a.total_cost   += calcDaily(row).total_cost;
+    a.total_cost   += dailyRowCost(row);
     if (row.date) {
       a.dates.add(row.date);
       a.dailyByDate[row.date] = (a.dailyByDate[row.date] || 0) + qty;
