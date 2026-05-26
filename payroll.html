@@ -2897,12 +2897,12 @@
     // Equipment list: global list loaded once, per-job list built on each modal open
     let splitEquipmentGlobal = null;
     let splitEquipmentList   = null;
-    let _projectsCache       = null;
+    const _projEquipCache    = {};
 
     function escAttr(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
     function num2(n) { return (Math.round((Number(n) || 0) * 100) / 100).toFixed(2); }
 
-    async function loadEquipmentForSplit(jobId) {
+    async function loadEquipmentForSplit(division, jobId) {
       if (!splitEquipmentGlobal) {
         try {
           const res = await fetch('/api/equipment', { headers: authHeaders() });
@@ -2914,18 +2914,24 @@
       }
       const globalSet = new Set(splitEquipmentGlobal);
       let projEquip = [];
-      if (jobId) {
-        try {
-          if (!_projectsCache) {
-            const res = await fetch('/api/projects', { headers: authHeaders() });
-            const j = await res.json();
-            _projectsCache = j.projects || [];
-          }
-          const proj = _projectsCache.find(p => String(p.id) === String(jobId));
-          if (proj && Array.isArray(proj.assigned_equipment)) {
-            projEquip = proj.assigned_equipment.filter(Boolean);
-          }
-        } catch { /* ignore */ }
+      if (jobId && (division === 'turf' || division === 'paving')) {
+        const cacheKey = `${division}::${jobId}`;
+        if (_projEquipCache[cacheKey]) {
+          projEquip = _projEquipCache[cacheKey];
+        } else {
+          const prefix = division === 'paving' ? 'fct_paving_project_' : 'fct_project_';
+          try {
+            const res = await fetch('/api/data/' + encodeURIComponent(prefix + jobId), { headers: authHeaders() });
+            if (res.ok) {
+              const j = await res.json();
+              const blob = j.value;
+              if (blob && Array.isArray(blob.assigned_equipment)) {
+                projEquip = blob.assigned_equipment.filter(Boolean);
+              }
+            }
+          } catch { /* ignore */ }
+          _projEquipCache[cacheKey] = projEquip;
+        }
       }
       const merged = [...splitEquipmentGlobal];
       for (const name of projEquip) {
@@ -2993,7 +2999,7 @@
       // Load lookups in parallel; pre-populate from existing injected rows
       // when re-editing.
       const [_eq, _cc, existing] = await Promise.all([
-        loadEquipmentForSplit(entry.job_id),
+        loadEquipmentForSplit(entry.division, entry.job_id),
         loadCostCodesFor(entry.division, entry.job_id),
         (mode === 'resplit'
           ? fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() })
