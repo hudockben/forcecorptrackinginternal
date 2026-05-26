@@ -4168,9 +4168,21 @@ function renderHomeTab() {
   <div class="home-wrap">
 
     ${overBudgetProjects.length ? `
-    <div style="display:flex;align-items:center;gap:0.6rem;padding:0.45rem 0.9rem;background:rgba(239,68,68,0.06);border-left:3px solid var(--red);border-radius:0 4px 4px 0;margin-bottom:1.25rem;font-size:0.77rem;flex-wrap:wrap">
-      <span style="color:var(--red);font-weight:600;flex-shrink:0">⚠ Budget Alert</span>
-      <span style="color:var(--muted);flex:1">${overBudgetProjects.map(p => `${esc(p.name)} <strong style="color:var(--red)">+${p.pct}%</strong> <span style="font-size:0.68rem">($${fmt(p.over)} over)</span>`).join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</span>
+    <div id="home-budget-alert" data-expanded="0" style="background:rgba(239,68,68,0.06);border-left:3px solid var(--red);border-radius:0 4px 4px 0;margin-bottom:1.25rem;font-size:0.77rem">
+      <div style="display:flex;align-items:center;gap:0.6rem;padding:0.45rem 0.9rem;cursor:pointer;user-select:none" onclick="
+        const wrap = document.getElementById('home-budget-alert');
+        const exp = wrap.dataset.expanded==='1';
+        wrap.dataset.expanded = exp ? '0' : '1';
+        wrap.querySelector('#home-alert-detail').style.display = exp ? 'none' : 'flex';
+        wrap.querySelector('.alert-chevron').style.transform = exp ? 'rotate(-90deg)' : 'rotate(0deg)';
+      ">
+        <span style="color:var(--red);font-weight:600;flex-shrink:0">⚠ Budget Alert</span>
+        <span style="color:var(--muted);font-size:0.75rem">${overBudgetProjects.length} project${overBudgetProjects.length > 1 ? 's' : ''} over budget</span>
+        <span class="alert-chevron" style="color:var(--muted);font-size:0.65rem;transition:transform 0.15s;transform:rotate(-90deg)">▼</span>
+      </div>
+      <div id="home-alert-detail" style="display:none;padding:0.25rem 0.9rem 0.5rem;flex-wrap:wrap;gap:0.15rem 0;flex-direction:column">
+        <span style="color:var(--muted)">${overBudgetProjects.map(p => `${esc(p.name)} <strong style="color:var(--red)">+${p.pct}%</strong> <span style="font-size:0.68rem">($${fmt(p.over)} over)</span>`).join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</span>
+      </div>
     </div>` : ''}
 
     <div class="home-metric-strip">
