@@ -1060,6 +1060,48 @@
     }
 
     .hidden { display: none !important; }
+
+    /* ── Searchable combobox (equipment) ── */
+    .cb { position: relative; width: 100%; }
+    .cb-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.82rem;
+      padding: 0.4rem 0.5rem;
+      outline: none;
+      font-family: inherit;
+    }
+    .cb-input:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
+    .cb-input::placeholder { color: var(--muted, #6b7280); }
+    .cb-menu {
+      position: absolute;
+      top: calc(100% + 2px);
+      left: 0;
+      min-width: 100%;
+      max-width: 280px;
+      z-index: 1000;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      max-height: 220px;
+      overflow-y: auto;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+    }
+    .cb-menu[hidden] { display: none; }
+    .cb-opt {
+      padding: 0.3rem 0.5rem;
+      font-size: 0.82rem;
+      color: var(--text);
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
+    .cb-opt-empty { padding: 0.3rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
   </style>
 </head>
 <body>
@@ -2852,21 +2894,50 @@
     // Cache of cost-code lookups per division+jobId so repeated opens don't
     // hammer /api/timesheet-job-costcodes.
     const splitCcCache = {};
-    // Equipment list (loaded once per session)
-    let splitEquipmentList = null;
+    // Equipment list: global list loaded once, per-job list built on each modal open
+    let splitEquipmentGlobal = null;
+    let splitEquipmentList   = null;
+    const _projEquipCache    = {};
 
     function escAttr(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
     function num2(n) { return (Math.round((Number(n) || 0) * 100) / 100).toFixed(2); }
 
-    async function loadEquipmentForSplit() {
-      if (splitEquipmentList) return splitEquipmentList;
-      try {
-        const res = await fetch('/api/equipment', { headers: authHeaders() });
-        const j = await res.json();
-        splitEquipmentList = Array.isArray(j.equipment)
-          ? j.equipment.map(e => e.name).filter(Boolean).sort((a,b) => a.localeCompare(b))
-          : [];
-      } catch { splitEquipmentList = []; }
+    async function loadEquipmentForSplit(division, jobId) {
+      if (!splitEquipmentGlobal) {
+        try {
+          const res = await fetch('/api/equipment', { headers: authHeaders() });
+          const j = await res.json();
+          splitEquipmentGlobal = Array.isArray(j.equipment)
+            ? j.equipment.map(e => e.name).filter(Boolean)
+            : [];
+        } catch { splitEquipmentGlobal = []; }
+      }
+      const globalSet = new Set(splitEquipmentGlobal);
+      let projEquip = [];
+      if (jobId && (division === 'turf' || division === 'paving')) {
+        const cacheKey = `${division}::${jobId}`;
+        if (_projEquipCache[cacheKey]) {
+          projEquip = _projEquipCache[cacheKey];
+        } else {
+          const prefix = division === 'paving' ? 'fct_paving_project_' : 'fct_project_';
+          try {
+            const res = await fetch('/api/data/' + encodeURIComponent(prefix + jobId), { headers: authHeaders() });
+            if (res.ok) {
+              const j = await res.json();
+              const blob = j.value;
+              if (blob && Array.isArray(blob.assigned_equipment)) {
+                projEquip = blob.assigned_equipment.filter(Boolean);
+              }
+            }
+          } catch { /* ignore */ }
+          _projEquipCache[cacheKey] = projEquip;
+        }
+      }
+      const merged = [...splitEquipmentGlobal];
+      for (const name of projEquip) {
+        if (!globalSet.has(name)) merged.push(name);
+      }
+      splitEquipmentList = merged.sort((a, b) => a.localeCompare(b));
       return splitEquipmentList;
     }
 
@@ -2928,7 +2999,7 @@
       // Load lookups in parallel; pre-populate from existing injected rows
       // when re-editing.
       const [_eq, _cc, existing] = await Promise.all([
-        loadEquipmentForSplit(),
+        loadEquipmentForSplit(entry.division, entry.job_id),
         loadCostCodesFor(entry.division, entry.job_id),
         (mode === 'resplit'
           ? fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() })
@@ -3006,13 +3077,122 @@
       return '<option value="">—</option>' +
         subs.map(s => `<option value="${escAttr(s)}" ${s === selected ? 'selected' : ''}>${escapeHtml(s || '(blank)')}</option>`).join('');
     }
-    function _eqOptions(selected) {
-      const list = splitEquipmentList || [];
-      const names = list.slice();
-      if (selected && !names.includes(selected)) names.unshift(selected);
-      return '<option value="">— none —</option>' +
-        names.map(n => `<option value="${escAttr(n)}" ${n === selected ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+    // ── Searchable combobox for equipment ──
+    const _eqCbState = new WeakMap();
+    const _eqCbEsc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    function _eqCbHtml(rowIdx, currentValue) {
+      return `<div class="cb" data-row="${rowIdx}">` +
+        `<input type="text" class="cb-input" value="${_eqCbEsc(currentValue || '')}" ` +
+          `placeholder="— none —" autocomplete="off" spellcheck="false" ` +
+          `onfocus="eqCbOnFocus(this)" oninput="eqCbOnInput(this)" ` +
+          `onkeydown="eqCbOnKey(event, this)" onblur="eqCbOnBlur(this)">` +
+        `<div class="cb-menu" hidden></div>` +
+      `</div>`;
     }
+
+    function eqCbOnFocus(input) {
+      const options = (splitEquipmentList || []).slice();
+      _eqCbState.set(input, {
+        options,
+        filtered: options,
+        highlight: Math.max(0, options.indexOf(input.value)),
+        originalValue: input.value,
+      });
+      eqCbRenderMenu(input);
+      input.select();
+    }
+    function eqCbOnInput(input) {
+      if (input._eqCbBypass) return;
+      const state = _eqCbState.get(input);
+      if (!state) return;
+      const q = input.value.trim().toLowerCase();
+      state.filtered = q ? state.options.filter(o => o.toLowerCase().includes(q)) : state.options;
+      const exact = state.filtered.findIndex(o => o.toLowerCase() === q);
+      state.highlight = exact >= 0 ? exact : (state.filtered.length ? 0 : -1);
+      eqCbRenderMenu(input);
+    }
+    function eqCbOnKey(event, input) {
+      const state = _eqCbState.get(input);
+      if (!state) return;
+      const list = state.filtered;
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (list.length) { state.highlight = (state.highlight + 1) % list.length; eqCbRenderMenu(input); eqCbScrollHi(input); }
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (list.length) { state.highlight = (state.highlight - 1 + list.length) % list.length; eqCbRenderMenu(input); eqCbScrollHi(input); }
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        const pick = list[state.highlight];
+        if (pick != null) input.value = pick;
+        eqCbCommit(input);
+        input.blur();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        input.value = state.originalValue;
+        eqCbClose(input);
+        input.blur();
+      } else if (event.key === 'Tab') {
+        const pick = list[state.highlight];
+        if (pick != null) input.value = pick;
+        eqCbCommit(input);
+      }
+    }
+    function eqCbOnBlur(input) {
+      setTimeout(() => { if (document.activeElement !== input) eqCbCommit(input); }, 120);
+    }
+    function eqCbRenderMenu(input) {
+      const state = _eqCbState.get(input);
+      const menu = input.nextElementSibling;
+      if (!state || !menu) return;
+      if (state.filtered.length === 0) {
+        menu.innerHTML = '<div class="cb-opt-empty">No matches</div>';
+      } else {
+        menu.innerHTML = state.filtered.map((opt, i) =>
+          `<div class="cb-opt${i === state.highlight ? ' hi' : ''}" data-val="${_eqCbEsc(opt)}">${_eqCbEsc(opt)}</div>`
+        ).join('');
+      }
+      menu.hidden = false;
+    }
+    function eqCbScrollHi(input) {
+      const hi = input.nextElementSibling && input.nextElementSibling.querySelector('.cb-opt.hi');
+      if (hi) hi.scrollIntoView({ block: 'nearest' });
+    }
+    function eqCbClose(input) {
+      const menu = input.nextElementSibling;
+      if (menu) menu.hidden = true;
+      _eqCbState.delete(input);
+    }
+    function eqCbCommit(input) {
+      const cb = input.closest('.cb');
+      if (!cb) return;
+      eqCbClose(input);
+      const rowIdx = parseInt(cb.dataset.row, 10);
+      if (!isNaN(rowIdx)) splitOnChange(rowIdx, 'equipment', input.value);
+    }
+    document.addEventListener('mousedown', (e) => {
+      const opt = e.target.closest('.cb-opt');
+      if (opt) {
+        const menu = opt.closest('.cb-menu');
+        if (!menu) return;
+        e.preventDefault();
+        const input = menu.previousElementSibling;
+        if (input) {
+          input.value = opt.dataset.val || '';
+          eqCbCommit(input);
+          input.blur();
+        }
+        return;
+      }
+      const cb = e.target.closest('.cb');
+      document.querySelectorAll('.cb-menu:not([hidden])').forEach(m => {
+        if (m.closest('.cb') !== cb) {
+          const input = m.previousElementSibling;
+          if (input) eqCbClose(input);
+        }
+      });
+    });
 
     function renderSplitRows() {
       const tbody = document.getElementById('splitTbody');
@@ -3026,7 +3206,7 @@
           <td><select onchange="splitOnChange(${i},'cost_code',this.value)">${_ccOptions(r.cost_code)}</select></td>
           <td><select onchange="splitOnChange(${i},'sub_code',this.value)">${_scOptions(r.cost_code, r.sub_code)}</select></td>
           <td><input type="number" class="num" min="0" step="0.01" value="${num2(r.quantity)}" oninput="splitOnChange(${i},'quantity',this.value)"></td>
-          <td><select onchange="splitOnChange(${i},'equipment',this.value)">${_eqOptions(r.equipment)}</select></td>
+          <td>${_eqCbHtml(i, r.equipment)}</td>
           <td><input type="number" class="num" min="0" max="24" step="0.25" value="${num2(r.labor_hours)}" oninput="splitOnChange(${i},'labor_hours',this.value)"></td>
           <td><input type="number" class="num" min="0" max="24" step="0.25" value="${num2(r.equip_hours)}" oninput="splitOnChange(${i},'equip_hours',this.value)"></td>
           <td class="travel-cell">
