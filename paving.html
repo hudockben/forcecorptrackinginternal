@@ -10358,7 +10358,7 @@ function renderCostTable() {
       <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
       <td class="calc">${fmt(avg_qty,2)}</td>
       <td class="calc">$${fmt(rtotal)}</td>
-      <td class="calc" title="Production Rate: company average cost per unit across all jobs">${avg_qty ? '$'+fmt(past_avg) : '—'}</td>
+      <td class="calc" title="Production Rate: company average cost per unit across all jobs">${rqty ? '$'+fmt(past_avg) : '—'}</td>
       <td class="calc">$${fmt(actualTotal)}</td>
       <td class="calc">${fmt(a.labor_hours,1)}</td>
       <td class="calc">${days}</td>
@@ -10422,7 +10422,7 @@ function renderCostTable() {
         <td class="calc">${p_btot  ? '$'+fmt(p_btot)  : '—'}</td>
         <td class="calc">${fmt(p_avg_qty,2)}</td>
         <td class="calc">$${fmt(p_rtotal)}</td>
-        <td class="calc">${p_avg_qty ? '$'+fmt(p_past_avg) : '—'}</td>
+        <td class="calc">${p_rqty ? '$'+fmt(p_past_avg) : '—'}</td>
         <td class="calc${p_alertCls}">$${fmt(p_actual)}</td>
         <td class="calc">${fmt(pa.labor_hours,1)}</td>
         <td class="calc">${p_days}</td>

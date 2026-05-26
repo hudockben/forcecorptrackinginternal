@@ -2825,7 +2825,7 @@
     <span><span class="dot dot-calc"></span> Computed from all daily tracking entries</span>
     <span><span class="dot dot-warn"></span> Running cost &gt;80% of bid</span>
     <span><span class="dot dot-over"></span> Over budget (&gt;100% of bid)</span>
-    <span>Production Rate = Running Total ÷ Avg Qty (company average cost per unit across all jobs)</span>
+    <span>Production Rate = Running Total ÷ Running Qty (company average cost per unit across all jobs)</span>
     <span>Dim rows = cost codes found in daily tracking with no bid entry yet</span>
   </div>
 </div>
@@ -10533,7 +10533,7 @@ function renderCostTable() {
     }, 0);
     const avg_qty  = sumProjAvgQty || (a.qty_count ? rqty / a.qty_count : 0);
     const rtotal   = a.total_cost;
-    const past_avg = avg_qty ? rtotal / avg_qty : 0;
+    const past_avg = rqty ? rtotal / rqty : 0;
     const days     = a.dates.size;
     const avg_lab  = a.num_laborers_count ? a.num_laborers_sum / a.num_laborers_count
                    : (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
@@ -10573,7 +10573,7 @@ function renderCostTable() {
       <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
       <td class="calc">${fmt(avg_qty,2)}</td>
       <td class="calc">$${fmt(rtotal)}</td>
-      <td class="calc" title="Production Rate: company average cost per unit across all jobs">${avg_qty ? '$'+fmt(past_avg) : '—'}</td>
+      <td class="calc" title="Production Rate: company average cost per unit across all jobs">${rqty ? '$'+fmt(past_avg) : '—'}</td>
       <td class="calc">$${fmt(actualTotal)}</td>
       <td class="calc">${fmt(a.labor_hours,1)}</td>
       <td class="calc">${days}</td>
@@ -10615,7 +10615,7 @@ function renderCostTable() {
       const p_rqty    = pa.running_qty;
       const p_avg_qty = pa.qty_count ? p_rqty / pa.qty_count : 0;
       const p_rtotal  = pa.total_cost;
-      const p_past_avg = p_avg_qty ? p_rtotal / p_avg_qty : 0;
+      const p_past_avg = p_rqty ? p_rtotal / p_rqty : 0;
       const p_days    = pa.dates.size;
       const p_avg_lab = pa.num_laborers_count ? pa.num_laborers_sum / pa.num_laborers_count
                       : (p_days && pa.labor_hours) ? pa.labor_hours / p_days / 8 : 0;
@@ -10637,7 +10637,7 @@ function renderCostTable() {
         <td class="calc">${p_btot  ? '$'+fmt(p_btot)  : '—'}</td>
         <td class="calc">${fmt(p_avg_qty,2)}</td>
         <td class="calc">$${fmt(p_rtotal)}</td>
-        <td class="calc">${p_avg_qty ? '$'+fmt(p_past_avg) : '—'}</td>
+        <td class="calc">${p_rqty ? '$'+fmt(p_past_avg) : '—'}</td>
         <td class="calc${p_alertCls}">$${fmt(p_actual)}</td>
         <td class="calc">${fmt(pa.labor_hours,1)}</td>
         <td class="calc">${p_days}</td>
