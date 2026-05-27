@@ -752,6 +752,27 @@
     .btn-blue   { background: #1d4ed8; color: #fff; }
     .btn-danger { background: #7f1d1d; color: #fca5a5; }
 
+    /* Save status indicator */
+    .save-indicator {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      font-size: 0.72rem; font-weight: 500; padding: 0.15rem 0.55rem;
+      border-radius: 4px; transition: opacity 0.3s, background 0.3s;
+      white-space: nowrap; user-select: none;
+    }
+    .save-indicator.idle    { opacity: 0; }
+    .save-indicator.saving  { opacity: 1; background: rgba(234,179,8,0.15); color: #fbbf24; }
+    .save-indicator.saved   { opacity: 1; background: rgba(34,197,94,0.15); color: #4ade80; }
+    .save-indicator.error   { opacity: 1; background: rgba(239,68,68,0.18); color: #f87171; }
+    .save-indicator.retrying { opacity: 1; background: rgba(234,179,8,0.15); color: #fbbf24; }
+    .save-indicator .si-dot {
+      width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    }
+    .save-indicator.saving .si-dot  { background: #fbbf24; animation: si-pulse 1s infinite; }
+    .save-indicator.saved .si-dot   { background: #4ade80; }
+    .save-indicator.error .si-dot   { background: #f87171; }
+    .save-indicator.retrying .si-dot { background: #fbbf24; animation: si-pulse 0.6s infinite; }
+    @keyframes si-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
     /* ── Table wrapper ── */
     .table-wrap { overflow-x: auto; padding: 1rem; }
     /* Make cost-tracking table wrap the scroll container so sticky headers work */
@@ -2383,6 +2404,7 @@
   <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
     <button class="btn btn-ghost" onclick="closeDailyView()">&#8592; Back</button>
     <span id="daily-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
+    <span id="dr-save-indicator" class="save-indicator idle"><span class="si-dot"></span><span class="si-label"></span></span>
     <div style="margin-left:auto;display:flex;gap:0.5rem">
       <button class="btn btn-ghost" id="daily-fs-reload" title="Reload entries from server">&#8635; Reload</button>
       <button class="btn btn-ghost" id="daily-fs-export">Export CSV</button>
@@ -3174,10 +3196,157 @@ function switchDivision() {
 })();
 
 /* ═══════════════════════════════════════════
+   DAILY-ROWS SAVE INDICATOR + RETRY
+═══════════════════════════════════════════ */
+let _drInflight = 0;
+let _drSaveHideTimer = null;
+
+function _drShowSave(state, text) {
+  const el = document.getElementById('dr-save-indicator');
+  if (!el) return;
+  const label = el.querySelector('.si-label');
+  el.className = 'save-indicator ' + state;
+  if (label) label.textContent = text || '';
+  clearTimeout(_drSaveHideTimer);
+  if (state === 'saved') {
+    _drSaveHideTimer = setTimeout(() => {
+      if (el.classList.contains('saved')) el.className = 'save-indicator idle';
+    }, 3000);
+  }
+}
+
+function _drSaveStart() {
+  _drInflight++;
+  _drShowSave('saving', 'Saving…');
+}
+function _drSaveOk() {
+  _drInflight = Math.max(0, _drInflight - 1);
+  if (_drInflight === 0) _drShowSave('saved', 'Saved');
+}
+function _drSaveFail(msg) {
+  _drInflight = Math.max(0, _drInflight - 1);
+  _drShowSave('error', msg || 'Save failed');
+}
+
+async function _fetchRetry(url, opts, retries) {
+  if (retries === undefined) retries = 3;
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const r = await fetch(url, opts);
+      if (r.ok || r.status < 500) return r;
+      lastErr = new Error('HTTP ' + r.status);
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt < retries) {
+      _drShowSave('retrying', 'Retrying… (' + (attempt + 1) + '/' + retries + ')');
+      await new Promise(ok => setTimeout(ok, 1000 * Math.pow(2, attempt)));
+    }
+  }
+  throw lastErr;
+}
+
+/* ═══════════════════════════════════════════
+   WRITE-AHEAD LOG (WAL)
+   Persists every row mutation to localStorage BEFORE the network request.
+   On success the entry is removed. On page load, surviving entries are
+   replayed — so even a browser crash or force-close cannot lose data.
+═══════════════════════════════════════════ */
+const _WAL_KEY = 'fct_dr_wal_' + DIVISION;
+const _WAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // discard entries older than 7 days
+
+function _walRead() {
+  try { return JSON.parse(localStorage.getItem(_WAL_KEY)) || {}; } catch { return {}; }
+}
+function _walWrite(wal) {
+  try { localStorage.setItem(_WAL_KEY, JSON.stringify(wal)); } catch (e) {
+    console.warn('[WAL] localStorage write failed:', e.message);
+  }
+}
+function _walAdd(id, entry) {
+  const wal = _walRead();
+  wal[id] = { ...entry, _ts: Date.now() };
+  _walWrite(wal);
+}
+function _walRemove(id) {
+  const wal = _walRead();
+  delete wal[id];
+  _walWrite(wal);
+}
+function _walClear() {
+  try { localStorage.removeItem(_WAL_KEY); } catch {}
+}
+
+async function _walReplay() {
+  const wal = _walRead();
+  const ids = Object.keys(wal);
+  if (!ids.length) return;
+  const now = Date.now();
+  let replayed = 0, expired = 0;
+  for (const id of ids) {
+    const entry = wal[id];
+    if (!entry || (now - (entry._ts || 0)) > _WAL_MAX_AGE_MS) {
+      _walRemove(id);
+      expired++;
+      continue;
+    }
+    try {
+      _drSaveStart();
+      if (entry.method === 'POST') {
+        const r = await _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+          body: JSON.stringify({ projectId: entry.projectId, row: entry.row })
+        });
+        if (r.ok || r.status === 409) { _walRemove(id); _drSaveOk(); replayed++; }
+        else { _drSaveFail('Replay failed'); }
+      } else if (entry.method === 'PUT') {
+        const r = await _fetchRetry(
+          `${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(entry.rowId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+          body: JSON.stringify({ row: entry.row, projectId: entry.projectId })
+        });
+        if (r.ok || r.status === 409) { _walRemove(id); _drSaveOk(); replayed++; }
+        else { _drSaveFail('Replay failed'); }
+      }
+    } catch (err) {
+      console.warn('[WAL] replay entry failed:', id, err.message);
+      _drSaveFail('Replay failed — will retry');
+    }
+  }
+  if (replayed) console.log(`[WAL] replayed ${replayed} pending write(s)`);
+  if (expired) console.log(`[WAL] discarded ${expired} expired entry/ies`);
+  if (replayed) _drShowSave('saved', `Recovered ${replayed} row(s)`);
+}
+
+let _walSyncTimer = null;
+function _walStartPeriodicSync() {
+  if (_walSyncTimer) return;
+  _walSyncTimer = setInterval(() => {
+    const wal = _walRead();
+    if (Object.keys(wal).length > 0) {
+      console.log('[WAL] periodic sync — replaying', Object.keys(wal).length, 'pending write(s)');
+      _walReplay();
+    }
+  }, 30000);
+}
+
+window.addEventListener('beforeunload', (e) => {
+  const wal = _walRead();
+  const pending = Object.keys(wal).length + Object.keys(_drSavePending).length;
+  if (pending > 0) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
+/* ═══════════════════════════════════════════
    DAILY-ROWS API CLIENT
    Scalable per-row storage in daily_tracking table.
-   All calls are fire-and-forget (except drGetAll + drPostBulk).
-   Errors are logged but never trigger the save-error banner.
+   Every mutation is written to a localStorage WAL before the network
+   request, retried with exponential backoff, and shown in the indicator.
 ═══════════════════════════════════════════ */
 
 /** Fetch daily rows for this company.
@@ -3209,33 +3378,50 @@ async function drGetAll(opts) {
   }
 }
 
-/** Insert one row into the DB (fire-and-forget). */
+/** Insert one row into the DB — WAL-protected with retry + indicator. */
 function drPost(projectId, row) {
-  fetch(`${API_BASE}/daily-rows?division=${DIVISION}`, {
+  const walId = 'post_' + row.id;
+  _walAdd(walId, { method: 'POST', projectId, row, rowId: row.id });
+  _drSaveStart();
+  _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ projectId, row })
   }).then(r => {
-    if (!r.ok) {
+    if (r.ok || r.status === 409) {
+      _walRemove(walId);
+      _drSaveOk();
+    } else {
       console.warn('[daily-rows] POST failed:', r.status);
-      // Row was not saved — add it to pending so the next edit will upsert it
       _drSavePending[String(row.id)] = row;
+      _drSaveFail('Row not saved');
     }
   }).catch(err => {
     console.warn('[daily-rows] POST error:', err.message);
     _drSavePending[String(row.id)] = row;
+    _drSaveFail('Row not saved — offline?');
   });
   saveProjectIndex();
 }
 
 /** Insert multiple rows at once (awaitable — used for migration and CSV import). */
 async function drPostBulk(projectId, rows) {
-  const r = await fetch(`${API_BASE}/daily-rows?division=${DIVISION}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body: JSON.stringify({ projectId, rows })
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const walIds = rows.map(r => 'post_' + r.id);
+  rows.forEach((r, i) => _walAdd(walIds[i], { method: 'POST', projectId, row: r, rowId: r.id }));
+  _drSaveStart();
+  try {
+    const r = await _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+      body: JSON.stringify({ projectId, rows })
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    walIds.forEach(id => _walRemove(id));
+    _drSaveOk();
+  } catch (err) {
+    _drSaveFail('Bulk save failed');
+    throw err;
+  }
 }
 
 // Debounce map: rowId → timer handle
@@ -3247,6 +3433,7 @@ const _drSavePending = {};
 function drPutDebounced(rowId, row) {
   clearTimeout(_drSaveTimers[rowId]);
   _drSavePending[rowId] = row;
+  _walAdd('put_' + rowId, { method: 'PUT', rowId, row, projectId: row._projectId || null });
   _drSaveTimers[rowId] = setTimeout(() => {
     delete _drSavePending[rowId];
     delete _drSaveTimers[rowId];
@@ -3263,7 +3450,10 @@ function drPutNow(rowId, row) {
 }
 
 function _drPutNow(rowId, row) {
-  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
+  const walId = 'put_' + rowId;
+  _walAdd(walId, { method: 'PUT', rowId, row, projectId: row._projectId || null });
+  _drSaveStart();
+  _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ row, projectId: row._projectId || null })
@@ -3271,10 +3461,15 @@ function _drPutNow(rowId, row) {
     if (!r.ok) {
       console.warn('[daily-rows] PUT failed:', r.status);
       _showSaveError(r.status === 401);
+      _drSaveFail('Update failed');
+    } else {
+      _walRemove(walId);
+      _drSaveOk();
     }
   }).catch(err => {
     console.warn('[daily-rows] PUT error:', err.message);
     _showSaveError(false);
+    _drSaveFail('Update failed — offline?');
   });
   saveProjectIndex();
 }
@@ -3304,39 +3499,51 @@ document.addEventListener('visibilitychange', () => {
 
 /** Delete one row by its JS id. */
 function drDelete(rowId) {
-  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
+  _drSaveStart();
+  _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${fctToken}` }
-  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE failed:', r.status); })
-    .catch(err => console.warn('[daily-rows] DELETE error:', err.message));
+  }).then(r => {
+    if (!r.ok) { console.warn('[daily-rows] DELETE failed:', r.status); _drSaveFail('Delete failed'); }
+    else { _drSaveOk(); }
+  }).catch(err => { console.warn('[daily-rows] DELETE error:', err.message); _drSaveFail('Delete failed'); });
   saveProjectIndex();
 }
 
 /** Delete all rows for a project (called when deleting the project itself). */
 function drDeleteByProject(projectId) {
-  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&projectId=${encodeURIComponent(projectId)}`, {
+  _drSaveStart();
+  _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&projectId=${encodeURIComponent(projectId)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${fctToken}` }
-  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by project failed:', r.status); })
-    .catch(err => console.warn('[daily-rows] DELETE by project error:', err.message));
+  }).then(r => {
+    if (!r.ok) { console.warn('[daily-rows] DELETE by project failed:', r.status); _drSaveFail(); }
+    else { _drSaveOk(); }
+  }).catch(err => { console.warn('[daily-rows] DELETE by project error:', err.message); _drSaveFail(); });
 }
 
 /** Delete all rows matching a cost code + sub code across all projects. */
 function drDeleteByCode(costCode, subCode) {
-  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&costCode=${encodeURIComponent(costCode)}&subCode=${encodeURIComponent(subCode)}`, {
+  _drSaveStart();
+  _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&costCode=${encodeURIComponent(costCode)}&subCode=${encodeURIComponent(subCode)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${fctToken}` }
-  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by code failed:', r.status); })
-    .catch(err => console.warn('[daily-rows] DELETE by code error:', err.message));
+  }).then(r => {
+    if (!r.ok) { console.warn('[daily-rows] DELETE by code failed:', r.status); _drSaveFail(); }
+    else { _drSaveOk(); }
+  }).catch(err => { console.warn('[daily-rows] DELETE by code error:', err.message); _drSaveFail(); });
 }
 
 /** Delete all rows matching a sub code across ALL cost codes. */
 function drDeleteBySubCode(subCode) {
-  fetch(`${API_BASE}/daily-rows?division=${DIVISION}&subCode=${encodeURIComponent(subCode)}`, {
+  _drSaveStart();
+  _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&subCode=${encodeURIComponent(subCode)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${fctToken}` }
-  }).then(r => { if (!r.ok) console.warn('[daily-rows] DELETE by subCode failed:', r.status); })
-    .catch(err => console.warn('[daily-rows] DELETE by subCode error:', err.message));
+  }).then(r => {
+    if (!r.ok) { console.warn('[daily-rows] DELETE by subCode failed:', r.status); _drSaveFail(); }
+    else { _drSaveOk(); }
+  }).catch(err => { console.warn('[daily-rows] DELETE by subCode error:', err.message); _drSaveFail(); });
 }
 
 /* ═══════════════════════════════════════════
@@ -17052,6 +17259,9 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     loadScaleManualEntries(),
     loadSoeUnitOverrides(),
   ]);
+
+  // Replay any writes that were persisted to WAL but never confirmed
+  _walReplay().then(() => _walStartPeriodicSync());
 
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
   if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
