@@ -3112,9 +3112,105 @@ async function _fetchRetry(url, opts, retries) {
 }
 
 /* ═══════════════════════════════════════════
+   WRITE-AHEAD LOG (WAL)
+   Persists every row mutation to localStorage BEFORE the network request.
+   On success the entry is removed. On page load, surviving entries are
+   replayed — so even a browser crash or force-close cannot lose data.
+═══════════════════════════════════════════ */
+const _WAL_KEY = 'fct_dr_wal_' + DIVISION;
+const _WAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function _walRead() {
+  try { return JSON.parse(localStorage.getItem(_WAL_KEY)) || {}; } catch { return {}; }
+}
+function _walWrite(wal) {
+  try { localStorage.setItem(_WAL_KEY, JSON.stringify(wal)); } catch (e) {
+    console.warn('[WAL] localStorage write failed:', e.message);
+  }
+}
+function _walAdd(id, entry) {
+  const wal = _walRead();
+  wal[id] = { ...entry, _ts: Date.now() };
+  _walWrite(wal);
+}
+function _walRemove(id) {
+  const wal = _walRead();
+  delete wal[id];
+  _walWrite(wal);
+}
+function _walClear() {
+  try { localStorage.removeItem(_WAL_KEY); } catch {}
+}
+
+async function _walReplay() {
+  const wal = _walRead();
+  const ids = Object.keys(wal);
+  if (!ids.length) return;
+  const now = Date.now();
+  let replayed = 0, expired = 0;
+  for (const id of ids) {
+    const entry = wal[id];
+    if (!entry || (now - (entry._ts || 0)) > _WAL_MAX_AGE_MS) {
+      _walRemove(id);
+      expired++;
+      continue;
+    }
+    try {
+      _drSaveStart();
+      if (entry.method === 'POST') {
+        const r = await _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+          body: JSON.stringify({ projectId: entry.projectId, row: entry.row })
+        });
+        if (r.ok || r.status === 409) { _walRemove(id); _drSaveOk(); replayed++; }
+        else { _drSaveFail('Replay failed'); }
+      } else if (entry.method === 'PUT') {
+        const r = await _fetchRetry(
+          `${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(entry.rowId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+          body: JSON.stringify({ row: entry.row, projectId: entry.projectId })
+        });
+        if (r.ok || r.status === 409) { _walRemove(id); _drSaveOk(); replayed++; }
+        else { _drSaveFail('Replay failed'); }
+      }
+    } catch (err) {
+      console.warn('[WAL] replay entry failed:', id, err.message);
+      _drSaveFail('Replay failed — will retry');
+    }
+  }
+  if (replayed) console.log(`[WAL] replayed ${replayed} pending write(s)`);
+  if (expired) console.log(`[WAL] discarded ${expired} expired entry/ies`);
+  if (replayed) _drShowSave('saved', `Recovered ${replayed} row(s)`);
+}
+
+let _walSyncTimer = null;
+function _walStartPeriodicSync() {
+  if (_walSyncTimer) return;
+  _walSyncTimer = setInterval(() => {
+    const wal = _walRead();
+    if (Object.keys(wal).length > 0) {
+      console.log('[WAL] periodic sync — replaying', Object.keys(wal).length, 'pending write(s)');
+      _walReplay();
+    }
+  }, 30000);
+}
+
+window.addEventListener('beforeunload', (e) => {
+  const wal = _walRead();
+  const pending = Object.keys(wal).length + Object.keys(_drSavePending).length;
+  if (pending > 0) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
+/* ═══════════════════════════════════════════
    DAILY-ROWS API CLIENT
    Scalable per-row storage in daily_tracking table.
-   Saves include retry with exponential backoff and a visible indicator.
+   Every mutation is written to a localStorage WAL before the network
+   request, retried with exponential backoff, and shown in the indicator.
 ═══════════════════════════════════════════ */
 
 /** Fetch daily rows for this company.
@@ -3146,20 +3242,23 @@ async function drGetAll(opts) {
   }
 }
 
-/** Insert one row into the DB with retry + indicator. */
+/** Insert one row into the DB — WAL-protected with retry + indicator. */
 function drPost(projectId, row) {
+  const walId = 'post_' + row.id;
+  _walAdd(walId, { method: 'POST', projectId, row, rowId: row.id });
   _drSaveStart();
   _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ projectId, row })
   }).then(r => {
-    if (!r.ok) {
+    if (r.ok || r.status === 409) {
+      _walRemove(walId);
+      _drSaveOk();
+    } else {
       console.warn('[daily-rows] POST failed:', r.status);
       _drSavePending[String(row.id)] = row;
       _drSaveFail('Row not saved');
-    } else {
-      _drSaveOk();
     }
   }).catch(err => {
     console.warn('[daily-rows] POST error:', err.message);
@@ -3171,6 +3270,8 @@ function drPost(projectId, row) {
 
 /** Insert multiple rows at once (awaitable — used for migration and CSV import). */
 async function drPostBulk(projectId, rows) {
+  const walIds = rows.map(r => 'post_' + r.id);
+  rows.forEach((r, i) => _walAdd(walIds[i], { method: 'POST', projectId, row: r, rowId: r.id }));
   _drSaveStart();
   try {
     const r = await _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}`, {
@@ -3179,6 +3280,7 @@ async function drPostBulk(projectId, rows) {
       body: JSON.stringify({ projectId, rows })
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    walIds.forEach(id => _walRemove(id));
     _drSaveOk();
   } catch (err) {
     _drSaveFail('Bulk save failed');
@@ -3195,6 +3297,7 @@ const _drSavePending = {};
 function drPutDebounced(rowId, row) {
   clearTimeout(_drSaveTimers[rowId]);
   _drSavePending[rowId] = row;
+  _walAdd('put_' + rowId, { method: 'PUT', rowId, row, projectId: row._projectId || null });
   _drSaveTimers[rowId] = setTimeout(() => {
     delete _drSavePending[rowId];
     delete _drSaveTimers[rowId];
@@ -3211,6 +3314,8 @@ function drPutNow(rowId, row) {
 }
 
 function _drPutNow(rowId, row) {
+  const walId = 'put_' + rowId;
+  _walAdd(walId, { method: 'PUT', rowId, row, projectId: row._projectId || null });
   _drSaveStart();
   _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
     method: 'PUT',
@@ -3222,6 +3327,7 @@ function _drPutNow(rowId, row) {
       _showSaveError(r.status === 401);
       _drSaveFail('Update failed');
     } else {
+      _walRemove(walId);
       _drSaveOk();
     }
   }).catch(err => {
@@ -17066,6 +17172,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (curIds === newIds && index.length > 0 && !tsChanged) return;
     if (_isEditing()) return;
     await loadProjects();
+    _walReplay().then(() => _walStartPeriodicSync());
     if (activeTab === 'home') renderHomeTab();
     if (activeTab === 'info') renderProjectInfoComputed();
   }
