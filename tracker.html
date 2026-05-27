@@ -3627,8 +3627,20 @@ function cbOptionsFor(listKey) {
   if (listKey === 'suppliers') return (lists.suppliers || []).map(s => s && s.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
   if (listKey === 'employees') return (lists.employees || []).map(e => e && e.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
   if (listKey === 'equipment') return (lists.equipment || []).map(e => e && e.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
+  if (listKey === 'projects') return projectsList.slice().sort((a,b) => (a['project-name']||'').localeCompare(b['project-name']||'')).map(p => ({ value: p.id, label: p['project-name'] || 'Untitled' }));
+  if (listKey.startsWith('tr_subcodes:')) {
+    const trId = listKey.slice(12);
+    const tr = truckingEntries.find(t => t.id === trId);
+    if (!tr || !tr.project_id) return [];
+    const proj = getProj(tr.project_id);
+    if (!proj || !Array.isArray(proj.bidItems)) return [];
+    return proj.bidItems.filter(b => b.cost_code || b.sub_code).sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b => ({ value: (b.cost_code||'') + '||' + (b.sub_code||''), label: [b.cost_code, b.sub_code].filter(Boolean).join(' / ') + (b.description ? ' — ' + b.description : '') }));
+  }
   return [];
 }
+
+const _cbLabel = o => typeof o === 'string' ? o : o.label;
+const _cbValue = o => typeof o === 'string' ? o : o.value;
 
 function cbOnFocus(input) {
   const cb = input.closest('.cb');
@@ -3637,23 +3649,22 @@ function cbOnFocus(input) {
   _cbState.set(input, {
     options,
     filtered: options,
-    highlight: Math.max(0, options.indexOf(input.value)),
+    highlight: Math.max(0, options.findIndex(o => _cbLabel(o) === input.value)),
     originalValue: input.value,
+    originalCbValue: input.dataset.cbValue || '',
   });
   cbRenderMenu(input);
   input.select();
 }
 function cbOnInput(event, input) {
-  // See paving.html cbOnInput — synthetic input from cbCommitInput must
-  // pass through so the document `input` handler's auto-fill logic
-  // (employee → rate, equipment → unit_cost, etc.) runs on commit.
   if (input._cbBypassFilter) return;
   if (event && event.stopPropagation) event.stopPropagation();
+  delete input.dataset.cbValue;
   const state = _cbState.get(input);
   if (!state) return;
   const q = input.value.trim().toLowerCase();
-  state.filtered = q ? state.options.filter(o => o.toLowerCase().includes(q)) : state.options;
-  const exact = state.filtered.findIndex(o => o.toLowerCase() === q);
+  state.filtered = q ? state.options.filter(o => _cbLabel(o).toLowerCase().includes(q)) : state.options;
+  const exact = state.filtered.findIndex(o => _cbLabel(o).toLowerCase() === q);
   state.highlight = exact >= 0 ? exact : (state.filtered.length ? 0 : -1);
   cbRenderMenu(input);
 }
@@ -3670,19 +3681,18 @@ function cbOnKey(event, input) {
   } else if (event.key === 'Enter') {
     event.preventDefault();
     const pick = list[state.highlight];
-    if (pick != null) input.value = pick;
+    if (pick != null) { input.value = _cbLabel(pick); if (typeof pick === 'object') input.dataset.cbValue = pick.value; }
     cbCommitInput(input);
-    // In the daily tracker, advance focus to the cell below (Excel-style)
-    // so the user can keep navigating. Elsewhere, blur as before.
     if (!dailyNavFromEl(input, 'down')) input.blur();
   } else if (event.key === 'Escape') {
     event.preventDefault();
     input.value = state.originalValue;
+    if (state.originalCbValue) input.dataset.cbValue = state.originalCbValue; else delete input.dataset.cbValue;
     cbClose(input);
     input.blur();
   } else if (event.key === 'Tab') {
     const pick = list[state.highlight];
-    if (pick != null) input.value = pick;
+    if (pick != null) { input.value = _cbLabel(pick); if (typeof pick === 'object') input.dataset.cbValue = pick.value; }
     cbCommitInput(input);
   }
 }
@@ -3694,10 +3704,10 @@ function cbRenderMenu(input) {
   const menu = input.nextElementSibling;
   if (!state || !menu) return;
   if (state.filtered.length === 0) {
-    menu.innerHTML = '<div class="cb-opt-empty">No matches — value will be saved as typed</div>';
+    menu.innerHTML = '<div class="cb-opt-empty">No matches</div>';
   } else {
     menu.innerHTML = state.filtered.map((opt, i) =>
-      `<div class="cb-opt${i === state.highlight ? ' hi' : ''}" data-val="${_cbEsc(opt)}">${_cbEsc(opt)}</div>`
+      `<div class="cb-opt${i === state.highlight ? ' hi' : ''}" data-val="${_cbEsc(_cbLabel(opt))}"${typeof opt === 'object' ? ` data-cb-val="${_cbEsc(opt.value)}"` : ''}>${_cbEsc(_cbLabel(opt))}</div>`
     ).join('');
   }
   menu.hidden = false;
@@ -3714,11 +3724,15 @@ function cbClose(input) {
 function cbCommitInput(input) {
   const cb = input.closest('.cb');
   if (!cb) return;
+  if (!input.dataset.cbValue && input.value.trim()) {
+    const options = cbOptionsFor(cb.dataset.list);
+    if (options.length > 0 && typeof options[0] === 'object') {
+      const match = options.find(o => o.label.toLowerCase() === input.value.trim().toLowerCase());
+      if (match) { input.value = match.label; input.dataset.cbValue = match.value; }
+    }
+  }
   cbClose(input);
   if (cb.dataset.passthrough === '1') {
-    // Fire BOTH input and change so all existing delegated handlers
-    // run (the input handler carries the auto-fill side effects that
-    // the change handler does not duplicate).
     input._cbBypassFilter = true;
     try {
       input.dispatchEvent(new Event('input',  { bubbles: true }));
@@ -3737,8 +3751,8 @@ document.addEventListener('mousedown', (e) => {
     const input = menu.previousElementSibling;
     if (input) {
       input.value = opt.dataset.val || '';
+      if (opt.dataset.cbVal) input.dataset.cbValue = opt.dataset.cbVal; else delete input.dataset.cbValue;
       cbCommitInput(input);
-      // Same advance-on-commit behavior as keyboard Enter (see cbOnKey).
       if (!dailyNavFromEl(input, 'down')) input.blur();
     }
     return;
@@ -8607,17 +8621,14 @@ function renderTruckingTab() {
           `<select data-tr-id="${tr.id}" data-tr-field="${field}"
             style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${opts}</select>`;
 
-        const driverOpts = `<option value="">— select —</option>` +
-          lists.employees.slice().sort((a,b) => a.name.localeCompare(b.name)).map(e =>
-            `<option value="${esc(e.name)}" ${e.name === tr.driver ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
-
-        const truckOpts = `<option value="">— select —</option>` +
-          (lists.equipment || []).slice().sort((a,b) => (a.name||'').localeCompare(b.name||'')).map(eq =>
-            `<option value="${esc(eq.name)}" ${eq.name === tr.truck_type ? 'selected' : ''}>${esc(eq.name)}</option>`).join('');
-
-        const projOpts = `<option value="">— none —</option>` +
-          projectsList.slice().sort((a,b) => (a['project-name']||'').localeCompare(b['project-name']||'')).map(p =>
-            `<option value="${esc(p.id)}" ${p.id === tr.project_id ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`).join('');
+        const projName = tr.project_id ? ((getProj(tr.project_id) || {})['project-name'] || 'Untitled') : '';
+        const subLabel = (() => {
+          if (!tr.project_id || (!tr.cost_code && !tr.sub_code)) return '';
+          const proj = getProj(tr.project_id);
+          const bi = ((proj && proj.bidItems) || []).find(b => (b.cost_code||'') === (tr.cost_code||'') && (b.sub_code||'') === (tr.sub_code||''));
+          const base = [tr.cost_code, tr.sub_code].filter(Boolean).join(' / ');
+          return bi && bi.description ? base + ' — ' + bi.description : base;
+        })();
 
         const statusOpts = ['pending', 'approved', 'invoiced'].map(s =>
           `<option value="${s}" ${s === tr.status ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
@@ -8636,8 +8647,8 @@ function renderTruckingTab() {
 
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(tr.tr_number)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px">${sel('project_id', projOpts)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${sel('sub_code_sel', _trSubCodeOpts(tr))}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${cbHtml('projects', projName, '— none —', `data-tr-id="${tr.id}" data-tr-field="project_id"`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${cbHtml('tr_subcodes:' + tr.id, subLabel, tr.project_id ? '— select —' : '— pick project first —', `data-tr-id="${tr.id}" data-tr-field="sub_code_sel"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('employees', tr.driver || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="driver"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('equipment', tr.truck_type || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="truck_type"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:150px">${inp('material_hauled', 'text', 'placeholder="Material hauled"')}</td>
@@ -9178,6 +9189,7 @@ document.getElementById('trucking-root').addEventListener('input', e => {
   const el = e.target;
   const id = el.dataset.trId, field = el.dataset.trField;
   if (!id || !field) return;
+  if (field === 'project_id' || field === 'sub_code_sel') return;
   const tr = truckingEntries.find(t => t.id === id);
   if (!tr) return;
   tr[field] = el.value;
@@ -9200,7 +9212,9 @@ document.getElementById('trucking-root').addEventListener('change', e => {
   const oldProj = tr.project_id;
 
   if (field === 'sub_code_sel') {
-    const [cc, sc] = el.value.split('||');
+    const mapped = el.dataset.cbValue || el.value || '';
+    delete el.dataset.cbValue;
+    const [cc, sc] = mapped.split('||');
     tr.cost_code = cc || '';
     tr.sub_code  = sc || '';
     saveTruckingEntries();
@@ -9209,7 +9223,12 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     return;
   }
 
-  tr[field] = el.value;
+  if (field === 'project_id') {
+    tr[field] = el.dataset.cbValue || '';
+    delete el.dataset.cbValue;
+  } else {
+    tr[field] = el.value;
+  }
 
   if (field === 'status') {
     tr.status_changed_at = new Date().toISOString();
@@ -9250,11 +9269,10 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     tr.cost_code = '';
     tr.sub_code  = '';
 
-    // Update sub_code dropdown for this row
     const subCell = document.getElementById('tr-subcode-cell-' + tr.id);
     if (subCell) {
-      const subSel = subCell.querySelector('select');
-      if (subSel) subSel.innerHTML = _trSubCodeOpts(tr);
+      const subInput = subCell.querySelector('.cb-input');
+      if (subInput) { subInput.value = ''; delete subInput.dataset.cbValue; }
     }
 
     // Insert new row into new project
