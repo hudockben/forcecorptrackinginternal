@@ -147,6 +147,31 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE INDEX IF NOT EXISTS idx_projects_company ON projects(company_code);
 
+-- Projects table: add columns used by api/projects.js that were not in the
+-- original CREATE TABLE.  All nullable or defaulted so existing rows survive.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS status            TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS contract_type     TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS client            TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS gc                TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS pm                TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS superintendent    TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS estimator         TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS client_contact    TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS address           TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS city_state        TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS end_date          DATE;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS contract_days     TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS contract_amount   TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS revised_amount    TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS retention         TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS scope             TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS notes             TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS sqft              TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS prevailing_wage   BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS assigned_employees JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS assigned_equipment JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS sort_order        INTEGER NOT NULL DEFAULT 0;
+
 -- ─────────────────────────────────────────────────
 -- BID ITEMS
 -- One row per bid line item, linked to a project.
