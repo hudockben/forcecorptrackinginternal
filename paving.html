@@ -4952,31 +4952,22 @@ async function loadProjects() {
         });
       }
     } catch (e) { console.warn('[recovery] orphan DB check failed:', e.message); }
-    // Pass 3 — normalized projects table. Checks the turf blob prefix to
-    // avoid pulling turf projects into the paving view.
+    // Pass 3 — normalized projects table: find IDs in the DB that are
+    // missing from the blob index, then recover only those whose
+    // fct_paving_project_* blob still exists (avoids resurrecting deleted projects).
     try {
       const res = await fetch(`${API_BASE}/projects`, {
         headers: { 'Authorization': `Bearer ${fctToken}` }
       });
       if (res.ok) {
         const { projects: dbProjects } = await res.json();
-        const missing = (dbProjects || []).filter(p => p && p.id && !_recoveredIds.has(p.id));
-        if (missing.length) {
-          const missingIds = missing.map(p => p.id);
-          const dbById = {};
-          missing.forEach(p => { dbById[p.id] = p; });
-          const pavingBatch = await apiBatchGet(missingIds.map(id => 'fct_paving_project_' + id));
-          const stillMissing = missingIds.filter(id => !pavingBatch['fct_paving_project_' + id]);
-          let turfBatch = {};
-          if (stillMissing.length) {
-            turfBatch = await apiBatchGet(stillMissing.map(id => 'fct_project_' + id));
-          }
+        const missingIds = (dbProjects || []).map(p => p.id).filter(id => id && !_recoveredIds.has(id));
+        if (missingIds.length) {
+          const batch = await apiBatchGet(missingIds.map(id => 'fct_paving_project_' + id));
           missingIds.forEach(id => {
-            if (turfBatch['fct_project_' + id]) return;
-            const p = pavingBatch['fct_paving_project_' + id] || dbById[id];
+            const p = batch['fct_paving_project_' + id];
             if (p && typeof p === 'object' && p.id) {
               if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
-              if (!Array.isArray(p.bidItems)) p.bidItems = [];
               projectsList.push(p);
               _recoveredIds.add(p.id);
             }
@@ -6574,6 +6565,11 @@ function deleteProject(id) {
     drDeleteByProject(id);
     projectsList = projectsList.filter(pr => pr.id !== id);
     saveProjectIndex();
+    apiPut('fct_paving_project_' + id, null);
+    fetch(`${API_BASE}/projects?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    }).catch(() => {});
     renderProjectsTab();
   });
 

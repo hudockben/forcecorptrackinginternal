@@ -5076,47 +5076,29 @@ async function loadProjects() {
         });
       }
     } catch (e) { console.warn('[recovery] orphan DB check failed:', e.message); }
-    // Pass 3 — normalized projects table (catches projects that exist in
-    // the DB but are missing from the blob index, even if the blob itself
-    // was never created). Checks the paving blob prefix to avoid pulling
-    // paving projects into the turf view.
+    // Pass 3 — normalized projects table: find IDs in the DB that are
+    // missing from the blob index, then recover only those whose
+    // fct_project_* blob still exists (avoids resurrecting deleted projects).
     try {
-      console.log('[recovery pass 3] checking /api/projects for missing projects...');
       const res = await fetch(`${API_BASE}/projects`, {
         headers: { 'Authorization': `Bearer ${fctToken}` }
       });
-      console.log('[recovery pass 3] /api/projects status:', res.status);
       if (res.ok) {
         const { projects: dbProjects } = await res.json();
-        console.log('[recovery pass 3] DB returned', (dbProjects || []).length, 'projects, index has', _recoveredIds.size);
-        const missing = (dbProjects || []).filter(p => p && p.id && !_recoveredIds.has(p.id));
-        console.log('[recovery pass 3] missing from index:', missing.length, missing.map(p => p['project-name'] || p.name || p.id));
-        if (missing.length) {
-          const missingIds = missing.map(p => p.id);
-          const dbById = {};
-          missing.forEach(p => { dbById[p.id] = p; });
-          const turfBatch = await apiBatchGet(missingIds.map(id => 'fct_project_' + id));
-          const turfFound = missingIds.filter(id => turfBatch['fct_project_' + id]).length;
-          const stillMissing = missingIds.filter(id => !turfBatch['fct_project_' + id]);
-          let pavingBatch = {};
-          if (stillMissing.length) {
-            pavingBatch = await apiBatchGet(stillMissing.map(id => 'fct_paving_project_' + id));
-          }
-          const pavingFound = stillMissing.filter(id => pavingBatch['fct_paving_project_' + id]).length;
-          console.log('[recovery pass 3] turf blobs found:', turfFound, '| paving blobs found:', pavingFound, '| no blob:', stillMissing.length - pavingFound);
+        const missingIds = (dbProjects || []).map(p => p.id).filter(id => id && !_recoveredIds.has(id));
+        if (missingIds.length) {
+          const batch = await apiBatchGet(missingIds.map(id => 'fct_project_' + id));
           missingIds.forEach(id => {
-            if (pavingBatch['fct_paving_project_' + id]) return;
-            const p = turfBatch['fct_project_' + id] || dbById[id];
+            const p = batch['fct_project_' + id];
             if (p && typeof p === 'object' && p.id) {
               if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
-              if (!Array.isArray(p.bidItems)) p.bidItems = [];
               projectsList.push(p);
               _recoveredIds.add(p.id);
             }
           });
         }
       }
-    } catch (e) { console.warn('[recovery pass 3] FAILED:', e.message, e.stack); }
+    } catch (e) { console.warn('[recovery] projects table check failed:', e.message); }
     if (projectsList.length > _preRecoveryCount) {
       console.log('[recovery] restored', projectsList.length - _preRecoveryCount, 'missing project(s)');
       await _loadAndMigrateDailyRows();
@@ -6751,6 +6733,11 @@ function deleteProject(id) {
     drDeleteByProject(id);
     projectsList = projectsList.filter(pr => pr.id !== id);
     saveProjectIndex();
+    apiPut('fct_project_' + id, null);
+    fetch(`${API_BASE}/projects?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    }).catch(() => {});
     renderProjectsTab();
   });
 
