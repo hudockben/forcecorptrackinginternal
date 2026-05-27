@@ -5076,6 +5076,32 @@ async function loadProjects() {
         });
       }
     } catch (e) { console.warn('[recovery] orphan DB check failed:', e.message); }
+    // Pass 3 — normalized projects table (catches projects whose blob exists
+    // but were dropped from the index AND have no daily rows yet).
+    // Falls back to the DB project data if the blob is also missing.
+    try {
+      const res = await fetch(`${API_BASE}/projects`, {
+        headers: { 'Authorization': `Bearer ${fctToken}` }
+      });
+      if (res.ok) {
+        const { projects: dbProjects } = await res.json();
+        const missing = (dbProjects || []).filter(p => p && p.id && !_recoveredIds.has(p.id));
+        if (missing.length) {
+          const missingIds = missing.map(p => p.id);
+          const batch = await apiBatchGet(missingIds.map(id => 'fct_project_' + id));
+          const dbById = {};
+          missing.forEach(p => { dbById[p.id] = p; });
+          missingIds.forEach(id => {
+            const p = batch['fct_project_' + id] || dbById[id];
+            if (p && typeof p === 'object' && p.id) {
+              if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
+              projectsList.push(p);
+              _recoveredIds.add(p.id);
+            }
+          });
+        }
+      }
+    } catch (e) { console.warn('[recovery] projects table check failed:', e.message); }
     if (projectsList.length > _preRecoveryCount) {
       console.log('[recovery] restored', projectsList.length - _preRecoveryCount, 'missing project(s)');
       await _loadAndMigrateDailyRows();
