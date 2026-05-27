@@ -5076,22 +5076,33 @@ async function loadProjects() {
         });
       }
     } catch (e) { console.warn('[recovery] orphan DB check failed:', e.message); }
-    // Pass 3 — normalized projects table (catches projects whose blob exists
-    // but were dropped from the index AND have no daily rows yet).
-    // Only recovers projects that have a fct_project_* blob (division-safe).
+    // Pass 3 — normalized projects table (catches projects that exist in
+    // the DB but are missing from the blob index, even if the blob itself
+    // was never created). Checks the paving blob prefix to avoid pulling
+    // paving projects into the turf view.
     try {
       const res = await fetch(`${API_BASE}/projects`, {
         headers: { 'Authorization': `Bearer ${fctToken}` }
       });
       if (res.ok) {
         const { projects: dbProjects } = await res.json();
-        const missingIds = (dbProjects || []).map(p => p.id).filter(id => id && !_recoveredIds.has(id));
-        if (missingIds.length) {
-          const batch = await apiBatchGet(missingIds.map(id => 'fct_project_' + id));
+        const missing = (dbProjects || []).filter(p => p && p.id && !_recoveredIds.has(p.id));
+        if (missing.length) {
+          const missingIds = missing.map(p => p.id);
+          const dbById = {};
+          missing.forEach(p => { dbById[p.id] = p; });
+          const turfBatch = await apiBatchGet(missingIds.map(id => 'fct_project_' + id));
+          const stillMissing = missingIds.filter(id => !turfBatch['fct_project_' + id]);
+          let pavingBatch = {};
+          if (stillMissing.length) {
+            pavingBatch = await apiBatchGet(stillMissing.map(id => 'fct_paving_project_' + id));
+          }
           missingIds.forEach(id => {
-            const p = batch['fct_project_' + id];
+            if (pavingBatch['fct_paving_project_' + id]) return;
+            const p = turfBatch['fct_project_' + id] || dbById[id];
             if (p && typeof p === 'object' && p.id) {
               if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
+              if (!Array.isArray(p.bidItems)) p.bidItems = [];
               projectsList.push(p);
               _recoveredIds.add(p.id);
             }
