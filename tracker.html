@@ -14015,12 +14015,14 @@ function massAddDailyRows(projId) {
   const p = getProj(projId); if (!p) return;
   if (!Array.isArray(p.dailyRows)) p.dailyRows = [];
   const cap = Math.min(count, 100);
+  const newRows = [];
   for (let i = 0; i < cap; i++) {
     const row = defaultDailyRow();
     row._projectId = projId;
     p.dailyRows.push(row);
-    drPost(projId, row);
+    newRows.push(row);
   }
+  drPostBulk(projId, newRows).catch(err => console.warn('[mass-add] bulk save failed:', err.message));
   input.value = '';
   renderDailyTable(projId);
 }
