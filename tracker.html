@@ -3254,14 +3254,19 @@ async function _fetchRetry(url, opts, retries) {
    replayed — so even a browser crash or force-close cannot lose data.
 ═══════════════════════════════════════════ */
 const _WAL_KEY = 'fct_dr_wal_' + DIVISION;
-const _WAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // discard entries older than 7 days
+const _WAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+let _walCache = null;
 function _walRead() {
-  try { return JSON.parse(localStorage.getItem(_WAL_KEY)) || {}; } catch { return {}; }
+  if (_walCache !== null) return _walCache;
+  try { _walCache = JSON.parse(localStorage.getItem(_WAL_KEY)) || {}; } catch { _walCache = {}; }
+  return _walCache;
 }
 function _walWrite(wal) {
+  _walCache = wal;
   try { localStorage.setItem(_WAL_KEY, JSON.stringify(wal)); } catch (e) {
     console.warn('[WAL] localStorage write failed:', e.message);
+    _drShowSave('error', 'Local backup failed — save may not survive a crash');
   }
 }
 function _walAdd(id, entry) {
@@ -3275,6 +3280,7 @@ function _walRemove(id) {
   _walWrite(wal);
 }
 function _walClear() {
+  _walCache = {};
   try { localStorage.removeItem(_WAL_KEY); } catch {}
 }
 
@@ -3318,7 +3324,12 @@ async function _walReplay() {
   }
   if (replayed) console.log(`[WAL] replayed ${replayed} pending write(s)`);
   if (expired) console.log(`[WAL] discarded ${expired} expired entry/ies`);
-  if (replayed) _drShowSave('saved', `Recovered ${replayed} row(s)`);
+  const remaining = Object.keys(_walRead()).length;
+  if (remaining > 0) {
+    _drShowSave('error', `${remaining} unsaved row(s) — will retry`);
+  } else if (replayed) {
+    _drShowSave('saved', `Recovered ${replayed} row(s)`);
+  }
 }
 
 let _walSyncTimer = null;
@@ -3495,6 +3506,11 @@ function _drFlushPending() {
 window.addEventListener('beforeunload', _drFlushPending);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') _drFlushPending();
+  if (document.visibilityState === 'visible') _walReplay();
+});
+window.addEventListener('online', () => {
+  console.log('[WAL] network restored — replaying pending writes');
+  _walReplay();
 });
 
 /** Delete one row by its JS id. */
