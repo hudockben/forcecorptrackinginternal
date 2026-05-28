@@ -5428,16 +5428,26 @@ async function _loadAndMigrateDailyRows() {
   const dbRows = await drGetAll({ since: since90 });
   const recentRows = Array.isArray(dbRows.rows) ? dbRows.rows : (Array.isArray(dbRows) ? dbRows : []);
 
-  function _distributeRows(rows) {
+  function _distributeRows(rows, options) {
     if (!rows.length) return;
+    const merge = options && options.merge;
     const projectsInDb = new Set(rows.map(r => r._projectId));
     const projMap = Object.fromEntries(projectsList.map(p => [p.id, p]));
-    projectsList.forEach(p => { if (projectsInDb.has(p.id) && !p._drFullLoaded) p.dailyRows = []; });
+    // Reset on initial load only. On backfill we MUST merge — wiping
+    // p.dailyRows would silently discard in-memory rows whose POST/PUT is
+    // still in flight, and the next edit to an unrelated field on that
+    // row would write the stale DB snapshot back, overwriting the user's
+    // pending change.
+    if (!merge) {
+      projectsList.forEach(p => { if (projectsInDb.has(p.id) && !p._drFullLoaded) p.dailyRows = []; });
+    }
     rows.forEach(row => {
       const proj = projMap[row._projectId];
       if (proj) {
-        // Avoid duplicates when backfill merges with recent data
-        if (!proj.dailyRows.some(r => r.id === row.id)) proj.dailyRows.push(row);
+        // IDs come back from the DB as strings, but rows created locally
+        // since the last full load still carry the original Number id —
+        // String() both sides so the dedup actually matches.
+        if (!proj.dailyRows.some(r => String(r.id) === String(row.id))) proj.dailyRows.push(row);
       }
     });
   }
@@ -5450,7 +5460,7 @@ async function _loadAndMigrateDailyRows() {
       const older = await drGetAll();
       const olderRows = Array.isArray(older) ? older : [];
       if (olderRows.length > recentRows.length) {
-        _distributeRows(olderRows);
+        _distributeRows(olderRows, { merge: true });
         projectsList.forEach(p => p._drFullLoaded = true);
         // Re-render if user is viewing schedule or a project
         if (typeof renderCurrentTab === 'function') renderCurrentTab();
