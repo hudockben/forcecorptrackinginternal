@@ -3174,7 +3174,14 @@
         if (input) cbClose(input);
       });
     }
-    window.addEventListener('scroll', cbCloseAll, true);
+    window.addEventListener('scroll', (e) => {
+      // Scrolling INSIDE the menu (the user picking through options) must
+      // not dismiss it. Only close when the scroll originates outside —
+      // the page, the modal, the table-wrap, etc.
+      const t = e.target;
+      if (t && t.closest && t.closest('.cb-menu')) return;
+      cbCloseAll();
+    }, true);
     window.addEventListener('resize', cbCloseAll);
     function cbScrollHi(input) {
       const hi = input.nextElementSibling && input.nextElementSibling.querySelector('.cb-opt.hi');

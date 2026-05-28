@@ -255,65 +255,57 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   const workDate = safeDate(entry.work_date)
     || (entry.work_date instanceof Date ? entry.work_date.toISOString().slice(0, 10) : null);
 
-  // Pre-fill auto-derivable fields the way the cost tracking page does when
-  // the user picks an employee/equipment manually. Each lookup is
-  // best-effort — a missing employee/project/equipment row just leaves the
-  // value at its previous default (null/0), matching the old behavior.
-  const [proj] = await sql`
-    SELECT prevailing_wage
-    FROM   projects
-    WHERE  id = ${entry.job_id} AND company_code = ${companyCode}
-    LIMIT  1
-  `;
-  const isPrevailingWage = !!(proj && proj.prevailing_wage === true);
+  // Pre-fill auto-derivable fields from the same source the cost tracking
+  // page reads when the user picks an employee/equipment manually: the
+  // app_data blobs. The normalized projects/employees/equipment_list
+  // tables drop `prevailing_wage`, `prevailing_rate`, and
+  // `non_prevailing_rate` during the sync-normalized.js mirror, so they're
+  // unreliable for auto-fill. Lookups are best-effort — a missing blob or
+  // a name that doesn't resolve leaves the value at its previous default
+  // (null/0).
+  const projKey = `${companyCode}:fct_project_${entry.job_id}`;
+  const projRows = await sql`SELECT value FROM app_data WHERE key = ${projKey}`;
+  const projBlob = projRows.length ? projRows[0].value : null;
+  const isPrevailingWage = !!(projBlob && projBlob.prevailing_wage === true);
+
+  const listsKey = division === 'paving'
+    ? `${companyCode}:fct_paving_lists`
+    : `${companyCode}:fct_lists`;
+  const listsRows = await sql`SELECT value FROM app_data WHERE key = ${listsKey}`;
+  const listsBlob = listsRows.length ? listsRows[0].value : null;
+  const blobEmps = listsBlob && Array.isArray(listsBlob.employees) ? listsBlob.employees : [];
+  const blobEquipment = listsBlob && Array.isArray(listsBlob.equipment) ? listsBlob.equipment : [];
 
   // Login usernames are typically the last name only ("Mowery") while the
-  // employees roster stores full names ("Lucas Mowery"). Try the exact
-  // match first; if that misses, fall back to a last-word match — but only
-  // when it resolves to a single employee, otherwise we don't know which
-  // person it refers to and leave the auto-fill blank.
-  const empName = (employeeName || '').trim();
+  // roster stores full names ("Lucas Mowery"). Try exact match first, then
+  // last-word match — but only accept the suffix match when unambiguous.
+  const empLogin = (employeeName || '').trim().toLowerCase();
   let emp = null;
-  if (empName) {
-    const exact = await sql`
-      SELECT name, job_class, pw_rate, non_pw_rate
-      FROM   employees
-      WHERE  company_code = ${companyCode} AND LOWER(name) = LOWER(${empName})
-      LIMIT  1
-    `;
-    if (exact.length) {
-      emp = exact[0];
-    } else {
-      const pattern = `% ${empName}`;
-      const suffix = await sql`
-        SELECT name, job_class, pw_rate, non_pw_rate
-        FROM   employees
-        WHERE  company_code = ${companyCode} AND LOWER(name) LIKE LOWER(${pattern})
-        LIMIT  2
-      `;
-      if (suffix.length === 1) emp = suffix[0];
+  if (empLogin) {
+    emp = blobEmps.find(
+      e => e && typeof e === 'object'
+        && String(e.name || '').trim().toLowerCase() === empLogin,
+    ) || null;
+    if (!emp) {
+      const needle = ' ' + empLogin;
+      const suffixMatches = blobEmps.filter(
+        e => e && typeof e === 'object'
+          && String(e.name || '').trim().toLowerCase().endsWith(needle),
+      );
+      if (suffixMatches.length === 1) emp = suffixMatches[0];
     }
   }
   const jobClass = (emp && emp.job_class) || null;
   const empRate  = emp
-    ? (Number(isPrevailingWage ? emp.pw_rate : emp.non_pw_rate) || 0)
+    ? (Number(isPrevailingWage ? emp.prevailing_rate : emp.non_prevailing_rate) || 0)
     : 0;
-  // Use the full name from the roster for the daily_tracking row so it
-  // matches manually-entered rows. Falls back to the login username if no
-  // employee row was found.
   const employeeLabel = (emp && emp.name) || employeeName;
 
-  const eqNames = Array.from(new Set(
-    splitRows.map(r => (r.equipment || '').trim()).filter(Boolean)
-  ));
   const eqCostByName = new Map();
-  if (eqNames.length) {
-    const eqRows = await sql`
-      SELECT name, unit_cost
-      FROM   equipment_list
-      WHERE  company_code = ${companyCode} AND name = ANY(${eqNames})
-    `;
-    for (const er of eqRows) eqCostByName.set(er.name, Number(er.unit_cost) || 0);
+  for (const eq of blobEquipment) {
+    if (eq && typeof eq === 'object' && eq.name) {
+      eqCostByName.set(String(eq.name), Number(eq.unit_cost) || 0);
+    }
   }
 
   for (let i = 0; i < splitRows.length; i++) {
