@@ -914,7 +914,7 @@
     .modal-msg.success { color: var(--green); }
 
     /* ── Split modal (approve + resplit) ── */
-    .split-modal { max-width: 1100px; }
+    .split-modal { max-width: min(1400px, 96vw); }
     .split-summary {
       background: var(--surface2, var(--bg));
       border: 1px solid var(--border);
@@ -1002,7 +1002,7 @@
     }
     .split-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
     .split-table-wrap {
-      max-height: 360px;
+      max-height: min(60vh, 560px);
       overflow: auto;
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -1077,11 +1077,9 @@
     .cb-input:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
     .cb-input::placeholder { color: var(--muted, #6b7280); }
     .cb-menu {
-      position: absolute;
-      top: calc(100% + 2px);
-      left: 0;
-      min-width: 100%;
-      max-width: 280px;
+      position: fixed;
+      min-width: 160px;
+      max-width: 320px;
       z-index: 1000;
       background: var(--surface);
       border: 1px solid var(--border);
@@ -3154,7 +3152,34 @@
         ).join('');
       }
       menu.hidden = false;
+      eqCbPositionMenu(input);
     }
+    function eqCbPositionMenu(input) {
+      const menu = input.nextElementSibling;
+      if (!menu || menu.hidden) return;
+      const rect = input.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      const gap = 2;
+      const desired = 220;
+      const spaceBelow = vh - rect.bottom - 8;
+      const spaceAbove = rect.top - 8;
+      const openUp = spaceBelow < 120 && spaceAbove > spaceBelow;
+      const h = Math.max(80, Math.min(desired, openUp ? spaceAbove : spaceBelow));
+      menu.style.maxHeight = h + 'px';
+      menu.style.width = Math.max(160, rect.width) + 'px';
+      const left = Math.min(Math.max(8, rect.left), vw - Math.max(160, rect.width) - 8);
+      menu.style.left = left + 'px';
+      menu.style.top = (openUp ? (rect.top - h - gap) : (rect.bottom + gap)) + 'px';
+    }
+    function eqCbCloseAll() {
+      document.querySelectorAll('.cb-menu:not([hidden])').forEach(m => {
+        const input = m.previousElementSibling;
+        if (input) eqCbClose(input);
+      });
+    }
+    window.addEventListener('scroll', eqCbCloseAll, true);
+    window.addEventListener('resize', eqCbCloseAll);
     function eqCbScrollHi(input) {
       const hi = input.nextElementSibling && input.nextElementSibling.querySelector('.cb-opt.hi');
       if (hi) hi.scrollIntoView({ block: 'nearest' });
