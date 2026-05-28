@@ -914,7 +914,7 @@
     .modal-msg.success { color: var(--green); }
 
     /* ── Split modal (approve + resplit) ── */
-    .split-modal { max-width: 1100px; }
+    .split-modal { max-width: min(1400px, 96vw); }
     .split-summary {
       background: var(--surface2, var(--bg));
       border: 1px solid var(--border);
@@ -1002,7 +1002,7 @@
     }
     .split-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
     .split-table-wrap {
-      max-height: 360px;
+      max-height: min(60vh, 560px);
       overflow: auto;
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -1077,11 +1077,9 @@
     .cb-input:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
     .cb-input::placeholder { color: var(--muted, #6b7280); }
     .cb-menu {
-      position: absolute;
-      top: calc(100% + 2px);
-      left: 0;
-      min-width: 100%;
-      max-width: 280px;
+      position: fixed;
+      min-width: 160px;
+      max-width: 320px;
       z-index: 1000;
       background: var(--surface);
       border: 1px solid var(--border);
@@ -2901,6 +2899,10 @@
 
     function escAttr(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
     function num2(n) { return (Math.round((Number(n) || 0) * 100) / 100).toFixed(2); }
+    function numInputVal(n) {
+      const v = Number(n);
+      return Number.isFinite(v) && v !== 0 ? num2(v) : '';
+    }
 
     async function loadEquipmentForSplit(division, jobId) {
       if (!splitEquipmentGlobal) {
@@ -3061,115 +3063,142 @@
       renderSplitTally();
     }
 
-    function _ccOptions(selected) {
-      const list = splitCcCache[`${splitEntry.division}::${splitEntry.job_id}`] || [];
-      const codes = list.map(c => c.cost_code);
-      // Preserve the current selection even if it's no longer in the bid items
-      if (selected && !codes.includes(selected)) codes.unshift(selected);
-      return '<option value="">— pick —</option>' +
-        codes.map(c => `<option value="${escAttr(c)}" ${c === selected ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('');
-    }
-    function _scOptions(costCode, selected) {
-      const list = splitCcCache[`${splitEntry.division}::${splitEntry.job_id}`] || [];
-      const found = list.find(c => c.cost_code === costCode);
-      const subs  = found ? found.sub_codes.slice() : [];
-      if (selected && !subs.includes(selected)) subs.unshift(selected);
-      return '<option value="">—</option>' +
-        subs.map(s => `<option value="${escAttr(s)}" ${s === selected ? 'selected' : ''}>${escapeHtml(s || '(blank)')}</option>`).join('');
-    }
-    // ── Searchable combobox for equipment ──
-    const _eqCbState = new WeakMap();
-    const _eqCbEsc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    // ── Searchable combobox (cost code, sub code, equipment) ──
+    const _cbState = new WeakMap();
+    const _cbEsc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-    function _eqCbHtml(rowIdx, currentValue) {
-      return `<div class="cb" data-row="${rowIdx}">` +
-        `<input type="text" class="cb-input" value="${_eqCbEsc(currentValue || '')}" ` +
-          `placeholder="— none —" autocomplete="off" spellcheck="false" ` +
-          `onfocus="eqCbOnFocus(this)" oninput="eqCbOnInput(this)" ` +
-          `onkeydown="eqCbOnKey(event, this)" onblur="eqCbOnBlur(this)">` +
+    function _cbHtml(rowIdx, field, currentValue, options, placeholder) {
+      const optsAttr = _cbEsc(JSON.stringify(Array.isArray(options) ? options : []));
+      return `<div class="cb" data-row="${rowIdx}" data-field="${field}" data-options="${optsAttr}">` +
+        `<input type="text" class="cb-input" value="${_cbEsc(currentValue || '')}" ` +
+          `placeholder="${_cbEsc(placeholder || '')}" autocomplete="off" spellcheck="false" ` +
+          `onfocus="cbOnFocus(this)" oninput="cbOnInput(this)" ` +
+          `onkeydown="cbOnKey(event, this)" onblur="cbOnBlur(this)">` +
         `<div class="cb-menu" hidden></div>` +
       `</div>`;
     }
 
-    function eqCbOnFocus(input) {
-      const options = (splitEquipmentList || []).slice();
-      _eqCbState.set(input, {
+    function _cbReadOptions(input) {
+      const cb = input.closest('.cb');
+      if (!cb) return [];
+      try {
+        const raw = JSON.parse(cb.dataset.options || '[]');
+        return Array.isArray(raw) ? raw.map(o => String(o == null ? '' : o)) : [];
+      } catch { return []; }
+    }
+    function cbOnFocus(input) {
+      const options = _cbReadOptions(input);
+      _cbState.set(input, {
         options,
         filtered: options,
         highlight: Math.max(0, options.indexOf(input.value)),
         originalValue: input.value,
       });
-      eqCbRenderMenu(input);
+      cbRenderMenu(input);
       input.select();
     }
-    function eqCbOnInput(input) {
-      if (input._eqCbBypass) return;
-      const state = _eqCbState.get(input);
+    function cbOnInput(input) {
+      const state = _cbState.get(input);
       if (!state) return;
       const q = input.value.trim().toLowerCase();
       state.filtered = q ? state.options.filter(o => o.toLowerCase().includes(q)) : state.options;
       const exact = state.filtered.findIndex(o => o.toLowerCase() === q);
       state.highlight = exact >= 0 ? exact : (state.filtered.length ? 0 : -1);
-      eqCbRenderMenu(input);
+      cbRenderMenu(input);
     }
-    function eqCbOnKey(event, input) {
-      const state = _eqCbState.get(input);
+    function cbOnKey(event, input) {
+      const state = _cbState.get(input);
       if (!state) return;
       const list = state.filtered;
       if (event.key === 'ArrowDown') {
         event.preventDefault();
-        if (list.length) { state.highlight = (state.highlight + 1) % list.length; eqCbRenderMenu(input); eqCbScrollHi(input); }
+        if (list.length) { state.highlight = (state.highlight + 1) % list.length; cbRenderMenu(input); cbScrollHi(input); }
       } else if (event.key === 'ArrowUp') {
         event.preventDefault();
-        if (list.length) { state.highlight = (state.highlight - 1 + list.length) % list.length; eqCbRenderMenu(input); eqCbScrollHi(input); }
+        if (list.length) { state.highlight = (state.highlight - 1 + list.length) % list.length; cbRenderMenu(input); cbScrollHi(input); }
       } else if (event.key === 'Enter') {
         event.preventDefault();
         const pick = list[state.highlight];
         if (pick != null) input.value = pick;
-        eqCbCommit(input);
+        cbCommit(input);
         input.blur();
       } else if (event.key === 'Escape') {
         event.preventDefault();
         input.value = state.originalValue;
-        eqCbClose(input);
+        cbClose(input);
         input.blur();
       } else if (event.key === 'Tab') {
         const pick = list[state.highlight];
         if (pick != null) input.value = pick;
-        eqCbCommit(input);
+        cbCommit(input);
       }
     }
-    function eqCbOnBlur(input) {
-      setTimeout(() => { if (document.activeElement !== input) eqCbCommit(input); }, 120);
+    function cbOnBlur(input) {
+      setTimeout(() => { if (document.activeElement !== input) cbCommit(input); }, 120);
     }
-    function eqCbRenderMenu(input) {
-      const state = _eqCbState.get(input);
+    function cbRenderMenu(input) {
+      const state = _cbState.get(input);
       const menu = input.nextElementSibling;
       if (!state || !menu) return;
       if (state.filtered.length === 0) {
         menu.innerHTML = '<div class="cb-opt-empty">No matches</div>';
       } else {
         menu.innerHTML = state.filtered.map((opt, i) =>
-          `<div class="cb-opt${i === state.highlight ? ' hi' : ''}" data-val="${_eqCbEsc(opt)}">${_eqCbEsc(opt)}</div>`
+          `<div class="cb-opt${i === state.highlight ? ' hi' : ''}" data-val="${_cbEsc(opt)}">${_cbEsc(opt === '' ? '(blank)' : opt)}</div>`
         ).join('');
       }
       menu.hidden = false;
+      cbPositionMenu(input);
     }
-    function eqCbScrollHi(input) {
+    function cbPositionMenu(input) {
+      const menu = input.nextElementSibling;
+      if (!menu || menu.hidden) return;
+      const rect = input.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      const gap = 2;
+      const desired = 220;
+      const spaceBelow = vh - rect.bottom - 8;
+      const spaceAbove = rect.top - 8;
+      const openUp = spaceBelow < 120 && spaceAbove > spaceBelow;
+      const h = Math.max(80, Math.min(desired, openUp ? spaceAbove : spaceBelow));
+      menu.style.maxHeight = h + 'px';
+      menu.style.width = Math.max(160, rect.width) + 'px';
+      const left = Math.min(Math.max(8, rect.left), vw - Math.max(160, rect.width) - 8);
+      menu.style.left = left + 'px';
+      menu.style.top = (openUp ? (rect.top - h - gap) : (rect.bottom + gap)) + 'px';
+    }
+    function cbCloseAll() {
+      document.querySelectorAll('.cb-menu:not([hidden])').forEach(m => {
+        const input = m.previousElementSibling;
+        if (input) cbClose(input);
+      });
+    }
+    window.addEventListener('scroll', (e) => {
+      // Scrolling INSIDE the menu (the user picking through options) must
+      // not dismiss it. Only close when the scroll originates outside —
+      // the page, the modal, the table-wrap, etc.
+      const t = e.target;
+      if (t && t.closest && t.closest('.cb-menu')) return;
+      cbCloseAll();
+    }, true);
+    window.addEventListener('resize', cbCloseAll);
+    function cbScrollHi(input) {
       const hi = input.nextElementSibling && input.nextElementSibling.querySelector('.cb-opt.hi');
       if (hi) hi.scrollIntoView({ block: 'nearest' });
     }
-    function eqCbClose(input) {
+    function cbClose(input) {
       const menu = input.nextElementSibling;
       if (menu) menu.hidden = true;
-      _eqCbState.delete(input);
+      _cbState.delete(input);
     }
-    function eqCbCommit(input) {
+    function cbCommit(input) {
       const cb = input.closest('.cb');
       if (!cb) return;
-      eqCbClose(input);
+      cbClose(input);
       const rowIdx = parseInt(cb.dataset.row, 10);
-      if (!isNaN(rowIdx)) splitOnChange(rowIdx, 'equipment', input.value);
+      const field = cb.dataset.field;
+      if (!isNaN(rowIdx) && field) splitOnChange(rowIdx, field, input.value);
     }
     document.addEventListener('mousedown', (e) => {
       const opt = e.target.closest('.cb-opt');
@@ -3180,7 +3209,7 @@
         const input = menu.previousElementSibling;
         if (input) {
           input.value = opt.dataset.val || '';
-          eqCbCommit(input);
+          cbCommit(input);
           input.blur();
         }
         return;
@@ -3189,7 +3218,7 @@
       document.querySelectorAll('.cb-menu:not([hidden])').forEach(m => {
         if (m.closest('.cb') !== cb) {
           const input = m.previousElementSibling;
-          if (input) eqCbClose(input);
+          if (input) cbClose(input);
         }
       });
     });
@@ -3200,21 +3229,28 @@
         tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:1.2rem">No rows yet — add a labor or travel row above.</td></tr>';
         return;
       }
-      tbody.innerHTML = splitRows.map((r, i) => `
+      const ccList = (splitCcCache[`${splitEntry.division}::${splitEntry.job_id}`] || []);
+      const ccCodes = ccList.map(c => c.cost_code);
+      const eqOpts = (splitEquipmentList || []).slice();
+      tbody.innerHTML = splitRows.map((r, i) => {
+        const found = ccList.find(c => c.cost_code === r.cost_code);
+        const subOpts = found ? found.sub_codes.slice() : [];
+        return `
         <tr class="${r.is_travel ? 'travel-row' : ''}">
           <td style="color:var(--muted);font-variant-numeric:tabular-nums">${i + 1}</td>
-          <td><select onchange="splitOnChange(${i},'cost_code',this.value)">${_ccOptions(r.cost_code)}</select></td>
-          <td><select onchange="splitOnChange(${i},'sub_code',this.value)">${_scOptions(r.cost_code, r.sub_code)}</select></td>
-          <td><input type="number" class="num" min="0" step="0.01" value="${num2(r.quantity)}" oninput="splitOnChange(${i},'quantity',this.value)"></td>
-          <td>${_eqCbHtml(i, r.equipment)}</td>
-          <td><input type="number" class="num" min="0" max="24" step="0.25" value="${num2(r.labor_hours)}" oninput="splitOnChange(${i},'labor_hours',this.value)"></td>
-          <td><input type="number" class="num" min="0" max="24" step="0.25" value="${num2(r.equip_hours)}" oninput="splitOnChange(${i},'equip_hours',this.value)"></td>
+          <td>${_cbHtml(i, 'cost_code', r.cost_code, ccCodes, '— pick —')}</td>
+          <td>${_cbHtml(i, 'sub_code', r.sub_code, subOpts, '—')}</td>
+          <td><input type="number" class="num" min="0" step="0.01" placeholder="0.00" value="${numInputVal(r.quantity)}" oninput="splitOnChange(${i},'quantity',this.value)"></td>
+          <td>${_cbHtml(i, 'equipment', r.equipment, eqOpts, '— none —')}</td>
+          <td><input type="number" class="num" min="0" max="24" step="0.25" placeholder="0.00" value="${numInputVal(r.labor_hours)}" oninput="splitOnChange(${i},'labor_hours',this.value)"></td>
+          <td><input type="number" class="num" min="0" max="24" step="0.25" placeholder="0.00" value="${numInputVal(r.equip_hours)}" oninput="splitOnChange(${i},'equip_hours',this.value)"></td>
           <td class="travel-cell">
             <input type="checkbox" ${r.is_travel ? 'checked' : ''} onchange="splitOnChange(${i},'is_travel',this.checked)">
           </td>
           <td><button class="split-row-del" onclick="splitDeleteRow(${i})" title="Remove row">&#10005;</button></td>
         </tr>
-      `).join('');
+        `;
+      }).join('');
     }
 
     function splitOnChange(idx, field, value) {

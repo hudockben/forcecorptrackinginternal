@@ -254,9 +254,64 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   // to YYYY-MM-DD so the date column always receives a normalized string.
   const workDate = safeDate(entry.work_date)
     || (entry.work_date instanceof Date ? entry.work_date.toISOString().slice(0, 10) : null);
+
+  // Pre-fill auto-derivable fields from the same source the cost tracking
+  // page reads when the user picks an employee/equipment manually: the
+  // app_data blobs. The normalized projects/employees/equipment_list
+  // tables drop `prevailing_wage`, `prevailing_rate`, and
+  // `non_prevailing_rate` during the sync-normalized.js mirror, so they're
+  // unreliable for auto-fill. Lookups are best-effort — a missing blob or
+  // a name that doesn't resolve leaves the value at its previous default
+  // (null/0).
+  const projKey = `${companyCode}:fct_project_${entry.job_id}`;
+  const projRows = await sql`SELECT value FROM app_data WHERE key = ${projKey}`;
+  const projBlob = projRows.length ? projRows[0].value : null;
+  const isPrevailingWage = !!(projBlob && projBlob.prevailing_wage === true);
+
+  const listsKey = division === 'paving'
+    ? `${companyCode}:fct_paving_lists`
+    : `${companyCode}:fct_lists`;
+  const listsRows = await sql`SELECT value FROM app_data WHERE key = ${listsKey}`;
+  const listsBlob = listsRows.length ? listsRows[0].value : null;
+  const blobEmps = listsBlob && Array.isArray(listsBlob.employees) ? listsBlob.employees : [];
+  const blobEquipment = listsBlob && Array.isArray(listsBlob.equipment) ? listsBlob.equipment : [];
+
+  // Login usernames are typically the last name only ("Mowery") while the
+  // roster stores full names ("Lucas Mowery"). Try exact match first, then
+  // last-word match — but only accept the suffix match when unambiguous.
+  const empLogin = (employeeName || '').trim().toLowerCase();
+  let emp = null;
+  if (empLogin) {
+    emp = blobEmps.find(
+      e => e && typeof e === 'object'
+        && String(e.name || '').trim().toLowerCase() === empLogin,
+    ) || null;
+    if (!emp) {
+      const needle = ' ' + empLogin;
+      const suffixMatches = blobEmps.filter(
+        e => e && typeof e === 'object'
+          && String(e.name || '').trim().toLowerCase().endsWith(needle),
+      );
+      if (suffixMatches.length === 1) emp = suffixMatches[0];
+    }
+  }
+  const jobClass = (emp && emp.job_class) || null;
+  const empRate  = emp
+    ? (Number(isPrevailingWage ? emp.prevailing_rate : emp.non_prevailing_rate) || 0)
+    : 0;
+  const employeeLabel = (emp && emp.name) || employeeName;
+
+  const eqCostByName = new Map();
+  for (const eq of blobEquipment) {
+    if (eq && typeof eq === 'object' && eq.name) {
+      eqCostByName.set(String(eq.name), Number(eq.unit_cost) || 0);
+    }
+  }
+
   for (let i = 0; i < splitRows.length; i++) {
     const r = splitRows[i];
     const rowId = `ts${entry.id}-${baseStamp}-${i}-${Math.floor(Math.random() * 1e6)}`;
+    const eqUnitCost = r.equipment ? (eqCostByName.get(r.equipment) || 0) : 0;
     await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
@@ -270,15 +325,15 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${companyCode},
         ${division},
         ${workDate},
-        ${r.is_travel ? 'Travel' : null},
-        ${employeeName},
+        ${null},
+        ${employeeLabel},
         ${r.cost_code || null},
         ${r.sub_code || null},
-        ${null},
-        ${0},
+        ${jobClass},
+        ${empRate},
         ${r.labor_hours},
         ${r.equipment || null},
-        ${0},
+        ${eqUnitCost},
         ${r.equip_hours},
         ${null}, ${null}, ${null}, ${0}, ${0},
         ${0}, ${r.quantity || 0},
