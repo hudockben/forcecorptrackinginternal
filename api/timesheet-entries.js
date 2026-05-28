@@ -267,20 +267,41 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   `;
   const isPrevailingWage = !!(proj && proj.prevailing_wage === true);
 
+  // Login usernames are typically the last name only ("Mowery") while the
+  // employees roster stores full names ("Lucas Mowery"). Try the exact
+  // match first; if that misses, fall back to a last-word match — but only
+  // when it resolves to a single employee, otherwise we don't know which
+  // person it refers to and leave the auto-fill blank.
   const empName = (employeeName || '').trim();
-  const empRows = empName
-    ? await sql`
-        SELECT job_class, pw_rate, non_pw_rate
+  let emp = null;
+  if (empName) {
+    const exact = await sql`
+      SELECT name, job_class, pw_rate, non_pw_rate
+      FROM   employees
+      WHERE  company_code = ${companyCode} AND LOWER(name) = LOWER(${empName})
+      LIMIT  1
+    `;
+    if (exact.length) {
+      emp = exact[0];
+    } else {
+      const pattern = `% ${empName}`;
+      const suffix = await sql`
+        SELECT name, job_class, pw_rate, non_pw_rate
         FROM   employees
-        WHERE  company_code = ${companyCode} AND LOWER(name) = LOWER(${empName})
-        LIMIT  1
-      `
-    : [];
-  const emp = empRows[0] || null;
+        WHERE  company_code = ${companyCode} AND LOWER(name) LIKE LOWER(${pattern})
+        LIMIT  2
+      `;
+      if (suffix.length === 1) emp = suffix[0];
+    }
+  }
   const jobClass = (emp && emp.job_class) || null;
   const empRate  = emp
     ? (Number(isPrevailingWage ? emp.pw_rate : emp.non_pw_rate) || 0)
     : 0;
+  // Use the full name from the roster for the daily_tracking row so it
+  // matches manually-entered rows. Falls back to the login username if no
+  // employee row was found.
+  const employeeLabel = (emp && emp.name) || employeeName;
 
   const eqNames = Array.from(new Set(
     splitRows.map(r => (r.equipment || '').trim()).filter(Boolean)
@@ -312,8 +333,8 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${companyCode},
         ${division},
         ${workDate},
-        ${r.is_travel ? 'Travel' : null},
-        ${employeeName},
+        ${null},
+        ${employeeLabel},
         ${r.cost_code || null},
         ${r.sub_code || null},
         ${jobClass},
