@@ -8107,6 +8107,7 @@ function _ensurePOLineRow(po, line) {
   const row = {
     ...defaultDailyRow(),
     id:              uid(),
+    _projectId:      po.project_id,
     date:            line.date     || po.date_created || _localDateStr(),
     employee:        line.employee || '',
     cost_code:       po.cost_code  || '',
@@ -9523,6 +9524,7 @@ document.getElementById('trucking-root').addEventListener('change', e => {
         const row = {
           ...defaultDailyRow(),
           id:              Date.now() + Math.random(),
+          _projectId:      tr.project_id,
           date:            tr.date            || '',
           employee:        tr.driver          || '',
           job_class:       'Trucking',
@@ -9659,6 +9661,7 @@ document.getElementById('inventory-root').addEventListener('change', e => {
         const row = {
           ...defaultDailyRow(),
           id:              Date.now() + Math.random(),
+          _projectId:      entry.project_id,
           date:            entry.date             || '',
           employee:        entry.employee         || '',
           job_class:       entry.job_class        || '',
@@ -17706,6 +17709,7 @@ function commitImportCSV() {
   _csvParsedRows.forEach(({ row, projId }) => {
     if (!byProj[projId]) byProj[projId] = [];
     row.id = Date.now() + Math.random();
+    row._projectId = projId;
     byProj[projId].push(row);
   });
   let totalImported = 0;
