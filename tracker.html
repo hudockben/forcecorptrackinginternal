@@ -8654,6 +8654,7 @@ function addTR() {
     sub_code:        '',
   });
   saveTruckingEntries();
+  _trPage = 0;
   renderTruckingTab();
 }
 
@@ -8721,6 +8722,10 @@ let trFilters  = {};
 let trSearch   = '';
 let _trffField   = null;
 let _trffPending = null;
+let _trPage      = 0;
+const TR_PAGE_SIZE = 20;
+
+function _trChangePage(delta) { _trPage += delta; renderTruckingTab(); }
 
 function _trFieldVal(tr, field) {
   if (field === 'project_id') {
@@ -8815,12 +8820,14 @@ function applyTRFilter() {
     trFilters[_trffField] = new Set(checked);
   }
   document.getElementById('tr-filter-dd').style.display = 'none';
+  _trPage = 0;
   renderTruckingTab();
 }
 
 function clearTRFilter() {
   delete trFilters[_trffField];
   document.getElementById('tr-filter-dd').style.display = 'none';
+  _trPage = 0;
   renderTruckingTab();
 }
 
@@ -8842,11 +8849,15 @@ function renderTruckingTab() {
 
   const filteredTRs = applyTRFilters().slice().reverse();
 
+  const totalPages = Math.max(1, Math.ceil(filteredTRs.length / TR_PAGE_SIZE));
+  _trPage = Math.max(0, Math.min(_trPage, totalPages - 1));
+  const pageTRs = filteredTRs.slice(_trPage * TR_PAGE_SIZE, (_trPage + 1) * TR_PAGE_SIZE);
+
   const bodyHTML = truckingEntries.length === 0
     ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No trucking entries yet. Click + New Entry to begin.</td></tr>`
     : filteredTRs.length === 0
     ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No trucking entries match the current filters.</td></tr>`
-    : filteredTRs.map(tr => {
+    : pageTRs.map(tr => {
         const loads = parseFloat(tr.loads) || 0;
         const rate  = parseFloat(tr.rate)  || 0;
         const hours = parseFloat(tr.hours) || 0;
@@ -8905,18 +8916,28 @@ function renderTruckingTab() {
 
   const hasFilters = Object.keys(trFilters).length > 0 || trSearch;
 
+  const paginationBar = filteredTRs.length > 0 ? `
+    <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;justify-content:center;flex-wrap:wrap">
+      <button class="btn btn-ghost" style="font-size:0.8rem;padding:0.3rem 0.75rem" onclick="_trChangePage(-1)" ${_trPage === 0 ? 'disabled' : ''}>← Prev</button>
+      <span style="font-size:0.8rem;color:var(--muted)">
+        Page <strong style="color:var(--text)">${_trPage + 1}</strong> of ${totalPages}
+        &nbsp;·&nbsp; Showing ${pageTRs.length ? (_trPage * TR_PAGE_SIZE + 1) : 0}–${_trPage * TR_PAGE_SIZE + pageTRs.length} of ${filteredTRs.length} entr${filteredTRs.length === 1 ? 'y' : 'ies'}
+      </span>
+      <button class="btn btn-ghost" style="font-size:0.8rem;padding:0.3rem 0.75rem" onclick="_trChangePage(1)" ${_trPage >= totalPages - 1 ? 'disabled' : ''}>Next →</button>
+    </div>` : '';
+
   root.innerHTML = `
     <div style="padding:1.5rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem">
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Trucking</span>
         <div style="display:flex;gap:0.5rem;align-items:center">
-          ${hasFilters ? `<button class="btn" onclick="trFilters={};trSearch='';renderTruckingTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
+          ${hasFilters ? `<button class="btn" onclick="trFilters={};trSearch='';_trPage=0;renderTruckingTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
           <button class="btn" onclick="exportTRCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#1d4ed8;color:#fff">&#8595; Export CSV</button>
           ${perm.canEdit ? `<button class="btn btn-green" onclick="addTR()">+ New Entry</button>` : ''}
         </div>
       </div>
       <input class="tr-global-search" type="text" value="${esc(trSearch)}" placeholder="&#128269; Search trucking entries…"
-        oninput="trSearch=this.value;renderTruckingTab()"
+        oninput="trSearch=this.value;_trPage=0;renderTruckingTab()"
         style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.82rem;padding:0.45rem 0.75rem;outline:none;box-sizing:border-box;margin-bottom:0.85rem">
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;min-width:1400px">
@@ -8932,6 +8953,7 @@ function renderTruckingTab() {
           <tbody>${bodyHTML}</tbody>
         </table>
       </div>
+      ${paginationBar}
     </div>`;
 
   if (searchWasFocused) {
