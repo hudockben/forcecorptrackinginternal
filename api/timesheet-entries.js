@@ -254,9 +254,51 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   // to YYYY-MM-DD so the date column always receives a normalized string.
   const workDate = safeDate(entry.work_date)
     || (entry.work_date instanceof Date ? entry.work_date.toISOString().slice(0, 10) : null);
+
+  // Pre-fill auto-derivable fields the way the cost tracking page does when
+  // the user picks an employee/equipment manually. Each lookup is
+  // best-effort — a missing employee/project/equipment row just leaves the
+  // value at its previous default (null/0), matching the old behavior.
+  const [proj] = await sql`
+    SELECT prevailing_wage
+    FROM   projects
+    WHERE  id = ${entry.job_id} AND company_code = ${companyCode}
+    LIMIT  1
+  `;
+  const isPrevailingWage = !!(proj && proj.prevailing_wage === true);
+
+  const empName = (employeeName || '').trim();
+  const empRows = empName
+    ? await sql`
+        SELECT job_class, pw_rate, non_pw_rate
+        FROM   employees
+        WHERE  company_code = ${companyCode} AND LOWER(name) = LOWER(${empName})
+        LIMIT  1
+      `
+    : [];
+  const emp = empRows[0] || null;
+  const jobClass = (emp && emp.job_class) || null;
+  const empRate  = emp
+    ? (Number(isPrevailingWage ? emp.pw_rate : emp.non_pw_rate) || 0)
+    : 0;
+
+  const eqNames = Array.from(new Set(
+    splitRows.map(r => (r.equipment || '').trim()).filter(Boolean)
+  ));
+  const eqCostByName = new Map();
+  if (eqNames.length) {
+    const eqRows = await sql`
+      SELECT name, unit_cost
+      FROM   equipment_list
+      WHERE  company_code = ${companyCode} AND name = ANY(${eqNames})
+    `;
+    for (const er of eqRows) eqCostByName.set(er.name, Number(er.unit_cost) || 0);
+  }
+
   for (let i = 0; i < splitRows.length; i++) {
     const r = splitRows[i];
     const rowId = `ts${entry.id}-${baseStamp}-${i}-${Math.floor(Math.random() * 1e6)}`;
+    const eqUnitCost = r.equipment ? (eqCostByName.get(r.equipment) || 0) : 0;
     await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
@@ -274,11 +316,11 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${employeeName},
         ${r.cost_code || null},
         ${r.sub_code || null},
-        ${null},
-        ${0},
+        ${jobClass},
+        ${empRate},
         ${r.labor_hours},
         ${r.equipment || null},
-        ${0},
+        ${eqUnitCost},
         ${r.equip_hours},
         ${null}, ${null}, ${null}, ${0}, ${0},
         ${0}, ${r.quantity || 0},
