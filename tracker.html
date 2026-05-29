@@ -2510,6 +2510,7 @@
   <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
     <button class="btn btn-ghost" onclick="closeBidView()">&#8592; Back</button>
     <span id="bid-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
+    <span id="bid-fs-offbid" style="display:none;color:#fbbf24;font-size:0.78rem;font-weight:600;cursor:help;margin-left:0.5rem;white-space:nowrap;"></span>
     <div style="margin-left:auto;display:flex;gap:0.5rem">
       <button class="btn btn-ghost" id="bid-fs-email">&#9993; Email</button>
       <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
@@ -7492,6 +7493,57 @@ function addBidSubCode(projId, costCode) {
   renderBidTable(projId);
 }
 
+// Off-bid daily costs for a project: daily rows that match NO bid line under
+// tracker's own wildcard rule (a blank bid sub_code matches any sub_code).
+// These are real spend that never shows against a bid item — almost always a
+// cost/sub code whose spelling or case doesn't match the bid line. The match
+// rule mirrors actualForBidItem() exactly. Returns { total, codes:[{...}] }.
+function offBidForProject(projId) {
+  const p = getProj(projId); if (!p) return { total: 0, codes: [] };
+  const bids = p.bidItems || [];
+  const hasKey  = b => !!((b.cost_code || '') || (b.sub_code || ''));
+  const matches = (b, r) =>
+    (b.cost_code ? r.cost_code === b.cost_code : true) &&
+    (b.sub_code  ? r.sub_code  === b.sub_code  : true);
+  const map = new Map();
+  (p.dailyRows || []).forEach(r => {
+    if (bids.some(b => hasKey(b) && matches(b, r))) return;  // on-bid — skip
+    const cost = dailyRowCost(r);
+    if (!cost) return;
+    const key = (r.cost_code || '') + '' + (r.sub_code || '');
+    const e = map.get(key) || { cost_code: r.cost_code || '', sub_code: r.sub_code || '', actual: 0 };
+    e.actual += cost;
+    map.set(key, e);
+  });
+  const codes = [...map.values()]
+    .filter(c => Math.abs(c.actual) > 0.005)
+    .sort((a, b) => b.actual - a.actual);
+  const total = codes.reduce((s, c) => s + c.actual, 0);
+  return { total, codes };
+}
+
+// Populate the ⚠ off-bid badge in the fullscreen bid view header. Hover shows
+// the offending codes. No-op when the badge element isn't present.
+function _renderBidOffBidBadge(projId) {
+  const el = document.getElementById('bid-fs-offbid');
+  if (!el) return;
+  const info = offBidForProject(projId);
+  if (!info || info.total <= 0.005) {
+    el.style.display = 'none';
+    el.textContent  = '';
+    el.removeAttribute('title');
+    return;
+  }
+  const lines = info.codes.slice(0, 12)
+    .map(c => `  ${c.cost_code || '(blank)'}${c.sub_code ? ' / ' + c.sub_code : ''}: $${fmt(c.actual)}`)
+    .join('\n');
+  const more = info.codes.length > 12 ? `\n  …and ${info.codes.length - 12} more` : '';
+  el.textContent = `⚠ $${fmt(info.total)} off-bid`;
+  el.title = `$${fmt(info.total)} in daily costs aren't matching any bid line, so they don't show against a bid item above.\n`
+    + `Usually the cost code / sub code spelling or case doesn't match the bid line. Check these:\n${lines}${more}`;
+  el.style.display = '';
+}
+
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
@@ -7504,6 +7556,7 @@ function renderBidTable(projId, opts = {}) {
   if (items.length === 0) {
     tbody.innerHTML = `<tr><td colspan="${COLS}" style="text-align:center;color:var(--muted);padding:1rem 0">${readonly ? 'No bid items.' : 'No bid items yet — click <strong>+ Add Item</strong> to start.'}</td></tr>`;
     renderBidFooter(projId, opts);
+    if (bidViewProjId === projId) _renderBidOffBidBadge(projId);
     return;
   }
 
@@ -7666,7 +7719,7 @@ function renderBidTable(projId, opts = {}) {
   });
 
   renderBidFooter(projId, opts);
-  if (bidViewProjId === projId) _updateBidFilterButtons();
+  if (bidViewProjId === projId) { _updateBidFilterButtons(); _renderBidOffBidBadge(projId); }
 }
 
 function projectCardHTML(p) {
