@@ -548,6 +548,15 @@
       font-size: 0.68rem;
       margin-left: 0.25rem;
     }
+    .ptable .offbid-flag {
+      display: block;
+      margin-top: 0.15rem;
+      color: #fbbf24;
+      font-size: 0.62rem;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: help;
+    }
     .ptable .v-mute      { color: var(--muted); }
     .ptable .pstar       {
       color: #22c55e;
@@ -861,6 +870,7 @@
       .ptable .pname-sub, .ptable .pstatus,
       .ptable .pprogress-pct, .ptable .v-mute,
       .ptable .v-profit-pct { color: #555; font-size: 0.5rem; }
+      .ptable .offbid-flag { color: #b45309; font-size: 0.5rem; }
       .ptable .pstar.off { color: #ddd; }
       .ptable .pprogress { min-width: 70px; gap: 0.3rem; }
       .ptable .pprogress-track { background: #eee; min-width: 40px; }
@@ -1150,6 +1160,22 @@
         profitCell = `<td class="col-num ${cls}">${esc(fmtMoney(p.profit))}${pct}</td>`;
       }
 
+      // Off-bid flag: part of Actual is booked under codes that aren't on the
+      // bid, so it's counted in Actual but not attributed to any bid item (and
+      // therefore not reflected in Projected). Surface a ⚠ with the amount +
+      // offending codes so the drift is visible and can be cleaned up.
+      let offBidFlag = '';
+      const offBid = Number(p.offBid) || 0;
+      if (offBid > 0.005) {
+        const list  = Array.isArray(p.offBidCodes) ? p.offBidCodes : [];
+        const lines = list.slice(0, 8)
+          .map(c => `  ${c.cost_code || '(blank)'}${c.sub_code ? ' / ' + c.sub_code : ''}: ${fmtMoney(c.actual)}`)
+          .join('\n');
+        const more  = list.length > 8 ? `\n  …and ${list.length - 8} more` : '';
+        const title = `${fmtMoney(offBid)} of Actual is logged under codes not on the bid — counted in Actual but not tied to any bid item (so not in Projected):\n${lines}${more}`;
+        offBidFlag  = `<div class="offbid-flag" title="${esc(title)}">⚠ ${esc(fmtMoney(offBid))} off-bid</div>`;
+      }
+
       const star = p.pinned ? '★' : '☆';
       const starCls = p.pinned ? 'pstar' : 'pstar off';
 
@@ -1172,7 +1198,7 @@
           </td>
           <td class="col-num v-contract">${esc(fmtMoney(p.contract, { zeroDash: true }))}</td>
           <td class="col-num v-bid">${esc(fmtMoney(p.bid,      { zeroDash: true }))}</td>
-          <td class="col-num v-actual">${esc(fmtMoney(p.actual, { zeroDash: true }))}</td>
+          <td class="col-num v-actual">${esc(fmtMoney(p.actual, { zeroDash: true }))}${offBidFlag}</td>
           ${varCell}
           <td class="col-num v-projected">${esc(fmtMoney(p.projected, { zeroDash: true }))}</td>
           ${profitCell}

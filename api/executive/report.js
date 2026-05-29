@@ -415,7 +415,13 @@ async function buildHero(sql, companyCode) {
 //   division: 'turf' | 'paving' — used to scope daily_tracking
 async function buildFinancials(sql, companyCode, division, projects) {
   const ids = projects.map(p => p.id).filter(Boolean);
-  let actualByMatch = new Map();
+  // Daily cost groups (cost_code/sub_code) per project. The per-row cost mirrors
+  // tracker.html's dailyRowCost/calcDaily EXACTLY so the Executive reconciles
+  // with the home page: total_cost_override (if non-zero) wins, else
+  // labor*rate + (equip_total_override || equip_hours*equip_unit_cost) + material.
+  // NULLIF(...,0) reproduces calcDaily's `override || computed` short-circuit;
+  // the previous formula ignored equip_total_override and understated actuals.
+  const groupsByProject = new Map();
   if (ids.length) {
     const rows = await sql`
       SELECT
@@ -423,9 +429,10 @@ async function buildFinancials(sql, companyCode, division, projects) {
         cost_code,
         COALESCE(sub_code, '') AS sub_code,
         SUM(
-          COALESCE(total_cost_override,
+          COALESCE(NULLIF(total_cost_override, 0),
             COALESCE(labor_hours, 0) * COALESCE(rate, 0)
-            + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
+            + COALESCE(NULLIF(equip_total_override, 0),
+                       COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0))
             + COALESCE(material_cost, 0)
           )
         )::float                           AS actual,
@@ -436,27 +443,56 @@ async function buildFinancials(sql, companyCode, division, projects) {
         AND project_id   = ANY(${ids})
       GROUP BY project_id, cost_code, COALESCE(sub_code, '')
     `;
-    actualByMatch = new Map(rows.map(r => [
-      `${r.project_id} ${r.cost_code || ''} ${r.sub_code || ''}`,
-      { actual: Number(r.actual) || 0, rqty: Number(r.rqty) || 0 },
-    ]));
+    for (const r of rows) {
+      const list = groupsByProject.get(r.project_id) || [];
+      list.push({
+        cost_code: r.cost_code || '',
+        sub_code:  r.sub_code  || '',
+        actual:    Number(r.actual) || 0,
+        rqty:      Number(r.rqty)   || 0,
+      });
+      groupsByProject.set(r.project_id, list);
+    }
   }
 
   const today = Date.now();
   const perProject = new Map();
   let contract_total = 0, bid_total = 0, actual_total = 0, projected_total = 0;
 
+  // Wildcard match — mirrors tracker.html actualForBidItem(): a bid line matches
+  // a daily group when the line's cost_code is blank OR equal AND its sub_code
+  // is blank OR equal. A blank bid sub_code therefore catches every sub_code
+  // under that cost code (the home page treats it as a wildcard, so we must too
+  // or on-bid spend gets falsely flagged as off-bid).
+  const lineMatchesGroup = (b, g) =>
+    (b.cost_code ? g.cost_code === b.cost_code : true) &&
+    (b.sub_code  ? g.sub_code  === b.sub_code  : true);
+  // tracker skips bid lines with neither code (actualForBidItem returns 0).
+  const lineHasKey = b => !!(b.cost_code || b.sub_code);
+
   for (const p of projects) {
     contract_total += projContract(p);
-    let bid = 0, actual = 0, projected = 0;
-    for (const b of projBidLines(p)) {
-      const key = `${p.id} ${b.cost_code} ${b.sub_code}`;
-      const m   = actualByMatch.get(key);
-      const a   = m ? m.actual : 0;
-      const rq  = m ? m.rqty   : 0;
+    const groups   = groupsByProject.get(p.id) || [];
+    const bidLines = projBidLines(p);
+
+    // Project actual = every daily group (matches the home page's all-rows sum).
+    // Off-bid spend is included here, then surfaced separately below, so the
+    // headline figure never silently drops money.
+    const actual = groups.reduce((s, g) => s + g.actual, 0);
+
+    // Per-bid-item projection — mirrors projectedCostForProject(): scale each
+    // bid item by its own wildcard-matched actuals/quantities.
+    let bid = 0, projected = 0;
+    for (const b of bidLines) {
       const itemBid = b.quantity * b.unit_cost;
-      bid    += itemBid;
-      actual += a;
+      bid += itemBid;
+
+      let a = 0, rq = 0;
+      if (lineHasKey(b)) {
+        for (const g of groups) {
+          if (lineMatchesGroup(b, g)) { a += g.actual; rq += g.rqty; }
+        }
+      }
 
       let proj;
       const startMs  = b.start_date  ? new Date(b.start_date  + 'T00:00:00Z').getTime() : null;
@@ -472,10 +508,24 @@ async function buildFinancials(sql, companyCode, division, projects) {
       }
       projected += proj;
     }
+
+    // Off-bid: daily groups that match NO bid line (wildcard-aware). They are
+    // included in `actual` above but not attributed to any bid item (so they
+    // don't feed `projected`). Flag them with the offending codes + amounts.
+    // By construction actual === on-bid spend + offBid.
+    let offBid = 0;
+    const offBidCodes = [];
+    for (const g of groups) {
+      if (bidLines.some(b => lineHasKey(b) && lineMatchesGroup(b, g))) continue;
+      offBid += g.actual;
+      offBidCodes.push({ cost_code: g.cost_code, sub_code: g.sub_code, actual: g.actual });
+    }
+    offBidCodes.sort((a, b) => b.actual - a.actual);
+
     bid_total       += bid;
     actual_total    += actual;
     projected_total += projected;
-    perProject.set(p.id, { contract: projContract(p), bid, actual, projected });
+    perProject.set(p.id, { contract: projContract(p), bid, actual, projected, offBid, offBidCodes });
   }
   return { contract_total, bid_total, actual_total, projected_total, perProject };
 }
@@ -780,7 +830,7 @@ async function buildProjectsPortfolio(sql, companyCode) {
   }
 
   const rows = tagged.map(({ p, division }) => {
-    const fin       = finByProject.get(p.id) || { bid: 0, actual: 0, projected: 0 };
+    const fin       = finByProject.get(p.id) || { bid: 0, actual: 0, projected: 0, offBid: 0, offBidCodes: [] };
     const contract  = projContract(p);
     const bid       = fin.bid;
     const actual    = fin.actual;
@@ -805,6 +855,8 @@ async function buildProjectsPortfolio(sql, companyCode) {
       projected,
       profit,
       profitPct,
+      offBid:      Number(fin.offBid) || 0,
+      offBidCodes: Array.isArray(fin.offBidCodes) ? fin.offBidCodes : [],
     };
   });
 
