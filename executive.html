@@ -1160,10 +1160,10 @@
         profitCell = `<td class="col-num ${cls}">${esc(fmtMoney(p.profit))}${pct}</td>`;
       }
 
-      // Off-bid flag: daily costs booked under codes that aren't on the bid are
-      // missed by the per-bid-item match, so they never reach Actual. Surface a
-      // ⚠ with the amount + offending codes (commonly a renamed/typo'd sub code)
-      // so the figure isn't silently understated.
+      // Off-bid flag: part of Actual is booked under codes that aren't on the
+      // bid, so it's counted in Actual but not attributed to any bid item (and
+      // therefore not reflected in Projected). Surface a ⚠ with the amount +
+      // offending codes so the drift is visible and can be cleaned up.
       let offBidFlag = '';
       const offBid = Number(p.offBid) || 0;
       if (offBid > 0.005) {
@@ -1172,7 +1172,7 @@
           .map(c => `  ${c.cost_code || '(blank)'}${c.sub_code ? ' / ' + c.sub_code : ''}: ${fmtMoney(c.actual)}`)
           .join('\n');
         const more  = list.length > 8 ? `\n  …and ${list.length - 8} more` : '';
-        const title = `${fmtMoney(offBid)} in daily costs logged under codes not on the bid — excluded from Actual:\n${lines}${more}`;
+        const title = `${fmtMoney(offBid)} of Actual is logged under codes not on the bid — counted in Actual but not tied to any bid item (so not in Projected):\n${lines}${more}`;
         offBidFlag  = `<div class="offbid-flag" title="${esc(title)}">⚠ ${esc(fmtMoney(offBid))} off-bid</div>`;
       }
 
