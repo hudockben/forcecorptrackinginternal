@@ -416,6 +416,10 @@ async function buildHero(sql, companyCode) {
 async function buildFinancials(sql, companyCode, division, projects) {
   const ids = projects.map(p => p.id).filter(Boolean);
   let actualByMatch = new Map();
+  // Every daily cost group (project × cost_code × sub_code), kept per project
+  // so we can flag costs booked under codes that aren't on the bid (e.g. after
+  // a sub-code rename leaves old daily rows orphaned from their bid line).
+  const groupsByProject = new Map();
   if (ids.length) {
     const rows = await sql`
       SELECT
@@ -440,6 +444,15 @@ async function buildFinancials(sql, companyCode, division, projects) {
       `${r.project_id} ${r.cost_code || ''} ${r.sub_code || ''}`,
       { actual: Number(r.actual) || 0, rqty: Number(r.rqty) || 0 },
     ]));
+    for (const r of rows) {
+      const list = groupsByProject.get(r.project_id) || [];
+      list.push({
+        cost_code: r.cost_code || '',
+        sub_code:  r.sub_code  || '',
+        actual:    Number(r.actual) || 0,
+      });
+      groupsByProject.set(r.project_id, list);
+    }
   }
 
   const today = Date.now();
@@ -475,7 +488,22 @@ async function buildFinancials(sql, companyCode, division, projects) {
     bid_total       += bid;
     actual_total    += actual;
     projected_total += projected;
-    perProject.set(p.id, { contract: projContract(p), bid, actual, projected });
+
+    // Off-bid drift: daily cost groups whose cost_code/sub_code pair isn't on
+    // any bid line are missed by the per-item match above, so they never reach
+    // `actual`. Surface them instead of letting the spend silently vanish
+    // (common after a sub-code rename orphans older daily rows).
+    const bidKeys = new Set(projBidLines(p).map(b => `${b.cost_code} ${b.sub_code}`));
+    let offBid = 0;
+    const offBidCodes = [];
+    for (const g of (groupsByProject.get(p.id) || [])) {
+      if (bidKeys.has(`${g.cost_code} ${g.sub_code}`)) continue;
+      offBid += g.actual;
+      offBidCodes.push({ cost_code: g.cost_code, sub_code: g.sub_code, actual: g.actual });
+    }
+    offBidCodes.sort((a, b) => b.actual - a.actual);
+
+    perProject.set(p.id, { contract: projContract(p), bid, actual, projected, offBid, offBidCodes });
   }
   return { contract_total, bid_total, actual_total, projected_total, perProject };
 }
@@ -780,7 +808,7 @@ async function buildProjectsPortfolio(sql, companyCode) {
   }
 
   const rows = tagged.map(({ p, division }) => {
-    const fin       = finByProject.get(p.id) || { bid: 0, actual: 0, projected: 0 };
+    const fin       = finByProject.get(p.id) || { bid: 0, actual: 0, projected: 0, offBid: 0, offBidCodes: [] };
     const contract  = projContract(p);
     const bid       = fin.bid;
     const actual    = fin.actual;
@@ -805,6 +833,8 @@ async function buildProjectsPortfolio(sql, companyCode) {
       projected,
       profit,
       profitPct,
+      offBid:      Number(fin.offBid) || 0,
+      offBidCodes: Array.isArray(fin.offBidCodes) ? fin.offBidCodes : [],
     };
   });
 
