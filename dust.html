@@ -985,6 +985,7 @@
     .cw-vtot { min-width: 100px; }
     .cw-vgrt { min-width: 105px; }
     .cw-gal  { min-width: 92px; }
+    .cw-mu   { min-width: 90px; }
     .cw-ubt  { min-width: 110px; }
     .cw-inv  { min-width: 112px; }
     .cw-del  { min-width: 34px; width: 34px; }
@@ -1476,7 +1477,7 @@
             <th class="g-entry"  colspan="2">Entry</th>
             <th class="g-v1"     colspan="3">Truck</th>
             <th class="g-cust"   colspan="3">Customer</th>
-            <th class="g-v1"     colspan="3">Material</th>
+            <th class="g-v1"     colspan="4">Material</th>
             <th class="g-v2"     colspan="2">Trucking</th>
             <th class="g-totals" colspan="1">Notes</th>
             <th class="g-totals" colspan="1">Totals</th>
@@ -1494,6 +1495,7 @@
             <th class="cw-st">State<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('state',this.value)"></th>
             <th class="cw-veh">Material<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('material',this.value)"></th>
             <th class="cw-gal">Gallons / Bags</th>
+            <th class="cw-mu">MU<input class="col-filter" type="text" placeholder="filter…" oninput="obSetFilter('mu',this.value)"></th>
             <th class="cw-rate">Price per Gal / Bag</th>
             <th class="cw-rate">Trucking HRS</th>
             <th class="cw-rate">Trucking $ / hr</th>
@@ -1505,7 +1507,7 @@
         <tbody id="obTbody"></tbody>
         <tfoot>
           <tr class="add-row-foot">
-            <td colspan="17">
+            <td colspan="18">
               <button class="add-row-foot-btn" onclick="obAddRow()">+ Add Row</button>
             </td>
           </tr>
@@ -1602,6 +1604,7 @@
         <button class="modal-tab-btn" data-panel="employees">Employees</button>
         <button class="modal-tab-btn" data-panel="materials">Materials</button>
         <button class="modal-tab-btn" data-panel="states">States</button>
+        <button class="modal-tab-btn" data-panel="mu">MU</button>
       </div>
       <div class="modal-body">
 
@@ -1649,6 +1652,15 @@
           <div class="add-item-row">
             <input type="text" id="new-state-abbr" placeholder="State abbreviation (e.g. PA)" maxlength="2" style="text-transform:uppercase;max-width:200px" />
             <button class="btn-list-add" onclick="addListItem('states')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- MU -->
+        <div class="list-panel" id="lp-mu">
+          <div class="list-items" id="li-mu"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-mu-name" placeholder="MU option…" />
+            <button class="btn-list-add" onclick="addListItem('mu')">+ Add</button>
           </div>
         </div>
 
@@ -2025,7 +2037,7 @@
         || null;
     }
 
-    let dustLists  = { equipment: [], employees: [], companies: [], materials: [], states: [] };
+    let dustLists  = { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [] };
     let dustFilters = {};
 
     function setFilter(field, value) {
@@ -3188,6 +3200,7 @@
       renderEmployeesPanel();
       renderMaterialsPanel();
       renderStatesPanel();
+      renderMuPanel();
     }
 
     function renderMaterialsPanel() {
@@ -3364,6 +3377,17 @@
         : '<div class="empty-hint">No states added yet.</div>';
     }
 
+    function renderMuPanel() {
+      const sorted = (dustLists.mu || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+      document.getElementById('li-mu').innerHTML = sorted.length
+        ? sorted.map(name => `
+            <div class="list-item">
+              <span style="font-size:0.82rem;font-weight:600;color:var(--text);flex:1">${esc(name)}</span>
+              <button class="remove-item" onclick="removeListItem('mu','${esc(name).replace(/'/g,"\\'")}')">✕</button>
+            </div>`).join('')
+        : '<div class="empty-hint">No MU options added yet.</div>';
+    }
+
     function addListItem(type) {
       if (type === 'equipment') {
         const name = document.getElementById('new-equip-name').value.trim();
@@ -3410,6 +3434,15 @@
           document.getElementById('new-mat-name').value = '';
           renderMaterialsPanel();
         }
+      } else if (type === 'mu') {
+        const name = document.getElementById('new-mu-name').value.trim();
+        if (!name) { document.getElementById('new-mu-name').focus(); return; }
+        if (!Array.isArray(dustLists.mu)) dustLists.mu = [];
+        if (!dustLists.mu.includes(name)) {
+          dustLists.mu.push(name);
+          document.getElementById('new-mu-name').value = '';
+          renderMuPanel();
+        }
       }
       saveLists();
     }
@@ -3428,6 +3461,9 @@
       } else if (type === 'materials') {
         // id here is the material name string
         dustLists.materials = (dustLists.materials || []).filter(n => n !== id);
+      } else if (type === 'mu') {
+        // id here is the MU option string
+        dustLists.mu = (dustLists.mu || []).filter(n => n !== id);
       } else {
         dustLists[type] = dustLists[type].filter(item => item.id !== id);
       }
@@ -3486,6 +3522,7 @@
     document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
     document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
     document.getElementById('new-mat-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('materials'); });
+    document.getElementById('new-mu-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('mu'); });
 
     /* ═══════════════════════════════════════════
        UB RATE
@@ -3851,6 +3888,7 @@
           dustLists.companies = Array.isArray(lists.companies) ? lists.companies : [];
           dustLists.materials = Array.isArray(lists.materials) ? lists.materials : [];
           dustLists.states    = Array.isArray(lists.states)    ? lists.states    : [];
+          dustLists.mu        = Array.isArray(lists.mu)        ? lists.mu        : [];
           // Ensure each company has required arrays; migrate co.men strings → {id,name} objects
           dustLists.companies.forEach(co => {
             if (!Array.isArray(co.locations)) co.locations = [];
@@ -4393,7 +4431,7 @@
           inv_number: '',
           driver: '', truck_number: '', trailer_number: '',
           customer: '', destination: '', state: '',
-          material: '', gallons_bags: '', price_per_unit: '',
+          material: '', gallons_bags: '', mu: '', price_per_unit: '',
           trucking_hrs: '', trucking_rate: '',
           comments: '',
         });
@@ -4586,6 +4624,14 @@
           matList.map(name =>
             `<option value="${esc(name)}"${row.material===name?' selected':''}>${esc(name)}</option>`).join('');
 
+        // MU dropdown sourced from the managed MU list. Preserve any saved
+        // value that's no longer in the list so legacy rows keep their choice.
+        const muList = (dustLists.mu || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+        if (row.mu && !muList.includes(row.mu)) muList.unshift(row.mu);
+        const muOpts = '<option value="">— select —</option>' +
+          muList.map(name =>
+            `<option value="${esc(name)}"${row.mu===name?' selected':''}>${esc(name)}</option>`).join('');
+
         const icTs   = obIcSent.get(row.id) || '';
         const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
 
@@ -4619,6 +4665,7 @@
           <td class="cw-st"><select onchange="obSet(${idx},'state',this.value)">${stOpts}</select></td>
           <td class="cw-veh"><select onchange="obSet(${idx},'material',this.value)">${matOpts}</select></td>
           <td class="cw-gal"><input type="number" step="0.01" min="0" value="${esc(row.gallons_bags||'')}" oninput="_obLiveSet(${idx},'gallons_bags',this.value)" onchange="obSet(${idx},'gallons_bags',this.value)"></td>
+          <td class="cw-mu"><select onchange="obSet(${idx},'mu',this.value)">${muOpts}</select></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.price_per_unit||'')}" oninput="_obLiveSet(${idx},'price_per_unit',this.value)" onchange="obSet(${idx},'price_per_unit',this.value)"></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>
@@ -4627,7 +4674,7 @@
           <td class="del-col"><button class="del-btn" onclick="obDeleteRow(${idx})" title="Delete row">✕</button></td>
         </tr>
         <tr class="inv-row" id="ob-ic-row-${idx}" style="display:${expanded?'':'none'}">
-          <td colspan="17">${icPanel}</td>
+          <td colspan="18">${icPanel}</td>
         </tr>`;
       }).join('');
 
@@ -4788,6 +4835,7 @@
       state: 'State',
       material: 'Material',
       gallons_bags: 'Gallons / Bags',
+      mu: 'MU',
       price_per_unit: 'Price per Gal/Bag',
       trucking_hrs: 'Trucking HRS',
       trucking_rate: 'Trucking $/hr',
@@ -4808,6 +4856,7 @@
           s.customer && `Customer: ${s.customer}`,
           s.destination && `Destination: ${s.destination}`,
           s.material && `Material: ${s.material}`,
+          s.mu && `MU: ${s.mu}`,
           s.gallons_bags && `Gal/Bags: ${s.gallons_bags}`,
           s.driver && `Driver: ${s.driver}`,
           s.inv_number && `Inv #: ${s.inv_number}`,

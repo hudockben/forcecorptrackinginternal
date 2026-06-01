@@ -22,6 +22,7 @@ const OB_AUDIT_FIELDS = [
   'state',
   'material',
   'gallons_bags',
+  'mu',
   'price_per_unit',
   'trucking_hrs',
   'trucking_rate',
