@@ -647,9 +647,11 @@ CREATE TABLE IF NOT EXISTS dust_company_personnel (
 
 CREATE INDEX IF NOT EXISTS idx_dust_pers_company ON dust_company_personnel(dust_company_id);
 
--- Employees and states stored in dropdown_lists:
+-- Employees, materials, states, and MU options stored in dropdown_lists:
 --   list_name = 'dust_employees'  (strings)
+--   list_name = 'dust_materials'  (strings)
 --   list_name = 'dust_states'     (strings)
+--   list_name = 'dust_mu'         (strings) — Other Billing "MU" dropdown
 
 -- ─────────────────────────────────────────────────
 -- INTERCOMPANY BILLING
