@@ -291,6 +291,13 @@
     .ci-co-stat-val { font-size: 0.82rem; font-weight: 600; color: var(--accent); }
     .ci-co-stat-lbl { font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
 
+    /* Dust Control monthly UB-gallons rollup (sits at the top of the tab) */
+    .ci-galsum-card { border-color: rgba(251,191,36,0.35); }
+    .ci-galsum-card .ci-co-header { background: rgba(251,191,36,0.06); }
+    .ci-galsum-card .ci-co-name { display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; }
+    .ci-galsum-sub { font-size: 0.6rem; font-weight: 500; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.08em; }
+
     .ci-month-table { width: 100%; border-collapse: collapse; }
     .ci-month-table th {
       font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em;
@@ -1820,9 +1827,102 @@
         </div>`;
       }
 
+      // ── Dust Control: cross-company monthly UB-gallons rollup ──
+      //   Sums every company's UB gallons per month so the per-customer
+      //   totals don't have to be added up by hand. Each month expands to
+      //   show the per-company breakdown. Shown only on the Dust Control tab.
+      function buildDustGallonsSummary(divRows) {
+        const galTxt = g => g.toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' gal';
+
+        const byMonth = {};
+        divRows.forEach(e => {
+          const gal = parseFloat(e.gallons_ub) || 0;
+          if (gal <= 0) return;
+          const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
+          const mIdx = isNaN(mRaw) ? -1 : mRaw;
+          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, gallons: 0, byCo: {} };
+          byMonth[mKey].gallons += gal;
+          const coName = e.company_name || 'Unknown';
+          byMonth[mKey].byCo[coName] = (byMonth[mKey].byCo[coName] || 0) + gal;
+        });
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+
+        const totGal = sortedMonths.reduce((s, m) => s + m.gallons, 0);
+        if (totGal <= 0) return '';                 // nothing to total — skip the panel
+        const totIc = totGal * icUbRate;
+
+        const monthRows = sortedMonths.map((m, mi) => {
+          const detId = `ci-galsum-m${mi}`;
+          const coRows = Object.entries(m.byCo)
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, g]) => `<tr>
+                <td>${escT(name)}</td>
+                <td class="r">${galTxt(g)}</td>
+                <td class="r ic-val">${icUbRate > 0 ? fmt$(g * icUbRate) : '—'}</td>
+              </tr>`).join('');
+          return `
+            <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
+              <td><span class="ci-month-arrow">▶</span>${m.label}</td>
+              <td class="r">${galTxt(m.gallons)}</td>
+              <td class="r ic-val">${icUbRate > 0 ? fmt$(m.gallons * icUbRate) : '—'}</td>
+            </tr>
+            <tr class="ci-mdet-row" id="${detId}">
+              <td colspan="3" class="ci-mdet-inner">
+                <table class="ci-detail-table">
+                  <thead><tr><th>Company</th><th class="r">UB Gallons</th><th class="r ic-val">IC UB Total</th></tr></thead>
+                  <tbody>${coRows}</tbody>
+                </table>
+              </td>
+            </tr>`;
+        }).join('');
+
+        const coNames = new Set(divRows.filter(e => (parseFloat(e.gallons_ub) || 0) > 0).map(e => e.company_name || 'Unknown'));
+        const subtitle = coNames.size === 1 ? [...coNames][0] : `Across ${coNames.size} companies`;
+
+        return `
+        <div class="ci-co-card ci-galsum-card">
+          <div class="ci-co-header">
+            <div class="ci-co-name">
+              <span class="ci-div-label dust">Dust Control</span>
+              Monthly UB Gallons <span class="ci-galsum-sub">· ${escT(subtitle)}</span>
+            </div>
+            <div class="ci-co-meta">
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${galTxt(totGal)}</div>
+                <div class="ci-co-stat-lbl">Total UB Gallons</div>
+              </div>
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val ic-val">${icUbRate > 0 ? fmt$(totIc) : '—'}</div>
+                <div class="ci-co-stat-lbl">IC UB Total</div>
+              </div>
+            </div>
+          </div>
+          <table class="ci-month-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th class="r">UB Gallons</th>
+                <th class="r ic-val">IC UB Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${monthRows}
+              <tr class="ci-month-total">
+                <td>Total</td>
+                <td class="r">${galTxt(totGal)}</td>
+                <td class="r ic-val">${icUbRate > 0 ? fmt$(totIc) : '—'}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`;
+      }
+
       const isObFilter = ciDivFilter === 'dust-other-billing';
 
-      body.innerHTML = Object.values(byCompany).map((co, idx) => {
+      const galSummaryHtml = ciDivFilter === 'dust' ? buildDustGallonsSummary(entries) : '';
+
+      body.innerHTML = galSummaryHtml + Object.values(byCompany).map((co, idx) => {
         const totJobs    = co.rows.length;
         const totHours   = co.rows.reduce((s, e) => s + (parseFloat(e.trucking_hrs)|| parseFloat(e.total_hours) || 0), 0);
         const totGallons = co.rows.reduce((s, e) => s + (parseFloat(e.gallons_bags)|| parseFloat(e.gallons_ub)  || 0), 0);
