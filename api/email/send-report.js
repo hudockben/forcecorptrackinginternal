@@ -41,6 +41,7 @@ const REPORT_TYPES = {
   paving_daily_pm:      { division: 'paving',    label: 'Daily PM Report'                    },
   paving_daily_summary: { division: 'paving',    label: 'Daily Summary Report'               },
   paving_bid_items:     { division: 'paving',    label: 'Bid Line Items vs Actuals — Paving' },
+  quarry_breakeven:     { division: 'quarry',    label: 'Quarry Break-Even Analysis'          },
 };
 
 module.exports = async (req, res) => {

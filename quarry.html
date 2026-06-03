@@ -408,7 +408,7 @@
     .analytics-toolbar-actions {
       display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap;
     }
-    #analyticsPdfBtn, #breakevenPdfBtn { display: inline-flex; align-items: center; gap: 0.4rem; }
+    #analyticsPdfBtn, #breakevenPdfBtn, #breakevenEmailBtn { display: inline-flex; align-items: center; gap: 0.4rem; }
 
     .sales-table-wrap {
       border: 1px solid var(--border); border-radius: 6px;
@@ -1238,6 +1238,7 @@
             <select class="year-filter-select" id="breakevenYearFilter" onchange="setYearFilter('breakeven', this.value)" disabled></select>
           </div>
           <button class="btn-add-row btn-bulk-upload" id="breakevenPdfBtn" onclick="downloadBreakevenPDF()">⇩ Print / PDF</button>
+          <button class="btn-add-row btn-bulk-upload" id="breakevenEmailBtn" onclick="emailBreakevenReport()">✉ Email</button>
         </div>
       </div>
 
@@ -1495,6 +1496,7 @@
     </div>
   </div>
 
+  <script src="report-email.js" defer></script>
   <script>
     // ── Auth guard ──────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -4962,7 +4964,14 @@ ${sections}
       doc.document.close();
     }
 
-    function downloadBreakevenPDF() {
+    // Builds the Break-Even report's inner HTML (style block + KPIs + tables +
+    // chart), reused by Print/PDF and Email. The <style> lives in the body so
+    // it survives email sanitization (which keeps <style>); @page/@media-print
+    // rules are harmless in email, and grid degrades to a vertical stack in
+    // clients that don't support it. Pass { includeHeader:false } for email,
+    // where the email shell already supplies the title + timestamp.
+    function buildBreakevenReport(opts) {
+      opts = opts || {};
       const yr = yearFilterLabel('breakeven');
       const yrTitle = (yr === 'all years') ? 'All Years' : yr;
       const generated = new Date().toLocaleString();
@@ -4982,7 +4991,7 @@ ${sections}
         ${kpiCard('Avg Price / Ton', money(total.avgPrice), 'Blended · all pits')}
         ${kpiCard('Variable Cost / Ton', money(total.varCostPerTon), 'Daily + crushing ÷ tons')}
         ${kpiCard('Contribution / Ton', money(total.contribution), 'Price − variable cost')}
-        ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Total entered · all pits')}
+        ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Average across pits')}
         ${kpiCard('Break-Even Tons / Mo', beTonsTxt(total), 'Tons/mo to cover all costs')}
         ${kpiCard('Break-Even Revenue / Mo', money(total.breakEvenRevenue), 'Sales $/mo to break even')}
         ${kpiCard('Avg Tons Sold / Mo', formatTons(total.avgTonsPerMonth), total.months > 0 ? `Over ${total.months} active months` : '—')}
@@ -5053,51 +5062,73 @@ ${sections}
           + `<div class="chart">${svg}</div>`;
       }
 
+      const style = `<style>
+  .be-report { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; }
+  .be-report h1 { font-size: 17px; margin: 0 0 0.15rem; }
+  .be-report h2 { font-size: 12px; margin: 1rem 0 0.4rem; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+  .be-report .meta { font-size: 10px; color: #555; margin-bottom: 0.6rem; }
+  .be-report .note { font-size: 9.5px; color: #555; margin: 0 0 0.9rem; line-height: 1.45; }
+  .be-report .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 0.8rem; }
+  .be-report .kpi { border: 1px solid #ccc; border-radius: 5px; padding: 6px 8px; background: #fafafa; }
+  .be-report .kpi-l { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #555; }
+  .be-report .kpi-v { font-size: 14px; font-weight: 700; margin-top: 2px; }
+  .be-report .kpi-s { font-size: 8.5px; color: #666; margin-top: 2px; }
+  .be-report table.rep { width: 100%; border-collapse: collapse; margin-bottom: 0.5rem; }
+  .be-report table.rep th, .be-report table.rep td { border: 1px solid #ccc; padding: 4px 6px; text-align: center; white-space: nowrap; font-size: 10px; }
+  .be-report table.rep th:first-child, .be-report table.rep td:first-child { text-align: left; }
+  .be-report table.rep thead th { background: #f0f0f0; font-weight: 700; font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .be-report table.rep tbody tr:nth-child(even) { background: #fafafa; }
+  .be-report table.rep tr.tot td { font-weight: 700; border-top: 2px solid #999; background: #f3f3f3; }
+  .be-report table.rep td.pos { color: #15803d; }
+  .be-report table.rep td.neg { color: #b91c1c; }
+  .be-report .chart { width: 100%; page-break-inside: avoid; }
+  .be-report .chart svg { width: 100%; height: auto; }
+  .be-report .chart-legend { display: flex; gap: 18px; font-size: 9.5px; color: #555; margin: 0 0 4px; }
+  .be-report .chart-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+  .be-report .chart-legend .ln { display: inline-block; width: 20px; height: 0; border-top: 3px solid #2563eb; }
+  .be-report .chart-legend .ln.needed { border-top-style: dashed; border-top-color: #c2410c; }
+  @page { size: landscape; margin: 0.4in; }
+</style>`;
+      const header = opts.includeHeader === false ? '' :
+        `<h1>Quarry Break-Even &mdash; ${yrTitle}</h1>`
+        + `<div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking + entered fixed costs</div>`;
+      const note = `<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; monthly fixed cost is the average of the per-pit entries. Break-even tons/mo = monthly fixed ÷ contribution per ton. <strong>Month-by-Month</strong> is cost-coverage: each month's break-even is the sales needed to cover that month's actual labor &amp; fuel plus the fixed cost entered for that month.</div>`;
+
+      const html = style + `<div class="be-report">` + header + note + kpis + locTable + monthlyTable + chartSection + `</div>`;
+      return { yrTitle, html, hasData: rows.length > 0 };
+    }
+
+    function downloadBreakevenPDF() {
+      const { yrTitle, html } = buildBreakevenReport({ includeHeader: true });
       const doc = window.open('', '_blank', 'width=1100,height=800');
       if (!doc) {
         alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
         return;
       }
-      doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Quarry Break-Even — ${yrTitle}</title>
-<style>
-  body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.25rem; }
-  h1 { font-size: 17px; margin: 0 0 0.15rem; }
-  h2 { font-size: 12px; margin: 1rem 0 0.4rem; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
-  .meta { font-size: 10px; color: #555; margin-bottom: 0.6rem; }
-  .note { font-size: 9.5px; color: #555; margin: 0 0 0.9rem; line-height: 1.45; }
-  .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 0.8rem; }
-  .kpi { border: 1px solid #ccc; border-radius: 5px; padding: 6px 8px; background: #fafafa; }
-  .kpi-l { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #555; }
-  .kpi-v { font-size: 14px; font-weight: 700; margin-top: 2px; }
-  .kpi-s { font-size: 8.5px; color: #666; margin-top: 2px; }
-  table.rep { width: 100%; border-collapse: collapse; margin-bottom: 0.5rem; }
-  table.rep th, table.rep td { border: 1px solid #ccc; padding: 4px 6px; text-align: center; white-space: nowrap; font-size: 10px; }
-  table.rep th:first-child, table.rep td:first-child { text-align: left; }
-  table.rep thead th { background: #f0f0f0; font-weight: 700; font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
-  table.rep tbody tr:nth-child(even) { background: #fafafa; }
-  table.rep tr.tot td { font-weight: 700; border-top: 2px solid #999; background: #f3f3f3; }
-  table.rep td.pos { color: #15803d; }
-  table.rep td.neg { color: #b91c1c; }
-  .chart { width: 100%; page-break-inside: avoid; }
-  .chart svg { width: 100%; height: auto; }
-  .chart-legend { display: flex; gap: 18px; font-size: 9.5px; color: #555; margin: 0 0 4px; }
-  .chart-legend > span { display: inline-flex; align-items: center; gap: 5px; }
-  .chart-legend .ln { display: inline-block; width: 20px; height: 0; border-top: 3px solid #2563eb; }
-  .chart-legend .ln.needed { border-top-style: dashed; border-top-color: #c2410c; }
-  @page { size: landscape; margin: 0.4in; }
-  @media print { body { padding: 0.1in; } }
-</style></head><body>
-<h1>Quarry Break-Even &mdash; ${yrTitle}</h1>
-<div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking + entered fixed costs</div>
-<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; monthly fixed cost is the average of the per-month entries. Break-even tons/mo = monthly fixed ÷ contribution per ton. <strong>Month-by-Month</strong> is cost-coverage: each month's break-even is the sales needed to cover that month's actual labor &amp; fuel plus the fixed cost entered for that month.</div>
-${kpis}
-${locTable}
-${monthlyTable}
-${chartSection}
-<script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>
-</body></html>`);
+      doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">`
+        + `<title>Quarry Break-Even — ${yrTitle}</title></head>`
+        + `<body style="margin:0;padding:16px;background:#fff;">${html}`
+        + `<` + `script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>`
+        + `</body></html>`);
       doc.document.close();
+    }
+
+    // Email the same report via the shared recipient-picker modal (report-email.js).
+    function emailBreakevenReport() {
+      if (typeof window.openReportEmailModal !== 'function') {
+        alert('Email module is still loading — please try again in a moment.');
+        return;
+      }
+      const built = buildBreakevenReport({ includeHeader: false });
+      if (!built.hasData) {
+        alert('No quarry data to email yet — add Sales, Daily, or Crushing entries first.');
+        return;
+      }
+      window.openReportEmailModal({
+        reportType: 'quarry_breakeven',
+        defaultSubject: `Quarry Break-Even — ${built.yrTitle}`,
+        getHTML: () => buildBreakevenReport({ includeHeader: false }).html,
+      });
     }
 
     // Refresh whenever the analytics tab data may have changed
