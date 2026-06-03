@@ -1247,7 +1247,7 @@
         <ul>
           <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales, Daily, and Crushing entries for the selected year. Variable cost = all daily + crushing labor &amp; fuel, divided by tons produced.</li>
           <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
-          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below (include each location's share of corporate overhead); this column shows the average. Entries save automatically.</li>
+          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below — pick a pit and type each month's figure. This column shows each location's average; <strong>All Pits is the average of the locations</strong>, and the executive dashboard mirrors it. Entries save automatically.</li>
         </ul>
       </div>
 
@@ -3761,12 +3761,39 @@
       const vals = Object.keys(m).map(k => Number(m[k])).filter(v => Number.isFinite(v) && v > 0);
       return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
     }
-    // Editable per-month fixed input (Month-by-Month table); stores under the
-    // currently selected location scope.
+    // Pit scopes = location-named buckets (exclude 'all' and no-location).
+    function pitScopes() {
+      return Object.keys(quarryMonthlyFixed).filter(s => s && s !== 'all' && s !== BE_NO_LOC);
+    }
+    // Average of each pit's average monthly fixed (pits with any fixed entered).
+    function pitsAvgFixed() {
+      const vals = pitScopes().map(scopeAvgFixed).filter(v => v > 0);
+      return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    }
+    // Average across pits of their fixed cost for one month.
+    function pitsAvgMonthFixed(monthKey) {
+      const vals = pitScopes().map(p => scopeMonthFixed(p, monthKey)).filter(v => v > 0);
+      return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    }
+    // Fixed figure for a By-Location / Month-by-Month scope. 'all' = the average
+    // of the per-pit values (so All Pits shows a number even when you only
+    // entered per pit); a pit uses its own entries; no-location is 0.
+    function avgFixedForScope(scope) {
+      if (scope === 'all') return pitsAvgFixed();
+      if (scope === BE_NO_LOC) return 0;
+      return scopeAvgFixed(scope);
+    }
+    function monthFixedForScope(scope, monthKey) {
+      if (scope === 'all') return pitsAvgMonthFixed(monthKey);
+      if (scope === BE_NO_LOC) return 0;
+      return scopeMonthFixed(scope, monthKey);
+    }
+    // Editable per-month fixed input (Month-by-Month table, a single pit
+    // selected); stores under that pit's scope.
     function onMonthlyFixedInput(input) {
       const scope = input.dataset.loc || '';
       const month = input.dataset.month || '';
-      if (!scope || !month) return;
+      if (!scope || !month || scope === 'all' || scope === BE_NO_LOC) return;
       const raw = String(input.value).trim();
       const n = raw === '' ? 0 : Number(raw.replace(/[^0-9.]/g, ''));
       if (Number.isFinite(n) && n > 0) {
@@ -3857,9 +3884,9 @@
         .sort((a, b) => (b.tonsSold - a.tonsSold) || a.name.localeCompare(b.name));
 
       // Division total — blended across every pit. All-Pits fixed is the
-      // average of the All-Pits-scope monthly entries (the figure mirrored to
-      // the executive tile), independent of the per-pit rows.
-      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, monthlyFixed: scopeAvgFixed('all'), salesMonths: new Set() };
+      // average of the per-pit monthly fixed values (the figure mirrored to
+      // the executive tile).
+      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, monthlyFixed: pitsAvgFixed(), salesMonths: new Set() };
       rows.forEach(r => {
         T.revenue += r.revenue; T.tonsSold += r.tonsSold;
         T.varCost += r.varCost; T.tonsCrushed += r.tonsCrushed;
@@ -4047,7 +4074,7 @@
       const inYear = (r) => rowMatchesYear('breakeven', r);
       const matchLoc = (r) => locFilter === 'all'
         || ((String(r.locationName || '').trim() || BE_NO_LOC) === locFilter);
-      const monthlyFixed = scopeAvgFixed(locFilter);  // average of this scope's entries (for display)
+      const monthlyFixed = avgFixedForScope(locFilter);  // scope average (All Pits = avg of pits)
 
       const months = new Map();
       const ensureM = (mk) => {
@@ -4079,7 +4106,7 @@
 
       const rows = [...months.values()].map(m => {
         const avgPrice = m.tonsSold > 0 ? m.revenue / m.tonsSold : yrAvgPrice;
-        const fixedCost = scopeMonthFixed(locFilter, m.month);
+        const fixedCost = monthFixedForScope(locFilter, m.month);
         const totalCost = m.varCost + fixedCost;
         const breakEvenTons = (avgPrice != null && avgPrice > 0) ? totalCost / avgPrice : null;
         const profit = m.revenue - totalCost;
@@ -4098,9 +4125,12 @@
 
       const note = document.getElementById('beMonthlyNote');
       if (note) {
+        const editing = beMonthlyLoc !== 'all' && beMonthlyLoc !== BE_NO_LOC;
         const locLabel = beMonthlyLoc === 'all' ? 'all pits' : beMonthlyLoc;
-        note.innerHTML = `Type each month's <strong>fixed overhead</strong> in the Fixed Cost column (${escapeHtml(locLabel)}); break-even then covers that month's actual labor &amp; fuel plus that fixed cost. `
-          + `The <strong>By Quarry Location</strong> table shows the average of these (${formatMoney(monthlyFixed)}/mo here), and the executive dashboard mirrors the All-Pits average. `
+        note.innerHTML = (editing
+            ? `Type <strong>${escapeHtml(locLabel)}</strong>'s monthly <strong>fixed overhead</strong> in the Fixed Cost column; break-even then covers that month's actual labor &amp; fuel plus that fixed cost. `
+            : `Fixed cost here is the <strong>average across pits</strong> (read-only) — pick a single pit above to enter its monthly fixed costs. `)
+          + `The <strong>By Quarry Location</strong> table shows ${editing ? "this pit's average" : 'the All-Pits average'} (${formatMoney(monthlyFixed)}/mo), and the executive dashboard mirrors the All-Pits average. `
           + `<strong>Profit / Loss = revenue − total cost</strong>, so the status is a true monthly result. `
           + `<em>Break-even tons = total cost ÷ that month's price. Only months with activity are shown.</em>`;
       }
@@ -4122,17 +4152,23 @@
         : m.profit >= 0 ? '<span class="be-pill good">Profit</span>'
         : '<span class="be-pill bad">Loss</span>';
 
+      // Fixed cost is editable per pit; All Pits / No-location show the derived
+      // average read-only (enter fixed costs by picking a specific pit).
+      const beEditable = beMonthlyLoc !== 'all' && beMonthlyLoc !== BE_NO_LOC;
       const tot = { tonsSold: 0, revenue: 0, varCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
       let html = rows.map(m => {
         tot.tonsSold += m.tonsSold; tot.revenue += m.revenue; tot.varCost += m.varCost;
         tot.fixedCost += m.fixedCost; tot.totalCost += m.totalCost; tot.profit += m.profit;
         const pl = m.profit >= 0 ? 'is-positive' : 'is-negative';
+        const fixedCell = beEditable
+          ? `<td class="be-num"><input class="be-fixed-input" type="text" inputmode="decimal" data-loc="${escapeHtml(beMonthlyLoc)}" data-month="${m.month}" value="${m.fixedCost > 0 ? m.fixedCost : ''}" placeholder="0" onchange="onMonthlyFixedInput(this)"></td>`
+          : `<td class="be-num">${m.fixedCost > 0 ? formatMoney(m.fixedCost) : dash}</td>`;
         return `<tr>`
           + `<td>${beMonthLabel(m.month)}</td>`
           + `<td class="be-num">${formatTons(m.tonsSold)}</td>`
           + `<td class="be-num">${formatMoney(m.revenue)}</td>`
           + `<td class="be-num">${formatMoney(m.varCost)}</td>`
-          + `<td class="be-num"><input class="be-fixed-input" type="text" inputmode="decimal" data-loc="${escapeHtml(beMonthlyLoc)}" data-month="${m.month}" value="${m.fixedCost > 0 ? m.fixedCost : ''}" placeholder="0" onchange="onMonthlyFixedInput(this)"></td>`
+          + fixedCell
           + `<td class="be-num">${formatMoney(m.totalCost)}</td>`
           + `<td class="be-num">${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>`
           + barCell(m.tonsSold, m.breakEvenTons)

@@ -1246,14 +1246,21 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   // Mirrors the Quarry page: the sales needed to cover THIS month's actual
   // labor + fuel plus fixed overhead. Variable cost/ton and contribution stay
   // year-blended so the per-ton economics — and the cost ≥ price guard — read
-  // steady. Monthly fixed mirrors the By-Location "All Pits" figure: the mean
-  // of the all-scope per-month entries in fct_quarry_monthly_fixed
-  // ({ scope: { 'YYYY-MM': amount } }).
+  // steady. Monthly fixed mirrors the By-Location "All Pits" figure: the
+  // average of each pit's average monthly fixed. fct_quarry_monthly_fixed is
+  // nested { scope: { 'YYYY-MM': amount } }; pit scopes exclude 'all' and the
+  // no-location bucket.
   let monthlyFixedTotal = 0;
   {
-    const allScope = (fixed && typeof fixed.all === 'object' && fixed.all) ? fixed.all : {};
-    const vals = Object.keys(allScope).map(k => num(allScope[k])).filter(v => v > 0);
-    if (vals.length) monthlyFixedTotal = vals.reduce((s, v) => s + v, 0) / vals.length;
+    const pitAvgs = Object.keys(fixed)
+      .filter(s => s && s !== 'all' && s !== '— No location —')
+      .map(s => {
+        const months = (fixed[s] && typeof fixed[s] === 'object') ? fixed[s] : {};
+        const vals = Object.keys(months).map(k => num(months[k])).filter(v => v > 0);
+        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+      })
+      .filter(v => v > 0);
+    if (pitAvgs.length) monthlyFixedTotal = pitAvgs.reduce((a, b) => a + b, 0) / pitAvgs.length;
   }
   const tonsBasisYr   = tonsCrushedYr > 0 ? tonsCrushedYr : tonsSoldYr;
   const avgPrice      = tonsSoldYr  > 0 ? revenueYr / tonsSoldYr : null;
