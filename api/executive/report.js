@@ -1273,10 +1273,10 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   // labor + fuel plus fixed overhead. Variable cost/ton and contribution stay
   // year-blended so the per-ton economics — and the cost ≥ price guard — read
   // steady. Monthly fixed mirrors the By-Location "All Pits" figure: the
-  // average of each pit's monthly fixed, where each pit's figure is scoped to
-  // the months it had activity this year (matching what the Quarry page
-  // shows). fct_quarry_monthly_fixed is nested { scope: { 'YYYY-MM': amount } };
-  // pit scopes exclude 'all' and the no-location bucket.
+  // SUM of each pit's monthly fixed (a true company total), where each pit's
+  // figure is scoped to the months it had activity this year (matching what
+  // the Quarry page shows). fct_quarry_monthly_fixed is nested
+  // { scope: { 'YYYY-MM': amount } }; pit scopes exclude 'all' and no-location.
   let monthlyFixedTotal = 0;
   {
     const pitAvgs = Object.keys(fixed)
@@ -1298,7 +1298,8 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
         return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
       })
       .filter(v => v > 0);
-    if (pitAvgs.length) monthlyFixedTotal = pitAvgs.reduce((a, b) => a + b, 0) / pitAvgs.length;
+    // Sum the per-pit figures: the company owes every pit's fixed cost.
+    monthlyFixedTotal = pitAvgs.reduce((a, b) => a + b, 0);
   }
   const tonsBasisYr     = tonsCrushedYr > 0 ? tonsCrushedYr : tonsSoldYr;
   const avgPrice        = tonsSoldYr  > 0 ? revenueYr / tonsSoldYr : null;

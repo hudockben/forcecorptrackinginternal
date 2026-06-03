@@ -3797,10 +3797,10 @@
       const vals = pitScopes().map(scopeAvgFixed).filter(v => v > 0);
       return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
     }
-    // Average across pits of their fixed cost for one month.
-    function pitsAvgMonthFixed(monthKey) {
-      const vals = pitScopes().map(p => scopeMonthFixed(p, monthKey)).filter(v => v > 0);
-      return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    // Sum across pits of their fixed cost for one month = the company's total
+    // fixed owed that month (used by the All-Pits month-by-month view).
+    function pitsSumMonthFixed(monthKey) {
+      return pitScopes().reduce((s, p) => s + scopeMonthFixed(p, monthKey), 0);
     }
     // Fixed figure for a By-Location / Month-by-Month scope. 'all' = the average
     // of the per-pit values (so All Pits shows a number even when you only
@@ -3811,7 +3811,7 @@
       return scopeAvgFixed(scope);
     }
     function monthFixedForScope(scope, monthKey) {
-      if (scope === 'all') return pitsAvgMonthFixed(monthKey);
+      if (scope === 'all') return pitsSumMonthFixed(monthKey);
       if (scope === BE_NO_LOC) return 0;
       return scopeMonthFixed(scope, monthKey);
     }
@@ -4008,38 +4008,42 @@
       const rows = [...locs.values()].map(finalize)
         .sort((a, b) => (b.tonsSold - a.tonsSold) || a.name.localeCompare(b.name));
 
-      // Division total — blended across every pit. All-Pits fixed is the
-      // average of the per-pit monthly fixed values (the figure mirrored to
-      // the executive tile).
-      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0, monthlyFixed: 0, salesMonths: new Set() };
+      // Division total = a true company total: the per-pit rows added up, so
+      // the All-Pits break-even target and shortfall are the pits combined and
+      // are never smaller than a single pit. Extensive figures (fixed cost,
+      // break-even tons/revenue, tons sold/mo) sum across the pit rows; the
+      // per-ton figures (price, variable cost, royalty, contribution) stay
+      // blended over the year. Each pit's break-even already covers its own
+      // fixed cost, so summing them is the company's break-even (the point
+      // where every pit covers itself).
+      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0,
+                  monthlyFixed: 0, beTons: 0, beTonsAny: false, beRev: 0, beRevAny: false,
+                  avgTonsPerMonth: 0, salesMonths: new Set() };
       rows.forEach(r => {
         T.revenue += r.revenue; T.tonsSold += r.tonsSold;
         T.varCost += r.varCost; T.tonsCrushed += r.tonsCrushed;
         T.royaltyCost += r.royaltyCost;
+        T.monthlyFixed += r.monthlyFixed || 0;
+        if (r.breakEvenTons != null)    { T.beTons += r.breakEvenTons;    T.beTonsAny = true; }
+        if (r.breakEvenRevenue != null) { T.beRev  += r.breakEvenRevenue; T.beRevAny  = true; }
+        T.avgTonsPerMonth += r.avgTonsPerMonth || 0;
         r.salesMonths.forEach(m => T.salesMonths.add(m));
       });
-      // All-Pits fixed = average of the per-pit (active-month-scoped) monthly
-      // fixed values, so it equals the average of the numbers shown on the
-      // pit rows. This is the figure mirrored to the executive tile.
-      const pitFixedVals = rows.filter(r => r.hasLoc && r.monthlyFixed > 0).map(r => r.monthlyFixed);
-      T.monthlyFixed = pitFixedVals.length ? pitFixedVals.reduce((s, v) => s + v, 0) / pitFixedVals.length : 0;
       const tBasis = T.tonsCrushed > 0 ? T.tonsCrushed : T.tonsSold;
       const tAvgPrice = T.tonsSold > 0 ? T.revenue / T.tonsSold : null;
       const tVarCost = tBasis > 0 ? T.varCost / tBasis : null;
       const tRoyaltyPerTon = T.tonsSold > 0 ? T.royaltyCost / T.tonsSold : 0;
       const tContribution = (tAvgPrice != null && tVarCost != null) ? tAvgPrice - tRoyaltyPerTon - tVarCost : null;
-      let tBeTons = null, tBeRev = null;
-      if (tContribution != null && tContribution > 0) {
-        tBeTons = T.monthlyFixed / tContribution;
-        tBeRev = tAvgPrice != null ? tBeTons * tAvgPrice : null;
-      } else if (tContribution != null && T.monthlyFixed <= 0) {
-        tBeTons = 0; tBeRev = 0;
-      }
+      // Break-even tons/revenue = the sum of each pit's own break-even; null
+      // only when no pit had a usable break-even this year.
+      const tBeTons = T.beTonsAny ? T.beTons : null;
+      const tBeRev  = T.beRevAny  ? T.beRev  : null;
       const tMonths = T.salesMonths.size;
       const total = {
-        name: 'All Pits', avgPrice: tAvgPrice, varCostPerTon: tVarCost, royaltyPerTon: tRoyaltyPerTon, contribution: tContribution,
+        name: 'All Pits', hasLoc: true,
+        avgPrice: tAvgPrice, varCostPerTon: tVarCost, royaltyPerTon: tRoyaltyPerTon, contribution: tContribution,
         monthlyFixed: T.monthlyFixed, breakEvenTons: tBeTons, breakEvenRevenue: tBeRev,
-        months: tMonths, avgTonsPerMonth: tMonths > 0 ? T.tonsSold / tMonths : 0,
+        months: tMonths, avgTonsPerMonth: T.avgTonsPerMonth,
       };
 
       return { rows, total };
@@ -4283,10 +4287,17 @@
       if (note) {
         const editing = beMonthlyLoc !== 'all' && beMonthlyLoc !== BE_NO_LOC;
         const locLabel = beMonthlyLoc === 'all' ? 'all pits' : beMonthlyLoc;
+        // Pull the figure the By-Location table actually shows for this scope
+        // so the note never contradicts the table: All Pits = the per-pit
+        // total; a single pit = its active-month average.
+        const beData = computeBreakeven();
+        const byLocFixed = editing
+          ? (beData.rows.find(r => r.name === beMonthlyLoc)?.monthlyFixed || 0)
+          : beData.total.monthlyFixed;
         note.innerHTML = (editing
             ? `Type <strong>${escapeHtml(locLabel)}</strong>'s monthly <strong>fixed overhead</strong> in the Fixed Cost column. `
-            : `Fixed cost here is the <strong>average across pits</strong> (read-only) — pick a single pit above to enter its monthly fixed costs. `)
-          + `The <strong>By Quarry Location</strong> table shows ${editing ? "this pit's average" : 'the All-Pits average'} (${formatMoney(monthlyFixed)}/mo), and the executive dashboard mirrors the All-Pits average. `
+            : `Fixed cost here is the <strong>total across all pits</strong> (read-only) — pick a single pit above to enter its monthly fixed costs. `)
+          + `The <strong>By Quarry Location</strong> table shows ${editing ? "this pit's average" : 'the All-Pits total'} (${formatMoney(byLocFixed)}/mo), and the executive dashboard mirrors the All-Pits total. `
           + `<strong>Total cost = crushing + fixed + royalty</strong> (royalty is % of sales); Profit / Loss = revenue − total cost. `
           + `<em>Break-even tons = (crushing + fixed) ÷ your net-of-royalty price. Only months with activity are shown.</em>`;
       }
@@ -5152,7 +5163,7 @@ ${sections}
         ${kpiCard('Avg Price / Ton', money(total.avgPrice), 'Blended · all pits')}
         ${kpiCard('Variable Cost / Ton', money(total.varCostPerTon), 'Crushing ÷ tons crushed')}
         ${kpiCard('Contribution / Ton', money(total.contribution), 'Price − royalty − variable cost')}
-        ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Average across pits')}
+        ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Total across all pits')}
         ${kpiCard('Break-Even Tons / Mo', beTonsTxt(total), 'Tons/mo to cover all costs')}
         ${kpiCard('Break-Even Revenue / Mo', money(total.breakEvenRevenue), 'Sales $/mo to break even')}
         ${kpiCard('Avg Tons Sold / Mo', formatTons(total.avgTonsPerMonth), total.months > 0 ? `Over ${total.months} active months` : '—')}
