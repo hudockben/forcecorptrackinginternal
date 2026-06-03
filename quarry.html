@@ -1255,7 +1255,7 @@
           <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales and Crushing entries for the selected year. Variable cost = crushing labor &amp; fuel ÷ tons crushed (daily tracking is not included).</li>
           <li><strong>Royalty %</strong> (per pit, in the table below) is a percentage of sales paid out — it comes off the price, lowering contribution by royalty% &times; price/ton. Enter each pit's rate (e.g., 12.75%) and contribution and break-even update automatically.</li>
           <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
-          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below — pick a pit and type each month's figure. This column shows each location's average; <strong>All Pits is the average of the locations</strong>, and the executive dashboard mirrors it. Entries save automatically.</li>
+          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below — pick a pit and type each month's figure. This column shows each location's average monthly fixed; <strong>All Pits is the total across pits</strong> (your full company-wide monthly fixed), and the executive dashboard mirrors it. Entries save automatically.</li>
         </ul>
       </div>
 
@@ -1368,6 +1368,27 @@
           <span class="be-leg"><span class="be-leg-line needed"></span>Break-even (need to crush)</span>
         </div>
         <div id="beChartWrap" class="be-chart-wrap"></div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title">Industry Benchmark — Reality Check</div>
+        <div class="be-monthly-note" id="beBenchmarkNote"></div>
+        <div class="sales-table-wrap">
+          <table class="sales-table be-table" id="beBenchmarkTable" style="min-width:780px;">
+            <thead>
+              <tr>
+                <th style="text-align:left;">Metric (All Pits)</th>
+                <th class="be-num">Your Number</th>
+                <th class="be-num">Typical U.S. Range</th>
+                <th>Read</th>
+              </tr>
+            </thead>
+            <tbody id="beBenchmarkBody"></tbody>
+          </table>
+        </div>
+        <div class="be-monthly-note" style="margin-top:0.7rem;">
+          <em>These are broad U.S. crushed-stone / aggregate rules of thumb — figures swing with region, product mix, plant scale, and haul distance, so treat them as a sanity check, not a target. Your variable cost here is <strong>crushing &amp; screening only</strong> (drilling, blasting, loading, and hauling are not in it), which is why contribution looks high — those other costs live in your fixed bucket or aren't captured. For firm numbers see USGS Mineral Commodity Summaries (price) and NSSGA / your state aggregate association (cost &amp; margin).</em>
+        </div>
       </div>
     </div>
   </div>
@@ -4061,6 +4082,112 @@
       return { cls: 'bad', label: `Below by ${formatTons(Math.abs(diff))} t/mo` };
     }
 
+    // ── Industry benchmark "reality check" ──
+    // Rough U.S. crushed-stone / aggregate rules of thumb. Ranges, not gospel —
+    // price and cost swing with region, product mix, plant scale, and haul
+    // distance. The labor rate is the operator's stated on-site full-time wage.
+    const BE_BENCH_LABOR_RATE = 30;  // $/hr, one full-time person on site
+
+    // Compares the All-Pits totals against the benchmarks; returns table rows
+    // plus the fixed-cost note. Shared by the on-screen section and the report.
+    function computeBreakevenBenchmarks(total) {
+      const dash = '—';
+      const rows = [];
+      const add = (label, valueTxt, rangeTxt, cls, verdict) => rows.push({ label, valueTxt, rangeTxt, cls, verdict });
+
+      // 1. Avg selling price / ton — USGS crushed-stone avg ~$14–15/ton.
+      { const v = total.avgPrice;
+        let cls = 'mute', verdict = 'No sales data';
+        if (v != null) {
+          if (v < 12)      { cls = 'bad';  verdict = 'Below typical — check pricing'; }
+          else if (v > 18) { cls = 'good'; verdict = 'Above typical — premium pricing'; }
+          else             { cls = 'good'; verdict = 'In range'; }
+        }
+        add('Avg selling price / ton', v != null ? formatMoney(v) : dash, '$12 – $18 / ton', cls, verdict);
+      }
+
+      // 2. Crushing & screening cost / ton (this model: crushing labor + fuel ÷
+      //    tons crushed; excludes drilling, blasting, loading, and hauling).
+      { const v = total.varCostPerTon;
+        let cls = 'mute', verdict = 'No crushing data';
+        if (v != null && v > 0) {
+          if (v < 2)       { cls = 'good'; verdict = 'Very low — double-check inputs'; }
+          else if (v <= 5) { cls = 'good'; verdict = 'In range'; }
+          else if (v <= 8) { cls = 'mute'; verdict = 'A bit high'; }
+          else             { cls = 'bad';  verdict = 'Above typical — high cost'; }
+        }
+        add('Crushing &amp; screening cost / ton', v != null ? formatMoney(v) : dash, '$2 – $5 / ton', cls, verdict);
+      }
+
+      // 3. Royalty (% of sales).
+      { const v = (total.avgPrice > 0 && total.royaltyPerTon) ? total.royaltyPerTon / total.avgPrice * 100 : 0;
+        let cls = 'good', verdict = 'In range';
+        if (v <= 0)      { cls = 'mute'; verdict = 'None entered'; }
+        else if (v > 15) { cls = 'bad';  verdict = 'Steep — above typical'; }
+        else if (v < 5)  { cls = 'good'; verdict = 'Favorable'; }
+        add('Royalty (% of sales)', v > 0 ? v.toFixed(1) + '%' : dash, '5% – 15%', cls, verdict);
+      }
+
+      // 4. Contribution / ton before fixed costs (price − royalty − crushing).
+      { const v = total.contribution;
+        let cls = 'mute', verdict = 'No data';
+        if (v != null) {
+          if (v <= 0)       { cls = 'bad';  verdict = 'Negative — losing money per ton'; }
+          else if (v >= 10) { cls = 'good'; verdict = 'Strong'; }
+          else if (v >= 6)  { cls = 'good'; verdict = 'Healthy'; }
+          else              { cls = 'mute'; verdict = 'Thin — little left for fixed costs'; }
+        }
+        add('Contribution / ton (before fixed)', v != null ? formatMoney(v) : dash, '$6 – $10 / ton', cls, verdict);
+      }
+
+      // 5. Full-time labor rate (operator's stated on-site figure).
+      { const v = BE_BENCH_LABOR_RATE;
+        let cls = 'good', verdict = 'In range';
+        if (v < 22)      { cls = 'mute'; verdict = 'Below typical'; }
+        else if (v > 35) { cls = 'mute'; verdict = 'Above typical'; }
+        add('Full-time labor rate', formatMoney(v) + ' / hr', '$22 – $35 / hr', cls, verdict);
+      }
+
+      // 6. Tons sold vs break-even — the bottom line.
+      { let cls = 'mute', verdict = 'Needs sales data', valueTxt = dash;
+        if (total.contribution != null && total.contribution <= 0) {
+          cls = 'bad'; verdict = 'No break-even — cost ≥ price';
+        } else if (!(total.monthlyFixed > 0)) {
+          verdict = 'Set fixed costs';
+        } else if (total.breakEvenTons > 0 && total.avgTonsPerMonth != null) {
+          const u = total.avgTonsPerMonth / total.breakEvenTons * 100;
+          valueTxt = Math.round(u) + '%';
+          if (u >= 100) { cls = 'good'; verdict = 'Above break-even — profitable'; }
+          else          { cls = 'bad';  verdict = 'Below break-even — not covering costs'; }
+        }
+        add('Tons sold vs break-even', valueTxt, '≥ 100% to profit', cls, verdict);
+      }
+
+      const ftMo = BE_BENCH_LABOR_RATE * 40 * 52 / 12;  // one 40-hr/wk position
+      const noteHtml =
+        `Your <strong>monthly fixed costs</strong> are the bills owed no matter how much you crush. Yours covers `
+        + `<strong>insurance</strong> and <strong>one full-time person on site at ${formatMoney(BE_BENCH_LABOR_RATE)}/hr</strong> `
+        + `(≈ ${formatMoney(ftMo)}/mo for a 40-hr/wk position). A complete figure usually also includes equipment loan/lease `
+        + `payments, property &amp; lease, permits &amp; bonds, property taxes, utilities, and salaried/office overhead — `
+        + `if any are missing, your break-even is understated.`;
+
+      return { rows, noteHtml };
+    }
+
+    function renderBreakevenBenchmarks(total) {
+      const body = document.getElementById('beBenchmarkBody');
+      if (!body) return;
+      const { rows, noteHtml } = computeBreakevenBenchmarks(total);
+      body.innerHTML = rows.map(r =>
+          `<tr><td style="text-align:left;">${r.label}</td>`
+        + `<td class="be-num">${r.valueTxt}</td>`
+        + `<td class="be-num">${r.rangeTxt}</td>`
+        + `<td><span class="be-pill ${r.cls}">${escapeHtml(r.verdict)}</span></td></tr>`
+      ).join('');
+      const note = document.getElementById('beBenchmarkNote');
+      if (note) note.innerHTML = noteHtml;
+    }
+
     async function refreshBreakeven() {
       renderBreakeven();
       const tasks = [];
@@ -4138,6 +4265,7 @@
         monthlySel.value = beMonthlyLoc;
       }
       renderBreakevenMonthly();
+      renderBreakevenBenchmarks(total);
 
       // ── Per-location table ──
       const body = document.getElementById('beLocationBody');
@@ -5243,6 +5371,21 @@ ${sections}
           + `<div class="chart">${svg}</div>`;
       }
 
+      // Industry benchmark "reality check" (All-Pits totals vs typical ranges)
+      let benchmarkSection = '';
+      {
+        const { rows: brows, noteHtml } = computeBreakevenBenchmarks(total);
+        const head = `<tr><th>Metric (All Pits)</th><th>Your Number</th><th>Typical U.S. Range</th><th>Read</th></tr>`;
+        const bbody = brows.map(r =>
+          `<tr><td>${r.label}</td><td>${r.valueTxt}</td><td>${r.rangeTxt}</td>`
+          + `<td class="${r.cls === 'good' ? 'pos' : r.cls === 'bad' ? 'neg' : ''}">${escapeHtml(r.verdict)}</td></tr>`
+        ).join('');
+        benchmarkSection = `<h2>Industry Benchmark &mdash; Reality Check</h2>`
+          + `<div class="note">${noteHtml}</div>`
+          + `<table class="rep"><thead>${head}</thead><tbody>${bbody}</tbody></table>`
+          + `<div class="note"><em>Broad U.S. crushed-stone / aggregate rules of thumb — figures vary by region, product mix, plant scale, and haul distance. Variable cost here is crushing &amp; screening only (drilling, blasting, loading, and hauling are not in it). Sanity check, not a target.</em></div>`;
+      }
+
       const style = `<style>
   .be-report { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; }
   .be-report h1 { font-size: 17px; margin: 0 0 0.15rem; }
@@ -5273,9 +5416,9 @@ ${sections}
       const header = opts.includeHeader === false ? '' :
         `<h1>Quarry Break-Even &mdash; ${yrTitle}</h1>`
         + `<div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking + entered fixed costs</div>`;
-      const note = `<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; variable cost is crushing ÷ tons crushed, royalty is a % of sales, and monthly fixed cost is the average of the per-pit entries. Contribution/ton = price − royalty − variable cost; break-even tons/mo = monthly fixed ÷ contribution. <strong>Month-by-Month</strong> total cost = crushing + fixed + royalty; break-even covers crushing + fixed at the net-of-royalty price.</div>`;
+      const note = `<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; variable cost is crushing ÷ tons crushed, royalty is a % of sales, and monthly fixed cost is each pit's average — <strong>All Pits totals them across pits</strong>. Contribution/ton = price − royalty − variable cost; break-even tons/mo = monthly fixed ÷ contribution. <strong>Month-by-Month</strong> total cost = crushing + fixed + royalty; break-even covers crushing + fixed at the net-of-royalty price.</div>`;
 
-      const html = style + `<div class="be-report">` + header + note + kpis + locTable + monthlyTable + chartSection + `</div>`;
+      const html = style + `<div class="be-report">` + header + note + kpis + locTable + monthlyTable + chartSection + benchmarkSection + `</div>`;
       return { yrTitle, html, hasData: rows.length > 0 };
     }
 
