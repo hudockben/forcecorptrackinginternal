@@ -1252,8 +1252,8 @@
         <strong>How many tons must each pit sell to stop losing money?</strong>
         <div class="be-formula">Break-even tons / mo&nbsp;=&nbsp;Monthly fixed costs&nbsp;÷&nbsp;(Avg price/ton − Variable cost/ton)</div>
         <ul>
-          <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales, Daily, and Crushing entries for the selected year. Variable cost = all daily + crushing labor &amp; fuel, divided by tons produced.</li>
-          <li><strong>Royalty %</strong> (per pit, in the table below) inflates that pit's variable cost: variable cost &times; (1 + royalty%). Enter each pit's rate — e.g., 12.75% — and contribution and break-even update automatically.</li>
+          <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales and Crushing entries for the selected year. Variable cost = crushing labor &amp; fuel ÷ tons crushed (daily tracking is not included).</li>
+          <li><strong>Royalty %</strong> (per pit, in the table below) is a percentage of sales paid out — it comes off the price, lowering contribution by royalty% &times; price/ton. Enter each pit's rate (e.g., 12.75%) and contribution and break-even update automatically.</li>
           <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
           <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below — pick a pit and type each month's figure. This column shows each location's average; <strong>All Pits is the average of the locations</strong>, and the executive dashboard mirrors it. Entries save automatically.</li>
         </ul>
@@ -1268,12 +1268,12 @@
         <div class="kpi-tile">
           <div class="kpi-label">Variable Cost / Ton</div>
           <div class="kpi-value" id="beKpiVarCost">—</div>
-          <div class="kpi-sub">Daily + crushing ÷ tons</div>
+          <div class="kpi-sub">Crushing ÷ tons crushed</div>
         </div>
         <div class="kpi-tile">
           <div class="kpi-label">Contribution / Ton</div>
           <div class="kpi-value" id="beKpiContribution">—</div>
-          <div class="kpi-sub">Price − variable cost</div>
+          <div class="kpi-sub">Price − royalty − variable cost</div>
         </div>
         <div class="kpi-tile">
           <div class="kpi-label">Monthly Fixed Costs</div>
@@ -1315,6 +1315,7 @@
                 <th class="be-num">Avg Price / Ton</th>
                 <th class="be-num">Variable Cost / Ton</th>
                 <th class="be-num">Royalty %</th>
+                <th class="be-num">Royalty / Ton</th>
                 <th class="be-num">Contribution / Ton</th>
                 <th class="be-num">Monthly Fixed Costs</th>
                 <th class="be-num">Break-Even Tons / Mo</th>
@@ -1346,6 +1347,7 @@
                 <th class="be-num">Revenue</th>
                 <th class="be-num">Variable Cost</th>
                 <th class="be-num">Royalty %</th>
+                <th class="be-num">Royalty</th>
                 <th class="be-num">Fixed Cost</th>
                 <th class="be-num">Total Cost</th>
                 <th class="be-num">Break-Even Tons</th>
@@ -3893,13 +3895,10 @@
         royaltyFetchedOnce = true;
       }
     }
-    // Royalty rate (%) for a location, and the variable-cost multiplier (1 + rate/100).
+    // Royalty rate (%) of sales for a location (0 if none).
     function royaltyRate(loc) {
       const v = Number(quarryRoyalty[loc]);
       return Number.isFinite(v) && v > 0 ? v : 0;
-    }
-    function royaltyMult(loc) {
-      return 1 + royaltyRate(loc) / 100;
     }
     function onRoyaltyInput(input) {
       const loc = input.dataset.loc || '';
@@ -3935,7 +3934,7 @@
         if (!locs.has(key)) {
           locs.set(key, {
             name: key, hasLoc: key !== BE_NO_LOC,
-            revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0,
+            revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0,
             salesMonths: new Set(),
           });
         }
@@ -3944,19 +3943,20 @@
 
       salesRows.filter(inYear).forEach(r => {
         const e = ensure(r.locationName);
-        e.revenue += homeRowSales(r);
+        const amt = homeRowSales(r);
+        e.revenue += amt;
+        e.royaltyCost += amt * royaltyRate(r.locationName) / 100;  // royalty is a % of sales
         const t = Number(r.tons);
         if (Number.isFinite(t)) e.tonsSold += t;
         const mk = beMonthKey(r.date);
         if (mk && Number.isFinite(t) && t > 0) e.salesMonths.add(mk);
       });
-      dailyRows.filter(inYear).forEach(r => {
-        ensure(r.locationName).varCost += dailyCalc(r).totalCost * royaltyMult(r.locationName);
-      });
+      // Variable cost = crushing labor & fuel only (daily tracking excluded),
+      // divided by tons crushed.
       crushRows.filter(inYear).forEach(r => {
         const e = ensure(r.locationName);
         const c = crushCalc(r);
-        e.varCost += c.totalCost * royaltyMult(r.locationName);
+        e.varCost += c.totalCost;
         e.tonsCrushed += c.estimatedTons;
       });
 
@@ -3969,7 +3969,8 @@
         const tonsBasis = e.tonsCrushed > 0 ? e.tonsCrushed : e.tonsSold;
         const avgPrice = e.tonsSold > 0 ? e.revenue / e.tonsSold : null;
         const varCostPerTon = tonsBasis > 0 ? e.varCost / tonsBasis : null;
-        const contribution = (avgPrice != null && varCostPerTon != null) ? avgPrice - varCostPerTon : null;
+        const royaltyPerTon = e.tonsSold > 0 ? e.royaltyCost / e.tonsSold : 0;  // royalty $ per ton sold
+        const contribution = (avgPrice != null && varCostPerTon != null) ? avgPrice - royaltyPerTon - varCostPerTon : null;
         const monthlyFixed = scopeAvgFixed(e.name);
         let breakEvenTons = null, breakEvenRevenue = null;
         if (contribution != null && contribution > 0) {
@@ -3981,7 +3982,7 @@
         const months = e.salesMonths.size;
         const avgTonsPerMonth = months > 0 ? e.tonsSold / months : 0;
         return {
-          ...e, tonsBasis, avgPrice, varCostPerTon, contribution,
+          ...e, tonsBasis, avgPrice, varCostPerTon, royaltyPerTon, contribution,
           monthlyFixed, breakEvenTons, breakEvenRevenue, months, avgTonsPerMonth,
         };
       };
@@ -3992,16 +3993,18 @@
       // Division total — blended across every pit. All-Pits fixed is the
       // average of the per-pit monthly fixed values (the figure mirrored to
       // the executive tile).
-      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, monthlyFixed: pitsAvgFixed(), salesMonths: new Set() };
+      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0, monthlyFixed: pitsAvgFixed(), salesMonths: new Set() };
       rows.forEach(r => {
         T.revenue += r.revenue; T.tonsSold += r.tonsSold;
         T.varCost += r.varCost; T.tonsCrushed += r.tonsCrushed;
+        T.royaltyCost += r.royaltyCost;
         r.salesMonths.forEach(m => T.salesMonths.add(m));
       });
       const tBasis = T.tonsCrushed > 0 ? T.tonsCrushed : T.tonsSold;
       const tAvgPrice = T.tonsSold > 0 ? T.revenue / T.tonsSold : null;
       const tVarCost = tBasis > 0 ? T.varCost / tBasis : null;
-      const tContribution = (tAvgPrice != null && tVarCost != null) ? tAvgPrice - tVarCost : null;
+      const tRoyaltyPerTon = T.tonsSold > 0 ? T.royaltyCost / T.tonsSold : 0;
+      const tContribution = (tAvgPrice != null && tVarCost != null) ? tAvgPrice - tRoyaltyPerTon - tVarCost : null;
       let tBeTons = null, tBeRev = null;
       if (tContribution != null && tContribution > 0) {
         tBeTons = T.monthlyFixed / tContribution;
@@ -4011,7 +4014,7 @@
       }
       const tMonths = T.salesMonths.size;
       const total = {
-        name: 'All Pits', avgPrice: tAvgPrice, varCostPerTon: tVarCost, contribution: tContribution,
+        name: 'All Pits', avgPrice: tAvgPrice, varCostPerTon: tVarCost, royaltyPerTon: tRoyaltyPerTon, contribution: tContribution,
         monthlyFixed: T.monthlyFixed, breakEvenTons: tBeTons, breakEvenRevenue: tBeRev,
         months: tMonths, avgTonsPerMonth: tMonths > 0 ? T.tonsSold / tMonths : 0,
       };
@@ -4123,10 +4126,11 @@
         const fixedCell = (d.name === BE_NO_LOC)
           ? cell(dash, 'be-num')
           : cell(d.monthlyFixed > 0 ? formatMoney(d.monthlyFixed) : dash, 'be-num');
-        // Editable royalty % per pit; inflates that pit's variable cost.
+        // Editable royalty % per pit; a % of sales deducted from contribution.
         const royaltyCell = (isTotal || d.name === BE_NO_LOC)
           ? cell(dash, 'be-num')
           : `<td class="be-num"><input class="be-royalty-input" type="text" inputmode="decimal" data-loc="${escapeHtml(d.name)}" value="${royaltyRate(d.name) > 0 ? royaltyRate(d.name) : ''}" placeholder="0" onchange="onRoyaltyInput(this)"> %</td>`;
+        const royaltyDollarCell = cell((d.royaltyPerTon && d.royaltyPerTon > 0) ? formatMoney(d.royaltyPerTon) : dash, 'be-num');
         const beTonsTxt = (d.contribution != null && d.contribution <= 0) ? 'No B/E'
           : (d.breakEvenTons != null ? formatTons(d.breakEvenTons) : dash);
         return `<tr class="${isTotal ? 'be-row-total' : ''}">`
@@ -4134,6 +4138,7 @@
           + moneyCell(d.avgPrice)
           + moneyCell(d.varCostPerTon)
           + royaltyCell
+          + royaltyDollarCell
           + `<td class="be-num ${contribCls}">${d.contribution != null ? formatMoney(d.contribution) : dash}</td>`
           + fixedCell
           + cell(beTonsTxt, 'be-num')
@@ -4145,7 +4150,7 @@
       let html = rows.map(d => rowHtml(d, false)).join('');
       if (rows.length) html += rowHtml({ ...total, hasLoc: true }, true);
       body.innerHTML = html
-        || `<tr class="is-empty-row"><td colspan="10" style="text-align:center;padding:1.5rem;">No quarry data yet for this year. Add entries on the Sales, Daily, or Crushing tabs.</td></tr>`;
+        || `<tr class="is-empty-row"><td colspan="11" style="text-align:center;padding:1.5rem;">No quarry data yet for this year. Add entries on the Sales, Daily, or Crushing tabs.</td></tr>`;
     }
 
     // ── Month-by-month break-even ────────────────────────────────
@@ -4190,31 +4195,27 @@
       const matchLoc = (r) => locFilter === 'all'
         || ((String(r.locationName || '').trim() || BE_NO_LOC) === locFilter);
       const monthlyFixed = avgFixedForScope(locFilter);  // scope average (All Pits = avg of pits)
+      const scopeRate = (locFilter !== 'all' && locFilter !== BE_NO_LOC) ? royaltyRate(locFilter) / 100 : null;
 
       const months = new Map();
       const ensureM = (mk) => {
-        if (!months.has(mk)) months.set(mk, { month: mk, revenue: 0, tonsSold: 0, varCost: 0, baseVarCost: 0, tonsCrushed: 0 });
+        if (!months.has(mk)) months.set(mk, { month: mk, revenue: 0, tonsSold: 0, varCost: 0, royaltyCost: 0, tonsCrushed: 0 });
         return months.get(mk);
       };
       salesRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
         const mk = beMonthKey(r.date); if (!mk) return;
         const e = ensureM(mk);
-        e.revenue += homeRowSales(r);
+        const amt = homeRowSales(r);
+        e.revenue += amt;
+        e.royaltyCost += amt * royaltyRate(r.locationName) / 100;  // royalty is a % of sales
         const t = Number(r.tons); if (Number.isFinite(t)) e.tonsSold += t;
       });
-      dailyRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
-        const mk = beMonthKey(r.date); if (!mk) return;
-        const e = ensureM(mk);
-        const base = dailyCalc(r).totalCost;
-        e.baseVarCost += base;
-        e.varCost += base * royaltyMult(r.locationName);
-      });
+      // Variable cost = crushing only (daily tracking excluded).
       crushRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
         const mk = beMonthKey(r.date); if (!mk) return;
         const e = ensureM(mk);
         const c = crushCalc(r);
-        e.baseVarCost += c.totalCost;
-        e.varCost += c.totalCost * royaltyMult(r.locationName);
+        e.varCost += c.totalCost;
         e.tonsCrushed += c.estimatedTons;
       });
 
@@ -4226,13 +4227,18 @@
       const rows = [...months.values()].map(m => {
         const avgPrice = m.tonsSold > 0 ? m.revenue / m.tonsSold : yrAvgPrice;
         const fixedCost = monthFixedForScope(locFilter, m.month);
-        const totalCost = m.varCost + fixedCost;
-        const breakEvenTons = (avgPrice != null && avgPrice > 0) ? totalCost / avgPrice : null;
+        // Royalty is a % of sales: effective rate from this month's sales,
+        // falling back to the selected pit's rate when there were no sales.
+        const effRate = m.revenue > 0 ? (m.royaltyCost / m.revenue) : (scopeRate != null ? scopeRate : 0);
+        const royaltyPct = effRate * 100;
+        // Total cost includes the royalty paid; break-even covers crushing +
+        // fixed at the net-of-royalty price.
+        const totalCost = m.varCost + fixedCost + m.royaltyCost;
+        const netPrice = (avgPrice != null) ? avgPrice * (1 - effRate) : null;
+        const breakEvenTons = (netPrice != null && netPrice > 0) ? (m.varCost + fixedCost) / netPrice : null;
+        const breakEvenRevenue = (breakEvenTons != null && avgPrice != null) ? breakEvenTons * avgPrice : null;
         const profit = m.revenue - totalCost;
-        // Effective royalty % applied to this month's variable cost (constant
-        // for a single pit, blended across pits in the All-Pits view).
-        const royaltyPct = m.baseVarCost > 0 ? (m.varCost / m.baseVarCost - 1) * 100 : 0;
-        return { ...m, avgPrice, fixedCost, totalCost, breakEvenRevenue: totalCost, breakEvenTons, profit, royaltyPct };
+        return { ...m, avgPrice, fixedCost, totalCost, breakEvenRevenue, breakEvenTons, profit, royaltyPct };
       }).sort((a, b) => a.month.localeCompare(b.month));
 
       return { rows, monthlyFixed, yrAvgPrice };
@@ -4250,15 +4256,15 @@
         const editing = beMonthlyLoc !== 'all' && beMonthlyLoc !== BE_NO_LOC;
         const locLabel = beMonthlyLoc === 'all' ? 'all pits' : beMonthlyLoc;
         note.innerHTML = (editing
-            ? `Type <strong>${escapeHtml(locLabel)}</strong>'s monthly <strong>fixed overhead</strong> in the Fixed Cost column; break-even then covers that month's actual labor &amp; fuel plus that fixed cost. `
+            ? `Type <strong>${escapeHtml(locLabel)}</strong>'s monthly <strong>fixed overhead</strong> in the Fixed Cost column. `
             : `Fixed cost here is the <strong>average across pits</strong> (read-only) — pick a single pit above to enter its monthly fixed costs. `)
           + `The <strong>By Quarry Location</strong> table shows ${editing ? "this pit's average" : 'the All-Pits average'} (${formatMoney(monthlyFixed)}/mo), and the executive dashboard mirrors the All-Pits average. `
-          + `<strong>Profit / Loss = revenue − total cost</strong>, so the status is a true monthly result. `
-          + `<em>Break-even tons = total cost ÷ that month's price. Only months with activity are shown.</em>`;
+          + `<strong>Total cost = crushing + fixed + royalty</strong> (royalty is % of sales); Profit / Loss = revenue − total cost. `
+          + `<em>Break-even tons = (crushing + fixed) ÷ your net-of-royalty price. Only months with activity are shown.</em>`;
       }
 
       if (!rows.length) {
-        body.innerHTML = `<tr class="is-empty-row"><td colspan="11" style="text-align:center;padding:1.5rem;">No entries for this year${beMonthlyLoc === 'all' ? '' : ' at ' + escapeHtml(beMonthlyLoc)}.</td></tr>`;
+        body.innerHTML = `<tr class="is-empty-row"><td colspan="12" style="text-align:center;padding:1.5rem;">No entries for this year${beMonthlyLoc === 'all' ? '' : ' at ' + escapeHtml(beMonthlyLoc)}.</td></tr>`;
         return;
       }
 
@@ -4277,10 +4283,10 @@
       // Fixed cost is editable per pit; All Pits / No-location show the derived
       // average read-only (enter fixed costs by picking a specific pit).
       const beEditable = beMonthlyLoc !== 'all' && beMonthlyLoc !== BE_NO_LOC;
-      const tot = { tonsSold: 0, revenue: 0, varCost: 0, baseVarCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
+      const tot = { tonsSold: 0, revenue: 0, varCost: 0, royaltyCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
       const royaltyCellTxt = (pct) => `<td class="be-num">${pct > 0 ? (Math.round(pct * 100) / 100) + '%' : dash}</td>`;
       let html = rows.map(m => {
-        tot.tonsSold += m.tonsSold; tot.revenue += m.revenue; tot.varCost += m.varCost; tot.baseVarCost += m.baseVarCost;
+        tot.tonsSold += m.tonsSold; tot.revenue += m.revenue; tot.varCost += m.varCost; tot.royaltyCost += m.royaltyCost;
         tot.fixedCost += m.fixedCost; tot.totalCost += m.totalCost; tot.profit += m.profit;
         const pl = m.profit >= 0 ? 'is-positive' : 'is-negative';
         const fixedCell = beEditable
@@ -4292,6 +4298,7 @@
           + `<td class="be-num">${formatMoney(m.revenue)}</td>`
           + `<td class="be-num">${formatMoney(m.varCost)}</td>`
           + royaltyCellTxt(m.royaltyPct)
+          + `<td class="be-num">${m.royaltyCost > 0 ? formatMoney(m.royaltyCost) : dash}</td>`
           + fixedCell
           + `<td class="be-num">${formatMoney(m.totalCost)}</td>`
           + `<td class="be-num">${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>`
@@ -4301,14 +4308,17 @@
           + `</tr>`;
       }).join('');
 
-      const totBeTons = (yrAvgPrice != null && yrAvgPrice > 0) ? tot.totalCost / yrAvgPrice : null;
+      const totEffRate = tot.revenue > 0 ? tot.royaltyCost / tot.revenue : 0;
+      const totNetPrice = (yrAvgPrice != null) ? yrAvgPrice * (1 - totEffRate) : null;
+      const totBeTons = (totNetPrice != null && totNetPrice > 0) ? (tot.varCost + tot.fixedCost) / totNetPrice : null;
       const totPl = tot.profit >= 0 ? 'is-positive' : 'is-negative';
       html += `<tr class="be-row-total">`
         + `<td>Year Total</td>`
         + `<td class="be-num">${formatTons(tot.tonsSold)}</td>`
         + `<td class="be-num">${formatMoney(tot.revenue)}</td>`
         + `<td class="be-num">${formatMoney(tot.varCost)}</td>`
-        + royaltyCellTxt(tot.baseVarCost > 0 ? (tot.varCost / tot.baseVarCost - 1) * 100 : 0)
+        + royaltyCellTxt(tot.revenue > 0 ? (tot.royaltyCost / tot.revenue) * 100 : 0)
+        + `<td class="be-num">${tot.royaltyCost > 0 ? formatMoney(tot.royaltyCost) : dash}</td>`
         + `<td class="be-num">${formatMoney(tot.fixedCost)}</td>`
         + `<td class="be-num">${formatMoney(tot.totalCost)}</td>`
         + `<td class="be-num">${totBeTons != null ? formatTons(totBeTons) : dash}</td>`
@@ -5112,8 +5122,8 @@ ${sections}
         `<div class="kpi"><div class="kpi-l">${label}</div><div class="kpi-v">${value}</div>${sub ? `<div class="kpi-s">${sub}</div>` : ''}</div>`;
       const kpis = `<div class="kpi-grid">
         ${kpiCard('Avg Price / Ton', money(total.avgPrice), 'Blended · all pits')}
-        ${kpiCard('Variable Cost / Ton', money(total.varCostPerTon), 'Daily + crushing ÷ tons')}
-        ${kpiCard('Contribution / Ton', money(total.contribution), 'Price − variable cost')}
+        ${kpiCard('Variable Cost / Ton', money(total.varCostPerTon), 'Crushing ÷ tons crushed')}
+        ${kpiCard('Contribution / Ton', money(total.contribution), 'Price − royalty − variable cost')}
         ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Average across pits')}
         ${kpiCard('Break-Even Tons / Mo', beTonsTxt(total), 'Tons/mo to cover all costs')}
         ${kpiCard('Break-Even Revenue / Mo', money(total.breakEvenRevenue), 'Sales $/mo to break even')}
@@ -5129,6 +5139,7 @@ ${sections}
           <td>${money(d.avgPrice)}</td>
           <td>${money(d.varCostPerTon)}</td>
           <td>${royaltyTxt(d, isTotal)}</td>
+          <td>${d.royaltyPerTon > 0 ? money(d.royaltyPerTon) : dash}</td>
           <td class="${d.contribution == null ? '' : (d.contribution >= 0 ? 'pos' : 'neg')}">${money(d.contribution)}</td>
           <td>${money(d.monthlyFixed)}</td>
           <td>${beTonsTxt(d)}</td>
@@ -5138,24 +5149,24 @@ ${sections}
         </tr>`;
       const locTable = `<h2>Break-Even by Location</h2>
         <table class="rep"><thead><tr>
-          <th>Location</th><th>Avg Price/Ton</th><th>Variable Cost/Ton</th><th>Royalty %</th><th>Contribution/Ton</th>
+          <th>Location</th><th>Avg Price/Ton</th><th>Variable Cost/Ton</th><th>Royalty %</th><th>Royalty/Ton</th><th>Contribution/Ton</th>
           <th>Monthly Fixed</th><th>Break-Even Tons/Mo</th><th>Break-Even Rev/Mo</th><th>Avg Tons Sold/Mo</th><th>Status</th>
         </tr></thead><tbody>
           ${rows.length ? rows.map(d => locRow(d, false)).join('') + locRow({ ...total }, true)
-                        : '<tr><td colspan="10">No quarry data for this year.</td></tr>'}
+                        : '<tr><td colspan="11">No quarry data for this year.</td></tr>'}
         </tbody></table>`;
 
       // Month-by-month table (respects the on-screen location filter)
       let monthlyTable = '';
       {
-        const mt = { tonsSold: 0, revenue: 0, varCost: 0, baseVarCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
+        const mt = { tonsSold: 0, revenue: 0, varCost: 0, royaltyCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
         const mRow = (m, isTotal) => {
           if (!isTotal) {
-            mt.tonsSold += m.tonsSold; mt.revenue += m.revenue; mt.varCost += m.varCost; mt.baseVarCost += m.baseVarCost;
+            mt.tonsSold += m.tonsSold; mt.revenue += m.revenue; mt.varCost += m.varCost; mt.royaltyCost += m.royaltyCost;
             mt.fixedCost += m.fixedCost; mt.totalCost += m.totalCost; mt.profit += m.profit;
           }
           const ratio = (m.breakEvenTons != null && m.breakEvenTons > 0) ? (m.tonsSold / m.breakEvenTons) : null;
-          const royPct = m.baseVarCost > 0 ? (m.varCost / m.baseVarCost - 1) * 100 : 0;
+          const royPct = m.revenue > 0 ? (m.royaltyCost / m.revenue) * 100 : 0;
           const status = m.tonsSold <= 0 ? 'No sales' : (m.profit >= 0 ? 'Profit' : 'Loss');
           return `<tr${isTotal ? ' class="tot"' : ''}>
             <td>${isTotal ? 'Year Total' : beMonthLabel(m.month)}</td>
@@ -5163,6 +5174,7 @@ ${sections}
             <td>${formatMoney(m.revenue)}</td>
             <td>${formatMoney(m.varCost)}</td>
             <td>${royPct > 0 ? (Math.round(royPct * 100) / 100) + '%' : dash}</td>
+            <td>${m.royaltyCost > 0 ? formatMoney(m.royaltyCost) : dash}</td>
             <td>${formatMoney(m.fixedCost)}</td>
             <td>${formatMoney(m.totalCost)}</td>
             <td>${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>
@@ -5171,10 +5183,12 @@ ${sections}
             <td>${status}</td>
           </tr>`;
         };
-        const head = `<tr><th>Month</th><th>Tons Sold</th><th>Revenue</th><th>Variable Cost</th><th>Royalty %</th><th>Fixed Cost</th><th>Total Cost</th><th>Break-Even Tons</th><th>Sold vs B/E</th><th>Profit / Loss</th><th>Status</th></tr>`;
+        const head = `<tr><th>Month</th><th>Tons Sold</th><th>Revenue</th><th>Variable Cost</th><th>Royalty %</th><th>Royalty</th><th>Fixed Cost</th><th>Total Cost</th><th>Break-Even Tons</th><th>Sold vs B/E</th><th>Profit / Loss</th><th>Status</th></tr>`;
         if (mrows.length) {
           const bodyRows = mrows.map(m => mRow(m, false)).join('');
-          const totBeTons = (yrAvgPrice != null && yrAvgPrice > 0) ? mt.totalCost / yrAvgPrice : null;
+          const totEffRate = mt.revenue > 0 ? mt.royaltyCost / mt.revenue : 0;
+          const totNetPrice = (yrAvgPrice != null) ? yrAvgPrice * (1 - totEffRate) : null;
+          const totBeTons = (totNetPrice != null && totNetPrice > 0) ? (mt.varCost + mt.fixedCost) / totNetPrice : null;
           const totalRow = mRow({ ...mt, breakEvenTons: totBeTons }, true);
           monthlyTable = `<h2>Month-by-Month Break-Even &mdash; ${escapeHtml(locLabel)}</h2>`
             + `<table class="rep"><thead>${head}</thead><tbody>${bodyRows}${totalRow}</tbody></table>`;
@@ -5220,7 +5234,7 @@ ${sections}
       const header = opts.includeHeader === false ? '' :
         `<h1>Quarry Break-Even &mdash; ${yrTitle}</h1>`
         + `<div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking + entered fixed costs</div>`;
-      const note = `<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; monthly fixed cost is the average of the per-pit entries. Break-even tons/mo = monthly fixed ÷ contribution per ton. <strong>Month-by-Month</strong> is cost-coverage: each month's break-even is the sales needed to cover that month's actual labor &amp; fuel plus the fixed cost entered for that month.</div>`;
+      const note = `<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; variable cost is crushing ÷ tons crushed, royalty is a % of sales, and monthly fixed cost is the average of the per-pit entries. Contribution/ton = price − royalty − variable cost; break-even tons/mo = monthly fixed ÷ contribution. <strong>Month-by-Month</strong> total cost = crushing + fixed + royalty; break-even covers crushing + fixed at the net-of-royalty price.</div>`;
 
       const html = style + `<div class="be-report">` + header + note + kpis + locTable + monthlyTable + chartSection + `</div>`;
       return { yrTitle, html, hasData: rows.length > 0 };
