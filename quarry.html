@@ -2808,6 +2808,10 @@
           putFixedCosts(quarryFixedCosts, { keepalive: true }).catch(() => {});
           fixedSavePending = null;
         }
+        if (monthlyFixedSavePending || monthlyFixedSaveInFlight) {
+          putMonthlyFixed(quarryMonthlyFixed, { keepalive: true }).catch(() => {});
+          monthlyFixedSavePending = null;
+        }
       } catch (_) { /* best-effort on unload */ }
     }
     window.addEventListener('beforeunload', _quarryFlushOnUnload);
@@ -3724,6 +3728,103 @@
       }
     }
 
+    // Per-month fixed cost overrides for the Month-by-Month table, keyed by
+    // "<locationFilter>::<YYYY-MM>". A month with no override inherits the
+    // standard monthly fixed cost (the per-pit figures above), so entering
+    // fixed costs once flows true profit/loss to every month; override any
+    // month for seasonal overhead.
+    const QUARRY_MONTHLY_FIXED_KEY = 'fct_quarry_monthly_fixed';
+    let quarryMonthlyFixed = {};
+    let monthlyFixedLoaded = false;
+    let monthlyFixedFetchedOnce = false;
+    let monthlyFixedSavePending = null;
+    let monthlyFixedSaveInFlight = false;
+
+    function normalizeMonthlyFixed(value) {
+      const out = {};
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.keys(value).forEach(k => {
+          const n = Number(value[k]);
+          if (Number.isFinite(n) && n >= 0) out[k] = n;
+        });
+      }
+      return out;
+    }
+    async function fetchMonthlyFixed() {
+      const res = await fetch(`/api/data/${QUARRY_MONTHLY_FIXED_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_MONTHLY_FIXED_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeMonthlyFixed(data.value);
+    }
+    async function putMonthlyFixed(value, opts = {}) {
+      const init = {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value }),
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_MONTHLY_FIXED_KEY}`, init);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_MONTHLY_FIXED_KEY} → ${res.status} ${text}`);
+      }
+    }
+    function scheduleMonthlyFixedSave() {
+      monthlyFixedSavePending = quarryMonthlyFixed;
+      if (monthlyFixedSaveInFlight) return;
+      flushMonthlyFixedSave();
+    }
+    async function flushMonthlyFixedSave() {
+      while (monthlyFixedSavePending) {
+        const snapshot = monthlyFixedSavePending;
+        monthlyFixedSavePending = null;
+        monthlyFixedSaveInFlight = true;
+        try {
+          await putMonthlyFixed(snapshot);
+        } catch (err) {
+          console.error('[quarry] monthly fixed save failed:', err);
+          alert('Could not save monthly fixed cost — please check your connection and try again.');
+        } finally {
+          monthlyFixedSaveInFlight = false;
+        }
+      }
+    }
+    async function refreshMonthlyFixed() {
+      try {
+        quarryMonthlyFixed = await fetchMonthlyFixed();
+        monthlyFixedLoaded = true;
+      } catch (err) {
+        console.error('[quarry] monthly fixed load failed:', err);
+        if (!monthlyFixedFetchedOnce) { quarryMonthlyFixed = {}; monthlyFixedLoaded = true; }
+      } finally {
+        monthlyFixedFetchedOnce = true;
+      }
+    }
+
+    // Effective monthly fixed cost = per-month override if set, else the
+    // standard monthly fixed for the current location scope.
+    function effectiveMonthlyFixed(locFilter, monthKey, standardFixed) {
+      const ov = quarryMonthlyFixed[`${locFilter}::${monthKey}`];
+      return ov != null ? ov : standardFixed;
+    }
+    function onMonthlyFixedInput(input) {
+      const month = input.dataset.month || '';
+      if (!month) return;
+      const key = `${beMonthlyLoc}::${month}`;
+      const raw = String(input.value).trim();
+      if (raw === '') {
+        delete quarryMonthlyFixed[key];           // revert to the standard monthly fixed
+      } else {
+        const n = Number(raw.replace(/[^0-9.]/g, ''));
+        if (Number.isFinite(n) && n >= 0) quarryMonthlyFixed[key] = Math.round(n * 100) / 100;
+        else delete quarryMonthlyFixed[key];
+      }
+      scheduleMonthlyFixedSave();
+      renderBreakevenMonthly();
+    }
+
     function onBreakevenFixedInput(input) {
       const loc = input.dataset.loc || '';
       if (!loc) return;
@@ -3858,6 +3959,7 @@
       if (!crushFetchedOnce) tasks.push(refreshCrush());
       if (!salesFetchedOnce) tasks.push(refreshSales());
       if (!fixedCostsFetchedOnce) tasks.push(refreshFixedCosts());
+      if (!monthlyFixedFetchedOnce) tasks.push(refreshMonthlyFixed());
       if (tasks.length) { await Promise.allSettled(tasks); renderBreakeven(); }
     }
 
@@ -4021,7 +4123,7 @@
 
       const rows = [...months.values()].map(m => {
         const avgPrice = m.tonsSold > 0 ? m.revenue / m.tonsSold : yrAvgPrice;
-        const fixedCost = monthlyFixed;
+        const fixedCost = effectiveMonthlyFixed(locFilter, m.month, monthlyFixed);
         const totalCost = m.varCost + fixedCost;
         const breakEvenTons = (avgPrice != null && avgPrice > 0) ? totalCost / avgPrice : null;
         const profit = m.revenue - totalCost;
@@ -4040,9 +4142,10 @@
       const note = document.getElementById('beMonthlyNote');
       if (note) {
         const locLabel = beMonthlyLoc === 'all' ? 'all pits' : beMonthlyLoc;
-        note.innerHTML = `Each month's break-even is the sales needed to cover <strong>that month's actual labor &amp; fuel</strong> plus <strong>${formatMoney(monthlyFixed)}/mo</strong> fixed overhead (${escapeHtml(locLabel)}). `
-          + `Slower months log fewer man-hours, so they cost less and break even on fewer tons. `
-          + `<em>Break-even revenue = total cost; break-even tons = total cost ÷ that month's price. Only months with activity are shown.</em>`;
+        note.innerHTML = `Each month's break-even covers <strong>that month's actual labor &amp; fuel</strong> plus the <strong>fixed cost you enter on the line</strong> (${escapeHtml(locLabel)}). `
+          + `Fixed cost defaults to your standard monthly fixed (${formatMoney(monthlyFixed)}/mo); edit any month for seasonal overhead, or clear it to revert. `
+          + `<strong>Profit / Loss = revenue − total cost</strong>, so the status is a true monthly result. `
+          + `<em>Break-even tons = total cost ÷ that month's price. Only months with activity are shown.</em>`;
       }
 
       if (!rows.length) {
@@ -4072,7 +4175,7 @@
           + `<td class="be-num">${formatTons(m.tonsSold)}</td>`
           + `<td class="be-num">${formatMoney(m.revenue)}</td>`
           + `<td class="be-num">${formatMoney(m.varCost)}</td>`
-          + `<td class="be-num">${formatMoney(m.fixedCost)}</td>`
+          + `<td class="be-num"><input class="be-fixed-input" type="text" inputmode="decimal" data-month="${m.month}" value="${m.fixedCost > 0 ? m.fixedCost : ''}" placeholder="0" onchange="onMonthlyFixedInput(this)"></td>`
           + `<td class="be-num">${formatMoney(m.totalCost)}</td>`
           + `<td class="be-num">${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>`
           + barCell(m.tonsSold, m.breakEvenTons)
