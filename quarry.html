@@ -671,6 +671,21 @@
     .be-table tr.be-row-total td { border-top: 2px solid var(--border); font-weight: 700; background: #14141d; }
     .be-table .is-positive { color: #4ade80; }
     .be-table .is-negative { color: #ef4444; }
+    .be-monthly-note { font-size: 0.72rem; color: var(--muted); margin: 0.1rem 0 0.85rem; line-height: 1.55; }
+    .be-monthly-note strong { color: var(--text); }
+    .be-monthly-note em { color: #9aa0a6; font-style: normal; }
+    .be-loc-filter {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 0.78rem; padding: 0.25rem 0.5rem; margin-left: 0.4rem;
+    }
+    .be-loc-filter:hover, .be-loc-filter:focus { border-color: var(--accent); }
+    .be-bar {
+      position: relative; display: inline-block; vertical-align: middle;
+      width: 84px; height: 7px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 999px; overflow: hidden;
+    }
+    .be-bar > span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; }
+    .be-bar-label { font-size: 0.66rem; color: var(--muted); margin-left: 0.4rem; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -1288,6 +1303,36 @@
               </tr>
             </thead>
             <tbody id="beLocationBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+          <span>Month-by-Month Break-Even</span>
+          <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:0.72rem;color:var(--muted);">
+            Location
+            <select class="be-loc-filter" id="beMonthlyLocFilter" onchange="setBeMonthlyLoc(this.value)"></select>
+          </span>
+        </div>
+        <div class="be-monthly-note" id="beMonthlyNote"></div>
+        <div class="sales-table-wrap">
+          <table class="sales-table be-table" id="beMonthlyTable" style="min-width:1080px;">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th class="be-num">Tons Sold</th>
+                <th class="be-num">Revenue</th>
+                <th class="be-num">Variable Cost</th>
+                <th class="be-num">Fixed Cost</th>
+                <th class="be-num">Total Cost</th>
+                <th class="be-num">Break-Even Tons</th>
+                <th>Sold vs B/E</th>
+                <th class="be-num">Profit / Loss</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="beMonthlyBody"></tbody>
           </table>
         </div>
       </div>
@@ -3864,6 +3909,18 @@
           : 'Add Sales, Daily, or Crushing entries — then enter each pit’s monthly fixed costs here.';
       }
 
+      // ── Month-by-month section: location dropdown + table ──
+      const monthlySel = document.getElementById('beMonthlyLocFilter');
+      if (monthlySel) {
+        const names = rows.map(r => r.name);
+        if (beMonthlyLoc !== 'all' && !names.includes(beMonthlyLoc)) beMonthlyLoc = 'all';
+        monthlySel.innerHTML = ['<option value="all">All Pits</option>']
+          .concat(names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`))
+          .join('');
+        monthlySel.value = beMonthlyLoc;
+      }
+      renderBreakevenMonthly();
+
       // ── Per-location table ──
       const body = document.getElementById('beLocationBody');
       if (!body) return;
@@ -3898,6 +3955,144 @@
       if (rows.length) html += rowHtml({ ...total, hasLoc: true }, true);
       body.innerHTML = html
         || `<tr class="is-empty-row"><td colspan="9" style="text-align:center;padding:1.5rem;">No quarry data yet for this year. Add entries on the Sales, Daily, or Crushing tabs.</td></tr>`;
+    }
+
+    // ── Month-by-month break-even ────────────────────────────────
+    // Cost-coverage view: for each month, the sales it took to cover that
+    // month's *actual* labor + fuel (already date-stamped per entry) plus
+    // fixed overhead. Slower months log fewer man-hours, so total cost — and
+    // therefore the tons needed to break even — drops, which is the seasonal
+    // pattern we want to surface. Break-even revenue = total cost; break-even
+    // tons = total cost ÷ that month's blended price (falls back to the
+    // year's blended price for months that had costs but no sales).
+    let beMonthlyLoc = 'all';
+
+    function setBeMonthlyLoc(value) {
+      beMonthlyLoc = value || 'all';
+      renderBreakevenMonthly();
+    }
+
+    function beMonthLabel(mk) {
+      const parts = String(mk).split('-');
+      const y = Number(parts[0]); const m = Number(parts[1]);
+      const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return (m >= 1 && m <= 12 ? names[m - 1] : '??') + ' ' + (Number.isFinite(y) ? y : '');
+    }
+
+    function computeBreakevenMonthly(locFilter) {
+      const inYear = (r) => rowMatchesYear('breakeven', r);
+      const matchLoc = (r) => locFilter === 'all'
+        || ((String(r.locationName || '').trim() || BE_NO_LOC) === locFilter);
+      const monthlyFixed = locFilter === 'all'
+        ? Object.values(quarryFixedCosts).reduce((s, v) => s + (Number(v) || 0), 0)
+        : (Number(quarryFixedCosts[locFilter]) || 0);
+
+      const months = new Map();
+      const ensureM = (mk) => {
+        if (!months.has(mk)) months.set(mk, { month: mk, revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0 });
+        return months.get(mk);
+      };
+      salesRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
+        const mk = beMonthKey(r.date); if (!mk) return;
+        const e = ensureM(mk);
+        e.revenue += homeRowSales(r);
+        const t = Number(r.tons); if (Number.isFinite(t)) e.tonsSold += t;
+      });
+      dailyRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
+        const mk = beMonthKey(r.date); if (!mk) return;
+        ensureM(mk).varCost += dailyCalc(r).totalCost;
+      });
+      crushRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
+        const mk = beMonthKey(r.date); if (!mk) return;
+        const e = ensureM(mk);
+        const c = crushCalc(r);
+        e.varCost += c.totalCost;
+        e.tonsCrushed += c.estimatedTons;
+      });
+
+      // Year-blended price covers months with costs but no recorded sales.
+      let yrRev = 0, yrTons = 0;
+      months.forEach(m => { yrRev += m.revenue; yrTons += m.tonsSold; });
+      const yrAvgPrice = yrTons > 0 ? yrRev / yrTons : null;
+
+      const rows = [...months.values()].map(m => {
+        const avgPrice = m.tonsSold > 0 ? m.revenue / m.tonsSold : yrAvgPrice;
+        const fixedCost = monthlyFixed;
+        const totalCost = m.varCost + fixedCost;
+        const breakEvenTons = (avgPrice != null && avgPrice > 0) ? totalCost / avgPrice : null;
+        const profit = m.revenue - totalCost;
+        return { ...m, avgPrice, fixedCost, totalCost, breakEvenRevenue: totalCost, breakEvenTons, profit };
+      }).sort((a, b) => a.month.localeCompare(b.month));
+
+      return { rows, monthlyFixed, yrAvgPrice };
+    }
+
+    function renderBreakevenMonthly() {
+      const body = document.getElementById('beMonthlyBody');
+      if (!body) return;
+      const dash = '—';
+      const { rows, monthlyFixed, yrAvgPrice } = computeBreakevenMonthly(beMonthlyLoc);
+
+      const note = document.getElementById('beMonthlyNote');
+      if (note) {
+        const locLabel = beMonthlyLoc === 'all' ? 'all pits' : beMonthlyLoc;
+        note.innerHTML = `Each month's break-even is the sales needed to cover <strong>that month's actual labor &amp; fuel</strong> plus <strong>${formatMoney(monthlyFixed)}/mo</strong> fixed overhead (${escapeHtml(locLabel)}). `
+          + `Slower months log fewer man-hours, so they cost less and break even on fewer tons. `
+          + `<em>Break-even revenue = total cost; break-even tons = total cost ÷ that month's price. Only months with activity are shown.</em>`;
+      }
+
+      if (!rows.length) {
+        body.innerHTML = `<tr class="is-empty-row"><td colspan="10" style="text-align:center;padding:1.5rem;">No entries for this year${beMonthlyLoc === 'all' ? '' : ' at ' + escapeHtml(beMonthlyLoc)}.</td></tr>`;
+        return;
+      }
+
+      const barCell = (sold, be) => {
+        if (be == null || be <= 0) return `<td>${dash}</td>`;
+        const ratio = sold / be;
+        const pct = Math.max(0, Math.min(ratio, 1)) * 100;
+        const color = ratio >= 1 ? '#4ade80' : '#ef4444';
+        return `<td><span class="be-bar"><span style="width:${pct}%;background:${color}"></span></span>`
+          + `<span class="be-bar-label">${Math.round(ratio * 100)}%</span></td>`;
+      };
+      const statusPill = (m) => m.tonsSold <= 0 ? '<span class="be-pill mute">No sales</span>'
+        : m.profit >= 0 ? '<span class="be-pill good">Profit</span>'
+        : '<span class="be-pill bad">Loss</span>';
+
+      const tot = { tonsSold: 0, revenue: 0, varCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
+      let html = rows.map(m => {
+        tot.tonsSold += m.tonsSold; tot.revenue += m.revenue; tot.varCost += m.varCost;
+        tot.fixedCost += m.fixedCost; tot.totalCost += m.totalCost; tot.profit += m.profit;
+        const pl = m.profit >= 0 ? 'is-positive' : 'is-negative';
+        return `<tr>`
+          + `<td>${beMonthLabel(m.month)}</td>`
+          + `<td class="be-num">${formatTons(m.tonsSold)}</td>`
+          + `<td class="be-num">${formatMoney(m.revenue)}</td>`
+          + `<td class="be-num">${formatMoney(m.varCost)}</td>`
+          + `<td class="be-num">${formatMoney(m.fixedCost)}</td>`
+          + `<td class="be-num">${formatMoney(m.totalCost)}</td>`
+          + `<td class="be-num">${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>`
+          + barCell(m.tonsSold, m.breakEvenTons)
+          + `<td class="be-num ${pl}">${formatMoney(m.profit)}</td>`
+          + `<td>${statusPill(m)}</td>`
+          + `</tr>`;
+      }).join('');
+
+      const totBeTons = (yrAvgPrice != null && yrAvgPrice > 0) ? tot.totalCost / yrAvgPrice : null;
+      const totPl = tot.profit >= 0 ? 'is-positive' : 'is-negative';
+      html += `<tr class="be-row-total">`
+        + `<td>Year Total</td>`
+        + `<td class="be-num">${formatTons(tot.tonsSold)}</td>`
+        + `<td class="be-num">${formatMoney(tot.revenue)}</td>`
+        + `<td class="be-num">${formatMoney(tot.varCost)}</td>`
+        + `<td class="be-num">${formatMoney(tot.fixedCost)}</td>`
+        + `<td class="be-num">${formatMoney(tot.totalCost)}</td>`
+        + `<td class="be-num">${totBeTons != null ? formatTons(totBeTons) : dash}</td>`
+        + barCell(tot.tonsSold, totBeTons)
+        + `<td class="be-num ${totPl}">${formatMoney(tot.profit)}</td>`
+        + `<td>${tot.tonsSold <= 0 ? '<span class="be-pill mute">No sales</span>' : (tot.profit >= 0 ? '<span class="be-pill good">Profit</span>' : '<span class="be-pill bad">Loss</span>')}</td>`
+        + `</tr>`;
+
+      body.innerHTML = html;
     }
 
     function renderHomeRanked(elId, items, mapper) {
