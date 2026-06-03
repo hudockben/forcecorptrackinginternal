@@ -408,7 +408,7 @@
     .analytics-toolbar-actions {
       display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap;
     }
-    #analyticsPdfBtn { display: inline-flex; align-items: center; gap: 0.4rem; }
+    #analyticsPdfBtn, #breakevenPdfBtn { display: inline-flex; align-items: center; gap: 0.4rem; }
 
     .sales-table-wrap {
       border: 1px solid var(--border); border-radius: 6px;
@@ -636,6 +636,65 @@
     }
     .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
     .cb-opt-empty { padding: 0.32rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
+
+    /* ── Break-Even tab ── */
+    .be-explainer {
+      background: #12121a; border: 1px solid var(--border); border-left: 3px solid var(--accent);
+      border-radius: 8px; padding: 0.85rem 1.05rem; margin-bottom: 1.1rem;
+      font-size: 0.78rem; line-height: 1.5; color: var(--text);
+    }
+    .be-explainer .be-formula {
+      display: inline-block; margin: 0.35rem 0; padding: 0.3rem 0.55rem;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--accent); font-weight: 600;
+    }
+    .be-explainer ul { margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); }
+    .be-explainer li { margin: 0.2rem 0; }
+    .be-explainer strong { color: var(--text); }
+    .be-table { min-width: 1150px; }
+    .be-table thead th,
+    .be-table tbody td { text-align: center; padding: 0.5rem 0.7rem; }
+    .be-num { font-variant-numeric: tabular-nums; }
+    .be-fixed-input {
+      width: 7rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 0.8rem; padding: 0.25rem 0.4rem;
+      text-align: right; font-variant-numeric: tabular-nums;
+    }
+    .be-fixed-input:focus { border-color: var(--accent); outline: none; }
+    .be-pill {
+      display: inline-block; padding: 0.12rem 0.5rem; border-radius: 999px;
+      font-size: 0.66rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;
+      border: 1px solid transparent; white-space: nowrap;
+    }
+    .be-pill.good { color: #4ade80; background: rgba(74,222,128,0.12); border-color: rgba(74,222,128,0.25); }
+    .be-pill.bad  { color: #ef4444; background: rgba(239,68,68,0.12);  border-color: rgba(239,68,68,0.25); }
+    .be-pill.mute { color: var(--muted); background: rgba(120,120,140,0.10); border-color: var(--border); }
+    .be-table tr.be-row-total td { border-top: 2px solid var(--border); font-weight: 700; background: #14141d; }
+    .be-table .is-positive { color: #4ade80; }
+    .be-table .is-negative { color: #ef4444; }
+    .be-monthly-note { font-size: 0.72rem; color: var(--muted); margin: 0.1rem 0 0.85rem; line-height: 1.55; }
+    .be-monthly-note strong { color: var(--text); }
+    .be-monthly-note em { color: #9aa0a6; font-style: normal; }
+    .be-loc-filter {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 0.78rem; padding: 0.25rem 0.5rem; margin-left: 0.4rem;
+    }
+    .be-loc-filter:hover, .be-loc-filter:focus { border-color: var(--accent); }
+    .be-bar {
+      position: relative; display: inline-block; vertical-align: middle;
+      width: 84px; height: 7px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 999px; overflow: hidden;
+    }
+    .be-bar > span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; }
+    .be-bar-label { font-size: 0.66rem; color: var(--muted); margin-left: 0.4rem; font-variant-numeric: tabular-nums; }
+    .be-chart-legend { display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: 0.72rem; color: var(--muted); margin: 0 0 0.6rem; }
+    .be-leg { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .be-leg-line { display: inline-block; width: 22px; height: 0; border-top-width: 3px; border-top-style: solid; }
+    .be-leg-line.crushed { border-top-color: #60a5fa; }
+    .be-leg-line.needed  { border-top-color: #f97316; border-top-style: dashed; }
+    .be-chart-wrap { width: 100%; overflow-x: auto; }
+    .be-chart-wrap svg { display: block; width: 100%; height: auto; }
+    .be-chart-empty { font-size: 0.78rem; color: var(--muted); text-align: center; padding: 1.5rem 1rem; }
   </style>
 </head>
 <body>
@@ -661,6 +720,7 @@
     <button class="tab-btn"        data-tab="crushing" onclick="switchTab('crushing')">Crushing Tracking</button>
     <button class="tab-btn"        data-tab="sales"     onclick="switchTab('sales')">Sales Tracking</button>
     <button class="tab-btn"        data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
+    <button class="tab-btn"        data-tab="breakeven" onclick="switchTab('breakeven')">Break-Even</button>
     <div class="tab-bar-spacer"></div>
     <button class="btn-manage-lists" onclick="openManageLists()">⚙ Manage Lists</button>
   </nav>
@@ -1164,6 +1224,142 @@
     </div>
   </div>
 
+  <!-- ── Break-Even tab panel ── -->
+  <div class="tab-panel"        id="tab-breakeven">
+    <div class="home-wrap">
+      <div class="home-toolbar">
+        <div>
+          <div class="home-title">Break-Even Analysis</div>
+          <div class="home-sub" id="beSubtitle">Loading…</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+          <div class="year-filter-wrap">
+            Year
+            <select class="year-filter-select" id="breakevenYearFilter" onchange="setYearFilter('breakeven', this.value)" disabled></select>
+          </div>
+          <button class="btn-add-row btn-bulk-upload" id="breakevenPdfBtn" onclick="downloadBreakevenPDF()">⇩ Print / PDF</button>
+        </div>
+      </div>
+
+      <div class="be-explainer">
+        <strong>How many tons must each pit sell to stop losing money?</strong>
+        <div class="be-formula">Break-even tons / mo&nbsp;=&nbsp;Monthly fixed costs&nbsp;÷&nbsp;(Avg price/ton − Variable cost/ton)</div>
+        <ul>
+          <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales, Daily, and Crushing entries for the selected year. Variable cost = all daily + crushing labor &amp; fuel, divided by tons produced.</li>
+          <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
+          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below (include each location's share of corporate overhead); this column shows the average. Entries save automatically.</li>
+        </ul>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile is-accent">
+          <div class="kpi-label">Avg Price / Ton</div>
+          <div class="kpi-value" id="beKpiPrice">—</div>
+          <div class="kpi-sub">Blended · all pits</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Variable Cost / Ton</div>
+          <div class="kpi-value" id="beKpiVarCost">—</div>
+          <div class="kpi-sub">Daily + crushing ÷ tons</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Contribution / Ton</div>
+          <div class="kpi-value" id="beKpiContribution">—</div>
+          <div class="kpi-sub">Price − variable cost</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Monthly Fixed Costs</div>
+          <div class="kpi-value" id="beKpiFixed">$0.00</div>
+          <div class="kpi-sub">Total entered · all pits</div>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile">
+          <div class="kpi-label">Break-Even Tons / Mo</div>
+          <div class="kpi-value" id="beKpiTons">—</div>
+          <div class="kpi-sub">Tons/mo to cover all costs</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Break-Even Revenue / Mo</div>
+          <div class="kpi-value" id="beKpiRevenue">—</div>
+          <div class="kpi-sub">Sales $/mo to break even</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Avg Tons Sold / Mo</div>
+          <div class="kpi-value" id="beKpiActual">0</div>
+          <div class="kpi-sub" id="beKpiActualSub">Recent monthly average</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Status</div>
+          <div class="kpi-value" id="beKpiStatus">—</div>
+          <div class="kpi-sub" id="beKpiStatusSub">vs break-even</div>
+        </div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title">By Quarry Location</div>
+        <div class="sales-table-wrap">
+          <table class="sales-table be-table" id="beLocationTable">
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th class="be-num">Avg Price / Ton</th>
+                <th class="be-num">Variable Cost / Ton</th>
+                <th class="be-num">Contribution / Ton</th>
+                <th class="be-num">Monthly Fixed Costs</th>
+                <th class="be-num">Break-Even Tons / Mo</th>
+                <th class="be-num">Break-Even Rev / Mo</th>
+                <th class="be-num">Avg Tons Sold / Mo</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="beLocationBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+          <span>Month-by-Month Break-Even</span>
+          <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:0.72rem;color:var(--muted);">
+            Location
+            <select class="be-loc-filter" id="beMonthlyLocFilter" onchange="setBeMonthlyLoc(this.value)"></select>
+          </span>
+        </div>
+        <div class="be-monthly-note" id="beMonthlyNote"></div>
+        <div class="sales-table-wrap">
+          <table class="sales-table be-table" id="beMonthlyTable" style="min-width:1080px;">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th class="be-num">Tons Sold</th>
+                <th class="be-num">Revenue</th>
+                <th class="be-num">Variable Cost</th>
+                <th class="be-num">Fixed Cost</th>
+                <th class="be-num">Total Cost</th>
+                <th class="be-num">Break-Even Tons</th>
+                <th>Sold vs B/E</th>
+                <th class="be-num">Profit / Loss</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="beMonthlyBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title">Crushed vs. Break-Even (tons / month)</div>
+        <div class="be-chart-legend">
+          <span class="be-leg"><span class="be-leg-line crushed"></span>Crushed (actual)</span>
+          <span class="be-leg"><span class="be-leg-line needed"></span>Break-even (need to crush)</span>
+        </div>
+        <div id="beChartWrap" class="be-chart-wrap"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Manage Lists Modal ── -->
   <div class="modal-backdrop" id="manageListsBackdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="manageListsTitle">
@@ -1322,6 +1518,7 @@
       if (tab === 'daily') refreshDaily();
       if (tab === 'home') refreshHome();
       if (tab === 'analytics') refreshAnalytics();
+      if (tab === 'breakeven') refreshBreakeven();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -1729,7 +1926,7 @@
     // ── Per-tab year filter ─────────────────────────────────────
     // Default each tab to the current year so users land on this
     // year's data. Selecting "All Years" shows everything.
-    const yearFilters = { daily: null, crushing: null, sales: null, home: null, analytics: null };
+    const yearFilters = { daily: null, crushing: null, sales: null, home: null, analytics: null, breakeven: null };
 
     function getRowYear(dateStr) {
       if (!dateStr || typeof dateStr !== 'string') return null;
@@ -1753,6 +1950,7 @@
       else if (tab === 'sales')    renderSales();
       else if (tab === 'home')     renderHome();
       else if (tab === 'analytics') renderAnalytics();
+      else if (tab === 'breakeven') renderBreakeven();
     }
     function renderYearFilterOptions(tab, rows) {
       const sel = document.getElementById(tab + 'YearFilter');
@@ -2623,6 +2821,10 @@
           putDaily(dailyRows.map(r => ({ ...r })), { keepalive: true }).catch(() => {});
           dailySavePending = null;
         }
+        if (monthlyFixedSavePending || monthlyFixedSaveInFlight) {
+          putMonthlyFixed(quarryMonthlyFixed, { keepalive: true }).catch(() => {});
+          monthlyFixedSavePending = null;
+        }
       } catch (_) { /* best-effort on unload */ }
     }
     window.addEventListener('beforeunload', _quarryFlushOnUnload);
@@ -3456,6 +3658,589 @@
       renderHomeFeed(feed.slice(0, 12));
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // BREAK-EVEN ANALYSIS
+    // Pulls avg price/ton and variable cost/ton from the existing
+    // sales / daily / crushing data. Fixed costs are typed per month in the
+    // Month-by-Month table and stored nested by the location scope shown
+    // there: { scope: { 'YYYY-MM': amount } } where scope is 'all' or a pit
+    // name. The By-Location "Monthly Fixed Cost" for each row is the AVERAGE
+    // of that scope's entries, and the executive tile mirrors the All-Pits
+    // average. Price and cost per ton are blended over the Year filter.
+    // ─────────────────────────────────────────────────────────────
+    const QUARRY_MONTHLY_FIXED_KEY = 'fct_quarry_monthly_fixed';
+    const BE_NO_LOC = '— No location —';
+    let quarryMonthlyFixed = {};
+    let monthlyFixedLoaded = false;
+    let monthlyFixedFetchedOnce = false;
+    let monthlyFixedSavePending = null;
+    let monthlyFixedSaveInFlight = false;
+
+    function normalizeMonthlyFixed(value) {
+      const out = {};
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.keys(value).forEach(scope => {
+          const months = value[scope];
+          if (months && typeof months === 'object' && !Array.isArray(months)) {
+            Object.keys(months).forEach(mk => {
+              const n = Number(months[mk]);
+              if (/^\d{4}-\d{2}$/.test(mk) && Number.isFinite(n) && n > 0) {
+                (out[scope] || (out[scope] = {}))[mk] = Math.round(n * 100) / 100;
+              }
+            });
+          }
+        });
+      }
+      return out;
+    }
+
+    async function fetchMonthlyFixed() {
+      const res = await fetch(`/api/data/${QUARRY_MONTHLY_FIXED_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_MONTHLY_FIXED_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeMonthlyFixed(data.value);
+    }
+    async function putMonthlyFixed(value, opts = {}) {
+      const init = {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value }),
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_MONTHLY_FIXED_KEY}`, init);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_MONTHLY_FIXED_KEY} → ${res.status} ${text}`);
+      }
+    }
+    // Coalesces rapid edits into a single in-flight PUT (mirrors lists save).
+    function scheduleMonthlyFixedSave() {
+      monthlyFixedSavePending = quarryMonthlyFixed;
+      if (monthlyFixedSaveInFlight) return;
+      flushMonthlyFixedSave();
+    }
+    async function flushMonthlyFixedSave() {
+      while (monthlyFixedSavePending) {
+        const snapshot = monthlyFixedSavePending;
+        monthlyFixedSavePending = null;
+        monthlyFixedSaveInFlight = true;
+        try {
+          await putMonthlyFixed(snapshot);
+        } catch (err) {
+          console.error('[quarry] monthly fixed save failed:', err);
+          alert('Could not save fixed costs — please check your connection and try again.');
+        } finally {
+          monthlyFixedSaveInFlight = false;
+        }
+      }
+    }
+    async function refreshMonthlyFixed() {
+      try {
+        quarryMonthlyFixed = await fetchMonthlyFixed();
+        monthlyFixedLoaded = true;
+      } catch (err) {
+        console.error('[quarry] monthly fixed load failed:', err);
+        if (!monthlyFixedFetchedOnce) { quarryMonthlyFixed = {}; monthlyFixedLoaded = true; }
+      } finally {
+        monthlyFixedFetchedOnce = true;
+      }
+    }
+
+    // One scope's fixed cost for a single month (0 if none).
+    function scopeMonthFixed(scope, monthKey) {
+      const m = quarryMonthlyFixed[scope];
+      const v = m ? Number(m[monthKey]) : 0;
+      return Number.isFinite(v) ? v : 0;
+    }
+    // Average of the per-month fixed costs entered for a scope (0 if none).
+    function scopeAvgFixed(scope) {
+      const m = quarryMonthlyFixed[scope];
+      if (!m) return 0;
+      const vals = Object.keys(m).map(k => Number(m[k])).filter(v => Number.isFinite(v) && v > 0);
+      return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    }
+    // Editable per-month fixed input (Month-by-Month table); stores under the
+    // currently selected location scope.
+    function onMonthlyFixedInput(input) {
+      const scope = input.dataset.loc || '';
+      const month = input.dataset.month || '';
+      if (!scope || !month) return;
+      const raw = String(input.value).trim();
+      const n = raw === '' ? 0 : Number(raw.replace(/[^0-9.]/g, ''));
+      if (Number.isFinite(n) && n > 0) {
+        (quarryMonthlyFixed[scope] || (quarryMonthlyFixed[scope] = {}))[month] = Math.round(n * 100) / 100;
+      } else if (quarryMonthlyFixed[scope]) {
+        delete quarryMonthlyFixed[scope][month];
+        if (!Object.keys(quarryMonthlyFixed[scope]).length) delete quarryMonthlyFixed[scope];
+      }
+      scheduleMonthlyFixedSave();
+      renderBreakeven();   // by-location average + monthly table + chart all refresh
+    }
+
+    // Month key (YYYY-MM) from either YYYY-MM-DD or M/D/YYYY.
+    function beMonthKey(dateStr) {
+      if (!dateStr) return null;
+      const s = String(dateStr).trim();
+      let m = s.match(/^(\d{4})-(\d{2})/);
+      if (m) return m[1] + '-' + m[2];
+      m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (m) return m[3] + '-' + String(m[1]).padStart(2, '0');
+      return null;
+    }
+
+    // Build per-location + division-total break-even figures for the
+    // selected year. Variable cost per ton uses tons crushed when present
+    // (matching the Home "Avg Cost/Ton" basis) and falls back to tons sold
+    // for sales-only pits.
+    function computeBreakeven() {
+      const inYear = (r) => rowMatchesYear('breakeven', r);
+      const locs = new Map();
+      const ensure = (name) => {
+        const key = (name || '').trim() || BE_NO_LOC;
+        if (!locs.has(key)) {
+          locs.set(key, {
+            name: key, hasLoc: key !== BE_NO_LOC,
+            revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0,
+            salesMonths: new Set(),
+          });
+        }
+        return locs.get(key);
+      };
+
+      salesRows.filter(inYear).forEach(r => {
+        const e = ensure(r.locationName);
+        e.revenue += homeRowSales(r);
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) e.tonsSold += t;
+        const mk = beMonthKey(r.date);
+        if (mk && Number.isFinite(t) && t > 0) e.salesMonths.add(mk);
+      });
+      dailyRows.filter(inYear).forEach(r => {
+        ensure(r.locationName).varCost += dailyCalc(r).totalCost;
+      });
+      crushRows.filter(inYear).forEach(r => {
+        const e = ensure(r.locationName);
+        const c = crushCalc(r);
+        e.varCost += c.totalCost;
+        e.tonsCrushed += c.estimatedTons;
+      });
+
+      // Surface pits that have fixed costs entered but no activity yet.
+      Object.keys(quarryMonthlyFixed).forEach(scope => {
+        if (scope && scope !== 'all' && scope !== BE_NO_LOC) ensure(scope);
+      });
+
+      const finalize = (e) => {
+        const tonsBasis = e.tonsCrushed > 0 ? e.tonsCrushed : e.tonsSold;
+        const avgPrice = e.tonsSold > 0 ? e.revenue / e.tonsSold : null;
+        const varCostPerTon = tonsBasis > 0 ? e.varCost / tonsBasis : null;
+        const contribution = (avgPrice != null && varCostPerTon != null) ? avgPrice - varCostPerTon : null;
+        const monthlyFixed = scopeAvgFixed(e.name);
+        let breakEvenTons = null, breakEvenRevenue = null;
+        if (contribution != null && contribution > 0) {
+          breakEvenTons = monthlyFixed / contribution;
+          breakEvenRevenue = avgPrice != null ? breakEvenTons * avgPrice : null;
+        } else if (contribution != null && monthlyFixed <= 0) {
+          breakEvenTons = 0; breakEvenRevenue = 0;
+        }
+        const months = e.salesMonths.size;
+        const avgTonsPerMonth = months > 0 ? e.tonsSold / months : 0;
+        return {
+          ...e, tonsBasis, avgPrice, varCostPerTon, contribution,
+          monthlyFixed, breakEvenTons, breakEvenRevenue, months, avgTonsPerMonth,
+        };
+      };
+
+      const rows = [...locs.values()].map(finalize)
+        .sort((a, b) => (b.tonsSold - a.tonsSold) || a.name.localeCompare(b.name));
+
+      // Division total — blended across every pit. All-Pits fixed is the
+      // average of the All-Pits-scope monthly entries (the figure mirrored to
+      // the executive tile), independent of the per-pit rows.
+      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, monthlyFixed: scopeAvgFixed('all'), salesMonths: new Set() };
+      rows.forEach(r => {
+        T.revenue += r.revenue; T.tonsSold += r.tonsSold;
+        T.varCost += r.varCost; T.tonsCrushed += r.tonsCrushed;
+        r.salesMonths.forEach(m => T.salesMonths.add(m));
+      });
+      const tBasis = T.tonsCrushed > 0 ? T.tonsCrushed : T.tonsSold;
+      const tAvgPrice = T.tonsSold > 0 ? T.revenue / T.tonsSold : null;
+      const tVarCost = tBasis > 0 ? T.varCost / tBasis : null;
+      const tContribution = (tAvgPrice != null && tVarCost != null) ? tAvgPrice - tVarCost : null;
+      let tBeTons = null, tBeRev = null;
+      if (tContribution != null && tContribution > 0) {
+        tBeTons = T.monthlyFixed / tContribution;
+        tBeRev = tAvgPrice != null ? tBeTons * tAvgPrice : null;
+      } else if (tContribution != null && T.monthlyFixed <= 0) {
+        tBeTons = 0; tBeRev = 0;
+      }
+      const tMonths = T.salesMonths.size;
+      const total = {
+        name: 'All Pits', avgPrice: tAvgPrice, varCostPerTon: tVarCost, contribution: tContribution,
+        monthlyFixed: T.monthlyFixed, breakEvenTons: tBeTons, breakEvenRevenue: tBeRev,
+        months: tMonths, avgTonsPerMonth: tMonths > 0 ? T.tonsSold / tMonths : 0,
+      };
+
+      return { rows, total };
+    }
+
+    // Status pill descriptor: are we above or below break-even?
+    function beStatus(d) {
+      if (d.contribution == null) return { cls: 'mute', label: 'Needs data' };
+      if (d.contribution <= 0)    return { cls: 'bad',  label: 'No break-even · cost ≥ price' };
+      if (d.monthlyFixed <= 0)    return { cls: 'mute', label: 'Set fixed costs' };
+      if (d.breakEvenTons == null) return { cls: 'mute', label: '—' };
+      if (d.months === 0)         return { cls: 'mute', label: 'No sales in range' };
+      const diff = d.avgTonsPerMonth - d.breakEvenTons;
+      if (diff >= 0) return { cls: 'good', label: `Above by ${formatTons(diff)} t/mo` };
+      return { cls: 'bad', label: `Below by ${formatTons(Math.abs(diff))} t/mo` };
+    }
+
+    async function refreshBreakeven() {
+      renderBreakeven();
+      const tasks = [];
+      if (!dailyFetchedOnce) tasks.push(refreshDaily());
+      if (!crushFetchedOnce) tasks.push(refreshCrush());
+      if (!salesFetchedOnce) tasks.push(refreshSales());
+      if (!monthlyFixedFetchedOnce) tasks.push(refreshMonthlyFixed());
+      if (tasks.length) { await Promise.allSettled(tasks); renderBreakeven(); }
+    }
+
+    function renderBreakeven() {
+      const allRows = [...dailyRows, ...crushRows, ...salesRows];
+      renderYearFilterOptions('breakeven', allRows);
+
+      const { rows, total } = computeBreakeven();
+      const dash = '—';
+      const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      const setSigned = (id, txt, sign) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = txt;
+        el.classList.toggle('is-positive', sign > 0);
+        el.classList.toggle('is-negative', sign < 0);
+      };
+
+      // ── Division KPIs ──
+      setText('beKpiPrice',   total.avgPrice != null ? formatMoney(total.avgPrice) : dash);
+      setText('beKpiVarCost', total.varCostPerTon != null ? formatMoney(total.varCostPerTon) : dash);
+      setSigned('beKpiContribution',
+        total.contribution != null ? formatMoney(total.contribution) : dash,
+        total.contribution == null ? 0 : (total.contribution > 0 ? 1 : -1));
+      setText('beKpiFixed', formatMoney(total.monthlyFixed));
+
+      setText('beKpiTons',
+        (total.contribution != null && total.contribution <= 0) ? 'No break-even'
+        : total.breakEvenTons != null ? formatTons(total.breakEvenTons)
+        : dash);
+      setText('beKpiRevenue', total.breakEvenRevenue != null ? formatMoney(total.breakEvenRevenue) : dash);
+      setText('beKpiActual', formatTons(total.avgTonsPerMonth));
+      setText('beKpiActualSub',
+        total.months > 0 ? `Over ${total.months} active sales month${total.months === 1 ? '' : 's'}` : 'No sales in range');
+
+      const st = beStatus(total);
+      const statusEl = document.getElementById('beKpiStatus');
+      if (statusEl) {
+        statusEl.textContent = st.label;
+        statusEl.classList.toggle('is-positive', st.cls === 'good');
+        statusEl.classList.toggle('is-negative', st.cls === 'bad');
+      }
+      setText('beKpiStatusSub',
+        (total.breakEvenTons != null && total.contribution != null && total.contribution > 0)
+          ? `Need ${formatTons(total.breakEvenTons)} t/mo · selling ${formatTons(total.avgTonsPerMonth)} t/mo`
+          : 'vs break-even');
+
+      const sub = document.getElementById('beSubtitle');
+      if (sub) {
+        const yr = yearFilterLabel('breakeven');
+        sub.textContent = rows.length
+          ? `Showing ${yr} · price & cost per ton are blended over the year; fixed costs and break-even are per month.`
+          : 'Add Sales, Daily, or Crushing entries — then enter monthly fixed costs in the table below.';
+      }
+
+      // ── Month-by-month section: location dropdown + table ──
+      const monthlySel = document.getElementById('beMonthlyLocFilter');
+      if (monthlySel) {
+        const names = rows.map(r => r.name);
+        if (beMonthlyLoc !== 'all' && !names.includes(beMonthlyLoc)) beMonthlyLoc = 'all';
+        monthlySel.innerHTML = ['<option value="all">All Pits</option>']
+          .concat(names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`))
+          .join('');
+        monthlySel.value = beMonthlyLoc;
+      }
+      renderBreakevenMonthly();
+
+      // ── Per-location table ──
+      const body = document.getElementById('beLocationBody');
+      if (!body) return;
+      const cell = (txt, cls) => `<td class="${cls || ''}">${txt}</td>`;
+      const moneyCell = (v) => cell(v != null ? formatMoney(v) : dash, 'be-num');
+      const tonsCell  = (v) => cell(v != null ? formatTons(v)  : dash, 'be-num');
+      const rowHtml = (d, isTotal) => {
+        const s = beStatus(d);
+        const contribCls = d.contribution == null ? '' : (d.contribution > 0 ? 'is-positive' : 'is-negative');
+        // Read-only: the average of this scope's per-month entries (typed in
+        // the Month-by-Month table below).
+        const fixedCell = (d.name === BE_NO_LOC)
+          ? cell(dash, 'be-num')
+          : cell(d.monthlyFixed > 0 ? formatMoney(d.monthlyFixed) : dash, 'be-num');
+        const beTonsTxt = (d.contribution != null && d.contribution <= 0) ? 'No B/E'
+          : (d.breakEvenTons != null ? formatTons(d.breakEvenTons) : dash);
+        return `<tr class="${isTotal ? 'be-row-total' : ''}">`
+          + cell(escapeHtml(d.name))
+          + moneyCell(d.avgPrice)
+          + moneyCell(d.varCostPerTon)
+          + `<td class="be-num ${contribCls}">${d.contribution != null ? formatMoney(d.contribution) : dash}</td>`
+          + fixedCell
+          + cell(beTonsTxt, 'be-num')
+          + moneyCell(d.breakEvenRevenue)
+          + tonsCell(d.avgTonsPerMonth)
+          + cell(`<span class="be-pill ${s.cls}">${escapeHtml(s.label)}</span>`)
+          + '</tr>';
+      };
+      let html = rows.map(d => rowHtml(d, false)).join('');
+      if (rows.length) html += rowHtml({ ...total, hasLoc: true }, true);
+      body.innerHTML = html
+        || `<tr class="is-empty-row"><td colspan="9" style="text-align:center;padding:1.5rem;">No quarry data yet for this year. Add entries on the Sales, Daily, or Crushing tabs.</td></tr>`;
+    }
+
+    // ── Month-by-month break-even ────────────────────────────────
+    // Cost-coverage view: for each month, the sales it took to cover that
+    // month's *actual* labor + fuel (already date-stamped per entry) plus
+    // fixed overhead. Slower months log fewer man-hours, so total cost — and
+    // therefore the tons needed to break even — drops, which is the seasonal
+    // pattern we want to surface. Break-even revenue = total cost; break-even
+    // tons = total cost ÷ that month's blended price (falls back to the
+    // year's blended price for months that had costs but no sales).
+    let beMonthlyLoc = 'all';
+
+    function setBeMonthlyLoc(value) {
+      beMonthlyLoc = value || 'all';
+      renderBreakevenMonthly();
+    }
+
+    function beMonthLabel(mk) {
+      const parts = String(mk).split('-');
+      const y = Number(parts[0]); const m = Number(parts[1]);
+      const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return (m >= 1 && m <= 12 ? names[m - 1] : '??') + ' ' + (Number.isFinite(y) ? y : '');
+    }
+    // Compact axis label: "Jan '26"
+    function beMonthShort(mk) {
+      const parts = String(mk).split('-');
+      const m = Number(parts[1]);
+      const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return (m >= 1 && m <= 12 ? names[m - 1] : '??') + " '" + String(parts[0] || '').slice(2);
+    }
+    // Round a max value up to a clean axis ceiling (1/2/2.5/5/10 × 10^n).
+    function beNiceCeil(v) {
+      if (!(v > 0)) return 1;
+      const pow = Math.pow(10, Math.floor(Math.log10(v)));
+      const n = v / pow;
+      const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
+      return step * pow;
+    }
+
+    function computeBreakevenMonthly(locFilter) {
+      const inYear = (r) => rowMatchesYear('breakeven', r);
+      const matchLoc = (r) => locFilter === 'all'
+        || ((String(r.locationName || '').trim() || BE_NO_LOC) === locFilter);
+      const monthlyFixed = scopeAvgFixed(locFilter);  // average of this scope's entries (for display)
+
+      const months = new Map();
+      const ensureM = (mk) => {
+        if (!months.has(mk)) months.set(mk, { month: mk, revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0 });
+        return months.get(mk);
+      };
+      salesRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
+        const mk = beMonthKey(r.date); if (!mk) return;
+        const e = ensureM(mk);
+        e.revenue += homeRowSales(r);
+        const t = Number(r.tons); if (Number.isFinite(t)) e.tonsSold += t;
+      });
+      dailyRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
+        const mk = beMonthKey(r.date); if (!mk) return;
+        ensureM(mk).varCost += dailyCalc(r).totalCost;
+      });
+      crushRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
+        const mk = beMonthKey(r.date); if (!mk) return;
+        const e = ensureM(mk);
+        const c = crushCalc(r);
+        e.varCost += c.totalCost;
+        e.tonsCrushed += c.estimatedTons;
+      });
+
+      // Year-blended price covers months with costs but no recorded sales.
+      let yrRev = 0, yrTons = 0;
+      months.forEach(m => { yrRev += m.revenue; yrTons += m.tonsSold; });
+      const yrAvgPrice = yrTons > 0 ? yrRev / yrTons : null;
+
+      const rows = [...months.values()].map(m => {
+        const avgPrice = m.tonsSold > 0 ? m.revenue / m.tonsSold : yrAvgPrice;
+        const fixedCost = scopeMonthFixed(locFilter, m.month);
+        const totalCost = m.varCost + fixedCost;
+        const breakEvenTons = (avgPrice != null && avgPrice > 0) ? totalCost / avgPrice : null;
+        const profit = m.revenue - totalCost;
+        return { ...m, avgPrice, fixedCost, totalCost, breakEvenRevenue: totalCost, breakEvenTons, profit };
+      }).sort((a, b) => a.month.localeCompare(b.month));
+
+      return { rows, monthlyFixed, yrAvgPrice };
+    }
+
+    function renderBreakevenMonthly() {
+      const body = document.getElementById('beMonthlyBody');
+      if (!body) return;
+      const dash = '—';
+      const { rows, monthlyFixed, yrAvgPrice } = computeBreakevenMonthly(beMonthlyLoc);
+      renderBreakevenChart(rows);
+
+      const note = document.getElementById('beMonthlyNote');
+      if (note) {
+        const locLabel = beMonthlyLoc === 'all' ? 'all pits' : beMonthlyLoc;
+        note.innerHTML = `Type each month's <strong>fixed overhead</strong> in the Fixed Cost column (${escapeHtml(locLabel)}); break-even then covers that month's actual labor &amp; fuel plus that fixed cost. `
+          + `The <strong>By Quarry Location</strong> table shows the average of these (${formatMoney(monthlyFixed)}/mo here), and the executive dashboard mirrors the All-Pits average. `
+          + `<strong>Profit / Loss = revenue − total cost</strong>, so the status is a true monthly result. `
+          + `<em>Break-even tons = total cost ÷ that month's price. Only months with activity are shown.</em>`;
+      }
+
+      if (!rows.length) {
+        body.innerHTML = `<tr class="is-empty-row"><td colspan="10" style="text-align:center;padding:1.5rem;">No entries for this year${beMonthlyLoc === 'all' ? '' : ' at ' + escapeHtml(beMonthlyLoc)}.</td></tr>`;
+        return;
+      }
+
+      const barCell = (sold, be) => {
+        if (be == null || be <= 0) return `<td>${dash}</td>`;
+        const ratio = sold / be;
+        const pct = Math.max(0, Math.min(ratio, 1)) * 100;
+        const color = ratio >= 1 ? '#4ade80' : '#ef4444';
+        return `<td><span class="be-bar"><span style="width:${pct}%;background:${color}"></span></span>`
+          + `<span class="be-bar-label">${Math.round(ratio * 100)}%</span></td>`;
+      };
+      const statusPill = (m) => m.tonsSold <= 0 ? '<span class="be-pill mute">No sales</span>'
+        : m.profit >= 0 ? '<span class="be-pill good">Profit</span>'
+        : '<span class="be-pill bad">Loss</span>';
+
+      const tot = { tonsSold: 0, revenue: 0, varCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
+      let html = rows.map(m => {
+        tot.tonsSold += m.tonsSold; tot.revenue += m.revenue; tot.varCost += m.varCost;
+        tot.fixedCost += m.fixedCost; tot.totalCost += m.totalCost; tot.profit += m.profit;
+        const pl = m.profit >= 0 ? 'is-positive' : 'is-negative';
+        return `<tr>`
+          + `<td>${beMonthLabel(m.month)}</td>`
+          + `<td class="be-num">${formatTons(m.tonsSold)}</td>`
+          + `<td class="be-num">${formatMoney(m.revenue)}</td>`
+          + `<td class="be-num">${formatMoney(m.varCost)}</td>`
+          + `<td class="be-num"><input class="be-fixed-input" type="text" inputmode="decimal" data-loc="${escapeHtml(beMonthlyLoc)}" data-month="${m.month}" value="${m.fixedCost > 0 ? m.fixedCost : ''}" placeholder="0" onchange="onMonthlyFixedInput(this)"></td>`
+          + `<td class="be-num">${formatMoney(m.totalCost)}</td>`
+          + `<td class="be-num">${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>`
+          + barCell(m.tonsSold, m.breakEvenTons)
+          + `<td class="be-num ${pl}">${formatMoney(m.profit)}</td>`
+          + `<td>${statusPill(m)}</td>`
+          + `</tr>`;
+      }).join('');
+
+      const totBeTons = (yrAvgPrice != null && yrAvgPrice > 0) ? tot.totalCost / yrAvgPrice : null;
+      const totPl = tot.profit >= 0 ? 'is-positive' : 'is-negative';
+      html += `<tr class="be-row-total">`
+        + `<td>Year Total</td>`
+        + `<td class="be-num">${formatTons(tot.tonsSold)}</td>`
+        + `<td class="be-num">${formatMoney(tot.revenue)}</td>`
+        + `<td class="be-num">${formatMoney(tot.varCost)}</td>`
+        + `<td class="be-num">${formatMoney(tot.fixedCost)}</td>`
+        + `<td class="be-num">${formatMoney(tot.totalCost)}</td>`
+        + `<td class="be-num">${totBeTons != null ? formatTons(totBeTons) : dash}</td>`
+        + barCell(tot.tonsSold, totBeTons)
+        + `<td class="be-num ${totPl}">${formatMoney(tot.profit)}</td>`
+        + `<td>${tot.tonsSold <= 0 ? '<span class="be-pill mute">No sales</span>' : (tot.profit >= 0 ? '<span class="be-pill good">Profit</span>' : '<span class="be-pill bad">Loss</span>')}</td>`
+        + `</tr>`;
+
+      body.innerHTML = html;
+    }
+
+    // Inline-SVG line chart: tons actually crushed vs the break-even tons
+    // needed each month. Shares the Month-by-Month data, so it tracks the
+    // year filter, the location dropdown, and per-month fixed-cost edits.
+    // Builds the Crushed-vs-Break-Even SVG. Colors are themeable so the same
+    // chart renders on the dark page and in the light-themed PDF.
+    function buildBreakevenChartSVG(rows, opts) {
+      rows = Array.isArray(rows) ? rows : [];
+      if (!rows.length) return '';
+      opts = opts || {};
+      const cGrid = opts.grid || '#23232f';
+      const cAxis = opts.axis || '#2a2a3a';
+      const cText = opts.text || '#9aa0a6';
+      const cCrushed = opts.crushed || '#60a5fa';
+      const cNeeded = opts.needed || '#f97316';
+
+      const W = 900, H = 320, mL = 64, mR = 24, mT = 18, mB = 46;
+      const plotW = W - mL - mR, plotH = H - mT - mB;
+      const N = rows.length;
+
+      const vals = [];
+      rows.forEach(r => {
+        vals.push(Number(r.tonsCrushed) || 0);
+        if (r.breakEvenTons != null) vals.push(r.breakEvenTons);
+      });
+      const chartMax = beNiceCeil(Math.max(1, ...vals) * 1.05);
+
+      const x = (i) => mL + (N === 1 ? plotW / 2 : (i / (N - 1)) * plotW);
+      const y = (v) => mT + (1 - (v / chartMax)) * plotH;
+
+      // Horizontal gridlines + y-axis tons labels
+      const ticks = 4;
+      let grid = '';
+      for (let t = 0; t <= ticks; t++) {
+        const gv = chartMax * t / ticks;
+        const gy = y(gv).toFixed(1);
+        grid += `<line x1="${mL}" y1="${gy}" x2="${W - mR}" y2="${gy}" stroke="${cGrid}" stroke-width="1"/>`
+              + `<text x="${mL - 8}" y="${(y(gv) + 4).toFixed(1)}" text-anchor="end" font-size="12" fill="${cText}">${formatTons(Math.round(gv))}</text>`;
+      }
+
+      // Axis lines
+      const axis = `<line x1="${mL}" y1="${mT}" x2="${mL}" y2="${mT + plotH}" stroke="${cAxis}" stroke-width="1"/>`
+                 + `<line x1="${mL}" y1="${mT + plotH}" x2="${W - mR}" y2="${mT + plotH}" stroke="${cAxis}" stroke-width="1"/>`;
+
+      // X-axis month labels (thin out when crowded)
+      const labelEvery = Math.ceil(N / 12);
+      let xlabels = '';
+      rows.forEach((r, i) => {
+        if (i % labelEvery !== 0 && i !== N - 1) return;
+        xlabels += `<text x="${x(i).toFixed(1)}" y="${H - mB + 18}" text-anchor="middle" font-size="12" fill="${cText}">${escapeHtml(beMonthShort(r.month))}</text>`;
+      });
+
+      // Crushed (actual) — solid
+      const crushedPts = rows.map((r, i) => `${x(i).toFixed(1)},${y(Number(r.tonsCrushed) || 0).toFixed(1)}`).join(' ');
+      let series = `<polyline fill="none" stroke="${cCrushed}" stroke-width="2.5" stroke-linejoin="round" points="${crushedPts}"/>`;
+      // Break-even (needed) — dashed, skipping months with no price
+      const neededPts = rows.map((r, i) => r.breakEvenTons != null ? `${x(i).toFixed(1)},${y(r.breakEvenTons).toFixed(1)}` : null).filter(Boolean).join(' ');
+      if (neededPts) {
+        series += `<polyline fill="none" stroke="${cNeeded}" stroke-width="2.5" stroke-dasharray="6 4" stroke-linejoin="round" points="${neededPts}"/>`;
+      }
+      // Data point dots with hover tooltips
+      let dots = '';
+      rows.forEach((r, i) => {
+        const cv = Number(r.tonsCrushed) || 0;
+        dots += `<circle cx="${x(i).toFixed(1)}" cy="${y(cv).toFixed(1)}" r="3" fill="${cCrushed}"><title>${escapeHtml(beMonthShort(r.month))} — Crushed ${formatTons(cv)} t</title></circle>`;
+        if (r.breakEvenTons != null) {
+          dots += `<circle cx="${x(i).toFixed(1)}" cy="${y(r.breakEvenTons).toFixed(1)}" r="3" fill="${cNeeded}"><title>${escapeHtml(beMonthShort(r.month))} — Need to crush ${formatTons(Math.round(r.breakEvenTons))} t</title></circle>`;
+        }
+      });
+
+      return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Crushed versus break-even tons by month">`
+        + grid + axis + series + dots + xlabels + `</svg>`;
+    }
+
+    function renderBreakevenChart(rows) {
+      const wrap = document.getElementById('beChartWrap');
+      if (!wrap) return;
+      rows = Array.isArray(rows) ? rows : [];
+      wrap.innerHTML = rows.length
+        ? buildBreakevenChartSVG(rows)
+        : '<div class="be-chart-empty">No monthly data to chart yet.</div>';
+    }
+
     function renderHomeRanked(elId, items, mapper) {
       const el = document.getElementById(elId);
       if (!el) return;
@@ -4136,6 +4921,144 @@
 <div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking</div>
 ${kpis}
 ${sections}
+<script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>
+</body></html>`);
+      doc.document.close();
+    }
+
+    function downloadBreakevenPDF() {
+      const yr = yearFilterLabel('breakeven');
+      const yrTitle = (yr === 'all years') ? 'All Years' : yr;
+      const generated = new Date().toLocaleString();
+      const dash = '—';
+      const { rows, total } = computeBreakeven();
+      const { rows: mrows, yrAvgPrice } = computeBreakevenMonthly(beMonthlyLoc);
+      const locLabel = beMonthlyLoc === 'all' ? 'All Pits' : beMonthlyLoc;
+
+      const money = v => v != null ? formatMoney(v) : dash;
+      const tons  = v => v != null ? formatTons(v)  : dash;
+      const beTonsTxt = d => (d.contribution != null && d.contribution <= 0) ? 'No break-even'
+        : (d.breakEvenTons != null ? tons(d.breakEvenTons) : dash);
+
+      const kpiCard = (label, value, sub) =>
+        `<div class="kpi"><div class="kpi-l">${label}</div><div class="kpi-v">${value}</div>${sub ? `<div class="kpi-s">${sub}</div>` : ''}</div>`;
+      const kpis = `<div class="kpi-grid">
+        ${kpiCard('Avg Price / Ton', money(total.avgPrice), 'Blended · all pits')}
+        ${kpiCard('Variable Cost / Ton', money(total.varCostPerTon), 'Daily + crushing ÷ tons')}
+        ${kpiCard('Contribution / Ton', money(total.contribution), 'Price − variable cost')}
+        ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Total entered · all pits')}
+        ${kpiCard('Break-Even Tons / Mo', beTonsTxt(total), 'Tons/mo to cover all costs')}
+        ${kpiCard('Break-Even Revenue / Mo', money(total.breakEvenRevenue), 'Sales $/mo to break even')}
+        ${kpiCard('Avg Tons Sold / Mo', formatTons(total.avgTonsPerMonth), total.months > 0 ? `Over ${total.months} active months` : '—')}
+      </div>`;
+
+      // By-location table
+      const locRow = (d, isTotal) =>
+        `<tr${isTotal ? ' class="tot"' : ''}>
+          <td>${escapeHtml(d.name)}</td>
+          <td>${money(d.avgPrice)}</td>
+          <td>${money(d.varCostPerTon)}</td>
+          <td class="${d.contribution == null ? '' : (d.contribution >= 0 ? 'pos' : 'neg')}">${money(d.contribution)}</td>
+          <td>${money(d.monthlyFixed)}</td>
+          <td>${beTonsTxt(d)}</td>
+          <td>${money(d.breakEvenRevenue)}</td>
+          <td>${tons(d.avgTonsPerMonth)}</td>
+          <td>${escapeHtml(beStatus(d).label)}</td>
+        </tr>`;
+      const locTable = `<h2>Break-Even by Location</h2>
+        <table class="rep"><thead><tr>
+          <th>Location</th><th>Avg Price/Ton</th><th>Variable Cost/Ton</th><th>Contribution/Ton</th>
+          <th>Monthly Fixed</th><th>Break-Even Tons/Mo</th><th>Break-Even Rev/Mo</th><th>Avg Tons Sold/Mo</th><th>Status</th>
+        </tr></thead><tbody>
+          ${rows.length ? rows.map(d => locRow(d, false)).join('') + locRow({ ...total }, true)
+                        : '<tr><td colspan="9">No quarry data for this year.</td></tr>'}
+        </tbody></table>`;
+
+      // Month-by-month table (respects the on-screen location filter)
+      let monthlyTable = '';
+      {
+        const mt = { tonsSold: 0, revenue: 0, varCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
+        const mRow = (m, isTotal) => {
+          if (!isTotal) {
+            mt.tonsSold += m.tonsSold; mt.revenue += m.revenue; mt.varCost += m.varCost;
+            mt.fixedCost += m.fixedCost; mt.totalCost += m.totalCost; mt.profit += m.profit;
+          }
+          const ratio = (m.breakEvenTons != null && m.breakEvenTons > 0) ? (m.tonsSold / m.breakEvenTons) : null;
+          const status = m.tonsSold <= 0 ? 'No sales' : (m.profit >= 0 ? 'Profit' : 'Loss');
+          return `<tr${isTotal ? ' class="tot"' : ''}>
+            <td>${isTotal ? 'Year Total' : beMonthLabel(m.month)}</td>
+            <td>${formatTons(m.tonsSold)}</td>
+            <td>${formatMoney(m.revenue)}</td>
+            <td>${formatMoney(m.varCost)}</td>
+            <td>${formatMoney(m.fixedCost)}</td>
+            <td>${formatMoney(m.totalCost)}</td>
+            <td>${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>
+            <td>${ratio != null ? Math.round(ratio * 100) + '%' : dash}</td>
+            <td class="${m.profit >= 0 ? 'pos' : 'neg'}">${formatMoney(m.profit)}</td>
+            <td>${status}</td>
+          </tr>`;
+        };
+        const head = `<tr><th>Month</th><th>Tons Sold</th><th>Revenue</th><th>Variable Cost</th><th>Fixed Cost</th><th>Total Cost</th><th>Break-Even Tons</th><th>Sold vs B/E</th><th>Profit / Loss</th><th>Status</th></tr>`;
+        if (mrows.length) {
+          const bodyRows = mrows.map(m => mRow(m, false)).join('');
+          const totBeTons = (yrAvgPrice != null && yrAvgPrice > 0) ? mt.totalCost / yrAvgPrice : null;
+          const totalRow = mRow({ ...mt, breakEvenTons: totBeTons }, true);
+          monthlyTable = `<h2>Month-by-Month Break-Even &mdash; ${escapeHtml(locLabel)}</h2>`
+            + `<table class="rep"><thead>${head}</thead><tbody>${bodyRows}${totalRow}</tbody></table>`;
+        }
+      }
+
+      // Crushed vs. break-even line chart (print-friendly colors)
+      let chartSection = '';
+      if (mrows.length) {
+        const svg = buildBreakevenChartSVG(mrows, { grid: '#e2e2e2', axis: '#999', text: '#555', crushed: '#2563eb', needed: '#c2410c' });
+        chartSection = `<h2>Crushed vs. Break-Even (tons / month) &mdash; ${escapeHtml(locLabel)}</h2>`
+          + `<div class="chart-legend"><span><span class="ln"></span>Crushed (actual)</span><span><span class="ln needed"></span>Break-even (need to crush)</span></div>`
+          + `<div class="chart">${svg}</div>`;
+      }
+
+      const doc = window.open('', '_blank', 'width=1100,height=800');
+      if (!doc) {
+        alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
+        return;
+      }
+      doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Quarry Break-Even — ${yrTitle}</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.25rem; }
+  h1 { font-size: 17px; margin: 0 0 0.15rem; }
+  h2 { font-size: 12px; margin: 1rem 0 0.4rem; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+  .meta { font-size: 10px; color: #555; margin-bottom: 0.6rem; }
+  .note { font-size: 9.5px; color: #555; margin: 0 0 0.9rem; line-height: 1.45; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 0.8rem; }
+  .kpi { border: 1px solid #ccc; border-radius: 5px; padding: 6px 8px; background: #fafafa; }
+  .kpi-l { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #555; }
+  .kpi-v { font-size: 14px; font-weight: 700; margin-top: 2px; }
+  .kpi-s { font-size: 8.5px; color: #666; margin-top: 2px; }
+  table.rep { width: 100%; border-collapse: collapse; margin-bottom: 0.5rem; }
+  table.rep th, table.rep td { border: 1px solid #ccc; padding: 4px 6px; text-align: center; white-space: nowrap; font-size: 10px; }
+  table.rep th:first-child, table.rep td:first-child { text-align: left; }
+  table.rep thead th { background: #f0f0f0; font-weight: 700; font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+  table.rep tbody tr:nth-child(even) { background: #fafafa; }
+  table.rep tr.tot td { font-weight: 700; border-top: 2px solid #999; background: #f3f3f3; }
+  table.rep td.pos { color: #15803d; }
+  table.rep td.neg { color: #b91c1c; }
+  .chart { width: 100%; page-break-inside: avoid; }
+  .chart svg { width: 100%; height: auto; }
+  .chart-legend { display: flex; gap: 18px; font-size: 9.5px; color: #555; margin: 0 0 4px; }
+  .chart-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+  .chart-legend .ln { display: inline-block; width: 20px; height: 0; border-top: 3px solid #2563eb; }
+  .chart-legend .ln.needed { border-top-style: dashed; border-top-color: #c2410c; }
+  @page { size: landscape; margin: 0.4in; }
+  @media print { body { padding: 0.1in; } }
+</style></head><body>
+<h1>Quarry Break-Even &mdash; ${yrTitle}</h1>
+<div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking + entered fixed costs</div>
+<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; monthly fixed cost is the average of the per-month entries. Break-even tons/mo = monthly fixed ÷ contribution per ton. <strong>Month-by-Month</strong> is cost-coverage: each month's break-even is the sales needed to cover that month's actual labor &amp; fuel plus the fixed cost entered for that month.</div>
+${kpis}
+${locTable}
+${monthlyTable}
+${chartSection}
 <script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>
 </body></html>`);
       doc.document.close();

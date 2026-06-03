@@ -1151,7 +1151,7 @@ async function buildPavingTile(sql, companyCode) {
 // payroll/fuel costs, all scoped to the current Sun-anchored week) and
 // monthly tons sold, plus the top product and active pit count.
 async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
-  const [salesBlob, dailyBlob, crushBlob] = await Promise.all([
+  const [salesBlob, dailyBlob, crushBlob, fixedBlob] = await Promise.all([
     safeRun('quarry.sales_blob', async () => {
       const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_sales`}`;
       return r[0]?.value;
@@ -1164,15 +1164,19 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
       const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_crushing`}`;
       return r[0]?.value;
     }),
+    safeRun('quarry.fixed_blob', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_monthly_fixed`}`;
+      return r[0]?.value;
+    }),
   ]);
   const sales = Array.isArray(salesBlob) ? salesBlob : [];
   const daily = Array.isArray(dailyBlob) ? dailyBlob : [];
   const crush = Array.isArray(crushBlob) ? crushBlob : [];
+  const fixed = (fixedBlob && typeof fixedBlob === 'object' && !Array.isArray(fixedBlob)) ? fixedBlob : {};
 
-  const monthStartIso = (() => {
-    const d = new Date();
-    return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
-  })();
+  const now           = new Date();
+  const monthStartIso = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+  const yearPrefix    = String(now.getFullYear());
 
   const num = v => {
     if (v == null || v === '') return 0;
@@ -1184,7 +1188,10 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   // Profit formula mirrors quarry.html's per-row calcs:
   //   daily row    cost = hours*rate + fuelGallons*ppg
   //   crushing row cost = hourlyRate*hours + fuelGallons*fuelCost
-  let revenueWk = 0, costWk = 0, tonsMo = 0;
+  // Year scoped (current year): blended price/cost per ton + monthly
+  // throughput feed the break-even indicator further down.
+  let revenueWk = 0, costWk = 0, tonsMo = 0, revenueMo = 0, varCostMo = 0;
+  let revenueYr = 0, tonsSoldYr = 0, varCostYr = 0, tonsCrushedYr = 0;
   const productTons = new Map();
   const activePits  = new Set();
   for (const r of sales) {
@@ -1196,23 +1203,37 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     if (date >= weekStart && date < weekEnd) revenueWk += tons * price;
     if (date >= monthStartIso) {
       tonsMo += tons;
+      revenueMo += tons * price;
       const name = String(r.productName || '').trim();
       if (name) productTons.set(name, (productTons.get(name) || 0) + tons);
       const pit = String(r.locationName || '').trim();
       if (pit) activePits.add(pit);
     }
+    if (date.slice(0, 4) === yearPrefix) {
+      revenueYr += tons * price;
+      tonsSoldYr += tons;
+    }
   }
   for (const r of daily) {
     if (!r || typeof r !== 'object') continue;
     const date = typeof r.date === 'string' ? r.date : '';
-    if (!date || date < weekStart || date >= weekEnd) continue;
-    costWk += num(r.hours) * num(r.rate) + num(r.fuelGallons) * num(r.ppg);
+    if (!date) continue;
+    const cost = num(r.hours) * num(r.rate) + num(r.fuelGallons) * num(r.ppg);
+    if (date >= weekStart && date < weekEnd) costWk += cost;
+    if (date >= monthStartIso) varCostMo += cost;
+    if (date.slice(0, 4) === yearPrefix) varCostYr += cost;
   }
   for (const r of crush) {
     if (!r || typeof r !== 'object') continue;
     const date = typeof r.date === 'string' ? r.date : '';
-    if (!date || date < weekStart || date >= weekEnd) continue;
-    costWk += num(r.hourlyRate) * num(r.hours) + num(r.fuelGallons) * num(r.fuelCost);
+    if (!date) continue;
+    const cost = num(r.hourlyRate) * num(r.hours) + num(r.fuelGallons) * num(r.fuelCost);
+    if (date >= weekStart && date < weekEnd) costWk += cost;
+    if (date >= monthStartIso) varCostMo += cost;
+    if (date.slice(0, 4) === yearPrefix) {
+      varCostYr += cost;
+      tonsCrushedYr += num(r.loadsToCrusher) * num(r.tonsPerLoad);
+    }
   }
   const profitWk = revenueWk - costWk;
 
@@ -1221,8 +1242,67 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     if (t > topProductTons) { topProduct = name; topProductTons = t; }
   }
 
-  const status = sales.length ? 'On Track' : 'No Data';
-  const statusKind = sales.length ? 'green' : 'mute';
+  // ── Break-even (current month, cost-coverage) ──
+  // Mirrors the Quarry page: the sales needed to cover THIS month's actual
+  // labor + fuel plus fixed overhead. Variable cost/ton and contribution stay
+  // year-blended so the per-ton economics — and the cost ≥ price guard — read
+  // steady. Monthly fixed mirrors the By-Location "All Pits" figure: the mean
+  // of the all-scope per-month entries in fct_quarry_monthly_fixed
+  // ({ scope: { 'YYYY-MM': amount } }).
+  let monthlyFixedTotal = 0;
+  {
+    const allScope = (fixed && typeof fixed.all === 'object' && fixed.all) ? fixed.all : {};
+    const vals = Object.keys(allScope).map(k => num(allScope[k])).filter(v => v > 0);
+    if (vals.length) monthlyFixedTotal = vals.reduce((s, v) => s + v, 0) / vals.length;
+  }
+  const tonsBasisYr   = tonsCrushedYr > 0 ? tonsCrushedYr : tonsSoldYr;
+  const avgPrice      = tonsSoldYr  > 0 ? revenueYr / tonsSoldYr : null;
+  const varCostPerTon = tonsBasisYr > 0 ? varCostYr / tonsBasisYr : null;
+  const contribution  = (avgPrice != null && varCostPerTon != null) ? avgPrice - varCostPerTon : null;
+
+  // Current month: blended price falls back to the year's when this month
+  // hasn't booked sales yet. Full monthly fixed is applied (it's owed
+  // regardless), matching the monthly breakdown's current-month row.
+  const priceMo         = tonsMo > 0 ? revenueMo / tonsMo : avgPrice;
+  const totalCostMo     = varCostMo + monthlyFixedTotal;
+  const breakEvenTonsMo = (priceMo != null && priceMo > 0) ? totalCostMo / priceMo : null;
+  const tonsShortMo     = breakEvenTonsMo != null ? Math.max(0, breakEvenTonsMo - tonsMo) : null;
+
+  // Status pill reflects this month's break-even when we can judge it,
+  // otherwise falls back to the prior On Track / No Data behavior.
+  let status, statusKind;
+  if (!sales.length) {
+    status = 'No Data'; statusKind = 'mute';
+  } else if (contribution != null && contribution <= 0) {
+    status = 'No Break-Even'; statusKind = 'red';
+  } else if (monthlyFixedTotal > 0 && breakEvenTonsMo != null && breakEvenTonsMo > 0) {
+    if (tonsMo >= breakEvenTonsMo) { status = 'Above B/E'; statusKind = 'green'; }
+    else { status = 'Below B/E'; statusKind = 'red'; }
+  } else {
+    status = 'On Track'; statusKind = 'green';
+  }
+
+  const round = n => Math.round(n).toLocaleString('en-US');
+
+  // Break-even KPI = this month's cost-coverage target (tons), with how
+  // many more tons it takes to cover the month.
+  let beKpi;
+  if (contribution != null && contribution <= 0) {
+    beKpi = { label: 'Break-Even · Mo', value: 'None', small: true, sub: 'cost ≥ price/ton' };
+  } else if (monthlyFixedTotal > 0 && breakEvenTonsMo != null) {
+    beKpi = { label: 'Break-Even · Mo', value: `${round(breakEvenTonsMo)} t`,
+              sub: tonsShortMo > 0 ? `${round(tonsShortMo)} t to go` : 'covered ✓' };
+  } else if (monthlyFixedTotal <= 0) {
+    beKpi = { label: 'Break-Even · Mo', value: 'Set costs', small: true, sub: 'on Quarry page' };
+  } else {
+    beKpi = { label: 'Break-Even · Mo', value: '—', sub: 'needs sales data' };
+  }
+  const marginKpi = {
+    label: 'Margin / Ton',
+    value: contribution != null ? fmtCurrency(contribution) : '—',
+    sub: (avgPrice != null && varCostPerTon != null)
+      ? `price ${fmtCurrency(avgPrice)} · cost ${fmtCurrency(varCostPerTon)}` : undefined,
+  };
 
   return {
     key: 'quarry', name: 'Quarry', accent: '#f97316',
@@ -1232,12 +1312,18 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
       // costs). A pit that ran daily/crushing hours without recording sales
       // is a real loss week worth surfacing rather than masking with '—'.
       { label: 'Profit · Wk',  value: (revenueWk > 0 || costWk > 0) ? fmtCurrency(profitWk) : '—' },
-      { label: 'Tons · Mo',    value: tonsMo > 0 ? Math.round(tonsMo).toLocaleString('en-US') : '—' },
+      { label: 'Tons · Mo',    value: tonsMo > 0 ? round(tonsMo) : '—' },
       topProduct
-        ? { label: 'Top Product', value: topProduct, sub: `${Math.round(topProductTons).toLocaleString('en-US')} tons` }
+        ? { label: 'Top Product', value: topProduct, sub: `${round(topProductTons)} tons` }
         : { label: 'Top Product', value: '—' },
       { label: 'Active Pits',  value: activePits.size > 0 ? String(activePits.size) : '—' },
-    ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
+      beKpi,
+      marginKpi,
+    ].map(k => {
+      if (k.sub === undefined || k.sub === null) delete k.sub;
+      if (k.small === undefined) delete k.small;
+      return k;
+    }),
   };
 }
 
