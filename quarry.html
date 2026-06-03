@@ -667,6 +667,17 @@
       text-align: right; font-variant-numeric: tabular-nums;
     }
     .be-royalty-input:focus { border-color: var(--accent); outline: none; }
+    .be-bench-input {
+      width: 2.8rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 0.78rem; padding: 0.22rem 0.3rem;
+      text-align: right; font-variant-numeric: tabular-nums;
+    }
+    .be-bench-input:focus { border-color: var(--accent); outline: none; }
+    .be-bench-reset {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--muted); font-size: 0.72rem; padding: 0.25rem 0.6rem; cursor: pointer;
+    }
+    .be-bench-reset:hover { border-color: var(--accent); color: var(--text); }
     .be-pill {
       display: inline-block; padding: 0.12rem 0.5rem; border-radius: 999px;
       font-size: 0.66rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;
@@ -1255,7 +1266,7 @@
           <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales and Crushing entries for the selected year. Variable cost = crushing labor &amp; fuel ÷ tons crushed (daily tracking is not included).</li>
           <li><strong>Royalty %</strong> (per pit, in the table below) is a percentage of sales paid out — it comes off the price, lowering contribution by royalty% &times; price/ton. Enter each pit's rate (e.g., 12.75%) and contribution and break-even update automatically.</li>
           <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
-          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below — pick a pit and type each month's figure. This column shows each location's average; <strong>All Pits is the average of the locations</strong>, and the executive dashboard mirrors it. Entries save automatically.</li>
+          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below — pick a pit and type each month's figure. This column shows each location's average monthly fixed; <strong>All Pits is the total across pits</strong> (your full company-wide monthly fixed), and the executive dashboard mirrors it. Entries save automatically.</li>
         </ul>
       </div>
 
@@ -1368,6 +1379,35 @@
           <span class="be-leg"><span class="be-leg-line needed"></span>Break-even (need to crush)</span>
         </div>
         <div id="beChartWrap" class="be-chart-wrap"></div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+          <span>Industry Benchmark — Reality Check <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">· Western PA</span></span>
+          <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:0.72rem;color:var(--muted);display:flex;align-items:center;gap:0.7rem;">
+            <span>Scope
+              <select class="be-loc-filter" id="beBenchmarkLocFilter" onchange="setBeBenchmarkLoc(this.value)"></select>
+            </span>
+            <button type="button" class="be-bench-reset" onclick="resetBreakevenBenchmarks()">Reset ranges</button>
+          </span>
+        </div>
+        <div class="be-monthly-note" id="beBenchmarkNote"></div>
+        <div class="sales-table-wrap">
+          <table class="sales-table be-table" id="beBenchmarkTable" style="min-width:820px;">
+            <thead>
+              <tr>
+                <th style="text-align:left;">Metric</th>
+                <th class="be-num">Your Number</th>
+                <th class="be-num">Typical Range <span style="font-weight:400;text-transform:none;">(editable)</span></th>
+                <th>Read</th>
+              </tr>
+            </thead>
+            <tbody id="beBenchmarkBody"></tbody>
+          </table>
+        </div>
+        <div class="be-monthly-note" style="margin-top:0.7rem;">
+          <em>Ranges are seeded for the <strong>Western PA / Appalachian</strong> crushed-limestone &amp; sandstone market — they still swing with product mix, plant scale, and haul distance, so treat them as a sanity check, not a target, and tune any field to your own quotes. Your variable cost here is <strong>crushing &amp; screening only</strong> (drilling, blasting, loading, and hauling are not in it), which is why contribution looks high — those other costs live in your fixed bucket or aren't captured. For firm numbers see USGS Minerals (PA crushed stone), PennDOT bid tabs, and the PA Aggregates &amp; Concrete Association.</em>
+        </div>
       </div>
     </div>
   </div>
@@ -2842,6 +2882,10 @@
           putRoyalty(quarryRoyalty, { keepalive: true }).catch(() => {});
           royaltySavePending = null;
         }
+        if (benchmarksSavePending || benchmarksSaveInFlight) {
+          putBenchmarks(quarryBenchmarks, { keepalive: true }).catch(() => {});
+          benchmarksSavePending = null;
+        }
       } catch (_) { /* best-effort on unload */ }
     }
     window.addEventListener('beforeunload', _quarryFlushOnUnload);
@@ -3778,6 +3822,16 @@
       const vals = Object.keys(m).map(k => Number(m[k])).filter(v => Number.isFinite(v) && v > 0);
       return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
     }
+    // Average of the per-month fixed costs entered for a pit, restricted to a
+    // given set of months (the months actually shown for the selected year) so
+    // entries for other months/years don't skew the figure.
+    function avgFixedForMonths(loc, monthsSet) {
+      const m = quarryMonthlyFixed[loc];
+      if (!m || !monthsSet || !monthsSet.size) return 0;
+      const vals = [];
+      monthsSet.forEach(mk => { const v = Number(m[mk]); if (Number.isFinite(v) && v > 0) vals.push(v); });
+      return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    }
     // Pit scopes = location-named buckets (exclude 'all' and no-location).
     function pitScopes() {
       return Object.keys(quarryMonthlyFixed).filter(s => s && s !== 'all' && s !== BE_NO_LOC);
@@ -3787,10 +3841,10 @@
       const vals = pitScopes().map(scopeAvgFixed).filter(v => v > 0);
       return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
     }
-    // Average across pits of their fixed cost for one month.
-    function pitsAvgMonthFixed(monthKey) {
-      const vals = pitScopes().map(p => scopeMonthFixed(p, monthKey)).filter(v => v > 0);
-      return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    // Sum across pits of their fixed cost for one month = the company's total
+    // fixed owed that month (used by the All-Pits month-by-month view).
+    function pitsSumMonthFixed(monthKey) {
+      return pitScopes().reduce((s, p) => s + scopeMonthFixed(p, monthKey), 0);
     }
     // Fixed figure for a By-Location / Month-by-Month scope. 'all' = the average
     // of the per-pit values (so All Pits shows a number even when you only
@@ -3801,7 +3855,7 @@
       return scopeAvgFixed(scope);
     }
     function monthFixedForScope(scope, monthKey) {
-      if (scope === 'all') return pitsAvgMonthFixed(monthKey);
+      if (scope === 'all') return pitsSumMonthFixed(monthKey);
       if (scope === BE_NO_LOC) return 0;
       return scopeMonthFixed(scope, monthKey);
     }
@@ -3911,6 +3965,99 @@
       renderBreakeven();
     }
 
+    // ── Benchmark config (editable industry ranges + labor rate) ───
+    // Stored as { laborRate, ranges: { price|crushing|royalty|contribution|
+    // labor: { lo, hi } } }. Seeds from Western Pennsylvania / Appalachian
+    // crushed-limestone & sandstone rules of thumb; the operator can tune any
+    // range to their market.
+    const BE_BENCH_DEFAULTS = {
+      laborRate: 30,
+      ranges: {
+        price:        { lo: 11, hi: 17 },   // WPA limestone/sandstone, base → spec
+        crushing:     { lo: 2.5, hi: 5.5 }, // crush & screen; PA fuel/energy runs high
+        royalty:      { lo: 8,  hi: 15 },   // Appalachian aggregate mineral leases
+        contribution: { lo: 5,  hi: 10 },
+        labor:        { lo: 24, hi: 36 },   // WPA quarry/equipment operator wage
+      },
+    };
+    const QUARRY_BENCHMARKS_KEY = 'fct_quarry_benchmarks';
+    let quarryBenchmarks = JSON.parse(JSON.stringify(BE_BENCH_DEFAULTS));
+    let benchmarksLoaded = false;
+    let benchmarksFetchedOnce = false;
+    let benchmarksSavePending = null;
+    let benchmarksSaveInFlight = false;
+
+    function normalizeBenchmarks(value) {
+      const out = JSON.parse(JSON.stringify(BE_BENCH_DEFAULTS));
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const lr = Number(value.laborRate);
+        if (Number.isFinite(lr) && lr > 0) out.laborRate = Math.round(lr * 100) / 100;
+        const r = value.ranges;
+        if (r && typeof r === 'object') {
+          Object.keys(out.ranges).forEach(k => {
+            if (r[k] && typeof r[k] === 'object') {
+              const lo = Number(r[k].lo), hi = Number(r[k].hi);
+              if (Number.isFinite(lo) && lo >= 0) out.ranges[k].lo = Math.round(lo * 100) / 100;
+              if (Number.isFinite(hi) && hi >= 0) out.ranges[k].hi = Math.round(hi * 100) / 100;
+            }
+          });
+        }
+      }
+      return out;
+    }
+    async function fetchBenchmarks() {
+      const res = await fetch(`/api/data/${QUARRY_BENCHMARKS_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_BENCHMARKS_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeBenchmarks(data.value);
+    }
+    async function putBenchmarks(value, opts = {}) {
+      const init = {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value }),
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_BENCHMARKS_KEY}`, init);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_BENCHMARKS_KEY} → ${res.status} ${text}`);
+      }
+    }
+    function scheduleBenchmarksSave() {
+      benchmarksSavePending = quarryBenchmarks;
+      if (benchmarksSaveInFlight) return;
+      flushBenchmarksSave();
+    }
+    async function flushBenchmarksSave() {
+      while (benchmarksSavePending) {
+        const snapshot = benchmarksSavePending;
+        benchmarksSavePending = null;
+        benchmarksSaveInFlight = true;
+        try {
+          await putBenchmarks(snapshot);
+        } catch (err) {
+          console.error('[quarry] benchmarks save failed:', err);
+          alert('Could not save benchmark settings — please check your connection and try again.');
+        } finally {
+          benchmarksSaveInFlight = false;
+        }
+      }
+    }
+    async function refreshBenchmarks() {
+      try {
+        quarryBenchmarks = await fetchBenchmarks();
+        benchmarksLoaded = true;
+      } catch (err) {
+        console.error('[quarry] benchmarks load failed:', err);
+        if (!benchmarksFetchedOnce) { quarryBenchmarks = JSON.parse(JSON.stringify(BE_BENCH_DEFAULTS)); benchmarksLoaded = true; }
+      } finally {
+        benchmarksFetchedOnce = true;
+      }
+    }
+
     // Month key (YYYY-MM) from either YYYY-MM-DD or M/D/YYYY.
     function beMonthKey(dateStr) {
       if (!dateStr) return null;
@@ -3935,7 +4082,7 @@
           locs.set(key, {
             name: key, hasLoc: key !== BE_NO_LOC,
             revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0,
-            salesMonths: new Set(),
+            salesMonths: new Set(), activeMonths: new Set(),
           });
         }
         return locs.get(key);
@@ -3949,12 +4096,15 @@
         const t = Number(r.tons);
         if (Number.isFinite(t)) e.tonsSold += t;
         const mk = beMonthKey(r.date);
+        if (mk) e.activeMonths.add(mk);
         if (mk && Number.isFinite(t) && t > 0) e.salesMonths.add(mk);
       });
       // Variable cost = crushing labor & fuel only (daily tracking excluded),
       // divided by tons crushed.
       crushRows.filter(inYear).forEach(r => {
         const e = ensure(r.locationName);
+        const mk = beMonthKey(r.date);
+        if (mk) e.activeMonths.add(mk);
         const c = crushCalc(r);
         e.varCost += c.totalCost;
         e.tonsCrushed += c.estimatedTons;
@@ -3971,7 +4121,12 @@
         const varCostPerTon = tonsBasis > 0 ? e.varCost / tonsBasis : null;
         const royaltyPerTon = e.tonsSold > 0 ? e.royaltyCost / e.tonsSold : 0;  // royalty $ per ton sold
         const contribution = (avgPrice != null && varCostPerTon != null) ? avgPrice - royaltyPerTon - varCostPerTon : null;
-        const monthlyFixed = scopeAvgFixed(e.name);
+        // Average the pit's entered fixed costs over just the months actually
+        // shown for the selected year (sales ∪ crush activity), so this equals
+        // the value(s) you typed in the Month-by-Month table — entries for
+        // other months/years don't drag the figure down. Fall back to the
+        // all-time average only when the pit has no activity this year.
+        const monthlyFixed = e.activeMonths.size > 0 ? avgFixedForMonths(e.name, e.activeMonths) : scopeAvgFixed(e.name);
         let breakEvenTons = null, breakEvenRevenue = null;
         if (contribution != null && contribution > 0) {
           breakEvenTons = monthlyFixed / contribution;
@@ -3990,14 +4145,25 @@
       const rows = [...locs.values()].map(finalize)
         .sort((a, b) => (b.tonsSold - a.tonsSold) || a.name.localeCompare(b.name));
 
-      // Division total — blended across every pit. All-Pits fixed is the
-      // average of the per-pit monthly fixed values (the figure mirrored to
-      // the executive tile).
-      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0, monthlyFixed: pitsAvgFixed(), salesMonths: new Set() };
+      // Division total = a true company total: the per-pit rows added up, so
+      // the All-Pits break-even target and shortfall are the pits combined and
+      // are never smaller than a single pit. Extensive figures (fixed cost,
+      // break-even tons/revenue, tons sold/mo) sum across the pit rows; the
+      // per-ton figures (price, variable cost, royalty, contribution) stay
+      // blended over the year. Each pit's break-even already covers its own
+      // fixed cost, so summing them is the company's break-even (the point
+      // where every pit covers itself).
+      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0,
+                  monthlyFixed: 0, beTons: 0, beTonsAny: false, beRev: 0, beRevAny: false,
+                  avgTonsPerMonth: 0, salesMonths: new Set() };
       rows.forEach(r => {
         T.revenue += r.revenue; T.tonsSold += r.tonsSold;
         T.varCost += r.varCost; T.tonsCrushed += r.tonsCrushed;
         T.royaltyCost += r.royaltyCost;
+        T.monthlyFixed += r.monthlyFixed || 0;
+        if (r.breakEvenTons != null)    { T.beTons += r.breakEvenTons;    T.beTonsAny = true; }
+        if (r.breakEvenRevenue != null) { T.beRev  += r.breakEvenRevenue; T.beRevAny  = true; }
+        T.avgTonsPerMonth += r.avgTonsPerMonth || 0;
         r.salesMonths.forEach(m => T.salesMonths.add(m));
       });
       const tBasis = T.tonsCrushed > 0 ? T.tonsCrushed : T.tonsSold;
@@ -4005,18 +4171,16 @@
       const tVarCost = tBasis > 0 ? T.varCost / tBasis : null;
       const tRoyaltyPerTon = T.tonsSold > 0 ? T.royaltyCost / T.tonsSold : 0;
       const tContribution = (tAvgPrice != null && tVarCost != null) ? tAvgPrice - tRoyaltyPerTon - tVarCost : null;
-      let tBeTons = null, tBeRev = null;
-      if (tContribution != null && tContribution > 0) {
-        tBeTons = T.monthlyFixed / tContribution;
-        tBeRev = tAvgPrice != null ? tBeTons * tAvgPrice : null;
-      } else if (tContribution != null && T.monthlyFixed <= 0) {
-        tBeTons = 0; tBeRev = 0;
-      }
+      // Break-even tons/revenue = the sum of each pit's own break-even; null
+      // only when no pit had a usable break-even this year.
+      const tBeTons = T.beTonsAny ? T.beTons : null;
+      const tBeRev  = T.beRevAny  ? T.beRev  : null;
       const tMonths = T.salesMonths.size;
       const total = {
-        name: 'All Pits', avgPrice: tAvgPrice, varCostPerTon: tVarCost, royaltyPerTon: tRoyaltyPerTon, contribution: tContribution,
+        name: 'All Pits', hasLoc: true,
+        avgPrice: tAvgPrice, varCostPerTon: tVarCost, royaltyPerTon: tRoyaltyPerTon, contribution: tContribution,
         monthlyFixed: T.monthlyFixed, breakEvenTons: tBeTons, breakEvenRevenue: tBeRev,
-        months: tMonths, avgTonsPerMonth: tMonths > 0 ? T.tonsSold / tMonths : 0,
+        months: tMonths, avgTonsPerMonth: T.avgTonsPerMonth,
       };
 
       return { rows, total };
@@ -4034,6 +4198,186 @@
       return { cls: 'bad', label: `Below by ${formatTons(Math.abs(diff))} t/mo` };
     }
 
+    // ── Industry benchmark "reality check" ──
+    // Compares one scope (All Pits total or a single pit) against the editable
+    // benchmark ranges in quarryBenchmarks. Returns table rows + the fixed-cost
+    // note; shared by the on-screen section and the Print/Email report.
+    let beBenchmarkLoc = 'all';
+
+    function setBeBenchmarkLoc(value) {
+      beBenchmarkLoc = value || 'all';
+      renderBreakevenBenchmarks();
+    }
+
+    function computeBreakevenBenchmarks(scope) {
+      const dash = '—';
+      const B = (quarryBenchmarks && quarryBenchmarks.ranges) ? quarryBenchmarks : BE_BENCH_DEFAULTS;
+      const R = B.ranges;
+      const laborRate = Number(B.laborRate) > 0 ? Number(B.laborRate) : BE_BENCH_DEFAULTS.laborRate;
+      const ord = (a, b) => (Number(a) <= Number(b) ? [Number(a), Number(b)] : [Number(b), Number(a)]);
+      const rows = [];
+
+      // 1. Avg selling price / ton.
+      { const [lo, hi] = ord(R.price.lo, R.price.hi); const v = scope.avgPrice;
+        let cls = 'mute', verdict = 'No sales data';
+        if (v != null) {
+          if (v < lo)      { cls = 'bad';  verdict = 'Below typical — check pricing'; }
+          else if (v > hi) { cls = 'good'; verdict = 'Above typical — premium pricing'; }
+          else             { cls = 'good'; verdict = 'In range'; }
+        }
+        rows.push({ key: 'price', label: 'Avg selling price / ton', valueTxt: v != null ? formatMoney(v) : dash,
+          lo, hi, unit: 'usdTon', rangeEditable: true, valueEditable: false, cls, verdict });
+      }
+
+      // 2. Crushing & screening cost / ton (crushing labor + fuel ÷ tons crushed;
+      //    excludes drilling, blasting, loading, and hauling).
+      { const [lo, hi] = ord(R.crushing.lo, R.crushing.hi); const v = scope.varCostPerTon;
+        let cls = 'mute', verdict = 'No crushing data';
+        if (v != null && v > 0) {
+          if (v < lo)       { cls = 'good'; verdict = 'Below typical — lean'; }
+          else if (v <= hi) { cls = 'good'; verdict = 'In range'; }
+          else              { cls = 'bad';  verdict = 'Above typical — high cost'; }
+        }
+        rows.push({ key: 'crushing', label: 'Crushing &amp; screening cost / ton', valueTxt: v != null ? formatMoney(v) : dash,
+          lo, hi, unit: 'usdTon', rangeEditable: true, valueEditable: false, cls, verdict });
+      }
+
+      // 3. Royalty (% of sales).
+      { const [lo, hi] = ord(R.royalty.lo, R.royalty.hi);
+        const v = (scope.avgPrice > 0 && scope.royaltyPerTon) ? scope.royaltyPerTon / scope.avgPrice * 100 : 0;
+        let cls = 'good', verdict = 'In range';
+        if (v <= 0)      { cls = 'mute'; verdict = 'None entered'; }
+        else if (v > hi) { cls = 'bad';  verdict = 'Steep — above typical'; }
+        else if (v < lo) { cls = 'good'; verdict = 'Favorable'; }
+        rows.push({ key: 'royalty', label: 'Royalty (% of sales)', valueTxt: v > 0 ? v.toFixed(1) + '%' : dash,
+          lo, hi, unit: 'pct', rangeEditable: true, valueEditable: false, cls, verdict });
+      }
+
+      // 4. Contribution / ton before fixed costs (price − royalty − crushing).
+      { const [lo, hi] = ord(R.contribution.lo, R.contribution.hi); const v = scope.contribution;
+        let cls = 'mute', verdict = 'No data';
+        if (v != null) {
+          if (v <= 0)       { cls = 'bad';  verdict = 'Negative — losing money per ton'; }
+          else if (v >= hi) { cls = 'good'; verdict = 'Strong'; }
+          else if (v >= lo) { cls = 'good'; verdict = 'Healthy'; }
+          else              { cls = 'mute'; verdict = 'Thin — little left for fixed costs'; }
+        }
+        rows.push({ key: 'contribution', label: 'Contribution / ton (before fixed)', valueTxt: v != null ? formatMoney(v) : dash,
+          lo, hi, unit: 'usdTon', rangeEditable: true, valueEditable: false, cls, verdict });
+      }
+
+      // 5. Full-time labor rate (the operator's actual on-site wage; editable).
+      { const [lo, hi] = ord(R.labor.lo, R.labor.hi); const v = laborRate;
+        let cls = 'good', verdict = 'In range';
+        if (v < lo)      { cls = 'mute'; verdict = 'Below typical'; }
+        else if (v > hi) { cls = 'mute'; verdict = 'Above typical'; }
+        rows.push({ key: 'labor', label: 'Full-time labor rate', valueTxt: formatMoney(v) + ' / hr', valueNum: v,
+          lo, hi, unit: 'usdHr', rangeEditable: true, valueEditable: true, cls, verdict });
+      }
+
+      // 6. Tons sold vs break-even — the bottom line (fixed 100% threshold).
+      { let cls = 'mute', verdict = 'Needs sales data', valueTxt = dash;
+        if (scope.contribution != null && scope.contribution <= 0) {
+          cls = 'bad'; verdict = 'No break-even — cost ≥ price';
+        } else if (!(scope.monthlyFixed > 0)) {
+          verdict = 'Set fixed costs';
+        } else if (scope.breakEvenTons > 0 && scope.avgTonsPerMonth != null) {
+          const u = scope.avgTonsPerMonth / scope.breakEvenTons * 100;
+          valueTxt = Math.round(u) + '%';
+          if (u >= 100) { cls = 'good'; verdict = 'Above break-even — profitable'; }
+          else          { cls = 'bad';  verdict = 'Below break-even — not covering costs'; }
+        }
+        rows.push({ key: 'util', label: 'Tons sold vs break-even', valueTxt,
+          rangeEditable: false, valueEditable: false, rangeTxt: '≥ 100% to profit', cls, verdict });
+      }
+
+      const fmtR = (lo, hi, unit) =>
+          unit === 'pct'   ? `${lo}% – ${hi}%`
+        : unit === 'usdHr' ? `${formatMoney(lo)} – ${formatMoney(hi)} / hr`
+        :                    `${formatMoney(lo)} – ${formatMoney(hi)} / ton`;
+      rows.forEach(r => { if (!r.rangeTxt) r.rangeTxt = fmtR(r.lo, r.hi, r.unit); });
+
+      const ftMo = laborRate * 40 * 52 / 12;  // one 40-hr/wk position
+      const noteHtml =
+        `Your <strong>monthly fixed costs</strong> are the bills owed no matter how much you crush. Yours covers `
+        + `<strong>insurance</strong> and <strong>one full-time person on site at ${formatMoney(laborRate)}/hr</strong> `
+        + `(≈ ${formatMoney(ftMo)}/mo for a 40-hr/wk position). A complete figure usually also includes equipment loan/lease `
+        + `payments, property &amp; lease, permits &amp; bonds, property taxes, utilities, and salaried/office overhead — `
+        + `if any are missing, your break-even is understated. Tune any range to match your market — changes save automatically.`;
+
+      return { rows, noteHtml, laborRate };
+    }
+
+    function renderBreakevenBenchmarks() {
+      const body = document.getElementById('beBenchmarkBody');
+      if (!body) return;
+      const data = computeBreakeven();
+      if (beBenchmarkLoc !== 'all' && !data.rows.some(r => r.name === beBenchmarkLoc)) beBenchmarkLoc = 'all';
+      const scope = beBenchmarkLoc === 'all'
+        ? data.total
+        : (data.rows.find(r => r.name === beBenchmarkLoc) || data.total);
+
+      const sel = document.getElementById('beBenchmarkLocFilter');
+      if (sel) {
+        const names = data.rows.map(r => r.name);
+        sel.innerHTML = ['<option value="all">All Pits</option>']
+          .concat(names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)).join('');
+        sel.value = beBenchmarkLoc;
+      }
+
+      const { rows, noteHtml } = computeBreakevenBenchmarks(scope);
+      const numInput = (key, bound, val) =>
+        `<input class="be-bench-input" type="text" inputmode="decimal" data-bench="${key}" data-bound="${bound}" value="${val}" onchange="onBenchmarkRangeInput(this)" aria-label="${key} ${bound}">`;
+      body.innerHTML = rows.map(r => {
+        const valCell = r.valueEditable
+          ? `<td class="be-num">$ <input class="be-bench-input" type="text" inputmode="decimal" data-bench="labor-value" value="${r.valueNum}" onchange="onBenchmarkLaborInput(this)"> / hr</td>`
+          : `<td class="be-num">${r.valueTxt}</td>`;
+        let rangeCell;
+        if (r.rangeEditable) {
+          const lo = numInput(r.key, 'lo', r.lo), hi = numInput(r.key, 'hi', r.hi);
+          rangeCell = r.unit === 'pct'   ? `<td class="be-num">${lo} – ${hi} %</td>`
+                    : r.unit === 'usdHr' ? `<td class="be-num">$ ${lo} – $ ${hi} / hr</td>`
+                    :                      `<td class="be-num">$ ${lo} – $ ${hi} / ton</td>`;
+        } else {
+          rangeCell = `<td class="be-num">${r.rangeTxt}</td>`;
+        }
+        return `<tr><td style="text-align:left;">${r.label}</td>${valCell}${rangeCell}`
+             + `<td><span class="be-pill ${r.cls}">${escapeHtml(r.verdict)}</span></td></tr>`;
+      }).join('');
+
+      const note = document.getElementById('beBenchmarkNote');
+      if (note) note.innerHTML = noteHtml;
+    }
+
+    function onBenchmarkRangeInput(input) {
+      const key = input.dataset.bench, bound = input.dataset.bound;
+      if (!quarryBenchmarks.ranges || !quarryBenchmarks.ranges[key] || (bound !== 'lo' && bound !== 'hi')) return;
+      const raw = String(input.value).trim();
+      const n = raw === '' ? NaN : Number(raw.replace(/[^0-9.]/g, ''));
+      if (Number.isFinite(n) && n >= 0) {
+        quarryBenchmarks.ranges[key][bound] = Math.round(n * 100) / 100;
+        scheduleBenchmarksSave();
+      }
+      renderBreakevenBenchmarks();  // re-render snaps invalid input back & updates verdicts
+    }
+
+    function onBenchmarkLaborInput(input) {
+      const raw = String(input.value).trim();
+      const n = raw === '' ? NaN : Number(raw.replace(/[^0-9.]/g, ''));
+      if (Number.isFinite(n) && n > 0) {
+        quarryBenchmarks.laborRate = Math.round(n * 100) / 100;
+        scheduleBenchmarksSave();
+      }
+      renderBreakevenBenchmarks();
+    }
+
+    function resetBreakevenBenchmarks() {
+      if (!confirm('Reset benchmark ranges and labor rate to the industry defaults?')) return;
+      quarryBenchmarks = JSON.parse(JSON.stringify(BE_BENCH_DEFAULTS));
+      scheduleBenchmarksSave();
+      renderBreakevenBenchmarks();
+    }
+
     async function refreshBreakeven() {
       renderBreakeven();
       const tasks = [];
@@ -4045,6 +4389,7 @@
       // a local save is still pending, in which case keep the local value.
       if (!monthlyFixedSavePending && !monthlyFixedSaveInFlight) tasks.push(refreshMonthlyFixed());
       if (!royaltySavePending && !royaltySaveInFlight) tasks.push(refreshRoyalty());
+      if (!benchmarksSavePending && !benchmarksSaveInFlight) tasks.push(refreshBenchmarks());
       if (tasks.length) { await Promise.allSettled(tasks); renderBreakeven(); }
     }
 
@@ -4111,6 +4456,7 @@
         monthlySel.value = beMonthlyLoc;
       }
       renderBreakevenMonthly();
+      renderBreakevenBenchmarks();
 
       // ── Per-location table ──
       const body = document.getElementById('beLocationBody');
@@ -4194,7 +4540,6 @@
       const inYear = (r) => rowMatchesYear('breakeven', r);
       const matchLoc = (r) => locFilter === 'all'
         || ((String(r.locationName || '').trim() || BE_NO_LOC) === locFilter);
-      const monthlyFixed = avgFixedForScope(locFilter);  // scope average (All Pits = avg of pits)
       const scopeRate = (locFilter !== 'all' && locFilter !== BE_NO_LOC) ? royaltyRate(locFilter) / 100 : null;
 
       const months = new Map();
@@ -4241,6 +4586,12 @@
         return { ...m, avgPrice, fixedCost, totalCost, breakEvenRevenue, breakEvenTons, profit, royaltyPct };
       }).sort((a, b) => a.month.localeCompare(b.month));
 
+      // Headline fixed figure = average of the fixed costs of the months
+      // actually shown (those with a value entered). This matches the
+      // By-Location "Monthly Fixed Cost" column, which is scoped the same way.
+      const fixedVals = rows.map(r => r.fixedCost).filter(v => v > 0);
+      const monthlyFixed = fixedVals.length ? fixedVals.reduce((s, v) => s + v, 0) / fixedVals.length : 0;
+
       return { rows, monthlyFixed, yrAvgPrice };
     }
 
@@ -4255,10 +4606,17 @@
       if (note) {
         const editing = beMonthlyLoc !== 'all' && beMonthlyLoc !== BE_NO_LOC;
         const locLabel = beMonthlyLoc === 'all' ? 'all pits' : beMonthlyLoc;
+        // Pull the figure the By-Location table actually shows for this scope
+        // so the note never contradicts the table: All Pits = the per-pit
+        // total; a single pit = its active-month average.
+        const beData = computeBreakeven();
+        const byLocFixed = editing
+          ? (beData.rows.find(r => r.name === beMonthlyLoc)?.monthlyFixed || 0)
+          : beData.total.monthlyFixed;
         note.innerHTML = (editing
             ? `Type <strong>${escapeHtml(locLabel)}</strong>'s monthly <strong>fixed overhead</strong> in the Fixed Cost column. `
-            : `Fixed cost here is the <strong>average across pits</strong> (read-only) — pick a single pit above to enter its monthly fixed costs. `)
-          + `The <strong>By Quarry Location</strong> table shows ${editing ? "this pit's average" : 'the All-Pits average'} (${formatMoney(monthlyFixed)}/mo), and the executive dashboard mirrors the All-Pits average. `
+            : `Fixed cost here is the <strong>total across all pits</strong> (read-only) — pick a single pit above to enter its monthly fixed costs. `)
+          + `The <strong>By Quarry Location</strong> table shows ${editing ? "this pit's average" : 'the All-Pits total'} (${formatMoney(byLocFixed)}/mo), and the executive dashboard mirrors the All-Pits total. `
           + `<strong>Total cost = crushing + fixed + royalty</strong> (royalty is % of sales); Profit / Loss = revenue − total cost. `
           + `<em>Break-even tons = (crushing + fixed) ÷ your net-of-royalty price. Only months with activity are shown.</em>`;
       }
@@ -5124,7 +5482,7 @@ ${sections}
         ${kpiCard('Avg Price / Ton', money(total.avgPrice), 'Blended · all pits')}
         ${kpiCard('Variable Cost / Ton', money(total.varCostPerTon), 'Crushing ÷ tons crushed')}
         ${kpiCard('Contribution / Ton', money(total.contribution), 'Price − royalty − variable cost')}
-        ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Average across pits')}
+        ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Total across all pits')}
         ${kpiCard('Break-Even Tons / Mo', beTonsTxt(total), 'Tons/mo to cover all costs')}
         ${kpiCard('Break-Even Revenue / Mo', money(total.breakEvenRevenue), 'Sales $/mo to break even')}
         ${kpiCard('Avg Tons Sold / Mo', formatTons(total.avgTonsPerMonth), total.months > 0 ? `Over ${total.months} active months` : '—')}
@@ -5204,6 +5562,24 @@ ${sections}
           + `<div class="chart">${svg}</div>`;
       }
 
+      // Industry benchmark "reality check" — respects the on-screen scope.
+      let benchmarkSection = '';
+      {
+        const benchScope = (beBenchmarkLoc !== 'all' && rows.length)
+          ? (rows.find(r => r.name === beBenchmarkLoc) || total) : total;
+        const benchLabel = (beBenchmarkLoc === 'all') ? 'All Pits' : beBenchmarkLoc;
+        const { rows: brows, noteHtml } = computeBreakevenBenchmarks(benchScope);
+        const head = `<tr><th>Metric (${escapeHtml(benchLabel)})</th><th>Your Number</th><th>Typical Range</th><th>Read</th></tr>`;
+        const bbody = brows.map(r =>
+          `<tr><td>${r.label}</td><td>${r.valueTxt}</td><td>${r.rangeTxt}</td>`
+          + `<td class="${r.cls === 'good' ? 'pos' : r.cls === 'bad' ? 'neg' : ''}">${escapeHtml(r.verdict)}</td></tr>`
+        ).join('');
+        benchmarkSection = `<h2>Industry Benchmark &mdash; Reality Check (${escapeHtml(benchLabel)})</h2>`
+          + `<div class="note">${noteHtml}</div>`
+          + `<table class="rep"><thead>${head}</thead><tbody>${bbody}</tbody></table>`
+          + `<div class="note"><em>Ranges are your tunable benchmarks (seeded for the Western PA / Appalachian crushed-limestone &amp; sandstone market — they still vary with product mix, plant scale, and haul distance). Variable cost here is crushing &amp; screening only (drilling, blasting, loading, and hauling are not in it). Sanity check, not a target.</em></div>`;
+      }
+
       const style = `<style>
   .be-report { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; }
   .be-report h1 { font-size: 17px; margin: 0 0 0.15rem; }
@@ -5234,9 +5610,9 @@ ${sections}
       const header = opts.includeHeader === false ? '' :
         `<h1>Quarry Break-Even &mdash; ${yrTitle}</h1>`
         + `<div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking + entered fixed costs</div>`;
-      const note = `<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; variable cost is crushing ÷ tons crushed, royalty is a % of sales, and monthly fixed cost is the average of the per-pit entries. Contribution/ton = price − royalty − variable cost; break-even tons/mo = monthly fixed ÷ contribution. <strong>Month-by-Month</strong> total cost = crushing + fixed + royalty; break-even covers crushing + fixed at the net-of-royalty price.</div>`;
+      const note = `<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; variable cost is crushing ÷ tons crushed, royalty is a % of sales, and monthly fixed cost is each pit's average — <strong>All Pits totals them across pits</strong>. Contribution/ton = price − royalty − variable cost; break-even tons/mo = monthly fixed ÷ contribution. <strong>Month-by-Month</strong> total cost = crushing + fixed + royalty; break-even covers crushing + fixed at the net-of-royalty price.</div>`;
 
-      const html = style + `<div class="be-report">` + header + note + kpis + locTable + monthlyTable + chartSection + `</div>`;
+      const html = style + `<div class="be-report">` + header + note + kpis + locTable + monthlyTable + chartSection + benchmarkSection + `</div>`;
       return { yrTitle, html, hasData: rows.length > 0 };
     }
 

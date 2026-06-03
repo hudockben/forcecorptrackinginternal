@@ -1204,6 +1204,17 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   let revenueYr = 0, tonsSoldYr = 0, varCostYr = 0, tonsCrushedYr = 0, royaltyCostYr = 0;
   const productTons = new Map();
   const activePits  = new Set();
+  // Per-pit set of 'YYYY-MM' months with activity this year (sales ∪ crush),
+  // used to scope each pit's monthly-fixed average the same way the Quarry
+  // page's By-Location table does, so the tile matches "All Pits".
+  const activeMonthsByPit = new Map();
+  const addActiveMonth = (pit, date) => {
+    const name = String(pit || '').trim();
+    if (!name || date.slice(0, 4) !== yearPrefix) return;
+    let set = activeMonthsByPit.get(name);
+    if (!set) { set = new Set(); activeMonthsByPit.set(name, set); }
+    set.add(date.slice(0, 7));
+  };
   for (const r of sales) {
     if (!r || typeof r !== 'object') continue;
     const date = typeof r.date === 'string' ? r.date : '';
@@ -1225,6 +1236,7 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
       revenueYr += tons * price;
       tonsSoldYr += tons;
       royaltyCostYr += tons * price * royaltyFrac;
+      addActiveMonth(r.locationName, date);
     }
   }
   for (const r of daily) {
@@ -1246,6 +1258,7 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     if (date.slice(0, 4) === yearPrefix) {
       varCostYr += cost;
       tonsCrushedYr += num(r.loadsToCrusher) * num(r.tonsPerLoad);
+      addActiveMonth(r.locationName, date);
     }
   }
   const profitWk = revenueWk - costWk;
@@ -1260,20 +1273,33 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   // labor + fuel plus fixed overhead. Variable cost/ton and contribution stay
   // year-blended so the per-ton economics — and the cost ≥ price guard — read
   // steady. Monthly fixed mirrors the By-Location "All Pits" figure: the
-  // average of each pit's average monthly fixed. fct_quarry_monthly_fixed is
-  // nested { scope: { 'YYYY-MM': amount } }; pit scopes exclude 'all' and the
-  // no-location bucket.
+  // SUM of each pit's monthly fixed (a true company total), where each pit's
+  // figure is scoped to the months it had activity this year (matching what
+  // the Quarry page shows). fct_quarry_monthly_fixed is nested
+  // { scope: { 'YYYY-MM': amount } }; pit scopes exclude 'all' and no-location.
   let monthlyFixedTotal = 0;
   {
     const pitAvgs = Object.keys(fixed)
       .filter(s => s && s !== 'all' && s !== '— No location —')
       .map(s => {
         const months = (fixed[s] && typeof fixed[s] === 'object') ? fixed[s] : {};
-        const vals = Object.keys(months).map(k => num(months[k])).filter(v => v > 0);
+        // Scope to the pit's active months this year (the months the Quarry
+        // page actually shows), so stale entries for other months/years don't
+        // drag the average down. Fall back to the all-time average only when
+        // the pit had no activity this year.
+        const active = activeMonthsByPit.get(s);
+        let vals;
+        if (active && active.size) {
+          vals = [];
+          active.forEach(mk => { const v = num(months[mk]); if (v > 0) vals.push(v); });
+        } else {
+          vals = Object.keys(months).map(k => num(months[k])).filter(v => v > 0);
+        }
         return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
       })
       .filter(v => v > 0);
-    if (pitAvgs.length) monthlyFixedTotal = pitAvgs.reduce((a, b) => a + b, 0) / pitAvgs.length;
+    // Sum the per-pit figures: the company owes every pit's fixed cost.
+    monthlyFixedTotal = pitAvgs.reduce((a, b) => a + b, 0);
   }
   const tonsBasisYr     = tonsCrushedYr > 0 ? tonsCrushedYr : tonsSoldYr;
   const avgPrice        = tonsSoldYr  > 0 ? revenueYr / tonsSoldYr : null;
