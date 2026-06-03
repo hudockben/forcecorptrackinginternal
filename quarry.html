@@ -1252,7 +1252,7 @@
         <strong>How many tons must each pit sell to stop losing money?</strong>
         <div class="be-formula">Break-even tons / mo&nbsp;=&nbsp;Monthly fixed costs&nbsp;÷&nbsp;(Avg price/ton − Variable cost/ton)</div>
         <ul>
-          <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales, Daily, and Crushing entries for the selected year. Variable cost = all daily + crushing labor &amp; fuel, divided by tons produced.</li>
+          <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales and Crushing entries for the selected year. Variable cost = crushing labor &amp; fuel ÷ tons crushed (daily tracking is not included).</li>
           <li><strong>Royalty %</strong> (per pit, in the table below) inflates that pit's variable cost: variable cost &times; (1 + royalty%). Enter each pit's rate — e.g., 12.75% — and contribution and break-even update automatically.</li>
           <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
           <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below — pick a pit and type each month's figure. This column shows each location's average; <strong>All Pits is the average of the locations</strong>, and the executive dashboard mirrors it. Entries save automatically.</li>
@@ -1268,7 +1268,7 @@
         <div class="kpi-tile">
           <div class="kpi-label">Variable Cost / Ton</div>
           <div class="kpi-value" id="beKpiVarCost">—</div>
-          <div class="kpi-sub">Daily + crushing ÷ tons</div>
+          <div class="kpi-sub">Crushing ÷ tons crushed</div>
         </div>
         <div class="kpi-tile">
           <div class="kpi-label">Contribution / Ton</div>
@@ -3950,9 +3950,8 @@
         const mk = beMonthKey(r.date);
         if (mk && Number.isFinite(t) && t > 0) e.salesMonths.add(mk);
       });
-      dailyRows.filter(inYear).forEach(r => {
-        ensure(r.locationName).varCost += dailyCalc(r).totalCost * royaltyMult(r.locationName);
-      });
+      // Variable cost = crushing labor & fuel only (daily tracking excluded),
+      // divided by tons crushed.
       crushRows.filter(inYear).forEach(r => {
         const e = ensure(r.locationName);
         const c = crushCalc(r);
@@ -4202,13 +4201,7 @@
         e.revenue += homeRowSales(r);
         const t = Number(r.tons); if (Number.isFinite(t)) e.tonsSold += t;
       });
-      dailyRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
-        const mk = beMonthKey(r.date); if (!mk) return;
-        const e = ensureM(mk);
-        const base = dailyCalc(r).totalCost;
-        e.baseVarCost += base;
-        e.varCost += base * royaltyMult(r.locationName);
-      });
+      // Variable cost = crushing only (daily tracking excluded).
       crushRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
         const mk = beMonthKey(r.date); if (!mk) return;
         const e = ensureM(mk);
@@ -5112,7 +5105,7 @@ ${sections}
         `<div class="kpi"><div class="kpi-l">${label}</div><div class="kpi-v">${value}</div>${sub ? `<div class="kpi-s">${sub}</div>` : ''}</div>`;
       const kpis = `<div class="kpi-grid">
         ${kpiCard('Avg Price / Ton', money(total.avgPrice), 'Blended · all pits')}
-        ${kpiCard('Variable Cost / Ton', money(total.varCostPerTon), 'Daily + crushing ÷ tons')}
+        ${kpiCard('Variable Cost / Ton', money(total.varCostPerTon), 'Crushing ÷ tons crushed')}
         ${kpiCard('Contribution / Ton', money(total.contribution), 'Price − variable cost')}
         ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Average across pits')}
         ${kpiCard('Break-Even Tons / Mo', beTonsTxt(total), 'Tons/mo to cover all costs')}

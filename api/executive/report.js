@@ -1228,10 +1228,10 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     if (!r || typeof r !== 'object') continue;
     const date = typeof r.date === 'string' ? r.date : '';
     if (!date) continue;
+    // Daily labor feeds the weekly profit only — variable cost/ton and
+    // break-even use crushing cost only.
     const cost = (num(r.hours) * num(r.rate) + num(r.fuelGallons) * num(r.ppg)) * royaltyMult(r.locationName);
     if (date >= weekStart && date < weekEnd) costWk += cost;
-    if (date >= monthStartIso) varCostMo += cost;
-    if (date.slice(0, 4) === yearPrefix) varCostYr += cost;
   }
   for (const r of crush) {
     if (!r || typeof r !== 'object') continue;
