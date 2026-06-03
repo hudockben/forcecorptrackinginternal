@@ -3778,6 +3778,16 @@
       const vals = Object.keys(m).map(k => Number(m[k])).filter(v => Number.isFinite(v) && v > 0);
       return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
     }
+    // Average of the per-month fixed costs entered for a pit, restricted to a
+    // given set of months (the months actually shown for the selected year) so
+    // entries for other months/years don't skew the figure.
+    function avgFixedForMonths(loc, monthsSet) {
+      const m = quarryMonthlyFixed[loc];
+      if (!m || !monthsSet || !monthsSet.size) return 0;
+      const vals = [];
+      monthsSet.forEach(mk => { const v = Number(m[mk]); if (Number.isFinite(v) && v > 0) vals.push(v); });
+      return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    }
     // Pit scopes = location-named buckets (exclude 'all' and no-location).
     function pitScopes() {
       return Object.keys(quarryMonthlyFixed).filter(s => s && s !== 'all' && s !== BE_NO_LOC);
@@ -3935,7 +3945,7 @@
           locs.set(key, {
             name: key, hasLoc: key !== BE_NO_LOC,
             revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0,
-            salesMonths: new Set(),
+            salesMonths: new Set(), activeMonths: new Set(),
           });
         }
         return locs.get(key);
@@ -3949,12 +3959,15 @@
         const t = Number(r.tons);
         if (Number.isFinite(t)) e.tonsSold += t;
         const mk = beMonthKey(r.date);
+        if (mk) e.activeMonths.add(mk);
         if (mk && Number.isFinite(t) && t > 0) e.salesMonths.add(mk);
       });
       // Variable cost = crushing labor & fuel only (daily tracking excluded),
       // divided by tons crushed.
       crushRows.filter(inYear).forEach(r => {
         const e = ensure(r.locationName);
+        const mk = beMonthKey(r.date);
+        if (mk) e.activeMonths.add(mk);
         const c = crushCalc(r);
         e.varCost += c.totalCost;
         e.tonsCrushed += c.estimatedTons;
@@ -3971,7 +3984,12 @@
         const varCostPerTon = tonsBasis > 0 ? e.varCost / tonsBasis : null;
         const royaltyPerTon = e.tonsSold > 0 ? e.royaltyCost / e.tonsSold : 0;  // royalty $ per ton sold
         const contribution = (avgPrice != null && varCostPerTon != null) ? avgPrice - royaltyPerTon - varCostPerTon : null;
-        const monthlyFixed = scopeAvgFixed(e.name);
+        // Average the pit's entered fixed costs over just the months actually
+        // shown for the selected year (sales ∪ crush activity), so this equals
+        // the value(s) you typed in the Month-by-Month table — entries for
+        // other months/years don't drag the figure down. Fall back to the
+        // all-time average only when the pit has no activity this year.
+        const monthlyFixed = e.activeMonths.size > 0 ? avgFixedForMonths(e.name, e.activeMonths) : scopeAvgFixed(e.name);
         let breakEvenTons = null, breakEvenRevenue = null;
         if (contribution != null && contribution > 0) {
           breakEvenTons = monthlyFixed / contribution;
@@ -3993,13 +4011,18 @@
       // Division total — blended across every pit. All-Pits fixed is the
       // average of the per-pit monthly fixed values (the figure mirrored to
       // the executive tile).
-      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0, monthlyFixed: pitsAvgFixed(), salesMonths: new Set() };
+      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, royaltyCost: 0, monthlyFixed: 0, salesMonths: new Set() };
       rows.forEach(r => {
         T.revenue += r.revenue; T.tonsSold += r.tonsSold;
         T.varCost += r.varCost; T.tonsCrushed += r.tonsCrushed;
         T.royaltyCost += r.royaltyCost;
         r.salesMonths.forEach(m => T.salesMonths.add(m));
       });
+      // All-Pits fixed = average of the per-pit (active-month-scoped) monthly
+      // fixed values, so it equals the average of the numbers shown on the
+      // pit rows. This is the figure mirrored to the executive tile.
+      const pitFixedVals = rows.filter(r => r.hasLoc && r.monthlyFixed > 0).map(r => r.monthlyFixed);
+      T.monthlyFixed = pitFixedVals.length ? pitFixedVals.reduce((s, v) => s + v, 0) / pitFixedVals.length : 0;
       const tBasis = T.tonsCrushed > 0 ? T.tonsCrushed : T.tonsSold;
       const tAvgPrice = T.tonsSold > 0 ? T.revenue / T.tonsSold : null;
       const tVarCost = tBasis > 0 ? T.varCost / tBasis : null;
@@ -4194,7 +4217,6 @@
       const inYear = (r) => rowMatchesYear('breakeven', r);
       const matchLoc = (r) => locFilter === 'all'
         || ((String(r.locationName || '').trim() || BE_NO_LOC) === locFilter);
-      const monthlyFixed = avgFixedForScope(locFilter);  // scope average (All Pits = avg of pits)
       const scopeRate = (locFilter !== 'all' && locFilter !== BE_NO_LOC) ? royaltyRate(locFilter) / 100 : null;
 
       const months = new Map();
@@ -4240,6 +4262,12 @@
         const profit = m.revenue - totalCost;
         return { ...m, avgPrice, fixedCost, totalCost, breakEvenRevenue, breakEvenTons, profit, royaltyPct };
       }).sort((a, b) => a.month.localeCompare(b.month));
+
+      // Headline fixed figure = average of the fixed costs of the months
+      // actually shown (those with a value entered). This matches the
+      // By-Location "Monthly Fixed Cost" column, which is scoped the same way.
+      const fixedVals = rows.map(r => r.fixedCost).filter(v => v > 0);
+      const monthlyFixed = fixedVals.length ? fixedVals.reduce((s, v) => s + v, 0) / fixedVals.length : 0;
 
       return { rows, monthlyFixed, yrAvgPrice };
     }
