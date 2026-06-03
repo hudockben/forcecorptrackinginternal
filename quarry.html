@@ -1315,6 +1315,7 @@
                 <th class="be-num">Avg Price / Ton</th>
                 <th class="be-num">Variable Cost / Ton</th>
                 <th class="be-num">Royalty %</th>
+                <th class="be-num">Royalty / Ton</th>
                 <th class="be-num">Contribution / Ton</th>
                 <th class="be-num">Monthly Fixed Costs</th>
                 <th class="be-num">Break-Even Tons / Mo</th>
@@ -1346,6 +1347,7 @@
                 <th class="be-num">Revenue</th>
                 <th class="be-num">Variable Cost</th>
                 <th class="be-num">Royalty %</th>
+                <th class="be-num">Royalty</th>
                 <th class="be-num">Fixed Cost</th>
                 <th class="be-num">Total Cost</th>
                 <th class="be-num">Break-Even Tons</th>
@@ -4128,6 +4130,7 @@
         const royaltyCell = (isTotal || d.name === BE_NO_LOC)
           ? cell(dash, 'be-num')
           : `<td class="be-num"><input class="be-royalty-input" type="text" inputmode="decimal" data-loc="${escapeHtml(d.name)}" value="${royaltyRate(d.name) > 0 ? royaltyRate(d.name) : ''}" placeholder="0" onchange="onRoyaltyInput(this)"> %</td>`;
+        const royaltyDollarCell = cell((d.royaltyPerTon && d.royaltyPerTon > 0) ? formatMoney(d.royaltyPerTon) : dash, 'be-num');
         const beTonsTxt = (d.contribution != null && d.contribution <= 0) ? 'No B/E'
           : (d.breakEvenTons != null ? formatTons(d.breakEvenTons) : dash);
         return `<tr class="${isTotal ? 'be-row-total' : ''}">`
@@ -4135,6 +4138,7 @@
           + moneyCell(d.avgPrice)
           + moneyCell(d.varCostPerTon)
           + royaltyCell
+          + royaltyDollarCell
           + `<td class="be-num ${contribCls}">${d.contribution != null ? formatMoney(d.contribution) : dash}</td>`
           + fixedCell
           + cell(beTonsTxt, 'be-num')
@@ -4146,7 +4150,7 @@
       let html = rows.map(d => rowHtml(d, false)).join('');
       if (rows.length) html += rowHtml({ ...total, hasLoc: true }, true);
       body.innerHTML = html
-        || `<tr class="is-empty-row"><td colspan="10" style="text-align:center;padding:1.5rem;">No quarry data yet for this year. Add entries on the Sales, Daily, or Crushing tabs.</td></tr>`;
+        || `<tr class="is-empty-row"><td colspan="11" style="text-align:center;padding:1.5rem;">No quarry data yet for this year. Add entries on the Sales, Daily, or Crushing tabs.</td></tr>`;
     }
 
     // ── Month-by-month break-even ────────────────────────────────
@@ -4260,7 +4264,7 @@
       }
 
       if (!rows.length) {
-        body.innerHTML = `<tr class="is-empty-row"><td colspan="11" style="text-align:center;padding:1.5rem;">No entries for this year${beMonthlyLoc === 'all' ? '' : ' at ' + escapeHtml(beMonthlyLoc)}.</td></tr>`;
+        body.innerHTML = `<tr class="is-empty-row"><td colspan="12" style="text-align:center;padding:1.5rem;">No entries for this year${beMonthlyLoc === 'all' ? '' : ' at ' + escapeHtml(beMonthlyLoc)}.</td></tr>`;
         return;
       }
 
@@ -4294,6 +4298,7 @@
           + `<td class="be-num">${formatMoney(m.revenue)}</td>`
           + `<td class="be-num">${formatMoney(m.varCost)}</td>`
           + royaltyCellTxt(m.royaltyPct)
+          + `<td class="be-num">${m.royaltyCost > 0 ? formatMoney(m.royaltyCost) : dash}</td>`
           + fixedCell
           + `<td class="be-num">${formatMoney(m.totalCost)}</td>`
           + `<td class="be-num">${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>`
@@ -4313,6 +4318,7 @@
         + `<td class="be-num">${formatMoney(tot.revenue)}</td>`
         + `<td class="be-num">${formatMoney(tot.varCost)}</td>`
         + royaltyCellTxt(tot.revenue > 0 ? (tot.royaltyCost / tot.revenue) * 100 : 0)
+        + `<td class="be-num">${tot.royaltyCost > 0 ? formatMoney(tot.royaltyCost) : dash}</td>`
         + `<td class="be-num">${formatMoney(tot.fixedCost)}</td>`
         + `<td class="be-num">${formatMoney(tot.totalCost)}</td>`
         + `<td class="be-num">${totBeTons != null ? formatTons(totBeTons) : dash}</td>`
@@ -5133,6 +5139,7 @@ ${sections}
           <td>${money(d.avgPrice)}</td>
           <td>${money(d.varCostPerTon)}</td>
           <td>${royaltyTxt(d, isTotal)}</td>
+          <td>${d.royaltyPerTon > 0 ? money(d.royaltyPerTon) : dash}</td>
           <td class="${d.contribution == null ? '' : (d.contribution >= 0 ? 'pos' : 'neg')}">${money(d.contribution)}</td>
           <td>${money(d.monthlyFixed)}</td>
           <td>${beTonsTxt(d)}</td>
@@ -5142,11 +5149,11 @@ ${sections}
         </tr>`;
       const locTable = `<h2>Break-Even by Location</h2>
         <table class="rep"><thead><tr>
-          <th>Location</th><th>Avg Price/Ton</th><th>Variable Cost/Ton</th><th>Royalty %</th><th>Contribution/Ton</th>
+          <th>Location</th><th>Avg Price/Ton</th><th>Variable Cost/Ton</th><th>Royalty %</th><th>Royalty/Ton</th><th>Contribution/Ton</th>
           <th>Monthly Fixed</th><th>Break-Even Tons/Mo</th><th>Break-Even Rev/Mo</th><th>Avg Tons Sold/Mo</th><th>Status</th>
         </tr></thead><tbody>
           ${rows.length ? rows.map(d => locRow(d, false)).join('') + locRow({ ...total }, true)
-                        : '<tr><td colspan="10">No quarry data for this year.</td></tr>'}
+                        : '<tr><td colspan="11">No quarry data for this year.</td></tr>'}
         </tbody></table>`;
 
       // Month-by-month table (respects the on-screen location filter)
@@ -5167,6 +5174,7 @@ ${sections}
             <td>${formatMoney(m.revenue)}</td>
             <td>${formatMoney(m.varCost)}</td>
             <td>${royPct > 0 ? (Math.round(royPct * 100) / 100) + '%' : dash}</td>
+            <td>${m.royaltyCost > 0 ? formatMoney(m.royaltyCost) : dash}</td>
             <td>${formatMoney(m.fixedCost)}</td>
             <td>${formatMoney(m.totalCost)}</td>
             <td>${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>
@@ -5175,7 +5183,7 @@ ${sections}
             <td>${status}</td>
           </tr>`;
         };
-        const head = `<tr><th>Month</th><th>Tons Sold</th><th>Revenue</th><th>Variable Cost</th><th>Royalty %</th><th>Fixed Cost</th><th>Total Cost</th><th>Break-Even Tons</th><th>Sold vs B/E</th><th>Profit / Loss</th><th>Status</th></tr>`;
+        const head = `<tr><th>Month</th><th>Tons Sold</th><th>Revenue</th><th>Variable Cost</th><th>Royalty %</th><th>Royalty</th><th>Fixed Cost</th><th>Total Cost</th><th>Break-Even Tons</th><th>Sold vs B/E</th><th>Profit / Loss</th><th>Status</th></tr>`;
         if (mrows.length) {
           const bodyRows = mrows.map(m => mRow(m, false)).join('');
           const totEffRate = mt.revenue > 0 ? mt.royaltyCost / mt.revenue : 0;
