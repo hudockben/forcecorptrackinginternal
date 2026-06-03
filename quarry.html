@@ -1345,6 +1345,7 @@
                 <th class="be-num">Tons Sold</th>
                 <th class="be-num">Revenue</th>
                 <th class="be-num">Variable Cost</th>
+                <th class="be-num">Royalty %</th>
                 <th class="be-num">Fixed Cost</th>
                 <th class="be-num">Total Cost</th>
                 <th class="be-num">Break-Even Tons</th>
@@ -4036,8 +4037,11 @@
       if (!dailyFetchedOnce) tasks.push(refreshDaily());
       if (!crushFetchedOnce) tasks.push(refreshCrush());
       if (!salesFetchedOnce) tasks.push(refreshSales());
-      if (!monthlyFixedFetchedOnce) tasks.push(refreshMonthlyFixed());
-      if (!royaltyFetchedOnce) tasks.push(refreshRoyalty());
+      // Always re-pull the entered config (fixed costs + royalty) so edits
+      // made on another device show up each time this tab is opened — unless
+      // a local save is still pending, in which case keep the local value.
+      if (!monthlyFixedSavePending && !monthlyFixedSaveInFlight) tasks.push(refreshMonthlyFixed());
+      if (!royaltySavePending && !royaltySaveInFlight) tasks.push(refreshRoyalty());
       if (tasks.length) { await Promise.allSettled(tasks); renderBreakeven(); }
     }
 
@@ -4189,7 +4193,7 @@
 
       const months = new Map();
       const ensureM = (mk) => {
-        if (!months.has(mk)) months.set(mk, { month: mk, revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0 });
+        if (!months.has(mk)) months.set(mk, { month: mk, revenue: 0, tonsSold: 0, varCost: 0, baseVarCost: 0, tonsCrushed: 0 });
         return months.get(mk);
       };
       salesRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
@@ -4200,12 +4204,16 @@
       });
       dailyRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
         const mk = beMonthKey(r.date); if (!mk) return;
-        ensureM(mk).varCost += dailyCalc(r).totalCost * royaltyMult(r.locationName);
+        const e = ensureM(mk);
+        const base = dailyCalc(r).totalCost;
+        e.baseVarCost += base;
+        e.varCost += base * royaltyMult(r.locationName);
       });
       crushRows.filter(r => inYear(r) && matchLoc(r)).forEach(r => {
         const mk = beMonthKey(r.date); if (!mk) return;
         const e = ensureM(mk);
         const c = crushCalc(r);
+        e.baseVarCost += c.totalCost;
         e.varCost += c.totalCost * royaltyMult(r.locationName);
         e.tonsCrushed += c.estimatedTons;
       });
@@ -4221,7 +4229,10 @@
         const totalCost = m.varCost + fixedCost;
         const breakEvenTons = (avgPrice != null && avgPrice > 0) ? totalCost / avgPrice : null;
         const profit = m.revenue - totalCost;
-        return { ...m, avgPrice, fixedCost, totalCost, breakEvenRevenue: totalCost, breakEvenTons, profit };
+        // Effective royalty % applied to this month's variable cost (constant
+        // for a single pit, blended across pits in the All-Pits view).
+        const royaltyPct = m.baseVarCost > 0 ? (m.varCost / m.baseVarCost - 1) * 100 : 0;
+        return { ...m, avgPrice, fixedCost, totalCost, breakEvenRevenue: totalCost, breakEvenTons, profit, royaltyPct };
       }).sort((a, b) => a.month.localeCompare(b.month));
 
       return { rows, monthlyFixed, yrAvgPrice };
@@ -4247,7 +4258,7 @@
       }
 
       if (!rows.length) {
-        body.innerHTML = `<tr class="is-empty-row"><td colspan="10" style="text-align:center;padding:1.5rem;">No entries for this year${beMonthlyLoc === 'all' ? '' : ' at ' + escapeHtml(beMonthlyLoc)}.</td></tr>`;
+        body.innerHTML = `<tr class="is-empty-row"><td colspan="11" style="text-align:center;padding:1.5rem;">No entries for this year${beMonthlyLoc === 'all' ? '' : ' at ' + escapeHtml(beMonthlyLoc)}.</td></tr>`;
         return;
       }
 
@@ -4266,9 +4277,10 @@
       // Fixed cost is editable per pit; All Pits / No-location show the derived
       // average read-only (enter fixed costs by picking a specific pit).
       const beEditable = beMonthlyLoc !== 'all' && beMonthlyLoc !== BE_NO_LOC;
-      const tot = { tonsSold: 0, revenue: 0, varCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
+      const tot = { tonsSold: 0, revenue: 0, varCost: 0, baseVarCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
+      const royaltyCellTxt = (pct) => `<td class="be-num">${pct > 0 ? (Math.round(pct * 100) / 100) + '%' : dash}</td>`;
       let html = rows.map(m => {
-        tot.tonsSold += m.tonsSold; tot.revenue += m.revenue; tot.varCost += m.varCost;
+        tot.tonsSold += m.tonsSold; tot.revenue += m.revenue; tot.varCost += m.varCost; tot.baseVarCost += m.baseVarCost;
         tot.fixedCost += m.fixedCost; tot.totalCost += m.totalCost; tot.profit += m.profit;
         const pl = m.profit >= 0 ? 'is-positive' : 'is-negative';
         const fixedCell = beEditable
@@ -4279,6 +4291,7 @@
           + `<td class="be-num">${formatTons(m.tonsSold)}</td>`
           + `<td class="be-num">${formatMoney(m.revenue)}</td>`
           + `<td class="be-num">${formatMoney(m.varCost)}</td>`
+          + royaltyCellTxt(m.royaltyPct)
           + fixedCell
           + `<td class="be-num">${formatMoney(m.totalCost)}</td>`
           + `<td class="be-num">${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>`
@@ -4295,6 +4308,7 @@
         + `<td class="be-num">${formatTons(tot.tonsSold)}</td>`
         + `<td class="be-num">${formatMoney(tot.revenue)}</td>`
         + `<td class="be-num">${formatMoney(tot.varCost)}</td>`
+        + royaltyCellTxt(tot.baseVarCost > 0 ? (tot.varCost / tot.baseVarCost - 1) * 100 : 0)
         + `<td class="be-num">${formatMoney(tot.fixedCost)}</td>`
         + `<td class="be-num">${formatMoney(tot.totalCost)}</td>`
         + `<td class="be-num">${totBeTons != null ? formatTons(totBeTons) : dash}</td>`
@@ -5134,19 +5148,21 @@ ${sections}
       // Month-by-month table (respects the on-screen location filter)
       let monthlyTable = '';
       {
-        const mt = { tonsSold: 0, revenue: 0, varCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
+        const mt = { tonsSold: 0, revenue: 0, varCost: 0, baseVarCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
         const mRow = (m, isTotal) => {
           if (!isTotal) {
-            mt.tonsSold += m.tonsSold; mt.revenue += m.revenue; mt.varCost += m.varCost;
+            mt.tonsSold += m.tonsSold; mt.revenue += m.revenue; mt.varCost += m.varCost; mt.baseVarCost += m.baseVarCost;
             mt.fixedCost += m.fixedCost; mt.totalCost += m.totalCost; mt.profit += m.profit;
           }
           const ratio = (m.breakEvenTons != null && m.breakEvenTons > 0) ? (m.tonsSold / m.breakEvenTons) : null;
+          const royPct = m.baseVarCost > 0 ? (m.varCost / m.baseVarCost - 1) * 100 : 0;
           const status = m.tonsSold <= 0 ? 'No sales' : (m.profit >= 0 ? 'Profit' : 'Loss');
           return `<tr${isTotal ? ' class="tot"' : ''}>
             <td>${isTotal ? 'Year Total' : beMonthLabel(m.month)}</td>
             <td>${formatTons(m.tonsSold)}</td>
             <td>${formatMoney(m.revenue)}</td>
             <td>${formatMoney(m.varCost)}</td>
+            <td>${royPct > 0 ? (Math.round(royPct * 100) / 100) + '%' : dash}</td>
             <td>${formatMoney(m.fixedCost)}</td>
             <td>${formatMoney(m.totalCost)}</td>
             <td>${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>
@@ -5155,7 +5171,7 @@ ${sections}
             <td>${status}</td>
           </tr>`;
         };
-        const head = `<tr><th>Month</th><th>Tons Sold</th><th>Revenue</th><th>Variable Cost</th><th>Fixed Cost</th><th>Total Cost</th><th>Break-Even Tons</th><th>Sold vs B/E</th><th>Profit / Loss</th><th>Status</th></tr>`;
+        const head = `<tr><th>Month</th><th>Tons Sold</th><th>Revenue</th><th>Variable Cost</th><th>Royalty %</th><th>Fixed Cost</th><th>Total Cost</th><th>Break-Even Tons</th><th>Sold vs B/E</th><th>Profit / Loss</th><th>Status</th></tr>`;
         if (mrows.length) {
           const bodyRows = mrows.map(m => mRow(m, false)).join('');
           const totBeTons = (yrAvgPrice != null && yrAvgPrice > 0) ? mt.totalCost / yrAvgPrice : null;
