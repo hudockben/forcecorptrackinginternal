@@ -1200,8 +1200,8 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   //   crushing row cost = hourlyRate*hours + fuelGallons*fuelCost
   // Year scoped (current year): blended price/cost per ton + monthly
   // throughput feed the break-even indicator further down.
-  let revenueWk = 0, costWk = 0, tonsMo = 0, revenueMo = 0, varCostMo = 0;
-  let revenueYr = 0, tonsSoldYr = 0, varCostYr = 0, tonsCrushedYr = 0;
+  let revenueWk = 0, costWk = 0, tonsMo = 0, revenueMo = 0, varCostMo = 0, royaltyCostMo = 0;
+  let revenueYr = 0, tonsSoldYr = 0, varCostYr = 0, tonsCrushedYr = 0, royaltyCostYr = 0;
   const productTons = new Map();
   const activePits  = new Set();
   for (const r of sales) {
@@ -1211,9 +1211,11 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     const tons  = num(r.tons);
     const price = num(r.pricePerTon);
     if (date >= weekStart && date < weekEnd) revenueWk += tons * price;
+    const royaltyFrac = royaltyMult(r.locationName) - 1;  // rate/100, royalty is % of sales
     if (date >= monthStartIso) {
       tonsMo += tons;
       revenueMo += tons * price;
+      royaltyCostMo += tons * price * royaltyFrac;
       const name = String(r.productName || '').trim();
       if (name) productTons.set(name, (productTons.get(name) || 0) + tons);
       const pit = String(r.locationName || '').trim();
@@ -1222,6 +1224,7 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     if (date.slice(0, 4) === yearPrefix) {
       revenueYr += tons * price;
       tonsSoldYr += tons;
+      royaltyCostYr += tons * price * royaltyFrac;
     }
   }
   for (const r of daily) {
@@ -1230,14 +1233,14 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     if (!date) continue;
     // Daily labor feeds the weekly profit only — variable cost/ton and
     // break-even use crushing cost only.
-    const cost = (num(r.hours) * num(r.rate) + num(r.fuelGallons) * num(r.ppg)) * royaltyMult(r.locationName);
+    const cost = num(r.hours) * num(r.rate) + num(r.fuelGallons) * num(r.ppg);
     if (date >= weekStart && date < weekEnd) costWk += cost;
   }
   for (const r of crush) {
     if (!r || typeof r !== 'object') continue;
     const date = typeof r.date === 'string' ? r.date : '';
     if (!date) continue;
-    const cost = (num(r.hourlyRate) * num(r.hours) + num(r.fuelGallons) * num(r.fuelCost)) * royaltyMult(r.locationName);
+    const cost = num(r.hourlyRate) * num(r.hours) + num(r.fuelGallons) * num(r.fuelCost);
     if (date >= weekStart && date < weekEnd) costWk += cost;
     if (date >= monthStartIso) varCostMo += cost;
     if (date.slice(0, 4) === yearPrefix) {
@@ -1272,17 +1275,21 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
       .filter(v => v > 0);
     if (pitAvgs.length) monthlyFixedTotal = pitAvgs.reduce((a, b) => a + b, 0) / pitAvgs.length;
   }
-  const tonsBasisYr   = tonsCrushedYr > 0 ? tonsCrushedYr : tonsSoldYr;
-  const avgPrice      = tonsSoldYr  > 0 ? revenueYr / tonsSoldYr : null;
-  const varCostPerTon = tonsBasisYr > 0 ? varCostYr / tonsBasisYr : null;
-  const contribution  = (avgPrice != null && varCostPerTon != null) ? avgPrice - varCostPerTon : null;
+  const tonsBasisYr     = tonsCrushedYr > 0 ? tonsCrushedYr : tonsSoldYr;
+  const avgPrice        = tonsSoldYr  > 0 ? revenueYr / tonsSoldYr : null;
+  const varCostPerTon   = tonsBasisYr > 0 ? varCostYr / tonsBasisYr : null;  // crushing only
+  const royaltyPerTonYr = tonsSoldYr  > 0 ? royaltyCostYr / tonsSoldYr : 0;   // royalty is % of sales
+  const contribution    = (avgPrice != null && varCostPerTon != null) ? avgPrice - royaltyPerTonYr - varCostPerTon : null;
 
   // Current month: blended price falls back to the year's when this month
   // hasn't booked sales yet. Full monthly fixed is applied (it's owed
-  // regardless), matching the monthly breakdown's current-month row.
+  // regardless). Royalty (% of sales) comes off the price; break-even covers
+  // crushing + fixed at the net-of-royalty price.
   const priceMo         = tonsMo > 0 ? revenueMo / tonsMo : avgPrice;
+  const effRateMo       = revenueMo > 0 ? royaltyCostMo / revenueMo : 0;
+  const netPriceMo      = priceMo != null ? priceMo * (1 - effRateMo) : null;
   const totalCostMo     = varCostMo + monthlyFixedTotal;
-  const breakEvenTonsMo = (priceMo != null && priceMo > 0) ? totalCostMo / priceMo : null;
+  const breakEvenTonsMo = (netPriceMo != null && netPriceMo > 0) ? totalCostMo / netPriceMo : null;
   const tonsShortMo     = breakEvenTonsMo != null ? Math.max(0, breakEvenTonsMo - tonsMo) : null;
 
   // Status pill reflects this month's break-even when we can judge it,
