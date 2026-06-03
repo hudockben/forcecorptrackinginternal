@@ -1383,7 +1383,7 @@
 
       <div class="home-panel">
         <div class="home-panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
-          <span>Industry Benchmark — Reality Check</span>
+          <span>Industry Benchmark — Reality Check <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">· Western PA</span></span>
           <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:0.72rem;color:var(--muted);display:flex;align-items:center;gap:0.7rem;">
             <span>Scope
               <select class="be-loc-filter" id="beBenchmarkLocFilter" onchange="setBeBenchmarkLoc(this.value)"></select>
@@ -1406,7 +1406,7 @@
           </table>
         </div>
         <div class="be-monthly-note" style="margin-top:0.7rem;">
-          <em>These are broad U.S. crushed-stone / aggregate rules of thumb — figures swing with region, product mix, plant scale, and haul distance, so treat them as a sanity check, not a target. Your variable cost here is <strong>crushing &amp; screening only</strong> (drilling, blasting, loading, and hauling are not in it), which is why contribution looks high — those other costs live in your fixed bucket or aren't captured. For firm numbers see USGS Mineral Commodity Summaries (price) and NSSGA / your state aggregate association (cost &amp; margin).</em>
+          <em>Ranges are seeded for the <strong>Western PA / Appalachian</strong> crushed-limestone &amp; sandstone market — they still swing with product mix, plant scale, and haul distance, so treat them as a sanity check, not a target, and tune any field to your own quotes. Your variable cost here is <strong>crushing &amp; screening only</strong> (drilling, blasting, loading, and hauling are not in it), which is why contribution looks high — those other costs live in your fixed bucket or aren't captured. For firm numbers see USGS Minerals (PA crushed stone), PennDOT bid tabs, and the PA Aggregates &amp; Concrete Association.</em>
         </div>
       </div>
     </div>
@@ -3967,16 +3967,17 @@
 
     // ── Benchmark config (editable industry ranges + labor rate) ───
     // Stored as { laborRate, ranges: { price|crushing|royalty|contribution|
-    // labor: { lo, hi } } }. Seeds from rough U.S. crushed-stone / aggregate
-    // rules of thumb; the operator can tune any range to their market.
+    // labor: { lo, hi } } }. Seeds from Western Pennsylvania / Appalachian
+    // crushed-limestone & sandstone rules of thumb; the operator can tune any
+    // range to their market.
     const BE_BENCH_DEFAULTS = {
       laborRate: 30,
       ranges: {
-        price:        { lo: 12, hi: 18 },
-        crushing:     { lo: 2,  hi: 5  },
-        royalty:      { lo: 5,  hi: 15 },
-        contribution: { lo: 6,  hi: 10 },
-        labor:        { lo: 22, hi: 35 },
+        price:        { lo: 11, hi: 17 },   // WPA limestone/sandstone, base → spec
+        crushing:     { lo: 2.5, hi: 5.5 }, // crush & screen; PA fuel/energy runs high
+        royalty:      { lo: 8,  hi: 15 },   // Appalachian aggregate mineral leases
+        contribution: { lo: 5,  hi: 10 },
+        labor:        { lo: 24, hi: 36 },   // WPA quarry/equipment operator wage
       },
     };
     const QUARRY_BENCHMARKS_KEY = 'fct_quarry_benchmarks';
@@ -5576,7 +5577,7 @@ ${sections}
         benchmarkSection = `<h2>Industry Benchmark &mdash; Reality Check (${escapeHtml(benchLabel)})</h2>`
           + `<div class="note">${noteHtml}</div>`
           + `<table class="rep"><thead>${head}</thead><tbody>${bbody}</tbody></table>`
-          + `<div class="note"><em>Ranges are your tunable benchmarks (seeded from broad U.S. crushed-stone / aggregate rules of thumb — they vary by region, product mix, plant scale, and haul distance). Variable cost here is crushing &amp; screening only (drilling, blasting, loading, and hauling are not in it). Sanity check, not a target.</em></div>`;
+          + `<div class="note"><em>Ranges are your tunable benchmarks (seeded for the Western PA / Appalachian crushed-limestone &amp; sandstone market — they still vary with product mix, plant scale, and haul distance). Variable cost here is crushing &amp; screening only (drilling, blasting, loading, and hauling are not in it). Sanity check, not a target.</em></div>`;
       }
 
       const style = `<style>
