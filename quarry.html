@@ -636,6 +636,41 @@
     }
     .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
     .cb-opt-empty { padding: 0.32rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
+
+    /* ── Break-Even tab ── */
+    .be-explainer {
+      background: #12121a; border: 1px solid var(--border); border-left: 3px solid var(--accent);
+      border-radius: 8px; padding: 0.85rem 1.05rem; margin-bottom: 1.1rem;
+      font-size: 0.78rem; line-height: 1.5; color: var(--text);
+    }
+    .be-explainer .be-formula {
+      display: inline-block; margin: 0.35rem 0; padding: 0.3rem 0.55rem;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--accent); font-weight: 600;
+    }
+    .be-explainer ul { margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted); }
+    .be-explainer li { margin: 0.2rem 0; }
+    .be-explainer strong { color: var(--text); }
+    .be-table { min-width: 1150px; }
+    .be-num { text-align: right; font-variant-numeric: tabular-nums; }
+    th.be-num { text-align: right; }
+    .be-fixed-input {
+      width: 7rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 0.8rem; padding: 0.25rem 0.4rem;
+      text-align: right; font-variant-numeric: tabular-nums;
+    }
+    .be-fixed-input:focus { border-color: var(--accent); outline: none; }
+    .be-pill {
+      display: inline-block; padding: 0.12rem 0.5rem; border-radius: 999px;
+      font-size: 0.66rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;
+      border: 1px solid transparent; white-space: nowrap;
+    }
+    .be-pill.good { color: #4ade80; background: rgba(74,222,128,0.12); border-color: rgba(74,222,128,0.25); }
+    .be-pill.bad  { color: #ef4444; background: rgba(239,68,68,0.12);  border-color: rgba(239,68,68,0.25); }
+    .be-pill.mute { color: var(--muted); background: rgba(120,120,140,0.10); border-color: var(--border); }
+    .be-table tr.be-row-total td { border-top: 2px solid var(--border); font-weight: 700; background: #14141d; }
+    .be-table .is-positive { color: #4ade80; }
+    .be-table .is-negative { color: #ef4444; }
   </style>
 </head>
 <body>
@@ -661,6 +696,7 @@
     <button class="tab-btn"        data-tab="crushing" onclick="switchTab('crushing')">Crushing Tracking</button>
     <button class="tab-btn"        data-tab="sales"     onclick="switchTab('sales')">Sales Tracking</button>
     <button class="tab-btn"        data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
+    <button class="tab-btn"        data-tab="breakeven" onclick="switchTab('breakeven')">Break-Even</button>
     <div class="tab-bar-spacer"></div>
     <button class="btn-manage-lists" onclick="openManageLists()">⚙ Manage Lists</button>
   </nav>
@@ -1164,6 +1200,100 @@
     </div>
   </div>
 
+  <!-- ── Break-Even tab panel ── -->
+  <div class="tab-panel"        id="tab-breakeven">
+    <div class="home-wrap">
+      <div class="home-toolbar">
+        <div>
+          <div class="home-title">Break-Even Analysis</div>
+          <div class="home-sub" id="beSubtitle">Loading…</div>
+        </div>
+        <div class="year-filter-wrap">
+          Year
+          <select class="year-filter-select" id="breakevenYearFilter" onchange="setYearFilter('breakeven', this.value)" disabled></select>
+        </div>
+      </div>
+
+      <div class="be-explainer">
+        <strong>How many tons must each pit sell to stop losing money?</strong>
+        <div class="be-formula">Break-even tons / mo&nbsp;=&nbsp;Monthly fixed costs&nbsp;÷&nbsp;(Avg price/ton − Variable cost/ton)</div>
+        <ul>
+          <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales, Daily, and Crushing entries for the selected year. Variable cost = all daily + crushing labor &amp; fuel, divided by tons produced.</li>
+          <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
+          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter each pit's monthly figure in the table (include its share of corporate overhead). Entries save automatically.</li>
+        </ul>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile is-accent">
+          <div class="kpi-label">Avg Price / Ton</div>
+          <div class="kpi-value" id="beKpiPrice">—</div>
+          <div class="kpi-sub">Blended · all pits</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Variable Cost / Ton</div>
+          <div class="kpi-value" id="beKpiVarCost">—</div>
+          <div class="kpi-sub">Daily + crushing ÷ tons</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Contribution / Ton</div>
+          <div class="kpi-value" id="beKpiContribution">—</div>
+          <div class="kpi-sub">Price − variable cost</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Monthly Fixed Costs</div>
+          <div class="kpi-value" id="beKpiFixed">$0.00</div>
+          <div class="kpi-sub">Total entered · all pits</div>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile">
+          <div class="kpi-label">Break-Even Tons / Mo</div>
+          <div class="kpi-value" id="beKpiTons">—</div>
+          <div class="kpi-sub">Tons/mo to cover all costs</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Break-Even Revenue / Mo</div>
+          <div class="kpi-value" id="beKpiRevenue">—</div>
+          <div class="kpi-sub">Sales $/mo to break even</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Avg Tons Sold / Mo</div>
+          <div class="kpi-value" id="beKpiActual">0</div>
+          <div class="kpi-sub" id="beKpiActualSub">Recent monthly average</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Status</div>
+          <div class="kpi-value" id="beKpiStatus">—</div>
+          <div class="kpi-sub" id="beKpiStatusSub">vs break-even</div>
+        </div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title">By Quarry Location</div>
+        <div class="sales-table-wrap">
+          <table class="sales-table be-table" id="beLocationTable">
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th class="be-num">Avg Price / Ton</th>
+                <th class="be-num">Variable Cost / Ton</th>
+                <th class="be-num">Contribution / Ton</th>
+                <th class="be-num">Monthly Fixed Costs</th>
+                <th class="be-num">Break-Even Tons / Mo</th>
+                <th class="be-num">Break-Even Rev / Mo</th>
+                <th class="be-num">Avg Tons Sold / Mo</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="beLocationBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Manage Lists Modal ── -->
   <div class="modal-backdrop" id="manageListsBackdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="manageListsTitle">
@@ -1322,6 +1452,7 @@
       if (tab === 'daily') refreshDaily();
       if (tab === 'home') refreshHome();
       if (tab === 'analytics') refreshAnalytics();
+      if (tab === 'breakeven') refreshBreakeven();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -1729,7 +1860,7 @@
     // ── Per-tab year filter ─────────────────────────────────────
     // Default each tab to the current year so users land on this
     // year's data. Selecting "All Years" shows everything.
-    const yearFilters = { daily: null, crushing: null, sales: null, home: null, analytics: null };
+    const yearFilters = { daily: null, crushing: null, sales: null, home: null, analytics: null, breakeven: null };
 
     function getRowYear(dateStr) {
       if (!dateStr || typeof dateStr !== 'string') return null;
@@ -1753,6 +1884,7 @@
       else if (tab === 'sales')    renderSales();
       else if (tab === 'home')     renderHome();
       else if (tab === 'analytics') renderAnalytics();
+      else if (tab === 'breakeven') renderBreakeven();
     }
     function renderYearFilterOptions(tab, rows) {
       const sel = document.getElementById(tab + 'YearFilter');
@@ -2623,6 +2755,10 @@
           putDaily(dailyRows.map(r => ({ ...r })), { keepalive: true }).catch(() => {});
           dailySavePending = null;
         }
+        if (fixedSavePending || fixedSaveInFlight) {
+          putFixedCosts(quarryFixedCosts, { keepalive: true }).catch(() => {});
+          fixedSavePending = null;
+        }
       } catch (_) { /* best-effort on unload */ }
     }
     window.addEventListener('beforeunload', _quarryFlushOnUnload);
@@ -3454,6 +3590,314 @@
       visibleSales.forEach(r => feed.push({ kind: 'sales', date: r.date || '', row: r }));
       feed.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
       renderHomeFeed(feed.slice(0, 12));
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // BREAK-EVEN ANALYSIS
+    // Pulls avg price/ton and variable cost/ton from the existing
+    // sales / daily / crushing data, lets the user enter each pit's
+    // monthly fixed costs (persisted in fct_quarry_fixed_costs), and
+    // computes the tons + revenue per month each location must sell to
+    // stop losing money. Break-even is inherently a *monthly* figure
+    // because fixed costs are entered per month; price and cost per ton
+    // are blended over whatever the Year filter selects.
+    // ─────────────────────────────────────────────────────────────
+    const QUARRY_FIXED_KEY = 'fct_quarry_fixed_costs';
+    const BE_NO_LOC = '— No location —';
+    let quarryFixedCosts = {};
+    let fixedCostsLoaded = false;
+    let fixedCostsFetchedOnce = false;
+    let fixedSavePending = null;
+    let fixedSaveInFlight = false;
+
+    function normalizeFixedCosts(value) {
+      const out = {};
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.keys(value).forEach(k => {
+          const n = Number(value[k]);
+          if (Number.isFinite(n) && n >= 0) out[k] = n;
+        });
+      }
+      return out;
+    }
+
+    async function fetchFixedCosts() {
+      const res = await fetch(`/api/data/${QUARRY_FIXED_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_FIXED_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeFixedCosts(data.value);
+    }
+    async function putFixedCosts(value, opts = {}) {
+      const init = {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value }),
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_FIXED_KEY}`, init);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_FIXED_KEY} → ${res.status} ${text}`);
+      }
+    }
+    // Coalesces rapid edits into a single in-flight PUT (mirrors lists save).
+    function scheduleFixedCostsSave() {
+      fixedSavePending = quarryFixedCosts;
+      if (fixedSaveInFlight) return;
+      flushFixedCostsSave();
+    }
+    async function flushFixedCostsSave() {
+      while (fixedSavePending) {
+        const snapshot = fixedSavePending;
+        fixedSavePending = null;
+        fixedSaveInFlight = true;
+        try {
+          await putFixedCosts(snapshot);
+        } catch (err) {
+          console.error('[quarry] fixed-costs save failed:', err);
+          alert('Could not save fixed costs — please check your connection and try again.');
+        } finally {
+          fixedSaveInFlight = false;
+        }
+      }
+    }
+    async function refreshFixedCosts() {
+      try {
+        quarryFixedCosts = await fetchFixedCosts();
+        fixedCostsLoaded = true;
+      } catch (err) {
+        console.error('[quarry] fixed-costs load failed:', err);
+        if (!fixedCostsFetchedOnce) { quarryFixedCosts = {}; fixedCostsLoaded = true; }
+      } finally {
+        fixedCostsFetchedOnce = true;
+      }
+    }
+
+    function onBreakevenFixedInput(input) {
+      const loc = input.dataset.loc || '';
+      if (!loc) return;
+      const n = Number(String(input.value).replace(/[^0-9.]/g, ''));
+      if (Number.isFinite(n) && n > 0) quarryFixedCosts[loc] = Math.round(n * 100) / 100;
+      else delete quarryFixedCosts[loc];
+      scheduleFixedCostsSave();
+      renderBreakeven();
+    }
+
+    // Month key (YYYY-MM) from either YYYY-MM-DD or M/D/YYYY.
+    function beMonthKey(dateStr) {
+      if (!dateStr) return null;
+      const s = String(dateStr).trim();
+      let m = s.match(/^(\d{4})-(\d{2})/);
+      if (m) return m[1] + '-' + m[2];
+      m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (m) return m[3] + '-' + String(m[1]).padStart(2, '0');
+      return null;
+    }
+
+    // Build per-location + division-total break-even figures for the
+    // selected year. Variable cost per ton uses tons crushed when present
+    // (matching the Home "Avg Cost/Ton" basis) and falls back to tons sold
+    // for sales-only pits.
+    function computeBreakeven() {
+      const inYear = (r) => rowMatchesYear('breakeven', r);
+      const locs = new Map();
+      const ensure = (name) => {
+        const key = (name || '').trim() || BE_NO_LOC;
+        if (!locs.has(key)) {
+          locs.set(key, {
+            name: key, hasLoc: key !== BE_NO_LOC,
+            revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0,
+            salesMonths: new Set(),
+          });
+        }
+        return locs.get(key);
+      };
+
+      salesRows.filter(inYear).forEach(r => {
+        const e = ensure(r.locationName);
+        e.revenue += homeRowSales(r);
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) e.tonsSold += t;
+        const mk = beMonthKey(r.date);
+        if (mk && Number.isFinite(t) && t > 0) e.salesMonths.add(mk);
+      });
+      dailyRows.filter(inYear).forEach(r => {
+        ensure(r.locationName).varCost += dailyCalc(r).totalCost;
+      });
+      crushRows.filter(inYear).forEach(r => {
+        const e = ensure(r.locationName);
+        const c = crushCalc(r);
+        e.varCost += c.totalCost;
+        e.tonsCrushed += c.estimatedTons;
+      });
+
+      // Surface pits that only have a fixed cost entered (no activity yet)
+      // so the user can still see/edit them.
+      Object.keys(quarryFixedCosts).forEach(name => { if (name) ensure(name); });
+
+      const finalize = (e) => {
+        const tonsBasis = e.tonsCrushed > 0 ? e.tonsCrushed : e.tonsSold;
+        const avgPrice = e.tonsSold > 0 ? e.revenue / e.tonsSold : null;
+        const varCostPerTon = tonsBasis > 0 ? e.varCost / tonsBasis : null;
+        const contribution = (avgPrice != null && varCostPerTon != null) ? avgPrice - varCostPerTon : null;
+        const monthlyFixed = e.hasLoc ? (Number(quarryFixedCosts[e.name]) || 0) : 0;
+        let breakEvenTons = null, breakEvenRevenue = null;
+        if (contribution != null && contribution > 0) {
+          breakEvenTons = monthlyFixed / contribution;
+          breakEvenRevenue = avgPrice != null ? breakEvenTons * avgPrice : null;
+        } else if (contribution != null && monthlyFixed <= 0) {
+          breakEvenTons = 0; breakEvenRevenue = 0;
+        }
+        const months = e.salesMonths.size;
+        const avgTonsPerMonth = months > 0 ? e.tonsSold / months : 0;
+        return {
+          ...e, tonsBasis, avgPrice, varCostPerTon, contribution,
+          monthlyFixed, breakEvenTons, breakEvenRevenue, months, avgTonsPerMonth,
+        };
+      };
+
+      const rows = [...locs.values()].map(finalize)
+        .sort((a, b) => (b.tonsSold - a.tonsSold) || a.name.localeCompare(b.name));
+
+      // Division total — blended across every pit.
+      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, monthlyFixed: 0, salesMonths: new Set() };
+      rows.forEach(r => {
+        T.revenue += r.revenue; T.tonsSold += r.tonsSold;
+        T.varCost += r.varCost; T.tonsCrushed += r.tonsCrushed;
+        T.monthlyFixed += r.monthlyFixed;
+        r.salesMonths.forEach(m => T.salesMonths.add(m));
+      });
+      const tBasis = T.tonsCrushed > 0 ? T.tonsCrushed : T.tonsSold;
+      const tAvgPrice = T.tonsSold > 0 ? T.revenue / T.tonsSold : null;
+      const tVarCost = tBasis > 0 ? T.varCost / tBasis : null;
+      const tContribution = (tAvgPrice != null && tVarCost != null) ? tAvgPrice - tVarCost : null;
+      let tBeTons = null, tBeRev = null;
+      if (tContribution != null && tContribution > 0) {
+        tBeTons = T.monthlyFixed / tContribution;
+        tBeRev = tAvgPrice != null ? tBeTons * tAvgPrice : null;
+      } else if (tContribution != null && T.monthlyFixed <= 0) {
+        tBeTons = 0; tBeRev = 0;
+      }
+      const tMonths = T.salesMonths.size;
+      const total = {
+        name: 'All Pits', avgPrice: tAvgPrice, varCostPerTon: tVarCost, contribution: tContribution,
+        monthlyFixed: T.monthlyFixed, breakEvenTons: tBeTons, breakEvenRevenue: tBeRev,
+        months: tMonths, avgTonsPerMonth: tMonths > 0 ? T.tonsSold / tMonths : 0,
+      };
+
+      return { rows, total };
+    }
+
+    // Status pill descriptor: are we above or below break-even?
+    function beStatus(d) {
+      if (d.contribution == null) return { cls: 'mute', label: 'Needs data' };
+      if (d.contribution <= 0)    return { cls: 'bad',  label: 'No break-even · cost ≥ price' };
+      if (d.monthlyFixed <= 0)    return { cls: 'mute', label: 'Set fixed costs' };
+      if (d.breakEvenTons == null) return { cls: 'mute', label: '—' };
+      if (d.months === 0)         return { cls: 'mute', label: 'No sales in range' };
+      const diff = d.avgTonsPerMonth - d.breakEvenTons;
+      if (diff >= 0) return { cls: 'good', label: `Above by ${formatTons(diff)} t/mo` };
+      return { cls: 'bad', label: `Below by ${formatTons(Math.abs(diff))} t/mo` };
+    }
+
+    async function refreshBreakeven() {
+      renderBreakeven();
+      const tasks = [];
+      if (!dailyFetchedOnce) tasks.push(refreshDaily());
+      if (!crushFetchedOnce) tasks.push(refreshCrush());
+      if (!salesFetchedOnce) tasks.push(refreshSales());
+      if (!fixedCostsFetchedOnce) tasks.push(refreshFixedCosts());
+      if (tasks.length) { await Promise.allSettled(tasks); renderBreakeven(); }
+    }
+
+    function renderBreakeven() {
+      const allRows = [...dailyRows, ...crushRows, ...salesRows];
+      renderYearFilterOptions('breakeven', allRows);
+
+      const { rows, total } = computeBreakeven();
+      const dash = '—';
+      const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      const setSigned = (id, txt, sign) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = txt;
+        el.classList.toggle('is-positive', sign > 0);
+        el.classList.toggle('is-negative', sign < 0);
+      };
+
+      // ── Division KPIs ──
+      setText('beKpiPrice',   total.avgPrice != null ? formatMoney(total.avgPrice) : dash);
+      setText('beKpiVarCost', total.varCostPerTon != null ? formatMoney(total.varCostPerTon) : dash);
+      setSigned('beKpiContribution',
+        total.contribution != null ? formatMoney(total.contribution) : dash,
+        total.contribution == null ? 0 : (total.contribution > 0 ? 1 : -1));
+      setText('beKpiFixed', formatMoney(total.monthlyFixed));
+
+      setText('beKpiTons',
+        (total.contribution != null && total.contribution <= 0) ? 'No break-even'
+        : total.breakEvenTons != null ? formatTons(total.breakEvenTons)
+        : dash);
+      setText('beKpiRevenue', total.breakEvenRevenue != null ? formatMoney(total.breakEvenRevenue) : dash);
+      setText('beKpiActual', formatTons(total.avgTonsPerMonth));
+      setText('beKpiActualSub',
+        total.months > 0 ? `Over ${total.months} active sales month${total.months === 1 ? '' : 's'}` : 'No sales in range');
+
+      const st = beStatus(total);
+      const statusEl = document.getElementById('beKpiStatus');
+      if (statusEl) {
+        statusEl.textContent = st.label;
+        statusEl.classList.toggle('is-positive', st.cls === 'good');
+        statusEl.classList.toggle('is-negative', st.cls === 'bad');
+      }
+      setText('beKpiStatusSub',
+        (total.breakEvenTons != null && total.contribution != null && total.contribution > 0)
+          ? `Need ${formatTons(total.breakEvenTons)} t/mo · selling ${formatTons(total.avgTonsPerMonth)} t/mo`
+          : 'vs break-even');
+
+      const sub = document.getElementById('beSubtitle');
+      if (sub) {
+        const yr = yearFilterLabel('breakeven');
+        sub.textContent = rows.length
+          ? `Showing ${yr} · price & cost per ton are blended over the year; fixed costs and break-even are per month.`
+          : 'Add Sales, Daily, or Crushing entries — then enter each pit’s monthly fixed costs here.';
+      }
+
+      // ── Per-location table ──
+      const body = document.getElementById('beLocationBody');
+      if (!body) return;
+      const cell = (txt, cls) => `<td class="${cls || ''}">${txt}</td>`;
+      const moneyCell = (v) => cell(v != null ? formatMoney(v) : dash, 'be-num');
+      const tonsCell  = (v) => cell(v != null ? formatTons(v)  : dash, 'be-num');
+      const rowHtml = (d, isTotal) => {
+        const s = beStatus(d);
+        const contribCls = d.contribution == null ? '' : (d.contribution > 0 ? 'is-positive' : 'is-negative');
+        const fixedCell = isTotal
+          ? cell(formatMoney(d.monthlyFixed), 'be-num')
+          : (d.name === BE_NO_LOC
+              ? cell(dash, 'be-num')
+              : `<td class="be-num"><input class="be-fixed-input" type="text" inputmode="decimal" ` +
+                `data-loc="${escapeHtml(d.name)}" value="${d.monthlyFixed > 0 ? d.monthlyFixed : ''}" ` +
+                `placeholder="0" onchange="onBreakevenFixedInput(this)"></td>`);
+        const beTonsTxt = (d.contribution != null && d.contribution <= 0) ? 'No B/E'
+          : (d.breakEvenTons != null ? formatTons(d.breakEvenTons) : dash);
+        return `<tr class="${isTotal ? 'be-row-total' : ''}">`
+          + cell(escapeHtml(d.name))
+          + moneyCell(d.avgPrice)
+          + moneyCell(d.varCostPerTon)
+          + `<td class="be-num ${contribCls}">${d.contribution != null ? formatMoney(d.contribution) : dash}</td>`
+          + fixedCell
+          + cell(beTonsTxt, 'be-num')
+          + moneyCell(d.breakEvenRevenue)
+          + tonsCell(d.avgTonsPerMonth)
+          + cell(`<span class="be-pill ${s.cls}">${escapeHtml(s.label)}</span>`)
+          + '</tr>';
+      };
+      let html = rows.map(d => rowHtml(d, false)).join('');
+      if (rows.length) html += rowHtml({ ...total, hasLoc: true }, true);
+      body.innerHTML = html
+        || `<tr class="is-empty-row"><td colspan="9" style="text-align:center;padding:1.5rem;">No quarry data yet for this year. Add entries on the Sales, Daily, or Crushing tabs.</td></tr>`;
     }
 
     function renderHomeRanked(elId, items, mapper) {
