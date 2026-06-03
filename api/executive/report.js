@@ -1165,7 +1165,7 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
       return r[0]?.value;
     }),
     safeRun('quarry.fixed_blob', async () => {
-      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_fixed_costs`}`;
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_monthly_fixed`}`;
       return r[0]?.value;
     }),
   ]);
@@ -1243,14 +1243,17 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   }
 
   // ── Break-even (current month, cost-coverage) ──
-  // Mirrors the Quarry page's Month-by-Month table for the in-progress
-  // month: the sales needed to cover THIS month's actual labor + fuel plus
-  // fixed overhead. Variable cost/ton and contribution stay year-blended so
-  // the per-ton economics — and the cost ≥ price guard — read steady.
+  // Mirrors the Quarry page: the sales needed to cover THIS month's actual
+  // labor + fuel plus fixed overhead. Variable cost/ton and contribution stay
+  // year-blended so the per-ton economics — and the cost ≥ price guard — read
+  // steady. Monthly fixed mirrors the By-Location "All Pits" figure: the mean
+  // of the all-scope per-month entries in fct_quarry_monthly_fixed
+  // ({ scope: { 'YYYY-MM': amount } }).
   let monthlyFixedTotal = 0;
-  for (const k of Object.keys(fixed)) {
-    const n = num(fixed[k]);
-    if (n > 0) monthlyFixedTotal += n;
+  {
+    const allScope = (fixed && typeof fixed.all === 'object' && fixed.all) ? fixed.all : {};
+    const vals = Object.keys(allScope).map(k => num(allScope[k])).filter(v => v > 0);
+    if (vals.length) monthlyFixedTotal = vals.reduce((s, v) => s + v, 0) / vals.length;
   }
   const tonsBasisYr   = tonsCrushedYr > 0 ? tonsCrushedYr : tonsSoldYr;
   const avgPrice      = tonsSoldYr  > 0 ? revenueYr / tonsSoldYr : null;

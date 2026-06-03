@@ -1247,7 +1247,7 @@
         <ul>
           <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales, Daily, and Crushing entries for the selected year. Variable cost = all daily + crushing labor &amp; fuel, divided by tons produced.</li>
           <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
-          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter each pit's monthly figure in the table (include its share of corporate overhead). Entries save automatically.</li>
+          <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below (include each location's share of corporate overhead); this column shows the average. Entries save automatically.</li>
         </ul>
       </div>
 
@@ -2821,9 +2821,9 @@
           putDaily(dailyRows.map(r => ({ ...r })), { keepalive: true }).catch(() => {});
           dailySavePending = null;
         }
-        if (fixedSavePending || fixedSaveInFlight) {
-          putFixedCosts(quarryFixedCosts, { keepalive: true }).catch(() => {});
-          fixedSavePending = null;
+        if (monthlyFixedSavePending || monthlyFixedSaveInFlight) {
+          putMonthlyFixed(quarryMonthlyFixed, { keepalive: true }).catch(() => {});
+          monthlyFixedSavePending = null;
         }
       } catch (_) { /* best-effort on unload */ }
     }
@@ -3661,94 +3661,122 @@
     // ─────────────────────────────────────────────────────────────
     // BREAK-EVEN ANALYSIS
     // Pulls avg price/ton and variable cost/ton from the existing
-    // sales / daily / crushing data, lets the user enter each pit's
-    // monthly fixed costs (persisted in fct_quarry_fixed_costs), and
-    // computes the tons + revenue per month each location must sell to
-    // stop losing money. Break-even is inherently a *monthly* figure
-    // because fixed costs are entered per month; price and cost per ton
-    // are blended over whatever the Year filter selects.
+    // sales / daily / crushing data. Fixed costs are typed per month in the
+    // Month-by-Month table and stored nested by the location scope shown
+    // there: { scope: { 'YYYY-MM': amount } } where scope is 'all' or a pit
+    // name. The By-Location "Monthly Fixed Cost" for each row is the AVERAGE
+    // of that scope's entries, and the executive tile mirrors the All-Pits
+    // average. Price and cost per ton are blended over the Year filter.
     // ─────────────────────────────────────────────────────────────
-    const QUARRY_FIXED_KEY = 'fct_quarry_fixed_costs';
+    const QUARRY_MONTHLY_FIXED_KEY = 'fct_quarry_monthly_fixed';
     const BE_NO_LOC = '— No location —';
-    let quarryFixedCosts = {};
-    let fixedCostsLoaded = false;
-    let fixedCostsFetchedOnce = false;
-    let fixedSavePending = null;
-    let fixedSaveInFlight = false;
+    let quarryMonthlyFixed = {};
+    let monthlyFixedLoaded = false;
+    let monthlyFixedFetchedOnce = false;
+    let monthlyFixedSavePending = null;
+    let monthlyFixedSaveInFlight = false;
 
-    function normalizeFixedCosts(value) {
+    function normalizeMonthlyFixed(value) {
       const out = {};
       if (value && typeof value === 'object' && !Array.isArray(value)) {
-        Object.keys(value).forEach(k => {
-          const n = Number(value[k]);
-          if (Number.isFinite(n) && n >= 0) out[k] = n;
+        Object.keys(value).forEach(scope => {
+          const months = value[scope];
+          if (months && typeof months === 'object' && !Array.isArray(months)) {
+            Object.keys(months).forEach(mk => {
+              const n = Number(months[mk]);
+              if (/^\d{4}-\d{2}$/.test(mk) && Number.isFinite(n) && n > 0) {
+                (out[scope] || (out[scope] = {}))[mk] = Math.round(n * 100) / 100;
+              }
+            });
+          }
         });
       }
       return out;
     }
 
-    async function fetchFixedCosts() {
-      const res = await fetch(`/api/data/${QUARRY_FIXED_KEY}`, {
+    async function fetchMonthlyFixed() {
+      const res = await fetch(`/api/data/${QUARRY_MONTHLY_FIXED_KEY}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) throw new Error(`GET ${QUARRY_FIXED_KEY} → ${res.status}`);
+      if (!res.ok) throw new Error(`GET ${QUARRY_MONTHLY_FIXED_KEY} → ${res.status}`);
       const data = await res.json();
-      return normalizeFixedCosts(data.value);
+      return normalizeMonthlyFixed(data.value);
     }
-    async function putFixedCosts(value, opts = {}) {
+    async function putMonthlyFixed(value, opts = {}) {
       const init = {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ value }),
       };
       if (opts.keepalive) init.keepalive = true;
-      const res = await fetch(`/api/data/${QUARRY_FIXED_KEY}`, init);
+      const res = await fetch(`/api/data/${QUARRY_MONTHLY_FIXED_KEY}`, init);
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new Error(`PUT ${QUARRY_FIXED_KEY} → ${res.status} ${text}`);
+        throw new Error(`PUT ${QUARRY_MONTHLY_FIXED_KEY} → ${res.status} ${text}`);
       }
     }
     // Coalesces rapid edits into a single in-flight PUT (mirrors lists save).
-    function scheduleFixedCostsSave() {
-      fixedSavePending = quarryFixedCosts;
-      if (fixedSaveInFlight) return;
-      flushFixedCostsSave();
+    function scheduleMonthlyFixedSave() {
+      monthlyFixedSavePending = quarryMonthlyFixed;
+      if (monthlyFixedSaveInFlight) return;
+      flushMonthlyFixedSave();
     }
-    async function flushFixedCostsSave() {
-      while (fixedSavePending) {
-        const snapshot = fixedSavePending;
-        fixedSavePending = null;
-        fixedSaveInFlight = true;
+    async function flushMonthlyFixedSave() {
+      while (monthlyFixedSavePending) {
+        const snapshot = monthlyFixedSavePending;
+        monthlyFixedSavePending = null;
+        monthlyFixedSaveInFlight = true;
         try {
-          await putFixedCosts(snapshot);
+          await putMonthlyFixed(snapshot);
         } catch (err) {
-          console.error('[quarry] fixed-costs save failed:', err);
+          console.error('[quarry] monthly fixed save failed:', err);
           alert('Could not save fixed costs — please check your connection and try again.');
         } finally {
-          fixedSaveInFlight = false;
+          monthlyFixedSaveInFlight = false;
         }
       }
     }
-    async function refreshFixedCosts() {
+    async function refreshMonthlyFixed() {
       try {
-        quarryFixedCosts = await fetchFixedCosts();
-        fixedCostsLoaded = true;
+        quarryMonthlyFixed = await fetchMonthlyFixed();
+        monthlyFixedLoaded = true;
       } catch (err) {
-        console.error('[quarry] fixed-costs load failed:', err);
-        if (!fixedCostsFetchedOnce) { quarryFixedCosts = {}; fixedCostsLoaded = true; }
+        console.error('[quarry] monthly fixed load failed:', err);
+        if (!monthlyFixedFetchedOnce) { quarryMonthlyFixed = {}; monthlyFixedLoaded = true; }
       } finally {
-        fixedCostsFetchedOnce = true;
+        monthlyFixedFetchedOnce = true;
       }
     }
 
-    function onBreakevenFixedInput(input) {
-      const loc = input.dataset.loc || '';
-      if (!loc) return;
-      const n = Number(String(input.value).replace(/[^0-9.]/g, ''));
-      if (Number.isFinite(n) && n > 0) quarryFixedCosts[loc] = Math.round(n * 100) / 100;
-      else delete quarryFixedCosts[loc];
-      scheduleFixedCostsSave();
-      renderBreakeven();
+    // One scope's fixed cost for a single month (0 if none).
+    function scopeMonthFixed(scope, monthKey) {
+      const m = quarryMonthlyFixed[scope];
+      const v = m ? Number(m[monthKey]) : 0;
+      return Number.isFinite(v) ? v : 0;
+    }
+    // Average of the per-month fixed costs entered for a scope (0 if none).
+    function scopeAvgFixed(scope) {
+      const m = quarryMonthlyFixed[scope];
+      if (!m) return 0;
+      const vals = Object.keys(m).map(k => Number(m[k])).filter(v => Number.isFinite(v) && v > 0);
+      return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    }
+    // Editable per-month fixed input (Month-by-Month table); stores under the
+    // currently selected location scope.
+    function onMonthlyFixedInput(input) {
+      const scope = input.dataset.loc || '';
+      const month = input.dataset.month || '';
+      if (!scope || !month) return;
+      const raw = String(input.value).trim();
+      const n = raw === '' ? 0 : Number(raw.replace(/[^0-9.]/g, ''));
+      if (Number.isFinite(n) && n > 0) {
+        (quarryMonthlyFixed[scope] || (quarryMonthlyFixed[scope] = {}))[month] = Math.round(n * 100) / 100;
+      } else if (quarryMonthlyFixed[scope]) {
+        delete quarryMonthlyFixed[scope][month];
+        if (!Object.keys(quarryMonthlyFixed[scope]).length) delete quarryMonthlyFixed[scope];
+      }
+      scheduleMonthlyFixedSave();
+      renderBreakeven();   // by-location average + monthly table + chart all refresh
     }
 
     // Month key (YYYY-MM) from either YYYY-MM-DD or M/D/YYYY.
@@ -3799,16 +3827,17 @@
         e.tonsCrushed += c.estimatedTons;
       });
 
-      // Surface pits that only have a fixed cost entered (no activity yet)
-      // so the user can still see/edit them.
-      Object.keys(quarryFixedCosts).forEach(name => { if (name) ensure(name); });
+      // Surface pits that have fixed costs entered but no activity yet.
+      Object.keys(quarryMonthlyFixed).forEach(scope => {
+        if (scope && scope !== 'all' && scope !== BE_NO_LOC) ensure(scope);
+      });
 
       const finalize = (e) => {
         const tonsBasis = e.tonsCrushed > 0 ? e.tonsCrushed : e.tonsSold;
         const avgPrice = e.tonsSold > 0 ? e.revenue / e.tonsSold : null;
         const varCostPerTon = tonsBasis > 0 ? e.varCost / tonsBasis : null;
         const contribution = (avgPrice != null && varCostPerTon != null) ? avgPrice - varCostPerTon : null;
-        const monthlyFixed = e.hasLoc ? (Number(quarryFixedCosts[e.name]) || 0) : 0;
+        const monthlyFixed = scopeAvgFixed(e.name);
         let breakEvenTons = null, breakEvenRevenue = null;
         if (contribution != null && contribution > 0) {
           breakEvenTons = monthlyFixed / contribution;
@@ -3827,12 +3856,13 @@
       const rows = [...locs.values()].map(finalize)
         .sort((a, b) => (b.tonsSold - a.tonsSold) || a.name.localeCompare(b.name));
 
-      // Division total — blended across every pit.
-      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, monthlyFixed: 0, salesMonths: new Set() };
+      // Division total — blended across every pit. All-Pits fixed is the
+      // average of the All-Pits-scope monthly entries (the figure mirrored to
+      // the executive tile), independent of the per-pit rows.
+      const T = { revenue: 0, tonsSold: 0, varCost: 0, tonsCrushed: 0, monthlyFixed: scopeAvgFixed('all'), salesMonths: new Set() };
       rows.forEach(r => {
         T.revenue += r.revenue; T.tonsSold += r.tonsSold;
         T.varCost += r.varCost; T.tonsCrushed += r.tonsCrushed;
-        T.monthlyFixed += r.monthlyFixed;
         r.salesMonths.forEach(m => T.salesMonths.add(m));
       });
       const tBasis = T.tonsCrushed > 0 ? T.tonsCrushed : T.tonsSold;
@@ -3874,7 +3904,7 @@
       if (!dailyFetchedOnce) tasks.push(refreshDaily());
       if (!crushFetchedOnce) tasks.push(refreshCrush());
       if (!salesFetchedOnce) tasks.push(refreshSales());
-      if (!fixedCostsFetchedOnce) tasks.push(refreshFixedCosts());
+      if (!monthlyFixedFetchedOnce) tasks.push(refreshMonthlyFixed());
       if (tasks.length) { await Promise.allSettled(tasks); renderBreakeven(); }
     }
 
@@ -3927,7 +3957,7 @@
         const yr = yearFilterLabel('breakeven');
         sub.textContent = rows.length
           ? `Showing ${yr} · price & cost per ton are blended over the year; fixed costs and break-even are per month.`
-          : 'Add Sales, Daily, or Crushing entries — then enter each pit’s monthly fixed costs here.';
+          : 'Add Sales, Daily, or Crushing entries — then enter monthly fixed costs in the table below.';
       }
 
       // ── Month-by-month section: location dropdown + table ──
@@ -3951,13 +3981,11 @@
       const rowHtml = (d, isTotal) => {
         const s = beStatus(d);
         const contribCls = d.contribution == null ? '' : (d.contribution > 0 ? 'is-positive' : 'is-negative');
-        const fixedCell = isTotal
-          ? cell(formatMoney(d.monthlyFixed), 'be-num')
-          : (d.name === BE_NO_LOC
-              ? cell(dash, 'be-num')
-              : `<td class="be-num"><input class="be-fixed-input" type="text" inputmode="decimal" ` +
-                `data-loc="${escapeHtml(d.name)}" value="${d.monthlyFixed > 0 ? d.monthlyFixed : ''}" ` +
-                `placeholder="0" onchange="onBreakevenFixedInput(this)"></td>`);
+        // Read-only: the average of this scope's per-month entries (typed in
+        // the Month-by-Month table below).
+        const fixedCell = (d.name === BE_NO_LOC)
+          ? cell(dash, 'be-num')
+          : cell(d.monthlyFixed > 0 ? formatMoney(d.monthlyFixed) : dash, 'be-num');
         const beTonsTxt = (d.contribution != null && d.contribution <= 0) ? 'No B/E'
           : (d.breakEvenTons != null ? formatTons(d.breakEvenTons) : dash);
         return `<tr class="${isTotal ? 'be-row-total' : ''}">`
@@ -4019,9 +4047,7 @@
       const inYear = (r) => rowMatchesYear('breakeven', r);
       const matchLoc = (r) => locFilter === 'all'
         || ((String(r.locationName || '').trim() || BE_NO_LOC) === locFilter);
-      const monthlyFixed = locFilter === 'all'
-        ? Object.values(quarryFixedCosts).reduce((s, v) => s + (Number(v) || 0), 0)
-        : (Number(quarryFixedCosts[locFilter]) || 0);
+      const monthlyFixed = scopeAvgFixed(locFilter);  // average of this scope's entries (for display)
 
       const months = new Map();
       const ensureM = (mk) => {
@@ -4053,7 +4079,7 @@
 
       const rows = [...months.values()].map(m => {
         const avgPrice = m.tonsSold > 0 ? m.revenue / m.tonsSold : yrAvgPrice;
-        const fixedCost = monthlyFixed;
+        const fixedCost = scopeMonthFixed(locFilter, m.month);
         const totalCost = m.varCost + fixedCost;
         const breakEvenTons = (avgPrice != null && avgPrice > 0) ? totalCost / avgPrice : null;
         const profit = m.revenue - totalCost;
@@ -4073,8 +4099,8 @@
       const note = document.getElementById('beMonthlyNote');
       if (note) {
         const locLabel = beMonthlyLoc === 'all' ? 'all pits' : beMonthlyLoc;
-        note.innerHTML = `Each month's break-even covers <strong>that month's actual labor &amp; fuel</strong> plus <strong>${formatMoney(monthlyFixed)}/mo</strong> fixed overhead (${escapeHtml(locLabel)}). `
-          + `Fixed cost comes from the <strong>By Quarry Location</strong> table above — enter it once per pit and it flows to every month here. `
+        note.innerHTML = `Type each month's <strong>fixed overhead</strong> in the Fixed Cost column (${escapeHtml(locLabel)}); break-even then covers that month's actual labor &amp; fuel plus that fixed cost. `
+          + `The <strong>By Quarry Location</strong> table shows the average of these (${formatMoney(monthlyFixed)}/mo here), and the executive dashboard mirrors the All-Pits average. `
           + `<strong>Profit / Loss = revenue − total cost</strong>, so the status is a true monthly result. `
           + `<em>Break-even tons = total cost ÷ that month's price. Only months with activity are shown.</em>`;
       }
@@ -4106,7 +4132,7 @@
           + `<td class="be-num">${formatTons(m.tonsSold)}</td>`
           + `<td class="be-num">${formatMoney(m.revenue)}</td>`
           + `<td class="be-num">${formatMoney(m.varCost)}</td>`
-          + `<td class="be-num">${formatMoney(m.fixedCost)}</td>`
+          + `<td class="be-num"><input class="be-fixed-input" type="text" inputmode="decimal" data-loc="${escapeHtml(beMonthlyLoc)}" data-month="${m.month}" value="${m.fixedCost > 0 ? m.fixedCost : ''}" placeholder="0" onchange="onMonthlyFixedInput(this)"></td>`
           + `<td class="be-num">${formatMoney(m.totalCost)}</td>`
           + `<td class="be-num">${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>`
           + barCell(m.tonsSold, m.breakEvenTons)
@@ -5028,7 +5054,7 @@ ${sections}
 </style></head><body>
 <h1>Quarry Break-Even &mdash; ${yrTitle}</h1>
 <div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking + entered fixed costs</div>
-<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton: break-even tons/mo = monthly fixed ÷ contribution per ton. <strong>Month-by-Month</strong> is cost-coverage: each month's break-even is the sales needed to cover that month's actual labor &amp; fuel plus fixed overhead, so slower months break even on fewer tons.</div>
+<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton; monthly fixed cost is the average of the per-month entries. Break-even tons/mo = monthly fixed ÷ contribution per ton. <strong>Month-by-Month</strong> is cost-coverage: each month's break-even is the sales needed to cover that month's actual labor &amp; fuel plus the fixed cost entered for that month.</div>
 ${kpis}
 ${locTable}
 ${monthlyTable}
