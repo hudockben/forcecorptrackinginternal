@@ -687,6 +687,14 @@
     }
     .be-bar > span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; }
     .be-bar-label { font-size: 0.66rem; color: var(--muted); margin-left: 0.4rem; font-variant-numeric: tabular-nums; }
+    .be-chart-legend { display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: 0.72rem; color: var(--muted); margin: 0 0 0.6rem; }
+    .be-leg { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .be-leg-line { display: inline-block; width: 22px; height: 0; border-top-width: 3px; border-top-style: solid; }
+    .be-leg-line.crushed { border-top-color: #60a5fa; }
+    .be-leg-line.needed  { border-top-color: #f97316; border-top-style: dashed; }
+    .be-chart-wrap { width: 100%; overflow-x: auto; }
+    .be-chart-wrap svg { display: block; width: 100%; height: auto; }
+    .be-chart-empty { font-size: 0.78rem; color: var(--muted); text-align: center; padding: 1.5rem 1rem; }
   </style>
 </head>
 <body>
@@ -1339,6 +1347,15 @@
             <tbody id="beMonthlyBody"></tbody>
           </table>
         </div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title">Crushed vs. Break-Even (tons / month)</div>
+        <div class="be-chart-legend">
+          <span class="be-leg"><span class="be-leg-line crushed"></span>Crushed (actual)</span>
+          <span class="be-leg"><span class="be-leg-line needed"></span>Break-even (need to crush)</span>
+        </div>
+        <div id="beChartWrap" class="be-chart-wrap"></div>
       </div>
     </div>
   </div>
@@ -4084,6 +4101,21 @@
       const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       return (m >= 1 && m <= 12 ? names[m - 1] : '??') + ' ' + (Number.isFinite(y) ? y : '');
     }
+    // Compact axis label: "Jan '26"
+    function beMonthShort(mk) {
+      const parts = String(mk).split('-');
+      const m = Number(parts[1]);
+      const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return (m >= 1 && m <= 12 ? names[m - 1] : '??') + " '" + String(parts[0] || '').slice(2);
+    }
+    // Round a max value up to a clean axis ceiling (1/2/2.5/5/10 × 10^n).
+    function beNiceCeil(v) {
+      if (!(v > 0)) return 1;
+      const pow = Math.pow(10, Math.floor(Math.log10(v)));
+      const n = v / pow;
+      const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
+      return step * pow;
+    }
 
     function computeBreakevenMonthly(locFilter) {
       const inYear = (r) => rowMatchesYear('breakeven', r);
@@ -4138,6 +4170,7 @@
       if (!body) return;
       const dash = '—';
       const { rows, monthlyFixed, yrAvgPrice } = computeBreakevenMonthly(beMonthlyLoc);
+      renderBreakevenChart(rows);
 
       const note = document.getElementById('beMonthlyNote');
       if (note) {
@@ -4200,6 +4233,76 @@
         + `</tr>`;
 
       body.innerHTML = html;
+    }
+
+    // Inline-SVG line chart: tons actually crushed vs the break-even tons
+    // needed each month. Shares the Month-by-Month data, so it tracks the
+    // year filter, the location dropdown, and per-month fixed-cost edits.
+    function renderBreakevenChart(rows) {
+      const wrap = document.getElementById('beChartWrap');
+      if (!wrap) return;
+      rows = Array.isArray(rows) ? rows : [];
+      if (!rows.length) {
+        wrap.innerHTML = '<div class="be-chart-empty">No monthly data to chart yet.</div>';
+        return;
+      }
+
+      const W = 900, H = 320, mL = 64, mR = 24, mT = 18, mB = 46;
+      const plotW = W - mL - mR, plotH = H - mT - mB;
+      const N = rows.length;
+
+      const vals = [];
+      rows.forEach(r => {
+        vals.push(Number(r.tonsCrushed) || 0);
+        if (r.breakEvenTons != null) vals.push(r.breakEvenTons);
+      });
+      const chartMax = beNiceCeil(Math.max(1, ...vals) * 1.05);
+
+      const x = (i) => mL + (N === 1 ? plotW / 2 : (i / (N - 1)) * plotW);
+      const y = (v) => mT + (1 - (v / chartMax)) * plotH;
+
+      // Horizontal gridlines + y-axis tons labels
+      const ticks = 4;
+      let grid = '';
+      for (let t = 0; t <= ticks; t++) {
+        const gv = chartMax * t / ticks;
+        const gy = y(gv).toFixed(1);
+        grid += `<line x1="${mL}" y1="${gy}" x2="${W - mR}" y2="${gy}" stroke="#23232f" stroke-width="1"/>`
+              + `<text x="${mL - 8}" y="${(y(gv) + 4).toFixed(1)}" text-anchor="end" font-size="12" fill="#9aa0a6">${formatTons(Math.round(gv))}</text>`;
+      }
+
+      // Axis lines
+      const axis = `<line x1="${mL}" y1="${mT}" x2="${mL}" y2="${mT + plotH}" stroke="#2a2a3a" stroke-width="1"/>`
+                 + `<line x1="${mL}" y1="${mT + plotH}" x2="${W - mR}" y2="${mT + plotH}" stroke="#2a2a3a" stroke-width="1"/>`;
+
+      // X-axis month labels (thin out when crowded)
+      const labelEvery = Math.ceil(N / 12);
+      let xlabels = '';
+      rows.forEach((r, i) => {
+        if (i % labelEvery !== 0 && i !== N - 1) return;
+        xlabels += `<text x="${x(i).toFixed(1)}" y="${H - mB + 18}" text-anchor="middle" font-size="12" fill="#9aa0a6">${escapeHtml(beMonthShort(r.month))}</text>`;
+      });
+
+      // Crushed (actual) — solid blue
+      const crushedPts = rows.map((r, i) => `${x(i).toFixed(1)},${y(Number(r.tonsCrushed) || 0).toFixed(1)}`).join(' ');
+      let series = `<polyline fill="none" stroke="#60a5fa" stroke-width="2.5" stroke-linejoin="round" points="${crushedPts}"/>`;
+      // Break-even (needed) — dashed orange, skipping months with no price
+      const neededPts = rows.map((r, i) => r.breakEvenTons != null ? `${x(i).toFixed(1)},${y(r.breakEvenTons).toFixed(1)}` : null).filter(Boolean).join(' ');
+      if (neededPts) {
+        series += `<polyline fill="none" stroke="#f97316" stroke-width="2.5" stroke-dasharray="6 4" stroke-linejoin="round" points="${neededPts}"/>`;
+      }
+      // Data point dots with hover tooltips
+      let dots = '';
+      rows.forEach((r, i) => {
+        const cv = Number(r.tonsCrushed) || 0;
+        dots += `<circle cx="${x(i).toFixed(1)}" cy="${y(cv).toFixed(1)}" r="3" fill="#60a5fa"><title>${escapeHtml(beMonthShort(r.month))} — Crushed ${formatTons(cv)} t</title></circle>`;
+        if (r.breakEvenTons != null) {
+          dots += `<circle cx="${x(i).toFixed(1)}" cy="${y(r.breakEvenTons).toFixed(1)}" r="3" fill="#f97316"><title>${escapeHtml(beMonthShort(r.month))} — Need to crush ${formatTons(Math.round(r.breakEvenTons))} t</title></circle>`;
+        }
+      });
+
+      wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Crushed versus break-even tons by month">`
+        + grid + axis + series + dots + xlabels + `</svg>`;
     }
 
     function renderHomeRanked(elId, items, mapper) {
