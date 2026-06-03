@@ -1151,7 +1151,7 @@ async function buildPavingTile(sql, companyCode) {
 // payroll/fuel costs, all scoped to the current Sun-anchored week) and
 // monthly tons sold, plus the top product and active pit count.
 async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
-  const [salesBlob, dailyBlob, crushBlob, fixedBlob] = await Promise.all([
+  const [salesBlob, dailyBlob, crushBlob, fixedBlob, royaltyBlob] = await Promise.all([
     safeRun('quarry.sales_blob', async () => {
       const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_sales`}`;
       return r[0]?.value;
@@ -1168,11 +1168,21 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
       const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_monthly_fixed`}`;
       return r[0]?.value;
     }),
+    safeRun('quarry.royalty_blob', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_royalty`}`;
+      return r[0]?.value;
+    }),
   ]);
   const sales = Array.isArray(salesBlob) ? salesBlob : [];
   const daily = Array.isArray(dailyBlob) ? dailyBlob : [];
   const crush = Array.isArray(crushBlob) ? crushBlob : [];
   const fixed = (fixedBlob && typeof fixedBlob === 'object' && !Array.isArray(fixedBlob)) ? fixedBlob : {};
+  // Royalty rate (%) per pit inflates that pit's variable cost by (1 + rate/100).
+  const royalty = (royaltyBlob && typeof royaltyBlob === 'object' && !Array.isArray(royaltyBlob)) ? royaltyBlob : {};
+  const royaltyMult = loc => {
+    const v = Number(royalty[loc]);
+    return 1 + (Number.isFinite(v) && v > 0 ? v : 0) / 100;
+  };
 
   const now           = new Date();
   const monthStartIso = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
@@ -1218,7 +1228,7 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     if (!r || typeof r !== 'object') continue;
     const date = typeof r.date === 'string' ? r.date : '';
     if (!date) continue;
-    const cost = num(r.hours) * num(r.rate) + num(r.fuelGallons) * num(r.ppg);
+    const cost = (num(r.hours) * num(r.rate) + num(r.fuelGallons) * num(r.ppg)) * royaltyMult(r.locationName);
     if (date >= weekStart && date < weekEnd) costWk += cost;
     if (date >= monthStartIso) varCostMo += cost;
     if (date.slice(0, 4) === yearPrefix) varCostYr += cost;
@@ -1227,7 +1237,7 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     if (!r || typeof r !== 'object') continue;
     const date = typeof r.date === 'string' ? r.date : '';
     if (!date) continue;
-    const cost = num(r.hourlyRate) * num(r.hours) + num(r.fuelGallons) * num(r.fuelCost);
+    const cost = (num(r.hourlyRate) * num(r.hours) + num(r.fuelGallons) * num(r.fuelCost)) * royaltyMult(r.locationName);
     if (date >= weekStart && date < weekEnd) costWk += cost;
     if (date >= monthStartIso) varCostMo += cost;
     if (date.slice(0, 4) === yearPrefix) {
