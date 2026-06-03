@@ -408,7 +408,7 @@
     .analytics-toolbar-actions {
       display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap;
     }
-    #analyticsPdfBtn { display: inline-flex; align-items: center; gap: 0.4rem; }
+    #analyticsPdfBtn, #breakevenPdfBtn { display: inline-flex; align-items: center; gap: 0.4rem; }
 
     .sales-table-wrap {
       border: 1px solid var(--border); border-radius: 6px;
@@ -652,8 +652,9 @@
     .be-explainer li { margin: 0.2rem 0; }
     .be-explainer strong { color: var(--text); }
     .be-table { min-width: 1150px; }
-    .be-num { text-align: right; font-variant-numeric: tabular-nums; }
-    th.be-num { text-align: right; }
+    .be-table thead th,
+    .be-table tbody td { text-align: center; padding: 0.5rem 0.7rem; }
+    .be-num { font-variant-numeric: tabular-nums; }
     .be-fixed-input {
       width: 7rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
       color: var(--text); font-size: 0.8rem; padding: 0.25rem 0.4rem;
@@ -1223,9 +1224,12 @@
           <div class="home-title">Break-Even Analysis</div>
           <div class="home-sub" id="beSubtitle">Loading…</div>
         </div>
-        <div class="year-filter-wrap">
-          Year
-          <select class="year-filter-select" id="breakevenYearFilter" onchange="setYearFilter('breakeven', this.value)" disabled></select>
+        <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+          <div class="year-filter-wrap">
+            Year
+            <select class="year-filter-select" id="breakevenYearFilter" onchange="setYearFilter('breakeven', this.value)" disabled></select>
+          </div>
+          <button class="btn-add-row btn-bulk-upload" id="breakevenPdfBtn" onclick="downloadBreakevenPDF()">⇩ Print / PDF</button>
         </div>
       </div>
 
@@ -4775,6 +4779,128 @@
 <div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking</div>
 ${kpis}
 ${sections}
+<script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>
+</body></html>`);
+      doc.document.close();
+    }
+
+    function downloadBreakevenPDF() {
+      const yr = yearFilterLabel('breakeven');
+      const yrTitle = (yr === 'all years') ? 'All Years' : yr;
+      const generated = new Date().toLocaleString();
+      const dash = '—';
+      const { rows, total } = computeBreakeven();
+      const { rows: mrows, yrAvgPrice } = computeBreakevenMonthly(beMonthlyLoc);
+      const locLabel = beMonthlyLoc === 'all' ? 'All Pits' : beMonthlyLoc;
+
+      const money = v => v != null ? formatMoney(v) : dash;
+      const tons  = v => v != null ? formatTons(v)  : dash;
+      const beTonsTxt = d => (d.contribution != null && d.contribution <= 0) ? 'No break-even'
+        : (d.breakEvenTons != null ? tons(d.breakEvenTons) : dash);
+
+      const kpiCard = (label, value, sub) =>
+        `<div class="kpi"><div class="kpi-l">${label}</div><div class="kpi-v">${value}</div>${sub ? `<div class="kpi-s">${sub}</div>` : ''}</div>`;
+      const kpis = `<div class="kpi-grid">
+        ${kpiCard('Avg Price / Ton', money(total.avgPrice), 'Blended · all pits')}
+        ${kpiCard('Variable Cost / Ton', money(total.varCostPerTon), 'Daily + crushing ÷ tons')}
+        ${kpiCard('Contribution / Ton', money(total.contribution), 'Price − variable cost')}
+        ${kpiCard('Monthly Fixed Costs', formatMoney(total.monthlyFixed), 'Total entered · all pits')}
+        ${kpiCard('Break-Even Tons / Mo', beTonsTxt(total), 'Tons/mo to cover all costs')}
+        ${kpiCard('Break-Even Revenue / Mo', money(total.breakEvenRevenue), 'Sales $/mo to break even')}
+        ${kpiCard('Avg Tons Sold / Mo', formatTons(total.avgTonsPerMonth), total.months > 0 ? `Over ${total.months} active months` : '—')}
+      </div>`;
+
+      // By-location table
+      const locRow = (d, isTotal) =>
+        `<tr${isTotal ? ' class="tot"' : ''}>
+          <td>${escapeHtml(d.name)}</td>
+          <td>${money(d.avgPrice)}</td>
+          <td>${money(d.varCostPerTon)}</td>
+          <td class="${d.contribution == null ? '' : (d.contribution >= 0 ? 'pos' : 'neg')}">${money(d.contribution)}</td>
+          <td>${money(d.monthlyFixed)}</td>
+          <td>${beTonsTxt(d)}</td>
+          <td>${money(d.breakEvenRevenue)}</td>
+          <td>${tons(d.avgTonsPerMonth)}</td>
+          <td>${escapeHtml(beStatus(d).label)}</td>
+        </tr>`;
+      const locTable = `<h2>Break-Even by Location</h2>
+        <table class="rep"><thead><tr>
+          <th>Location</th><th>Avg Price/Ton</th><th>Variable Cost/Ton</th><th>Contribution/Ton</th>
+          <th>Monthly Fixed</th><th>Break-Even Tons/Mo</th><th>Break-Even Rev/Mo</th><th>Avg Tons Sold/Mo</th><th>Status</th>
+        </tr></thead><tbody>
+          ${rows.length ? rows.map(d => locRow(d, false)).join('') + locRow({ ...total }, true)
+                        : '<tr><td colspan="9">No quarry data for this year.</td></tr>'}
+        </tbody></table>`;
+
+      // Month-by-month table (respects the on-screen location filter)
+      let monthlyTable = '';
+      {
+        const mt = { tonsSold: 0, revenue: 0, varCost: 0, fixedCost: 0, totalCost: 0, profit: 0 };
+        const mRow = (m, isTotal) => {
+          if (!isTotal) {
+            mt.tonsSold += m.tonsSold; mt.revenue += m.revenue; mt.varCost += m.varCost;
+            mt.fixedCost += m.fixedCost; mt.totalCost += m.totalCost; mt.profit += m.profit;
+          }
+          const ratio = (m.breakEvenTons != null && m.breakEvenTons > 0) ? (m.tonsSold / m.breakEvenTons) : null;
+          const status = m.tonsSold <= 0 ? 'No sales' : (m.profit >= 0 ? 'Profit' : 'Loss');
+          return `<tr${isTotal ? ' class="tot"' : ''}>
+            <td>${isTotal ? 'Year Total' : beMonthLabel(m.month)}</td>
+            <td>${formatTons(m.tonsSold)}</td>
+            <td>${formatMoney(m.revenue)}</td>
+            <td>${formatMoney(m.varCost)}</td>
+            <td>${formatMoney(m.fixedCost)}</td>
+            <td>${formatMoney(m.totalCost)}</td>
+            <td>${m.breakEvenTons != null ? formatTons(m.breakEvenTons) : dash}</td>
+            <td>${ratio != null ? Math.round(ratio * 100) + '%' : dash}</td>
+            <td class="${m.profit >= 0 ? 'pos' : 'neg'}">${formatMoney(m.profit)}</td>
+            <td>${status}</td>
+          </tr>`;
+        };
+        const head = `<tr><th>Month</th><th>Tons Sold</th><th>Revenue</th><th>Variable Cost</th><th>Fixed Cost</th><th>Total Cost</th><th>Break-Even Tons</th><th>Sold vs B/E</th><th>Profit / Loss</th><th>Status</th></tr>`;
+        if (mrows.length) {
+          const bodyRows = mrows.map(m => mRow(m, false)).join('');
+          const totBeTons = (yrAvgPrice != null && yrAvgPrice > 0) ? mt.totalCost / yrAvgPrice : null;
+          const totalRow = mRow({ ...mt, breakEvenTons: totBeTons }, true);
+          monthlyTable = `<h2>Month-by-Month Break-Even &mdash; ${escapeHtml(locLabel)}</h2>`
+            + `<table class="rep"><thead>${head}</thead><tbody>${bodyRows}${totalRow}</tbody></table>`;
+        }
+      }
+
+      const doc = window.open('', '_blank', 'width=1100,height=800');
+      if (!doc) {
+        alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
+        return;
+      }
+      doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Quarry Break-Even — ${yrTitle}</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.25rem; }
+  h1 { font-size: 17px; margin: 0 0 0.15rem; }
+  h2 { font-size: 12px; margin: 1rem 0 0.4rem; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+  .meta { font-size: 10px; color: #555; margin-bottom: 0.6rem; }
+  .note { font-size: 9.5px; color: #555; margin: 0 0 0.9rem; line-height: 1.45; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 0.8rem; }
+  .kpi { border: 1px solid #ccc; border-radius: 5px; padding: 6px 8px; background: #fafafa; }
+  .kpi-l { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #555; }
+  .kpi-v { font-size: 14px; font-weight: 700; margin-top: 2px; }
+  .kpi-s { font-size: 8.5px; color: #666; margin-top: 2px; }
+  table.rep { width: 100%; border-collapse: collapse; margin-bottom: 0.5rem; }
+  table.rep th, table.rep td { border: 1px solid #ccc; padding: 4px 6px; text-align: center; white-space: nowrap; font-size: 10px; }
+  table.rep th:first-child, table.rep td:first-child { text-align: left; }
+  table.rep thead th { background: #f0f0f0; font-weight: 700; font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+  table.rep tbody tr:nth-child(even) { background: #fafafa; }
+  table.rep tr.tot td { font-weight: 700; border-top: 2px solid #999; background: #f3f3f3; }
+  table.rep td.pos { color: #15803d; }
+  table.rep td.neg { color: #b91c1c; }
+  @page { size: landscape; margin: 0.4in; }
+  @media print { body { padding: 0.1in; } }
+</style></head><body>
+<h1>Quarry Break-Even &mdash; ${yrTitle}</h1>
+<div class="meta">Generated ${generated} &middot; Source: Daily, Crushing, and Sales tracking + entered fixed costs</div>
+<div class="note"><strong>By Location</strong> uses your typical (year-blended) price and cost per ton: break-even tons/mo = monthly fixed ÷ contribution per ton. <strong>Month-by-Month</strong> is cost-coverage: each month's break-even is the sales needed to cover that month's actual labor &amp; fuel plus fixed overhead, so slower months break even on fewer tons.</div>
+${kpis}
+${locTable}
+${monthlyTable}
 <script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>
 </body></html>`);
       doc.document.close();
