@@ -7026,6 +7026,9 @@ function deleteProject(id) {
     close();
     drDeleteByProject(id);
     projectsList = projectsList.filter(pr => pr.id !== id);
+    // Keep the localStorage cache in sync so the load-time recovery can never
+    // resurrect this project from a stale local copy (see loadProjects).
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     saveProjectIndex();
     apiPut('fct_project_' + id, null);
     fetch(`${API_BASE}/projects?id=${encodeURIComponent(id)}`, {
