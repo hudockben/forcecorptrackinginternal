@@ -5126,9 +5126,38 @@ async function loadProjects() {
     // Batch-load all project blobs in one request instead of N individual fetches
     const projKeys = index.map(id => 'fct_paving_project_' + id);
     const batchResult = await apiBatchGet(projKeys);
-    const results = index.map(id => batchResult['fct_paving_project_' + id]).filter(p => p && typeof p === 'object');
+    // Build the list in index order. A project whose blob is missing on the
+    // server — e.g. a brand-new project whose debounced blob write never
+    // landed before a refresh — would otherwise be silently dropped here and
+    // then erased from the localStorage cache written at the end of this
+    // function. Recover any such project from the local cache and re-save it
+    // so the loss self-heals on the next load.
+    let _lsById = {};
+    try {
+      const _raw = JSON.parse(localStorage.getItem(PROJECTS_KEY));
+      if (Array.isArray(_raw)) _raw.forEach(p => { if (p && p.id) _lsById[p.id] = p; });
+    } catch {}
+    let _serverLoaded = 0;
+    const _missingBlobIds = [];
+    const results = [];
+    index.forEach(id => {
+      const blob = batchResult['fct_paving_project_' + id];
+      if (blob && typeof blob === 'object') { results.push(blob); _serverLoaded++; return; }
+      if (_lsById[id]) { results.push(_lsById[id]); _missingBlobIds.push(id); }
+    });
     projectsList = results;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
+    // Re-save recovered blobs only when the batch fetch clearly succeeded (at
+    // least one blob came back). If none came back, the request itself likely
+    // failed transiently — keep the local copies on screen but don't risk
+    // overwriting good server data with a stale cache.
+    if (_missingBlobIds.length && _serverLoaded > 0) {
+      console.log('[recovery] re-saving', _missingBlobIds.length, 'project blob(s) listed in the index but missing on the server');
+      _missingBlobIds.forEach(id => {
+        const p = getProj(id);
+        if (p) apiPut('fct_paving_project_' + id, _projBlob(p));
+      });
+    }
     // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
     await _loadAndMigrateDailyRows();
 
@@ -6746,8 +6775,19 @@ function addProject() {
     prevailing_wage: false, assigned_employees: [], assigned_equipment: []
   };
   projectsList.push(p);
-  saveProject(p.id);
+  // Persist the new project's blob immediately (not on the 600ms debounce) and
+  // BEFORE saving the index, so the index never references a blob the server
+  // doesn't have yet — that race could otherwise silently drop the project on
+  // the next load.
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
+  apiPut('fct_paving_project_' + p.id, _projBlob(p));
   saveProjectIndex();
+  // Clear any active search filter — a freshly added project has no name yet,
+  // so it wouldn't match the filter and the scroll-to-card below would be a
+  // silent no-op, making it look like nothing happened.
+  projSearch = '';
+  const _si = document.querySelector('.proj-search');
+  if (_si) _si.value = '';
   projPage = 0;
   renderProjectsTab();
   const card = document.getElementById('pcard-' + p.id);
@@ -6810,6 +6850,9 @@ function deleteProject(id) {
     close();
     drDeleteByProject(id);
     projectsList = projectsList.filter(pr => pr.id !== id);
+    // Keep the localStorage cache in sync so the load-time recovery can never
+    // resurrect this project from a stale local copy (see loadProjects).
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
     saveProjectIndex();
     apiPut('fct_paving_project_' + id, null);
     fetch(`${API_BASE}/projects?id=${encodeURIComponent(id)}`, {
