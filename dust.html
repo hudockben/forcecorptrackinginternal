@@ -2143,7 +2143,14 @@
     }
 
     /** Save dust config (settings + lists) to normalized endpoint. */
+    // Tracks in-flight config saves and the time of the most recent one, so the
+    // 60s background poller never overwrites local list edits (e.g. a freshly
+    // added employee) with a server read that raced the write.
+    let _configPutInFlight = 0;
+    let _configChangedAt   = 0;
     function dustConfigPut(opts = {}) {
+      _configChangedAt = Date.now();
+      _configPutInFlight++;
       const init = {
         method: 'PUT',
         headers: AUTH_HDR(),
@@ -2154,7 +2161,8 @@
       };
       if (opts.keepalive) init.keepalive = true;
       return fetch('/api/dust-config', init)
-        .then(r => r.ok ? r.json() : null).catch(() => null);
+        .then(r => r.ok ? r.json() : null).catch(() => null)
+        .finally(() => { _configPutInFlight = Math.max(0, _configPutInFlight - 1); });
     }
 
     /* ═══════════════════════════════════════════
@@ -5416,13 +5424,30 @@
         return !!(m && m.classList.contains('open'));
       }
 
+      // Cooldown after a local config save before the poller is allowed to
+      // overwrite dustLists — covers the write's commit + any brief lag so a
+      // racing read can't clobber a just-added list item.
+      const DUST_CONFIG_COOLDOWN_MS = 12_000;
+
       async function pollDustConfig() {
         try {
           // Don't overwrite dustLists while the user is editing the list
           // modal or anywhere else — their unsaved typing would be wiped.
           if (_isEditing() || _listsModalOpen()) return;
+          // Never overwrite local lists while a config save is in flight,
+          // a row save is pending, or one just happened. The server read can
+          // race the write (or land mid delete-then-reinsert) and return a
+          // stale/partial list, which the next save would then persist —
+          // the cause of list items (e.g. employees) silently disappearing.
+          if (_configPutInFlight > 0 || _hasPendingSave()) return;
+          if (Date.now() - _configChangedAt < DUST_CONFIG_COOLDOWN_MS) return;
+          const before = _configChangedAt;
           const config = await dustConfigGet();
           if (!config || !config.lists) return;
+          // Bail if anything changed locally (or a save/edit started) while
+          // the round-trip was in flight.
+          if (_configPutInFlight > 0 || _hasPendingSave() || _configChangedAt !== before
+              || _isEditing() || _listsModalOpen()) return;
           const { lists } = config;
           const incoming = {
             equipment: Array.isArray(lists.equipment) ? lists.equipment : [],

@@ -236,10 +236,12 @@ async function _syncEquipment(sql, companyCode, equipment) {
 }
 
 async function _syncDropdownList(sql, companyCode, listName, values) {
+  const clean = Array.isArray(values) ? values.filter(v => v != null && v !== '') : [];
+
   // Bulk-wipe protection: refuse to wipe a dropdown list when the incoming
   // values are empty but the table has multiple existing entries — almost
   // always indicates a stale-state bug. Single-item deletes still work.
-  if (!Array.isArray(values) || values.length === 0) {
+  if (clean.length === 0) {
     const [{ count }] = await sql`
       SELECT COUNT(*)::int AS count FROM dropdown_lists
       WHERE company_code = ${companyCode} AND list_name = ${listName}
@@ -248,18 +250,26 @@ async function _syncDropdownList(sql, companyCode, listName, values) {
       console.warn(`[dust-config] refused empty ${listName} sync: ${count} rows would have been wiped for ${companyCode}`);
       return;
     }
+    await sql`DELETE FROM dropdown_lists WHERE company_code = ${companyCode} AND list_name = ${listName}`;
+    return;
   }
-  await sql`
-    DELETE FROM dropdown_lists WHERE company_code = ${companyCode} AND list_name = ${listName}
-  `;
-  for (let i = 0; i < values.length; i++) {
-    if (!values[i]) continue;
+
+  // Upsert the incoming values first, then prune only the values no longer
+  // present. This avoids the delete-all-then-reinsert gap that a concurrent
+  // reader (e.g. the dust page's 60s config poller) could observe as an empty
+  // or partial list — which previously caused saved list items to vanish.
+  for (let i = 0; i < clean.length; i++) {
     await sql`
       INSERT INTO dropdown_lists (company_code, list_name, value, sort_order)
-      VALUES (${companyCode}, ${listName}, ${values[i]}, ${i})
+      VALUES (${companyCode}, ${listName}, ${clean[i]}, ${i})
       ON CONFLICT (company_code, list_name, value) DO UPDATE SET sort_order = EXCLUDED.sort_order
     `;
   }
+  await sql`
+    DELETE FROM dropdown_lists
+    WHERE company_code = ${companyCode} AND list_name = ${listName}
+      AND value <> ALL(${clean})
+  `;
 }
 
 async function _syncCompanies(sql, companyCode, companies) {
