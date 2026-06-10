@@ -866,6 +866,13 @@
       font-size: 0.68rem; color: var(--muted); line-height: 1.6; margin-top: 0.6rem;
     }
     .pm-note b { color: var(--text); font-weight: 700; }
+    /* Numeric "math breakdown" line under a result card's formula label */
+    .an-card-calc {
+      font-size: 0.72rem; color: var(--text); opacity: 0.72;
+      font-variant-numeric: tabular-nums; margin-top: 0.2rem;
+      white-space: nowrap; letter-spacing: 0.01em;
+    }
+    .an-card-calc:empty { display: none; }
 
     /* Bar chart */
     .bar-list { display: flex; flex-direction: column; gap: 0.6rem; }
@@ -1098,6 +1105,7 @@
       .an-card-lbl { color: #555 !important; }
       .an-card-val { color: #111 !important; }
       .an-card-val.amber { color: #b45309 !important; }
+      .an-card-calc { color: #333 !important; opacity: 1 !important; }
       .an-charts { grid-template-columns: repeat(3,1fr) !important; gap: 0.5rem !important; }
       .an-chart-box, .fin-wide-chart { background: #f9f9f9 !important; border: 1px solid #ddd !important; break-inside: avoid; padding: 0.6rem 0.75rem !important; }
       .an-chart-ttl.amber { color: #b45309 !important; }
@@ -1593,16 +1601,19 @@
             <div class="an-card-lbl">Profit / UB Gal</div>
             <div class="an-card-val" id="pm-profit-val">—</div>
             <div class="an-card-sub">charge − cost to make</div>
+            <div class="an-card-calc" id="pm-profit-calc"></div>
           </div>
           <div class="an-card">
             <div class="an-card-lbl">Profit Margin</div>
             <div class="an-card-val" id="pm-margin-val">—</div>
             <div class="an-card-sub">profit ÷ charge</div>
+            <div class="an-card-calc" id="pm-margin-calc"></div>
           </div>
           <div class="an-card">
             <div class="an-card-lbl">Markup</div>
             <div class="an-card-val" id="pm-markup-val">—</div>
             <div class="an-card-sub">profit ÷ cost to make</div>
+            <div class="an-card-calc" id="pm-markup-calc"></div>
           </div>
         </div>
 
@@ -4690,6 +4701,11 @@
         marginEl.classList.toggle('red',   ready && margin <  0);
       }
       set('pm-markup-val', ready ? markup.toFixed(1) + '%' : '—');
+
+      // Math breakdown lines (numbers plugged into each formula)
+      set('pm-profit-calc', ready ? `${money(charge)} − ${money(costToMake)}` : '');
+      set('pm-margin-calc', ready ? `${signedMoney(profit)} ÷ ${money(charge)}` : '');
+      set('pm-markup-calc', ready ? `${signedMoney(profit)} ÷ ${money(costToMake)}` : '');
     }
 
     /* Hook tab clicks that need a render */
