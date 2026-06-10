@@ -798,6 +798,82 @@
     .an-tbl td.neg { color: var(--red) !important; font-weight: 700; }
     .an-tbl td.pos { color: var(--green) !important; font-weight: 700; }
 
+    /* Profit Margin tab */
+    .an-card-val.green { color: var(--green); }
+    .an-card-val.red   { color: var(--red); }
+    .pm-card {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1.1rem 1.25rem; margin-bottom: 0.85rem;
+    }
+    .pm-tbl { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .pm-tbl th {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      padding: 0.5rem 0.75rem; text-align: right;
+      border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    .pm-tbl th:first-child { text-align: left; }
+    .pm-tbl td {
+      padding: 0.45rem 0.75rem; text-align: right;
+      border-bottom: 1px solid rgba(255,255,255,0.035);
+      color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums;
+    }
+    .pm-tbl td:first-child { text-align: left; font-weight: 600; }
+    .pm-tbl tfoot td {
+      font-weight: 700; color: var(--amber);
+      border-top: 2px solid var(--border); border-bottom: none;
+    }
+    .pm-tbl tfoot td:first-child { color: var(--text); }
+    .pm-tbl .pm-mult { color: var(--muted); font-weight: 400; padding: 0 0.15rem; }
+    .pm-input {
+      width: 7rem; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 5px; color: var(--text); font-size: 0.8rem;
+      padding: 0.3rem 0.5rem; text-align: right; font-variant-numeric: tabular-nums;
+    }
+    .pm-input:focus { outline: none; border-color: var(--amber); }
+    /* Editable value that lives inside a summary card */
+    .pm-card-input {
+      background: transparent; border: none; border-bottom: 1px dashed var(--border);
+      color: var(--text); font-size: 1.6rem; font-weight: 700; line-height: 1;
+      font-variant-numeric: tabular-nums; width: 5.5ch; padding: 0;
+    }
+    .pm-card-input:focus { outline: none; border-bottom-color: var(--amber); }
+    .pm-input::-webkit-outer-spin-button, .pm-input::-webkit-inner-spin-button,
+    .pm-card-input::-webkit-outer-spin-button, .pm-card-input::-webkit-inner-spin-button {
+      -webkit-appearance: none; margin: 0;
+    }
+    .pm-input[type=number], .pm-card-input[type=number] { -moz-appearance: textfield; }
+    /* Charge basis pills */
+    .pm-basis-row {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem;
+      margin-bottom: 0.85rem;
+    }
+    .pm-basis-lbl {
+      font-size: 0.66rem; color: var(--muted); margin-right: 0.35rem;
+      font-weight: 600;
+    }
+    .pm-pill {
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.03em;
+      padding: 0.2rem 0.6rem; border-radius: 99px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--muted); cursor: pointer; transition: all 0.15s;
+    }
+    .pm-pill:hover:not(.active) { color: var(--text); border-color: rgba(255,255,255,0.25); }
+    .pm-pill.active { color: var(--amber); border-color: var(--amber); background: rgba(251,191,36,0.1); }
+    .pm-custom-wrap { display: flex; align-items: center; gap: 0.25rem; color: var(--muted); font-size: 0.8rem; }
+    .pm-custom-wrap .pm-input { width: 6rem; }
+    .pm-note {
+      font-size: 0.68rem; color: var(--muted); line-height: 1.6; margin-top: 0.6rem;
+    }
+    .pm-note b { color: var(--text); font-weight: 700; }
+    /* Numeric "math breakdown" line under a result card's formula label */
+    .an-card-calc {
+      font-size: 0.72rem; color: var(--text); opacity: 0.72;
+      font-variant-numeric: tabular-nums; margin-top: 0.2rem;
+      white-space: nowrap; letter-spacing: 0.01em;
+    }
+    .an-card-calc:empty { display: none; }
+
     /* Bar chart */
     .bar-list { display: flex; flex-direction: column; gap: 0.6rem; }
     .bar-item  { display: flex; align-items: center; gap: 0.65rem; }
@@ -1029,6 +1105,7 @@
       .an-card-lbl { color: #555 !important; }
       .an-card-val { color: #111 !important; }
       .an-card-val.amber { color: #b45309 !important; }
+      .an-card-calc { color: #333 !important; opacity: 1 !important; }
       .an-charts { grid-template-columns: repeat(3,1fr) !important; gap: 0.5rem !important; }
       .an-chart-box, .fin-wide-chart { background: #f9f9f9 !important; border: 1px solid #ddd !important; break-inside: avoid; padding: 0.6rem 0.75rem !important; }
       .an-chart-ttl.amber { color: #b45309 !important; }
@@ -1056,6 +1133,15 @@
       .fin-delta.dn { color: #b91c1c !important; }
       svg text { fill: #333 !important; }
       svg line { stroke: #ccc !important; }
+      .pm-card { background: #f9f9f9 !important; border: 1px solid #ddd !important; break-inside: avoid; }
+      .pm-tbl th { color: #555 !important; border-bottom-color: #ccc !important; }
+      .pm-tbl td { color: #111 !important; border-bottom-color: #eee !important; }
+      .pm-tbl tfoot td { color: #b45309 !important; border-top-color: #ccc !important; }
+      .pm-input, .pm-card-input { color: #111 !important; border-color: #bbb !important; background: #fff !important; }
+      .pm-pill { color: #555 !important; border-color: #bbb !important; }
+      .pm-pill.active { color: #b45309 !important; border-color: #b45309 !important; }
+      .pm-note { color: #555 !important; }
+      .pm-note b { color: #111 !important; }
     }
 
     /* ── Pending invoices card (Home Dashboard) ── */
@@ -1312,6 +1398,7 @@
         <div class="an-subtabs">
           <button class="an-subtab active" data-an="customer">Customer Data</button>
           <button class="an-subtab" data-an="financial">Financial</button>
+          <button class="an-subtab" data-an="profit">Profit Margin</button>
         </div>
         <div id="an-yr-filter" class="yr-filter"></div>
         <button class="an-export-btn" onclick="exportPDF()">↓ Export PDF</button>
@@ -1433,6 +1520,104 @@
         </div>
 
       </div><!-- /an-financial -->
+
+      <!-- ── Profit Margin sub-panel ── -->
+      <div id="an-profit" style="display:none">
+
+        <div class="an-section-lbl">Cost to Make — UB Concentrate Batch</div>
+        <div class="pm-card">
+          <table class="pm-tbl">
+            <thead><tr>
+              <th>Component</th><th>Gallons</th><th>Rate ($/gal)</th><th>Cost</th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td>Base</td>
+                <td><input class="pm-input" type="number" id="pm-base-gal"  min="0" step="any" placeholder="0" oninput="pmOnInput()"></td>
+                <td><input class="pm-input" type="number" id="pm-base-rate" min="0" step="any" placeholder="0.00" oninput="pmOnInput()"></td>
+                <td id="pm-base-cost">$0.00</td>
+              </tr>
+              <tr>
+                <td>Soap</td>
+                <td><input class="pm-input" type="number" id="pm-soap-gal"  min="0" step="any" placeholder="0" oninput="pmOnInput()"></td>
+                <td><input class="pm-input" type="number" id="pm-soap-rate" min="0" step="any" placeholder="0.00" oninput="pmOnInput()"></td>
+                <td id="pm-soap-cost">$0.00</td>
+              </tr>
+              <tr>
+                <td>Water</td>
+                <td><input class="pm-input" type="number" id="pm-water-gal"  min="0" step="any" placeholder="0" oninput="pmOnInput()"></td>
+                <td><input class="pm-input" type="number" id="pm-water-rate" min="0" step="any" placeholder="0.00" oninput="pmOnInput()"></td>
+                <td id="pm-water-cost">$0.00</td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr>
+                <td>Total</td>
+                <td id="pm-total-gal">0</td>
+                <td></td>
+                <td id="pm-total-cost">$0.00</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <div class="an-section-lbl">Dilution &amp; Cost per Gallon</div>
+        <div class="an-cards">
+          <div class="an-card">
+            <div class="an-card-lbl">Concentrate Cost / Gal</div>
+            <div class="an-card-val" id="pm-conc-per-gal">—</div>
+            <div class="an-card-sub">total batch cost ÷ total gallons</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Mix Parts (Dilution)</div>
+            <div class="an-card-val"><input class="pm-card-input" type="number" id="pm-mix-parts" min="1" step="any" placeholder="6" oninput="pmOnInput()"></div>
+            <div class="an-card-sub">finished UB parts per 1 part concentrate</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Cost to Make / UB Gal</div>
+            <div class="an-card-val amber" id="pm-cost-to-make">—</div>
+            <div class="an-card-sub">concentrate cost ÷ mix parts</div>
+          </div>
+        </div>
+
+        <div class="an-section-lbl">Revenue &amp; Profit Margin</div>
+        <div class="pm-card">
+          <div class="pm-basis-row">
+            <span class="pm-basis-lbl">Customer charge per UB gallon:</span>
+            <button class="pm-pill active" data-basis="invoice" onclick="pmSetBasis('invoice')">Invoice ÷ Gallons</button>
+            <button class="pm-pill" data-basis="ub" onclick="pmSetBasis('ub')">UB Rev ÷ Gallons</button>
+            <button class="pm-pill" data-basis="custom" onclick="pmSetBasis('custom')">Custom</button>
+            <span class="pm-custom-wrap" id="pm-custom-wrap" style="display:none">$<input class="pm-input" type="number" id="pm-charge" min="0" step="any" placeholder="0.00" oninput="pmOnInput()"> / gal</span>
+          </div>
+          <div class="pm-note" id="pm-track-note"></div>
+        </div>
+        <div class="an-cards">
+          <div class="an-card">
+            <div class="an-card-lbl">Charge / UB Gal</div>
+            <div class="an-card-val" id="pm-charge-val">—</div>
+            <div class="an-card-sub" id="pm-charge-src">from tracking</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Profit / UB Gal</div>
+            <div class="an-card-val" id="pm-profit-val">—</div>
+            <div class="an-card-sub">charge − cost to make</div>
+            <div class="an-card-calc" id="pm-profit-calc"></div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Profit Margin</div>
+            <div class="an-card-val" id="pm-margin-val">—</div>
+            <div class="an-card-sub">profit ÷ charge</div>
+            <div class="an-card-calc" id="pm-margin-calc"></div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Markup</div>
+            <div class="an-card-val" id="pm-markup-val">—</div>
+            <div class="an-card-sub">profit ÷ cost to make</div>
+            <div class="an-card-calc" id="pm-markup-calc"></div>
+          </div>
+        </div>
+
+      </div><!-- /an-profit -->
 
     </div>
   </div><!-- /tab-analytics -->
@@ -1963,7 +2148,7 @@
         method: 'PUT',
         headers: AUTH_HDR(),
         body: JSON.stringify({
-          settings: { ub_rate: ubRate },
+          settings: { ub_rate: ubRate, profit_margin: profitMargin },
           lists: dustLists,
         }),
       };
@@ -1977,6 +2162,15 @@
     ═══════════════════════════════════════════ */
     let rows       = [];
     let ubRate     = 0;
+    // Profit Margin calculator inputs (persisted via dust-config settings blob)
+    let profitMargin = {
+      base_gal:  null, base_rate:  null,
+      soap_gal:  null, soap_rate:  null,
+      water_gal: null, water_rate: null,
+      mix_parts: null,
+      charge_basis: 'invoice', // 'invoice' | 'ub' | 'custom'
+      charge:    null,         // manual $/gal when charge_basis === 'custom'
+    };
     let saveTimer  = null;
     let isSaving   = false; // true while a saveDustRows request is in flight
     // Ids the user explicitly deleted but haven't been confirmed by the
@@ -3882,6 +4076,9 @@
           ubRate = parseFloat(settings.ub_rate) || 0;
           document.getElementById('ubRateInput').value = ubRate.toFixed(2);
         }
+        if (settings && settings.profit_margin && typeof settings.profit_margin === 'object') {
+          Object.assign(profitMargin, settings.profit_margin);
+        }
         if (lists && typeof lists === 'object') {
           dustLists.equipment = Array.isArray(lists.equipment) ? lists.equipment : [];
           dustLists.employees = Array.isArray(lists.employees) ? lists.employees : [];
@@ -3905,6 +4102,7 @@
         dustConfigPut();
       }
 
+      pmInitInputs();
       renderYearSelector();
       renderTable();
       renderHomeDashboard();
@@ -4043,8 +4241,10 @@
         const panel = btn.dataset.an;
         document.getElementById('an-customer').style.display  = panel === 'customer'  ? '' : 'none';
         document.getElementById('an-financial').style.display = panel === 'financial' ? '' : 'none';
+        document.getElementById('an-profit').style.display    = panel === 'profit'    ? '' : 'none';
         if (panel === 'customer')  renderCustomerAnalytics();
         if (panel === 'financial') renderFinancial();
+        if (panel === 'profit')    renderProfitMargin();
       });
     });
 
@@ -4073,6 +4273,7 @@
       buildYearFilter();
       const panel = document.querySelector('.an-subtab.active')?.dataset.an;
       if (panel === 'customer') renderCustomerAnalytics();
+      else if (panel === 'profit') renderProfitMargin();
       else renderFinancial();
     }
 
@@ -4350,6 +4551,161 @@
       }
       document.getElementById('fin-co-yr-foot').innerHTML =
         `<tr><td>Total</td>${footCells}${footGrowth}</tr>`;
+    }
+
+    /* ═══════════════════════════════════════════
+       ANALYTICS — Profit Margin tab
+    ═══════════════════════════════════════════ */
+    const PM_NUM_FIELDS = [
+      'base_gal','base_rate','soap_gal','soap_rate',
+      'water_gal','water_rate','mix_parts','charge',
+    ];
+    // field name (snake) → input id (kebab, prefixed)
+    const _pmId = f => 'pm-' + f.replace(/_/g, '-');
+    const _pmNum = v => { const f = parseFloat(v); return isFinite(f) ? f : 0; };
+    // $/gal formatted to 4 decimals (fractions of a cent matter at volume)
+    function rate4(n) {
+      return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+    }
+
+    let pmSaveTimer = null;
+    function pmScheduleSave() {
+      setSaveState('saving');
+      clearTimeout(pmSaveTimer);
+      pmSaveTimer = setTimeout(async () => {
+        pmSaveTimer = null;
+        const ok = await dustConfigPut();
+        setSaveState(ok ? 'saved' : 'error');
+        setTimeout(() => setSaveState(''), 3000);
+      }, 900);
+    }
+
+    /* Populate the static inputs from saved state (called once at init). */
+    function pmInitInputs() {
+      PM_NUM_FIELDS.forEach(f => {
+        const el = document.getElementById(_pmId(f));
+        if (el) el.value = (profitMargin[f] == null ? '' : profitMargin[f]);
+      });
+      const basis = profitMargin.charge_basis || 'invoice';
+      document.querySelectorAll('.pm-pill').forEach(p =>
+        p.classList.toggle('active', p.dataset.basis === basis));
+      const wrap = document.getElementById('pm-custom-wrap');
+      if (wrap) wrap.style.display = basis === 'custom' ? '' : 'none';
+    }
+
+    /* Read inputs → state, re-render, and persist (debounced). */
+    function pmOnInput() {
+      PM_NUM_FIELDS.forEach(f => {
+        const el = document.getElementById(_pmId(f));
+        if (!el) return;
+        const raw = (el.value || '').trim();
+        profitMargin[f] = raw === '' ? null : parseFloat(raw);
+      });
+      renderProfitMargin();
+      pmScheduleSave();
+    }
+
+    function pmSetBasis(b) {
+      profitMargin.charge_basis = b;
+      document.querySelectorAll('.pm-pill').forEach(p =>
+        p.classList.toggle('active', p.dataset.basis === b));
+      const wrap = document.getElementById('pm-custom-wrap');
+      if (wrap) wrap.style.display = b === 'custom' ? '' : 'none';
+      if (b === 'custom') document.getElementById('pm-charge')?.focus();
+      renderProfitMargin();
+      pmScheduleSave();
+    }
+
+    function renderProfitMargin() {
+      buildYearFilter();
+      const pm = profitMargin;
+
+      // ── Batch cost ──
+      const baseGal = _pmNum(pm.base_gal),  baseRate  = _pmNum(pm.base_rate);
+      const soapGal = _pmNum(pm.soap_gal),  soapRate  = _pmNum(pm.soap_rate);
+      const watGal  = _pmNum(pm.water_gal), watRate   = _pmNum(pm.water_rate);
+      const baseCost = baseGal * baseRate;
+      const soapCost = soapGal * soapRate;
+      const watCost  = watGal  * watRate;
+      const totalCost = round2(baseCost + soapCost + watCost);
+      const totalGal  = baseGal + soapGal + watGal;
+
+      const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      set('pm-base-cost',  money(round2(baseCost)));
+      set('pm-soap-cost',  money(round2(soapCost)));
+      set('pm-water-cost', money(round2(watCost)));
+      set('pm-total-gal',  numFmt(totalGal, totalGal % 1 ? 2 : 0));
+      set('pm-total-cost', money(totalCost));
+
+      // ── Dilution ──
+      // Per-gallon figures are carried to the cent — the unit the business
+      // prices and communicates in — so profit/margin/markup line up with
+      // hand calculations instead of drifting by sub-cent rounding.
+      const concPerGal = totalGal > 0 ? round2(totalCost / totalGal) : 0;
+      const mix = _pmNum(pm.mix_parts);
+      const costToMake = (totalGal > 0 && mix > 0) ? round2((totalCost / totalGal) / mix) : 0;
+      set('pm-conc-per-gal', totalGal > 0 ? money(concPerGal) : '—');
+      set('pm-cost-to-make', costToMake > 0 ? money(costToMake) : '—');
+
+      // ── Customer charge from tracking (respects year filter) ──
+      const anRows = getAnRows();
+      let invSum = 0, ubSum = 0, galSum = 0, jobs = 0;
+      anRows.forEach(r => {
+        const c = calc(r);
+        invSum += c.invTotal; ubSum += c.ubTotal; galSum += c.gallons; jobs++;
+      });
+      const trackInv = galSum > 0 ? invSum / galSum : 0; // invoice total ÷ gallons
+      const trackUb  = galSum > 0 ? ubSum  / galSum : 0; // UB revenue ÷ gallons
+      const yrLabel  = _anYear || 'all years';
+
+      const note = document.getElementById('pm-track-note');
+      if (note) {
+        note.innerHTML = galSum > 0
+          ? `From Dust Control Tracking (${esc(yrLabel)}): ` +
+            `Invoice Total ÷ Gallons = <b>${rate4(trackInv)}/gal</b> · ` +
+            `UB Revenue ÷ Gallons = <b>${rate4(trackUb)}/gal</b> ` +
+            `<span style="color:var(--muted)">(${numFmt(jobs)} jobs · ${numFmt(Math.round(galSum))} gal · ${money(round2(invSum))} invoiced)</span>`
+          : 'No tracking data yet — add rows in the Dust Control Tracking tab, or enter a custom charge.';
+      }
+
+      // Effective charge per the selected basis (also to the cent)
+      let charge, srcLabel;
+      if (pm.charge_basis === 'custom') {
+        charge = round2(_pmNum(pm.charge)); srcLabel = 'custom';
+      } else if (pm.charge_basis === 'ub') {
+        charge = round2(trackUb); srcLabel = `UB rev ÷ gallons · ${yrLabel}`;
+      } else {
+        charge = round2(trackInv); srcLabel = `invoice ÷ gallons · ${yrLabel}`;
+      }
+
+      // ── Profit / margin / markup ──
+      const ready  = costToMake > 0 && charge > 0;
+      const profit = round2(charge - costToMake);
+      const margin = charge      > 0 ? (profit / charge)     * 100 : 0;
+      const markup = costToMake  > 0 ? (profit / costToMake) * 100 : 0;
+      const signedMoney = n => (n < 0 ? '-' + money(Math.abs(n)) : money(n));
+
+      set('pm-charge-val', charge > 0 ? money(charge) : '—');
+      set('pm-charge-src', srcLabel);
+
+      const profitEl = document.getElementById('pm-profit-val');
+      if (profitEl) {
+        profitEl.textContent = ready ? signedMoney(profit) : '—';
+        profitEl.classList.toggle('green', ready && profit >= 0);
+        profitEl.classList.toggle('red',   ready && profit <  0);
+      }
+      const marginEl = document.getElementById('pm-margin-val');
+      if (marginEl) {
+        marginEl.textContent = ready ? margin.toFixed(1) + '%' : '—';
+        marginEl.classList.toggle('green', ready && margin >= 0);
+        marginEl.classList.toggle('red',   ready && margin <  0);
+      }
+      set('pm-markup-val', ready ? markup.toFixed(1) + '%' : '—');
+
+      // Math breakdown lines (numbers plugged into each formula)
+      set('pm-profit-calc', ready ? `${money(charge)} − ${money(costToMake)}` : '');
+      set('pm-margin-calc', ready ? `${signedMoney(profit)} ÷ ${money(charge)}` : '');
+      set('pm-markup-calc', ready ? `${signedMoney(profit)} ÷ ${money(costToMake)}` : '');
     }
 
     /* Hook tab clicks that need a render */

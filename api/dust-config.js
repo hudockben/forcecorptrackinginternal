@@ -110,7 +110,12 @@ module.exports = async (req, res) => {
         }));
 
         return res.json({
-          settings: { ub_rate: parseFloat(settingsRows[0]?.ub_rate) || 0 },
+          settings: {
+            ub_rate: parseFloat(settingsRows[0]?.ub_rate) || 0,
+            // profit_margin lives only in the settings blob (no normalized
+            // column); surface it here so the Profit Margin tab persists.
+            profit_margin: blobSettingsVal.profit_margin ?? null,
+          },
           lists: {
             equipment: equipRows.map(e => ({
               id:           e.id,
