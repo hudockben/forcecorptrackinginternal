@@ -1400,6 +1400,7 @@
           <button class="an-subtab active" data-an="customer">Customer Data</button>
           <button class="an-subtab" data-an="financial">Financial</button>
           <button class="an-subtab" data-an="profit">Profit Margin Calculator</button>
+          <button class="an-subtab" data-an="actual">Actual Profit Margin</button>
         </div>
         <div id="an-yr-filter" class="yr-filter"></div>
         <button class="an-export-btn" onclick="exportPDF()">↓ Export PDF</button>
@@ -1619,6 +1620,88 @@
         </div>
 
       </div><!-- /an-profit -->
+
+      <!-- ── Actual Profit Margin sub-panel ── -->
+      <div id="an-actual" style="display:none">
+
+        <div class="pm-card">
+          <div class="pm-basis-row">
+            <span class="pm-basis-lbl">Revenue basis (charge per UB gallon):</span>
+            <button class="pm-pill active" data-basis="invoice" onclick="apmSetBasis('invoice')">Invoice ÷ Gallons</button>
+            <button class="pm-pill" data-basis="ub" onclick="apmSetBasis('ub')">UB Rev ÷ Gallons</button>
+          </div>
+          <div class="pm-note" id="apm-note"></div>
+        </div>
+
+        <div class="an-section-lbl">Whole — Actual Cost to Make vs Charge (per UB gallon)</div>
+        <div class="an-cards">
+          <div class="an-card">
+            <div class="an-card-lbl">Concentrate Cost / Gal</div>
+            <div class="an-card-val" id="apm-conc">—</div>
+            <div class="an-card-sub">product cost ÷ units</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Cost to Make / UB Gal</div>
+            <div class="an-card-val amber" id="apm-ctm">—</div>
+            <div class="an-card-sub">concentrate cost ÷ mix parts</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Charge / UB Gal</div>
+            <div class="an-card-val" id="apm-charge">—</div>
+            <div class="an-card-sub" id="apm-charge-src">from tracking</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Profit / UB Gal</div>
+            <div class="an-card-val" id="apm-profit">—</div>
+            <div class="an-card-sub">charge − cost to make</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Profit Margin</div>
+            <div class="an-card-val" id="apm-margin">—</div>
+            <div class="an-card-sub">profit ÷ charge</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Markup</div>
+            <div class="an-card-val" id="apm-markup">—</div>
+            <div class="an-card-sub">profit ÷ cost to make</div>
+          </div>
+        </div>
+
+        <div class="an-section-lbl">By Mix Type <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">— cost from Product Cost Tracking; charge is the overall period rate</span></div>
+        <div class="table-wrap">
+          <table class="sheet-table">
+            <thead><tr class="col-row">
+              <th>Mix Type</th><th>Entries</th><th>Total Cost</th><th>Units</th>
+              <th>Conc Cost/Gal</th><th>UB Gal Made</th><th>Cost to Make/UB Gal</th>
+              <th>Charge/UB Gal</th><th>Profit/UB Gal</th><th>Margin</th><th>Markup</th>
+            </tr></thead>
+            <tbody id="apm-mix-body"></tbody>
+          </table>
+        </div>
+
+        <div class="an-section-lbl">By Month</div>
+        <div class="table-wrap">
+          <table class="sheet-table">
+            <thead><tr class="col-row">
+              <th>Month</th><th>Total Cost</th><th>UB Gal Made</th><th>Cost to Make/UB Gal</th>
+              <th>Charge/UB Gal</th><th>Profit/UB Gal</th><th>Margin</th>
+            </tr></thead>
+            <tbody id="apm-month-body"></tbody>
+          </table>
+        </div>
+
+        <div class="an-section-lbl">By Year</div>
+        <div class="table-wrap">
+          <table class="sheet-table">
+            <thead><tr class="col-row">
+              <th>Year</th><th>Total Cost</th><th>UB Gal Made</th><th>Cost to Make/UB Gal</th>
+              <th>Charge/UB Gal</th><th>Profit/UB Gal</th><th>Margin</th>
+            </tr></thead>
+            <tbody id="apm-year-body"></tbody>
+          </table>
+        </div>
+
+      </div><!-- /an-actual -->
 
     </div>
   </div><!-- /tab-analytics -->
@@ -4514,9 +4597,11 @@
         document.getElementById('an-customer').style.display  = panel === 'customer'  ? '' : 'none';
         document.getElementById('an-financial').style.display = panel === 'financial' ? '' : 'none';
         document.getElementById('an-profit').style.display    = panel === 'profit'    ? '' : 'none';
+        document.getElementById('an-actual').style.display    = panel === 'actual'    ? '' : 'none';
         if (panel === 'customer')  renderCustomerAnalytics();
         if (panel === 'financial') renderFinancial();
         if (panel === 'profit')    renderProfitMargin();
+        if (panel === 'actual')    renderActualProfitMargin();
       });
     });
 
@@ -4546,6 +4631,7 @@
       const panel = document.querySelector('.an-subtab.active')?.dataset.an;
       if (panel === 'customer') renderCustomerAnalytics();
       else if (panel === 'profit') renderProfitMargin();
+      else if (panel === 'actual') renderActualProfitMargin();
       else renderFinancial();
     }
 
@@ -4978,6 +5064,199 @@
       set('pm-profit-calc', ready ? `${money(charge)} − ${money(costToMake)}` : '');
       set('pm-margin-calc', ready ? `${signedMoney(profit)} ÷ ${money(charge)}` : '');
       set('pm-markup-calc', ready ? `${signedMoney(profit)} ÷ ${money(costToMake)}` : '');
+    }
+
+    /* ═══════════════════════════════════════════
+       ANALYTICS — Actual Profit Margin
+       Same shape as the Profit Margin Calculator, but with ACTUAL data:
+         • cost  ← Product Cost Tracking (pcRows), where Mix Type = mix parts
+         • revenue ← Dust Control Tracking (rows)
+       Mirrors the calculator's per-UB-gallon math:
+         Concentrate Cost/Gal = Σ total cost ÷ Σ units
+         Cost to Make/UB Gal  = Σ total cost ÷ Σ(units × mix type)   (= conc cost ÷ mix parts)
+         Charge/UB Gal        = invoice (or UB rev) ÷ gallons
+       Broken out as a whole, per mix type, by month, and by year.
+       Per-gallon figures use only rows with BOTH Units > 0 and Mix Type > 0,
+       since both are needed to attribute cost to finished UB gallons.
+    ═══════════════════════════════════════════ */
+    let apmBasis = 'invoice'; // 'invoice' | 'ub'
+
+    function apmSetBasis(b) {
+      apmBasis = b;
+      document.querySelectorAll('#an-actual .pm-pill').forEach(p =>
+        p.classList.toggle('active', p.dataset.basis === b));
+      renderActualProfitMargin();
+    }
+
+    const _apmNum    = v => { const f = parseFloat(v); return isFinite(f) ? f : 0; };
+    const _apmByYear = (arr, yr) => yr ? arr.filter(r => (r.date || '').slice(0, 4) === yr) : arr;
+
+    // Aggregate Product-Cost rows → cost metrics (per-gallon uses qualifying rows).
+    function _apmCost(pcrows) {
+      let cost = 0, costAll = 0, units = 0, ubGal = 0, q = 0, n = 0;
+      pcrows.forEach(r => {
+        const c = pcCalc(r).total;
+        costAll += c; n++;
+        const u = _apmNum(r.units), mx = _apmNum(r.mix_type);
+        if (u > 0 && mx > 0) { cost += c; units += u; ubGal += u * mx; q++; }
+      });
+      return {
+        cost, costAll, units, ubGal, qualifying: q, count: n,
+        concPerGal:      units > 0 ? cost / units : 0,
+        costToMakePerUb: ubGal > 0 ? cost / ubGal : 0,
+      };
+    }
+
+    // Aggregate Dust-Control rows → revenue metrics.
+    function _apmRev(dustrows) {
+      let inv = 0, ub = 0, gal = 0, jobs = 0;
+      dustrows.forEach(r => { const c = calc(r); inv += c.invTotal; ub += c.ubTotal; gal += c.gallons; jobs++; });
+      return { inv, ub, gal, jobs, chargePerGal: gal > 0 ? (apmBasis === 'ub' ? ub : inv) / gal : 0 };
+    }
+
+    function _apmMargin(costToMake, charge) {
+      const ready  = costToMake > 0 && charge > 0;
+      const profit = charge - costToMake;
+      return {
+        ready, profit,
+        margin: charge     > 0 ? (profit / charge)     * 100 : 0,
+        markup: costToMake > 0 ? (profit / costToMake) * 100 : 0,
+      };
+    }
+
+    const _apmRate = n => (n < 0 ? '-' + rate4(Math.abs(n)) : rate4(n));
+    const _apmPct  = n => n.toFixed(1) + '%';
+    const _apmMonthLabel = ym => {
+      const [y, mo] = ym.split('-');
+      const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return `${names[parseInt(mo, 10) - 1] || mo} ${y}`;
+    };
+
+    function renderActualProfitMargin() {
+      buildYearFilter();
+      const yr    = _anYear;
+      const pcAll = _apmByYear(pcRows, yr);
+      const dcAll = _apmByYear(rows,   yr);
+      const cost  = _apmCost(pcAll);
+      const rev   = _apmRev(dcAll);
+      const m     = _apmMargin(cost.costToMakePerUb, rev.chargePerGal);
+      const yrLabel = yr || 'all years';
+      const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+
+      // Data-source note
+      const note = document.getElementById('apm-note');
+      if (note) {
+        note.innerHTML = (cost.qualifying > 0 || rev.gal > 0)
+          ? `Cost from Product Cost Tracking (${esc(yrLabel)}): <b>${money(round2(cost.cost))}</b> over ` +
+            `<b>${numFmt(cost.qualifying)}</b> of ${numFmt(cost.count)} rows ` +
+            `(${numFmt(Math.round(cost.units))} units → ${numFmt(Math.round(cost.ubGal))} UB gal made). ` +
+            `Revenue from Dust Control Tracking: <b>${money(round2(rev.inv))}</b> invoiced · ${numFmt(Math.round(rev.gal))} gal.` +
+            (cost.qualifying < cost.count
+              ? ` <span style="color:var(--amber)">Rows missing Units or Mix Type are excluded from per-gallon cost.</span>` : '')
+          : 'No data yet — add rows in Product Cost Tracking (with Units &amp; Mix Type) and Dust Control Tracking.';
+      }
+
+      // Whole cards
+      set('apm-conc',   cost.concPerGal      > 0 ? rate4(cost.concPerGal)      : '—');
+      set('apm-ctm',    cost.costToMakePerUb > 0 ? rate4(cost.costToMakePerUb) : '—');
+      set('apm-charge', rev.chargePerGal     > 0 ? rate4(rev.chargePerGal)     : '—');
+      set('apm-charge-src', (apmBasis === 'ub' ? 'UB rev ÷ gallons · ' : 'invoice ÷ gallons · ') + yrLabel);
+
+      const profitEl = document.getElementById('apm-profit');
+      if (profitEl) {
+        profitEl.textContent = m.ready ? _apmRate(m.profit) : '—';
+        profitEl.classList.toggle('green', m.ready && m.profit >= 0);
+        profitEl.classList.toggle('red',   m.ready && m.profit <  0);
+      }
+      const marginEl = document.getElementById('apm-margin');
+      if (marginEl) {
+        marginEl.textContent = m.ready ? _apmPct(m.margin) : '—';
+        marginEl.classList.toggle('green', m.ready && m.margin >= 0);
+        marginEl.classList.toggle('red',   m.ready && m.margin <  0);
+      }
+      set('apm-markup', m.ready ? _apmPct(m.markup) : '—');
+
+      // By Mix Type — charge is the overall period rate (revenue has no mix type)
+      const byMix = new Map();
+      pcAll.forEach(r => {
+        const mt = String(r.mix_type || '').trim();
+        if (!mt) return;
+        if (!byMix.has(mt)) byMix.set(mt, []);
+        byMix.get(mt).push(r);
+      });
+      const mixKeys = [...byMix.keys()].sort((a, b) => _apmNum(a) - _apmNum(b));
+      const mixBody = document.getElementById('apm-mix-body');
+      if (mixBody) {
+        mixBody.innerHTML = mixKeys.length
+          ? mixKeys.map(mt => {
+              const cc = _apmCost(byMix.get(mt));
+              const mm = _apmMargin(cc.costToMakePerUb, rev.chargePerGal);
+              return `<tr>
+                <td>${esc(mt)}</td>
+                <td>${numFmt(cc.count)}</td>
+                <td>${money(round2(cc.cost))}</td>
+                <td>${numFmt(Math.round(cc.units))}</td>
+                <td>${cc.concPerGal > 0 ? rate4(cc.concPerGal) : '—'}</td>
+                <td>${numFmt(Math.round(cc.ubGal))}</td>
+                <td>${cc.costToMakePerUb > 0 ? rate4(cc.costToMakePerUb) : '—'}</td>
+                <td>${rev.chargePerGal > 0 ? rate4(rev.chargePerGal) : '—'}</td>
+                <td>${mm.ready ? _apmRate(mm.profit) : '—'}</td>
+                <td>${mm.ready ? _apmPct(mm.margin) : '—'}</td>
+                <td>${mm.ready ? _apmPct(mm.markup) : '—'}</td>
+              </tr>`;
+            }).join('')
+          : `<tr><td colspan="11" style="color:var(--muted);padding:0.8rem;text-align:center">No Product Cost rows with a Mix Type yet.</td></tr>`;
+      }
+
+      // By Month — cost & revenue both scoped to the month
+      const months = new Set();
+      pcAll.forEach(r => { const k = (r.date || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(k)) months.add(k); });
+      dcAll.forEach(r => { const k = (r.date || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(k)) months.add(k); });
+      const monthBody = document.getElementById('apm-month-body');
+      if (monthBody) {
+        const keys = [...months].sort().reverse();
+        monthBody.innerHTML = keys.length
+          ? keys.map(ym => {
+              const cc = _apmCost(pcAll.filter(r => (r.date || '').slice(0, 7) === ym));
+              const rr = _apmRev(dcAll.filter(r => (r.date || '').slice(0, 7) === ym));
+              const mm = _apmMargin(cc.costToMakePerUb, rr.chargePerGal);
+              return `<tr>
+                <td>${esc(_apmMonthLabel(ym))}</td>
+                <td>${money(round2(cc.cost))}</td>
+                <td>${numFmt(Math.round(cc.ubGal))}</td>
+                <td>${cc.costToMakePerUb > 0 ? rate4(cc.costToMakePerUb) : '—'}</td>
+                <td>${rr.chargePerGal > 0 ? rate4(rr.chargePerGal) : '—'}</td>
+                <td>${mm.ready ? _apmRate(mm.profit) : '—'}</td>
+                <td>${mm.ready ? _apmPct(mm.margin) : '—'}</td>
+              </tr>`;
+            }).join('')
+          : `<tr><td colspan="7" style="color:var(--muted);padding:0.8rem;text-align:center">No data for the selected period.</td></tr>`;
+      }
+
+      // By Year — always all years (full year-over-year view)
+      const years = new Set();
+      pcRows.forEach(r => { const k = (r.date || '').slice(0, 4); if (/^\d{4}$/.test(k)) years.add(k); });
+      rows.forEach(r => { const k = (r.date || '').slice(0, 4); if (/^\d{4}$/.test(k)) years.add(k); });
+      const yearBody = document.getElementById('apm-year-body');
+      if (yearBody) {
+        const keys = [...years].sort().reverse();
+        yearBody.innerHTML = keys.length
+          ? keys.map(y => {
+              const cc = _apmCost(pcRows.filter(r => (r.date || '').slice(0, 4) === y));
+              const rr = _apmRev(rows.filter(r => (r.date || '').slice(0, 4) === y));
+              const mm = _apmMargin(cc.costToMakePerUb, rr.chargePerGal);
+              return `<tr>
+                <td>${esc(y)}</td>
+                <td>${money(round2(cc.cost))}</td>
+                <td>${numFmt(Math.round(cc.ubGal))}</td>
+                <td>${cc.costToMakePerUb > 0 ? rate4(cc.costToMakePerUb) : '—'}</td>
+                <td>${rr.chargePerGal > 0 ? rate4(rr.chargePerGal) : '—'}</td>
+                <td>${mm.ready ? _apmRate(mm.profit) : '—'}</td>
+                <td>${mm.ready ? _apmPct(mm.margin) : '—'}</td>
+              </tr>`;
+            }).join('')
+          : `<tr><td colspan="7" style="color:var(--muted);padding:0.8rem;text-align:center">No data yet.</td></tr>`;
+      }
     }
 
     /* Hook tab clicks that need a render */
