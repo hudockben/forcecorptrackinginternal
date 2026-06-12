@@ -153,6 +153,9 @@ module.exports = async (req, res) => {
             // Lists rate field and Product Cost auto-fill survive reloads.
             employee_rates: (blobListsRaw && typeof blobListsRaw.employee_rates === 'object'
               && blobListsRaw.employee_rates) || {},
+            // Cost codes (with nested sub_codes) also live only in the blob.
+            cost_codes: (blobListsRaw && Array.isArray(blobListsRaw.cost_codes)
+              && blobListsRaw.cost_codes) || [],
           },
         });
       }

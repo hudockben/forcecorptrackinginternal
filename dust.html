@@ -1739,8 +1739,9 @@
       <table class="sheet-table">
         <thead>
           <tr class="group-row">
-            <th class="g-entry"  colspan="1">Entry</th>
-            <th class="g-v1"     colspan="4">Labor</th>
+            <th class="g-entry"  colspan="2">Entry</th>
+            <th class="g-cust"   colspan="2">Code</th>
+            <th class="g-v1"     colspan="3">Labor</th>
             <th class="g-v2"     colspan="5">Material</th>
             <th class="g-totals" colspan="1">Totals</th>
             <th class="g-del"></th>
@@ -1748,6 +1749,8 @@
           <tr class="col-row">
             <th class="cw-date">Date<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('date',this.value)"></th>
             <th class="cw-rate">Hours</th>
+            <th class="cw-veh">Cost Code<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('cost_code',this.value)"></th>
+            <th class="cw-veh">Sub Code</th>
             <th class="cw-cm">Employee<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('employee',this.value)"></th>
             <th class="cw-rate">Rate</th>
             <th class="cw-inv calc-hdr">Labor Total</th>
@@ -1763,7 +1766,7 @@
         <tbody id="pcTbody"></tbody>
         <tfoot>
           <tr class="add-row-foot">
-            <td colspan="12">
+            <td colspan="14">
               <button class="add-row-foot-btn" onclick="pcAddRow()">+ Add Row</button>
             </td>
           </tr>
@@ -1861,6 +1864,7 @@
         <button class="modal-tab-btn" data-panel="materials">Materials</button>
         <button class="modal-tab-btn" data-panel="states">States</button>
         <button class="modal-tab-btn" data-panel="mu">MU</button>
+        <button class="modal-tab-btn" data-panel="codes">Codes</button>
       </div>
       <div class="modal-body">
 
@@ -1918,6 +1922,15 @@
           <div class="add-item-row">
             <input type="text" id="new-mu-name" placeholder="MU option…" />
             <button class="btn-list-add" onclick="addListItem('mu')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- Codes (cost codes → sub codes) -->
+        <div class="list-panel" id="lp-codes">
+          <div class="list-items" id="li-codes"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-code-name" placeholder="Cost code…" />
+            <button class="btn-list-add" onclick="addListItem('cost_codes')">+ Add</button>
           </div>
         </div>
 
@@ -2350,7 +2363,7 @@
         || null;
     }
 
-    let dustLists  = { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [], employee_rates: {} };
+    let dustLists  = { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [], employee_rates: {}, cost_codes: [] };
     let dustFilters = {};
 
     function setFilter(field, value) {
@@ -3522,6 +3535,7 @@
       renderMaterialsPanel();
       renderStatesPanel();
       renderMuPanel();
+      renderCodesPanel();
     }
 
     function renderMaterialsPanel() {
@@ -3704,6 +3718,87 @@
       saveLists();
     }
 
+    /* ═══════════════════════════════════════════
+       COST CODES — each cost code holds a nested
+       list of sub codes (same parent/child editor
+       pattern as Companies → well pads).
+    ═══════════════════════════════════════════ */
+    const codeExpanded = new Set();
+
+    function toggleCodeExpand(id) {
+      if (codeExpanded.has(id)) codeExpanded.delete(id);
+      else                      codeExpanded.add(id);
+      renderCodesPanel();
+    }
+
+    function renderCodesPanel() {
+      const sorted = (dustLists.cost_codes || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code)));
+      document.getElementById('li-codes').innerHTML = sorted.length
+        ? sorted.map(cc => {
+            const isOpen = codeExpanded.has(cc.id);
+            const subs   = (cc.sub_codes || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code)));
+            const subsHtml = subs.length
+              ? subs.map(sc => `
+                  <div class="list-item co-location-item" style="padding:0.28rem 0.5rem">
+                    <input type="text" value="${esc(sc.code)}" placeholder="Sub code"
+                      oninput="updateSubCode('${cc.id}','${sc.id}',this.value)" />
+                    <button class="remove-item" onclick="removeSubCode('${cc.id}','${sc.id}')">✕</button>
+                  </div>`).join('')
+              : '<div class="empty-hint">No sub codes added yet.</div>';
+            const meta = `${subs.length} sub code${subs.length === 1 ? '' : 's'}`;
+            return `
+              <div class="list-item company-item">
+                <div class="company-header">
+                  <button class="company-chev${isOpen ? ' open' : ''}" onclick="toggleCodeExpand('${cc.id}')" title="${isOpen ? 'Collapse' : 'Expand'}">▶</button>
+                  <input type="text" value="${esc(cc.code)}" placeholder="Cost code"
+                    oninput="updateListItem('cost_codes','${cc.id}','code',this.value)" />
+                  <span class="company-collapsed-meta">${meta}</span>
+                  <button class="remove-item" onclick="removeListItem('cost_codes','${cc.id}')">✕</button>
+                </div>
+                <div class="company-body" ${isOpen ? '' : 'hidden'}>
+                  <div class="co-locations-section">
+                    <div class="co-men-lbl">Sub Codes</div>
+                    <div class="co-location-items">${subsHtml}</div>
+                    <div class="add-location-row">
+                      <input type="text" class="new-subcode-name" placeholder="Sub code…" />
+                      <button class="btn-list-add" onclick="addSubCode('${cc.id}',this)">+ Add</button>
+                    </div>
+                  </div>
+                </div>
+              </div>`;
+          }).join('')
+        : '<div class="empty-hint">No cost codes added yet.</div>';
+    }
+
+    function addSubCode(ccId, btn) {
+      const row   = btn.closest('.add-location-row');
+      const input = row.querySelector('.new-subcode-name');
+      const code  = input ? input.value.trim() : '';
+      if (!code) { if (input) input.focus(); return; }
+      const cc = (dustLists.cost_codes || []).find(c => c.id === ccId);
+      if (!cc) return;
+      if (!Array.isArray(cc.sub_codes)) cc.sub_codes = [];
+      if (!cc.sub_codes.some(s => s.code === code)) cc.sub_codes.push({ id: uid(), code });
+      if (input) input.value = '';
+      renderCodesPanel();
+      saveLists();
+    }
+
+    function removeSubCode(ccId, scId) {
+      const cc = (dustLists.cost_codes || []).find(c => c.id === ccId);
+      if (!cc) return;
+      cc.sub_codes = (cc.sub_codes || []).filter(s => s.id !== scId);
+      renderCodesPanel();
+      saveLists();
+    }
+
+    function updateSubCode(ccId, scId, value) {
+      const cc = (dustLists.cost_codes || []).find(c => c.id === ccId);
+      const sc = cc ? (cc.sub_codes || []).find(s => s.id === scId) : null;
+      if (sc) sc.code = value;
+      saveLists();
+    }
+
     function renderStatesPanel() {
       const sorted = dustLists.states.slice().sort();
       document.getElementById('li-states').innerHTML = sorted.length
@@ -3786,6 +3881,18 @@
           document.getElementById('new-mu-name').value = '';
           renderMuPanel();
         }
+      } else if (type === 'cost_codes') {
+        const code = document.getElementById('new-code-name').value.trim();
+        if (!code) { document.getElementById('new-code-name').focus(); return; }
+        if (!Array.isArray(dustLists.cost_codes)) dustLists.cost_codes = [];
+        let cc = dustLists.cost_codes.find(c => c.code === code);
+        if (!cc) {
+          cc = { id: uid(), code, sub_codes: [] };
+          dustLists.cost_codes.push(cc);
+          codeExpanded.add(cc.id); // auto-expand so sub codes can be added right away
+        }
+        document.getElementById('new-code-name').value = '';
+        renderCodesPanel();
       }
       saveLists();
     }
@@ -3869,6 +3976,7 @@
     });
     document.getElementById('new-mat-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('materials'); });
     document.getElementById('new-mu-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('mu'); });
+    document.getElementById('new-code-name')?.addEventListener('keydown',  e => { if (e.key==='Enter') addListItem('cost_codes'); });
 
     /* ═══════════════════════════════════════════
        UB RATE
@@ -4241,6 +4349,14 @@
           // Per-employee labor rates, keyed by employee name. Object (not array).
           dustLists.employee_rates = (lists.employee_rates && typeof lists.employee_rates === 'object'
             && !Array.isArray(lists.employee_rates)) ? lists.employee_rates : {};
+          // Cost codes, each with a nested sub_codes array. Backfill ids so the
+          // editor and the cascading dropdown can reference rows reliably.
+          dustLists.cost_codes = Array.isArray(lists.cost_codes) ? lists.cost_codes : [];
+          dustLists.cost_codes.forEach(cc => {
+            if (!cc.id) cc.id = uid();
+            if (!Array.isArray(cc.sub_codes)) cc.sub_codes = [];
+            cc.sub_codes.forEach(sc => { if (sc && !sc.id) sc.id = uid(); });
+          });
           // Ensure each company has required arrays; migrate co.men strings → {id,name} objects
           dustLists.companies.forEach(co => {
             if (!Array.isArray(co.locations)) co.locations = [];
@@ -5375,7 +5491,7 @@
       for (let i = 0; i < count; i++) {
         pcRows.unshift({
           id: uid(), date: todayStr(),
-          hours: '', employee: '', rate: '',
+          hours: '', cost_code: '', sub_code: '', employee: '', rate: '',
           material: '', supplier: '', units: '', unit_cost: '',
         });
       }
@@ -5424,6 +5540,31 @@
         pcRefreshCalcCells(idx);
         pcRefreshTotals();
       }
+      pcScheduleSave();
+    }
+
+    // Build the <option>s for a row's Sub Code dropdown, limited to the sub
+    // codes tied to the given cost code. Preserves a saved value that's no
+    // longer in the list so legacy rows don't lose their selection.
+    function pcSubCodeOptions(costCode, selected) {
+      const cc   = (dustLists.cost_codes || []).find(c => c.code === costCode);
+      const subs = cc ? (cc.sub_codes || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code))) : [];
+      const names = subs.map(s => s.code);
+      const extra = (selected && !names.includes(selected))
+        ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : '';
+      return '<option value="">— select —</option>' + extra +
+        subs.map(s => `<option value="${esc(s.code)}"${s.code===selected?' selected':''}>${esc(s.code)}</option>`).join('');
+    }
+
+    // Cost Code select: store it, reset the row's sub code, and rebuild the
+    // sub-code dropdown in place so it shows only that cost code's sub codes.
+    function pcSetCostCode(idx, value) {
+      if (!pcRows[idx]) return;
+      pcRows[idx].cost_code = value;
+      pcRows[idx].sub_code  = '';
+      const tr    = document.querySelector(`#pcTbody tr[data-idx="${idx}"]`);
+      const scSel = tr && tr.querySelector('select[data-role="pc-subcode"]');
+      if (scSel) scSel.innerHTML = pcSubCodeOptions(value, '');
       pcScheduleSave();
     }
 
@@ -5494,9 +5635,22 @@
           empList.map(name =>
             `<option value="${esc(name)}"${row.employee===name?' selected':''}>${esc(name)}</option>`).join('');
 
+        // Cost Code dropdown from the managed cost codes. Preserve any saved
+        // value no longer in the list so legacy rows keep their selection.
+        const ccList  = (dustLists.cost_codes || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code)));
+        const ccNames = ccList.map(c => c.code);
+        const ccExtra = (row.cost_code && !ccNames.includes(row.cost_code))
+          ? `<option value="${esc(row.cost_code)}" selected>${esc(row.cost_code)}</option>` : '';
+        const ccOpts  = '<option value="">— select —</option>' + ccExtra +
+          ccList.map(c => `<option value="${esc(c.code)}"${row.cost_code===c.code?' selected':''}>${esc(c.code)}</option>`).join('');
+        // Sub Code dropdown is filtered to the selected cost code's sub codes.
+        const scOpts  = pcSubCodeOptions(row.cost_code, row.sub_code);
+
         return `<tr data-idx="${idx}">
           <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="pcSet(${idx},'date',this.value)"></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.hours||'')}" oninput="_pcLiveSet(${idx},'hours',this.value)" onchange="pcSet(${idx},'hours',this.value)"></td>
+          <td class="cw-veh"><select onchange="pcSetCostCode(${idx},this.value)">${ccOpts}</select></td>
+          <td class="cw-veh"><select data-role="pc-subcode" onchange="pcSet(${idx},'sub_code',this.value)">${scOpts}</select></td>
           <td class="cw-cm"><select onchange="pcSetEmployee(${idx},this.value)">${empOpts}</select></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" data-role="pc-rate" value="${esc(row.rate||'')}" oninput="_pcLiveSet(${idx},'rate',this.value)" onchange="pcSet(${idx},'rate',this.value)"></td>
           <td class="calc cw-inv${c.laborTotal ? '' : ' empty'}" data-calc="labor">${c.laborTotal ? money(c.laborTotal) : '—'}</td>
