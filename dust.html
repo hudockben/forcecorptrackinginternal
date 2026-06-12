@@ -1283,6 +1283,7 @@
   <nav class="tab-bar">
     <button class="tab-btn active" data-tab="home">Home</button>
     <button class="tab-btn" data-tab="tracking">Dust Control Tracking</button>
+    <button class="tab-btn" data-tab="product-cost">Product Cost Tracking</button>
     <button class="tab-btn" data-tab="other-billing">Other Billing</button>
     <button class="tab-btn" data-tab="analytics">Analytics</button>
     <button class="tab-btn" data-tab="reports">Reports</button>
@@ -1398,7 +1399,8 @@
         <div class="an-subtabs">
           <button class="an-subtab active" data-an="customer">Customer Data</button>
           <button class="an-subtab" data-an="financial">Financial</button>
-          <button class="an-subtab" data-an="profit">Profit Margin</button>
+          <button class="an-subtab" data-an="profit">Profit Margin Calculator</button>
+          <button class="an-subtab" data-an="actual">Actual Profit Margin</button>
         </div>
         <div id="an-yr-filter" class="yr-filter"></div>
         <button class="an-export-btn" onclick="exportPDF()">↓ Export PDF</button>
@@ -1619,6 +1621,88 @@
 
       </div><!-- /an-profit -->
 
+      <!-- ── Actual Profit Margin sub-panel ── -->
+      <div id="an-actual" style="display:none">
+
+        <div class="pm-card">
+          <div class="pm-basis-row">
+            <span class="pm-basis-lbl">Revenue basis (charge per UB gallon):</span>
+            <button class="pm-pill active" data-basis="invoice" onclick="apmSetBasis('invoice')">Invoice ÷ Gallons</button>
+            <button class="pm-pill" data-basis="ub" onclick="apmSetBasis('ub')">UB Rev ÷ Gallons</button>
+          </div>
+          <div class="pm-note" id="apm-note"></div>
+        </div>
+
+        <div class="an-section-lbl">Whole — Actual Cost to Make vs Charge (per UB gallon)</div>
+        <div class="an-cards">
+          <div class="an-card">
+            <div class="an-card-lbl">Concentrate Cost / Gal</div>
+            <div class="an-card-val" id="apm-conc">—</div>
+            <div class="an-card-sub">product cost ÷ units</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Cost to Make / UB Gal</div>
+            <div class="an-card-val amber" id="apm-ctm">—</div>
+            <div class="an-card-sub">concentrate cost ÷ mix parts</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Charge / UB Gal</div>
+            <div class="an-card-val" id="apm-charge">—</div>
+            <div class="an-card-sub" id="apm-charge-src">from tracking</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Profit / UB Gal</div>
+            <div class="an-card-val" id="apm-profit">—</div>
+            <div class="an-card-sub">charge − cost to make</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Profit Margin</div>
+            <div class="an-card-val" id="apm-margin">—</div>
+            <div class="an-card-sub">profit ÷ charge</div>
+          </div>
+          <div class="an-card">
+            <div class="an-card-lbl">Markup</div>
+            <div class="an-card-val" id="apm-markup">—</div>
+            <div class="an-card-sub">profit ÷ cost to make</div>
+          </div>
+        </div>
+
+        <div class="an-section-lbl">By Mix Type <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">— cost from Product Cost Tracking; charge is the overall period rate</span></div>
+        <div class="table-wrap">
+          <table class="sheet-table">
+            <thead><tr class="col-row">
+              <th>Mix Type</th><th>Entries</th><th>Total Cost</th><th>Units</th>
+              <th>Conc Cost/Gal</th><th>UB Gal Made</th><th>Cost to Make/UB Gal</th>
+              <th>Charge/UB Gal</th><th>Profit/UB Gal</th><th>Margin</th><th>Markup</th>
+            </tr></thead>
+            <tbody id="apm-mix-body"></tbody>
+          </table>
+        </div>
+
+        <div class="an-section-lbl">By Month</div>
+        <div class="table-wrap">
+          <table class="sheet-table">
+            <thead><tr class="col-row">
+              <th>Month</th><th>Total Cost</th><th>UB Gal Made</th><th>Cost to Make/UB Gal</th>
+              <th>Charge/UB Gal</th><th>Profit/UB Gal</th><th>Margin</th>
+            </tr></thead>
+            <tbody id="apm-month-body"></tbody>
+          </table>
+        </div>
+
+        <div class="an-section-lbl">By Year</div>
+        <div class="table-wrap">
+          <table class="sheet-table">
+            <thead><tr class="col-row">
+              <th>Year</th><th>Total Cost</th><th>UB Gal Made</th><th>Cost to Make/UB Gal</th>
+              <th>Charge/UB Gal</th><th>Profit/UB Gal</th><th>Margin</th>
+            </tr></thead>
+            <tbody id="apm-year-body"></tbody>
+          </table>
+        </div>
+
+      </div><!-- /an-actual -->
+
     </div>
   </div><!-- /tab-analytics -->
 
@@ -1701,6 +1785,80 @@
     </div>
 
   </div><!-- /tab-other-billing -->
+
+  <!-- ══════════════════════════════════════════════
+       PRODUCT COST TRACKING TAB
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-product-cost">
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <button class="btn-add" onclick="pcAddRow()">+ Add Row</button>
+      <input type="number" id="pc-bulk-add-count" min="1" max="100" value="1"
+        title="Number of rows to add"
+        style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2,#1e1e1e);border:1px solid var(--border,#333);border-radius:4px;color:var(--text,#eee);font-size:0.72rem;text-align:center;outline:none">
+      <div id="pcYearSelector" class="year-selector"></div>
+      <span class="row-count" id="pcRowCount">0 rows</span>
+    </div>
+
+    <!-- Totals bar -->
+    <div class="totals-bar">
+      <div class="tot-item">
+        <span class="tot-label">Labor Total</span>
+        <span class="tot-val" id="pc-tot-labor">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Material Total</span>
+        <span class="tot-val" id="pc-tot-mat">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Total Cost</span>
+        <span class="tot-val" id="pc-tot-grand">—</span>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table class="sheet-table">
+        <thead>
+          <tr class="group-row">
+            <th class="g-entry"  colspan="3">Entry</th>
+            <th class="g-cust"   colspan="2">Code</th>
+            <th class="g-v1"     colspan="3">Labor</th>
+            <th class="g-v2"     colspan="5">Material</th>
+            <th class="g-totals" colspan="1">Totals</th>
+            <th class="g-del"></th>
+          </tr>
+          <tr class="col-row">
+            <th class="cw-date">Date<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('date',this.value)"></th>
+            <th class="cw-cm">Employee<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('employee',this.value)"></th>
+            <th class="cw-mu">Mix Type</th>
+            <th class="cw-veh">Cost Code<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('cost_code',this.value)"></th>
+            <th class="cw-veh">Sub Code</th>
+            <th class="cw-rate">Rate</th>
+            <th class="cw-rate">Hours</th>
+            <th class="cw-inv calc-hdr">Labor Total</th>
+            <th class="cw-veh">Material<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('material',this.value)"></th>
+            <th class="cw-loc">Supplier<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('supplier',this.value)"></th>
+            <th class="cw-rate">Units</th>
+            <th class="cw-rate">Unit Cost</th>
+            <th class="cw-inv calc-hdr">Material Total</th>
+            <th class="cw-inv calc-hdr">Total Cost</th>
+            <th class="cw-del"></th>
+          </tr>
+        </thead>
+        <tbody id="pcTbody"></tbody>
+        <tfoot>
+          <tr class="add-row-foot">
+            <td colspan="15">
+              <button class="add-row-foot-btn" onclick="pcAddRow()">+ Add Row</button>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+  </div><!-- /tab-product-cost -->
 
   <!-- ══════════════════════════════════════════════
        REPORTS TAB — Audit Log
@@ -1790,6 +1948,7 @@
         <button class="modal-tab-btn" data-panel="materials">Materials</button>
         <button class="modal-tab-btn" data-panel="states">States</button>
         <button class="modal-tab-btn" data-panel="mu">MU</button>
+        <button class="modal-tab-btn" data-panel="codes">Codes</button>
       </div>
       <div class="modal-body">
 
@@ -1818,6 +1977,7 @@
           <div class="list-items" id="li-employees"></div>
           <div class="add-item-row">
             <input type="text" id="new-emp-name" placeholder="Employee / driver name…" />
+            <input type="number" id="new-emp-rate" class="short" placeholder="Labor rate $" min="0" step="0.01" />
             <button class="btn-list-add" onclick="addListItem('employees')">+ Add</button>
           </div>
         </div>
@@ -1846,6 +2006,15 @@
           <div class="add-item-row">
             <input type="text" id="new-mu-name" placeholder="MU option…" />
             <button class="btn-list-add" onclick="addListItem('mu')">+ Add</button>
+          </div>
+        </div>
+
+        <!-- Codes (cost codes → sub codes) -->
+        <div class="list-panel" id="lp-codes">
+          <div class="list-items" id="li-codes"></div>
+          <div class="add-item-row">
+            <input type="text" id="new-code-name" placeholder="Cost code…" />
+            <button class="btn-list-add" onclick="addListItem('cost_codes')">+ Add</button>
           </div>
         </div>
 
@@ -2148,21 +2317,60 @@
     // added employee) with a server read that raced the write.
     let _configPutInFlight = 0;
     let _configChangedAt   = 0;
-    function dustConfigPut(opts = {}) {
-      _configChangedAt = Date.now();
-      _configPutInFlight++;
+    // Serializes config writes. Each list edit (e.g. adding an employee) fires
+    // an immediate save; without this, several quick edits launched concurrent
+    // PUTs that could COMPLETE out of order. The server prunes any dropdown
+    // value not present in the incoming list, so an older snapshot landing last
+    // would silently delete just-added employees from both the blob and the
+    // normalized dropdown_lists table. Chaining guarantees writes apply in order
+    // and the final write reflects the final list.
+    let _configPutChain = Promise.resolve();
+
+    function _dustConfigBody(keepalive) {
       const init = {
         method: 'PUT',
         headers: AUTH_HDR(),
+        // Snapshot dustLists at send time so queued edits coalesce into the
+        // latest, most-complete list.
         body: JSON.stringify({
           settings: { ub_rate: ubRate, profit_margin: profitMargin },
           lists: dustLists,
         }),
       };
-      if (opts.keepalive) init.keepalive = true;
-      return fetch('/api/dust-config', init)
-        .then(r => r.ok ? r.json() : null).catch(() => null)
+      if (keepalive) init.keepalive = true;
+      return init;
+    }
+
+    function dustConfigPut(opts = {}) {
+      _configChangedAt = Date.now();
+      _configPutInFlight++;
+
+      // Page-unload flushes must fire synchronously (the tab is closing) and
+      // can't await retries — send once, outside the serialization queue.
+      if (opts.keepalive) {
+        return fetch('/api/dust-config', _dustConfigBody(true))
+          .then(r => r.ok ? r.json() : null).catch(() => null)
+          .finally(() => { _configPutInFlight = Math.max(0, _configPutInFlight - 1); });
+      }
+
+      // Retry a few times so a transient network/server error doesn't silently
+      // drop the edit (saves were previously fire-and-forget with no retry).
+      const send = async () => {
+        _configChangedAt = Date.now(); // cover the actual send time for the poll cooldown
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const r = await fetch('/api/dust-config', _dustConfigBody(false));
+            if (r.ok) return await r.json().catch(() => null);
+          } catch { /* network error — fall through to retry */ }
+          await new Promise(res => setTimeout(res, 400 * (attempt + 1)));
+        }
+        return null;
+      };
+
+      const p = _configPutChain.then(send, send)
         .finally(() => { _configPutInFlight = Math.max(0, _configPutInFlight - 1); });
+      _configPutChain = p.catch(() => {}); // keep the chain alive after a failure
+      return p;
     }
 
     /* ═══════════════════════════════════════════
@@ -2239,7 +2447,7 @@
         || null;
     }
 
-    let dustLists  = { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [] };
+    let dustLists  = { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [], employee_rates: {}, cost_codes: [] };
     let dustFilters = {};
 
     function setFilter(field, value) {
@@ -2639,7 +2847,15 @@
       renderTable();
     }
 
-    function saveLists() { dustConfigPut(); }
+    function saveLists() {
+      // Surface save progress on the shared indicator so list edits (adding an
+      // employee, setting a rate, etc.) give visible confirmation they persisted.
+      setSaveState('saving');
+      dustConfigPut().then(ok => {
+        setSaveState(ok ? 'saved' : 'error');
+        setTimeout(() => setSaveState(''), 3000);
+      });
+    }
 
     function scheduleSave() {
       setSaveState('saving');
@@ -3403,6 +3619,7 @@
       renderMaterialsPanel();
       renderStatesPanel();
       renderMuPanel();
+      renderCodesPanel();
     }
 
     function renderMaterialsPanel() {
@@ -3417,14 +3634,31 @@
     }
 
     function renderEmployeesPanel() {
+      const rates  = (dustLists.employee_rates && typeof dustLists.employee_rates === 'object') ? dustLists.employee_rates : {};
       const sorted = (dustLists.employees || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
       document.getElementById('li-employees').innerHTML = sorted.length
-        ? sorted.map(name => `
+        ? sorted.map(name => {
+            const safe = esc(name).replace(/'/g,"\\'");
+            const rate = rates[name];
+            return `
             <div class="list-item">
               <span style="font-size:0.82rem;font-weight:600;color:var(--text);flex:1">${esc(name)}</span>
-              <button class="remove-item" onclick="removeListItem('employees','${esc(name).replace(/'/g,"\\'")}')">✕</button>
-            </div>`).join('')
+              <span class="list-item-lbl">Labor Rate $</span>
+              <input type="number" class="short" value="${rate != null ? rate : ''}" placeholder="0.00" min="0" step="0.01"
+                oninput="updateEmployeeRate('${safe}',this.value)" />
+              <button class="remove-item" onclick="removeListItem('employees','${safe}')">✕</button>
+            </div>`;
+          }).join('')
         : '<div class="empty-hint">No employees added yet.</div>';
+    }
+
+    // Set/clear an employee's labor rate (keyed by name). Blank input clears it.
+    function updateEmployeeRate(name, value) {
+      if (!dustLists.employee_rates || typeof dustLists.employee_rates !== 'object') dustLists.employee_rates = {};
+      const r = parseFloat(value);
+      if (isNaN(r)) delete dustLists.employee_rates[name];
+      else          dustLists.employee_rates[name] = r;
+      saveLists();
     }
 
     function renderEquipmentPanel() {
@@ -3568,6 +3802,87 @@
       saveLists();
     }
 
+    /* ═══════════════════════════════════════════
+       COST CODES — each cost code holds a nested
+       list of sub codes (same parent/child editor
+       pattern as Companies → well pads).
+    ═══════════════════════════════════════════ */
+    const codeExpanded = new Set();
+
+    function toggleCodeExpand(id) {
+      if (codeExpanded.has(id)) codeExpanded.delete(id);
+      else                      codeExpanded.add(id);
+      renderCodesPanel();
+    }
+
+    function renderCodesPanel() {
+      const sorted = (dustLists.cost_codes || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code)));
+      document.getElementById('li-codes').innerHTML = sorted.length
+        ? sorted.map(cc => {
+            const isOpen = codeExpanded.has(cc.id);
+            const subs   = (cc.sub_codes || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code)));
+            const subsHtml = subs.length
+              ? subs.map(sc => `
+                  <div class="list-item co-location-item" style="padding:0.28rem 0.5rem">
+                    <input type="text" value="${esc(sc.code)}" placeholder="Sub code"
+                      oninput="updateSubCode('${cc.id}','${sc.id}',this.value)" />
+                    <button class="remove-item" onclick="removeSubCode('${cc.id}','${sc.id}')">✕</button>
+                  </div>`).join('')
+              : '<div class="empty-hint">No sub codes added yet.</div>';
+            const meta = `${subs.length} sub code${subs.length === 1 ? '' : 's'}`;
+            return `
+              <div class="list-item company-item">
+                <div class="company-header">
+                  <button class="company-chev${isOpen ? ' open' : ''}" onclick="toggleCodeExpand('${cc.id}')" title="${isOpen ? 'Collapse' : 'Expand'}">▶</button>
+                  <input type="text" value="${esc(cc.code)}" placeholder="Cost code"
+                    oninput="updateListItem('cost_codes','${cc.id}','code',this.value)" />
+                  <span class="company-collapsed-meta">${meta}</span>
+                  <button class="remove-item" onclick="removeListItem('cost_codes','${cc.id}')">✕</button>
+                </div>
+                <div class="company-body" ${isOpen ? '' : 'hidden'}>
+                  <div class="co-locations-section">
+                    <div class="co-men-lbl">Sub Codes</div>
+                    <div class="co-location-items">${subsHtml}</div>
+                    <div class="add-location-row">
+                      <input type="text" class="new-subcode-name" placeholder="Sub code…" />
+                      <button class="btn-list-add" onclick="addSubCode('${cc.id}',this)">+ Add</button>
+                    </div>
+                  </div>
+                </div>
+              </div>`;
+          }).join('')
+        : '<div class="empty-hint">No cost codes added yet.</div>';
+    }
+
+    function addSubCode(ccId, btn) {
+      const row   = btn.closest('.add-location-row');
+      const input = row.querySelector('.new-subcode-name');
+      const code  = input ? input.value.trim() : '';
+      if (!code) { if (input) input.focus(); return; }
+      const cc = (dustLists.cost_codes || []).find(c => c.id === ccId);
+      if (!cc) return;
+      if (!Array.isArray(cc.sub_codes)) cc.sub_codes = [];
+      if (!cc.sub_codes.some(s => s.code === code)) cc.sub_codes.push({ id: uid(), code });
+      if (input) input.value = '';
+      renderCodesPanel();
+      saveLists();
+    }
+
+    function removeSubCode(ccId, scId) {
+      const cc = (dustLists.cost_codes || []).find(c => c.id === ccId);
+      if (!cc) return;
+      cc.sub_codes = (cc.sub_codes || []).filter(s => s.id !== scId);
+      renderCodesPanel();
+      saveLists();
+    }
+
+    function updateSubCode(ccId, scId, value) {
+      const cc = (dustLists.cost_codes || []).find(c => c.id === ccId);
+      const sc = cc ? (cc.sub_codes || []).find(s => s.id === scId) : null;
+      if (sc) sc.code = value;
+      saveLists();
+    }
+
     function renderStatesPanel() {
       const sorted = dustLists.states.slice().sort();
       document.getElementById('li-states').innerHTML = sorted.length
@@ -3621,12 +3936,17 @@
       } else if (type === 'employees') {
         const name = document.getElementById('new-emp-name').value.trim();
         if (!name) { document.getElementById('new-emp-name').focus(); return; }
+        const rateEl = document.getElementById('new-emp-rate');
+        const rate   = parseFloat(rateEl.value);
         if (!Array.isArray(dustLists.employees)) dustLists.employees = [];
-        if (!dustLists.employees.includes(name)) {
-          dustLists.employees.push(name);
-          document.getElementById('new-emp-name').value = '';
-          renderEmployeesPanel();
-        }
+        if (!dustLists.employee_rates || typeof dustLists.employee_rates !== 'object') dustLists.employee_rates = {};
+        if (!dustLists.employees.includes(name)) dustLists.employees.push(name);
+        // Record the labor rate (when provided) keyed by employee name. Re-adding
+        // an existing name with a rate updates that employee's rate.
+        if (!isNaN(rate)) dustLists.employee_rates[name] = rate;
+        document.getElementById('new-emp-name').value = '';
+        rateEl.value = '';
+        renderEmployeesPanel();
       } else if (type === 'materials') {
         const name = document.getElementById('new-mat-name').value.trim();
         if (!name) { document.getElementById('new-mat-name').focus(); return; }
@@ -3645,6 +3965,18 @@
           document.getElementById('new-mu-name').value = '';
           renderMuPanel();
         }
+      } else if (type === 'cost_codes') {
+        const code = document.getElementById('new-code-name').value.trim();
+        if (!code) { document.getElementById('new-code-name').focus(); return; }
+        if (!Array.isArray(dustLists.cost_codes)) dustLists.cost_codes = [];
+        let cc = dustLists.cost_codes.find(c => c.code === code);
+        if (!cc) {
+          cc = { id: uid(), code, sub_codes: [] };
+          dustLists.cost_codes.push(cc);
+          codeExpanded.add(cc.id); // auto-expand so sub codes can be added right away
+        }
+        document.getElementById('new-code-name').value = '';
+        renderCodesPanel();
       }
       saveLists();
     }
@@ -3660,6 +3992,7 @@
       } else if (type === 'employees') {
         // id here is the employee name string
         dustLists.employees = (dustLists.employees || []).filter(n => n !== id);
+        if (dustLists.employee_rates) delete dustLists.employee_rates[id];
       } else if (type === 'materials') {
         // id here is the material name string
         dustLists.materials = (dustLists.materials || []).filter(n => n !== id);
@@ -3722,9 +4055,12 @@
     });
     document.getElementById('new-co-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('companies'); });
     document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
-    document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
+    ['new-emp-name','new-emp-rate'].forEach(id => {
+      document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('employees'); });
+    });
     document.getElementById('new-mat-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('materials'); });
     document.getElementById('new-mu-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('mu'); });
+    document.getElementById('new-code-name')?.addEventListener('keydown',  e => { if (e.key==='Enter') addListItem('cost_codes'); });
 
     /* ═══════════════════════════════════════════
        UB RATE
@@ -4094,6 +4430,17 @@
           dustLists.materials = Array.isArray(lists.materials) ? lists.materials : [];
           dustLists.states    = Array.isArray(lists.states)    ? lists.states    : [];
           dustLists.mu        = Array.isArray(lists.mu)        ? lists.mu        : [];
+          // Per-employee labor rates, keyed by employee name. Object (not array).
+          dustLists.employee_rates = (lists.employee_rates && typeof lists.employee_rates === 'object'
+            && !Array.isArray(lists.employee_rates)) ? lists.employee_rates : {};
+          // Cost codes, each with a nested sub_codes array. Backfill ids so the
+          // editor and the cascading dropdown can reference rows reliably.
+          dustLists.cost_codes = Array.isArray(lists.cost_codes) ? lists.cost_codes : [];
+          dustLists.cost_codes.forEach(cc => {
+            if (!cc.id) cc.id = uid();
+            if (!Array.isArray(cc.sub_codes)) cc.sub_codes = [];
+            cc.sub_codes.forEach(sc => { if (sc && !sc.id) sc.id = uid(); });
+          });
           // Ensure each company has required arrays; migrate co.men strings → {id,name} objects
           dustLists.companies.forEach(co => {
             if (!Array.isArray(co.locations)) co.locations = [];
@@ -4250,9 +4597,11 @@
         document.getElementById('an-customer').style.display  = panel === 'customer'  ? '' : 'none';
         document.getElementById('an-financial').style.display = panel === 'financial' ? '' : 'none';
         document.getElementById('an-profit').style.display    = panel === 'profit'    ? '' : 'none';
+        document.getElementById('an-actual').style.display    = panel === 'actual'    ? '' : 'none';
         if (panel === 'customer')  renderCustomerAnalytics();
         if (panel === 'financial') renderFinancial();
         if (panel === 'profit')    renderProfitMargin();
+        if (panel === 'actual')    renderActualProfitMargin();
       });
     });
 
@@ -4282,6 +4631,7 @@
       const panel = document.querySelector('.an-subtab.active')?.dataset.an;
       if (panel === 'customer') renderCustomerAnalytics();
       else if (panel === 'profit') renderProfitMargin();
+      else if (panel === 'actual') renderActualProfitMargin();
       else renderFinancial();
     }
 
@@ -4716,6 +5066,205 @@
       set('pm-markup-calc', ready ? `${signedMoney(profit)} ÷ ${money(costToMake)}` : '');
     }
 
+    /* ═══════════════════════════════════════════
+       ANALYTICS — Actual Profit Margin
+       Same shape as the Profit Margin Calculator, but with ACTUAL data:
+         • cost  ← Product Cost Tracking (pcRows), where Mix Type = mix parts
+         • revenue ← Dust Control Tracking (rows)
+       Mirrors the calculator's per-UB-gallon math:
+         Concentrate Cost/Gal = Σ total cost ÷ Σ units
+         Cost to Make/UB Gal  = Σ total cost ÷ Σ(units × mix type)   (= conc cost ÷ mix parts)
+         Charge/UB Gal        = invoice (or UB rev) ÷ gallons
+       Broken out as a whole, per mix type, by month, and by year.
+       Per-gallon figures use only rows with BOTH Units > 0 and Mix Type > 0,
+       since both are needed to attribute cost to finished UB gallons.
+    ═══════════════════════════════════════════ */
+    let apmBasis = 'invoice'; // 'invoice' | 'ub'
+
+    function apmSetBasis(b) {
+      apmBasis = b;
+      document.querySelectorAll('#an-actual .pm-pill').forEach(p =>
+        p.classList.toggle('active', p.dataset.basis === b));
+      renderActualProfitMargin();
+    }
+
+    const _apmNum    = v => { const f = parseFloat(v); return isFinite(f) ? f : 0; };
+    const _apmByYear = (arr, yr) => yr ? arr.filter(r => (r.date || '').slice(0, 4) === yr) : arr;
+
+    // Aggregate Product-Cost rows → cost metrics.
+    function _apmCost(pcrows) {
+      // Numerator includes ALL cost (labor + every material row) so labor
+      // entered on its own rows is never dropped. Volume comes from the
+      // material rows: Units = amount of each material bought for the mix
+      // (e.g. gallons of soap), which sum to the concentrate volume. UB
+      // gallons made = Σ(units × mix type), mix type being the dilution.
+      let cost = 0, units = 0, ubGal = 0, withVol = 0, n = 0;
+      pcrows.forEach(r => {
+        cost += pcCalc(r).total;
+        n++;
+        const u = _apmNum(r.units), mx = _apmNum(r.mix_type);
+        if (u > 0) units += u;
+        if (u > 0 && mx > 0) { ubGal += u * mx; withVol++; }
+      });
+      return {
+        cost, units, ubGal, withVol, count: n,
+        concPerGal:      units > 0 ? cost / units : 0,
+        costToMakePerUb: ubGal > 0 ? cost / ubGal : 0,
+      };
+    }
+
+    // Aggregate Dust-Control rows → revenue metrics.
+    function _apmRev(dustrows) {
+      let inv = 0, ub = 0, gal = 0, jobs = 0;
+      dustrows.forEach(r => { const c = calc(r); inv += c.invTotal; ub += c.ubTotal; gal += c.gallons; jobs++; });
+      return { inv, ub, gal, jobs, chargePerGal: gal > 0 ? (apmBasis === 'ub' ? ub : inv) / gal : 0 };
+    }
+
+    function _apmMargin(costToMake, charge) {
+      const ready  = costToMake > 0 && charge > 0;
+      const profit = charge - costToMake;
+      return {
+        ready, profit,
+        margin: charge     > 0 ? (profit / charge)     * 100 : 0,
+        markup: costToMake > 0 ? (profit / costToMake) * 100 : 0,
+      };
+    }
+
+    const _apmRate = n => (n < 0 ? '-' + rate4(Math.abs(n)) : rate4(n));
+    const _apmPct  = n => n.toFixed(1) + '%';
+    const _apmMonthLabel = ym => {
+      const [y, mo] = ym.split('-');
+      const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return `${names[parseInt(mo, 10) - 1] || mo} ${y}`;
+    };
+
+    function renderActualProfitMargin() {
+      buildYearFilter();
+      const yr    = _anYear;
+      const pcAll = _apmByYear(pcRows, yr);
+      const dcAll = _apmByYear(rows,   yr);
+      const cost  = _apmCost(pcAll);
+      const rev   = _apmRev(dcAll);
+      const m     = _apmMargin(cost.costToMakePerUb, rev.chargePerGal);
+      const yrLabel = yr || 'all years';
+      const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+
+      // Data-source note
+      const note = document.getElementById('apm-note');
+      if (note) {
+        note.innerHTML = (cost.count > 0 || rev.gal > 0)
+          ? `Cost from Product Cost Tracking (${esc(yrLabel)}): <b>${money(round2(cost.cost))}</b> over ` +
+            `${numFmt(cost.count)} rows ` +
+            `(${numFmt(Math.round(cost.units))} material units → ${numFmt(Math.round(cost.ubGal))} UB gal made). ` +
+            `Revenue from Dust Control Tracking: <b>${money(round2(rev.inv))}</b> invoiced · ${numFmt(Math.round(rev.gal))} gal.` +
+            (cost.cost > 0 && cost.ubGal === 0
+              ? ` <span style="color:var(--amber)">Add Units &amp; Mix Type to cost rows to compute per-gallon cost.</span>` : '')
+          : 'No data yet — add rows in Product Cost Tracking (with Units &amp; Mix Type) and Dust Control Tracking.';
+      }
+
+      // Whole cards
+      set('apm-conc',   cost.concPerGal      > 0 ? rate4(cost.concPerGal)      : '—');
+      set('apm-ctm',    cost.costToMakePerUb > 0 ? rate4(cost.costToMakePerUb) : '—');
+      set('apm-charge', rev.chargePerGal     > 0 ? rate4(rev.chargePerGal)     : '—');
+      set('apm-charge-src', (apmBasis === 'ub' ? 'UB rev ÷ gallons · ' : 'invoice ÷ gallons · ') + yrLabel);
+
+      const profitEl = document.getElementById('apm-profit');
+      if (profitEl) {
+        profitEl.textContent = m.ready ? _apmRate(m.profit) : '—';
+        profitEl.classList.toggle('green', m.ready && m.profit >= 0);
+        profitEl.classList.toggle('red',   m.ready && m.profit <  0);
+      }
+      const marginEl = document.getElementById('apm-margin');
+      if (marginEl) {
+        marginEl.textContent = m.ready ? _apmPct(m.margin) : '—';
+        marginEl.classList.toggle('green', m.ready && m.margin >= 0);
+        marginEl.classList.toggle('red',   m.ready && m.margin <  0);
+      }
+      set('apm-markup', m.ready ? _apmPct(m.markup) : '—');
+
+      // By Mix Type — charge is the overall period rate (revenue has no mix type)
+      const byMix = new Map();
+      pcAll.forEach(r => {
+        const mt = String(r.mix_type || '').trim();
+        if (!mt) return;
+        if (!byMix.has(mt)) byMix.set(mt, []);
+        byMix.get(mt).push(r);
+      });
+      const mixKeys = [...byMix.keys()].sort((a, b) => _apmNum(a) - _apmNum(b));
+      const mixBody = document.getElementById('apm-mix-body');
+      if (mixBody) {
+        mixBody.innerHTML = mixKeys.length
+          ? mixKeys.map(mt => {
+              const cc = _apmCost(byMix.get(mt));
+              const mm = _apmMargin(cc.costToMakePerUb, rev.chargePerGal);
+              return `<tr>
+                <td>${esc(mt)}</td>
+                <td>${numFmt(cc.count)}</td>
+                <td>${money(round2(cc.cost))}</td>
+                <td>${numFmt(Math.round(cc.units))}</td>
+                <td>${cc.concPerGal > 0 ? rate4(cc.concPerGal) : '—'}</td>
+                <td>${numFmt(Math.round(cc.ubGal))}</td>
+                <td>${cc.costToMakePerUb > 0 ? rate4(cc.costToMakePerUb) : '—'}</td>
+                <td>${rev.chargePerGal > 0 ? rate4(rev.chargePerGal) : '—'}</td>
+                <td>${mm.ready ? _apmRate(mm.profit) : '—'}</td>
+                <td>${mm.ready ? _apmPct(mm.margin) : '—'}</td>
+                <td>${mm.ready ? _apmPct(mm.markup) : '—'}</td>
+              </tr>`;
+            }).join('')
+          : `<tr><td colspan="11" style="color:var(--muted);padding:0.8rem;text-align:center">No Product Cost rows with a Mix Type yet.</td></tr>`;
+      }
+
+      // By Month — cost & revenue both scoped to the month
+      const months = new Set();
+      pcAll.forEach(r => { const k = (r.date || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(k)) months.add(k); });
+      dcAll.forEach(r => { const k = (r.date || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(k)) months.add(k); });
+      const monthBody = document.getElementById('apm-month-body');
+      if (monthBody) {
+        const keys = [...months].sort().reverse();
+        monthBody.innerHTML = keys.length
+          ? keys.map(ym => {
+              const cc = _apmCost(pcAll.filter(r => (r.date || '').slice(0, 7) === ym));
+              const rr = _apmRev(dcAll.filter(r => (r.date || '').slice(0, 7) === ym));
+              const mm = _apmMargin(cc.costToMakePerUb, rr.chargePerGal);
+              return `<tr>
+                <td>${esc(_apmMonthLabel(ym))}</td>
+                <td>${money(round2(cc.cost))}</td>
+                <td>${numFmt(Math.round(cc.ubGal))}</td>
+                <td>${cc.costToMakePerUb > 0 ? rate4(cc.costToMakePerUb) : '—'}</td>
+                <td>${rr.chargePerGal > 0 ? rate4(rr.chargePerGal) : '—'}</td>
+                <td>${mm.ready ? _apmRate(mm.profit) : '—'}</td>
+                <td>${mm.ready ? _apmPct(mm.margin) : '—'}</td>
+              </tr>`;
+            }).join('')
+          : `<tr><td colspan="7" style="color:var(--muted);padding:0.8rem;text-align:center">No data for the selected period.</td></tr>`;
+      }
+
+      // By Year — always all years (full year-over-year view)
+      const years = new Set();
+      pcRows.forEach(r => { const k = (r.date || '').slice(0, 4); if (/^\d{4}$/.test(k)) years.add(k); });
+      rows.forEach(r => { const k = (r.date || '').slice(0, 4); if (/^\d{4}$/.test(k)) years.add(k); });
+      const yearBody = document.getElementById('apm-year-body');
+      if (yearBody) {
+        const keys = [...years].sort().reverse();
+        yearBody.innerHTML = keys.length
+          ? keys.map(y => {
+              const cc = _apmCost(pcRows.filter(r => (r.date || '').slice(0, 4) === y));
+              const rr = _apmRev(rows.filter(r => (r.date || '').slice(0, 4) === y));
+              const mm = _apmMargin(cc.costToMakePerUb, rr.chargePerGal);
+              return `<tr>
+                <td>${esc(y)}</td>
+                <td>${money(round2(cc.cost))}</td>
+                <td>${numFmt(Math.round(cc.ubGal))}</td>
+                <td>${cc.costToMakePerUb > 0 ? rate4(cc.costToMakePerUb) : '—'}</td>
+                <td>${rr.chargePerGal > 0 ? rate4(rr.chargePerGal) : '—'}</td>
+                <td>${mm.ready ? _apmRate(mm.profit) : '—'}</td>
+                <td>${mm.ready ? _apmPct(mm.margin) : '—'}</td>
+              </tr>`;
+            }).join('')
+          : `<tr><td colspan="7" style="color:var(--muted);padding:0.8rem;text-align:center">No data yet.</td></tr>`;
+      }
+    }
+
     /* Hook tab clicks that need a render */
     document.querySelector('[data-tab="home"]')
       ?.addEventListener('click', renderHomeDashboard);
@@ -4725,6 +5274,8 @@
       ?.addEventListener('click', loadAuditLog);
     document.querySelector('[data-tab="other-billing"]')
       ?.addEventListener('click', obRenderTable);
+    document.querySelector('[data-tab="product-cost"]')
+      ?.addEventListener('click', pcRenderTable);
 
     init();
 
@@ -5167,6 +5718,294 @@
     window.addEventListener('beforeunload', _flushObOnUnload);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') _flushObOnUnload();
+    });
+
+    /* ═══════════════════════════════════════════
+       PRODUCT COST TRACKING — tracking rows
+       Persisted to the app_data table via the
+       dust_product_cost_rows blob (same key-value
+       store every other dust tab uses).
+    ═══════════════════════════════════════════ */
+    const PC_KEY = 'dust_product_cost_rows';
+
+    // Fields that feed the computed Labor / Material / Total cells.
+    const PC_CALC_FIELDS = ['hours', 'rate', 'units', 'unit_cost'];
+
+    let pcRows      = [];
+    let pcFilters   = {};
+    let pcSaveTimer = null;
+    let pcYear      = String(new Date().getFullYear());
+
+    // Labor Total = Hours × Rate, Material Total = Units × Unit Cost,
+    // Total Cost = Labor Total + Material Total.
+    function pcCalc(row) {
+      const hours    = parseFloat(row.hours)     || 0;
+      const rate     = parseFloat(row.rate)      || 0;
+      const units    = parseFloat(row.units)     || 0;
+      const unitCost = parseFloat(row.unit_cost) || 0;
+      const laborTotal = round2(hours * rate);
+      const matTotal   = round2(units * unitCost);
+      const total      = round2(laborTotal + matTotal);
+      return { laborTotal, matTotal, total };
+    }
+
+    async function pcLoad() {
+      try {
+        const data = await apiGet(PC_KEY);
+        pcRows = Array.isArray(data) ? data : [];
+      } catch { pcRows = []; }
+    }
+
+    async function pcSave(opts = {}) {
+      try { return await apiPut(PC_KEY, pcRows, opts); }
+      catch { return false; }
+    }
+
+    function pcScheduleSave() {
+      setSaveState('saving');
+      clearTimeout(pcSaveTimer);
+      pcSaveTimer = setTimeout(async () => {
+        const ok = await pcSave();
+        setSaveState(ok ? 'saved' : 'error');
+        setTimeout(() => setSaveState(''), 3000);
+      }, 900);
+    }
+
+    function pcAddRow() {
+      const countEl = document.getElementById('pc-bulk-add-count');
+      const count = Math.min(Math.max(parseInt(countEl?.value) || 1, 1), 100);
+      for (let i = 0; i < count; i++) {
+        pcRows.unshift({
+          id: uid(), date: todayStr(),
+          hours: '', mix_type: '', cost_code: '', sub_code: '', employee: '', rate: '',
+          material: '', supplier: '', units: '', unit_cost: '',
+        });
+      }
+      pcRenderTable();
+      pcScheduleSave();
+      const tbody = document.getElementById('pcTbody');
+      const first = tbody?.querySelector('tr[data-idx]');
+      if (first) {
+        first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const inp = first.querySelector('input');
+        if (inp) setTimeout(() => inp.focus(), 80);
+      }
+    }
+
+    function pcDeleteRow(idx) {
+      if (!confirm('Delete this row?')) return;
+      pcRows.splice(idx, 1);
+      pcRenderTable();
+      pcScheduleSave();
+    }
+
+    function pcSet(idx, field, value) {
+      if (!pcRows[idx]) return;
+      pcRows[idx][field] = value;
+      if (PC_CALC_FIELDS.includes(field)) {
+        pcRefreshCalcCells(idx);
+        pcRefreshTotals();
+      }
+      pcScheduleSave();
+    }
+
+    // Employee select: store the choice and auto-fill the Rate cell from the
+    // employee's managed labor rate. Only overwrites Rate when a rate is
+    // defined for that employee, so picking a rate-less employee keeps any
+    // value already typed. The Rate field stays manually editable afterward.
+    function pcSetEmployee(idx, value) {
+      if (!pcRows[idx]) return;
+      pcRows[idx].employee = value;
+      const rates = (dustLists.employee_rates && typeof dustLists.employee_rates === 'object') ? dustLists.employee_rates : {};
+      const rate  = rates[value];
+      if (rate != null && rate !== '' && !isNaN(parseFloat(rate))) {
+        pcRows[idx].rate = parseFloat(rate);
+        const tr = document.querySelector(`#pcTbody tr[data-idx="${idx}"]`);
+        const rateInput = tr && tr.querySelector('input[data-role="pc-rate"]');
+        if (rateInput) rateInput.value = pcRows[idx].rate;
+        pcRefreshCalcCells(idx);
+        pcRefreshTotals();
+      }
+      pcScheduleSave();
+    }
+
+    // Build the <option>s for a row's Sub Code dropdown, limited to the sub
+    // codes tied to the given cost code. Preserves a saved value that's no
+    // longer in the list so legacy rows don't lose their selection.
+    function pcSubCodeOptions(costCode, selected) {
+      const cc   = (dustLists.cost_codes || []).find(c => c.code === costCode);
+      const subs = cc ? (cc.sub_codes || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code))) : [];
+      const names = subs.map(s => s.code);
+      const extra = (selected && !names.includes(selected))
+        ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : '';
+      return '<option value="">— select —</option>' + extra +
+        subs.map(s => `<option value="${esc(s.code)}"${s.code===selected?' selected':''}>${esc(s.code)}</option>`).join('');
+    }
+
+    // Cost Code select: store it, reset the row's sub code, and rebuild the
+    // sub-code dropdown in place so it shows only that cost code's sub codes.
+    function pcSetCostCode(idx, value) {
+      if (!pcRows[idx]) return;
+      pcRows[idx].cost_code = value;
+      pcRows[idx].sub_code  = '';
+      const tr    = document.querySelector(`#pcTbody tr[data-idx="${idx}"]`);
+      const scSel = tr && tr.querySelector('select[data-role="pc-subcode"]');
+      if (scSel) scSel.innerHTML = pcSubCodeOptions(value, '');
+      pcScheduleSave();
+    }
+
+    // Live update while typing in a numeric cell — refresh the computed
+    // cells without a full re-render so the input keeps focus.
+    function _pcLiveSet(idx, field, value) {
+      if (!pcRows[idx]) return;
+      pcRows[idx][field] = value;
+      if (PC_CALC_FIELDS.includes(field)) {
+        pcRefreshCalcCells(idx);
+        pcRefreshTotals();
+      }
+    }
+
+    function pcSetFilter(field, value) {
+      const v = (value || '').trim().toLowerCase();
+      if (v) pcFilters[field] = v;
+      else   delete pcFilters[field];
+      pcRenderTable();
+    }
+
+    function pcSetYear(y) { pcYear = y; pcRenderYearSelector(); pcRenderTable(); }
+
+    function pcRenderYearSelector() {
+      const years = [...new Set(
+        pcRows.map(r => (r.date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort();
+      const el = document.getElementById('pcYearSelector');
+      if (!el) return;
+      if (!years.length) { el.innerHTML = ''; return; }
+      if (pcYear !== 'all' && !years.includes(pcYear)) pcYear = years[years.length - 1];
+      el.innerHTML =
+        `<button class="year-btn${pcYear === 'all' ? ' active' : ''}" onclick="pcSetYear('all')">All</button>` +
+        years.map(y =>
+          `<button class="year-btn${pcYear === y ? ' active' : ''}" onclick="pcSetYear('${y}')">${y}</button>`
+        ).join('');
+    }
+
+    function pcRenderTable() {
+      const tbody = document.getElementById('pcTbody');
+      if (!tbody) return;
+
+      pcRenderYearSelector();
+
+      const filterEntries = Object.entries(pcFilters);
+      const visibleIdxs = pcRows.reduce((acc, row, idx) => {
+        if (pcYear !== 'all' && (row.date || '').slice(0, 4) !== pcYear) return acc;
+        if (filterEntries.length && !filterEntries.every(([f, v]) =>
+            (row[f] || '').toLowerCase().includes(v))) return acc;
+        acc.push(idx);
+        return acc;
+      }, []).sort((a, b) => (pcRows[b].date || '').localeCompare(pcRows[a].date || ''));
+
+      let totLabor = 0, totMat = 0, totGrand = 0;
+
+      tbody.innerHTML = visibleIdxs.map(idx => {
+        const row = pcRows[idx];
+        const c   = pcCalc(row);
+        totLabor += c.laborTotal;
+        totMat   += c.matTotal;
+        totGrand += c.total;
+
+        // Employee dropdown sourced from the managed employees list. Preserve
+        // any saved value that's no longer in the list so legacy rows keep it.
+        const empList = (dustLists.employees || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+        if (row.employee && !empList.includes(row.employee)) empList.unshift(row.employee);
+        const empOpts = '<option value="">— select —</option>' +
+          empList.map(name =>
+            `<option value="${esc(name)}"${row.employee===name?' selected':''}>${esc(name)}</option>`).join('');
+
+        // Cost Code dropdown from the managed cost codes. Preserve any saved
+        // value no longer in the list so legacy rows keep their selection.
+        const ccList  = (dustLists.cost_codes || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code)));
+        const ccNames = ccList.map(c => c.code);
+        const ccExtra = (row.cost_code && !ccNames.includes(row.cost_code))
+          ? `<option value="${esc(row.cost_code)}" selected>${esc(row.cost_code)}</option>` : '';
+        const ccOpts  = '<option value="">— select —</option>' + ccExtra +
+          ccList.map(c => `<option value="${esc(c.code)}"${row.cost_code===c.code?' selected':''}>${esc(c.code)}</option>`).join('');
+        // Sub Code dropdown is filtered to the selected cost code's sub codes.
+        const scOpts  = pcSubCodeOptions(row.cost_code, row.sub_code);
+        // Mix Type: fixed numerical dropdown, 1–15.
+        const mixOpts = '<option value="">— select —</option>' +
+          Array.from({ length: 15 }, (_, i) => i + 1).map(n =>
+            `<option value="${n}"${String(row.mix_type) === String(n) ? ' selected' : ''}>${n}</option>`).join('');
+
+        return `<tr data-idx="${idx}">
+          <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="pcSet(${idx},'date',this.value)"></td>
+          <td class="cw-cm"><select onchange="pcSetEmployee(${idx},this.value)">${empOpts}</select></td>
+          <td class="cw-mu"><select onchange="pcSet(${idx},'mix_type',this.value)">${mixOpts}</select></td>
+          <td class="cw-veh"><select onchange="pcSetCostCode(${idx},this.value)">${ccOpts}</select></td>
+          <td class="cw-veh"><select data-role="pc-subcode" onchange="pcSet(${idx},'sub_code',this.value)">${scOpts}</select></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" data-role="pc-rate" value="${esc(row.rate||'')}" oninput="_pcLiveSet(${idx},'rate',this.value)" onchange="pcSet(${idx},'rate',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.hours||'')}" oninput="_pcLiveSet(${idx},'hours',this.value)" onchange="pcSet(${idx},'hours',this.value)"></td>
+          <td class="calc cw-inv${c.laborTotal ? '' : ' empty'}" data-calc="labor">${c.laborTotal ? money(c.laborTotal) : '—'}</td>
+          <td class="cw-veh"><input type="text" value="${esc(row.material||'')}" placeholder="Material…" oninput="pcSet(${idx},'material',this.value)"></td>
+          <td class="cw-loc"><input type="text" value="${esc(row.supplier||'')}" placeholder="Supplier…" oninput="pcSet(${idx},'supplier',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.units||'')}" oninput="_pcLiveSet(${idx},'units',this.value)" onchange="pcSet(${idx},'units',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.unit_cost||'')}" oninput="_pcLiveSet(${idx},'unit_cost',this.value)" onchange="pcSet(${idx},'unit_cost',this.value)"></td>
+          <td class="calc cw-inv${c.matTotal ? '' : ' empty'}" data-calc="material">${c.matTotal ? money(c.matTotal) : '—'}</td>
+          <td class="calc cw-inv${c.total ? '' : ' empty'}" data-calc="total">${c.total ? money(c.total) : '—'}</td>
+          <td class="del-col"><button class="del-btn" onclick="pcDeleteRow(${idx})" title="Delete row">✕</button></td>
+        </tr>`;
+      }).join('');
+
+      document.getElementById('pc-tot-labor').textContent = totLabor ? money(totLabor) : '—';
+      document.getElementById('pc-tot-mat').textContent   = totMat   ? money(totMat)   : '—';
+      document.getElementById('pc-tot-grand').textContent = totGrand ? money(totGrand) : '—';
+
+      const total = pcRows.length, shown = visibleIdxs.length;
+      document.getElementById('pcRowCount').textContent = shown < total
+        ? `${shown} of ${total} row${total !== 1 ? 's' : ''}`
+        : `${total} row${total !== 1 ? 's' : ''}`;
+    }
+
+    function pcRefreshCalcCells(idx) {
+      const c  = pcCalc(pcRows[idx]);
+      const tr = document.querySelector(`#pcTbody tr[data-idx="${idx}"]`);
+      if (!tr) return;
+      const setCell = (role, val) => {
+        const cell = tr.querySelector(`td[data-calc="${role}"]`);
+        if (!cell) return;
+        cell.textContent = val ? money(val) : '—';
+        cell.classList.toggle('empty', !val);
+      };
+      setCell('labor',    c.laborTotal);
+      setCell('material', c.matTotal);
+      setCell('total',    c.total);
+    }
+
+    function pcRefreshTotals() {
+      let totLabor = 0, totMat = 0, totGrand = 0;
+      pcRows.forEach(row => {
+        const c = pcCalc(row);
+        totLabor += c.laborTotal;
+        totMat   += c.matTotal;
+        totGrand += c.total;
+      });
+      document.getElementById('pc-tot-labor').textContent = totLabor ? money(totLabor) : '—';
+      document.getElementById('pc-tot-mat').textContent   = totMat   ? money(totMat)   : '—';
+      document.getElementById('pc-tot-grand').textContent = totGrand ? money(totGrand) : '—';
+    }
+
+    // Load Product Cost rows in the background after main init
+    pcLoad().then(pcRenderTable);
+
+    // Flush pending PC save on unload — keepalive lets the request survive
+    // the navigation; without it the browser may cancel it mid-flight.
+    function _flushPcOnUnload() {
+      clearTimeout(pcSaveTimer);
+      pcSaveTimer = null;
+      if (pcRows.length > 0) pcSave({ keepalive: true });
+    }
+    window.addEventListener('beforeunload', _flushPcOnUnload);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') _flushPcOnUnload();
     });
 
     /* ═══════════════════════════════════════════
