@@ -1284,6 +1284,7 @@
     <button class="tab-btn active" data-tab="home">Home</button>
     <button class="tab-btn" data-tab="tracking">Dust Control Tracking</button>
     <button class="tab-btn" data-tab="other-billing">Other Billing</button>
+    <button class="tab-btn" data-tab="product-cost">Product Cost Tracking</button>
     <button class="tab-btn" data-tab="analytics">Analytics</button>
     <button class="tab-btn" data-tab="reports">Reports</button>
   </nav>
@@ -1701,6 +1702,76 @@
     </div>
 
   </div><!-- /tab-other-billing -->
+
+  <!-- ══════════════════════════════════════════════
+       PRODUCT COST TRACKING TAB
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-product-cost">
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <button class="btn-add" onclick="pcAddRow()">+ Add Row</button>
+      <input type="number" id="pc-bulk-add-count" min="1" max="100" value="1"
+        title="Number of rows to add"
+        style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2,#1e1e1e);border:1px solid var(--border,#333);border-radius:4px;color:var(--text,#eee);font-size:0.72rem;text-align:center;outline:none">
+      <div id="pcYearSelector" class="year-selector"></div>
+      <span class="row-count" id="pcRowCount">0 rows</span>
+    </div>
+
+    <!-- Totals bar -->
+    <div class="totals-bar">
+      <div class="tot-item">
+        <span class="tot-label">Labor Total</span>
+        <span class="tot-val" id="pc-tot-labor">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Material Total</span>
+        <span class="tot-val" id="pc-tot-mat">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Total Cost</span>
+        <span class="tot-val" id="pc-tot-grand">—</span>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table class="sheet-table">
+        <thead>
+          <tr class="group-row">
+            <th class="g-entry"  colspan="1">Entry</th>
+            <th class="g-v1"     colspan="4">Labor</th>
+            <th class="g-v2"     colspan="5">Material</th>
+            <th class="g-totals" colspan="1">Totals</th>
+            <th class="g-del"></th>
+          </tr>
+          <tr class="col-row">
+            <th class="cw-date">Date<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('date',this.value)"></th>
+            <th class="cw-rate">Hours</th>
+            <th class="cw-cm">Employee<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('employee',this.value)"></th>
+            <th class="cw-rate">Rate</th>
+            <th class="cw-inv calc-hdr">Labor Total</th>
+            <th class="cw-veh">Material<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('material',this.value)"></th>
+            <th class="cw-loc">Supplier<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('supplier',this.value)"></th>
+            <th class="cw-rate">Units</th>
+            <th class="cw-rate">Unit Cost</th>
+            <th class="cw-inv calc-hdr">Material Total</th>
+            <th class="cw-inv calc-hdr">Total Cost</th>
+            <th class="cw-del"></th>
+          </tr>
+        </thead>
+        <tbody id="pcTbody"></tbody>
+        <tfoot>
+          <tr class="add-row-foot">
+            <td colspan="12">
+              <button class="add-row-foot-btn" onclick="pcAddRow()">+ Add Row</button>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+  </div><!-- /tab-product-cost -->
 
   <!-- ══════════════════════════════════════════════
        REPORTS TAB — Audit Log
@@ -4725,6 +4796,8 @@
       ?.addEventListener('click', loadAuditLog);
     document.querySelector('[data-tab="other-billing"]')
       ?.addEventListener('click', obRenderTable);
+    document.querySelector('[data-tab="product-cost"]')
+      ?.addEventListener('click', pcRenderTable);
 
     init();
 
@@ -5167,6 +5240,231 @@
     window.addEventListener('beforeunload', _flushObOnUnload);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') _flushObOnUnload();
+    });
+
+    /* ═══════════════════════════════════════════
+       PRODUCT COST TRACKING — tracking rows
+       Persisted to the app_data table via the
+       dust_product_cost_rows blob (same key-value
+       store every other dust tab uses).
+    ═══════════════════════════════════════════ */
+    const PC_KEY = 'dust_product_cost_rows';
+
+    // Fields that feed the computed Labor / Material / Total cells.
+    const PC_CALC_FIELDS = ['hours', 'rate', 'units', 'unit_cost'];
+
+    let pcRows      = [];
+    let pcFilters   = {};
+    let pcSaveTimer = null;
+    let pcYear      = String(new Date().getFullYear());
+
+    // Labor Total = Hours × Rate, Material Total = Units × Unit Cost,
+    // Total Cost = Labor Total + Material Total.
+    function pcCalc(row) {
+      const hours    = parseFloat(row.hours)     || 0;
+      const rate     = parseFloat(row.rate)      || 0;
+      const units    = parseFloat(row.units)     || 0;
+      const unitCost = parseFloat(row.unit_cost) || 0;
+      const laborTotal = round2(hours * rate);
+      const matTotal   = round2(units * unitCost);
+      const total      = round2(laborTotal + matTotal);
+      return { laborTotal, matTotal, total };
+    }
+
+    async function pcLoad() {
+      try {
+        const data = await apiGet(PC_KEY);
+        pcRows = Array.isArray(data) ? data : [];
+      } catch { pcRows = []; }
+    }
+
+    async function pcSave(opts = {}) {
+      try { return await apiPut(PC_KEY, pcRows, opts); }
+      catch { return false; }
+    }
+
+    function pcScheduleSave() {
+      setSaveState('saving');
+      clearTimeout(pcSaveTimer);
+      pcSaveTimer = setTimeout(async () => {
+        const ok = await pcSave();
+        setSaveState(ok ? 'saved' : 'error');
+        setTimeout(() => setSaveState(''), 3000);
+      }, 900);
+    }
+
+    function pcAddRow() {
+      const countEl = document.getElementById('pc-bulk-add-count');
+      const count = Math.min(Math.max(parseInt(countEl?.value) || 1, 1), 100);
+      for (let i = 0; i < count; i++) {
+        pcRows.unshift({
+          id: uid(), date: todayStr(),
+          hours: '', employee: '', rate: '',
+          material: '', supplier: '', units: '', unit_cost: '',
+        });
+      }
+      pcRenderTable();
+      pcScheduleSave();
+      const tbody = document.getElementById('pcTbody');
+      const first = tbody?.querySelector('tr[data-idx]');
+      if (first) {
+        first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const inp = first.querySelector('input');
+        if (inp) setTimeout(() => inp.focus(), 80);
+      }
+    }
+
+    function pcDeleteRow(idx) {
+      if (!confirm('Delete this row?')) return;
+      pcRows.splice(idx, 1);
+      pcRenderTable();
+      pcScheduleSave();
+    }
+
+    function pcSet(idx, field, value) {
+      if (!pcRows[idx]) return;
+      pcRows[idx][field] = value;
+      if (PC_CALC_FIELDS.includes(field)) {
+        pcRefreshCalcCells(idx);
+        pcRefreshTotals();
+      }
+      pcScheduleSave();
+    }
+
+    // Live update while typing in a numeric cell — refresh the computed
+    // cells without a full re-render so the input keeps focus.
+    function _pcLiveSet(idx, field, value) {
+      if (!pcRows[idx]) return;
+      pcRows[idx][field] = value;
+      if (PC_CALC_FIELDS.includes(field)) {
+        pcRefreshCalcCells(idx);
+        pcRefreshTotals();
+      }
+    }
+
+    function pcSetFilter(field, value) {
+      const v = (value || '').trim().toLowerCase();
+      if (v) pcFilters[field] = v;
+      else   delete pcFilters[field];
+      pcRenderTable();
+    }
+
+    function pcSetYear(y) { pcYear = y; pcRenderYearSelector(); pcRenderTable(); }
+
+    function pcRenderYearSelector() {
+      const years = [...new Set(
+        pcRows.map(r => (r.date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort();
+      const el = document.getElementById('pcYearSelector');
+      if (!el) return;
+      if (!years.length) { el.innerHTML = ''; return; }
+      if (pcYear !== 'all' && !years.includes(pcYear)) pcYear = years[years.length - 1];
+      el.innerHTML =
+        `<button class="year-btn${pcYear === 'all' ? ' active' : ''}" onclick="pcSetYear('all')">All</button>` +
+        years.map(y =>
+          `<button class="year-btn${pcYear === y ? ' active' : ''}" onclick="pcSetYear('${y}')">${y}</button>`
+        ).join('');
+    }
+
+    function pcRenderTable() {
+      const tbody = document.getElementById('pcTbody');
+      if (!tbody) return;
+
+      pcRenderYearSelector();
+
+      const filterEntries = Object.entries(pcFilters);
+      const visibleIdxs = pcRows.reduce((acc, row, idx) => {
+        if (pcYear !== 'all' && (row.date || '').slice(0, 4) !== pcYear) return acc;
+        if (filterEntries.length && !filterEntries.every(([f, v]) =>
+            (row[f] || '').toLowerCase().includes(v))) return acc;
+        acc.push(idx);
+        return acc;
+      }, []).sort((a, b) => (pcRows[b].date || '').localeCompare(pcRows[a].date || ''));
+
+      let totLabor = 0, totMat = 0, totGrand = 0;
+
+      tbody.innerHTML = visibleIdxs.map(idx => {
+        const row = pcRows[idx];
+        const c   = pcCalc(row);
+        totLabor += c.laborTotal;
+        totMat   += c.matTotal;
+        totGrand += c.total;
+
+        // Employee dropdown sourced from the managed employees list. Preserve
+        // any saved value that's no longer in the list so legacy rows keep it.
+        const empList = (dustLists.employees || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+        if (row.employee && !empList.includes(row.employee)) empList.unshift(row.employee);
+        const empOpts = '<option value="">— select —</option>' +
+          empList.map(name =>
+            `<option value="${esc(name)}"${row.employee===name?' selected':''}>${esc(name)}</option>`).join('');
+
+        return `<tr data-idx="${idx}">
+          <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="pcSet(${idx},'date',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.hours||'')}" oninput="_pcLiveSet(${idx},'hours',this.value)" onchange="pcSet(${idx},'hours',this.value)"></td>
+          <td class="cw-cm"><select onchange="pcSet(${idx},'employee',this.value)">${empOpts}</select></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.rate||'')}" oninput="_pcLiveSet(${idx},'rate',this.value)" onchange="pcSet(${idx},'rate',this.value)"></td>
+          <td class="calc cw-inv${c.laborTotal ? '' : ' empty'}" data-calc="labor">${c.laborTotal ? money(c.laborTotal) : '—'}</td>
+          <td class="cw-veh"><input type="text" value="${esc(row.material||'')}" placeholder="Material…" oninput="pcSet(${idx},'material',this.value)"></td>
+          <td class="cw-loc"><input type="text" value="${esc(row.supplier||'')}" placeholder="Supplier…" oninput="pcSet(${idx},'supplier',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.units||'')}" oninput="_pcLiveSet(${idx},'units',this.value)" onchange="pcSet(${idx},'units',this.value)"></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.unit_cost||'')}" oninput="_pcLiveSet(${idx},'unit_cost',this.value)" onchange="pcSet(${idx},'unit_cost',this.value)"></td>
+          <td class="calc cw-inv${c.matTotal ? '' : ' empty'}" data-calc="material">${c.matTotal ? money(c.matTotal) : '—'}</td>
+          <td class="calc cw-inv${c.total ? '' : ' empty'}" data-calc="total">${c.total ? money(c.total) : '—'}</td>
+          <td class="del-col"><button class="del-btn" onclick="pcDeleteRow(${idx})" title="Delete row">✕</button></td>
+        </tr>`;
+      }).join('');
+
+      document.getElementById('pc-tot-labor').textContent = totLabor ? money(totLabor) : '—';
+      document.getElementById('pc-tot-mat').textContent   = totMat   ? money(totMat)   : '—';
+      document.getElementById('pc-tot-grand').textContent = totGrand ? money(totGrand) : '—';
+
+      const total = pcRows.length, shown = visibleIdxs.length;
+      document.getElementById('pcRowCount').textContent = shown < total
+        ? `${shown} of ${total} row${total !== 1 ? 's' : ''}`
+        : `${total} row${total !== 1 ? 's' : ''}`;
+    }
+
+    function pcRefreshCalcCells(idx) {
+      const c  = pcCalc(pcRows[idx]);
+      const tr = document.querySelector(`#pcTbody tr[data-idx="${idx}"]`);
+      if (!tr) return;
+      const setCell = (role, val) => {
+        const cell = tr.querySelector(`td[data-calc="${role}"]`);
+        if (!cell) return;
+        cell.textContent = val ? money(val) : '—';
+        cell.classList.toggle('empty', !val);
+      };
+      setCell('labor',    c.laborTotal);
+      setCell('material', c.matTotal);
+      setCell('total',    c.total);
+    }
+
+    function pcRefreshTotals() {
+      let totLabor = 0, totMat = 0, totGrand = 0;
+      pcRows.forEach(row => {
+        const c = pcCalc(row);
+        totLabor += c.laborTotal;
+        totMat   += c.matTotal;
+        totGrand += c.total;
+      });
+      document.getElementById('pc-tot-labor').textContent = totLabor ? money(totLabor) : '—';
+      document.getElementById('pc-tot-mat').textContent   = totMat   ? money(totMat)   : '—';
+      document.getElementById('pc-tot-grand').textContent = totGrand ? money(totGrand) : '—';
+    }
+
+    // Load Product Cost rows in the background after main init
+    pcLoad().then(pcRenderTable);
+
+    // Flush pending PC save on unload — keepalive lets the request survive
+    // the navigation; without it the browser may cancel it mid-flight.
+    function _flushPcOnUnload() {
+      clearTimeout(pcSaveTimer);
+      pcSaveTimer = null;
+      if (pcRows.length > 0) pcSave({ keepalive: true });
+    }
+    window.addEventListener('beforeunload', _flushPcOnUnload);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') _flushPcOnUnload();
     });
 
     /* ═══════════════════════════════════════════
