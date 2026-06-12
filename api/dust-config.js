@@ -17,6 +17,20 @@ function safeFloat(v) {
   return isNaN(f) ? null : f;
 }
 
+// Merge two scalar dropdown lists, preserving order: normalized values first,
+// then any blob-only values appended. Used so a value still present in the
+// rewritten-in-full blob isn't lost when the normalized table is trusted.
+function _unionValues(primary, extra) {
+  const out  = Array.isArray(primary) ? primary.slice() : [];
+  const seen = new Set(out.map(v => String(v)));
+  (Array.isArray(extra) ? extra : []).forEach(v => {
+    if (v == null || v === '') return;
+    const k = String(v);
+    if (!seen.has(k)) { seen.add(k); out.push(v); }
+  });
+  return out;
+}
+
 // Idempotent guard so ALTER TABLE only runs once per cold-start
 let _companyRateColsEnsured = false;
 async function ensureCompanyRateColumns(sql) {
@@ -123,10 +137,16 @@ module.exports = async (req, res) => {
               unit_number:  e.unit_number  || '',
               vehicle_rate: e.vehicle_rate != null ? e.vehicle_rate : null,
             })),
-            employees: empRows.map(r => r.value),
-            materials: matRows.map(r => r.value),
-            states:    stateRows.map(r => r.value),
-            mu:        muRows.map(r => r.value),
+            // Union the normalized dropdown values with the blob's copy. The
+            // blob is rewritten in full on every save, so any value present
+            // there but missing from the normalized table (e.g. an employee
+            // dropped by a past concurrent-write race) is recovered rather than
+            // silently lost. Removals still work: a deleted value is gone from
+            // both sources in the same save, so it's absent from the union.
+            employees: _unionValues(empRows.map(r => r.value),   blobListsVal.employees),
+            materials: _unionValues(matRows.map(r => r.value),   blobListsVal.materials),
+            states:    _unionValues(stateRows.map(r => r.value), blobListsVal.states),
+            mu:        _unionValues(muRows.map(r => r.value),    blobListsVal.mu),
             companies,
             // Per-employee labor rates live only in the dust_lists blob (no
             // normalized column); surface them from the blob so the Manage

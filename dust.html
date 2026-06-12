@@ -2220,21 +2220,60 @@
     // added employee) with a server read that raced the write.
     let _configPutInFlight = 0;
     let _configChangedAt   = 0;
-    function dustConfigPut(opts = {}) {
-      _configChangedAt = Date.now();
-      _configPutInFlight++;
+    // Serializes config writes. Each list edit (e.g. adding an employee) fires
+    // an immediate save; without this, several quick edits launched concurrent
+    // PUTs that could COMPLETE out of order. The server prunes any dropdown
+    // value not present in the incoming list, so an older snapshot landing last
+    // would silently delete just-added employees from both the blob and the
+    // normalized dropdown_lists table. Chaining guarantees writes apply in order
+    // and the final write reflects the final list.
+    let _configPutChain = Promise.resolve();
+
+    function _dustConfigBody(keepalive) {
       const init = {
         method: 'PUT',
         headers: AUTH_HDR(),
+        // Snapshot dustLists at send time so queued edits coalesce into the
+        // latest, most-complete list.
         body: JSON.stringify({
           settings: { ub_rate: ubRate, profit_margin: profitMargin },
           lists: dustLists,
         }),
       };
-      if (opts.keepalive) init.keepalive = true;
-      return fetch('/api/dust-config', init)
-        .then(r => r.ok ? r.json() : null).catch(() => null)
+      if (keepalive) init.keepalive = true;
+      return init;
+    }
+
+    function dustConfigPut(opts = {}) {
+      _configChangedAt = Date.now();
+      _configPutInFlight++;
+
+      // Page-unload flushes must fire synchronously (the tab is closing) and
+      // can't await retries — send once, outside the serialization queue.
+      if (opts.keepalive) {
+        return fetch('/api/dust-config', _dustConfigBody(true))
+          .then(r => r.ok ? r.json() : null).catch(() => null)
+          .finally(() => { _configPutInFlight = Math.max(0, _configPutInFlight - 1); });
+      }
+
+      // Retry a few times so a transient network/server error doesn't silently
+      // drop the edit (saves were previously fire-and-forget with no retry).
+      const send = async () => {
+        _configChangedAt = Date.now(); // cover the actual send time for the poll cooldown
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const r = await fetch('/api/dust-config', _dustConfigBody(false));
+            if (r.ok) return await r.json().catch(() => null);
+          } catch { /* network error — fall through to retry */ }
+          await new Promise(res => setTimeout(res, 400 * (attempt + 1)));
+        }
+        return null;
+      };
+
+      const p = _configPutChain.then(send, send)
         .finally(() => { _configPutInFlight = Math.max(0, _configPutInFlight - 1); });
+      _configPutChain = p.catch(() => {}); // keep the chain alive after a failure
+      return p;
     }
 
     /* ═══════════════════════════════════════════
@@ -2711,7 +2750,15 @@
       renderTable();
     }
 
-    function saveLists() { dustConfigPut(); }
+    function saveLists() {
+      // Surface save progress on the shared indicator so list edits (adding an
+      // employee, setting a rate, etc.) give visible confirmation they persisted.
+      setSaveState('saving');
+      dustConfigPut().then(ok => {
+        setSaveState(ok ? 'saved' : 'error');
+        setTimeout(() => setSaveState(''), 3000);
+      });
+    }
 
     function scheduleSave() {
       setSaveState('saving');
