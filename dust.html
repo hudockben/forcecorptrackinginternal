@@ -5091,17 +5091,23 @@
     const _apmNum    = v => { const f = parseFloat(v); return isFinite(f) ? f : 0; };
     const _apmByYear = (arr, yr) => yr ? arr.filter(r => (r.date || '').slice(0, 4) === yr) : arr;
 
-    // Aggregate Product-Cost rows → cost metrics (per-gallon uses qualifying rows).
+    // Aggregate Product-Cost rows → cost metrics.
     function _apmCost(pcrows) {
-      let cost = 0, costAll = 0, units = 0, ubGal = 0, q = 0, n = 0;
+      // Numerator includes ALL cost (labor + every material row) so labor
+      // entered on its own rows is never dropped. Volume comes from the
+      // material rows: Units = amount of each material bought for the mix
+      // (e.g. gallons of soap), which sum to the concentrate volume. UB
+      // gallons made = Σ(units × mix type), mix type being the dilution.
+      let cost = 0, units = 0, ubGal = 0, withVol = 0, n = 0;
       pcrows.forEach(r => {
-        const c = pcCalc(r).total;
-        costAll += c; n++;
+        cost += pcCalc(r).total;
+        n++;
         const u = _apmNum(r.units), mx = _apmNum(r.mix_type);
-        if (u > 0 && mx > 0) { cost += c; units += u; ubGal += u * mx; q++; }
+        if (u > 0) units += u;
+        if (u > 0 && mx > 0) { ubGal += u * mx; withVol++; }
       });
       return {
-        cost, costAll, units, ubGal, qualifying: q, count: n,
+        cost, units, ubGal, withVol, count: n,
         concPerGal:      units > 0 ? cost / units : 0,
         costToMakePerUb: ubGal > 0 ? cost / ubGal : 0,
       };
@@ -5146,13 +5152,13 @@
       // Data-source note
       const note = document.getElementById('apm-note');
       if (note) {
-        note.innerHTML = (cost.qualifying > 0 || rev.gal > 0)
+        note.innerHTML = (cost.count > 0 || rev.gal > 0)
           ? `Cost from Product Cost Tracking (${esc(yrLabel)}): <b>${money(round2(cost.cost))}</b> over ` +
-            `<b>${numFmt(cost.qualifying)}</b> of ${numFmt(cost.count)} rows ` +
-            `(${numFmt(Math.round(cost.units))} units → ${numFmt(Math.round(cost.ubGal))} UB gal made). ` +
+            `${numFmt(cost.count)} rows ` +
+            `(${numFmt(Math.round(cost.units))} material units → ${numFmt(Math.round(cost.ubGal))} UB gal made). ` +
             `Revenue from Dust Control Tracking: <b>${money(round2(rev.inv))}</b> invoiced · ${numFmt(Math.round(rev.gal))} gal.` +
-            (cost.qualifying < cost.count
-              ? ` <span style="color:var(--amber)">Rows missing Units or Mix Type are excluded from per-gallon cost.</span>` : '')
+            (cost.cost > 0 && cost.ubGal === 0
+              ? ` <span style="color:var(--amber)">Add Units &amp; Mix Type to cost rows to compute per-gallon cost.</span>` : '')
           : 'No data yet — add rows in Product Cost Tracking (with Units &amp; Mix Type) and Dust Control Tracking.';
       }
 
