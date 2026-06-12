@@ -1739,18 +1739,18 @@
       <table class="sheet-table">
         <thead>
           <tr class="group-row">
-            <th class="g-entry"  colspan="1">Entry</th>
+            <th class="g-entry"  colspan="2">Entry</th>
             <th class="g-cust"   colspan="2">Code</th>
-            <th class="g-v1"     colspan="4">Labor</th>
+            <th class="g-v1"     colspan="3">Labor</th>
             <th class="g-v2"     colspan="5">Material</th>
             <th class="g-totals" colspan="1">Totals</th>
             <th class="g-del"></th>
           </tr>
           <tr class="col-row">
             <th class="cw-date">Date<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('date',this.value)"></th>
+            <th class="cw-cm">Employee<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('employee',this.value)"></th>
             <th class="cw-veh">Cost Code<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('cost_code',this.value)"></th>
             <th class="cw-veh">Sub Code</th>
-            <th class="cw-cm">Employee<input class="col-filter" type="text" placeholder="filter…" oninput="pcSetFilter('employee',this.value)"></th>
             <th class="cw-rate">Rate</th>
             <th class="cw-rate">Hours</th>
             <th class="cw-inv calc-hdr">Labor Total</th>
@@ -5648,9 +5648,9 @@
 
         return `<tr data-idx="${idx}">
           <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="pcSet(${idx},'date',this.value)"></td>
+          <td class="cw-cm"><select onchange="pcSetEmployee(${idx},this.value)">${empOpts}</select></td>
           <td class="cw-veh"><select onchange="pcSetCostCode(${idx},this.value)">${ccOpts}</select></td>
           <td class="cw-veh"><select data-role="pc-subcode" onchange="pcSet(${idx},'sub_code',this.value)">${scOpts}</select></td>
-          <td class="cw-cm"><select onchange="pcSetEmployee(${idx},this.value)">${empOpts}</select></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" data-role="pc-rate" value="${esc(row.rate||'')}" oninput="_pcLiveSet(${idx},'rate',this.value)" onchange="pcSet(${idx},'rate',this.value)"></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.hours||'')}" oninput="_pcLiveSet(${idx},'hours',this.value)" onchange="pcSet(${idx},'hours',this.value)"></td>
           <td class="calc cw-inv${c.laborTotal ? '' : ' empty'}" data-calc="labor">${c.laborTotal ? money(c.laborTotal) : '—'}</td>
