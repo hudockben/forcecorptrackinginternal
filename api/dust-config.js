@@ -128,6 +128,11 @@ module.exports = async (req, res) => {
             states:    stateRows.map(r => r.value),
             mu:        muRows.map(r => r.value),
             companies,
+            // Per-employee labor rates live only in the dust_lists blob (no
+            // normalized column); surface them from the blob so the Manage
+            // Lists rate field and Product Cost auto-fill survive reloads.
+            employee_rates: (blobListsRaw && typeof blobListsRaw.employee_rates === 'object'
+              && blobListsRaw.employee_rates) || {},
           },
         });
       }

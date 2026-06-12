@@ -1889,6 +1889,7 @@
           <div class="list-items" id="li-employees"></div>
           <div class="add-item-row">
             <input type="text" id="new-emp-name" placeholder="Employee / driver name…" />
+            <input type="number" id="new-emp-rate" class="short" placeholder="Labor rate $" min="0" step="0.01" />
             <button class="btn-list-add" onclick="addListItem('employees')">+ Add</button>
           </div>
         </div>
@@ -2310,7 +2311,7 @@
         || null;
     }
 
-    let dustLists  = { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [] };
+    let dustLists  = { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [], employee_rates: {} };
     let dustFilters = {};
 
     function setFilter(field, value) {
@@ -3488,14 +3489,31 @@
     }
 
     function renderEmployeesPanel() {
+      const rates  = (dustLists.employee_rates && typeof dustLists.employee_rates === 'object') ? dustLists.employee_rates : {};
       const sorted = (dustLists.employees || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
       document.getElementById('li-employees').innerHTML = sorted.length
-        ? sorted.map(name => `
+        ? sorted.map(name => {
+            const safe = esc(name).replace(/'/g,"\\'");
+            const rate = rates[name];
+            return `
             <div class="list-item">
               <span style="font-size:0.82rem;font-weight:600;color:var(--text);flex:1">${esc(name)}</span>
-              <button class="remove-item" onclick="removeListItem('employees','${esc(name).replace(/'/g,"\\'")}')">✕</button>
-            </div>`).join('')
+              <span class="list-item-lbl">Labor Rate $</span>
+              <input type="number" class="short" value="${rate != null ? rate : ''}" placeholder="0.00" min="0" step="0.01"
+                oninput="updateEmployeeRate('${safe}',this.value)" />
+              <button class="remove-item" onclick="removeListItem('employees','${safe}')">✕</button>
+            </div>`;
+          }).join('')
         : '<div class="empty-hint">No employees added yet.</div>';
+    }
+
+    // Set/clear an employee's labor rate (keyed by name). Blank input clears it.
+    function updateEmployeeRate(name, value) {
+      if (!dustLists.employee_rates || typeof dustLists.employee_rates !== 'object') dustLists.employee_rates = {};
+      const r = parseFloat(value);
+      if (isNaN(r)) delete dustLists.employee_rates[name];
+      else          dustLists.employee_rates[name] = r;
+      saveLists();
     }
 
     function renderEquipmentPanel() {
@@ -3692,12 +3710,17 @@
       } else if (type === 'employees') {
         const name = document.getElementById('new-emp-name').value.trim();
         if (!name) { document.getElementById('new-emp-name').focus(); return; }
+        const rateEl = document.getElementById('new-emp-rate');
+        const rate   = parseFloat(rateEl.value);
         if (!Array.isArray(dustLists.employees)) dustLists.employees = [];
-        if (!dustLists.employees.includes(name)) {
-          dustLists.employees.push(name);
-          document.getElementById('new-emp-name').value = '';
-          renderEmployeesPanel();
-        }
+        if (!dustLists.employee_rates || typeof dustLists.employee_rates !== 'object') dustLists.employee_rates = {};
+        if (!dustLists.employees.includes(name)) dustLists.employees.push(name);
+        // Record the labor rate (when provided) keyed by employee name. Re-adding
+        // an existing name with a rate updates that employee's rate.
+        if (!isNaN(rate)) dustLists.employee_rates[name] = rate;
+        document.getElementById('new-emp-name').value = '';
+        rateEl.value = '';
+        renderEmployeesPanel();
       } else if (type === 'materials') {
         const name = document.getElementById('new-mat-name').value.trim();
         if (!name) { document.getElementById('new-mat-name').focus(); return; }
@@ -3731,6 +3754,7 @@
       } else if (type === 'employees') {
         // id here is the employee name string
         dustLists.employees = (dustLists.employees || []).filter(n => n !== id);
+        if (dustLists.employee_rates) delete dustLists.employee_rates[id];
       } else if (type === 'materials') {
         // id here is the material name string
         dustLists.materials = (dustLists.materials || []).filter(n => n !== id);
@@ -3793,7 +3817,9 @@
     });
     document.getElementById('new-co-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('companies'); });
     document.getElementById('new-state-abbr')?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('states'); });
-    document.getElementById('new-emp-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('employees'); });
+    ['new-emp-name','new-emp-rate'].forEach(id => {
+      document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') addListItem('employees'); });
+    });
     document.getElementById('new-mat-name')?.addEventListener('keydown',   e => { if (e.key==='Enter') addListItem('materials'); });
     document.getElementById('new-mu-name')?.addEventListener('keydown',    e => { if (e.key==='Enter') addListItem('mu'); });
 
@@ -4165,6 +4191,9 @@
           dustLists.materials = Array.isArray(lists.materials) ? lists.materials : [];
           dustLists.states    = Array.isArray(lists.states)    ? lists.states    : [];
           dustLists.mu        = Array.isArray(lists.mu)        ? lists.mu        : [];
+          // Per-employee labor rates, keyed by employee name. Object (not array).
+          dustLists.employee_rates = (lists.employee_rates && typeof lists.employee_rates === 'object'
+            && !Array.isArray(lists.employee_rates)) ? lists.employee_rates : {};
           // Ensure each company has required arrays; migrate co.men strings → {id,name} objects
           dustLists.companies.forEach(co => {
             if (!Array.isArray(co.locations)) co.locations = [];
@@ -5331,6 +5360,26 @@
       pcScheduleSave();
     }
 
+    // Employee select: store the choice and auto-fill the Rate cell from the
+    // employee's managed labor rate. Only overwrites Rate when a rate is
+    // defined for that employee, so picking a rate-less employee keeps any
+    // value already typed. The Rate field stays manually editable afterward.
+    function pcSetEmployee(idx, value) {
+      if (!pcRows[idx]) return;
+      pcRows[idx].employee = value;
+      const rates = (dustLists.employee_rates && typeof dustLists.employee_rates === 'object') ? dustLists.employee_rates : {};
+      const rate  = rates[value];
+      if (rate != null && rate !== '' && !isNaN(parseFloat(rate))) {
+        pcRows[idx].rate = parseFloat(rate);
+        const tr = document.querySelector(`#pcTbody tr[data-idx="${idx}"]`);
+        const rateInput = tr && tr.querySelector('input[data-role="pc-rate"]');
+        if (rateInput) rateInput.value = pcRows[idx].rate;
+        pcRefreshCalcCells(idx);
+        pcRefreshTotals();
+      }
+      pcScheduleSave();
+    }
+
     // Live update while typing in a numeric cell — refresh the computed
     // cells without a full re-render so the input keeps focus.
     function _pcLiveSet(idx, field, value) {
@@ -5401,8 +5450,8 @@
         return `<tr data-idx="${idx}">
           <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="pcSet(${idx},'date',this.value)"></td>
           <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.hours||'')}" oninput="_pcLiveSet(${idx},'hours',this.value)" onchange="pcSet(${idx},'hours',this.value)"></td>
-          <td class="cw-cm"><select onchange="pcSet(${idx},'employee',this.value)">${empOpts}</select></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.rate||'')}" oninput="_pcLiveSet(${idx},'rate',this.value)" onchange="pcSet(${idx},'rate',this.value)"></td>
+          <td class="cw-cm"><select onchange="pcSetEmployee(${idx},this.value)">${empOpts}</select></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" data-role="pc-rate" value="${esc(row.rate||'')}" oninput="_pcLiveSet(${idx},'rate',this.value)" onchange="pcSet(${idx},'rate',this.value)"></td>
           <td class="calc cw-inv${c.laborTotal ? '' : ' empty'}" data-calc="labor">${c.laborTotal ? money(c.laborTotal) : '—'}</td>
           <td class="cw-veh"><input type="text" value="${esc(row.material||'')}" placeholder="Material…" oninput="pcSet(${idx},'material',this.value)"></td>
           <td class="cw-loc"><input type="text" value="${esc(row.supplier||'')}" placeholder="Supplier…" oninput="pcSet(${idx},'supplier',this.value)"></td>
