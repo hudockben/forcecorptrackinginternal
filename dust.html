@@ -2097,6 +2097,15 @@
     #printModal .prt-presets { display:flex; flex-wrap:wrap; gap:0.4rem; }
     #printModal .prt-preset { padding:0.32rem 0.62rem; background:var(--surface2); border:1px solid var(--border); border-radius:999px; color:var(--text); font-size:0.68rem; cursor:pointer; transition:all 0.15s; }
     #printModal .prt-preset:hover { border-color:var(--amber); color:var(--amber); }
+    #printModal .prt-colrow { display:flex; align-items:center; justify-content:space-between; margin-bottom:0.3rem; }
+    #printModal .prt-link { background:none; border:none; color:var(--amber); font-size:0.66rem; cursor:pointer; padding:0; }
+    #printModal .prt-link:hover { text-decoration:underline; }
+    #printModal .prt-colist { max-height:152px; overflow-y:auto; border:1px solid var(--border); border-radius:5px; background:var(--surface2); padding:0.25rem; }
+    #printModal .prt-coitem { display:flex; align-items:center; gap:0.5rem; padding:0.3rem 0.4rem; border-radius:4px; font-size:0.76rem; color:var(--text); cursor:pointer; }
+    #printModal .prt-coitem:hover { background:rgba(255,255,255,0.05); }
+    #printModal .prt-coitem input { accent-color:var(--amber); cursor:pointer; margin:0; }
+    #printModal .prt-empty { padding:0.6rem 0.4rem; font-size:0.72rem; color:var(--muted); }
+    #printModal .prt-hint { font-size:0.64rem; color:var(--muted); margin-top:0.35rem; }
   </style>
   <div class="modal-overlay" id="printModal" onclick="if(event.target===this)closePrintModal()">
     <div class="modal" style="width:460px">
@@ -2106,8 +2115,8 @@
       </div>
       <div class="modal-body" style="padding:1.1rem 1.25rem 1.25rem">
         <p style="margin:0 0 0.95rem;font-size:0.72rem;color:var(--muted);line-height:1.5">
-          Pick a date range and customer. The report lists each job's date, location,
-          hours, truck&nbsp;hours, and gallons of UB — with a totals row at the bottom.
+          Pick a date range and one or more customers. The report lists each job's date,
+          location, hours, truck&nbsp;hours, and gallons of UB — with a totals row at the bottom.
         </p>
 
         <div style="display:flex;gap:0.6rem;margin-bottom:0.85rem">
@@ -2130,8 +2139,15 @@
         </div>
 
         <div style="margin:0.95rem 0 0.4rem">
-          <label class="prt-lbl" for="prtCustomer">Customer</label>
-          <select id="prtCustomer" class="prt-input"></select>
+          <div class="prt-colrow">
+            <label class="prt-lbl" style="margin:0">Customers</label>
+            <div style="display:flex;gap:0.7rem">
+              <button type="button" class="prt-link" onclick="prtSetAllCustomers(true)">Select all</button>
+              <button type="button" class="prt-link" onclick="prtSetAllCustomers(false)">Clear</button>
+            </div>
+          </div>
+          <div id="prtCustomerList" class="prt-colist"></div>
+          <div class="prt-hint" id="prtCustomerHint"></div>
         </div>
 
         <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1.35rem">
@@ -4763,14 +4779,39 @@
     }
 
     function openPrintModal() {
-      // Customer dropdown = "All Customers" + every company, alphabetised.
-      const sel = document.getElementById('prtCustomer');
+      // Customer multi-select: one checkbox per company (alphabetised). With
+      // none checked, the report includes every customer ("All Customers").
+      const list  = document.getElementById('prtCustomerList');
       const names = (dustLists.companies || []).map(c => c.name).filter(Boolean)
         .sort((a, b) => a.localeCompare(b));
-      sel.innerHTML = '<option value="">All Customers</option>'
-        + names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+      list.innerHTML = names.length
+        ? names.map(n => `
+            <label class="prt-coitem">
+              <input type="checkbox" class="prt-co-cb" value="${esc(n)}" onchange="prtUpdateCustomerHint()">
+              <span>${esc(n)}</span>
+            </label>`).join('')
+        : '<div class="prt-empty">No customers in the list yet.</div>';
+      prtUpdateCustomerHint();
       printPreset('week'); // default to the current week — "a week's worth" in one click
       document.getElementById('printModal').classList.add('open');
+    }
+
+    // Currently-checked customer names ([] = all customers).
+    function prtSelectedCustomers() {
+      return Array.from(document.querySelectorAll('#prtCustomerList .prt-co-cb:checked'))
+        .map(cb => cb.value);
+    }
+
+    function prtSetAllCustomers(on) {
+      document.querySelectorAll('#prtCustomerList .prt-co-cb').forEach(cb => { cb.checked = on; });
+      prtUpdateCustomerHint();
+    }
+
+    function prtUpdateCustomerHint() {
+      const n = prtSelectedCustomers().length;
+      document.getElementById('prtCustomerHint').textContent = n === 0
+        ? 'None selected → all customers will be included.'
+        : `${n} customer${n === 1 ? '' : 's'} selected.`;
     }
 
     function closePrintModal() {
@@ -4780,7 +4821,7 @@
     function generateDustReport() {
       const start    = document.getElementById('prtStart').value; // '' = open-ended
       const end      = document.getElementById('prtEnd').value;
-      const customer = document.getElementById('prtCustomer').value;
+      const selected = prtSelectedCustomers();                    // [] = all customers
 
       if (start && end && start > end) {
         alert('The "From" date is after the "To" date — please fix the range.');
@@ -4788,18 +4829,18 @@
       }
 
       // YYYY-MM-DD strings compare correctly with </>; undated rows are skipped.
+      const pickSet = selected.length ? new Set(selected) : null;
       const picked = rows.filter(r => {
         const d = r.date || '';
         if (!d) return false;
         if (start && d < start) return false;
         if (end   && d > end)   return false;
-        if (customer && r.company !== customer) return false;
+        if (pickSet && !pickSet.has(r.company)) return false;
         return true;
       }).sort((a, b) =>
         (a.date || '').localeCompare(b.date || '') ||
         (a.company || '').localeCompare(b.company || ''));
 
-      const allCustomers = !customer;
       let tHours = 0, tTruck = 0, tGal = 0;
 
       const bodyRows = picked.map(r => {
@@ -4816,14 +4857,18 @@
       });
 
       _openDustReportWindow({
-        start, end, customer, allCustomers, bodyRows,
+        start, end, selected, bodyRows,
         totals: { hours: tHours, truck: tTruck, gal: tGal },
       });
       closePrintModal();
     }
 
     function _openDustReportWindow(data) {
-      const { start, end, customer, allCustomers, bodyRows, totals } = data;
+      const { start, end, selected, bodyRows, totals } = data;
+      // Show the Customer column whenever the report spans more than one
+      // customer — "All Customers" (none selected) or a multi-select. A single
+      // selected customer is named in the header, so the column is redundant.
+      const showCo = selected.length !== 1;
 
       const fmtDate = ymd => {
         if (!ymd) return '';
@@ -4836,13 +4881,15 @@
       const rangeLabel = (start || end)
         ? `${start ? fmtDate(start) : '(start)'} – ${end ? fmtDate(end) : 'today'}`
         : 'All dates';
-      const custLabel = allCustomers ? 'All Customers' : customer;
+      const custLabel = selected.length === 0 ? 'All Customers'
+        : selected.length <= 4 ? selected.join(', ')
+        : `${selected.length} customers`;
       const genLabel  = new Date().toLocaleString('en-US',
         { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
-      const numStart  = allCustomers ? 3 : 2; // index where the numeric columns begin
+      const numStart  = showCo ? 3 : 2; // index where the numeric columns begin
       const headCells = ['Date']
-        .concat(allCustomers ? ['Customer'] : [])
+        .concat(showCo ? ['Customer'] : [])
         .concat(['Location', 'Hours', 'Truck Hours', 'Gallons of UB']);
       const colCount  = headCells.length;
 
@@ -4850,7 +4897,7 @@
         ? bodyRows.map(r => `
             <tr>
               <td>${esc(fmtDate(r.date))}</td>
-              ${allCustomers ? `<td>${esc(r.company)}</td>` : ''}
+              ${showCo ? `<td>${esc(r.company)}</td>` : ''}
               <td>${esc(r.location)}</td>
               <td class="num">${hrs(r.hours)}</td>
               <td class="num">${hrs(r.truckHrs)}</td>
