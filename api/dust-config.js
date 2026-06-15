@@ -254,6 +254,16 @@ async function _syncEquipment(sql, companyCode, equipment) {
   for (let i = 0; i < equipment.length; i++) {
     const e = equipment[i];
     if (!e || !e.id) continue;
+    // dust_equipment has a UNIQUE(company_code, name) constraint, but the upsert
+    // below keys ON CONFLICT (id) — so a name held by a *different* id (a
+    // duplicate-named vehicle, or a rename that collides) raises a 23505 and
+    // aborts the whole config sync. Clear any other row holding this name first
+    // so the upsert can't collide; a row that's still wanted is re-inserted by
+    // its own loop iteration. (See _syncCompanies for the full rationale.)
+    await sql`
+      DELETE FROM dust_equipment
+      WHERE company_code = ${companyCode} AND name = ${e.name || ''} AND id <> ${e.id}
+    `;
     await sql`
       INSERT INTO dust_equipment (id, company_code, name, unit_number, vehicle_rate, sort_order)
       VALUES (${e.id}, ${companyCode}, ${e.name || ''}, ${e.unit_number || null},
@@ -328,6 +338,23 @@ async function _syncCompanies(sql, companyCode, companies) {
     const co = companies[i];
     if (!co || !co.id) continue;
 
+    // Resolve the UNIQUE(company_code, name) constraint up front. The upsert
+    // below only declares ON CONFLICT (id), so it catches primary-key (id)
+    // collisions but NOT name collisions. If a *different* row already holds
+    // this name — a duplicate-named company, or a rename/swap that lands on
+    // another row's name — the INSERT/UPDATE raises a 23505 unique violation.
+    // Because callers run the syncs under Promise.all and the PUT writes the
+    // JSON blob *before* syncing, that single throw aborts the entire config
+    // sync while leaving the normalized tables stale: every company edit (new
+    // companies, per-customer UB $/gal, V1/V2 defaults) then silently reverts
+    // on the next load, since GET trusts the normalized table. Deleting any
+    // other row holding this name first makes the upsert collision-proof. A row
+    // that's still wanted keeps its id and is re-inserted by its own iteration;
+    // a genuine duplicate name correctly collapses to a single row.
+    await sql`
+      DELETE FROM dust_companies
+      WHERE company_code = ${companyCode} AND name = ${co.name || ''} AND id <> ${co.id}
+    `;
     await sql`
       INSERT INTO dust_companies (id, company_code, name, tier, v1_rate, v2_rate, ub_rate, sort_order)
       VALUES (${co.id}, ${companyCode}, ${co.name || ''}, ${co.tier || ''},
