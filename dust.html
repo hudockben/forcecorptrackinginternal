@@ -1309,6 +1309,7 @@
         style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2,#1e1e1e);border:1px solid var(--border,#333);border-radius:4px;color:var(--text,#eee);font-size:0.72rem;text-align:center;outline:none">
       <button class="btn-ghost" onclick="openImportModal()">↑ Import CSV</button>
       <button class="btn-ghost" id="repairBtn" onclick="repairListsFromRows()">⟳ Repair Lists</button>
+      <button class="btn-ghost" onclick="openPrintModal()">🖨 Print / PDF</button>
       <div id="yearSelector" class="year-selector"></div>
       <span class="row-count" id="rowCount">0 rows</span>
       <div class="ub-rate-wrap" title="Default UB price per gallon. Set a per-customer override in Manage Lists → Companies → 'UB $/gal'.">
@@ -2082,6 +2083,61 @@
           <button class="btn-import-confirm" id="importConfirmBtn" onclick="confirmImport()" disabled>Import Rows</button>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════
+       PRINT / PDF REPORT MODAL
+  ══════════════════════════════════════════════ -->
+  <style>
+    #printModal .prt-lbl { display:block; font-size:0.62rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:0.3rem; }
+    #printModal .prt-input { width:100%; padding:0.5rem 0.6rem; background:var(--surface2); border:1px solid var(--border); border-radius:5px; color:var(--text); font-size:0.8rem; outline:none; }
+    #printModal .prt-input:focus { border-color:var(--amber); }
+    #printModal .prt-presets { display:flex; flex-wrap:wrap; gap:0.4rem; }
+    #printModal .prt-preset { padding:0.32rem 0.62rem; background:var(--surface2); border:1px solid var(--border); border-radius:999px; color:var(--text); font-size:0.68rem; cursor:pointer; transition:all 0.15s; }
+    #printModal .prt-preset:hover { border-color:var(--amber); color:var(--amber); }
+  </style>
+  <div class="modal-overlay" id="printModal" onclick="if(event.target===this)closePrintModal()">
+    <div class="modal" style="width:460px">
+      <div class="modal-hdr">
+        <span class="modal-title">Print / PDF Report</span>
+        <button class="modal-close" onclick="closePrintModal()">✕</button>
+      </div>
+      <div class="modal-body" style="padding:1.1rem 1.25rem 1.25rem">
+        <p style="margin:0 0 0.95rem;font-size:0.72rem;color:var(--muted);line-height:1.5">
+          Pick a date range and customer. The report lists each job's date, location,
+          hours, truck&nbsp;hours, and gallons of UB — with a totals row at the bottom.
+        </p>
+
+        <div style="display:flex;gap:0.6rem;margin-bottom:0.85rem">
+          <div style="flex:1">
+            <label class="prt-lbl" for="prtStart">From</label>
+            <input type="date" id="prtStart" class="prt-input">
+          </div>
+          <div style="flex:1">
+            <label class="prt-lbl" for="prtEnd">To</label>
+            <input type="date" id="prtEnd" class="prt-input">
+          </div>
+        </div>
+
+        <div class="prt-presets">
+          <button type="button" class="prt-preset" onclick="printPreset('week')">This Week</button>
+          <button type="button" class="prt-preset" onclick="printPreset('lastweek')">Last Week</button>
+          <button type="button" class="prt-preset" onclick="printPreset('month')">This Month</button>
+          <button type="button" class="prt-preset" onclick="printPreset('year')">This Year</button>
+          <button type="button" class="prt-preset" onclick="printPreset('all')">All Dates</button>
+        </div>
+
+        <div style="margin:0.95rem 0 0.4rem">
+          <label class="prt-lbl" for="prtCustomer">Customer</label>
+          <select id="prtCustomer" class="prt-input"></select>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1.35rem">
+          <button class="modal-close" onclick="closePrintModal()" style="font-size:0.72rem;padding:0.45rem 0.95rem;border:1px solid var(--border);border-radius:5px">Cancel</button>
+          <button class="btn-add" onclick="generateDustReport()">🖨 Generate PDF</button>
+        </div>
       </div>
     </div>
   </div>
@@ -4665,6 +4721,204 @@
     }
 
     function exportPDF() { window.print(); }
+
+    /* ═══════════════════════════════════════════
+       PRINT / PDF REPORT
+       A date-range + customer filtered summary of the
+       tracking sheet — date, location, hours, truck
+       hours (= job hours × number of trucks on the
+       row), and gallons of UB — with column totals so
+       a week's (or more) worth can be tallied at a
+       glance. Renders into a clean print-only window
+       the user can save as a PDF.
+    ═══════════════════════════════════════════ */
+    function _ymd(d) {
+      // Local-time YYYY-MM-DD (avoids the UTC day-shift of toISOString()).
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function printPreset(kind) {
+      const startEl = document.getElementById('prtStart');
+      const endEl   = document.getElementById('prtEnd');
+      if (kind === 'all') { startEl.value = ''; endEl.value = ''; return; }
+      const now = new Date();
+      let start, end;
+      if (kind === 'week' || kind === 'lastweek') {
+        const base = new Date(now);
+        if (kind === 'lastweek') base.setDate(base.getDate() - 7);
+        start = new Date(base); start.setDate(base.getDate() - base.getDay()); // Sunday
+        end   = new Date(start); end.setDate(start.getDate() + 6);             // Saturday
+      } else if (kind === 'month') {
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+        end   = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      } else { // year
+        start = new Date(now.getFullYear(), 0, 1);
+        end   = new Date(now.getFullYear(), 11, 31);
+      }
+      startEl.value = _ymd(start);
+      endEl.value   = _ymd(end);
+    }
+
+    function openPrintModal() {
+      // Customer dropdown = "All Customers" + every company, alphabetised.
+      const sel = document.getElementById('prtCustomer');
+      const names = (dustLists.companies || []).map(c => c.name).filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+      sel.innerHTML = '<option value="">All Customers</option>'
+        + names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+      printPreset('week'); // default to the current week — "a week's worth" in one click
+      document.getElementById('printModal').classList.add('open');
+    }
+
+    function closePrintModal() {
+      document.getElementById('printModal').classList.remove('open');
+    }
+
+    function generateDustReport() {
+      const start    = document.getElementById('prtStart').value; // '' = open-ended
+      const end      = document.getElementById('prtEnd').value;
+      const customer = document.getElementById('prtCustomer').value;
+
+      if (start && end && start > end) {
+        alert('The "From" date is after the "To" date — please fix the range.');
+        return;
+      }
+
+      // YYYY-MM-DD strings compare correctly with </>; undated rows are skipped.
+      const picked = rows.filter(r => {
+        const d = r.date || '';
+        if (!d) return false;
+        if (start && d < start) return false;
+        if (end   && d > end)   return false;
+        if (customer && r.company !== customer) return false;
+        return true;
+      }).sort((a, b) =>
+        (a.date || '').localeCompare(b.date || '') ||
+        (a.company || '').localeCompare(b.company || ''));
+
+      const allCustomers = !customer;
+      let tHours = 0, tTruck = 0, tGal = 0;
+
+      const bodyRows = picked.map(r => {
+        const c     = calc(r);
+        const hours = c.totalHours || 0;
+        // Truck hours = job duration × number of trucks present on the row.
+        const truckCount = (String(r.vehicle1 || '').trim() ? 1 : 0)
+                         + (String(r.vehicle2 || '').trim() ? 1 : 0);
+        const truckHrs = round2(hours * truckCount);
+        const gal      = c.gallons || 0;
+        tHours += hours; tTruck += truckHrs; tGal += gal;
+        return { date: r.date, company: r.company || '', location: r.location || '',
+                 hours, truckHrs, gal };
+      });
+
+      _openDustReportWindow({
+        start, end, customer, allCustomers, bodyRows,
+        totals: { hours: tHours, truck: tTruck, gal: tGal },
+      });
+      closePrintModal();
+    }
+
+    function _openDustReportWindow(data) {
+      const { start, end, customer, allCustomers, bodyRows, totals } = data;
+
+      const fmtDate = ymd => {
+        if (!ymd) return '';
+        const [y, m, d] = ymd.split('-');
+        return `${parseInt(m, 10)}/${parseInt(d, 10)}/${y}`;
+      };
+      const hrs = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const gal = n => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 1 });
+
+      const rangeLabel = (start || end)
+        ? `${start ? fmtDate(start) : '(start)'} – ${end ? fmtDate(end) : 'today'}`
+        : 'All dates';
+      const custLabel = allCustomers ? 'All Customers' : customer;
+      const genLabel  = new Date().toLocaleString('en-US',
+        { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+      const numStart  = allCustomers ? 3 : 2; // index where the numeric columns begin
+      const headCells = ['Date']
+        .concat(allCustomers ? ['Customer'] : [])
+        .concat(['Location', 'Hours', 'Truck Hours', 'Gallons of UB']);
+      const colCount  = headCells.length;
+
+      const rowsHtml = bodyRows.length
+        ? bodyRows.map(r => `
+            <tr>
+              <td>${esc(fmtDate(r.date))}</td>
+              ${allCustomers ? `<td>${esc(r.company)}</td>` : ''}
+              <td>${esc(r.location)}</td>
+              <td class="num">${hrs(r.hours)}</td>
+              <td class="num">${hrs(r.truckHrs)}</td>
+              <td class="num">${gal(r.gal)}</td>
+            </tr>`).join('')
+        : `<tr><td colspan="${colCount}" class="empty">No entries found for this date range and customer.</td></tr>`;
+
+      const totalsHtml = bodyRows.length ? `
+        <tr class="totals">
+          <td colspan="${numStart}">TOTAL — ${bodyRows.length} ${bodyRows.length === 1 ? 'entry' : 'entries'}</td>
+          <td class="num">${hrs(totals.hours)}</td>
+          <td class="num">${hrs(totals.truck)}</td>
+          <td class="num">${gal(totals.gal)}</td>
+        </tr>` : '';
+
+      const html = `<!doctype html><html><head><meta charset="utf-8">
+        <title>Dust Control Report — ${esc(custLabel)}</title>
+        <style>
+          * { box-sizing: border-box; }
+          body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color:#111; margin:0; padding:28px 32px; }
+          .doc-hdr { display:flex; justify-content:space-between; align-items:flex-end; border-bottom:3px solid #b45309; padding-bottom:10px; }
+          .brand { font-size:21px; font-weight:800; letter-spacing:-0.01em; }
+          .brand small { display:block; font-size:10px; font-weight:700; color:#b45309; letter-spacing:0.09em; text-transform:uppercase; margin-top:2px; }
+          .doc-title { font-size:13px; font-weight:700; color:#374151; text-align:right; }
+          .meta { display:flex; gap:24px; flex-wrap:wrap; font-size:11px; color:#555; margin:12px 0 16px; }
+          .meta b { color:#111; }
+          table { width:100%; border-collapse:collapse; font-size:11px; }
+          th, td { padding:6px 9px; border-bottom:1px solid #e5e7eb; text-align:left; }
+          th { background:#f3f4f6; border-bottom:2px solid #b45309; font-size:9px; text-transform:uppercase; letter-spacing:0.04em; color:#374151; }
+          td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+          tbody tr:nth-child(even) td { background:#fafafa; }
+          td.empty { text-align:center; color:#888; padding:26px; font-style:italic; }
+          tr.totals td { border-top:2px solid #b45309; border-bottom:none; font-weight:800; font-size:12px; background:#fff7ed !important; }
+          .foot { margin-top:22px; font-size:9px; color:#9ca3af; text-align:center; }
+          .toolbar-print { margin-bottom:16px; }
+          .toolbar-print button { font:inherit; font-size:12px; padding:8px 16px; background:#b45309; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600; }
+          @media print { .toolbar-print { display:none; } body { padding:0; } @page { margin: 0.6in 0.5in; } }
+        </style></head>
+        <body>
+          <div class="toolbar-print"><button onclick="window.print()">🖨 Print / Save as PDF</button></div>
+          <div class="doc-hdr">
+            <div class="brand">DataWatch<small>Dust Control Tracking</small></div>
+            <div class="doc-title">Service Summary Report</div>
+          </div>
+          <div class="meta">
+            <span>Customer: <b>${esc(custLabel)}</b></span>
+            <span>Date Range: <b>${esc(rangeLabel)}</b></span>
+            <span>Generated: <b>${esc(genLabel)}</b></span>
+          </div>
+          <table>
+            <thead><tr>${headCells.map((h, i) => `<th${i >= numStart ? ' class="num"' : ''}>${esc(h)}</th>`).join('')}</tr></thead>
+            <tbody>${rowsHtml}${totalsHtml}</tbody>
+          </table>
+          <div class="foot">Generated by DataWatch · Dust Control Tracking</div>
+        </body></html>`;
+
+      const w = window.open('', '_blank');
+      if (!w) {
+        alert('Your browser blocked the report window. Please allow pop-ups for this site, then try again.');
+        return;
+      }
+      w.document.open();
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+      // Let the new document lay out before opening the print dialog.
+      setTimeout(() => { try { w.print(); } catch (_) {} }, 350);
+    }
 
     /* ── Analytics sub-tab switching ── */
     document.querySelectorAll('.an-subtab').forEach(btn => {
