@@ -870,8 +870,8 @@
             <span class="rate-suf">/hr</span>
           </div>
         </div>
-        <div class="rate-field">
-          <label for="ciUbRate">UB Rate</label>
+        <div class="rate-field" title="Default UB $/gal for intercompany billing. Customers with a per-customer UB rate (set in Dust → Manage Lists → Companies) bill at their own rate instead.">
+          <label for="ciUbRate">UB Rate <span style="opacity:0.6;font-weight:400">(default)</span></label>
           <div class="ci-rate-wrap">
             <span class="rate-pre">$</span>
             <input type="number" id="ciUbRate" value="0" min="0" step="0.01" oninput="onRateChange()">
@@ -1053,6 +1053,17 @@
     let icUbRate          = parseFloat(localStorage.getItem('ic_ub_rate')           ?? '0')   || 0;
     let icQuarryLaborRate = parseFloat(localStorage.getItem('ic_quarry_labor_rate') ?? '121') || 121;
 
+    // Per-customer dust UB $/gal overrides (lower-cased customer name → rate),
+    // loaded from dust-config. When a customer carries its own UB rate the
+    // intercompany billing honors it so it matches the dust invoice; otherwise
+    // it falls back to the shared icUbRate.
+    let dustCoUbRate = {};
+    function dustUbRateFor(name) {
+      const key = String(name == null ? '' : name).trim().toLowerCase();
+      const r = dustCoUbRate[key];
+      return (r != null && !isNaN(r)) ? r : icUbRate;
+    }
+
     function initRateInputs() {
       const tr  = document.getElementById('ciTruckRate');
       const lr  = document.getElementById('ciLaborRate');
@@ -1079,6 +1090,19 @@
           const dc = await dustRes.json();
           const ubFromDust = parseFloat(dc?.settings?.ub_rate);
           if (!isNaN(ubFromDust)) icUbRate = ubFromDust;
+          // Capture per-customer UB overrides so IC billing mirrors the dust
+          // invoice for customers billed at a non-default $/gal (e.g. Kiewit).
+          const cos = dc?.lists?.companies;
+          if (Array.isArray(cos)) {
+            const map = {};
+            cos.forEach(co => {
+              if (co && co.name && co.ub_rate != null && co.ub_rate !== '') {
+                const r = parseFloat(co.ub_rate);
+                if (!isNaN(r)) map[String(co.name).trim().toLowerCase()] = r;
+              }
+            });
+            dustCoUbRate = map;
+          }
         }
 
         // IC rates blob may override if explicitly saved from this page
@@ -1589,10 +1613,10 @@
           byMonth[mKey].jobs++;
           byMonth[mKey].hours     += parseFloat(e.total_hours) || 0;
           byMonth[mKey].gallons   += parseFloat(e.gallons_ub)  || 0;
-          byMonth[mKey].icUbTotal += (parseFloat(e.gallons_ub) || 0) * icUbRate;
+          byMonth[mKey].icUbTotal += (parseFloat(e.gallons_ub) || 0) * dustUbRateFor(e.company_name);
           byMonth[mKey].total     += parseFloat(e.total)       || 0;
           byMonth[mKey].icTotal   += isDust
-            ? (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0) + (parseFloat(e.gallons_ub) || 0) * icUbRate
+            ? (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0) + (parseFloat(e.gallons_ub) || 0) * dustUbRateFor(e.company_name)
             : (parseFloat(e.total_hours) || 0) * icTruckRate;
           byMonth[mKey].entries.push(e);
         });
@@ -1602,9 +1626,11 @@
         const totHours     = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
         const totGallons   = divRows.reduce((s, e) => s + (parseFloat(e.gallons_ub)  || 0), 0);
         const totRev       = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
-        const totIcUbTotal = isDust ? totGallons * icUbRate : 0;
+        const totIcUbTotal = isDust
+          ? divRows.reduce((s, e) => s + (parseFloat(e.gallons_ub)||0) * dustUbRateFor(e.company_name), 0)
+          : 0;
         const totIcRev     = isDust
-          ? divRows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * icUbRate, 0)
+          ? divRows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * dustUbRateFor(e.company_name), 0)
           : totHours * icTruckRate;
 
         const detailHead = isDust
@@ -1620,7 +1646,8 @@
             if (isDust) {
               const hrs = parseFloat(e.total_hours) || 0;
               const gal = parseFloat(e.gallons_ub) || 0;
-              const icAmt = (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + gal * icUbRate;
+              const ubR = dustUbRateFor(e.company_name);
+              const icAmt = (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + gal * ubR;
               return `<tr>
                 <td>${e.actual_date || '—'}</td>
                 <td>${escT(e.location || '—')}</td>
@@ -1629,7 +1656,7 @@
                 <td>${escT(e.vehicle2 || '—')}</td>
                 <td class="r">${fmtH(hrs)}</td>
                 <td class="r">${gal > 0 ? gal.toLocaleString(undefined,{maximumFractionDigits:1}) + ' gal' : '—'}</td>
-                <td class="r ic-val">${gal > 0 && icUbRate > 0 ? fmt$(gal * icUbRate) : '—'}</td>
+                <td class="r ic-val">${gal > 0 && ubR > 0 ? fmt$(gal * ubR) : '—'}</td>
                 <td class="r">${fmt$(parseFloat(e.total) || 0)}</td>
                 <td class="r ic-val">${fmt$(icAmt)}</td>
                 <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
@@ -1841,31 +1868,37 @@
           const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
           const mIdx = isNaN(mRaw) ? -1 : mRaw;
           const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, gallons: 0, byCo: {} };
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, gallons: 0, icUb: 0, byCo: {} };
           byMonth[mKey].gallons += gal;
           const coName = e.company_name || 'Unknown';
           byMonth[mKey].byCo[coName] = (byMonth[mKey].byCo[coName] || 0) + gal;
+          // IC UB total is summed per customer so each customer's own $/gal
+          // override (else the shared icUbRate) is applied to its gallons.
+          byMonth[mKey].icUb += gal * dustUbRateFor(coName);
         });
         const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
 
         const totGal = sortedMonths.reduce((s, m) => s + m.gallons, 0);
         if (totGal <= 0) return '';                 // nothing to total — skip the panel
-        const totIc = totGal * icUbRate;
+        const totIc = sortedMonths.reduce((s, m) => s + m.icUb, 0);
 
         const monthRows = sortedMonths.map((m, mi) => {
           const detId = `ci-galsum-m${mi}`;
           const coRows = Object.entries(m.byCo)
             .sort((a, b) => b[1] - a[1])
-            .map(([name, g]) => `<tr>
+            .map(([name, g]) => {
+              const r = dustUbRateFor(name);
+              return `<tr>
                 <td>${escT(name)}</td>
                 <td class="r">${galTxt(g)}</td>
-                <td class="r ic-val">${icUbRate > 0 ? fmt$(g * icUbRate) : '—'}</td>
-              </tr>`).join('');
+                <td class="r ic-val">${r > 0 ? fmt$(g * r) : '—'}</td>
+              </tr>`;
+            }).join('');
           return `
             <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
               <td><span class="ci-month-arrow">▶</span>${m.label}</td>
               <td class="r">${galTxt(m.gallons)}</td>
-              <td class="r ic-val">${icUbRate > 0 ? fmt$(m.gallons * icUbRate) : '—'}</td>
+              <td class="r ic-val">${m.icUb > 0 ? fmt$(m.icUb) : '—'}</td>
             </tr>
             <tr class="ci-mdet-row" id="${detId}">
               <td colspan="3" class="ci-mdet-inner">
@@ -1893,7 +1926,7 @@
                 <div class="ci-co-stat-lbl">Total UB Gallons</div>
               </div>
               <div class="ci-co-stat">
-                <div class="ci-co-stat-val ic-val">${icUbRate > 0 ? fmt$(totIc) : '—'}</div>
+                <div class="ci-co-stat-val ic-val">${totIc > 0 ? fmt$(totIc) : '—'}</div>
                 <div class="ci-co-stat-lbl">IC UB Total</div>
               </div>
             </div>
@@ -1911,7 +1944,7 @@
               <tr class="ci-month-total">
                 <td>Total</td>
                 <td class="r">${galTxt(totGal)}</td>
-                <td class="r ic-val">${icUbRate > 0 ? fmt$(totIc) : '—'}</td>
+                <td class="r ic-val">${totIc > 0 ? fmt$(totIc) : '—'}</td>
               </tr>
             </tbody>
           </table>
@@ -1931,7 +1964,7 @@
           ? totHours * icTruckRate
           : isObFilter
             ? totRev
-            : co.rows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * icUbRate, 0);
+            : co.rows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * dustUbRateFor(e.company_name), 0);
 
         const divSections = co.rows.length
           ? (isObFilter
@@ -2230,7 +2263,7 @@
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
         // Dust tracking: use stored per-vehicle totals (actual rates) + current UB rate.
         return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
-             + (parseFloat(e.gallons_ub) || 0) * icUbRate;
+             + (parseFloat(e.gallons_ub) || 0) * dustUbRateFor(e.company_name);
       }
 
       const totalIc  = entries.reduce((s, e) => s + icAmt(e), 0);
@@ -2537,7 +2570,7 @@
         if (e.source === 'dust-other-billing') return parseFloat(e.total) || 0;
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
         return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
-             + (parseFloat(e.gallons_ub) || 0) * icUbRate;
+             + (parseFloat(e.gallons_ub) || 0) * dustUbRateFor(e.company_name);
       }
 
       const truckIcYTD  = truckEntries.reduce((s, e) => s + icAmt(e), 0);

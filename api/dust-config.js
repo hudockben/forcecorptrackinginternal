@@ -37,6 +37,9 @@ async function ensureCompanyRateColumns(sql) {
   if (_companyRateColsEnsured) return;
   await sql`ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS v1_rate NUMERIC(10,4)`;
   await sql`ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS v2_rate NUMERIC(10,4)`;
+  // Optional per-customer UB $/gal override. NULL means "use the global
+  // dust_settings.ub_rate"; a value bills that customer at its own rate.
+  await sql`ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS ub_rate NUMERIC(10,4)`;
   _companyRateColsEnsured = true;
 }
 
@@ -115,6 +118,7 @@ module.exports = async (req, res) => {
           tier:      co.tier || '',
           v1_rate:   co.v1_rate != null ? parseFloat(co.v1_rate) : null,
           v2_rate:   co.v2_rate != null ? parseFloat(co.v2_rate) : null,
+          ub_rate:   co.ub_rate != null ? parseFloat(co.ub_rate) : null,
           locations: locRows
             .filter(l => l.dust_company_id === co.id)
             .map(l => ({ id: l.id, name: l.name, state: l.state || '' })),
@@ -325,14 +329,15 @@ async function _syncCompanies(sql, companyCode, companies) {
     if (!co || !co.id) continue;
 
     await sql`
-      INSERT INTO dust_companies (id, company_code, name, tier, v1_rate, v2_rate, sort_order)
+      INSERT INTO dust_companies (id, company_code, name, tier, v1_rate, v2_rate, ub_rate, sort_order)
       VALUES (${co.id}, ${companyCode}, ${co.name || ''}, ${co.tier || ''},
-              ${safeFloat(co.v1_rate)}, ${safeFloat(co.v2_rate)}, ${i})
+              ${safeFloat(co.v1_rate)}, ${safeFloat(co.v2_rate)}, ${safeFloat(co.ub_rate)}, ${i})
       ON CONFLICT (id) DO UPDATE SET
         name       = EXCLUDED.name,
         tier       = EXCLUDED.tier,
         v1_rate    = EXCLUDED.v1_rate,
         v2_rate    = EXCLUDED.v2_rate,
+        ub_rate    = EXCLUDED.ub_rate,
         sort_order = EXCLUDED.sort_order
     `;
 

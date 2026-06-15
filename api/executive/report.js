@@ -698,6 +698,12 @@ async function buildTruckingTile(sql, companyCode, weekStart, weekEnd) {
 // still count toward the UB fee. GREATEST(0, ...) guards against
 // overnight time wraparound producing negative intervals.
 async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
+  // Per-customer UB $/gal override column may not exist on older DBs; the
+  // dust-config endpoint adds it lazily, but the report can run first. Ensure
+  // it so the revenue joins below can reference dust_companies.ub_rate.
+  await safeRun('dust.ensure_ub_col', () =>
+    sql`ALTER TABLE IF EXISTS dust_companies ADD COLUMN IF NOT EXISTS ub_rate NUMERIC(10,4)`);
+
   // Revenue · This Week
   const revWk = await safeRun('dust.revenue_wk', async () => {
     const rows = await sql`
@@ -706,21 +712,24 @@ async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
           COALESCE(v1_rate, 0)     * GREATEST(0, hrs)
           + COALESCE(v2_rate, 0)   * GREATEST(0, hrs)
           + COALESCE(gallons_ub, 0)
-            * COALESCE((SELECT ub_rate::float FROM dust_settings WHERE company_code = ${companyCode}), 0)
+            * COALESCE(co_ub_rate, (SELECT ub_rate::float FROM dust_settings WHERE company_code = ${companyCode}), 0)
         ), 0)::float AS v
       FROM (
         SELECT
-          v1_rate, v2_rate, gallons_ub,
+          d.v1_rate, d.v2_rate, d.gallons_ub,
+          c.ub_rate::float AS co_ub_rate,
           CASE
-            WHEN start_time ~ '^[0-9]{1,2}:[0-9]{2}'
-             AND end_time   ~ '^[0-9]{1,2}:[0-9]{2}'
-            THEN EXTRACT(EPOCH FROM (end_time::time - start_time::time)) / 3600.0
+            WHEN d.start_time ~ '^[0-9]{1,2}:[0-9]{2}'
+             AND d.end_time   ~ '^[0-9]{1,2}:[0-9]{2}'
+            THEN EXTRACT(EPOCH FROM (d.end_time::time - d.start_time::time)) / 3600.0
             ELSE 0
           END AS hrs
-        FROM dust_control_entries
-        WHERE company_code = ${companyCode}
-          AND date >= ${weekStart}
-          AND date <  ${weekEnd}
+        FROM dust_control_entries d
+        LEFT JOIN dust_companies c
+          ON c.company_code = d.company_code AND c.name = d.company
+        WHERE d.company_code = ${companyCode}
+          AND d.date >= ${weekStart}
+          AND d.date <  ${weekEnd}
       ) e
     `;
     return rows[0]?.v ?? 0;
@@ -734,21 +743,24 @@ async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
           COALESCE(v1_rate, 0)     * GREATEST(0, hrs)
           + COALESCE(v2_rate, 0)   * GREATEST(0, hrs)
           + COALESCE(gallons_ub, 0)
-            * COALESCE((SELECT ub_rate::float FROM dust_settings WHERE company_code = ${companyCode}), 0)
+            * COALESCE(co_ub_rate, (SELECT ub_rate::float FROM dust_settings WHERE company_code = ${companyCode}), 0)
         ), 0)::float AS v
       FROM (
         SELECT
-          v1_rate, v2_rate, gallons_ub,
+          d.v1_rate, d.v2_rate, d.gallons_ub,
+          c.ub_rate::float AS co_ub_rate,
           CASE
-            WHEN start_time ~ '^[0-9]{1,2}:[0-9]{2}'
-             AND end_time   ~ '^[0-9]{1,2}:[0-9]{2}'
-            THEN EXTRACT(EPOCH FROM (end_time::time - start_time::time)) / 3600.0
+            WHEN d.start_time ~ '^[0-9]{1,2}:[0-9]{2}'
+             AND d.end_time   ~ '^[0-9]{1,2}:[0-9]{2}'
+            THEN EXTRACT(EPOCH FROM (d.end_time::time - d.start_time::time)) / 3600.0
             ELSE 0
           END AS hrs
-        FROM dust_control_entries
-        WHERE company_code = ${companyCode}
-          AND date >= date_trunc('month', CURRENT_DATE)
-          AND date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+        FROM dust_control_entries d
+        LEFT JOIN dust_companies c
+          ON c.company_code = d.company_code AND c.name = d.company
+        WHERE d.company_code = ${companyCode}
+          AND d.date >= date_trunc('month', CURRENT_DATE)
+          AND d.date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
       ) e
     `;
     return rows[0]?.v ?? 0;
