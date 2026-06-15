@@ -595,7 +595,7 @@
     .company-header input { flex: 1; }
     .company-header input.short { flex: none; width: 90px; text-align: right; }
     .company-rates-row {
-      display: flex; align-items: center; gap: 0.5rem;
+      display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; row-gap: 0.35rem;
       padding-left: 30px; /* align under the company name (past the chevron) */
     }
     .company-rates-row input.short { flex: none; width: 90px; text-align: right; }
@@ -1311,8 +1311,8 @@
       <button class="btn-ghost" id="repairBtn" onclick="repairListsFromRows()">⟳ Repair Lists</button>
       <div id="yearSelector" class="year-selector"></div>
       <span class="row-count" id="rowCount">0 rows</span>
-      <div class="ub-rate-wrap">
-        <label for="ubRateInput">UB Rate</label>
+      <div class="ub-rate-wrap" title="Default UB price per gallon. Set a per-customer override in Manage Lists → Companies → 'UB $/gal'.">
+        <label for="ubRateInput">UB Rate <span style="opacity:0.6;font-weight:400">(default)</span></label>
         <span class="ub-rate-sym">$</span>
         <input class="ub-rate-input" type="number" id="ubRateInput"
           step="0.01" min="0" placeholder="0.00"
@@ -2911,6 +2911,19 @@
     /* ═══════════════════════════════════════════
        CALCULATIONS
     ═══════════════════════════════════════════ */
+    /* The UB $/gal rate to bill a row at. A customer (company) may carry its
+       own ub_rate override (Manage Lists → Companies → "UB $/gal"); when set
+       it wins, otherwise the row falls back to the global UB Rate. Lets e.g.
+       Kiewit bill at a different $/gal than the shop default. */
+    function ubRateForRow(row) {
+      const co = row && dustLists.companies.find(c => c.name === row.company);
+      if (co && co.ub_rate != null && co.ub_rate !== '') {
+        const r = parseFloat(co.ub_rate);
+        if (!isNaN(r)) return r;
+      }
+      return ubRate;
+    }
+
     function calc(row) {
       const s = parseMins(row.start_time);
       const e = parseMins(row.end_time);
@@ -2930,7 +2943,7 @@
       const v1Total  = round2(v1Rate * totalHours);
       const v2Total  = round2(v2Rate * totalHours);
       const vehTotal = round2(v1Total + v2Total);
-      const ubTotal  = round2(gallons * ubRate);
+      const ubTotal  = round2(gallons * ubRateForRow(row));
       const invTotal = round2(vehTotal + ubTotal);
 
       return { totalHours, v1Total, v2Total, vehTotal, gallons, ubTotal, invTotal };
@@ -3585,6 +3598,40 @@
       scheduleSave();
     }
 
+    /* Apply each customer's V1/V2 Default $ to rows that have a vehicle in
+       that slot but a blank rate. setCompany / setVehicle only prefill on a
+       *change* event, so rows whose company was already set — or whose
+       default was configured after the fact — never picked the rate up
+       ("the rate assigned to that company isn't pulling in"). This back-fills
+       them. Only truly blank rates are touched (a real 0 or a manual edit is
+       left alone), and only when a vehicle is selected for the slot so we
+       never invent a charge for an empty vehicle. Returns true if any row
+       changed so the caller can persist. */
+    function materializeCompanyVehicleRates() {
+      let changed = false;
+      rows.forEach(row => {
+        const co = dustLists.companies.find(c => c.name === row.company);
+        if (!co) return;
+        // Never retroactively re-rate a row that's already been invoiced —
+        // its total was locked in when the invoice went out. Only back-fill
+        // open/draft rows.
+        const billed = !!(row.inv_sent
+          || row.inv_status === 'sent' || row.inv_status === 'paid' || row.inv_status === 'overdue');
+        if (billed) return;
+        [['vehicle1', 'v1_rate'], ['vehicle2', 'v2_rate']].forEach(([vField, rField]) => {
+          const cur       = row[rField];
+          const isBlank   = (cur === '' || cur == null);
+          const hasVeh    = !!String(row[vField] || '').trim();
+          const coRate    = co[rField];
+          if (isBlank && hasVeh && coRate != null && coRate !== '') {
+            row[rField] = coRate;
+            changed = true;
+          }
+        });
+      });
+      return changed;
+    }
+
     /* ═══════════════════════════════════════════
        MANAGE LISTS MODAL
     ═══════════════════════════════════════════ */
@@ -3609,7 +3656,10 @@
 
     function closeListsModal() {
       document.getElementById('listsModal').classList.remove('open');
-      renderTable(); // refresh dropdowns with any new list items
+      // A default rate just edited in the modal should land on existing rows
+      // (blank-rate + vehicle-selected) right away.
+      if (materializeCompanyVehicleRates()) scheduleSave();
+      renderTable(); // refresh dropdowns + recompute totals with any new rates
     }
 
     function renderListPanels() {
@@ -3743,6 +3793,10 @@
                   <span class="list-item-lbl">V2 Default $</span>
                   <input type="number" class="short" value="${co.v2_rate != null ? co.v2_rate : ''}" placeholder="0.00" min="0" step="0.01"
                     oninput="updateCompanyRate('${co.id}','v2_rate',this.value)" />
+                  <span class="list-item-lbl" title="Per-customer UB price per gallon. Blank = use the global UB Rate.">UB $/gal</span>
+                  <input type="number" class="short" value="${co.ub_rate != null ? co.ub_rate : ''}" placeholder="default" min="0" step="0.01"
+                    title="Per-customer UB price per gallon. Blank = use the global UB Rate."
+                    oninput="updateCompanyRate('${co.id}','ub_rate',this.value)" onchange="onCompanyUbRateChange()" />
                 </div>
                 <div class="company-body" ${isOpen ? '' : 'hidden'}>
                   <div class="co-locations-section">
@@ -4025,6 +4079,13 @@
         co[field] = isNaN(f) ? null : f;
       }
       saveLists();
+    }
+
+    // A customer's UB $/gal drives the UB Gallon Total for every one of its
+    // rows, so re-render the sheet (and totals) once the edit settles to
+    // reflect the new per-customer billing immediately.
+    function onCompanyUbRateChange() {
+      renderTable();
     }
 
     function addCompanyMan(coId, btn) {
@@ -4456,6 +4517,10 @@
         syncListsFromImport(rows);
         dustConfigPut();
       }
+
+      // Back-fill blank vehicle rates from each customer's V1/V2 defaults so
+      // previously-entered rows reflect the rate assigned to their company.
+      if (materializeCompanyVehicleRates()) saveDustRows(rows);
 
       pmInitInputs();
       renderYearSelector();
@@ -6302,6 +6367,12 @@
           });
           if (JSON.stringify(incoming) === JSON.stringify(dustLists)) return;
           Object.assign(dustLists, incoming);
+          // UB Gallon Total now depends on each customer's ub_rate override, so
+          // a config-only change (e.g. another user editing a customer's rate)
+          // must re-render to refresh the billing totals. Guards above ensure
+          // the user isn't mid-edit, matching the row poll's render path.
+          renderTable();
+          renderHomeDashboard();
         } catch { /* non-fatal */ }
       }
 
