@@ -30,6 +30,7 @@ const VALID_REPORT_TYPES = new Set([
   'turf_daily_pm', 'turf_daily_summary',
   'paving_daily_pm', 'paving_daily_summary',
   'quarry_breakeven',
+  'dust_tracking_summary',
 ]);
 const MAX_NAME_LEN     = 120;
 const MAX_EMAILS       = 50;

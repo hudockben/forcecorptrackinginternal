@@ -2152,11 +2152,15 @@
 
         <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1.35rem">
           <button class="modal-close" onclick="closePrintModal()" style="font-size:0.72rem;padding:0.45rem 0.95rem;border:1px solid var(--border);border-radius:5px">Cancel</button>
+          <button class="btn-ghost" onclick="emailDustReport()">✉ Email Report</button>
           <button class="btn-add" onclick="generateDustReport()">🖨 Generate PDF</button>
         </div>
       </div>
     </div>
   </div>
+
+  <!-- Shared "Email Report" modal (recipients, saved groups, send) -->
+  <script src="report-email.js"></script>
 
   <script>
     /* ═══════════════════════════════════════════
@@ -4818,19 +4822,22 @@
       document.getElementById('printModal').classList.remove('open');
     }
 
-    function generateDustReport() {
+    // Collect the picker's inputs + the filtered/computed rows. Shared by the
+    // print (PDF) and email paths so both render identical data. Returns null
+    // if the date range is invalid (after alerting the user).
+    function _collectDustReportData() {
       const start    = document.getElementById('prtStart').value; // '' = open-ended
       const end      = document.getElementById('prtEnd').value;
       const selected = prtSelectedCustomers();                    // [] = all customers
 
       if (start && end && start > end) {
         alert('The "From" date is after the "To" date — please fix the range.');
-        return;
+        return null;
       }
 
       // YYYY-MM-DD strings compare correctly with </>; undated rows are skipped.
       const pickSet = selected.length ? new Set(selected) : null;
-      const picked = rows.filter(r => {
+      const bodyRows = rows.filter(r => {
         const d = r.date || '';
         if (!d) return false;
         if (start && d < start) return false;
@@ -4839,36 +4846,70 @@
         return true;
       }).sort((a, b) =>
         (a.date || '').localeCompare(b.date || '') ||
-        (a.company || '').localeCompare(b.company || ''));
-
-      let tHours = 0, tTruck = 0, tGal = 0;
-
-      const bodyRows = picked.map(r => {
-        const c     = calc(r);
+        (a.company || '').localeCompare(b.company || '')
+      ).map(r => {
+        const c = calc(r);
         const hours = c.totalHours || 0;
         // Truck hours = job duration × number of trucks present on the row.
         const truckCount = (String(r.vehicle1 || '').trim() ? 1 : 0)
                          + (String(r.vehicle2 || '').trim() ? 1 : 0);
-        const truckHrs = round2(hours * truckCount);
-        const gal      = c.gallons || 0;
-        tHours += hours; tTruck += truckHrs; tGal += gal;
         return { date: r.date, company: r.company || '', location: r.location || '',
-                 hours, truckHrs, gal };
+                 hours, truckHrs: round2(hours * truckCount), gal: c.gallons || 0 };
       });
 
-      _openDustReportWindow({
-        start, end, selected, bodyRows,
-        totals: { hours: tHours, truck: tTruck, gal: tGal },
-      });
+      return { start, end, selected, bodyRows };
+    }
+
+    function generateDustReport() {
+      const data = _collectDustReportData();
+      if (!data) return;
+      _openDustReportWindow(data);
       closePrintModal();
     }
 
+    // Customer label for the report header / subject.
+    function _dustCustLabel(selected) {
+      return selected.length === 0 ? 'All Customers'
+        : selected.length <= 4 ? selected.join(', ')
+        : `${selected.length} customers`;
+    }
+
+    // Build the ordered render items for the report body — the single source of
+    // truth for grouping, ordering, and sums, shared by the print and email
+    // renderers. When the report spans more than one customer, rows group by
+    // customer (alphabetical, date-sorted) with a per-customer subtotal, then a
+    // grand total; otherwise a flat list with one total. `showCo` says whether
+    // the Customer column should appear.
+    function _dustReportItems(bodyRows, selected) {
+      const showCo  = selected.length !== 1;
+      const entries = n => `${n} ${n === 1 ? 'entry' : 'entries'}`;
+      const sum = arr => ({
+        h: arr.reduce((s, r) => s + r.hours,    0),
+        t: arr.reduce((s, r) => s + r.truckHrs, 0),
+        g: arr.reduce((s, r) => s + r.gal,      0),
+      });
+      const items = [];
+      const names = [...new Set(bodyRows.map(r => r.company))];
+      const grouped = showCo && names.length > 1;
+
+      if (grouped) {
+        names.sort((a, b) => a.localeCompare(b)).forEach(name => {
+          const g = bodyRows.filter(r => r.company === name)
+            .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+          g.forEach(r => items.push({ type: 'data', r }));
+          items.push({ type: 'sub', label: `${name} — subtotal (${entries(g.length)})`, ...sum(g) });
+        });
+        items.push({ type: 'tot', label: `GRAND TOTAL — ${entries(bodyRows.length)}`, ...sum(bodyRows) });
+      } else {
+        bodyRows.forEach(r => items.push({ type: 'data', r }));
+        if (bodyRows.length) items.push({ type: 'tot', label: `TOTAL — ${entries(bodyRows.length)}`, ...sum(bodyRows) });
+      }
+      return { showCo, items };
+    }
+
     function _openDustReportWindow(data) {
-      const { start, end, selected, bodyRows, totals } = data;
-      // Show the Customer column whenever the report spans more than one
-      // customer — "All Customers" (none selected) or a multi-select. A single
-      // selected customer is named in the header, so the column is redundant.
-      const showCo = selected.length !== 1;
+      const { start, end, selected, bodyRows } = data;
+      const { showCo, items } = _dustReportItems(bodyRows, selected);
 
       const fmtDate = ymd => {
         if (!ymd) return '';
@@ -4881,9 +4922,7 @@
       const rangeLabel = (start || end)
         ? `${start ? fmtDate(start) : '(start)'} – ${end ? fmtDate(end) : 'today'}`
         : 'All dates';
-      const custLabel = selected.length === 0 ? 'All Customers'
-        : selected.length <= 4 ? selected.join(', ')
-        : `${selected.length} customers`;
+      const custLabel = _dustCustLabel(selected);
       const genLabel  = new Date().toLocaleString('en-US',
         { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
@@ -4893,47 +4932,24 @@
         .concat(['Location', 'Hours', 'Truck Hours', 'Gallons of UB']);
       const colCount  = headCells.length;
 
-      const entries = n => `${n} ${n === 1 ? 'entry' : 'entries'}`;
-      const dataRow = r => `
-            <tr>
+      const cellNum = v => `<td class="num">${v}</td>`;
+      const bodyHtml = items.length
+        ? items.map(it => {
+            if (it.type === 'data') {
+              const r = it.r;
+              return `<tr>
               <td>${esc(fmtDate(r.date))}</td>
               ${showCo ? `<td>${esc(r.company)}</td>` : ''}
               <td>${esc(r.location)}</td>
-              <td class="num">${hrs(r.hours)}</td>
-              <td class="num">${hrs(r.truckHrs)}</td>
-              <td class="num">${gal(r.gal)}</td>
+              ${cellNum(hrs(r.hours))}${cellNum(hrs(r.truckHrs))}${cellNum(gal(r.gal))}
             </tr>`;
-      const sumRow = (cls, label, sH, sT, sG) => `
-        <tr class="${cls}">
-          <td colspan="${numStart}">${esc(label)}</td>
-          <td class="num">${hrs(sH)}</td>
-          <td class="num">${hrs(sT)}</td>
-          <td class="num">${gal(sG)}</td>
-        </tr>`;
-
-      // Group with per-customer subtotals when the report spans more than one
-      // customer; otherwise list rows flat. A grand total always closes it.
-      const groupNames = [...new Set(bodyRows.map(r => r.company))];
-      const grouped    = showCo && groupNames.length > 1;
-
-      let bodyHtml;
-      if (!bodyRows.length) {
-        bodyHtml = `<tr><td colspan="${colCount}" class="empty">No entries found for this date range and customer.</td></tr>`;
-      } else if (grouped) {
-        bodyHtml = groupNames.sort((a, b) => a.localeCompare(b)).map(name => {
-          const g  = bodyRows.filter(r => r.company === name)
-            .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-          const sH = g.reduce((s, r) => s + r.hours,    0);
-          const sT = g.reduce((s, r) => s + r.truckHrs, 0);
-          const sG = g.reduce((s, r) => s + r.gal,      0);
-          return g.map(dataRow).join('')
-            + sumRow('subtotal', `${name} — subtotal (${entries(g.length)})`, sH, sT, sG);
-        }).join('')
-          + sumRow('totals', `GRAND TOTAL — ${entries(bodyRows.length)}`, totals.hours, totals.truck, totals.gal);
-      } else {
-        bodyHtml = bodyRows.map(dataRow).join('')
-          + sumRow('totals', `TOTAL — ${entries(bodyRows.length)}`, totals.hours, totals.truck, totals.gal);
-      }
+            }
+            return `<tr class="${it.type === 'sub' ? 'subtotal' : 'totals'}">
+              <td colspan="${numStart}">${esc(it.label)}</td>
+              ${cellNum(hrs(it.h))}${cellNum(hrs(it.t))}${cellNum(gal(it.g))}
+            </tr>`;
+          }).join('')
+        : `<tr><td colspan="${colCount}" class="empty">No entries found for this date range and customer.</td></tr>`;
 
       const html = `<!doctype html><html><head><meta charset="utf-8">
         <title>Dust Control Report — ${esc(custLabel)}</title>
@@ -4988,6 +5004,97 @@
       w.focus();
       // Let the new document lay out before opening the print dialog.
       setTimeout(() => { try { w.print(); } catch (_) {} }, 350);
+    }
+
+    // Inline-styled report body for email. Email clients strip <style>/<head>,
+    // so every cell carries its own style. Returns the meta line + table only;
+    // the send-report endpoint wraps it (company header, "Generated" timestamp,
+    // optional note, footer). Same data/order as the print view via the shared
+    // _dustReportItems().
+    function _dustReportEmailHtml(data) {
+      const { start, end, selected, bodyRows } = data;
+      const { showCo, items } = _dustReportItems(bodyRows, selected);
+
+      const fmtDate = ymd => {
+        if (!ymd) return '';
+        const [y, m, d] = ymd.split('-');
+        return `${parseInt(m, 10)}/${parseInt(d, 10)}/${y}`;
+      };
+      const hrs = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const gal = n => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 1 });
+
+      const rangeLabel = (start || end)
+        ? `${start ? fmtDate(start) : '(start)'} – ${end ? fmtDate(end) : 'today'}`
+        : 'All dates';
+      const custLabel = _dustCustLabel(selected);
+
+      const numStart  = showCo ? 3 : 2;
+      const headCells = ['Date'].concat(showCo ? ['Customer'] : [])
+        .concat(['Location', 'Hours', 'Truck Hours', 'Gallons of UB']);
+      const colCount  = headCells.length;
+
+      const TH  = 'padding:6px 9px;border-bottom:2px solid #b45309;background:#f3f4f6;color:#374151;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;text-align:left;';
+      const THN = TH + 'text-align:right;';
+      const TD  = 'padding:6px 9px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#111;text-align:left;';
+      const TDN = TD + 'text-align:right;';
+      const SUB = 'padding:6px 9px;border-top:1px solid #d1d5db;border-bottom:1px solid #d1d5db;background:#f3f4f6;color:#374151;font-size:12px;font-weight:700;';
+      const TOT = 'padding:7px 9px;border-top:2px solid #b45309;background:#fff7ed;color:#111;font-size:13px;font-weight:800;';
+      const rt  = s => s + 'text-align:right;';
+
+      const th = headCells.map((h, i) => `<th style="${i >= numStart ? THN : TH}">${esc(h)}</th>`).join('');
+
+      const rowsHtml = items.length
+        ? items.map(it => {
+            if (it.type === 'data') {
+              const r = it.r;
+              return `<tr>
+                <td style="${TD}">${esc(fmtDate(r.date))}</td>
+                ${showCo ? `<td style="${TD}">${esc(r.company)}</td>` : ''}
+                <td style="${TD}">${esc(r.location)}</td>
+                <td style="${TDN}">${hrs(r.hours)}</td>
+                <td style="${TDN}">${hrs(r.truckHrs)}</td>
+                <td style="${TDN}">${gal(r.gal)}</td>
+              </tr>`;
+            }
+            const base = it.type === 'sub' ? SUB : TOT;
+            return `<tr>
+                <td style="${base}" colspan="${numStart}">${esc(it.label)}</td>
+                <td style="${rt(base)}">${hrs(it.h)}</td>
+                <td style="${rt(base)}">${hrs(it.t)}</td>
+                <td style="${rt(base)}">${gal(it.g)}</td>
+              </tr>`;
+          }).join('')
+        : `<tr><td colspan="${colCount}" style="${TD}text-align:center;color:#888;padding:20px;font-style:italic;">No entries found for this date range and customer.</td></tr>`;
+
+      return `
+        <div style="font-size:12px;color:#555;margin:0 0 14px;">
+          <span style="margin-right:18px;">Customer: <b style="color:#111;">${esc(custLabel)}</b></span>
+          <span>Date Range: <b style="color:#111;">${esc(rangeLabel)}</b></span>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <thead><tr>${th}</tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>`;
+    }
+
+    function emailDustReport() {
+      if (typeof window.openReportEmailModal !== 'function') {
+        alert('The email module did not load. Please refresh the page and try again.');
+        return;
+      }
+      const data = _collectDustReportData();
+      if (!data) return;
+      if (!data.bodyRows.length) {
+        alert('No entries match this date range and customer selection — nothing to email.');
+        return;
+      }
+      const custLabel = _dustCustLabel(data.selected);
+      closePrintModal();
+      window.openReportEmailModal({
+        reportType:     'dust_tracking_summary',
+        defaultSubject: `Dust Control Tracking Report — ${custLabel}`,
+        getHTML:        () => _dustReportEmailHtml(data),
+      });
     }
 
     /* ── Analytics sub-tab switching ── */
