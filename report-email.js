@@ -433,6 +433,7 @@
     paving_daily_pm:      'Daily PM Report — Paving',
     paving_daily_summary: 'Daily Summary — Paving',
     paving_bid_items:     'Bid Line Items vs Actuals — Paving',
+    dust_tracking_summary:'Dust Control Tracking Report',
   };
 
   function openReportEmailModal(opts) {
