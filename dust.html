@@ -3973,6 +3973,18 @@
       } else if (type === 'companies') {
         const name = document.getElementById('new-co-name').value.trim();
         if (!name) { document.getElementById('new-co-name').focus(); return; }
+        // Company name is a natural key: the database enforces
+        // UNIQUE(company_code, name), and ubRateForRow() / vehicle-rate
+        // back-fill match rows to a customer by name. A duplicate name can't be
+        // persisted (it would abort the whole config sync) and would shadow the
+        // original, so block it here instead of silently creating a dead entry.
+        const dupCo = dustLists.companies.find(c => (c.name || '').trim().toLowerCase() === name.toLowerCase());
+        if (dupCo) {
+          alert(`"${dupCo.name}" is already in the company list.`);
+          const el = document.getElementById('new-co-name');
+          el.select(); el.focus();
+          return;
+        }
         const newCo = { id: uid(), name, men: [], locations: [] };
         dustLists.companies.push(newCo);
         document.getElementById('new-co-name').value = '';

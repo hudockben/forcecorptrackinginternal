@@ -190,7 +190,111 @@ assert('IC: customer without override uses IC default', icFor('CNX') === 1.10);
 assert('IC: null/empty name uses IC default', icFor(null) === 1.10 && icFor('') === 1.10);
 
 // ──────────────────────────────────────────────────────────────────────────
-console.log(`\n${'─'.repeat(48)}`);
-console.log(`  ${passed} passed, ${failed} failed`);
-console.log(`${'─'.repeat(48)}`);
-process.exit(failed ? 1 : 0);
+section('E. _syncCompanies resilient to UNIQUE(company_code, name)');
+
+// dust_companies enforces UNIQUE(company_code, name); the upsert keys ON
+// CONFLICT (id). A name held by a different id (duplicate-named company, or a
+// rename/swap) must NOT raise a 23505 and abort the sync — that silently
+// reverts every company edit (new companies, per-customer UB $/gal) because
+// the JSON blob is written but the normalized table is left stale and GET
+// trusts it. This drives the *shipped* _syncCompanies against an in-memory
+// store that enforces both constraints, exactly like Postgres.
+const safeFloat = v => { const f = parseFloat(v); return isNaN(f) ? null : f; };
+
+function makeDb() {
+  const db = { companies: [], _err: null };
+  const sql = async (strings, ...vals) => {
+    const q = strings.join(' ? ').replace(/\s+/g, ' ').trim();
+    if (/^SELECT COUNT\(\*\)::int AS count FROM dust_companies WHERE company_code =/.test(q))
+      return [{ count: db.companies.filter(c => c.company_code === vals[0]).length }];
+    if (/^DELETE FROM dust_companies WHERE company_code = \? AND name = \? AND id <>/.test(q)) {
+      const [code, name, id] = vals;
+      db.companies = db.companies.filter(c => !(c.company_code === code && c.name === name && c.id !== id));
+      return [];
+    }
+    if (/^DELETE FROM dust_companies WHERE company_code = \? AND id <> ALL/.test(q)) {
+      const [code, ids] = vals;
+      db.companies = db.companies.filter(c => !(c.company_code === code && !ids.includes(c.id)));
+      return [];
+    }
+    if (/^DELETE FROM dust_companies WHERE company_code = \?$/.test(q)) {
+      db.companies = db.companies.filter(c => c.company_code !== vals[0]);
+      return [];
+    }
+    if (/^INSERT INTO dust_companies/.test(q)) {
+      const [id, company_code, name] = vals;
+      const ub = vals[6];
+      const byId = db.companies.find(c => c.id === id);
+      if (byId) {
+        if (db.companies.find(c => c !== byId && c.company_code === company_code && c.name === name))
+          { const e = new Error('23505 unique_violation (UPDATE name=' + name + ')'); throw e; }
+        byId.name = name; byId.ub_rate = ub;
+      } else {
+        if (db.companies.find(c => c.company_code === company_code && c.name === name))
+          { const e = new Error('23505 unique_violation (INSERT name=' + name + ')'); throw e; }
+        db.companies.push({ id, company_code, name, ub_rate: ub });
+      }
+      return [];
+    }
+    // locations / personnel — irrelevant to this constraint; behave as empty.
+    if (/dust_company_locations|dust_company_personnel/.test(q))
+      return /^SELECT COUNT/.test(q) ? [{ count: 0 }] : [];
+    throw new Error('UNHANDLED QUERY: ' + q);
+  };
+  return { db, sql };
+}
+
+const syncBox = { console, safeFloat };
+vm.createContext(syncBox);
+vm.runInContext(extractFn(cfgJs, 'async function _syncCompanies'), syncBox);
+const runSync = async (sql, companies) => {
+  syncBox._sql = sql; syncBox._companies = companies;
+  return vm.runInContext('_syncCompanies(_sql, "FORCECORP", _companies)', syncBox);
+};
+
+(async () => {
+  // 1. Clean list: adding a new company (B&B) persists.
+  let { db, sql } = makeDb();
+  await runSync(sql, [{ id: 'a', name: 'Kiewit' }, { id: 'b', name: 'CNX' }]);
+  await runSync(sql, [{ id: 'a', name: 'Kiewit' }, { id: 'b', name: 'CNX' }, { id: 'c', name: 'B&B' }]);
+  assert('clean list: new company "B&B" persists', !!db.companies.find(c => c.name === 'B&B'));
+
+  // 2. Duplicate name present (different ids) must NOT abort the sync, and the
+  //    new company added after it must still land.
+  ({ db, sql } = makeDb());
+  let threw = null;
+  try {
+    await runSync(sql, [
+      { id: 'a', name: 'Kiewit' },
+      { id: 'b', name: 'CNX' },
+      { id: 'd', name: 'CNX' },   // duplicate name, different id
+      { id: 'c', name: 'B&B', ub_rate: 1.55 },
+    ]);
+  } catch (e) { threw = e; }
+  assert('duplicate company name does not throw / abort the sync', threw === null,
+    threw && threw.message);
+  assert('company added after the duplicate ("B&B") still persists',
+    !!db.companies.find(c => c.name === 'B&B'));
+  assert('per-customer ub_rate on that company is stored',
+    (db.companies.find(c => c.name === 'B&B') || {}).ub_rate === 1.55);
+  assert('duplicate name collapses to a single normalized row',
+    db.companies.filter(c => c.name === 'CNX').length === 1);
+
+  // 3. Swapping two companies' names (A<->B) must not collide.
+  ({ db, sql } = makeDb());
+  await runSync(sql, [{ id: 'x', name: 'Alpha' }, { id: 'y', name: 'Bravo' }]);
+  threw = null;
+  try {
+    await runSync(sql, [{ id: 'x', name: 'Bravo' }, { id: 'y', name: 'Alpha' }]);
+  } catch (e) { threw = e; }
+  assert('name swap (Alpha<->Bravo) does not throw', threw === null, threw && threw.message);
+  assert('after swap, both rows hold their new names',
+    (db.companies.find(c => c.id === 'x') || {}).name === 'Bravo' &&
+    (db.companies.find(c => c.id === 'y') || {}).name === 'Alpha');
+
+  // ── Final summary (kept inside the async IIFE so it runs after the awaits) ──
+  console.log(`\n${'─'.repeat(48)}`);
+  console.log(`  ${passed} passed, ${failed} failed`);
+  console.log(`${'─'.repeat(48)}`);
+  process.exit(failed ? 1 : 0);
+})();
