@@ -2777,7 +2777,19 @@
         document.getElementById('em-end').value   = e.end_time   || '';
         document.getElementById('em-lunch').value = e.lunch_break === true ? 'true' : 'false';
         document.getElementById('em-equip').value = e.operated_equipment === true ? 'true' : 'false';
-        document.getElementById('em-sup').value   = e.supervisor_id || '';
+        const emSupSel = document.getElementById('em-sup');
+        if (e.supervisor_id && !supervisors.some(s => String(s.id) === String(e.supervisor_id))) {
+          // Supervisor no longer in the list — keep current value as a synthetic
+          // option so it displays and isn't cleared/overwritten on save.
+          const opt = document.createElement('option');
+          opt.value = e.supervisor_id;
+          opt.textContent = e.supervisor_name || e.supervisor_id;
+          opt.dataset.name = e.supervisor_name || '';
+          opt.selected = true;
+          emSupSel.appendChild(opt);
+        } else {
+          emSupSel.value = e.supervisor_id || '';
+        }
         document.getElementById('em-notes').value = e.notes || '';
       }
 

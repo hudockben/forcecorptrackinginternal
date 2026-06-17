@@ -929,7 +929,19 @@
         document.getElementById('f-date').value     = e.work_date || '';
         document.getElementById('f-division').value = e.division  || '';
         await onDivisionChange();
-        document.getElementById('f-job').value = e.job_id || '';
+        const tsJobSel = document.getElementById('f-job');
+        if (e.job_id && ![...tsJobSel.options].some(o => String(o.value) === String(e.job_id))) {
+          // Job no longer in the active list — keep it as a synthetic option so
+          // the draft still shows it (and can be re-saved) instead of blanking.
+          const opt = document.createElement('option');
+          opt.value = e.job_id;
+          opt.textContent = e.job_label || e.job_id;
+          opt.dataset.label = e.job_label || '';
+          opt.selected = true;
+          tsJobSel.appendChild(opt);
+        } else {
+          tsJobSel.value = e.job_id || '';
+        }
         document.getElementById('f-travel-to-site').value = e.travel_to_site_hours != null ? e.travel_to_site_hours : '';
         document.getElementById('f-travel-to-shop').value = e.travel_to_shop_hours != null ? e.travel_to_shop_hours : '';
         updateTravelHours();
@@ -940,7 +952,19 @@
         else clearSeg('lunch');
         if (e.operated_equipment === true || e.operated_equipment === false) setSeg('equip', e.operated_equipment);
         else clearSeg('equip');
-        document.getElementById('f-supervisor').value = e.supervisor_id || '';
+        const tsSupSel = document.getElementById('f-supervisor');
+        if (e.supervisor_id && ![...tsSupSel.options].some(o => String(o.value) === String(e.supervisor_id))) {
+          // Supervisor no longer in the list — keep it as a synthetic option so
+          // the draft still shows it (and can be re-saved) instead of blanking.
+          const opt = document.createElement('option');
+          opt.value = e.supervisor_id;
+          opt.textContent = e.supervisor_name || e.supervisor_id;
+          opt.dataset.name = e.supervisor_name || '';
+          opt.selected = true;
+          tsSupSel.appendChild(opt);
+        } else {
+          tsSupSel.value = e.supervisor_id || '';
+        }
         document.getElementById('f-notes').value = e.notes || '';
       } else {
         offType = e.time_off_type || null;
