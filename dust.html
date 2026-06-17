@@ -3841,8 +3841,14 @@
                     <select style="flex:none;width:80px;background:transparent;border:none;outline:none;color:var(--text);font-size:0.78rem"
                       onchange="updateCompanyLocation('${co.id}','${loc.id}','state',this.value)">
                       <option value="">—</option>
-                      ${dustLists.states.slice().sort().map(s =>
-                        `<option value="${esc(s)}"${loc.state===s?' selected':''}>${esc(s)}</option>`).join('')}
+                      ${(() => {
+                        // Keep a saved location state visible even if it's no
+                        // longer in the managed States list.
+                        const sl = dustLists.states.slice().sort();
+                        if (loc.state && !sl.includes(loc.state)) sl.unshift(loc.state);
+                        return sl.map(s =>
+                          `<option value="${esc(s)}"${loc.state===s?' selected':''}>${esc(s)}</option>`).join('');
+                      })()}
                     </select>
                     <button class="remove-item" onclick="removeCompanyLocation('${co.id}','${loc.id}')">✕</button>
                   </div>`).join('')
@@ -5921,7 +5927,14 @@
         obRows[idx].state = loc.state;
         const tr = document.querySelector(`#obTbody tr[data-idx="${idx}"]`);
         const stSel = tr && tr.querySelector('td.cw-st select');
-        if (stSel) stSel.value = loc.state;
+        if (stSel) {
+          // Ensure the auto-filled state exists as an option before selecting it,
+          // so the dropdown shows it even if it isn't in the managed States list.
+          if (loc.state && !Array.from(stSel.options).some(o => o.value === loc.state)) {
+            stSel.insertAdjacentHTML('beforeend', `<option value="${esc(loc.state)}">${esc(loc.state)}</option>`);
+          }
+          stSel.value = loc.state;
+        }
       }
       obScheduleSave();
     }
@@ -6005,8 +6018,13 @@
           coNames.map(name =>
             `<option value="${esc(name)}"${row.customer===name?' selected':''}>${esc(name)}</option>`).join('');
 
+        // Preserve a saved state that's no longer in the managed States list
+        // (e.g. a removed state, or one auto-filled from a location) so the cell
+        // keeps showing it instead of silently reverting to "—".
+        const stList = dustLists.states.slice().sort();
+        if (row.state && !stList.includes(row.state)) stList.unshift(row.state);
         const stOpts = '<option value="">—</option>' +
-          dustLists.states.slice().sort().map(s =>
+          stList.map(s =>
             `<option value="${esc(s)}"${row.state===s?' selected':''}>${esc(s)}</option>`).join('');
 
         // Build driver options from employees list. If the row has a driver
