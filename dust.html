@@ -5995,9 +5995,15 @@
         totTrk   += c.trkTotal;
         totGrand += c.total;
 
+        // Customer dropdown sourced from the companies list. Preserve any saved
+        // value that's no longer in the list (e.g. a renamed/removed company or
+        // a legacy entry) so the row keeps showing its customer — matching how
+        // the driver/destination/material/MU dropdowns behave below.
+        const coNames = dustLists.companies.map(co => co.name).slice().sort((a, b) => a.localeCompare(b));
+        if (row.customer && !coNames.includes(row.customer)) coNames.unshift(row.customer);
         const coOpts = '<option value="">— select —</option>' +
-          dustLists.companies.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(co =>
-            `<option value="${esc(co.name)}"${row.customer===co.name?' selected':''}>${esc(co.name)}</option>`).join('');
+          coNames.map(name =>
+            `<option value="${esc(name)}"${row.customer===name?' selected':''}>${esc(name)}</option>`).join('');
 
         const stOpts = '<option value="">—</option>' +
           dustLists.states.slice().sort().map(s =>
