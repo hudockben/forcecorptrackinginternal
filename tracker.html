@@ -10220,7 +10220,9 @@ function renderAllListPanels() {
   lists.employees.forEach((emp, idx) => {
     const div = document.createElement('div');
     div.className = 'list-item';
-    const jcOpts = ['', ...lists.job_classes].map(jc =>
+    const jcVals = ['', ...lists.job_classes];
+    if (emp.job_class && !jcVals.includes(emp.job_class)) jcVals.push(emp.job_class);
+    const jcOpts = jcVals.map(jc =>
       `<option value="${esc(jc)}" ${jc === (emp.job_class || '') ? 'selected' : ''}>${jc || '— class —'}</option>`
     ).join('');
     div.innerHTML = `
@@ -20523,6 +20525,9 @@ function _ppRender() {
   Object.values(sched).forEach(d => {
     d.employees.forEach(e => { if (!allEmp.includes(e)) customEmp.add(e); });
     d.equipment.forEach(e => { if (!allEquip.includes(e)) customEquip.add(e); });
+    // Crew assignments may reference equipment not toggled into d.equipment or
+    // the global list — keep those so the crew dropdown still shows them.
+    if (d.crew) Object.values(d.crew).forEach(eq => { if (eq && !allEquip.includes(eq)) customEquip.add(eq); });
   });
   // Merge project-assigned crew/equipment so new sub-codes with no history still show available names
   const projObj = getProj(_pp.projId);
