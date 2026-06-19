@@ -4575,8 +4575,27 @@
           ubRate = parseFloat(settings.ub_rate) || 0;
           document.getElementById('ubRateInput').value = ubRate.toFixed(2);
         }
-        if (settings && settings.profit_margin && typeof settings.profit_margin === 'object') {
-          Object.assign(profitMargin, settings.profit_margin);
+        // Restore Profit Margin Calculator inputs. Prefer the local cache when
+        // the server hasn't moved past what we last confirmed saving — this
+        // rescues edits lost to a reload before the debounced save landed. If
+        // the server changed elsewhere, it wins. (See _pmLsSave.)
+        const _serverPM = (settings && settings.profit_margin && typeof settings.profit_margin === 'object')
+          ? settings.profit_margin : null;
+        const _serverPMeff = _pmIsEmpty(_serverPM) ? null : _serverPM;
+        const _pmLs = _pmLsGet();
+        const _localPM = (_pmLs && _pmLs.pm && typeof _pmLs.pm === 'object') ? _pmLs.pm : null;
+        if (_localPM) {
+          const remoteChanged = _serverPMeff && JSON.stringify(_serverPMeff) !== JSON.stringify(_pmLs.synced || null);
+          if (remoteChanged) {
+            Object.assign(profitMargin, _serverPMeff);
+            _pmLsSave(true);                 // adopt the remote change as our baseline
+          } else {
+            Object.assign(profitMargin, _localPM);
+            if (JSON.stringify(_localPM) !== JSON.stringify(_serverPMeff)) pmScheduleSave(); // push rescued edits
+          }
+        } else if (_serverPMeff) {
+          Object.assign(profitMargin, _serverPMeff);
+          _pmLsSave(true);                   // seed the cache from the server
         }
         if (lists && typeof lists === 'object') {
           dustLists.equipment = Array.isArray(lists.equipment) ? lists.equipment : [];
@@ -5435,6 +5454,31 @@
     // field name (snake) → input id (kebab, prefixed)
     const _pmId = f => 'pm-' + f.replace(/_/g, '-');
     const _pmNum = v => { const f = parseFloat(v); return isFinite(f) ? f : 0; };
+
+    // ── Profit Margin local write-through cache ──────────────────────────
+    // The calculator's server save is debounced, and the page-unload flush
+    // can be dropped (e.g. when the keepalive payload is too large), so an
+    // edit made just before a reload could be lost — the reported "values
+    // don't hold." Mirror every edit to localStorage synchronously (which
+    // can't be lost) and restore from it on load. The server blob stays the
+    // cross-device source of truth: `synced` records the last value we
+    // confirmed reached the server, so on load we can tell a lost local save
+    // (server still matches `synced` → keep the newer local copy) from a real
+    // remote change (server moved past `synced` → it wins).
+    const PM_LS_KEY = 'fct_dust_pm:' + ((user && user.companyCode) || 'default');
+    const _pmIsEmpty = pm => !pm || typeof pm !== 'object' || PM_NUM_FIELDS.every(f => pm[f] == null);
+    function _pmLsGet() {
+      try { const v = JSON.parse(localStorage.getItem(PM_LS_KEY)); return (v && typeof v === 'object') ? v : null; }
+      catch { return null; }
+    }
+    function _pmLsSave(markSynced) {
+      try {
+        const prev = _pmLsGet() || {};
+        const snap = JSON.parse(JSON.stringify(profitMargin));
+        localStorage.setItem(PM_LS_KEY, JSON.stringify({ pm: snap, synced: markSynced ? snap : (prev.synced || null) }));
+      } catch { /* storage blocked/full — non-fatal */ }
+    }
+
     // $/gal formatted to 4 decimals (fractions of a cent matter at volume)
     function rate4(n) {
       return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
@@ -5447,6 +5491,7 @@
       pmSaveTimer = setTimeout(async () => {
         pmSaveTimer = null;
         const ok = await dustConfigPut();
+        if (ok) _pmLsSave(true);   // server now holds the current inputs
         setSaveState(ok ? 'saved' : 'error');
         setTimeout(() => setSaveState(''), 3000);
       }, 900);
@@ -5473,12 +5518,14 @@
         const raw = (el.value || '').trim();
         profitMargin[f] = raw === '' ? null : parseFloat(raw);
       });
+      _pmLsSave(false);   // mirror locally at once so a quick reload can't lose it
       renderProfitMargin();
       pmScheduleSave();
     }
 
     function pmSetBasis(b) {
       profitMargin.charge_basis = b;
+      _pmLsSave(false);
       document.querySelectorAll('.pm-pill').forEach(p =>
         p.classList.toggle('active', p.dataset.basis === b));
       const wrap = document.getElementById('pm-custom-wrap');
