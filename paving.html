@@ -2313,7 +2313,11 @@
       top: calc(100% + 2px);
       left: 0;
       min-width: 100%;
-      max-width: 280px;
+      /* Grow to fit the widest option (e.g. long sub-code labels like
+         "Javelin Runway Excavation / 2 1/2" 25MM…") so the whole option
+         is readable, but stay within the viewport. */
+      width: max-content;
+      max-width: min(560px, 92vw);
       z-index: 1000;
       background: var(--surface);
       border: 1px solid var(--border);
@@ -2326,11 +2330,13 @@
     .cb-opt {
       padding: 0.3rem 0.5rem;
       font-size: 0.8rem;
+      line-height: 1.35;
       color: var(--text);
       cursor: pointer;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      /* Wrap long labels onto multiple lines instead of clipping them
+         with an ellipsis, so the entire option stays readable. */
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
     .cb-opt-empty { padding: 0.3rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
