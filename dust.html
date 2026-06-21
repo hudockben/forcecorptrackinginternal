@@ -4879,7 +4879,8 @@
         const truckCount = (String(r.vehicle1 || '').trim() ? 1 : 0)
                          + (String(r.vehicle2 || '').trim() ? 1 : 0);
         return { date: r.date, company: r.company || '', location: r.location || '',
-                 hours, truckHrs: round2(hours * truckCount), gal: c.gallons || 0 };
+                 hours, truckHrs: round2(hours * truckCount), gal: c.gallons || 0,
+                 v1: c.v1Total || 0, v2: c.v2Total || 0, ub: c.ubTotal || 0, total: c.invTotal || 0 };
       });
 
       return { start, end, selected, bodyRows };
@@ -4909,9 +4910,13 @@
       const showCo  = selected.length !== 1;
       const entries = n => `${n} ${n === 1 ? 'entry' : 'entries'}`;
       const sum = arr => ({
-        h: arr.reduce((s, r) => s + r.hours,    0),
-        t: arr.reduce((s, r) => s + r.truckHrs, 0),
-        g: arr.reduce((s, r) => s + r.gal,      0),
+        h:  arr.reduce((s, r) => s + r.hours,    0),
+        t:  arr.reduce((s, r) => s + r.truckHrs, 0),
+        g:  arr.reduce((s, r) => s + r.gal,      0),
+        v1: arr.reduce((s, r) => s + r.v1,       0),
+        v2: arr.reduce((s, r) => s + r.v2,       0),
+        ub: arr.reduce((s, r) => s + r.ub,       0),
+        tc: arr.reduce((s, r) => s + r.total,    0),
       });
       const items = [];
       const names = [...new Set(bodyRows.map(r => r.company))];
@@ -4954,7 +4959,8 @@
       const numStart  = showCo ? 3 : 2; // index where the numeric columns begin
       const headCells = ['Date']
         .concat(showCo ? ['Customer'] : [])
-        .concat(['Location', 'Hours', 'Truck Hours', 'Gallons of UB']);
+        .concat(['Location', 'Hours', 'Truck Hours', 'Gallons of UB',
+                 'Vehicle 1', 'Vehicle 2', 'UB Gallon', 'Total Cost']);
       const colCount  = headCells.length;
 
       const cellNum = v => `<td class="num">${v}</td>`;
@@ -4966,12 +4972,12 @@
               <td>${esc(fmtDate(r.date))}</td>
               ${showCo ? `<td>${esc(r.company)}</td>` : ''}
               <td>${esc(r.location)}</td>
-              ${cellNum(hrs(r.hours))}${cellNum(hrs(r.truckHrs))}${cellNum(gal(r.gal))}
+              ${cellNum(hrs(r.hours))}${cellNum(hrs(r.truckHrs))}${cellNum(gal(r.gal))}${cellNum(money(r.v1))}${cellNum(money(r.v2))}${cellNum(money(r.ub))}${cellNum(money(r.total))}
             </tr>`;
             }
             return `<tr class="${it.type === 'sub' ? 'subtotal' : 'totals'}">
               <td colspan="${numStart}">${esc(it.label)}</td>
-              ${cellNum(hrs(it.h))}${cellNum(hrs(it.t))}${cellNum(gal(it.g))}
+              ${cellNum(hrs(it.h))}${cellNum(hrs(it.t))}${cellNum(gal(it.g))}${cellNum(money(it.v1))}${cellNum(money(it.v2))}${cellNum(money(it.ub))}${cellNum(money(it.tc))}
             </tr>`;
           }).join('')
         : `<tr><td colspan="${colCount}" class="empty">No entries found for this date range and customer.</td></tr>`;
@@ -4987,18 +4993,18 @@
           .doc-title { font-size:13px; font-weight:700; color:#374151; text-align:right; }
           .meta { display:flex; gap:24px; flex-wrap:wrap; font-size:11px; color:#555; margin:12px 0 16px; }
           .meta b { color:#111; }
-          table { width:100%; border-collapse:collapse; font-size:11px; }
-          th, td { padding:6px 9px; border-bottom:1px solid #e5e7eb; text-align:left; }
-          th { background:#f3f4f6; border-bottom:2px solid #b45309; font-size:9px; text-transform:uppercase; letter-spacing:0.04em; color:#374151; }
-          td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+          table { width:100%; border-collapse:collapse; font-size:9px; }
+          th, td { padding:4px 6px; border-bottom:1px solid #e5e7eb; text-align:left; }
+          th { background:#f3f4f6; border-bottom:2px solid #b45309; font-size:8px; text-transform:uppercase; letter-spacing:0.03em; color:#374151; }
+          td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
           tbody tr:nth-child(even) td { background:#fafafa; }
           td.empty { text-align:center; color:#888; padding:26px; font-style:italic; }
-          tr.subtotal td { border-top:1px solid #d1d5db; border-bottom:1px solid #d1d5db; font-weight:700; font-size:11px; background:#f3f4f6 !important; color:#374151; }
-          tr.totals td { border-top:2px solid #b45309; border-bottom:none; font-weight:800; font-size:12px; background:#fff7ed !important; }
+          tr.subtotal td { border-top:1px solid #d1d5db; border-bottom:1px solid #d1d5db; font-weight:700; font-size:9px; background:#f3f4f6 !important; color:#374151; }
+          tr.totals td { border-top:2px solid #b45309; border-bottom:none; font-weight:800; font-size:10px; background:#fff7ed !important; }
           .foot { margin-top:22px; font-size:9px; color:#9ca3af; text-align:center; }
           .toolbar-print { margin-bottom:16px; }
           .toolbar-print button { font:inherit; font-size:12px; padding:8px 16px; background:#b45309; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600; }
-          @media print { .toolbar-print { display:none; } body { padding:0; } @page { margin: 0.6in 0.5in; } }
+          @media print { .toolbar-print { display:none; } body { padding:0; } @page { size: landscape; margin: 0.5in; } }
         </style></head>
         <body>
           <div class="toolbar-print"><button onclick="window.print()">🖨 Print / Save as PDF</button></div>
