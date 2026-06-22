@@ -183,7 +183,12 @@ require.cache[neonPath] = {
 const authPath = path.resolve(__dirname, '../api/lib/auth.js');
 require.cache[authPath] = {
   id: authPath, filename: authPath, loaded: true,
-  exports: { requireAuth: () => ({ companyCode: COMPANY, isPlatformAdmin: true }) },
+  exports: {
+    requireAuth: () => ({ companyCode: COMPANY, isPlatformAdmin: true }),
+    // report.js also gates on hasDivisionAccess(payload, 'executive'); mirror the
+    // real "platform admins always pass" rule for the mocked admin payload.
+    hasDivisionAccess: (payload) => Boolean(payload && payload.isPlatformAdmin),
+  },
 };
 
 process.env.DATABASE_URL = 'postgres://user:pass@localhost/db';
