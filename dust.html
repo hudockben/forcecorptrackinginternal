@@ -5040,8 +5040,9 @@
     // Inline-styled report body for email. Email clients strip <style>/<head>,
     // so every cell carries its own style. Returns the meta line + table only;
     // the send-report endpoint wraps it (company header, "Generated" timestamp,
-    // optional note, footer). Same data/order as the print view via the shared
-    // _dustReportItems().
+    // optional note, footer). Mirrors the print/PDF view exactly — same columns
+    // (incl. Vehicle 1/2, UB Gallon, Total Cost), data, and order via the shared
+    // _dustReportItems() — with compact sizing so all ten columns fit the page.
     function _dustReportEmailHtml(data) {
       const { start, end, selected, bodyRows } = data;
       const { showCo, items } = _dustReportItems(bodyRows, selected);
@@ -5059,18 +5060,22 @@
         : 'All dates';
       const custLabel = _dustCustLabel(selected);
 
-      const numStart  = showCo ? 3 : 2;
+      const numStart  = showCo ? 3 : 2; // index where the numeric columns begin
       const headCells = ['Date'].concat(showCo ? ['Customer'] : [])
-        .concat(['Location', 'Hours', 'Truck Hours', 'Gallons of UB']);
+        .concat(['Location', 'Hours', 'Truck Hours', 'Gallons of UB',
+                 'Vehicle 1', 'Vehicle 2', 'UB Gallon', 'Total Cost']);
       const colCount  = headCells.length;
 
-      const TH  = 'padding:6px 9px;border-bottom:2px solid #b45309;background:#f3f4f6;color:#374151;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;text-align:left;';
+      // Compact, PDF-matching sizing so all ten columns fit on the page.
+      // Numeric cells stay on one line (nowrap) so dollar values don't wrap.
+      const NUM = 'white-space:nowrap;font-variant-numeric:tabular-nums;';
+      const TH  = 'padding:4px 6px;border-bottom:2px solid #b45309;background:#f3f4f6;color:#374151;font-size:8px;text-transform:uppercase;letter-spacing:0.03em;text-align:left;';
       const THN = TH + 'text-align:right;';
-      const TD  = 'padding:6px 9px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#111;text-align:left;';
-      const TDN = TD + 'text-align:right;';
-      const SUB = 'padding:6px 9px;border-top:1px solid #d1d5db;border-bottom:1px solid #d1d5db;background:#f3f4f6;color:#374151;font-size:12px;font-weight:700;';
-      const TOT = 'padding:7px 9px;border-top:2px solid #b45309;background:#fff7ed;color:#111;font-size:13px;font-weight:800;';
-      const rt  = s => s + 'text-align:right;';
+      const TD  = 'padding:4px 6px;border-bottom:1px solid #e5e7eb;font-size:9px;color:#111;text-align:left;';
+      const TDN = TD + 'text-align:right;' + NUM;
+      const SUB = 'padding:4px 6px;border-top:1px solid #d1d5db;border-bottom:1px solid #d1d5db;background:#f3f4f6;color:#374151;font-size:9px;font-weight:700;';
+      const TOT = 'padding:5px 6px;border-top:2px solid #b45309;background:#fff7ed;color:#111;font-size:10px;font-weight:800;';
+      const rt  = s => s + 'text-align:right;' + NUM;
 
       const th = headCells.map((h, i) => `<th style="${i >= numStart ? THN : TH}">${esc(h)}</th>`).join('');
 
@@ -5085,6 +5090,10 @@
                 <td style="${TDN}">${hrs(r.hours)}</td>
                 <td style="${TDN}">${hrs(r.truckHrs)}</td>
                 <td style="${TDN}">${gal(r.gal)}</td>
+                <td style="${TDN}">${money(r.v1)}</td>
+                <td style="${TDN}">${money(r.v2)}</td>
+                <td style="${TDN}">${money(r.ub)}</td>
+                <td style="${TDN}">${money(r.total)}</td>
               </tr>`;
             }
             const base = it.type === 'sub' ? SUB : TOT;
@@ -5093,12 +5102,16 @@
                 <td style="${rt(base)}">${hrs(it.h)}</td>
                 <td style="${rt(base)}">${hrs(it.t)}</td>
                 <td style="${rt(base)}">${gal(it.g)}</td>
+                <td style="${rt(base)}">${money(it.v1)}</td>
+                <td style="${rt(base)}">${money(it.v2)}</td>
+                <td style="${rt(base)}">${money(it.ub)}</td>
+                <td style="${rt(base)}">${money(it.tc)}</td>
               </tr>`;
           }).join('')
         : `<tr><td colspan="${colCount}" style="${TD}text-align:center;color:#888;padding:20px;font-style:italic;">No entries found for this date range and customer.</td></tr>`;
 
       return `
-        <div style="font-size:12px;color:#555;margin:0 0 14px;">
+        <div style="font-size:11px;color:#555;margin:0 0 12px;">
           <span style="margin-right:18px;">Customer: <b style="color:#111;">${esc(custLabel)}</b></span>
           <span>Date Range: <b style="color:#111;">${esc(rangeLabel)}</b></span>
         </div>
