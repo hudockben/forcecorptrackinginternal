@@ -5323,8 +5323,9 @@
         return;
       }
 
-      // Use all rows for year palette so colors stay consistent when filtering
-      const years = [...new Set(
+      // All years across every row — used only as a stable color palette for
+      // the monthly timeline so a year keeps its color when the view is filtered.
+      const allYears = [...new Set(
         rows.map(r => (r.date||'').slice(0,4)).filter(y => /^\d{4}$/.test(y))
       )].sort();
 
@@ -5359,6 +5360,13 @@
         byYearCo[y][co].hrs  += c.totalHours;
         byYearCo[y][co].jobs++;
       });
+
+      // Years actually present in the (possibly year-filtered) data. The cards,
+      // charts, customer table, and totals are all driven off this — not every
+      // year that exists in `rows` — so a year filter that excludes a year never
+      // makes us read byYear[thatYear].inv (undefined), which used to throw and
+      // leave the whole Financial tab blank.
+      const years = Object.keys(byYear).sort();
 
       // ── Year summary cards ──
       document.getElementById('fin-year-cards').innerHTML = years.map((y, i) => {
@@ -5406,7 +5414,7 @@
       buildBars('fin-bar-monthly', ymKeys.map(ym => {
         const mo    = parseInt(ym.slice(5),10) - 1;
         const yr    = ym.slice(0,4);
-        const yrIdx = years.indexOf(yr);
+        const yrIdx = allYears.indexOf(yr);
         return { label: `${MONTHS[mo]} ${yr}`, v: byYearMo[ym], color: YR_COLORS[yrIdx % YR_COLORS.length] };
       }), 'amber', v => money(v));
 
