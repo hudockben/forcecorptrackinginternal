@@ -755,6 +755,21 @@
     .badge-draft     { background: rgba(136,136,136,0.15); color: var(--muted); }
     .badge-submitted { background: rgba(96,165,250,0.15); color: var(--blue); }
     .badge-approved  { background: rgba(34,197,94,0.15);  color: var(--green); }
+
+    /* ── Prevailing-wage pill (per job tied to the entry) ── */
+    .pw-pill {
+      display: inline-block;
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .pw-yes { background: rgba(234,179,8,0.16);  color: var(--yellow); }
+    .pw-no  { background: rgba(136,136,136,0.15); color: var(--muted); }
+    .pw-na  { color: var(--muted); }
     .status-meta {
       font-size: 0.62rem;
       color: var(--muted);
@@ -1238,6 +1253,7 @@
             <th>Type</th>
             <th>Division</th>
             <th>Job</th>
+            <th>Prevailing&nbsp;Wage</th>
             <th>Time</th>
             <th>Hours</th>
             <th>Travel</th>
@@ -1248,7 +1264,7 @@
           </tr>
         </thead>
         <tbody id="rowsBody">
-          <tr class="empty-row"><td colspan="13">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="14">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1545,7 +1561,7 @@
       if (division) params.set('division', division);
 
       const tbody = document.getElementById('rowsBody');
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="13">Loading…</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="14">Loading…</td></tr>';
 
       try {
         const url = '/api/timesheet-entries?' + params.toString();
@@ -1558,7 +1574,7 @@
           'statuses:', allEntries.reduce((m, e) => { m[e.status]=(m[e.status]||0)+1; return m; }, {}));
         filterAndRender();
       } catch (err) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="13">Error: ${escapeHtml(err.message)}</td></tr>`;
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="14">Error: ${escapeHtml(err.message)}</td></tr>`;
       }
     }
 
@@ -2347,7 +2363,7 @@
         : `No approved entries in this range yet.<div class="empty-diag">${escapeHtml(diag)}</div>`;
 
       if (!rows.length) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="13">${emptyMsg}</td></tr>`;
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="14">${emptyMsg}</td></tr>`;
         if (isPending) selectedIds.clear();
         updateBulk();
         return;
@@ -2396,6 +2412,7 @@
             <td>${type}</td>
             <td>${escapeHtml(division)}</td>
             <td>${escapeHtml(job)}</td>
+            <td>${prevailingWageHtml(e)}</td>
             <td>${timeCell}</td>
             <td style="font-variant-numeric:tabular-nums">${hours}</td>
             <td style="font-variant-numeric:tabular-nums">${travel}</td>
@@ -2429,6 +2446,19 @@
     function prettyOff(t) {
       const map = { vacation:'Vacation', sick:'Sick', jury_duty:'Jury Duty', bereavement:'Bereavement', holiday:'Holiday' };
       return map[t] || t;
+    }
+    // Prevailing-wage pill, derived from the job tied to the entry.
+    // The server resolves e.prevailing_wage from the project blob:
+    //   true/false → turf/paving job with a known prevailing-wage flag
+    //   null       → time-off, or a division (dust/trucking/quarry) where
+    //                prevailing wage doesn't apply → show a neutral dash.
+    function prevailingWageHtml(e) {
+      if (e.entry_type === 'time_off' || e.prevailing_wage == null) {
+        return '<span class="pw-na" title="Prevailing wage does not apply to this entry">—</span>';
+      }
+      return e.prevailing_wage
+        ? '<span class="pw-pill pw-yes" title="Prevailing wage job">Yes</span>'
+        : '<span class="pw-pill pw-no" title="Standard (non-prevailing) wage job">No</span>';
     }
     function fmtTimestamp(iso) {
       if (!iso) return '';

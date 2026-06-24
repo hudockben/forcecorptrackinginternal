@@ -156,6 +156,48 @@ function dbToEntry(r) {
   };
 }
 
+// ── Prevailing-wage lookup ────────────────────────────────────────────────
+// The prevailing-wage flag lives on the project blob in app_data, not on the
+// timesheet row. Only turf/paving keep their projects there — keyed
+// fct_project_<id> / fct_paving_project_<id> — with a top-level
+// `prevailing_wage` boolean; the other divisions' "jobs" are customers or
+// locations with no such concept. Resolve it for a whole batch of entries
+// with a single app_data read (same key = ANY(...) pattern timesheet-jobs.js
+// uses) so the payroll list can show Yes/No per row.
+const PW_PROJECT_PREFIX = { turf: 'fct_project_', paving: 'fct_paving_project_' };
+
+// app_data key for an entry's project, or null when its division has no
+// prevailing-wage concept (or the entry has no job attached).
+function pwProjectKey(companyCode, entry) {
+  const prefix = PW_PROJECT_PREFIX[entry.division];
+  return prefix && entry.job_id ? `${companyCode}:${prefix}${entry.job_id}` : null;
+}
+
+// Sets `prevailing_wage` on every entry (mutates in place):
+//   true / false → resolved from the project blob (false when the blob is
+//                  missing, matching how rate auto-fill treats a gone project)
+//   null         → division has no prevailing-wage concept / no job attached
+async function attachPrevailingWage(sql, companyCode, entries) {
+  const keys = [...new Set(
+    entries.map(e => pwProjectKey(companyCode, e)).filter(Boolean),
+  )];
+
+  const pwByKey = new Map();
+  if (keys.length) {
+    const rows = await sql`SELECT key, value FROM app_data WHERE key = ANY(${keys})`;
+    for (const r of rows) {
+      const blob = r.value;
+      pwByKey.set(r.key, !!(blob && typeof blob === 'object' && blob.prevailing_wage === true));
+    }
+  }
+
+  for (const e of entries) {
+    const key = pwProjectKey(companyCode, e);
+    e.prevailing_wage = key == null ? null : (pwByKey.has(key) ? pwByKey.get(key) : false);
+  }
+  return entries;
+}
+
 // ── Split helpers (timesheet → daily_tracking auto-injection) ─────────────
 // A "split" is the supervisor's breakdown of a single approved timesheet
 // entry into one or more daily_tracking rows. The supervisor picks cost
@@ -518,7 +560,8 @@ module.exports = async (req, res) => {
         `;
       }
 
-      return res.json({ entries: rows.map(dbToEntry) });
+      const entries = await attachPrevailingWage(sql, companyCode, rows.map(dbToEntry));
+      return res.json({ entries });
     }
 
     // ── POST (create draft) — field-user only ─────────────────────────────
