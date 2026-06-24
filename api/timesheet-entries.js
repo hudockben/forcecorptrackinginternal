@@ -198,6 +198,18 @@ async function attachPrevailingWage(sql, companyCode, entries) {
   return entries;
 }
 
+// Standard single-entry write response. Resolves prevailing_wage (the field
+// attachPrevailingWage adds for the list view) so a client that splices the
+// returned entry straight into its local cache — e.g. payroll's
+// applyEntryUpdate after approve/edit/unapprove — keeps the Yes/No flag and
+// the prevailing-hours report accurate without a full refetch, and stays
+// correct even when an admin edit changed the job. `extra` merges in any
+// additional top-level keys (e.g. removed_split_rows).
+async function entryJson(sql, companyCode, row, extra) {
+  const [entry] = await attachPrevailingWage(sql, companyCode, [dbToEntry(row)]);
+  return Object.assign({ ok: true, entry }, extra || {});
+}
+
 // ── Split helpers (timesheet → daily_tracking auto-injection) ─────────────
 // A "split" is the supervisor's breakdown of a single approved timesheet
 // entry into one or more daily_tracking rows. The supervisor picks cost
@@ -595,7 +607,7 @@ module.exports = async (req, res) => {
       `;
       const row = inserted[0];
       await writeAudit(sql, companyCode, payload, row.id, 'INSERT', null, dbToEntry(row));
-      return res.json({ ok: true, entry: dbToEntry(row) });
+      return res.json(await entryJson(sql, companyCode, row));
     }
 
     // ── POST ?action=submit — draft → submitted (field-user, own row) ─────
@@ -625,7 +637,7 @@ module.exports = async (req, res) => {
         RETURNING *
       `;
       await writeAudit(sql, companyCode, payload, id, 'SUBMIT', null, dbToEntry(updated));
-      return res.json({ ok: true, entry: dbToEntry(updated) });
+      return res.json(await entryJson(sql, companyCode, updated));
     }
 
     // ── POST ?action=approve — submitted → approved (payroll admin) ───────
@@ -712,7 +724,7 @@ module.exports = async (req, res) => {
         splitRows ? { split_row_count: splitRows.length } : null,
         dbToEntry(updated),
       );
-      return res.json({ ok: true, entry: dbToEntry(updated) });
+      return res.json(await entryJson(sql, companyCode, updated));
     }
 
     // ── POST ?action=resplit — re-author the split on an approved entry ──
@@ -771,7 +783,7 @@ module.exports = async (req, res) => {
         { resplit: true, split_row_count: splitRows.length },
         dbToEntry(existing),
       );
-      return res.json({ ok: true, entry: dbToEntry(existing) });
+      return res.json(await entryJson(sql, companyCode, existing));
     }
 
     // ── POST ?action=unapprove — approved → submitted (payroll admin) ────
@@ -819,7 +831,7 @@ module.exports = async (req, res) => {
         { unapprove: true, removed_split_rows: cnt },
         dbToEntry(updated),
       );
-      return res.json({ ok: true, entry: dbToEntry(updated), removed_split_rows: cnt });
+      return res.json(await entryJson(sql, companyCode, updated, { removed_split_rows: cnt }));
     }
 
     // ── GET ?action=split&id=N — fetch existing injected rows ────────────
@@ -916,7 +928,7 @@ module.exports = async (req, res) => {
         isAdminEditable ? 'ADMIN_EDIT' : 'UPDATE',
         null, dbToEntry(updated)
       );
-      return res.json({ ok: true, entry: dbToEntry(updated) });
+      return res.json(await entryJson(sql, companyCode, updated));
     }
 
     // ── DELETE ────────────────────────────────────────────────────────────
