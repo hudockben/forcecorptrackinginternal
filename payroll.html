@@ -2859,9 +2859,22 @@
       document.getElementById('editBackdrop').classList.remove('open');
       editingEntry = null;
     }
-    document.getElementById('editBackdrop').addEventListener('click', function(e) {
-      if (e.target === this) closeEdit();
-    });
+    // Close a modal only when the click GESTURE both starts and ends on the
+    // backdrop itself. A plain click-target check isn't enough: the searchable
+    // dropdowns (cost/sub code, equipment) are position:fixed and can float
+    // over the backdrop area below the modal. Picking an option hides the menu
+    // on mousedown, so the mouseup — and the click the browser synthesizes from
+    // it — lands on the backdrop, which would otherwise dismiss the modal
+    // mid-edit. Requiring mousedown to have started on the backdrop fixes it.
+    function bindBackdropClose(backdrop, closeFn) {
+      let downOnBackdrop = false;
+      backdrop.addEventListener('mousedown', e => { downOnBackdrop = (e.target === backdrop); });
+      backdrop.addEventListener('click', e => {
+        if (e.target === backdrop && downOnBackdrop) closeFn();
+        downOnBackdrop = false;
+      });
+    }
+    bindBackdropClose(document.getElementById('editBackdrop'), closeEdit);
 
     async function saveEdit() {
       if (!editingEntry) return;
@@ -3098,9 +3111,7 @@
       splitEntry = null;
       splitRows  = [];
     }
-    document.getElementById('splitBackdrop').addEventListener('click', function(e) {
-      if (e.target === this) closeSplit();
-    });
+    bindBackdropClose(document.getElementById('splitBackdrop'), closeSplit);
 
     function _blankSplitRow(isTravel) {
       return {
