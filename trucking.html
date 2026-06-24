@@ -694,10 +694,18 @@
       let dataChanged  = false;
       let listsChanged = false;
 
-      const addStr = (arr, val) => {
-        if (!val || arr.includes(val)) return arr;
+      // Seed lookup sets from the lists already loaded so the per-entry
+      // dedup below stays O(1). The old concat+includes/some approach was
+      // O(n²) and froze the page on load for companies with tens of
+      // thousands of entries.
+      const _driverSet   = new Set(divTruckLists.drivers);
+      const _customerSet = new Set(divTruckLists.customers);
+      const _unitNameSet = new Set(divTruckLists.units.map(u => u && u.name));
+      const addStr = (set, arr, val) => {
+        if (!val || set.has(val)) return;
+        set.add(val);
+        arr.push(val);
         listsChanged = true;
-        return arr.concat(val);
       };
 
       divEntries.forEach(e => {
@@ -718,9 +726,10 @@
         if (th !== (e.total_hours || '')) { e.total_hours = th; dataChanged = true; }
 
         // Auto-populate managed lists from stored entries
-        divTruckLists.drivers   = addStr(divTruckLists.drivers,   e.driver);
-        divTruckLists.customers = addStr(divTruckLists.customers, e.customer);
-        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)) {
+        addStr(_driverSet,   divTruckLists.drivers,   e.driver);
+        addStr(_customerSet, divTruckLists.customers, e.customer);
+        if (e.unit && !_unitNameSet.has(e.unit)) {
+          _unitNameSet.add(e.unit);
           divTruckLists.units.push({ name: e.unit, number: '' });
           listsChanged = true;
         }
@@ -802,9 +811,10 @@
 
     function _syncStaleIcEntries() {
       let changed = false;
+      const _entryById = new Map(divEntries.map(e => [e.id, e]));
       icBillingArr.forEach((icEntry, idx) => {
         if (icEntry.source !== 'trucking' || !icEntry.source_id) return;
-        const te = divEntries.find(e => e.id === icEntry.source_id);
+        const te = _entryById.get(icEntry.source_id);
         if (!te) return;
         const tot = (parseFloat(te.total_hours) || 0) * (parseFloat(te.haul_fee) || 0);
         if (icEntry.total_hours !== te.total_hours || icEntry.haul_fee !== te.haul_fee) {
@@ -1395,6 +1405,10 @@
       const filteredEntries = applyColFilters(yearFiltered)
         .slice().sort((a, b) => (b.actual_date || '').localeCompare(a.actual_date || '') || (b.task_number || '').localeCompare(a.task_number || ''));
 
+      // Unit-number lookup built once per render — avoids an O(rows × units)
+      // scan (a per-row .find) that froze the tab for large datasets.
+      const unitByName = new Map(divTruckLists.units.map(u => [u.name, u]));
+
       // ── Totals ──
       let sumHours = 0, sumRevenue = 0;
       filteredEntries.forEach(e => {
@@ -1464,7 +1478,7 @@
               <td style="min-width:140px">${cbHtml(e.id, 'driver', e.driver || '')}</td>
               <td style="min-width:140px">
                 ${cbHtml(e.id, 'unit', e.unit || '')}
-                <div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>
+                <div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((unitByName.get(e.unit)||{}).number||'')}</div>
               </td>
               <td style="min-width:90px"><input type="time" value="${esc(e.actual_start||'')}" oninput="_liveHours('${e.id}','actual_start',this.value)" onchange="updateField('${e.id}','actual_start',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
               <td style="min-width:90px"><input type="time" value="${esc(e.actual_end||'')}" oninput="_liveHours('${e.id}','actual_end',this.value)" onchange="updateField('${e.id}','actual_end',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
@@ -2041,9 +2055,10 @@
       const byCustomer = {};
       entries.forEach(e => {
         const c = e.customer || '(none)';
-        if (!byCustomer[c]) byCustomer[c] = { hours:0, revenue:0, count:0 };
+        if (!byCustomer[c]) byCustomer[c] = { hours:0, revenue:0, count:0, feeSum:0 };
         byCustomer[c].hours   += parseFloat(e.total_hours)||0;
         byCustomer[c].revenue += (parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0);
+        byCustomer[c].feeSum  += parseFloat(e.haul_fee)||0;
         byCustomer[c].count++;
       });
 
@@ -2122,9 +2137,7 @@
                   ? `<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--muted)">No data for this period.</td></tr>`
                   : custRows.map((c,i) => {
                       const avgHrs = c.count ? c.hours / c.count : 0;
-                      const avgFee = c.count
-                        ? entries.filter(e=>e.customer===c.name).reduce((s,e)=>s+(parseFloat(e.haul_fee)||0),0) / c.count
-                        : 0;
+                      const avgFee = c.count ? c.feeSum / c.count : 0;
                       return `<tr style="border-bottom:1px solid var(--border);${i%2===1?'background:rgba(255,255,255,0.02)':''}">
                         <td style="padding:0.55rem 1rem;color:var(--text);font-weight:500">${esc(c.name)}</td>
                         <td style="padding:0.55rem 0.75rem;text-align:right;color:var(--muted)">${c.count}</td>
@@ -2233,12 +2246,15 @@
       };
 
       // ── Unit table rows ──
+      // Map built once so the per-row unit-number lookup is O(1) rather than
+      // an O(units²) scan that froze this tab for large fleets.
+      const _unitByName = new Map(divTruckLists.units.map(u => [u.name, u]));
       const unitTableRows = unitRows.map((r,i) => {
         const pctH = totalHrs  ? (r.hours/totalHrs*100)   : 0;
         const pctR = totalRev  ? (r.revenue/totalRev*100) : 0;
         const revHr = r.hours  ? r.revenue/r.hours : 0;
         const rateRange = r.minFee===r.maxFee ? fmtMoney(r.minFee) : `${fmtMoney(r.minFee)} – ${fmtMoney(r.maxFee)}`;
-        const unitNum = (divTruckLists.units.find(u=>u.name===r.name)||{}).number || '';
+        const unitNum = (_unitByName.get(r.name)||{}).number || '';
         const isOpen  = expandedEquipRows.has(r.name);
         const carotStyle = `display:inline-block;transition:transform 0.18s;transform:rotate(${isOpen?'90':'0'}deg);color:var(--muted);font-size:0.85rem;cursor:pointer`;
         const customerList = [...r.customers].join(', ');
@@ -2576,12 +2592,14 @@
 
       // Prepend so newly imported rows appear at the top
       divEntries.unshift(...newEntries);
-      const add = (arr, val) => val && !arr.includes(val) ? [...arr, val] : arr;
+      // Set-backed dedup keeps a large CSV import O(n) instead of O(n²).
+      const _impDrivers = new Set(divTruckLists.drivers);
+      const _impCustomers = new Set(divTruckLists.customers);
+      const _impUnits = new Set(divTruckLists.units.map(u => u && u.name));
       newEntries.forEach(e => {
-        divTruckLists.drivers   = add(divTruckLists.drivers,   e.driver);
-        divTruckLists.customers = add(divTruckLists.customers, e.customer);
-        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit))
-          divTruckLists.units.push({ name: e.unit, number: '' });
+        if (e.driver && !_impDrivers.has(e.driver)) { _impDrivers.add(e.driver); divTruckLists.drivers.push(e.driver); }
+        if (e.customer && !_impCustomers.has(e.customer)) { _impCustomers.add(e.customer); divTruckLists.customers.push(e.customer); }
+        if (e.unit && !_impUnits.has(e.unit)) { _impUnits.add(e.unit); divTruckLists.units.push({ name: e.unit, number: '' }); }
       });
       divTruckLists.drivers.sort((a,b) => a.localeCompare(b));
       divTruckLists.customers.sort((a,b) => a.localeCompare(b));
