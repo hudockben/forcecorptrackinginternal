@@ -537,6 +537,11 @@
     }
     .report tbody td.name { font-weight: 600; font-variant-numeric: normal; }
     .report tbody td.num  { text-align: right; }
+    /* Prevailing-wage hours column — amber on screen to tie it to the
+       per-entry pill. The @media print block forces every report cell to
+       black with !important, so the printed payroll sheet stays crisp. */
+    .report td.num-pw      { color: var(--yellow); font-weight: 600; }
+    .report thead th.th-pw { color: var(--yellow); }
     .report tr.total td {
       border-top: 2px solid var(--border);
       border-bottom: none;
@@ -1625,6 +1630,8 @@
           username:      u,
           workHours:     0,
           travelHours:   0,
+          pwHours:       0,
+          stdHours:      0,
           pendingHours:  0,
           approvedHours: 0,
           pendingOff:    0,
@@ -1640,6 +1647,12 @@
           if (e.status === 'submitted' || e.status === 'approved') {
             acc.workHours   += work;
             acc.travelHours += travel;
+            // Split the day's hours by the job's prevailing-wage flag so
+            // payroll can see prevailing vs standard hours per worker. Only
+            // an explicit true counts as prevailing; false and null (the
+            // divisions with no prevailing-wage concept) both fall to standard.
+            if (e.prevailing_wage === true) acc.pwHours  += h;
+            else                            acc.stdHours += h;
           }
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
@@ -1655,11 +1668,13 @@
       const tot = rows.reduce((acc, r) => ({
         workHours:     acc.workHours     + r.workHours,
         travelHours:   acc.travelHours   + r.travelHours,
+        pwHours:       acc.pwHours        + r.pwHours,
+        stdHours:      acc.stdHours       + r.stdHours,
         pendingHours:  acc.pendingHours  + r.pendingHours,
         approvedHours: acc.approvedHours + r.approvedHours,
         pendingOff:    acc.pendingOff    + r.pendingOff,
         approvedOff:   acc.approvedOff   + r.approvedOff,
-      }), { workHours: 0, travelHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
+      }), { workHours: 0, travelHours: 0, pwHours: 0, stdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
 
       // Header subtitle
       const scopeBits = [];
@@ -1707,6 +1722,8 @@
             <td class="num">${r.workHours.toFixed(2)}</td>
             <td class="num">${r.travelHours.toFixed(2)}</td>
             <td class="num">${total.toFixed(2)}</td>
+            <td class="num num-pw">${r.pwHours.toFixed(2)}</td>
+            <td class="num">${r.stdHours.toFixed(2)}</td>
             <td class="num">${r.pendingHours.toFixed(2)}</td>
             <td class="num">${r.approvedHours.toFixed(2)}</td>
             <td>${escapeHtml(off)}</td>
@@ -1737,6 +1754,8 @@
                 <th style="text-align:right">Hours</th>
                 <th style="text-align:right">Travel</th>
                 <th style="text-align:right">Total</th>
+                <th class="th-pw" style="text-align:right">Prevailing&nbsp;Hrs</th>
+                <th style="text-align:right">Standard&nbsp;Hrs</th>
                 <th style="text-align:right">Pending Hours</th>
                 <th style="text-align:right">Approved Hours</th>
                 <th>Time Off</th>
@@ -1750,6 +1769,8 @@
                 <td class="num">${tot.workHours.toFixed(2)}</td>
                 <td class="num">${tot.travelHours.toFixed(2)}</td>
                 <td class="num">${totalAll.toFixed(2)}</td>
+                <td class="num num-pw">${tot.pwHours.toFixed(2)}</td>
+                <td class="num">${tot.stdHours.toFixed(2)}</td>
                 <td class="num">${tot.pendingHours.toFixed(2)}</td>
                 <td class="num">${tot.approvedHours.toFixed(2)}</td>
                 <td>${tot.pendingOff} pending / ${tot.approvedOff} approved</td>
