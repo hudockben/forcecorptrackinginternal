@@ -580,6 +580,50 @@
       font-size: 0.9rem;
     }
 
+    /* ── Expandable per-employee detail (Reports tab) ── */
+    .report tbody tr.emp-row { cursor: pointer; }
+    .report tbody tr.emp-row:hover td { background: rgba(255,255,255,0.03); }
+    .report .exp-caret {
+      display: inline-block;
+      width: 0.85em;
+      margin-right: 0.3rem;
+      color: var(--muted);
+      font-size: 0.7rem;
+      transition: transform 0.12s ease;
+    }
+    .report tbody tr.emp-row.expanded .exp-caret { transform: rotate(90deg); color: var(--accent); }
+    .report tr.report-detail > td { padding: 0 0 0.6rem 1.4rem; background: rgba(0,0,0,0.18); border-bottom: 1px solid var(--border); }
+    .report .report-detail-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.76rem;
+      margin-top: 0.2rem;
+    }
+    .report .report-detail-table th {
+      text-align: left;
+      padding: 0.4rem 0.7rem;
+      font-size: 0.56rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      background: transparent;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .report .report-detail-table td {
+      padding: 0.4rem 0.7rem;
+      border-bottom: 1px solid rgba(42,42,58,0.5);
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+    .report .report-detail-table td.num { text-align: right; }
+    .report .report-detail-table tr.detail-total td {
+      font-weight: 700;
+      color: var(--text);
+      border-top: 1px solid var(--border);
+      border-bottom: none;
+    }
+
     /* ── Print: hide everything except the active report / audit log ── */
     @media print {
       @page { margin: 0.5in; }
@@ -618,6 +662,16 @@
       .pill-pending { background: #fde68a !important; color: #6b3a00 !important; }
       .pill-clear   { background: #d1fae5 !important; color: #064e3b !important; }
       .report tr.has-pending td.name::before { color: #b45309 !important; }
+      /* Expanded per-employee detail: print whatever the user left open. The
+         caret is a screen-only affordance, so hide it on paper. */
+      .report .exp-caret { display: none !important; }
+      .report tr.report-detail > td { background: #fff !important; padding: 0 0 0.12in 0.3in !important; }
+      .report .report-detail-table th {
+        background: #fafafa !important; color: #000 !important;
+        border-bottom: 1px solid #999 !important;
+      }
+      .report .report-detail-table td { color: #000 !important; border-bottom: 1px solid #ddd !important; }
+      .report .report-detail-table tr.detail-total td { border-top: 1px solid #000 !important; }
 
       /* Audit Log tab */
       .audit-wrap {
@@ -1387,6 +1441,7 @@
     let allEntries   = [];          // current API result
     let filtered     = [];          // after client-side username filter
     let selectedIds  = new Set();
+    let expandedReportUsers = new Set(); // Reports tab: usernames whose per-entry detail is expanded
     let supervisors  = [];
     let jobsCache    = {};
     let editingEntry = null;
@@ -1636,8 +1691,10 @@
           approvedHours: 0,
           pendingOff:    0,
           approvedOff:   0,
+          entries:       [],
         });
         const acc = byUser.get(u);
+        acc.entries.push(e);
         if (e.entry_type === 'daily') {
           const work   = Number(e.computed_hours || 0);
           const travel = Number(e.travel_hours   || 0);
@@ -1716,9 +1773,14 @@
         const status = hasPending
           ? `<span class="pill pill-pending">${r.pendingHours.toFixed(2)} h pending</span>`
           : `<span class="pill pill-clear">All approved</span>`;
+        // Each employee row expands to a per-entry breakdown. Expansion state
+        // is keyed by username so it survives the re-render the filter inputs
+        // trigger on every keystroke.
+        const expanded = expandedReportUsers.has(r.username);
+        const userAttr = escapeHtml(r.username);
         return `
-          <tr class="${hasPending ? 'has-pending' : ''}">
-            <td class="name">${escapeHtml(r.username)}</td>
+          <tr class="emp-row${hasPending ? ' has-pending' : ''}${expanded ? ' expanded' : ''}" data-user="${userAttr}" onclick="toggleReportRow(this)" title="Click to ${expanded ? 'collapse' : 'expand'} this employee's entries">
+            <td class="name"><span class="exp-caret">▸</span>${escapeHtml(r.username)}</td>
             <td class="num">${r.workHours.toFixed(2)}</td>
             <td class="num">${r.travelHours.toFixed(2)}</td>
             <td class="num">${total.toFixed(2)}</td>
@@ -1728,6 +1790,9 @@
             <td class="num">${r.approvedHours.toFixed(2)}</td>
             <td>${escapeHtml(off)}</td>
             <td>${status}</td>
+          </tr>
+          <tr class="report-detail" data-user="${userAttr}"${expanded ? '' : ' hidden'}>
+            <td colspan="10">${reportDetailHtml(r.entries)}</td>
           </tr>
         `;
       }).join('');
@@ -1782,6 +1847,82 @@
           </table>
         </div>
       `;
+    }
+
+    // Per-entry breakdown shown when an employee row in the report is expanded.
+    // Lists every entry in range (oldest first) with its division, project and
+    // prevailing-wage hours, then a Total row summing that employee's entries.
+    function reportDetailHtml(entries) {
+      const list = (entries || []).slice().sort((a, b) =>
+        (a.work_date || '').localeCompare(b.work_date || '') ||
+        String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      let sumWork = 0, sumTravel = 0, sumTotal = 0, sumPw = 0;
+      const lines = list.map(e => {
+        const isOff  = e.entry_type === 'time_off';
+        const work   = isOff ? 0 : Number(e.computed_hours || 0);
+        const travel = isOff ? 0 : Number(e.travel_hours   || 0);
+        const total  = work + travel;
+        // Per entry, prevailing-wage hours = the whole day's hours when the
+        // tied job is prevailing wage, else 0 (matches the aggregate column).
+        const pw     = (!isOff && e.prevailing_wage === true) ? total : 0;
+        sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw;
+        const division = isOff ? '—' : (prettyDiv(e.division) || '—');
+        const project  = isOff ? `Time Off · ${prettyOff(e.time_off_type)}` : (e.job_label || '—');
+        const statusPill = e.status === 'approved'
+          ? '<span class="pill pill-clear">Approved</span>'
+          : '<span class="pill pill-pending">Pending</span>';
+        return `
+          <tr>
+            <td>${prettyDate(e.work_date)}</td>
+            <td>${escapeHtml(division)}</td>
+            <td>${escapeHtml(project)}</td>
+            <td class="num">${isOff ? '—' : work.toFixed(2)}</td>
+            <td class="num">${isOff ? '—' : travel.toFixed(2)}</td>
+            <td class="num">${isOff ? '—' : total.toFixed(2)}</td>
+            <td class="num${pw > 0 ? ' num-pw' : ''}">${isOff ? '—' : pw.toFixed(2)}</td>
+            <td>${statusPill}</td>
+          </tr>`;
+      }).join('');
+      return `
+        <table class="report-detail-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Division</th>
+              <th>Project</th>
+              <th style="text-align:right">Work</th>
+              <th style="text-align:right">Travel</th>
+              <th style="text-align:right">Total</th>
+              <th class="th-pw" style="text-align:right">Prevailing&nbsp;Hrs</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>${lines}</tbody>
+          <tfoot>
+            <tr class="detail-total">
+              <td colspan="3">Total — ${list.length} ${list.length === 1 ? 'entry' : 'entries'}</td>
+              <td class="num">${sumWork.toFixed(2)}</td>
+              <td class="num">${sumTravel.toFixed(2)}</td>
+              <td class="num">${sumTotal.toFixed(2)}</td>
+              <td class="num num-pw">${sumPw.toFixed(2)}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>`;
+    }
+
+    // Expand / collapse an employee's per-entry detail row (the <tr> right
+    // after the clicked row). State is tracked so it survives re-renders.
+    function toggleReportRow(rowEl) {
+      const detail = rowEl.nextElementSibling;
+      if (!detail || !detail.classList.contains('report-detail')) return;
+      const user = rowEl.dataset.user || '';
+      const willExpand = detail.hidden;
+      detail.hidden = !willExpand;
+      rowEl.classList.toggle('expanded', willExpand);
+      rowEl.title = `Click to ${willExpand ? 'collapse' : 'expand'} this employee's entries`;
+      if (willExpand) expandedReportUsers.add(user);
+      else            expandedReportUsers.delete(user);
     }
 
     function printReport() {
