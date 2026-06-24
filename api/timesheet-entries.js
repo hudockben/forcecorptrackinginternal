@@ -317,7 +317,11 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   // unreliable for auto-fill. Lookups are best-effort — a missing blob or
   // a name that doesn't resolve leaves the value at its previous default
   // (null/0).
-  const projKey = `${companyCode}:fct_project_${entry.job_id}`;
+  // Paving projects live under fct_paving_project_<id>, turf under
+  // fct_project_<id> — use the division-aware prefix (same map the list view
+  // uses) so paving prevailing-wage jobs resolve their flag, and thus the
+  // prevailing vs non-prevailing labor rate, correctly.
+  const projKey = `${companyCode}:${PW_PROJECT_PREFIX[division] || 'fct_project_'}${entry.job_id}`;
   const projRows = await sql`SELECT value FROM app_data WHERE key = ${projKey}`;
   const projBlob = projRows.length ? projRows[0].value : null;
   const isPrevailingWage = !!(projBlob && projBlob.prevailing_wage === true);
