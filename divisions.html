@@ -649,13 +649,14 @@
                 <th>Quarry</th>
                 <th>Billing</th>
                 <th>Executive</th>
+                <th>Scheduler</th>
                 <th>Timesheet</th>
                 <th>Payroll</th>
                 <th></th>
               </tr>
             </thead>
             <tbody id="userListBody">
-              <tr><td colspan="11" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+              <tr><td colspan="12" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -743,6 +744,16 @@
             <div class="div-role-row">
               <span class="div-role-label">Executive</span>
               <select id="mu-role-executive">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3">Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Scheduler <span style="text-transform:none;color:var(--muted)">(cross-division)</span></span>
+              <select id="mu-role-scheduler">
                 <option value="no_access" selected>No Access</option>
                 <option value="level1">Level 1 — View only</option>
                 <option value="level2">Level 2 — Insert &amp; edit</option>
@@ -927,6 +938,21 @@
                   <circle cx="15" cy="5" r="1"/>
                 </svg>`,
       },
+      scheduler: {
+        name:  'Scheduler',
+        desc:  'Cross-division master scheduler — staff crews and equipment across every active job using live pacing projections and AI insights.',
+        color: '#60a5fa',
+        href:  'scheduler.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="4" width="18" height="16" rx="2"/>
+                  <line x1="3" y1="9" x2="21" y2="9"/>
+                  <line x1="9" y1="9" x2="9" y2="20"/>
+                  <line x1="15" y1="9" x2="15" y2="20"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                </svg>`,
+      },
       timesheet: {
         name:  'Timesheet',
         desc:  'Daily time entry and time-off requests for field employees. Submissions feed the Payroll review queue.',
@@ -956,7 +982,7 @@
       },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -1147,7 +1173,7 @@
       level1:    'View',
       no_access: '—',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll'];
 
     // Tracks which sub-tab is active and whether the supervisors panel has
     // been hydrated yet (lazy-loaded on first visit to skip the
@@ -1196,7 +1222,7 @@
 
     async function loadUserList() {
       const tbody = document.getElementById('userListBody');
-      tbody.innerHTML = '<tr><td colspan="9" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="12" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
       try {
         const res  = await fetch('/api/company/users', {
           headers: { Authorization: `Bearer ${token}` }
@@ -1204,7 +1230,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Failed');
         if (!data.users.length) {
-          tbody.innerHTML = '<tr><td colspan="11" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="12" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
           return;
         }
         tbody.innerHTML = data.users.map(u => {
@@ -1217,6 +1243,7 @@
           const quarry       = dr.quarry       || 'no_access';
           const intercompany = dr.intercompany || 'no_access';
           const executive    = dr.executive    || 'no_access';
+          const scheduler    = dr.scheduler    || 'no_access';
           const timesheet    = dr.timesheet    || 'no_access';
           const payroll      = dr.payroll      || 'no_access';
           const isSelf       = String(u.id) === String(user.userId);
@@ -1230,6 +1257,7 @@
               <td>${divRoleBadge(quarry)}</td>
               <td>${divRoleBadge(intercompany)}</td>
               <td>${divRoleBadge(executive)}</td>
+              <td>${divRoleBadge(scheduler)}</td>
               <td>${divRoleBadge(timesheet)}</td>
               <td>${divRoleBadge(payroll)}</td>
               <td style="text-align:right;white-space:nowrap">
@@ -1241,7 +1269,7 @@
             </tr>`;
         }).join('');
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="11" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
       }
     }
 
@@ -1264,6 +1292,7 @@
       document.getElementById('mu-role-quarry').value       = dr.quarry       || 'no_access';
       document.getElementById('mu-role-intercompany').value = dr.intercompany || 'no_access';
       document.getElementById('mu-role-executive').value    = dr.executive    || 'no_access';
+      document.getElementById('mu-role-scheduler').value    = dr.scheduler    || 'no_access';
       document.getElementById('mu-role-timesheet').value    = dr.timesheet    || 'no_access';
       document.getElementById('mu-role-payroll').value      = dr.payroll      || 'no_access';
 
@@ -1287,6 +1316,7 @@
       document.getElementById('mu-role-quarry').value       = 'no_access';
       document.getElementById('mu-role-intercompany').value = 'no_access';
       document.getElementById('mu-role-executive').value    = 'no_access';
+      document.getElementById('mu-role-scheduler').value    = 'no_access';
       document.getElementById('mu-role-timesheet').value    = 'no_access';
       document.getElementById('mu-role-payroll').value      = 'no_access';
       document.getElementById('mu-result').textContent  = '';
@@ -1319,6 +1349,7 @@
         quarry:       document.getElementById('mu-role-quarry').value,
         intercompany: document.getElementById('mu-role-intercompany').value,
         executive:    document.getElementById('mu-role-executive').value,
+        scheduler:    document.getElementById('mu-role-scheduler').value,
         timesheet:    document.getElementById('mu-role-timesheet').value,
         payroll:      document.getElementById('mu-role-payroll').value,
       };
