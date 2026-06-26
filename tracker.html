@@ -546,6 +546,10 @@
     .assign-check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.83rem; cursor: pointer; color: var(--text); }
     .assign-check input[type="checkbox"] { accent-color: var(--green); width: 14px; height: 14px; flex-shrink: 0; cursor: pointer; }
     .assign-list:empty::after { content: "None in global lists yet"; color: var(--muted); font-size: 0.78rem; font-style: italic; }
+    .pick-search { width: 100%; box-sizing: border-box; margin-bottom: 0.4rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 0.8rem; padding: 0.3rem 0.5rem; }
+    .pick-search:focus { outline: none; border-color: var(--green); }
+    .pick-empty { color: var(--muted); font-size: 0.78rem; font-style: italic; padding: 0.15rem 0; }
+    .pick-hidden { display: none !important; }
 
     /* ── Bid Items & Daily Tracking (shared section wrapper) ── */
     .bid-section { padding: 1.1rem 1.5rem; border-top: 1px solid var(--border); }
@@ -7219,13 +7223,16 @@ function selectAllProjectAssignment(projId, field, names, btn) {
   }
   saveProject(projId);
   // update checkboxes in the DOM
-  const list = btn.closest('.assign-col-wrap').querySelector('.assign-list');
-  list.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-    const label = cb.parentElement.textContent.trim().split('(')[0].trim();
-    // match by name stored in onchange attr via names array index
-    const idx = names.findIndex(n => n === label || cb.getAttribute('onchange').includes(`'${n}'`));
-    if (idx !== -1) cb.checked = !allSelected;
+  const wrap = btn.closest('.assign-col-wrap');
+  const list = wrap.querySelector('.assign-list');
+  list.querySelectorAll('label.assign-check').forEach(lbl => {
+    const cb = lbl.querySelector('input[type="checkbox"]');
+    if (cb) cb.checked = !allSelected;
+    lbl.dataset.selected = !allSelected ? '1' : '0';
   });
+  // Re-apply the active search filter so visibility matches the new selection
+  const search = wrap.querySelector('.pick-search');
+  _filterPickList(list, search ? search.value : '');
   const dailyTbody = document.getElementById('daily-tbody-' + projId);
   if (dailyTbody) renderDailyTable(projId);
 }
@@ -7239,6 +7246,30 @@ function toggleProjectAssignment(projId, field, name, checked) {
   // Re-render daily table if open so dropdown options update immediately
   const dailyTbody = document.getElementById('daily-tbody-' + projId);
   if (dailyTbody) renderDailyTable(projId);
+}
+
+// Searchable multi-select helper for long employee/equipment pick lists.
+// Each row carries data-name (lowercased match target) and data-selected
+// ("1"/"0"). With an empty query the list collapses to only the selected rows
+// so a roster of hundreds isn't dumped on screen; typing reveals any matching
+// row regardless of whether it's selected.
+function _filterPickList(listEl, query) {
+  if (!listEl) return;
+  const needle = (query || '').trim().toLowerCase();
+  let shown = 0;
+  [...listEl.children].forEach(row => {
+    if (!row.dataset || row.dataset.name == null) return; // skip the hint node
+    const match = needle ? row.dataset.name.includes(needle) : row.dataset.selected === '1';
+    // Toggle a class rather than inline display so each row keeps its own
+    // base layout (flex rows, etc.) when shown.
+    row.classList.toggle('pick-hidden', !match);
+    if (match) shown++;
+  });
+  const hint = listEl.querySelector('.pick-empty');
+  if (hint) {
+    hint.style.display = shown ? 'none' : '';
+    hint.textContent = needle ? 'No matches' : 'None selected — type to search';
+  }
 }
 
 function statusBadgeClass(s) {
@@ -7861,13 +7892,19 @@ function projectCardHTML(p) {
               ${lists.employees.length && lists.employees.every(e=>(p.assigned_employees||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
             </button>
           </div>
-          <div class="assign-list">
-            ${lists.employees.map(emp => `
-              <label class="assign-check">
-                <input type="checkbox" ${(p.assigned_employees||[]).includes(emp.name) ? 'checked' : ''}
-                  onchange="toggleProjectAssignment('${p.id}','assigned_employees','${esc(emp.name)}',this.checked)">
+          ${lists.employees.length ? `<input type="text" class="pick-search"
+            placeholder="Search ${lists.employees.length} employee${lists.employees.length===1?'':'s'}…"
+            oninput="_filterPickList(document.getElementById('assign-emp-list-${p.id}'), this.value)">` : ''}
+          <div class="assign-list" id="assign-emp-list-${p.id}">
+            ${lists.employees.map(emp => {
+              const sel = (p.assigned_employees||[]).includes(emp.name);
+              return `<label class="assign-check${sel?'':' pick-hidden'}" data-name="${esc(emp.name.toLowerCase())}" data-selected="${sel?'1':'0'}">
+                <input type="checkbox" ${sel ? 'checked' : ''}
+                  onchange="toggleProjectAssignment('${p.id}','assigned_employees','${esc(emp.name)}',this.checked);this.closest('.assign-check').dataset.selected=this.checked?'1':'0'">
                 ${esc(emp.name)}${emp.job_class ? ` <span style="color:var(--muted);font-size:0.75rem">(${esc(emp.job_class)})</span>` : ''}
-              </label>`).join('')}
+              </label>`;
+            }).join('')}
+            ${lists.employees.length ? `<div class="pick-empty" style="${(p.assigned_employees||[]).some(n=>lists.employees.some(e=>e.name===n))?'display:none':''}">None selected — type to search</div>` : ''}
           </div>
         </div>
         <div class="assign-col-wrap">
@@ -7878,13 +7915,19 @@ function projectCardHTML(p) {
               ${lists.equipment.length && lists.equipment.every(e=>(p.assigned_equipment||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
             </button>
           </div>
-          <div class="assign-list">
-            ${lists.equipment.map(eq => `
-              <label class="assign-check">
-                <input type="checkbox" ${(p.assigned_equipment||[]).includes(eq.name) ? 'checked' : ''}
-                  onchange="toggleProjectAssignment('${p.id}','assigned_equipment','${esc(eq.name)}',this.checked)">
+          ${lists.equipment.length ? `<input type="text" class="pick-search"
+            placeholder="Search ${lists.equipment.length} item${lists.equipment.length===1?'':'s'}…"
+            oninput="_filterPickList(document.getElementById('assign-equip-list-${p.id}'), this.value)">` : ''}
+          <div class="assign-list" id="assign-equip-list-${p.id}">
+            ${lists.equipment.map(eq => {
+              const sel = (p.assigned_equipment||[]).includes(eq.name);
+              return `<label class="assign-check${sel?'':' pick-hidden'}" data-name="${esc(eq.name.toLowerCase())}" data-selected="${sel?'1':'0'}">
+                <input type="checkbox" ${sel ? 'checked' : ''}
+                  onchange="toggleProjectAssignment('${p.id}','assigned_equipment','${esc(eq.name)}',this.checked);this.closest('.assign-check').dataset.selected=this.checked?'1':'0'">
                 ${esc(eq.name)}${eq.unit_cost ? ` <span style="color:var(--muted);font-size:0.75rem">($${fmt(eq.unit_cost)}/hr)</span>` : ''}
-              </label>`).join('')}
+              </label>`;
+            }).join('')}
+            ${lists.equipment.length ? `<div class="pick-empty" style="${(p.assigned_equipment||[]).some(n=>lists.equipment.some(e=>e.name===n))?'display:none':''}">None selected — type to search</div>` : ''}
           </div>
         </div>
       </div>
@@ -20155,6 +20198,8 @@ let _pp = {
   open:       false,
   multiCode:  false,
   selectedDay: null,
+  empSearch:  '', // day-panel crew search filter (persisted across re-renders)
+  equipSearch:'', // day-panel equipment search filter
   schedule:   {}, // biKey → { dateStr → { employees[], equipment[], crew{name→equip}, halfDay, noWork, noWorkReason, notes } }
 };
 
@@ -20265,6 +20310,8 @@ function _ppOpen() {
 
 function _ppClose() {
   _pp.open = false;
+  _pp.empSearch = '';
+  _pp.equipSearch = '';
   const el = document.getElementById('pp-overlay');
   if (el) el.remove();
 }
@@ -20332,6 +20379,7 @@ function _ppAddCustomEmployee(dateStr) {
   if (!name) return;
   const d = _ppDayData(_pp.biKey, dateStr);
   if (!d.employees.includes(name)) d.employees.push(name);
+  _pp.empSearch = ''; // clear filter so the just-added person is visible
   _ppSave();
   _ppRender();
 }
@@ -20342,6 +20390,7 @@ function _ppAddCustomEquipment(dateStr) {
   if (!name) return;
   const d = _ppDayData(_pp.biKey, dateStr);
   if (!d.equipment.includes(name)) d.equipment.push(name);
+  _pp.equipSearch = ''; // clear filter so the just-added equipment is visible
   _ppSave();
   _ppRender();
 }
@@ -20776,15 +20825,23 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
   const NW_ICONS = { 'Rain Day':'🌧️', 'Holiday':'🏖️', 'Inspection':'🔍', 'Other':'🚫' };
   const NW_CLS   = { 'Rain Day':'rain', 'Holiday':'holiday', 'Inspection':'inspect', 'Other':'other' };
 
+  // Collapse long rosters to just the selected rows; the search box reveals
+  // the rest on demand (see _filterPickList).
+  const empSearch = (_pp.empSearch || '').trim().toLowerCase();
+  const equipSearch = (_pp.equipSearch || '').trim().toLowerCase();
+  let empShown = 0, equipShown = 0;
+
   const empRows = fullEmpList.map(e => {
     const checked = (plan.employees||[]).includes(e);
+    const vis = empSearch ? e.toLowerCase().includes(empSearch) : checked;
+    if (vis) empShown++;
     const assignedEquip = (plan.crew||{})[e] || '';
     const dis = plan.noWork ? 'disabled' : '';
     const opac = plan.noWork ? 'opacity:0.4;pointer-events:none' : '';
     const eqOpts = ['', ...fullEquipList].map(eq =>
       `<option value="${esc(eq)}" ${eq === assignedEquip ? 'selected' : ''}>${esc(eq) || 'no equip'}</option>`
     ).join('');
-    return `<div style="display:flex;align-items:center;gap:0.35rem;margin-bottom:0.2rem;${opac}">
+    return `<div class="${vis?'':'pick-hidden'}" data-name="${esc(e.toLowerCase())}" data-selected="${checked?'1':'0'}" style="display:flex;align-items:center;gap:0.35rem;margin-bottom:0.2rem;${opac}">
       <label style="display:flex;align-items:center;gap:0.3rem;flex:1;min-width:0">
         <input type="checkbox" ${checked?'checked':''} onchange="_ppToggleEmployee('${dateStr}','${esc(e)}')" ${dis}>
         <span class="pp-chip" style="font-size:0.75rem">${esc(e)}</span>
@@ -20795,7 +20852,9 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
 
   const eqRows = fullEquipList.map(e => {
     const checked = (plan.equipment||[]).includes(e);
-    return `<label class="pp-check-row" style="${plan.noWork?'opacity:0.4;pointer-events:none':''}">
+    const vis = equipSearch ? e.toLowerCase().includes(equipSearch) : checked;
+    if (vis) equipShown++;
+    return `<label class="pp-check-row${vis?'':' pick-hidden'}" data-name="${esc(e.toLowerCase())}" data-selected="${checked?'1':'0'}" style="${plan.noWork?'opacity:0.4;pointer-events:none':''}">
       <input type="checkbox" ${checked?'checked':''} onchange="_ppToggleEquipment('${dateStr}','${esc(e)}')" ${plan.noWork?'disabled':''}>
       <span class="pp-chip equip" style="font-size:0.75rem">${esc(e)}</span>
     </label>`;
@@ -20811,7 +20870,11 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
         onclick="_ppSetHalfDay('${dateStr}')" ${plan.noWork?'disabled':''}>½ Half Day</button>
     </div>
     <div class="pp-section-lbl">👷 Crew</div>
-    <div style="margin-bottom:0.5rem">${empRows || '<div style="font-size:0.75rem;color:var(--muted)">No crew history for this code yet</div>'}</div>
+    ${fullEmpList.length ? `<input type="text" class="pick-search" value="${esc(_pp.empSearch||'')}"
+      placeholder="Search ${fullEmpList.length} ${fullEmpList.length===1?'person':'people'}…"
+      oninput="_pp.empSearch=this.value;_filterPickList(document.getElementById('pp-emp-list'),this.value)">
+    <div id="pp-emp-list" style="margin-bottom:0.5rem">${empRows}<div class="pick-empty" style="${empShown?'display:none':''}">${empSearch?'No matches':'None selected — type to search'}</div></div>`
+      : '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem">No crew history for this code yet</div>'}
     <div style="display:flex;gap:0.3rem;margin-bottom:1rem">
       <input id="pp-new-emp" type="text" placeholder="Add person…"
         style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.78rem"
@@ -20819,7 +20882,11 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
       <button class="btn btn-ghost" style="font-size:0.75rem" onclick="_ppAddCustomEmployee('${dateStr}')">+</button>
     </div>
     <div class="pp-section-lbl">🚜 Equipment</div>
-    <div style="margin-bottom:0.5rem">${eqRows || '<div style="font-size:0.75rem;color:var(--muted)">No equipment history for this code yet</div>'}</div>
+    ${fullEquipList.length ? `<input type="text" class="pick-search" value="${esc(_pp.equipSearch||'')}"
+      placeholder="Search ${fullEquipList.length} item${fullEquipList.length===1?'':'s'}…"
+      oninput="_pp.equipSearch=this.value;_filterPickList(document.getElementById('pp-equip-list'),this.value)">
+    <div id="pp-equip-list" style="margin-bottom:0.5rem">${eqRows}<div class="pick-empty" style="${equipShown?'display:none':''}">${equipSearch?'No matches':'None selected — type to search'}</div></div>`
+      : '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem">No equipment history for this code yet</div>'}
     <div style="display:flex;gap:0.3rem;margin-bottom:1rem">
       <input id="pp-new-equip" type="text" placeholder="Add equipment…"
         style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.4rem;font-size:0.78rem"
