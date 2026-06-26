@@ -550,6 +550,7 @@
     .pick-search:focus { outline: none; border-color: var(--green); }
     .pick-empty { color: var(--muted); font-size: 0.78rem; font-style: italic; padding: 0.15rem 0; }
     .pick-hidden { display: none !important; }
+    .pp-pick-list { margin-bottom: 0.5rem; max-height: 220px; overflow-y: auto; }
 
     /* ── Bid Items & Daily Tracking (shared section wrapper) ── */
     .bid-section { padding: 1.1rem 1.5rem; border-top: 1px solid var(--border); }
@@ -7225,14 +7226,7 @@ function selectAllProjectAssignment(projId, field, names, btn) {
   // update checkboxes in the DOM
   const wrap = btn.closest('.assign-col-wrap');
   const list = wrap.querySelector('.assign-list');
-  list.querySelectorAll('label.assign-check').forEach(lbl => {
-    const cb = lbl.querySelector('input[type="checkbox"]');
-    if (cb) cb.checked = !allSelected;
-    lbl.dataset.selected = !allSelected ? '1' : '0';
-  });
-  // Re-apply the active search filter so visibility matches the new selection
-  const search = wrap.querySelector('.pick-search');
-  _filterPickList(list, search ? search.value : '');
+  list.querySelectorAll('label.assign-check input[type="checkbox"]').forEach(cb => { cb.checked = !allSelected; });
   const dailyTbody = document.getElementById('daily-tbody-' + projId);
   if (dailyTbody) renderDailyTable(projId);
 }
@@ -7248,28 +7242,24 @@ function toggleProjectAssignment(projId, field, name, checked) {
   if (dailyTbody) renderDailyTable(projId);
 }
 
-// Searchable multi-select helper for long employee/equipment pick lists.
-// Each row carries data-name (lowercased match target) and data-selected
-// ("1"/"0"). With an empty query the list collapses to only the selected rows
-// so a roster of hundreds isn't dumped on screen; typing reveals any matching
-// row regardless of whether it's selected.
+// Search filter for long employee/equipment pick lists. Each row carries
+// data-name (lowercased match target). The full list stays visible (inside a
+// compact scroll area) so every option remains selectable; typing in the
+// search box narrows it to matching rows.
 function _filterPickList(listEl, query) {
   if (!listEl) return;
   const needle = (query || '').trim().toLowerCase();
   let shown = 0;
   [...listEl.children].forEach(row => {
     if (!row.dataset || row.dataset.name == null) return; // skip the hint node
-    const match = needle ? row.dataset.name.includes(needle) : row.dataset.selected === '1';
+    const match = !needle || row.dataset.name.includes(needle);
     // Toggle a class rather than inline display so each row keeps its own
     // base layout (flex rows, etc.) when shown.
     row.classList.toggle('pick-hidden', !match);
     if (match) shown++;
   });
   const hint = listEl.querySelector('.pick-empty');
-  if (hint) {
-    hint.style.display = shown ? 'none' : '';
-    hint.textContent = needle ? 'No matches' : 'None selected — type to search';
-  }
+  if (hint) hint.style.display = shown ? 'none' : '';
 }
 
 function statusBadgeClass(s) {
@@ -7896,15 +7886,13 @@ function projectCardHTML(p) {
             placeholder="Search ${lists.employees.length} employee${lists.employees.length===1?'':'s'}…"
             oninput="_filterPickList(document.getElementById('assign-emp-list-${p.id}'), this.value)">` : ''}
           <div class="assign-list" id="assign-emp-list-${p.id}">
-            ${lists.employees.map(emp => {
-              const sel = (p.assigned_employees||[]).includes(emp.name);
-              return `<label class="assign-check${sel?'':' pick-hidden'}" data-name="${esc(emp.name.toLowerCase())}" data-selected="${sel?'1':'0'}">
-                <input type="checkbox" ${sel ? 'checked' : ''}
-                  onchange="toggleProjectAssignment('${p.id}','assigned_employees','${esc(emp.name)}',this.checked);this.closest('.assign-check').dataset.selected=this.checked?'1':'0'">
+            ${lists.employees.map(emp => `
+              <label class="assign-check" data-name="${esc(String(emp.name||'').toLowerCase())}">
+                <input type="checkbox" ${(p.assigned_employees||[]).includes(emp.name) ? 'checked' : ''}
+                  onchange="toggleProjectAssignment('${p.id}','assigned_employees','${esc(emp.name)}',this.checked)">
                 ${esc(emp.name)}${emp.job_class ? ` <span style="color:var(--muted);font-size:0.75rem">(${esc(emp.job_class)})</span>` : ''}
-              </label>`;
-            }).join('')}
-            ${lists.employees.length ? `<div class="pick-empty" style="${(p.assigned_employees||[]).some(n=>lists.employees.some(e=>e.name===n))?'display:none':''}">None selected — type to search</div>` : ''}
+              </label>`).join('')}
+            ${lists.employees.length ? `<div class="pick-empty" style="display:none">No matches</div>` : ''}
           </div>
         </div>
         <div class="assign-col-wrap">
@@ -7919,15 +7907,13 @@ function projectCardHTML(p) {
             placeholder="Search ${lists.equipment.length} item${lists.equipment.length===1?'':'s'}…"
             oninput="_filterPickList(document.getElementById('assign-equip-list-${p.id}'), this.value)">` : ''}
           <div class="assign-list" id="assign-equip-list-${p.id}">
-            ${lists.equipment.map(eq => {
-              const sel = (p.assigned_equipment||[]).includes(eq.name);
-              return `<label class="assign-check${sel?'':' pick-hidden'}" data-name="${esc(eq.name.toLowerCase())}" data-selected="${sel?'1':'0'}">
-                <input type="checkbox" ${sel ? 'checked' : ''}
-                  onchange="toggleProjectAssignment('${p.id}','assigned_equipment','${esc(eq.name)}',this.checked);this.closest('.assign-check').dataset.selected=this.checked?'1':'0'">
+            ${lists.equipment.map(eq => `
+              <label class="assign-check" data-name="${esc(String(eq.name||'').toLowerCase())}">
+                <input type="checkbox" ${(p.assigned_equipment||[]).includes(eq.name) ? 'checked' : ''}
+                  onchange="toggleProjectAssignment('${p.id}','assigned_equipment','${esc(eq.name)}',this.checked)">
                 ${esc(eq.name)}${eq.unit_cost ? ` <span style="color:var(--muted);font-size:0.75rem">($${fmt(eq.unit_cost)}/hr)</span>` : ''}
-              </label>`;
-            }).join('')}
-            ${lists.equipment.length ? `<div class="pick-empty" style="${(p.assigned_equipment||[]).some(n=>lists.equipment.some(e=>e.name===n))?'display:none':''}">None selected — type to search</div>` : ''}
+              </label>`).join('')}
+            ${lists.equipment.length ? `<div class="pick-empty" style="display:none">No matches</div>` : ''}
           </div>
         </div>
       </div>
@@ -20833,7 +20819,7 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
 
   const empRows = fullEmpList.map(e => {
     const checked = (plan.employees||[]).includes(e);
-    const vis = empSearch ? e.toLowerCase().includes(empSearch) : checked;
+    const vis = !empSearch || String(e||'').toLowerCase().includes(empSearch);
     if (vis) empShown++;
     const assignedEquip = (plan.crew||{})[e] || '';
     const dis = plan.noWork ? 'disabled' : '';
@@ -20852,7 +20838,7 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
 
   const eqRows = fullEquipList.map(e => {
     const checked = (plan.equipment||[]).includes(e);
-    const vis = equipSearch ? e.toLowerCase().includes(equipSearch) : checked;
+    const vis = !equipSearch || String(e||'').toLowerCase().includes(equipSearch);
     if (vis) equipShown++;
     return `<label class="pp-check-row${vis?'':' pick-hidden'}" data-name="${esc(e.toLowerCase())}" data-selected="${checked?'1':'0'}" style="${plan.noWork?'opacity:0.4;pointer-events:none':''}">
       <input type="checkbox" ${checked?'checked':''} onchange="_ppToggleEquipment('${dateStr}','${esc(e)}')" ${plan.noWork?'disabled':''}>
@@ -20873,7 +20859,7 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
     ${fullEmpList.length ? `<input type="text" class="pick-search" value="${esc(_pp.empSearch||'')}"
       placeholder="Search ${fullEmpList.length} ${fullEmpList.length===1?'person':'people'}…"
       oninput="_pp.empSearch=this.value;_filterPickList(document.getElementById('pp-emp-list'),this.value)">
-    <div id="pp-emp-list" style="margin-bottom:0.5rem">${empRows}<div class="pick-empty" style="${empShown?'display:none':''}">${empSearch?'No matches':'None selected — type to search'}</div></div>`
+    <div id="pp-emp-list" class="pp-pick-list">${empRows}<div class="pick-empty" style="${empShown?'display:none':''}">No matches</div></div>`
       : '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem">No crew history for this code yet</div>'}
     <div style="display:flex;gap:0.3rem;margin-bottom:1rem">
       <input id="pp-new-emp" type="text" placeholder="Add person…"
@@ -20885,7 +20871,7 @@ function _ppRenderDayPanel(dateStr, fullEmpList, fullEquipList) {
     ${fullEquipList.length ? `<input type="text" class="pick-search" value="${esc(_pp.equipSearch||'')}"
       placeholder="Search ${fullEquipList.length} item${fullEquipList.length===1?'':'s'}…"
       oninput="_pp.equipSearch=this.value;_filterPickList(document.getElementById('pp-equip-list'),this.value)">
-    <div id="pp-equip-list" style="margin-bottom:0.5rem">${eqRows}<div class="pick-empty" style="${equipShown?'display:none':''}">${equipSearch?'No matches':'None selected — type to search'}</div></div>`
+    <div id="pp-equip-list" class="pp-pick-list">${eqRows}<div class="pick-empty" style="${equipShown?'display:none':''}">No matches</div></div>`
       : '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem">No equipment history for this code yet</div>'}
     <div style="display:flex;gap:0.3rem;margin-bottom:1rem">
       <input id="pp-new-equip" type="text" placeholder="Add equipment…"
