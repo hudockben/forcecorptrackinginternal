@@ -178,14 +178,34 @@ async function loadAll() {
     document.getElementById('main').innerHTML = '<div class="empty">Could not load the schedule.<br><span class="muted">' + esc(err.message) + '</span></div>';
   }
 }
-let _saveTimer = null;
-function saveAssignments() { clearTimeout(_saveTimer); _saveTimer = setTimeout(async () => {
-  try { await api('/api/data?key=' + ASSIGN_KEY, { method:'PUT', body: JSON.stringify({ value: { version:1, assignments: state.assignments } }) }); toast('Saved'); }
-  catch (err) { toast('Save failed: ' + err.message); } }, 500); }
-let _crewTimer = null;
-function saveCrews() { clearTimeout(_crewTimer); _crewTimer = setTimeout(async () => {
-  try { await api('/api/data?key=' + CREWS_KEY, { method:'PUT', body: JSON.stringify({ value: { version:1, crews: state.crews } }) }); }
-  catch (err) { toast('Crew save failed: ' + err.message); } }, 400); }
+// Debounced, reliable saves. Edits mark a dirty flag and flush after a short
+// pause; if the tab is hidden/closed before then, we force-flush with
+// keepalive so an in-progress edit is never silently lost. On failure the
+// dirty flag is restored so the next change (or flush) retries.
+let _saveTimer = null, _dirtyAssign = false, _dirtyCrews = false;
+function _scheduleFlush() { clearTimeout(_saveTimer); _saveTimer = setTimeout(() => flushSaves(false), 500); }
+function saveAssignments() { _dirtyAssign = true; _scheduleFlush(); }
+function saveCrews() { _dirtyCrews = true; _scheduleFlush(); }
+async function _putKey(key, value, keepalive) {
+  const res = await fetch('/api/data?key=' + key, { method:'PUT', keepalive,
+    headers: { 'Content-Type':'application/json', Authorization:'Bearer ' + token }, body: JSON.stringify({ value }) });
+  if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || ('Error ' + res.status)); }
+}
+async function flushSaves(keepalive) {
+  clearTimeout(_saveTimer);
+  const tasks = [];
+  if (_dirtyAssign) { _dirtyAssign = false; tasks.push(['a', ASSIGN_KEY, { version:1, assignments: state.assignments }]); }
+  if (_dirtyCrews)  { _dirtyCrews  = false; tasks.push(['c', CREWS_KEY,  { version:1, crews: state.crews }]); }
+  if (!tasks.length) return;
+  let okCount = 0;
+  for (const [tag, key, value] of tasks) {
+    try { await _putKey(key, value, !!keepalive); okCount++; }
+    catch (err) { if (tag === 'a') _dirtyAssign = true; else _dirtyCrews = true; if (!keepalive) toast('Save failed: ' + err.message); }
+  }
+  if (!keepalive && okCount) toast('Saved');
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSaves(true); });
+window.addEventListener('pagehide', () => flushSaves(true));
 
 // ── Assignment model ────────────────────────────────────────────────────────
 function dayList(date) { return state.assignments[date] || (state.assignments[date] = []); }
