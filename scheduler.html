@@ -669,9 +669,19 @@ function dispatchBodyJob(dates) {
   const keys = Object.keys(byJob).sort((x,y) => byJob[x].name.localeCompare(byJob[y].name));
   if (!keys.length) return '<div style="color:#999">No assignments in this range.</div>';
   return keys.map(k => { const j = byJob[k];
-    const rows = dates.filter(d => j.days[d]).map(d => { const items = j.days[d]; const crew = items.filter(a=>a.kind==='emp').map(a=>esc(a.resource)+(a.half?' (½)':'')); const eq = items.filter(a=>a.kind==='equip').map(a=>esc(a.resource));
-      return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+dayLabel(d)+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
-    return '<div style="'+_h2+'">'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:130px">Day</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:30%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
+    const rows = dates.filter(d => j.days[d]).map(d => {
+      // Split each day's assignments by cost / sub code so crews see exactly
+      // which task they're on, not just that they're on the job somewhere.
+      const byCode = {};
+      j.days[d].forEach(a => { const ck = (a.costCode||'')+'|'+(a.subCode||''); (byCode[ck] = byCode[ck] || { costCode:a.costCode||'', subCode:a.subCode||'', items:[] }).items.push(a); });
+      const codeKeys = Object.keys(byCode).sort((x,y) => x.localeCompare(y));
+      return codeKeys.map((ck, i) => { const g = byCode[ck];
+        const crew = g.items.filter(a=>a.kind==='emp').map(a=>esc(a.resource)+(a.half?' (½)':''));
+        const eq = g.items.filter(a=>a.kind==='equip').map(a=>esc(a.resource));
+        const code = g.costCode ? '<strong>'+esc(g.costCode)+'</strong>'+(g.subCode?' · '+esc(g.subCode):'') : '<span style="color:#999">Whole job</span>';
+        return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+(i===0?dayLabel(d):'')+'</td><td style="'+_td+';white-space:nowrap">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
+    }).join('');
+    return '<div style="'+_h2+'">'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
 function dispatchBodyPerson(dates) {
   const byRes = {};
