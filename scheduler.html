@@ -12,19 +12,15 @@
       --text:#e0e0e0; --muted:#666; --green:#22c55e; --green-dim:#16a34a;
       --blue:#60a5fa; --red:#ef4444; --amber:#fbbf24; --orange:#f97316; --purple:#a78bfa;
     }
-    body { min-height:100vh; background:var(--bg); color:var(--text);
-      font-family:'Segoe UI', system-ui, -apple-system, sans-serif; display:flex; flex-direction:column; }
+    body { min-height:100vh; background:var(--bg); color:var(--text); font-family:'Segoe UI', system-ui, -apple-system, sans-serif; display:flex; flex-direction:column; }
     a { color:inherit; }
-    header { display:flex; align-items:center; justify-content:space-between;
-      padding:0.75rem 1.5rem; background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:40; }
+    header { display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1.5rem; background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:40; }
     .brand { font-size:0.68rem; letter-spacing:0.3em; text-transform:uppercase; color:var(--blue); font-weight:700; }
     .brand-sub { font-size:0.55rem; letter-spacing:0.2em; color:var(--muted); margin-left:0.5rem; text-transform:uppercase; }
     .header-right { display:flex; align-items:center; gap:0.7rem; }
-    .hlink { font-size:0.62rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted);
-      background:none; border:1px solid var(--border); border-radius:5px; padding:0.4rem 0.8rem; cursor:pointer; text-decoration:none; transition:.15s; }
+    .hlink { font-size:0.62rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); background:none; border:1px solid var(--border); border-radius:5px; padding:0.4rem 0.8rem; cursor:pointer; text-decoration:none; transition:.15s; }
     .hlink:hover { color:var(--text); border-color:#555; }
-    .avatar { width:30px; height:30px; border-radius:50%; background:var(--surface2); border:1px solid var(--border);
-      display:flex; align-items:center; justify-content:center; font-size:0.7rem; font-weight:700; color:var(--blue); }
+    .avatar { width:30px; height:30px; border-radius:50%; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:0.7rem; font-weight:700; color:var(--blue); }
     .tabs { display:flex; gap:0.25rem; padding:0.6rem 1.5rem 0; background:var(--surface); border-bottom:1px solid var(--border); }
     .tab { font-size:0.78rem; font-weight:600; color:var(--muted); background:none; border:none; cursor:pointer; padding:0.55rem 1rem; border-bottom:2px solid transparent; }
     .tab.active { color:var(--text); border-bottom-color:var(--blue); }
@@ -50,38 +46,26 @@
     table.board { border-collapse:collapse; width:100%; font-size:0.74rem; }
     table.board th, table.board td { border-bottom:1px solid var(--border); border-right:1px solid var(--border); vertical-align:top; }
     table.board thead th { position:sticky; top:0; background:var(--surface2); z-index:5; padding:0.45rem 0.5rem; text-align:center; font-weight:700; }
-    table.board thead th.weekend { color:var(--muted); }
-    table.board thead th.today { color:var(--blue); }
-    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:210px; max-width:240px; text-align:left !important; padding:0.45rem 0.6rem !important; }
+    table.board thead th.weekend { color:var(--muted); } table.board thead th.today { color:var(--blue); }
+    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:230px; max-width:260px; text-align:left !important; padding:0.45rem 0.6rem !important; }
     thead .lead-col { z-index:7; }
     .cell { min-width:116px; height:50px; padding:0.25rem; cursor:pointer; transition:background .1s; }
     .cell:hover { background:var(--surface2); }
-    .cell.weekend { background:rgba(255,255,255,0.015); }
-    .cell.today { box-shadow: inset 2px 0 0 var(--blue); }
-    .cnt-cell { text-align:center; font-weight:700; color:var(--muted); }
-    .cnt-cell.has { color:var(--text); }
+    .cell.weekend { background:rgba(255,255,255,0.015); } .cell.today { box-shadow: inset 2px 0 0 var(--blue); }
+    .cnt-cell { text-align:center; font-weight:700; color:var(--muted); } .cnt-cell.has { color:var(--text); }
     .asn { display:block; font-size:0.64rem; line-height:1.25; padding:0.1rem 0.3rem; border-radius:4px; margin-bottom:0.12rem; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); }
-    .asn.half { opacity:0.85; font-style:italic; }
-    .asn .cc { color:var(--muted); }
-    /* group / job header rows */
-    .grp-row td { background:var(--surface2); cursor:pointer; }
-    .grp-lead { font-weight:700; }
-    .caret { display:inline-block; width:12px; color:var(--muted); }
+    .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
+    .grp-row td { background:var(--surface2); cursor:pointer; } .grp-lead { font-weight:700; } .caret { display:inline-block; width:12px; color:var(--muted); }
     .div-badge { font-size:0.58rem; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; padding:0.1rem 0.4rem; border-radius:5px; border:1px solid; }
     .pill { font-size:0.58rem; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; padding:0.08rem 0.4rem; border-radius:9px; }
-    .pill.on-track { background:rgba(34,197,94,0.15); color:var(--green); }
-    .pill.at-risk { background:rgba(251,191,36,0.15); color:var(--amber); }
-    .pill.behind { background:rgba(239,68,68,0.15); color:var(--red); }
-    .pill.complete { background:rgba(96,165,250,0.15); color:var(--blue); }
+    .pill.on-track { background:rgba(34,197,94,0.15); color:var(--green); } .pill.at-risk { background:rgba(251,191,36,0.15); color:var(--amber); }
+    .pill.behind { background:rgba(239,68,68,0.15); color:var(--red); } .pill.complete { background:rgba(96,165,250,0.15); color:var(--blue); }
     .pill.no-data, .pill.not-started { background:var(--surface2); color:var(--muted); }
     .need-badge { font-size:0.56rem; font-weight:700; color:var(--red); border:1px solid var(--red); border-radius:8px; padding:0 5px; white-space:nowrap; }
     .sub-meta { font-size:0.62rem; color:var(--muted); margin-top:2px; display:flex; gap:0.35rem; align-items:center; flex-wrap:wrap; }
     .res-meta { font-size:0.6rem; color:var(--muted); display:flex; gap:0.3rem; align-items:center; flex-wrap:wrap; margin-top:0.1rem; }
     .res-load { font-size:0.58rem; padding:0.02rem 0.3rem; border-radius:8px; background:var(--surface2); border:1px solid var(--border); }
-    .sup-dot { color:var(--amber); }
-    .muted { color:var(--muted); } .warn { color:var(--red); } .ok { color:var(--green); }
-    /* AI */
+    .sup-dot { color:var(--amber); } .muted { color:var(--muted); } .warn { color:var(--red); } .ok { color:var(--green); }
     .ai-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; max-width:920px; }
     .ai-head { display:flex; align-items:center; gap:0.6rem; padding:0.7rem 1rem; background:var(--surface2); border-bottom:1px solid var(--border); }
     .ai-badge { font-size:0.58rem; padding:0.1rem 0.45rem; border-radius:9px; background:rgba(96,165,250,0.15); color:var(--blue); font-weight:700; text-transform:uppercase; letter-spacing:0.05em; }
@@ -89,84 +73,65 @@
     .rec { display:flex; gap:0.6rem; padding:0.55rem 0; border-top:1px solid var(--border); align-items:flex-start; }
     .rec-dot { width:8px; height:8px; border-radius:50%; margin-top:0.35rem; flex-shrink:0; }
     .rec-meta { font-size:0.62rem; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); }
-    .rec-issue { font-size:0.82rem; font-weight:600; margin:0.1rem 0; }
-    .rec-action { font-size:0.8rem; color:var(--muted); }
-    .reassign { display:flex; align-items:center; gap:0.5rem; font-size:0.78rem; padding:0.4rem 0; border-top:1px solid var(--border); flex-wrap:wrap; }
-    .reassign .arrow { color:var(--blue); }
-    /* modal */
+    .rec-issue { font-size:0.82rem; font-weight:600; margin:0.1rem 0; } .rec-action { font-size:0.8rem; color:var(--muted); }
+    .reassign { display:flex; align-items:center; gap:0.5rem; font-size:0.78rem; padding:0.4rem 0; border-top:1px solid var(--border); flex-wrap:wrap; } .reassign .arrow { color:var(--blue); }
     .overlay { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:100; padding:1rem; }
-    .modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; width:min(480px,96vw); max-height:90vh; overflow:auto; }
+    .modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; width:min(500px,96vw); max-height:90vh; overflow:auto; }
     .modal-head { display:flex; align-items:center; justify-content:space-between; padding:0.8rem 1rem; border-bottom:1px solid var(--border); }
     .modal-body { padding:0.9rem 1rem; }
     .x { background:none; border:none; color:var(--muted); font-size:1.1rem; cursor:pointer; }
     label.fld { display:block; font-size:0.64rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin:0.7rem 0 0.25rem; }
     select.full, input.full { width:100%; }
     .cur-asn { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.5rem; background:var(--surface2); border:1px solid var(--border); border-radius:6px; margin-bottom:0.35rem; font-size:0.76rem; }
-    .cur-asn .grow { flex:1; min-width:0; }
-    .mini { font-size:0.66rem; padding:0.2rem 0.45rem; }
-    .pick-list { max-height:38vh; overflow:auto; margin-top:0.3rem; }
+    .cur-asn .grow { flex:1; min-width:0; } .mini { font-size:0.66rem; padding:0.2rem 0.45rem; }
+    .seg { display:inline-flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+    .seg button { background:var(--surface2); border:none; color:var(--muted); font-size:0.7rem; padding:0.3rem 0.6rem; cursor:pointer; }
+    .seg button.active { background:rgba(96,165,250,0.18); color:var(--blue); font-weight:700; }
+    .proj { font-size:0.76rem; margin:0.5rem 0; padding:0.45rem 0.6rem; border:1px solid var(--border); border-radius:6px; background:var(--surface2); }
+    .proj.ok { border-color:var(--green-dim); } .proj.warn { border-color:var(--red); }
+    .pick-list { max-height:34vh; overflow:auto; margin-top:0.3rem; }
     .pick-row { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.55rem; border:1px solid var(--border); border-radius:6px; margin-bottom:0.3rem; cursor:pointer; }
-    .pick-row:hover { border-color:#555; background:var(--surface2); }
-    .pick-row.on-this { border-color:var(--green-dim); }
-    .pick-name { font-weight:600; } .pick-sub { font-size:0.64rem; color:var(--muted); }
-    .pick-status { margin-left:auto; font-size:0.66rem; white-space:nowrap; }
+    .pick-row:hover { border-color:#555; background:var(--surface2); } .pick-row.on-this { border-color:var(--green-dim); }
+    .pick-name { font-weight:600; } .pick-sub { font-size:0.64rem; color:var(--muted); } .pick-status { margin-left:auto; font-size:0.66rem; white-space:nowrap; }
     .empty { color:var(--muted); font-size:0.82rem; text-align:center; padding:2.5rem 1rem; }
     .loading { color:var(--muted); font-size:0.85rem; text-align:center; padding:3rem 1rem; }
     footer { padding:1rem 1.5rem; font-size:0.6rem; color:var(--muted); border-top:1px solid var(--border); }
-    .toast { position:fixed; bottom:1rem; right:1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:0.55rem 0.9rem; font-size:0.76rem; z-index:200; opacity:0; transition:opacity .2s; }
-    .toast.show { opacity:1; }
+    .toast { position:fixed; bottom:1rem; right:1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:0.55rem 0.9rem; font-size:0.76rem; z-index:200; opacity:0; transition:opacity .2s; } .toast.show { opacity:1; }
   </style>
 </head>
 <body>
   <header>
     <div><span class="brand">DataWatch</span><span class="brand-sub">Scheduler</span></div>
-    <div class="header-right">
-      <a class="hlink" href="divisions.html">← Divisions</a>
-      <span class="avatar" id="avatar">U</span>
-      <button class="hlink" id="logoutBtn">Log out</button>
-    </div>
+    <div class="header-right"><a class="hlink" href="divisions.html">← Divisions</a><span class="avatar" id="avatar">U</span><button class="hlink" id="logoutBtn">Log out</button></div>
   </header>
-
   <div class="tabs">
     <button class="tab active" data-view="job" id="tab-job">By Job</button>
     <button class="tab" data-view="crew" id="tab-crew">By Crew</button>
     <button class="tab" data-view="ai" id="tab-ai">AI Insights</button>
   </div>
-
   <div class="toolbar" id="toolbar"></div>
   <main id="main"><div class="loading">Loading master schedule…</div></main>
   <footer>© DataWatch · Force Corp · Scheduler · Cross-division resource planning</footer>
   <div class="toast" id="toast"></div>
 
 <script>
-// ── Auth guard ──────────────────────────────────────────────────────────────
+// ── Auth ────────────────────────────────────────────────────────────────────
 const token = localStorage.getItem('fct_token');
-let user = null;
-try { user = JSON.parse(localStorage.getItem('fct_user')); } catch {}
+let user = null; try { user = JSON.parse(localStorage.getItem('fct_user')); } catch {}
 const schedRole = user && user.divisionRoles && user.divisionRoles.scheduler;
 const hasAccess = Boolean(user) && (user.isPlatformAdmin || (schedRole && schedRole !== 'no_access'));
-if (!token || !user) { location.replace('index.html'); }
-else if (!hasAccess) { location.replace('divisions.html'); }
+if (!token || !user) location.replace('index.html'); else if (!hasAccess) location.replace('divisions.html');
 
 const ASSIGN_KEY = 'fct_scheduler_assignments';
+const CREWS_KEY  = 'fct_scheduler_crews';
 const DIV_COLORS = { turf:'#22c55e', paving:'#60a5fa', dust:'#fbbf24', trucking:'#ef4444', quarry:'#f97316' };
 const STATUS_RANK = { behind:0, 'at-risk':1, 'no-data':2, 'not-started':3, 'on-track':4, complete:5 };
 
 const state = {
-  view: 'job',
-  board: null,
-  assignments: {},
-  weekAnchor: null,
-  divFilter: 'all',
-  jobSearch: '',
-  needCrewOnly: false,
-  jobOpen: {},           // jobId -> expanded (jobs default collapsed)
-  crewSearch: '',
-  tradeFilter: 'all',
-  showAll: false,        // crew view: show full roster vs in-play only
-  grpCol: {},            // trade group -> collapsed
-  assignCtx: null,       // modal context
-  ai: null, aiLoading: false,
+  view:'job', board:null, assignments:{}, crews:[], weekAnchor:null,
+  divFilter:'all', jobSearch:'', needCrewOnly:false, jobOpen:{},
+  crewSearch:'', tradeFilter:'all', showAll:false, grpCol:{},
+  applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -176,14 +141,16 @@ const pad = n => String(n).padStart(2, '0');
 const dstr = d => d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
 const todayStr = () => dstr(new Date());
 function fmtNum(n, dp=1) { if (n == null || isNaN(n)) return '—'; const v = Number(n); return (v % 1 === 0) ? String(v) : v.toFixed(dp); }
+function shortDate(ds) { return new Date(ds+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}); }
+function addDays(ds, n) { const d = new Date(ds+'T12:00:00'); d.setDate(d.getDate()+n); return dstr(d); }
+function daysBetween(a, b) { return Math.round((new Date(b+'T12:00:00') - new Date(a+'T12:00:00')) / 86400000); }
 function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); x.setDate(x.getDate() + (dow === 0 ? -6 : 1 - dow)); x.setHours(0,0,0,0); return x; }
 function weekDays() { const out = []; const m = new Date(state.weekAnchor); for (let i=0;i<7;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
 function weekDateStrs() { return weekDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
 let _uid = Date.now();
 function uid() { return 'a' + (++_uid); }
-function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1800); }
-
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1900); }
 async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { 'Content-Type':'application/json', Authorization:'Bearer '+token, ...(opts.headers||{}) } });
   if (res.status === 401) { location.replace('index.html'); throw new Error('Unauthorized'); }
@@ -195,13 +162,16 @@ async function api(path, opts = {}) {
 // ── Load / save ─────────────────────────────────────────────────────────────
 async function loadAll() {
   try {
-    const [board, asn] = await Promise.all([
+    const [board, asn, crews] = await Promise.all([
       api('/api/scheduler/board?today=' + todayStr()),
-      api('/api/data?key=' + ASSIGN_KEY).catch(() => ({ value: null })),
+      api('/api/data?key=' + ASSIGN_KEY).catch(() => ({ value:null })),
+      api('/api/data?key=' + CREWS_KEY).catch(() => ({ value:null })),
     ]);
     state.board = board;
     const v = asn && asn.value;
     state.assignments = (v && typeof v === 'object' && v.assignments) ? v.assignments : {};
+    const c = crews && crews.value;
+    state.crews = (c && Array.isArray(c.crews)) ? c.crews : [];
     if (!state.weekAnchor) state.weekAnchor = mondayOf(new Date());
     render();
   } catch (err) {
@@ -209,13 +179,13 @@ async function loadAll() {
   }
 }
 let _saveTimer = null;
-function saveAssignments() {
-  clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(async () => {
-    try { await api('/api/data?key=' + ASSIGN_KEY, { method:'PUT', body: JSON.stringify({ value: { version:1, assignments: state.assignments } }) }); toast('Saved'); }
-    catch (err) { toast('Save failed: ' + err.message); }
-  }, 500);
-}
+function saveAssignments() { clearTimeout(_saveTimer); _saveTimer = setTimeout(async () => {
+  try { await api('/api/data?key=' + ASSIGN_KEY, { method:'PUT', body: JSON.stringify({ value: { version:1, assignments: state.assignments } }) }); toast('Saved'); }
+  catch (err) { toast('Save failed: ' + err.message); } }, 500); }
+let _crewTimer = null;
+function saveCrews() { clearTimeout(_crewTimer); _crewTimer = setTimeout(async () => {
+  try { await api('/api/data?key=' + CREWS_KEY, { method:'PUT', body: JSON.stringify({ value: { version:1, crews: state.crews } }) }); }
+  catch (err) { toast('Crew save failed: ' + err.message); } }, 400); }
 
 // ── Assignment model ────────────────────────────────────────────────────────
 function dayList(date) { return state.assignments[date] || (state.assignments[date] = []); }
@@ -225,32 +195,74 @@ function cellAssignments(date, division, jobId, costCode, subCode) {
   return (state.assignments[date] || []).filter(a => a.division === division && a.jobId === jobId && (a.costCode||'') === (costCode||'') && (a.subCode||'') === (subCode||''));
 }
 function addAssignment(date, resource, kind, job, sc) {
-  dayList(date).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: sc ? sc.costCode : '', subCode: sc ? sc.subCode : '', half: false });
-  saveAssignments();
+  dayList(date).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: sc?sc.costCode:'', subCode: sc?sc.subCode:'', half:false }); saveAssignments();
 }
-function removeAssignment(date, id) {
-  state.assignments[date] = (state.assignments[date] || []).filter(a => a.id !== id);
-  if (!state.assignments[date].length) delete state.assignments[date];
-  saveAssignments();
+// Add a resource across several dates (bulk); returns how many were added.
+function addAssignmentSpan(resource, kind, job, sc, dates) {
+  let added = 0; const cc = sc?sc.costCode:'', sk = sc?sc.subCode:'';
+  dates.forEach(d => { if (cellAssignments(d, job.division, job.id, cc, sk).some(a => a.resource === resource)) return;
+    dayList(d).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: cc, subCode: sk, half:false }); added++; });
+  if (added) saveAssignments(); return added;
 }
+function removeAssignment(date, id) { state.assignments[date] = (state.assignments[date] || []).filter(a => a.id !== id); if (!state.assignments[date].length) delete state.assignments[date]; saveAssignments(); }
 function toggleHalf(date, id) { const a = (state.assignments[date]||[]).find(x => x.id === id); if (a) { a.half = !a.half; saveAssignments(); } }
-
 function conflictResourcesOn(date) {
-  const byRes = {};
-  (state.assignments[date] || []).forEach(a => { (byRes[a.resource] = byRes[a.resource] || new Set()).add(a.division + '::' + a.jobId); });
+  const byRes = {}; (state.assignments[date] || []).forEach(a => { (byRes[a.resource] = byRes[a.resource] || new Set()).add(a.division + '::' + a.jobId); });
   const out = new Set(); Object.entries(byRes).forEach(([r,set]) => { if (set.size > 1) out.add(r); }); return out;
 }
 function totalConflicts() { let n = 0; Object.keys(state.assignments).forEach(d => { n += conflictResourcesOn(d).size; }); return n; }
 function loadForResource(resource) { let days = 0; weekDateStrs().forEach(d => { if (assignmentsFor(d, resource).length) days++; }); return days; }
-
-// "In play" = assigned somewhere this week, or on an active job's crew/equipment history.
 function resourcesInPlay() {
   const emps = new Set(), equips = new Set();
   weekDateStrs().forEach(d => (state.assignments[d] || []).forEach(a => { (a.kind === 'equip' ? equips : emps).add(a.resource); }));
-  (state.board.jobs || []).forEach(j => (j.subCodes || []).forEach(sc => {
-    (sc.crew || []).forEach(n => emps.add(n)); (sc.equipment || []).forEach(n => equips.add(n));
-  }));
+  (state.board.jobs || []).forEach(j => (j.subCodes || []).forEach(sc => { (sc.crew||[]).forEach(n => emps.add(n)); (sc.equipment||[]).forEach(n => equips.add(n)); }));
   return { emps, equips };
+}
+// span the picker applies to
+function spanDates(anchor) {
+  if (state.applySpan === 'day') return [anchor];
+  const m = mondayOf(new Date(anchor + 'T12:00:00')); const n = state.applySpan === 'week5' ? 5 : 7;
+  const out = []; for (let i=0;i<n;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(dstr(d)); } return out;
+}
+
+// ── Deadline projection: with the crew planned forward, when does it finish? ──
+function projectSubCode(job, sc) {
+  const prod = sc.prod;
+  if (sc.isComplete) return { kind:'complete' };
+  if (!prod || prod <= 0) return { kind:'no-data' };
+  const unitsLeft = sc.unitsLeft != null ? sc.unitsLeft : Math.max((sc.bidQty||0)-(sc.runningQty||0), 0);
+  if (unitsLeft <= 0) return { kind:'complete' };
+  const tStr = todayStr(); const cc = sc.costCode||'', sk = sc.subCode||'';
+  const perDate = [];
+  Object.keys(state.assignments).forEach(d => { if (d < tStr) return;
+    const items = (state.assignments[d]||[]).filter(a => a.kind==='emp' && a.division===job.division && a.jobId===job.id && (a.costCode||'')===cc && (a.subCode||'')===sk);
+    if (items.length) perDate.push([d, items.reduce((s,a)=>s+(a.half?0.5:1),0)]);
+  });
+  perDate.sort((a,b)=>a[0].localeCompare(b[0]));
+  const deadline = sc.targetDate || job.deadline || null;
+  if (!perDate.length) return { kind:'unstaffed', deadline };
+  let cum = 0, finish = null;
+  for (const [d, ld] of perDate) { cum += ld * prod; if (cum >= unitsLeft) { finish = d; break; } }
+  if (!finish) { const lastCrew = perDate[perDate.length-1][1] || 1; const moreDays = Math.ceil((unitsLeft - cum) / (lastCrew*prod)); return { kind:'short', scheduledThrough: perDate[perDate.length-1][0], moreDays, deadline }; }
+  let onTime = null, daysLate = 0;
+  if (deadline) { onTime = finish <= deadline; if (!onTime) daysLate = daysBetween(deadline, finish); }
+  return { kind:'ok', finish, deadline, onTime, daysLate };
+}
+function projChip(job, sc) {
+  const p = projectSubCode(job, sc);
+  if (p.kind === 'ok') return p.onTime===false ? '<span class="warn">▸ '+shortDate(p.finish)+' +'+p.daysLate+'d</span>' : '<span class="ok">▸ '+shortDate(p.finish)+(p.onTime?' ✓':'')+'</span>';
+  if (p.kind === 'short') return '<span class="warn">▸ '+p.moreDays+'d short</span>';
+  if (p.kind === 'unstaffed') return (sc.status==='behind'||sc.status==='at-risk') ? '<span class="warn">▸ unstaffed</span>' : '';
+  return '';
+}
+function projLine(job, sc) {
+  if (!sc) return '';
+  const p = projectSubCode(job, sc); const dl = sc.targetDate || job.deadline;
+  if (p.kind === 'no-data') return '<div class="proj muted">No productivity history yet — can’t project a finish date.</div>';
+  if (p.kind === 'complete') return '<div class="proj ok">✓ This sub-code is complete.</div>';
+  if (p.kind === 'unstaffed') return '<div class="proj warn">Nobody scheduled going forward'+(dl?' · deadline '+dl:'')+'. Add crew below.</div>';
+  if (p.kind === 'short') return '<div class="proj warn">Scheduled through '+shortDate(p.scheduledThrough)+' — about '+p.moreDays+' more crew-day(s) needed'+(dl?', deadline '+dl:'')+'.</div>';
+  return '<div class="proj '+(p.onTime===false?'warn':'ok')+'">With this plan: finishes <strong>'+shortDate(p.finish)+'</strong>'+(p.onTime===false?' ⚠ '+p.daysLate+' day(s) late':p.onTime?' ✓ on time':'')+(dl?' (deadline '+dl+')':'')+'.</div>';
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
@@ -267,13 +279,9 @@ function visibleJobs() {
 }
 function jobById(division, id) { return (state.board.jobs || []).find(j => j.division === division && j.id === id); }
 function subCodeOf(job, costCode, subCode) { return (job.subCodes || []).find(s => s.costCode === costCode && (s.subCode||'') === (subCode||'')); }
-function subNeedsCrew(sc, weekStrs) {
-  if (sc.status === 'complete') return false;
-  if (sc.status === 'behind' || sc.status === 'at-risk') return true;
-  return false;
-}
+function subNeedsCrew(sc) { return sc.status === 'behind' || sc.status === 'at-risk'; }
 
-// ── Render ──────────────────────────────────────────────────────────────────
+// ── Render dispatch ─────────────────────────────────────────────────────────
 function render() {
   if (!state.board) return;
   ['job','crew','ai'].forEach(v => document.getElementById('tab-'+v).classList.toggle('active', state.view === v));
@@ -285,37 +293,29 @@ function render() {
   else if (state.view === 'crew') main.innerHTML = renderCrewBoard();
   else main.innerHTML = renderAI();
 }
-
-function divFilterHtml() {
-  const opts = ['all'].concat(state.board.sourceDivisions || []);
-  return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>';
-}
-function wknavHtml() {
-  const wk = weekDays();
-  const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
-  return '<div class="wknav"><button class="btn" id="wkPrev">◀</button><span class="wklabel">'+esc(label)+'</span><button class="btn" id="wkNext">▶</button><button class="btn ghost" id="wkToday">Today</button></div>';
-}
+function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>'; }
+function wknavHtml() { const wk = weekDays(); const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); return '<div class="wknav"><button class="btn" id="wkPrev">◀</button><span class="wklabel">'+esc(label)+'</span><button class="btn" id="wkNext">▶</button><button class="btn ghost" id="wkToday">Today</button></div>'; }
 function renderToolbar() {
   const tb = document.getElementById('toolbar');
-  if (state.view === 'ai') {
-    tb.innerHTML = '<button class="btn primary" id="genAi">⚡ '+(state.ai?'Regenerate insights':'Generate insights')+'</button><span class="muted" style="font-size:0.72rem">Reviews conflicts, behind work &amp; capacity across all jobs</span>';
-    document.getElementById('genAi').onclick = generateAI; return;
-  }
+  if (state.view === 'ai') { tb.innerHTML = '<button class="btn primary" id="genAi">⚡ '+(state.ai?'Regenerate insights':'Generate insights')+'</button><span class="muted" style="font-size:0.72rem">Reviews conflicts, behind work &amp; capacity across all jobs</span>'; document.getElementById('genAi').onclick = generateAI; return; }
   if (state.view === 'job') {
     tb.innerHTML = wknavHtml() +
-      '<input type="text" id="jobSearch" placeholder="Search jobs…" value="'+esc(state.jobSearch)+'" style="width:150px">' +
-      divFilterHtml() +
+      '<input type="text" id="jobSearch" placeholder="Search jobs…" value="'+esc(state.jobSearch)+'" style="width:140px">' + divFilterHtml() +
       '<label class="chip-toggle"><input type="checkbox" id="needOnly" '+(state.needCrewOnly?'checked':'')+'> Needs crew only</label>' +
       '<div class="spacer"></div>' +
-      '<button class="btn" id="importPlans" title="Pull crew/equipment already planned in each division\'s Projection Planner">⤵ Import division plans</button>';
+      '<button class="btn" id="copyWk" title="Copy this week\'s assignments into next week">📋 Copy week →</button>' +
+      '<button class="btn" id="crewsBtn" title="Manage saved crew templates">👥 Crews</button>' +
+      '<button class="btn" id="printBtn" title="Printable dispatch sheets">🖨 Print</button>' +
+      '<button class="btn" id="importPlans" title="Pull crew/equipment already planned in each division\'s Projection Planner">⤵ Import plans</button>';
   } else {
     const trades = ['all'].concat(tradeList());
     tb.innerHTML = wknavHtml() +
-      '<input type="text" id="crewSearch" placeholder="Search crew…" value="'+esc(state.crewSearch)+'" style="width:150px">' +
+      '<input type="text" id="crewSearch" placeholder="Search crew…" value="'+esc(state.crewSearch)+'" style="width:140px">' +
       '<select id="tradeFilter">'+trades.map(t => '<option value="'+esc(t)+'"'+(state.tradeFilter===t?' selected':'')+'>'+(t==='all'?'All trades':esc(t))+'</option>').join('')+'</select>' +
       '<label class="chip-toggle"><input type="checkbox" id="showAll" '+(state.showAll?'checked':'')+'> Show full roster</label>' +
       '<div class="spacer"></div>' +
-      '<span class="muted" style="font-size:0.72rem">'+(state.board.employees||[]).length+' crew · '+(state.board.equipment||[]).length+' equipment</span>';
+      '<button class="btn" id="printBtn" title="Printable dispatch sheets">🖨 Print</button>' +
+      '<span class="muted" style="font-size:0.72rem">'+(state.board.employees||[]).length+' crew · '+(state.board.equipment||[]).length+' equip</span>';
   }
   wireToolbar();
 }
@@ -328,20 +328,16 @@ function wireToolbar() {
   if (g('jobSearch')) g('jobSearch').oninput = e => { state.jobSearch = e.target.value; document.getElementById('main').innerHTML = renderJobBoard(); };
   if (g('needOnly')) g('needOnly').onchange = e => { state.needCrewOnly = e.target.checked; render(); };
   if (g('importPlans')) g('importPlans').onclick = importPlanned;
+  if (g('copyWk')) g('copyWk').onclick = copyWeekForward;
+  if (g('crewsBtn')) g('crewsBtn').onclick = openCrewsModal;
+  if (g('printBtn')) g('printBtn').onclick = openPrintModal;
   if (g('crewSearch')) g('crewSearch').oninput = e => { state.crewSearch = e.target.value; document.getElementById('main').innerHTML = renderCrewBoard(); };
   if (g('tradeFilter')) g('tradeFilter').onchange = e => { state.tradeFilter = e.target.value; render(); };
   if (g('showAll')) g('showAll').onchange = e => { state.showAll = e.target.checked; render(); };
 }
-
-function dayHeaders(days, ds, tStr) {
-  return days.map((d,i) => {
-    const w = (d.getDay()===0||d.getDay()===6), isT = ds[i]===tStr;
-    return '<th class="'+(w?'weekend ':'')+(isT?'today':'')+'">'+d.toLocaleDateString(undefined,{weekday:'short'})+'<br><span style="font-size:0.66rem">'+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</span></th>';
-  }).join('');
-}
+function dayHeaders(days, ds, tStr) { return days.map((d,i) => { const w = (d.getDay()===0||d.getDay()===6), isT = ds[i]===tStr; return '<th class="'+(w?'weekend ':'')+(isT?'today':'')+'">'+d.toLocaleDateString(undefined,{weekday:'short'})+'<br><span style="font-size:0.66rem">'+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</span></th>'; }).join(''); }
 function renderCapacity() {
-  const wk = weekDateStrs();
-  const total = (state.board.employees||[]).length;
+  const wk = weekDateStrs(); const total = (state.board.employees||[]).length;
   const assigned = new Set(); wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind==='emp') assigned.add(a.resource); }));
   const idle = Math.max(total - assigned.size, 0);
   const conflicts = wk.reduce((s,d) => s + conflictResourcesOn(d).size, 0);
@@ -349,17 +345,13 @@ function renderCapacity() {
   const card = (v,l,c) => '<div class="cap-card"><div class="cap-val" style="color:'+(c||'var(--text)')+'">'+v+'</div><div class="cap-lbl">'+l+'</div></div>';
   return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled this wk','var(--green)')+card(idle,'Idle this wk',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+'</div>';
 }
-function chip(a, conf) {
-  const col = divColor(a.division);
-  const lbl = a.kind === 'equip' ? a.resource.split(' ')[0] : a.resource.split(' ')[0];
-  return '<span class="asn'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'" title="'+esc(a.resource+' — '+a.jobName)+'">'+esc(lbl)+(a.kind==='equip'?' 🚜':'')+(a.half?' ½':'')+'</span>';
-}
+function chip(a, conf) { const col = divColor(a.division); return '<span class="asn'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'" title="'+esc(a.resource+' — '+a.jobName)+'">'+esc(a.resource.split(' ')[0])+(a.kind==='equip'?' 🚜':'')+(a.half?' ½':'')+'</span>'; }
 
 // ── By Job board ────────────────────────────────────────────────────────────
 function renderJobBoard() {
   const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
   const jobs = visibleJobs();
-  let html = renderCapacity() + '<div class="hint">Staff the work: click a day cell on a sub-code to add crew or equipment from a search picker (free people shown first). Red = that person is double-booked across jobs.</div>';
+  let html = renderCapacity() + '<div class="hint">Click a job to expand. Click a day cell on a sub-code to staff it — the picker shows free people first and projects the finish date as you add crew.</div>';
   if (!jobs.length) return html + '<div class="empty">No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+'.</div>';
   let body = '';
   jobs.forEach(job => {
@@ -367,28 +359,21 @@ function renderJobBoard() {
     const collapsed = !state.jobOpen[job.division+'::'+job.id];
     const behind = (job.subCodes||[]).filter(c => c.status==='behind').length;
     const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
-    body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')">'+
-      '<td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+
-        '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+
-        (job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
-        '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+'</div></td>'+
-      headCells+'</tr>';
+    body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+
+      '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
+      '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+'</div></td>'+headCells+'</tr>';
     if (collapsed) return;
-    let subs = (job.subCodes||[]);
-    if (state.needCrewOnly) subs = subs.filter(sc => subNeedsCrew(sc, ds));
-    if (!subs.length) body += '<tr><td class="lead-col muted" style="padding-left:1.5rem">'+(state.needCrewOnly?'No sub-codes need crew':'No sub-codes')+'</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
+    let subs = (job.subCodes||[]); if (state.needCrewOnly) subs = subs.filter(subNeedsCrew);
+    if (!subs.length) { body += '<tr><td class="lead-col muted" style="padding-left:1.5rem">'+(state.needCrewOnly?'No sub-codes need crew':'No sub-codes')+'</td>'+ds.map(()=>'<td></td>').join('')+'</tr>'; return; }
     subs.forEach(sc => {
       const need = sc.addlLaborersNeeded ? '<span class="need-badge">+'+sc.addlLaborersNeeded+' crew</span>' : '';
       const lead = '<td class="lead-col" style="padding-left:1.4rem"><strong>'+esc(sc.costCode)+'</strong>'+(sc.subCode?' · '+esc(sc.subCode):'')+
-        '<div class="sub-meta"><span class="pill '+sc.status+'">'+sc.status.replace('-',' ')+'</span>'+
-        (sc.requiredPace!=null?'<span>req '+fmtNum(sc.requiredPace)+'/d</span>':'')+
-        (sc.usingPPDays?'<span style="color:var(--blue)">📅'+fmtNum(sc.effectiveDaysLeft)+'d</span>':'')+need+'</div></td>';
+        '<div class="sub-meta"><span class="pill '+sc.status+'">'+sc.status.replace('-',' ')+'</span>'+(sc.requiredPace!=null?'<span>req '+fmtNum(sc.requiredPace)+'/d</span>':'')+need+' '+projChip(job,sc)+'</div></td>';
       const cells = ds.map(d => {
         const items = cellAssignments(d, job.division, job.id, sc.costCode, sc.subCode);
         const confSet = conflictResourcesOn(d);
         const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr;
-        return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(sc.costCode)+'\',\''+escAttr(sc.subCode)+'\',\''+d+'\')">'+
-          items.map(a => chip(a, confSet.has(a.resource))).join('')+'</td>';
+        return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(sc.costCode)+'\',\''+escAttr(sc.subCode)+'\',\''+d+'\')">'+items.map(a => chip(a, confSet.has(a.resource))).join('')+'</td>';
       }).join('');
       body += '<tr>'+lead+cells+'</tr>';
     });
@@ -397,43 +382,26 @@ function renderJobBoard() {
 }
 function toggleJob(division, id) { const k = division+'::'+id; state.jobOpen[k] = !state.jobOpen[k]; document.getElementById('main').innerHTML = renderJobBoard(); }
 
-// ── By Crew board (grouped by trade, in-play default) ───────────────────────
-function tradeList() {
-  const set = new Set(); (state.board.employees||[]).forEach(e => set.add(e.jobClass || 'Other')); return [...set].sort();
-}
+// ── By Crew board ───────────────────────────────────────────────────────────
+function tradeList() { const set = new Set(); (state.board.employees||[]).forEach(e => set.add(e.jobClass || 'Other')); return [...set].sort(); }
 function renderCrewBoard() {
   const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
-  const inPlay = resourcesInPlay();
-  const q = state.crewSearch.trim().toLowerCase();
+  const inPlay = resourcesInPlay(); const q = state.crewSearch.trim().toLowerCase();
   let emps = (state.board.employees || []);
   if (state.tradeFilter !== 'all') emps = emps.filter(e => (e.jobClass||'Other') === state.tradeFilter);
   if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q));
   if (!state.showAll && !q) emps = emps.filter(e => inPlay.emps.has(e.name));
-
-  // group by trade
-  const groups = {};
-  emps.forEach(e => { const g = e.jobClass || 'Other'; (groups[g] = groups[g] || []).push(e); });
+  const groups = {}; emps.forEach(e => { const g = e.jobClass || 'Other'; (groups[g] = groups[g] || []).push(e); });
   const groupNames = Object.keys(groups).sort();
-
-  let html = renderCapacity() +
-    '<div class="hint">'+(state.showAll?'Showing the full roster.':'Showing crew in rotation (assigned this week or on an active job). Tick “Show full roster” for everyone.')+' Click a cell to assign someone to a job. Red = double-booked.</div>';
-
+  let html = renderCapacity() + '<div class="hint">'+(state.showAll?'Showing the full roster.':'Showing crew in rotation (assigned this week or on an active job). Tick “Show full roster” for everyone.')+' Click a cell to assign someone to a job. Red = double-booked.</div>';
   let body = '';
   const rowFor = (resource, kind, meta) => {
     const load = loadForResource(resource);
-    const left = '<td class="lead-col"><span style="font-weight:600">'+esc(resource)+'</span>'+
-      '<div class="res-meta">'+(meta && meta.isSupervisor?'<span class="sup-dot" title="Supervisor">★</span>':'')+
-      (meta && meta.jobClass?'<span>'+esc(meta.jobClass)+'</span>':(kind==='equip'?'<span>equipment</span>':''))+
-      '<span class="res-load">'+load+'/7d</span></div></td>';
-    const cells = ds.map(d => {
-      const conf = conflictResourcesOn(d).has(resource);
-      const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr;
-      const items = assignmentsFor(d, resource);
-      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+items.map(a => chip(a, conf)).join('')+'</td>';
-    }).join('');
+    const left = '<td class="lead-col"><span style="font-weight:600">'+esc(resource)+'</span><div class="res-meta">'+(meta && meta.isSupervisor?'<span class="sup-dot" title="Supervisor">★</span>':'')+(meta && meta.jobClass?'<span>'+esc(meta.jobClass)+'</span>':(kind==='equip'?'<span>equipment</span>':''))+'<span class="res-load">'+load+'/7d</span></div></td>';
+    const cells = ds.map(d => { const conf = conflictResourcesOn(d).has(resource); const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr; const items = assignmentsFor(d, resource);
+      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+items.map(a => chip(a, conf)).join('')+'</td>'; }).join('');
     return '<tr>'+left+cells+'</tr>';
   };
-
   if (!groupNames.length) body += '<tr><td class="lead-col muted">No crew match.</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
   groupNames.forEach(g => {
     const collapsed = !!state.grpCol['t::'+g];
@@ -441,18 +409,13 @@ function renderCrewBoard() {
     body += '<tr class="grp-row" onclick="toggleGrp(\'t::'+escAttr(g)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+esc(g)+' <span class="muted">('+groups[g].length+')</span></td>'+headCells+'</tr>';
     if (!collapsed) body += groups[g].map(e => rowFor(e.name, 'emp', e)).join('');
   });
-
-  // Equipment group
-  let equips = (state.board.equipment || []);
-  if (q) equips = equips.filter(n => n.toLowerCase().includes(q));
-  if (!state.showAll && !q) equips = equips.filter(n => inPlay.equips.has(n));
+  let equips = (state.board.equipment || []); if (q) equips = equips.filter(n => n.toLowerCase().includes(q)); if (!state.showAll && !q) equips = equips.filter(n => inPlay.equips.has(n));
   if (state.tradeFilter === 'all' && equips.length) {
     const collapsed = !!state.grpCol['equip'];
     const headCells = ds.map(d => { const n = equips.filter(n2 => assignmentsFor(d, n2).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleGrp(\'equip\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> 🚜 Equipment <span class="muted">('+equips.length+')</span></td>'+headCells+'</tr>';
     if (!collapsed) body += equips.map(n => rowFor(n, 'equip', null)).join('');
   }
-
   return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderCrewBoard(); }
@@ -462,72 +425,48 @@ function openAssignJob(division, jobId, costCode, subCode, date) { state.assignC
 function openAssignResource(resource, kind, date) { state.assignCtx = { mode:'resource', resource, kind, date }; renderModal(); }
 function closeAssign() { state.assignCtx = null; const o = document.getElementById('assignOverlay'); if (o) o.remove(); }
 function afterMutate() { renderModal(); document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard(); }
-
-function renderModal() {
-  const ctx = state.assignCtx; if (!ctx) return;
+function setSpan(s) { state.applySpan = s; renderModal(); }
+function renderModal() { const ctx = state.assignCtx; if (!ctx) return;
   let o = document.getElementById('assignOverlay');
   if (!o) { o = document.createElement('div'); o.id='assignOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeAssign(); }; }
   o.innerHTML = ctx.mode === 'job' ? modalJobHtml(ctx) : modalResourceHtml(ctx);
   if (ctx.mode === 'job') updatePickList();
 }
-
-// Staff a job/sub-code cell — search the roster, free people first.
+function spanLabel() { return state.applySpan==='day'?'this day':state.applySpan==='week5'?'Mon–Fri':'the full week'; }
 function modalJobHtml(ctx) {
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
   const sc = subCodeOf(job, ctx.costCode, ctx.subCode);
-  const d = new Date(ctx.date+'T12:00:00');
-  const dfmt = d.toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
+  const dfmt = new Date(ctx.date+'T12:00:00').toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
   const col = divColor(ctx.division);
   const current = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
-  const curHtml = current.length ? current.map(a =>
-    '<div class="cur-asn"><span class="grow">'+esc(a.resource)+(a.kind==='equip'?' 🚜':'')+'</span>'+
-    '<button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button>'+
-    '<button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>').join('')
-    : '<div class="muted" style="font-size:0.78rem">Nobody assigned here yet.</div>';
-  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div>'+
-    '<div class="muted" style="font-size:0.72rem">'+esc(ctx.costCode||'job-level')+(ctx.subCode?' · '+esc(ctx.subCode):'')+' · '+esc(dfmt)+(sc?' · '+sc.status:'')+'</div></div>'+
-    '<button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
-    '<label class="fld">Assigned here</label>'+curHtml+
-    '<label class="fld">Add crew or equipment</label>'+
-    '<input type="text" class="full" id="pickSearch" placeholder="Search people / equipment…" oninput="updatePickList()" autocomplete="off">'+
-    '<div class="pick-list" id="pickList"></div>'+
+  const curHtml = current.length ? current.map(a => '<div class="cur-asn"><span class="grow">'+esc(a.resource)+(a.kind==='equip'?' 🚜':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>').join('') : '<div class="muted" style="font-size:0.78rem">Nobody assigned here (this day) yet.</div>';
+  const crewOpts = state.crews.length ? '<div style="display:flex;gap:0.4rem;margin-bottom:0.3rem"><select class="full" id="crewSel"><option value="">Add a saved crew…</option>'+state.crews.map(c => '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+c.members.length+')</option>').join('')+'</select><button class="btn" onclick="applyCrewFromPicker()">Add</button></div>' : '<div class="muted" style="font-size:0.72rem;margin-bottom:0.3rem">No saved crews yet — assign people, then “Save as crew”.</div>';
+  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(ctx.costCode||'job-level')+(ctx.subCode?' · '+esc(ctx.subCode):'')+' · '+esc(dfmt)+(sc?' · '+sc.status:'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+    projLine(job, sc) +
+    '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
+    (state.applySpan!=='day'?'<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">Adds each person to '+spanLabel()+' on this sub-code.</div>':'')+
+    '<label class="fld">Assigned here (this day)</label>'+curHtml+
+    (current.length?'<button class="btn mini" style="margin-top:0.2rem" onclick="saveCurrentAsCrew()">💾 Save these as a crew</button>':'')+
+    '<label class="fld">Saved crews</label>'+crewOpts+
+    '<label class="fld">Add crew or equipment</label><input type="text" class="full" id="pickSearch" placeholder="Search people / equipment…" oninput="updatePickList()" autocomplete="off"><div class="pick-list" id="pickList"></div>'+
     '<div style="margin-top:0.8rem"><button class="btn" onclick="closeAssign()">Done</button></div></div></div>';
 }
 function updatePickList() {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const box = document.getElementById('pickList'); if (!box) return;
-  const q = (document.getElementById('pickSearch')||{}).value || '';
-  const ql = q.trim().toLowerCase();
+  const q = ((document.getElementById('pickSearch')||{}).value || '').trim().toLowerCase();
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
   const sc = subCodeOf(job, ctx.costCode, ctx.subCode);
-  const here = new Set(cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode).map(a => a.resource));
-
-  // Build candidate list: employees then equipment
   const emps = (state.board.employees||[]).map(e => ({ name:e.name, kind:'emp', jobClass:e.jobClass, sup:e.isSupervisor }));
   const equips = (state.board.equipment||[]).map(n => ({ name:n, kind:'equip', jobClass:'', sup:false }));
   let cands = emps.concat(equips);
-  if (ql) cands = cands.filter(c => c.name.toLowerCase().includes(ql) || (c.jobClass||'').toLowerCase().includes(ql));
-
-  // annotate availability that day
-  cands.forEach(c => {
-    const items = assignmentsFor(ctx.date, c.name);
-    c.onThis = items.some(a => a.division===ctx.division && a.jobId===ctx.jobId);
-    c.others = [...new Set(items.filter(a => !(a.division===ctx.division && a.jobId===ctx.jobId)).map(a => a.jobName))];
-  });
-  // free first, then busy-elsewhere, then on-this; suggested crew (history) bubbled up within free
+  if (q) cands = cands.filter(c => c.name.toLowerCase().includes(q) || (c.jobClass||'').toLowerCase().includes(q));
+  cands.forEach(c => { const items = assignmentsFor(ctx.date, c.name); c.onThis = items.some(a => a.division===ctx.division && a.jobId===ctx.jobId); c.others = [...new Set(items.filter(a => !(a.division===ctx.division && a.jobId===ctx.jobId)).map(a => a.jobName))]; });
   const histCrew = new Set(sc ? (sc.crew||[]) : []);
-  cands.sort((a,b) => {
-    const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis;
-    if (af !== bf) return af ? -1 : 1;
-    const ah = histCrew.has(a.name), bh = histCrew.has(b.name);
-    if (ah !== bh) return ah ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-
+  cands.sort((a,b) => { const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis; if (af !== bf) return af ? -1 : 1; const ah = histCrew.has(a.name), bh = histCrew.has(b.name); if (ah !== bh) return ah ? -1 : 1; return a.name.localeCompare(b.name); });
   cands = cands.slice(0, 60);
   if (!cands.length) { box.innerHTML = '<div class="muted" style="font-size:0.78rem;padding:0.5rem">No match.</div>'; return; }
-  box.innerHTML = cands.map(c => {
-    let status, cls = '';
+  box.innerHTML = cands.map(c => { let status, cls = '';
     if (c.onThis) { status = '<span class="ok">✓ assigned</span>'; cls = ' on-this'; }
     else if (c.others.length) status = '<span class="warn">→ '+esc(c.others.join(', '))+'</span>';
     else status = '<span class="ok">free</span>';
@@ -539,66 +478,134 @@ function pickAdd(name, kind) {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
   const sc = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
-  if (cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode).some(a => a.resource === name)) { toast(name+' already here'); return; }
-  addAssignment(ctx.date, name, kind, job, sc);
+  const dates = spanDates(ctx.date);
+  const added = addAssignmentSpan(name, kind, job, sc, dates);
+  if (!added) toast(name+' already on those days'); else if (added > 1) toast('Added '+name+' to '+added+' days');
   afterMutate();
 }
+function applyCrewFromPicker() {
+  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
+  const sel = document.getElementById('crewSel'); if (!sel || !sel.value) return;
+  const crew = state.crews.find(c => c.id === sel.value); if (!crew) return;
+  const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
+  const sc = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
+  const dates = spanDates(ctx.date);
+  let added = 0; crew.members.forEach(m => { added += addAssignmentSpan(m.name, m.kind||'emp', job, sc, dates); });
+  toast(added ? ('Added '+crew.name+' ('+added+' assignment'+(added>1?'s':'')+')') : 'Crew already scheduled here');
+  afterMutate();
+}
+function saveCurrentAsCrew() {
+  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
+  const current = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
+  if (!current.length) { toast('Nobody assigned here to save'); return; }
+  const name = prompt('Name this crew (e.g. "Paving Crew A"):'); if (!name || !name.trim()) return;
+  const members = current.map(a => ({ name:a.resource, kind:a.kind }));
+  state.crews.push({ id: uid(), name: name.trim(), members }); saveCrews(); renderModal(); toast('Saved crew “'+name.trim()+'”');
+}
 
-// Assign a person to a job from the crew view (person -> job picker).
 function modalResourceHtml(ctx) {
-  const d = new Date(ctx.date+'T12:00:00');
-  const dfmt = d.toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
+  const dfmt = new Date(ctx.date+'T12:00:00').toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
   const current = assignmentsFor(ctx.date, ctx.resource);
   const conf = conflictResourcesOn(ctx.date).has(ctx.resource);
-  const curHtml = current.length ? current.map(a => { const col = divColor(a.division);
-    return '<div class="cur-asn"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(a.division)+'</span>'+
-      '<span class="grow">'+esc(a.jobName)+(a.costCode?' <span class="muted">· '+esc(a.costCode)+(a.subCode?' · '+esc(a.subCode):'')+'</span>':'')+'</span>'+
-      '<button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button>'+
-      '<button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>'; }).join('')
-    : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
+  const curHtml = current.length ? current.map(a => { const col = divColor(a.division); return '<div class="cur-asn"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(a.division)+'</span><span class="grow">'+esc(a.jobName)+(a.costCode?' <span class="muted">· '+esc(a.costCode)+(a.subCode?' · '+esc(a.subCode):'')+'</span>':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>'; }).join('') : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
   const jobs = visibleJobs();
-  const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => {
-    const inDiv = jobs.filter(j => j.division === div); if (!inDiv.length) return '';
-    return '<optgroup label="'+div.toUpperCase()+'">'+inDiv.map(j => '<option value="'+esc(j.division)+'::'+esc(j.id)+'">'+esc(j.name)+(j.jobNumber?' (#'+esc(j.jobNumber)+')':'')+'</option>').join('')+'</optgroup>';
-  }).join('');
-  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div>'+
-    '<div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+'</div></div>'+
-    '<button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
-    '<label class="fld">Scheduled</label>'+curHtml+
-    '<label class="fld">Add to a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select>'+
-    '<div id="rScWrap" style="display:none"><label class="fld">Sub-code</label><select class="full" id="rSc"></select></div>'+
-    '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn primary" id="rAdd" style="flex:1" disabled onclick="rConfirmAdd()">Add</button><button class="btn" onclick="closeAssign()">Done</button></div></div></div>';
+  const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => { const inDiv = jobs.filter(j => j.division === div); if (!inDiv.length) return ''; return '<optgroup label="'+div.toUpperCase()+'">'+inDiv.map(j => '<option value="'+esc(j.division)+'::'+esc(j.id)+'">'+esc(j.name)+(j.jobNumber?' (#'+esc(j.jobNumber)+')':'')+'</option>').join('')+'</optgroup>'; }).join('');
+  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+    '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
+    '<label class="fld">Scheduled (this day)</label>'+curHtml+
+    '<label class="fld">Add to a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select><div id="rScWrap" style="display:none"><label class="fld">Sub-code</label><select class="full" id="rSc"></select></div>'+
+    '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn primary" id="rAdd" style="flex:1" disabled onclick="rConfirmAdd()">Add to '+spanLabel()+'</button><button class="btn" onclick="closeAssign()">Done</button></div></div></div>';
 }
-function onPickRJob() {
-  const sel = document.getElementById('rJob').value, wrap = document.getElementById('rScWrap'), scSel = document.getElementById('rSc'), add = document.getElementById('rAdd');
+function onPickRJob() { const sel = document.getElementById('rJob').value, wrap = document.getElementById('rScWrap'), scSel = document.getElementById('rSc'), add = document.getElementById('rAdd');
   if (!sel) { wrap.style.display='none'; add.disabled = true; return; }
   const [division, id] = sel.split('::'); const job = jobById(division, id);
   wrap.style.display = 'block'; add.disabled = false;
   scSel.innerHTML = '<option value="">— whole job —</option>' + (job.subCodes||[]).map((c,i) => '<option value="'+i+'">'+esc(c.costCode)+(c.subCode?' · '+esc(c.subCode):'')+'  ['+c.status+(c.addlLaborersNeeded?' · +'+c.addlLaborersNeeded:'')+']</option>').join('');
 }
-function rConfirmAdd() {
-  const sel = document.getElementById('rJob').value; if (!sel) return;
+function rConfirmAdd() { const sel = document.getElementById('rJob').value; if (!sel) return;
   const [division, id] = sel.split('::'); const job = jobById(division, id);
-  const scIdx = document.getElementById('rSc').value;
-  const sc = scIdx !== '' ? (job.subCodes||[])[parseInt(scIdx,10)] : null;
-  const ctx = state.assignCtx;
-  addAssignment(ctx.date, ctx.resource, ctx.kind, job, sc);
-  afterMutate();
+  const scIdx = document.getElementById('rSc').value; const sc = scIdx !== '' ? (job.subCodes||[])[parseInt(scIdx,10)] : null;
+  const ctx = state.assignCtx; const added = addAssignmentSpan(ctx.resource, ctx.kind, job, sc, spanDates(ctx.date));
+  if (added > 1) toast('Added to '+added+' days'); afterMutate();
 }
 
-// ── Import division Projection Planner plans ────────────────────────────────
+// ── Crews manager ───────────────────────────────────────────────────────────
+function openCrewsModal() {
+  let o = document.getElementById('crewsOverlay');
+  if (!o) { o = document.createElement('div'); o.id='crewsOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeCrews(); }; }
+  const rows = state.crews.length ? state.crews.map(c => '<div class="cur-asn"><span class="grow"><strong>'+esc(c.name)+'</strong> <span class="muted">· '+c.members.map(m=>esc(m.name)).join(', ')+'</span></span><button class="btn mini" onclick="deleteCrew(\''+c.id+'\')">Delete</button></div>').join('') : '<div class="muted" style="font-size:0.8rem">No saved crews yet. Open a job cell, assign a few people, then “Save these as a crew”.</div>';
+  o.innerHTML = '<div class="modal"><div class="modal-head"><div style="font-weight:700">👥 Saved Crews</div><button class="x" onclick="closeCrews()">✕</button></div><div class="modal-body"><div class="muted" style="font-size:0.76rem;margin-bottom:0.6rem">Reusable crew templates you can drop onto any job in one click.</div>'+rows+'</div></div>';
+}
+function closeCrews() { const o = document.getElementById('crewsOverlay'); if (o) o.remove(); }
+function deleteCrew(id) { state.crews = state.crews.filter(c => c.id !== id); saveCrews(); openCrewsModal(); }
+
+// ── Copy week ───────────────────────────────────────────────────────────────
+function copyWeekForward() {
+  const wk = weekDateStrs(); let added = 0;
+  wk.forEach(d => { const items = state.assignments[d] || []; const nd = addDays(d, 7);
+    items.forEach(a => { if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||'') && (x.subCode||'')===(a.subCode||''))) return;
+      dayList(nd).push({ ...a, id: uid() }); added++; }); });
+  if (added) { saveAssignments(); toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'); state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
+  else toast('Nothing to copy (next week already matches)');
+}
+
+// ── Import division plans ───────────────────────────────────────────────────
 function importPlanned() {
-  const planned = state.board.plannedAssignments || [];
-  if (!planned.length) { toast('No division plans to import'); return; }
+  const planned = state.board.plannedAssignments || []; if (!planned.length) { toast('No division plans to import'); return; }
   let added = 0;
-  planned.forEach(p => {
-    const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'') && (a.subCode||'')===(p.subCode||''));
-    if (dup) return;
-    dayList(p.date).push({ id: uid(), resource:p.resource, kind:p.kind||'emp', division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', subCode:p.subCode||'', half:!!p.half });
-    added++;
-  });
-  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')); render(); }
-  else toast('Already up to date with division plans');
+  planned.forEach(p => { const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'') && (a.subCode||'')===(p.subCode||'')); if (dup) return;
+    dayList(p.date).push({ id: uid(), resource:p.resource, kind:p.kind||'emp', division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', subCode:p.subCode||'', half:!!p.half }); added++; });
+  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')); render(); } else toast('Already up to date with division plans');
+}
+
+// ── Print / dispatch sheets ─────────────────────────────────────────────────
+function openPrintModal() {
+  let o = document.getElementById('printOverlay');
+  if (!o) { o = document.createElement('div'); o.id='printOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closePrint(); }; }
+  o.innerHTML = '<div class="modal"><div class="modal-head"><div style="font-weight:700">🖨 Print dispatch sheet</div><button class="x" onclick="closePrint()">✕</button></div><div class="modal-body">'+
+    '<label class="fld">Layout</label><select class="full" id="prLayout"><option value="job">By job — who is on each job each day</option><option value="person">By person — each crew member’s schedule</option></select>'+
+    '<label class="fld">Range</label><select class="full" id="prScope"><option value="week">This week</option><option value="today">Today only</option></select>'+
+    '<div style="display:flex;gap:0.5rem;margin-top:1rem"><button class="btn primary" style="flex:1" onclick="doPrint()">Open print view</button><button class="btn" onclick="closePrint()">Cancel</button></div></div></div>';
+}
+function closePrint() { const o = document.getElementById('printOverlay'); if (o) o.remove(); }
+function doPrint() {
+  const layout = document.getElementById('prLayout').value, scope = document.getElementById('prScope').value;
+  const dates = scope === 'today' ? [todayStr()] : weekDateStrs();
+  closePrint();
+  const html = layout === 'job' ? printByJob(dates) : printByPerson(dates);
+  const w = window.open('', '_blank'); if (!w) { toast('Allow pop-ups to print'); return; }
+  w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch {} }, 350);
+}
+function printShell(title, bodyHtml) {
+  const today = new Date().toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric', year:'numeric'});
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+esc(title)+'</title><style>'+
+    'body{font-family:Segoe UI,system-ui,sans-serif;color:#111;margin:24px;font-size:12px}h1{font-size:18px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #333;padding-bottom:3px}'+
+    '.sub{color:#666;font-size:11px;margin-bottom:14px}table{border-collapse:collapse;width:100%;margin-bottom:6px}th,td{border:1px solid #ccc;padding:5px 7px;text-align:left;vertical-align:top}th{background:#f2f2f2;font-size:11px}'+
+    '.day{font-weight:700;white-space:nowrap}.muted{color:#999}.eq{color:#444}@media print{h2{page-break-after:avoid}tr{page-break-inside:avoid}}'+
+    '</style></head><body><h1>'+esc(title)+'</h1><div class="sub">Force Corp · Generated '+esc(today)+'</div>'+bodyHtml+'</body></html>';
+}
+function printByJob(dates) {
+  // group assignments by job, then by date
+  const byJob = {};
+  dates.forEach(d => (state.assignments[d]||[]).forEach(a => { const k = a.division+'::'+a.jobId; (byJob[k] = byJob[k] || { name:a.jobName, division:a.division, days:{} }); (byJob[k].days[d] = byJob[k].days[d] || []).push(a); }));
+  const keys = Object.keys(byJob).sort((x,y) => byJob[x].name.localeCompare(byJob[y].name));
+  if (!keys.length) return printShell('Dispatch — by job', '<div class="muted">No assignments in this range.</div>');
+  const body = keys.map(k => { const j = byJob[k];
+    const rows = dates.filter(d => j.days[d]).map(d => { const items = j.days[d]; const crew = items.filter(a=>a.kind==='emp').map(a=>esc(a.resource)+(a.half?' (½)':'')); const eq = items.filter(a=>a.kind==='equip').map(a=>esc(a.resource));
+      return '<tr><td class="day">'+new Date(d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+'</td><td>'+(crew.join(', ')||'<span class="muted">—</span>')+'</td><td class="eq">'+(eq.join(', ')||'<span class="muted">—</span>')+'</td></tr>'; }).join('');
+    return '<h2>'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</h2><table><thead><tr><th style="width:120px">Day</th><th>Crew</th><th style="width:30%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
+  return printShell('Dispatch — by job', body);
+}
+function printByPerson(dates) {
+  const byRes = {};
+  dates.forEach(d => (state.assignments[d]||[]).forEach(a => { (byRes[a.resource] = byRes[a.resource] || { kind:a.kind, days:{} }); (byRes[a.resource].days[d] = byRes[a.resource].days[d] || []).push(a); }));
+  const names = Object.keys(byRes).sort((a,b)=>a.localeCompare(b));
+  if (!names.length) return printShell('Schedules — by person', '<div class="muted">No assignments in this range.</div>');
+  const body = names.map(n => { const r = byRes[n];
+    const rows = dates.filter(d => r.days[d]).map(d => { const items = r.days[d]; const jobs = items.map(a => esc(a.jobName)+(a.costCode?' ['+esc(a.costCode)+(a.subCode?'·'+esc(a.subCode):'')+']':'')+(a.half?' (½)':'')).join('; ');
+      return '<tr><td class="day">'+new Date(d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+'</td><td>'+jobs+'</td></tr>'; }).join('');
+    return '<h2>'+esc(n)+(r.kind==='equip'?' (equipment)':'')+'</h2><table><thead><tr><th style="width:140px">Day</th><th>Assignment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
+  return printShell('Schedules — by person', body);
 }
 
 // ── AI insights ─────────────────────────────────────────────────────────────
@@ -606,19 +613,15 @@ function buildAISnapshot() {
   const wk = weekDateStrs();
   const jobs = (state.board.jobs||[]).map(j => ({ division:j.division, name:j.name, jobNumber:j.jobNumber, deadline:j.deadline, status:j.status,
     subCodes: (j.subCodes||[]).filter(c => c.status==='behind'||c.status==='at-risk'||c.notStartedYet).map(c => ({ costCode:c.costCode, subCode:c.subCode, status:c.status, pctComplete:c.pctComplete, currentPace:c.currentPace, requiredPace:c.requiredPace, gap:c.gap, effectiveDaysLeft:c.effectiveDaysLeft, usingPPDays:c.usingPPDays, targetDate:c.targetDate, addlLaborersNeeded:c.addlLaborersNeeded, crew:c.crew })) })).filter(j => j.subCodes.length);
-  const conflicts = [];
-  Object.keys(state.assignments).forEach(d => { if (d < todayStr()) return; conflictResourcesOn(d).forEach(r => { conflicts.push({ date:d, resource:r, jobs: assignmentsFor(d,r).map(a => ({ name:a.jobName, costCode:a.costCode, subCode:a.subCode })) }); }); });
-  const unstaffed = [];
-  (state.board.jobs||[]).forEach(j => (j.subCodes||[]).forEach(c => { if (c.status==='behind' && (c.addlLaborersNeeded || !c.crew.length)) unstaffed.push({ jobName:j.name, costCode:c.costCode, subCode:c.subCode, addlLaborersNeeded:c.addlLaborersNeeded }); }));
+  const conflicts = []; Object.keys(state.assignments).forEach(d => { if (d < todayStr()) return; conflictResourcesOn(d).forEach(r => { conflicts.push({ date:d, resource:r, jobs: assignmentsFor(d,r).map(a => ({ name:a.jobName, costCode:a.costCode, subCode:a.subCode })) }); }); });
+  const unstaffed = []; (state.board.jobs||[]).forEach(j => (j.subCodes||[]).forEach(c => { if (c.status==='behind' && (c.addlLaborersNeeded || !c.crew.length)) unstaffed.push({ jobName:j.name, costCode:c.costCode, subCode:c.subCode, addlLaborersNeeded:c.addlLaborersNeeded }); }));
   const total = (state.board.employees||[]).length; const assigned = new Set(); wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind==='emp') assigned.add(a.resource); }));
   return { today: todayStr(), jobs, conflicts: conflicts.slice(0,40), unstaffed: unstaffed.slice(0,30), capacity: { totalEmployees: total, assignedThisWeek: assigned.size, idleThisWeek: Math.max(total-assigned.size,0) } };
 }
-async function generateAI() {
-  state.aiLoading = true; render();
+async function generateAI() { state.aiLoading = true; render();
   try { state.ai = await api('/api/ai/scheduler-insights', { method:'POST', body: JSON.stringify(buildAISnapshot()) }); }
   catch (err) { state.ai = { summary:'Could not generate insights: '+err.message, recommendations:[], reassignments:[], outlook:'' }; }
-  finally { state.aiLoading = false; render(); }
-}
+  finally { state.aiLoading = false; render(); } }
 function renderAI() {
   if (state.aiLoading) return '<div class="loading">⚡ Analyzing the cross-division schedule…</div>';
   if (!state.ai) return '<div class="empty">No insights yet.<br><span class="muted">Click “Generate insights” to have AI review conflicts, behind work and capacity across every active job.</span></div>';
@@ -635,9 +638,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-
-Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal });
-
+Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openPrintModal, closePrint, doPrint });
 loadAll();
 </script>
 </body>
