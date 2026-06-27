@@ -160,7 +160,7 @@ const state = {
   divFilter: 'all',
   jobSearch: '',
   needCrewOnly: false,
-  jobCol: {},            // jobId -> collapsed
+  jobOpen: {},           // jobId -> expanded (jobs default collapsed)
   crewSearch: '',
   tradeFilter: 'all',
   showAll: false,        // crew view: show full roster vs in-play only
@@ -364,7 +364,7 @@ function renderJobBoard() {
   let body = '';
   jobs.forEach(job => {
     const col = divColor(job.division);
-    const collapsed = !!state.jobCol[job.division+'::'+job.id];
+    const collapsed = !state.jobOpen[job.division+'::'+job.id];
     const behind = (job.subCodes||[]).filter(c => c.status==='behind').length;
     const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')">'+
@@ -395,7 +395,7 @@ function renderJobBoard() {
   });
   return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job / Sub-code</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
-function toggleJob(division, id) { const k = division+'::'+id; state.jobCol[k] = !state.jobCol[k]; document.getElementById('main').innerHTML = renderJobBoard(); }
+function toggleJob(division, id) { const k = division+'::'+id; state.jobOpen[k] = !state.jobOpen[k]; document.getElementById('main').innerHTML = renderJobBoard(); }
 
 // ── By Crew board (grouped by trade, in-play default) ───────────────────────
 function tradeList() {
