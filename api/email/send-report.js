@@ -43,6 +43,7 @@ const REPORT_TYPES = {
   paving_bid_items:     { division: 'paving',    label: 'Bid Line Items vs Actuals — Paving' },
   quarry_breakeven:     { division: 'quarry',    label: 'Quarry Break-Even Analysis'          },
   dust_tracking_summary:{ division: 'dust',      label: 'Dust Control Tracking Report'        },
+  scheduler_dispatch:   { division: 'scheduler', label: 'Crew Dispatch Schedule'              },
 };
 
 module.exports = async (req, res) => {
