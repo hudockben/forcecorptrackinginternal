@@ -690,6 +690,31 @@ function dispatchCodeMeta(job, sc) {
   if (!lines.length) return { html:'', color };
   return { html:'<div style="font-size:10px;line-height:1.4;margin-top:2px;color:#555">'+lines.join('')+'</div>', color };
 }
+// One-line rollup under a job header on the dispatch sheet: job number, how
+// many crew are on it this range, overall % complete (dollar-weighted across
+// all cost codes), behind / at-risk counts, and the job deadline.
+function dispatchJobSummary(job, days, dates) {
+  const bits = [];
+  if (job && job.jobNumber) bits.push('Job #'+esc(job.jobNumber));
+  const crew = new Set();
+  dates.forEach(d => (days[d]||[]).forEach(a => { if (a.kind==='emp') crew.add(a.resource); }));
+  if (crew.size) bits.push(crew.size+(crew.size===1?' person':' crew'));
+  if (job) {
+    const subs = job.subCodes||[];
+    const wv = subs.reduce((s,c)=>s+(c.bidValue||0),0);
+    let pct = null;
+    if (wv > 0) pct = subs.reduce((s,c)=>s+(c.bidValue||0)*((c.pctComplete||0)/100),0)/wv*100;
+    else if (subs.length) pct = subs.reduce((s,c)=>s+(c.pctComplete||0),0)/subs.length;
+    if (pct != null) bits.push(Math.round(pct)+'% complete');
+    const behind = subs.filter(c=>c.status==='behind').length;
+    const atRisk = subs.filter(c=>c.status==='at-risk').length;
+    if (behind) bits.push('<span style="color:#b91c1c">'+behind+' behind</span>');
+    if (atRisk) bits.push('<span style="color:#b45309">'+atRisk+' at-risk</span>');
+    if (job.deadline) bits.push('due '+shortDate(job.deadline));
+  }
+  if (!bits.length) return '';
+  return '<div style="font-size:11px;color:#555;margin:2px 0 8px">'+bits.join(' · ')+'</div>';
+}
 function dispatchBodyJob(dates) {
   const byJob = {};
   dates.forEach(d => (state.assignments[d]||[]).forEach(a => { const k = a.division+'::'+a.jobId; (byJob[k] = byJob[k] || { name:a.jobName, division:a.division, jobId:a.jobId, days:{} }); (byJob[k].days[d] = byJob[k].days[d] || []).push(a); }));
@@ -712,7 +737,7 @@ function dispatchBodyJob(dates) {
           : '<span style="color:#999">Whole job</span>';
         return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600;vertical-align:top">'+(i===0?dayLabel(d):'')+'</td><td style="'+_td+'">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
     }).join('');
-    return '<div style="'+_h2+'">'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
+    return '<div style="'+_h2+'">'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</div>'+dispatchJobSummary(job, j.days, dates)+'<table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
 function dispatchBodyPerson(dates) {
   const byRes = {};
