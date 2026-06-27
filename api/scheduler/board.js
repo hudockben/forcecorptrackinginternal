@@ -288,6 +288,28 @@ async function readEquipment(sql, companyCode) {
     return rows.map(r => (r.name || '').trim()).filter(Boolean);
   } catch (err) { console.warn('[scheduler/board] equipment read failed:', err.message); return []; }
 }
+// Approved/pending time-off from the Timesheet division → name → { dateStr → {status,type} }.
+// Pending (submitted) and approved both surface so a scheduler sees the risk early.
+async function readTimeOff(sql, companyCode, todayStr) {
+  try {
+    const rows = await sql`
+      SELECT te.work_date, te.status, te.time_off_type,
+             COALESCE(NULLIF(TRIM(e.name), ''), te.username) AS name
+      FROM   timesheet_entries te
+      LEFT JOIN employees e ON e.id = te.employee_id
+      WHERE  te.company_code = ${companyCode}
+        AND  te.entry_type = 'time_off'
+        AND  te.status IN ('submitted', 'approved')
+        AND  te.work_date >= ${todayStr}::date`;
+    const map = {};
+    rows.forEach(r => {
+      const name = (r.name || '').trim(); if (!name) return;
+      const ds = String(r.work_date).slice(0, 10);
+      (map[name] = map[name] || {})[ds] = { status: r.status, type: r.time_off_type || 'time off' };
+    });
+    return map;
+  } catch (err) { console.warn('[scheduler/board] time-off read failed:', err.message); return {}; }
+}
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -308,9 +330,10 @@ module.exports = async (req, res) => {
   const companyCode = payload.companyCode;
 
   try {
-    const [employees, equipment, ...divisionProjects] = await Promise.all([
+    const [employees, equipment, timeOff, ...divisionProjects] = await Promise.all([
       readEmployees(sql, companyCode),
       readEquipment(sql, companyCode),
+      readTimeOff(sql, companyCode, todayStr),
       ...SOURCE_DIVISIONS.map(s => readProjects(sql, companyCode, s.prefix, s.index)),
     ]);
 
@@ -370,6 +393,7 @@ module.exports = async (req, res) => {
       equipment: equipOut,
       jobs,
       plannedAssignments,
+      timeOff,
       sourceDivisions: SOURCE_DIVISIONS.map(s => s.division),
     });
   } catch (err) {

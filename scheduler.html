@@ -155,6 +155,8 @@ function rateOf(name) { const e = (state.board.employees||[]).find(x => x.name =
 function laborCost(dates, pred) { let t = 0; dates.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind !== 'emp') return; if (pred && !pred(a)) return; t += (a.half ? 0.5 : 1) * HOURS_PER_DAY * rateOf(a.resource); })); return t; }
 function fmtMoney(n) { const v = Math.round(n || 0); return v >= 100000 ? '$' + Math.round(v/1000) + 'k' : '$' + v.toLocaleString('en-US'); }
 function toggleRateBasis() { state.rateBasis = state.rateBasis === 'standard' ? 'prevailing' : 'standard'; render(); }
+// Time-off (from Timesheet): returns {status,type} if this person is off this date, else null.
+function isOff(name, date) { return (state.board.timeOff && state.board.timeOff[name] && state.board.timeOff[name][date]) || null; }
 const _clientTag = 'c' + Math.random().toString(36).slice(2, 7); // per-client tag so ids never collide across schedulers
 let _uid = 0;
 function uid() { return _clientTag + (++_uid).toString(36); }
@@ -480,8 +482,9 @@ function renderCrewBoard() {
   const rowFor = (resource, kind, meta) => {
     const load = loadForResource(resource);
     const left = '<td class="lead-col"><span style="font-weight:600">'+esc(resource)+'</span><div class="res-meta">'+(meta && meta.isSupervisor?'<span class="sup-dot" title="Supervisor">★</span>':'')+(meta && meta.jobClass?'<span>'+esc(meta.jobClass)+'</span>':(kind==='equip'?'<span>equipment</span>':''))+'<span class="res-load">'+load+'/7d</span></div></td>';
-    const cells = ds.map(d => { const conf = conflictResourcesOn(d).has(resource); const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr; const items = assignmentsFor(d, resource);
-      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+items.map(a => chip(a, conf)).join('')+'</td>'; }).join('');
+    const cells = ds.map(d => { const conf = conflictResourcesOn(d).has(resource); const off = isOff(resource, d); const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr; const items = assignmentsFor(d, resource);
+      const offMark = off ? '<span title="'+esc(off.type)+(off.status==='submitted'?' (requested)':' (approved)')+'" style="font-size:0.6rem;color:'+(items.length?'var(--red)':'var(--amber)')+'">⛱'+(items.length?' off!':'')+'</span>' : '';
+      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(off&&items.length?' conflict':'')+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf)).join('')+'</td>'; }).join('');
     return '<tr>'+left+cells+'</tr>';
   };
   if (!groupNames.length) body += '<tr><td class="lead-col muted">No crew match.</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
@@ -543,13 +546,14 @@ function updatePickList() {
   const equips = (state.board.equipment||[]).map(n => ({ name:n, kind:'equip', jobClass:'', sup:false }));
   let cands = emps.concat(equips);
   if (q) cands = cands.filter(c => c.name.toLowerCase().includes(q) || (c.jobClass||'').toLowerCase().includes(q));
-  cands.forEach(c => { const items = assignmentsFor(ctx.date, c.name); c.onThis = items.some(a => a.division===ctx.division && a.jobId===ctx.jobId); c.others = [...new Set(items.filter(a => !(a.division===ctx.division && a.jobId===ctx.jobId)).map(a => a.jobName))]; });
+  cands.forEach(c => { const items = assignmentsFor(ctx.date, c.name); c.onThis = items.some(a => a.division===ctx.division && a.jobId===ctx.jobId); c.others = [...new Set(items.filter(a => !(a.division===ctx.division && a.jobId===ctx.jobId)).map(a => a.jobName))]; c.off = isOff(c.name, ctx.date); });
   const histCrew = new Set(sc ? (sc.crew||[]) : []);
-  cands.sort((a,b) => { const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis; if (af !== bf) return af ? -1 : 1; const ah = histCrew.has(a.name), bh = histCrew.has(b.name); if (ah !== bh) return ah ? -1 : 1; return a.name.localeCompare(b.name); });
+  cands.sort((a,b) => { if (!!a.off !== !!b.off) return a.off ? 1 : -1; const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis; if (af !== bf) return af ? -1 : 1; const ah = histCrew.has(a.name), bh = histCrew.has(b.name); if (ah !== bh) return ah ? -1 : 1; return a.name.localeCompare(b.name); });
   cands = cands.slice(0, 60);
   if (!cands.length) { box.innerHTML = '<div class="muted" style="font-size:0.78rem;padding:0.5rem">No match.</div>'; return; }
   box.innerHTML = cands.map(c => { let status, cls = '';
-    if (c.onThis) { status = '<span class="ok">✓ assigned</span>'; cls = ' on-this'; }
+    if (c.off) status = '<span class="warn">⛱ off'+(c.off.status==='submitted'?' (req)':'')+'</span>';
+    else if (c.onThis) { status = '<span class="ok">✓ assigned</span>'; cls = ' on-this'; }
     else if (c.others.length) status = '<span class="warn">→ '+esc(c.others.join(', '))+'</span>';
     else status = '<span class="ok">free</span>';
     const sub = [c.kind==='equip'?'equipment':(c.jobClass||''), histCrew.has(c.name)?'★ worked this code':''].filter(Boolean).join(' · ');
@@ -592,10 +596,11 @@ function modalResourceHtml(ctx) {
   const dfmt = new Date(ctx.date+'T12:00:00').toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
   const current = assignmentsFor(ctx.date, ctx.resource);
   const conf = conflictResourcesOn(ctx.date).has(ctx.resource);
+  const off = isOff(ctx.resource, ctx.date);
   const curHtml = current.length ? current.map(a => { const col = divColor(a.division); return '<div class="cur-asn"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(a.division)+'</span><span class="grow">'+esc(a.jobName)+(a.costCode?' <span class="muted">· '+esc(a.costCode)+(a.subCode?' · '+esc(a.subCode):'')+'</span>':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>'; }).join('') : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
   const jobs = visibleJobs();
   const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => { const inDiv = jobs.filter(j => j.division === div); if (!inDiv.length) return ''; return '<optgroup label="'+div.toUpperCase()+'">'+inDiv.map(j => '<option value="'+esc(j.division)+'::'+esc(j.id)+'">'+esc(j.name)+(j.jobNumber?' (#'+esc(j.jobNumber)+')':'')+'</option>').join('')+'</optgroup>'; }).join('');
-  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+(off.status==='submitted'?' (requested off)':' off')+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
     '<label class="fld">Scheduled (this day)</label>'+curHtml+
     '<label class="fld">Add to a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select><div id="rScWrap" style="display:none"><label class="fld">Sub-code</label><select class="full" id="rSc"></select></div>'+
@@ -766,22 +771,26 @@ function autoFill(division, jobId, costCode, subCode) {
   const job = jobById(division, jobId); if (!job) return;
   const sc = subCodeOf(job, costCode, subCode); if (!sc) { toast('Sub-code not found'); return; }
   const need = Math.max(sc.addlLaborersNeeded || 1, 1);
-  const empByName = {}; (state.board.employees||[]).forEach(e => empByName[e.name] = e);
-  const prefTrades = new Set((sc.crew||[]).map(n => empByName[n] && empByName[n].jobClass).filter(Boolean));
-  const idle = idleEmployees().slice().sort((a,b) => (prefTrades.has(a.jobClass)?0:1) - (prefTrades.has(b.jobClass)?0:1) || a.name.localeCompare(b.name));
-  const pick = idle.slice(0, need);
-  if (!pick.length) { toast('No idle crew available this week'); return; }
   const dates = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); });
   if (!dates.length) { toast('No working days left this week'); return; }
+  const empByName = {}; (state.board.employees||[]).forEach(e => empByName[e.name] = e);
+  const prefTrades = new Set((sc.crew||[]).map(n => empByName[n] && empByName[n].jobClass).filter(Boolean));
+  // idle crew with at least one day not on time-off; prefer the sub-code's trade
+  const idle = idleEmployees().filter(e => !dates.every(d => isOff(e.name, d))).slice()
+    .sort((a,b) => (prefTrades.has(a.jobClass)?0:1) - (prefTrades.has(b.jobClass)?0:1) || a.name.localeCompare(b.name));
+  const pick = idle.slice(0, need);
+  if (!pick.length) { toast('No available idle crew this week (idle crew are off)'); return; }
   pushUndo();
-  let added = 0; pick.forEach(e => { added += addAssignmentSpan(e.name, 'emp', job, sc, dates); });
+  let added = 0; const used = [];
+  pick.forEach(e => { const okDates = dates.filter(d => !isOff(e.name, d)); const n = addAssignmentSpan(e.name, 'emp', job, sc, okDates); if (n) used.push(e.name.split(' ')[0]); added += n; });
   if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already scheduled here'); return; }
-  toast('Assigned ' + pick.map(e => e.name.split(' ')[0]).join(', ') + ' to ' + sc.costCode);
+  toast('Assigned ' + used.join(', ') + ' to ' + sc.costCode);
   render();
 }
 function renderAttention() {
   const gaps = gapItems(); const idle = idleEmployees(); const wk = weekDateStrs();
   const conflicts = []; wk.forEach(d => conflictResourcesOn(d).forEach(r => conflicts.push({ d, r })));
+  const offSched = []; wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind === 'emp') { const off = isOff(a.resource, d); if (off) offSched.push({ d, name:a.resource, jobName:a.jobName, off }); } }));
   let html = renderCapacity();
   html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">⚠ Needs crew (' + gaps.length + ')</div>';
   if (!gaps.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">No behind or at-risk work is short on crew this week. 👍</div>';
@@ -801,7 +810,11 @@ function renderAttention() {
   html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🟢 Idle this week (' + idle.length + ')</div>';
   if (!idle.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">Everyone is scheduled this week.</div>';
   else { const byTrade = {}; idle.forEach(e => { const t = e.jobClass || 'Other'; (byTrade[t] = byTrade[t] || []).push(e.name); });
-    html += '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.4rem">' + Object.keys(byTrade).sort().map(t => '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.45rem 0.7rem;max-width:280px"><div style="font-size:0.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">'+esc(t)+' ('+byTrade[t].length+')</div><div style="font-size:0.78rem">'+byTrade[t].map(esc).join(', ')+'</div></div>').join('') + '</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.4rem">' + Object.keys(byTrade).sort().map(t => '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.45rem 0.7rem;max-width:280px"><div style="font-size:0.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">'+esc(t)+' ('+byTrade[t].length+')</div><div style="font-size:0.78rem">'+byTrade[t].map(n => esc(n)+(wk.some(d=>isOff(n,d))?' ⛱':'')).join(', ')+'</div></div>').join('') + '</div>';
+  }
+  if (offSched.length) {
+    html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">⛱ Scheduled but off (' + offSched.length + ')</div>';
+    html += '<div style="display:flex;flex-direction:column;gap:0.3rem;margin-bottom:1.4rem">' + offSched.map(o => '<div style="font-size:0.78rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><span class="warn" style="font-weight:600">'+esc(o.name)+'</span><span class="muted">'+shortDate(o.d)+'</span><span>'+esc(o.off.type)+(o.off.status==='submitted'?' (requested)':'')+' — scheduled on '+esc(o.jobName)+'</span><button class="btn mini" onclick="openAssignResource(\''+escAttr(o.name)+'\',\'emp\',\''+o.d+'\')">Fix…</button></div>').join('') + '</div>';
   }
   if (conflicts.length) {
     html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🔴 Double-booked (' + conflicts.length + ')</div>';
