@@ -305,7 +305,7 @@ function renderToolbar() {
       '<div class="spacer"></div>' +
       '<button class="btn" id="copyWk" title="Copy this week\'s assignments into next week">📋 Copy week →</button>' +
       '<button class="btn" id="crewsBtn" title="Manage saved crew templates">👥 Crews</button>' +
-      '<button class="btn" id="printBtn" title="Printable dispatch sheets">🖨 Print</button>' +
+      '<button class="btn" id="printBtn" title="Print or email the dispatch schedule to crews">📤 Send / Print</button>' +
       '<button class="btn" id="importPlans" title="Pull crew/equipment already planned in each division\'s Projection Planner">⤵ Import plans</button>';
   } else {
     const trades = ['all'].concat(tradeList());
@@ -314,7 +314,7 @@ function renderToolbar() {
       '<select id="tradeFilter">'+trades.map(t => '<option value="'+esc(t)+'"'+(state.tradeFilter===t?' selected':'')+'>'+(t==='all'?'All trades':esc(t))+'</option>').join('')+'</select>' +
       '<label class="chip-toggle"><input type="checkbox" id="showAll" '+(state.showAll?'checked':'')+'> Show full roster</label>' +
       '<div class="spacer"></div>' +
-      '<button class="btn" id="printBtn" title="Printable dispatch sheets">🖨 Print</button>' +
+      '<button class="btn" id="printBtn" title="Print or email the dispatch schedule to crews">📤 Send / Print</button>' +
       '<span class="muted" style="font-size:0.72rem">'+(state.board.employees||[]).length+' crew · '+(state.board.equipment||[]).length+' equip</span>';
   }
   wireToolbar();
@@ -330,7 +330,7 @@ function wireToolbar() {
   if (g('importPlans')) g('importPlans').onclick = importPlanned;
   if (g('copyWk')) g('copyWk').onclick = copyWeekForward;
   if (g('crewsBtn')) g('crewsBtn').onclick = openCrewsModal;
-  if (g('printBtn')) g('printBtn').onclick = openPrintModal;
+  if (g('printBtn')) g('printBtn').onclick = openDispatchModal;
   if (g('crewSearch')) g('crewSearch').oninput = e => { state.crewSearch = e.target.value; document.getElementById('main').innerHTML = renderCrewBoard(); };
   if (g('tradeFilter')) g('tradeFilter').onchange = e => { state.tradeFilter = e.target.value; render(); };
   if (g('showAll')) g('showAll').onchange = e => { state.showAll = e.target.checked; render(); };
@@ -559,53 +559,90 @@ function importPlanned() {
 }
 
 // ── Print / dispatch sheets ─────────────────────────────────────────────────
-function openPrintModal() {
-  let o = document.getElementById('printOverlay');
-  if (!o) { o = document.createElement('div'); o.id='printOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closePrint(); }; }
-  o.innerHTML = '<div class="modal"><div class="modal-head"><div style="font-weight:700">🖨 Print dispatch sheet</div><button class="x" onclick="closePrint()">✕</button></div><div class="modal-body">'+
-    '<label class="fld">Layout</label><select class="full" id="prLayout"><option value="job">By job — who is on each job each day</option><option value="person">By person — each crew member’s schedule</option></select>'+
-    '<label class="fld">Range</label><select class="full" id="prScope"><option value="week">This week</option><option value="today">Today only</option></select>'+
-    '<div style="display:flex;gap:0.5rem;margin-top:1rem"><button class="btn primary" style="flex:1" onclick="doPrint()">Open print view</button><button class="btn" onclick="closePrint()">Cancel</button></div></div></div>';
+// Dispatch report body — INLINE styles so it works both in the print window
+// and inside the email shell (api/lib/email.js strips <style>, keeps inline).
+const _td = 'border:1px solid #ccc;padding:5px 7px;text-align:left;vertical-align:top;font-size:12px';
+const _th = 'border:1px solid #ccc;padding:5px 7px;text-align:left;background:#f2f2f2;font-size:11px';
+const _h2 = 'font-size:15px;font-weight:800;border-bottom:2px solid #333;padding-bottom:3px;margin:18px 0 6px;color:#111';
+function dispatchDates(scope) { return scope === 'today' ? [todayStr()] : weekDateStrs(); }
+function dispatchTitle(scope) {
+  if (scope === 'today') return 'Crew Dispatch — ' + new Date(todayStr()+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
+  return 'Crew Dispatch — week of ' + weekDays()[0].toLocaleDateString(undefined,{month:'short',day:'numeric'});
 }
-function closePrint() { const o = document.getElementById('printOverlay'); if (o) o.remove(); }
-function doPrint() {
-  const layout = document.getElementById('prLayout').value, scope = document.getElementById('prScope').value;
-  const dates = scope === 'today' ? [todayStr()] : weekDateStrs();
-  closePrint();
-  const html = layout === 'job' ? printByJob(dates) : printByPerson(dates);
-  const w = window.open('', '_blank'); if (!w) { toast('Allow pop-ups to print'); return; }
-  w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch {} }, 350);
-}
-function printShell(title, bodyHtml) {
-  const today = new Date().toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric', year:'numeric'});
-  return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+esc(title)+'</title><style>'+
-    'body{font-family:Segoe UI,system-ui,sans-serif;color:#111;margin:24px;font-size:12px}h1{font-size:18px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #333;padding-bottom:3px}'+
-    '.sub{color:#666;font-size:11px;margin-bottom:14px}table{border-collapse:collapse;width:100%;margin-bottom:6px}th,td{border:1px solid #ccc;padding:5px 7px;text-align:left;vertical-align:top}th{background:#f2f2f2;font-size:11px}'+
-    '.day{font-weight:700;white-space:nowrap}.muted{color:#999}.eq{color:#444}@media print{h2{page-break-after:avoid}tr{page-break-inside:avoid}}'+
-    '</style></head><body><h1>'+esc(title)+'</h1><div class="sub">Force Corp · Generated '+esc(today)+'</div>'+bodyHtml+'</body></html>';
-}
-function printByJob(dates) {
-  // group assignments by job, then by date
+function dayLabel(d) { return new Date(d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
+function buildDispatchBody(layout, dates) { return layout === 'person' ? dispatchBodyPerson(dates) : dispatchBodyJob(dates); }
+function dispatchBodyJob(dates) {
   const byJob = {};
   dates.forEach(d => (state.assignments[d]||[]).forEach(a => { const k = a.division+'::'+a.jobId; (byJob[k] = byJob[k] || { name:a.jobName, division:a.division, days:{} }); (byJob[k].days[d] = byJob[k].days[d] || []).push(a); }));
   const keys = Object.keys(byJob).sort((x,y) => byJob[x].name.localeCompare(byJob[y].name));
-  if (!keys.length) return printShell('Dispatch — by job', '<div class="muted">No assignments in this range.</div>');
-  const body = keys.map(k => { const j = byJob[k];
+  if (!keys.length) return '<div style="color:#999">No assignments in this range.</div>';
+  return keys.map(k => { const j = byJob[k];
     const rows = dates.filter(d => j.days[d]).map(d => { const items = j.days[d]; const crew = items.filter(a=>a.kind==='emp').map(a=>esc(a.resource)+(a.half?' (½)':'')); const eq = items.filter(a=>a.kind==='equip').map(a=>esc(a.resource));
-      return '<tr><td class="day">'+new Date(d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+'</td><td>'+(crew.join(', ')||'<span class="muted">—</span>')+'</td><td class="eq">'+(eq.join(', ')||'<span class="muted">—</span>')+'</td></tr>'; }).join('');
-    return '<h2>'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</h2><table><thead><tr><th style="width:120px">Day</th><th>Crew</th><th style="width:30%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
-  return printShell('Dispatch — by job', body);
+      return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+dayLabel(d)+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
+    return '<div style="'+_h2+'">'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:130px">Day</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:30%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
-function printByPerson(dates) {
+function dispatchBodyPerson(dates) {
   const byRes = {};
   dates.forEach(d => (state.assignments[d]||[]).forEach(a => { (byRes[a.resource] = byRes[a.resource] || { kind:a.kind, days:{} }); (byRes[a.resource].days[d] = byRes[a.resource].days[d] || []).push(a); }));
   const names = Object.keys(byRes).sort((a,b)=>a.localeCompare(b));
-  if (!names.length) return printShell('Schedules — by person', '<div class="muted">No assignments in this range.</div>');
-  const body = names.map(n => { const r = byRes[n];
+  if (!names.length) return '<div style="color:#999">No assignments in this range.</div>';
+  return names.map(n => { const r = byRes[n];
     const rows = dates.filter(d => r.days[d]).map(d => { const items = r.days[d]; const jobs = items.map(a => esc(a.jobName)+(a.costCode?' ['+esc(a.costCode)+(a.subCode?'·'+esc(a.subCode):'')+']':'')+(a.half?' (½)':'')).join('; ');
-      return '<tr><td class="day">'+new Date(d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+'</td><td>'+jobs+'</td></tr>'; }).join('');
-    return '<h2>'+esc(n)+(r.kind==='equip'?' (equipment)':'')+'</h2><table><thead><tr><th style="width:140px">Day</th><th>Assignment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
-  return printShell('Schedules — by person', body);
+      return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+dayLabel(d)+'</td><td style="'+_td+'">'+jobs+'</td></tr>'; }).join('');
+    return '<div style="'+_h2+'">'+esc(n)+(r.kind==='equip'?' (equipment)':'')+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:150px">Day</th><th style="'+_th+'">Assignment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
+}
+
+let _dispatchGroups = [];
+async function openDispatchModal() {
+  let o = document.getElementById('dispatchOverlay');
+  if (!o) { o = document.createElement('div'); o.id='dispatchOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeDispatch(); }; }
+  o.innerHTML = dispatchModalHtml('<option value="">Loading saved lists…</option>');
+  try { const r = await api('/api/email/recipient-groups?report_type=scheduler_dispatch'); _dispatchGroups = (r && r.groups) || []; }
+  catch { _dispatchGroups = []; }
+  const sel = document.getElementById('dpGroup');
+  if (sel) sel.innerHTML = '<option value="">— choose a saved list —</option>' + _dispatchGroups.map(g => '<option value="'+g.id+'">'+esc(g.name)+' ('+(g.emails||[]).length+')</option>').join('');
+}
+function dispatchModalHtml(groupOptions) {
+  return '<div class="modal"><div class="modal-head"><div style="font-weight:700">📤 Dispatch schedule</div><button class="x" onclick="closeDispatch()">✕</button></div><div class="modal-body">'+
+    '<label class="fld">Layout</label><select class="full" id="dpLayout"><option value="job">By job — who is on each job each day</option><option value="person">By person — each crew member’s schedule</option></select>'+
+    '<label class="fld">Range</label><select class="full" id="dpScope"><option value="week">This week</option><option value="today">Today only</option></select>'+
+    '<div style="margin-top:0.6rem"><button class="btn" onclick="doPrint()">🖨 Open print view</button></div>'+
+    '<hr style="border:none;border-top:1px solid var(--border);margin:1rem 0">'+
+    '<div style="font-weight:700;font-size:0.82rem">Email to crews</div>'+
+    '<label class="fld">Saved distribution list</label><select class="full" id="dpGroup">'+groupOptions+'</select>'+
+    '<label class="fld">Additional emails (comma / space separated)</label><input type="text" class="full" id="dpEmails" placeholder="foreman@…, super@…" autocomplete="off">'+
+    '<label class="fld">Note (optional)</label><textarea class="full" id="dpNote" style="min-height:54px" placeholder="e.g. Updated plan — please check your assignments for the week."></textarea>'+
+    '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn primary" id="dpSend" style="flex:1" onclick="doEmail()">✉ Send email</button><button class="btn" onclick="closeDispatch()">Close</button></div>'+
+    '<div id="dpResult" style="font-size:0.72rem;margin-top:0.5rem"></div></div></div>';
+}
+function closeDispatch() { const o = document.getElementById('dispatchOverlay'); if (o) o.remove(); }
+function printShell(title, body) {
+  const ts = new Date().toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric', year:'numeric'});
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+esc(title)+'</title></head><body style="font-family:Segoe UI,system-ui,sans-serif;color:#111;margin:24px"><div style="font-size:18px;font-weight:800">'+esc(title)+'</div><div style="color:#666;font-size:11px;margin-bottom:14px">Force Corp · Generated '+esc(ts)+'</div>'+body+'</body></html>';
+}
+function doPrint() {
+  const layout = document.getElementById('dpLayout').value, scope = document.getElementById('dpScope').value;
+  const html = printShell(dispatchTitle(scope), buildDispatchBody(layout, dispatchDates(scope)));
+  const w = window.open('', '_blank'); if (!w) { toast('Allow pop-ups to print'); return; }
+  w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch {} }, 350);
+}
+function parseEmails(s) { return String(s||'').split(/[,;\s]+/).map(x => x.trim()).filter(Boolean); }
+async function doEmail() {
+  const layout = document.getElementById('dpLayout').value, scope = document.getElementById('dpScope').value;
+  const result = document.getElementById('dpResult'), btn = document.getElementById('dpSend');
+  let recipients = [];
+  const gid = document.getElementById('dpGroup').value;
+  if (gid) { const g = _dispatchGroups.find(x => String(x.id) === String(gid)); if (g) recipients = recipients.concat(g.emails || []); }
+  recipients = recipients.concat(parseEmails(document.getElementById('dpEmails').value));
+  recipients = [...new Set(recipients.map(e => e.toLowerCase()))];
+  if (!recipients.length) { result.style.color = 'var(--red)'; result.textContent = 'Add a saved list or at least one email address.'; return; }
+  const body = buildDispatchBody(layout, dispatchDates(scope));
+  if (body.indexOf('No assignments') !== -1) { result.style.color = 'var(--amber)'; result.textContent = 'Nothing scheduled in this range to send.'; return; }
+  btn.disabled = true; result.style.color = 'var(--muted)'; result.textContent = 'Sending…';
+  try {
+    const r = await api('/api/email/send-report', { method:'POST', body: JSON.stringify({ report_type:'scheduler_dispatch', subject: dispatchTitle(scope), note: document.getElementById('dpNote').value || '', recipients, html: body }) });
+    result.style.color = 'var(--green)'; result.textContent = '✓ Sent to ' + (r.recipientCount || recipients.length) + ' recipient(s).'; btn.disabled = false; toast('Dispatch emailed');
+  } catch (err) { result.style.color = 'var(--red)'; result.textContent = 'Failed: ' + err.message; btn.disabled = false; }
 }
 
 // ── AI insights ─────────────────────────────────────────────────────────────
@@ -638,7 +675,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openPrintModal, closePrint, doPrint });
+Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail });
 loadAll();
 </script>
 </body>
