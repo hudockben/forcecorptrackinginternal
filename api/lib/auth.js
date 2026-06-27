@@ -6,7 +6,7 @@ const jwt = require('jsonwebtoken');
 // 'timesheet' (field-employee entry) and 'payroll' (admin review) are
 // permission-only keys — they have no division-scoped data tables of their
 // own. Field users typically have ONLY timesheet:level1 and nothing else.
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'scheduler'];
 
 // Keys that are intentionally shared across every division within a company
 // (any logged-in user may read/write them regardless of their division roles).

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='%230a0f1e' stroke='%2322c55e' stroke-width='6'/><circle cx='50' cy='50' r='12' fill='%2322c55e'/><line x1='50' y1='12' x2='50' y2='38' stroke='%2300dcff' stroke-width='4' stroke-linecap='round'/><line x1='50' y1='62' x2='50' y2='88' stroke='%2300dcff' stroke-width='4' stroke-linecap='round'/><line x1='12' y1='50' x2='38' y2='50' stroke='%238b5cf6' stroke-width='4' stroke-linecap='round'/><line x1='62' y1='50' x2='88' y2='50' stroke='%238b5cf6' stroke-width='4' stroke-linecap='round'/></svg>">
+  <title>DataWatch — Scheduler</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #111118;
+      --surface2:  #1a1a26;
+      --border:    #2a2a3a;
+      --accent:    #6366f1;
+      --text:      #e0e0e0;
+      --muted:     #666;
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.875rem 1.75rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      font-size: 0.68rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: #22c55e;
+      font-weight: 700;
+    }
+
+    .back-link {
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.38rem 0.8rem;
+      cursor: pointer;
+      text-decoration: none;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .back-link:hover { color: var(--text); border-color: #555; }
+
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 4rem 1.5rem;
+      text-align: center;
+    }
+
+    .hero-icon {
+      width: 72px;
+      height: 72px;
+      border-radius: 16px;
+      background: rgba(99,102,241,0.1);
+      border: 1px solid rgba(99,102,241,0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+    }
+    .hero-icon svg { width: 34px; height: 34px; }
+
+    .badge-soon {
+      display: inline-block;
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.25rem 0.6rem;
+      border-radius: 3px;
+      background: rgba(99,102,241,0.12);
+      color: #a5b4fc;
+      border: 1px solid rgba(99,102,241,0.3);
+      margin-bottom: 1.25rem;
+    }
+
+    h1 {
+      font-size: clamp(1.6rem, 3vw, 2.25rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      color: #fff;
+      margin-bottom: 0.75rem;
+    }
+
+    .sub {
+      font-size: 0.9rem;
+      color: var(--muted);
+      max-width: 480px;
+      line-height: 1.6;
+    }
+
+    footer {
+      text-align: center;
+      padding: 1.5rem;
+      font-size: 0.62rem;
+      color: #2a2a3a;
+      letter-spacing: 0.04em;
+      border-top: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">DataWatch</div>
+    <a href="divisions.html" class="back-link">&#8592; All Divisions</a>
+  </header>
+
+  <main>
+    <div class="hero-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="17" rx="2"/>
+        <line x1="3" y1="9" x2="21" y2="9"/>
+        <line x1="8" y1="2" x2="8" y2="6"/>
+        <line x1="16" y1="2" x2="16" y2="6"/>
+        <circle cx="12" cy="15" r="3"/>
+        <polyline points="12 13.6 12 15 13.1 15.7"/>
+      </svg>
+    </div>
+    <div class="badge-soon">Coming Soon</div>
+    <h1>Scheduler</h1>
+    <p class="sub">
+      Centralized crew, equipment, and job scheduling across all divisions.
+      This module is licensed and access can already be granted in
+      <strong>Manage&nbsp;Users</strong>, but the scheduling workspace itself
+      is still being built.
+    </p>
+  </main>
+
+  <footer>© DataWatch · Force Corp · All rights reserved</footer>
+
+  <script>
+    // ── Auth guard ──────────────────────────────────────────────────────────
+    // Mirror the other division pages: bounce to the login screen if there's
+    // no session. Access control for the Scheduler tile itself lives in
+    // divisions.html / Manage Users (division_roles.scheduler).
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) {
+      window.location.replace('index.html');
+    } else {
+      localStorage.setItem('fct_division', 'scheduler');
+    }
+  </script>
+
+</body>
+</html>

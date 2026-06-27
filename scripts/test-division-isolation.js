@@ -90,11 +90,12 @@ const legacyEmpty = {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 console.log('\n[ALL_DIVISIONS]');
-assert('contains all 9 divisions', ALL_DIVISIONS.length === 9);
+assert('contains all 10 divisions', ALL_DIVISIONS.length === 10);
 assert('includes paving',          ALL_DIVISIONS.includes('paving'));
 assert('includes intercompany',    ALL_DIVISIONS.includes('intercompany'));
 assert('includes timesheet',       ALL_DIVISIONS.includes('timesheet'));
 assert('includes payroll',         ALL_DIVISIONS.includes('payroll'));
+assert('includes scheduler',       ALL_DIVISIONS.includes('scheduler'));
 
 console.log('\n[normalizeDivision]');
 assert('normalizes case',           normalizeDivision('PAVING') === 'paving');
