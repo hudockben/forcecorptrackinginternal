@@ -227,6 +227,7 @@ function buildSubCode(bi, a, ppSched, deadline, todayStr) {
     key, costCode: bi.cost_code || '', subCode: bi.sub_code || '',
     description: bi.description || '', unit: bi.unit || '',
     bidQty, runningQty, pctComplete: Math.round(pct * 10) / 10, unitsLeft,
+    bidValue: Math.round(bidQty * (parseFloat(bi.unit_cost) || 0)),
     startDate: bi.start_date || null, targetDate: bi.target_date || null,
     daysWorked, currentPace: round2(currentPace), recentPace: round2(recentPace),
     prod: prod !== null ? round2(prod) : null,
@@ -269,11 +270,12 @@ function plannedAssignmentsFromSchedule(ppSchedule, todayStr, job) {
 async function readEmployees(sql, companyCode) {
   try {
     const rows = await sql`
-      SELECT name, job_class, is_supervisor
+      SELECT name, job_class, is_supervisor, pw_rate, non_pw_rate
       FROM   employees
       WHERE  company_code = ${companyCode} AND active = TRUE
       ORDER  BY sort_order ASC, name ASC`;
-    return rows.map(r => ({ name: (r.name || '').trim(), jobClass: r.job_class || '', isSupervisor: !!r.is_supervisor }))
+    return rows.map(r => ({ name: (r.name || '').trim(), jobClass: r.job_class || '', isSupervisor: !!r.is_supervisor,
+        rateStd: parseFloat(r.non_pw_rate) || 0, ratePw: parseFloat(r.pw_rate) || parseFloat(r.non_pw_rate) || 0 }))
       .filter(r => r.name);
   } catch (err) { console.warn('[scheduler/board] employees read failed:', err.message); return []; }
 }
@@ -348,13 +350,14 @@ module.exports = async (req, res) => {
           division: src.division, id, name,
           jobNumber: String(proj['job-number'] || proj.job_number || '').trim(),
           status: status || 'Active', deadline, subCodes,
+          bidValue: subCodes.reduce((s, c) => s + (c.bidValue || 0), 0),
         });
       });
     });
 
     // Merge project-derived names that aren't in the roster tables.
     const knownEmp = new Set(employees.map(e => e.name));
-    rosterEmp.forEach(n => { if (n && !knownEmp.has(n)) employees.push({ name: n, jobClass: '', isSupervisor: false }); });
+    rosterEmp.forEach(n => { if (n && !knownEmp.has(n)) employees.push({ name: n, jobClass: '', isSupervisor: false, rateStd: 0, ratePw: 0 }); });
     const equipOut = [...rosterEquip].filter(Boolean).sort((a, b) => a.localeCompare(b));
     employees.sort((a, b) => a.name.localeCompare(b.name));
 

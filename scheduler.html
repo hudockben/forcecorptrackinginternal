@@ -132,7 +132,7 @@ const state = {
   view:'job', board:null, assignments:{}, crews:[], weekAnchor:null,
   divFilter:'all', jobSearch:'', needCrewOnly:false, jobOpen:{},
   crewSearch:'', tradeFilter:'all', showAll:false, grpCol:{},
-  applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
+  applySpan:'day', assignCtx:null, ai:null, aiLoading:false, rateBasis:'standard',
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -149,6 +149,12 @@ function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); x.setDate(
 function weekDays() { const out = []; const m = new Date(state.weekAnchor); for (let i=0;i<7;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
 function weekDateStrs() { return weekDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
+// ── Labor cost (assignments × wage rate) ────────────────────────────────────
+const HOURS_PER_DAY = 8;
+function rateOf(name) { const e = (state.board.employees||[]).find(x => x.name === name); if (!e) return 0; return state.rateBasis === 'prevailing' ? (e.ratePw || e.rateStd || 0) : (e.rateStd || 0); }
+function laborCost(dates, pred) { let t = 0; dates.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind !== 'emp') return; if (pred && !pred(a)) return; t += (a.half ? 0.5 : 1) * HOURS_PER_DAY * rateOf(a.resource); })); return t; }
+function fmtMoney(n) { const v = Math.round(n || 0); return v >= 100000 ? '$' + Math.round(v/1000) + 'k' : '$' + v.toLocaleString('en-US'); }
+function toggleRateBasis() { state.rateBasis = state.rateBasis === 'standard' ? 'prevailing' : 'standard'; render(); }
 const _clientTag = 'c' + Math.random().toString(36).slice(2, 7); // per-client tag so ids never collide across schedulers
 let _uid = 0;
 function uid() { return _clientTag + (++_uid).toString(36); }
@@ -417,7 +423,8 @@ function renderCapacity() {
   const conflicts = wk.reduce((s,d) => s + conflictResourcesOn(d).size, 0);
   const behind = (state.board.jobs||[]).reduce((s,j) => s + (j.subCodes||[]).filter(c => c.status==='behind').length, 0);
   const card = (v,l,c) => '<div class="cap-card"><div class="cap-val" style="color:'+(c||'var(--text)')+'">'+v+'</div><div class="cap-lbl">'+l+'</div></div>';
-  return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled this wk','var(--green)')+card(idle,'Idle this wk',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+'</div>';
+  const laborCard = '<div class="cap-card" style="cursor:pointer" title="Projected labor cost this week (crew × '+HOURS_PER_DAY+'h × wage rate). Click to switch Standard / Prevailing rates." onclick="toggleRateBasis()"><div class="cap-val" style="color:var(--blue)">'+fmtMoney(laborCost(wk))+'</div><div class="cap-lbl">Labor this wk · '+(state.rateBasis==='prevailing'?'PW rates':'std rates')+'</div></div>';
+  return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled this wk','var(--green)')+card(idle,'Idle this wk',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+laborCard+'</div>';
 }
 function chip(a, conf) { const col = divColor(a.division); return '<span class="asn'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'" title="'+esc(a.resource+' — '+a.jobName)+'">'+esc(a.resource.split(' ')[0])+(a.kind==='equip'?' 🚜':'')+(a.half?' ½':'')+'</span>'; }
 
@@ -432,10 +439,11 @@ function renderJobBoard() {
     const col = divColor(job.division);
     const collapsed = !state.jobOpen[job.division+'::'+job.id];
     const behind = (job.subCodes||[]).filter(c => c.status==='behind').length;
+    const jobLabor = laborCost(ds, x => x.division===job.division && x.jobId===job.id);
     const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+
       '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
-      '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+'</div></td>'+headCells+'</tr>';
+      '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+(jobLabor?' · <span style="color:var(--blue)">'+fmtMoney(jobLabor)+' labor/wk</span>':'')+(job.bidValue?' · <span class="muted">bid '+fmtMoney(job.bidValue)+'</span>':'')+'</div></td>'+headCells+'</tr>';
     if (collapsed) return;
     let subs = (job.subCodes||[]); if (state.needCrewOnly) subs = subs.filter(subNeedsCrew);
     if (!subs.length) { body += '<tr><td class="lead-col muted" style="padding-left:1.5rem">'+(state.needCrewOnly?'No sub-codes need crew':'No sub-codes')+'</td>'+ds.map(()=>'<td></td>').join('')+'</tr>'; return; }
@@ -820,7 +828,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill });
+Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, toggleRateBasis });
 loadAll();
 </script>
 </body>
