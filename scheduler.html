@@ -107,6 +107,7 @@
   <div class="tabs">
     <button class="tab active" data-view="job" id="tab-job">By Job</button>
     <button class="tab" data-view="crew" id="tab-crew">By Crew</button>
+    <button class="tab" data-view="attention" id="tab-attention">Attention</button>
     <button class="tab" data-view="ai" id="tab-ai">AI Insights</button>
   </div>
   <div class="toolbar" id="toolbar"></div>
@@ -148,8 +149,9 @@ function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); x.setDate(
 function weekDays() { const out = []; const m = new Date(state.weekAnchor); for (let i=0;i<7;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
 function weekDateStrs() { return weekDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
-let _uid = Date.now();
-function uid() { return 'a' + (++_uid); }
+const _clientTag = 'c' + Math.random().toString(36).slice(2, 7); // per-client tag so ids never collide across schedulers
+let _uid = 0;
+function uid() { return _clientTag + (++_uid).toString(36); }
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1900); }
 async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { 'Content-Type':'application/json', Authorization:'Bearer '+token, ...(opts.headers||{}) } });
@@ -172,40 +174,79 @@ async function loadAll() {
     state.assignments = (v && typeof v === 'object' && v.assignments) ? v.assignments : {};
     const c = crews && crews.value;
     state.crews = (c && Array.isArray(c.crews)) ? c.crews : [];
+    _baseline = JSON.stringify(state.assignments);
     if (!state.weekAnchor) state.weekAnchor = mondayOf(new Date());
     render();
   } catch (err) {
     document.getElementById('main').innerHTML = '<div class="empty">Could not load the schedule.<br><span class="muted">' + esc(err.message) + '</span></div>';
   }
 }
-// Debounced, reliable saves. Edits mark a dirty flag and flush after a short
-// pause; if the tab is hidden/closed before then, we force-flush with
-// keepalive so an in-progress edit is never silently lost. On failure the
-// dirty flag is restored so the next change (or flush) retries.
-let _saveTimer = null, _dirtyAssign = false, _dirtyCrews = false;
+// Persistence: baseline + merge-on-save + undo/redo. Saves are debounced;
+// before each write we re-read the server copy and merge by assignment id so
+// two schedulers editing at once don't clobber each other. On tab hide/close
+// we force-flush (keepalive) so in-progress edits aren't lost.
+let _baseline = '{}';
+let _undo = [], _redo = [];
+let _saveTimer = null, _dirtyAssign = false, _dirtyCrews = false, _flushing = false;
+function _snap() { return JSON.stringify(state.assignments); }
+function pushUndo() { _undo.push(_snap()); if (_undo.length > 50) _undo.shift(); _redo = []; updateUndoButtons(); }
+function updateUndoButtons() { const u=document.getElementById('undoBtn'), r=document.getElementById('redoBtn'); if (u) u.disabled = !_undo.length; if (r) r.disabled = !_redo.length; }
+function undo() { if (!_undo.length) return; _redo.push(_snap()); state.assignments = JSON.parse(_undo.pop()); if (state.assignCtx) closeAssign(); _dirtyAssign = true; _scheduleFlush(); render(); }
+function redo() { if (!_redo.length) return; _undo.push(_snap()); state.assignments = JSON.parse(_redo.pop()); if (state.assignCtx) closeAssign(); _dirtyAssign = true; _scheduleFlush(); render(); }
 function _scheduleFlush() { clearTimeout(_saveTimer); _saveTimer = setTimeout(() => flushSaves(false), 500); }
 function saveAssignments() { _dirtyAssign = true; _scheduleFlush(); }
 function saveCrews() { _dirtyCrews = true; _scheduleFlush(); }
+async function _getVal(key) { try { const r = await api('/api/data?key=' + key); return r && r.value; } catch { return null; } }
 async function _putKey(key, value, keepalive) {
   const res = await fetch('/api/data?key=' + key, { method:'PUT', keepalive,
     headers: { 'Content-Type':'application/json', Authorization:'Bearer ' + token }, body: JSON.stringify({ value }) });
   if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || ('Error ' + res.status)); }
 }
+function _flat(a) { const m={}; for (const d in a) for (const x of (a[d]||[])) m[x.id] = { ...x, _d:d }; return m; }
+function _unflat(m) { const o={}; for (const id in m) { const { _d, ...rest } = m[id]; (o[_d] = o[_d] || []).push(rest); } return o; }
+// 3-way merge: start from theirs, then layer our adds/removes/edits (by id) on top.
+function mergeAssignments(baseStr, ours, theirs) {
+  const b=_flat(JSON.parse(baseStr||'{}')), o=_flat(ours), t=_flat(theirs), res={ ...t };
+  for (const id in o) if (!(id in b)) res[id] = o[id];                                                   // we added
+  for (const id in b) if (!(id in o)) delete res[id];                                                    // we removed
+  for (const id in o) if (id in b && JSON.stringify(o[id]) !== JSON.stringify(b[id])) res[id] = o[id];   // we edited
+  return _unflat(res);
+}
 async function flushSaves(keepalive) {
   clearTimeout(_saveTimer);
-  const tasks = [];
-  if (_dirtyAssign) { _dirtyAssign = false; tasks.push(['a', ASSIGN_KEY, { version:1, assignments: state.assignments }]); }
-  if (_dirtyCrews)  { _dirtyCrews  = false; tasks.push(['c', CREWS_KEY,  { version:1, crews: state.crews }]); }
-  if (!tasks.length) return;
-  let okCount = 0;
-  for (const [tag, key, value] of tasks) {
-    try { await _putKey(key, value, !!keepalive); okCount++; }
-    catch (err) { if (tag === 'a') _dirtyAssign = true; else _dirtyCrews = true; if (!keepalive) toast('Save failed: ' + err.message); }
+  if (keepalive) { // tab closing — best-effort straight PUT, no round-trip
+    if (_dirtyAssign) { _dirtyAssign = false; _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments }, true).catch(()=>{}); }
+    if (_dirtyCrews)  { _dirtyCrews  = false; _putKey(CREWS_KEY,  { version:1, crews: state.crews }, true).catch(()=>{}); }
+    return;
   }
-  if (!keepalive && okCount) toast('Saved');
+  if (_flushing) { _scheduleFlush(); return; }
+  _flushing = true;
+  try {
+    if (_dirtyAssign) {
+      _dirtyAssign = false;
+      const sv = await _getVal(ASSIGN_KEY);
+      const theirs = (sv && sv.assignments) || {};
+      if (JSON.stringify(theirs) !== _baseline) { state.assignments = mergeAssignments(_baseline, state.assignments, theirs); toast('Merged another scheduler’s changes'); render(); }
+      await _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments }, false);
+      _baseline = _snap(); toast('Saved');
+    }
+    if (_dirtyCrews) { _dirtyCrews = false; await _putKey(CREWS_KEY, { version:1, crews: state.crews }, false); }
+  } catch (err) { _dirtyAssign = true; toast('Save failed: ' + err.message); }
+  finally { _flushing = false; }
+}
+async function refreshData() {
+  try {
+    const [board, sv] = await Promise.all([ api('/api/scheduler/board?today=' + todayStr()), _getVal(ASSIGN_KEY) ]);
+    state.board = board;
+    const theirs = (sv && sv.assignments) || {};
+    state.assignments = (_dirtyAssign || _snap() !== _baseline) ? mergeAssignments(_baseline, state.assignments, theirs) : theirs;
+    _baseline = JSON.stringify(theirs);
+    render(); toast('Refreshed');
+  } catch (err) { toast('Refresh failed: ' + err.message); }
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSaves(true); });
 window.addEventListener('pagehide', () => flushSaves(true));
+document.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); e.shiftKey ? redo() : undo(); } });
 
 // ── Assignment model ────────────────────────────────────────────────────────
 function dayList(date) { return state.assignments[date] || (state.assignments[date] = []); }
@@ -224,8 +265,8 @@ function addAssignmentSpan(resource, kind, job, sc, dates) {
     dayList(d).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: cc, subCode: sk, half:false }); added++; });
   if (added) saveAssignments(); return added;
 }
-function removeAssignment(date, id) { state.assignments[date] = (state.assignments[date] || []).filter(a => a.id !== id); if (!state.assignments[date].length) delete state.assignments[date]; saveAssignments(); }
-function toggleHalf(date, id) { const a = (state.assignments[date]||[]).find(x => x.id === id); if (a) { a.half = !a.half; saveAssignments(); } }
+function removeAssignment(date, id) { if ((state.assignments[date]||[]).some(a => a.id === id)) pushUndo(); state.assignments[date] = (state.assignments[date] || []).filter(a => a.id !== id); if (!state.assignments[date].length) delete state.assignments[date]; saveAssignments(); }
+function toggleHalf(date, id) { const a = (state.assignments[date]||[]).find(x => x.id === id); if (a) { pushUndo(); a.half = !a.half; saveAssignments(); } }
 function conflictResourcesOn(date) {
   const byRes = {}; (state.assignments[date] || []).forEach(a => { (byRes[a.resource] = byRes[a.resource] || new Set()).add(a.division + '::' + a.jobId); });
   const out = new Set(); Object.entries(byRes).forEach(([r,set]) => { if (set.size > 1) out.add(r); }); return out;
@@ -304,25 +345,35 @@ function subNeedsCrew(sc) { return sc.status === 'behind' || sc.status === 'at-r
 // ── Render dispatch ─────────────────────────────────────────────────────────
 function render() {
   if (!state.board) return;
-  ['job','crew','ai'].forEach(v => document.getElementById('tab-'+v).classList.toggle('active', state.view === v));
+  ['job','crew','attention','ai'].forEach(v => document.getElementById('tab-'+v).classList.toggle('active', state.view === v));
   const conf = totalConflicts();
   document.getElementById('tab-crew').innerHTML = 'By Crew' + (conf ? ' <span class="pip" title="cross-job conflicts">'+conf+'</span>' : '');
+  const gaps = gapItems().length;
+  document.getElementById('tab-attention').innerHTML = 'Attention' + (gaps ? ' <span class="pip" title="staffing gaps">'+gaps+'</span>' : '');
   renderToolbar();
   const main = document.getElementById('main');
   if (state.view === 'job') main.innerHTML = renderJobBoard();
   else if (state.view === 'crew') main.innerHTML = renderCrewBoard();
+  else if (state.view === 'attention') main.innerHTML = renderAttention();
   else main.innerHTML = renderAI();
+  updateUndoButtons();
 }
 function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>'; }
 function wknavHtml() { const wk = weekDays(); const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); return '<div class="wknav"><button class="btn" id="wkPrev">◀</button><span class="wklabel">'+esc(label)+'</span><button class="btn" id="wkNext">▶</button><button class="btn ghost" id="wkToday">Today</button></div>'; }
+function toolsHtml() {
+  return '<button class="btn" id="undoBtn" title="Undo (Ctrl+Z)"'+(_undo.length?'':' disabled')+'>↶ Undo</button>'+
+         '<button class="btn" id="redoBtn" title="Redo (Ctrl+Shift+Z)"'+(_redo.length?'':' disabled')+'>↷</button>'+
+         '<button class="btn" id="refreshBtn" title="Refresh — pull other schedulers’ changes">⟳</button>';
+}
 function renderToolbar() {
   const tb = document.getElementById('toolbar');
   if (state.view === 'ai') { tb.innerHTML = '<button class="btn primary" id="genAi">⚡ '+(state.ai?'Regenerate insights':'Generate insights')+'</button><span class="muted" style="font-size:0.72rem">Reviews conflicts, behind work &amp; capacity across all jobs</span>'; document.getElementById('genAi').onclick = generateAI; return; }
+  if (state.view === 'attention') { tb.innerHTML = wknavHtml() + '<span class="muted" style="font-size:0.72rem">Gaps &amp; idle crew for the selected week</span><div class="spacer"></div>' + toolsHtml(); wireToolbar(); return; }
   if (state.view === 'job') {
     tb.innerHTML = wknavHtml() +
       '<input type="text" id="jobSearch" placeholder="Search jobs…" value="'+esc(state.jobSearch)+'" style="width:140px">' + divFilterHtml() +
       '<label class="chip-toggle"><input type="checkbox" id="needOnly" '+(state.needCrewOnly?'checked':'')+'> Needs crew only</label>' +
-      '<div class="spacer"></div>' +
+      '<div class="spacer"></div>' + toolsHtml() +
       '<button class="btn" id="copyWk" title="Copy this week\'s assignments into next week">📋 Copy week →</button>' +
       '<button class="btn" id="crewsBtn" title="Manage saved crew templates">👥 Crews</button>' +
       '<button class="btn" id="printBtn" title="Print or email the dispatch schedule to crews">📤 Send / Print</button>' +
@@ -333,7 +384,7 @@ function renderToolbar() {
       '<input type="text" id="crewSearch" placeholder="Search crew…" value="'+esc(state.crewSearch)+'" style="width:140px">' +
       '<select id="tradeFilter">'+trades.map(t => '<option value="'+esc(t)+'"'+(state.tradeFilter===t?' selected':'')+'>'+(t==='all'?'All trades':esc(t))+'</option>').join('')+'</select>' +
       '<label class="chip-toggle"><input type="checkbox" id="showAll" '+(state.showAll?'checked':'')+'> Show full roster</label>' +
-      '<div class="spacer"></div>' +
+      '<div class="spacer"></div>' + toolsHtml() +
       '<button class="btn" id="printBtn" title="Print or email the dispatch schedule to crews">📤 Send / Print</button>' +
       '<span class="muted" style="font-size:0.72rem">'+(state.board.employees||[]).length+' crew · '+(state.board.equipment||[]).length+' equip</span>';
   }
@@ -354,6 +405,9 @@ function wireToolbar() {
   if (g('crewSearch')) g('crewSearch').oninput = e => { state.crewSearch = e.target.value; document.getElementById('main').innerHTML = renderCrewBoard(); };
   if (g('tradeFilter')) g('tradeFilter').onchange = e => { state.tradeFilter = e.target.value; render(); };
   if (g('showAll')) g('showAll').onchange = e => { state.showAll = e.target.checked; render(); };
+  if (g('undoBtn')) g('undoBtn').onclick = undo;
+  if (g('redoBtn')) g('redoBtn').onclick = redo;
+  if (g('refreshBtn')) g('refreshBtn').onclick = refreshData;
 }
 function dayHeaders(days, ds, tStr) { return days.map((d,i) => { const w = (d.getDay()===0||d.getDay()===6), isT = ds[i]===tStr; return '<th class="'+(w?'weekend ':'')+(isT?'today':'')+'">'+d.toLocaleDateString(undefined,{weekday:'short'})+'<br><span style="font-size:0.66rem">'+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</span></th>'; }).join(''); }
 function renderCapacity() {
@@ -499,8 +553,9 @@ function pickAdd(name, kind) {
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
   const sc = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
   const dates = spanDates(ctx.date);
+  pushUndo();
   const added = addAssignmentSpan(name, kind, job, sc, dates);
-  if (!added) toast(name+' already on those days'); else if (added > 1) toast('Added '+name+' to '+added+' days');
+  if (!added) { _undo.pop(); updateUndoButtons(); toast(name+' already on those days'); } else if (added > 1) toast('Added '+name+' to '+added+' days');
   afterMutate();
 }
 function applyCrewFromPicker() {
@@ -510,7 +565,9 @@ function applyCrewFromPicker() {
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
   const sc = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
   const dates = spanDates(ctx.date);
+  pushUndo();
   let added = 0; crew.members.forEach(m => { added += addAssignmentSpan(m.name, m.kind||'emp', job, sc, dates); });
+  if (!added) { _undo.pop(); updateUndoButtons(); }
   toast(added ? ('Added '+crew.name+' ('+added+' assignment'+(added>1?'s':'')+')') : 'Crew already scheduled here');
   afterMutate();
 }
@@ -545,8 +602,8 @@ function onPickRJob() { const sel = document.getElementById('rJob').value, wrap 
 function rConfirmAdd() { const sel = document.getElementById('rJob').value; if (!sel) return;
   const [division, id] = sel.split('::'); const job = jobById(division, id);
   const scIdx = document.getElementById('rSc').value; const sc = scIdx !== '' ? (job.subCodes||[])[parseInt(scIdx,10)] : null;
-  const ctx = state.assignCtx; const added = addAssignmentSpan(ctx.resource, ctx.kind, job, sc, spanDates(ctx.date));
-  if (added > 1) toast('Added to '+added+' days'); afterMutate();
+  const ctx = state.assignCtx; pushUndo(); const added = addAssignmentSpan(ctx.resource, ctx.kind, job, sc, spanDates(ctx.date));
+  if (!added) { _undo.pop(); updateUndoButtons(); } else if (added > 1) toast('Added to '+added+' days'); afterMutate();
 }
 
 // ── Crews manager ───────────────────────────────────────────────────────────
@@ -561,21 +618,23 @@ function deleteCrew(id) { state.crews = state.crews.filter(c => c.id !== id); sa
 
 // ── Copy week ───────────────────────────────────────────────────────────────
 function copyWeekForward() {
+  pushUndo();
   const wk = weekDateStrs(); let added = 0;
   wk.forEach(d => { const items = state.assignments[d] || []; const nd = addDays(d, 7);
     items.forEach(a => { if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||'') && (x.subCode||'')===(a.subCode||''))) return;
       dayList(nd).push({ ...a, id: uid() }); added++; }); });
   if (added) { saveAssignments(); toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'); state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
-  else toast('Nothing to copy (next week already matches)');
+  else { _undo.pop(); updateUndoButtons(); toast('Nothing to copy (next week already matches)'); }
 }
 
 // ── Import division plans ───────────────────────────────────────────────────
 function importPlanned() {
   const planned = state.board.plannedAssignments || []; if (!planned.length) { toast('No division plans to import'); return; }
+  pushUndo();
   let added = 0;
   planned.forEach(p => { const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'') && (a.subCode||'')===(p.subCode||'')); if (dup) return;
     dayList(p.date).push({ id: uid(), resource:p.resource, kind:p.kind||'emp', division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', subCode:p.subCode||'', half:!!p.half }); added++; });
-  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')); render(); } else toast('Already up to date with division plans');
+  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')); render(); } else { _undo.pop(); updateUndoButtons(); toast('Already up to date with division plans'); }
 }
 
 // ── Print / dispatch sheets ─────────────────────────────────────────────────
@@ -679,6 +738,72 @@ async function generateAI() { state.aiLoading = true; render();
   try { state.ai = await api('/api/ai/scheduler-insights', { method:'POST', body: JSON.stringify(buildAISnapshot()) }); }
   catch (err) { state.ai = { summary:'Could not generate insights: '+err.message, recommendations:[], reassignments:[], outlook:'' }; }
   finally { state.aiLoading = false; render(); } }
+// ── Attention: gaps + one-click auto-fill ──────────────────────────────────
+function gapItems() {
+  if (!state.board) return [];
+  const wk = weekDateStrs(); const items = [];
+  (state.board.jobs||[]).forEach(job => (job.subCodes||[]).forEach(sc => {
+    if (sc.status !== 'behind' && sc.status !== 'at-risk') return;
+    const staffed = new Set();
+    wk.forEach(d => cellAssignments(d, job.division, job.id, sc.costCode, sc.subCode).forEach(a => { if (a.kind === 'emp') staffed.add(a.resource); }));
+    if (staffed.size === 0) items.push({ type:'unstaffed', job, sc, need: sc.addlLaborersNeeded || 1, staffed: 0 });
+    else if (sc.addlLaborersNeeded && staffed.size < sc.addlLaborersNeeded) items.push({ type:'understaffed', job, sc, need: sc.addlLaborersNeeded, staffed: staffed.size });
+  }));
+  items.sort((a,b) => (a.type==='unstaffed'?0:1) - (b.type==='unstaffed'?0:1) || (STATUS_RANK[a.sc.status]-STATUS_RANK[b.sc.status]));
+  return items;
+}
+function idleEmployees() { if (!state.board) return []; return (state.board.employees||[]).filter(e => loadForResource(e.name) === 0); }
+function firstWorkdayThisWeek() { const wd = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); }); return wd[0] || todayStr(); }
+function autoFill(division, jobId, costCode, subCode) {
+  const job = jobById(division, jobId); if (!job) return;
+  const sc = subCodeOf(job, costCode, subCode); if (!sc) { toast('Sub-code not found'); return; }
+  const need = Math.max(sc.addlLaborersNeeded || 1, 1);
+  const empByName = {}; (state.board.employees||[]).forEach(e => empByName[e.name] = e);
+  const prefTrades = new Set((sc.crew||[]).map(n => empByName[n] && empByName[n].jobClass).filter(Boolean));
+  const idle = idleEmployees().slice().sort((a,b) => (prefTrades.has(a.jobClass)?0:1) - (prefTrades.has(b.jobClass)?0:1) || a.name.localeCompare(b.name));
+  const pick = idle.slice(0, need);
+  if (!pick.length) { toast('No idle crew available this week'); return; }
+  const dates = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); });
+  if (!dates.length) { toast('No working days left this week'); return; }
+  pushUndo();
+  let added = 0; pick.forEach(e => { added += addAssignmentSpan(e.name, 'emp', job, sc, dates); });
+  if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already scheduled here'); return; }
+  toast('Assigned ' + pick.map(e => e.name.split(' ')[0]).join(', ') + ' to ' + sc.costCode);
+  render();
+}
+function renderAttention() {
+  const gaps = gapItems(); const idle = idleEmployees(); const wk = weekDateStrs();
+  const conflicts = []; wk.forEach(d => conflictResourcesOn(d).forEach(r => conflicts.push({ d, r })));
+  let html = renderCapacity();
+  html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">⚠ Needs crew (' + gaps.length + ')</div>';
+  if (!gaps.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">No behind or at-risk work is short on crew this week. 👍</div>';
+  else html += '<div style="display:flex;flex-direction:column;gap:0.4rem;margin-bottom:1.4rem">' + gaps.map(g => {
+    const col = divColor(g.job.division); const fwd = firstWorkdayThisWeek();
+    return '<div style="display:flex;align-items:center;gap:0.6rem;background:var(--surface);border:1px solid var(--border);border-left:3px solid '+col+';border-radius:8px;padding:0.5rem 0.7rem;flex-wrap:wrap">'+
+      '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(g.job.division)+'</span>'+
+      '<span style="font-weight:600">'+esc(g.job.name)+'</span>'+
+      '<span class="muted" style="font-size:0.74rem">'+esc(g.sc.costCode)+(g.sc.subCode?' · '+esc(g.sc.subCode):'')+'</span>'+
+      '<span class="pill '+g.sc.status+'">'+g.sc.status.replace('-',' ')+'</span>'+
+      '<span class="warn" style="font-size:0.74rem">'+(g.type==='unstaffed'?'no crew scheduled':('needs +'+g.need+', has '+g.staffed)) + projChip(g.job, g.sc) +'</span>'+
+      '<span style="flex:1"></span>'+
+      '<button class="btn primary mini" title="Auto-assign idle crew for the rest of this week" onclick="autoFill(\''+g.job.division+'\',\''+escAttr(g.job.id)+'\',\''+escAttr(g.sc.costCode)+'\',\''+escAttr(g.sc.subCode)+'\')">⚡ Fill</button>'+
+      '<button class="btn mini" onclick="openAssignJob(\''+g.job.division+'\',\''+escAttr(g.job.id)+'\',\''+escAttr(g.sc.costCode)+'\',\''+escAttr(g.sc.subCode)+'\',\''+fwd+'\')">Staff…</button>'+
+    '</div>';
+  }).join('') + '</div>';
+  html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🟢 Idle this week (' + idle.length + ')</div>';
+  if (!idle.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">Everyone is scheduled this week.</div>';
+  else { const byTrade = {}; idle.forEach(e => { const t = e.jobClass || 'Other'; (byTrade[t] = byTrade[t] || []).push(e.name); });
+    html += '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.4rem">' + Object.keys(byTrade).sort().map(t => '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.45rem 0.7rem;max-width:280px"><div style="font-size:0.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">'+esc(t)+' ('+byTrade[t].length+')</div><div style="font-size:0.78rem">'+byTrade[t].map(esc).join(', ')+'</div></div>').join('') + '</div>';
+  }
+  if (conflicts.length) {
+    html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🔴 Double-booked (' + conflicts.length + ')</div>';
+    html += '<div style="display:flex;flex-direction:column;gap:0.3rem">' + conflicts.map(c => {
+      const jobs = [...new Set(assignmentsFor(c.d, c.r).map(a => a.jobName))].join(' AND ');
+      return '<div style="font-size:0.78rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><span class="warn" style="font-weight:600">'+esc(c.r)+'</span><span class="muted">'+shortDate(c.d)+'</span><span>'+esc(jobs)+'</span><button class="btn mini" onclick="openAssignResource(\''+escAttr(c.r)+'\',\'emp\',\''+c.d+'\')">Resolve…</button></div>';
+    }).join('') + '</div>';
+  }
+  return html;
+}
 function renderAI() {
   if (state.aiLoading) return '<div class="loading">⚡ Analyzing the cross-division schedule…</div>';
   if (!state.ai) return '<div class="empty">No insights yet.<br><span class="muted">Click “Generate insights” to have AI review conflicts, behind work and capacity across every active job.</span></div>';
@@ -695,7 +820,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail });
+Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill });
 loadAll();
 </script>
 </body>
