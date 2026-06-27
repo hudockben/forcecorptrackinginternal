@@ -15,102 +15,73 @@
     body { min-height:100vh; background:var(--bg); color:var(--text);
       font-family:'Segoe UI', system-ui, -apple-system, sans-serif; display:flex; flex-direction:column; }
     a { color:inherit; }
-
-    /* Header */
     header { display:flex; align-items:center; justify-content:space-between;
-      padding:0.75rem 1.5rem; background:var(--surface); border-bottom:1px solid var(--border);
-      position:sticky; top:0; z-index:40; }
+      padding:0.75rem 1.5rem; background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:40; }
     .brand { font-size:0.68rem; letter-spacing:0.3em; text-transform:uppercase; color:var(--blue); font-weight:700; }
     .brand-sub { font-size:0.55rem; letter-spacing:0.2em; color:var(--muted); margin-left:0.5rem; text-transform:uppercase; }
     .header-right { display:flex; align-items:center; gap:0.7rem; }
     .hlink { font-size:0.62rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted);
-      background:none; border:1px solid var(--border); border-radius:5px; padding:0.4rem 0.8rem; cursor:pointer;
-      text-decoration:none; transition:color .15s,border-color .15s; }
+      background:none; border:1px solid var(--border); border-radius:5px; padding:0.4rem 0.8rem; cursor:pointer; text-decoration:none; transition:.15s; }
     .hlink:hover { color:var(--text); border-color:#555; }
     .avatar { width:30px; height:30px; border-radius:50%; background:var(--surface2); border:1px solid var(--border);
       display:flex; align-items:center; justify-content:center; font-size:0.7rem; font-weight:700; color:var(--blue); }
-
-    /* Tabs */
     .tabs { display:flex; gap:0.25rem; padding:0.6rem 1.5rem 0; background:var(--surface); border-bottom:1px solid var(--border); }
-    .tab { font-size:0.78rem; font-weight:600; color:var(--muted); background:none; border:none; cursor:pointer;
-      padding:0.55rem 1rem; border-bottom:2px solid transparent; }
+    .tab { font-size:0.78rem; font-weight:600; color:var(--muted); background:none; border:none; cursor:pointer; padding:0.55rem 1rem; border-bottom:2px solid transparent; }
     .tab.active { color:var(--text); border-bottom-color:var(--blue); }
-    .tab .pip { display:inline-block; min-width:16px; padding:0 4px; margin-left:0.35rem; font-size:0.62rem;
-      background:var(--red); color:#fff; border-radius:9px; font-weight:700; }
-
-    /* Toolbar */
+    .tab .pip { display:inline-block; min-width:16px; padding:0 4px; margin-left:0.35rem; font-size:0.62rem; background:var(--red); color:#fff; border-radius:9px; font-weight:700; }
     .toolbar { display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap; padding:0.7rem 1.5rem; border-bottom:1px solid var(--border); }
-    .btn { font-size:0.74rem; font-weight:600; color:var(--text); background:var(--surface2); border:1px solid var(--border);
-      border-radius:6px; padding:0.4rem 0.7rem; cursor:pointer; transition:.15s; white-space:nowrap; }
+    .btn { font-size:0.74rem; font-weight:600; color:var(--text); background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:0.4rem 0.7rem; cursor:pointer; transition:.15s; white-space:nowrap; }
     .btn:hover { border-color:#555; }
     .btn.primary { background:rgba(96,165,250,0.14); border-color:var(--blue); color:var(--blue); }
     .btn.ghost { background:none; }
     .btn:disabled { opacity:0.5; cursor:default; }
     .wknav { display:flex; align-items:center; gap:0.4rem; }
-    .wklabel { font-size:0.82rem; font-weight:700; min-width:190px; text-align:center; }
-    input[type=text], select { background:var(--surface2); border:1px solid var(--border); color:var(--text);
-      border-radius:6px; padding:0.4rem 0.55rem; font-size:0.78rem; }
+    .wklabel { font-size:0.82rem; font-weight:700; min-width:185px; text-align:center; }
+    input[type=text], select { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.4rem 0.55rem; font-size:0.78rem; }
     .spacer { flex:1; }
-    .chip-toggle { display:flex; align-items:center; gap:0.35rem; font-size:0.72rem; color:var(--muted); cursor:pointer; }
-
+    .chip-toggle { display:flex; align-items:center; gap:0.35rem; font-size:0.72rem; color:var(--muted); cursor:pointer; white-space:nowrap; }
     main { padding:1rem 1.5rem 3rem; flex:1; }
-
-    /* Capacity strip */
     .cap { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:0.9rem; }
-    .cap-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:0.6rem 0.9rem; min-width:130px; }
+    .cap-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:0.6rem 0.9rem; min-width:120px; }
     .cap-val { font-size:1.25rem; font-weight:800; }
-    .cap-lbl { font-size:0.64rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-top:0.1rem; }
-
-    /* Board grid */
+    .cap-lbl { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-top:0.1rem; }
+    .hint { color:var(--muted); font-size:0.7rem; margin-bottom:0.5rem; }
     .board-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:10px; }
     table.board { border-collapse:collapse; width:100%; font-size:0.74rem; }
     table.board th, table.board td { border-bottom:1px solid var(--border); border-right:1px solid var(--border); vertical-align:top; }
     table.board thead th { position:sticky; top:0; background:var(--surface2); z-index:5; padding:0.45rem 0.5rem; text-align:center; font-weight:700; }
     table.board thead th.weekend { color:var(--muted); }
     table.board thead th.today { color:var(--blue); }
-    .res-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:170px; max-width:200px;
-      text-align:left !important; padding:0.45rem 0.6rem !important; }
-    thead .res-col { z-index:7; }
-    .res-name { font-weight:700; font-size:0.78rem; }
-    .res-meta { font-size:0.62rem; color:var(--muted); display:flex; gap:0.3rem; align-items:center; flex-wrap:wrap; margin-top:0.1rem; }
-    .res-load { font-size:0.6rem; padding:0.02rem 0.3rem; border-radius:8px; background:var(--surface2); border:1px solid var(--border); }
-    .sup-dot { color:var(--amber); }
-    .cell { min-width:118px; height:54px; padding:0.25rem; cursor:pointer; transition:background .1s; }
+    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:210px; max-width:240px; text-align:left !important; padding:0.45rem 0.6rem !important; }
+    thead .lead-col { z-index:7; }
+    .cell { min-width:116px; height:50px; padding:0.25rem; cursor:pointer; transition:background .1s; }
     .cell:hover { background:var(--surface2); }
     .cell.weekend { background:rgba(255,255,255,0.015); }
     .cell.today { box-shadow: inset 2px 0 0 var(--blue); }
-    .cell.conflict { background:rgba(239,68,68,0.13); }
-    .asn { display:block; font-size:0.64rem; line-height:1.25; padding:0.12rem 0.32rem; border-radius:4px; margin-bottom:0.15rem;
-      border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .cnt-cell { text-align:center; font-weight:700; color:var(--muted); }
+    .cnt-cell.has { color:var(--text); }
+    .asn { display:block; font-size:0.64rem; line-height:1.25; padding:0.1rem 0.3rem; border-radius:4px; margin-bottom:0.12rem; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); }
+    .asn.half { opacity:0.85; font-style:italic; }
     .asn .cc { color:var(--muted); }
-    .asn.half { opacity:0.8; font-style:italic; }
-    .section-row td { background:var(--surface2); font-size:0.64rem; text-transform:uppercase; letter-spacing:0.08em;
-      color:var(--muted); font-weight:700; padding:0.3rem 0.6rem; position:sticky; left:0; }
-
-    /* Jobs view */
-    .job-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:0.8rem; overflow:hidden; }
-    .job-head { display:flex; align-items:center; gap:0.6rem; padding:0.65rem 0.9rem; cursor:pointer; flex-wrap:wrap; }
-    .job-head:hover { background:var(--surface2); }
-    .div-badge { font-size:0.6rem; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; padding:0.12rem 0.45rem;
-      border-radius:5px; border:1px solid; }
-    .job-name { font-weight:700; font-size:0.9rem; }
-    .job-sub { font-size:0.68rem; color:var(--muted); }
-    .pill { font-size:0.6rem; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; padding:0.1rem 0.45rem; border-radius:9px; }
+    /* group / job header rows */
+    .grp-row td { background:var(--surface2); cursor:pointer; }
+    .grp-lead { font-weight:700; }
+    .caret { display:inline-block; width:12px; color:var(--muted); }
+    .div-badge { font-size:0.58rem; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; padding:0.1rem 0.4rem; border-radius:5px; border:1px solid; }
+    .pill { font-size:0.58rem; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; padding:0.08rem 0.4rem; border-radius:9px; }
     .pill.on-track { background:rgba(34,197,94,0.15); color:var(--green); }
     .pill.at-risk { background:rgba(251,191,36,0.15); color:var(--amber); }
     .pill.behind { background:rgba(239,68,68,0.15); color:var(--red); }
     .pill.complete { background:rgba(96,165,250,0.15); color:var(--blue); }
     .pill.no-data, .pill.not-started { background:var(--surface2); color:var(--muted); }
-    .sc-table { width:100%; border-collapse:collapse; font-size:0.74rem; }
-    .sc-table th { text-align:left; font-size:0.62rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted);
-      font-weight:600; padding:0.35rem 0.6rem; border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
-    .sc-table td { padding:0.4rem 0.6rem; border-bottom:1px solid var(--border); }
-    .prog { height:6px; background:var(--surface2); border-radius:4px; overflow:hidden; min-width:70px; }
-    .prog > div { height:100%; }
-    .muted { color:var(--muted); }
-    .warn { color:var(--red); }
-
-    /* AI panel */
+    .need-badge { font-size:0.56rem; font-weight:700; color:var(--red); border:1px solid var(--red); border-radius:8px; padding:0 5px; white-space:nowrap; }
+    .sub-meta { font-size:0.62rem; color:var(--muted); margin-top:2px; display:flex; gap:0.35rem; align-items:center; flex-wrap:wrap; }
+    .res-meta { font-size:0.6rem; color:var(--muted); display:flex; gap:0.3rem; align-items:center; flex-wrap:wrap; margin-top:0.1rem; }
+    .res-load { font-size:0.58rem; padding:0.02rem 0.3rem; border-radius:8px; background:var(--surface2); border:1px solid var(--border); }
+    .sup-dot { color:var(--amber); }
+    .muted { color:var(--muted); } .warn { color:var(--red); } .ok { color:var(--green); }
+    /* AI */
     .ai-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; max-width:920px; }
     .ai-head { display:flex; align-items:center; gap:0.6rem; padding:0.7rem 1rem; background:var(--surface2); border-bottom:1px solid var(--border); }
     .ai-badge { font-size:0.58rem; padding:0.1rem 0.45rem; border-radius:9px; background:rgba(96,165,250,0.15); color:var(--blue); font-weight:700; text-transform:uppercase; letter-spacing:0.05em; }
@@ -122,32 +93,33 @@
     .rec-action { font-size:0.8rem; color:var(--muted); }
     .reassign { display:flex; align-items:center; gap:0.5rem; font-size:0.78rem; padding:0.4rem 0; border-top:1px solid var(--border); flex-wrap:wrap; }
     .reassign .arrow { color:var(--blue); }
-
-    /* Modal */
+    /* modal */
     .overlay { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:100; padding:1rem; }
-    .modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; width:min(460px,96vw); max-height:90vh; overflow:auto; }
+    .modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; width:min(480px,96vw); max-height:90vh; overflow:auto; }
     .modal-head { display:flex; align-items:center; justify-content:space-between; padding:0.8rem 1rem; border-bottom:1px solid var(--border); }
     .modal-body { padding:0.9rem 1rem; }
     .x { background:none; border:none; color:var(--muted); font-size:1.1rem; cursor:pointer; }
-    label.fld { display:block; font-size:0.64rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin:0.6rem 0 0.2rem; }
+    label.fld { display:block; font-size:0.64rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin:0.7rem 0 0.25rem; }
     select.full, input.full { width:100%; }
-    .cur-asn { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.5rem; background:var(--surface2); border:1px solid var(--border);
-      border-radius:6px; margin-bottom:0.35rem; font-size:0.76rem; }
+    .cur-asn { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.5rem; background:var(--surface2); border:1px solid var(--border); border-radius:6px; margin-bottom:0.35rem; font-size:0.76rem; }
     .cur-asn .grow { flex:1; min-width:0; }
     .mini { font-size:0.66rem; padding:0.2rem 0.45rem; }
+    .pick-list { max-height:38vh; overflow:auto; margin-top:0.3rem; }
+    .pick-row { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.55rem; border:1px solid var(--border); border-radius:6px; margin-bottom:0.3rem; cursor:pointer; }
+    .pick-row:hover { border-color:#555; background:var(--surface2); }
+    .pick-row.on-this { border-color:var(--green-dim); }
+    .pick-name { font-weight:600; } .pick-sub { font-size:0.64rem; color:var(--muted); }
+    .pick-status { margin-left:auto; font-size:0.66rem; white-space:nowrap; }
     .empty { color:var(--muted); font-size:0.82rem; text-align:center; padding:2.5rem 1rem; }
     .loading { color:var(--muted); font-size:0.85rem; text-align:center; padding:3rem 1rem; }
     footer { padding:1rem 1.5rem; font-size:0.6rem; color:var(--muted); border-top:1px solid var(--border); }
-    .toast { position:fixed; bottom:1rem; right:1rem; background:var(--surface2); border:1px solid var(--border);
-      border-radius:8px; padding:0.55rem 0.9rem; font-size:0.76rem; z-index:200; opacity:0; transition:opacity .2s; }
+    .toast { position:fixed; bottom:1rem; right:1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:0.55rem 0.9rem; font-size:0.76rem; z-index:200; opacity:0; transition:opacity .2s; }
     .toast.show { opacity:1; }
   </style>
 </head>
 <body>
   <header>
-    <div>
-      <span class="brand">DataWatch</span><span class="brand-sub">Scheduler</span>
-    </div>
+    <div><span class="brand">DataWatch</span><span class="brand-sub">Scheduler</span></div>
     <div class="header-right">
       <a class="hlink" href="divisions.html">← Divisions</a>
       <span class="avatar" id="avatar">U</span>
@@ -156,8 +128,8 @@
   </header>
 
   <div class="tabs">
-    <button class="tab active" data-view="board" id="tab-board">Board</button>
-    <button class="tab" data-view="jobs" id="tab-jobs">Jobs &amp; Demand</button>
+    <button class="tab active" data-view="job" id="tab-job">By Job</button>
+    <button class="tab" data-view="crew" id="tab-crew">By Crew</button>
     <button class="tab" data-view="ai" id="tab-ai">AI Insights</button>
   </div>
 
@@ -181,49 +153,46 @@ const DIV_COLORS = { turf:'#22c55e', paving:'#60a5fa', dust:'#fbbf24', trucking:
 const STATUS_RANK = { behind:0, 'at-risk':1, 'no-data':2, 'not-started':3, 'on-track':4, complete:5 };
 
 const state = {
-  view: 'board',
-  board: null,            // GET /api/scheduler/board response
-  assignments: {},        // { 'YYYY-MM-DD': [ {id,resource,kind,division,jobId,jobName,costCode,subCode,half} ] }
-  weekAnchor: null,       // Date (Monday of shown week)
-  search: '',
+  view: 'job',
+  board: null,
+  assignments: {},
+  weekAnchor: null,
   divFilter: 'all',
-  idleOnly: false,
-  editing: null,          // { resource, kind, date }
-  ai: null,
-  aiLoading: false,
-  saving: false,
+  jobSearch: '',
+  needCrewOnly: false,
+  jobCol: {},            // jobId -> collapsed
+  crewSearch: '',
+  tradeFilter: 'all',
+  showAll: false,        // crew view: show full roster vs in-play only
+  grpCol: {},            // trade group -> collapsed
+  assignCtx: null,       // modal context
+  ai: null, aiLoading: false,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const escAttr = s => String(s ?? '').replace(/\\/g,'\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 const pad = n => String(n).padStart(2, '0');
 const dstr = d => d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
 const todayStr = () => dstr(new Date());
 function fmtNum(n, dp=1) { if (n == null || isNaN(n)) return '—'; const v = Number(n); return (v % 1 === 0) ? String(v) : v.toFixed(dp); }
-function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); const diff = (dow === 0 ? -6 : 1 - dow); x.setDate(x.getDate()+diff); x.setHours(0,0,0,0); return x; }
+function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); x.setDate(x.getDate() + (dow === 0 ? -6 : 1 - dow)); x.setHours(0,0,0,0); return x; }
 function weekDays() { const out = []; const m = new Date(state.weekAnchor); for (let i=0;i<7;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
+function weekDateStrs() { return weekDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
 let _uid = Date.now();
 function uid() { return 'a' + (++_uid); }
-
-function toast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.classList.add('show');
-  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1800);
-}
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1800); }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(opts.headers || {}) },
-  });
+  const res = await fetch(path, { ...opts, headers: { 'Content-Type':'application/json', Authorization:'Bearer '+token, ...(opts.headers||{}) } });
   if (res.status === 401) { location.replace('index.html'); throw new Error('Unauthorized'); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || ('Error ' + res.status) + (data.detail ? ': ' + data.detail : ''));
+  if (!res.ok) throw new Error(data.error || ('Error '+res.status) + (data.detail ? ': '+data.detail : ''));
   return data;
 }
 
-// ── Data load / save ────────────────────────────────────────────────────────
+// ── Load / save ─────────────────────────────────────────────────────────────
 async function loadAll() {
   try {
     const [board, asn] = await Promise.all([
@@ -239,25 +208,24 @@ async function loadAll() {
     document.getElementById('main').innerHTML = '<div class="empty">Could not load the schedule.<br><span class="muted">' + esc(err.message) + '</span></div>';
   }
 }
-
 let _saveTimer = null;
 function saveAssignments() {
   clearTimeout(_saveTimer);
-  state.saving = true;
   _saveTimer = setTimeout(async () => {
-    try {
-      await api('/api/data?key=' + ASSIGN_KEY, { method: 'PUT', body: JSON.stringify({ value: { version: 1, assignments: state.assignments } }) });
-      state.saving = false; toast('Saved');
-    } catch (err) { state.saving = false; toast('Save failed: ' + err.message); }
+    try { await api('/api/data?key=' + ASSIGN_KEY, { method:'PUT', body: JSON.stringify({ value: { version:1, assignments: state.assignments } }) }); toast('Saved'); }
+    catch (err) { toast('Save failed: ' + err.message); }
   }, 500);
 }
 
 // ── Assignment model ────────────────────────────────────────────────────────
 function dayList(date) { return state.assignments[date] || (state.assignments[date] = []); }
 function assignmentsFor(date, resource) { return (state.assignments[date] || []).filter(a => a.resource === resource); }
-function addAssignment(date, resource, kind, job, sc, half) {
-  dayList(date).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name,
-    costCode: sc ? sc.costCode : '', subCode: sc ? sc.subCode : '', half: !!half });
+function jobAssignmentsOnDate(date, division, jobId) { return (state.assignments[date] || []).filter(a => a.division === division && a.jobId === jobId); }
+function cellAssignments(date, division, jobId, costCode, subCode) {
+  return (state.assignments[date] || []).filter(a => a.division === division && a.jobId === jobId && (a.costCode||'') === (costCode||'') && (a.subCode||'') === (subCode||''));
+}
+function addAssignment(date, resource, kind, job, sc) {
+  dayList(date).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: sc ? sc.costCode : '', subCode: sc ? sc.subCode : '', half: false });
   saveAssignments();
 }
 function removeAssignment(date, id) {
@@ -265,243 +233,392 @@ function removeAssignment(date, id) {
   if (!state.assignments[date].length) delete state.assignments[date];
   saveAssignments();
 }
-function toggleHalf(date, id) {
-  const a = (state.assignments[date] || []).find(x => x.id === id);
-  if (a) { a.half = !a.half; saveAssignments(); }
-}
+function toggleHalf(date, id) { const a = (state.assignments[date]||[]).find(x => x.id === id); if (a) { a.half = !a.half; saveAssignments(); } }
 
-// A resource is in conflict on a date when assigned to 2+ distinct jobs.
 function conflictResourcesOn(date) {
   const byRes = {};
   (state.assignments[date] || []).forEach(a => { (byRes[a.resource] = byRes[a.resource] || new Set()).add(a.division + '::' + a.jobId); });
-  const out = new Set();
-  Object.entries(byRes).forEach(([r, set]) => { if (set.size > 1) out.add(r); });
-  return out;
+  const out = new Set(); Object.entries(byRes).forEach(([r,set]) => { if (set.size > 1) out.add(r); }); return out;
 }
-function totalConflicts() {
-  let n = 0;
-  Object.keys(state.assignments).forEach(d => { n += conflictResourcesOn(d).size; });
-  return n;
+function totalConflicts() { let n = 0; Object.keys(state.assignments).forEach(d => { n += conflictResourcesOn(d).size; }); return n; }
+function loadForResource(resource) { let days = 0; weekDateStrs().forEach(d => { if (assignmentsFor(d, resource).length) days++; }); return days; }
+
+// "In play" = assigned somewhere this week, or on an active job's crew/equipment history.
+function resourcesInPlay() {
+  const emps = new Set(), equips = new Set();
+  weekDateStrs().forEach(d => (state.assignments[d] || []).forEach(a => { (a.kind === 'equip' ? equips : emps).add(a.resource); }));
+  (state.board.jobs || []).forEach(j => (j.subCodes || []).forEach(sc => {
+    (sc.crew || []).forEach(n => emps.add(n)); (sc.equipment || []).forEach(n => equips.add(n));
+  }));
+  return { emps, equips };
 }
 
-// ── Resource list (filtered) ────────────────────────────────────────────────
-function weekDateStrs() { return weekDays().map(dstr); }
-function loadForResource(resource) {
-  const wk = weekDateStrs();
-  let days = 0;
-  wk.forEach(d => { if (assignmentsFor(d, resource).length) days++; });
-  return days;
-}
-function filteredEmployees() {
-  let emps = (state.board.employees || []).map(e => e.name);
-  const q = state.search.trim().toLowerCase();
-  if (q) emps = emps.filter(n => n.toLowerCase().includes(q));
-  if (state.idleOnly) emps = emps.filter(n => loadForResource(n) === 0);
-  return emps;
-}
-
-// ── Active jobs / sub-codes ─────────────────────────────────────────────────
+// ── Jobs ────────────────────────────────────────────────────────────────────
 function visibleJobs() {
-  let jobs = state.board.jobs || [];
+  let jobs = (state.board.jobs || []);
   if (state.divFilter !== 'all') jobs = jobs.filter(j => j.division === state.divFilter);
-  return jobs;
+  const q = state.jobSearch.trim().toLowerCase();
+  if (q) jobs = jobs.filter(j => (j.name + ' ' + (j.jobNumber||'')).toLowerCase().includes(q));
+  return jobs.slice().sort((a,b) => {
+    const ra = Math.min(9, ...(a.subCodes||[]).map(c => STATUS_RANK[c.status] ?? 9));
+    const rb = Math.min(9, ...(b.subCodes||[]).map(c => STATUS_RANK[c.status] ?? 9));
+    return ra - rb || a.name.localeCompare(b.name);
+  });
 }
 function jobById(division, id) { return (state.board.jobs || []).find(j => j.division === division && j.id === id); }
-function subCodeOf(job, costCode, subCode) {
-  return (job.subCodes || []).find(s => s.costCode === costCode && (s.subCode || '') === (subCode || ''));
+function subCodeOf(job, costCode, subCode) { return (job.subCodes || []).find(s => s.costCode === costCode && (s.subCode||'') === (subCode||'')); }
+function subNeedsCrew(sc, weekStrs) {
+  if (sc.status === 'complete') return false;
+  if (sc.status === 'behind' || sc.status === 'at-risk') return true;
+  return false;
 }
 
-// ── Rendering ───────────────────────────────────────────────────────────────
+// ── Render ──────────────────────────────────────────────────────────────────
 function render() {
   if (!state.board) return;
-  ['board','jobs','ai'].forEach(v => document.getElementById('tab-' + v).classList.toggle('active', state.view === v));
-  const cpip = totalConflicts();
-  const cTab = document.getElementById('tab-board');
-  cTab.innerHTML = 'Board' + (cpip ? ' <span class="pip" title="cross-job conflicts">' + cpip + '</span>' : '');
+  ['job','crew','ai'].forEach(v => document.getElementById('tab-'+v).classList.toggle('active', state.view === v));
+  const conf = totalConflicts();
+  document.getElementById('tab-crew').innerHTML = 'By Crew' + (conf ? ' <span class="pip" title="cross-job conflicts">'+conf+'</span>' : '');
   renderToolbar();
   const main = document.getElementById('main');
-  if (state.view === 'board') main.innerHTML = renderBoard();
-  else if (state.view === 'jobs') main.innerHTML = renderJobs();
+  if (state.view === 'job') main.innerHTML = renderJobBoard();
+  else if (state.view === 'crew') main.innerHTML = renderCrewBoard();
   else main.innerHTML = renderAI();
 }
 
-function renderToolbar() {
-  const tb = document.getElementById('toolbar');
-  if (state.view === 'jobs') {
-    tb.innerHTML = divFilterHtml() +
-      '<div class="spacer"></div>' +
-      '<span class="muted" style="font-size:0.72rem">' + (state.board.jobs || []).length + ' active jobs · ' +
-      (state.board.sourceDivisions || []).join(', ') + '</span>';
-    wireToolbar();
-    return;
-  }
-  if (state.view === 'ai') {
-    tb.innerHTML = '<button class="btn primary" id="genAi">⚡ ' + (state.ai ? 'Regenerate insights' : 'Generate insights') + '</button>' +
-      '<span class="muted" style="font-size:0.72rem">Analyzes conflicts, behind work &amp; capacity across all jobs</span>';
-    document.getElementById('genAi').onclick = generateAI;
-    return;
-  }
-  // board toolbar
-  const wk = weekDays();
-  const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
-  tb.innerHTML =
-    '<div class="wknav">' +
-      '<button class="btn" id="wkPrev">◀</button>' +
-      '<span class="wklabel">' + esc(label) + '</span>' +
-      '<button class="btn" id="wkNext">▶</button>' +
-      '<button class="btn ghost" id="wkToday">Today</button>' +
-    '</div>' +
-    '<input type="text" id="resSearch" placeholder="Search crew…" value="' + esc(state.search) + '" style="width:150px">' +
-    '<label class="chip-toggle"><input type="checkbox" id="idleOnly" ' + (state.idleOnly ? 'checked' : '') + '> Idle this week</label>' +
-    divFilterHtml() +
-    '<div class="spacer"></div>' +
-    '<button class="btn" id="importPlans" title="Pull crew/equipment already planned in each division\'s Projection Planner">⤵ Import division plans</button>';
-  wireToolbar();
-}
 function divFilterHtml() {
   const opts = ['all'].concat(state.board.sourceDivisions || []);
-  return '<select id="divFilter">' + opts.map(d =>
-    '<option value="' + d + '"' + (state.divFilter === d ? ' selected' : '') + '>' + (d === 'all' ? 'All divisions' : d[0].toUpperCase()+d.slice(1)) + '</option>').join('') + '</select>';
+  return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>';
+}
+function wknavHtml() {
+  const wk = weekDays();
+  const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+  return '<div class="wknav"><button class="btn" id="wkPrev">◀</button><span class="wklabel">'+esc(label)+'</span><button class="btn" id="wkNext">▶</button><button class="btn ghost" id="wkToday">Today</button></div>';
+}
+function renderToolbar() {
+  const tb = document.getElementById('toolbar');
+  if (state.view === 'ai') {
+    tb.innerHTML = '<button class="btn primary" id="genAi">⚡ '+(state.ai?'Regenerate insights':'Generate insights')+'</button><span class="muted" style="font-size:0.72rem">Reviews conflicts, behind work &amp; capacity across all jobs</span>';
+    document.getElementById('genAi').onclick = generateAI; return;
+  }
+  if (state.view === 'job') {
+    tb.innerHTML = wknavHtml() +
+      '<input type="text" id="jobSearch" placeholder="Search jobs…" value="'+esc(state.jobSearch)+'" style="width:150px">' +
+      divFilterHtml() +
+      '<label class="chip-toggle"><input type="checkbox" id="needOnly" '+(state.needCrewOnly?'checked':'')+'> Needs crew only</label>' +
+      '<div class="spacer"></div>' +
+      '<button class="btn" id="importPlans" title="Pull crew/equipment already planned in each division\'s Projection Planner">⤵ Import division plans</button>';
+  } else {
+    const trades = ['all'].concat(tradeList());
+    tb.innerHTML = wknavHtml() +
+      '<input type="text" id="crewSearch" placeholder="Search crew…" value="'+esc(state.crewSearch)+'" style="width:150px">' +
+      '<select id="tradeFilter">'+trades.map(t => '<option value="'+esc(t)+'"'+(state.tradeFilter===t?' selected':'')+'>'+(t==='all'?'All trades':esc(t))+'</option>').join('')+'</select>' +
+      '<label class="chip-toggle"><input type="checkbox" id="showAll" '+(state.showAll?'checked':'')+'> Show full roster</label>' +
+      '<div class="spacer"></div>' +
+      '<span class="muted" style="font-size:0.72rem">'+(state.board.employees||[]).length+' crew · '+(state.board.equipment||[]).length+' equipment</span>';
+  }
+  wireToolbar();
 }
 function wireToolbar() {
   const g = id => document.getElementById(id);
-  if (g('wkPrev')) g('wkPrev').onclick = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()-7); state.weekAnchor = new Date(state.weekAnchor); render(); };
-  if (g('wkNext')) g('wkNext').onclick = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); };
+  if (g('wkPrev'))  g('wkPrev').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()-7); state.weekAnchor = new Date(state.weekAnchor); render(); };
+  if (g('wkNext'))  g('wkNext').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); };
   if (g('wkToday')) g('wkToday').onclick = () => { state.weekAnchor = mondayOf(new Date()); render(); };
-  if (g('resSearch')) g('resSearch').oninput = e => { state.search = e.target.value; const m=document.getElementById('main'); m.innerHTML = renderBoard(); };
-  if (g('idleOnly')) g('idleOnly').onchange = e => { state.idleOnly = e.target.checked; render(); };
   if (g('divFilter')) g('divFilter').onchange = e => { state.divFilter = e.target.value; render(); };
+  if (g('jobSearch')) g('jobSearch').oninput = e => { state.jobSearch = e.target.value; document.getElementById('main').innerHTML = renderJobBoard(); };
+  if (g('needOnly')) g('needOnly').onchange = e => { state.needCrewOnly = e.target.checked; render(); };
   if (g('importPlans')) g('importPlans').onclick = importPlanned;
+  if (g('crewSearch')) g('crewSearch').oninput = e => { state.crewSearch = e.target.value; document.getElementById('main').innerHTML = renderCrewBoard(); };
+  if (g('tradeFilter')) g('tradeFilter').onchange = e => { state.tradeFilter = e.target.value; render(); };
+  if (g('showAll')) g('showAll').onchange = e => { state.showAll = e.target.checked; render(); };
 }
 
-// Capacity strip (this week)
-function renderCapacity() {
-  const wk = weekDateStrs();
-  const total = (state.board.employees || []).length;
-  const assigned = new Set();
-  wk.forEach(d => (state.assignments[d] || []).forEach(a => { if (a.kind === 'emp') assigned.add(a.resource); }));
-  const idle = Math.max(total - assigned.size, 0);
-  const conflicts = wk.reduce((s,d) => s + conflictResourcesOn(d).size, 0);
-  const behind = (state.board.jobs || []).reduce((s,j) => s + (j.subCodes||[]).filter(c => c.status==='behind').length, 0);
-  const card = (val, lbl, color) => '<div class="cap-card"><div class="cap-val" style="color:' + (color||'var(--text)') + '">' + val + '</div><div class="cap-lbl">' + lbl + '</div></div>';
-  return '<div class="cap">' +
-    card(total, 'Field crew') +
-    card(assigned.size, 'Scheduled this wk', 'var(--green)') +
-    card(idle, 'Idle this wk', idle ? 'var(--amber)' : 'var(--muted)') +
-    card(conflicts, 'Conflicts', conflicts ? 'var(--red)' : 'var(--muted)') +
-    card(behind, 'Behind sub-codes', behind ? 'var(--red)' : 'var(--muted)') +
-  '</div>';
-}
-
-function asnChip(a) {
-  const col = divColor(a.division);
-  const cc = (a.costCode || '') + (a.subCode ? ' · ' + a.subCode : '');
-  return '<span class="asn' + (a.half ? ' half' : '') + '" style="border-left-color:' + col + '" title="' + esc(a.jobName + ' — ' + cc) + '">' +
-    esc(a.jobName) + (cc ? ' <span class="cc">' + esc(cc) + '</span>' : '') + (a.half ? ' ½' : '') + '</span>';
-}
-
-function renderBoard() {
-  const days = weekDays();
-  const ds = days.map(dstr);
-  const tStr = todayStr();
-  const emps = filteredEmployees();
-  const equips = state.board.equipment || [];
-
-  const head = '<thead><tr><th class="res-col">Crew / Equipment</th>' +
-    days.map((d,i) => {
-      const w = (d.getDay()===0||d.getDay()===6);
-      const isT = ds[i]===tStr;
-      return '<th class="' + (w?'weekend ':'') + (isT?'today':'') + '">' +
-        d.toLocaleDateString(undefined,{weekday:'short'}) + '<br><span style="font-size:0.66rem">' + d.toLocaleDateString(undefined,{month:'short',day:'numeric'}) + '</span></th>';
-    }).join('') + '</tr></thead>';
-
-  const rowFor = (resource, kind) => {
-    const meta = kind === 'emp' ? (state.board.employees || []).find(e => e.name === resource) : null;
-    const load = loadForResource(resource);
-    const left = '<td class="res-col"><div class="res-name">' + esc(resource) + '</div>' +
-      '<div class="res-meta">' + (meta && meta.isSupervisor ? '<span class="sup-dot" title="Supervisor">★</span>' : '') +
-      (meta && meta.jobClass ? '<span>' + esc(meta.jobClass) + '</span>' : (kind==='equip'?'<span>equipment</span>':'')) +
-      '<span class="res-load">' + load + '/7d</span></div></td>';
-    const cells = ds.map((d,i) => {
-      const w = (days[i].getDay()===0||days[i].getDay()===6);
-      const isT = d===tStr;
-      const conf = conflictResourcesOn(d).has(resource);
-      const items = assignmentsFor(d, resource);
-      return '<td class="cell' + (w?' weekend':'') + (isT?' today':'') + (conf?' conflict':'') + '" ' +
-        'onclick="openAssign(\'' + escAttr(resource) + '\',\'' + kind + '\',\'' + d + '\')">' +
-        items.map(asnChip).join('') + '</td>';
-    }).join('');
-    return '<tr>' + left + cells + '</tr>';
-  };
-
-  let body = '<tbody>';
-  if (!emps.length && !equips.length) body += '<tr><td class="res-col">—</td><td colspan="7" class="muted" style="padding:1rem">No crew found.</td></tr>';
-  body += '<tr class="section-row"><td colspan="8">Crew (' + emps.length + ')</td></tr>';
-  body += emps.map(n => rowFor(n, 'emp')).join('');
-  if (equips.length) {
-    body += '<tr class="section-row"><td colspan="8">Equipment (' + equips.length + ')</td></tr>';
-    body += equips.map(n => rowFor(n, 'equip')).join('');
-  }
-  body += '</tbody>';
-
-  return renderCapacity() +
-    '<div class="muted" style="font-size:0.7rem;margin-bottom:0.5rem">Click any cell to assign crew/equipment to a job &amp; sub-code. Red = double-booked across jobs that day.</div>' +
-    '<div class="board-wrap"><table class="board">' + head + body + '</table></div>';
-}
-function escAttr(s) { return String(s).replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
-
-function renderJobs() {
-  const jobs = visibleJobs().slice().sort((a,b) => {
-    const ra = Math.min.apply(null, (a.subCodes||[]).map(c => STATUS_RANK[c.status] ?? 9).concat([9]));
-    const rb = Math.min.apply(null, (b.subCodes||[]).map(c => STATUS_RANK[c.status] ?? 9).concat([9]));
-    return ra - rb;
-  });
-  if (!jobs.length) return '<div class="empty">No active jobs in the selected division(s).</div>';
-  return jobs.map(j => {
-    const col = divColor(j.division);
-    const scs = (j.subCodes || []).slice().sort((a,b) => (STATUS_RANK[a.status]??9)-(STATUS_RANK[b.status]??9));
-    const behind = scs.filter(c => c.status==='behind').length;
-    const rows = scs.map(c => {
-      const pace = c.requiredPace != null
-        ? fmtNum(c.currentPace) + ' / ' + fmtNum(c.requiredPace) + ' ' + (c.unit||'') + '/day'
-        : (c.currentPace ? fmtNum(c.currentPace) + ' ' + (c.unit||'') + '/day' : '—');
-      const win = c.usingPPDays
-        ? '<span style="color:var(--blue)" title="From the division Projection Planner">📅 ' + fmtNum(c.effectiveDaysLeft) + ' planned days</span>'
-        : (c.effectiveDaysLeft != null ? fmtNum(c.effectiveDaysLeft) + ' wd' + (c.targetDate ? ' → ' + c.targetDate : '') : '<span class="muted">no deadline</span>');
-      const need = (c.addlLaborersNeeded ? '<span class="warn">+' + c.addlLaborersNeeded + ' crew</span>' : (c.status==='behind' ? '<span class="warn">behind</span>' : '<span class="muted">—</span>'));
-      const pc = Math.min(Math.max(c.pctComplete||0,0),100);
-      const barCol = c.status==='behind'?'var(--red)':c.status==='at-risk'?'var(--amber)':c.status==='complete'?'var(--blue)':'var(--green)';
-      return '<tr>' +
-        '<td><strong>' + esc(c.costCode) + '</strong>' + (c.subCode ? ' · ' + esc(c.subCode) : '') +
-          (c.description ? '<div class="muted" style="font-size:0.66rem">' + esc(c.description) + '</div>' : '') + '</td>' +
-        '<td><span class="pill ' + c.status + '">' + c.status.replace('-',' ') + '</span></td>' +
-        '<td><div class="prog"><div style="width:' + pc + '%;background:' + barCol + '"></div></div>' +
-          '<div class="muted" style="font-size:0.64rem;margin-top:2px">' + fmtNum(c.runningQty) + ' / ' + fmtNum(c.bidQty) + ' ' + esc(c.unit||'') + ' (' + fmtNum(pc) + '%)</div></td>' +
-        '<td>' + pace + '</td>' +
-        '<td>' + win + '</td>' +
-        '<td>' + need + '</td>' +
-        '<td class="muted" style="font-size:0.66rem">' + (c.crew && c.crew.length ? esc(c.crew.join(', ')) : '<span class="warn">none</span>') + '</td>' +
-      '</tr>';
-    }).join('');
-    return '<div class="job-card">' +
-      '<div class="job-head" onclick="this.parentNode.querySelector(\'.job-body\').classList.toggle(\'open\');this.parentNode.querySelector(\'.job-body\').style.display = this.parentNode.querySelector(\'.job-body\').style.display===\'block\'?\'none\':\'block\'">' +
-        '<span class="div-badge" style="color:' + col + ';border-color:' + col + '">' + esc(j.division) + '</span>' +
-        '<span class="job-name">' + esc(j.name) + '</span>' +
-        (j.jobNumber ? '<span class="job-sub">#' + esc(j.jobNumber) + '</span>' : '') +
-        (j.deadline ? '<span class="job-sub">· deadline ' + esc(j.deadline) + '</span>' : '') +
-        '<span class="spacer" style="flex:1"></span>' +
-        (behind ? '<span class="pill behind">' + behind + ' behind</span>' : '') +
-        '<span class="job-sub">' + scs.length + ' sub-codes ▾</span>' +
-      '</div>' +
-      '<div class="job-body" style="display:none">' +
-        '<table class="sc-table"><thead><tr><th>Sub-code</th><th>Status</th><th>Progress</th><th>Pace (cur/req)</th><th>Window</th><th>Need</th><th>Crew</th></tr></thead><tbody>' +
-        (rows || '<tr><td colspan="7" class="muted">No bid items.</td></tr>') +
-        '</tbody></table>' +
-      '</div>' +
-    '</div>';
+function dayHeaders(days, ds, tStr) {
+  return days.map((d,i) => {
+    const w = (d.getDay()===0||d.getDay()===6), isT = ds[i]===tStr;
+    return '<th class="'+(w?'weekend ':'')+(isT?'today':'')+'">'+d.toLocaleDateString(undefined,{weekday:'short'})+'<br><span style="font-size:0.66rem">'+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</span></th>';
   }).join('');
 }
+function renderCapacity() {
+  const wk = weekDateStrs();
+  const total = (state.board.employees||[]).length;
+  const assigned = new Set(); wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind==='emp') assigned.add(a.resource); }));
+  const idle = Math.max(total - assigned.size, 0);
+  const conflicts = wk.reduce((s,d) => s + conflictResourcesOn(d).size, 0);
+  const behind = (state.board.jobs||[]).reduce((s,j) => s + (j.subCodes||[]).filter(c => c.status==='behind').length, 0);
+  const card = (v,l,c) => '<div class="cap-card"><div class="cap-val" style="color:'+(c||'var(--text)')+'">'+v+'</div><div class="cap-lbl">'+l+'</div></div>';
+  return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled this wk','var(--green)')+card(idle,'Idle this wk',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+'</div>';
+}
+function chip(a, conf) {
+  const col = divColor(a.division);
+  const lbl = a.kind === 'equip' ? a.resource.split(' ')[0] : a.resource.split(' ')[0];
+  return '<span class="asn'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'" title="'+esc(a.resource+' — '+a.jobName)+'">'+esc(lbl)+(a.kind==='equip'?' 🚜':'')+(a.half?' ½':'')+'</span>';
+}
 
+// ── By Job board ────────────────────────────────────────────────────────────
+function renderJobBoard() {
+  const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
+  const jobs = visibleJobs();
+  let html = renderCapacity() + '<div class="hint">Staff the work: click a day cell on a sub-code to add crew or equipment from a search picker (free people shown first). Red = that person is double-booked across jobs.</div>';
+  if (!jobs.length) return html + '<div class="empty">No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+'.</div>';
+  let body = '';
+  jobs.forEach(job => {
+    const col = divColor(job.division);
+    const collapsed = !!state.jobCol[job.division+'::'+job.id];
+    const behind = (job.subCodes||[]).filter(c => c.status==='behind').length;
+    const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
+    body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')">'+
+      '<td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+
+        '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+
+        (job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
+        '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+'</div></td>'+
+      headCells+'</tr>';
+    if (collapsed) return;
+    let subs = (job.subCodes||[]);
+    if (state.needCrewOnly) subs = subs.filter(sc => subNeedsCrew(sc, ds));
+    if (!subs.length) body += '<tr><td class="lead-col muted" style="padding-left:1.5rem">'+(state.needCrewOnly?'No sub-codes need crew':'No sub-codes')+'</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
+    subs.forEach(sc => {
+      const need = sc.addlLaborersNeeded ? '<span class="need-badge">+'+sc.addlLaborersNeeded+' crew</span>' : '';
+      const lead = '<td class="lead-col" style="padding-left:1.4rem"><strong>'+esc(sc.costCode)+'</strong>'+(sc.subCode?' · '+esc(sc.subCode):'')+
+        '<div class="sub-meta"><span class="pill '+sc.status+'">'+sc.status.replace('-',' ')+'</span>'+
+        (sc.requiredPace!=null?'<span>req '+fmtNum(sc.requiredPace)+'/d</span>':'')+
+        (sc.usingPPDays?'<span style="color:var(--blue)">📅'+fmtNum(sc.effectiveDaysLeft)+'d</span>':'')+need+'</div></td>';
+      const cells = ds.map(d => {
+        const items = cellAssignments(d, job.division, job.id, sc.costCode, sc.subCode);
+        const confSet = conflictResourcesOn(d);
+        const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr;
+        return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(sc.costCode)+'\',\''+escAttr(sc.subCode)+'\',\''+d+'\')">'+
+          items.map(a => chip(a, confSet.has(a.resource))).join('')+'</td>';
+      }).join('');
+      body += '<tr>'+lead+cells+'</tr>';
+    });
+  });
+  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job / Sub-code</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
+}
+function toggleJob(division, id) { const k = division+'::'+id; state.jobCol[k] = !state.jobCol[k]; document.getElementById('main').innerHTML = renderJobBoard(); }
+
+// ── By Crew board (grouped by trade, in-play default) ───────────────────────
+function tradeList() {
+  const set = new Set(); (state.board.employees||[]).forEach(e => set.add(e.jobClass || 'Other')); return [...set].sort();
+}
+function renderCrewBoard() {
+  const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
+  const inPlay = resourcesInPlay();
+  const q = state.crewSearch.trim().toLowerCase();
+  let emps = (state.board.employees || []);
+  if (state.tradeFilter !== 'all') emps = emps.filter(e => (e.jobClass||'Other') === state.tradeFilter);
+  if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q));
+  if (!state.showAll && !q) emps = emps.filter(e => inPlay.emps.has(e.name));
+
+  // group by trade
+  const groups = {};
+  emps.forEach(e => { const g = e.jobClass || 'Other'; (groups[g] = groups[g] || []).push(e); });
+  const groupNames = Object.keys(groups).sort();
+
+  let html = renderCapacity() +
+    '<div class="hint">'+(state.showAll?'Showing the full roster.':'Showing crew in rotation (assigned this week or on an active job). Tick “Show full roster” for everyone.')+' Click a cell to assign someone to a job. Red = double-booked.</div>';
+
+  let body = '';
+  const rowFor = (resource, kind, meta) => {
+    const load = loadForResource(resource);
+    const left = '<td class="lead-col"><span style="font-weight:600">'+esc(resource)+'</span>'+
+      '<div class="res-meta">'+(meta && meta.isSupervisor?'<span class="sup-dot" title="Supervisor">★</span>':'')+
+      (meta && meta.jobClass?'<span>'+esc(meta.jobClass)+'</span>':(kind==='equip'?'<span>equipment</span>':''))+
+      '<span class="res-load">'+load+'/7d</span></div></td>';
+    const cells = ds.map(d => {
+      const conf = conflictResourcesOn(d).has(resource);
+      const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr;
+      const items = assignmentsFor(d, resource);
+      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+items.map(a => chip(a, conf)).join('')+'</td>';
+    }).join('');
+    return '<tr>'+left+cells+'</tr>';
+  };
+
+  if (!groupNames.length) body += '<tr><td class="lead-col muted">No crew match.</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
+  groupNames.forEach(g => {
+    const collapsed = !!state.grpCol['t::'+g];
+    const headCells = ds.map(d => { const n = groups[g].filter(e => assignmentsFor(d, e.name).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
+    body += '<tr class="grp-row" onclick="toggleGrp(\'t::'+escAttr(g)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+esc(g)+' <span class="muted">('+groups[g].length+')</span></td>'+headCells+'</tr>';
+    if (!collapsed) body += groups[g].map(e => rowFor(e.name, 'emp', e)).join('');
+  });
+
+  // Equipment group
+  let equips = (state.board.equipment || []);
+  if (q) equips = equips.filter(n => n.toLowerCase().includes(q));
+  if (!state.showAll && !q) equips = equips.filter(n => inPlay.equips.has(n));
+  if (state.tradeFilter === 'all' && equips.length) {
+    const collapsed = !!state.grpCol['equip'];
+    const headCells = ds.map(d => { const n = equips.filter(n2 => assignmentsFor(d, n2).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
+    body += '<tr class="grp-row" onclick="toggleGrp(\'equip\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> 🚜 Equipment <span class="muted">('+equips.length+')</span></td>'+headCells+'</tr>';
+    if (!collapsed) body += equips.map(n => rowFor(n, 'equip', null)).join('');
+  }
+
+  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
+}
+function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderCrewBoard(); }
+
+// ── Assign modal ────────────────────────────────────────────────────────────
+function openAssignJob(division, jobId, costCode, subCode, date) { state.assignCtx = { mode:'job', division, jobId, costCode, subCode, date }; renderModal(); }
+function openAssignResource(resource, kind, date) { state.assignCtx = { mode:'resource', resource, kind, date }; renderModal(); }
+function closeAssign() { state.assignCtx = null; const o = document.getElementById('assignOverlay'); if (o) o.remove(); }
+function afterMutate() { renderModal(); document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard(); }
+
+function renderModal() {
+  const ctx = state.assignCtx; if (!ctx) return;
+  let o = document.getElementById('assignOverlay');
+  if (!o) { o = document.createElement('div'); o.id='assignOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeAssign(); }; }
+  o.innerHTML = ctx.mode === 'job' ? modalJobHtml(ctx) : modalResourceHtml(ctx);
+  if (ctx.mode === 'job') updatePickList();
+}
+
+// Staff a job/sub-code cell — search the roster, free people first.
+function modalJobHtml(ctx) {
+  const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
+  const sc = subCodeOf(job, ctx.costCode, ctx.subCode);
+  const d = new Date(ctx.date+'T12:00:00');
+  const dfmt = d.toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
+  const col = divColor(ctx.division);
+  const current = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
+  const curHtml = current.length ? current.map(a =>
+    '<div class="cur-asn"><span class="grow">'+esc(a.resource)+(a.kind==='equip'?' 🚜':'')+'</span>'+
+    '<button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button>'+
+    '<button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>').join('')
+    : '<div class="muted" style="font-size:0.78rem">Nobody assigned here yet.</div>';
+  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div>'+
+    '<div class="muted" style="font-size:0.72rem">'+esc(ctx.costCode||'job-level')+(ctx.subCode?' · '+esc(ctx.subCode):'')+' · '+esc(dfmt)+(sc?' · '+sc.status:'')+'</div></div>'+
+    '<button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+    '<label class="fld">Assigned here</label>'+curHtml+
+    '<label class="fld">Add crew or equipment</label>'+
+    '<input type="text" class="full" id="pickSearch" placeholder="Search people / equipment…" oninput="updatePickList()" autocomplete="off">'+
+    '<div class="pick-list" id="pickList"></div>'+
+    '<div style="margin-top:0.8rem"><button class="btn" onclick="closeAssign()">Done</button></div></div></div>';
+}
+function updatePickList() {
+  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
+  const box = document.getElementById('pickList'); if (!box) return;
+  const q = (document.getElementById('pickSearch')||{}).value || '';
+  const ql = q.trim().toLowerCase();
+  const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
+  const sc = subCodeOf(job, ctx.costCode, ctx.subCode);
+  const here = new Set(cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode).map(a => a.resource));
+
+  // Build candidate list: employees then equipment
+  const emps = (state.board.employees||[]).map(e => ({ name:e.name, kind:'emp', jobClass:e.jobClass, sup:e.isSupervisor }));
+  const equips = (state.board.equipment||[]).map(n => ({ name:n, kind:'equip', jobClass:'', sup:false }));
+  let cands = emps.concat(equips);
+  if (ql) cands = cands.filter(c => c.name.toLowerCase().includes(ql) || (c.jobClass||'').toLowerCase().includes(ql));
+
+  // annotate availability that day
+  cands.forEach(c => {
+    const items = assignmentsFor(ctx.date, c.name);
+    c.onThis = items.some(a => a.division===ctx.division && a.jobId===ctx.jobId);
+    c.others = [...new Set(items.filter(a => !(a.division===ctx.division && a.jobId===ctx.jobId)).map(a => a.jobName))];
+  });
+  // free first, then busy-elsewhere, then on-this; suggested crew (history) bubbled up within free
+  const histCrew = new Set(sc ? (sc.crew||[]) : []);
+  cands.sort((a,b) => {
+    const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis;
+    if (af !== bf) return af ? -1 : 1;
+    const ah = histCrew.has(a.name), bh = histCrew.has(b.name);
+    if (ah !== bh) return ah ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  cands = cands.slice(0, 60);
+  if (!cands.length) { box.innerHTML = '<div class="muted" style="font-size:0.78rem;padding:0.5rem">No match.</div>'; return; }
+  box.innerHTML = cands.map(c => {
+    let status, cls = '';
+    if (c.onThis) { status = '<span class="ok">✓ assigned</span>'; cls = ' on-this'; }
+    else if (c.others.length) status = '<span class="warn">→ '+esc(c.others.join(', '))+'</span>';
+    else status = '<span class="ok">free</span>';
+    const sub = [c.kind==='equip'?'equipment':(c.jobClass||''), histCrew.has(c.name)?'★ worked this code':''].filter(Boolean).join(' · ');
+    return '<div class="pick-row'+cls+'" onclick="pickAdd(\''+escAttr(c.name)+'\',\''+c.kind+'\')"><div><div class="pick-name">'+(c.sup?'★ ':'')+esc(c.name)+(c.kind==='equip'?' 🚜':'')+'</div>'+(sub?'<div class="pick-sub">'+esc(sub)+'</div>':'')+'</div><span class="pick-status">'+status+'</span></div>';
+  }).join('');
+}
+function pickAdd(name, kind) {
+  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
+  const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
+  const sc = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
+  if (cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode).some(a => a.resource === name)) { toast(name+' already here'); return; }
+  addAssignment(ctx.date, name, kind, job, sc);
+  afterMutate();
+}
+
+// Assign a person to a job from the crew view (person -> job picker).
+function modalResourceHtml(ctx) {
+  const d = new Date(ctx.date+'T12:00:00');
+  const dfmt = d.toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
+  const current = assignmentsFor(ctx.date, ctx.resource);
+  const conf = conflictResourcesOn(ctx.date).has(ctx.resource);
+  const curHtml = current.length ? current.map(a => { const col = divColor(a.division);
+    return '<div class="cur-asn"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(a.division)+'</span>'+
+      '<span class="grow">'+esc(a.jobName)+(a.costCode?' <span class="muted">· '+esc(a.costCode)+(a.subCode?' · '+esc(a.subCode):'')+'</span>':'')+'</span>'+
+      '<button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button>'+
+      '<button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>'; }).join('')
+    : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
+  const jobs = visibleJobs();
+  const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => {
+    const inDiv = jobs.filter(j => j.division === div); if (!inDiv.length) return '';
+    return '<optgroup label="'+div.toUpperCase()+'">'+inDiv.map(j => '<option value="'+esc(j.division)+'::'+esc(j.id)+'">'+esc(j.name)+(j.jobNumber?' (#'+esc(j.jobNumber)+')':'')+'</option>').join('')+'</optgroup>';
+  }).join('');
+  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div>'+
+    '<div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+'</div></div>'+
+    '<button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+    '<label class="fld">Scheduled</label>'+curHtml+
+    '<label class="fld">Add to a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select>'+
+    '<div id="rScWrap" style="display:none"><label class="fld">Sub-code</label><select class="full" id="rSc"></select></div>'+
+    '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn primary" id="rAdd" style="flex:1" disabled onclick="rConfirmAdd()">Add</button><button class="btn" onclick="closeAssign()">Done</button></div></div></div>';
+}
+function onPickRJob() {
+  const sel = document.getElementById('rJob').value, wrap = document.getElementById('rScWrap'), scSel = document.getElementById('rSc'), add = document.getElementById('rAdd');
+  if (!sel) { wrap.style.display='none'; add.disabled = true; return; }
+  const [division, id] = sel.split('::'); const job = jobById(division, id);
+  wrap.style.display = 'block'; add.disabled = false;
+  scSel.innerHTML = '<option value="">— whole job —</option>' + (job.subCodes||[]).map((c,i) => '<option value="'+i+'">'+esc(c.costCode)+(c.subCode?' · '+esc(c.subCode):'')+'  ['+c.status+(c.addlLaborersNeeded?' · +'+c.addlLaborersNeeded:'')+']</option>').join('');
+}
+function rConfirmAdd() {
+  const sel = document.getElementById('rJob').value; if (!sel) return;
+  const [division, id] = sel.split('::'); const job = jobById(division, id);
+  const scIdx = document.getElementById('rSc').value;
+  const sc = scIdx !== '' ? (job.subCodes||[])[parseInt(scIdx,10)] : null;
+  const ctx = state.assignCtx;
+  addAssignment(ctx.date, ctx.resource, ctx.kind, job, sc);
+  afterMutate();
+}
+
+// ── Import division Projection Planner plans ────────────────────────────────
+function importPlanned() {
+  const planned = state.board.plannedAssignments || [];
+  if (!planned.length) { toast('No division plans to import'); return; }
+  let added = 0;
+  planned.forEach(p => {
+    const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'') && (a.subCode||'')===(p.subCode||''));
+    if (dup) return;
+    dayList(p.date).push({ id: uid(), resource:p.resource, kind:p.kind||'emp', division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', subCode:p.subCode||'', half:!!p.half });
+    added++;
+  });
+  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')); render(); }
+  else toast('Already up to date with division plans');
+}
+
+// ── AI insights ─────────────────────────────────────────────────────────────
+function buildAISnapshot() {
+  const wk = weekDateStrs();
+  const jobs = (state.board.jobs||[]).map(j => ({ division:j.division, name:j.name, jobNumber:j.jobNumber, deadline:j.deadline, status:j.status,
+    subCodes: (j.subCodes||[]).filter(c => c.status==='behind'||c.status==='at-risk'||c.notStartedYet).map(c => ({ costCode:c.costCode, subCode:c.subCode, status:c.status, pctComplete:c.pctComplete, currentPace:c.currentPace, requiredPace:c.requiredPace, gap:c.gap, effectiveDaysLeft:c.effectiveDaysLeft, usingPPDays:c.usingPPDays, targetDate:c.targetDate, addlLaborersNeeded:c.addlLaborersNeeded, crew:c.crew })) })).filter(j => j.subCodes.length);
+  const conflicts = [];
+  Object.keys(state.assignments).forEach(d => { if (d < todayStr()) return; conflictResourcesOn(d).forEach(r => { conflicts.push({ date:d, resource:r, jobs: assignmentsFor(d,r).map(a => ({ name:a.jobName, costCode:a.costCode, subCode:a.subCode })) }); }); });
+  const unstaffed = [];
+  (state.board.jobs||[]).forEach(j => (j.subCodes||[]).forEach(c => { if (c.status==='behind' && (c.addlLaborersNeeded || !c.crew.length)) unstaffed.push({ jobName:j.name, costCode:c.costCode, subCode:c.subCode, addlLaborersNeeded:c.addlLaborersNeeded }); }));
+  const total = (state.board.employees||[]).length; const assigned = new Set(); wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind==='emp') assigned.add(a.resource); }));
+  return { today: todayStr(), jobs, conflicts: conflicts.slice(0,40), unstaffed: unstaffed.slice(0,30), capacity: { totalEmployees: total, assignedThisWeek: assigned.size, idleThisWeek: Math.max(total-assigned.size,0) } };
+}
+async function generateAI() {
+  state.aiLoading = true; render();
+  try { state.ai = await api('/api/ai/scheduler-insights', { method:'POST', body: JSON.stringify(buildAISnapshot()) }); }
+  catch (err) { state.ai = { summary:'Could not generate insights: '+err.message, recommendations:[], reassignments:[], outlook:'' }; }
+  finally { state.aiLoading = false; render(); }
+}
 function renderAI() {
   if (state.aiLoading) return '<div class="loading">⚡ Analyzing the cross-division schedule…</div>';
   if (!state.ai) return '<div class="empty">No insights yet.<br><span class="muted">Click “Generate insights” to have AI review conflicts, behind work and capacity across every active job.</span></div>';
@@ -509,169 +626,17 @@ function renderAI() {
   const oc = { 'on-track':'var(--green)','at-risk':'var(--amber)','behind':'var(--red)' }[a.outlook] || 'var(--muted)';
   const ol = { 'on-track':'On Track','at-risk':'At Risk','behind':'Behind' }[a.outlook] || (a.outlook||'');
   const pcol = { high:'var(--red)', medium:'var(--amber)', low:'var(--green)' };
-  const recs = (a.recommendations || []).map(r => '<div class="rec">' +
-    '<div class="rec-dot" style="background:' + (pcol[r.priority]||'var(--muted)') + '"></div>' +
-    '<div><div class="rec-meta">' + esc(r.scope||'Overall') + ' · ' + esc((r.priority||'medium').toUpperCase()) + '</div>' +
-    '<div class="rec-issue">' + esc(r.issue||'') + '</div><div class="rec-action">' + esc(r.action||'') + '</div></div></div>').join('');
-  const re = (a.reassignments || []).map(r => '<div class="reassign">' +
-    '<strong>' + esc(r.employee) + '</strong><span class="muted">' + esc(r.fromJob||'Unassigned') + '</span>' +
-    '<span class="arrow">→</span><strong>' + esc(r.toJob||'') + '</strong>' +
-    (r.reason ? '<span class="muted">· ' + esc(r.reason) + '</span>' : '') + '</div>').join('');
-  return '<div class="ai-card"><div class="ai-head"><span>⚡</span><span style="font-weight:700">AI Scheduling Insights</span>' +
-    '<span class="ai-badge">Claude</span>' + (ol ? '<span style="margin-left:auto;font-weight:700;color:' + oc + '">' + esc(ol) + '</span>' : '') + '</div>' +
-    '<div class="ai-body"><div style="font-size:0.86rem;line-height:1.6;margin-bottom:0.5rem">' + esc(a.summary||'') + '</div>' +
-    recs +
-    (re ? '<div class="rec-meta" style="margin-top:0.9rem">Suggested reassignments</div>' + re : '') +
-    (a.cached ? '<div class="muted" style="font-size:0.62rem;margin-top:0.8rem">Cached result</div>' : '') +
-    '</div></div>';
+  const recs = (a.recommendations||[]).map(r => '<div class="rec"><div class="rec-dot" style="background:'+(pcol[r.priority]||'var(--muted)')+'"></div><div><div class="rec-meta">'+esc(r.scope||'Overall')+' · '+esc((r.priority||'medium').toUpperCase())+'</div><div class="rec-issue">'+esc(r.issue||'')+'</div><div class="rec-action">'+esc(r.action||'')+'</div></div></div>').join('');
+  const re = (a.reassignments||[]).map(r => '<div class="reassign"><strong>'+esc(r.employee)+'</strong><span class="muted">'+esc(r.fromJob||'Unassigned')+'</span><span class="arrow">→</span><strong>'+esc(r.toJob||'')+'</strong>'+(r.reason?'<span class="muted">· '+esc(r.reason)+'</span>':'')+'</div>').join('');
+  return '<div class="ai-card"><div class="ai-head"><span>⚡</span><span style="font-weight:700">AI Scheduling Insights</span><span class="ai-badge">Claude</span>'+(ol?'<span style="margin-left:auto;font-weight:700;color:'+oc+'">'+esc(ol)+'</span>':'')+'</div><div class="ai-body"><div style="font-size:0.86rem;line-height:1.6;margin-bottom:0.5rem">'+esc(a.summary||'')+'</div>'+recs+(re?'<div class="rec-meta" style="margin-top:0.9rem">Suggested reassignments</div>'+re:'')+(a.cached?'<div class="muted" style="font-size:0.62rem;margin-top:0.8rem">Cached result</div>':'')+'</div></div>';
 }
 
-// ── Assign modal ────────────────────────────────────────────────────────────
-function openAssign(resource, kind, date) {
-  state.editing = { resource, kind, date };
-  renderModal();
-}
-function closeAssign() {
-  state.editing = null;
-  const o = document.getElementById('assignOverlay'); if (o) o.remove();
-}
-function renderModal() {
-  const { resource, kind, date } = state.editing;
-  let o = document.getElementById('assignOverlay');
-  if (!o) { o = document.createElement('div'); o.id = 'assignOverlay'; o.className = 'overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeAssign(); }; }
-  const d = new Date(date + 'T12:00:00');
-  const dfmt = d.toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
-  const current = assignmentsFor(date, resource);
-  const conf = conflictResourcesOn(date).has(resource);
-
-  const curHtml = current.length ? current.map(a => {
-    const col = divColor(a.division);
-    return '<div class="cur-asn"><span class="div-badge" style="color:' + col + ';border-color:' + col + '">' + esc(a.division) + '</span>' +
-      '<span class="grow">' + esc(a.jobName) + (a.costCode ? ' <span class="muted">· ' + esc(a.costCode) + (a.subCode?' · '+esc(a.subCode):'') + '</span>' : '') + '</span>' +
-      '<button class="btn mini" onclick="toggleHalf(\'' + date + '\',\'' + a.id + '\');renderModal();render()">' + (a.half?'½ day':'full') + '</button>' +
-      '<button class="btn mini" onclick="removeAssignment(\'' + date + '\',\'' + a.id + '\');renderModal();render()">✕</button></div>';
-  }).join('') : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
-
-  const jobs = visibleJobs();
-  const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => {
-    const inDiv = jobs.filter(j => j.division === div);
-    if (!inDiv.length) return '';
-    return '<optgroup label="' + div.toUpperCase() + '">' + inDiv.map(j =>
-      '<option value="' + esc(j.division) + '::' + esc(j.id) + '">' + esc(j.name) + (j.jobNumber?' (#'+esc(j.jobNumber)+')':'') + '</option>').join('') + '</optgroup>';
-  }).join('');
-
-  o.innerHTML = '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">' + esc(resource) + '</div>' +
-      '<div class="muted" style="font-size:0.72rem">' + esc(dfmt) + ' · ' + (kind==='equip'?'equipment':'crew') + (conf?' · <span class="warn">double-booked</span>':'') + '</div></div>' +
-      '<button class="x" onclick="closeAssign()">✕</button></div>' +
-    '<div class="modal-body">' +
-      '<label class="fld">Currently scheduled</label>' + curHtml +
-      '<label class="fld">Add to a job</label>' +
-      '<select class="full" id="asnJob" onchange="onPickJob()">' + jobOpts + '</select>' +
-      '<div id="asnScWrap" style="display:none"><label class="fld">Sub-code</label><select class="full" id="asnSc"></select>' +
-        '<label class="chip-toggle" style="margin-top:0.5rem"><input type="checkbox" id="asnHalf"> Half day</label></div>' +
-      '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn primary" id="asnAdd" style="flex:1" disabled onclick="confirmAdd()">Add assignment</button>' +
-        '<button class="btn" onclick="closeAssign()">Done</button></div>' +
-    '</div></div>';
-}
-function onPickJob() {
-  const sel = document.getElementById('asnJob').value;
-  const wrap = document.getElementById('asnScWrap');
-  const scSel = document.getElementById('asnSc');
-  const add = document.getElementById('asnAdd');
-  if (!sel) { wrap.style.display='none'; add.disabled = true; return; }
-  const [division, id] = sel.split('::');
-  const job = jobById(division, id);
-  const scs = (job.subCodes || []);
-  wrap.style.display = 'block';
-  scSel.innerHTML = '<option value="">— whole job —</option>' + scs.map((c,i) =>
-    '<option value="' + i + '">' + esc(c.costCode) + (c.subCode?' · '+esc(c.subCode):'') + '  [' + c.status + (c.addlLaborersNeeded?(' · +'+c.addlLaborersNeeded+' need'):'') + ']</option>').join('');
-  add.disabled = false;
-}
-function confirmAdd() {
-  const sel = document.getElementById('asnJob').value;
-  if (!sel) return;
-  const [division, id] = sel.split('::');
-  const job = jobById(division, id);
-  const scIdx = document.getElementById('asnSc').value;
-  const sc = scIdx !== '' ? (job.subCodes || [])[parseInt(scIdx,10)] : null;
-  const half = document.getElementById('asnHalf').checked;
-  const { resource, kind, date } = state.editing;
-  addAssignment(date, resource, kind, job, sc, half);
-  renderModal();
-  render();
-}
-
-// ── Import division Projection Planner assignments ──────────────────────────
-function importPlanned() {
-  const planned = state.board.plannedAssignments || [];
-  if (!planned.length) { toast('No division plans to import'); return; }
-  let added = 0;
-  planned.forEach(p => {
-    const existing = (state.assignments[p.date] || []).some(a =>
-      a.resource === p.resource && a.division === p.division && a.jobId === p.jobId && a.costCode === p.costCode && (a.subCode||'') === (p.subCode||''));
-    if (existing) return;
-    const job = jobById(p.division, p.jobId) || { division: p.division, id: p.jobId, name: p.jobName };
-    dayList(p.date).push({ id: uid(), resource: p.resource, kind: p.kind || 'emp', division: p.division,
-      jobId: p.jobId, jobName: p.jobName, costCode: p.costCode || '', subCode: p.subCode || '', half: !!p.half });
-    added++;
-  });
-  if (added) { saveAssignments(); toast('Imported ' + added + ' planned assignment' + (added>1?'s':'')); render(); }
-  else toast('Already up to date with division plans');
-}
-
-// ── AI insights ─────────────────────────────────────────────────────────────
-function buildAISnapshot() {
-  const wk = weekDateStrs();
-  const jobs = (state.board.jobs || []).map(j => ({
-    division: j.division, name: j.name, jobNumber: j.jobNumber, deadline: j.deadline, status: j.status,
-    subCodes: (j.subCodes || []).filter(c => c.status==='behind' || c.status==='at-risk' || c.notStartedYet)
-      .map(c => ({ costCode:c.costCode, subCode:c.subCode, status:c.status, pctComplete:c.pctComplete,
-        currentPace:c.currentPace, requiredPace:c.requiredPace, gap:c.gap, effectiveDaysLeft:c.effectiveDaysLeft,
-        usingPPDays:c.usingPPDays, targetDate:c.targetDate, addlLaborersNeeded:c.addlLaborersNeeded, crew:c.crew })),
-  })).filter(j => j.subCodes.length);
-
-  const conflicts = [];
-  Object.keys(state.assignments).forEach(d => {
-    if (d < todayStr()) return;
-    conflictResourcesOn(d).forEach(r => {
-      const items = assignmentsFor(d, r);
-      conflicts.push({ date:d, resource:r, jobs: items.map(a => ({ name:a.jobName, costCode:a.costCode, subCode:a.subCode })) });
-    });
-  });
-
-  const unstaffed = [];
-  (state.board.jobs || []).forEach(j => (j.subCodes||[]).forEach(c => {
-    if (c.status==='behind' && (c.addlLaborersNeeded || !c.crew.length)) unstaffed.push({ jobName:j.name, costCode:c.costCode, subCode:c.subCode, addlLaborersNeeded:c.addlLaborersNeeded });
-  }));
-
-  const total = (state.board.employees || []).length;
-  const assigned = new Set();
-  wk.forEach(d => (state.assignments[d] || []).forEach(a => { if (a.kind==='emp') assigned.add(a.resource); }));
-  const capacity = { totalEmployees: total, assignedThisWeek: assigned.size, idleThisWeek: Math.max(total-assigned.size,0) };
-
-  return { today: todayStr(), jobs, conflicts: conflicts.slice(0,40), unstaffed: unstaffed.slice(0,30), capacity };
-}
-async function generateAI() {
-  state.aiLoading = true; render();
-  try {
-    const snap = buildAISnapshot();
-    state.ai = await api('/api/ai/scheduler-insights', { method:'POST', body: JSON.stringify(snap) });
-  } catch (err) {
-    state.ai = { summary: 'Could not generate insights: ' + err.message, recommendations: [], reassignments: [], outlook: '' };
-  } finally {
-    state.aiLoading = false; render();
-  }
-}
-
-// ── Tab switching ───────────────────────────────────────────────────────────
+// ── Wire up ─────────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
-const av = document.getElementById('avatar'); if (user) av.textContent = (user.username||'U').slice(0,2).toUpperCase();
+if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
 
-// expose handlers used in inline onclick
-window.openAssign = openAssign; window.closeAssign = closeAssign; window.onPickJob = onPickJob;
-window.confirmAdd = confirmAdd; window.removeAssignment = removeAssignment; window.toggleHalf = toggleHalf;
-window.renderModal = renderModal; window.render = render;
+Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal });
 
 loadAll();
 </script>
