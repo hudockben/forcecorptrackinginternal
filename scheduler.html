@@ -663,12 +663,39 @@ function dispatchTitle(scope) {
 }
 function dayLabel(d) { return new Date(d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
 function buildDispatchBody(layout, dates) { return layout === 'person' ? dispatchBodyPerson(dates) : dispatchBodyJob(dates); }
+// Project-progress detail shown under a cost code on the dispatch sheet so
+// crews know the goal, not just the task: today's target quantity (the daily
+// pace needed to finish on time), % complete + units left, deadline vs the
+// projected finish, and any crew shortfall. Returns { html, color } where
+// color tints the code red/amber when it's behind / at-risk.
+function dispatchCodeMeta(job, sc) {
+  if (!job || !sc) return { html:'', color:'' };
+  const unitRaw = (sc.unit||'').trim(); const isLS = unitRaw.toUpperCase()==='LS';
+  const unit = (unitRaw && !isLS) ? ' '+esc(unitRaw) : '';
+  const color = sc.status==='behind' ? '#b91c1c' : sc.status==='at-risk' ? '#b45309' : '';
+  const lines = [];
+  if (sc.description) lines.push('<div style="font-style:italic;color:#777">'+esc(sc.description)+'</div>');
+  const stat = [];
+  if (sc.requiredPace != null && sc.requiredPace > 0) stat.push('<strong>Target '+fmtNum(sc.requiredPace)+unit+'/day</strong>');
+  if (sc.pctComplete != null) { let p = Math.round(sc.pctComplete)+'%'; if (!isLS && sc.unitsLeft != null && sc.unitsLeft > 0) p += ' · '+fmtNum(sc.unitsLeft)+unit+' left'; stat.push(p); }
+  if (sc.addlLaborersNeeded) stat.push('<span style="color:#b91c1c">needs +'+sc.addlLaborersNeeded+'</span>');
+  if (stat.length) lines.push('<div>'+stat.join(' · ')+'</div>');
+  const dl = sc.targetDate || job.deadline;
+  if (dl) {
+    const p = projectSubCode(job, sc); let dline = 'due '+shortDate(dl), dcolor = '#555';
+    if (p.kind==='ok') { dline += ' — proj '+shortDate(p.finish)+(p.onTime===false ? ' ⚠ +'+p.daysLate+'d' : ' ✓'); if (p.onTime===false) dcolor = '#b91c1c'; }
+    else if (p.kind==='short') { dline += ' — '+p.moreDays+'d short'; dcolor = '#b45309'; }
+    lines.push('<div style="color:'+dcolor+'">'+dline+'</div>');
+  }
+  if (!lines.length) return { html:'', color };
+  return { html:'<div style="font-size:10px;line-height:1.4;margin-top:2px;color:#555">'+lines.join('')+'</div>', color };
+}
 function dispatchBodyJob(dates) {
   const byJob = {};
-  dates.forEach(d => (state.assignments[d]||[]).forEach(a => { const k = a.division+'::'+a.jobId; (byJob[k] = byJob[k] || { name:a.jobName, division:a.division, days:{} }); (byJob[k].days[d] = byJob[k].days[d] || []).push(a); }));
+  dates.forEach(d => (state.assignments[d]||[]).forEach(a => { const k = a.division+'::'+a.jobId; (byJob[k] = byJob[k] || { name:a.jobName, division:a.division, jobId:a.jobId, days:{} }); (byJob[k].days[d] = byJob[k].days[d] || []).push(a); }));
   const keys = Object.keys(byJob).sort((x,y) => byJob[x].name.localeCompare(byJob[y].name));
   if (!keys.length) return '<div style="color:#999">No assignments in this range.</div>';
-  return keys.map(k => { const j = byJob[k];
+  return keys.map(k => { const j = byJob[k]; const job = jobById(j.division, j.jobId);
     const rows = dates.filter(d => j.days[d]).map(d => {
       // Split each day's assignments by cost / sub code so crews see exactly
       // which task they're on, not just that they're on the job somewhere.
@@ -678,8 +705,12 @@ function dispatchBodyJob(dates) {
       return codeKeys.map((ck, i) => { const g = byCode[ck];
         const crew = g.items.filter(a=>a.kind==='emp').map(a=>esc(a.resource)+(a.half?' (½)':''));
         const eq = g.items.filter(a=>a.kind==='equip').map(a=>esc(a.resource));
-        const code = g.costCode ? '<strong>'+esc(g.costCode)+'</strong>'+(g.subCode?' · '+esc(g.subCode):'') : '<span style="color:#999">Whole job</span>';
-        return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+(i===0?dayLabel(d):'')+'</td><td style="'+_td+';white-space:nowrap">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
+        const sc = job ? subCodeOf(job, g.costCode, g.subCode) : null;
+        const meta = dispatchCodeMeta(job, sc);
+        const code = g.costCode
+          ? '<strong'+(meta.color?' style="color:'+meta.color+'"':'')+'>'+esc(g.costCode)+'</strong>'+(g.subCode?' · '+esc(g.subCode):'')+meta.html
+          : '<span style="color:#999">Whole job</span>';
+        return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600;vertical-align:top">'+(i===0?dayLabel(d):'')+'</td><td style="'+_td+'">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
     }).join('');
     return '<div style="'+_h2+'">'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
