@@ -183,8 +183,22 @@ async function loadAll() {
     const c = crews && crews.value;
     state.crews = (c && Array.isArray(c.crews)) ? c.crews : [];
     _baseline = JSON.stringify(state.assignments);
+
+    // Recover edits that were cached locally but never confirmed saved to the
+    // server (a save that was slow/dropped/failed before the last reload).
+    const local = _readLocal();
+    if (local && local.synced === false) {
+      const serverStr = _snap();
+      const recovered = _recoverAdds(state.assignments, local.assignments || {});
+      if (JSON.stringify(recovered) !== serverStr) { state.assignments = recovered; _dirtyAssign = true; }
+      if (Array.isArray(local.crews) && local.crews.length && !state.crews.length) { state.crews = local.crews; _dirtyCrews = true; }
+      if (_dirtyAssign || _dirtyCrews) { toast('Restored unsaved changes — saving…'); _scheduleFlush(); }
+    }
+    _writeLocal(!(_dirtyAssign || _dirtyCrews));
+
     if (!state.weekAnchor) state.weekAnchor = mondayOf(new Date());
     render();
+    setSaveStatus(_dirtyAssign || _dirtyCrews ? 'pending' : 'saved');
   } catch (err) {
     document.getElementById('main').innerHTML = '<div class="empty">Could not load the schedule.<br><span class="muted">' + esc(err.message) + '</span></div>';
   }
@@ -196,12 +210,37 @@ async function loadAll() {
 let _baseline = '{}';
 let _undo = [], _redo = [];
 let _saveTimer = null, _dirtyAssign = false, _dirtyCrews = false, _flushing = false;
+// Local write-through cache: every edit is mirrored to localStorage *before*
+// the (debounced) network save, so edits survive a reload even if the save is
+// slow, dropped (mobile keepalive), or fails — they get re-pushed on next load.
+// Namespaced per company+user so a shared browser doesn't cross-contaminate.
+const LOCAL_KEY = 'fct_sched_cache:' + ((user && user.companyCode) || '') + ':' + ((user && user.username) || '');
+let _saveState = 'saved';                 // 'saved' | 'pending' | 'saving' | 'error'
+let _retryTimer = null, _retryDelay = 0;
+function _writeLocal(synced) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify({ v:1, synced: !!synced, assignments: state.assignments, crews: state.crews })); } catch {} }
+function _readLocal() { try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || 'null'); } catch { return null; } }
+// Recover locally-cached additions the server never confirmed. Additions only
+// (never deletes) so a stale cache can't wipe another device's work.
+function _recoverAdds(server, local) { const res = _flat(server), lo = _flat(local); for (const id in lo) if (!(id in res)) res[id] = lo[id]; return _unflat(res); }
+function setSaveStatus(s) { _saveState = s; renderSaveStatus(); }
+function renderSaveStatus() {
+  const el = document.getElementById('saveStatus'); if (!el) return;
+  const map = { saved:['✓ Saved','#16a34a'], pending:['• Unsaved…','#b45309'], saving:['⟳ Saving…','#6b7280'], error:['⚠ Unsaved — retrying','#b91c1c'] };
+  const [txt, col] = map[_saveState] || map.saved;
+  el.textContent = txt; el.style.color = col;
+}
+function _scheduleRetry(err) {
+  clearTimeout(_retryTimer);
+  _retryDelay = Math.min(_retryDelay ? _retryDelay * 2 : 2000, 30000);
+  toast('Save failed — retrying' + (err && err.message ? ' (' + err.message + ')' : ''));
+  _retryTimer = setTimeout(() => flushSaves(false), _retryDelay);
+}
 function _snap() { return JSON.stringify(state.assignments); }
 function pushUndo() { _undo.push(_snap()); if (_undo.length > 50) _undo.shift(); _redo = []; updateUndoButtons(); }
 function updateUndoButtons() { const u=document.getElementById('undoBtn'), r=document.getElementById('redoBtn'); if (u) u.disabled = !_undo.length; if (r) r.disabled = !_redo.length; }
 function undo() { if (!_undo.length) return; _redo.push(_snap()); state.assignments = JSON.parse(_undo.pop()); if (state.assignCtx) closeAssign(); _dirtyAssign = true; _scheduleFlush(); render(); }
 function redo() { if (!_redo.length) return; _undo.push(_snap()); state.assignments = JSON.parse(_redo.pop()); if (state.assignCtx) closeAssign(); _dirtyAssign = true; _scheduleFlush(); render(); }
-function _scheduleFlush() { clearTimeout(_saveTimer); _saveTimer = setTimeout(() => flushSaves(false), 500); }
+function _scheduleFlush() { _writeLocal(false); if (_saveState !== 'saving') setSaveStatus('pending'); clearTimeout(_saveTimer); _saveTimer = setTimeout(() => flushSaves(false), 500); }
 function saveAssignments() { _dirtyAssign = true; _scheduleFlush(); }
 function saveCrews() { _dirtyCrews = true; _scheduleFlush(); }
 async function _getVal(key) { try { const r = await api('/api/data?key=' + key); return r && r.value; } catch { return null; } }
@@ -222,25 +261,29 @@ function mergeAssignments(baseStr, ours, theirs) {
 }
 async function flushSaves(keepalive) {
   clearTimeout(_saveTimer);
-  if (keepalive) { // tab closing — best-effort straight PUT, no round-trip
-    if (_dirtyAssign) { _dirtyAssign = false; _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments }, true).catch(()=>{}); }
-    if (_dirtyCrews)  { _dirtyCrews  = false; _putKey(CREWS_KEY,  { version:1, crews: state.crews }, true).catch(()=>{}); }
+  if (keepalive) { // tab hiding/closing — best-effort PUT. Keep dirty flags set
+    // so if the tab comes back (or the keepalive was dropped) we still flush;
+    // the local cache stays unsynced until a real success confirms the write.
+    if (_dirtyAssign) _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments }, true).catch(()=>{});
+    if (_dirtyCrews)  _putKey(CREWS_KEY,  { version:1, crews: state.crews }, true).catch(()=>{});
     return;
   }
   if (_flushing) { _scheduleFlush(); return; }
-  _flushing = true;
+  if (!_dirtyAssign && !_dirtyCrews) return;
+  _flushing = true; setSaveStatus('saving');
   try {
     if (_dirtyAssign) {
-      _dirtyAssign = false;
       const sv = await _getVal(ASSIGN_KEY);
       const theirs = (sv && sv.assignments) || {};
       if (JSON.stringify(theirs) !== _baseline) { state.assignments = mergeAssignments(_baseline, state.assignments, theirs); toast('Merged another scheduler’s changes'); render(); }
       await _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments }, false);
-      _baseline = _snap(); toast('Saved');
+      _baseline = _snap(); _dirtyAssign = false;
     }
-    if (_dirtyCrews) { _dirtyCrews = false; await _putKey(CREWS_KEY, { version:1, crews: state.crews }, false); }
-  } catch (err) { _dirtyAssign = true; toast('Save failed: ' + err.message); }
-  finally { _flushing = false; }
+    if (_dirtyCrews) { await _putKey(CREWS_KEY, { version:1, crews: state.crews }, false); _dirtyCrews = false; }
+    _writeLocal(true); _retryDelay = 0; clearTimeout(_retryTimer); setSaveStatus('saved');
+  } catch (err) {
+    _writeLocal(false); setSaveStatus('error'); _scheduleRetry(err);
+  } finally { _flushing = false; }
 }
 async function refreshData() {
   try {
@@ -249,11 +292,17 @@ async function refreshData() {
     const theirs = (sv && sv.assignments) || {};
     state.assignments = (_dirtyAssign || _snap() !== _baseline) ? mergeAssignments(_baseline, state.assignments, theirs) : theirs;
     _baseline = JSON.stringify(theirs);
+    _writeLocal(!(_dirtyAssign || _dirtyCrews));
     render(); toast('Refreshed');
+    if (_dirtyAssign || _dirtyCrews) { setSaveStatus('pending'); _scheduleFlush(); } else setSaveStatus('saved');
   } catch (err) { toast('Refresh failed: ' + err.message); }
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSaves(true); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushSaves(true);
+  else if (_dirtyAssign || _dirtyCrews) flushSaves(false); // tab returned with unsaved edits — retry now
+});
 window.addEventListener('pagehide', () => flushSaves(true));
+window.addEventListener('online', () => { if (_dirtyAssign || _dirtyCrews) flushSaves(false); });
 document.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); e.shiftKey ? redo() : undo(); } });
 
 // ── Assignment model ────────────────────────────────────────────────────────
@@ -369,7 +418,8 @@ function render() {
 function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>'; }
 function wknavHtml() { const wk = weekDays(); const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); return '<div class="wknav"><button class="btn" id="wkPrev">◀</button><span class="wklabel">'+esc(label)+'</span><button class="btn" id="wkNext">▶</button><button class="btn ghost" id="wkToday">Today</button></div>'; }
 function toolsHtml() {
-  return '<button class="btn" id="undoBtn" title="Undo (Ctrl+Z)"'+(_undo.length?'':' disabled')+'>↶ Undo</button>'+
+  return '<span id="saveStatus" title="Schedule save status" style="font-size:0.72rem;font-weight:600;white-space:nowrap;margin-right:0.2rem"></span>'+
+         '<button class="btn" id="undoBtn" title="Undo (Ctrl+Z)"'+(_undo.length?'':' disabled')+'>↶ Undo</button>'+
          '<button class="btn" id="redoBtn" title="Redo (Ctrl+Shift+Z)"'+(_redo.length?'':' disabled')+'>↷</button>'+
          '<button class="btn" id="refreshBtn" title="Refresh — pull other schedulers’ changes">⟳</button>';
 }
@@ -416,6 +466,7 @@ function wireToolbar() {
   if (g('undoBtn')) g('undoBtn').onclick = undo;
   if (g('redoBtn')) g('redoBtn').onclick = redo;
   if (g('refreshBtn')) g('refreshBtn').onclick = refreshData;
+  renderSaveStatus();
 }
 function dayHeaders(days, ds, tStr) { return days.map((d,i) => { const w = (d.getDay()===0||d.getDay()===6), isT = ds[i]===tStr; return '<th class="'+(w?'weekend ':'')+(isT?'today':'')+'">'+d.toLocaleDateString(undefined,{weekday:'short'})+'<br><span style="font-size:0.66rem">'+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</span></th>'; }).join(''); }
 function renderCapacity() {
@@ -663,15 +714,81 @@ function dispatchTitle(scope) {
 }
 function dayLabel(d) { return new Date(d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
 function buildDispatchBody(layout, dates) { return layout === 'person' ? dispatchBodyPerson(dates) : dispatchBodyJob(dates); }
+// Project-progress detail shown under a cost code on the dispatch sheet so
+// crews know the goal, not just the task: today's target quantity (the daily
+// pace needed to finish on time), % complete + units left, deadline vs the
+// projected finish, and any crew shortfall. Returns { html, color } where
+// color tints the code red/amber when it's behind / at-risk.
+function dispatchCodeMeta(job, sc) {
+  if (!job || !sc) return { html:'', color:'' };
+  const unitRaw = (sc.unit||'').trim(); const isLS = unitRaw.toUpperCase()==='LS';
+  const unit = (unitRaw && !isLS) ? ' '+esc(unitRaw) : '';
+  const color = sc.status==='behind' ? '#b91c1c' : sc.status==='at-risk' ? '#b45309' : '';
+  const lines = [];
+  if (sc.description) lines.push('<div style="font-style:italic;color:#777">'+esc(sc.description)+'</div>');
+  const stat = [];
+  if (sc.requiredPace != null && sc.requiredPace > 0) stat.push('<strong>Target '+fmtNum(sc.requiredPace)+unit+'/day</strong>');
+  if (sc.pctComplete != null) { let p = Math.round(sc.pctComplete)+'%'; if (!isLS && sc.unitsLeft != null && sc.unitsLeft > 0) p += ' · '+fmtNum(sc.unitsLeft)+unit+' left'; stat.push(p); }
+  if (sc.addlLaborersNeeded) stat.push('<span style="color:#b91c1c">needs +'+sc.addlLaborersNeeded+'</span>');
+  if (stat.length) lines.push('<div>'+stat.join(' · ')+'</div>');
+  const dl = sc.targetDate || job.deadline;
+  if (dl) {
+    const p = projectSubCode(job, sc); let dline = 'due '+shortDate(dl), dcolor = '#555';
+    if (p.kind==='ok') { dline += ' — proj '+shortDate(p.finish)+(p.onTime===false ? ' ⚠ +'+p.daysLate+'d' : ' ✓'); if (p.onTime===false) dcolor = '#b91c1c'; }
+    else if (p.kind==='short') { dline += ' — '+p.moreDays+'d short'; dcolor = '#b45309'; }
+    lines.push('<div style="color:'+dcolor+'">'+dline+'</div>');
+  }
+  if (!lines.length) return { html:'', color };
+  return { html:'<div style="font-size:10px;line-height:1.4;margin-top:2px;color:#555">'+lines.join('')+'</div>', color };
+}
+// One-line rollup under a job header on the dispatch sheet: job number, how
+// many crew are on it this range, overall % complete (dollar-weighted across
+// all cost codes), behind / at-risk counts, and the job deadline.
+function dispatchJobSummary(job, days, dates) {
+  const bits = [];
+  if (job && job.jobNumber) bits.push('Job #'+esc(job.jobNumber));
+  const crew = new Set();
+  dates.forEach(d => (days[d]||[]).forEach(a => { if (a.kind==='emp') crew.add(a.resource); }));
+  if (crew.size) bits.push(crew.size+(crew.size===1?' person':' crew'));
+  if (job) {
+    const subs = job.subCodes||[];
+    const wv = subs.reduce((s,c)=>s+(c.bidValue||0),0);
+    let pct = null;
+    if (wv > 0) pct = subs.reduce((s,c)=>s+(c.bidValue||0)*((c.pctComplete||0)/100),0)/wv*100;
+    else if (subs.length) pct = subs.reduce((s,c)=>s+(c.pctComplete||0),0)/subs.length;
+    if (pct != null) bits.push(Math.round(pct)+'% complete');
+    const behind = subs.filter(c=>c.status==='behind').length;
+    const atRisk = subs.filter(c=>c.status==='at-risk').length;
+    if (behind) bits.push('<span style="color:#b91c1c">'+behind+' behind</span>');
+    if (atRisk) bits.push('<span style="color:#b45309">'+atRisk+' at-risk</span>');
+    if (job.deadline) bits.push('due '+shortDate(job.deadline));
+  }
+  if (!bits.length) return '';
+  return '<div style="font-size:11px;color:#555;margin:2px 0 8px">'+bits.join(' · ')+'</div>';
+}
 function dispatchBodyJob(dates) {
   const byJob = {};
-  dates.forEach(d => (state.assignments[d]||[]).forEach(a => { const k = a.division+'::'+a.jobId; (byJob[k] = byJob[k] || { name:a.jobName, division:a.division, days:{} }); (byJob[k].days[d] = byJob[k].days[d] || []).push(a); }));
+  dates.forEach(d => (state.assignments[d]||[]).forEach(a => { const k = a.division+'::'+a.jobId; (byJob[k] = byJob[k] || { name:a.jobName, division:a.division, jobId:a.jobId, days:{} }); (byJob[k].days[d] = byJob[k].days[d] || []).push(a); }));
   const keys = Object.keys(byJob).sort((x,y) => byJob[x].name.localeCompare(byJob[y].name));
   if (!keys.length) return '<div style="color:#999">No assignments in this range.</div>';
-  return keys.map(k => { const j = byJob[k];
-    const rows = dates.filter(d => j.days[d]).map(d => { const items = j.days[d]; const crew = items.filter(a=>a.kind==='emp').map(a=>esc(a.resource)+(a.half?' (½)':'')); const eq = items.filter(a=>a.kind==='equip').map(a=>esc(a.resource));
-      return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+dayLabel(d)+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
-    return '<div style="'+_h2+'">'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:130px">Day</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:30%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
+  return keys.map(k => { const j = byJob[k]; const job = jobById(j.division, j.jobId);
+    const rows = dates.filter(d => j.days[d]).map(d => {
+      // Split each day's assignments by cost / sub code so crews see exactly
+      // which task they're on, not just that they're on the job somewhere.
+      const byCode = {};
+      j.days[d].forEach(a => { const ck = (a.costCode||'')+'|'+(a.subCode||''); (byCode[ck] = byCode[ck] || { costCode:a.costCode||'', subCode:a.subCode||'', items:[] }).items.push(a); });
+      const codeKeys = Object.keys(byCode).sort((x,y) => x.localeCompare(y));
+      return codeKeys.map((ck, i) => { const g = byCode[ck];
+        const crew = g.items.filter(a=>a.kind==='emp').map(a=>esc(a.resource)+(a.half?' (½)':''));
+        const eq = g.items.filter(a=>a.kind==='equip').map(a=>esc(a.resource));
+        const sc = job ? subCodeOf(job, g.costCode, g.subCode) : null;
+        const meta = dispatchCodeMeta(job, sc);
+        const code = g.costCode
+          ? '<strong'+(meta.color?' style="color:'+meta.color+'"':'')+'>'+esc(g.costCode)+'</strong>'+(g.subCode?' · '+esc(g.subCode):'')+meta.html
+          : '<span style="color:#999">Whole job</span>';
+        return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600;vertical-align:top">'+(i===0?dayLabel(d):'')+'</td><td style="'+_td+'">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
+    }).join('');
+    return '<div style="'+_h2+'">'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</div>'+dispatchJobSummary(job, j.days, dates)+'<table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
 function dispatchBodyPerson(dates) {
   const byRes = {};
