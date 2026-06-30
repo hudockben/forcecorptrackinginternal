@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>DataWatch — Timesheet → Payroll → Project</title>
+<style>
+  :root{
+    --bg:#070a0e; --bg2:#0c1117; --panel:#11161d; --panel2:#161d26;
+    --line:#1f2a36; --line2:#2a3848;
+    --ink:#e8eef5; --ink-dim:#9fb0c0; --ink-faint:#64768a;
+    --green:#22c55e; --green-deep:#16a34a; --green-soft:rgba(34,197,94,.14);
+    --amber:#eab308; --red:#ef4444; --blue:#60a5fa;
+    --mono:"SFMono-Regular",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#000}
+  #stage{
+    position:relative;width:1920px;height:1080px;overflow:hidden;
+    background:
+      radial-gradient(1200px 700px at 78% -10%, rgba(34,197,94,.10), transparent 60%),
+      radial-gradient(1000px 800px at 10% 120%, rgba(96,165,250,.06), transparent 60%),
+      linear-gradient(180deg,#070a0e,#05080b 60%, #04070a);
+    font-family:var(--sans); color:var(--ink); user-select:none;
+  }
+  /* subtle blueprint grid */
+  #grid{position:absolute;inset:0;opacity:.5;
+    background-image:
+      linear-gradient(rgba(120,160,200,.05) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(120,160,200,.05) 1px,transparent 1px);
+    background-size:60px 60px,60px 60px;
+    mask-image:radial-gradient(1400px 900px at 50% 40%,#000 55%,transparent 100%);}
+  .layer{position:absolute;inset:0;will-change:opacity,transform}
+
+  /* ---------- header / brand ---------- */
+  #brandbar{position:absolute;top:46px;left:64px;right:64px;display:flex;align-items:center;gap:18px}
+  #brandbar img{height:54px;width:auto;filter:drop-shadow(0 2px 6px rgba(0,0,0,.6))}
+  .brand-name{font-weight:800;letter-spacing:.5px;font-size:26px}
+  .brand-name b{color:var(--green)}
+  .brand-tag{margin-left:auto;font-size:18px;color:var(--ink-faint);letter-spacing:2px;text-transform:uppercase;font-weight:600}
+
+  /* ---------- title scene ---------- */
+  .t-wrap{position:absolute;left:0;right:0;top:300px;text-align:center}
+  .t-kicker{font-size:24px;letter-spacing:8px;text-transform:uppercase;color:var(--green);font-weight:700}
+  .t-head{font-size:104px;font-weight:850;line-height:1.02;margin-top:22px;letter-spacing:-2px}
+  .t-head .g{color:var(--green)}
+  .t-sub{font-size:30px;color:var(--ink-dim);margin-top:30px;font-weight:500}
+  .t-chips{display:flex;gap:26px;justify-content:center;margin-top:64px}
+  .t-chip{font-size:30px;font-weight:750;padding:22px 40px;border-radius:18px;border:1px solid var(--line2);
+    background:linear-gradient(180deg,var(--panel2),var(--panel));display:flex;align-items:center;gap:16px;
+    box-shadow:0 18px 50px rgba(0,0,0,.45)}
+  .t-chip .dot{width:16px;height:16px;border-radius:50%}
+  .t-arrow{align-self:center;font-size:40px;color:var(--ink-faint)}
+
+  /* ---------- generic scene heading ---------- */
+  .scene-head{position:absolute;top:150px;left:64px;right:64px;display:flex;align-items:baseline;gap:22px}
+  .scene-num{font-family:var(--mono);font-size:30px;color:var(--green);font-weight:700}
+  .scene-title{font-size:50px;font-weight:800;letter-spacing:-1px}
+  .scene-desc{margin-left:auto;font-size:24px;color:var(--ink-dim);max-width:680px;text-align:right;line-height:1.35}
+
+  /* ---------- card / form ---------- */
+  .card{position:absolute;border-radius:22px;border:1px solid var(--line2);
+    background:linear-gradient(180deg,var(--panel2),var(--panel));
+    box-shadow:0 30px 80px rgba(0,0,0,.5);overflow:hidden}
+  .card-head{padding:24px 30px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;
+    background:linear-gradient(180deg,rgba(34,197,94,.06),transparent)}
+  .card-head .tag{font-family:var(--mono);font-size:18px;color:var(--ink-faint);margin-left:auto}
+  .card-title{font-size:28px;font-weight:750}
+  .pill{font-size:18px;font-weight:700;padding:7px 16px;border-radius:999px;display:inline-flex;align-items:center;gap:9px}
+  .pill .d{width:11px;height:11px;border-radius:50%}
+  .pill.draft{background:rgba(234,179,8,.14);color:var(--amber)}
+  .pill.sub{background:rgba(96,165,250,.16);color:var(--blue)}
+  .pill.appr{background:var(--green-soft);color:var(--green)}
+
+  .field{display:flex;align-items:center;padding:20px 30px;border-bottom:1px solid var(--line);gap:20px}
+  .field .lbl{font-size:22px;color:var(--ink-faint);width:230px;font-weight:600;letter-spacing:.3px}
+  .field .val{font-size:26px;font-weight:700;color:var(--ink)}
+  .field .val.mono{font-family:var(--mono)}
+  .field .sub{font-size:19px;color:var(--ink-dim);font-weight:500;margin-left:10px}
+  .toggle{width:62px;height:34px;border-radius:999px;background:#26323f;position:relative;display:inline-block}
+  .toggle i{position:absolute;top:4px;left:4px;width:26px;height:26px;border-radius:50%;background:#7d8da0;transition:none}
+
+  /* hours readout */
+  .hours-box{margin:0;padding:26px 30px;display:flex;align-items:center;gap:28px;background:linear-gradient(180deg,rgba(34,197,94,.05),transparent)}
+  .calc{font-family:var(--mono);font-size:24px;color:var(--ink-dim)}
+  .calc b{color:var(--ink)}
+  .calc .strike{text-decoration:line-through;color:var(--ink-faint)}
+  .bignum{margin-left:auto;text-align:right}
+  .bignum .n{font-family:var(--mono);font-size:74px;font-weight:800;color:var(--green);line-height:1}
+  .bignum .u{font-size:22px;color:var(--ink-faint);letter-spacing:2px;text-transform:uppercase}
+
+  /* split rows */
+  .split{position:absolute;border-radius:22px;border:1px solid var(--line2);
+    background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 30px 80px rgba(0,0,0,.5);overflow:hidden}
+  .split .row{display:flex;align-items:center;padding:22px 30px;border-bottom:1px solid var(--line);gap:18px}
+  .ccode{font-family:var(--mono);font-size:24px;font-weight:800;color:var(--green);width:120px}
+  .cdesc{font-size:24px;font-weight:650}
+  .chrs{margin-left:auto;font-family:var(--mono);font-size:30px;font-weight:800}
+  .split .total{display:flex;align-items:center;padding:22px 30px;gap:16px;background:rgba(34,197,94,.06)}
+  .split .total .lbl{font-size:24px;font-weight:750;color:var(--ink-dim)}
+  .check{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:24px;font-weight:800;color:var(--green)}
+  .ts-badge{font-family:var(--mono);font-size:15px;font-weight:800;color:var(--green);
+    border:1px solid var(--green-deep);background:var(--green-soft);border-radius:7px;padding:3px 9px;letter-spacing:1px}
+  .lock{color:var(--ink-faint);font-size:20px}
+
+  /* big approve button */
+  .btn{position:absolute;display:flex;align-items:center;gap:14px;font-size:26px;font-weight:800;
+    padding:22px 38px;border-radius:16px;color:#05210f;
+    background:linear-gradient(180deg,#2fd167,#16a34a);box-shadow:0 18px 50px rgba(22,163,74,.45);}
+  .btn .arrow{font-size:24px}
+  .ripple{position:absolute;border-radius:50%;border:3px solid var(--green);pointer-events:none}
+
+  /* tracker table */
+  .ttable{position:absolute;border-radius:22px;border:1px solid var(--line2);overflow:hidden;
+    background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 30px 80px rgba(0,0,0,.5)}
+  .ttable .thead,.ttable .trow{display:grid;grid-template-columns:160px 1fr 150px 150px;align-items:center;gap:14px;padding:18px 28px;border-bottom:1px solid var(--line)}
+  .ttable .thead{font-size:19px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:1.5px;font-weight:700;background:rgba(255,255,255,.02)}
+  .ttable .trow{font-size:24px}
+  .ttable .trow .c1{font-family:var(--mono);font-weight:800;color:var(--green)}
+  .ttable .trow .c4{font-family:var(--mono);font-weight:800;text-align:right}
+  .ttable .trow.dim{color:var(--ink-faint)}
+  .ttable .trow.dim .c1{color:var(--ink-faint)}
+  .ttable .trow .who{display:flex;align-items:center;gap:12px}
+
+  /* project total card */
+  .ptotal{position:absolute;border-radius:22px;border:1px solid var(--line2);padding:34px 38px;
+    background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 30px 80px rgba(0,0,0,.5)}
+  .ptotal .lab{font-size:22px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:2px;font-weight:700}
+  .ptotal .v{font-family:var(--mono);font-size:64px;font-weight:850;margin-top:10px}
+  .ptotal .v.green{color:var(--green)}
+  .ptotal .delta{font-size:24px;color:var(--green);font-weight:750;margin-top:8px}
+
+  /* recap */
+  .recap-center{position:absolute;left:50%;top:430px;transform:translateX(-50%);text-align:center}
+  .recap-src{display:inline-flex;flex-direction:column;align-items:center;gap:10px;padding:30px 46px;border-radius:20px;
+    border:1px solid var(--green-deep);background:var(--green-soft)}
+  .recap-src .big{font-size:34px;font-weight:800}
+  .recap-src .small{font-size:22px;color:var(--ink-dim)}
+  .recap-box{position:absolute;width:520px;border-radius:20px;border:1px solid var(--line2);padding:34px;
+    background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 24px 70px rgba(0,0,0,.5)}
+  .recap-box h4{font-size:30px;font-weight:800;margin-bottom:10px}
+  .recap-box p{font-size:23px;color:var(--ink-dim);line-height:1.4}
+  .recap-box .ic{font-size:40px}
+  .recap-line{position:absolute;height:3px;background:linear-gradient(90deg,var(--green),transparent);transform-origin:left center}
+  .tagline{position:absolute;left:0;right:0;bottom:150px;text-align:center;font-size:38px;font-weight:800}
+  .tagline .g{color:var(--green)}
+
+  /* connector flow dot */
+  .flowdot{position:absolute;width:26px;height:26px;border-radius:50%;
+    background:var(--green);box-shadow:0 0 26px 8px rgba(34,197,94,.6)}
+
+  /* ---------- pipeline footer ---------- */
+  #pipe{position:absolute;left:64px;right:64px;bottom:54px;height:84px;
+    border-radius:18px;border:1px solid var(--line);background:rgba(10,14,19,.72);
+    display:flex;align-items:center;padding:0 30px;gap:20px;backdrop-filter:blur(2px)}
+  .pstep{display:flex;align-items:center;gap:16px;flex:1}
+  .pstep .icn{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;
+    border:1px solid var(--line2);background:var(--panel2);transition:none}
+  .pstep .ptext .pt{font-size:22px;font-weight:750}
+  .pstep .ptext .ps{font-size:16px;color:var(--ink-faint)}
+  .psep{color:var(--ink-faint);font-size:28px}
+  .pstep.on .icn{border-color:var(--green);background:var(--green-soft);box-shadow:0 0 24px rgba(34,197,94,.35)}
+  .pstep.on .pt{color:var(--green)}
+  #progress{position:absolute;left:0;bottom:0;height:5px;background:linear-gradient(90deg,var(--green-deep),var(--green));width:0}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="grid"></div>
+
+  <div id="brandbar">
+    <img src="../datawatch-helmet.png" alt="DataWatch"/>
+    <div class="brand-name">Data<b>Watch</b></div>
+    <div class="brand-tag">Field Operations Tracking</div>
+  </div>
+
+  <!-- ===================== S0 TITLE ===================== -->
+  <div class="layer" id="s0">
+    <div class="t-wrap">
+      <div class="t-kicker" id="s0k">One entry. Two systems.</div>
+      <div class="t-head">How a timesheet becomes<br><span class="g">pay</span> &amp; <span class="g">project cost</span></div>
+      <div class="t-sub">Follow a single day of work from the field to the books.</div>
+      <div class="t-chips">
+        <div class="t-chip" id="c-ts"><span class="dot" style="background:var(--blue)"></span>Timesheet</div>
+        <div class="t-arrow">→</div>
+        <div class="t-chip" id="c-pr"><span class="dot" style="background:var(--amber)"></span>Payroll</div>
+        <div class="t-arrow">→</div>
+        <div class="t-chip" id="c-pj"><span class="dot" style="background:var(--green)"></span>Project</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== S1 TIMESHEET ===================== -->
+  <div class="layer" id="s1">
+    <div class="scene-head">
+      <span class="scene-num">01</span>
+      <span class="scene-title">The crew logs the day</span>
+      <span class="scene-desc">A field employee opens the <b>Timesheet</b> tab and records one shift against a job.</span>
+    </div>
+
+    <div class="card" id="ts-card" style="left:120px;top:268px;width:880px">
+      <div class="card-head">
+        <span class="card-title">Daily Timesheet</span>
+        <span class="pill draft" id="ts-pill"><span class="d" style="background:var(--amber)"></span><span id="ts-pill-t">Draft</span></span>
+        <span class="tag">entry&nbsp;#TS-4821</span>
+      </div>
+      <div class="field" id="f1"><span class="lbl">Employee</span><span class="val">M. Reyes</span><span class="sub">· Paving Division</span></div>
+      <div class="field" id="f2"><span class="lbl">Job</span><span class="val">Elm St. Repave</span><span class="sub">· #2025-042</span></div>
+      <div class="field" id="f3"><span class="lbl">Supervisor</span><span class="val">J. Carter</span></div>
+      <div class="field" id="f4"><span class="lbl">Clock In / Out</span><span class="val mono">7:00 AM → 3:30 PM</span></div>
+      <div class="field" id="f5"><span class="lbl">Lunch break</span><span class="val mono" id="lunch-v">30 min</span>
+        <span class="toggle" id="lunch-tog" style="margin-left:14px"><i id="lunch-i"></i></span></div>
+      <div class="field" id="f6"><span class="lbl">Travel</span><span class="val mono">0.5 h</span><span class="sub">shop → site</span></div>
+    </div>
+
+    <div class="card" id="ts-hours" style="left:1040px;top:268px;width:740px">
+      <div class="card-head"><span class="card-title">Hours, computed</span><span class="tag">auto</span></div>
+      <div class="hours-box" style="flex-direction:column;align-items:stretch;gap:18px">
+        <div class="calc" id="hl1">Shift&nbsp; <b>7:00a → 3:30p</b> &nbsp;=&nbsp; <b>8.5 h</b></div>
+        <div class="calc" id="hl2">Less lunch &nbsp; <span class="strike">8.5</span> − 0.5 &nbsp;=&nbsp; <b>8.0 h worked</b></div>
+        <div class="calc" id="hl3">Plus travel &nbsp; 8.0 + 0.5 &nbsp;=&nbsp; <b style="color:var(--green)">8.5 h total</b></div>
+      </div>
+      <div class="hours-box" style="border-top:1px solid var(--line)">
+        <div class="calc">Total payable hours</div>
+        <div class="bignum"><div class="n" id="ts-total">0.0</div><div class="u">hours</div></div>
+      </div>
+    </div>
+
+    <div class="flowdot" id="s1-dot" style="opacity:0"></div>
+  </div>
+
+  <!-- ===================== S2 PAYROLL ===================== -->
+  <div class="layer" id="s2">
+    <div class="scene-head">
+      <span class="scene-num">02</span>
+      <span class="scene-title">Payroll approves &amp; splits</span>
+      <span class="scene-desc">Submitted hours land in <b>Payroll → Pending Review</b>. The admin assigns them to <b>cost codes</b> before approving.</span>
+    </div>
+
+    <div class="card" id="pr-entry" style="left:120px;top:280px;width:760px">
+      <div class="card-head">
+        <span class="card-title">Pending entry · M. Reyes</span>
+        <span class="pill sub" id="pr-pill"><span class="d" style="background:var(--blue)"></span><span id="pr-pill-t">Submitted</span></span>
+      </div>
+      <div class="field"><span class="lbl">Job</span><span class="val">Elm St. Repave</span><span class="sub">· #2025-042</span></div>
+      <div class="field"><span class="lbl">Work date</span><span class="val mono">Mon · Jun 29</span></div>
+      <div class="hours-box">
+        <div class="calc">Hours to assign</div>
+        <div class="bignum"><div class="n" id="pr-total" style="font-size:60px">8.5</div><div class="u">hours</div></div>
+      </div>
+    </div>
+
+    <div class="split" id="pr-split" style="left:920px;top:280px;width:860px">
+      <div class="card-head"><span class="card-title">Split to cost codes</span><span class="tag">labor → job</span></div>
+      <div class="row" id="sr1"><span class="ccode">101 · A</span><span class="cdesc">Milling — remove old asphalt</span><span class="chrs" style="color:var(--green)">6.0 h</span></div>
+      <div class="row" id="sr2"><span class="ccode">101 · B</span><span class="cdesc">Paving — lay &amp; compact</span><span class="chrs" style="color:var(--green)">2.5 h</span></div>
+      <div class="total" id="sr-total">
+        <span class="lbl">Split total</span>
+        <span class="chrs" id="split-sum" style="font-size:30px">0.0 h</span>
+        <span class="check" id="split-check" style="opacity:0">✓ matches 8.5 h</span>
+      </div>
+    </div>
+
+    <div class="btn" id="pr-btn" style="left:920px;top:620px"><span>Approve &amp; Inject Cost Tracking</span><span class="arrow">→</span></div>
+    <div class="ripple" id="pr-ripple" style="opacity:0"></div>
+    <div class="flowdot" id="s2-dot" style="opacity:0"></div>
+  </div>
+
+  <!-- ===================== S3 PROJECT ===================== -->
+  <div class="layer" id="s3">
+    <div class="scene-head">
+      <span class="scene-num">03</span>
+      <span class="scene-title">It lands on the job</span>
+      <span class="scene-desc">Approval auto-injects locked rows into the project’s <b>cost tracking</b> — tagged <span class="ts-badge">TS</span> so they trace back to the timesheet.</span>
+    </div>
+
+    <div class="ttable" id="pj-table" style="left:120px;top:280px;width:1140px">
+      <div class="thead"><span>Cost code</span><span>Activity / source</span><span>Crew</span><span>Labor hrs</span></div>
+      <div class="trow dim" id="tr0"><span class="c1">101 · A</span><span class="who">Milling <span class="sub" style="color:var(--ink-faint);font-size:18px">· prior</span></span><span>2 crew</span><span class="c4">48.0</span></div>
+      <div class="trow" id="tr1">
+        <span class="c1">101 · A</span>
+        <span class="who">Milling <span class="ts-badge">TS</span> <span class="lock">🔒</span></span>
+        <span>M. Reyes</span><span class="c4" style="color:var(--green)">6.0</span></div>
+      <div class="trow" id="tr2">
+        <span class="c1">101 · B</span>
+        <span class="who">Paving <span class="ts-badge">TS</span> <span class="lock">🔒</span></span>
+        <span>M. Reyes</span><span class="c4" style="color:var(--green)">2.5</span></div>
+    </div>
+
+    <div class="ptotal" id="pj-total" style="left:1320px;top:280px;width:460px">
+      <div class="lab">Elm St. Repave — labor to date</div>
+      <div class="v green" id="pj-hours">312.0 h</div>
+      <div class="delta" id="pj-delta">+8.5 h from M. Reyes today</div>
+      <div style="height:1px;background:var(--line);margin:26px 0"></div>
+      <div class="lab">Same hours also drive</div>
+      <div class="v" id="pj-pay" style="font-size:46px;color:var(--blue)">Payroll</div>
+      <div class="delta" style="color:var(--ink-dim)" id="pj-pay-sub">8.5 h on M. Reyes’ paycheck</div>
+    </div>
+  </div>
+
+  <!-- ===================== S4 RECAP ===================== -->
+  <div class="layer" id="s4">
+    <div class="recap-center" id="rc-src">
+      <div class="recap-src">
+        <div class="big">1 timesheet entry</div>
+        <div class="small">M. Reyes · 8.5 h · Elm St. Repave</div>
+      </div>
+    </div>
+
+    <div class="recap-line" id="rc-l1"></div>
+    <div class="recap-line" id="rc-l2"></div>
+
+    <div class="recap-box" id="rc-pay" style="left:230px;top:560px">
+      <div class="ic">💵</div>
+      <h4>Payroll</h4>
+      <p>Hours flow straight to the paycheck — regular, travel &amp; prevailing-wage split out automatically.</p>
+    </div>
+    <div class="recap-box" id="rc-job" style="left:1170px;top:560px">
+      <div class="ic">📊</div>
+      <h4>Project cost</h4>
+      <p>The same hours post as labor against the job’s cost codes — no double entry, fully traceable.</p>
+    </div>
+
+    <div class="tagline" id="rc-tag">Enter time <span class="g">once</span>. It pays the crew <span class="g">and</span> costs the job — automatically.</div>
+  </div>
+
+  <!-- ===================== PIPELINE FOOTER ===================== -->
+  <div id="pipe">
+    <div class="pstep" id="ps0"><div class="icn">🕒</div><div class="ptext"><div class="pt">Timesheet</div><div class="ps">field logs hours</div></div></div>
+    <div class="psep">→</div>
+    <div class="pstep" id="ps1"><div class="icn">✅</div><div class="ptext"><div class="pt">Payroll</div><div class="ps">approve &amp; split</div></div></div>
+    <div class="psep">→</div>
+    <div class="pstep" id="ps2"><div class="icn">📊</div><div class="ptext"><div class="pt">Project</div><div class="ps">labor cost posts</div></div></div>
+    <div id="progress"></div>
+  </div>
+</div>
+
+<script>
+/* ---------------- deterministic timeline ---------------- */
+const FPS = 30;
+// scene boundaries in seconds
+const T = { s0:[0,6], s1:[6,21], s2:[21,38], s3:[38,52], s4:[52,62] };
+const DURATION = 62;            // seconds
+const TOTAL_FRAMES = DURATION*FPS;
+
+const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
+const lerp=(a,b,p)=>a+(b-a)*p;
+const easeIO=p=>p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
+const easeOut=p=>1-Math.pow(1-p,3);
+// progress within [start,end] seconds, eased
+function seg(t,start,end,ease=easeIO){ if(end<=start) return t>=end?1:0; return ease(clamp((t-start)/(end-start))); }
+function fmt1(x){return (Math.round(x*10)/10).toFixed(1);}
+
+const $=id=>document.getElementById(id);
+function set(el,o){ if(typeof el==='string')el=$(el); if(!el)return; for(const k in o){ if(k==='o')el.style.opacity=o[k]; else if(k==='ty')el.style.transform=`translateY(${o[k]}px)`; else if(k==='tx')el.style.transform=`translateX(${o[k]}px)`; else if(k==='t')el.style.transform=o[k]; else el.style[k]=o[k]; } }
+// appear: fade + rise
+function appear(el,t,start,dur=.6,rise=26){ const p=seg(t,start,start+dur,easeOut); set(el,{o:p, ty:lerp(rise,0,p)}); return p; }
+
+function showLayer(id,on){ const el=$(id); el.style.display = on?'block':'none'; }
+
+function pipeline(stage){ // 0,1,2 active (or -1)
+  for(let i=0;i<3;i++){ $('ps'+i).classList.toggle('on', i===stage); }
+}
+
+/* ---------------- the seek function ---------------- */
+function seek(timeSec){
+  const t=clamp(timeSec,0,DURATION);
+  $('progress').style.width = (t/DURATION*100)+'%';
+
+  // which scene is active
+  const inS = (k)=> t>=T[k][0] && t<T[k][1];
+  // crossfade-out tail length
+  const FADE=0.5;
+  const layerVis=(k)=>{
+    const [a,b]=T[k];
+    if(t<a-0.001) return 0;
+    if(t<a+FADE) return easeOut(clamp((t-a)/FADE));          // fade in
+    if(t<=b-FADE) return 1;
+    if(t<=b) return 1-easeOut(clamp((t-(b-FADE))/FADE));     // fade out
+    return 0;
+  };
+  ['s0','s1','s2','s3','s4'].forEach(k=>{
+    const v=layerVis(k); const el=$(k);
+    el.style.display = v>0.001?'block':'none';
+    el.style.opacity = v;
+  });
+
+  /* ---- brand bar: hide big logo subtly during title vs always show small ---- */
+
+  /* ================= S0 TITLE ================= */
+  if(inS('s0') || t<T.s0[1]+FADE){
+    const lt=t-T.s0[0];
+    appear($('s0k'),lt,0.2,.6,18);
+    const head=document.querySelector('#s0 .t-head'); appear(head,lt,0.5,.7,30);
+    appear(document.querySelector('#s0 .t-sub'),lt,1.1,.6,18);
+    // chips pop in sequence
+    const chips=['c-ts','c-pr','c-pj'];
+    chips.forEach((c,i)=>{ const p=seg(lt,1.9+i*0.35,1.9+i*0.35+0.5,easeOut); set($(c),{o:p, t:`scale(${lerp(.85,1,p)})`}); });
+    document.querySelectorAll('#s0 .t-arrow').forEach((a,i)=>{ a.style.opacity=seg(lt,2.25+i*0.35,2.25+i*0.35+0.4); });
+  }
+
+  /* ================= S1 TIMESHEET ================= */
+  {
+    const lt=t-T.s1[0];
+    appear($('ts-card'),lt,0.2,.6,30);
+    // fields fill sequentially
+    ['f1','f2','f3','f4'].forEach((f,i)=> appear($(f),lt,0.7+i*0.45,.45,14));
+    // lunch row + toggle flip on
+    appear($('f5'),lt,2.6,.45,14);
+    const flip=seg(lt,3.1,3.5,easeOut);
+    set('lunch-i',{ left:lerp(4,32,flip)+'px', background: flip>.5?'var(--green)':'#7d8da0' });
+    set('lunch-tog',{ background: flip>.5?'var(--green-deep)':'#26323f' });
+    appear($('f6'),lt,3.3,.45,14);
+
+    // hours card
+    appear($('ts-hours'),lt,1.4,.6,30);
+    set('hl1',{o:seg(lt,2.0,2.4)});
+    set('hl2',{o:seg(lt,3.4,3.9)});
+    set('hl3',{o:seg(lt,4.6,5.1)});
+    // total counter rolls 0 -> 8.5 between 5.0 and 6.4
+    const hp=seg(lt,5.0,6.6,easeOut);
+    $('ts-total').textContent = fmt1(lerp(0,8.5,hp));
+
+    // status: Draft -> Submitted around lt 7.8
+    const submitted = lt>=7.8;
+    $('ts-pill-t').textContent = submitted?'Submitted':'Draft';
+    $('ts-pill').className = 'pill '+(submitted?'sub':'draft');
+    $('ts-pill').querySelector('.d').style.background = submitted?'var(--blue)':'var(--amber)';
+
+    // flow dot travels from hours card to bottom pipeline (handoff) near end
+    const fp=seg(lt,8.4,9.6,easeIO);
+    if(fp>0&&fp<1){ set('s1-dot',{o:1, left:lerp(1380,560,fp)+'px', top:lerp(560,968,fp)+'px'}); }
+    else set('s1-dot',{o:0});
+  }
+
+  /* ================= S2 PAYROLL ================= */
+  {
+    const lt=t-T.s2[0];
+    appear($('pr-entry'),lt,0.2,.55,30);
+    appear($('pr-split'),lt,0.7,.55,30);
+    // split rows appear
+    appear($('sr1'),lt,1.6,.45,14);
+    appear($('sr2'),lt,2.1,.45,14);
+    // split sum counts up 0 -> 8.5 and check appears when matched
+    const sp=seg(lt,2.4,3.6,easeOut);
+    const sumv=lerp(0,8.5,sp);
+    $('split-sum').textContent = fmt1(sumv)+' h';
+    $('split-sum').style.color = sp>=1 ? 'var(--green)' : 'var(--ink)';
+    set('split-check',{o:seg(lt,3.6,4.1)});
+
+    // button appears, then ripple + press around 4.6 - 6.0
+    appear($('pr-btn'),lt,3.4,.5,18);
+    const press=seg(lt,5.0,5.4,easeIO);
+    set('pr-btn',{ t:`scale(${lerp(1,0.96,Math.sin(clamp((lt-5.0)/0.4,0,1)*Math.PI))})` });
+    // ripple expands
+    const rp=seg(lt,5.1,6.1,easeOut);
+    if(rp>0&&rp<1){ const sz=lerp(20,520,rp); set('pr-ripple',{o:(1-rp)*0.9, left:(1140-sz/2)+'px', top:(672-sz/2)+'px', width:sz+'px', height:sz+'px'}); }
+    else set('pr-ripple',{o:0});
+
+    // status flips Submitted -> Approved after click
+    const appr = lt>=5.8;
+    $('pr-pill-t').textContent = appr?'Approved':'Submitted';
+    $('pr-pill').className='pill '+(appr?'appr':'sub');
+    $('pr-pill').querySelector('.d').style.background = appr?'var(--green)':'var(--blue)';
+    if(appr){ set('pr-btn',{ background:'linear-gradient(180deg,#1f6f3d,#16562b)', boxShadow:'none' }); $('pr-btn').querySelector('span').textContent='✓ Approved — cost tracking injected'; }
+    else { set('pr-btn',{ background:'linear-gradient(180deg,#2fd167,#16a34a)', boxShadow:'0 18px 50px rgba(22,163,74,.45)'}); $('pr-btn').querySelector('span').textContent='Approve & Inject Cost Tracking'; }
+
+    // handoff dot to project
+    const fp=seg(lt,6.6,7.8,easeIO);
+    if(fp>0&&fp<1){ set('s2-dot',{o:1, left:lerp(900,1170,fp)+'px', top:lerp(620,968,fp)+'px'}); }
+    else set('s2-dot',{o:0});
+  }
+
+  /* ================= S3 PROJECT ================= */
+  {
+    const lt=t-T.s3[0];
+    appear($('pj-table'),lt,0.2,.55,30);
+    appear($('pj-total'),lt,0.5,.55,30);
+    // injected rows slide/fade in
+    const r1=seg(lt,1.4,2.0,easeOut); set('tr1',{o:r1, ty:lerp(18,0,r1), background:`rgba(34,197,94,${lerp(.18,0,r1)})`});
+    const r2=seg(lt,2.0,2.6,easeOut); set('tr2',{o:r2, ty:lerp(18,0,r2), background:`rgba(34,197,94,${lerp(.18,0,r2)})`});
+    // project total rolls 312.0 -> 320.5
+    const hp=seg(lt,2.6,4.2,easeOut);
+    $('pj-hours').textContent = fmt1(lerp(312.0,320.5,hp))+' h';
+    set('pj-delta',{o:seg(lt,3.6,4.2)});
+    // "also drives payroll" emphasis
+    set('pj-pay',{o:seg(lt,4.6,5.2)});
+    set('pj-pay-sub',{o:seg(lt,5.0,5.6)});
+  }
+
+  /* ================= S4 RECAP ================= */
+  {
+    const lt=t-T.s4[0];
+    appear($('rc-src'),lt,0.2,.6,20);
+    // lines draw out to the two boxes
+    // l1: from source (~960,540) down-left to pay box; l2 down-right to job box
+    const L1=seg(lt,0.9,1.6,easeOut), L2=seg(lt,1.1,1.8,easeOut);
+    set('rc-l1',{ left:'690px', top:'545px', width:lerp(0,300,L1)+'px', t:'rotate(26deg)', o:1 });
+    set('rc-l2',{ left:'1230px', top:'545px', width:lerp(0,300,L2)+'px', t:'rotate(154deg)', o:1 });
+    appear($('rc-pay'),lt,1.5,.55,24);
+    appear($('rc-job'),lt,1.7,.55,24);
+    const tg=seg(lt,2.6,3.4,easeOut); set('rc-tag',{o:tg, ty:lerp(18,0,tg)});
+  }
+
+  /* ================= PIPELINE FOOTER ACTIVE STAGE ================= */
+  let stage=-1;
+  if(t<T.s1[0]) stage=-1;
+  else if(t<T.s2[0]) stage=0;
+  else if(t<T.s3[0]) stage=1;
+  else if(t<T.s4[0]) stage=2;
+  else stage=-1; // recap: light all? keep none-special -> we'll light all
+  for(let i=0;i<3;i++){ $('ps'+i).classList.toggle('on', (stage===-1 && t>=T.s4[0]) ? true : i===stage); }
+}
+
+window.seek=seek;
+window.__FPS=FPS; window.__TOTAL_FRAMES=TOTAL_FRAMES; window.__DURATION=DURATION;
+window.__ready=true;
+
+/* live preview when opened directly in a browser (not during capture) */
+(function(){
+  if(window.__capture){ seek(0); return; }   // renderer drives seek() itself
+  const params=new URLSearchParams(location.search);
+  if(params.has('frame')){ seek(parseInt(params.get('frame'),10)/FPS); return; }
+  if(params.get('static')==='1'){ seek(parseFloat(params.get('t')||'0')); return; }
+  // autoplay loop for human preview
+  let start=null;
+  function tick(ts){ if(start==null)start=ts; let el=((ts-start)/1000)%DURATION; seek(el); requestAnimationFrame(tick);}
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
