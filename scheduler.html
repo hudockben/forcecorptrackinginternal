@@ -95,8 +95,19 @@
     .pick-row { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.55rem; border:1px solid var(--border); border-radius:6px; margin-bottom:0.3rem; cursor:pointer; }
     .pick-row:hover { border-color:#555; background:var(--surface2); } .pick-row.on-this { border-color:var(--green-dim); }
     .pick-name { font-weight:600; } .pick-sub { font-size:0.64rem; color:var(--muted); } .pick-status { margin-left:auto; font-size:0.66rem; white-space:nowrap; }
-    .also-codes { display:flex; flex-wrap:wrap; gap:0.3rem; }
-    .also-codes .btn { font-size:0.68rem; padding:0.28rem 0.5rem; }
+    .also-dd { position:relative; }
+    .also-trigger { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; width:100%; background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.45rem 0.6rem; font-size:0.78rem; cursor:pointer; }
+    .also-trigger:hover { border-color:#555; } .also-caret { color:var(--muted); font-size:0.7rem; }
+    .also-panel { margin-top:0.3rem; border:1px solid var(--border); border-radius:6px; background:var(--surface); padding:0.4rem; }
+    .also-panel input[type=text] { width:100%; margin-bottom:0.35rem; }
+    .also-list { max-height:30vh; overflow:auto; display:flex; flex-direction:column; gap:0.2rem; }
+    .also-opt { display:flex; align-items:center; gap:0.5rem; padding:0.32rem 0.5rem; border:1px solid var(--border); border-radius:5px; cursor:pointer; font-size:0.76rem; }
+    .also-opt:hover { border-color:#555; background:var(--surface2); }
+    .also-opt.on { border-color:var(--blue); background:rgba(96,165,250,0.12); color:var(--blue); }
+    .also-check { width:14px; display:inline-block; text-align:center; color:var(--blue); font-weight:800; }
+    .also-chips { display:flex; flex-wrap:wrap; gap:0.3rem; } .also-chips:not(:empty) { margin-top:0.35rem; }
+    .also-chip { display:inline-flex; align-items:center; gap:0.3rem; font-size:0.7rem; background:rgba(96,165,250,0.12); border:1px solid var(--blue); color:var(--blue); border-radius:12px; padding:0.15rem 0.2rem 0.15rem 0.5rem; }
+    .also-chip button { background:none; border:none; color:var(--blue); cursor:pointer; font-size:0.72rem; line-height:1; padding:0 0.25rem; }
     .empty { color:var(--muted); font-size:0.82rem; text-align:center; padding:2.5rem 1rem; }
     .loading { color:var(--muted); font-size:0.85rem; text-align:center; padding:3rem 1rem; }
     footer { padding:1rem 1.5rem; font-size:0.6rem; color:var(--muted); border-top:1px solid var(--border); }
@@ -137,7 +148,7 @@ const state = {
   divFilter:'all', jobSearch:'', needCrewOnly:false, jobOpen:{},
   crewSearch:'', tradeFilter:'all', showAll:false, grpCol:{},
   applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
-  alsoCodes:[], siteTimes:{},
+  alsoCodes:[], alsoOpen:false, siteTimes:{},
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -591,13 +602,47 @@ function renderCrewBoard() {
 function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderCrewBoard(); }
 
 // ── Assign modal ────────────────────────────────────────────────────────────
-function openAssignJob(division, jobId, costCode, subCode, date) { state.assignCtx = { mode:'job', division, jobId, costCode, subCode, date }; state.alsoCodes = []; renderModal(); }
+function openAssignJob(division, jobId, costCode, subCode, date) { state.assignCtx = { mode:'job', division, jobId, costCode, subCode, date }; state.alsoCodes = []; state.alsoOpen = false; renderModal(); }
 function openAssignResource(resource, kind, date) { state.assignCtx = { mode:'resource', resource, kind, date }; renderModal(); }
 function closeAssign() { state.assignCtx = null; const o = document.getElementById('assignOverlay'); if (o) o.remove(); }
 function afterMutate() { renderModal(); document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard(); }
 function setSpan(s) { state.applySpan = s; renderModal(); }
-// Extra cost codes (by index into job.subCodes) a person/crew should also land on.
-function toggleAlsoCode(i) { const k = state.alsoCodes || (state.alsoCodes = []); const at = k.indexOf(i); if (at >= 0) k.splice(at, 1); else k.push(i); renderModal(); }
+// ── "Also assign to other cost codes" multi-select dropdown ─────────────────
+// Indices are into job.subCodes; we update the dropdown's DOM in place (rather
+// than re-render the whole modal) so the filter text and scroll position survive.
+function alsoOtherCodes() {
+  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return [];
+  const job = jobById(ctx.division, ctx.jobId) || { subCodes:[] };
+  const curKey = (ctx.costCode||'') + '¦' + (ctx.subCode||'');
+  return (job.subCodes || []).map((s,i) => ({ s, i })).filter(o => ((o.s.costCode||'')+'¦'+(o.s.subCode||'')) !== curKey);
+}
+function alsoLabel(s) { return esc(s.costCode) + (s.subCode ? ' · ' + esc(s.subCode) : ''); }
+function alsoSummaryText() { const n = (state.alsoCodes||[]).length; return n ? n + ' cost code' + (n>1?'s':'') + ' selected' : 'Select cost codes…'; }
+function alsoHelpHtml() { const n = (state.alsoCodes||[]).length; return n ? 'Each person or crew you add lands on <strong>'+(n+1)+' cost codes</strong>'+(state.applySpan!=='day'?' across '+spanLabel():'')+'.' : 'Pick extra cost codes so one crew lands on several at once.'; }
+function alsoChipsHtml() {
+  const sel = state.alsoCodes || []; if (!sel.length) return '';
+  const byIdx = {}; alsoOtherCodes().forEach(o => byIdx[o.i] = o.s);
+  return sel.map(i => byIdx[i] ? '<span class="also-chip">'+alsoLabel(byIdx[i])+'<button title="Remove" onclick="toggleAlsoCode('+i+')">✕</button></span>' : '').join('');
+}
+function alsoListHtml(filter) {
+  const q = (filter||'').trim().toLowerCase();
+  const sel = new Set(state.alsoCodes || []);
+  let opts = alsoOtherCodes();
+  if (q) opts = opts.filter(o => (o.s.costCode+' '+(o.s.subCode||'')).toLowerCase().includes(q));
+  if (!opts.length) return '<div class="muted" style="font-size:0.74rem;padding:0.4rem 0.5rem">No cost codes match.</div>';
+  return opts.map(o => '<div class="also-opt'+(sel.has(o.i)?' on':'')+'" data-i="'+o.i+'" onclick="toggleAlsoCode('+o.i+')"><span class="also-check">'+(sel.has(o.i)?'✓':'')+'</span><span>'+alsoLabel(o.s)+'</span></div>').join('');
+}
+function toggleAlsoOpen() { state.alsoOpen = !state.alsoOpen; renderModal(); if (state.alsoOpen) { const s = document.getElementById('alsoSearch'); if (s) s.focus(); } }
+function updateAlsoList() { const box = document.getElementById('alsoList'); if (!box) return; box.innerHTML = alsoListHtml((document.getElementById('alsoSearch')||{}).value || ''); }
+function toggleAlsoCode(i) {
+  const k = state.alsoCodes || (state.alsoCodes = []); const at = k.indexOf(i); const nowOn = at < 0;
+  if (at >= 0) k.splice(at, 1); else k.push(i);
+  const row = document.querySelector('.also-opt[data-i="'+i+'"]');
+  if (row) { row.classList.toggle('on', nowOn); const chk = row.querySelector('.also-check'); if (chk) chk.textContent = nowOn ? '✓' : ''; }
+  const sum = document.getElementById('alsoSummaryText'); if (sum) sum.textContent = alsoSummaryText();
+  const chips = document.getElementById('alsoChips'); if (chips) chips.innerHTML = alsoChipsHtml();
+  const help = document.getElementById('alsoHelp'); if (help) help.innerHTML = alsoHelpHtml();
+}
 // The current cell's sub-code plus any "also" codes the user tapped.
 function targetSubCodes(job, ctx) {
   const cur = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
@@ -620,16 +665,17 @@ function modalJobHtml(ctx) {
   const current = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
   const curHtml = current.length ? current.map(a => '<div class="cur-asn"><span class="grow">'+esc(a.resource)+(a.kind==='equip'?' 🚜':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>').join('') : '<div class="muted" style="font-size:0.78rem">Nobody assigned here (this day) yet.</div>';
   const crewOpts = state.crews.length ? '<div style="display:flex;gap:0.4rem;margin-bottom:0.3rem"><select class="full" id="crewSel"><option value="">Add a saved crew…</option>'+state.crews.map(c => '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+c.members.length+')</option>').join('')+'</select><button class="btn" onclick="applyCrewFromPicker()">Add</button></div>' : '<div class="muted" style="font-size:0.72rem;margin-bottom:0.3rem">No saved crews yet — assign people, then “Save as crew”.</div>';
-  const curKey = (ctx.costCode||'') + '¦' + (ctx.subCode||'');
-  const alsoSel = new Set(state.alsoCodes || []);
-  const otherCodes = (job.subCodes || []).map((s,i) => ({ s, i })).filter(o => ((o.s.costCode||'')+'¦'+(o.s.subCode||'')) !== curKey);
-  const alsoHtml = otherCodes.length ? (
-    '<label class="fld">Also assign to these cost codes</label>' +
-    '<div class="also-codes">' + otherCodes.map(o => { const on = alsoSel.has(o.i);
-      return '<button class="btn'+(on?' primary':'')+'" onclick="toggleAlsoCode('+o.i+')">'+(on?'✓ ':'')+esc(o.s.costCode)+(o.s.subCode?' · '+esc(o.s.subCode):'')+'</button>'; }).join('') + '</div>' +
-    '<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">'+(alsoSel.size
-      ? 'Each person or crew you add lands on <strong>'+(alsoSel.size+1)+' cost codes</strong>'+(state.applySpan!=='day'?' across '+spanLabel():'')+'.'
-      : 'Tap codes to staff a crew across several at once — no times needed.')+'</div>'
+  const alsoHtml = alsoOtherCodes().length ? (
+    '<label class="fld">Also assign to other cost codes</label>' +
+    '<div class="also-dd">' +
+      '<button type="button" class="also-trigger" onclick="toggleAlsoOpen()"><span id="alsoSummaryText">'+esc(alsoSummaryText())+'</span><span class="also-caret">'+(state.alsoOpen?'▴':'▾')+'</span></button>' +
+      '<div class="also-panel" id="alsoPanel"'+(state.alsoOpen?'':' style="display:none"')+'>' +
+        '<input type="text" id="alsoSearch" placeholder="Filter cost codes…" oninput="updateAlsoList()" autocomplete="off">' +
+        '<div class="also-list" id="alsoList">'+alsoListHtml('')+'</div>' +
+      '</div>' +
+    '</div>' +
+    '<div id="alsoChips" class="also-chips">'+alsoChipsHtml()+'</div>' +
+    '<div class="muted" id="alsoHelp" style="font-size:0.68rem;margin-top:0.25rem">'+alsoHelpHtml()+'</div>'
   ) : '';
   const siteVal = getSiteTime(ctx.date, ctx.division, ctx.jobId);
   const siteHtml = '<label class="fld">Be on site</label>'+
@@ -1032,7 +1078,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, toggleAlsoCode, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime });
+Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, toggleAlsoCode, toggleAlsoOpen, updateAlsoList, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime });
 loadAll();
 </script>
 </body>
