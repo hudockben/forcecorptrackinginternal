@@ -36,13 +36,13 @@
     input[type=text], select { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.4rem 0.55rem; font-size:0.78rem; }
     .spacer { flex:1; }
     .chip-toggle { display:flex; align-items:center; gap:0.35rem; font-size:0.72rem; color:var(--muted); cursor:pointer; white-space:nowrap; }
-    main { padding:1rem 1.5rem 1.25rem; flex:1; min-height:0; display:flex; flex-direction:column; overflow:auto; }
-    .cap { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:0.9rem; }
-    .cap-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:0.6rem 0.9rem; min-width:120px; }
-    .cap-val { font-size:1.25rem; font-weight:800; }
-    .cap-lbl { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-top:0.1rem; }
-    .hint { color:var(--muted); font-size:0.7rem; margin-bottom:0.5rem; }
-    .board-wrap { overflow:auto; border:1px solid var(--border); border-radius:10px; flex:0 1 auto; min-height:160px; }
+    main { padding:0.7rem 1.5rem 1rem; flex:1; min-height:0; display:flex; flex-direction:column; overflow:auto; }
+    .cap { display:flex; gap:0.45rem; flex-wrap:wrap; margin-bottom:0.5rem; }
+    .cap-card { display:flex; align-items:baseline; gap:0.4rem; background:var(--surface); border:1px solid var(--border); border-radius:7px; padding:0.28rem 0.62rem; }
+    .cap-val { font-size:1.02rem; font-weight:800; line-height:1.15; }
+    .cap-lbl { font-size:0.58rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); white-space:nowrap; }
+    .hint { color:var(--muted); font-size:0.68rem; margin-bottom:0.45rem; }
+    .board-wrap { overflow:auto; border:1px solid var(--border); border-radius:10px; flex:1 1 auto; min-height:160px; }
     table.board { border-collapse:collapse; width:100%; font-size:0.74rem; }
     table.board th, table.board td { border-bottom:1px solid var(--border); border-right:1px solid var(--border); vertical-align:top; }
     table.board thead th { position:sticky; top:0; background:var(--surface2); z-index:5; padding:0.45rem 0.5rem; text-align:center; font-weight:700; }
@@ -426,7 +426,7 @@ function renderToolbar() {
   if (state.view === 'attention') { tb.innerHTML = wknavHtml() + '<span class="muted" style="font-size:0.72rem">Gaps &amp; idle crew for the selected week</span><div class="spacer"></div>' + toolsHtml(); wireToolbar(); return; }
   if (state.view === 'job') {
     tb.innerHTML = wknavHtml() +
-      '<input type="text" id="jobSearch" placeholder="Search jobs…" value="'+esc(state.jobSearch)+'" style="width:140px">' + divFilterHtml() +
+      '<input type="text" id="jobSearch" placeholder="🔍 Search projects…" value="'+esc(state.jobSearch)+'" style="width:210px">' + divFilterHtml() +
       '<label class="chip-toggle"><input type="checkbox" id="needOnly" '+(state.needCrewOnly?'checked':'')+'> Needs crew only</label>' +
       '<div class="spacer"></div>' + toolsHtml() +
       '<button class="btn" id="copyWk" title="Copy this week\'s assignments into next week">📋 Copy week →</button>' +
@@ -481,12 +481,13 @@ function chip(a, conf) { const col = divColor(a.division); return '<span class="
 function renderJobBoard() {
   const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
   const jobs = visibleJobs();
-  let html = renderCapacity() + '<div class="hint">Click a job to expand. Click a day cell on a sub-code to staff it — the picker shows free people first and projects the finish date as you add crew.</div>';
-  if (!jobs.length) return html + '<div class="empty">No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+'.</div>';
+  const searching = state.jobSearch.trim() !== '';
+  let html = renderCapacity() + '<div class="hint">Click a project to expand · click a day cell on a sub-code to staff it.</div>';
+  if (!jobs.length) return html + '<div class="empty">'+(searching ? 'No projects match “'+esc(state.jobSearch.trim())+'”.' : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+'.')+'</div>';
   let body = '';
   jobs.forEach(job => {
     const col = divColor(job.division);
-    const collapsed = !state.jobOpen[job.division+'::'+job.id];
+    const collapsed = !state.jobOpen[job.division+'::'+job.id] && !searching;
     const behind = (job.subCodes||[]).filter(c => c.status==='behind').length;
     const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+
