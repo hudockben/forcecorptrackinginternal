@@ -1125,7 +1125,7 @@ async function openDispatchModal() {
 function dispatchModalHtml(groupOptions) {
   return '<div class="modal"><div class="modal-head"><div style="font-weight:700">📤 Dispatch schedule</div><button class="x" onclick="closeDispatch()">✕</button></div><div class="modal-body">'+
     '<label class="fld">Layout</label><select class="full" id="dpLayout"><option value="job">By job — who is on each job each day</option><option value="person">By person — each crew member’s schedule</option></select>'+
-    '<label class="fld">Range</label><select class="full" id="dpScope"><option value="week">This week</option><option value="today">Today only</option></select>'+
+    '<label class="fld">Range</label><select class="full" id="dpScope"><option value="today" selected>Today only</option><option value="week">This week</option></select>'+
     '<div style="margin-top:0.6rem"><button class="btn" onclick="doPrint()">🖨 Open print view</button></div>'+
     '<hr style="border:none;border-top:1px solid var(--border);margin:1rem 0">'+
     '<div style="font-weight:700;font-size:0.82rem">Email to crews</div>'+
