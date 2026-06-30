@@ -187,8 +187,8 @@ async function loadAll() {
   try {
     const [board, asn, crews] = await Promise.all([
       api('/api/scheduler/board?today=' + todayStr()),
-      api('/api/data?key=' + ASSIGN_KEY).catch(() => ({ value:null })),
-      api('/api/data?key=' + CREWS_KEY).catch(() => ({ value:null })),
+      api('/api/data/' + ASSIGN_KEY).catch(() => ({ value:null })),
+      api('/api/data/' + CREWS_KEY).catch(() => ({ value:null })),
     ]);
     state.board = board;
     const v = asn && asn.value;
@@ -261,9 +261,9 @@ function redo() { if (!_redo.length) return; _undo.push(_snap()); state.assignme
 function _scheduleFlush() { _writeLocal(false); if (_saveState !== 'saving') setSaveStatus('pending'); clearTimeout(_saveTimer); _saveTimer = setTimeout(() => flushSaves(false), 500); }
 function saveAssignments() { _dirtyAssign = true; _scheduleFlush(); }
 function saveCrews() { _dirtyCrews = true; _scheduleFlush(); }
-async function _getVal(key) { try { const r = await api('/api/data?key=' + key); return r && r.value; } catch { return null; } }
+async function _getVal(key) { try { const r = await api('/api/data/' + key); return r && r.value; } catch { return null; } }
 async function _putKey(key, value, keepalive) {
-  const res = await fetch('/api/data?key=' + key, { method:'PUT', keepalive,
+  const res = await fetch('/api/data/' + key, { method:'PUT', keepalive,
     headers: { 'Content-Type':'application/json', Authorization:'Bearer ' + token }, body: JSON.stringify({ value }) });
   if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || ('Error ' + res.status)); }
 }
