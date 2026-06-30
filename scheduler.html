@@ -220,6 +220,8 @@ async function loadAll() {
       if (Array.isArray(local.crews) && local.crews.length && !state.crews.length) { state.crews = local.crews; _dirtyCrews = true; }
       if (_dirtyAssign || _dirtyCrews) { toast('Restored unsaved changes — saving…'); _scheduleFlush(); }
     }
+    // Clean up any duplicate assignments left by past merges, and persist the fix.
+    if (dedupeAssignmentMap(state.assignments)) { _dirtyAssign = true; _scheduleFlush(); }
     _writeLocal(!(_dirtyAssign || _dirtyCrews));
 
     if (!state.weekAnchor) state.weekAnchor = mondayOf(new Date());
@@ -296,6 +298,24 @@ function mergeAssignments(baseStr, ours, theirs) {
   for (const id in o) if (id in b && JSON.stringify(o[id]) !== JSON.stringify(b[id])) res[id] = o[id];   // we edited
   return _unflat(res);
 }
+// Collapse duplicate assignments that share the same logical identity — same
+// resource/operator on the same job · cost code · sub code on a date — but were
+// created with different ids (e.g. an id-keyed merge of two sessions that each
+// added the same person, which the merge can't dedupe). Keeps the first, drops
+// the rest. Mutates `map`; returns true if anything was removed.
+function dedupeAssignmentMap(map) {
+  let removed = false;
+  for (const d in map) {
+    const seen = new Set(); const out = [];
+    for (const a of (map[d] || [])) {
+      const k = (a.resource||'')+'¦'+(a.kind||'')+'¦'+(a.op||'')+'¦'+(a.division||'')+'¦'+(a.jobId||'')+'¦'+(a.costCode||'')+'¦'+(a.subCode||'');
+      if (seen.has(k)) { removed = true; continue; }
+      seen.add(k); out.push(a);
+    }
+    if (out.length) map[d] = out; else delete map[d];
+  }
+  return removed;
+}
 async function flushSaves(keepalive) {
   clearTimeout(_saveTimer);
   if (keepalive) { // tab hiding/closing — best-effort PUT. Keep dirty flags set
@@ -317,6 +337,7 @@ async function flushSaves(keepalive) {
       if (JSON.stringify(theirs) !== _baseline) { state.assignments = mergeAssignments(_baseline, state.assignments, theirs); merged = true; }
       if (JSON.stringify(theirsTimes) !== _baselineTimes) { state.siteTimes = mergeSiteTimes(_baselineTimes, state.siteTimes, theirsTimes); merged = true; }
       if (merged) { toast('Merged another scheduler’s changes'); render(); }
+      if (dedupeAssignmentMap(state.assignments)) render(); // never persist duplicate assignments
       await _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments, siteTimes: state.siteTimes }, false);
       _baseline = _snap(); _baselineTimes = JSON.stringify(state.siteTimes); _dirtyAssign = false;
     }
@@ -333,6 +354,7 @@ async function refreshData() {
     const theirs = (sv && sv.assignments) || {};
     const theirsTimes = (sv && sv.siteTimes) || {};
     state.assignments = (_dirtyAssign || _snap() !== _baseline) ? mergeAssignments(_baseline, state.assignments, theirs) : theirs;
+    if (dedupeAssignmentMap(state.assignments)) _dirtyAssign = true;
     state.siteTimes = (_dirtyAssign || JSON.stringify(state.siteTimes) !== _baselineTimes) ? mergeSiteTimes(_baselineTimes, state.siteTimes, theirsTimes) : theirsTimes;
     _baseline = JSON.stringify(theirs);
     _baselineTimes = JSON.stringify(theirsTimes);
@@ -1076,8 +1098,9 @@ function dispatchBodyJob(dates) {
       j.days[d].forEach(a => { const ck = (a.costCode||'')+'|'+(a.subCode||''); (byCode[ck] = byCode[ck] || { costCode:a.costCode||'', subCode:a.subCode||'', items:[] }).items.push(a); });
       const codeKeys = Object.keys(byCode).sort((x,y) => x.localeCompare(y));
       return codeKeys.map((ck, i) => { const g = byCode[ck];
-        const people = g.items.filter(a=>a.kind==='emp');
-        const machines = g.items.filter(a=>a.kind==='equip');
+        // Dedupe defensively so a duplicate assignment never lists a name twice.
+        const seenP = new Set(), people = []; g.items.forEach(a => { if (a.kind==='emp' && !seenP.has(a.resource)) { seenP.add(a.resource); people.push(a); } });
+        const seenM = new Set(), machines = []; g.items.forEach(a => { if (a.kind==='equip') { const mk=a.resource+'¦'+(a.op||''); if (!seenM.has(mk)) { seenM.add(mk); machines.push(a); } } });
         const pres = new Set(people.map(p=>p.resource));
         const byOp = {}; machines.forEach(m => { if (m.op && pres.has(m.op)) (byOp[m.op]=byOp[m.op]||[]).push(m); });
         // Operator carries their machine in the Crew column; loose machines stay in Equipment.
@@ -1100,9 +1123,10 @@ function dispatchBodyPerson(dates) {
   dates.forEach(d => (state.assignments[d]||[]).forEach(a => { (byRes[a.resource] = byRes[a.resource] || { kind:a.kind, days:{} }); (byRes[a.resource].days[d] = byRes[a.resource].days[d] || []).push(a); }));
   const names = Object.keys(byRes).sort((a,b)=>a.localeCompare(b));
   if (!names.length) return '<div style="color:#999">No assignments in this range.</div>';
-  const pairedMachinesFor = (d, a) => (state.assignments[d]||[]).filter(m => m.kind==='equip' && m.op===a.resource && m.division===a.division && m.jobId===a.jobId && (m.costCode||'')===(a.costCode||'') && (m.subCode||'')===(a.subCode||''));
+  const pairedMachinesFor = (d, a) => { const seen = new Set(); return (state.assignments[d]||[]).filter(m => m.kind==='equip' && m.op===a.resource && m.division===a.division && m.jobId===a.jobId && (m.costCode||'')===(a.costCode||'') && (m.subCode||'')===(a.subCode||'') && !seen.has(m.resource) && seen.add(m.resource)); };
+  const dayKey = a => (a.division||'')+'¦'+(a.jobId||'')+'¦'+(a.costCode||'')+'¦'+(a.subCode||'')+'¦'+(a.op||'');
   return names.map(n => { const r = byRes[n];
-    const rows = dates.filter(d => r.days[d]).map(d => { const items = r.days[d]; const jobs = items.map(a => { let s = esc(a.jobName)+(a.costCode?' ['+esc(a.costCode)+(a.subCode?'·'+esc(a.subCode):'')+']':'')+(a.half?' (½)':'');
+    const rows = dates.filter(d => r.days[d]).map(d => { const seenItem = new Set(); const items = r.days[d].filter(a => !seenItem.has(dayKey(a)) && seenItem.add(dayKey(a))); const jobs = items.map(a => { let s = esc(a.jobName)+(a.costCode?' ['+esc(a.costCode)+(a.subCode?'·'+esc(a.subCode):'')+']':'')+(a.half?' (½)':'');
         if (a.kind==='emp') { const mm = pairedMachinesFor(d, a); if (mm.length) s += ' <span style="color:#555">+ 🚜 '+mm.map(m=>esc(m.resource)).join(', ')+'</span>'; }
         else if (a.kind==='equip' && a.op) s += ' <span style="color:#888">(op: '+esc(a.op)+')</span>';
         return s; }).join('; ');
@@ -1114,6 +1138,9 @@ function dispatchBodyPerson(dates) {
 
 let _dispatchGroups = [];
 async function openDispatchModal() {
+  // Clean any duplicate assignments before building a report so the dispatch
+  // never lists the same person twice (and persist the cleanup).
+  if (dedupeAssignmentMap(state.assignments)) { saveAssignments(); render(); toast('Cleaned up duplicate assignments'); }
   let o = document.getElementById('dispatchOverlay');
   if (!o) { o = document.createElement('div'); o.id='dispatchOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeDispatch(); }; }
   o.innerHTML = dispatchModalHtml('<option value="">Loading saved lists…</option>');
