@@ -93,6 +93,8 @@
     .pick-row { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.55rem; border:1px solid var(--border); border-radius:6px; margin-bottom:0.3rem; cursor:pointer; }
     .pick-row:hover { border-color:#555; background:var(--surface2); } .pick-row.on-this { border-color:var(--green-dim); }
     .pick-name { font-weight:600; } .pick-sub { font-size:0.64rem; color:var(--muted); } .pick-status { margin-left:auto; font-size:0.66rem; white-space:nowrap; }
+    .also-codes { display:flex; flex-wrap:wrap; gap:0.3rem; }
+    .also-codes .btn { font-size:0.68rem; padding:0.28rem 0.5rem; }
     .empty { color:var(--muted); font-size:0.82rem; text-align:center; padding:2.5rem 1rem; }
     .loading { color:var(--muted); font-size:0.85rem; text-align:center; padding:3rem 1rem; }
     footer { padding:1rem 1.5rem; font-size:0.6rem; color:var(--muted); border-top:1px solid var(--border); }
@@ -133,6 +135,7 @@ const state = {
   divFilter:'all', jobSearch:'', needCrewOnly:false, jobOpen:{},
   crewSearch:'', tradeFilter:'all', showAll:false, grpCol:{},
   applySpan:'day', assignCtx:null, ai:null, aiLoading:false, rateBasis:'standard',
+  alsoCodes:[],
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -557,11 +560,20 @@ function renderCrewBoard() {
 function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderCrewBoard(); }
 
 // ── Assign modal ────────────────────────────────────────────────────────────
-function openAssignJob(division, jobId, costCode, subCode, date) { state.assignCtx = { mode:'job', division, jobId, costCode, subCode, date }; renderModal(); }
+function openAssignJob(division, jobId, costCode, subCode, date) { state.assignCtx = { mode:'job', division, jobId, costCode, subCode, date }; state.alsoCodes = []; renderModal(); }
 function openAssignResource(resource, kind, date) { state.assignCtx = { mode:'resource', resource, kind, date }; renderModal(); }
 function closeAssign() { state.assignCtx = null; const o = document.getElementById('assignOverlay'); if (o) o.remove(); }
 function afterMutate() { renderModal(); document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard(); }
 function setSpan(s) { state.applySpan = s; renderModal(); }
+// Extra cost codes (by index into job.subCodes) a person/crew should also land on.
+function toggleAlsoCode(i) { const k = state.alsoCodes || (state.alsoCodes = []); const at = k.indexOf(i); if (at >= 0) k.splice(at, 1); else k.push(i); renderModal(); }
+// The current cell's sub-code plus any "also" codes the user tapped.
+function targetSubCodes(job, ctx) {
+  const cur = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
+  const list = cur ? [cur] : [];
+  (state.alsoCodes || []).forEach(i => { const sc = (job.subCodes || [])[i]; if (sc) list.push(sc); });
+  return list.length ? list : [null];
+}
 function renderModal() { const ctx = state.assignCtx; if (!ctx) return;
   let o = document.getElementById('assignOverlay');
   if (!o) { o = document.createElement('div'); o.id='assignOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeAssign(); }; }
@@ -577,10 +589,22 @@ function modalJobHtml(ctx) {
   const current = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
   const curHtml = current.length ? current.map(a => '<div class="cur-asn"><span class="grow">'+esc(a.resource)+(a.kind==='equip'?' 🚜':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>').join('') : '<div class="muted" style="font-size:0.78rem">Nobody assigned here (this day) yet.</div>';
   const crewOpts = state.crews.length ? '<div style="display:flex;gap:0.4rem;margin-bottom:0.3rem"><select class="full" id="crewSel"><option value="">Add a saved crew…</option>'+state.crews.map(c => '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+c.members.length+')</option>').join('')+'</select><button class="btn" onclick="applyCrewFromPicker()">Add</button></div>' : '<div class="muted" style="font-size:0.72rem;margin-bottom:0.3rem">No saved crews yet — assign people, then “Save as crew”.</div>';
+  const curKey = (ctx.costCode||'') + '¦' + (ctx.subCode||'');
+  const alsoSel = new Set(state.alsoCodes || []);
+  const otherCodes = (job.subCodes || []).map((s,i) => ({ s, i })).filter(o => ((o.s.costCode||'')+'¦'+(o.s.subCode||'')) !== curKey);
+  const alsoHtml = otherCodes.length ? (
+    '<label class="fld">Also assign to these cost codes</label>' +
+    '<div class="also-codes">' + otherCodes.map(o => { const on = alsoSel.has(o.i);
+      return '<button class="btn'+(on?' primary':'')+'" onclick="toggleAlsoCode('+o.i+')">'+(on?'✓ ':'')+esc(o.s.costCode)+(o.s.subCode?' · '+esc(o.s.subCode):'')+'</button>'; }).join('') + '</div>' +
+    '<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">'+(alsoSel.size
+      ? 'Each person or crew you add lands on <strong>'+(alsoSel.size+1)+' cost codes</strong>'+(state.applySpan!=='day'?' across '+spanLabel():'')+'.'
+      : 'Tap codes to staff a crew across several at once — no times needed.')+'</div>'
+  ) : '';
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(ctx.costCode||'job-level')+(ctx.subCode?' · '+esc(ctx.subCode):'')+' · '+esc(dfmt)+(sc?' · '+sc.status:'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     projLine(job, sc) +
     '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
     (state.applySpan!=='day'?'<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">Adds each person to '+spanLabel()+' on this sub-code.</div>':'')+
+    alsoHtml +
     '<label class="fld">Assigned here (this day)</label>'+curHtml+
     (current.length?'<button class="btn mini" style="margin-top:0.2rem" onclick="saveCurrentAsCrew()">💾 Save these as a crew</button>':'')+
     '<label class="fld">Saved crews</label>'+crewOpts+
@@ -614,11 +638,12 @@ function updatePickList() {
 function pickAdd(name, kind) {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
-  const sc = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
+  const targets = targetSubCodes(job, ctx);
   const dates = spanDates(ctx.date);
   pushUndo();
-  const added = addAssignmentSpan(name, kind, job, sc, dates);
-  if (!added) { _undo.pop(); updateUndoButtons(); toast(name+' already on those days'); } else if (added > 1) toast('Added '+name+' to '+added+' days');
+  let added = 0; targets.forEach(sc => { added += addAssignmentSpan(name, kind, job, sc, dates); });
+  if (!added) { _undo.pop(); updateUndoButtons(); toast(name+' already on those'); }
+  else { const codes = targets.length; if (codes > 1 || dates.length > 1) toast('Added '+name+(codes>1?' to '+codes+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')); }
   afterMutate();
 }
 function applyCrewFromPicker() {
@@ -626,12 +651,12 @@ function applyCrewFromPicker() {
   const sel = document.getElementById('crewSel'); if (!sel || !sel.value) return;
   const crew = state.crews.find(c => c.id === sel.value); if (!crew) return;
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
-  const sc = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
+  const targets = targetSubCodes(job, ctx);
   const dates = spanDates(ctx.date);
   pushUndo();
-  let added = 0; crew.members.forEach(m => { added += addAssignmentSpan(m.name, m.kind||'emp', job, sc, dates); });
+  let added = 0; crew.members.forEach(m => targets.forEach(sc => { added += addAssignmentSpan(m.name, m.kind||'emp', job, sc, dates); }));
   if (!added) { _undo.pop(); updateUndoButtons(); }
-  toast(added ? ('Added '+crew.name+' ('+added+' assignment'+(added>1?'s':'')+')') : 'Crew already scheduled here');
+  toast(added ? ('Added '+crew.name+(targets.length>1?' to '+targets.length+' cost codes':'')+' ('+added+' assignment'+(added>1?'s':'')+')') : 'Crew already scheduled here');
   afterMutate();
 }
 function saveCurrentAsCrew() {
@@ -654,20 +679,24 @@ function modalResourceHtml(ctx) {
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+(off.status==='submitted'?' (requested off)':' off')+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
     '<label class="fld">Scheduled (this day)</label>'+curHtml+
-    '<label class="fld">Add to a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select><div id="rScWrap" style="display:none"><label class="fld">Sub-code</label><select class="full" id="rSc"></select></div>'+
+    '<label class="fld">Add to a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select><div id="rScWrap" style="display:none"><label class="fld">Cost codes</label><select class="full" id="rSc" multiple size="5"></select><div class="muted" style="font-size:0.66rem;margin-top:0.25rem">Pick one or more to split across cost codes — or leave all unselected for the whole job.</div></div>'+
     '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn primary" id="rAdd" style="flex:1" disabled onclick="rConfirmAdd()">Add to '+spanLabel()+'</button><button class="btn" onclick="closeAssign()">Done</button></div></div></div>';
 }
 function onPickRJob() { const sel = document.getElementById('rJob').value, wrap = document.getElementById('rScWrap'), scSel = document.getElementById('rSc'), add = document.getElementById('rAdd');
   if (!sel) { wrap.style.display='none'; add.disabled = true; return; }
   const [division, id] = sel.split('::'); const job = jobById(division, id);
   wrap.style.display = 'block'; add.disabled = false;
-  scSel.innerHTML = '<option value="">— whole job —</option>' + (job.subCodes||[]).map((c,i) => '<option value="'+i+'">'+esc(c.costCode)+(c.subCode?' · '+esc(c.subCode):'')+'  ['+c.status+(c.addlLaborersNeeded?' · +'+c.addlLaborersNeeded:'')+']</option>').join('');
+  scSel.innerHTML = (job.subCodes||[]).map((c,i) => '<option value="'+i+'">'+esc(c.costCode)+(c.subCode?' · '+esc(c.subCode):'')+'  ['+c.status+(c.addlLaborersNeeded?' · +'+c.addlLaborersNeeded:'')+']</option>').join('') || '<option value="" disabled>No cost codes — adds to whole job</option>';
 }
 function rConfirmAdd() { const sel = document.getElementById('rJob').value; if (!sel) return;
   const [division, id] = sel.split('::'); const job = jobById(division, id);
-  const scIdx = document.getElementById('rSc').value; const sc = scIdx !== '' ? (job.subCodes||[])[parseInt(scIdx,10)] : null;
-  const ctx = state.assignCtx; pushUndo(); const added = addAssignmentSpan(ctx.resource, ctx.kind, job, sc, spanDates(ctx.date));
-  if (!added) { _undo.pop(); updateUndoButtons(); } else if (added > 1) toast('Added to '+added+' days'); afterMutate();
+  const scSel = document.getElementById('rSc');
+  const idxs = Array.from(scSel.selectedOptions || []).map(o => o.value).filter(v => v !== '');
+  const scs = idxs.length ? idxs.map(v => (job.subCodes||[])[parseInt(v,10)]) : [null];
+  const ctx = state.assignCtx; const dates = spanDates(ctx.date); pushUndo();
+  let added = 0; scs.forEach(sc => { added += addAssignmentSpan(ctx.resource, ctx.kind, job, sc, dates); });
+  if (!added) { _undo.pop(); updateUndoButtons(); toast(ctx.resource+' already on those'); }
+  else toast('Added'+(scs.length>1?' to '+scs.length+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')); afterMutate();
 }
 
 // ── Crews manager ───────────────────────────────────────────────────────────
