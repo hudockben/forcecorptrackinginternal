@@ -33,7 +33,8 @@
     .btn:disabled { opacity:0.5; cursor:default; }
     .wknav { display:flex; align-items:center; gap:0.4rem; }
     .wklabel { font-size:0.82rem; font-weight:700; min-width:185px; text-align:center; }
-    input[type=text], select { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.4rem 0.55rem; font-size:0.78rem; }
+    input[type=text], input[type=time], select { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.4rem 0.55rem; font-size:0.78rem; }
+    input[type=time]::-webkit-calendar-picker-indicator { filter:invert(0.8); cursor:pointer; }
     .spacer { flex:1; }
     .chip-toggle { display:flex; align-items:center; gap:0.35rem; font-size:0.72rem; color:var(--muted); cursor:pointer; white-space:nowrap; }
     main { padding:0.7rem 1.5rem 1rem; flex:1; min-height:0; display:flex; flex-direction:column; overflow:auto; }
@@ -53,6 +54,7 @@
     .cell:hover { background:var(--surface2); }
     .cell.weekend { background:rgba(255,255,255,0.015); } .cell.today { box-shadow: inset 2px 0 0 var(--blue); }
     .cnt-cell { text-align:center; font-weight:700; color:var(--muted); } .cnt-cell.has { color:var(--text); }
+    .site-time { font-size:0.58rem; font-weight:700; color:var(--blue); margin-top:1px; letter-spacing:-0.02em; }
     .asn { display:block; font-size:0.64rem; line-height:1.25; padding:0.1rem 0.3rem; border-radius:4px; margin-bottom:0.12rem; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
     .grp-row td { background:var(--surface2); cursor:pointer; } .grp-lead { font-weight:700; } .caret { display:inline-block; width:12px; color:var(--muted); }
@@ -135,7 +137,7 @@ const state = {
   divFilter:'all', jobSearch:'', needCrewOnly:false, jobOpen:{},
   crewSearch:'', tradeFilter:'all', showAll:false, grpCol:{},
   applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
-  alsoCodes:[],
+  alsoCodes:[], siteTimes:{},
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -146,6 +148,9 @@ const dstr = d => d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getD
 const todayStr = () => dstr(new Date());
 function fmtNum(n, dp=1) { if (n == null || isNaN(n)) return '—'; const v = Number(n); return (v % 1 === 0) ? String(v) : v.toFixed(dp); }
 function shortDate(ds) { return new Date(ds+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}); }
+// "06:30" → "6:30 AM" (long) / "6:30a" (compact). Empty string for blanks.
+function fmtTime(hhmm) { if (!hhmm) return ''; const [h,m] = String(hhmm).split(':').map(Number); if (isNaN(h)) return ''; const ap = h<12?'AM':'PM', h12 = (h%12)||12; return h12+':'+pad(m||0)+' '+ap; }
+function fmtTimeShort(hhmm) { if (!hhmm) return ''; const [h,m] = String(hhmm).split(':').map(Number); if (isNaN(h)) return ''; const ap = h<12?'a':'p', h12 = (h%12)||12; return h12+(m?':'+pad(m):'')+ap; }
 function addDays(ds, n) { const d = new Date(ds+'T12:00:00'); d.setDate(d.getDate()+n); return dstr(d); }
 function daysBetween(a, b) { return Math.round((new Date(b+'T12:00:00') - new Date(a+'T12:00:00')) / 86400000); }
 function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); x.setDate(x.getDate() + (dow === 0 ? -6 : 1 - dow)); x.setHours(0,0,0,0); return x; }
@@ -177,9 +182,11 @@ async function loadAll() {
     state.board = board;
     const v = asn && asn.value;
     state.assignments = (v && typeof v === 'object' && v.assignments) ? v.assignments : {};
+    state.siteTimes = (v && typeof v === 'object' && v.siteTimes && typeof v.siteTimes === 'object') ? v.siteTimes : {};
     const c = crews && crews.value;
     state.crews = (c && Array.isArray(c.crews)) ? c.crews : [];
     _baseline = JSON.stringify(state.assignments);
+    _baselineTimes = JSON.stringify(state.siteTimes);
 
     // Recover edits that were cached locally but never confirmed saved to the
     // server (a save that was slow/dropped/failed before the last reload).
@@ -188,6 +195,8 @@ async function loadAll() {
       const serverStr = _snap();
       const recovered = _recoverAdds(state.assignments, local.assignments || {});
       if (JSON.stringify(recovered) !== serverStr) { state.assignments = recovered; _dirtyAssign = true; }
+      const recoveredTimes = _recoverTimes(state.siteTimes, local.siteTimes || {});
+      if (JSON.stringify(recoveredTimes) !== JSON.stringify(state.siteTimes)) { state.siteTimes = recoveredTimes; _dirtyAssign = true; }
       if (Array.isArray(local.crews) && local.crews.length && !state.crews.length) { state.crews = local.crews; _dirtyCrews = true; }
       if (_dirtyAssign || _dirtyCrews) { toast('Restored unsaved changes — saving…'); _scheduleFlush(); }
     }
@@ -204,7 +213,7 @@ async function loadAll() {
 // before each write we re-read the server copy and merge by assignment id so
 // two schedulers editing at once don't clobber each other. On tab hide/close
 // we force-flush (keepalive) so in-progress edits aren't lost.
-let _baseline = '{}';
+let _baseline = '{}', _baselineTimes = '{}';
 let _undo = [], _redo = [];
 let _saveTimer = null, _dirtyAssign = false, _dirtyCrews = false, _flushing = false;
 // Local write-through cache: every edit is mirrored to localStorage *before*
@@ -214,11 +223,12 @@ let _saveTimer = null, _dirtyAssign = false, _dirtyCrews = false, _flushing = fa
 const LOCAL_KEY = 'fct_sched_cache:' + ((user && user.companyCode) || '') + ':' + ((user && user.username) || '');
 let _saveState = 'saved';                 // 'saved' | 'pending' | 'saving' | 'error'
 let _retryTimer = null, _retryDelay = 0;
-function _writeLocal(synced) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify({ v:1, synced: !!synced, assignments: state.assignments, crews: state.crews })); } catch {} }
+function _writeLocal(synced) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify({ v:1, synced: !!synced, assignments: state.assignments, crews: state.crews, siteTimes: state.siteTimes })); } catch {} }
 function _readLocal() { try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || 'null'); } catch { return null; } }
 // Recover locally-cached additions the server never confirmed. Additions only
 // (never deletes) so a stale cache can't wipe another device's work.
 function _recoverAdds(server, local) { const res = _flat(server), lo = _flat(local); for (const id in lo) if (!(id in res)) res[id] = lo[id]; return _unflat(res); }
+function _recoverTimes(server, local) { const res = _flatTimes(server), lo = _flatTimes(local); for (const k in lo) if (!(k in res)) res[k] = lo[k]; return _unflatTimes(res); }
 function setSaveStatus(s) { _saveState = s; renderSaveStatus(); }
 function renderSaveStatus() {
   const el = document.getElementById('saveStatus'); if (!el) return;
@@ -248,6 +258,16 @@ async function _putKey(key, value, keepalive) {
 }
 function _flat(a) { const m={}; for (const d in a) for (const x of (a[d]||[])) m[x.id] = { ...x, _d:d }; return m; }
 function _unflat(m) { const o={}; for (const id in m) { const { _d, ...rest } = m[id]; (o[_d] = o[_d] || []).push(rest); } return o; }
+// Site times flatten to "date jobKey" -> "HH:MM" so they merge like assignments.
+function _flatTimes(st) { const m={}; for (const d in st) for (const k in (st[d]||{})) m[d+' '+k] = st[d][k]; return m; }
+function _unflatTimes(m) { const o={}; for (const fk in m) { const i = fk.indexOf(' '); const d = fk.slice(0,i), k = fk.slice(i+1); (o[d] = o[d] || {})[k] = m[fk]; } return o; }
+function mergeSiteTimes(baseStr, ours, theirs) {
+  const b=_flatTimes(JSON.parse(baseStr||'{}')), o=_flatTimes(ours), t=_flatTimes(theirs), res={ ...t };
+  for (const k in o) if (!(k in b)) res[k] = o[k];                                  // we set
+  for (const k in b) if (!(k in o)) delete res[k];                                  // we cleared
+  for (const k in o) if (k in b && o[k] !== b[k]) res[k] = o[k];                     // we changed
+  return _unflatTimes(res);
+}
 // 3-way merge: start from theirs, then layer our adds/removes/edits (by id) on top.
 function mergeAssignments(baseStr, ours, theirs) {
   const b=_flat(JSON.parse(baseStr||'{}')), o=_flat(ours), t=_flat(theirs), res={ ...t };
@@ -261,7 +281,7 @@ async function flushSaves(keepalive) {
   if (keepalive) { // tab hiding/closing — best-effort PUT. Keep dirty flags set
     // so if the tab comes back (or the keepalive was dropped) we still flush;
     // the local cache stays unsynced until a real success confirms the write.
-    if (_dirtyAssign) _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments }, true).catch(()=>{});
+    if (_dirtyAssign) _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments, siteTimes: state.siteTimes }, true).catch(()=>{});
     if (_dirtyCrews)  _putKey(CREWS_KEY,  { version:1, crews: state.crews }, true).catch(()=>{});
     return;
   }
@@ -272,9 +292,13 @@ async function flushSaves(keepalive) {
     if (_dirtyAssign) {
       const sv = await _getVal(ASSIGN_KEY);
       const theirs = (sv && sv.assignments) || {};
-      if (JSON.stringify(theirs) !== _baseline) { state.assignments = mergeAssignments(_baseline, state.assignments, theirs); toast('Merged another scheduler’s changes'); render(); }
-      await _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments }, false);
-      _baseline = _snap(); _dirtyAssign = false;
+      const theirsTimes = (sv && sv.siteTimes) || {};
+      let merged = false;
+      if (JSON.stringify(theirs) !== _baseline) { state.assignments = mergeAssignments(_baseline, state.assignments, theirs); merged = true; }
+      if (JSON.stringify(theirsTimes) !== _baselineTimes) { state.siteTimes = mergeSiteTimes(_baselineTimes, state.siteTimes, theirsTimes); merged = true; }
+      if (merged) { toast('Merged another scheduler’s changes'); render(); }
+      await _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments, siteTimes: state.siteTimes }, false);
+      _baseline = _snap(); _baselineTimes = JSON.stringify(state.siteTimes); _dirtyAssign = false;
     }
     if (_dirtyCrews) { await _putKey(CREWS_KEY, { version:1, crews: state.crews }, false); _dirtyCrews = false; }
     _writeLocal(true); _retryDelay = 0; clearTimeout(_retryTimer); setSaveStatus('saved');
@@ -287,8 +311,11 @@ async function refreshData() {
     const [board, sv] = await Promise.all([ api('/api/scheduler/board?today=' + todayStr()), _getVal(ASSIGN_KEY) ]);
     state.board = board;
     const theirs = (sv && sv.assignments) || {};
+    const theirsTimes = (sv && sv.siteTimes) || {};
     state.assignments = (_dirtyAssign || _snap() !== _baseline) ? mergeAssignments(_baseline, state.assignments, theirs) : theirs;
+    state.siteTimes = (_dirtyAssign || JSON.stringify(state.siteTimes) !== _baselineTimes) ? mergeSiteTimes(_baselineTimes, state.siteTimes, theirsTimes) : theirsTimes;
     _baseline = JSON.stringify(theirs);
+    _baselineTimes = JSON.stringify(theirsTimes);
     _writeLocal(!(_dirtyAssign || _dirtyCrews));
     render(); toast('Refreshed');
     if (_dirtyAssign || _dirtyCrews) { setSaveStatus('pending'); _scheduleFlush(); } else setSaveStatus('saved');
@@ -321,6 +348,17 @@ function addAssignmentSpan(resource, kind, job, sc, dates) {
 }
 function removeAssignment(date, id) { if ((state.assignments[date]||[]).some(a => a.id === id)) pushUndo(); state.assignments[date] = (state.assignments[date] || []).filter(a => a.id !== id); if (!state.assignments[date].length) delete state.assignments[date]; saveAssignments(); }
 function toggleHalf(date, id) { const a = (state.assignments[date]||[]).find(x => x.id === id); if (a) { pushUndo(); a.half = !a.half; saveAssignments(); } }
+// ── "Be on site" report time (per job, per day) ─────────────────────────────
+function siteKey(division, jobId) { return division + '::' + jobId; }
+function getSiteTime(date, division, jobId) { return (state.siteTimes[date] || {})[siteKey(division, jobId)] || ''; }
+function setSiteTime(division, jobId, val, dates) {
+  const key = siteKey(division, jobId);
+  dates.forEach(d => {
+    const day = state.siteTimes[d] || (state.siteTimes[d] = {});
+    if (val) day[key] = val; else { delete day[key]; if (!Object.keys(day).length) delete state.siteTimes[d]; }
+  });
+  saveAssignments();
+}
 function conflictResourcesOn(date) {
   const byRes = {}; (state.assignments[date] || []).forEach(a => { (byRes[a.resource] = byRes[a.resource] || new Set()).add(a.division + '::' + a.jobId); });
   const out = new Set(); Object.entries(byRes).forEach(([r,set]) => { if (set.size > 1) out.add(r); }); return out;
@@ -489,7 +527,7 @@ function renderJobBoard() {
     const col = divColor(job.division);
     const collapsed = !state.jobOpen[job.division+'::'+job.id] && !searching;
     const behind = (job.subCodes||[]).filter(c => c.status==='behind').length;
-    const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
+    const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; const st = getSiteTime(d, job.division, job.id); return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+(st?'<div class="site-time">⏰'+esc(fmtTimeShort(st))+'</div>':'')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+
       '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
       '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+'</div></td>'+headCells+'</tr>';
@@ -593,10 +631,18 @@ function modalJobHtml(ctx) {
       ? 'Each person or crew you add lands on <strong>'+(alsoSel.size+1)+' cost codes</strong>'+(state.applySpan!=='day'?' across '+spanLabel():'')+'.'
       : 'Tap codes to staff a crew across several at once — no times needed.')+'</div>'
   ) : '';
+  const siteVal = getSiteTime(ctx.date, ctx.division, ctx.jobId);
+  const siteHtml = '<label class="fld">Be on site</label>'+
+    '<div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">'+
+      '<input type="time" id="siteTime" value="'+esc(siteVal)+'" onchange="onSiteTimeInput()" style="width:130px">'+
+      (siteVal ? '<span style="font-size:0.76rem;font-weight:700;color:var(--blue)">⏰ '+esc(fmtTime(siteVal))+'</span><button class="btn mini" onclick="clearSiteTime()">clear</button>' : '')+
+      '<span class="muted" style="font-size:0.68rem;flex-basis:100%">Report time for the whole crew on <strong>'+esc(job.name)+'</strong> · '+spanLabel()+'.</span>'+
+    '</div>';
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(ctx.costCode||'job-level')+(ctx.subCode?' · '+esc(ctx.subCode):'')+' · '+esc(dfmt)+(sc?' · '+sc.status:'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     projLine(job, sc) +
     '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
     (state.applySpan!=='day'?'<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">Adds each person to '+spanLabel()+' on this sub-code.</div>':'')+
+    siteHtml +
     alsoHtml +
     '<label class="fld">Assigned here (this day)</label>'+curHtml+
     (current.length?'<button class="btn mini" style="margin-top:0.2rem" onclick="saveCurrentAsCrew()">💾 Save these as a crew</button>':'')+
@@ -604,6 +650,8 @@ function modalJobHtml(ctx) {
     '<label class="fld">Add crew or equipment</label><input type="text" class="full" id="pickSearch" placeholder="Search people / equipment…" oninput="updatePickList()" autocomplete="off"><div class="pick-list" id="pickList"></div>'+
     '<div style="margin-top:0.8rem"><button class="btn" onclick="closeAssign()">Done</button></div></div></div>';
 }
+function onSiteTimeInput() { const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return; const el = document.getElementById('siteTime'); if (!el) return; setSiteTime(ctx.division, ctx.jobId, el.value, spanDates(ctx.date)); afterMutate(); if (el.value) toast('On site '+fmtTime(el.value)+(state.applySpan!=='day'?' · '+spanLabel():'')); }
+function clearSiteTime() { const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return; setSiteTime(ctx.division, ctx.jobId, '', spanDates(ctx.date)); afterMutate(); }
 function updatePickList() {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const box = document.getElementById('pickList'); if (!box) return;
@@ -808,7 +856,9 @@ function dispatchBodyJob(dates) {
         const code = g.costCode
           ? '<strong'+(meta.color?' style="color:'+meta.color+'"':'')+'>'+esc(g.costCode)+'</strong>'+(g.subCode?' · '+esc(g.subCode):'')+meta.html
           : '<span style="color:#999">Whole job</span>';
-        return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600;vertical-align:top">'+(i===0?dayLabel(d):'')+'</td><td style="'+_td+'">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
+        const st = i===0 ? getSiteTime(d, j.division, j.jobId) : '';
+        const dayCell = i===0 ? dayLabel(d)+(st?'<div style="font-weight:800;color:#1d4ed8;font-size:11px;margin-top:2px">⏰ On site '+esc(fmtTime(st))+'</div>':'') : '';
+        return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600;vertical-align:top">'+dayCell+'</td><td style="'+_td+'">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
     }).join('');
     return '<div style="'+_h2+'">'+esc(j.division.toUpperCase())+' · '+esc(j.name)+'</div>'+dispatchJobSummary(job, j.days, dates)+'<table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
@@ -819,7 +869,9 @@ function dispatchBodyPerson(dates) {
   if (!names.length) return '<div style="color:#999">No assignments in this range.</div>';
   return names.map(n => { const r = byRes[n];
     const rows = dates.filter(d => r.days[d]).map(d => { const items = r.days[d]; const jobs = items.map(a => esc(a.jobName)+(a.costCode?' ['+esc(a.costCode)+(a.subCode?'·'+esc(a.subCode):'')+']':'')+(a.half?' (½)':'')).join('; ');
-      return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+dayLabel(d)+'</td><td style="'+_td+'">'+jobs+'</td></tr>'; }).join('');
+      const times = [...new Set(items.map(a => getSiteTime(d, a.division, a.jobId)).filter(Boolean))];
+      const onSite = times.length ? '<strong style="color:#1d4ed8">On site '+times.map(t=>esc(fmtTime(t))).join(' / ')+'</strong> — ' : '';
+      return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+dayLabel(d)+'</td><td style="'+_td+'">'+onSite+jobs+'</td></tr>'; }).join('');
     return '<div style="'+_h2+'">'+esc(n)+(r.kind==='equip'?' (equipment)':'')+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:150px">Day</th><th style="'+_th+'">Assignment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
 
@@ -980,7 +1032,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill });
+Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, toggleAlsoCode, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime });
 loadAll();
 </script>
 </body>
