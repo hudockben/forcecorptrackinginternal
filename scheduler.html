@@ -120,6 +120,43 @@
     .loading { color:var(--muted); font-size:0.85rem; text-align:center; padding:3rem 1rem; }
     footer { padding:1rem 1.5rem; font-size:0.6rem; color:var(--muted); border-top:1px solid var(--border); }
     .toast { position:fixed; bottom:1rem; right:1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:0.55rem 0.9rem; font-size:0.76rem; z-index:200; opacity:0; transition:opacity .2s; } .toast.show { opacity:1; }
+    .span-toggle { flex-shrink:0; }
+    /* ── Phone layout ─────────────────────────────────────────────────────── */
+    @media (max-width: 700px) {
+      header { padding:0.55rem 0.8rem; }
+      .brand-sub { display:none; }
+      .header-right { gap:0.45rem; }
+      .hlink { padding:0.4rem 0.6rem; }
+      .tabs { padding:0.4rem 0.6rem 0; gap:0.1rem; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+      .tab { padding:0.55rem 0.6rem; white-space:nowrap; }
+      .toolbar { padding:0.5rem 0.6rem; gap:0.4rem; }
+      .toolbar .spacer { display:none; }
+      .toolbar input[type=text], .toolbar select { width:auto !important; flex:1 1 120px; min-width:108px; font-size:0.84rem; padding:0.5rem 0.55rem; }
+      .wknav { flex:1 1 100%; justify-content:space-between; }
+      .wklabel { min-width:0; flex:1; font-size:0.88rem; }
+      .btn { padding:0.5rem 0.72rem; font-size:0.8rem; }
+      .seg button { padding:0.5rem 0.75rem; font-size:0.8rem; }
+      .chip-toggle { font-size:0.78rem; }
+      main { padding:0.5rem 0.6rem 1rem; }
+      .cap { gap:0.3rem; } .cap-card { padding:0.24rem 0.5rem; } .cap-val { font-size:0.92rem; } .cap-lbl { font-size:0.5rem; }
+      .hint { font-size:0.64rem; }
+      .lead-col { min-width:128px; max-width:48vw; padding:0.5rem 0.5rem !important; }
+      table.board { font-size:0.8rem; }
+      table.board .cell { min-width:92px; }                 /* week mode stays scrollable */
+      table.board.day-mode .cell { min-width:0; }           /* day mode: the single column fills */
+      table.board.day-mode thead th:not(.lead-col) { width:auto; }
+      .cell { height:auto; min-height:46px; }
+      .asn { font-size:0.74rem; padding:0.24rem 0.42rem; }  /* readable, tappable chips */
+      .cnt-cell { font-size:0.84rem; }
+      .site-time { font-size:0.62rem; }
+      /* Modals become bottom sheets that are easy to reach with a thumb */
+      .overlay { align-items:flex-end; padding:0; }
+      .modal { width:100vw; max-height:92vh; border-radius:16px 16px 0 0; }
+      .modal-body { padding:0.9rem 0.9rem 1.6rem; }
+      .pick-row, .also-opt, .cur-asn { padding:0.6rem 0.6rem; }
+      .pick-list { max-height:44vh; }
+      .btn.mini { padding:0.4rem 0.6rem; font-size:0.74rem; }
+    }
   </style>
 </head>
 <body>
@@ -158,7 +195,9 @@ const state = {
   applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
   alsoCodes:[], alsoOpen:false, siteTimes:{},
   subFilter:{}, subGrpCol:{}, equipPickFor:null,
+  boardSpan:'week', focusDay:null,   // 'week' = 7-day grid, 'day' = single day (phone-friendly)
 };
+let _spanInit = false;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -176,6 +215,9 @@ function daysBetween(a, b) { return Math.round((new Date(b+'T12:00:00') - new Da
 function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); x.setDate(x.getDate() + (dow === 0 ? -6 : 1 - dow)); x.setHours(0,0,0,0); return x; }
 function weekDays() { const out = []; const m = new Date(state.weekAnchor); for (let i=0;i<7;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
 function weekDateStrs() { return weekDays().map(dstr); }
+// The board shows either the whole week or a single focused day (phone mode).
+function boardDays() { if (state.boardSpan === 'day' && state.focusDay) return [new Date(state.focusDay+'T12:00:00')]; return weekDays(); }
+function boardDateStrs() { return boardDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
 // Time-off (from Timesheet): returns {status,type} if this person is off this date, else null.
 function isOff(name, date) { return (state.board.timeOff && state.board.timeOff[name] && state.board.timeOff[name][date]) || null; }
@@ -225,6 +267,15 @@ async function loadAll() {
     _writeLocal(!(_dirtyAssign || _dirtyCrews));
 
     if (!state.weekAnchor) state.weekAnchor = mondayOf(new Date());
+    if (!state.focusDay) state.focusDay = todayStr();
+    // Default to single-day view on phones (remembering any prior choice); the
+    // week grid is unusable on a narrow screen.
+    if (!_spanInit) {
+      _spanInit = true;
+      const saved = (() => { try { return localStorage.getItem('fct_sched_span'); } catch { return null; } })();
+      state.boardSpan = (saved === 'day' || saved === 'week') ? saved : (window.innerWidth < 700 ? 'day' : 'week');
+      if (state.boardSpan === 'day') state.weekAnchor = mondayOf(new Date(state.focusDay+'T12:00:00'));
+    }
     render();
     setSaveStatus(_dirtyAssign || _dirtyCrews ? 'pending' : 'saved');
   } catch (err) {
@@ -515,6 +566,13 @@ function render() {
 }
 function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>'; }
 function wknavHtml() { const wk = weekDays(); const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); return '<div class="wknav"><button class="btn" id="wkPrev">◀</button><span class="wklabel">'+esc(label)+'</span><button class="btn" id="wkNext">▶</button><button class="btn ghost" id="wkToday">Today</button></div>'; }
+// Day/Week toggle + the matching date stepper. Day mode shows one column so the
+// board fits a phone; the toggle is remembered per device.
+function spanToggleHtml() { return '<div class="seg span-toggle"><button class="'+(state.boardSpan==='day'?'active':'')+'" onclick="setBoardSpan(\'day\')">Day</button><button class="'+(state.boardSpan==='week'?'active':'')+'" onclick="setBoardSpan(\'week\')">Week</button></div>'; }
+function dayNavHtml() { const d = new Date((state.focusDay||todayStr())+'T12:00:00'); const label = d.toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'}); return '<div class="wknav"><button class="btn" id="dayPrev">◀</button><span class="wklabel">'+esc(label)+'</span><button class="btn" id="dayNext">▶</button><button class="btn ghost" id="dayToday">Today</button></div>'; }
+function boardNavHtml() { return (state.boardSpan==='day' ? dayNavHtml() : wknavHtml()) + spanToggleHtml(); }
+function setBoardSpan(s) { state.boardSpan = s; try { localStorage.setItem('fct_sched_span', s); } catch {} if (s==='day') { if (!state.focusDay) state.focusDay = todayStr(); state.weekAnchor = mondayOf(new Date(state.focusDay+'T12:00:00')); } render(); }
+function stepDay(n) { state.focusDay = addDays(state.focusDay || todayStr(), n); state.weekAnchor = mondayOf(new Date(state.focusDay+'T12:00:00')); render(); }
 function toolsHtml() {
   return '<span id="saveStatus" title="Schedule save status" style="font-size:0.72rem;font-weight:600;white-space:nowrap;margin-right:0.2rem"></span>'+
          '<button class="btn" id="undoBtn" title="Undo (Ctrl+Z)"'+(_undo.length?'':' disabled')+'>↶ Undo</button>'+
@@ -526,7 +584,7 @@ function renderToolbar() {
   if (state.view === 'ai') { tb.innerHTML = '<button class="btn primary" id="genAi">⚡ '+(state.ai?'Regenerate insights':'Generate insights')+'</button><span class="muted" style="font-size:0.72rem">Reviews conflicts, behind work &amp; capacity across all jobs</span>'; document.getElementById('genAi').onclick = generateAI; return; }
   if (state.view === 'attention') { tb.innerHTML = wknavHtml() + '<span class="muted" style="font-size:0.72rem">Gaps &amp; idle crew for the selected week</span><div class="spacer"></div>' + toolsHtml(); wireToolbar(); return; }
   if (state.view === 'job') {
-    tb.innerHTML = wknavHtml() +
+    tb.innerHTML = boardNavHtml() +
       '<input type="text" id="jobSearch" placeholder="🔍 Search projects…" value="'+esc(state.jobSearch)+'" style="width:210px">' + divFilterHtml() +
       '<label class="chip-toggle"><input type="checkbox" id="needOnly" '+(state.needCrewOnly?'checked':'')+'> Needs crew only</label>' +
       '<div class="spacer"></div>' + toolsHtml() +
@@ -536,7 +594,7 @@ function renderToolbar() {
       '<button class="btn" id="importPlans" title="Pull crew/equipment already planned in each division\'s Projection Planner">⤵ Import plans</button>';
   } else {
     const trades = ['all'].concat(tradeList());
-    tb.innerHTML = wknavHtml() +
+    tb.innerHTML = boardNavHtml() +
       '<input type="text" id="crewSearch" placeholder="Search crew…" value="'+esc(state.crewSearch)+'" style="width:140px">' +
       '<select id="tradeFilter">'+trades.map(t => '<option value="'+esc(t)+'"'+(state.tradeFilter===t?' selected':'')+'>'+(t==='all'?'All trades':esc(t))+'</option>').join('')+'</select>' +
       '<label class="chip-toggle"><input type="checkbox" id="showAll" '+(state.showAll?'checked':'')+'> Show full roster</label>' +
@@ -551,6 +609,9 @@ function wireToolbar() {
   if (g('wkPrev'))  g('wkPrev').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()-7); state.weekAnchor = new Date(state.weekAnchor); render(); };
   if (g('wkNext'))  g('wkNext').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); };
   if (g('wkToday')) g('wkToday').onclick = () => { state.weekAnchor = mondayOf(new Date()); render(); };
+  if (g('dayPrev'))  g('dayPrev').onclick  = () => stepDay(-1);
+  if (g('dayNext'))  g('dayNext').onclick  = () => stepDay(1);
+  if (g('dayToday')) g('dayToday').onclick = () => { state.focusDay = todayStr(); state.weekAnchor = mondayOf(new Date()); render(); };
   if (g('divFilter')) g('divFilter').onchange = e => { state.divFilter = e.target.value; render(); };
   if (g('jobSearch')) g('jobSearch').oninput = e => { state.jobSearch = e.target.value; document.getElementById('main').innerHTML = renderJobBoard(); };
   if (g('needOnly')) g('needOnly').onchange = e => { state.needCrewOnly = e.target.checked; render(); };
@@ -589,7 +650,7 @@ function chip(a, conf) {
 
 // ── By Job board ────────────────────────────────────────────────────────────
 function renderJobBoard() {
-  const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
+  const days = boardDays(), ds = days.map(dstr), tStr = todayStr();
   const jobs = visibleJobs();
   const searching = state.jobSearch.trim() !== '';
   let html = renderCapacity() + '<div class="hint">Click a project to expand · click a day cell on a sub-code to staff it.</div>';
@@ -606,7 +667,7 @@ function renderJobBoard() {
     if (collapsed) return;
     body += jobSubSection(job, ds, tStr, searching);
   });
-  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job / Sub-code</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
+  return html + '<div class="board-wrap"><table class="board'+(state.boardSpan==='day'?' day-mode':'')+'"><thead><tr><th class="lead-col">Job / Sub-code</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 // One sub-code row (lead cell + day cells). Shared by the flat and grouped layouts.
 function subLeadHtml(job, sc) {
@@ -679,7 +740,7 @@ function onSubFilter(division, jobId) {
 // ── By Crew board ───────────────────────────────────────────────────────────
 function tradeList() { const set = new Set(); (state.board.employees||[]).forEach(e => set.add(e.jobClass || 'Other')); return [...set].sort(); }
 function renderCrewBoard() {
-  const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
+  const days = boardDays(), ds = days.map(dstr), tStr = todayStr();
   const inPlay = resourcesInPlay(); const q = state.crewSearch.trim().toLowerCase();
   let emps = (state.board.employees || []);
   if (state.tradeFilter !== 'all') emps = emps.filter(e => (e.jobClass||'Other') === state.tradeFilter);
@@ -711,7 +772,7 @@ function renderCrewBoard() {
     body += '<tr class="grp-row" onclick="toggleGrp(\'equip\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> 🚜 Equipment <span class="muted">('+equips.length+')</span></td>'+headCells+'</tr>';
     if (!collapsed) body += equips.map(n => rowFor(n, 'equip', null)).join('');
   }
-  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
+  return html + '<div class="board-wrap"><table class="board'+(state.boardSpan==='day'?' day-mode':'')+'"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderCrewBoard(); }
 
