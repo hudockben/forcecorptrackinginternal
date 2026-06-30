@@ -710,7 +710,7 @@ function alsoOtherCodes() {
 }
 function alsoLabel(s) { return esc(s.costCode) + (s.subCode ? ' · ' + esc(s.subCode) : ''); }
 function alsoSummaryText() { const n = (state.alsoCodes||[]).length; return n ? n + ' cost code' + (n>1?'s':'') + ' selected' : 'Select cost codes…'; }
-function alsoHelpHtml() { const n = (state.alsoCodes||[]).length; return n ? 'Each person or crew you add lands on <strong>'+(n+1)+' cost codes</strong>'+(state.applySpan!=='day'?' across '+spanLabel():'')+'.' : 'Pick extra cost codes so one crew lands on several at once.'; }
+function alsoHelpHtml() { const n = (state.alsoCodes||[]).length; return n ? 'This crew is on <strong>'+(n+1)+' cost codes</strong>'+(state.applySpan!=='day'?' across '+spanLabel():'')+'. Ticking a code puts the people assigned here on it; unticking takes them back off.' : 'Pick extra cost codes to put this crew on several at once.'; }
 function alsoChipsHtml() {
   const sel = state.alsoCodes || []; if (!sel.length) return '';
   const byIdx = {}; alsoOtherCodes().forEach(o => byIdx[o.i] = o.s);
@@ -734,6 +734,41 @@ function toggleAlsoCode(i) {
   const sum = document.getElementById('alsoSummaryText'); if (sum) sum.textContent = alsoSummaryText();
   const chips = document.getElementById('alsoChips'); if (chips) chips.innerHTML = alsoChipsHtml();
   const help = document.getElementById('alsoHelp'); if (help) help.innerHTML = alsoHelpHtml();
+  mirrorAlsoCode(i, nowOn); // apply to people already assigned here, not just to people added next
+}
+// Put the current cell's crew on (or take it off) a just-toggled "also" cost
+// code. Without this, ticking a second sub-code did nothing to people already
+// assigned — so it never saved and never reached the dispatch. Equipment keeps
+// its operator pairing; people added afterward still fan out via pickAdd.
+function mirrorAlsoCode(idx, on) {
+  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
+  const job = jobById(ctx.division, ctx.jobId); if (!job) return;
+  const sc = (job.subCodes || [])[idx]; if (!sc) return;
+  const crew = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
+  if (!crew.length) return; // nothing here yet — forward-add handles people you add next
+  const dates = spanDates(ctx.date);
+  const cc = sc.costCode || '', sk = sc.subCode || '';
+  pushUndo();
+  let changed = 0;
+  if (on) {
+    crew.forEach(a => dates.forEach(d => {
+      if (cellAssignments(d, job.division, job.id, cc, sk).some(x => x.resource === a.resource && (x.op||'') === (a.op||''))) return;
+      const o = { id: uid(), resource:a.resource, kind:a.kind, division:job.division, jobId:job.id, jobName:job.name, costCode:cc, subCode:sk, half:!!a.half };
+      if (a.op) o.op = a.op;
+      dayList(d).push(o); changed++;
+    }));
+  } else {
+    const keyset = new Set(crew.map(a => a.resource + '¦' + (a.op||'')));
+    dates.forEach(d => {
+      const list = state.assignments[d]; if (!list) return;
+      const kept = list.filter(a => !(a.division===job.division && a.jobId===job.id && (a.costCode||'')===cc && (a.subCode||'')===sk && keyset.has(a.resource + '¦' + (a.op||''))));
+      changed += list.length - kept.length;
+      if (kept.length) state.assignments[d] = kept; else delete state.assignments[d];
+    });
+  }
+  if (changed) { saveAssignments(); document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard();
+    toast((on?'Added ':'Removed ')+crew.length+(crew.length===1?' resource ':' resources ')+(on?'to ':'from ')+(sk||cc)); }
+  else { _undo.pop(); updateUndoButtons(); }
 }
 // The current cell's sub-code plus any "also" codes the user tapped.
 function targetSubCodes(job, ctx) {
