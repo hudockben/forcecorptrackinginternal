@@ -12,7 +12,7 @@
       --text:#e0e0e0; --muted:#666; --green:#22c55e; --green-dim:#16a34a;
       --blue:#60a5fa; --red:#ef4444; --amber:#fbbf24; --orange:#f97316; --purple:#a78bfa;
     }
-    body { min-height:100vh; background:var(--bg); color:var(--text); font-family:'Segoe UI', system-ui, -apple-system, sans-serif; display:flex; flex-direction:column; }
+    body { height:100vh; overflow:hidden; background:var(--bg); color:var(--text); font-family:'Segoe UI', system-ui, -apple-system, sans-serif; display:flex; flex-direction:column; }
     a { color:inherit; }
     header { display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1.5rem; background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:40; }
     .brand { font-size:0.68rem; letter-spacing:0.3em; text-transform:uppercase; color:var(--blue); font-weight:700; }
@@ -36,13 +36,13 @@
     input[type=text], select { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.4rem 0.55rem; font-size:0.78rem; }
     .spacer { flex:1; }
     .chip-toggle { display:flex; align-items:center; gap:0.35rem; font-size:0.72rem; color:var(--muted); cursor:pointer; white-space:nowrap; }
-    main { padding:1rem 1.5rem 3rem; flex:1; }
+    main { padding:1rem 1.5rem 1.25rem; flex:1; min-height:0; display:flex; flex-direction:column; overflow:auto; }
     .cap { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:0.9rem; }
     .cap-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:0.6rem 0.9rem; min-width:120px; }
     .cap-val { font-size:1.25rem; font-weight:800; }
     .cap-lbl { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-top:0.1rem; }
     .hint { color:var(--muted); font-size:0.7rem; margin-bottom:0.5rem; }
-    .board-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:10px; }
+    .board-wrap { overflow:auto; border:1px solid var(--border); border-radius:10px; flex:0 1 auto; min-height:160px; }
     table.board { border-collapse:collapse; width:100%; font-size:0.74rem; }
     table.board th, table.board td { border-bottom:1px solid var(--border); border-right:1px solid var(--border); vertical-align:top; }
     table.board thead th { position:sticky; top:0; background:var(--surface2); z-index:5; padding:0.45rem 0.5rem; text-align:center; font-weight:700; }
@@ -134,7 +134,7 @@ const state = {
   view:'job', board:null, assignments:{}, crews:[], weekAnchor:null,
   divFilter:'all', jobSearch:'', needCrewOnly:false, jobOpen:{},
   crewSearch:'', tradeFilter:'all', showAll:false, grpCol:{},
-  applySpan:'day', assignCtx:null, ai:null, aiLoading:false, rateBasis:'standard',
+  applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
   alsoCodes:[],
 };
 
@@ -152,12 +152,6 @@ function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); x.setDate(
 function weekDays() { const out = []; const m = new Date(state.weekAnchor); for (let i=0;i<7;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
 function weekDateStrs() { return weekDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
-// ── Labor cost (assignments × wage rate) ────────────────────────────────────
-const HOURS_PER_DAY = 8;
-function rateOf(name) { const e = (state.board.employees||[]).find(x => x.name === name); if (!e) return 0; return state.rateBasis === 'prevailing' ? (e.ratePw || e.rateStd || 0) : (e.rateStd || 0); }
-function laborCost(dates, pred) { let t = 0; dates.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind !== 'emp') return; if (pred && !pred(a)) return; t += (a.half ? 0.5 : 1) * HOURS_PER_DAY * rateOf(a.resource); })); return t; }
-function fmtMoney(n) { const v = Math.round(n || 0); return v >= 100000 ? '$' + Math.round(v/1000) + 'k' : '$' + v.toLocaleString('en-US'); }
-function toggleRateBasis() { state.rateBasis = state.rateBasis === 'standard' ? 'prevailing' : 'standard'; render(); }
 // Time-off (from Timesheet): returns {status,type} if this person is off this date, else null.
 function isOff(name, date) { return (state.board.timeOff && state.board.timeOff[name] && state.board.timeOff[name][date]) || null; }
 const _clientTag = 'c' + Math.random().toString(36).slice(2, 7); // per-client tag so ids never collide across schedulers
@@ -479,8 +473,7 @@ function renderCapacity() {
   const conflicts = wk.reduce((s,d) => s + conflictResourcesOn(d).size, 0);
   const behind = (state.board.jobs||[]).reduce((s,j) => s + (j.subCodes||[]).filter(c => c.status==='behind').length, 0);
   const card = (v,l,c) => '<div class="cap-card"><div class="cap-val" style="color:'+(c||'var(--text)')+'">'+v+'</div><div class="cap-lbl">'+l+'</div></div>';
-  const laborCard = '<div class="cap-card" style="cursor:pointer" title="Projected labor cost this week (crew × '+HOURS_PER_DAY+'h × wage rate). Click to switch Standard / Prevailing rates." onclick="toggleRateBasis()"><div class="cap-val" style="color:var(--blue)">'+fmtMoney(laborCost(wk))+'</div><div class="cap-lbl">Labor this wk · '+(state.rateBasis==='prevailing'?'PW rates':'std rates')+'</div></div>';
-  return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled this wk','var(--green)')+card(idle,'Idle this wk',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+laborCard+'</div>';
+  return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled this wk','var(--green)')+card(idle,'Idle this wk',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+'</div>';
 }
 function chip(a, conf) { const col = divColor(a.division); return '<span class="asn'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'" title="'+esc(a.resource+' — '+a.jobName)+'">'+esc(a.resource.split(' ')[0])+(a.kind==='equip'?' 🚜':'')+(a.half?' ½':'')+'</span>'; }
 
@@ -495,11 +488,10 @@ function renderJobBoard() {
     const col = divColor(job.division);
     const collapsed = !state.jobOpen[job.division+'::'+job.id];
     const behind = (job.subCodes||[]).filter(c => c.status==='behind').length;
-    const jobLabor = laborCost(ds, x => x.division===job.division && x.jobId===job.id);
     const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+
       '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
-      '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+(jobLabor?' · <span style="color:var(--blue)">'+fmtMoney(jobLabor)+' labor/wk</span>':'')+(job.bidValue?' · <span class="muted">bid '+fmtMoney(job.bidValue)+'</span>':'')+'</div></td>'+headCells+'</tr>';
+      '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+'</div></td>'+headCells+'</tr>';
     if (collapsed) return;
     let subs = (job.subCodes||[]); if (state.needCrewOnly) subs = subs.filter(subNeedsCrew);
     if (!subs.length) { body += '<tr><td class="lead-col muted" style="padding-left:1.5rem">'+(state.needCrewOnly?'No sub-codes need crew':'No sub-codes')+'</td>'+ds.map(()=>'<td></td>').join('')+'</tr>'; return; }
@@ -987,7 +979,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, toggleRateBasis });
+Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill });
 loadAll();
 </script>
 </body>
