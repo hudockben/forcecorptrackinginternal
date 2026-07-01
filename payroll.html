@@ -877,6 +877,9 @@
       border-left: 4px solid #fb923c;
       border-radius: 8px;
     }
+    /* An author `display` value overrides the `hidden` attribute's UA
+       display:none, so re-assert it explicitly or an empty banner shows. */
+    .hours-flag-banner[hidden] { display: none; }
     .hours-flag-banner strong { color: #fb923c; }
 
     /* ── Row action buttons ── */
