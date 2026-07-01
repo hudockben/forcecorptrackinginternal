@@ -839,6 +839,19 @@
     }
     .status-meta strong { color: var(--text); font-weight: 600; }
 
+    /* ── Same-day / same-job hours-mismatch flag (subtle) ── */
+    .hours-flag {
+      display: inline-block;
+      margin-left: 0.3rem;
+      font-size: 0.72rem;
+      line-height: 1;
+      color: #fb923c;              /* amber — matches the analytics hours accent */
+      opacity: 0.9;
+      cursor: help;
+      vertical-align: middle;
+    }
+    td.hours-mismatch { color: #fb923c; }   /* tint the hours number itself */
+
     /* ── Row action buttons ── */
     .row-btn {
       background: none;
@@ -2492,6 +2505,57 @@
       document.getElementById('stat-hours').textContent     = hours.toFixed(2);
     }
 
+    // Hours-mismatch detector — flags laborers whose on-site hours diverge from
+    // the rest of the crew on the SAME job on the SAME day. If everyone booked
+    // 10h it stays quiet; if one person booked 8 and another 13, both get a
+    // subtle flag for the supervisor to eyeball before approving. This is plain
+    // arithmetic (median + spread), not an LLM call, so it's instant, free, and
+    // deterministic. Tune HOURS_MISMATCH_THRESHOLD to change how far off counts.
+    const HOURS_MISMATCH_THRESHOLD = 1.5;   // hours of deviation from crew median
+    function computeHoursMismatchFlags(entries) {
+      // Group daily entries by job + date, aggregating hours per laborer (a
+      // person may have more than one entry on the same job/day — sum them).
+      const groups = new Map();               // key -> Map(person -> {hours, ids:[]})
+      for (const e of entries) {
+        if (e.entry_type !== 'daily') continue;
+        const h = Number(e.computed_hours);
+        if (!Number.isFinite(h) || h <= 0) continue;   // need real on-site hours
+        const jobKey = (e.job_id != null && e.job_id !== '')
+          ? String(e.job_id) : (e.job_label || '');
+        if (!jobKey) continue;                          // no project → can't compare
+        const key = jobKey + '||' + (e.work_date || '');
+        let g = groups.get(key);
+        if (!g) { g = new Map(); groups.set(key, g); }
+        const who = e.username || ('id:' + e.id);
+        let rec = g.get(who);
+        if (!rec) { rec = { hours: 0, ids: [] }; g.set(who, rec); }
+        rec.hours += h;
+        rec.ids.push(e.id);
+      }
+      const flags = new Map();                // entryId -> {hours, median, min, max, crew}
+      for (const g of groups.values()) {
+        if (g.size < 2) continue;             // need at least two laborers to compare
+        const people = [...g.values()];
+        const arr = people.map(p => p.hours).sort((a, b) => a - b);
+        const n = arr.length;
+        const median = n % 2 ? arr[(n - 1) / 2] : (arr[n / 2 - 1] + arr[n / 2]) / 2;
+        const min = arr[0], max = arr[n - 1];
+        if (max - min < HOURS_MISMATCH_THRESHOLD) continue;   // crew effectively agrees
+        for (const p of people) {
+          if (Math.abs(p.hours - median) >= HOURS_MISMATCH_THRESHOLD) {
+            for (const id of p.ids) flags.set(id, { hours: p.hours, median, min, max, crew: g.size });
+          }
+        }
+      }
+      return flags;
+    }
+    function hoursMismatchTitle(f, name) {
+      return `Hours don't match the crew on this job this day. `
+        + `${name || 'This laborer'}: ${f.hours.toFixed(2)}h vs crew median ${f.median.toFixed(2)}h `
+        + `(crew range ${f.min.toFixed(2)}–${f.max.toFixed(2)}h across ${f.crew} laborers). `
+        + `Worth a look before approving.`;
+    }
+
     function renderRows() {
       const tbody = document.getElementById('rowsBody');
       const status = tabStatus();
@@ -2532,6 +2596,11 @@
         return;
       }
 
+      // Flag laborers whose hours diverge from their crew on the same job/day.
+      // Computed over the full filtered set (both statuses) so a pending entry
+      // is still compared against an already-approved peer on the same crew.
+      const mismatchFlags = computeHoursMismatchFlags(filtered);
+
       tbody.innerHTML = rows.map(e => {
         const sel = selectedIds.has(e.id);
         const type = e.entry_type === 'time_off'
@@ -2567,6 +2636,10 @@
           ? '—'
           : (workH != null || travelH != null ? totalH.toFixed(2) : '');
         const sup      = e.entry_type === 'time_off' ? '—' : (e.supervisor_name || '—');
+        const hoursFlag = mismatchFlags.get(e.id);
+        const hoursMarker = hoursFlag
+          ? ` <span class="hours-flag" title="${escapeHtml(hoursMismatchTitle(hoursFlag, e.username))}">⚑</span>`
+          : '';
         return `
           <tr class="${sel ? 'selected' : ''}">
             <td class="td-narrow">${isPending ? `<input type="checkbox" data-id="${e.id}" ${sel ? 'checked' : ''} onchange="toggleRow('${e.id}')" />` : ''}</td>
@@ -2577,7 +2650,7 @@
             <td>${escapeHtml(job)}</td>
             <td>${prevailingWageHtml(e)}</td>
             <td>${timeCell}</td>
-            <td style="font-variant-numeric:tabular-nums">${hours}</td>
+            <td class="${hoursFlag ? 'hours-mismatch' : ''}" style="font-variant-numeric:tabular-nums">${hours}${hoursMarker}</td>
             <td style="font-variant-numeric:tabular-nums">${travel}</td>
             <td style="font-variant-numeric:tabular-nums"><strong>${total}</strong></td>
             <td>${e.entry_type === 'time_off' || !e.supervisor_name
