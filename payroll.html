@@ -839,18 +839,45 @@
     }
     .status-meta strong { color: var(--text); font-weight: 600; }
 
-    /* ── Same-day / same-job hours-mismatch flag (subtle) ── */
+    /* ── Same-day / same-job hours-mismatch flag ── */
     .hours-flag {
-      display: inline-block;
-      margin-left: 0.3rem;
-      font-size: 0.72rem;
-      line-height: 1;
-      color: #fb923c;              /* amber — matches the analytics hours accent */
-      opacity: 0.9;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      margin-left: 0.4rem;
+      padding: 0.12rem 0.42rem;
+      font-size: 0.6rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #7c2d12;              /* dark on amber for contrast */
+      background: #fb923c;
+      border-radius: 999px;
       cursor: help;
       vertical-align: middle;
+      white-space: nowrap;
     }
-    td.hours-mismatch { color: #fb923c; }   /* tint the hours number itself */
+    td.hours-mismatch { color: #fb923c; font-weight: 700; }
+    /* Amber wash + spine so the whole row catches the eye at a glance */
+    tbody tr.row-hours-mismatch      { background: rgba(251,146,60,0.10); }
+    tbody tr.row-hours-mismatch:hover { background: rgba(251,146,60,0.16); }
+    tbody tr.row-hours-mismatch > td:first-child { box-shadow: inset 3px 0 0 0 #fb923c; }
+    /* Notice bar above the table summarising how many entries are flagged */
+    .hours-flag-banner {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0 0 0.4rem;
+      padding: 0.6rem 0.9rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #fdba74;
+      background: rgba(251,146,60,0.12);
+      border: 1px solid rgba(251,146,60,0.45);
+      border-left: 4px solid #fb923c;
+      border-radius: 8px;
+    }
+    .hours-flag-banner strong { color: #fb923c; }
 
     /* ── Row action buttons ── */
     .row-btn {
@@ -1317,6 +1344,7 @@
 
     <!-- ── Table ── -->
     <div class="table-wrap">
+      <div id="hoursFlagBanner" class="hours-flag-banner" hidden></div>
       <table>
         <thead>
           <tr>
@@ -2589,8 +2617,11 @@
         ? `Nothing to review in this range — everything has been approved or no entries have been submitted yet.<div class="empty-diag">${escapeHtml(diag)}</div>`
         : `No approved entries in this range yet.<div class="empty-diag">${escapeHtml(diag)}</div>`;
 
+      const banner = document.getElementById('hoursFlagBanner');
+
       if (!rows.length) {
         tbody.innerHTML = `<tr class="empty-row"><td colspan="14">${emptyMsg}</td></tr>`;
+        if (banner) { banner.hidden = true; banner.innerHTML = ''; }
         if (isPending) selectedIds.clear();
         updateBulk();
         return;
@@ -2600,6 +2631,22 @@
       // Computed over the full filtered set (both statuses) so a pending entry
       // is still compared against an already-approved peer on the same crew.
       const mismatchFlags = computeHoursMismatchFlags(filtered);
+
+      // Notice bar: how many entries in THIS tab are flagged, so the mismatch
+      // stands out before the supervisor even scans the rows.
+      if (banner) {
+        const flaggedInView = rows.reduce((n, e) => n + (mismatchFlags.has(e.id) ? 1 : 0), 0);
+        if (flaggedInView > 0) {
+          banner.hidden = false;
+          banner.innerHTML =
+            `<span style="font-size:1.05rem;line-height:1">⚑</span>`
+            + `<span><strong>${flaggedInView}</strong> ${flaggedInView === 1 ? 'entry has' : 'entries have'} `
+            + `hours that don't match the crew on the same job/day — hover the amber <strong>⚑ Hours vary</strong> badge to compare before approving.</span>`;
+        } else {
+          banner.hidden = true;
+          banner.innerHTML = '';
+        }
+      }
 
       tbody.innerHTML = rows.map(e => {
         const sel = selectedIds.has(e.id);
@@ -2638,10 +2685,10 @@
         const sup      = e.entry_type === 'time_off' ? '—' : (e.supervisor_name || '—');
         const hoursFlag = mismatchFlags.get(e.id);
         const hoursMarker = hoursFlag
-          ? ` <span class="hours-flag" title="${escapeHtml(hoursMismatchTitle(hoursFlag, e.username))}">⚑</span>`
+          ? ` <span class="hours-flag" title="${escapeHtml(hoursMismatchTitle(hoursFlag, e.username))}">⚑ Hours vary</span>`
           : '';
         return `
-          <tr class="${sel ? 'selected' : ''}">
+          <tr class="${sel ? 'selected' : ''}${hoursFlag ? ' row-hours-mismatch' : ''}">
             <td class="td-narrow">${isPending ? `<input type="checkbox" data-id="${e.id}" ${sel ? 'checked' : ''} onchange="toggleRow('${e.id}')" />` : ''}</td>
             <td><strong>${escapeHtml(e.username)}</strong></td>
             <td>${prettyDate(e.work_date)}</td>
