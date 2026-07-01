@@ -2536,17 +2536,18 @@
       document.getElementById('stat-hours').textContent     = hours.toFixed(2);
     }
 
-    // Hours-mismatch detector — flags laborers whose on-site hours diverge from
-    // the rest of the crew on the SAME job on the SAME day. If everyone booked
-    // 10h it stays quiet; if one person booked 8 and another 13, both get a
-    // subtle flag for the supervisor to eyeball before approving. This is plain
-    // arithmetic (median + spread), not an LLM call, so it's instant, free, and
-    // deterministic. Tune HOURS_MISMATCH_THRESHOLD to change how far off counts.
-    const HOURS_MISMATCH_THRESHOLD = 1.5;   // hours of deviation from crew median
+    // Hours-mismatch detector — flags on-site hours that diverge on the SAME job
+    // on the SAME day. Primary mode compares LABORERS: if two different people
+    // booked 8h and 13h, both flag; if the whole crew booked 10h it stays quiet.
+    // Solo fallback: when a job/day has only ONE laborer but several entries
+    // (e.g. everything was entered under one login, or the same worker submitted
+    // twice), it compares those entries against each other so the mismatch still
+    // surfaces. Plain arithmetic (median + spread), not an LLM call, so it's
+    // instant, free, and deterministic. Tune HOURS_MISMATCH_THRESHOLD below.
+    const HOURS_MISMATCH_THRESHOLD = 1.5;   // hours of deviation from the median
     function computeHoursMismatchFlags(entries) {
-      // Group daily entries by job + date, aggregating hours per laborer (a
-      // person may have more than one entry on the same job/day — sum them).
-      const groups = new Map();               // key -> Map(person -> {hours, ids:[]})
+      // Group daily entries by job + date; keep each entry AND who booked it.
+      const groups = new Map();               // key -> [{id, hours, person}]
       for (const e of entries) {
         if (e.entry_type !== 'daily') continue;
         const h = Number(e.computed_hours);
@@ -2555,35 +2556,56 @@
           ? String(e.job_id) : (e.job_label || '');
         if (!jobKey) continue;                          // no project → can't compare
         const key = jobKey + '||' + (e.work_date || '');
-        let g = groups.get(key);
-        if (!g) { g = new Map(); groups.set(key, g); }
-        const who = e.username || ('id:' + e.id);
-        let rec = g.get(who);
-        if (!rec) { rec = { hours: 0, ids: [] }; g.set(who, rec); }
-        rec.hours += h;
-        rec.ids.push(e.id);
+        let arr = groups.get(key);
+        if (!arr) { arr = []; groups.set(key, arr); }
+        arr.push({ id: e.id, hours: h, person: e.username || ('id:' + e.id) });
       }
-      const flags = new Map();                // entryId -> {hours, median, min, max, crew}
-      for (const g of groups.values()) {
-        if (g.size < 2) continue;             // need at least two laborers to compare
-        const people = [...g.values()];
-        const arr = people.map(p => p.hours).sort((a, b) => a - b);
-        const n = arr.length;
-        const median = n % 2 ? arr[(n - 1) / 2] : (arr[n / 2 - 1] + arr[n / 2]) / 2;
-        const min = arr[0], max = arr[n - 1];
-        if (max - min < HOURS_MISMATCH_THRESHOLD) continue;   // crew effectively agrees
-        for (const p of people) {
-          if (Math.abs(p.hours - median) >= HOURS_MISMATCH_THRESHOLD) {
-            for (const id of p.ids) flags.set(id, { hours: p.hours, median, min, max, crew: g.size });
+
+      const flags = new Map();                // entryId -> {hours, median, min, max, count, unit}
+      // Compare a set of "units" (each is {hours, ids:[]}); flag the outliers.
+      const flagUnits = (units, unit) => {
+        if (units.length < 2) return;
+        const hrs = units.map(u => u.hours).sort((a, b) => a - b);
+        const n = hrs.length;
+        const median = n % 2 ? hrs[(n - 1) / 2] : (hrs[n / 2 - 1] + hrs[n / 2]) / 2;
+        const min = hrs[0], max = hrs[n - 1];
+        if (max - min < HOURS_MISMATCH_THRESHOLD) return;   // effectively agree
+        for (const u of units) {
+          if (Math.abs(u.hours - median) >= HOURS_MISMATCH_THRESHOLD) {
+            for (const id of u.ids) flags.set(id, { hours: u.hours, median, min, max, count: n, unit });
           }
+        }
+      };
+
+      for (const arr of groups.values()) {
+        // Aggregate per laborer (person → summed hours + their entry ids).
+        const perPerson = new Map();
+        for (const it of arr) {
+          let rec = perPerson.get(it.person);
+          if (!rec) { rec = { hours: 0, ids: [] }; perPerson.set(it.person, rec); }
+          rec.hours += it.hours;
+          rec.ids.push(it.id);
+        }
+        if (perPerson.size >= 2) {
+          // Primary: two or more different laborers → compare people.
+          flagUnits([...perPerson.values()], 'laborers');
+        } else if (arr.length >= 2) {
+          // Solo fallback: one laborer, multiple entries → compare the entries.
+          flagUnits(arr.map(it => ({ hours: it.hours, ids: [it.id] })), 'entries');
         }
       }
       return flags;
     }
     function hoursMismatchTitle(f, name) {
+      if (f.unit === 'entries') {
+        return `Mismatched hours on the same job this day — ${f.count} entries for `
+          + `${name || 'this laborer'} that don't line up. This entry: ${f.hours.toFixed(2)}h `
+          + `vs median ${f.median.toFixed(2)}h (range ${f.min.toFixed(2)}–${f.max.toFixed(2)}h). `
+          + `Worth a look before approving.`;
+      }
       return `Hours don't match the crew on this job this day. `
         + `${name || 'This laborer'}: ${f.hours.toFixed(2)}h vs crew median ${f.median.toFixed(2)}h `
-        + `(crew range ${f.min.toFixed(2)}–${f.max.toFixed(2)}h across ${f.crew} laborers). `
+        + `(crew range ${f.min.toFixed(2)}–${f.max.toFixed(2)}h across ${f.count} laborers). `
         + `Worth a look before approving.`;
     }
 
