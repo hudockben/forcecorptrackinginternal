@@ -839,6 +839,49 @@
     }
     .status-meta strong { color: var(--text); font-weight: 600; }
 
+    /* ── Same-day / same-job hours-mismatch flag ── */
+    .hours-flag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      margin-left: 0.4rem;
+      padding: 0.12rem 0.42rem;
+      font-size: 0.6rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #7c2d12;              /* dark on amber for contrast */
+      background: #fb923c;
+      border-radius: 999px;
+      cursor: help;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+    td.hours-mismatch { color: #fb923c; font-weight: 700; }
+    /* Amber wash + spine so the whole row catches the eye at a glance */
+    tbody tr.row-hours-mismatch      { background: rgba(251,146,60,0.10); }
+    tbody tr.row-hours-mismatch:hover { background: rgba(251,146,60,0.16); }
+    tbody tr.row-hours-mismatch > td:first-child { box-shadow: inset 3px 0 0 0 #fb923c; }
+    /* Notice bar above the table summarising how many entries are flagged */
+    .hours-flag-banner {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0 0 0.4rem;
+      padding: 0.6rem 0.9rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #fdba74;
+      background: rgba(251,146,60,0.12);
+      border: 1px solid rgba(251,146,60,0.45);
+      border-left: 4px solid #fb923c;
+      border-radius: 8px;
+    }
+    /* An author `display` value overrides the `hidden` attribute's UA
+       display:none, so re-assert it explicitly or an empty banner shows. */
+    .hours-flag-banner[hidden] { display: none; }
+    .hours-flag-banner strong { color: #fb923c; }
+
     /* ── Row action buttons ── */
     .row-btn {
       background: none;
@@ -1304,6 +1347,7 @@
 
     <!-- ── Table ── -->
     <div class="table-wrap">
+      <div id="hoursFlagBanner" class="hours-flag-banner" hidden></div>
       <table>
         <thead>
           <tr>
@@ -2492,6 +2536,79 @@
       document.getElementById('stat-hours').textContent     = hours.toFixed(2);
     }
 
+    // Hours-mismatch detector — flags on-site hours that diverge on the SAME job
+    // on the SAME day. Primary mode compares LABORERS: if two different people
+    // booked 8h and 13h, both flag; if the whole crew booked 10h it stays quiet.
+    // Solo fallback: when a job/day has only ONE laborer but several entries
+    // (e.g. everything was entered under one login, or the same worker submitted
+    // twice), it compares those entries against each other so the mismatch still
+    // surfaces. Plain arithmetic (median + spread), not an LLM call, so it's
+    // instant, free, and deterministic. Tune HOURS_MISMATCH_THRESHOLD below.
+    const HOURS_MISMATCH_THRESHOLD = 1.5;   // hours of deviation from the median
+    function computeHoursMismatchFlags(entries) {
+      // Group daily entries by job + date; keep each entry AND who booked it.
+      const groups = new Map();               // key -> [{id, hours, person}]
+      for (const e of entries) {
+        if (e.entry_type !== 'daily') continue;
+        const h = Number(e.computed_hours);
+        if (!Number.isFinite(h) || h <= 0) continue;   // need real on-site hours
+        const jobKey = (e.job_id != null && e.job_id !== '')
+          ? String(e.job_id) : (e.job_label || '');
+        if (!jobKey) continue;                          // no project → can't compare
+        const key = jobKey + '||' + (e.work_date || '');
+        let arr = groups.get(key);
+        if (!arr) { arr = []; groups.set(key, arr); }
+        arr.push({ id: e.id, hours: h, person: e.username || ('id:' + e.id) });
+      }
+
+      const flags = new Map();                // entryId -> {hours, median, min, max, count, unit}
+      // Compare a set of "units" (each is {hours, ids:[]}); flag the outliers.
+      const flagUnits = (units, unit) => {
+        if (units.length < 2) return;
+        const hrs = units.map(u => u.hours).sort((a, b) => a - b);
+        const n = hrs.length;
+        const median = n % 2 ? hrs[(n - 1) / 2] : (hrs[n / 2 - 1] + hrs[n / 2]) / 2;
+        const min = hrs[0], max = hrs[n - 1];
+        if (max - min < HOURS_MISMATCH_THRESHOLD) return;   // effectively agree
+        for (const u of units) {
+          if (Math.abs(u.hours - median) >= HOURS_MISMATCH_THRESHOLD) {
+            for (const id of u.ids) flags.set(id, { hours: u.hours, median, min, max, count: n, unit });
+          }
+        }
+      };
+
+      for (const arr of groups.values()) {
+        // Aggregate per laborer (person → summed hours + their entry ids).
+        const perPerson = new Map();
+        for (const it of arr) {
+          let rec = perPerson.get(it.person);
+          if (!rec) { rec = { hours: 0, ids: [] }; perPerson.set(it.person, rec); }
+          rec.hours += it.hours;
+          rec.ids.push(it.id);
+        }
+        if (perPerson.size >= 2) {
+          // Primary: two or more different laborers → compare people.
+          flagUnits([...perPerson.values()], 'laborers');
+        } else if (arr.length >= 2) {
+          // Solo fallback: one laborer, multiple entries → compare the entries.
+          flagUnits(arr.map(it => ({ hours: it.hours, ids: [it.id] })), 'entries');
+        }
+      }
+      return flags;
+    }
+    function hoursMismatchTitle(f, name) {
+      if (f.unit === 'entries') {
+        return `Mismatched hours on the same job this day — ${f.count} entries for `
+          + `${name || 'this laborer'} that don't line up. This entry: ${f.hours.toFixed(2)}h `
+          + `vs median ${f.median.toFixed(2)}h (range ${f.min.toFixed(2)}–${f.max.toFixed(2)}h). `
+          + `Worth a look before approving.`;
+      }
+      return `Hours don't match the crew on this job this day. `
+        + `${name || 'This laborer'}: ${f.hours.toFixed(2)}h vs crew median ${f.median.toFixed(2)}h `
+        + `(crew range ${f.min.toFixed(2)}–${f.max.toFixed(2)}h across ${f.count} laborers). `
+        + `Worth a look before approving.`;
+    }
+
     function renderRows() {
       const tbody = document.getElementById('rowsBody');
       const status = tabStatus();
@@ -2525,11 +2642,35 @@
         ? `Nothing to review in this range — everything has been approved or no entries have been submitted yet.<div class="empty-diag">${escapeHtml(diag)}</div>`
         : `No approved entries in this range yet.<div class="empty-diag">${escapeHtml(diag)}</div>`;
 
+      const banner = document.getElementById('hoursFlagBanner');
+
       if (!rows.length) {
         tbody.innerHTML = `<tr class="empty-row"><td colspan="14">${emptyMsg}</td></tr>`;
+        if (banner) { banner.hidden = true; banner.innerHTML = ''; }
         if (isPending) selectedIds.clear();
         updateBulk();
         return;
+      }
+
+      // Flag laborers whose hours diverge from their crew on the same job/day.
+      // Computed over the full filtered set (both statuses) so a pending entry
+      // is still compared against an already-approved peer on the same crew.
+      const mismatchFlags = computeHoursMismatchFlags(filtered);
+
+      // Notice bar: how many entries in THIS tab are flagged, so the mismatch
+      // stands out before the supervisor even scans the rows.
+      if (banner) {
+        const flaggedInView = rows.reduce((n, e) => n + (mismatchFlags.has(e.id) ? 1 : 0), 0);
+        if (flaggedInView > 0) {
+          banner.hidden = false;
+          banner.innerHTML =
+            `<span style="font-size:1.05rem;line-height:1">⚑</span>`
+            + `<span><strong>${flaggedInView}</strong> ${flaggedInView === 1 ? 'entry has' : 'entries have'} `
+            + `hours that don't match the crew on the same job/day — hover the amber <strong>⚑ Hours vary</strong> badge to compare before approving.</span>`;
+        } else {
+          banner.hidden = true;
+          banner.innerHTML = '';
+        }
       }
 
       tbody.innerHTML = rows.map(e => {
@@ -2567,8 +2708,12 @@
           ? '—'
           : (workH != null || travelH != null ? totalH.toFixed(2) : '');
         const sup      = e.entry_type === 'time_off' ? '—' : (e.supervisor_name || '—');
+        const hoursFlag = mismatchFlags.get(e.id);
+        const hoursMarker = hoursFlag
+          ? ` <span class="hours-flag" title="${escapeHtml(hoursMismatchTitle(hoursFlag, e.username))}">⚑ Hours vary</span>`
+          : '';
         return `
-          <tr class="${sel ? 'selected' : ''}">
+          <tr class="${sel ? 'selected' : ''}${hoursFlag ? ' row-hours-mismatch' : ''}">
             <td class="td-narrow">${isPending ? `<input type="checkbox" data-id="${e.id}" ${sel ? 'checked' : ''} onchange="toggleRow('${e.id}')" />` : ''}</td>
             <td><strong>${escapeHtml(e.username)}</strong></td>
             <td>${prettyDate(e.work_date)}</td>
@@ -2577,7 +2722,7 @@
             <td>${escapeHtml(job)}</td>
             <td>${prevailingWageHtml(e)}</td>
             <td>${timeCell}</td>
-            <td style="font-variant-numeric:tabular-nums">${hours}</td>
+            <td class="${hoursFlag ? 'hours-mismatch' : ''}" style="font-variant-numeric:tabular-nums">${hours}${hoursMarker}</td>
             <td style="font-variant-numeric:tabular-nums">${travel}</td>
             <td style="font-variant-numeric:tabular-nums"><strong>${total}</strong></td>
             <td>${e.entry_type === 'time_off' || !e.supervisor_name
