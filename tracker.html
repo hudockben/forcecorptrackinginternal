@@ -3152,6 +3152,12 @@ const DIVISION    = 'turf';
 // not in this set stays locked because it came from payroll's approval.
 const INJECTED_EDITABLE_FIELDS = new Set(['cost_code', 'sub_code', 'job_class', 'quantity']);
 
+// Travel time is not paid at the prevailing wage rate. Whenever a daily row's
+// sub code is set to "Travel", the labor rate is forced to this flat amount
+// instead of the employee's prevailing / non-prevailing rate.
+const TRAVEL_SUB_CODE = 'travel';
+const TRAVEL_RATE = 45;
+
 if (!fctToken || !fctUser) {
   window.location.replace('index.html');
 }
@@ -17261,9 +17267,33 @@ document.addEventListener('input', e => {
           p.dailyRows[i].job_class = emp.job_class;
           if (rowEl) { const s = rowEl.querySelector('[data-f="job_class"]'); if (s) s.value = emp.job_class; }
         }
-        const autoRate = p.prevailing_wage ? (emp.prevailing_rate || 0) : (emp.non_prevailing_rate || 0);
+        // Travel is not paid at the prevailing wage — force the flat travel rate
+        const isTravel = (p.dailyRows[i].sub_code || '').trim().toLowerCase() === TRAVEL_SUB_CODE;
+        const autoRate = isTravel
+          ? TRAVEL_RATE
+          : (p.prevailing_wage ? (emp.prevailing_rate || 0) : (emp.non_prevailing_rate || 0));
         p.dailyRows[i].rate = autoRate || '';
         if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate || ''; }
+      }
+    }
+    // Force the flat travel rate when the sub code is set to "Travel"; restore
+    // the employee's standard/prevailing rate when it changes to anything else.
+    if (f === 'sub_code' && !_isInj) {
+      const _tbody = document.getElementById('daily-tbody-' + projId);
+      const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
+      const isTravel = (el.value || '').trim().toLowerCase() === TRAVEL_SUB_CODE;
+      let newRate;
+      if (isTravel) {
+        newRate = TRAVEL_RATE;
+      } else {
+        const emp = lists.employees.find(e => e.name === p.dailyRows[i].employee);
+        newRate = emp
+          ? (p.prevailing_wage ? (emp.prevailing_rate || 0) : (emp.non_prevailing_rate || 0))
+          : null;
+      }
+      if (newRate != null) {
+        p.dailyRows[i].rate = newRate || '';
+        if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = newRate || ''; }
       }
     }
     // Auto-calculate material cost when units_purchased or unit_cost changes
