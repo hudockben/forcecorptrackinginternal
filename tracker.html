@@ -2528,6 +2528,7 @@
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
         <th>Start Date</th><th>Target Date</th>
+        <th class="num" title="Estimated crew-days & labor hours to finish this bid quantity, based on similar-size past jobs for this sub code. Click → Dates on a row to schedule it.">Hist. Estimate</th>
       </tr></thead>
       <tbody id="bid-fs-tbody"></tbody>
       <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
@@ -7410,6 +7411,60 @@ function cumulativeHoursForBidItem(b, projId) {
   }, 0);
 }
 
+// Scale a historical benchmark (from computeSizeAwarePastAvg) to a given bid
+// quantity → estimated labor hours and crew-days to finish that quantity.
+//   estHours = (hrs per unit historically) × bidQty
+//   estDays  = bidQty ÷ (units completed per crew-day historically)
+// Returns zeros when there isn't enough history to scale.
+function _deriveEstFromHist(h, bidQty) {
+  if (!h || !(bidQty > 0) || !(h.histRunQty > 0)) {
+    return { estHours: 0, estDays: 0, hoursPerUnit: 0, unitsPerDay: 0 };
+  }
+  const hoursPerUnit = h.histLbr  > 0 ? h.histLbr / h.histRunQty : 0;
+  const unitsPerDay  = h.histDays > 0 ? h.histRunQty / h.histDays : 0;
+  return {
+    estHours:     hoursPerUnit > 0 ? hoursPerUnit * bidQty : 0,
+    estDays:      unitsPerDay  > 0 ? bidQty / unitsPerDay   : 0,
+    hoursPerUnit, unitsPerDay,
+  };
+}
+
+// Full historical duration estimate for a bid quantity of this sub code, using
+// the same similar-size job filtering as the Past Avg benchmark. Returns null
+// when no usable history exists. Standalone (recomputes the benchmark) so it can
+// be called outside the render loop, e.g. from the "→ Dates" scheduling button.
+function estimateDurationForBidItem(bidQty, costCode, subCode, projId) {
+  if (!(bidQty > 0)) return null;
+  const h = computeSizeAwarePastAvg(bidQty, costCode, subCode, projId);
+  const e = _deriveEstFromHist(h, bidQty);
+  if (e.estHours <= 0 && e.estDays <= 0) return null;
+  return { ...e, jobCount: h.jobCount, confidence: h.confidence, band: h.band };
+}
+
+// Push the historical estimate onto this bid item's schedule: start = existing
+// start date (or today if blank), target = start + estimated working days.
+// This is what lets "historically ~3 days for 1100 LF" become a real start/target
+// span on the schedule with one click.
+function applyEstimateToDates(projId, bidId) {
+  const p = getProj(projId); if (!p) return;
+  const b = (p.bidItems || []).find(x => x.id === bidId); if (!b) return;
+  const baseQty = parseFloat(b.quantity) || 0;
+  const coQty   = (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+  const bidQty  = baseQty + coQty;
+  const est = estimateDurationForBidItem(bidQty, b.cost_code, b.sub_code, projId);
+  if (!est || !(est.estDays > 0)) {
+    alert('No historical duration estimate yet for this sub code — need past jobs with logged hours and quantities to size a schedule.');
+    return;
+  }
+  const days   = Math.max(1, Math.ceil(est.estDays));
+  const start  = b.start_date || _localDateStr();
+  const target = _addWorkingDays(start, days);
+  if (!target) return;
+  updateBidItem(projId, bidId, 'start_date',  start);
+  updateBidItem(projId, bidId, 'target_date', target);
+  renderBidTable(projId);
+}
+
 function laborerCountForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
@@ -7464,6 +7519,10 @@ function renderBidFooter(projId, opts = {}) {
   const projCls = (totalProj - totalBid) <= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
   const totalCumHrs = (p.bidItems||[]).reduce((s,b) => s + cumulativeHoursForBidItem(b, projId), 0);
+  const totalEstHrs = (p.bidItems||[]).reduce((s,b) => {
+    const est = estimateDurationForBidItem(_effQty(b), b.cost_code, b.sub_code, projId);
+    return s + (est ? est.estHours : 0);
+  }, 0);
   const totalLab = new Set((p.dailyRows||[]).map(r => r.employee).filter(Boolean)).size;
   const cells = `
     <td class="foot-label">Totals</td>
@@ -7480,7 +7539,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
     <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>`;
-  footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td>`;
+  footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td><td class="foot-label num" title="Total estimated labor hours to complete all bid items at historical pace">${totalEstHrs ? '≈ '+fmt(totalEstHrs,0)+' hrs' : '—'}</td>`;
 
   // Update sqft summary bar in the fullscreen view (only when this project is open)
   if (bidViewProjId === projId) {
@@ -7596,7 +7655,7 @@ function _renderBidOffBidBadge(projId) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 15 : 17;
+  const COLS     = readonly ? 15 : 18;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
@@ -7661,7 +7720,7 @@ function renderBidTable(projId, opts = {}) {
     tbody.appendChild(hdrTr);
 
     // ── Child rows ──
-    let gBidTotal = 0, gActual = 0, gCumHrs = 0, gProj = 0;
+    let gBidTotal = 0, gActual = 0, gCumHrs = 0, gEstHrs = 0, gProj = 0;
     const visItems = scFilter ? groupItems.filter(b => scFilter.has(b.sub_code || '')) : groupItems;
     visItems.forEach(b => {
       const baseBidQty = parseFloat(b.quantity) || 0;
@@ -7691,6 +7750,21 @@ function renderBidTable(projId, opts = {}) {
       const _paStyle = (_paUC > 0 && rqty > 0 && actual)
         ? ((actual / rqty) > _paUC ? 'color:#f87171' : 'color:#4ade80')
         : '';
+
+      // Historical duration estimate scaled to THIS bid quantity (reuses _pa).
+      const _est     = _deriveEstFromHist(_pa, bidQty);
+      const _estDays = _est.estDays > 0 ? Math.max(1, Math.ceil(_est.estDays)) : 0;
+      const _unitLbl = esc(b.unit) || 'unit';
+      const _estTip  = (_est.estDays > 0 || _est.estHours > 0)
+        ? 'Based on ' + _pa.jobCount + (_pa.band != null ? ' similar-size' : '') + ' job' + (_pa.jobCount !== 1 ? 's' : '')
+          + ' (' + (_pa.band != null ? '±' + Math.round(_pa.band * 100) + '%, ' + _pa.confidence : _pa.confidence + ' — all sizes') + '). '
+          + 'Historical pace ' + (_est.unitsPerDay > 0 ? fmt(_est.unitsPerDay, 1) + ' ' + _unitLbl + '/day' : '—')
+          + (_est.hoursPerUnit > 0 ? ', ' + fmt(_est.hoursPerUnit, 2) + ' hrs/' + _unitLbl : '') + '. '
+          + 'Scaled to ' + fmt(bidQty, 0) + ' ' + _unitLbl + ': ≈ ' + fmt(_est.estDays, 1) + ' days'
+          + (_est.estHours > 0 ? ' / ≈ ' + fmt(_est.estHours, 0) + ' hrs' : '') + '. '
+          + 'Click → Dates to set start (today if blank) & target ' + _estDays + ' working day' + (_estDays !== 1 ? 's' : '') + ' out.'
+        : 'No similar-size historical jobs with logged hours yet.';
+      gEstHrs += _est.estHours;
 
       const childTr = document.createElement('tr');
       childTr.className = 'bid-group-child';
@@ -7736,7 +7810,14 @@ function renderBidTable(projId, opts = {}) {
              onchange="updateBidItem('${projId}','${b.id}','start_date',this.value);this.style.color=this.value?'var(--green)':'var(--muted)'"></td>
            <td><input type="date" value="${esc(b.target_date||'')}" title="Target completion date for this sub code"
              style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.target_date ? 'var(--blue)' : 'var(--muted)'}"
-             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>`;
+             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>
+           <td class="bid-calc" style="white-space:nowrap" title="${esc(_estTip)}">${
+             (_estDays > 0 || _est.estHours > 0)
+               ? `${_estDays > 0 ? `<div style="font-weight:600;color:var(--blue)">≈ ${_estDays} day${_estDays!==1?'s':''}</div>` : ''}`
+                 + `${_est.estHours > 0 ? `<div style="font-size:0.68rem;color:var(--muted)">≈ ${fmt(_est.estHours,0)} hrs</div>` : ''}`
+                 + `${_estDays > 0 ? `<button style="font-size:0.6rem;padding:0.08rem 0.35rem;margin-top:0.15rem;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:3px;cursor:pointer" onclick="applyEstimateToDates('${projId}','${b.id}')">&#8594; Dates</button>` : ''}`
+               : '—'
+           }</td>`;
       tbody.appendChild(childTr);
     });
 
@@ -7755,7 +7836,7 @@ function renderBidTable(projId, opts = {}) {
       <td class="bid-calc">—</td>
       <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
       <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>
-      ${readonly ? '' : '<td></td><td></td>'}` ;
+      ${readonly ? '' : `<td></td><td></td><td class="bid-calc" title="Total estimated labor hours to complete this group at historical pace">${gEstHrs ? '≈ '+fmt(gEstHrs,0)+' hrs' : '—'}</td>`}` ;
     const totalLabel = `<td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode)||'(No Code)'} — Total</td>`;
 
     const totalTr = document.createElement('tr');
@@ -10624,6 +10705,8 @@ function computeSizeAwarePastAvg(bidQty, costCode, subCode, excludeProjId = null
     histEqPD:  totDays   > 0 ? totEq   / totDays   : 0,
     histMU:    totEq     > 0 ? totRunQty / totEq    : 0,
     histDays:  totDays,
+    histLbr:   totLbr,     // total labor hours across the filtered similar-size jobs
+    histRunQty: totRunQty, // total completed quantity across those jobs
     band:      selectedBand,
     jobCount:  filtered.length,
     confidence,
