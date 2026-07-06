@@ -471,6 +471,18 @@
     }
     .row-del-btn:hover { color: #ef4444; }
 
+    /* Rows injected from an approved timesheet entry (Payroll-owned). */
+    tr.ts-locked { background: rgba(249,115,22,0.05); }
+    tr.ts-locked .cell-readonly { color: var(--text); text-align: left; }
+    tr.ts-locked .col-num .cell-readonly,
+    tr.ts-locked .col-total .cell-readonly { text-align: right; }
+    .ts-lock-badge {
+      display: inline-block; font-size: 0.6rem; font-weight: 700;
+      letter-spacing: 0.04em; color: #f97316;
+      border: 1px solid rgba(249,115,22,0.5); border-radius: 4px;
+      padding: 2px 5px; white-space: nowrap; cursor: default;
+    }
+
     .sales-empty {
       text-align: center; padding: 2.5rem 1rem;
       color: var(--muted); font-size: 0.8rem;
@@ -2110,7 +2122,9 @@
       const cfg = TRACKING_DELETE_CFG[tab];
       if (!cfg) return 0;
       const rows = cfg.getRows();
-      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesLocation(tab, r)).length;
+      // Timesheet-injected rows are Payroll-owned — they're never deletable
+      // from the filtered-delete tool here, so don't count them.
+      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r)).length;
     }
 
     function refreshDeleteFilteredBtn(tab) {
@@ -2128,7 +2142,8 @@
       const cfg = TRACKING_DELETE_CFG[tab];
       if (!cfg) return;
       const rows = cfg.getRows();
-      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesLocation(tab, r);
+      // Never delete timesheet-injected rows (Payroll-owned) via this tool.
+      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r);
       const toDelete = rows.filter(matches);
       if (!toDelete.length) return;
 
@@ -2607,6 +2622,15 @@
       return { totalPayroll, totalFuel, estimatedTons, tonsPerHour, totalCost, costPerTon };
     }
 
+    // A Daily/Crushing row is "timesheet-owned" when its id was minted by the
+    // payroll approval injector (api/timesheet-entries.js → "tsq-<entryId>-…").
+    // These render read-only; they're edited/removed from Payroll, not here.
+    function isTimesheetRow(row) {
+      return !!row && typeof row.id === 'string' && row.id.startsWith('tsq-');
+    }
+    const TS_LOCK_BADGE =
+      '<span class="ts-lock-badge" title="Injected from an approved timesheet — manage it in Payroll">🔒 TS</span>';
+
     function renderCrush() {
       const tbody = document.getElementById('crushTbody');
       if (!tbody) return;
@@ -2644,6 +2668,31 @@
           const txt = money ? formatMoney(val) : formatTons(val);
           return `<div class="cell-readonly is-calc${z}" id="${id}-${i}">${txt}</div>`;
         };
+        // Timesheet-injected crushing rows are Payroll-owned — read-only here.
+        if (isTimesheetRow(row)) {
+          const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
+          return `
+            <tr class="ts-locked" title="Injected from an approved timesheet entry — edit or remove it in Payroll, not here.">
+              <td class="col-date">${ro(row.date)}</td>
+              <td>${ro(row.locationName)}</td>
+              <td>${ro(row.employeeName)}</td>
+              <td class="col-num">${ro(row.hourlyRate)}</td>
+              <td class="col-num">${ro(row.hours)}</td>
+              <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
+              <td class="col-num">${ro(row.fuelGallons)}</td>
+              <td class="col-num">${ro(row.fuelCost)}</td>
+              <td class="col-total">${calcCell('crush-totalFuel', c.totalFuel, true)}</td>
+              <td class="col-num">${ro(row.loadsToCrusher)}</td>
+              <td class="col-num">${ro(row.tonsPerLoad)}</td>
+              <td class="col-total">${calcCell('crush-estimatedTons', c.estimatedTons, false)}</td>
+              <td class="col-num">${ro(row.hoursCrushing)}</td>
+              <td class="col-total">${calcCell('crush-tonsPerHour', c.tonsPerHour, false)}</td>
+              <td class="col-total">${calcCell('crush-totalCost', c.totalCost, true)}</td>
+              <td class="col-total">${calcCell('crush-costPerTon', c.costPerTon, true)}</td>
+              <td class="col-comments">${ro(row.comments)}</td>
+              <td class="col-actions">${TS_LOCK_BADGE}</td>
+            </tr>`;
+        }
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value)" /></td>
@@ -2957,6 +3006,28 @@
           const txt = money ? formatMoney(val) : formatTons(val);
           return `<div class="cell-readonly is-calc${z}" id="${id}-${i}">${txt}</div>`;
         };
+        // Rows injected from an approved timesheet entry (id "tsq-…") are
+        // owned by Payroll — render them read-only so field edits here can't
+        // silently drift from the timesheet. Edit/remove them in Payroll.
+        if (isTimesheetRow(row)) {
+          const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
+          return `
+            <tr class="ts-locked" title="Injected from an approved timesheet entry — edit or remove it in Payroll, not here.">
+              <td class="col-date">${ro(row.date)}</td>
+              <td>${ro(row.locationName)}</td>
+              <td>${ro(row.employeeName)}</td>
+              <td>${ro(row.equipmentName)}</td>
+              <td>${ro(row.taskName)}</td>
+              <td class="col-num">${ro(row.hours)}</td>
+              <td class="col-num">${ro(row.rate)}</td>
+              <td class="col-total">${calcCell('daily-laborCost', c.laborCost, true)}</td>
+              <td class="col-num">${ro(row.fuelGallons)}</td>
+              <td class="col-num">${ro(row.ppg)}</td>
+              <td class="col-total">${calcCell('daily-fuelCost', c.fuelCost, true)}</td>
+              <td class="col-total">${calcCell('daily-totalCost', c.totalCost, true)}</td>
+              <td class="col-actions">${TS_LOCK_BADGE}</td>
+            </tr>`;
+        }
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateDailyCell(${i}, 'date', this.value)" /></td>

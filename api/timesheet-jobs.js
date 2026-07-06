@@ -16,7 +16,9 @@
  *   trucking  → `dropdown_lists` rows where list_name = 'truck_customers'
  *                (the Trucking division's customer roster)
  *   dust      → `dust_companies` (customer-level — no status, show all)
- *   quarry    → `quarry_locations` (no status, show all)
+ *   quarry    → `quarry_locations` × two standing activities (Daily,
+ *                Crushing) — one job per (activity, location); job_id encodes
+ *                "<activity>:<locationId>" so approval routes to the right tab
  *
  * "Active/awarded" = project status in {Awarded, In Progress, Substantially Complete}.
  * Empty/missing status is also included so older projects without a status set
@@ -135,7 +137,22 @@ async function quarryJobs(sql, companyCode) {
     WHERE company_code = ${companyCode}
     ORDER BY name ASC
   `;
-  return rows.map(r => ({ id: r.id, label: r.name }));
+  // Quarry doesn't spin up a new "project" per job the way turf/paving do — it
+  // runs two standing activities (Daily field work, Crushing) at each location.
+  // Encode BOTH the activity and the location in the job so payroll approval
+  // knows which quarry tab to auto-inject the approved hours into:
+  //   job_id    = "<activity>:<locationId>"   (activity ∈ daily | crushing)
+  //   job_label = "Daily — <name>" / "Crushing — <name>"
+  // The approve handler in timesheet-entries.js parses job_id back into
+  // (activity, locationId) — see parseQuarryJob there.
+  const jobs = [];
+  for (const r of rows) {
+    const name = (r.name || '').trim();
+    if (!name || r.id == null) continue;
+    jobs.push({ id: `daily:${r.id}`,    label: `Daily — ${name}` });
+    jobs.push({ id: `crushing:${r.id}`, label: `Crushing — ${name}` });
+  }
+  return jobs;
 }
 
 module.exports = async (req, res) => {
