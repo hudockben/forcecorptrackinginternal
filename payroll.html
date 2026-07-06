@@ -1420,6 +1420,27 @@
     </div>
   </div>
 
+  <!-- ── Quarry approve/inject modal ──
+       Quarry entries inject a single row into the quarry Daily or Crushing
+       tracking tab (fct_quarry_daily / fct_quarry_crushing). The activity is
+       encoded in the entry's job; this modal collects the quarry-specific
+       cost fields payroll knows, then POSTs { quarry: {...} } to approve. -->
+  <div class="modal-backdrop" id="quarryBackdrop">
+    <div class="modal split-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title" id="quarryTitle">Approve &amp; Inject — Quarry</div>
+        <button class="modal-close" onclick="closeQuarry()">&#10005;</button>
+      </div>
+      <div class="split-summary" id="quarrySummary"></div>
+      <div id="quarryFields" style="display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-top:4px"></div>
+      <div class="modal-msg" id="quarryMsg"></div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeQuarry()">Cancel</button>
+        <button class="btn-save"   id="quarrySaveBtn" onclick="quarrySave()">Approve &amp; Inject</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Edit modal ── -->
   <div class="modal-backdrop" id="editBackdrop">
     <div class="modal" onclick="event.stopPropagation()">
@@ -2733,7 +2754,8 @@
               <button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>
               ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
               ${!isPending && entryNeedsSplit(e) ? `<button class="row-btn approve" onclick="openSplitModalById('${e.id}','resplit')" title="Edit the cost tracking split injected from this entry">Edit Split</button>` : ''}
-              ${!isPending && entryNeedsSplit(e) ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and remove the injected cost rows">Un-approve</button>` : ''}
+              ${!isPending && entryNeedsQuarry(e) ? `<button class="row-btn approve" onclick="openQuarryModalById('${e.id}','resplit')" title="Edit the quarry row injected from this entry">Edit Row</button>` : ''}
+              ${!isPending && (entryNeedsSplit(e) || entryNeedsQuarry(e)) ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and remove the injected cost rows">Un-approve</button>` : ''}
               <button class="row-btn delete"  onclick="deleteEntry('${e.id}')">Delete</button>
             </td>
           </tr>
@@ -2887,6 +2909,10 @@
         openSplitModal(e, 'approve');
         return;
       }
+      if (entryNeedsQuarry(e)) {
+        openQuarryModal(e, 'approve');
+        return;
+      }
       if (!confirm('Approve this entry?')) return;
       try {
         const res = await fetch('/api/timesheet-entries?action=approve&id=' + encodeURIComponent(id), {
@@ -2911,11 +2937,11 @@
       // through the split modal so each entry gets its own breakdown.
       const splitOnes = ids
         .map(id => filtered.find(x => x.id === id))
-        .filter(e => e && entryNeedsSplit(e));
+        .filter(e => e && (entryNeedsSplit(e) || entryNeedsQuarry(e)));
       if (splitOnes.length) {
         alert(
-          `Bulk approve isn't supported for Turf or Paving entries (${splitOnes.length} selected).\n\n` +
-          `Each of those entries needs its own cost-tracking split — open them one at a time using the Approve button.`
+          `Bulk approve isn't supported for Turf, Paving, or Quarry entries (${splitOnes.length} selected).\n\n` +
+          `Each of those entries needs its own cost-tracking detail — open them one at a time using the Approve button.`
         );
         return;
       }
@@ -2925,12 +2951,12 @@
 
     async function approveAllSubmitted() {
       const all = filtered.filter(e => e.status === 'submitted');
-      const splitOnes = all.filter(entryNeedsSplit);
+      const splitOnes = all.filter(e => entryNeedsSplit(e) || entryNeedsQuarry(e));
       if (splitOnes.length) {
         alert(
-          `"Approve All" isn't supported when Turf or Paving entries are in view ` +
-          `(${splitOnes.length} of ${all.length} require an individual cost-tracking split).\n\n` +
-          `Approve those individually, or filter the view to a non-split division (Trucking, Dust, Quarry) first.`
+          `"Approve All" isn't supported when Turf, Paving, or Quarry entries are in view ` +
+          `(${splitOnes.length} of ${all.length} require an individual cost-tracking detail).\n\n` +
+          `Approve those individually, or filter the view to a non-split division (Trucking, Dust) first.`
         );
         return;
       }
@@ -3708,6 +3734,179 @@
         renderRows();
         renderStats();
         setTimeout(closeSplit, 600);
+      } catch (err) {
+        msg.classList.add('error');
+        msg.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ── Quarry approve/inject modal ─────────────────────────────────────────
+    // Quarry daily entries inject ONE row into the quarry Daily or Crushing
+    // tab (fct_quarry_daily / fct_quarry_crushing). The activity is encoded in
+    // the entry's job ("<activity>:<locationId>"); this modal collects the
+    // quarry-specific cost fields payroll knows, then POSTs { quarry: {...} }.
+    let quarryEntry = null;
+    let quarryMode  = null;   // 'approve' | 'resplit'
+
+    const Q_LABEL_STYLE = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
+    const Q_INPUT_STYLE = 'padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;width:100%;box-sizing:border-box';
+
+    function entryNeedsQuarry(e) {
+      return !!e && e.entry_type === 'daily' && e.division === 'quarry';
+    }
+    // Daily/Crushing from the job_id ("<activity>:<loc>") or job_label
+    // ("Daily — …" / "Crushing — …"). null = can't tell (legacy job).
+    function quarryActivityOf(e) {
+      const id = String((e && e.job_id) || '');
+      const c = id.indexOf(':');
+      if (c >= 0) {
+        const a = id.slice(0, c).toLowerCase();
+        if (a === 'daily' || a === 'crushing') return a;
+      }
+      const lab = String((e && e.job_label) || '').toLowerCase();
+      if (lab.startsWith('crushing')) return 'crushing';
+      if (lab.startsWith('daily'))    return 'daily';
+      return null;
+    }
+    // Location text for display — the part after the "—" in the job label.
+    function quarryLocationLabel(e) {
+      const parts = String((e && e.job_label) || '').split('—');
+      return parts.length > 1 ? parts.slice(1).join('—').trim() : ((e && e.job_label) || '');
+    }
+
+    function _qNumField(id, label, val, span) {
+      const v = (val == null || val === '') ? '' : escapeHtml(String(val));
+      return `<label style="${Q_LABEL_STYLE}${span ? ';grid-column:1/-1' : ''}"><span>${label}</span>` +
+        `<input type="number" step="0.01" min="0" id="${id}" value="${v}" placeholder="0" style="${Q_INPUT_STYLE}"></label>`;
+    }
+    function _qTextField(id, label, val, ph) {
+      return `<label style="${Q_LABEL_STYLE}"><span>${label}</span>` +
+        `<input type="text" id="${id}" value="${escapeHtml(val || '')}" placeholder="${escapeHtml(ph || '')}" style="${Q_INPUT_STYLE}"></label>`;
+    }
+
+    function quarryFieldsHtml(activity, row) {
+      const r = row || {};
+      if (activity === 'crushing') {
+        return [
+          _qNumField('q_hourlyRate',     'Hourly Rate ($/h)', r.hourlyRate),
+          _qNumField('q_hoursCrushing',  'Hours Crushing',    r.hoursCrushing),
+          _qNumField('q_loadsToCrusher', 'Loads to Crusher',  r.loadsToCrusher),
+          _qNumField('q_tonsPerLoad',    'Tons / Load',       r.tonsPerLoad),
+          _qNumField('q_fuelGallons',    'Fuel Gallons',      r.fuelGallons),
+          _qNumField('q_fuelCost',       'Fuel Cost ($)',     r.fuelCost),
+          `<label style="${Q_LABEL_STYLE};grid-column:1/-1"><span>Comments</span>` +
+            `<textarea id="q_comments" rows="2" style="${Q_INPUT_STYLE};resize:vertical">${escapeHtml(r.comments || '')}</textarea></label>`,
+        ].join('');
+      }
+      return [
+        _qTextField('q_equipmentName', 'Equipment', r.equipmentName, 'e.g. Excavator'),
+        _qTextField('q_taskName',      'Task',      r.taskName,      'e.g. Stripping'),
+        _qNumField('q_rate',           'Rate ($/h)',   r.rate),
+        _qNumField('q_fuelGallons',    'Fuel Gallons', r.fuelGallons),
+        _qNumField('q_ppg',            'PPG ($/gal)',  r.ppg, true),
+      ].join('');
+    }
+
+    function openQuarryModalById(id, mode) {
+      const e = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
+      if (!e) return alert('Entry not found.');
+      openQuarryModal(e, mode);
+    }
+
+    async function openQuarryModal(entry, mode) {
+      const activity = quarryActivityOf(entry);
+      if (!activity) {
+        alert('This quarry entry\'s job has no Daily/Crushing activity.\n\n' +
+              'Edit the entry and re-pick the job (e.g. "Daily — Homer City"), then approve.');
+        return;
+      }
+      quarryEntry = entry;
+      quarryMode  = mode;
+
+      const work = Number(entry.computed_hours) || 0;
+      document.getElementById('quarryTitle').textContent =
+        (mode === 'approve' ? 'Approve & Inject — ' : 'Edit Quarry Row — ')
+        + (entry.username || '') + ' · ' + prettyDate(entry.work_date);
+      document.getElementById('quarrySummary').innerHTML = `
+        <div>Employee: <strong>${escapeHtml(entry.username || '')}</strong></div>
+        <div>Date: <strong>${escapeHtml(prettyDate(entry.work_date))}</strong></div>
+        <div>Activity: <strong>${activity === 'crushing' ? 'Crushing' : 'Daily'} Tracking</strong></div>
+        <div>Location: <strong>${escapeHtml(quarryLocationLabel(entry) || '—')}</strong></div>
+        <div>Work hours (injected): <strong>${num2(work)}</strong></div>
+        <div>Supervisor: <strong>${escapeHtml(entry.supervisor_name || '—')}</strong></div>
+      `;
+      const msg = document.getElementById('quarryMsg');
+      msg.textContent = ''; msg.className = 'modal-msg';
+      document.getElementById('quarrySaveBtn').textContent =
+        mode === 'approve' ? 'Approve & Inject' : 'Save Row';
+      document.getElementById('quarryFields').innerHTML = quarryFieldsHtml(activity, null);
+      document.getElementById('quarryBackdrop').classList.add('open');
+
+      // Re-edit: pre-fill from the currently injected row.
+      if (mode === 'resplit') {
+        try {
+          const res = await fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() });
+          const j = await res.json();
+          const row = j && j.quarry && j.quarry.row ? j.quarry.row : null;
+          const act = (j && j.quarry && j.quarry.activity) || activity;
+          if (row) document.getElementById('quarryFields').innerHTML = quarryFieldsHtml(act, row);
+        } catch (_) { /* keep blank fields on lookup failure */ }
+      }
+    }
+
+    function closeQuarry() {
+      document.getElementById('quarryBackdrop').classList.remove('open');
+      quarryEntry = null; quarryMode = null;
+    }
+    bindBackdropClose(document.getElementById('quarryBackdrop'), closeQuarry);
+
+    function _qval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+    function collectQuarryFields(activity) {
+      if (activity === 'crushing') {
+        return {
+          hourlyRate:     _qval('q_hourlyRate'),
+          hoursCrushing:  _qval('q_hoursCrushing'),
+          loadsToCrusher: _qval('q_loadsToCrusher'),
+          tonsPerLoad:    _qval('q_tonsPerLoad'),
+          fuelGallons:    _qval('q_fuelGallons'),
+          fuelCost:       _qval('q_fuelCost'),
+          comments:       _qval('q_comments'),
+        };
+      }
+      return {
+        equipmentName: _qval('q_equipmentName'),
+        taskName:      _qval('q_taskName'),
+        rate:          _qval('q_rate'),
+        fuelGallons:   _qval('q_fuelGallons'),
+        ppg:           _qval('q_ppg'),
+      };
+    }
+
+    async function quarrySave() {
+      if (!quarryEntry || !quarryMode) return;
+      const activity = quarryActivityOf(quarryEntry);
+      const msg = document.getElementById('quarryMsg');
+      msg.className = 'modal-msg';
+      const btn = document.getElementById('quarrySaveBtn');
+      const quarry = collectQuarryFields(activity);
+      const action = quarryMode === 'approve' ? 'approve' : 'resplit';
+      btn.disabled = true;
+      try {
+        const res = await fetch(
+          '/api/timesheet-entries?action=' + action + '&id=' + encodeURIComponent(quarryEntry.id),
+          { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ quarry }) }
+        );
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        msg.classList.add('success');
+        msg.textContent = action === 'approve' ? 'Approved & injected.' : 'Row updated.';
+        if (j.entry) applyEntryUpdate(j.entry);
+        selectedIds.delete(quarryEntry.id);
+        renderRows();
+        renderStats();
+        setTimeout(closeQuarry, 600);
       } catch (err) {
         msg.classList.add('error');
         msg.textContent = err.message;

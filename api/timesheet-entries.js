@@ -27,16 +27,27 @@
  *     { cost_code, sub_code, equipment, labor_hours, equip_hours, quantity, is_travel }.
  *     sum(labor_hours) across the array must equal computed_hours + travel_hours.
  *     On success, one daily_tracking row is inserted per split element, tagged
- *     with timesheet_entry_id. Other divisions: legacy behavior (flip status only).
+ *     with timesheet_entry_id.
+ *     For quarry daily entries the body MUST include a `quarry: {...}` object of
+ *     the activity-specific value fields (daily: rate, fuelGallons, ppg,
+ *     equipment/task; crushing: hourlyRate, hoursCrushing, fuelGallons,
+ *     fuelCost, loadsToCrusher, tonsPerLoad, comments). The activity + location
+ *     come from the job_id ("<activity>:<locationId>"); the row's hours are
+ *     pinned to the entry's computed (work) hours. On success one row is
+ *     appended to the fct_quarry_daily / fct_quarry_crushing blob (and mirrored
+ *     to the normalized table), with its id prefixed "tsq-<entryId>-".
+ *     Other divisions: legacy behavior (flip status only).
  *
  *   POST   /api/timesheet-entries?action=resplit&id=N   — replace injected rows
  *     Payroll-admin only, row must already be 'approved'. Same body shape as
- *     approve. Deletes the prior injected daily_tracking rows for this entry,
- *     then inserts the new split. Status stays 'approved'.
+ *     approve. For turf/paving: deletes the prior injected daily_tracking rows
+ *     then inserts the new split. For quarry: rewrites the injected blob row.
+ *     Status stays 'approved'.
  *
  *   POST   /api/timesheet-entries?action=unapprove&id=N — approved → submitted
- *     Payroll-admin only. Deletes any injected daily_tracking rows and reverts
- *     status. Used when an approval needs to be re-done from scratch.
+ *     Payroll-admin only. Deletes any injected daily_tracking rows (turf/paving)
+ *     and any injected fct_quarry_* blob rows (quarry) and reverts status. Used
+ *     when an approval needs to be re-done from scratch.
  *
  *   GET    /api/timesheet-entries?action=split&id=N     — current injected rows
  *     Returns the existing split (one element per daily_tracking row linked to
@@ -50,20 +61,36 @@
  *   - computed_hours (recomputed from start_time/end_time on every write)
  *   - user_id / username / company_code (taken from JWT, never the body)
  *
- * This data is intentionally isolated from daily_tracking.labor_hours and
- * dust_control_entries — payroll uses timesheet_entries only.
+ * timesheet_entries is the payroll source of truth. Approval is the only bridge
+ * out of it: turf/paving/quarry daily entries inject cost-tracking rows on
+ * approval (see the approve/resplit/unapprove actions below); other divisions
+ * stay isolated (status flip only).
  */
 
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('./lib/auth');
+const { syncForKey } = require('./lib/sync-normalized');
 
 const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry'];
 const VALID_TIME_OFF  = ['vacation', 'sick', 'jury_duty', 'bereavement', 'holiday'];
 
-// Auto-inject is only meaningful for divisions whose cost tracking lives in
-// daily_tracking (rows per project). Turf and paving qualify; the other
+// Auto-inject into daily_tracking is only meaningful for divisions whose cost
+// tracking lives there (rows per project). Turf and paving qualify; the other
 // divisions either store labor elsewhere or don't track per-project cost.
 const AUTO_INJECT_DIVISIONS = ['turf', 'paving'];
+
+// Quarry auto-injects too, but into the quarry division's OWN cost tracking —
+// the fct_quarry_daily / fct_quarry_crushing app_data blobs (mirrored to
+// quarry_daily_entries / quarry_crushing_entries by sync-normalized.js), NOT
+// daily_tracking. The activity (which tab) + location are encoded in the
+// timesheet job_id as "<activity>:<locationId>" by timesheet-jobs.js.
+const QUARRY_ACTIVITY_KEY = { daily: 'fct_quarry_daily', crushing: 'fct_quarry_crushing' };
+
+// Split "tsq-<entryId>-<stamp>" back into its entry id, and let us find every
+// quarry blob row injected from one timesheet entry. Encoded into the row `id`
+// (not a side field) because quarry.html's normalizeDailyRow/normalizeCrushRow
+// drop unknown keys but always preserve `id`.
+function quarryRowIdPrefix(entryId) { return `tsq-${entryId}-`; }
 
 function safeDate(v) {
   if (!v) return null;
@@ -402,6 +429,229 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   }
 }
 
+// ── Quarry split helpers (timesheet → fct_quarry_daily/crushing blob) ──────
+// Quarry's cost tracking is a JSON blob per activity, not a table. So the
+// injection is a read-modify-write on the app_data blob (append a row, write
+// it back, and mirror it into the normalized table via syncForKey — exactly
+// what api/data/[key].js does on a normal PUT). Injected rows are tagged by
+// encoding the timesheet entry id into the row id so unapprove/delete/resplit
+// can find and remove them again.
+
+// Parse a quarry job_id ("<activity>:<locationId>") into its parts. activity is
+// null when the id has no recognized activity prefix (legacy location-only ids).
+function parseQuarryJob(jobId) {
+  const s = String(jobId || '');
+  const i = s.indexOf(':');
+  if (i < 0) return { activity: null, locationId: s };
+  const activity = s.slice(0, i).toLowerCase();
+  const locationId = s.slice(i + 1);
+  return { activity: QUARRY_ACTIVITY_KEY[activity] ? activity : null, locationId };
+}
+
+// Parse+round a non-negative decimal from the modal. Returns null on invalid.
+// '' / null → 0 (the field was left blank).
+function quarryNum(v, max = 1e12) {
+  if (v == null || v === '') return 0;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > max) return null;
+  return Math.round(n * 10000) / 10000;
+}
+
+/**
+ * Validate the payroll modal payload (req.body.quarry) for one activity.
+ * Returns { fields } (the validated, activity-specific value fields) or
+ * { error }. Hours are NOT taken from the body — the server pins them to the
+ * timesheet's own computed (work) hours so the two can't drift.
+ */
+// Per-field caps. These are far above any real quarry value but low enough
+// that neither a field NOR any derived product (labor_cost = hours*rate,
+// estimated_tons = loads*tonsPerLoad, etc.) can overflow the NUMERIC(14,4)
+// mirror columns (max ≈ 1e10) inside syncForKey — which would otherwise throw
+// AFTER the blob was already written and leave blob/mirror inconsistent.
+const Q_MAX = {
+  rate: 1e4, hourlyRate: 1e4, ppg: 1e3, fuelCost: 1e3,
+  fuelGallons: 1e5, loadsToCrusher: 1e4, tonsPerLoad: 1e3, hoursCrushing: 24,
+};
+
+function validateQuarryInjection(activity, raw) {
+  const q = (raw && typeof raw === 'object') ? raw : {};
+  if (activity === 'daily') {
+    const rate        = quarryNum(q.rate,        Q_MAX.rate);
+    const fuelGallons = quarryNum(q.fuelGallons, Q_MAX.fuelGallons);
+    const ppg         = quarryNum(q.ppg,         Q_MAX.ppg);
+    if (rate == null)        return { error: `rate must be between 0 and ${Q_MAX.rate}` };
+    if (fuelGallons == null) return { error: `fuelGallons must be between 0 and ${Q_MAX.fuelGallons}` };
+    if (ppg == null)         return { error: `ppg must be between 0 and ${Q_MAX.ppg}` };
+    return { fields: {
+      equipmentId:   safeStr(q.equipmentId, 200) || '',
+      equipmentName: safeStr(q.equipmentName, 255) || '',
+      taskId:        safeStr(q.taskId, 200) || '',
+      taskName:      safeStr(q.taskName, 255) || '',
+      rate, fuelGallons, ppg,
+    } };
+  }
+  if (activity === 'crushing') {
+    const vals = {
+      hourlyRate:     quarryNum(q.hourlyRate,     Q_MAX.hourlyRate),
+      hoursCrushing:  quarryNum(q.hoursCrushing,  Q_MAX.hoursCrushing),
+      fuelGallons:    quarryNum(q.fuelGallons,    Q_MAX.fuelGallons),
+      fuelCost:       quarryNum(q.fuelCost,       Q_MAX.fuelCost),
+      loadsToCrusher: quarryNum(q.loadsToCrusher, Q_MAX.loadsToCrusher),
+      tonsPerLoad:    quarryNum(q.tonsPerLoad,    Q_MAX.tonsPerLoad),
+    };
+    for (const [k, v] of Object.entries(vals)) {
+      if (v == null) return { error: `${k} must be between 0 and ${Q_MAX[k]}` };
+    }
+    return { fields: { ...vals, comments: safeStr(q.comments, 2000) || '' } };
+  }
+  return { error: 'Unknown quarry activity' };
+}
+
+async function readBlobArray(sql, companyCode, blobKey) {
+  const scoped = `${companyCode}:${blobKey}`;
+  const rows = await sql`SELECT value FROM app_data WHERE key = ${scoped}`;
+  const v = rows.length ? rows[0].value : null;
+  return Array.isArray(v) ? v : [];
+}
+
+async function writeBlobArray(sql, companyCode, blobKey, arr) {
+  const scoped = `${companyCode}:${blobKey}`;
+  await sql`
+    INSERT INTO app_data (key, value, updated_at)
+    VALUES (${scoped}, ${JSON.stringify(arr)}, NOW())
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+  `;
+}
+
+// Resolve the human location name for a quarry job. Prefer the canonical
+// quarry_locations row; fall back to the trailing text of the job_label
+// ("Daily — Homer City" → "Homer City") when the id doesn't resolve.
+async function quarryLocationName(sql, companyCode, locationId, jobLabel) {
+  if (locationId) {
+    const rows = await sql`
+      SELECT name FROM quarry_locations
+      WHERE company_code = ${companyCode} AND id = ${locationId}
+    `;
+    if (rows.length && rows[0].name) return rows[0].name;
+  }
+  const parts = String(jobLabel || '').split('—');
+  return parts.length > 1 ? parts.slice(1).join('—').trim() : (parts[0] || '').trim();
+}
+
+// Best-effort match of the timesheet employee to the quarry roster so the
+// injected row carries a real employee_id (used by the tab's filters). Login
+// names are often a last name; try exact then unambiguous suffix, else keep
+// the free-text name with an empty id.
+async function matchQuarryEmployee(sql, companyCode, name) {
+  const n = (name || '').trim().toLowerCase();
+  if (!n) return { id: '', name: name || '' };
+  const rows = await sql`SELECT id, name FROM quarry_employees WHERE company_code = ${companyCode}`;
+  const exact = rows.find(r => String(r.name || '').trim().toLowerCase() === n);
+  if (exact) return { id: exact.id || '', name: exact.name };
+  const suffix = rows.filter(r => String(r.name || '').trim().toLowerCase().endsWith(' ' + n));
+  if (suffix.length === 1) return { id: suffix[0].id || '', name: suffix[0].name };
+  return { id: '', name: name || '' };
+}
+
+/**
+ * Build + inject a single quarry blob row for an approved entry. Deletes any
+ * prior injected rows for this entry first (idempotent — covers resplit and a
+ * retried approve), appends the new row, writes the blob, and mirrors it into
+ * the normalized table via syncForKey. Returns the row that was written.
+ */
+async function insertQuarryRow(sql, companyCode, entry, activity, fields) {
+  const blobKey = QUARRY_ACTIVITY_KEY[activity];
+  const { locationId } = parseQuarryJob(entry.job_id);
+  const locationName = await quarryLocationName(sql, companyCode, locationId, entry.job_label);
+  const emp = await matchQuarryEmployee(sql, companyCode, entry.username);
+  const workDate = safeDate(entry.work_date) || '';
+  // Work hours only — travel time is intentionally not carried into the
+  // quarry cost row (product decision).
+  const hours = _r2(Number(entry.computed_hours) || 0);
+
+  const base = {
+    id: `${quarryRowIdPrefix(entry.id)}${Date.now()}`,
+    date: workDate,
+    locationId: locationId || '',
+    locationName: locationName || '',
+    employeeId: emp.id || '',
+    employeeName: emp.name || entry.username || '',
+  };
+
+  const row = activity === 'daily'
+    ? {
+        ...base,
+        equipmentId:   fields.equipmentId,
+        equipmentName: fields.equipmentName,
+        taskId:        fields.taskId,
+        taskName:      fields.taskName,
+        hours,
+        rate:          fields.rate,
+        fuelGallons:   fields.fuelGallons,
+        ppg:           fields.ppg,
+      }
+    : {
+        ...base,
+        comments:       fields.comments,
+        hourlyRate:     fields.hourlyRate,
+        hours,
+        hoursCrushing:  fields.hoursCrushing,
+        fuelGallons:    fields.fuelGallons,
+        fuelCost:       fields.fuelCost,
+        loadsToCrusher: fields.loadsToCrusher,
+        tonsPerLoad:    fields.tonsPerLoad,
+      };
+
+  const prefix = quarryRowIdPrefix(entry.id);
+  const arr = await readBlobArray(sql, companyCode, blobKey);
+  const next = arr.filter(r => !(r && typeof r === 'object' && String(r.id || '').startsWith(prefix)));
+  next.push(row);
+  await writeBlobArray(sql, companyCode, blobKey, next);
+  await syncForKey(sql, companyCode, blobKey, next);
+  return row;
+}
+
+/**
+ * Remove every quarry blob row injected from this entry, across both activity
+ * blobs (the job's activity may have changed since approval). Returns the count
+ * removed. Because syncForKey short-circuits on an empty array (it will not
+ * delete the last mirror row), the removed ids are also deleted from the
+ * normalized table explicitly.
+ */
+async function removeQuarryRows(sql, companyCode, entry) {
+  const prefix = quarryRowIdPrefix(entry.id);
+  let removedTotal = 0;
+  for (const [activity, blobKey] of Object.entries(QUARRY_ACTIVITY_KEY)) {
+    const arr = await readBlobArray(sql, companyCode, blobKey);
+    const removed = arr.filter(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
+    if (!removed.length) continue;
+    const remaining = arr.filter(r => !(r && typeof r === 'object' && String(r.id || '').startsWith(prefix)));
+    await writeBlobArray(sql, companyCode, blobKey, remaining);
+    const removedIds = removed.map(r => r.id);
+    if (activity === 'daily') {
+      await sql`DELETE FROM quarry_daily_entries WHERE company_code = ${companyCode} AND id = ANY(${removedIds})`;
+    } else {
+      await sql`DELETE FROM quarry_crushing_entries WHERE company_code = ${companyCode} AND id = ANY(${removedIds})`;
+    }
+    if (remaining.length) await syncForKey(sql, companyCode, blobKey, remaining);
+    removedTotal += removed.length;
+  }
+  return removedTotal;
+}
+
+// The injected quarry row(s) for an entry, shaped for the payroll modal to
+// pre-fill when re-editing an approved entry (mirrors the GET action=split
+// contract for turf/paving).
+async function quarrySplitForEntry(sql, companyCode, entry) {
+  const { activity } = parseQuarryJob(entry.job_id);
+  const blobKey = QUARRY_ACTIVITY_KEY[activity];
+  if (!blobKey) return { activity: null, row: null };
+  const prefix = quarryRowIdPrefix(entry.id);
+  const arr = await readBlobArray(sql, companyCode, blobKey);
+  const row = arr.find(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix)) || null;
+  return { activity, row };
+}
+
 async function writeAudit(sql, companyCode, payload, entryId, action, changes, snapshot) {
   try {
     await sql`
@@ -650,12 +900,14 @@ module.exports = async (req, res) => {
     // The split is validated (sum(labor_hours) must equal work+travel hours)
     // before any DB write happens; once validated the entry transitions to
     // 'approved' AND the daily_tracking rows are inserted in the same code
-    // path. If the insert fails the approval is rolled back manually
-    // (status flipped back to 'submitted') so payroll sees the pending row
-    // again rather than an approved-but-uninjected entry.
+    // path. For quarry daily entries the body MUST include a `quarry` object;
+    // one row is appended to the fct_quarry_daily/crushing blob instead. If the
+    // injection fails the approval is rolled back manually (status flipped back
+    // to 'submitted') so payroll sees the pending row again rather than an
+    // approved-but-uninjected entry.
     //
-    // For divisions outside AUTO_INJECT_DIVISIONS the legacy behavior is
-    // preserved: approval flips status only, no daily_tracking write.
+    // For the remaining divisions (dust/trucking) the legacy behavior is
+    // preserved: approval flips status only, no cost-tracking write.
     if (req.method === 'POST' && req.query.action === 'approve') {
       if (!canAdmin) {
         return res.status(403).json({ error: 'Payroll admin access is required' });
@@ -675,6 +927,9 @@ module.exports = async (req, res) => {
       const needsSplit =
         existing.entry_type === 'daily' &&
         AUTO_INJECT_DIVISIONS.includes(existing.division);
+      const needsQuarry =
+        existing.entry_type === 'daily' &&
+        existing.division === 'quarry';
 
       let splitRows = null;
       if (needsSplit) {
@@ -684,6 +939,19 @@ module.exports = async (req, res) => {
         const { rows, error } = validateSplit((req.body && req.body.split) || [], existing);
         if (error) return res.status(400).json({ error });
         splitRows = rows;
+      }
+
+      let quarryInject = null;
+      if (needsQuarry) {
+        const { activity } = parseQuarryJob(existing.job_id);
+        if (!activity) {
+          return res.status(400).json({
+            error: 'This quarry entry is missing a Daily/Crushing activity on its job. Edit the entry and re-pick the job, then approve.',
+          });
+        }
+        const { fields, error } = validateQuarryInjection(activity, req.body && req.body.quarry);
+        if (error) return res.status(400).json({ error });
+        quarryInject = { activity, fields };
       }
 
       const [updated] = await sql`
@@ -697,16 +965,29 @@ module.exports = async (req, res) => {
         RETURNING *
       `;
 
-      if (splitRows) {
+      if (splitRows || quarryInject) {
         try {
-          await insertSplitRows(
-            sql, splitRows, updated, updated.division, companyCode, updated.username,
-          );
+          if (splitRows) {
+            await insertSplitRows(
+              sql, splitRows, updated, updated.division, companyCode, updated.username,
+            );
+          } else {
+            await insertQuarryRow(
+              sql, companyCode, updated, quarryInject.activity, quarryInject.fields,
+            );
+          }
         } catch (injErr) {
           // Rollback the approval so payroll sees the row as pending again
           // and can retry. Without this we'd have an approved entry with
           // zero injected rows — invisible to the cost tracking tab.
-          console.error('[timesheet-entries] split insert failed, rolling back approval:', injErr.message);
+          console.error('[timesheet-entries] injection failed, rolling back approval:', injErr.message);
+          // Quarry writes the blob before mirroring; if the mirror sync threw,
+          // scrub any half-written blob row so it can't linger as a phantom
+          // locked row in the Daily/Crushing tab while the entry is pending.
+          if (quarryInject) {
+            try { await removeQuarryRows(sql, companyCode, updated); }
+            catch (cleanupErr) { console.error('[timesheet-entries] quarry rollback cleanup failed:', cleanupErr.message); }
+          }
           await sql`
             UPDATE timesheet_entries
             SET status              = 'submitted',
@@ -725,7 +1006,8 @@ module.exports = async (req, res) => {
 
       await writeAudit(
         sql, companyCode, payload, id, 'APPROVE',
-        splitRows ? { split_row_count: splitRows.length } : null,
+        splitRows ? { split_row_count: splitRows.length }
+          : quarryInject ? { quarry_activity: quarryInject.activity } : null,
         dbToEntry(updated),
       );
       return res.json(await entryJson(sql, companyCode, updated));
@@ -751,8 +1033,38 @@ module.exports = async (req, res) => {
       if (existing.status !== 'approved') {
         return res.status(409).json({ error: 'Resplit is only allowed on approved entries' });
       }
+
+      // Quarry re-edit: rewrite the injected quarry blob row. insertQuarryRow
+      // deletes the prior injected row(s) for this entry before appending, so
+      // there's no separate delete step here.
+      if (existing.entry_type === 'daily' && existing.division === 'quarry') {
+        const { activity } = parseQuarryJob(existing.job_id);
+        if (!activity) {
+          return res.status(400).json({
+            error: 'This quarry entry is missing a Daily/Crushing activity on its job.',
+          });
+        }
+        const { fields, error } = validateQuarryInjection(activity, req.body && req.body.quarry);
+        if (error) return res.status(400).json({ error });
+        try {
+          await insertQuarryRow(sql, companyCode, existing, activity, fields);
+        } catch (injErr) {
+          console.error('[timesheet-entries] quarry resplit failed:', injErr.message);
+          return res.status(500).json({
+            error: 'Edit failed: could not rewrite the quarry tracking row. Retry.',
+            detail: injErr.message,
+          });
+        }
+        await writeAudit(
+          sql, companyCode, payload, id, 'ADMIN_EDIT',
+          { resplit: true, quarry_activity: activity },
+          dbToEntry(existing),
+        );
+        return res.json(await entryJson(sql, companyCode, existing));
+      }
+
       if (existing.entry_type !== 'daily' || !AUTO_INJECT_DIVISIONS.includes(existing.division)) {
-        return res.status(400).json({ error: 'Resplit applies only to daily entries in turf/paving' });
+        return res.status(400).json({ error: 'Resplit applies only to daily entries in turf/paving/quarry' });
       }
       if (!existing.job_id) {
         return res.status(400).json({ error: 'Cannot inject: entry has no job_id (project)' });
@@ -820,6 +1132,14 @@ module.exports = async (req, res) => {
         DELETE FROM daily_tracking
         WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
       `;
+      // Quarry stores its injected rows in the fct_quarry_* blobs, not
+      // daily_tracking — clear those too so the Daily/Crushing tab reflects
+      // the un-approval.
+      let removedQuarry = 0;
+      if (existing.division === 'quarry') {
+        removedQuarry = await removeQuarryRows(sql, companyCode, existing);
+      }
+      const removed = cnt + removedQuarry;
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status              = 'submitted',
@@ -832,10 +1152,10 @@ module.exports = async (req, res) => {
       `;
       await writeAudit(
         sql, companyCode, payload, id, 'ADMIN_EDIT',
-        { unapprove: true, removed_split_rows: cnt },
+        { unapprove: true, removed_split_rows: removed },
         dbToEntry(updated),
       );
-      return res.json(await entryJson(sql, companyCode, updated, { removed_split_rows: cnt }));
+      return res.json(await entryJson(sql, companyCode, updated, { removed_split_rows: removed }));
     }
 
     // ── GET ?action=split&id=N — fetch existing injected rows ────────────
@@ -844,6 +1164,19 @@ module.exports = async (req, res) => {
     if (req.method === 'GET' && req.query.action === 'split') {
       const id = safeInt(req.query.id);
       if (!id) return res.status(400).json({ error: 'id is required' });
+
+      // Quarry entries: return the injected quarry blob row (activity + its
+      // value fields) so the payroll modal can pre-fill on re-edit. `id` MUST
+      // be selected — quarrySplitForEntry keys the blob lookup on entry.id.
+      const [entryRow] = await sql`
+        SELECT id, division, job_id, job_label FROM timesheet_entries
+        WHERE id = ${id} AND company_code = ${companyCode}
+      `;
+      if (entryRow && entryRow.division === 'quarry') {
+        const { activity, row } = await quarrySplitForEntry(sql, companyCode, entryRow);
+        return res.json({ quarry: { activity, row } });
+      }
+
       const rows = await sql`
         SELECT row_id, project_id, date, cost_code, sub_code, equipment,
                labor_hours, equip_hours, quantity, field_type
@@ -893,10 +1226,15 @@ module.exports = async (req, res) => {
           SELECT COUNT(*)::int AS cnt FROM daily_tracking
           WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
         `;
-        if (cnt > 0) {
+        let injected = cnt;
+        if (existing.division === 'quarry') {
+          const { row } = await quarrySplitForEntry(sql, companyCode, existing);
+          if (row) injected += 1;
+        }
+        if (injected > 0) {
           return res.status(409).json({
             error: 'This entry has cost tracking rows injected from approval. Un-approve it first, edit, then re-approve with a fresh split.',
-            injected_row_count: cnt,
+            injected_row_count: injected,
           });
         }
       }
@@ -969,6 +1307,9 @@ module.exports = async (req, res) => {
           DELETE FROM daily_tracking
           WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
         `;
+        if (existing.division === 'quarry') {
+          removedSplitRows += await removeQuarryRows(sql, companyCode, existing);
+        }
       }
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;
       await writeAudit(
