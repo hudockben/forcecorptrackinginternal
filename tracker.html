@@ -2528,6 +2528,7 @@
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
         <th>Start Date</th><th>Target Date</th>
+        <th class="num" title="Total labor hours logged against this sub code across all other (past) projects">Hist. Hours</th>
       </tr></thead>
       <tbody id="bid-fs-tbody"></tbody>
       <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
@@ -7410,6 +7411,25 @@ function cumulativeHoursForBidItem(b, projId) {
   }, 0);
 }
 
+// Total labor hours logged against this sub code (cost_code + sub_code) across
+// every OTHER project — a historical benchmark of how many hours this kind of
+// work has taken on past jobs. Excludes the current project so it reads as
+// prior experience, sitting alongside "Cum. Hours" (this job's hours).
+function historicalHoursForSubCode(b, projId) {
+  if (!b.cost_code && !b.sub_code) return 0;
+  let total = 0;
+  projectsList.forEach(p => {
+    if (p.id === projId) return;
+    (p.dailyRows || []).forEach(r => {
+      if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
+          (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+        total += parseFloat(r.labor_hours) || 0;
+      }
+    });
+  });
+  return total;
+}
+
 function laborerCountForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
@@ -7464,6 +7484,7 @@ function renderBidFooter(projId, opts = {}) {
   const projCls = (totalProj - totalBid) <= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
   const totalCumHrs = (p.bidItems||[]).reduce((s,b) => s + cumulativeHoursForBidItem(b, projId), 0);
+  const totalHistHrs = (p.bidItems||[]).reduce((s,b) => s + historicalHoursForSubCode(b, projId), 0);
   const totalLab = new Set((p.dailyRows||[]).map(r => r.employee).filter(Boolean)).size;
   const cells = `
     <td class="foot-label">Totals</td>
@@ -7480,7 +7501,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
     <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>`;
-  footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td>`;
+  footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td><td class="foot-label num">${totalHistHrs ? fmt(totalHistHrs) : '—'}</td>`;
 
   // Update sqft summary bar in the fullscreen view (only when this project is open)
   if (bidViewProjId === projId) {
@@ -7596,7 +7617,7 @@ function _renderBidOffBidBadge(projId) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 15 : 17;
+  const COLS     = readonly ? 15 : 18;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
   tbody.innerHTML = '';
@@ -7661,7 +7682,7 @@ function renderBidTable(projId, opts = {}) {
     tbody.appendChild(hdrTr);
 
     // ── Child rows ──
-    let gBidTotal = 0, gActual = 0, gCumHrs = 0, gProj = 0;
+    let gBidTotal = 0, gActual = 0, gCumHrs = 0, gHistHrs = 0, gProj = 0;
     const visItems = scFilter ? groupItems.filter(b => scFilter.has(b.sub_code || '')) : groupItems;
     visItems.forEach(b => {
       const baseBidQty = parseFloat(b.quantity) || 0;
@@ -7671,6 +7692,7 @@ function renderBidTable(projId, opts = {}) {
       const actual  = actualForBidItem(b, projId);
       const rqty    = runningQtyForBidItem(b, projId);
       const cumHrs  = cumulativeHoursForBidItem(b, projId);
+      const histHrs = historicalHoursForSubCode(b, projId);
       const numLab  = laborerCountForBidItem(b, projId);
       const proj    = projForBidItem(b, actual, rqty, bidQty, bidTot);
       const diff    = bidTot - actual;
@@ -7680,7 +7702,7 @@ function renderBidTable(projId, opts = {}) {
       const projCls = (proj - bidTot) <= 0 ? 'bid-under' : 'bid-over';
       const projTxt = bidTot ? '$' + fmt(proj) : '—';
 
-      gBidTotal += bidTot; gActual += actual; gCumHrs += cumHrs; gProj += proj;
+      gBidTotal += bidTot; gActual += actual; gCumHrs += cumHrs; gHistHrs += histHrs; gProj += proj;
 
       // Size-aware past avg for this sub code — exclude this project from its own benchmark
       const _pa     = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId);
@@ -7736,7 +7758,8 @@ function renderBidTable(projId, opts = {}) {
              onchange="updateBidItem('${projId}','${b.id}','start_date',this.value);this.style.color=this.value?'var(--green)':'var(--muted)'"></td>
            <td><input type="date" value="${esc(b.target_date||'')}" title="Target completion date for this sub code"
              style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.target_date ? 'var(--blue)' : 'var(--muted)'}"
-             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>`;
+             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>
+           <td class="bid-calc" title="Total labor hours logged against this sub code across all other (past) projects">${histHrs ? fmt(histHrs) : '—'}</td>`;
       tbody.appendChild(childTr);
     });
 
@@ -7755,7 +7778,7 @@ function renderBidTable(projId, opts = {}) {
       <td class="bid-calc">—</td>
       <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
       <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>
-      ${readonly ? '' : '<td></td><td></td>'}` ;
+      ${readonly ? '' : `<td></td><td></td><td class="bid-calc">${gHistHrs ? fmt(gHistHrs) : '—'}</td>`}` ;
     const totalLabel = `<td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode)||'(No Code)'} — Total</td>`;
 
     const totalTr = document.createElement('tr');
