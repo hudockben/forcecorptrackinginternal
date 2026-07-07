@@ -785,6 +785,16 @@
       border-bottom: 1px solid rgba(42,42,58,0.6);
       vertical-align: middle;
     }
+    /* ── Timesheet review table (Pending / Approved tabs) ──────────────────────
+       Denser type + tighter cell padding so all 14 columns fit a smaller-screen
+       laptop without a horizontal scroll bar. Scoped to .table-wrap so the
+       Audit Log / Reports / Analytics tables keep their own sizing. */
+    .table-wrap table    { font-size: 0.78rem; }
+    .table-wrap thead th { padding: 0.5rem 0.34rem; font-size: 0.58rem; letter-spacing: 0.03em; }
+    .table-wrap tbody td { padding: 0.45rem 0.34rem; }
+    /* Headers allowed to stack onto two lines so a Yes/No column tracks its pill
+       width instead of the long label ("Prevailing Wage", "Operated Equipment"). */
+    .table-wrap thead th.th-wrap { white-space: normal; line-height: 1.15; }
     tbody tr:hover { background: rgba(255,255,255,0.015); }
     tbody tr.selected { background: rgba(236,72,153,0.06); }
     .td-narrow { width: 40px; text-align: center; }
@@ -805,11 +815,11 @@
     /* ── Badge ── */
     .badge {
       display: inline-block;
-      font-size: 0.6rem;
+      font-size: 0.56rem;
       font-weight: 700;
-      letter-spacing: 0.1em;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
-      padding: 0.2rem 0.5rem;
+      padding: 0.18rem 0.42rem;
       border-radius: 4px;
     }
     .badge-draft     { background: rgba(136,136,136,0.15); color: var(--muted); }
@@ -819,23 +829,39 @@
     /* ── Prevailing-wage pill (per job tied to the entry) ── */
     .pw-pill {
       display: inline-block;
-      font-size: 0.6rem;
+      font-size: 0.56rem;
       font-weight: 700;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
-      padding: 0.2rem 0.5rem;
+      padding: 0.18rem 0.42rem;
       border-radius: 4px;
       white-space: nowrap;
     }
     .pw-yes { background: rgba(234,179,8,0.16);  color: var(--yellow); }
     .pw-no  { background: rgba(136,136,136,0.15); color: var(--muted); }
     .pw-na  { color: var(--muted); }
-    .status-meta {
-      font-size: 0.62rem;
-      color: var(--muted);
-      line-height: 1.45;
-      margin-top: 0.35rem;
+
+    /* ── Per-day Yes/No flags (lunch break, operated equipment) ──
+       Same pill shape as prevailing wage, but green/grey rather than amber so
+       amber stays reserved for prevailing wage. */
+    .yn-pill {
+      display: inline-block;
+      font-size: 0.56rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.42rem;
+      border-radius: 4px;
       white-space: nowrap;
+    }
+    .yn-yes { background: rgba(34,197,94,0.15);  color: var(--green); }
+    .yn-no  { background: rgba(136,136,136,0.15); color: var(--muted); }
+    .yn-na  { color: var(--muted); }
+    .status-meta {
+      font-size: 0.56rem;
+      color: var(--muted);
+      line-height: 1.4;
+      margin-top: 0.3rem;
     }
     .status-meta strong { color: var(--text); font-weight: 600; }
 
@@ -887,12 +913,12 @@
       background: none;
       border: 1px solid var(--border);
       color: var(--muted);
-      padding: 0.28rem 0.7rem;
+      padding: 0.24rem 0.48rem;
       border-radius: 4px;
-      font-size: 0.7rem;
+      font-size: 0.66rem;
       font-weight: 600;
       cursor: pointer;
-      margin-left: 0.3rem;
+      margin-left: 0.22rem;
     }
     .row-btn.edit:hover    { color: var(--accent); border-color: var(--accent); }
     .row-btn.approve { color: var(--green); border-color: rgba(34,197,94,0.35); }
@@ -905,9 +931,9 @@
       background: none;
       border: 1px dashed rgba(34,197,94,0.25);
       color: var(--text);
-      padding: 0.18rem 0.55rem;
+      padding: 0.16rem 0.4rem;
       border-radius: 4px;
-      font-size: 0.8rem;
+      font-size: 0.76rem;
       font-family: inherit;
       cursor: pointer;
       transition: background 0.12s, border-color 0.12s, color 0.12s;
@@ -1357,7 +1383,9 @@
             <th>Type</th>
             <th>Division</th>
             <th>Job</th>
-            <th>Prevailing&nbsp;Wage</th>
+            <th class="th-wrap">Prevailing Wage</th>
+            <th class="th-wrap">Lunch Break</th>
+            <th class="th-wrap">Operated Equipment</th>
             <th>Time</th>
             <th>Hours</th>
             <th>Travel</th>
@@ -1368,7 +1396,7 @@
           </tr>
         </thead>
         <tbody id="rowsBody">
-          <tr class="empty-row"><td colspan="14">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="16">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1687,7 +1715,7 @@
       if (division) params.set('division', division);
 
       const tbody = document.getElementById('rowsBody');
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="14">Loading…</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="16">Loading…</td></tr>';
 
       try {
         const url = '/api/timesheet-entries?' + params.toString();
@@ -1700,7 +1728,7 @@
           'statuses:', allEntries.reduce((m, e) => { m[e.status]=(m[e.status]||0)+1; return m; }, {}));
         filterAndRender();
       } catch (err) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="14">Error: ${escapeHtml(err.message)}</td></tr>`;
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="16">Error: ${escapeHtml(err.message)}</td></tr>`;
       }
     }
 
@@ -1946,6 +1974,8 @@
             <td class="num">${isOff ? '—' : travel.toFixed(2)}</td>
             <td class="num">${isOff ? '—' : total.toFixed(2)}</td>
             <td class="num${pw > 0 ? ' num-pw' : ''}">${isOff ? '—' : pw.toFixed(2)}</td>
+            <td>${dayFlagHtml(e, 'lunch_break', 'Took a lunch break', 'No lunch break taken')}</td>
+            <td>${dayFlagHtml(e, 'operated_equipment', 'Operated equipment this day', 'Did not operate equipment')}</td>
             <td>${statusPill}</td>
           </tr>`;
       }).join('');
@@ -1960,6 +1990,8 @@
               <th style="text-align:right">Travel</th>
               <th style="text-align:right">Total</th>
               <th class="th-pw" style="text-align:right">Prevailing&nbsp;Hrs</th>
+              <th>Lunch</th>
+              <th>Equipment</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -1971,6 +2003,8 @@
               <td class="num">${sumTravel.toFixed(2)}</td>
               <td class="num">${sumTotal.toFixed(2)}</td>
               <td class="num num-pw">${sumPw.toFixed(2)}</td>
+              <td></td>
+              <td></td>
               <td></td>
             </tr>
           </tfoot>
@@ -2666,7 +2700,7 @@
       const banner = document.getElementById('hoursFlagBanner');
 
       if (!rows.length) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="14">${emptyMsg}</td></tr>`;
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="16">${emptyMsg}</td></tr>`;
         if (banner) { banner.hidden = true; banner.innerHTML = ''; }
         if (isPending) selectedIds.clear();
         updateBulk();
@@ -2742,6 +2776,8 @@
             <td>${escapeHtml(division)}</td>
             <td>${escapeHtml(job)}</td>
             <td>${prevailingWageHtml(e)}</td>
+            <td>${dayFlagHtml(e, 'lunch_break', 'Took a lunch break (30 min deducted)', 'No lunch break taken')}</td>
+            <td>${dayFlagHtml(e, 'operated_equipment', 'Operated equipment this day', 'Did not operate equipment')}</td>
             <td>${timeCell}</td>
             <td class="${hoursFlag ? 'hours-mismatch' : ''}" style="font-variant-numeric:tabular-nums">${hours}${hoursMarker}</td>
             <td style="font-variant-numeric:tabular-nums">${travel}</td>
@@ -2789,6 +2825,19 @@
       return e.prevailing_wage
         ? '<span class="pw-pill pw-yes" title="Prevailing wage job">Yes</span>'
         : '<span class="pw-pill pw-no" title="Standard (non-prevailing) wage job">No</span>';
+    }
+    // Per-day Yes/No flag captured on the entry itself (lunch_break,
+    // operated_equipment). Rendered as a Yes/No pill just like prevailing
+    // wage; a neutral dash when it doesn't apply — time-off entries, or an
+    // older entry saved before the flag existed (value null).
+    function dayFlagHtml(e, field, yesTitle, noTitle) {
+      const v = e[field];
+      if (e.entry_type === 'time_off' || v == null) {
+        return '<span class="yn-na" title="Not applicable to this entry">—</span>';
+      }
+      return v
+        ? `<span class="yn-pill yn-yes" title="${escapeHtml(yesTitle)}">Yes</span>`
+        : `<span class="yn-pill yn-no" title="${escapeHtml(noTitle)}">No</span>`;
     }
     function fmtTimestamp(iso) {
       if (!iso) return '';
