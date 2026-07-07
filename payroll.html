@@ -3811,6 +3811,7 @@
     // on failure the fields still work as plain free-text inputs.
     let quarryEquipOptions = [];
     let quarryTaskOptions  = [];
+    let quarryEmployeeList = [];   // [{ name, rate }] — for the per-employee rate lookup
     let quarryListsLoaded  = false;
     async function loadQuarryListsOnce() {
       if (quarryListsLoaded) return;
@@ -3824,8 +3825,22 @@
           : [];
         quarryEquipOptions = names(lists.equipment);
         quarryTaskOptions  = names(lists.tasks);
+        quarryEmployeeList = Array.isArray(lists.employees) ? lists.employees : [];
         quarryListsLoaded  = true;
       } catch (_) { /* keep free-text fallback */ }
+    }
+    // The quarry employee's configured hourly rate, matched from the timesheet
+    // username the same way the server resolves the employee on injection
+    // (exact case-insensitive name, else a unique "… <username>" suffix).
+    // Returns a positive Number, or null when there's no usable rate on file.
+    function quarryEmployeeRate(username) {
+      const n = String(username || '').trim().toLowerCase();
+      if (!n || !quarryEmployeeList.length) return null;
+      const rateOf = e => { const r = Number(e && e.rate); return Number.isFinite(r) && r > 0 ? r : null; };
+      const exact = quarryEmployeeList.find(e => String(e.name || '').trim().toLowerCase() === n);
+      if (exact) return rateOf(exact);
+      const suffix = quarryEmployeeList.filter(e => String(e.name || '').trim().toLowerCase().endsWith(' ' + n));
+      return suffix.length === 1 ? rateOf(suffix[0]) : null;
     }
 
     function entryNeedsQuarry(e) {
@@ -3894,9 +3909,18 @@
             `<textarea id="q_comments" rows="2" style="${Q_INPUT_STYLE};resize:vertical">${escapeHtml(r.comments || '')}</textarea></label>`,
         ].join('');
       }
-      // Daily: equipment/task are quick-pick dropdowns, the rate pre-fills to the
-      // flat quarry rate, and PPG is derived from fuel cost ÷ gallons (read-only).
-      const rateVal = (r.rate == null || r.rate === '') ? QUARRY_DEFAULT_RATE : r.rate;
+      // Daily: equipment/task are quick-pick dropdowns; PPG is derived from fuel
+      // cost ÷ gallons (read-only). The rate pre-fills from the employee's
+      // configured quarry rate, falling back to the flat default — always editable.
+      const storedRate = (r.rate == null || r.rate === '') ? null : r.rate;
+      const empRate    = quarryEntry ? quarryEmployeeRate(quarryEntry.username) : null;
+      const rateVal    = storedRate != null ? storedRate
+                       : (empRate != null ? empRate : QUARRY_DEFAULT_RATE);
+      const rateTitle  = storedRate != null
+                       ? 'Rate on the injected row — editable'
+                       : empRate != null
+                       ? `Pre-filled from ${(quarryEntry && quarryEntry.username) || 'the employee'}'s quarry rate — editable`
+                       : `Default quarry rate ($${QUARRY_DEFAULT_RATE}/h) — no per-employee rate on file — editable`;
       // A stored row keeps ppg (not the dollar cost). Reconstruct the fuel cost
       // the user originally entered so the Fuel Cost field round-trips on edit.
       const hasFuel = r.fuelGallons != null && r.fuelGallons !== '' && r.ppg != null && r.ppg !== '';
@@ -3906,7 +3930,8 @@
       return [
         _qListField('q_equipmentName', 'Equipment', r.equipmentName, quarryEquipOptions),
         _qListField('q_taskName',      'Task',      r.taskName,      quarryTaskOptions),
-        _qNumField('q_rate',           'Rate ($/h)', rateVal),
+        `<label style="${Q_LABEL_STYLE}"><span>Rate ($/h)</span>` +
+          `<input type="number" step="0.01" min="0" id="q_rate" value="${escapeHtml(String(rateVal))}" placeholder="0" title="${escapeHtml(rateTitle)}" style="${Q_INPUT_STYLE}"></label>`,
         `<label style="${Q_LABEL_STYLE}"><span>Fuel Gallons</span>` +
           `<input type="number" step="0.01" min="0" id="q_fuelGallons" value="${escapeHtml(galVal)}" placeholder="0" style="${Q_INPUT_STYLE}" oninput="recalcQuarryPpg()"></label>`,
         `<label style="${Q_LABEL_STYLE}"><span>Fuel Cost ($)</span>` +
