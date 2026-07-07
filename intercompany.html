@@ -192,6 +192,8 @@
     .div-tag.dust     { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.2); }
     .div-tag.quarry   { background: rgba(6,182,212,0.10);  color: #06b6d4; border: 1px solid rgba(6,182,212,0.22); }
     .div-tag.turf     { background: rgba(34,197,94,0.10);  color: #22c55e; border: 1px solid rgba(34,197,94,0.2); }
+    .div-tag.paving   { background: rgba(148,163,184,0.14); color: #94a3b8; border: 1px solid rgba(148,163,184,0.28); }
+    .div-tag.js-inline { margin-right: 0.4rem; vertical-align: middle; }
     .co-item-notes { font-size: 0.72rem; color: var(--muted); }
     .co-item-actions { display: flex; flex-direction: column; gap: 0.3rem; flex-shrink: 0; }
     .btn-co-edit {
@@ -653,6 +655,10 @@
     .an-tbl tbody tr:hover td { background:rgba(255,255,255,0.02); }
     .an-tbl tfoot td { font-weight:700; border-top:2px solid var(--border); color:var(--accent); padding:0.45rem 1rem; font-size:0.75rem; background:rgba(167,139,250,0.04); }
     .an-tbl tfoot td.r { text-align:right; }
+    /* Division subtotal rows in the Job Summary report */
+    .an-tbl tbody tr.js-subtotal td { font-weight:700; color:var(--text); background:rgba(148,163,184,0.07); border-top:1px solid var(--border); border-bottom:1px solid var(--border); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em; }
+    .an-tbl tbody tr.js-subtotal:hover td { background:rgba(148,163,184,0.07); }
+    .an-tbl tbody tr.js-subtotal td.r { text-align:right; }
 
     .an-trend-tbl { width:100%; border-collapse:collapse; min-width:600px; }
     .an-trend-tbl th { font-size:0.6rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); text-align:left; padding:0.38rem 1rem; border-bottom:1px solid var(--border); white-space:nowrap; }
@@ -762,6 +768,15 @@
       }
       .an-tbl tbody tr:nth-child(even) td { background: #f9f9f9 !important; }
       .an-tbl tbody td { padding: 5px 8px; border-bottom: 1px solid #ddd; }
+
+      /* Division subtotal rows print with a distinct shaded band */
+      .an-tbl tbody tr.js-subtotal td,
+      .an-tbl tbody tr.js-subtotal td * {
+        background: #e6e6e6 !important;
+        font-weight: 700;
+        border-top: 1px solid #999 !important;
+        border-bottom: 1px solid #999 !important;
+      }
 
       .an-tbl tfoot td,
       .an-tbl tfoot td * {
@@ -2881,6 +2896,14 @@
             pavingTrucking = Array.isArray(tj.truckingEntries) ? tj.truckingEntries : [];
           } catch { /* non-fatal */ }
         }
+        // Tag each row with its source division so projects can be grouped
+        // (Turf vs Paving) in the report below. Turf is the default source;
+        // paving rows/trucking come from the ?division=paving endpoints.
+        (allRows || []).forEach(r => { r._division = 'turf'; });
+        pavingRows.forEach(r => { r._division = 'paving'; });
+        (truckingEntries || []).forEach(t => { t._division = 'turf'; });
+        pavingTrucking.forEach(t => { t._division = 'paving'; });
+
         const mergedRows     = (allRows || []).concat(pavingRows);
         const mergedTrucking = (truckingEntries || []).concat(pavingTrucking);
 
@@ -2903,9 +2926,15 @@
         function getOrCreate(pid) {
           if (!pid) return null;
           if (!byProject[pid]) {
-            byProject[pid] = { pid, minDate: null, maxDate: null, laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, hoursWorked: 0 };
+            byProject[pid] = { pid, division: null, minDate: null, maxDate: null, laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, hoursWorked: 0 };
           }
           return byProject[pid];
+        }
+
+        // Tag a project with the division that booked its costs. A project ID
+        // belongs to exactly one division, so first non-null source wins.
+        function setDiv(entry, div) {
+          if (entry && div && !entry.division) entry.division = div;
         }
 
         function trackDate(entry, date) {
@@ -2927,6 +2956,7 @@
           const pid = row._projectId;
           const entry = getOrCreate(pid);
           if (!entry) return;
+          setDiv(entry, row._division);
           trackDate(entry, row.date);
           const lh   = parseFloat(row.labor_hours)          || 0;
           const rate = parseFloat(row.rate)                 || 0;
@@ -2954,6 +2984,7 @@
           const pid = t.project_id;
           const entry = getOrCreate(pid);
           if (!entry) return;
+          setDiv(entry, t._division);
           trackDate(entry, t.date);
           const cost = (parseFloat(t.rate) || 0) * (parseFloat(t.hours) || 0);
           const type = (t.truck_type || '').toLowerCase();
@@ -2966,6 +2997,7 @@
           const pid = inv.project_id;
           const entry = getOrCreate(pid);
           if (!entry) return;
+          setDiv(entry, 'turf'); // infill inventory is a turf-division production input
           trackDate(entry, inv.date);
           const lh       = parseFloat(inv.hours)           || 0;
           const rate     = parseFloat(inv.rate)            || 0;
@@ -3014,7 +3046,8 @@
             const proj  = projMap[p.pid];
             const name  = proj['project-name'] || proj.name || p.pid;
             const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost;
-            return { ...p, name, total };
+            const division = p.division === 'paving' ? 'paving' : 'turf';
+            return { ...p, name, total, division };
           })
           .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -3066,7 +3099,7 @@
             ? (row.minDate || startDate)
             : (row.minDate || startDate) + ' – ' + (row.maxDate || endDate);
           return '<tr style="background:rgba(100,200,120,0.06);font-style:italic">'
-            + '<td style="font-weight:500;color:var(--accent)">Rubber Infill Production</td>'
+            + '<td style="font-weight:500;color:var(--accent)"><span class="div-tag turf js-inline">Turf</span>Rubber Infill Production</td>'
             + '<td style="color:var(--muted);white-space:nowrap">' + dateRange + '</td>'
             + '<td class="r">' + (row.laborCost    > 0 ? fmt$(row.laborCost)    : '—') + '</td>'
             + '<td class="r">' + (row.equipCost    > 0 ? fmt$(row.equipCost)    : '—') + '</td>'
@@ -3079,6 +3112,81 @@
 
         const totalRowLabel = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + (infillRow ? ' + infill' : '');
 
+        // ── Group project rows by division (Turf vs Paving) ──────────
+        function divBadge(div) {
+          return div === 'paving'
+            ? '<span class="div-tag paving js-inline">Paving</span>'
+            : '<span class="div-tag turf js-inline">Turf</span>';
+        }
+
+        function renderProjRow(r) {
+          const dateRange = r.minDate === r.maxDate
+            ? (r.minDate || startDate)
+            : (r.minDate || startDate) + ' – ' + (r.maxDate || endDate);
+          return '<tr>'
+            + '<td style="font-weight:500">' + divBadge(r.division) + escT(r.name) + '</td>'
+            + '<td style="color:var(--muted);white-space:nowrap">' + dateRange + '</td>'
+            + '<td class="r">' + fmt$(r.laborCost) + '</td>'
+            + '<td class="r">' + fmt$(r.equipCost) + '</td>'
+            + '<td class="r">' + (r.lowboyCost    > 0 ? fmt$(r.lowboyCost)    : '—') + '</td>'
+            + '<td class="r">' + (r.triAxleCost   > 0 ? fmt$(r.triAxleCost)   : '—') + '</td>'
+            + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(r.total) + '</td>'
+            + '<td class="r">' + r.hoursWorked.toFixed(1) + ' hrs</td>'
+            + '</tr>';
+        }
+
+        function sumRows(rows) {
+          return rows.reduce((a, r) => {
+            a.laborCost   += r.laborCost;   a.equipCost   += r.equipCost;
+            a.lowboyCost  += r.lowboyCost;  a.triAxleCost += r.triAxleCost;
+            a.total       += r.total;       a.hoursWorked += r.hoursWorked;
+            return a;
+          }, { laborCost: 0, equipCost: 0, lowboyCost: 0, triAxleCost: 0, total: 0, hoursWorked: 0 });
+        }
+
+        function subtotalRow(label, s) {
+          return '<tr class="js-subtotal">'
+            + '<td>' + label + '</td>'
+            + '<td>—</td>'
+            + '<td class="r">' + fmt$(s.laborCost) + '</td>'
+            + '<td class="r">' + fmt$(s.equipCost) + '</td>'
+            + '<td class="r">' + (s.lowboyCost  > 0 ? fmt$(s.lowboyCost)  : '—') + '</td>'
+            + '<td class="r">' + (s.triAxleCost > 0 ? fmt$(s.triAxleCost) : '—') + '</td>'
+            + '<td class="r">' + fmt$(s.total) + '</td>'
+            + '<td class="r">' + s.hoursWorked.toFixed(1) + ' hrs</td>'
+            + '</tr>';
+        }
+
+        const turfProj   = reportRows.filter(r => r.division !== 'paving');
+        const pavingProj = reportRows.filter(r => r.division === 'paving');
+        // Show per-division subtotals only when both divisions are represented,
+        // otherwise the subtotal would just duplicate the grand total.
+        const groupByDiv = turfProj.length > 0 && pavingProj.length > 0;
+
+        let bodyHtml;
+        if (groupByDiv) {
+          const turfSub = sumRows(turfProj);
+          if (infillRow) {
+            turfSub.laborCost   += infillRow.laborCost;
+            turfSub.equipCost   += infillRow.equipCost;
+            turfSub.total       += infillRow.total;
+            turfSub.hoursWorked += infillRow.hoursWorked;
+          }
+          const pavingSub = sumRows(pavingProj);
+          const turfLbl = 'Turf Subtotal — ' + turfProj.length + ' project'
+            + (turfProj.length !== 1 ? 's' : '') + (infillRow ? ' + infill' : '');
+          const pavingLbl = 'Paving Subtotal — ' + pavingProj.length + ' project'
+            + (pavingProj.length !== 1 ? 's' : '');
+          bodyHtml = turfProj.map(renderProjRow).join('')
+            + renderInfillRow(infillRow)
+            + subtotalRow(turfLbl, turfSub)
+            + pavingProj.map(renderProjRow).join('')
+            + subtotalRow(pavingLbl, pavingSub);
+        } else {
+          bodyHtml = reportRows.map(renderProjRow).join('')
+            + renderInfillRow(infillRow);
+        }
+
         resultsEl.innerHTML = '<div class="an-tbl-wrap"><table class="an-tbl" style="min-width:1100px">'
           + '<thead><tr>'
           + '<th>PROJECT</th>'
@@ -3090,22 +3198,7 @@
           + '<th class="r">TOTAL AMOUNT</th>'
           + '<th class="r">HOURS WORKED</th>'
           + '</tr></thead><tbody>'
-          + reportRows.map(r => {
-              const dateRange = r.minDate === r.maxDate
-                ? (r.minDate || startDate)
-                : (r.minDate || startDate) + ' – ' + (r.maxDate || endDate);
-              return '<tr>'
-                + '<td style="font-weight:500">' + escT(r.name) + '</td>'
-                + '<td style="color:var(--muted);white-space:nowrap">' + dateRange + '</td>'
-                + '<td class="r">' + fmt$(r.laborCost) + '</td>'
-                + '<td class="r">' + fmt$(r.equipCost) + '</td>'
-                + '<td class="r">' + (r.lowboyCost    > 0 ? fmt$(r.lowboyCost)    : '—') + '</td>'
-                + '<td class="r">' + (r.triAxleCost   > 0 ? fmt$(r.triAxleCost)   : '—') + '</td>'
-                + '<td class="r" style="color:var(--accent);font-weight:600">' + fmt$(r.total) + '</td>'
-                + '<td class="r">' + r.hoursWorked.toFixed(1) + ' hrs</td>'
-                + '</tr>';
-            }).join('')
-          + renderInfillRow(infillRow)
+          + bodyHtml
           + '</tbody><tfoot><tr>'
           + '<td>TOTALS — ' + totalRowLabel + '</td>'
           + '<td>—</td>'
