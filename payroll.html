@@ -3886,25 +3886,50 @@
           `placeholder="${escapeHtml(ph || 'Select or type…')}" autocomplete="off" style="${Q_INPUT_STYLE}">` +
         `<datalist id="${listId}">${opts}</datalist></label>`;
     }
-    // Live PPG = fuel cost ÷ fuel gallons; runs as the Daily fuel inputs change.
-    function recalcQuarryPpg() {
+    // Live $/gal = fuel cost ÷ fuel gallons; runs as the Daily/Crushing fuel
+    // inputs change. targetId is the read-only field to write ('q_ppg' for Daily,
+    // 'q_crushPpg' for Crushing) — both derive the same per-gallon value.
+    function recalcQuarryPpg(targetId) {
       const gallons = Number(_qval('q_fuelGallons')) || 0;
       const cost    = Number(_qval('q_fuelCost'))    || 0;
-      const ppgEl   = document.getElementById('q_ppg');
-      if (!ppgEl) return;
-      ppgEl.value = gallons > 0 ? String(Math.round((cost / gallons) * 10000) / 10000) : '';
+      const el      = document.getElementById(targetId || 'q_ppg');
+      if (!el) return;
+      el.value = gallons > 0 ? String(Math.round((cost / gallons) * 10000) / 10000) : '';
     }
 
     function quarryFieldsHtml(activity, row) {
       const r = row || {};
       if (activity === 'crushing') {
+        // Same quick-fill behavior as Daily: hourly rate pre-fills from the
+        // employee's quarry rate (fallback default, editable).
+        const cStoredRate = (r.hourlyRate == null || r.hourlyRate === '') ? null : r.hourlyRate;
+        const cEmpRate    = quarryEntry ? quarryEmployeeRate(quarryEntry.username) : null;
+        const cRateVal    = cStoredRate != null ? cStoredRate
+                          : (cEmpRate != null ? cEmpRate : QUARRY_DEFAULT_RATE);
+        const cRateTitle  = cStoredRate != null
+                          ? 'Rate on the injected row — editable'
+                          : cEmpRate != null
+                          ? `Pre-filled from ${(quarryEntry && quarryEntry.username) || 'the employee'}'s quarry rate — editable`
+                          : `Default quarry rate ($${QUARRY_DEFAULT_RATE}/h) — no per-employee rate on file — editable`;
+        // Crushing stores fuelCost as a PER-GALLON rate (the grid and the executive
+        // report both compute fuelGallons × fuelCost). Let the supervisor type the
+        // TOTAL fuel cost + gallons and derive $/gal — same behavior as Daily's PPG.
+        const cHasFuel   = r.fuelGallons != null && r.fuelGallons !== '' && r.fuelCost != null && r.fuelCost !== '';
+        const cCostVal   = cHasFuel ? num2(Number(r.fuelGallons) * Number(r.fuelCost)) : '';
+        const cPerGalVal = (r.fuelCost == null || r.fuelCost === '') ? '' : String(r.fuelCost);
+        const cGalVal    = (r.fuelGallons == null || r.fuelGallons === '') ? '' : String(r.fuelGallons);
         return [
-          _qNumField('q_hourlyRate',     'Hourly Rate ($/h)', r.hourlyRate),
+          `<label style="${Q_LABEL_STYLE}"><span>Hourly Rate ($/h)</span>` +
+            `<input type="number" step="0.01" min="0" id="q_hourlyRate" value="${escapeHtml(String(cRateVal))}" placeholder="0" title="${escapeHtml(cRateTitle)}" style="${Q_INPUT_STYLE}"></label>`,
           _qNumField('q_hoursCrushing',  'Hours Crushing',    r.hoursCrushing),
           _qNumField('q_loadsToCrusher', 'Loads to Crusher',  r.loadsToCrusher),
           _qNumField('q_tonsPerLoad',    'Tons / Load',       r.tonsPerLoad),
-          _qNumField('q_fuelGallons',    'Fuel Gallons',      r.fuelGallons),
-          _qNumField('q_fuelCost',       'Fuel Cost ($)',     r.fuelCost),
+          `<label style="${Q_LABEL_STYLE}"><span>Fuel Gallons</span>` +
+            `<input type="number" step="0.01" min="0" id="q_fuelGallons" value="${escapeHtml(cGalVal)}" placeholder="0" style="${Q_INPUT_STYLE}" oninput="recalcQuarryPpg('q_crushPpg')"></label>`,
+          `<label style="${Q_LABEL_STYLE}"><span>Fuel Cost ($)</span>` +
+            `<input type="number" step="0.01" min="0" id="q_fuelCost" value="${escapeHtml(cCostVal)}" placeholder="0" style="${Q_INPUT_STYLE}" oninput="recalcQuarryPpg('q_crushPpg')"></label>`,
+          `<label style="${Q_LABEL_STYLE}"><span>$/gal · auto</span>` +
+            `<input type="number" id="q_crushPpg" value="${escapeHtml(cPerGalVal)}" placeholder="0.00" readonly tabindex="-1" title="Auto-calculated: fuel cost ÷ fuel gallons" style="${Q_RO_STYLE}"></label>`,
           `<label style="${Q_LABEL_STYLE};grid-column:1/-1"><span>Comments</span>` +
             `<textarea id="q_comments" rows="2" style="${Q_INPUT_STYLE};resize:vertical">${escapeHtml(r.comments || '')}</textarea></label>`,
         ].join('');
@@ -3956,8 +3981,9 @@
       }
       quarryEntry = entry;
       quarryMode  = mode;
-      // Load the equipment/task option lists so the Daily dropdowns are ready.
-      if (activity === 'daily') await loadQuarryListsOnce();
+      // Load the option lists: Daily uses them for the equipment/task dropdowns,
+      // and both Daily and Crushing use the employee roster to pre-fill the rate.
+      await loadQuarryListsOnce();
 
       const work = Number(entry.computed_hours) || 0;
       document.getElementById('quarryTitle').textContent =
@@ -3999,13 +4025,18 @@
     function _qval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
     function collectQuarryFields(activity) {
       if (activity === 'crushing') {
+        const cGallons = Number(_qval('q_fuelGallons')) || 0;
+        const cCost    = Number(_qval('q_fuelCost'))    || 0;
         return {
           hourlyRate:     _qval('q_hourlyRate'),
           hoursCrushing:  _qval('q_hoursCrushing'),
           loadsToCrusher: _qval('q_loadsToCrusher'),
           tonsPerLoad:    _qval('q_tonsPerLoad'),
           fuelGallons:    _qval('q_fuelGallons'),
-          fuelCost:       _qval('q_fuelCost'),
+          // fuelCost is stored PER-GALLON (grid + exec report compute
+          // gallons × fuelCost). The supervisor types total fuel $; store the
+          // derived $/gal so every consumer reproduces that total.
+          fuelCost:       cGallons > 0 ? cCost / cGallons : 0,
           comments:       _qval('q_comments'),
         };
       }

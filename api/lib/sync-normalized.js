@@ -804,7 +804,11 @@ async function syncQuarryCrushing(sql, companyCode, value) {
     const tonsPerLoad    = safeFloat(r.tonsPerLoad);
 
     const totalPayroll   = (hours != null && hourlyRate != null) ? hours * hourlyRate : null;
-    const totalFuel      = fuelCost;
+    // fuelCost is a PER-GALLON rate (matches the crushing grid in quarry.html and
+    // the executive report — both compute fuelGallons × fuelCost). Multiply here so
+    // the normalized total_fuel/total_cost columns aren't undercounted by a factor
+    // of gallons. Mirrors the Daily branch above (fuelGallons × ppg).
+    const totalFuel      = (fuelGallons != null && fuelCost != null) ? fuelGallons * fuelCost : null;
     const estimatedTons  = (loadsToCrusher != null && tonsPerLoad != null) ? loadsToCrusher * tonsPerLoad : null;
     const tonsPerHour    = (estimatedTons != null && hoursCrushing != null && hoursCrushing > 0)
       ? estimatedTons / hoursCrushing
