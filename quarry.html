@@ -2653,7 +2653,10 @@
       }
       const visibleEntries = crushRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesLocation('crushing', row));
+        .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesLocation('crushing', row))
+        // Newest first so payroll-injected (tsq-) rows surface at the top rather
+        // than being appended out of sight — matches the Daily tab.
+        .sort((a, b) => String(b.row.date || '').localeCompare(String(a.row.date || '')));
       if (!visibleEntries.length) {
         tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))} · ${escapeHtml(locationFilterLabel('crushing'))}. Adjust the filters above.</td></tr>`;
         updateCrushSummary();
@@ -2991,7 +2994,12 @@
       }
       const visibleEntries = dailyRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesLocation('daily', row));
+        .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesLocation('daily', row))
+        // Newest work-date first. Payroll approval appends injected (tsq-) rows
+        // to the end of the blob, so without this they'd render at the very
+        // bottom — "invisible" under a long list of older manual rows. Stable
+        // sort preserves the existing order among same-date rows.
+        .sort((a, b) => String(b.row.date || '').localeCompare(String(a.row.date || '')));
       if (!visibleEntries.length) {
         tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries for ${escapeHtml(yearFilterLabel('daily'))} · ${escapeHtml(locationFilterLabel('daily'))}. Adjust the filters above.</td></tr>`;
         updateDailySummary();
