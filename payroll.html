@@ -4035,7 +4035,7 @@
           fuelGallons:    _qval('q_fuelGallons'),
           // fuelCost is stored PER-GALLON (grid + exec report compute
           // gallons × fuelCost). The supervisor types total fuel $; store the
-          // derived $/gal so every consumer reproduces that total.
+          // derived $/gal so consumers reproduce that total (to 4-dp precision).
           fuelCost:       cGallons > 0 ? cCost / cGallons : 0,
           comments:       _qval('q_comments'),
         };
@@ -4049,7 +4049,7 @@
         fuelGallons:   _qval('q_fuelGallons'),
         // PPG is derived ($/gal = fuel cost ÷ gallons). The injected quarry row
         // stores ppg, and the tracker recomputes fuel cost = gallons × ppg — so
-        // the dollar figure the reviewer typed round-trips exactly.
+        // the typed dollar figure round-trips (to 4-decimal $/gal precision).
         ppg:           gallons > 0 ? cost / gallons : 0,
       };
     }
@@ -4061,6 +4061,18 @@
       msg.className = 'modal-msg';
       const btn = document.getElementById('quarrySaveBtn');
       const quarry = collectQuarryFields(activity);
+      // Guard: a fuel cost with no gallons can't be represented — fuelCost/ppg is
+      // a per-gallon rate, so it would be silently dropped to 0. Block it with a
+      // clear message. Applies to Daily and Crushing (both have these inputs).
+      if (activity === 'daily' || activity === 'crushing') {
+        const gEl = document.getElementById('q_fuelGallons');
+        const cEl = document.getElementById('q_fuelCost');
+        if ((cEl ? Number(cEl.value) || 0 : 0) > 0 && (gEl ? Number(gEl.value) || 0 : 0) <= 0) {
+          msg.classList.add('error');
+          msg.textContent = 'Enter Fuel Gallons for that fuel cost (or clear the fuel cost).';
+          return;
+        }
+      }
       const action = quarryMode === 'approve' ? 'approve' : 'resplit';
       btn.disabled = true;
       try {
