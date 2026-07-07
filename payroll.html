@@ -3798,9 +3798,35 @@
     // quarry-specific cost fields payroll knows, then POSTs { quarry: {...} }.
     let quarryEntry = null;
     let quarryMode  = null;   // 'approve' | 'resplit'
+    const QUARRY_DEFAULT_RATE = 26;   // flat quarry Daily rate ($/h), pre-filled on approve
 
     const Q_LABEL_STYLE = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
     const Q_INPUT_STYLE = 'padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;width:100%;box-sizing:border-box';
+    // Read-only look for the auto-calculated PPG field.
+    const Q_RO_STYLE    = Q_INPUT_STYLE + ';background:#0b1220;color:#94a3b8;cursor:not-allowed';
+
+    // Equipment / Task option names for the Daily quick-pick dropdowns, pulled
+    // from the same per-company "Manage Lists" blob the quarry tracker uses
+    // (fct_quarry_lists). Cached after the first success so re-opens are instant;
+    // on failure the fields still work as plain free-text inputs.
+    let quarryEquipOptions = [];
+    let quarryTaskOptions  = [];
+    let quarryListsLoaded  = false;
+    async function loadQuarryListsOnce() {
+      if (quarryListsLoaded) return;
+      try {
+        const res = await fetch('/api/data/fct_quarry_lists', { headers: authHeaders() });
+        if (!res.ok) return;
+        const data  = await res.json();
+        const lists = (data && data.value) || {};
+        const names = arr => Array.isArray(arr)
+          ? arr.map(it => (it && it.name) || '').filter(Boolean).sort((a, b) => a.localeCompare(b))
+          : [];
+        quarryEquipOptions = names(lists.equipment);
+        quarryTaskOptions  = names(lists.tasks);
+        quarryListsLoaded  = true;
+      } catch (_) { /* keep free-text fallback */ }
+    }
 
     function entryNeedsQuarry(e) {
       return !!e && e.entry_type === 'daily' && e.division === 'quarry';
@@ -3834,6 +3860,25 @@
       return `<label style="${Q_LABEL_STYLE}"><span>${label}</span>` +
         `<input type="text" id="${id}" value="${escapeHtml(val || '')}" placeholder="${escapeHtml(ph || '')}" style="${Q_INPUT_STYLE}"></label>`;
     }
+    // Datalist-backed quick-pick input: shows a dropdown of `options` while still
+    // accepting free text (the server stores the name verbatim). Degrades to a
+    // plain text box when the option list is empty.
+    function _qListField(id, label, val, options, ph) {
+      const listId = id + '_dl';
+      const opts = (options || []).map(o => `<option value="${escapeHtml(o)}"></option>`).join('');
+      return `<label style="${Q_LABEL_STYLE}"><span>${label}</span>` +
+        `<input type="text" id="${id}" list="${listId}" value="${escapeHtml(val || '')}" ` +
+          `placeholder="${escapeHtml(ph || 'Select or type…')}" autocomplete="off" style="${Q_INPUT_STYLE}">` +
+        `<datalist id="${listId}">${opts}</datalist></label>`;
+    }
+    // Live PPG = fuel cost ÷ fuel gallons; runs as the Daily fuel inputs change.
+    function recalcQuarryPpg() {
+      const gallons = Number(_qval('q_fuelGallons')) || 0;
+      const cost    = Number(_qval('q_fuelCost'))    || 0;
+      const ppgEl   = document.getElementById('q_ppg');
+      if (!ppgEl) return;
+      ppgEl.value = gallons > 0 ? String(Math.round((cost / gallons) * 10000) / 10000) : '';
+    }
 
     function quarryFieldsHtml(activity, row) {
       const r = row || {};
@@ -3849,12 +3894,25 @@
             `<textarea id="q_comments" rows="2" style="${Q_INPUT_STYLE};resize:vertical">${escapeHtml(r.comments || '')}</textarea></label>`,
         ].join('');
       }
+      // Daily: equipment/task are quick-pick dropdowns, the rate pre-fills to the
+      // flat quarry rate, and PPG is derived from fuel cost ÷ gallons (read-only).
+      const rateVal = (r.rate == null || r.rate === '') ? QUARRY_DEFAULT_RATE : r.rate;
+      // A stored row keeps ppg (not the dollar cost). Reconstruct the fuel cost
+      // the user originally entered so the Fuel Cost field round-trips on edit.
+      const hasFuel = r.fuelGallons != null && r.fuelGallons !== '' && r.ppg != null && r.ppg !== '';
+      const costVal = hasFuel ? num2(Number(r.fuelGallons) * Number(r.ppg)) : '';
+      const ppgVal  = (r.ppg == null || r.ppg === '') ? '' : String(r.ppg);
+      const galVal  = (r.fuelGallons == null || r.fuelGallons === '') ? '' : String(r.fuelGallons);
       return [
-        _qTextField('q_equipmentName', 'Equipment', r.equipmentName, 'e.g. Excavator'),
-        _qTextField('q_taskName',      'Task',      r.taskName,      'e.g. Stripping'),
-        _qNumField('q_rate',           'Rate ($/h)',   r.rate),
-        _qNumField('q_fuelGallons',    'Fuel Gallons', r.fuelGallons),
-        _qNumField('q_ppg',            'PPG ($/gal)',  r.ppg, true),
+        _qListField('q_equipmentName', 'Equipment', r.equipmentName, quarryEquipOptions),
+        _qListField('q_taskName',      'Task',      r.taskName,      quarryTaskOptions),
+        _qNumField('q_rate',           'Rate ($/h)', rateVal),
+        `<label style="${Q_LABEL_STYLE}"><span>Fuel Gallons</span>` +
+          `<input type="number" step="0.01" min="0" id="q_fuelGallons" value="${escapeHtml(galVal)}" placeholder="0" style="${Q_INPUT_STYLE}" oninput="recalcQuarryPpg()"></label>`,
+        `<label style="${Q_LABEL_STYLE}"><span>Fuel Cost ($)</span>` +
+          `<input type="number" step="0.01" min="0" id="q_fuelCost" value="${escapeHtml(costVal)}" placeholder="0" style="${Q_INPUT_STYLE}" oninput="recalcQuarryPpg()"></label>`,
+        `<label style="${Q_LABEL_STYLE}"><span>PPG ($/gal) · auto</span>` +
+          `<input type="number" id="q_ppg" value="${escapeHtml(ppgVal)}" placeholder="0.00" readonly tabindex="-1" title="Auto-calculated: fuel cost ÷ fuel gallons" style="${Q_RO_STYLE}"></label>`,
       ].join('');
     }
 
@@ -3873,6 +3931,8 @@
       }
       quarryEntry = entry;
       quarryMode  = mode;
+      // Load the equipment/task option lists so the Daily dropdowns are ready.
+      if (activity === 'daily') await loadQuarryListsOnce();
 
       const work = Number(entry.computed_hours) || 0;
       document.getElementById('quarryTitle').textContent =
@@ -3924,12 +3984,17 @@
           comments:       _qval('q_comments'),
         };
       }
+      const gallons = Number(_qval('q_fuelGallons')) || 0;
+      const cost    = Number(_qval('q_fuelCost'))    || 0;
       return {
         equipmentName: _qval('q_equipmentName'),
         taskName:      _qval('q_taskName'),
         rate:          _qval('q_rate'),
         fuelGallons:   _qval('q_fuelGallons'),
-        ppg:           _qval('q_ppg'),
+        // PPG is derived ($/gal = fuel cost ÷ gallons). The injected quarry row
+        // stores ppg, and the tracker recomputes fuel cost = gallons × ppg — so
+        // the dollar figure the reviewer typed round-trips exactly.
+        ppg:           gallons > 0 ? cost / gallons : 0,
       };
     }
 
