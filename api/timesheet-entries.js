@@ -534,8 +534,11 @@ async function quarryLocationName(sql, companyCode, locationId, jobLabel) {
     `;
     if (rows.length && rows[0].name) return rows[0].name;
   }
-  const parts = String(jobLabel || '').split('—');
-  return parts.length > 1 ? parts.slice(1).join('—').trim() : (parts[0] || '').trim();
+  // Fall back to the location text after the activity prefix in the job label
+  // ("Daily — Homer City" → "Homer City"). Tolerate any dash (em/en/hyphen) so
+  // a label not built with the canonical em dash still resolves the location.
+  const m = String(jobLabel || '').match(/[—–-]\s*(.+)$/);
+  return m ? m[1].trim() : String(jobLabel || '').trim();
 }
 
 // Best-effort match of the timesheet employee to the quarry roster so the
