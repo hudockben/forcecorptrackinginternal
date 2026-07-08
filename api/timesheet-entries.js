@@ -191,6 +191,8 @@ function dbToEntry(r) {
     supervisor_name:     r.supervisor_name || '',
     notes:               r.notes || '',
     time_off_type:       r.time_off_type || '',
+    truck_unit:          r.truck_unit || '',
+    truck_description:   r.truck_description || '',
     submitted_at:        r.submitted_at,
     approved_at:         r.approved_at,
     approved_by_user_id: r.approved_by_user_id,
@@ -804,13 +806,13 @@ async function insertTruckingRow(sql, companyCode, entry) {
     task_number:       '',
     actual_date:       workDate,
     driver,
-    unit:              '',
+    unit:              safeStr(entry.truck_unit, 100) || '',
     actual_start:      hhmm(entry.start_time),
     actual_end:        hhmm(entry.end_time),
     total_hours:       hours,
     haul_fee:          '',      // filled in by the trucking office
     customer,
-    description:       '',
+    description:       safeStr(entry.truck_description, 2000) || '',
     division:          '',      // filled in by the trucking office
     notes:             entry.notes || '',
     qb_invoice:        '',
@@ -906,6 +908,8 @@ function normalizeEntryBody(body) {
         supervisor_name:      null,
         notes:                safeStr(body.notes, 2000),
         time_off_type,
+        truck_unit:           null,
+        truck_description:    null,
       },
     };
   }
@@ -952,6 +956,13 @@ function normalizeEntryBody(body) {
     ? null
     : Math.round(((travel_to_site_hours || 0) + (travel_to_shop_hours || 0)) * 100) / 100;
 
+  // Trucking-only extras: the truck Unit and a per-haul Description. Only
+  // meaningful for the trucking division (they map to the Truck Tracking unit +
+  // description columns on approval); for every other division they're forced to
+  // null so a stray value can't leak across.
+  const truck_unit        = division === 'trucking' ? safeStr(body.truck_unit, 100)        : null;
+  const truck_description = division === 'trucking' ? safeStr(body.truck_description, 2000) : null;
+
   return {
     data: {
       entry_type,
@@ -971,6 +982,8 @@ function normalizeEntryBody(body) {
       supervisor_name,
       notes:              safeStr(body.notes, 2000),
       time_off_type:      null,
+      truck_unit,
+      truck_description,
     },
   };
 }
@@ -1057,7 +1070,8 @@ module.exports = async (req, res) => {
           travel_to_site_hours, travel_to_shop_hours, travel_hours,
           lunch_break, operated_equipment,
           supervisor_id, supervisor_name,
-          notes, time_off_type
+          notes, time_off_type,
+          truck_unit, truck_description
         ) VALUES (
           ${companyCode}, ${userId}, ${username}, ${data.entry_type}, ${data.work_date}, 'draft',
           ${data.division}, ${data.job_id}, ${data.job_label},
@@ -1065,7 +1079,8 @@ module.exports = async (req, res) => {
           ${data.travel_to_site_hours}, ${data.travel_to_shop_hours}, ${data.travel_hours},
           ${data.lunch_break}, ${data.operated_equipment},
           ${data.supervisor_id}, ${data.supervisor_name},
-          ${data.notes}, ${data.time_off_type}
+          ${data.notes}, ${data.time_off_type},
+          ${data.truck_unit}, ${data.truck_description}
         )
         RETURNING *
       `;
@@ -1493,6 +1508,8 @@ module.exports = async (req, res) => {
           supervisor_name    = ${data.supervisor_name},
           notes              = ${data.notes},
           time_off_type      = ${data.time_off_type},
+          truck_unit         = ${data.truck_unit},
+          truck_description  = ${data.truck_description},
           updated_at         = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *

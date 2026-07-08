@@ -104,7 +104,8 @@ function entry(over = {}) {
     division: 'trucking', work_date: '2026-07-06',
     job_id: 'Acme Materials', job_label: 'Acme Materials',
     start_time: '07:00', end_time: '15:30', computed_hours: 8.0,
-    notes: 'gravel run', ...over,
+    notes: 'gravel run', truck_unit: '634', truck_description: 'Haul 2b from Derry to HC Quarry',
+    ...over,
   };
 }
 
@@ -190,6 +191,8 @@ function entry(over = {}) {
     assert('insert: total_hours ← computed (lunch-deducted) hours', row.total_hours === 8.0);
     assert('insert: customer ← job_label', row.customer === 'Acme Materials');
     assert('insert: notes carried over', row.notes === 'gravel run');
+    assert('insert: unit ← timesheet truck_unit', row.unit === '634');
+    assert('insert: description ← timesheet truck_description', row.description === 'Haul 2b from Derry to HC Quarry');
     assert('insert: haul_fee LEFT BLANK for the trucking office', row.haul_fee === '');
     assert('insert: division column LEFT BLANK for the trucking office', row.division === '');
     assert('insert: invoice_status defaults to Unpaid', row.invoice_status === 'Unpaid');
@@ -251,6 +254,14 @@ function entry(over = {}) {
     const { sql } = makeSql({ drivers: [] });
     const row = await insertTruckingRow(sql, CO, entry({ job_label: '', job_id: 'Bar Haul' }));
     assert('insert: customer falls back to job_id', row.customer === 'Bar Haul');
+  }
+
+  // ── unit/description default to blank when the entry has none (older rows) ──
+  {
+    const { sql } = makeSql({ drivers: [] });
+    const row = await insertTruckingRow(sql, CO, entry({ truck_unit: null, truck_description: null }));
+    assert('insert: missing unit → blank', row.unit === '');
+    assert('insert: missing description → blank', row.description === '');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
