@@ -36,7 +36,12 @@
  *     pinned to the entry's computed (work) hours. On success one row is
  *     appended to the fct_quarry_daily / fct_quarry_crushing blob (and mirrored
  *     to the normalized table), with its id prefixed "tsq-<entryId>-".
- *     Other divisions: legacy behavior (flip status only).
+ *     For trucking daily entries NO body is needed — a Truck Tracking row is
+ *     autofilled from the entry (driver ← employee, date, start/end, hours,
+ *     customer ← job_label) and appended to the fct_truck_division blob (and
+ *     mirrored to truck_division_entries), with its id prefixed "tst-<entryId>-".
+ *     Haul fee and the division column are left blank for the trucking office.
+ *     Remaining divisions (dust): legacy behavior (flip status only).
  *
  *   POST   /api/timesheet-entries?action=resplit&id=N   — replace injected rows
  *     Payroll-admin only, row must already be 'approved'. Same body shape as
@@ -45,9 +50,10 @@
  *     Status stays 'approved'.
  *
  *   POST   /api/timesheet-entries?action=unapprove&id=N — approved → submitted
- *     Payroll-admin only. Deletes any injected daily_tracking rows (turf/paving)
- *     and any injected fct_quarry_* blob rows (quarry) and reverts status. Used
- *     when an approval needs to be re-done from scratch.
+ *     Payroll-admin only. Deletes any injected daily_tracking rows (turf/paving),
+ *     any injected fct_quarry_* blob rows (quarry), and any injected
+ *     fct_truck_division rows (trucking), then reverts status. Used when an
+ *     approval needs to be re-done from scratch.
  *
  *   GET    /api/timesheet-entries?action=split&id=N     — current injected rows
  *     Returns the existing split (one element per daily_tracking row linked to
@@ -62,8 +68,8 @@
  *   - user_id / username / company_code (taken from JWT, never the body)
  *
  * timesheet_entries is the payroll source of truth. Approval is the only bridge
- * out of it: turf/paving/quarry daily entries inject cost-tracking rows on
- * approval (see the approve/resplit/unapprove actions below); other divisions
+ * out of it: turf/paving/quarry/trucking daily entries inject cost-tracking rows
+ * on approval (see the approve/unapprove actions below); the remaining divisions
  * stay isolated (status flip only).
  */
 
@@ -91,6 +97,17 @@ const QUARRY_ACTIVITY_KEY = { daily: 'fct_quarry_daily', crushing: 'fct_quarry_c
 // (not a side field) because quarry.html's normalizeDailyRow/normalizeCrushRow
 // drop unknown keys but always preserve `id`.
 function quarryRowIdPrefix(entryId) { return `tsq-${entryId}-`; }
+
+// Trucking auto-injects too, but into the Trucking division's OWN "Truck
+// Tracking" tab — the fct_truck_division app_data blob (mirrored to the
+// truck_division_entries table by api/truck-division.js). Unlike
+// turf/paving/quarry there are NO payroll-entered cost fields: every value is
+// autofilled from the timesheet entry. The haul fee and the division column are
+// deliberately left blank for the trucking office to fill in later. Injected
+// rows are tagged by encoding the timesheet entry id into the row id (same
+// scheme as quarry) so unapprove/delete can find and remove them again.
+const TRUCK_DIVISION_BLOB = 'fct_truck_division';
+function truckingRowIdPrefix(entryId) { return `tst-${entryId}-`; }
 
 function safeDate(v) {
   if (!v) return null;
@@ -655,6 +672,180 @@ async function quarrySplitForEntry(sql, companyCode, entry) {
   return { activity, row };
 }
 
+// ── Trucking split helpers (timesheet → fct_truck_division blob) ───────────
+// Trucking's cost tracking is a single JSON blob (fct_truck_division), an array
+// of truck-tracking rows. Injection is a read-modify-write on that blob (drop
+// any prior injected rows for this entry, append the new one, write it back)
+// plus a direct mirror into the truck_division_entries table — syncForKey does
+// NOT know this key (only api/truck-division.js syncs it), so we mirror the one
+// row ourselves to keep the table honest.
+
+// Non-negative decimal or null (for the NUMERIC(10,4) mirror columns). Blank
+// stays blank so haul_fee round-trips as "not set yet".
+function truckNum(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// A DB DATE/TEXT date → "YYYY-MM-DD" or null (reuses safeDate's contract).
+function truckDate(v) { return safeDate(v); }
+
+// Best-effort match of the timesheet employee to the trucking driver roster so
+// the injected row's driver reads as a real driver name where possible. The
+// roster lives in dropdown_lists (list_name='truck_drivers'). Login names are
+// often a last name; try exact then an unambiguous suffix, else keep the raw
+// name (the Truck Tracking combobox preserves free text).
+async function matchTruckingDriver(sql, companyCode, name) {
+  const n = (name || '').trim().toLowerCase();
+  if (!n) return name || '';
+  const rows = await sql`
+    SELECT value FROM dropdown_lists
+    WHERE company_code = ${companyCode} AND list_name = 'truck_drivers'
+  `;
+  const names = rows.map(r => String(r.value || '')).filter(Boolean);
+  const exact = names.find(v => v.trim().toLowerCase() === n);
+  if (exact) return exact;
+  const suffix = names.filter(v => v.trim().toLowerCase().endsWith(' ' + n));
+  if (suffix.length === 1) return suffix[0];
+  return name || '';
+}
+
+// Upsert one injected row into the truck_division_entries mirror table. Mirrors
+// the column set + coercions used by api/truck-division.js's _syncEntries so the
+// two writers stay compatible (a later full-list PUT from trucking.html will
+// re-upsert this same row cleanly).
+async function upsertTruckDivisionEntry(sql, companyCode, e) {
+  await sql`
+    INSERT INTO truck_division_entries (
+      id, company_code, task_number, actual_date, driver, unit,
+      actual_start, actual_end, total_hours, haul_fee, customer,
+      description, division, notes, qb_invoice, invoiced_date,
+      invoice_sent_date, invoice_status, date_paid, updated_at
+    ) VALUES (
+      ${e.id}, ${companyCode},
+      ${e.task_number || null},
+      ${truckDate(e.actual_date)},
+      ${e.driver || null},
+      ${e.unit || null},
+      ${e.actual_start || null},
+      ${e.actual_end || null},
+      ${truckNum(e.total_hours)},
+      ${truckNum(e.haul_fee)},
+      ${e.customer || null},
+      ${e.description || null},
+      ${e.division || null},
+      ${e.notes || null},
+      ${e.qb_invoice || null},
+      ${truckDate(e.invoiced_date)},
+      ${truckDate(e.invoice_sent_date)},
+      ${e.invoice_status || 'Unpaid'},
+      ${truckDate(e.date_paid)},
+      NOW()
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      task_number       = EXCLUDED.task_number,
+      actual_date       = EXCLUDED.actual_date,
+      driver            = EXCLUDED.driver,
+      unit              = EXCLUDED.unit,
+      actual_start      = EXCLUDED.actual_start,
+      actual_end        = EXCLUDED.actual_end,
+      total_hours       = EXCLUDED.total_hours,
+      haul_fee          = EXCLUDED.haul_fee,
+      customer          = EXCLUDED.customer,
+      description       = EXCLUDED.description,
+      division          = EXCLUDED.division,
+      notes             = EXCLUDED.notes,
+      qb_invoice        = EXCLUDED.qb_invoice,
+      invoiced_date     = EXCLUDED.invoiced_date,
+      invoice_sent_date = EXCLUDED.invoice_sent_date,
+      invoice_status    = EXCLUDED.invoice_status,
+      date_paid         = EXCLUDED.date_paid,
+      updated_at        = NOW()
+  `;
+}
+
+/**
+ * Build + inject a single Truck Tracking row for an approved trucking entry.
+ * Deletes any prior injected rows for this entry first (idempotent — covers a
+ * retried approve), appends the new row to the fct_truck_division blob, writes
+ * it, and mirrors the row into truck_division_entries. Returns the row written.
+ *
+ * Autofill: driver ← employee, actual_date ← work_date, actual_start/end ←
+ * start/end, total_hours ← the (lunch-deducted) computed work hours, customer ←
+ * job_label. haul_fee and division are intentionally left blank for the trucking
+ * office to fill in later; invoice fields default to Unpaid/blank.
+ */
+async function insertTruckingRow(sql, companyCode, entry) {
+  const workDate = safeDate(entry.work_date) || '';
+  const hours    = _r2(Number(entry.computed_hours) || 0);
+  const driver   = await matchTruckingDriver(sql, companyCode, entry.username);
+  const customer = safeStr(entry.job_label, 500) || safeStr(entry.job_id, 500) || '';
+  const hhmm     = v => String(v || '').slice(0, 5);
+
+  const row = {
+    id:                `${truckingRowIdPrefix(entry.id)}${Date.now()}`,
+    task_number:       '',
+    actual_date:       workDate,
+    driver,
+    unit:              '',
+    actual_start:      hhmm(entry.start_time),
+    actual_end:        hhmm(entry.end_time),
+    total_hours:       hours,
+    haul_fee:          '',      // filled in by the trucking office
+    customer,
+    description:       '',
+    division:          '',      // filled in by the trucking office
+    notes:             entry.notes || '',
+    qb_invoice:        '',
+    invoiced_date:     '',
+    invoice_sent_date: '',
+    invoice_status:    'Unpaid',
+    date_paid:         '',
+  };
+
+  const prefix = truckingRowIdPrefix(entry.id);
+  const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
+  const stale  = arr.filter(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
+  const next   = arr.filter(r => !(r && typeof r === 'object' && String(r.id || '').startsWith(prefix)));
+  next.push(row);
+  await writeBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB, next);
+
+  const staleIds = stale.map(r => r.id).filter(Boolean);
+  if (staleIds.length) {
+    await sql`DELETE FROM truck_division_entries WHERE company_code = ${companyCode} AND id = ANY(${staleIds})`;
+  }
+  await upsertTruckDivisionEntry(sql, companyCode, row);
+  return row;
+}
+
+/**
+ * Remove every Truck Tracking row injected from this entry — from both the
+ * fct_truck_division blob and the truck_division_entries mirror. Returns the
+ * count removed.
+ */
+async function removeTruckingRows(sql, companyCode, entry) {
+  const prefix    = truckingRowIdPrefix(entry.id);
+  const arr       = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
+  const removed   = arr.filter(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
+  if (!removed.length) return 0;
+  const remaining = arr.filter(r => !(r && typeof r === 'object' && String(r.id || '').startsWith(prefix)));
+  await writeBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB, remaining);
+  const removedIds = removed.map(r => r.id).filter(Boolean);
+  if (removedIds.length) {
+    await sql`DELETE FROM truck_division_entries WHERE company_code = ${companyCode} AND id = ANY(${removedIds})`;
+  }
+  return removed.length;
+}
+
+// True when an approved trucking entry still has an injected Truck Tracking row.
+// Used by the PUT guard to force un-approve-before-edit (same rule as quarry).
+async function truckingHasInjectedRow(sql, companyCode, entry) {
+  const prefix = truckingRowIdPrefix(entry.id);
+  const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
+  return arr.some(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
+}
+
 async function writeAudit(sql, companyCode, payload, entryId, action, changes, snapshot) {
   try {
     await sql`
@@ -933,6 +1124,11 @@ module.exports = async (req, res) => {
       const needsQuarry =
         existing.entry_type === 'daily' &&
         existing.division === 'quarry';
+      // Trucking injects a fully-autofilled Truck Tracking row — no payroll
+      // input, so there's nothing to validate from the body.
+      const needsTrucking =
+        existing.entry_type === 'daily' &&
+        existing.division === 'trucking';
 
       let splitRows = null;
       if (needsSplit) {
@@ -968,28 +1164,34 @@ module.exports = async (req, res) => {
         RETURNING *
       `;
 
-      if (splitRows || quarryInject) {
+      if (splitRows || quarryInject || needsTrucking) {
         try {
           if (splitRows) {
             await insertSplitRows(
               sql, splitRows, updated, updated.division, companyCode, updated.username,
             );
-          } else {
+          } else if (quarryInject) {
             await insertQuarryRow(
               sql, companyCode, updated, quarryInject.activity, quarryInject.fields,
             );
+          } else {
+            await insertTruckingRow(sql, companyCode, updated);
           }
         } catch (injErr) {
           // Rollback the approval so payroll sees the row as pending again
           // and can retry. Without this we'd have an approved entry with
           // zero injected rows — invisible to the cost tracking tab.
           console.error('[timesheet-entries] injection failed, rolling back approval:', injErr.message);
-          // Quarry writes the blob before mirroring; if the mirror sync threw,
-          // scrub any half-written blob row so it can't linger as a phantom
-          // locked row in the Daily/Crushing tab while the entry is pending.
+          // Quarry/trucking write the blob before mirroring; if the mirror sync
+          // threw, scrub any half-written blob row so it can't linger as a
+          // phantom row in the division's tracking tab while the entry is pending.
           if (quarryInject) {
             try { await removeQuarryRows(sql, companyCode, updated); }
             catch (cleanupErr) { console.error('[timesheet-entries] quarry rollback cleanup failed:', cleanupErr.message); }
+          }
+          if (needsTrucking) {
+            try { await removeTruckingRows(sql, companyCode, updated); }
+            catch (cleanupErr) { console.error('[timesheet-entries] trucking rollback cleanup failed:', cleanupErr.message); }
           }
           await sql`
             UPDATE timesheet_entries
@@ -1010,7 +1212,8 @@ module.exports = async (req, res) => {
       await writeAudit(
         sql, companyCode, payload, id, 'APPROVE',
         splitRows ? { split_row_count: splitRows.length }
-          : quarryInject ? { quarry_activity: quarryInject.activity } : null,
+          : quarryInject ? { quarry_activity: quarryInject.activity }
+          : needsTrucking ? { trucking_injected: true } : null,
         dbToEntry(updated),
       );
       return res.json(await entryJson(sql, companyCode, updated));
@@ -1142,7 +1345,14 @@ module.exports = async (req, res) => {
       if (existing.division === 'quarry') {
         removedQuarry = await removeQuarryRows(sql, companyCode, existing);
       }
-      const removed = cnt + removedQuarry;
+      // Trucking stores its injected rows in the fct_truck_division blob +
+      // truck_division_entries table — clear those so the Truck Tracking tab
+      // reflects the un-approval.
+      let removedTrucking = 0;
+      if (existing.division === 'trucking') {
+        removedTrucking = await removeTruckingRows(sql, companyCode, existing);
+      }
+      const removed = cnt + removedQuarry + removedTrucking;
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status              = 'submitted',
@@ -1234,6 +1444,9 @@ module.exports = async (req, res) => {
           const { row } = await quarrySplitForEntry(sql, companyCode, existing);
           if (row) injected += 1;
         }
+        if (existing.division === 'trucking') {
+          if (await truckingHasInjectedRow(sql, companyCode, existing)) injected += 1;
+        }
         if (injected > 0) {
           return res.status(409).json({
             error: 'This entry has cost tracking rows injected from approval. Un-approve it first, edit, then re-approve with a fresh split.',
@@ -1313,6 +1526,9 @@ module.exports = async (req, res) => {
         if (existing.division === 'quarry') {
           removedSplitRows += await removeQuarryRows(sql, companyCode, existing);
         }
+        if (existing.division === 'trucking') {
+          removedSplitRows += await removeTruckingRows(sql, companyCode, existing);
+        }
       }
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;
       await writeAudit(
@@ -1329,4 +1545,15 @@ module.exports = async (req, res) => {
     console.error('[timesheet-entries]', err.message);
     return res.status(500).json({ error: 'Database error', detail: err.message });
   }
+};
+
+// Internal helpers exposed for unit testing only (scripts/test-trucking-injection.js).
+// Not part of the HTTP contract — do not depend on these from other endpoints.
+module.exports._test = {
+  truckingRowIdPrefix,
+  matchTruckingDriver,
+  insertTruckingRow,
+  removeTruckingRows,
+  truckingHasInjectedRow,
+  TRUCK_DIVISION_BLOB,
 };

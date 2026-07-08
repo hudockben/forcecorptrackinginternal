@@ -1446,6 +1446,10 @@
         ? `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No entries match the current filters.</td></tr>`
         : filteredEntries.map(e => {
             const tot     = (parseFloat(e.total_hours)||0) * (parseFloat(e.haul_fee)||0);
+            // Rows autofilled from an approved timesheet entry (payroll → Truck
+            // Tracking) carry a "tst-" id prefix. Flag them so the office knows
+            // to fill in the still-blank haul fee and division.
+            const isInjected = String(e.id || '').startsWith('tst-');
             const isOpen  = expandedRows.has(e.id);
             const caretStyle = `display:inline-block;transition:transform 0.18s;transform:rotate(${isOpen?'90':'0'}deg);color:var(--muted);font-size:0.85rem;line-height:1;cursor:pointer;user-select:none`;
             const subLabel = `font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--orange);font-weight:700;margin-bottom:0.3rem`;
@@ -1459,7 +1463,7 @@
               <td style="width:28px;text-align:center;padding:0 0.25rem;cursor:pointer" onclick="toggleInvoiceRow('${e.id}')">
                 <span id="caret-${e.id}" style="${caretStyle}">&#8250;</span>
               </td>
-              <td class="td-task-num">${esc(e.task_number)}</td>
+              <td class="td-task-num">${esc(e.task_number)}${isInjected ? `<span title="Autofilled from an approved timesheet entry — fill in the haul fee and division." style="display:inline-block;margin-top:0.15rem;font-size:0.56rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#2dd4bf;background:rgba(45,212,191,0.12);border:1px solid rgba(45,212,191,0.35);border-radius:3px;padding:0.05rem 0.32rem;white-space:nowrap">&#8592; Timesheet</span>` : ''}</td>
               <td style="min-width:110px">${inp(e.id,'actual_date','date','',e.actual_date)}</td>
               <td style="min-width:140px">${cbHtml(e.id, 'driver', e.driver || '')}</td>
               <td style="min-width:140px">
