@@ -443,6 +443,20 @@
           </div>
         </div>
 
+        <!-- Trucking-only fields. Shown only when Division = Trucking; the Unit
+             and Description map to the matching Truck Tracking columns when the
+             entry is approved into the Trucking division. -->
+        <div id="truckingFields" style="display:none;flex-direction:column;gap:0.85rem">
+          <div class="row">
+            <label for="f-truck-unit">Unit</label>
+            <input type="text" id="f-truck-unit" maxlength="100" placeholder="Truck / unit #" />
+          </div>
+          <div class="row">
+            <label for="f-truck-desc">Description</label>
+            <textarea id="f-truck-desc" maxlength="2000" placeholder="What was hauled, route, etc."></textarea>
+          </div>
+        </div>
+
         <div class="row-2">
           <div class="row">
             <label for="f-travel-to-site">Travel Time to Site (hours)</label>
@@ -705,6 +719,9 @@
     async function onDivisionChange() {
       const div = document.getElementById('f-division').value;
       const jobSel = document.getElementById('f-job');
+      // Trucking-only Unit + Description fields ride alongside the job picker.
+      const truckWrap = document.getElementById('truckingFields');
+      if (truckWrap) truckWrap.style.display = (div === 'trucking') ? 'flex' : 'none';
       if (!div) {
         jobSel.innerHTML = '<option value="">— pick division first —</option>';
         jobSel.disabled = true;
@@ -966,6 +983,8 @@
           tsSupSel.value = e.supervisor_id || '';
         }
         document.getElementById('f-notes').value = e.notes || '';
+        document.getElementById('f-truck-unit').value = e.truck_unit || '';
+        document.getElementById('f-truck-desc').value = e.truck_description || '';
       } else {
         offType = e.time_off_type || null;
         document.querySelectorAll('#off-pills .pill').forEach(p => {
@@ -988,6 +1007,9 @@
       const jobSel = document.getElementById('f-job');
       jobSel.innerHTML = '<option value="">— pick division first —</option>';
       jobSel.disabled = true;
+      document.getElementById('f-truck-unit').value = '';
+      document.getElementById('f-truck-desc').value = '';
+      document.getElementById('truckingFields').style.display = 'none';
       document.getElementById('f-travel-to-site').value = '';
       document.getElementById('f-travel-to-shop').value = '';
       updateTravelHours();
@@ -1042,6 +1064,10 @@
       // empty strings; the API treats them as null.
       const travelToSite = document.getElementById('f-travel-to-site').value;
       const travelToShop = document.getElementById('f-travel-to-shop').value;
+      // Trucking-only extras (Unit + Description). Sent only for the trucking
+      // division; the server ignores/nulls them for every other division.
+      const truckUnit = div === 'trucking' ? (document.getElementById('f-truck-unit').value || '').trim() : '';
+      const truckDesc = div === 'trucking' ? (document.getElementById('f-truck-desc').value || '').trim() : '';
       return { data: {
         entry_type: 'daily',
         work_date: d,
@@ -1057,6 +1083,8 @@
         supervisor_id: supId,
         supervisor_name: supName,
         notes: document.getElementById('f-notes').value || '',
+        truck_unit: truckUnit,
+        truck_description: truckDesc,
       }};
     }
 

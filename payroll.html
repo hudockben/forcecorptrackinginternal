@@ -1469,6 +1469,33 @@
     </div>
   </div>
 
+  <!-- ── Trucking approve/inject modal ──
+       Trucking entries autofill a row into the Trucking division's "Truck
+       Tracking" tab (fct_truck_division). Driver, unit, hours, customer and
+       description are pulled from the timesheet; payroll enters the haul fee and
+       (optionally) the division column here so the row is completed and locked
+       — it can only be edited from Payroll, not in the Trucking division. -->
+  <div class="modal-backdrop" id="truckingBackdrop">
+    <div class="modal split-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title" id="truckingTitle">Approve &amp; Add to Truck Tracking</div>
+        <button class="modal-close" onclick="closeTrucking()">&#10005;</button>
+      </div>
+      <div class="split-summary" id="truckingSummary"></div>
+      <div id="truckingFields" style="display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-top:8px"></div>
+      <div class="modal-note" id="truckingNote"
+           style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(45,212,191,0.08);color:var(--muted);font-size:0.8rem;line-height:1.4">
+        Driver, unit, hours, customer and description are autofilled from the timesheet and
+        locked in the Trucking division — this row is edited here in Payroll.
+      </div>
+      <div class="modal-msg" id="truckingMsg"></div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeTrucking()">Cancel</button>
+        <button class="btn-save"   id="truckingSaveBtn" onclick="truckingSave()">Approve &amp; Add</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Edit modal ── -->
   <div class="modal-backdrop" id="editBackdrop">
     <div class="modal" onclick="event.stopPropagation()">
@@ -2791,7 +2818,8 @@
               ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
               ${!isPending && entryNeedsSplit(e) ? `<button class="row-btn approve" onclick="openSplitModalById('${e.id}','resplit')" title="Edit the cost tracking split injected from this entry">Edit Split</button>` : ''}
               ${!isPending && entryNeedsQuarry(e) ? `<button class="row-btn approve" onclick="openQuarryModalById('${e.id}','resplit')" title="Edit the quarry row injected from this entry">Edit Row</button>` : ''}
-              ${!isPending && (entryNeedsSplit(e) || entryNeedsQuarry(e)) ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and remove the injected cost rows">Un-approve</button>` : ''}
+              ${!isPending && entryNeedsTrucking(e) ? `<button class="row-btn approve" onclick="openTruckingModalById('${e.id}','resplit')" title="Edit the Truck Tracking row (haul fee / division)">Edit Row</button>` : ''}
+              ${!isPending && (entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e)) ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and remove the injected cost rows">Un-approve</button>` : ''}
               <button class="row-btn delete"  onclick="deleteEntry('${e.id}')">Delete</button>
             </td>
           </tr>
@@ -2962,6 +2990,10 @@
         openQuarryModal(e, 'approve');
         return;
       }
+      if (entryNeedsTrucking(e)) {
+        openTruckingModal(e, 'approve');
+        return;
+      }
       if (!confirm('Approve this entry?')) return;
       try {
         const res = await fetch('/api/timesheet-entries?action=approve&id=' + encodeURIComponent(id), {
@@ -2981,16 +3013,16 @@
     async function bulkApprove() {
       const ids = Array.from(selectedIds);
       if (!ids.length) return;
-      // Block bulk approve when any selected entry needs a per-entry split
-      // (turf/paving). The supervisor must approve those one at a time
-      // through the split modal so each entry gets its own breakdown.
+      // Block bulk approve when any selected entry needs an individual approval
+      // step (turf/paving split, quarry row, or trucking row). Those must be
+      // approved one at a time so each gets its own division-specific injection.
       const splitOnes = ids
         .map(id => filtered.find(x => x.id === id))
-        .filter(e => e && (entryNeedsSplit(e) || entryNeedsQuarry(e)));
+        .filter(e => e && (entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e)));
       if (splitOnes.length) {
         alert(
-          `Bulk approve isn't supported for Turf, Paving, or Quarry entries (${splitOnes.length} selected).\n\n` +
-          `Each of those entries needs its own cost-tracking detail — open them one at a time using the Approve button.`
+          `Bulk approve isn't supported for Turf, Paving, Quarry, or Trucking entries (${splitOnes.length} selected).\n\n` +
+          `Each of those entries injects a row into its division — open them one at a time using the Approve button.`
         );
         return;
       }
@@ -3000,12 +3032,12 @@
 
     async function approveAllSubmitted() {
       const all = filtered.filter(e => e.status === 'submitted');
-      const splitOnes = all.filter(e => entryNeedsSplit(e) || entryNeedsQuarry(e));
+      const splitOnes = all.filter(e => entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e));
       if (splitOnes.length) {
         alert(
-          `"Approve All" isn't supported when Turf, Paving, or Quarry entries are in view ` +
-          `(${splitOnes.length} of ${all.length} require an individual cost-tracking detail).\n\n` +
-          `Approve those individually, or filter the view to a non-split division (Trucking, Dust) first.`
+          `"Approve All" isn't supported when Turf, Paving, Quarry, or Trucking entries are in view ` +
+          `(${splitOnes.length} of ${all.length} inject a row into their division on approval).\n\n` +
+          `Approve those individually, or filter the view to a status-only division (Dust) first.`
         );
         return;
       }
@@ -4116,6 +4148,105 @@
         renderStats();
       } catch (err) {
         alert(err.message);
+      }
+    }
+
+    // ── Trucking approve modal ────────────────────────────────────────────
+    // Trucking entries autofill a Truck Tracking row on approval. Payroll enters
+    // the haul fee (billing rate) and, optionally, the division column here; the
+    // rest of the row is pulled from the timesheet. Those two fields can be
+    // re-edited later via "Edit Row" (resplit) since the row is locked in the
+    // Trucking division.
+    let truckingEntry = null;
+    let truckingMode  = null;
+    const TK_LABEL = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
+    const TK_INPUT = 'padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;width:100%;box-sizing:border-box';
+    function entryNeedsTrucking(e) {
+      return !!e && e.entry_type === 'daily' && e.division === 'trucking';
+    }
+    function truckingFieldsHtml(row) {
+      const r = row || {};
+      const fee = (r.haul_fee == null || r.haul_fee === '') ? '' : r.haul_fee;
+      const div = r.division || '';
+      return `
+        <label style="${TK_LABEL}"><span>Haul Fee ($/hr)</span>
+          <input type="number" id="tk_haulFee" min="0" step="0.01" value="${escapeHtml(String(fee))}" placeholder="0.00" style="${TK_INPUT}"></label>
+        <label style="${TK_LABEL}"><span>Division <span style="font-weight:400;color:var(--muted)">(optional)</span></span>
+          <input type="text" id="tk_division" maxlength="100" value="${escapeHtml(div)}" placeholder="e.g. Paving" style="${TK_INPUT}"></label>`;
+    }
+    function openTruckingModalById(id, mode) {
+      const e = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
+      if (!e) return alert('Entry not found.');
+      openTruckingModal(e, mode);
+    }
+    async function openTruckingModal(entry, mode) {
+      truckingEntry = entry;
+      truckingMode  = mode || 'approve';
+      const work = Number(entry.computed_hours) || 0;
+      const times = (entry.start_time && entry.end_time)
+        ? `${escapeHtml(entry.start_time)} – ${escapeHtml(entry.end_time)}`
+        : '—';
+      document.getElementById('truckingTitle').textContent =
+        (truckingMode === 'approve' ? 'Approve & Add to Truck Tracking — ' : 'Edit Truck Tracking Row — ')
+        + (entry.username || '') + ' · ' + prettyDate(entry.work_date);
+      document.getElementById('truckingSummary').innerHTML = `
+        <div>Driver: <strong>${escapeHtml(entry.username || '')}</strong></div>
+        <div>Date: <strong>${escapeHtml(prettyDate(entry.work_date))}</strong></div>
+        <div>Customer: <strong>${escapeHtml(entry.job_label || '—')}</strong></div>
+        <div>Unit: <strong>${escapeHtml(entry.truck_unit || '—')}</strong></div>
+        <div>Start–End: <strong>${times}</strong></div>
+        <div>Hours: <strong>${num2(work)}</strong></div>
+        <div style="grid-column:1 / -1">Description: <strong>${escapeHtml(entry.truck_description || '—')}</strong></div>
+      `;
+      const msg = document.getElementById('truckingMsg');
+      msg.textContent = ''; msg.className = 'modal-msg';
+      document.getElementById('truckingSaveBtn').textContent = truckingMode === 'approve' ? 'Approve & Add' : 'Save Row';
+      document.getElementById('truckingFields').innerHTML = truckingFieldsHtml(null);
+      document.getElementById('truckingBackdrop').classList.add('open');
+      // Re-edit: pre-fill the haul fee / division from the injected row.
+      if (truckingMode === 'resplit') {
+        try {
+          const res = await fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() });
+          const j = await res.json();
+          const row = j && j.trucking && j.trucking.row ? j.trucking.row : null;
+          if (row) document.getElementById('truckingFields').innerHTML = truckingFieldsHtml(row);
+        } catch (_) { /* keep blank fields on lookup failure */ }
+      }
+    }
+    function closeTrucking() {
+      document.getElementById('truckingBackdrop').classList.remove('open');
+      truckingEntry = null; truckingMode = null;
+    }
+    bindBackdropClose(document.getElementById('truckingBackdrop'), closeTrucking);
+
+    function _tkval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+    async function truckingSave() {
+      if (!truckingEntry || !truckingMode) return;
+      const msg = document.getElementById('truckingMsg');
+      msg.className = 'modal-msg';
+      const btn = document.getElementById('truckingSaveBtn');
+      const trucking = { haul_fee: _tkval('tk_haulFee'), division: _tkval('tk_division') };
+      const action = truckingMode === 'approve' ? 'approve' : 'resplit';
+      btn.disabled = true;
+      try {
+        const res = await fetch(
+          '/api/timesheet-entries?action=' + action + '&id=' + encodeURIComponent(truckingEntry.id),
+          { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ trucking }) }
+        );
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        msg.classList.add('success');
+        msg.textContent = action === 'approve' ? 'Approved & added to Truck Tracking.' : 'Row updated.';
+        if (j.entry) applyEntryUpdate(j.entry);
+        selectedIds.delete(truckingEntry.id);
+        renderRows();
+        renderStats();
+        setTimeout(closeTrucking, 600);
+      } catch (err) {
+        msg.classList.add('error');
+        msg.textContent = err.message;
+      } finally {
+        btn.disabled = false;
       }
     }
 
