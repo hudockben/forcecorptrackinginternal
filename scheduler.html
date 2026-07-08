@@ -94,6 +94,7 @@
     .pick-list { max-height:34vh; overflow:auto; margin-top:0.3rem; }
     .pick-row { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.55rem; border:1px solid var(--border); border-radius:6px; margin-bottom:0.3rem; cursor:pointer; }
     .pick-row:hover { border-color:#555; background:var(--surface2); } .pick-row.on-this { border-color:var(--green-dim); }
+    .pick-row.blocked { border-color:rgba(239,68,68,0.5); border-left:3px solid var(--red); background:rgba(239,68,68,0.06); opacity:0.7; } .pick-row.blocked .pick-name { text-decoration:line-through; text-decoration-color:var(--red); }
     .pick-name { font-weight:600; } .pick-sub { font-size:0.64rem; color:var(--muted); } .pick-status { margin-left:auto; font-size:0.66rem; white-space:nowrap; }
     .also-dd { position:relative; }
     .also-trigger { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; width:100%; background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.45rem 0.6rem; font-size:0.78rem; cursor:pointer; }
@@ -179,6 +180,11 @@ function weekDateStrs() { return weekDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
 // Time-off (from Timesheet): returns {status,type} if this person is off this date, else null.
 function isOff(name, date) { return (state.board.timeOff && state.board.timeOff[name] && state.board.timeOff[name][date]) || null; }
+// APPROVED time-off is a HARD block: an employee cannot be scheduled on a job for
+// a date payroll has approved them off. Pending (submitted) requests are only a
+// soft warning — schedulers can still plan around a request that isn't final yet.
+// Equipment never carries time-off, so it is never blocked.
+function isBlockedOff(name, kind, date) { if (kind === 'equip') return false; const o = isOff(name, date); return !!(o && o.status === 'approved'); }
 const _clientTag = 'c' + Math.random().toString(36).slice(2, 7); // per-client tag so ids never collide across schedulers
 let _uid = 0;
 function uid() { return _clientTag + (++_uid).toString(36); }
@@ -379,12 +385,16 @@ function cellAssignments(date, division, jobId, costCode, subCode) {
   return (state.assignments[date] || []).filter(a => a.division === division && a.jobId === jobId && (a.costCode||'') === (costCode||'') && (a.subCode||'') === (subCode||''));
 }
 function addAssignment(date, resource, kind, job, sc) {
-  dayList(date).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: sc?sc.costCode:'', subCode: sc?sc.subCode:'', half:false }); saveAssignments();
+  if (isBlockedOff(resource, kind, date)) return 0; // approved off — refuse
+  dayList(date).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: sc?sc.costCode:'', subCode: sc?sc.subCode:'', half:false }); saveAssignments(); return 1;
 }
 // Add a resource across several dates (bulk); returns how many were added.
+// Dates the employee is APPROVED off are skipped — no path can schedule over
+// approved time-off. Callers compute their own blocked-date messaging.
 function addAssignmentSpan(resource, kind, job, sc, dates) {
   let added = 0; const cc = sc?sc.costCode:'', sk = sc?sc.subCode:'';
-  dates.forEach(d => { if (cellAssignments(d, job.division, job.id, cc, sk).some(a => a.resource === resource)) return;
+  dates.forEach(d => { if (isBlockedOff(resource, kind, d)) return;
+    if (cellAssignments(d, job.division, job.id, cc, sk).some(a => a.resource === resource)) return;
     dayList(d).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: cc, subCode: sk, half:false }); added++; });
   if (added) saveAssignments(); return added;
 }
@@ -917,7 +927,8 @@ function updatePickList() {
   cands = cands.slice(0, 60);
   if (!cands.length) { box.innerHTML = '<div class="muted" style="font-size:0.78rem;padding:0.5rem">No match.</div>'; return; }
   box.innerHTML = cands.map(c => { let status, cls = '';
-    if (c.off) status = '<span class="warn">⛱ off'+(c.off.status==='submitted'?' (req)':'')+'</span>';
+    if (c.off && c.off.status === 'approved' && c.kind !== 'equip') { status = '<span class="warn">⛱ off (approved)</span>'; cls = ' blocked'; }
+    else if (c.off) status = '<span class="warn">⛱ off'+(c.off.status==='submitted'?' (req)':'')+'</span>';
     else if (c.onThis) { status = '<span class="ok">✓ assigned</span>'; cls = ' on-this'; }
     else if (c.others.length) status = '<span class="warn">→ '+esc(c.others.join(', '))+'</span>';
     else status = '<span class="ok">free</span>';
@@ -930,10 +941,14 @@ function pickAdd(name, kind) {
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
   const targets = targetSubCodes(job, ctx);
   const dates = spanDates(ctx.date);
+  const blocked = dates.filter(d => isBlockedOff(name, kind, d));
   pushUndo();
   let added = 0; targets.forEach(sc => { added += addAssignmentSpan(name, kind, job, sc, dates); });
-  if (!added) { _undo.pop(); updateUndoButtons(); toast(name+' already on those'); }
-  else { const codes = targets.length; if (codes > 1 || dates.length > 1) toast('Added '+name+(codes>1?' to '+codes+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')); }
+  if (!added) { _undo.pop(); updateUndoButtons();
+    if (blocked.length) { const o = isOff(name, blocked[0]); toast(name+' is approved off ('+((o&&o.type)||'time off')+') — not scheduled'); }
+    else toast(name+' already on those'); }
+  else { const codes = targets.length;
+    if (codes > 1 || dates.length > 1 || blocked.length) toast('Added '+name+(codes>1?' to '+codes+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')+(blocked.length?' · skipped '+blocked.length+' approved-off day'+(blocked.length>1?'s':''):'')); }
   afterMutate();
 }
 function applyCrewFromPicker() {
@@ -943,10 +958,11 @@ function applyCrewFromPicker() {
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
   const targets = targetSubCodes(job, ctx);
   const dates = spanDates(ctx.date);
+  let blocked = 0; crew.members.forEach(m => { const k = m.kind||'emp'; blocked += dates.filter(d => isBlockedOff(m.name, k, d)).length; });
   pushUndo();
   let added = 0; crew.members.forEach(m => targets.forEach(sc => { added += addAssignmentSpan(m.name, m.kind||'emp', job, sc, dates); }));
   if (!added) { _undo.pop(); updateUndoButtons(); }
-  toast(added ? ('Added '+crew.name+(targets.length>1?' to '+targets.length+' cost codes':'')+' ('+added+' assignment'+(added>1?'s':'')+')') : 'Crew already scheduled here');
+  toast(added ? ('Added '+crew.name+(targets.length>1?' to '+targets.length+' cost codes':'')+' ('+added+' assignment'+(added>1?'s':'')+')'+(blocked?' · skipped approved-off days':'')) : (blocked ? 'Crew are approved off — nothing scheduled' : 'Crew already scheduled here'));
   afterMutate();
 }
 function saveCurrentAsCrew() {
@@ -966,7 +982,7 @@ function modalResourceHtml(ctx) {
   const curHtml = current.length ? current.map(a => { const col = divColor(a.division); return '<div class="cur-asn"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(a.division)+'</span><span class="grow">'+esc(a.jobName)+(a.costCode?' <span class="muted">· '+esc(a.costCode)+(a.subCode?' · '+esc(a.subCode):'')+'</span>':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>'; }).join('') : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
   const jobs = visibleJobs();
   const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => { const inDiv = jobs.filter(j => j.division === div); if (!inDiv.length) return ''; return '<optgroup label="'+div.toUpperCase()+'">'+inDiv.map(j => '<option value="'+esc(j.division)+'::'+esc(j.id)+'">'+esc(j.name)+(j.jobNumber?' (#'+esc(j.jobNumber)+')':'')+'</option>').join('')+'</optgroup>'; }).join('');
-  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+(off.status==='submitted'?' (requested off)':' off')+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+(off.status==='submitted'?' (requested off)':' (approved off — cannot schedule)')+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
     '<label class="fld">Scheduled (this day)</label>'+curHtml+
     '<label class="fld">Add to a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select><div id="rScWrap" style="display:none"><label class="fld">Cost codes</label><select class="full" id="rSc" multiple size="5"></select><div class="muted" style="font-size:0.66rem;margin-top:0.25rem">Pick one or more to split across cost codes — or leave all unselected for the whole job.</div></div>'+
@@ -983,10 +999,14 @@ function rConfirmAdd() { const sel = document.getElementById('rJob').value; if (
   const scSel = document.getElementById('rSc');
   const idxs = Array.from(scSel.selectedOptions || []).map(o => o.value).filter(v => v !== '');
   const scs = idxs.length ? idxs.map(v => (job.subCodes||[])[parseInt(v,10)]) : [null];
-  const ctx = state.assignCtx; const dates = spanDates(ctx.date); pushUndo();
+  const ctx = state.assignCtx; const dates = spanDates(ctx.date);
+  const blocked = dates.filter(d => isBlockedOff(ctx.resource, ctx.kind, d));
+  pushUndo();
   let added = 0; scs.forEach(sc => { added += addAssignmentSpan(ctx.resource, ctx.kind, job, sc, dates); });
-  if (!added) { _undo.pop(); updateUndoButtons(); toast(ctx.resource+' already on those'); }
-  else toast('Added'+(scs.length>1?' to '+scs.length+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')); afterMutate();
+  if (!added) { _undo.pop(); updateUndoButtons();
+    if (blocked.length) { const o = isOff(ctx.resource, blocked[0]); toast(ctx.resource+' is approved off ('+((o&&o.type)||'time off')+') — not scheduled'); }
+    else toast(ctx.resource+' already on those'); }
+  else toast('Added'+(scs.length>1?' to '+scs.length+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')+(blocked.length?' · skipped '+blocked.length+' approved-off day'+(blocked.length>1?'s':''):'')); afterMutate();
 }
 
 // ── Crews manager ───────────────────────────────────────────────────────────
@@ -1002,22 +1022,26 @@ function deleteCrew(id) { state.crews = state.crews.filter(c => c.id !== id); sa
 // ── Copy week ───────────────────────────────────────────────────────────────
 function copyWeekForward() {
   pushUndo();
-  const wk = weekDateStrs(); let added = 0;
+  const wk = weekDateStrs(); let added = 0, blocked = 0;
   wk.forEach(d => { const items = state.assignments[d] || []; const nd = addDays(d, 7);
-    items.forEach(a => { if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||'') && (x.subCode||'')===(a.subCode||''))) return;
+    items.forEach(a => { if (isBlockedOff(a.resource, a.kind, nd)) { blocked++; return; } // approved off next week — don't carry forward
+      if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||'') && (x.subCode||'')===(a.subCode||''))) return;
       dayList(nd).push({ ...a, id: uid() }); added++; }); });
-  if (added) { saveAssignments(); toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'); state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
-  else { _undo.pop(); updateUndoButtons(); toast('Nothing to copy (next week already matches)'); }
+  if (added) { saveAssignments(); toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'+(blocked?' · skipped '+blocked+' approved-off':'')); state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
+  else { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Next week is all approved-off for those crew' : 'Nothing to copy (next week already matches)'); }
 }
 
 // ── Import division plans ───────────────────────────────────────────────────
 function importPlanned() {
   const planned = state.board.plannedAssignments || []; if (!planned.length) { toast('No division plans to import'); return; }
   pushUndo();
-  let added = 0;
-  planned.forEach(p => { const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'') && (a.subCode||'')===(p.subCode||'')); if (dup) return;
-    dayList(p.date).push({ id: uid(), resource:p.resource, kind:p.kind||'emp', division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', subCode:p.subCode||'', half:!!p.half }); added++; });
-  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')); render(); } else { _undo.pop(); updateUndoButtons(); toast('Already up to date with division plans'); }
+  let added = 0, blocked = 0;
+  planned.forEach(p => { const kind = p.kind||'emp';
+    if (isBlockedOff(p.resource, kind, p.date)) { blocked++; return; } // approved off — never import over it
+    const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'') && (a.subCode||'')===(p.subCode||'')); if (dup) return;
+    dayList(p.date).push({ id: uid(), resource:p.resource, kind, division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', subCode:p.subCode||'', half:!!p.half }); added++; });
+  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')+(blocked?' · skipped '+blocked+' approved-off':'')); render(); }
+  else { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Matching crew are approved off — nothing imported' : 'Already up to date with division plans'); }
 }
 
 // ── Print / dispatch sheets ─────────────────────────────────────────────────
@@ -1245,7 +1269,10 @@ function autoFill(division, jobId, costCode, subCode) {
 function renderAttention() {
   const gaps = gapItems(); const idle = idleEmployees(); const wk = weekDateStrs();
   const conflicts = []; wk.forEach(d => conflictResourcesOn(d).forEach(r => conflicts.push({ d, r })));
-  const offSched = []; wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind === 'emp') { const off = isOff(a.resource, d); if (off) offSched.push({ d, name:a.resource, jobName:a.jobName, off }); } }));
+  const offSched = []; wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind === 'emp') { const off = isOff(a.resource, d); if (off) offSched.push({ d, id:a.id, name:a.resource, jobName:a.jobName, off }); } }));
+  // Approved conflicts (person is locked off but still on the board — e.g. time
+  // off approved after they were scheduled) float to the top of the list.
+  offSched.sort((x,y) => (y.off.status==='approved') - (x.off.status==='approved') || (x.d<y.d?-1:x.d>y.d?1:0));
   let html = renderCapacity();
   html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">⚠ Needs crew (' + gaps.length + ')</div>';
   if (!gaps.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">No behind or at-risk work is short on crew this week. 👍</div>';
@@ -1269,7 +1296,8 @@ function renderAttention() {
   }
   if (offSched.length) {
     html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">⛱ Scheduled but off (' + offSched.length + ')</div>';
-    html += '<div style="display:flex;flex-direction:column;gap:0.3rem;margin-bottom:1.4rem">' + offSched.map(o => '<div style="font-size:0.78rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><span class="warn" style="font-weight:600">'+esc(o.name)+'</span><span class="muted">'+shortDate(o.d)+'</span><span>'+esc(o.off.type)+(o.off.status==='submitted'?' (requested)':'')+' — scheduled on '+esc(o.jobName)+'</span><button class="btn mini" onclick="openAssignResource(\''+escAttr(o.name)+'\',\'emp\',\''+o.d+'\')">Fix…</button></div>').join('') + '</div>';
+    html += '<div style="display:flex;flex-direction:column;gap:0.3rem;margin-bottom:1.4rem">' + offSched.map(o => { const appr = o.off.status==='approved';
+      return '<div style="font-size:0.78rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><span class="warn" style="font-weight:600">'+esc(o.name)+'</span><span class="muted">'+shortDate(o.d)+'</span><span>'+esc(o.off.type)+(appr?' <strong style="color:var(--red)">(APPROVED OFF)</strong>':' (requested)')+' — scheduled on '+esc(o.jobName)+'</span>'+(appr?'<button class="btn mini" title="Remove this assignment" onclick="removeAssignment(\''+o.d+'\',\''+o.id+'\');afterMutate()">Remove</button>':'')+'<button class="btn mini" onclick="openAssignResource(\''+escAttr(o.name)+'\',\'emp\',\''+o.d+'\')">Fix…</button></div>'; }).join('') + '</div>';
   }
   if (conflicts.length) {
     html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🔴 Double-booked (' + conflicts.length + ')</div>';
