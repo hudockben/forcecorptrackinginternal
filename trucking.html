@@ -973,6 +973,9 @@
     }
 
     function deleteRow(id) {
+      // Payroll-injected rows (tst- prefix) are locked — remove them by
+      // un-approving the timesheet entry in Payroll, not from here.
+      if (String(id).startsWith('tst-')) return;
       divEntries = divEntries.filter(e => e.id !== id);
       schedSave();
       renderTrackingTab();
@@ -1459,35 +1462,50 @@
             const icBadge = icEntry
               ? `<div id="ic-main-${e.id}" style="font-size:0.62rem;color:#22c55e;font-weight:600;margin-top:0.18rem;white-space:nowrap;letter-spacing:0.01em">&#10003; IC ${fmtSentAt(icEntry.sent_at)}</div>`
               : `<div id="ic-main-${e.id}"></div>`;
-            return `<tr style="${rowBg}">
-              <td style="width:28px;text-align:center;padding:0 0.25rem;cursor:pointer" onclick="toggleInvoiceRow('${e.id}')">
-                <span id="caret-${e.id}" style="${caretStyle}">&#8250;</span>
-              </td>
-              <td class="td-task-num">${esc(e.task_number)}${isInjected ? `<span title="Autofilled from an approved timesheet entry — fill in the haul fee and division." style="display:inline-block;margin-top:0.15rem;font-size:0.56rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#2dd4bf;background:rgba(45,212,191,0.12);border:1px solid rgba(45,212,191,0.35);border-radius:3px;padding:0.05rem 0.32rem;white-space:nowrap">&#8592; Timesheet</span>` : ''}</td>
-              <td style="min-width:110px">${inp(e.id,'actual_date','date','',e.actual_date)}</td>
-              <td style="min-width:140px">${cbHtml(e.id, 'driver', e.driver || '')}</td>
-              <td style="min-width:140px">
-                ${cbHtml(e.id, 'unit', e.unit || '')}
-                <div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>
-              </td>
-              <td style="min-width:90px"><input type="time" value="${esc(e.actual_start||'')}" oninput="_liveHours('${e.id}','actual_start',this.value)" onchange="updateField('${e.id}','actual_start',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
-              <td style="min-width:90px"><input type="time" value="${esc(e.actual_end||'')}" oninput="_liveHours('${e.id}','actual_end',this.value)" onchange="updateField('${e.id}','actual_end',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
-              <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)">
-                <input type="number" id="th-hrs-${e.id}" value="${esc(e.total_hours || '')}"
-                  placeholder="0"
-                  onchange="updateField('${e.id}','total_hours',this.value)"
-                  style="width:100%;background:transparent;border:none;color:#fbbf24;font-size:0.8rem;outline:none;padding:0.15rem 0;text-align:right;font-weight:600">
-              </td>
-              <td style="min-width:90px;text-align:right">${inp(e.id,'haul_fee','number','0.00',e.haul_fee)}</td>
-              <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
-              <td style="min-width:130px">${cbHtml(e.id, 'customer', e.customer || '')}</td>
-              <td style="min-width:160px">${inp(e.id,'description','text','Description',e.description)}</td>
-              <td style="min-width:100px">${inp(e.id,'division','text','Division',e.division)}</td>
-              <td style="min-width:130px">${inp(e.id,'notes','text','Notes',e.notes)}${icBadge}</td>
-              <td style="text-align:center;width:36px">
-                <button class="btn-del-row" onclick="deleteRow('${e.id}')" title="Delete">&#10005;</button>
-              </td>
-            </tr>
+            // Read-only cell for locked (payroll-injected) rows.
+            const ro = v => `<span style="color:var(--text);font-size:0.8rem">${esc(v == null ? '' : String(v))}</span>`;
+            const unitNum = `<div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>`;
+            const caretCell = `<td style="width:28px;text-align:center;padding:0 0.25rem;cursor:pointer" onclick="toggleInvoiceRow('${e.id}')"><span id="caret-${e.id}" style="${caretStyle}">&#8250;</span></td>`;
+            const tsBadge = `<span title="Injected from an approved timesheet entry — edit it in Payroll, not here." style="display:inline-block;margin-top:0.15rem;font-size:0.56rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#2dd4bf;background:rgba(45,212,191,0.12);border:1px solid rgba(45,212,191,0.35);border-radius:3px;padding:0.05rem 0.32rem;white-space:nowrap">&#8592; Timesheet</span>`;
+            // Payroll-injected rows are locked here — the core data is read-only
+            // (edited in Payroll), but the invoice sub-row below stays editable so
+            // the trucking office can still manage billing.
+            const mainRow = isInjected
+              ? `<tr style="${rowBg}" title="Injected from an approved timesheet entry — edit it in Payroll, not here.">
+                  ${caretCell}
+                  <td class="td-task-num">${esc(e.task_number)}${tsBadge}</td>
+                  <td style="min-width:110px">${ro(e.actual_date)}</td>
+                  <td style="min-width:140px">${ro(e.driver)}</td>
+                  <td style="min-width:140px">${ro(e.unit)}${unitNum}</td>
+                  <td style="min-width:90px">${ro(e.actual_start)}</td>
+                  <td style="min-width:90px">${ro(e.actual_end)}</td>
+                  <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)"><span style="color:#fbbf24;font-size:0.8rem;font-weight:600">${esc(e.total_hours||'')}</span></td>
+                  <td style="min-width:90px;text-align:right">${ro(e.haul_fee)}</td>
+                  <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
+                  <td style="min-width:130px">${ro(e.customer)}</td>
+                  <td style="min-width:160px">${ro(e.description)}</td>
+                  <td style="min-width:100px">${ro(e.division)}</td>
+                  <td style="min-width:130px">${ro(e.notes)}${icBadge}</td>
+                  <td style="text-align:center;width:36px"><span title="Locked — edit this row in Payroll" style="color:var(--muted);font-size:0.9rem">&#128274;</span></td>
+                </tr>`
+              : `<tr style="${rowBg}">
+                  ${caretCell}
+                  <td class="td-task-num">${esc(e.task_number)}</td>
+                  <td style="min-width:110px">${inp(e.id,'actual_date','date','',e.actual_date)}</td>
+                  <td style="min-width:140px">${cbHtml(e.id, 'driver', e.driver || '')}</td>
+                  <td style="min-width:140px">${cbHtml(e.id, 'unit', e.unit || '')}${unitNum}</td>
+                  <td style="min-width:90px"><input type="time" value="${esc(e.actual_start||'')}" oninput="_liveHours('${e.id}','actual_start',this.value)" onchange="updateField('${e.id}','actual_start',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
+                  <td style="min-width:90px"><input type="time" value="${esc(e.actual_end||'')}" oninput="_liveHours('${e.id}','actual_end',this.value)" onchange="updateField('${e.id}','actual_end',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
+                  <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)"><input type="number" id="th-hrs-${e.id}" value="${esc(e.total_hours || '')}" placeholder="0" onchange="updateField('${e.id}','total_hours',this.value)" style="width:100%;background:transparent;border:none;color:#fbbf24;font-size:0.8rem;outline:none;padding:0.15rem 0;text-align:right;font-weight:600"></td>
+                  <td style="min-width:90px;text-align:right">${inp(e.id,'haul_fee','number','0.00',e.haul_fee)}</td>
+                  <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
+                  <td style="min-width:130px">${cbHtml(e.id, 'customer', e.customer || '')}</td>
+                  <td style="min-width:160px">${inp(e.id,'description','text','Description',e.description)}</td>
+                  <td style="min-width:100px">${inp(e.id,'division','text','Division',e.division)}</td>
+                  <td style="min-width:130px">${inp(e.id,'notes','text','Notes',e.notes)}${icBadge}</td>
+                  <td style="text-align:center;width:36px"><button class="btn-del-row" onclick="deleteRow('${e.id}')" title="Delete">&#10005;</button></td>
+                </tr>`;
+            return mainRow + `
             <tr id="inv-row-${e.id}" style="display:${isOpen?'table-row':'none'};background:var(--surface2)">
               <td colspan="15" style="padding:0.65rem 1rem 0.75rem 2.5rem;border-bottom:2px solid var(--border)">
                 <div style="display:flex;gap:2rem;flex-wrap:wrap;align-items:flex-start">

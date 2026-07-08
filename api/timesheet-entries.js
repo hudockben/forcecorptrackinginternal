@@ -693,6 +693,27 @@ function truckNum(v) {
 // A DB DATE/TEXT date → "YYYY-MM-DD" or null (reuses safeDate's contract).
 function truckDate(v) { return safeDate(v); }
 
+// Validate the payroll modal payload (req.body.trucking) for a trucking
+// injection. Only two fields are entered on the payroll side — the haul fee
+// (billing rate per hour) and the division column; everything else autofills
+// from the timesheet entry. Both are optional (blank is allowed) so payroll can
+// approve now and fill the fee in later via Edit Row. Returns { fields } or
+// { error }.
+const TRUCK_HAUL_FEE_MAX = 1e7;
+function validateTruckingInjection(raw) {
+  const t = (raw && typeof raw === 'object') ? raw : {};
+  let haul_fee = '';
+  if (t.haul_fee !== '' && t.haul_fee != null) {
+    const n = Number(t.haul_fee);
+    if (!Number.isFinite(n) || n < 0 || n > TRUCK_HAUL_FEE_MAX) {
+      return { error: `haul_fee must be a number between 0 and ${TRUCK_HAUL_FEE_MAX}` };
+    }
+    haul_fee = Math.round(n * 10000) / 10000;
+  }
+  const division = safeStr(t.division, 100) || '';
+  return { fields: { haul_fee, division } };
+}
+
 // Best-effort match of the timesheet employee to the trucking driver roster so
 // the injected row's driver reads as a real driver name where possible. The
 // roster lives in dropdown_lists (list_name='truck_drivers'). Login names are
@@ -791,15 +812,22 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
  *
  * Autofill: driver ← employee, actual_date ← work_date, actual_start/end ←
  * start/end, total_hours ← the (lunch-deducted) computed work hours, customer ←
- * job_label. haul_fee and division are intentionally left blank for the trucking
- * office to fill in later; invoice fields default to Unpaid/blank.
+ * job_label, unit ← truck_unit, description ← truck_description. The haul fee and
+ * division column come from the payroll modal (fields arg); everything else is
+ * derived from the timesheet entry so the Truck Tracking row is fully owned by
+ * payroll and locked in the Trucking division. invoice fields default to
+ * Unpaid/blank (the trucking office manages invoicing).
  */
-async function insertTruckingRow(sql, companyCode, entry) {
+async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
   const workDate = safeDate(entry.work_date) || '';
   const hours    = _r2(Number(entry.computed_hours) || 0);
   const driver   = await matchTruckingDriver(sql, companyCode, entry.username);
   const customer = safeStr(entry.job_label, 500) || safeStr(entry.job_id, 500) || '';
   const hhmm     = v => String(v || '').slice(0, 5);
+  // Payroll-entered fields (validated by validateTruckingInjection). Blank is
+  // allowed — payroll can approve now and set the fee later via Edit Row.
+  const haulFee  = (fields.haul_fee === '' || fields.haul_fee == null) ? '' : fields.haul_fee;
+  const division = safeStr(fields.division, 100) || '';
 
   const row = {
     id:                `${truckingRowIdPrefix(entry.id)}${Date.now()}`,
@@ -810,10 +838,10 @@ async function insertTruckingRow(sql, companyCode, entry) {
     actual_start:      hhmm(entry.start_time),
     actual_end:        hhmm(entry.end_time),
     total_hours:       hours,
-    haul_fee:          '',      // filled in by the trucking office
+    haul_fee:          haulFee,   // entered on the payroll side
     customer,
     description:       safeStr(entry.truck_description, 2000) || '',
-    division:          '',      // filled in by the trucking office
+    division,                     // entered on the payroll side
     notes:             entry.notes || '',
     qb_invoice:        '',
     invoiced_date:     '',
@@ -862,6 +890,16 @@ async function truckingHasInjectedRow(sql, companyCode, entry) {
   const prefix = truckingRowIdPrefix(entry.id);
   const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
   return arr.some(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
+}
+
+// The injected Truck Tracking row for an entry, so the payroll modal can pre-fill
+// the haul fee + division when re-editing an approved entry (mirrors the GET
+// action=split contract quarry uses).
+async function truckingSplitForEntry(sql, companyCode, entry) {
+  const prefix = truckingRowIdPrefix(entry.id);
+  const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
+  const row    = arr.find(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix)) || null;
+  return { row };
 }
 
 async function writeAudit(sql, companyCode, payload, entryId, action, changes, snapshot) {
@@ -1155,8 +1193,8 @@ module.exports = async (req, res) => {
       const needsQuarry =
         existing.entry_type === 'daily' &&
         existing.division === 'quarry';
-      // Trucking injects a fully-autofilled Truck Tracking row — no payroll
-      // input, so there's nothing to validate from the body.
+      // Trucking injects an autofilled Truck Tracking row; payroll supplies the
+      // haul fee + division column in the body (both optional).
       const needsTrucking =
         existing.entry_type === 'daily' &&
         existing.division === 'trucking';
@@ -1184,6 +1222,13 @@ module.exports = async (req, res) => {
         quarryInject = { activity, fields };
       }
 
+      let truckingInject = null;
+      if (needsTrucking) {
+        const { fields, error } = validateTruckingInjection(req.body && req.body.trucking);
+        if (error) return res.status(400).json({ error });
+        truckingInject = fields;
+      }
+
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status              = 'approved',
@@ -1206,7 +1251,7 @@ module.exports = async (req, res) => {
               sql, companyCode, updated, quarryInject.activity, quarryInject.fields,
             );
           } else {
-            await insertTruckingRow(sql, companyCode, updated);
+            await insertTruckingRow(sql, companyCode, updated, truckingInject || {});
           }
         } catch (injErr) {
           // Rollback the approval so payroll sees the row as pending again
@@ -1300,8 +1345,31 @@ module.exports = async (req, res) => {
         return res.json(await entryJson(sql, companyCode, existing));
       }
 
+      // Trucking re-edit: rewrite the injected Truck Tracking row with the new
+      // haul fee / division. insertTruckingRow removes the prior injected row for
+      // this entry before appending, so there's no separate delete step.
+      if (existing.entry_type === 'daily' && existing.division === 'trucking') {
+        const { fields, error } = validateTruckingInjection(req.body && req.body.trucking);
+        if (error) return res.status(400).json({ error });
+        try {
+          await insertTruckingRow(sql, companyCode, existing, fields);
+        } catch (injErr) {
+          console.error('[timesheet-entries] trucking resplit failed:', injErr.message);
+          return res.status(500).json({
+            error: 'Edit failed: could not rewrite the Truck Tracking row. Retry.',
+            detail: injErr.message,
+          });
+        }
+        await writeAudit(
+          sql, companyCode, payload, id, 'ADMIN_EDIT',
+          { resplit: true, trucking: true },
+          dbToEntry(existing),
+        );
+        return res.json(await entryJson(sql, companyCode, existing));
+      }
+
       if (existing.entry_type !== 'daily' || !AUTO_INJECT_DIVISIONS.includes(existing.division)) {
-        return res.status(400).json({ error: 'Resplit applies only to daily entries in turf/paving/quarry' });
+        return res.status(400).json({ error: 'Resplit applies only to daily entries in turf/paving/quarry/trucking' });
       }
       if (!existing.job_id) {
         return res.status(400).json({ error: 'Cannot inject: entry has no job_id (project)' });
@@ -1419,6 +1487,10 @@ module.exports = async (req, res) => {
       if (entryRow && entryRow.division === 'quarry') {
         const { activity, row } = await quarrySplitForEntry(sql, companyCode, entryRow);
         return res.json({ quarry: { activity, row } });
+      }
+      if (entryRow && entryRow.division === 'trucking') {
+        const { row } = await truckingSplitForEntry(sql, companyCode, entryRow);
+        return res.json({ trucking: { row } });
       }
 
       const rows = await sql`
@@ -1588,5 +1660,7 @@ module.exports._test = {
   insertTruckingRow,
   removeTruckingRows,
   truckingHasInjectedRow,
+  truckingSplitForEntry,
+  validateTruckingInjection,
   TRUCK_DIVISION_BLOB,
 };

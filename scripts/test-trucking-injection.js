@@ -22,7 +22,8 @@
 const { _test } = require('../api/timesheet-entries.js');
 const {
   truckingRowIdPrefix, matchTruckingDriver, insertTruckingRow,
-  removeTruckingRows, truckingHasInjectedRow, TRUCK_DIVISION_BLOB,
+  removeTruckingRows, truckingHasInjectedRow, truckingSplitForEntry,
+  validateTruckingInjection, TRUCK_DIVISION_BLOB,
 } = _test;
 const { truckingJobs } = require('../api/timesheet-jobs.js')._test;
 
@@ -262,6 +263,51 @@ function entry(over = {}) {
     const row = await insertTruckingRow(sql, CO, entry({ truck_unit: null, truck_description: null }));
     assert('insert: missing unit → blank', row.unit === '');
     assert('insert: missing description → blank', row.description === '');
+  }
+
+  // ── payroll-entered haul fee + division ──
+  {
+    const { sql, store } = makeSql({ drivers: [] });
+    const row = await insertTruckingRow(sql, CO, entry(), { haul_fee: 121, division: 'Paving' });
+    assert('fields: haul_fee set from payroll', row.haul_fee === 121);
+    assert('fields: division set from payroll', row.division === 'Paving');
+    const mirror = store.tde.get(row.id);
+    assert('fields: mirror stores haul_fee as a number', mirror.haul_fee === 121);
+    assert('fields: mirror stores division', mirror.division === 'Paving');
+    assert('fields: haul_fee blank when omitted', (await insertTruckingRow(sql, CO, entry())).haul_fee === '');
+  }
+
+  // ── validateTruckingInjection ──
+  {
+    assert('validate: numeric haul fee accepted', validateTruckingInjection({ haul_fee: '115.5' }).fields.haul_fee === 115.5);
+    assert('validate: blank haul fee → blank', validateTruckingInjection({ haul_fee: '' }).fields.haul_fee === '');
+    assert('validate: missing body → blank fee', validateTruckingInjection(undefined).fields.haul_fee === '');
+    assert('validate: negative haul fee rejected', !!validateTruckingInjection({ haul_fee: -5 }).error);
+    assert('validate: non-numeric haul fee rejected', !!validateTruckingInjection({ haul_fee: 'abc' }).error);
+    assert('validate: division trimmed', validateTruckingInjection({ division: '  Paving  ' }).fields.division === 'Paving');
+  }
+
+  // ── truckingSplitForEntry: re-edit pre-fill ──
+  {
+    const { sql } = makeSql({ drivers: [] });
+    await insertTruckingRow(sql, CO, entry(), { haul_fee: 90, division: 'Turf' });
+    const { row } = await truckingSplitForEntry(sql, CO, entry());
+    assert('split: returns the injected row for re-edit', !!row && row.haul_fee === 90 && row.division === 'Turf');
+    const empty = await truckingSplitForEntry(sql, CO, entry({ id: 999 }));
+    assert('split: null when no injected row', empty.row === null);
+  }
+
+  // ── resplit: updates fee/division, keeps autofill, stays a single row ──
+  {
+    const { sql, store } = makeSql({ drivers: [] });
+    await insertTruckingRow(sql, CO, entry(), { haul_fee: 100, division: '' });
+    await insertTruckingRow(sql, CO, entry(), { haul_fee: 130, division: 'Quarry' });
+    const blob = store.appData.get(BLOB_KEY);
+    const injected = blob.filter(x => String(x.id).startsWith(truckingRowIdPrefix(42)));
+    assert('resplit: still exactly one injected row', injected.length === 1);
+    assert('resplit: haul fee updated', injected[0].haul_fee === 130);
+    assert('resplit: division updated', injected[0].division === 'Quarry');
+    assert('resplit: autofill preserved (unit)', injected[0].unit === '634');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
