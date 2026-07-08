@@ -24,6 +24,9 @@ const {
   truckingRowIdPrefix, matchTruckingDriver, insertTruckingRow,
   removeTruckingRows, truckingHasInjectedRow, TRUCK_DIVISION_BLOB,
 } = _test;
+const { truckingJobs } = require('../api/timesheet-jobs.js')._test;
+
+const LISTS_BLOB = 'fct_truck_division_lists';
 
 let passed = 0, failed = 0;
 function assert(label, cond) {
@@ -36,20 +39,26 @@ function assert(label, cond) {
 // (driver roster), and truck_division_entries (mirror table).
 function makeSql(initial = {}) {
   const store = {
-    appData: new Map(Object.entries(initial.appData || {})),  // key → JS value (array)
-    drivers: (initial.drivers || []).slice(),                 // ['John Smith', ...]
-    tde:     new Map(),                                        // id → row object
+    appData:         new Map(Object.entries(initial.appData || {})),  // key → JS value
+    driversMirror:   (initial.drivers   || []).slice(),   // dropdown_lists truck_drivers
+    customersMirror: (initial.customers || []).slice(),   // dropdown_lists truck_customers
+    tde:             new Map(),                            // id → row object
   };
   const sql = (strings, ...values) => {
     const q = strings.join(' ').replace(/\s+/g, ' ').trim();
 
-    // matchTruckingDriver
-    if (q.includes('FROM dropdown_lists') && q.includes('truck_drivers')) {
-      return Promise.resolve(store.drivers.map(v => ({ value: v })));
+    // dropdown_lists mirror reads (fallback path)
+    if (q.includes('FROM dropdown_lists')) {
+      if (q.includes('truck_drivers'))   return Promise.resolve(store.driversMirror.map(v => ({ value: v })));
+      if (q.includes('truck_customers')) return Promise.resolve(store.customersMirror.map(v => ({ value: v })));
+      return Promise.resolve([]);
     }
-    // readBlobArray
+    // app_data reads. The key may be interpolated (${scoped}) or a hardcoded
+    // literal (legacy keys, e.g. key = 'fct_truck_division_lists') — mirror how
+    // api/truck-division.js writes those queries.
     if (q.startsWith('SELECT value FROM app_data WHERE key =')) {
-      const key = values[0];
+      let key = values[0];
+      if (key === undefined) { const m = q.match(/key = '([^']*)'/); key = m ? m[1] : undefined; }
       const v = store.appData.has(key) ? store.appData.get(key) : null;
       return Promise.resolve(v == null ? [] : [{ value: v }]);
     }
@@ -119,6 +128,52 @@ function entry(over = {}) {
     const { sql } = makeSql({ drivers: [] });
     assert('driver: empty roster keeps raw name',
       (await matchTruckingDriver(sql, CO, 'smith')) === 'smith');
+  }
+  {
+    // Blob is the source of truth — it must win over a stale dropdown_lists mirror.
+    const { sql } = makeSql({
+      appData: { [`${CO}:${LISTS_BLOB}`]: { drivers: ['Al Smith'], customers: [], units: [] } },
+      drivers: ['WRONG Person'],  // stale mirror that must be ignored
+    });
+    assert('driver: matches from the lists blob, not the stale mirror',
+      (await matchTruckingDriver(sql, CO, 'smith')) === 'Al Smith');
+  }
+
+  // ── truckingJobs: the customer picker mirrors the managed list (blob) ──
+  {
+    // Managed list (blob) holds distinct-cased dupes + an exact dupe + a blank.
+    const managed = ['Bell Supply', 'Force', 'FORCE', 'Arcadis', 'Arcadis', '', 'CNX'];
+    const { sql } = makeSql({
+      appData: { [`${CO}:${LISTS_BLOB}`]: { drivers: [], customers: managed, units: [] } },
+      customers: ['STALE ONLY'],  // dropdown_lists mirror must be ignored when the blob exists
+    });
+    const jobs = await truckingJobs(sql, CO);
+    const labels = jobs.map(j => j.label);
+    assert('jobs: reads the blob, not the stale mirror', !labels.includes('STALE ONLY'));
+    assert('jobs: keeps distinct-cased customers ("Force" and "FORCE")',
+      labels.includes('Force') && labels.includes('FORCE'));
+    assert('jobs: drops blanks and exact duplicates',
+      labels.filter(l => l === 'Arcadis').length === 1 && !labels.includes(''));
+    assert('jobs: sorted alphabetically (localeCompare)',
+      JSON.stringify(labels) === JSON.stringify([...labels].sort((a, b) => a.localeCompare(b))));
+    assert('jobs: id equals the customer name', jobs.every(j => j.id === j.label));
+  }
+  {
+    // Legacy unscoped blob is used when the scoped key is absent.
+    const { sql } = makeSql({
+      appData: { [LISTS_BLOB]: { drivers: [], customers: ['Legacy Co'], units: [] } },
+    });
+    const jobs = await truckingJobs(sql, CO);
+    assert('jobs: falls back to the legacy unscoped blob',
+      jobs.length === 1 && jobs[0].label === 'Legacy Co');
+  }
+  {
+    // No blob at all → fall back to the dropdown_lists mirror.
+    const { sql } = makeSql({ customers: ['Mirror Co', 'Mirror Co', 'Zeta'] });
+    const jobs = await truckingJobs(sql, CO);
+    const labels = jobs.map(j => j.label);
+    assert('jobs: falls back to the dropdown_lists mirror when no blob',
+      labels.length === 2 && labels.includes('Mirror Co') && labels.includes('Zeta'));
   }
 
   // ── insertTruckingRow: autofill mapping ──

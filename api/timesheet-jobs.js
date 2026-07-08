@@ -95,27 +95,49 @@ async function pavingJobs(sql, companyCode) {
 }
 
 async function truckingJobs(sql, companyCode) {
-  // Trucking's "jobs" are its customer roster — the people they haul for.
-  // Source of truth is the dropdown_lists table; the same data is also
-  // mirrored in fct_truck_division_lists but the table is the canonical
-  // form (see api/truck-division.js).
-  const rows = await sql`
-    SELECT value, sort_order FROM dropdown_lists
-    WHERE  company_code = ${companyCode}
-      AND  list_name    = 'truck_customers'
-    ORDER  BY sort_order ASC, value ASC
-  `;
+  // Trucking's "jobs" are its customer roster — the people they haul for. The
+  // Trucking division manages this list in trucking.html, and its SOURCE OF
+  // TRUTH is the fct_truck_division_lists app_data blob: api/truck-division.js
+  // writes that blob synchronously and prefers it on read, while the
+  // dropdown_lists table is only a fire-and-forget mirror that can lag (or be
+  // dropped entirely) in a serverless request. Reading the mirror here made the
+  // picker drift out of sync with the managed customer list — showing far fewer
+  // customers than the division actually has. Read the blob (scoped key first,
+  // then the legacy unscoped key — same resolution api/truck-division.js uses)
+  // so the picker mirrors exactly what "Manage lists" shows.
+  const [scopedRows, legacyRows] = await Promise.all([
+    sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division_lists'}`,
+    sql`SELECT value FROM app_data WHERE key = 'fct_truck_division_lists'`,
+  ]);
+  const scoped = (scopedRows[0]?.value && typeof scopedRows[0].value === 'object') ? scopedRows[0].value : null;
+  const legacy = (legacyRows[0]?.value && typeof legacyRows[0].value === 'object') ? legacyRows[0].value : null;
+  const lists  = scoped || legacy || null;
+
+  let customers = (lists && Array.isArray(lists.customers)) ? lists.customers : null;
+
+  // Fallback for older data that only ever populated the normalized mirror.
+  if (!customers) {
+    const mirror = await sql`
+      SELECT value FROM dropdown_lists
+      WHERE  company_code = ${companyCode} AND list_name = 'truck_customers'
+      ORDER  BY sort_order ASC, value ASC
+    `;
+    customers = mirror.map(r => r.value);
+  }
+
+  // Mirror the managed list as-is: keep distinct-cased names (the roster
+  // intentionally holds e.g. "Force" and "FORCE" as separate customers), and
+  // drop only blanks and exact duplicates. Customer name is the identifier —
+  // the trucking model has no stable per-customer id.
   const seen = new Set();
   const jobs = [];
-  for (const r of rows) {
-    const name = (r.value || '').trim();
-    if (!name) continue;
-    const key = name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    // No stable id — customer name is the identifier in the trucking model.
+  for (const raw of customers) {
+    const name = (raw || '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
     jobs.push({ id: name, label: name });
   }
+  jobs.sort((a, b) => a.label.localeCompare(b.label));
   return jobs;
 }
 
@@ -195,3 +217,6 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: 'Database error', detail: err.message });
   }
 };
+
+// Internal helper exposed for unit testing only (scripts/test-trucking-injection.js).
+module.exports._test = { truckingJobs };

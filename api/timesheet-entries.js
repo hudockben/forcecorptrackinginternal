@@ -699,11 +699,27 @@ function truckDate(v) { return safeDate(v); }
 async function matchTruckingDriver(sql, companyCode, name) {
   const n = (name || '').trim().toLowerCase();
   if (!n) return name || '';
-  const rows = await sql`
-    SELECT value FROM dropdown_lists
-    WHERE company_code = ${companyCode} AND list_name = 'truck_drivers'
-  `;
-  const names = rows.map(r => String(r.value || '')).filter(Boolean);
+  // Roster source of truth is the fct_truck_division_lists blob (the
+  // dropdown_lists mirror can lag in serverless — same reason api/timesheet-jobs
+  // reads the blob for the customer picker). Read the blob first, fall back to
+  // the mirror for older data.
+  const [scopedRows, legacyRows] = await Promise.all([
+    sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division_lists'}`,
+    sql`SELECT value FROM app_data WHERE key = 'fct_truck_division_lists'`,
+  ]);
+  const scoped = (scopedRows[0]?.value && typeof scopedRows[0].value === 'object') ? scopedRows[0].value : null;
+  const legacy = (legacyRows[0]?.value && typeof legacyRows[0].value === 'object') ? legacyRows[0].value : null;
+  const lists  = scoped || legacy || null;
+  let names = (lists && Array.isArray(lists.drivers))
+    ? lists.drivers.map(v => String(v || '')).filter(Boolean)
+    : null;
+  if (!names) {
+    const rows = await sql`
+      SELECT value FROM dropdown_lists
+      WHERE company_code = ${companyCode} AND list_name = 'truck_drivers'
+    `;
+    names = rows.map(r => String(r.value || '')).filter(Boolean);
+  }
   const exact = names.find(v => v.trim().toLowerCase() === n);
   if (exact) return exact;
   const suffix = names.filter(v => v.trim().toLowerCase().endsWith(' ' + n));
