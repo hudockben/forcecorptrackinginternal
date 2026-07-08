@@ -7541,10 +7541,33 @@ function renderBidFooter(projId, opts = {}) {
     <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>`;
   footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td><td class="foot-label num" title="Total estimated labor hours to complete all bid items at historical pace">${totalEstHrs ? '≈ '+fmt(totalEstHrs,0)+' hrs' : '—'}</td>`;
 
-  // Update sqft summary bar in the fullscreen view (only when this project is open)
+  // Update the summary bar in the fullscreen view (only when this project is open).
+  // Always shows the financial roll-up (contract value, costs, profit); the
+  // Cost / SF breakdown is appended below it when the project has a SF figure.
   if (bidViewProjId === projId) {
     const sqftBar = document.getElementById('bid-fs-sqft-bar');
     if (sqftBar) {
+      const contractVal = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+      const profit      = contractVal ? contractVal - totalProj : null;   // Contract - Projected final cost
+      const profitCol   = profit === null ? 'var(--muted)' : profit >= 0 ? 'var(--green)' : 'var(--red)';
+      const profitTxt   = profit === null ? '—' : (profit >= 0 ? '$'+fmt(profit) : '-$'+fmt(Math.abs(profit)));
+      const profitPct   = (profit !== null && contractVal) ? ` (${(profit / contractVal * 100).toFixed(1)}%)` : '';
+      const profitDisp  = profitTxt + (profitPct ? `<span style="font-size:0.72em;font-weight:400;opacity:0.85">${profitPct}</span>` : '');
+      const projCol     = !totalBid ? 'var(--text)' : totalProj > totalBid ? 'var(--red)' : 'var(--green)';
+      const fmet = (label, val, col) =>
+        `<div style="display:flex;flex-direction:column;gap:1px">
+           <span style="font-size:0.6rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted)">${label}</span>
+           <span style="font-weight:700;font-size:0.98rem;color:${col}">${val}</span>
+         </div>`;
+      let barHTML =
+        `<div style="display:flex;gap:1.4rem;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:0.55rem 1rem;flex-wrap:wrap;margin-bottom:0.25rem">
+           ${fmet('Contract Value', contractVal ? '$'+fmt(contractVal) : '—', 'var(--blue)')}
+           ${fmet('Bid Cost', totalBid ? '$'+fmt(totalBid) : '—', '#86efac')}
+           ${fmet('Actual Cost', totalActual ? '$'+fmt(totalActual) : '—', 'var(--yellow)')}
+           ${fmet('Projected Cost', totalBid ? '$'+fmt(totalProj) : '—', projCol)}
+           <div style="width:1px;height:30px;background:var(--border);align-self:center"></div>
+           ${fmet('Profit', profitDisp, profitCol)}
+         </div>`;
       const sqft = parseFloat(p['sqft']) || 0;
       if (sqft > 0) {
         const bidSF     = totalBid    / sqft;
@@ -7554,9 +7577,8 @@ function renderBidFooter(projId, opts = {}) {
         const deltaTxt  = deltaSF >= 0
           ? `$${fmt(deltaSF)}/sf under bid`
           : `$${fmt(Math.abs(deltaSF))}/sf over bid`;
-        sqftBar.style.display = 'block';
-        sqftBar.innerHTML = `
-          <div style="display:flex;gap:2rem;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:0.55rem 1rem;flex-wrap:wrap;margin-bottom:0.25rem">
+        barHTML +=
+          `<div style="display:flex;gap:2rem;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:0.55rem 1rem;flex-wrap:wrap;margin-bottom:0.25rem">
             <span style="font-size:0.65rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted)">Cost / SF &nbsp;·&nbsp; ${fmt(sqft)} sf</span>
             <div style="display:flex;gap:0.4rem;align-items:baseline">
               <span style="font-size:0.65rem;color:var(--muted)">Bid</span>
@@ -7568,10 +7590,9 @@ function renderBidFooter(projId, opts = {}) {
             </div>
             <span style="font-weight:600;font-size:0.88rem;${deltaCls}">${deltaTxt}</span>
           </div>`;
-      } else {
-        sqftBar.style.display = 'none';
-        sqftBar.innerHTML = '';
       }
+      sqftBar.style.display = 'block';
+      sqftBar.innerHTML = barHTML;
     }
   }
 }
@@ -14673,6 +14694,21 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     </div>`;
   })() : '';
 
+  // Financial roll-up: contract value + profit (Contract - Projected final cost)
+  const contractVal = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+  const profitVal   = contractVal ? contractVal - grandProj : null;
+  const profitCls   = profitVal === null ? '' : profitVal >= 0 ? 'sqft-under' : 'sqft-over';
+  const profitTxt   = profitVal === null ? dash : (profitVal >= 0 ? '$'+fmt(profitVal) : '-$'+fmt(Math.abs(profitVal)));
+  const profitPct   = (profitVal !== null && contractVal) ? ` (${(profitVal / contractVal * 100).toFixed(1)}%)` : '';
+  const finBarHTML = `<div class="sqft-bar">
+      <div class="sqft-metric"><div class="sqft-label">Contract Value</div><div class="sqft-val">${contractVal ? '$'+fmt(contractVal) : dash}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Bid Cost</div><div class="sqft-val">${grandBid ? '$'+fmt(grandBid) : dash}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Actual Cost</div><div class="sqft-val sqft-actual">${grandActual ? '$'+fmt(grandActual) : dash}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Projected Cost</div><div class="sqft-val">${grandBid ? '$'+fmt(grandProj) : dash}</div></div>
+      <div class="sqft-sep"></div>
+      <div class="sqft-metric"><div class="sqft-label">Profit</div><div class="sqft-val ${profitCls}">${profitTxt}${profitPct}</div></div>
+    </div>`;
+
   const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>${name} — Bid Line Items vs Actuals</title>
   <style>
@@ -14705,6 +14741,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   </head><body>
   <h2>Bid Line Items vs Actuals — ${esc(name)}${esc(jobNo)}</h2>
   <p class="meta">Printed ${new Date().toLocaleDateString()}</p>
+  ${finBarHTML}
   ${sqftBarHTML}
   <table>
     <thead><tr>

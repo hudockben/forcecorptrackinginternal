@@ -23,9 +23,9 @@ CREATE TABLE cost_items (
 -- Calculated / derived columns (for reference — compute these in application logic or views):
 --
 --  percent_completed       = (running_quantities / quantity) * 100
---  total_cost_bid          = quantity * bid_item_cost
+--  bid_cost_total          = quantity * bid_item_cost
 --  running_total_cost      = running_quantities * running_item_cost
---  total_cost_pct          = (running_total_cost / total_cost_bid) * 100
+--  total_cost_pct          = (running_total_cost / bid_cost_total) * 100
 --  projected_cost          = running_total_cost + ((quantity - running_quantities) * running_item_cost)
 --  mu_per_laborer_hour     = running_total_cost / cumulative_labor_hours
 --  equipment_cost_per_hour = equip_total_cost / equipment_hours
@@ -44,7 +44,7 @@ SELECT
     bid_item_cost,
     running_item_cost,
     past_avg,
-    ROUND(quantity * bid_item_cost, 2)                                  AS total_cost_bid,
+    ROUND(quantity * bid_item_cost, 2)                                  AS bid_cost_total,
     ROUND(running_quantities * running_item_cost, 2)                    AS running_total_cost,
     CASE WHEN (quantity * bid_item_cost) != 0
          THEN ROUND(((running_quantities * running_item_cost) / (quantity * bid_item_cost)) * 100, 2)
