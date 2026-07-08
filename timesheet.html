@@ -537,6 +537,12 @@
           <input type="date" id="f-off-date" />
         </div>
         <div class="row">
+          <label for="f-off-supervisor">Supervisor</label>
+          <select id="f-off-supervisor">
+            <option value="">— pick —</option>
+          </select>
+        </div>
+        <div class="row">
           <label for="f-off-notes">Notes <span style="text-transform:none;font-weight:400">(optional)</span></label>
           <textarea id="f-off-notes" placeholder="Anything the office should know"></textarea>
         </div>
@@ -711,9 +717,10 @@
         const data = await res.json();
         supervisors = Array.isArray(data.supervisors) ? data.supervisors : [];
       } catch { supervisors = []; }
-      const sel = document.getElementById('f-supervisor');
-      sel.innerHTML = '<option value="">— pick —</option>' +
+      const opts = '<option value="">— pick —</option>' +
         supervisors.map(s => `<option value="${s.id}" data-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
+      document.getElementById('f-supervisor').innerHTML = opts;
+      document.getElementById('f-off-supervisor').innerHTML = opts;
     }
 
     async function onDivisionChange() {
@@ -991,6 +998,19 @@
           p.classList.toggle('active', p.dataset.val === offType);
         });
         document.getElementById('f-off-date').value = e.work_date || '';
+        const offSupSel = document.getElementById('f-off-supervisor');
+        if (e.supervisor_id && ![...offSupSel.options].some(o => String(o.value) === String(e.supervisor_id))) {
+          // Supervisor no longer in the list — keep it as a synthetic option so
+          // the draft still shows it (and can be re-saved) instead of blanking.
+          const opt = document.createElement('option');
+          opt.value = e.supervisor_id;
+          opt.textContent = e.supervisor_name || e.supervisor_id;
+          opt.dataset.name = e.supervisor_name || '';
+          opt.selected = true;
+          offSupSel.appendChild(opt);
+        } else {
+          offSupSel.value = e.supervisor_id || '';
+        }
         document.getElementById('f-off-notes').value = e.notes || '';
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1023,6 +1043,7 @@
       offType = null;
       document.querySelectorAll('#off-pills .pill').forEach(p => p.classList.remove('active'));
       document.getElementById('f-off-date').value = todayStr();
+      document.getElementById('f-off-supervisor').value = '';
       document.getElementById('f-off-notes').value = '';
       document.getElementById('formMsg').textContent = '';
     }
@@ -1033,10 +1054,17 @@
         if (!offType) return { error: 'Pick a time-off type.' };
         const d = document.getElementById('f-off-date').value;
         if (!d) return { error: 'Pick a date.' };
+        const offSupSel = document.getElementById('f-off-supervisor');
+        const offSupId  = offSupSel.value;
+        if (!offSupId) return { error: 'Pick a supervisor.' };
+        const offSupOpt = offSupSel.options[offSupSel.selectedIndex];
+        const offSupName = offSupOpt ? offSupOpt.dataset.name || offSupOpt.textContent : '';
         return { data: {
           entry_type: 'time_off',
           work_date: d,
           time_off_type: offType,
+          supervisor_id: offSupId,
+          supervisor_name: offSupName,
           notes: document.getElementById('f-off-notes').value || '',
         }};
       }

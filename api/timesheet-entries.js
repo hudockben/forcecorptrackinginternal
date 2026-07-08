@@ -927,6 +927,11 @@ function normalizeEntryBody(body) {
   if (entry_type === 'time_off') {
     const time_off_type = VALID_TIME_OFF.includes(body.time_off_type) ? body.time_off_type : null;
     if (!time_off_type) return { error: 'time_off_type is required (vacation, sick, jury_duty, bereavement, holiday)' };
+    // Time off is tied to a supervisor too (same roster as daily entries) so
+    // payroll can attribute/route it and the Scheduler knows whose crew is out.
+    const supervisor_id   = safeInt(body.supervisor_id);
+    const supervisor_name = safeStr(body.supervisor_name, 200);
+    if (!supervisor_name) return { error: 'supervisor_name is required' };
     return {
       data: {
         entry_type,
@@ -942,8 +947,8 @@ function normalizeEntryBody(body) {
         travel_hours:         null,
         lunch_break:          null,
         operated_equipment:   null,
-        supervisor_id:        null,
-        supervisor_name:      null,
+        supervisor_id,
+        supervisor_name,
         notes:                safeStr(body.notes, 2000),
         time_off_type,
         truck_unit:           null,

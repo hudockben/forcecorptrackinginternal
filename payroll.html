@@ -2789,7 +2789,7 @@
         const total    = e.entry_type === 'time_off'
           ? '—'
           : (workH != null || travelH != null ? totalH.toFixed(2) : '');
-        const sup      = e.entry_type === 'time_off' ? '—' : (e.supervisor_name || '—');
+        const sup      = e.supervisor_name || '—';
         const hoursFlag = mismatchFlags.get(e.id);
         const hoursMarker = hoursFlag
           ? ` <span class="hours-flag" title="${escapeHtml(hoursMismatchTitle(hoursFlag, e.username))}">⚑ Hours vary</span>`
@@ -2809,7 +2809,7 @@
             <td class="${hoursFlag ? 'hours-mismatch' : ''}" style="font-variant-numeric:tabular-nums">${hours}${hoursMarker}</td>
             <td style="font-variant-numeric:tabular-nums">${travel}</td>
             <td style="font-variant-numeric:tabular-nums"><strong>${total}</strong></td>
-            <td>${e.entry_type === 'time_off' || !e.supervisor_name
+            <td>${!e.supervisor_name
               ? escapeHtml(sup)
               : `<button class="sup-chip" title="Filter to this supervisor" onclick="filterBySupervisor('${escapeJsAttr(e.supervisor_name)}')">${escapeHtml(sup)}</button>`}</td>
             <td><span class="badge badge-${e.status}">${e.status}</span>${statusMetaHtml(e)}</td>
@@ -3113,6 +3113,8 @@
 
       const grid = document.getElementById('editGrid');
       if (e.entry_type === 'time_off') {
+        // ensure supervisors loaded so time off can be tied to one too
+        if (!supervisors.length) await loadSupervisors();
         grid.innerHTML = `
           <div>
             <label>Type</label>
@@ -3129,12 +3131,32 @@
             <input type="date" id="em-date" />
           </div>
           <div class="full">
+            <label>Supervisor</label>
+            <select id="em-sup">
+              <option value="">— pick —</option>
+              ${supervisors.map(s => `<option value="${s.id}" data-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="full">
             <label>Notes</label>
             <textarea id="em-notes"></textarea>
           </div>
         `;
         document.getElementById('em-off-type').value = e.time_off_type || 'vacation';
         document.getElementById('em-date').value     = e.work_date || '';
+        const emOffSupSel = document.getElementById('em-sup');
+        if (e.supervisor_id && !supervisors.some(s => String(s.id) === String(e.supervisor_id))) {
+          // Supervisor no longer in the list — keep current value as a synthetic
+          // option so it displays and isn't cleared/overwritten on save.
+          const opt = document.createElement('option');
+          opt.value = e.supervisor_id;
+          opt.textContent = e.supervisor_name || e.supervisor_id;
+          opt.dataset.name = e.supervisor_name || '';
+          opt.selected = true;
+          emOffSupSel.appendChild(opt);
+        } else {
+          emOffSupSel.value = e.supervisor_id || '';
+        }
         document.getElementById('em-notes').value    = e.notes || '';
       } else {
         // ensure supervisors loaded
@@ -3280,10 +3302,15 @@
 
       let body;
       if (editingEntry.entry_type === 'time_off') {
+        const offSupSel = document.getElementById('em-sup');
+        const offSupOpt = offSupSel.options[offSupSel.selectedIndex];
+        if (!offSupSel.value) { msg.textContent = 'Pick a supervisor.'; msg.classList.add('error'); return; }
         body = {
           entry_type: 'time_off',
           work_date: document.getElementById('em-date').value,
           time_off_type: document.getElementById('em-off-type').value,
+          supervisor_id:   offSupSel.value,
+          supervisor_name: offSupOpt ? (offSupOpt.dataset.name || offSupOpt.textContent) : '',
           notes: document.getElementById('em-notes').value || '',
         };
       } else {
