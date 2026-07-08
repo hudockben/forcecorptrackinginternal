@@ -1126,6 +1126,18 @@
       return Math.round(mins / 60 * 100) / 100;
     }
 
+    // Format a 24-hour "HH:MM" as 12-hour "HH:MM AM/PM" so read-only (locked)
+    // rows match the native time-input display on editable rows. Leaves anything
+    // that isn't a HH:MM value untouched.
+    function fmtTime12(hhmm) {
+      const m = String(hhmm || '').trim().match(/^(\d{1,2}):(\d{2})/);
+      if (!m) return String(hhmm || '');
+      let h = parseInt(m[1], 10);
+      const ap = h >= 12 ? 'PM' : 'AM';
+      h = h % 12; if (h === 0) h = 12;
+      return String(h).padStart(2, '0') + ':' + m[2] + ' ' + ap;
+    }
+
     // Updates time field in memory and refreshes hours/total display without triggering a save.
     // Called by oninput so the display stays live while the user is still typing.
     function _liveHours(id, field, value) {
@@ -1477,8 +1489,8 @@
                   <td style="min-width:110px">${ro(e.actual_date)}</td>
                   <td style="min-width:140px">${ro(e.driver)}</td>
                   <td style="min-width:140px">${ro(e.unit)}${unitNum}</td>
-                  <td style="min-width:90px">${ro(e.actual_start)}</td>
-                  <td style="min-width:90px">${ro(e.actual_end)}</td>
+                  <td style="min-width:90px">${ro(fmtTime12(e.actual_start))}</td>
+                  <td style="min-width:90px">${ro(fmtTime12(e.actual_end))}</td>
                   <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)"><span style="color:#fbbf24;font-size:0.8rem;font-weight:600">${esc(e.total_hours||'')}</span></td>
                   <td style="min-width:90px;text-align:right">${ro(e.haul_fee)}</td>
                   <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
