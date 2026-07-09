@@ -1880,13 +1880,17 @@
         divRows.forEach(e => {
           const gal = parseFloat(e.gallons_ub) || 0;
           if (gal <= 0) return;
+          const hrs = parseFloat(e.total_hours) || 0;
           const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
           const mIdx = isNaN(mRaw) ? -1 : mRaw;
           const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, gallons: 0, icUb: 0, byCo: {} };
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, gallons: 0, hours: 0, icUb: 0, byCo: {} };
           byMonth[mKey].gallons += gal;
+          byMonth[mKey].hours   += hrs;
           const coName = e.company_name || 'Unknown';
-          byMonth[mKey].byCo[coName] = (byMonth[mKey].byCo[coName] || 0) + gal;
+          if (!byMonth[mKey].byCo[coName]) byMonth[mKey].byCo[coName] = { gallons: 0, hours: 0 };
+          byMonth[mKey].byCo[coName].gallons += gal;
+          byMonth[mKey].byCo[coName].hours   += hrs;
           // IC UB total is summed per customer so each customer's own $/gal
           // override (else the shared icUbRate) is applied to its gallons.
           byMonth[mKey].icUb += gal * dustUbRateFor(coName);
@@ -1895,30 +1899,33 @@
 
         const totGal = sortedMonths.reduce((s, m) => s + m.gallons, 0);
         if (totGal <= 0) return '';                 // nothing to total — skip the panel
+        const totHrs = sortedMonths.reduce((s, m) => s + m.hours, 0);
         const totIc = sortedMonths.reduce((s, m) => s + m.icUb, 0);
 
         const monthRows = sortedMonths.map((m, mi) => {
           const detId = `ci-galsum-m${mi}`;
           const coRows = Object.entries(m.byCo)
-            .sort((a, b) => b[1] - a[1])
-            .map(([name, g]) => {
+            .sort((a, b) => b[1].gallons - a[1].gallons)
+            .map(([name, d]) => {
               const r = dustUbRateFor(name);
               return `<tr>
                 <td>${escT(name)}</td>
-                <td class="r">${galTxt(g)}</td>
-                <td class="r ic-val">${r > 0 ? fmt$(g * r) : '—'}</td>
+                <td class="r">${fmtH(d.hours)}</td>
+                <td class="r">${galTxt(d.gallons)}</td>
+                <td class="r ic-val">${r > 0 ? fmt$(d.gallons * r) : '—'}</td>
               </tr>`;
             }).join('');
           return `
             <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
               <td><span class="ci-month-arrow">▶</span>${m.label}</td>
+              <td class="r">${fmtH(m.hours)}</td>
               <td class="r">${galTxt(m.gallons)}</td>
               <td class="r ic-val">${m.icUb > 0 ? fmt$(m.icUb) : '—'}</td>
             </tr>
             <tr class="ci-mdet-row" id="${detId}">
-              <td colspan="3" class="ci-mdet-inner">
+              <td colspan="4" class="ci-mdet-inner">
                 <table class="ci-detail-table">
-                  <thead><tr><th>Company</th><th class="r">UB Gallons</th><th class="r ic-val">IC UB Total</th></tr></thead>
+                  <thead><tr><th>Company</th><th class="r">Hours</th><th class="r">UB Gallons</th><th class="r ic-val">IC UB Total</th></tr></thead>
                   <tbody>${coRows}</tbody>
                 </table>
               </td>
@@ -1937,6 +1944,10 @@
             </div>
             <div class="ci-co-meta">
               <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${fmtH(totHrs)}</div>
+                <div class="ci-co-stat-lbl">Total Hours</div>
+              </div>
+              <div class="ci-co-stat">
                 <div class="ci-co-stat-val">${galTxt(totGal)}</div>
                 <div class="ci-co-stat-lbl">Total UB Gallons</div>
               </div>
@@ -1950,6 +1961,7 @@
             <thead>
               <tr>
                 <th>Month</th>
+                <th class="r">Hours</th>
                 <th class="r">UB Gallons</th>
                 <th class="r ic-val">IC UB Total</th>
               </tr>
@@ -1958,6 +1970,7 @@
               ${monthRows}
               <tr class="ci-month-total">
                 <td>Total</td>
+                <td class="r">${fmtH(totHrs)}</td>
                 <td class="r">${galTxt(totGal)}</td>
                 <td class="r ic-val">${totIc > 0 ? fmt$(totIc) : '—'}</td>
               </tr>
