@@ -691,6 +691,48 @@
       text-align: right; font-variant-numeric: tabular-nums;
     }
     .be-royalty-input:focus { border-color: var(--accent); outline: none; }
+    /* Per-pit royalty owners: table button + editor modal */
+    .be-royalty-btn {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 0.8rem; font-weight: 600; font-family: inherit;
+      padding: 0.25rem 0.6rem; cursor: pointer; font-variant-numeric: tabular-nums;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .be-royalty-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .ro-body { padding: 0.25rem 0.1rem; }
+    .ro-help {
+      font-size: 0.78rem; color: var(--muted); line-height: 1.5; margin-bottom: 1rem;
+    }
+    .ro-help strong { color: var(--text); }
+    .ro-list-head, .ro-row {
+      display: grid; grid-template-columns: 1fr 6rem 7.5rem auto; gap: 0.6rem;
+      align-items: center;
+    }
+    .ro-list-head {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); padding: 0 0.15rem 0.4rem;
+    }
+    .ro-list { display: flex; flex-direction: column; gap: 0.5rem; }
+    .ro-row {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.5rem 0.6rem;
+    }
+    .ro-name, .ro-num {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 0.82rem; padding: 0.35rem 0.5rem;
+      outline: none; font-family: inherit; width: 100%;
+    }
+    .ro-name:focus, .ro-num:focus { border-color: var(--accent); }
+    .ro-field {
+      display: flex; align-items: center; gap: 0.25rem;
+      font-size: 0.78rem; color: var(--muted); white-space: nowrap;
+    }
+    .ro-field .ro-num { text-align: right; font-variant-numeric: tabular-nums; }
+    .ro-total {
+      margin-top: 1rem; padding-top: 0.8rem; border-top: 1px solid var(--border);
+      font-size: 0.85rem; color: var(--muted); text-align: right;
+    }
+    .ro-total strong { color: var(--accent); font-size: 0.95rem; }
     .be-bench-input {
       width: 2.8rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
       color: var(--text); font-size: 0.78rem; padding: 0.22rem 0.3rem;
@@ -1288,7 +1330,7 @@
         <div class="be-formula">Break-even tons / mo&nbsp;=&nbsp;Monthly fixed costs&nbsp;÷&nbsp;(Avg price/ton − Variable cost/ton)</div>
         <ul>
           <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales and Crushing entries for the selected year. Variable cost = crushing labor &amp; fuel ÷ tons crushed (daily tracking is not included).</li>
-          <li><strong>Royalty %</strong> (per pit, in the table below) is a percentage of sales paid out — it comes off the price, lowering contribution by royalty% &times; price/ton. Enter each pit's rate (e.g., 12.75%) and contribution and break-even update automatically. Royalty applies <strong>only to material you flag as royalty-bearing</strong> — open <em>Manage Lists → Product</em> and check the rock products that carry a royalty; sales of unchecked products (fill, millings, etc.) are excluded, so contribution isn't over-deducted.</li>
+          <li><strong>Royalty</strong> (per pit, in the table below) comes off the price, lowering contribution. Click a pit's <strong>Royalty %</strong> cell to add its <strong>owners</strong> — each pit can stack several (e.g., mineral + surface + energies), and each owner is the greater of its <em>% of the sale</em> or a <em>$/ton floor</em>. The cell shows the combined rate; contribution and break-even update automatically. Royalty applies <strong>only to material you flag as royalty-bearing</strong> — open <em>Manage Lists → Product</em> and check the rock products that carry a royalty; sales of unchecked products (fill, millings, etc.) are excluded, so contribution isn't over-deducted.</li>
           <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
           <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below — pick a pit and type each month's figure. This column shows each location's average monthly fixed; <strong>All Pits is the total across pits</strong> (your full company-wide monthly fixed), and the executive dashboard mirrors it. Entries save automatically.</li>
         </ul>
@@ -1459,6 +1501,17 @@
         <div class="ml-panel"        id="ml-employees"></div>
         <div class="ml-panel"        id="ml-location"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- ── Royalty Owners Modal (per pit) ── -->
+  <div class="modal-backdrop" id="royaltyOwnersBackdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="royaltyOwnersTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="royaltyOwnersTitle">Royalty Owners</div>
+        <button class="modal-close" onclick="closeRoyaltyOwners()" aria-label="Close">✕</button>
+      </div>
+      <div class="ro-body" id="royaltyOwnersBody"></div>
     </div>
   </div>
 
@@ -1876,8 +1929,11 @@
     document.getElementById('manageListsBackdrop').addEventListener('click', function(e) {
       if (e.target === this) closeManageLists();
     });
+    document.getElementById('royaltyOwnersBackdrop').addEventListener('click', function(e) {
+      if (e.target === this) closeRoyaltyOwners();
+    });
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') closeManageLists();
+      if (e.key === 'Escape') { closeManageLists(); closeRoyaltyOwners(); }
     });
 
     renderAllPanels();
@@ -3991,9 +4047,13 @@
       renderBreakeven();   // by-location average + monthly table + chart all refresh
     }
 
-    // ── Royalty rate (per pit) ────────────────────────────────────
-    // Stored flat: { '<pit>': ratePercent }. Inflates each location's
-    // variable cost by (1 + rate/100) everywhere break-even is computed.
+    // ── Royalty owners (per pit) ──────────────────────────────────
+    // Stored as { '<pit>': [ { id, name, rate, floor } ] } — each pit can owe
+    // several stacked royalties (e.g. mineral + surface + energies), each a
+    // % of sales with a per-ton floor. A pit's royalty on a sale is the sum
+    // over its owners of max(rate% × price, floor) × tons, charged only on
+    // royalty-flagged products. Legacy blobs stored a bare number per pit
+    // ({ pit: 12.75 }); those migrate to a single unnamed owner, no floor.
     const QUARRY_ROYALTY_KEY = 'fct_quarry_royalty';
     let quarryRoyalty = {};
     let royaltyLoaded = false;
@@ -4001,12 +4061,38 @@
     let royaltySavePending = null;
     let royaltySaveInFlight = false;
 
+    const royaltyRound = (n) => Math.round(n * 10000) / 10000;
+    function newRoyaltyId() {
+      return Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+    }
+    // Normalize one pit's owner list from any stored shape (array of owners,
+    // legacy bare number, or junk).
+    function normalizeOwners(v) {
+      if (Array.isArray(v)) {
+        return v.map(o => {
+          const rate = Number(o && o.rate);
+          const floor = Number(o && o.floor);
+          const name = (o && typeof o.name === 'string' && o.name.trim()) ? o.name.trim() : 'Royalty';
+          return {
+            id: (o && o.id) ? String(o.id) : newRoyaltyId(),
+            name,
+            rate: Number.isFinite(rate) && rate > 0 ? royaltyRound(rate) : 0,
+            floor: Number.isFinite(floor) && floor > 0 ? royaltyRound(floor) : 0,
+          };
+        }).filter(o => o.rate > 0 || o.floor > 0);
+      }
+      const n = Number(v); // legacy: a bare percentage of sales
+      if (Number.isFinite(n) && n > 0) {
+        return [{ id: newRoyaltyId(), name: 'Royalty', rate: royaltyRound(n), floor: 0 }];
+      }
+      return [];
+    }
     function normalizeRoyalty(value) {
       const out = {};
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         Object.keys(value).forEach(k => {
-          const n = Number(value[k]);
-          if (Number.isFinite(n) && n > 0) out[k] = Math.round(n * 10000) / 10000;
+          const owners = normalizeOwners(value[k]);
+          if (owners.length) out[k] = owners;
         });
       }
       return out;
@@ -4063,10 +4149,32 @@
         royaltyFetchedOnce = true;
       }
     }
-    // Royalty rate (%) of sales for a location (0 if none).
+    // A pit's royalty owners (empty when none configured).
+    function royaltyOwners(loc) {
+      const v = quarryRoyalty[loc];
+      return Array.isArray(v) ? v : [];
+    }
+    // Combined nominal rate (%) across a pit's owners — for display only.
     function royaltyRate(loc) {
-      const v = Number(quarryRoyalty[loc]);
-      return Number.isFinite(v) && v > 0 ? v : 0;
+      return royaltyOwners(loc).reduce((s, o) => s + (Number(o.rate) || 0), 0);
+    }
+    // Royalty $ owed on one sale: each owner pays the greater of its % of the
+    // sale or its per-ton floor, summed across owners. price × rate% is the
+    // per-ton royalty; the floor only bites when the price is low enough.
+    function royaltyForSale(loc, tons, pricePerTon) {
+      const t = Number(tons);
+      if (!Number.isFinite(t) || t <= 0) return 0;
+      const price = Number(pricePerTon);
+      // No price → no sale value → no royalty (the floor would otherwise
+      // charge against $0 revenue on an incomplete row).
+      if (!Number.isFinite(price) || price <= 0) return 0;
+      let total = 0;
+      royaltyOwners(loc).forEach(o => {
+        const rate = Number(o.rate) || 0;
+        const floor = Number(o.floor) || 0;
+        total += Math.max(price * rate / 100, floor) * t;
+      });
+      return total;
     }
     // Royalties apply only to material flagged in Manage Lists → Product
     // (rock/aggregate), not every product. Build id + name lookups of the
@@ -4089,14 +4197,88 @@
       const nm = String(row.productName || '').trim().toLowerCase();
       return nm !== '' && sets.names.has(nm);
     }
-    function onRoyaltyInput(input) {
-      const loc = input.dataset.loc || '';
+    // ── Royalty owners editor (per pit) ───────────────────────────
+    let royaltyEditLoc = null;
+    function openRoyaltyOwners(loc) {
       if (!loc || loc === 'all' || loc === BE_NO_LOC) return;
-      const raw = String(input.value).trim();
-      const n = raw === '' ? 0 : Number(raw.replace(/[^0-9.]/g, ''));
-      if (Number.isFinite(n) && n > 0) quarryRoyalty[loc] = Math.round(n * 10000) / 10000;
-      else delete quarryRoyalty[loc];
+      royaltyEditLoc = loc;
+      renderRoyaltyOwners();
+      document.getElementById('royaltyOwnersBackdrop').classList.add('open');
+    }
+    function closeRoyaltyOwners() {
+      royaltyEditLoc = null;
+      document.getElementById('royaltyOwnersBackdrop').classList.remove('open');
+    }
+    function royaltyCombinedLabel(loc) {
+      const c = royaltyRate(loc);
+      return c > 0 ? (Math.round(c * 100) / 100) + '%' : '—';
+    }
+    function renderRoyaltyOwners() {
+      const loc = royaltyEditLoc;
+      const titleEl = document.getElementById('royaltyOwnersTitle');
+      const body = document.getElementById('royaltyOwnersBody');
+      if (!loc || !body) return;
+      if (titleEl) titleEl.textContent = `Royalty Owners — ${loc}`;
+      const owners = royaltyOwners(loc);
+      const rowsHtml = owners.length
+        ? owners.map((o, i) => `
+            <div class="ro-row">
+              <input class="ro-name" type="text" value="${escapeHtml(o.name || '')}" placeholder="Owner name"
+                     maxlength="60" onchange="roUpdateOwner(${i}, 'name', this.value)" />
+              <div class="ro-field"><input class="ro-num" type="text" inputmode="decimal" value="${o.rate > 0 ? o.rate : ''}"
+                     placeholder="0" onchange="roUpdateOwner(${i}, 'rate', this.value)" /><span>%</span></div>
+              <div class="ro-field"><span>$</span><input class="ro-num" type="text" inputmode="decimal" value="${o.floor > 0 ? o.floor : ''}"
+                     placeholder="0.00" onchange="roUpdateOwner(${i}, 'floor', this.value)" /><span>/ton</span></div>
+              <button class="btn-del" onclick="roDeleteOwner(${i})">Delete</button>
+            </div>`).join('')
+        : `<div class="ml-empty">No royalty owners yet — this pit's sales carry no royalty. Add one below.</div>`;
+      body.innerHTML = `
+        <div class="ro-help">Each owner is paid the greater of its <strong>% of the sale</strong> or its <strong>$/ton floor</strong> (whichever is larger), on royalty-flagged (rock) products only. The combined rate feeds Break-Even and stacks all owners.</div>
+        <div class="ro-list-head"><span>Owner</span><span>Rate</span><span>Floor</span><span></span></div>
+        <div class="ro-list">${rowsHtml}</div>
+        <button class="btn-add-row" onclick="roAddOwner()">+ Add owner</button>
+        <div class="ro-total">Combined rate: <strong id="roCombined">${royaltyCombinedLabel(loc)}</strong></div>
+      `;
+    }
+    function roEnsureLoc() {
+      if (!royaltyEditLoc) return null;
+      if (!Array.isArray(quarryRoyalty[royaltyEditLoc])) quarryRoyalty[royaltyEditLoc] = [];
+      return quarryRoyalty[royaltyEditLoc];
+    }
+    function roRefreshTotal() {
+      const el = document.getElementById('roCombined');
+      if (el && royaltyEditLoc) el.textContent = royaltyCombinedLabel(royaltyEditLoc);
+    }
+    function roAddOwner() {
+      const list = roEnsureLoc();
+      if (!list) return;
+      // New owner starts blank (inert) until a rate/floor is entered, so
+      // adding a row doesn't silently charge royalty.
+      list.push({ id: newRoyaltyId(), name: 'Royalty', rate: 0, floor: 0 });
       scheduleRoyaltySave();
+      renderRoyaltyOwners();
+      renderBreakeven();
+    }
+    function roDeleteOwner(i) {
+      const list = roEnsureLoc();
+      if (!list || !list[i]) return;
+      list.splice(i, 1);
+      if (!list.length) delete quarryRoyalty[royaltyEditLoc];
+      scheduleRoyaltySave();
+      renderRoyaltyOwners();
+      renderBreakeven();
+    }
+    function roUpdateOwner(i, field, value) {
+      const list = roEnsureLoc();
+      if (!list || !list[i]) return;
+      if (field === 'name') {
+        list[i].name = String(value).trim() || 'Royalty';
+      } else if (field === 'rate' || field === 'floor') {
+        const n = Number(String(value).replace(/[^0-9.]/g, ''));
+        list[i][field] = Number.isFinite(n) && n > 0 ? royaltyRound(n) : 0;
+      }
+      scheduleRoyaltySave();
+      roRefreshTotal();   // update the combined figure without stealing field focus
       renderBreakeven();
     }
 
@@ -4228,8 +4410,8 @@
         const e = ensure(r.locationName);
         const amt = homeRowSales(r);
         e.revenue += amt;
-        // Royalty is a % of sales, but only on royalty-flagged material.
-        if (salesRowHasRoyalty(r, royaltySets)) e.royaltyCost += amt * royaltyRate(r.locationName) / 100;
+        // Royalty stacks each owner (% of sale or $/ton floor), rock only.
+        if (salesRowHasRoyalty(r, royaltySets)) e.royaltyCost += royaltyForSale(r.locationName, r.tons, r.pricePerTon);
         const t = Number(r.tons);
         if (Number.isFinite(t)) e.tonsSold += t;
         const mk = beMonthKey(r.date);
@@ -4609,10 +4791,13 @@
         const fixedCell = (d.name === BE_NO_LOC)
           ? cell(dash, 'be-num')
           : cell(d.monthlyFixed > 0 ? formatMoney(d.monthlyFixed) : dash, 'be-num');
-        // Editable royalty % per pit; a % of sales deducted from contribution.
+        // Per pit: click to edit the stacked royalty owners; the cell shows
+        // their combined rate (a % of sales deducted from contribution).
+        const royaltyRateVal = royaltyRate(d.name);
+        const hasOwners = royaltyOwners(d.name).length > 0;
         const royaltyCell = (isTotal || d.name === BE_NO_LOC)
           ? cell(dash, 'be-num')
-          : `<td class="be-num"><input class="be-royalty-input" type="text" inputmode="decimal" data-loc="${escapeHtml(d.name)}" value="${royaltyRate(d.name) > 0 ? royaltyRate(d.name) : ''}" placeholder="0" onchange="onRoyaltyInput(this)"> %</td>`;
+          : `<td class="be-num"><button type="button" class="be-royalty-btn" data-loc="${escapeHtml(d.name)}" onclick="openRoyaltyOwners(this.dataset.loc)" title="Edit royalty owners">${hasOwners ? (Math.round(royaltyRateVal * 100) / 100) + '%' : 'Set'}</button></td>`;
         const royaltyDollarCell = cell((d.royaltyPerTon && d.royaltyPerTon > 0) ? formatMoney(d.royaltyPerTon) : dash, 'be-num');
         const beTonsTxt = (d.contribution != null && d.contribution <= 0) ? 'No B/E'
           : (d.breakEvenTons != null ? formatTons(d.breakEvenTons) : dash);
@@ -4690,8 +4875,8 @@
         const e = ensureM(mk);
         const amt = homeRowSales(r);
         e.revenue += amt;
-        // Royalty is a % of sales, but only on royalty-flagged material.
-        if (salesRowHasRoyalty(r, royaltySets)) e.royaltyCost += amt * royaltyRate(r.locationName) / 100;
+        // Royalty stacks each owner (% of sale or $/ton floor), rock only.
+        if (salesRowHasRoyalty(r, royaltySets)) e.royaltyCost += royaltyForSale(r.locationName, r.tons, r.pricePerTon);
         const t = Number(r.tons); if (Number.isFinite(t)) e.tonsSold += t;
       });
       // Variable cost = crushing only (daily tracking excluded).
@@ -5629,7 +5814,7 @@ ${sections}
 
       // By-location table
       const royaltyTxt = (d, isTotal) => (isTotal || d.name === BE_NO_LOC || royaltyRate(d.name) <= 0)
-        ? dash : (royaltyRate(d.name) + '%');
+        ? dash : ((Math.round(royaltyRate(d.name) * 100) / 100) + '%');
       const locRow = (d, isTotal) =>
         `<tr${isTotal ? ' class="tot"' : ''}>
           <td>${escapeHtml(d.name)}</td>
