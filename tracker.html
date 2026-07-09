@@ -9151,8 +9151,8 @@ function renderTruckingTab() {
 
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(tr.tr_number)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px">${cbHtml('projects', projName, '— none —', `data-tr-id="${tr.id}" data-tr-field="project_id"`)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${cbHtml('tr_subcodes:' + tr.id, subLabel, tr.project_id ? '— select —' : '— pick project first —', `data-tr-id="${tr.id}" data-tr-field="sub_code_sel"`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${cbHtml('projects', projName, '— none —', `data-tr-id="${tr.id}" data-tr-field="project_id"${tr.project_id ? ` data-cb-value="${esc(tr.project_id)}"` : ''}`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${cbHtml('tr_subcodes:' + tr.id, subLabel, tr.project_id ? '— select —' : '— pick project first —', `data-tr-id="${tr.id}" data-tr-field="sub_code_sel"${(tr.cost_code || tr.sub_code) ? ` data-cb-value="${esc((tr.cost_code||'') + '||' + (tr.sub_code||''))}"` : ''}`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('employees', tr.driver || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="driver"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('equipment', tr.truck_type || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="truck_type"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:150px">${inp('material_hauled', 'text', 'placeholder="Material hauled"')}</td>
@@ -9716,7 +9716,10 @@ document.getElementById('trucking-root').addEventListener('input', e => {
   const el = e.target;
   const id = el.dataset.trId, field = el.dataset.trField;
   if (!id || !field) return;
-  if (field === 'project_id' || field === 'sub_code_sel') return;
+  // Combobox fields (project/sub code/driver/truck type) and the status select
+  // commit via a synthetic change; handle them in the change listener only, so
+  // keystrokes while filtering don't clobber the value or save per character.
+  if (field === 'project_id' || field === 'sub_code_sel' || field === 'driver' || field === 'truck_type' || field === 'status') return;
   const tr = truckingEntries.find(t => t.id === id);
   if (!tr) return;
   tr[field] = el.value;
@@ -9739,9 +9742,15 @@ document.getElementById('trucking-root').addEventListener('change', e => {
   const oldProj = tr.project_id;
 
   if (field === 'sub_code_sel') {
-    const mapped = el.dataset.cbValue || el.value || '';
+    // Sub code is a bid-item picker: the real value (cost_code||sub_code) only
+    // ever lives in cbValue. Never fall back to el.value — that's the human label
+    // (no "||"), which would corrupt cost_code with a label fragment, e.g. when a
+    // bid item was deleted/renamed after this entry referenced it.
+    const mapped = el.dataset.cbValue || '';
     delete el.dataset.cbValue;
     const [cc, sc] = mapped.split('||');
+    // No-op commit (focus+blur, or re-picking the same item) — skip redundant re-sync.
+    if ((cc || '') === (tr.cost_code || '') && (sc || '') === (tr.sub_code || '')) return;
     tr.cost_code = cc || '';
     tr.sub_code  = sc || '';
     saveTruckingEntries();
@@ -9751,9 +9760,16 @@ document.getElementById('trucking-root').addEventListener('change', e => {
   }
 
   if (field === 'project_id') {
-    tr[field] = el.dataset.cbValue || '';
+    const newProj = el.dataset.cbValue || '';
     delete el.dataset.cbValue;
+    // No-op commit: re-selecting the current project (or a focus+blur) must NOT
+    // clear the sub code or delete/recreate the linked daily row below.
+    if (newProj === oldProj) return;
+    tr[field] = newProj;
   } else {
+    // No-op commit for driver / truck_type / status — skip redundant work, and
+    // stop truck_type from re-overwriting a manually edited rate on a blur.
+    if (tr[field] === el.value) return;
     tr[field] = el.value;
   }
 
