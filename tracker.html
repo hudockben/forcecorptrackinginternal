@@ -3873,6 +3873,14 @@ function cbOptionsFor(listKey) {
     if (!proj || !Array.isArray(proj.bidItems)) return [];
     return proj.bidItems.filter(b => b.cost_code || b.sub_code).sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b => ({ value: (b.cost_code||'') + '||' + (b.sub_code||''), label: [b.cost_code, b.sub_code].filter(Boolean).join(' / ') + (b.description ? ' — ' + b.description : '') }));
   }
+  if (listKey.startsWith('po_subcodes:')) {
+    const poId = listKey.slice(12);
+    const po = purchaseOrders.find(p => p.id === poId);
+    if (!po || !po.project_id) return [];
+    const proj = getProj(po.project_id);
+    if (!proj || !Array.isArray(proj.bidItems)) return [];
+    return proj.bidItems.filter(b => b.cost_code || b.sub_code).sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b => ({ value: (b.cost_code||'') + '||' + (b.sub_code||''), label: [b.cost_code, b.sub_code].filter(Boolean).join(' / ') + (b.description ? ' — ' + b.description : '') }));
+  }
   return [];
 }
 
@@ -8495,11 +8503,6 @@ function renderPOTab() {
   if (poPage < 0) poPage = 0;
   const filteredPOs = allFilteredPOs.slice(poPage * PO_PER_PAGE, (poPage + 1) * PO_PER_PAGE);
 
-  // ── supplier / status opts (shared across rows) ───────────────────────
-  const supNames = lists.suppliers.map(s => s.name||'').filter(Boolean).sort((a,b)=>a.localeCompare(b));
-  const empNames = lists.employees.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(e=>e.name);
-  const projsSorted = projectsList.slice().sort((a,b)=>(a['project-name']||'').localeCompare(b['project-name']||''));
-
   const selOpts = (field, options, current, poId, lineId) => {
     const attr = lineId
       ? `data-po-id="${poId}" data-line-id="${lineId}" data-line-field="${field}"`
@@ -8534,9 +8537,15 @@ function renderPOTab() {
         const lCount  = (po.lines||[]).length;
         const expanded= _poExpanded.has(po.id);
 
-        // Header-level dropdowns
-        const projOpts = [['','— none —'], ...projsSorted.map(p=>[p.id, p['project-name']||'Untitled'])];
-        const supOpts  = [['','— select —'], ...supNames.map(n=>[n,n])];
+        // Header-level searchable comboboxes — display labels for project / sub code
+        const poProjName = po.project_id ? ((getProj(po.project_id) || {})['project-name'] || 'Untitled') : '';
+        const poSubLabel = (() => {
+          if (!po.project_id || (!po.cost_code && !po.sub_code)) return '';
+          const proj = getProj(po.project_id);
+          const bi = ((proj && proj.bidItems) || []).find(b => (b.cost_code||'') === (po.cost_code||'') && (b.sub_code||'') === (po.sub_code||''));
+          const base = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
+          return bi && bi.description ? base + ' — ' + bi.description : base;
+        })();
         const statusOpts = [['pending','Pending'],['approved','Approved'],['closed','Closed']];
 
         const statusColor = po.status==='approved' ? '#86efac' : po.status==='closed' ? 'var(--muted)' : 'var(--yellow)';
@@ -8563,10 +8572,10 @@ function renderPOTab() {
             <span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</span>${badge}
           </td>
           <td style="padding:0.35rem 0.6rem;min-width:110px" onclick="event.stopPropagation()">${inp('date_created','date',po.date_created,po.id,null)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${selOpts('project_id',projOpts,po.project_id,po.id,null)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}" onclick="event.stopPropagation()">${selOpts('sub_code_sel',[['','— pick project —'],...((getProj(po.project_id)?.bidItems||[]).filter(b=>b.cost_code||b.sub_code).sort((a,b)=>((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b=>[((b.cost_code||'')+'||'+(b.sub_code||'')),([b.cost_code,b.sub_code].filter(Boolean).join(' / '))]))],((po.cost_code||'')+'||'+(po.sub_code||'')),po.id,null)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${po.id}" data-po-field="project_id"`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${po.id}" data-po-field="sub_code_sel"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${inp('title','text',po.title,po.id,null,'placeholder="Material / Description"')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${selOpts('supplier',supOpts,po.supplier,po.id,null)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${cbHtml('suppliers', po.supplier || '', '— select —', `data-po-id="${po.id}" data-po-field="supplier"`)}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.8rem;color:var(--muted)" id="po-qty-${po.id}">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${po.id}">${tot.amt > 0 ? '$'+fmt(tot.amt) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
@@ -8575,7 +8584,6 @@ function renderPOTab() {
         </tr>`;
 
         // ── Delivery lines sub-table (when expanded) ───────────────────
-        const empOpts = [['','— select —'], ...empNames.map(n=>[n,n])];
         const lineRows = (po.lines||[]).map(line => {
           const q = parseFloat(line.qty)||0, u = parseFloat(line.unit_cost)||0, t = parseFloat(line.tax)||0;
           const lineAmt = q*u, lineTot = lineAmt+t;
@@ -8587,7 +8595,7 @@ function renderPOTab() {
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem" id="po-line-amt-${line.id}">${lineAmt > 0 ? '$'+fmt(lineAmt) : '—'}</td>
             <td style="padding:0.3rem 0.5rem;min-width:80px">${inp('tax','number',line.tax,po.id,line.id,'step="any" placeholder="0.00"')}</td>
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600" id="po-line-tot-${line.id}">${lineTot > 0 ? '$'+fmt(lineTot) : '—'}</td>
-            <td style="padding:0.3rem 0.5rem;min-width:130px">${selOpts('employee',empOpts,line.employee,po.id,line.id)}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:130px">${cbHtml('employees', line.employee || '', '— select —', `data-po-id="${po.id}" data-line-id="${line.id}" data-line-field="employee"`)}</td>
             ${perm.canEdit ? `<td style="padding:0.3rem 0.4rem;text-align:center"><button onclick="deletePOLine('${po.id}','${line.id}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.8rem;opacity:0.6" title="Remove delivery">&#10005;</button></td>` : '<td></td>'}
           </tr>`;
         }).join('');
@@ -8748,6 +8756,13 @@ function _handlePOEvent(e) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
 
+  // project_id / sub_code_sel / supplier / employee are searchable comboboxes
+  // (cbHtml) that commit via a synthetic input+change pair. Apply them on
+  // `change` only, so keystrokes while filtering don't clobber the value or
+  // fire a save on every character.
+  const _cbField = el.dataset.poField || el.dataset.lineField;
+  if (e.type === 'input' && (_cbField === 'project_id' || _cbField === 'sub_code_sel' || _cbField === 'supplier' || _cbField === 'employee')) return;
+
   // ── Line-level field ──────────────────────────────────────────────────
   const lineId    = el.dataset.lineId;
   const lineField = el.dataset.lineField;
@@ -8786,7 +8801,9 @@ function _handlePOEvent(e) {
   const oldProj = po.project_id;
 
   if (field === 'sub_code_sel') {
-    const [cc, sc] = el.value.split('||');
+    const mapped = el.dataset.cbValue || el.value || '';
+    delete el.dataset.cbValue;
+    const [cc, sc] = mapped.split('||');
     po.cost_code = cc || '';
     po.sub_code  = sc || '';
     savePurchaseOrders();
@@ -8795,7 +8812,12 @@ function _handlePOEvent(e) {
     return;
   }
 
-  po[field] = el.value;
+  if (field === 'project_id') {
+    po.project_id = el.dataset.cbValue || '';
+    delete el.dataset.cbValue;
+  } else {
+    po[field] = el.value;
+  }
 
   if (field === 'status') {
     po.status_changed_at = new Date().toISOString();
@@ -8826,9 +8848,12 @@ function _handlePOEvent(e) {
     }
     po.cost_code = '';
     po.sub_code  = '';
-    // Refresh sub code dropdown
+    // Reset the sub code combobox (options recompute for the new project on focus)
     const subCell = document.getElementById('po-subcode-cell-' + poId);
-    if (subCell) { const ss = subCell.querySelector('select'); if (ss) ss.innerHTML = _subCodeOpts(po); }
+    if (subCell) {
+      const subInput = subCell.querySelector('.cb-input');
+      if (subInput) { subInput.value = ''; delete subInput.dataset.cbValue; }
+    }
     // Create daily rows for each line with data in new project
     if (po.project_id) {
       (po.lines||[]).forEach(line => { if (line.qty || line.unit_cost) _ensurePOLineRow(po, line); });
