@@ -9467,6 +9467,9 @@ document.getElementById('trucking-root').addEventListener('change', e => {
       const hours = parseFloat(tr.hours) || 0;
       const totEl = document.getElementById('tr-tot-' + tr.id);
       if (totEl) totEl.textContent = '$' + fmt(rate * hours);
+      // Propagate the auto-filled rate to the linked daily row (a manual rate
+      // edit already syncs via the input listener; the autofill must too).
+      _syncTRRowField(tr, 'rate');
     }
   }
 
