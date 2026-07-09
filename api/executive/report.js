@@ -1193,11 +1193,27 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   const daily = Array.isArray(dailyBlob) ? dailyBlob : [];
   const crush = Array.isArray(crushBlob) ? crushBlob : [];
   const fixed = (fixedBlob && typeof fixedBlob === 'object' && !Array.isArray(fixedBlob)) ? fixedBlob : {};
-  // Royalty rate (%) per pit inflates that pit's variable cost by (1 + rate/100).
+  // Royalty owners per pit: { pit: [ { name, rate, floor } ] }. Each owner is
+  // paid the greater of (rate% of the sale) or ($floor per ton), stacked, on
+  // royalty-flagged products only. Legacy blobs stored a bare number per pit.
   const royalty = (royaltyBlob && typeof royaltyBlob === 'object' && !Array.isArray(royaltyBlob)) ? royaltyBlob : {};
-  const royaltyMult = loc => {
-    const v = Number(royalty[loc]);
-    return 1 + (Number.isFinite(v) && v > 0 ? v : 0) / 100;
+  const royaltyOwnersFor = loc => {
+    const v = royalty[loc];
+    if (Array.isArray(v)) return v;
+    const n = Number(v);
+    return (Number.isFinite(n) && n > 0) ? [{ rate: n, floor: 0 }] : [];
+  };
+  // Royalty $ owed on one sale, summed across the pit's owners.
+  const royaltyForSale = (loc, tons, price) => {
+    const t = Number(tons); if (!Number.isFinite(t) || t <= 0) return 0;
+    const p = Number.isFinite(Number(price)) ? Number(price) : 0;
+    let total = 0;
+    for (const o of royaltyOwnersFor(loc)) {
+      const rate = Number(o && o.rate) || 0;
+      const floor = Number(o && o.floor) || 0;
+      total += Math.max(p * rate / 100, floor) * t;
+    }
+    return total;
   };
   // Royalties apply only to material flagged as royalty-bearing in Manage
   // Lists → Product (rock/aggregate), not every product — mirror the Quarry
@@ -1254,12 +1270,12 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     const tons  = num(r.tons);
     const price = num(r.pricePerTon);
     if (date >= weekStart && date < weekEnd) revenueWk += tons * price;
-    // Royalty is a % of sales, but only on royalty-flagged material.
-    const royaltyFrac = rowHasRoyalty(r) ? (royaltyMult(r.locationName) - 1) : 0;
+    // Royalty stacks each owner (% of sale or $/ton floor), rock only.
+    const rowRoyalty = rowHasRoyalty(r) ? royaltyForSale(r.locationName, tons, price) : 0;
     if (date >= monthStartIso) {
       tonsMo += tons;
       revenueMo += tons * price;
-      royaltyCostMo += tons * price * royaltyFrac;
+      royaltyCostMo += rowRoyalty;
       const name = String(r.productName || '').trim();
       if (name) productTons.set(name, (productTons.get(name) || 0) + tons);
       const pit = String(r.locationName || '').trim();
@@ -1268,7 +1284,7 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     if (date.slice(0, 4) === yearPrefix) {
       revenueYr += tons * price;
       tonsSoldYr += tons;
-      royaltyCostYr += tons * price * royaltyFrac;
+      royaltyCostYr += rowRoyalty;
       addActiveMonth(r.locationName, date);
     }
   }
