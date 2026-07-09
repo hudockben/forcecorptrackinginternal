@@ -32,6 +32,23 @@ function isCrossDivisionKey(key) {
   return Boolean(key) && CROSS_DIVISION_KEYS.has(key);
 }
 
+// Quarry blobs that an intercompany user may READ (GET only) even without a
+// quarry role. The IC Quarry sub-tab auto-pulls both — daily and crushing
+// labor hours roll into each location's intercompany total — so both must be
+// readable, but neither is writable through this escape hatch.
+const IC_QUARRY_READONLY_KEYS = new Set(['fct_quarry_daily', 'fct_quarry_crushing']);
+
+/**
+ * True when `key` is a quarry blob the caller may read solely by virtue of
+ * intercompany access (GET only). Returns false for writes and for callers
+ * without intercompany access — normal division checks still apply to those.
+ */
+function isIcQuarryReadOnlyGet(key, payload, method) {
+  return method === 'GET'
+    && IC_QUARRY_READONLY_KEYS.has(key)
+    && hasDivisionAccess(payload, 'intercompany');
+}
+
 // Blob-key prefix → division mapping. Used by api/data/[key].js to verify
 // the caller has access to a division before reading or writing its blob.
 // Order matters: most-specific prefix wins.
@@ -162,6 +179,7 @@ function requireDivision(req, res, options = {}) {
 module.exports = {
   ALL_DIVISIONS,
   CROSS_DIVISION_CONTRIBUTORS,
+  IC_QUARRY_READONLY_KEYS,
   requireAuth,
   requireDivision,
   hasDivisionAccess,
@@ -170,4 +188,5 @@ module.exports = {
   divisionForKey,
   isSharedKey,
   isCrossDivisionKey,
+  isIcQuarryReadOnlyGet,
 };

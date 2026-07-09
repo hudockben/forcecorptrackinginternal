@@ -1397,8 +1397,10 @@
     // ── Billing entries ─────────────────────────────────────────
     const IC_BILLING_KEY     = 'fct_intercompany_billing_entries';
     const QUARRY_DAILY_KEY   = 'fct_quarry_daily';
-    let icBillingEntries = [];
-    let quarryDailyRows  = [];
+    const QUARRY_CRUSH_KEY   = 'fct_quarry_crushing';
+    let icBillingEntries   = [];
+    let quarryDailyRows    = [];
+    let quarryCrushingRows = [];
     const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const fmt$   = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     const fmtH   = v => (Math.floor(v * 100) / 100).toFixed(2) + ' hrs';
@@ -1416,6 +1418,7 @@
           const hrs  = parseFloat(r && r.hours)    || 0;
           const rate = parseFloat(r && r.rate)     || 0;
           return {
+            _kind:         'daily',
             id:            r && r.id ? String(r.id) : '',
             actual_date:   r && typeof r.date === 'string' ? r.date : '',
             location_id:   r && r.locationId   ? String(r.locationId) : '',
@@ -1432,6 +1435,41 @@
           };
         });
       } catch { quarryDailyRows = []; }
+    }
+
+    // ── Quarry crushing (auto-pulled from quarry division for IC Quarry tab) ──
+    //  Mirrors loadQuarryDaily: crushing labor hours × hourlyRate become the
+    //  billable labor that rolls into the same per-location IC total. Loads and
+    //  estimated tons are carried through for the expandable detail rows.
+    async function loadQuarryCrushing() {
+      try {
+        const r = await fetch(`${API_BASE}/data/${QUARRY_CRUSH_KEY}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) { quarryCrushingRows = []; return; }
+        const { value } = await r.json();
+        const rows = Array.isArray(value) ? value : [];
+        quarryCrushingRows = rows.map(r => {
+          const hrs   = parseFloat(r && r.hours)          || 0;
+          const rate  = parseFloat(r && r.hourlyRate)     || 0;
+          const loads = parseFloat(r && r.loadsToCrusher) || 0;
+          const tpl   = parseFloat(r && r.tonsPerLoad)    || 0;
+          return {
+            _kind:            'crushing',
+            id:               r && r.id ? String(r.id) : '',
+            actual_date:      r && typeof r.date === 'string' ? r.date : '',
+            location_id:      r && r.locationId   ? String(r.locationId) : '',
+            location_name:    r && r.locationName ? String(r.locationName) : '',
+            employee_id:      r && r.employeeId   ? String(r.employeeId) : '',
+            employee_name:    r && r.employeeName ? String(r.employeeName) : '',
+            total_hours:      hrs,
+            rate:             rate,
+            labor_cost:       hrs * rate,
+            loads_to_crusher: loads,
+            estimated_tons:   loads * tpl,
+          };
+        });
+      } catch { quarryCrushingRows = []; }
     }
 
     async function loadBillingEntries() {
@@ -1503,7 +1541,7 @@
     async function loadAndRenderCompanyInfo() {
       document.getElementById('ciBody').innerHTML =
         '<div class="ci-empty"><strong>Loading</strong>Fetching billing entries…</div>';
-      await Promise.all([loadCompanies(), loadBillingEntries(), loadQuarryDaily(), loadRates()]);
+      await Promise.all([loadCompanies(), loadBillingEntries(), loadQuarryDaily(), loadQuarryCrushing(), loadRates()]);
 
       buildYearFilterOptions();
       buildCompanyFilterOptions();
@@ -1518,7 +1556,7 @@
     function buildYearFilterOptions() {
       const yearSel = document.getElementById('ciYearFilter');
       if (!yearSel) return;
-      const dateBucket = ciDivFilter === 'quarry' ? quarryDailyRows : icBillingEntries;
+      const dateBucket = ciDivFilter === 'quarry' ? quarryDailyRows.concat(quarryCrushingRows) : icBillingEntries;
       const years = [...new Set(
         dateBucket.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
       )].sort().reverse();
@@ -1540,7 +1578,7 @@
       let opts;
       if (ciDivFilter === 'quarry') {
         const seen = new Map();
-        quarryDailyRows.forEach(r => {
+        quarryDailyRows.concat(quarryCrushingRows).forEach(r => {
           const id = r.location_id || r.location_name;
           if (!id) return;
           if (!seen.has(id)) seen.set(id, r.location_name || id);
@@ -2033,11 +2071,13 @@
 
     // ── Quarry Company Info renderer ────────────────────────────
     //  Mirrors the Trucking rollup: per-location card → month-by-month
-    //  totals → expandable detail rows. Driven entirely off
-    //  quarryDailyRows (loaded from fct_quarry_daily); does not touch
+    //  totals → expandable detail rows. Driven off quarryDailyRows
+    //  (fct_quarry_daily) + quarryCrushingRows (fct_quarry_crushing) — each
+    //  location card carries a Daily Tracking and a Crushing Tracking section,
+    //  with labor from both rolled into the card's IC total. Does not touch
     //  icBillingEntries.
     function renderQuarryCompanyInfo(body, yearFilter, locationFilter) {
-      let rows = quarryDailyRows;
+      let rows = quarryDailyRows.concat(quarryCrushingRows);
       if (yearFilter !== 'all') rows = rows.filter(r => (r.actual_date || '').startsWith(yearFilter));
       if (locationFilter !== 'all') {
         rows = rows.filter(r => (r.location_id || r.location_name) === locationFilter);
@@ -2047,12 +2087,12 @@
       count.textContent = rows.length ? `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}` : '';
 
       if (!rows.length) {
-        const hasAny = quarryDailyRows.length > 0;
+        const hasAny = quarryDailyRows.length > 0 || quarryCrushingRows.length > 0;
         body.innerHTML = `<div class="ci-empty">
           <strong>No Quarry Entries</strong>
           ${hasAny
-            ? `No quarry daily entries match the current filter selection.`
-            : `No quarry daily entries found. Add rows in the <em>Quarry → Daily Tracking</em> tab and they'll appear here automatically.`}
+            ? `No quarry entries match the current filter selection.`
+            : `No quarry entries found. Add rows in the <em>Quarry → Daily Tracking</em> or <em>Crushing Tracking</em> tab and they'll appear here automatically.`}
         </div>`;
         return;
       }
@@ -2065,7 +2105,9 @@
         byLocation[key].rows.push(r);
       });
 
-      function buildQuarrySection(locRows, sectionId) {
+      function buildQuarrySection(locRows, sectionId, kind) {
+        const isCrush = kind === 'crushing';
+        const fmtTons = v => { const n = parseFloat(v) || 0; return n ? (Math.round(n * 100) / 100).toLocaleString() : '—'; };
         const byMonth = {};
         locRows.forEach(r => {
           const mRaw = parseInt((r.actual_date || '').slice(5, 7), 10) - 1;
@@ -2085,7 +2127,9 @@
         const totLabor = locRows.reduce((s, r) => s + (parseFloat(r.labor_cost)  || 0), 0);
         const totIc    = totHours * icQuarryLaborRate;
 
-        const detailHead = `<th>Date</th><th>Employee</th><th>Equipment</th><th>Task</th><th class="r">Labor Hours</th><th class="r">Rate</th><th class="r">Labor Cost</th><th class="r ic-val">IC Total</th>`;
+        const detailHead = isCrush
+          ? `<th>Date</th><th>Employee</th><th class="r">Loads</th><th class="r">Est. Tons</th><th class="r">Labor Hours</th><th class="r">Rate</th><th class="r">Labor Cost</th><th class="r ic-val">IC Total</th>`
+          : `<th>Date</th><th>Employee</th><th>Equipment</th><th>Task</th><th class="r">Labor Hours</th><th class="r">Rate</th><th class="r">Labor Cost</th><th class="r ic-val">IC Total</th>`;
 
         const monthRows = sortedMonths.map((m, mi) => {
           const detId = `${sectionId}-m${mi}`;
@@ -2096,11 +2140,15 @@
             const rate  = parseFloat(r.rate)        || 0;
             const labor = parseFloat(r.labor_cost)  || 0;
             const icAmt = hrs * icQuarryLaborRate;
+            const midCols = isCrush
+              ? `<td class="r">${(parseFloat(r.loads_to_crusher) || 0) || '—'}</td>
+              <td class="r">${fmtTons(r.estimated_tons)}</td>`
+              : `<td>${escT(r.equipment_name || '—')}</td>
+              <td>${escT(r.task_name      || '—')}</td>`;
             return `<tr>
               <td>${r.actual_date || '—'}</td>
               <td>${escT(r.employee_name  || '—')}</td>
-              <td>${escT(r.equipment_name || '—')}</td>
-              <td>${escT(r.task_name      || '—')}</td>
+              ${midCols}
               <td class="r">${fmtH(hrs)}</td>
               <td class="r">${rate > 0 ? fmt$(rate) + '/hr' : '—'}</td>
               <td class="r">${labor > 0 ? fmt$(labor) : '—'}</td>
@@ -2129,7 +2177,7 @@
         return `
         <div class="ci-div-section">
           <div class="ci-div-header">
-            <span class="ci-div-label quarry">Quarry</span>
+            <span class="ci-div-label quarry">${isCrush ? 'Crushing Tracking' : 'Daily Tracking'}</span>
             <div class="ci-div-stats">
               <div class="ci-div-stat"><strong>${totJobs}</strong> entr${totJobs === 1 ? 'y' : 'ies'}</div>
               <div class="ci-div-stat"><strong>${fmtH(totHours)}</strong></div>
@@ -2172,7 +2220,12 @@
         .sort((a, b) => b.totIc - a.totIc);
 
       body.innerHTML = cards.map((loc, idx) => {
-        const section = buildQuarrySection(loc.rows, `ci-qd-${idx}`);
+        const dailyRows = loc.rows.filter(r => r._kind !== 'crushing');
+        const crushRows = loc.rows.filter(r => r._kind === 'crushing');
+        const section = [
+          dailyRows.length ? buildQuarrySection(dailyRows, `ci-qd-${idx}`, 'daily')    : '',
+          crushRows.length ? buildQuarrySection(crushRows, `ci-qc-${idx}`, 'crushing') : '',
+        ].join('');
         const icStatCard = `
               <div class="ci-co-stat">
                 <div class="ci-co-stat-val ic-val">${fmt$(loc.totIc)}</div>
@@ -3315,10 +3368,11 @@
       async function pollQuarryDaily() {
         // Only poll when the Quarry sub-tab is the one being viewed — saves a
         // round-trip otherwise. Compares a quick hash before re-rendering.
+        // Covers both auto-pulled sources (daily + crushing).
         if (_activeTabId() !== 'company-info' || ciDivFilter !== 'quarry') return;
-        const prev = JSON.stringify(quarryDailyRows);
-        await loadQuarryDaily();
-        if (JSON.stringify(quarryDailyRows) === prev) return;
+        const prev = JSON.stringify(quarryDailyRows) + '|' + JSON.stringify(quarryCrushingRows);
+        await Promise.all([loadQuarryDaily(), loadQuarryCrushing()]);
+        if (JSON.stringify(quarryDailyRows) + '|' + JSON.stringify(quarryCrushingRows) === prev) return;
         if (!_isEditing()) renderCompanyInfo();
       }
 
