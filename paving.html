@@ -3743,6 +3743,14 @@ function cbOptionsFor(listKey) {
     if (!proj || !Array.isArray(proj.bidItems)) return [];
     return proj.bidItems.filter(b => b.cost_code || b.sub_code).sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b => ({ value: (b.cost_code||'') + '||' + (b.sub_code||''), label: [b.cost_code, b.sub_code].filter(Boolean).join(' / ') + (b.description ? ' — ' + b.description : '') }));
   }
+  if (listKey.startsWith('po_subcodes:')) {
+    const poId = listKey.slice(12);
+    const po = purchaseOrders.find(p => p.id === poId);
+    if (!po || !po.project_id) return [];
+    const proj = getProj(po.project_id);
+    if (!proj || !Array.isArray(proj.bidItems)) return [];
+    return proj.bidItems.filter(b => b.cost_code || b.sub_code).sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b => ({ value: (b.cost_code||'') + '||' + (b.sub_code||''), label: [b.cost_code, b.sub_code].filter(Boolean).join(' / ') + (b.description ? ' — ' + b.description : '') }));
+  }
   return [];
 }
 
@@ -8210,11 +8218,6 @@ function renderPOTab() {
   if (poPage < 0) poPage = 0;
   const filteredPOs = allFilteredPOs.slice(poPage * PO_PER_PAGE, (poPage + 1) * PO_PER_PAGE);
 
-  // ── supplier / status opts (shared across rows) ───────────────────────
-  const supNames = (lists.suppliers||[]).map(s => s.name||'').filter(Boolean).sort((a,b)=>a.localeCompare(b));
-  const empNames = (lists.employees||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(e=>e.name);
-  const projsSorted = projectsList.slice().sort((a,b)=>(a['project-name']||'').localeCompare(b['project-name']||''));
-
   const selOpts = (field, options, current, poId, lineId) => {
     const attr = lineId
       ? `data-po-id="${poId}" data-line-id="${lineId}" data-line-field="${field}"`
@@ -8249,9 +8252,15 @@ function renderPOTab() {
         const lCount  = (po.lines||[]).length;
         const expanded= _poExpanded.has(po.id);
 
-        // Header-level dropdowns
-        const projOpts = [['','— none —'], ...projsSorted.map(p=>[p.id, p['project-name']||'Untitled'])];
-        const supOpts  = [['','— select —'], ...supNames.map(n=>[n,n])];
+        // Header-level searchable comboboxes — display labels for project / sub code
+        const poProjName = po.project_id ? ((getProj(po.project_id) || {})['project-name'] || 'Untitled') : '';
+        const poSubLabel = (() => {
+          if (!po.project_id || (!po.cost_code && !po.sub_code)) return '';
+          const proj = getProj(po.project_id);
+          const bi = ((proj && proj.bidItems) || []).find(b => (b.cost_code||'') === (po.cost_code||'') && (b.sub_code||'') === (po.sub_code||''));
+          const base = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
+          return bi && bi.description ? base + ' — ' + bi.description : base;
+        })();
         const statusOpts = [['pending','Pending'],['approved','Approved'],['closed','Closed']];
 
         const statusColor = po.status==='approved' ? '#86efac' : po.status==='closed' ? 'var(--muted)' : 'var(--yellow)';
@@ -8278,10 +8287,10 @@ function renderPOTab() {
             <span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</span>${badge}
           </td>
           <td style="padding:0.35rem 0.6rem;min-width:110px" onclick="event.stopPropagation()">${inp('date_created','date',po.date_created,po.id,null)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${selOpts('project_id',projOpts,po.project_id,po.id,null)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}" onclick="event.stopPropagation()">${selOpts('sub_code_sel',[['','— pick project —'],...((getProj(po.project_id)?.bidItems||[]).filter(b=>b.cost_code||b.sub_code).sort((a,b)=>((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b=>[((b.cost_code||'')+'||'+(b.sub_code||'')),([b.cost_code,b.sub_code].filter(Boolean).join(' / '))]))],((po.cost_code||'')+'||'+(po.sub_code||'')),po.id,null)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${po.id}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${po.id}" data-po-field="sub_code_sel"${(po.cost_code || po.sub_code) ? ` data-cb-value="${esc((po.cost_code||'') + '||' + (po.sub_code||''))}"` : ''}`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${inp('title','text',po.title,po.id,null,'placeholder="Material / Description"')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${selOpts('supplier',supOpts,po.supplier,po.id,null)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${cbHtml('suppliers', po.supplier || '', '— select —', `data-po-id="${po.id}" data-po-field="supplier"`)}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.8rem;color:var(--muted)" id="po-qty-${po.id}">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${po.id}">${tot.amt > 0 ? '$'+fmt(tot.amt) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
@@ -8290,7 +8299,6 @@ function renderPOTab() {
         </tr>`;
 
         // ── Delivery lines sub-table (when expanded) ───────────────────
-        const empOpts = [['','— select —'], ...empNames.map(n=>[n,n])];
         const lineRows = (po.lines||[]).map(line => {
           const q = parseFloat(line.qty)||0, u = parseFloat(line.unit_cost)||0, t = parseFloat(line.tax)||0;
           const lineAmt = q*u, lineTot = lineAmt+t;
@@ -8302,7 +8310,7 @@ function renderPOTab() {
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem" id="po-line-amt-${line.id}">${lineAmt > 0 ? '$'+fmt(lineAmt) : '—'}</td>
             <td style="padding:0.3rem 0.5rem;min-width:80px">${inp('tax','number',line.tax,po.id,line.id,'step="any" placeholder="0.00"')}</td>
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600" id="po-line-tot-${line.id}">${lineTot > 0 ? '$'+fmt(lineTot) : '—'}</td>
-            <td style="padding:0.3rem 0.5rem;min-width:130px">${selOpts('employee',empOpts,line.employee,po.id,line.id)}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:130px">${cbHtml('employees', line.employee || '', '— select —', `data-po-id="${po.id}" data-line-id="${line.id}" data-line-field="employee"`)}</td>
             ${perm.canEdit ? `<td style="padding:0.3rem 0.4rem;text-align:center"><button onclick="deletePOLine('${po.id}','${line.id}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.8rem;opacity:0.6" title="Remove delivery">&#10005;</button></td>` : '<td></td>'}
           </tr>`;
         }).join('');
@@ -8463,12 +8471,21 @@ function _handlePOEvent(e) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
 
+  // project_id / sub_code_sel / supplier / employee are searchable comboboxes
+  // (cbHtml) that commit via a synthetic input+change pair. Apply them on
+  // `change` only, so keystrokes while filtering don't clobber the value or
+  // fire a save on every character.
+  const _cbField = el.dataset.poField || el.dataset.lineField;
+  if (e.type === 'input' && (_cbField === 'project_id' || _cbField === 'sub_code_sel' || _cbField === 'supplier' || _cbField === 'employee')) return;
+
   // ── Line-level field ──────────────────────────────────────────────────
   const lineId    = el.dataset.lineId;
   const lineField = el.dataset.lineField;
   if (lineId && lineField) {
     const line = (po.lines || []).find(l => l.id === lineId);
     if (!line) return;
+    // No-op commit (e.g. focus+blur of the employee combobox) — skip redundant work.
+    if (line[lineField] === el.value) return;
     line[lineField] = el.value;
     // Live update line amount/total cells
     if (['qty','unit_cost','tax'].includes(lineField)) {
@@ -8501,7 +8518,20 @@ function _handlePOEvent(e) {
   const oldProj = po.project_id;
 
   if (field === 'sub_code_sel') {
-    const [cc, sc] = el.value.split('||');
+    // Sub code is a bid-item picker: the real value (cost_code||sub_code) only
+    // ever lives in cbValue. Never fall back to el.value — that's the human label
+    // (no "||"), which would corrupt cost_code with a label fragment, e.g. when a
+    // bid item was deleted/renamed after this PO referenced it.
+    const mapped = el.dataset.cbValue || '';
+    // Keep (don't delete) the resolved value so a later focus+blur round-trips it
+    // exactly instead of re-deriving from the label — a renamed bid item or
+    // trailing whitespace in a description would otherwise wipe the code on blur.
+    // cbOnInput clears this the moment the user actually types.
+    el.dataset.cbValue = mapped;
+    const [cc, sc] = mapped.split('||');
+    // No-op commit (focus+blur, or re-picking the same item): the combobox still
+    // fires a change, but re-applying the same value would needlessly re-sync.
+    if ((cc || '') === (po.cost_code || '') && (sc || '') === (po.sub_code || '')) return;
     po.cost_code = cc || '';
     po.sub_code  = sc || '';
     savePurchaseOrders();
@@ -8510,7 +8540,23 @@ function _handlePOEvent(e) {
     return;
   }
 
-  po[field] = el.value;
+  if (field === 'project_id') {
+    const newProj = el.dataset.cbValue || '';
+    // Keep (don't delete) the resolved value so a later focus+blur round-trips it
+    // exactly instead of re-deriving from the label — label re-derivation can
+    // misassign a same-named project or fail on a renamed one. cbOnInput clears
+    // this the moment the user actually types.
+    el.dataset.cbValue = newProj;
+    // No-op commit: re-selecting the current project (or a focus+blur that
+    // re-resolves to it) must NOT clear the sub code or delete/recreate the
+    // linked daily rows in the block below.
+    if (newProj === oldProj) return;
+    po.project_id = newProj;
+  } else {
+    // No-op commit for supplier / title / date / status — skip the redundant save.
+    if (po[field] === el.value) return;
+    po[field] = el.value;
+  }
 
   if (field === 'status') {
     po.status_changed_at = new Date().toISOString();
@@ -8541,9 +8587,12 @@ function _handlePOEvent(e) {
     }
     po.cost_code = '';
     po.sub_code  = '';
-    // Refresh sub code dropdown
+    // Reset the sub code combobox (options recompute for the new project on focus)
     const subCell = document.getElementById('po-subcode-cell-' + poId);
-    if (subCell) { const ss = subCell.querySelector('select'); if (ss) ss.innerHTML = _subCodeOpts(po); }
+    if (subCell) {
+      const subInput = subCell.querySelector('.cb-input');
+      if (subInput) { subInput.value = ''; delete subInput.dataset.cbValue; }
+    }
     // Create daily rows for each line with data in new project
     if (po.project_id) {
       (po.lines||[]).forEach(line => { if (line.qty || line.unit_cost) _ensurePOLineRow(po, line); });
@@ -8831,8 +8880,8 @@ function renderTruckingTab() {
 
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(tr.tr_number)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px">${cbHtml('projects', projName, '— none —', `data-tr-id="${tr.id}" data-tr-field="project_id"`)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${cbHtml('tr_subcodes:' + tr.id, subLabel, tr.project_id ? '— select —' : '— pick project first —', `data-tr-id="${tr.id}" data-tr-field="sub_code_sel"`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px">${cbHtml('projects', projName, '— none —', `data-tr-id="${tr.id}" data-tr-field="project_id"${tr.project_id ? ` data-cb-value="${esc(tr.project_id)}"` : ''}`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${cbHtml('tr_subcodes:' + tr.id, subLabel, tr.project_id ? '— select —' : '— pick project first —', `data-tr-id="${tr.id}" data-tr-field="sub_code_sel"${(tr.cost_code || tr.sub_code) ? ` data-cb-value="${esc((tr.cost_code||'') + '||' + (tr.sub_code||''))}"` : ''}`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('employees', tr.driver || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="driver"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('equipment', tr.truck_type || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="truck_type"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:150px">${inp('material_hauled', 'text', 'placeholder="Material hauled"')}</td>
@@ -9347,7 +9396,10 @@ document.getElementById('trucking-root').addEventListener('input', e => {
   const el = e.target;
   const id = el.dataset.trId, field = el.dataset.trField;
   if (!id || !field) return;
-  if (field === 'project_id' || field === 'sub_code_sel') return;
+  // Combobox fields (project/sub code/driver/truck type) and the status select
+  // commit via a synthetic change; handle them in the change listener only, so
+  // keystrokes while filtering don't clobber the value or save per character.
+  if (field === 'project_id' || field === 'sub_code_sel' || field === 'driver' || field === 'truck_type' || field === 'status') return;
   const tr = truckingEntries.find(t => t.id === id);
   if (!tr) return;
   tr[field] = el.value;
@@ -9370,9 +9422,19 @@ document.getElementById('trucking-root').addEventListener('change', e => {
   const oldProj = tr.project_id;
 
   if (field === 'sub_code_sel') {
-    const mapped = el.dataset.cbValue || el.value || '';
-    delete el.dataset.cbValue;
+    // Sub code is a bid-item picker: the real value (cost_code||sub_code) only
+    // ever lives in cbValue. Never fall back to el.value — that's the human label
+    // (no "||"), which would corrupt cost_code with a label fragment, e.g. when a
+    // bid item was deleted/renamed after this entry referenced it.
+    const mapped = el.dataset.cbValue || '';
+    // Keep (don't delete) the resolved value so a later focus+blur round-trips it
+    // exactly instead of re-deriving from the label — a renamed bid item or
+    // trailing whitespace in a description would otherwise wipe the code on blur.
+    // cbOnInput clears this the moment the user actually types.
+    el.dataset.cbValue = mapped;
     const [cc, sc] = mapped.split('||');
+    // No-op commit (focus+blur, or re-picking the same item) — skip redundant re-sync.
+    if ((cc || '') === (tr.cost_code || '') && (sc || '') === (tr.sub_code || '')) return;
     tr.cost_code = cc || '';
     tr.sub_code  = sc || '';
     saveTruckingEntries();
@@ -9382,9 +9444,20 @@ document.getElementById('trucking-root').addEventListener('change', e => {
   }
 
   if (field === 'project_id') {
-    tr[field] = el.dataset.cbValue || '';
-    delete el.dataset.cbValue;
+    const newProj = el.dataset.cbValue || '';
+    // Keep (don't delete) the resolved value so a later focus+blur round-trips it
+    // exactly instead of re-deriving from the label — label re-derivation can
+    // misassign a same-named project or fail on a renamed one. cbOnInput clears
+    // this the moment the user actually types.
+    el.dataset.cbValue = newProj;
+    // No-op commit: re-selecting the current project (or a focus+blur) must NOT
+    // clear the sub code or delete/recreate the linked daily row below.
+    if (newProj === oldProj) return;
+    tr[field] = newProj;
   } else {
+    // No-op commit for driver / truck_type / status — skip redundant work, and
+    // stop truck_type from re-overwriting a manually edited rate on a blur.
+    if (tr[field] === el.value) return;
     tr[field] = el.value;
   }
 
@@ -9410,6 +9483,9 @@ document.getElementById('trucking-root').addEventListener('change', e => {
       const hours = parseFloat(tr.hours) || 0;
       const totEl = document.getElementById('tr-tot-' + tr.id);
       if (totEl) totEl.textContent = '$' + fmt(rate * hours);
+      // Propagate the auto-filled rate to the linked daily row (a manual rate
+      // edit already syncs via the input listener; the autofill must too).
+      _syncTRRowField(tr, 'rate');
     }
   }
 
