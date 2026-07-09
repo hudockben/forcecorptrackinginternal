@@ -1163,7 +1163,7 @@ async function buildPavingTile(sql, companyCode) {
 // payroll/fuel costs, all scoped to the current Sun-anchored week) and
 // monthly tons sold, plus the top product and active pit count.
 async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
-  const [salesBlob, dailyBlob, crushBlob, fixedBlob, royaltyBlob] = await Promise.all([
+  const [salesBlob, dailyBlob, crushBlob, fixedBlob, royaltyBlob, listsBlob] = await Promise.all([
     safeRun('quarry.sales_blob', async () => {
       const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_sales`}`;
       return r[0]?.value;
@@ -1184,6 +1184,10 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
       const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_royalty`}`;
       return r[0]?.value;
     }),
+    safeRun('quarry.lists_blob', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_lists`}`;
+      return r[0]?.value;
+    }),
   ]);
   const sales = Array.isArray(salesBlob) ? salesBlob : [];
   const daily = Array.isArray(dailyBlob) ? dailyBlob : [];
@@ -1194,6 +1198,22 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   const royaltyMult = loc => {
     const v = Number(royalty[loc]);
     return 1 + (Number.isFinite(v) && v > 0 ? v : 0) / 100;
+  };
+  // Royalties apply only to material flagged as royalty-bearing in Manage
+  // Lists → Product (rock/aggregate), not every product — mirror the Quarry
+  // page so this tile isn't inflated by non-royalty sales (fill, millings…).
+  const lists = (listsBlob && typeof listsBlob === 'object' && !Array.isArray(listsBlob)) ? listsBlob : {};
+  const royaltyProductIds = new Set(), royaltyProductNames = new Set();
+  (Array.isArray(lists.product) ? lists.product : []).forEach(p => {
+    if (!p || !p.royalty) return;
+    if (p.id != null && p.id !== '') royaltyProductIds.add(String(p.id));
+    const nm = String(p.name || '').trim().toLowerCase();
+    if (nm) royaltyProductNames.add(nm);
+  });
+  const rowHasRoyalty = r => {
+    if (r.productId != null && r.productId !== '' && royaltyProductIds.has(String(r.productId))) return true;
+    const nm = String(r.productName || '').trim().toLowerCase();
+    return nm !== '' && royaltyProductNames.has(nm);
   };
 
   const now           = new Date();
@@ -1234,7 +1254,8 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
     const tons  = num(r.tons);
     const price = num(r.pricePerTon);
     if (date >= weekStart && date < weekEnd) revenueWk += tons * price;
-    const royaltyFrac = royaltyMult(r.locationName) - 1;  // rate/100, royalty is % of sales
+    // Royalty is a % of sales, but only on royalty-flagged material.
+    const royaltyFrac = rowHasRoyalty(r) ? (royaltyMult(r.locationName) - 1) : 0;
     if (date >= monthStartIso) {
       tonsMo += tons;
       revenueMo += tons * price;

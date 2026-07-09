@@ -226,6 +226,18 @@
     }
     .ml-rate-input:focus { border-color: var(--accent); }
     .ml-form .ml-rate-input { flex: 0 0 auto; }
+    /* Product royalty toggle */
+    .ml-royalty-wrap {
+      display: flex; align-items: center; gap: 0.35rem;
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      cursor: pointer; user-select: none; white-space: nowrap;
+    }
+    .ml-royalty-wrap input[type="checkbox"] {
+      width: 15px; height: 15px; margin: 0; cursor: pointer;
+      accent-color: var(--accent); flex: 0 0 auto;
+    }
+    .ml-royalty-wrap.is-on { color: var(--accent); }
     .btn-del {
       font-size: 0.62rem; font-weight: 600; padding: 0.22rem 0.6rem;
       background: none; border: 1px solid rgba(239,68,68,0.25); color: #ef4444;
@@ -1276,7 +1288,7 @@
         <div class="be-formula">Break-even tons / mo&nbsp;=&nbsp;Monthly fixed costs&nbsp;÷&nbsp;(Avg price/ton − Variable cost/ton)</div>
         <ul>
           <li><strong>Avg price/ton</strong> and <strong>variable cost/ton</strong> are pulled automatically from your Sales and Crushing entries for the selected year. Variable cost = crushing labor &amp; fuel ÷ tons crushed (daily tracking is not included).</li>
-          <li><strong>Royalty %</strong> (per pit, in the table below) is a percentage of sales paid out — it comes off the price, lowering contribution by royalty% &times; price/ton. Enter each pit's rate (e.g., 12.75%) and contribution and break-even update automatically.</li>
+          <li><strong>Royalty %</strong> (per pit, in the table below) is a percentage of sales paid out — it comes off the price, lowering contribution by royalty% &times; price/ton. Enter each pit's rate (e.g., 12.75%) and contribution and break-even update automatically. Royalty applies <strong>only to material you flag as royalty-bearing</strong> — open <em>Manage Lists → Product</em> and check the rock products that carry a royalty; sales of unchecked products (fill, millings, etc.) are excluded, so contribution isn't over-deducted.</li>
           <li><strong>Contribution/ton</strong> = price − variable cost — what each ton puts toward fixed costs. If it's $0 or less, you lose money on every ton and there's no break-even.</li>
           <li><strong>Monthly fixed costs</strong> are the bills you pay no matter how much you crush: equipment payments, insurance, permits/royalties, salaried staff, taxes. Enter them per month in the <strong>Month-by-Month</strong> table below — pick a pit and type each month's figure. This column shows each location's average monthly fixed; <strong>All Pits is the total across pits</strong> (your full company-wide monthly fixed), and the executive dashboard mirrors it. Entries save automatically.</li>
         </ul>
@@ -1723,6 +1735,7 @@
         return;
       }
       const isEmployees = type.key === 'employees';
+      const isProduct = type.key === 'product';
       const items = quarryLists[type.key] || [];
       const sortedItems = [...items].sort((a, b) =>
         String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' })
@@ -1739,10 +1752,17 @@
                    <span>/hr</span>
                  </div>`
               : '';
+            const royaltyCell = isProduct
+              ? `<label class="ml-royalty-wrap${it.royalty ? ' is-on' : ''}" title="When checked, this product's sales have the pit's royalty % applied in Break-Even. Leave unchecked for non-royalty material.">
+                   <input type="checkbox" ${it.royalty ? 'checked' : ''} onchange="toggleProductRoyalty(${i}, this.checked)" />
+                   Royalty
+                 </label>`
+              : '';
             return `
             <div class="ml-item">
               <div class="ml-item-name">${escapeHtml(it.name)}</div>
               ${rateCell}
+              ${royaltyCell}
               <button class="btn-del" onclick="deleteListItem('${type.key}', ${i})">Delete</button>
             </div>`;
           }).join('')}</div>`
@@ -1807,6 +1827,21 @@
       if (!list || !list[index]) return;
       list[index].rate = parseRate(raw);
       scheduleSave();
+    }
+
+    // Flag a product as royalty-bearing (rock/aggregate) or not. Only flagged
+    // products have the pit's royalty % applied to their sales in Break-Even.
+    function toggleProductRoyalty(index, checked) {
+      if (!listsLoaded) return;
+      const list = quarryLists.product;
+      if (!list || !list[index]) return;
+      if (checked) list[index].royalty = true;
+      else delete list[index].royalty;
+      scheduleSave();
+      renderListPanel(LIST_TYPES.find(t => t.key === 'product'));
+      // Break-even royalty is gated on these flags, so refresh it now — the
+      // figures behind the modal update the moment it's closed.
+      if (typeof renderBreakeven === 'function') renderBreakeven();
     }
 
     function escapeHtml(s) {
@@ -4033,6 +4068,27 @@
       const v = Number(quarryRoyalty[loc]);
       return Number.isFinite(v) && v > 0 ? v : 0;
     }
+    // Royalties apply only to material flagged in Manage Lists → Product
+    // (rock/aggregate), not every product. Build id + name lookups of the
+    // flagged products so sales of non-royalty items (fill, millings, etc.)
+    // don't get the pit's royalty % deducted from contribution.
+    function royaltyProductSets() {
+      const ids = new Set(), names = new Set();
+      (quarryLists.product || []).forEach(p => {
+        if (!p || !p.royalty) return;
+        if (p.id != null && p.id !== '') ids.add(String(p.id));
+        const nm = String(p.name || '').trim().toLowerCase();
+        if (nm) names.add(nm);
+      });
+      return { ids, names };
+    }
+    // True when a sales row's product is flagged for royalty. Matches by id
+    // first, falling back to name so free-text / CSV-imported rows still work.
+    function salesRowHasRoyalty(row, sets) {
+      if (row.productId != null && row.productId !== '' && sets.ids.has(String(row.productId))) return true;
+      const nm = String(row.productName || '').trim().toLowerCase();
+      return nm !== '' && sets.names.has(nm);
+    }
     function onRoyaltyInput(input) {
       const loc = input.dataset.loc || '';
       if (!loc || loc === 'all' || loc === BE_NO_LOC) return;
@@ -4167,11 +4223,13 @@
         return locs.get(key);
       };
 
+      const royaltySets = royaltyProductSets();
       salesRows.filter(inYear).forEach(r => {
         const e = ensure(r.locationName);
         const amt = homeRowSales(r);
         e.revenue += amt;
-        e.royaltyCost += amt * royaltyRate(r.locationName) / 100;  // royalty is a % of sales
+        // Royalty is a % of sales, but only on royalty-flagged material.
+        if (salesRowHasRoyalty(r, royaltySets)) e.royaltyCost += amt * royaltyRate(r.locationName) / 100;
         const t = Number(r.tons);
         if (Number.isFinite(t)) e.tonsSold += t;
         const mk = beMonthKey(r.date);
@@ -4620,6 +4678,7 @@
       const matchLoc = (r) => locFilter === 'all'
         || ((String(r.locationName || '').trim() || BE_NO_LOC) === locFilter);
       const scopeRate = (locFilter !== 'all' && locFilter !== BE_NO_LOC) ? royaltyRate(locFilter) / 100 : null;
+      const royaltySets = royaltyProductSets();
 
       const months = new Map();
       const ensureM = (mk) => {
@@ -4631,7 +4690,8 @@
         const e = ensureM(mk);
         const amt = homeRowSales(r);
         e.revenue += amt;
-        e.royaltyCost += amt * royaltyRate(r.locationName) / 100;  // royalty is a % of sales
+        // Royalty is a % of sales, but only on royalty-flagged material.
+        if (salesRowHasRoyalty(r, royaltySets)) e.royaltyCost += amt * royaltyRate(r.locationName) / 100;
         const t = Number(r.tons); if (Number.isFinite(t)) e.tonsSold += t;
       });
       // Variable cost = crushing only (daily tracking excluded).
