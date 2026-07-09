@@ -9,6 +9,7 @@ const {
   divisionForKey,
   isSharedKey,
   isCrossDivisionKey,
+  isIcQuarryReadOnlyGet,
   CROSS_DIVISION_CONTRIBUTORS,
 } = require('../lib/auth');
 
@@ -80,13 +81,11 @@ module.exports = async (req, res) => {
   }
 
   if (!isKeyAllowedForUser(key, payload)) {
-    // Read-only escape hatch: intercompany users can GET fct_quarry_daily
-    // so the IC Quarry sub-tab can render labor hours without granting
-    // them broader quarry-division access.
-    const icReadOnly = req.method === 'GET'
-      && key === 'fct_quarry_daily'
-      && hasDivisionAccess(payload, 'intercompany');
-    if (!icReadOnly) {
+    // Read-only escape hatch: intercompany users can GET the quarry daily and
+    // crushing blobs so the IC Quarry sub-tab can render labor hours (both are
+    // auto-pulled into the per-location IC rollup) without granting them
+    // broader quarry-division access.
+    if (!isIcQuarryReadOnlyGet(key, payload, req.method)) {
       return res.status(403).json({ error: 'You do not have access to this division\'s data' });
     }
   }

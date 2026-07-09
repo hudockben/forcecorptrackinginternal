@@ -90,7 +90,11 @@ const legacyEmpty = {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 console.log('\n[ALL_DIVISIONS]');
-assert('contains all 9 divisions', ALL_DIVISIONS.length === 9);
+const EXPECTED_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll'];
+assert('contains exactly the canonical divisions',
+  ALL_DIVISIONS.length === EXPECTED_DIVISIONS.length &&
+  EXPECTED_DIVISIONS.every(d => ALL_DIVISIONS.includes(d)));
+assert('includes quarry',          ALL_DIVISIONS.includes('quarry'));
 assert('includes paving',          ALL_DIVISIONS.includes('paving'));
 assert('includes intercompany',    ALL_DIVISIONS.includes('intercompany'));
 assert('includes timesheet',       ALL_DIVISIONS.includes('timesheet'));
@@ -190,6 +194,27 @@ assert('pavingOnly user can write IC billing (cross-division)',
   hasAnyDivisionAccess(pavingOnly, CROSS_DIVISION_CONTRIBUTORS) === true);
 assert('turfOnly user CANNOT write IC billing (no source-division access)',
   hasAnyDivisionAccess(turfOnly, CROSS_DIVISION_CONTRIBUTORS) === false);
+
+console.log('\n[Intercompany read-only quarry escape hatch]');
+const { isIcQuarryReadOnlyGet, IC_QUARRY_READONLY_KEYS } = require('../api/lib/auth');
+const icOnly = {
+  username: 'ic-user',
+  divisionRoles: { turf: 'no_access', dust: 'no_access', paving: 'no_access', trucking: 'no_access', quarry: 'no_access', intercompany: 'level3' },
+  isPlatformAdmin: false,
+};
+// The IC Quarry sub-tab auto-pulls BOTH daily and crushing — regression guard
+// for the bug where only fct_quarry_daily was whitelisted and crushing 403'd.
+assert('escape-hatch set contains fct_quarry_daily',    IC_QUARRY_READONLY_KEYS.has('fct_quarry_daily'));
+assert('escape-hatch set contains fct_quarry_crushing', IC_QUARRY_READONLY_KEYS.has('fct_quarry_crushing'));
+assert('IC user CAN GET fct_quarry_daily',    isIcQuarryReadOnlyGet('fct_quarry_daily',    icOnly, 'GET') === true);
+assert('IC user CAN GET fct_quarry_crushing', isIcQuarryReadOnlyGet('fct_quarry_crushing', icOnly, 'GET') === true);
+assert('IC user CANNOT PUT fct_quarry_crushing (read-only)', isIcQuarryReadOnlyGet('fct_quarry_crushing', icOnly, 'PUT') === false);
+assert('IC user CANNOT PATCH fct_quarry_daily (read-only)',  isIcQuarryReadOnlyGet('fct_quarry_daily', icOnly, 'PATCH') === false);
+assert('hatch does NOT cover other quarry blobs (sales)',    isIcQuarryReadOnlyGet('fct_quarry_sales', icOnly, 'GET') === false);
+assert('non-IC quarry user not granted via hatch (uses normal quarry role)',
+  isIcQuarryReadOnlyGet('fct_quarry_crushing', pavingOnly, 'GET') === false);
+// A real quarry user reaches crushing through the normal division check, not the hatch.
+assert('quarry blob maps to quarry division', divisionForKey('fct_quarry_crushing') === 'quarry');
 
 console.log('\n────────────────────────────────────────');
 console.log(`  ${passed} passed, ${failed} failed`);
