@@ -1206,7 +1206,10 @@ async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
   // Royalty $ owed on one sale, summed across the pit's owners.
   const royaltyForSale = (loc, tons, price) => {
     const t = Number(tons); if (!Number.isFinite(t) || t <= 0) return 0;
-    const p = Number.isFinite(Number(price)) ? Number(price) : 0;
+    const p = Number(price);
+    // No price → no sale value → no royalty (don't let the floor charge
+    // against $0 revenue on an incomplete row).
+    if (!Number.isFinite(p) || p <= 0) return 0;
     let total = 0;
     for (const o of royaltyOwnersFor(loc)) {
       const rate = Number(o && o.rate) || 0;

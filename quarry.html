@@ -4165,12 +4165,14 @@
       const t = Number(tons);
       if (!Number.isFinite(t) || t <= 0) return 0;
       const price = Number(pricePerTon);
-      const p = Number.isFinite(price) ? price : 0;
+      // No price → no sale value → no royalty (the floor would otherwise
+      // charge against $0 revenue on an incomplete row).
+      if (!Number.isFinite(price) || price <= 0) return 0;
       let total = 0;
       royaltyOwners(loc).forEach(o => {
         const rate = Number(o.rate) || 0;
         const floor = Number(o.floor) || 0;
-        total += Math.max(p * rate / 100, floor) * t;
+        total += Math.max(price * rate / 100, floor) * t;
       });
       return total;
     }
@@ -4250,7 +4252,9 @@
     function roAddOwner() {
       const list = roEnsureLoc();
       if (!list) return;
-      list.push({ id: newRoyaltyId(), name: 'Royalty', rate: 0, floor: 0.25 });
+      // New owner starts blank (inert) until a rate/floor is entered, so
+      // adding a row doesn't silently charge royalty.
+      list.push({ id: newRoyaltyId(), name: 'Royalty', rate: 0, floor: 0 });
       scheduleRoyaltySave();
       renderRoyaltyOwners();
       renderBreakeven();
