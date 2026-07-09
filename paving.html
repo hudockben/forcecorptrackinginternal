@@ -8287,8 +8287,8 @@ function renderPOTab() {
             <span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</span>${badge}
           </td>
           <td style="padding:0.35rem 0.6rem;min-width:110px" onclick="event.stopPropagation()">${inp('date_created','date',po.date_created,po.id,null)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${po.id}" data-po-field="project_id"`)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${po.id}" data-po-field="sub_code_sel"`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${po.id}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${po.id}" data-po-field="sub_code_sel"${(po.cost_code || po.sub_code) ? ` data-cb-value="${esc((po.cost_code||'') + '||' + (po.sub_code||''))}"` : ''}`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${inp('title','text',po.title,po.id,null,'placeholder="Material / Description"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${cbHtml('suppliers', po.supplier || '', '— select —', `data-po-id="${po.id}" data-po-field="supplier"`)}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.8rem;color:var(--muted)" id="po-qty-${po.id}">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
@@ -8484,6 +8484,8 @@ function _handlePOEvent(e) {
   if (lineId && lineField) {
     const line = (po.lines || []).find(l => l.id === lineId);
     if (!line) return;
+    // No-op commit (e.g. focus+blur of the employee combobox) — skip redundant work.
+    if (line[lineField] === el.value) return;
     line[lineField] = el.value;
     // Live update line amount/total cells
     if (['qty','unit_cost','tax'].includes(lineField)) {
@@ -8516,9 +8518,16 @@ function _handlePOEvent(e) {
   const oldProj = po.project_id;
 
   if (field === 'sub_code_sel') {
-    const mapped = el.dataset.cbValue || el.value || '';
+    // Sub code is a bid-item picker: the real value (cost_code||sub_code) only
+    // ever lives in cbValue. Never fall back to el.value — that's the human label
+    // (no "||"), which would corrupt cost_code with a label fragment, e.g. when a
+    // bid item was deleted/renamed after this PO referenced it.
+    const mapped = el.dataset.cbValue || '';
     delete el.dataset.cbValue;
     const [cc, sc] = mapped.split('||');
+    // No-op commit (focus+blur, or re-picking the same item): the combobox still
+    // fires a change, but re-applying the same value would needlessly re-sync.
+    if ((cc || '') === (po.cost_code || '') && (sc || '') === (po.sub_code || '')) return;
     po.cost_code = cc || '';
     po.sub_code  = sc || '';
     savePurchaseOrders();
@@ -8528,9 +8537,16 @@ function _handlePOEvent(e) {
   }
 
   if (field === 'project_id') {
-    po.project_id = el.dataset.cbValue || '';
+    const newProj = el.dataset.cbValue || '';
     delete el.dataset.cbValue;
+    // No-op commit: re-selecting the current project (or a focus+blur that
+    // re-resolves to it) must NOT clear the sub code or delete/recreate the
+    // linked daily rows in the block below.
+    if (newProj === oldProj) return;
+    po.project_id = newProj;
   } else {
+    // No-op commit for supplier / title / date / status — skip the redundant save.
+    if (po[field] === el.value) return;
     po[field] = el.value;
   }
 
