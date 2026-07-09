@@ -8808,7 +8808,11 @@ function _handlePOEvent(e) {
     // (no "||"), which would corrupt cost_code with a label fragment, e.g. when a
     // bid item was deleted/renamed after this PO referenced it.
     const mapped = el.dataset.cbValue || '';
-    delete el.dataset.cbValue;
+    // Keep (don't delete) the resolved value so a later focus+blur round-trips it
+    // exactly instead of re-deriving from the label — a renamed bid item or
+    // trailing whitespace in a description would otherwise wipe the code on blur.
+    // cbOnInput clears this the moment the user actually types.
+    el.dataset.cbValue = mapped;
     const [cc, sc] = mapped.split('||');
     // No-op commit (focus+blur, or re-picking the same item): the combobox still
     // fires a change, but re-applying the same value would needlessly re-sync.
@@ -8823,7 +8827,11 @@ function _handlePOEvent(e) {
 
   if (field === 'project_id') {
     const newProj = el.dataset.cbValue || '';
-    delete el.dataset.cbValue;
+    // Keep (don't delete) the resolved value so a later focus+blur round-trips it
+    // exactly instead of re-deriving from the label — label re-derivation can
+    // misassign a same-named project or fail on a renamed one. cbOnInput clears
+    // this the moment the user actually types.
+    el.dataset.cbValue = newProj;
     // No-op commit: re-selecting the current project (or a focus+blur that
     // re-resolves to it) must NOT clear the sub code or delete/recreate the
     // linked daily rows in the block below.
@@ -9747,7 +9755,11 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     // (no "||"), which would corrupt cost_code with a label fragment, e.g. when a
     // bid item was deleted/renamed after this entry referenced it.
     const mapped = el.dataset.cbValue || '';
-    delete el.dataset.cbValue;
+    // Keep (don't delete) the resolved value so a later focus+blur round-trips it
+    // exactly instead of re-deriving from the label — a renamed bid item or
+    // trailing whitespace in a description would otherwise wipe the code on blur.
+    // cbOnInput clears this the moment the user actually types.
+    el.dataset.cbValue = mapped;
     const [cc, sc] = mapped.split('||');
     // No-op commit (focus+blur, or re-picking the same item) — skip redundant re-sync.
     if ((cc || '') === (tr.cost_code || '') && (sc || '') === (tr.sub_code || '')) return;
@@ -9761,7 +9773,11 @@ document.getElementById('trucking-root').addEventListener('change', e => {
 
   if (field === 'project_id') {
     const newProj = el.dataset.cbValue || '';
-    delete el.dataset.cbValue;
+    // Keep (don't delete) the resolved value so a later focus+blur round-trips it
+    // exactly instead of re-deriving from the label — label re-derivation can
+    // misassign a same-named project or fail on a renamed one. cbOnInput clears
+    // this the moment the user actually types.
+    el.dataset.cbValue = newProj;
     // No-op commit: re-selecting the current project (or a focus+blur) must NOT
     // clear the sub code or delete/recreate the linked daily row below.
     if (newProj === oldProj) return;
