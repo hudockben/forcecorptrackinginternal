@@ -17652,7 +17652,7 @@ function _seSummaryHtml() {
         </div>
       </div>
       <div style="display:flex;gap:2.5rem;flex-wrap:wrap;margin-bottom:1.15rem">
-        ${stat('Total Labor Hours', _SE_FMT(totLbr, 1) + ' hrs', `across ${computed.length} sub code${computed.length !== 1 ? 's' : ''}`, '#a78bfa')}
+        ${stat('Total Labor Hours', _SE_FMT(totLbr, 1) + ' hrs', `across ${active.length} sub code${active.length !== 1 ? 's' : ''}${completed.length ? ` &middot; ${completed.length} completed` : ''}`, '#a78bfa')}
         ${stat('Working Days', String(totalWD), offField.length ? `field ${fieldEnd}d + off-field` : 'bid order &middot; adjustable', '#4ade80')}
         ${stat(offField.length ? 'Field Complete' : 'Est. Completion', _seFmtDate(offField.length ? sched.fieldCal : endCal), offField.length ? 'field done · off-field follows' : 'starting ' + _seFmtDate(startCal), deadlineSet ? dlColor : '#60a5fa')}
       </div>
@@ -17869,7 +17869,7 @@ function _seImportBids(projId) {
     // Non-blocking hint appended above summary
     const hint = document.createElement('div');
     hint.style.cssText = 'margin-top:1rem;padding:0.6rem 0.9rem;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.35);border-radius:7px;font-size:0.76rem;color:#c4b5fd';
-    hint.innerHTML = `Imported ${added.length} bid item${added.length !== 1 ? 's' : ''}. ${blanks} have no history — click <strong>&#10024; Estimate Blanks</strong> to fill them with AI.`;
+    hint.innerHTML = `Imported ${added.length} bid item${added.length !== 1 ? 's' : ''}. ${blanks} have no history — the AI is filling them in automatically (or use <strong>&#10024; Estimate all</strong>).`;
     if (s && s.parentNode) s.parentNode.insertBefore(hint, s);
   }
 }
