@@ -16965,6 +16965,7 @@ let _seRows         = null;
 let _seStart        = null;          // 'YYYY-MM-DD'
 let _seSkipWeekends = true;
 let _seDeadlineDay  = null;          // field deadline as a working-day index (null = default to field end)
+let _seProjName     = null;          // name of the last imported project (for the PDF header)
 
 const _SE_FMT = (v, d = 0) => (v == null || isNaN(v))
   ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -17233,7 +17234,6 @@ function renderScheduleEstimator() {
             style="background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.42rem 0.6rem;border-radius:7px;font-size:0.8rem;width:210px">
           <datalist id="se-proj-datalist">${projDatalist}</datalist>
           <button onclick="_seImportBidsFromPicker()" style="${ghostBtn}">&#8681; Import</button>
-          <button onclick="_sePrint()" style="${ghostBtn}">&#8659; Export PDF</button>
         </div>
       </div>
       ${banner}${cta}
@@ -17644,6 +17644,7 @@ function _seSummaryHtml() {
           ${dlBadge}
           <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.72rem;color:var(--muted);cursor:pointer"><input type="checkbox" ${_seSkipWeekends ? 'checked' : ''} onchange="_seToggleWeekends(this.checked)" style="cursor:pointer">Skip weekends</label>
           <div style="display:flex;gap:0.35rem">${presetBtn('All Sequential', false)}${presetBtn('All Same Day', true)}</div>
+          <button onclick="_sePrint()" title="Export this schedule as a clean, print-ready PDF" style="display:inline-flex;align-items:center;gap:0.35rem;padding:0.34rem 0.8rem;background:rgba(74,222,128,0.15);border:1.5px solid rgba(74,222,128,0.5);color:#4ade80;border-radius:6px;font-size:0.74rem;font-weight:700;cursor:pointer;white-space:nowrap">&#8659; Export PDF</button>
         </div>
       </div>
       <div style="display:flex;gap:2.5rem;flex-wrap:wrap;margin-bottom:1.15rem">
@@ -17830,6 +17831,7 @@ function _seImportBids(projId) {
   const statKeys = new Set((window._seStats || []).map(s => s.key));
   const items = (p.bidItems || []).filter(b => (b.cost_code || b.sub_code));
   if (!items.length) { alert('That project has no bid items to import.'); return; }
+  _seProjName = (p['project-name'] || '').trim() || null;   // label the exported PDF
 
   const added = items.map(b => {
     const cc  = b.cost_code || '';
@@ -18069,7 +18071,7 @@ function _sePrint() {
     </div>`;
 
     const bars = sec.items.map(c => barRowP(c, color)).join('');
-    return header + bars;
+    return `<div class="sec">${header}${bars}</div>`;
   }).join('');
 
   function barRowP(c, color) {
@@ -18114,20 +18116,30 @@ function _sePrint() {
   }).join('');
 
   const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const projLabel = _seProjName ? esc2(_seProjName) : 'Untitled Project';
   const win = window.open('', '_blank');
   if (!win) { alert('Pop-up blocked — allow pop-ups to export the schedule.'); return; }
   win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Project Schedule</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
     body{color:#111;background:#fff;padding:0.6cm 0.7cm}
-    h1{font-size:17px;margin-bottom:1px}
+    .dw-head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:3px solid #16a34a;padding-bottom:9px;margin-bottom:11px}
+    .dw-brand{display:flex;align-items:center;gap:9px}
+    .dw-logo{width:32px;height:32px;flex:0 0 32px;border-radius:8px;background:linear-gradient(135deg,#16a34a,#0891b2);color:#fff;font-size:17px;font-weight:800;display:flex;align-items:center;justify-content:center}
+    .dw-brand .nm{font-size:18px;font-weight:800;letter-spacing:-0.02em;color:#0f172a;line-height:1}
+    .dw-brand .tag{font-size:7.5px;letter-spacing:0.16em;text-transform:uppercase;color:#16a34a;font-weight:700;margin-top:2px}
+    .dw-title{text-align:right}
+    .dw-title .t{font-size:15px;font-weight:700;color:#0f172a;line-height:1.15;max-width:5in;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dw-title .s{font-size:9px;color:#777;margin-top:2px}
     .meta{font-size:10px;color:#666;margin-bottom:12px}
+    h2{font-size:12px;color:#0f172a;margin-bottom:7px;padding-bottom:4px;border-bottom:1px solid #d5d8dd}
     .kpis{display:flex;gap:30px;margin-bottom:14px;flex-wrap:wrap}
     .kpi .l{font-size:8px;text-transform:uppercase;letter-spacing:0.05em;color:#888}
     .kpi .v{font-size:15px;font-weight:700;color:#111}
     .gantt{border:1px solid #e3e5e9;border-radius:6px;padding:8px 10px 12px}
     .axis{display:flex;align-items:flex-end;height:16px;margin-bottom:3px}
-    .row{display:flex;align-items:center;height:19px;margin:2.5px 0}
+    .sec{page-break-inside:avoid}
+    .row{display:flex;align-items:center;height:19px;margin:2.5px 0;page-break-inside:avoid}
     .lbl{width:220px;flex:0 0 220px;padding-right:8px;overflow:hidden}
     .lbl.sub{padding-left:11px}
     .lbl .cc{font-size:10px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -18138,16 +18150,25 @@ function _sePrint() {
     .phase{position:absolute;top:3px;bottom:3px;border-radius:2px;opacity:0.38}
     .rt{width:122px;flex:0 0 122px;text-align:right;font-size:8px;color:#555;padding-left:6px;white-space:nowrap}
     .ovh{font-size:8px;text-transform:uppercase;letter-spacing:0.05em;color:#888;margin-top:7px;border-top:1px dashed #ccc;padding-top:5px}
-    table{border-collapse:collapse;width:100%;margin-top:16px}
+    table{border-collapse:collapse;width:100%}
+    thead{display:table-header-group}
     th,td{border:1px solid #ccc;padding:3px 6px;font-size:9px;white-space:nowrap}
     th{background:#f4f4f4;text-align:left}
     td.r,th.r{text-align:right}
+    tr{page-break-inside:avoid}
     tr:nth-child(even) td{background:#fafafa}
+    .detail{page-break-before:always;padding-top:2px}
     .fn{font-size:8px;color:#777;margin-top:6px}
     @media print{@page{margin:0.7cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style></head><body>
-    <h1>Project Schedule</h1>
-    <p class="meta">${sections.length} section${sections.length !== 1 ? 's' : ''} &middot; ${ordered.length} sub code${ordered.length !== 1 ? 's' : ''} &middot; bid order${_seSkipWeekends ? ', weekends excluded' : ''} &middot; Generated ${dateStr}</p>
+    <div class="dw-head">
+      <div class="dw-brand">
+        <div class="dw-logo">&#128202;</div>
+        <div><div class="nm">DataWatch</div><div class="tag">Schedule Estimator</div></div>
+      </div>
+      <div class="dw-title"><div class="t">${projLabel}</div><div class="s">Project Schedule &middot; Generated ${dateStr}</div></div>
+    </div>
+    <p class="meta">${sections.length} section${sections.length !== 1 ? 's' : ''} &middot; ${ordered.length} sub code${ordered.length !== 1 ? 's' : ''} &middot; bid order${_seSkipWeekends ? ', weekends excluded' : ''}</p>
     <div class="kpis">
       <div class="kpi"><div class="l">Total Labor Hours</div><div class="v">${_SE_FMT(totLbr, 1)} hrs</div></div>
       <div class="kpi"><div class="l">Working Days</div><div class="v">${totalWD}</div></div>
@@ -18161,12 +18182,15 @@ function _sePrint() {
       <div class="axis"><div style="width:220px;flex:0 0 220px"></div><div style="flex:1;position:relative;height:100%">${axisHtml}</div><div style="width:122px;flex:0 0 122px"></div></div>
       ${ganttRows}${offRows}${spanRows}
     </div>
+    <div class="detail">
+    <h2>Schedule Detail</h2>
     <table><thead><tr>
       <th>Cost Code</th><th>Sub Code</th><th class="r">Quantity</th><th class="r">Labor Hrs</th>
       <th class="r">Crew</th><th class="r">Hrs/Day</th><th class="r">Work Days</th>
       <th>Start</th><th>Finish</th>
     </tr></thead><tbody>${tbody}</tbody></table>
     <p class="fn">* Travel / project management span the full project. ${offField.length ? '&#8224; Off-field work is done after the field is handed over. ' : ''}A <b>*</b> after Work Days marks a manually set duration.${deadlineSet ? ` The vertical line is the field deadline (${_seFmtDate(deadlineCal)}).` : ''}</p>
+    </div>
     <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
   win.document.close();
