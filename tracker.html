@@ -16964,7 +16964,6 @@ function _calcRemoveRow(idx) {
 let _seRows         = null;
 let _seStart        = null;          // 'YYYY-MM-DD'
 let _seSkipWeekends = true;
-let _seMode         = 'sequential';  // 'sequential' | 'parallel'
 
 const _SE_FMT = (v, d = 0) => (v == null || isNaN(v))
   ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -17352,121 +17351,172 @@ function _seResultHtml(idx) {
       ${r.equipHrs != null ? card('Est. Equip Hours', _SE_FMT(r.equipHrs, 1) + ' hrs', isAI ? 'AI estimate' : 'avg across history', '#fb923c') : ''}
     </div>
     <div style="font-size:0.68rem;color:var(--muted);margin-bottom:0.6rem;line-height:1.5">“Est. Working Days” uses the crew &amp; hours/day set above.${r.histDays != null ? ' “Historical Pace” is how long it actually took at the crew-day throughput logged for this sub code — a reality check on your staffing plan.' : ''}</div>
+    ${_seIsSpanning(st.subCode) ? `<div style="font-size:0.68rem;color:#93c5fd;margin-bottom:0.6rem;line-height:1.5">&#8734; This runs <strong>every project day</strong> — in the schedule below it is pinned to span the full project length, regardless of the estimate above.</div>` : ''}
     <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">${pill}${noteRight}</div>`;
 }
 
-function _seSummaryHtml() {
-  const stats = window._seStats || [];
-  const rows = (_seRows || []).map(row => {
+// Daily-overhead sub codes (travel, project management, supervision) run every
+// working day, so they are pinned to the full project length rather than a
+// production-rate estimate that can under-count them.
+function _seIsSpanning(sc) {
+  const s = (sc || '').toLowerCase();
+  return s.includes('travel')
+    || s.includes('project management') || s.includes('project mgmt') || s.includes('proj mgmt') || s.includes('pm ') || s === 'pm'
+    || s.includes('supervis') || s.includes('superintend');
+}
+
+// Shared scheduler. Places each sub code's working-day window in BID (row) order,
+// honoring per-row "same day as previous" overlaps, and spans daily overhead
+// (travel / PM) across the whole project. Returned to both the on-screen summary
+// and the printable schedule so they never diverge.
+function _seBuildSchedule() {
+  const startStr = _seStart || _seTodayStr();
+  const computed = (_seRows || []).map((row, idx) => {
     const r = _seComputeRow(row);
     if (r.invalid || r.needsEstimate || r.days == null || !(r.days > 0)) return null;
-    return r;
+    return { r, row, idx, span: Math.max(1, Math.ceil(r.days)), spanning: _seIsSpanning(r.st.subCode) };
   }).filter(Boolean);
-  if (rows.length === 0) return '';
+  if (!computed.length) return null;
 
-  const startStr = _seStart || _seTodayStr();
-  const parallel = _seMode === 'parallel';
-  const PALETTE  = ['#4ade80', '#60a5fa', '#a78bfa', '#fb923c', '#38bdf8', '#f472b6', '#facc15', '#22d3ee'];
+  const normal   = computed.filter(c => !c.spanning);
+  const spanning = computed.filter(c => c.spanning);
 
-  // Group the schedule by COST CODE so the timeline reads as phases, not a run-on
-  // list. Sub codes of the same cost code sit together and are scheduled as one
-  // contiguous block; each cost code is a phase with its own bar.
-  const groupOrder = [];
-  const groupMap = {};
-  rows.forEach(r => {
-    const cc = (r.st.costCode || '').trim() || '(No Cost Code)';
-    if (!groupMap[cc]) { groupMap[cc] = []; groupOrder.push(cc); }
-    groupMap[cc].push(r);
+  // Place normal items top-to-bottom; a "same day as previous" row joins the
+  // running group (overlap) instead of starting after it (which compresses the
+  // finish, so the timeline reacts live as you map concurrent work).
+  let groupStart = 1, groupEnd = 0, placed = 0;
+  normal.forEach(c => {
+    if (placed === 0 || !c.row._sameDay) {
+      c.startDay = placed === 0 ? 1 : groupEnd + 1;
+      groupStart = c.startDay;
+      groupEnd   = c.startDay + c.span - 1;
+    } else {
+      c.startDay = groupStart;
+      groupEnd   = Math.max(groupEnd, groupStart + c.span - 1);
+    }
+    c.finishDay = c.startDay + c.span - 1;
+    placed++;
   });
 
-  // Whole-working-day windows so calendar placement is clean.
-  let cursor = 0;
-  const groups = groupOrder.map((cc, gi) => {
-    const gitems = groupMap[cc].map(r => {
-      const span     = Math.max(1, Math.ceil(r.days));
-      const startIdx = parallel ? 1 : cursor + 1;
-      const endIdx   = parallel ? span : cursor + span;
-      if (!parallel) cursor += span;
-      return { r, span, startIdx, endIdx };
-    });
-    return {
-      cc, gitems, gi,
-      phaseStart: Math.min(...gitems.map(it => it.startIdx)),
-      phaseEnd:   Math.max(...gitems.map(it => it.endIdx)),
-      phaseHrs:   gitems.reduce((s, it) => s + it.r.totalLaborHrs, 0),
-    };
-  });
-  const allItems = groups.flatMap(g => g.gitems);
-  const totalWD = parallel ? Math.max(...allItems.map(it => it.span)) : cursor;
-  const totLbr  = rows.reduce((s, r) => s + r.totalLaborHrs, 0);
-  const startCal = _seNthWorkingDay(startStr, 1, _seSkipWeekends);
-  const endCal   = _seNthWorkingDay(startStr, totalWD, _seSkipWeekends);
+  const workEnd    = normal.length ? Math.max(...normal.map(c => c.finishDay)) : 0;
+  const projectEnd = normal.length ? Math.max(1, workEnd)
+    : Math.max(1, ...spanning.map(c => c.span));   // only overhead selected → its own length
+
+  // Overhead spans the full project (never shorter).
+  spanning.forEach(c => { c.startDay = 1; c.finishDay = projectEnd; c.span = projectEnd; c.pinned = true; });
+
+  return {
+    startStr, computed, normal, spanning,
+    totalWD: projectEnd,
+    totLbr:  computed.reduce((s, c) => s + c.r.totalLaborHrs, 0),
+    startCal: _seNthWorkingDay(startStr, 1, _seSkipWeekends),
+    endCal:   _seNthWorkingDay(startStr, projectEnd, _seSkipWeekends),
+  };
+}
+
+function _seSummaryHtml() {
+  const sched = _seBuildSchedule();
+  if (!sched) return '';
+  const { startStr, computed, normal, spanning, totalWD, totLbr, startCal, endCal } = sched;
+  const PALETTE = ['#4ade80', '#60a5fa', '#a78bfa', '#fb923c', '#38bdf8', '#f472b6', '#facc15', '#22d3ee'];
+  const pct  = idx => totalWD > 0 ? (idx / totalWD * 100) : 0;
+  const dstr = d   => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
 
   const stat = (label, value, sub, color) =>
     `<div><div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
       <div style="font-size:1.55rem;font-weight:700;color:${color || '#4ade80'};line-height:1.1">${value}</div>
       ${sub ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${sub}</div>` : ''}</div>`;
+  const presetBtn = (label, val) =>
+    `<button onclick="_seSetAllSameDay(${val})" title="${val ? 'Start every sub code on the same day (fully overlapped)' : 'Run every sub code back-to-back (bid order)'}" style="padding:0.28rem 0.7rem;border-radius:6px;font-size:0.72rem;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--bg);color:var(--muted)">${label}</button>`;
 
-  const modeBtn = (m, label) =>
-    `<button onclick="_seSetMode('${m}')" style="padding:0.28rem 0.7rem;border-radius:6px;font-size:0.72rem;font-weight:600;cursor:pointer;border:1px solid ${_seMode === m ? 'rgba(74,222,128,0.5)' : 'var(--border)'};background:${_seMode === m ? 'rgba(74,222,128,0.15)' : 'var(--bg)'};color:${_seMode === m ? '#4ade80' : 'var(--muted)'}">${label}</button>`;
+  // Sections = contiguous runs of the same cost code, in bid order.
+  const sections = [];
+  normal.forEach(c => {
+    const cc = (c.r.st.costCode || '').trim() || '(No Cost Code)';
+    const last = sections[sections.length - 1];
+    if (last && last.cc === cc) last.items.push(c);
+    else sections.push({ cc, items: [c] });
+  });
 
-  const pct = idx => totalWD > 0 ? (idx / totalWD * 100) : 0;
+  let colorIdx = 0;
+  const sectionHtml = sections.map(sec => {
+    const color    = PALETTE[colorIdx++ % PALETTE.length];
+    const secStart = Math.min(...sec.items.map(c => c.startDay));
+    const secEnd   = Math.max(...sec.items.map(c => c.finishDay));
+    const secHrs   = sec.items.reduce((s, c) => s + c.r.totalLaborHrs, 0);
 
-  const gantt = groups.map(g => {
-    const color = PALETTE[g.gi % PALETTE.length];
-    const pLeft  = pct(g.phaseStart - 1);
-    const pWidth = Math.max(2, pct(g.phaseEnd) - pct(g.phaseStart - 1));
-    const pd0 = _seNthWorkingDay(startStr, g.phaseStart, _seSkipWeekends);
-    const pd1 = _seNthWorkingDay(startStr, g.phaseEnd,   _seSkipWeekends);
-    const phaseDays = g.phaseEnd - g.phaseStart + 1;
-
-    // Phase header: cost code name + a slim phase bar spanning its sub codes.
-    const header = `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.55rem 0 0.1rem">
-      <div style="width:190px;flex:0 0 190px;font-size:0.76rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(g.cc)}">${_seEsc(g.cc)}</div>
-      <div style="flex:1;position:relative;height:11px;background:var(--bg);border-radius:3px">
-        <div title="Phase: days ${g.phaseStart}–${g.phaseEnd} · ${_seFmtDate(pd0)} → ${_seFmtDate(pd1)}" style="position:absolute;left:${pLeft}%;width:${pWidth}%;top:0;bottom:0;background:${color};opacity:0.35;border-radius:3px;border:1px solid ${color}"></div>
+    const header = `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.6rem 0 0.15rem">
+      <div style="width:220px;flex:0 0 220px;min-width:0">
+        <div style="font-size:0.77rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sec.cc)}">${_seEsc(sec.cc)}</div>
+        <div style="font-size:0.62rem;color:var(--muted)">${dstr(secStart)} &rarr; ${dstr(secEnd)}</div>
       </div>
-      <div style="width:60px;flex:0 0 60px;text-align:right;font-size:0.66rem;color:var(--muted)">${phaseDays}d · ${_SE_FMT(g.phaseHrs, 0)}h</div>
+      <div style="flex:1;position:relative;height:11px;background:var(--bg);border-radius:3px">
+        <div style="position:absolute;left:${pct(secStart - 1)}%;width:${Math.max(2, pct(secEnd) - pct(secStart - 1))}%;top:0;bottom:0;background:${color};opacity:0.35;border-radius:3px;border:1px solid ${color}"></div>
+      </div>
+      <div style="width:74px;flex:0 0 74px;text-align:right;font-size:0.64rem;color:var(--muted)">${secEnd - secStart + 1}d &middot; ${_SE_FMT(secHrs, 0)}h</div>
     </div>`;
 
-    // Sub-code bars, indented under the phase.
-    const bars = g.gitems.map(it => {
-      const left  = pct(it.startIdx - 1);
-      const width = Math.max(2, it.span / totalWD * 100);
-      const sc0   = _seNthWorkingDay(startStr, it.startIdx, _seSkipWeekends);
-      const sc1   = _seNthWorkingDay(startStr, it.endIdx,   _seSkipWeekends);
-      const sc    = it.r.st.subCode || '(custom)';
+    const bars = sec.items.map(c => {
+      const left  = pct(c.startDay - 1);
+      const width = Math.max(2, c.span / totalWD * 100);
+      const sc    = c.r.st.subCode || '(custom)';
+      const first = c === normal[0];
+      const on    = !!c.row._sameDay;
+      const toggle = first ? `<span style="flex:0 0 auto;width:20px"></span>`
+        : `<button onclick="_seToggleSameDay(${c.idx})" title="${on ? 'Starts the same day as the item above (overlap) — click to run it after instead' : 'Runs after the item above — click to start it the same day (overlap)'}" style="flex:0 0 auto;width:20px;height:20px;border-radius:4px;border:1px solid ${on ? 'rgba(96,165,250,0.6)' : 'var(--border)'};background:${on ? 'rgba(96,165,250,0.18)' : 'var(--bg)'};color:${on ? '#60a5fa' : 'var(--muted)'};font-size:0.72rem;cursor:pointer;line-height:1;padding:0;margin-top:0.05rem">${on ? '&#8657;' : '&#8595;'}</button>`;
       return `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.16rem 0">
-        <div style="width:190px;flex:0 0 190px;padding-left:0.95rem;font-size:0.71rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${it.r.st.costCode ? ' — ' + _seEsc(it.r.st.costCode) : ''}">&#8627; ${_seEsc(sc)}</div>
-        <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
-          <div title="Days ${it.startIdx}–${it.endIdx} · ${_seFmtDate(sc0)} → ${_seFmtDate(sc1)}" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${it.span}d</div>
+        <div style="width:220px;flex:0 0 220px;padding-left:0.5rem;display:flex;align-items:flex-start;gap:0.35rem;min-width:0">
+          ${toggle}
+          <div style="min-width:0">
+            <div style="font-size:0.72rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div>
+            <div style="font-size:0.62rem;color:var(--muted)">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</div>
+          </div>
         </div>
-        <div style="width:60px;flex:0 0 60px;text-align:right;font-size:0.7rem;color:var(--muted)">${_SE_FMT(it.r.totalLaborHrs, 0)}h</div>
+        <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
+          <div title="Days ${c.startDay}–${c.finishDay}" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${c.span}d</div>
+        </div>
+        <div style="width:74px;flex:0 0 74px;text-align:right;font-size:0.7rem;color:var(--muted)">${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
       </div>`;
     }).join('');
 
     return header + bars;
   }).join('');
 
-  const phaseCount = groups.length;
+  const spanHtml = spanning.length ? `
+    <div style="margin-top:0.7rem;padding-top:0.5rem;border-top:1px dashed var(--border)">
+      <div style="font-size:0.64rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Every project day &middot; ${totalWD}d</div>
+      ${spanning.map(c => {
+        const sc = c.r.st.subCode || '(custom)';
+        return `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.16rem 0">
+          <div style="width:220px;flex:0 0 220px;padding-left:0.5rem;min-width:0">
+            <div style="font-size:0.72rem;color:#cbd5e1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}">&#8734; ${_seEsc(sc)}</div>
+            <div style="font-size:0.62rem;color:var(--muted)">${dstr(1)} &rarr; ${dstr(totalWD)}</div>
+          </div>
+          <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
+            <div title="Spans the full project (${totalWD}d)" style="position:absolute;left:0;width:100%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${totalWD}d</div>
+          </div>
+          <div style="width:74px;flex:0 0 74px;text-align:right;font-size:0.7rem;color:var(--muted)">${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
+        </div>`;
+      }).join('')}
+    </div>` : '';
 
   return `
     <div style="margin-top:1.5rem;padding:1.2rem 1.4rem;background:rgba(74,222,128,0.06);border:2px solid rgba(74,222,128,0.28);border-radius:12px">
       <div style="display:flex;flex-wrap:wrap;gap:0.9rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem">
-        <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${phaseCount} phase${phaseCount !== 1 ? 's' : ''} · ${rows.length} sub code${rows.length !== 1 ? 's' : ''}</div>
+        <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${sections.length} section${sections.length !== 1 ? 's' : ''} · ${computed.length} sub code${computed.length !== 1 ? 's' : ''}</div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
           <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)">Start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem"></label>
           <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.72rem;color:var(--muted);cursor:pointer"><input type="checkbox" ${_seSkipWeekends ? 'checked' : ''} onchange="_seToggleWeekends(this.checked)" style="cursor:pointer">Skip weekends</label>
-          <div style="display:flex;gap:0.35rem">${modeBtn('sequential', 'Sequential')}${modeBtn('parallel', 'Parallel')}</div>
+          <div style="display:flex;gap:0.35rem">${presetBtn('All Sequential', false)}${presetBtn('All Same Day', true)}</div>
         </div>
       </div>
       <div style="display:flex;gap:2.5rem;flex-wrap:wrap;margin-bottom:1.15rem">
-        ${stat('Total Labor Hours', _SE_FMT(totLbr, 1) + ' hrs', `across ${rows.length} sub code${rows.length !== 1 ? 's' : ''}`, '#a78bfa')}
-        ${stat('Working Days', String(totalWD), parallel ? 'run in parallel (longest task drives it)' : 'run back-to-back', '#4ade80')}
+        ${stat('Total Labor Hours', _SE_FMT(totLbr, 1) + ' hrs', `across ${computed.length} sub code${computed.length !== 1 ? 's' : ''}`, '#a78bfa')}
+        ${stat('Working Days', String(totalWD), 'bid order &middot; adjustable below', '#4ade80')}
         ${stat('Est. Completion', _seFmtDate(endCal), 'starting ' + _seFmtDate(startCal), '#60a5fa')}
       </div>
-      <div style="margin-top:0.5rem">${gantt}</div>
-      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5">Bars are grouped into <strong style="color:var(--fg)">phases by cost code</strong>; each sub code is rounded up to whole working days for calendar placement. <strong style="color:var(--fg)">Sequential</strong> runs phases back-to-back; <strong style="color:var(--fg)">Parallel</strong> starts them together and the longest one drives the finish. Adjust crew &amp; hours/day on any sub code to compress the schedule.</div>
+      <div style="margin-top:0.5rem">${sectionHtml}${spanHtml}</div>
+      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5">Work flows <strong style="color:var(--fg)">top-to-bottom in bid order</strong>, grouped into <strong style="color:var(--fg)">cost-code sections</strong> with start &rarr; finish dates. Use the <span style="color:#60a5fa">&#8657;</span> toggle to start a sub code the <strong style="color:var(--fg)">same day</strong> as the one above (overlap) and watch the finish compress. <strong style="color:var(--fg)">Travel &amp; project management</strong> are pinned to span the full project. Each sub code is rounded up to whole working days.</div>
     </div>`;
 }
 
@@ -17524,9 +17574,11 @@ function _seRemoveRow(idx) {
   if (_seRows.length === 0) _seRows = null;   // reseed on next render
   renderScheduleEstimator();
 }
-function _seSetStart(v)        { _seStart = v; const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); }
-function _seToggleWeekends(b)  { _seSkipWeekends = !!b; const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); }
-function _seSetMode(m)         { _seMode = m; const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); }
+function _seRenderSummary()    { const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); }
+function _seSetStart(v)        { _seStart = v; _seRenderSummary(); }
+function _seToggleWeekends(b)  { _seSkipWeekends = !!b; _seRenderSummary(); }
+function _seToggleSameDay(idx) { if (_seRows && _seRows[idx]) { _seRows[idx]._sameDay = !_seRows[idx]._sameDay; _seRenderSummary(); } }
+function _seSetAllSameDay(val) { (_seRows || []).forEach(r => { r._sameDay = !!val; }); _seRenderSummary(); }
 
 /* ── Bid-item import ─────────────────────────────────────────────────────── */
 function _seImportBidsFromPicker() {
@@ -17703,42 +17755,26 @@ async function _seAutoEstimateBlanks() {
 
 /* ── Printable schedule ──────────────────────────────────────────────────── */
 function _sePrint() {
-  const rows = (_seRows || []).map(row => _seComputeRow(row))
-    .filter(r => r && !r.invalid && !r.needsEstimate && r.days != null && r.days > 0);
-  if (rows.length === 0) { alert('Add at least one sub code with a quantity (and an estimate) to print the schedule.'); return; }
-
-  const startStr = _seStart || _seTodayStr();
-  const parallel = _seMode === 'parallel';
-  let cursor = 0;
-  const items = rows.map(r => {
-    const span     = Math.max(1, Math.ceil(r.days));
-    const startIdx = parallel ? 1 : cursor + 1;
-    const endIdx   = parallel ? span : cursor + span;
-    if (!parallel) cursor += span;
-    return { r, span, startIdx, endIdx };
-  });
-  const totalWD  = parallel ? Math.max(...items.map(it => it.span)) : cursor;
-  const totLbr   = rows.reduce((s, r) => s + r.totalLaborHrs, 0);
-  const startCal = _seNthWorkingDay(startStr, 1, _seSkipWeekends);
-  const endCal   = _seNthWorkingDay(startStr, totalWD, _seSkipWeekends);
+  const sched = _seBuildSchedule();
+  if (!sched) { alert('Add at least one sub code with a quantity (and an estimate) to print the schedule.'); return; }
+  const { startStr, normal, spanning, totalWD, totLbr, startCal, endCal } = sched;
 
   const esc2 = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const body = items.map(it => {
-    const r   = it.r, st = r.st;
-    const sc0 = _seNthWorkingDay(startStr, it.startIdx, _seSkipWeekends);
-    const sc1 = _seNthWorkingDay(startStr, it.endIdx,   _seSkipWeekends);
+  const dstr = d => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
+  const ordered = normal.concat(spanning);   // bid order, overhead last
+  const body = ordered.map(c => {
+    const r = c.r, st = r.st;
     return `<tr>
-      <td>${esc2(st.subCode || '(custom)')}</td>
       <td>${esc2(st.costCode || '')}</td>
+      <td>${esc2(st.subCode || '(custom)')}${c.spanning ? ' *' : ''}</td>
       <td class="r">${_SE_FMT(r.q, r.q % 1 ? 2 : 0)}${st.unit ? ' ' + esc2(st.unit) : ''}</td>
       <td class="r">${_SE_FMT(r.totalLaborHrs, 1)}</td>
       <td class="r">${_SE_FMT(r.crew, 0)}</td>
       <td class="r">${_SE_FMT(r.hpd, 1)}</td>
-      <td class="r">${_SE_FMT(r.days, 1)}</td>
-      <td class="r">${r.histDays != null ? _SE_FMT(r.histDays, 1) : '—'}</td>
-      <td class="r">${r.equipHrs != null ? _SE_FMT(r.equipHrs, 1) : '—'}</td>
-      <td>${r.source === 'ai' ? 'AI' : 'History'}</td>
-      <td>${_seFmtDate(sc0)} – ${_seFmtDate(sc1)}</td>
+      <td class="r">${c.span}</td>
+      <td>${dstr(c.startDay)}</td>
+      <td>${dstr(c.finishDay)}</td>
+      <td>${c.spanning ? 'Overhead' : (r.source === 'ai' ? 'AI' : 'History')}</td>
     </tr>`;
   }).join('');
 
@@ -17759,10 +17795,11 @@ function _sePrint() {
     th{background:#f4f4f4;text-align:left}
     td.r,th.r{text-align:right}
     tr:nth-child(even) td{background:#fafafa}
+    .fn{font-size:9px;color:#777;margin-top:0.5rem}
     @media print{@page{margin:1cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style></head><body>
     <h1>Schedule Estimate</h1>
-    <p class="meta">${parallel ? 'Parallel schedule' : 'Sequential schedule'} · ${_seSkipWeekends ? 'weekends excluded' : 'calendar days'} · Generated ${dateStr}</p>
+    <p class="meta">Bid-order schedule · ${_seSkipWeekends ? 'weekends excluded' : 'calendar days'} · Generated ${dateStr}</p>
     <div class="kpis">
       <div class="kpi"><div class="l">Total Labor Hours</div><div class="v">${_SE_FMT(totLbr, 1)} hrs</div></div>
       <div class="kpi"><div class="l">Working Days</div><div class="v">${totalWD}</div></div>
@@ -17770,10 +17807,11 @@ function _sePrint() {
       <div class="kpi"><div class="l">Est. Completion</div><div class="v">${_seFmtDate(endCal)}</div></div>
     </div>
     <table><thead><tr>
-      <th>Sub Code</th><th>Cost Code</th><th class="r">Quantity</th><th class="r">Labor Hrs</th>
+      <th>Cost Code</th><th>Sub Code</th><th class="r">Quantity</th><th class="r">Labor Hrs</th>
       <th class="r">Crew</th><th class="r">Hrs/Day</th><th class="r">Work Days</th>
-      <th class="r">Hist. Pace (d)</th><th class="r">Equip Hrs</th><th>Basis</th><th>Window</th>
+      <th>Start</th><th>Finish</th><th>Basis</th>
     </tr></thead><tbody>${body}</tbody></table>
+    <p class="fn">* Travel / project management are pinned to span the full project length.</p>
     <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
   win.document.close();
