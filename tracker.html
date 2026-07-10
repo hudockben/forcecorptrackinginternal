@@ -17194,6 +17194,18 @@ function renderScheduleEstimator() {
       No historical labor data yet — you can still build a schedule by importing bid items and filling the blanks with <strong>&#10024; AI estimates</strong>.
     </div>`;
 
+  // Blank sub codes (no history, named, no estimate yet) → one-click "estimate all".
+  const _statKeys0    = new Set(stats.map(s => s.key));
+  const blankRows     = _seRows.filter(r => !_statKeys0.has(r.key) && !r.ai && (r.subCode || '').trim());
+  const blankCount    = blankRows.length;
+  const blanksLoading = blankRows.some(r => r._aiLoading);
+  const fillAllBtn    = 'display:inline-flex;align-items:center;gap:0.4rem;padding:0.55rem 1.15rem;background:#7c3aed;border:none;color:#fff;border-radius:8px;font-size:0.85rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 1px 6px rgba(124,58,237,0.4)';
+  const cta = blankCount > 0 ? `
+    <div style="margin-bottom:1.1rem;padding:0.8rem 1rem;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.45);border-radius:9px;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+      <div style="font-size:0.82rem;color:#c4b5fd"><strong style="color:#a78bfa">${blankCount} sub code${blankCount !== 1 ? 's' : ''}</strong> ${blankCount !== 1 ? 'have' : 'has'} no historical data${blanksLoading ? ' — estimating…' : ' and need an AI estimate.'}</div>
+      <button id="se-fillall-btn" onclick="_seAIFillBlanks()" ${blanksLoading ? 'disabled' : ''} style="${fillAllBtn}${blanksLoading ? ';opacity:0.6;cursor:default' : ''}">${blanksLoading ? '&#10024; Estimating…' : `&#10024; Estimate all ${blankCount} with AI`}</button>
+    </div>` : '';
+
   el.innerHTML = `
     <div style="max-width:1060px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.1rem;gap:1rem;flex-wrap:wrap">
@@ -17204,11 +17216,10 @@ function renderScheduleEstimator() {
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
           <select id="se-import-proj" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.42rem 0.6rem;border-radius:7px;font-size:0.8rem;max-width:200px">${projOpts}</select>
           <button onclick="_seImportBidsFromPicker()" style="${ghostBtn}">&#8681; Import</button>
-          <button id="se-fillai-btn" onclick="_seAIFillBlanks()" style="${purpleBtn}">&#10024; Estimate Blanks</button>
           <button onclick="_sePrint()" style="${ghostBtn}">&#8659; Print</button>
         </div>
       </div>
-      ${banner}
+      ${banner}${cta}
       <div id="se-rows-container">${rowsHtml}</div>
       <div style="display:flex;gap:0.55rem;flex-wrap:wrap;margin-top:0.3rem">
         <button onclick="_seAddRow()" style="${greenBtn}">&#43; Add Sub Code</button>
@@ -17355,21 +17366,41 @@ function _seSummaryHtml() {
 
   const startStr = _seStart || _seTodayStr();
   const parallel = _seMode === 'parallel';
+  const PALETTE  = ['#4ade80', '#60a5fa', '#a78bfa', '#fb923c', '#38bdf8', '#f472b6', '#facc15', '#22d3ee'];
+
+  // Group the schedule by COST CODE so the timeline reads as phases, not a run-on
+  // list. Sub codes of the same cost code sit together and are scheduled as one
+  // contiguous block; each cost code is a phase with its own bar.
+  const groupOrder = [];
+  const groupMap = {};
+  rows.forEach(r => {
+    const cc = (r.st.costCode || '').trim() || '(No Cost Code)';
+    if (!groupMap[cc]) { groupMap[cc] = []; groupOrder.push(cc); }
+    groupMap[cc].push(r);
+  });
 
   // Whole-working-day windows so calendar placement is clean.
   let cursor = 0;
-  const items = rows.map(r => {
-    const span     = Math.max(1, Math.ceil(r.days));
-    const startIdx = parallel ? 1 : cursor + 1;
-    const endIdx   = parallel ? span : cursor + span;
-    if (!parallel) cursor += span;
-    return { r, span, startIdx, endIdx };
+  const groups = groupOrder.map((cc, gi) => {
+    const gitems = groupMap[cc].map(r => {
+      const span     = Math.max(1, Math.ceil(r.days));
+      const startIdx = parallel ? 1 : cursor + 1;
+      const endIdx   = parallel ? span : cursor + span;
+      if (!parallel) cursor += span;
+      return { r, span, startIdx, endIdx };
+    });
+    return {
+      cc, gitems, gi,
+      phaseStart: Math.min(...gitems.map(it => it.startIdx)),
+      phaseEnd:   Math.max(...gitems.map(it => it.endIdx)),
+      phaseHrs:   gitems.reduce((s, it) => s + it.r.totalLaborHrs, 0),
+    };
   });
-  const totalWD = parallel ? Math.max(...items.map(it => it.span)) : cursor;
+  const allItems = groups.flatMap(g => g.gitems);
+  const totalWD = parallel ? Math.max(...allItems.map(it => it.span)) : cursor;
   const totLbr  = rows.reduce((s, r) => s + r.totalLaborHrs, 0);
   const startCal = _seNthWorkingDay(startStr, 1, _seSkipWeekends);
   const endCal   = _seNthWorkingDay(startStr, totalWD, _seSkipWeekends);
-  const PALETTE  = ['#4ade80', '#60a5fa', '#a78bfa', '#fb923c', '#38bdf8', '#f472b6', '#facc15', '#22d3ee'];
 
   const stat = (label, value, sub, color) =>
     `<div><div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
@@ -17379,26 +17410,50 @@ function _seSummaryHtml() {
   const modeBtn = (m, label) =>
     `<button onclick="_seSetMode('${m}')" style="padding:0.28rem 0.7rem;border-radius:6px;font-size:0.72rem;font-weight:600;cursor:pointer;border:1px solid ${_seMode === m ? 'rgba(74,222,128,0.5)' : 'var(--border)'};background:${_seMode === m ? 'rgba(74,222,128,0.15)' : 'var(--bg)'};color:${_seMode === m ? '#4ade80' : 'var(--muted)'}">${label}</button>`;
 
-  const gantt = items.map((it, i) => {
-    const color = PALETTE[i % PALETTE.length];
-    const left  = totalWD > 0 ? ((it.startIdx - 1) / totalWD * 100) : 0;
-    const width = totalWD > 0 ? Math.max(2, it.span / totalWD * 100) : 100;
-    const sc0   = _seNthWorkingDay(startStr, it.startIdx, _seSkipWeekends);
-    const sc1   = _seNthWorkingDay(startStr, it.endIdx,   _seSkipWeekends);
-    const sc    = it.r.st.subCode || '(custom)';
-    return `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.3rem 0">
-      <div style="width:170px;flex:0 0 170px;font-size:0.73rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${it.r.st.costCode ? ' (' + _seEsc(it.r.st.costCode) + ')' : ''}">${_seEsc(sc)}</div>
-      <div style="flex:1;position:relative;height:22px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
-        <div title="Days ${it.startIdx}–${it.endIdx} · ${_seFmtDate(sc0)} → ${_seFmtDate(sc1)}" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${it.span}d</div>
+  const pct = idx => totalWD > 0 ? (idx / totalWD * 100) : 0;
+
+  const gantt = groups.map(g => {
+    const color = PALETTE[g.gi % PALETTE.length];
+    const pLeft  = pct(g.phaseStart - 1);
+    const pWidth = Math.max(2, pct(g.phaseEnd) - pct(g.phaseStart - 1));
+    const pd0 = _seNthWorkingDay(startStr, g.phaseStart, _seSkipWeekends);
+    const pd1 = _seNthWorkingDay(startStr, g.phaseEnd,   _seSkipWeekends);
+    const phaseDays = g.phaseEnd - g.phaseStart + 1;
+
+    // Phase header: cost code name + a slim phase bar spanning its sub codes.
+    const header = `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.55rem 0 0.1rem">
+      <div style="width:190px;flex:0 0 190px;font-size:0.76rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(g.cc)}">${_seEsc(g.cc)}</div>
+      <div style="flex:1;position:relative;height:11px;background:var(--bg);border-radius:3px">
+        <div title="Phase: days ${g.phaseStart}–${g.phaseEnd} · ${_seFmtDate(pd0)} → ${_seFmtDate(pd1)}" style="position:absolute;left:${pLeft}%;width:${pWidth}%;top:0;bottom:0;background:${color};opacity:0.35;border-radius:3px;border:1px solid ${color}"></div>
       </div>
-      <div style="width:60px;flex:0 0 60px;text-align:right;font-size:0.7rem;color:var(--muted)">${_SE_FMT(it.r.totalLaborHrs, 0)}h</div>
+      <div style="width:60px;flex:0 0 60px;text-align:right;font-size:0.66rem;color:var(--muted)">${phaseDays}d · ${_SE_FMT(g.phaseHrs, 0)}h</div>
     </div>`;
+
+    // Sub-code bars, indented under the phase.
+    const bars = g.gitems.map(it => {
+      const left  = pct(it.startIdx - 1);
+      const width = Math.max(2, it.span / totalWD * 100);
+      const sc0   = _seNthWorkingDay(startStr, it.startIdx, _seSkipWeekends);
+      const sc1   = _seNthWorkingDay(startStr, it.endIdx,   _seSkipWeekends);
+      const sc    = it.r.st.subCode || '(custom)';
+      return `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.16rem 0">
+        <div style="width:190px;flex:0 0 190px;padding-left:0.95rem;font-size:0.71rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${it.r.st.costCode ? ' — ' + _seEsc(it.r.st.costCode) : ''}">&#8627; ${_seEsc(sc)}</div>
+        <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
+          <div title="Days ${it.startIdx}–${it.endIdx} · ${_seFmtDate(sc0)} → ${_seFmtDate(sc1)}" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${it.span}d</div>
+        </div>
+        <div style="width:60px;flex:0 0 60px;text-align:right;font-size:0.7rem;color:var(--muted)">${_SE_FMT(it.r.totalLaborHrs, 0)}h</div>
+      </div>`;
+    }).join('');
+
+    return header + bars;
   }).join('');
+
+  const phaseCount = groups.length;
 
   return `
     <div style="margin-top:1.5rem;padding:1.2rem 1.4rem;background:rgba(74,222,128,0.06);border:2px solid rgba(74,222,128,0.28);border-radius:12px">
       <div style="display:flex;flex-wrap:wrap;gap:0.9rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem">
-        <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${rows.length} sub code${rows.length !== 1 ? 's' : ''}</div>
+        <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${phaseCount} phase${phaseCount !== 1 ? 's' : ''} · ${rows.length} sub code${rows.length !== 1 ? 's' : ''}</div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
           <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)">Start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem"></label>
           <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.72rem;color:var(--muted);cursor:pointer"><input type="checkbox" ${_seSkipWeekends ? 'checked' : ''} onchange="_seToggleWeekends(this.checked)" style="cursor:pointer">Skip weekends</label>
@@ -17411,7 +17466,7 @@ function _seSummaryHtml() {
         ${stat('Est. Completion', _seFmtDate(endCal), 'starting ' + _seFmtDate(startCal), '#60a5fa')}
       </div>
       <div style="margin-top:0.5rem">${gantt}</div>
-      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5">Each sub code is rounded up to whole working days for calendar placement. <strong style="color:var(--fg)">Sequential</strong> lays tasks back-to-back; <strong style="color:var(--fg)">Parallel</strong> starts them together and the longest one drives the finish. Adjust crew &amp; hours/day on any sub code to compress the schedule.</div>
+      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5">Bars are grouped into <strong style="color:var(--fg)">phases by cost code</strong>; each sub code is rounded up to whole working days for calendar placement. <strong style="color:var(--fg)">Sequential</strong> runs phases back-to-back; <strong style="color:var(--fg)">Parallel</strong> starts them together and the longest one drives the finish. Adjust crew &amp; hours/day on any sub code to compress the schedule.</div>
     </div>`;
 }
 
@@ -17601,20 +17656,24 @@ async function _seAIRow(idx) {
   }
 }
 async function _seAIFillBlanks() {
+  if (window._seFillBusy) return;
   const statKeys = new Set((window._seStats || []).map(s => s.key));
   const targets = (_seRows || []).filter(r =>
-    !statKeys.has(r.key) && !r.ai && (r.subCode || '').trim());
+    !statKeys.has(r.key) && !r.ai && !r._aiLoading && (r.subCode || '').trim());
   if (!targets.length) {
     alert('No blanks to estimate. Blanks are custom/imported sub codes with a name, no history, and no AI estimate yet.');
     return;
   }
-  const btn = document.getElementById('se-fillai-btn');
-  if (btn) { btn.disabled = true; btn.innerHTML = 'Estimating…'; }
+  window._seFillBusy = true;
+  targets.forEach(r => { r._aiLoading = true; });
+  if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show "Estimating…"
   try {
     await _seRunEstimates(targets);
   } catch (err) {
     alert('AI estimate failed: ' + err.message + (targets.length > _SE_AI_CHUNK ? ' (some may have been filled)' : ''));
   } finally {
+    targets.forEach(r => { r._aiLoading = false; });
+    window._seFillBusy = false;
     renderScheduleEstimator();
   }
 }
