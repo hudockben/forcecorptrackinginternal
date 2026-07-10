@@ -16966,11 +16966,49 @@ let _seStart        = null;          // 'YYYY-MM-DD'
 let _seSkipWeekends = true;
 let _seDeadlineDate = null;          // field deadline as an absolute 'YYYY-MM-DD' date (null = default to field end); the working-day index is derived at build time so it never drifts when Project start / Skip weekends change
 let _seProjName     = null;          // name of the last imported project (for the PDF header)
+let _seLoaded       = false;         // whether saved state has been restored this page load (one-shot)
+const _SE_STORE_KEY = 'fct_sched_est_' + DIVISION;   // per-division persistence key
 
 const _SE_FMT = (v, d = 0) => (v == null || isNaN(v))
   ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
 function _seEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+/* ── Persistence ─────────────────────────────────────────────────────────────
+   The estimator's working state lives in module vars, so it survives moving
+   between tabs but is lost on a full page reload. Save the rows and schedule
+   settings (start date, weekend rule, deadline, imported project) to
+   localStorage after every change and restore them the first time the tab
+   renders — so the user never has to rebuild a schedule they already set up,
+   including all their gantt adjustments (start dates, day overrides, same-day
+   overlaps, off-field / completed flags, and AI estimates). */
+function _seSaveState() {
+  if (!Array.isArray(_seRows)) return;
+  try {
+    // Strip render-only flags so a reload can't restore a stuck "estimating…" spinner.
+    const rows = _seRows.map(r => { const c = Object.assign({}, r); delete c._aiLoading; return c; });
+    localStorage.setItem(_SE_STORE_KEY, JSON.stringify({
+      v: 1, rows,
+      start:        _seStart,
+      skipWeekends: _seSkipWeekends,
+      deadlineDate: _seDeadlineDate,
+      projName:     _seProjName,
+    }));
+  } catch (e) { /* private mode / quota exceeded — non-fatal, state just won't persist */ }
+}
+function _seRestoreState() {
+  try {
+    const raw = localStorage.getItem(_SE_STORE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (!s || !Array.isArray(s.rows) || !s.rows.length) return;
+    _seRows = s.rows.map(r => { r._aiLoading = false; return r; });   // never reopen a spinner
+    if (typeof s.start        === 'string' || s.start        === null) _seStart        = s.start;
+    if (typeof s.skipWeekends === 'boolean')                           _seSkipWeekends = s.skipWeekends;
+    if (typeof s.deadlineDate === 'string' || s.deadlineDate === null) _seDeadlineDate = s.deadlineDate;
+    if (typeof s.projName     === 'string' || s.projName     === null) _seProjName     = s.projName;
+  } catch (e) { /* corrupt / old payload — ignore and start fresh */ }
+}
 
 function _seNewAIRow() {
   return { key: '||', costCode: '', subCode: '', unit: '', qty: '', crew: null, hpd: null, ai: null, source: 'ai' };
@@ -17177,6 +17215,10 @@ function renderScheduleEstimator() {
   const stats = buildScheduleEstimatorStats();
   window._seStats = stats;
 
+  // Restore a previously-saved schedule once per page load (before seeding), so
+  // returning to the tab after a refresh shows exactly what was left behind.
+  if (!_seLoaded) { _seLoaded = true; if (_seRows == null) _seRestoreState(); }
+
   if (!_seRows || _seRows.length === 0) {
     _seRows = [ stats.length ? { key: stats[0].key, qty: '', crew: null, hpd: null } : _seNewAIRow() ];
   }
@@ -17247,6 +17289,8 @@ function renderScheduleEstimator() {
       </div>
       <div id="se-summary">${_seSummaryHtml()}</div>
     </div>`;
+
+  _seSaveState();   // persist the current rows + settings after every full render
 
   // No history for a named sub code? Auto-fill it with AI industry standards.
   const _statKeys = new Set(stats.map(s => s.key));
@@ -17680,6 +17724,7 @@ function _seRefreshRow(idx) {
   if (r) r.innerHTML = _seResultHtml(idx);
   const s = document.getElementById('se-summary');
   if (s) s.innerHTML = _seSummaryHtml();
+  _seSaveState();
 }
 function _seSetKey(idx, key) {
   if (!_seRows || !_seRows[idx]) return;
@@ -17729,7 +17774,7 @@ function _seRemoveRow(idx) {
   if (_seRows.length === 0) _seRows = null;   // reseed on next render
   renderScheduleEstimator();
 }
-function _seRenderSummary()    { const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); }
+function _seRenderSummary()    { const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); _seSaveState(); }
 function _seSetStart(v)        { _seStart = v; _seRenderSummary(); }
 function _seToggleWeekends(b)  { _seSkipWeekends = !!b; _seRenderSummary(); }
 function _seToggleSameDay(idx) { if (_seRows && _seRows[idx]) { _seRows[idx]._sameDay = !_seRows[idx]._sameDay; _seRows[idx]._startDay = null; _seRenderSummary(); } }   // clear any drag/typed start so the overlap actually takes effect
