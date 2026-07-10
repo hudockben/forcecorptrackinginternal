@@ -17423,6 +17423,7 @@ function _seSummaryHtml() {
   const PALETTE = ['#4ade80', '#60a5fa', '#a78bfa', '#fb923c', '#38bdf8', '#f472b6', '#facc15', '#22d3ee'];
   const pct  = idx => totalWD > 0 ? (idx / totalWD * 100) : 0;
   const dstr = d   => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
+  const _SE_STEP = 'width:17px;height:17px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:0.8rem;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto';
 
   const stat = (label, value, sub, color) =>
     `<div><div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
@@ -17456,7 +17457,7 @@ function _seSummaryHtml() {
       <div style="flex:1;position:relative;height:11px;background:var(--bg);border-radius:3px">
         <div style="position:absolute;left:${pct(secStart - 1)}%;width:${Math.max(2, pct(secEnd) - pct(secStart - 1))}%;top:0;bottom:0;background:${color};opacity:0.35;border-radius:3px;border:1px solid ${color}"></div>
       </div>
-      <div style="width:118px;flex:0 0 118px;text-align:right;font-size:0.63rem;color:var(--muted)">${secEnd - secStart + 1}d &middot; ${secCrew} crew &middot; ${_SE_FMT(secHrs, 0)}h</div>
+      <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.63rem;color:var(--muted)">${secEnd - secStart + 1}d &middot; ${secCrew} crew &middot; ${_SE_FMT(secHrs, 0)}h</div>
     </div>`;
 
     const bars = sec.items.map(c => {
@@ -17478,8 +17479,12 @@ function _seSummaryHtml() {
         <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
           <div title="Days ${c.startDay}–${c.finishDay} · ${_SE_FMT(c.r.crew, 0)} laborers · ${_SE_FMT(c.r.hpd, 1)} hrs/day · ${_SE_FMT(c.r.totalLaborHrs, 0)} labor hrs" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${c.span}d</div>
         </div>
-        <div style="width:118px;flex:0 0 118px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
-          <div><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> laborer${Math.round(c.r.crew) === 1 ? '' : 's'}</div>
+        <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
+          <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.25rem">
+            <button onclick="_seAdjustCrew(${c.idx},-1)" title="Remove a laborer" style="${_SE_STEP}">&#8722;</button>
+            <span title="Laborers on this sub code"><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> lab</span>
+            <button onclick="_seAdjustCrew(${c.idx},1)" title="Add a laborer" style="${_SE_STEP}">&#43;</button>
+          </div>
           <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h &middot; ${_SE_FMT(c.r.hpd, 0)}h/day</div>
         </div>
       </div>`;
@@ -17501,8 +17506,12 @@ function _seSummaryHtml() {
           <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
             <div title="Spans the full project (${totalWD}d) · ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:0;width:100%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${totalWD}d</div>
           </div>
-          <div style="width:118px;flex:0 0 118px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
-            <div><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> laborer${Math.round(c.r.crew) === 1 ? '' : 's'}</div>
+          <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
+            <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.25rem">
+              <button onclick="_seAdjustCrew(${c.idx},-1)" title="Remove a laborer" style="${_SE_STEP}">&#8722;</button>
+              <span title="Laborers on this sub code"><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> lab</span>
+              <button onclick="_seAdjustCrew(${c.idx},1)" title="Add a laborer" style="${_SE_STEP}">&#43;</button>
+            </div>
             <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
           </div>
         </div>`;
@@ -17588,6 +17597,20 @@ function _seSetStart(v)        { _seStart = v; _seRenderSummary(); }
 function _seToggleWeekends(b)  { _seSkipWeekends = !!b; _seRenderSummary(); }
 function _seToggleSameDay(idx) { if (_seRows && _seRows[idx]) { _seRows[idx]._sameDay = !_seRows[idx]._sameDay; _seRenderSummary(); } }
 function _seSetAllSameDay(val) { (_seRows || []).forEach(r => { r._sameDay = !!val; }); _seRenderSummary(); }
+// Add/remove a laborer straight from the schedule; days recompute from the new
+// crew and the whole timeline shifts. Bases off the crew currently in effect
+// (a manual value or the AI/history default) and marks it a manual override.
+function _seAdjustCrew(idx, delta) {
+  const row = _seRows && _seRows[idx];
+  if (!row) return;
+  const r = _seComputeRow(row);
+  const cur = (r && r.crew) ? Math.round(r.crew) : 1;
+  row.crew = String(Math.max(1, cur + delta));
+  row._crewFromAI = false;
+  const rowEl = document.getElementById(`se-row-${idx}`);   // keep the row's Crew input in sync
+  if (rowEl) rowEl.innerHTML = _seBuildRowHtml(idx);
+  _seRenderSummary();
+}
 
 /* ── Bid-item import ─────────────────────────────────────────────────────── */
 function _seImportBidsFromPicker() {
