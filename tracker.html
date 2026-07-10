@@ -2374,6 +2374,7 @@
       <button class="admin-dropdown-item" id="analytics-item-scale"   onclick="analyticsSwitchTab('scale')">&#128200; Scale of Economy</button>
       <button class="admin-dropdown-item" id="analytics-item-subcode" onclick="analyticsSwitchTab('subcode')">&#128202; Sub Code Performance</button>
       <button class="admin-dropdown-item" id="analytics-item-calc"    onclick="analyticsSwitchTab('calc')">&#129518; Turf Calculator</button>
+      <button class="admin-dropdown-item" id="analytics-item-schedest" onclick="analyticsSwitchTab('schedest')">&#9201; Schedule Estimator</button>
     </div>
   </div>
   <div class="admin-dropdown-wrap">
@@ -2783,6 +2784,11 @@
 <!-- ══════════════ TURF CALCULATOR TAB ══════════════ -->
 <div class="tab-panel" id="tab-calc">
   <div id="calc-content" style="padding:1.25rem"><!-- rendered by JS --></div>
+</div>
+
+<!-- ══════════════ SCHEDULE ESTIMATOR TAB ══════════════ -->
+<div class="tab-panel" id="tab-schedest">
+  <div id="schedest-content" style="padding:1.25rem"><!-- rendered by JS --></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -4094,6 +4100,7 @@ function analyticsSwitchTab(tab) {
   if (tab === 'scale')    renderScaleOfEconomy();
   if (tab === 'subcode')  renderSubCodePerf();
   if (tab === 'calc')     renderTurfCalculator();
+  if (tab === 'schedest') renderScheduleEstimator();
 }
 
 function adminSwitchTab(tab) {
@@ -16943,6 +16950,1264 @@ function _calcRemoveRow(idx) {
   if (!window._calcRows) return;
   window._calcRows.splice(idx, 1);
   renderTurfCalculator();
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCHEDULE ESTIMATOR
+   Marries the Scale-of-Economy labor model (power-law hrs/unit) and the
+   historical crew-day throughput (computeSizeAwarePastAvg) with a quantity to
+   project labor HOURS and working DAYS per sub code, then rolls them into a
+   start-to-finish, datable schedule. Sub codes with no history can be filled
+   in by AI (/api/ai/estimate-subcode) or imported from a project's bid items.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let _seRows         = null;
+let _seStart        = null;          // 'YYYY-MM-DD'
+let _seSkipWeekends = true;
+let _seDeadlineDay  = null;          // field deadline as a working-day index (null = default to field end)
+let _seProjName     = null;          // name of the last imported project (for the PDF header)
+
+const _SE_FMT = (v, d = 0) => (v == null || isNaN(v))
+  ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+function _seEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+function _seNewAIRow() {
+  return { key: '||', costCode: '', subCode: '', unit: '', qty: '', crew: null, hpd: null, ai: null, source: 'ai' };
+}
+
+function _seTodayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Date of the Nth working day counting from a start date (day 1 = first working
+// day on/after start). Skips Sat/Sun when skipWeekends is on.
+function _seNthWorkingDay(startStr, n, skipWeekends) {
+  const base = startStr ? new Date(startStr + 'T00:00:00') : new Date();
+  if (isNaN(base.getTime())) return null;
+  const d = new Date(base);
+  n = Math.max(1, Math.ceil(n));
+  if (!skipWeekends) { d.setDate(d.getDate() + (n - 1)); return d; }
+  let count = 0;
+  for (let guard = 0; guard < 100000; guard++) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) { count++; if (count >= n) return new Date(d); }
+    d.setDate(d.getDate() + 1);
+  }
+  return d;
+}
+
+function _seFmtDate(d) {
+  if (!d || isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function _seResolveUnit(costCode, subCode) {
+  const k = costCode + '||' + subCode;
+  if (typeof soeUnitOverrides !== 'undefined' && soeUnitOverrides && soeUnitOverrides[k]) return soeUnitOverrides[k];
+  for (const p of projectsList) {
+    const bi = (p.bidItems || []).find(b => (b.cost_code || '') === costCode && (b.sub_code || '') === subCode);
+    if (bi && bi.unit) return bi.unit;
+  }
+  return '';
+}
+
+// Builds one descriptor per sub code that has historical labor data, marrying
+// the SoE power-law model (when 2+ jobs exist) with raw per-job aggregates for
+// crew size, equipment, and crew-day throughput.
+function buildScheduleEstimatorStats() {
+  _calcEnsureStats();                          // best-effort populate _soeStats (power-law models)
+  const soeByKey = {};
+  (_soeStats || []).forEach(s => { soeByKey[s.key] = s; });
+
+  const byProj = buildProjectSubCodeAgg();
+  const out = [];
+  Object.entries(byProj).forEach(([key, projects]) => {
+    const [costCode, subCode] = key.split('||');
+    if (!costCode && !subCode) return;
+
+    const jobs = projects.filter(pr => pr.runQty > 0 && pr.laborHrs > 0);
+    if (jobs.length === 0) return;
+
+    const totLbr = jobs.reduce((s, pr) => s + pr.laborHrs, 0);
+    const totQty = jobs.reduce((s, pr) => s + pr.runQty,  0);
+    if (totQty <= 0) return;
+    const totDays = jobs.reduce((s, pr) => s + pr.dayCount, 0);
+    const totEq   = jobs.reduce((s, pr) => s + pr.equipHrs, 0);
+
+    const perUnitPts = jobs.map(pr => pr.laborHrs / pr.runQty);
+    const crews      = jobs.map(pr => Object.keys(pr.employees || {}).length).filter(n => n > 0);
+    const soe        = soeByKey[key] || null;
+    const bidQtys    = jobs.map(pr => pr.bidQty).filter(q => q > 0);
+    const sizes      = bidQtys.length ? bidQtys : jobs.map(pr => pr.runQty);
+
+    out.push({
+      key, costCode, subCode,
+      unit:         (soe && soe.unit) ? soe.unit : _seResolveUnit(costCode, subCode),
+      n:            jobs.length,
+      soe,
+      avgLbrPerUnit: totLbr / totQty,
+      avgEqPerUnit:  totQty > 0 ? totEq / totQty : 0,
+      histLbrPD:     totDays > 0 ? totLbr / totDays : 0,
+      typicalCrew:   crews.length ? Math.round(crews.reduce((a, b) => a + b, 0) / crews.length) : null,
+      perUnitPts,
+      minX:  Math.min(...sizes),
+      maxX:  Math.max(...sizes),
+      totLbr, totQty, totDays,
+    });
+  });
+
+  out.sort((a, b) => b.n - a.n || a.subCode.localeCompare(b.subCode));
+  return out;
+}
+
+// A row references a stat by key. Rows whose key has no historical stat (custom
+// / AI / bid-import with no history) get a lightweight "virtual" stat from the
+// row's own metadata so the rest of the pipeline is uniform.
+function _seStatForRow(row) {
+  const st = (window._seStats || []).find(s => s.key === row.key);
+  if (st) return st;
+  return {
+    key: row.key, costCode: row.costCode || '', subCode: row.subCode || '', unit: row.unit || '',
+    n: 0, soe: null, avgLbrPerUnit: 0, avgEqPerUnit: 0, histLbrPD: 0, typicalCrew: null,
+    perUnitPts: [], minX: 0, maxX: 0, totLbr: 0, totQty: 0, totDays: 0, virtual: true,
+  };
+}
+
+function _seDefaultCrew(st, ai) {
+  // Prefer the crew implied by historical crew-day throughput (labor hrs/day ÷ an
+  // 8-hour day) so the default "Est. Working Days" closely tracks the historical
+  // pace out of the box (whole-crew rounding makes it approximate, not exact).
+  // Distinct named-employee counts undercount when labor is logged as lump
+  // crew-hours, so they are only a fallback.
+  if (st && st.histLbrPD > 0) return Math.max(1, Math.round(st.histLbrPD / 8));
+  if (st && st.typicalCrew)   return st.typicalCrew;
+  if (ai && ai.crewSize > 0)  return Math.max(1, Math.round(ai.crewSize));
+  return 1;
+}
+
+// Core computation for a single row. Returns {invalid} when no quantity yet,
+// {needsEstimate} when there is neither history nor an AI estimate, otherwise a
+// full result with labor hours, working days, historical pace, and equip hours.
+function _seComputeRow(row) {
+  const st  = _seStatForRow(row);
+  const ai  = row.ai || null;
+  const hasHistory = !st.virtual &&
+    (st.avgLbrPerUnit > 0 || (st.soe && !st.soe.laborTooFew && st.soe.laborA != null));
+
+  if (!hasHistory && !(ai && ai.laborHrsPerUnit != null)) return { st, needsEstimate: true };
+
+  const q = parseFloat(row.qty);
+  if (isNaN(q) || q <= 0) return { st, invalid: true };
+
+  let laborHrsPerUnit, source, extrapolated = false, hasModel = false;
+  if (hasHistory) {
+    const s = st.soe;
+    hasModel     = !!(s && !s.laborTooFew && s.laborA != null && s.laborB != null && s.laborPts && s.laborPts.length >= 2);
+    // Judge extrapolation against the range the labor curve was actually FIT on
+    // (laborPts), which can be narrower than the job range in st.minX/maxX; outside
+    // it we fall back to the average instead of evaluating the curve out-of-range.
+    if (hasModel) {
+      const lxs = s.laborPts.map(p => p.x);
+      extrapolated = (q < Math.min(...lxs) || q > Math.max(...lxs));
+    } else {
+      extrapolated = (q < st.minX || q > st.maxX);
+    }
+    if (hasModel && !extrapolated) laborHrsPerUnit = Math.max(0, s.laborA * Math.pow(q, s.laborB));
+    else if (hasModel)             laborHrsPerUnit = s.laborPts.reduce((a, p) => a + p.y, 0) / s.laborPts.length;
+    else                           laborHrsPerUnit = st.avgLbrPerUnit;
+    source = 'history';
+  } else {
+    laborHrsPerUnit = Math.max(0, ai.laborHrsPerUnit);
+    source = 'ai';
+  }
+
+  const totalLaborHrs = laborHrsPerUnit * q;
+
+  // ± band from the spread of per-job labor hrs/unit (history only)
+  let laborLow = null, laborHigh = null;
+  if (hasHistory && st.perUnitPts.length >= 2) {
+    const m  = st.perUnitPts.reduce((a, b) => a + b, 0) / st.perUnitPts.length;
+    const sd = Math.sqrt(st.perUnitPts.reduce((a, v) => a + (v - m) ** 2, 0) / st.perUnitPts.length);
+    laborLow  = Math.max(0, (laborHrsPerUnit - sd) * q);
+    laborHigh = (laborHrsPerUnit + sd) * q;
+  }
+
+  // Size-aware historical crew-day throughput → "historical pace" days
+  let histLbrPD = 0, histDays = null;
+  if (hasHistory) {
+    const bench = computeSizeAwarePastAvg(q, st.costCode, st.subCode);
+    histLbrPD = (bench && bench.histLbrPD > 0) ? bench.histLbrPD : st.histLbrPD;
+    if (histLbrPD > 0) histDays = totalLaborHrs / histLbrPD;
+  }
+
+  // Crew size + productive hours/day (user-editable; sensible defaults)
+  const defCrew = _seDefaultCrew(st, ai);
+  const defHpd  = (ai && ai.hoursPerDay > 0) ? ai.hoursPerDay : 8;
+  const crewN = parseFloat(row.crew);
+  const hpdN  = parseFloat(row.hpd);
+  const crew  = (row.crew != null && row.crew !== '' && !isNaN(crewN)) ? crewN : defCrew;
+  const hpd   = (row.hpd  != null && row.hpd  !== '' && !isNaN(hpdN))  ? hpdN  : defHpd;
+  const days  = (crew > 0 && hpd > 0) ? totalLaborHrs / (crew * hpd) : null;
+
+  // Equipment hours
+  let equipHrs = null;
+  if (hasHistory && st.avgEqPerUnit > 0)                 equipHrs = st.avgEqPerUnit * q;
+  else if (source === 'ai' && ai && ai.equipHrsPerUnit > 0) equipHrs = ai.equipHrsPerUnit * q;
+
+  const conf = source === 'ai'
+    ? (ai && ai.confidence ? ai.confidence : 'AI')
+    : ((extrapolated || st.n < 2) ? 'Low' : (hasModel && st.soe.laborR2 >= 0.5 ? 'High' : 'Moderate'));
+
+  return {
+    st, q, source, hasHistory, hasModel, extrapolated,
+    laborHrsPerUnit, totalLaborHrs, laborLow, laborHigh,
+    histLbrPD, histDays, defCrew, defHpd, crew, hpd, days, equipHrs, conf, ai,
+  };
+}
+
+function renderScheduleEstimator() {
+  const el = document.getElementById('schedest-content');
+  if (!el) return;
+
+  const stats = buildScheduleEstimatorStats();
+  window._seStats = stats;
+
+  if (!_seRows || _seRows.length === 0) {
+    _seRows = [ stats.length ? { key: stats[0].key, qty: '', crew: null, hpd: null } : _seNewAIRow() ];
+  }
+
+  const projDatalist = projectsList.slice()
+    .sort((a, b) => (a['project-name'] || '').localeCompare(b['project-name'] || ''))
+    .map(p => `<option value="${_seEsc(p['project-name'] || 'Untitled')}"></option>`)
+    .join('');
+
+  const ghostBtn  = 'padding:0.42rem 0.85rem;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:7px;font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap';
+  const purpleBtn = 'padding:0.42rem 0.85rem;background:rgba(167,139,250,0.15);border:1.5px solid rgba(167,139,250,0.5);color:#a78bfa;border-radius:7px;font-size:0.8rem;font-weight:700;cursor:pointer;white-space:nowrap';
+  const greenBtn  = 'display:inline-flex;align-items:center;gap:0.35rem;padding:0.42rem 0.9rem;background:rgba(74,222,128,0.15);border:1.5px solid rgba(74,222,128,0.45);color:#4ade80;border-radius:7px;font-size:0.82rem;font-weight:700;cursor:pointer;white-space:nowrap';
+
+  const rowsHtml = _seRows.map((_, i) => `<div id="se-row-${i}" style="margin-bottom:1.25rem">${_seBuildRowHtml(i)}</div>`).join('');
+
+  const banner = stats.length ? '' : `
+    <div style="margin-bottom:1.1rem;padding:0.7rem 0.95rem;background:rgba(96,165,250,0.1);border:1px solid rgba(96,165,250,0.35);border-radius:7px;font-size:0.78rem;color:#93c5fd">
+      No historical labor data yet — you can still build a schedule by importing bid items and filling the blanks with <strong>&#10024; AI estimates</strong>.
+    </div>`;
+
+  // Blank sub codes (no history, named, no estimate yet) → one-click "estimate all".
+  const _statKeys0    = new Set(stats.map(s => s.key));
+  const blankRows     = _seRows.filter(r => !_statKeys0.has(r.key) && !r.ai && (r.subCode || '').trim());
+  const blankCount    = blankRows.length;
+  const fillAllBtn    = 'display:inline-flex;align-items:center;gap:0.4rem;padding:0.55rem 1.15rem;background:#7c3aed;border:none;color:#fff;border-radius:8px;font-size:0.85rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 1px 6px rgba(124,58,237,0.4)';
+  const prog = window._seFillProgress || null;
+  let cta = '';
+  if (prog) {
+    const pctDone = prog.total ? Math.round(prog.done / prog.total * 100) : 0;
+    cta = `
+    <div style="margin-bottom:1.1rem;padding:0.8rem 1rem;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.45);border-radius:9px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;font-size:0.82rem;color:#c4b5fd;margin-bottom:0.55rem">
+        <span>&#10024; Estimating sub codes from industry standards…</span>
+        <strong style="color:#a78bfa">${prog.done} / ${prog.total} &middot; ${pctDone}%</strong>
+      </div>
+      <div style="height:9px;background:var(--bg);border-radius:5px;overflow:hidden;border:1px solid rgba(167,139,250,0.3)">
+        <div style="height:100%;width:${pctDone}%;background:linear-gradient(90deg,#7c3aed,#a78bfa);border-radius:5px;transition:width 0.3s"></div>
+      </div>
+    </div>`;
+  } else if (blankCount > 0) {
+    cta = `
+    <div style="margin-bottom:1.1rem;padding:0.8rem 1rem;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.45);border-radius:9px;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+      <div style="font-size:0.82rem;color:#c4b5fd"><strong style="color:#a78bfa">${blankCount} sub code${blankCount !== 1 ? 's' : ''}</strong> ${blankCount !== 1 ? 'have' : 'has'} no historical data and need an AI estimate.</div>
+      <button id="se-fillall-btn" onclick="_seAIFillBlanks()" style="${fillAllBtn}">&#10024; Estimate all ${blankCount} with AI</button>
+    </div>`;
+  }
+
+  el.innerHTML = `
+    <div style="max-width:1060px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.1rem;gap:1rem;flex-wrap:wrap">
+        <div>
+          <div style="font-size:0.95rem;font-weight:700;color:var(--fg);margin-bottom:0.15rem">&#9201; Schedule Estimator</div>
+          <div style="font-size:0.75rem;color:var(--muted);max-width:640px;line-height:1.5">Pick sub codes and quantities — the estimator uses your historical labor model and crew-day pace to project labor hours and working days for each, then builds a start-to-finish schedule. Blanks with no history can be filled by AI.</div>
+        </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+          <input id="se-import-proj" list="se-proj-datalist" placeholder="Search project to import…" autocomplete="off"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();_seImportBidsFromPicker();}"
+            style="background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.42rem 0.6rem;border-radius:7px;font-size:0.8rem;width:210px">
+          <datalist id="se-proj-datalist">${projDatalist}</datalist>
+          <button onclick="_seImportBidsFromPicker()" style="${ghostBtn}">&#8681; Import</button>
+        </div>
+      </div>
+      ${banner}${cta}
+      <div id="se-rows-container">${rowsHtml}</div>
+      <div style="display:flex;gap:0.55rem;flex-wrap:wrap;margin-top:0.3rem">
+        <button onclick="_seAddRow()" style="${greenBtn}">&#43; Add Sub Code</button>
+        <button onclick="_seAddAIRow()" style="${purpleBtn}">&#10024; Custom / AI Sub Code</button>
+      </div>
+      <div id="se-summary">${_seSummaryHtml()}</div>
+    </div>`;
+
+  // No history for a named sub code? Auto-fill it with AI industry standards.
+  const _statKeys = new Set(stats.map(s => s.key));
+  if (_seRows.some(r => !_statKeys.has(r.key) && !r.ai && !r._aiTried && (r.subCode || '').trim())) {
+    setTimeout(_seAutoEstimateBlanks, 30);
+  }
+}
+
+function _seBuildRowHtml(idx) {
+  const row = (_seRows || [])[idx];
+  if (!row) return '';
+  const virtual = !(window._seStats || []).some(s => s.key === row.key);
+  const st  = _seStatForRow(row);
+  const ai  = row.ai || null;
+
+  const defCrew = _seDefaultCrew(st, ai);
+  const defHpd  = (ai && ai.hoursPerDay > 0) ? ai.hoursPerDay : 8;
+  const crewVal = (row.crew != null && row.crew !== '') ? row.crew : defCrew;
+  const hpdVal  = (row.hpd  != null && row.hpd  !== '') ? row.hpd  : defHpd;
+
+  const lbl = 'font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);display:block;margin-bottom:0.35rem';
+  const inp = 'width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.82rem';
+  const aiBtn = 'padding:0.45rem 0.6rem;background:rgba(167,139,250,0.15);border:1px solid rgba(167,139,250,0.5);color:#a78bfa;border-radius:6px;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;line-height:1';
+
+  let subControl, note;
+  if (virtual) {
+    const busy = row._aiLoading;
+    subControl = `
+      <label style="${lbl}">Sub Code <span style="color:#a78bfa;font-weight:600;text-transform:none;letter-spacing:0">(custom)</span></label>
+      <div style="display:flex;gap:0.4rem">
+        <input type="text" value="${_seEsc(st.subCode)}" placeholder="e.g. Base Prep" ${busy ? 'disabled' : ''}
+          onchange="_seSetName(${idx},this.value)" style="${inp};flex:1">
+        <button onclick="_seAIRow(${idx})" ${busy ? 'disabled' : ''} title="Estimate this sub code with AI" style="${aiBtn}${busy ? ';opacity:0.6;cursor:default' : ''}">${busy ? '&#8230;' : (ai ? '&#10024; Redo' : '&#10024; AI')}</button>
+      </div>`;
+    note = busy
+      ? `<span style="color:#a78bfa;font-weight:600">&#10024; Estimating with AI…</span>`
+      : ai
+      ? `<span style="color:#a78bfa;font-weight:600">&#10024; AI estimate</span> · ${_seEsc(ai.confidence || '')} confidence${ai.rationale ? `<br><span style="font-size:0.66rem;color:var(--muted)">${_seEsc(ai.rationale)}</span>` : ''}`
+      : row._aiTried
+      ? `<span style="color:#fbbf24">AI estimate unavailable</span> — click <strong style="color:#a78bfa">&#10024; AI</strong> to retry.`
+      : `<span style="color:#a78bfa">Estimating automatically…</span> or click <strong style="color:#a78bfa">&#10024; AI</strong>.`;
+  } else {
+    const opts = (window._seStats || []).map(o =>
+      `<option value="${_seEsc(o.key)}"${o.key === st.key ? ' selected' : ''}>${_seEsc(o.subCode)}  (${_seEsc(o.costCode)})  —  ${o.n} job${o.n !== 1 ? 's' : ''} · unit: ${_seEsc(o.unit || 'n/a')}</option>`
+    ).join('');
+    subControl = `<label style="${lbl}">Sub Code</label><select onchange="_seSetKey(${idx},this.value)" style="${inp}">${opts}</select>`;
+    note = `Observed range: <strong style="color:var(--fg)">${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)}</strong> ${_seEsc(st.unit || 'units')}<br>Based on <strong style="color:var(--fg)">${st.n}</strong> historical job${st.n !== 1 ? 's' : ''}`;
+  }
+
+  const removeBtn = ((_seRows || []).length > 1)
+    ? `<button onclick="_seRemoveRow(${idx})" title="Remove" style="align-self:flex-end;padding:0.38rem 0.65rem;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.35);color:#f87171;border-radius:6px;font-size:0.85rem;cursor:pointer;line-height:1;margin-bottom:0.2rem">&#10005;</button>`
+    : '';
+
+  return `
+    <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;padding:1rem;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+      <div style="flex:2;min-width:230px">${subControl}</div>
+      <div style="flex:1;min-width:120px">
+        <label style="${lbl}">Quantity${st.unit ? ` <span style="color:var(--fg);font-weight:600;text-transform:none;letter-spacing:0">(${_seEsc(st.unit)})</span>` : ''}</label>
+        <input type="number" min="0" step="any" placeholder="Enter qty…" value="${_seEsc(row.qty)}" oninput="_seSetQty(${idx},this.value)" style="${inp}">
+      </div>
+      <div style="width:84px">
+        <label style="${lbl}" title="People working this sub code at once">Crew</label>
+        <input type="number" min="0" step="any" value="${_seEsc(crewVal)}" oninput="_seSetCrew(${idx},this.value)" style="${inp}">
+      </div>
+      <div style="width:92px">
+        <label style="${lbl}" title="Productive hours per working day">Hrs/Day</label>
+        <input type="number" min="0" step="any" value="${_seEsc(hpdVal)}" oninput="_seSetHpd(${idx},this.value)" style="${inp}">
+      </div>
+      <div style="font-size:0.7rem;color:var(--muted);align-self:flex-end;padding-bottom:0.4rem;line-height:1.6;flex:1;min-width:180px">${note}</div>
+      ${removeBtn}
+    </div>
+    <div id="se-results-${idx}" style="margin-top:0.75rem">${_seResultHtml(idx)}</div>`;
+}
+
+function _seResultHtml(idx) {
+  const row = (_seRows || [])[idx];
+  if (!row) return '';
+  const r  = _seComputeRow(row);
+  const st = r.st;
+
+  if (r.needsEstimate) {
+    if (row._aiLoading) {
+      return `<div style="padding:1.5rem;text-align:center;color:#a78bfa;font-size:0.82rem">&#10024; Estimating <strong>${_seEsc(st.subCode || 'this sub code')}</strong> from industry standards…</div>`;
+    }
+    if (row._aiTried) {
+      return `<div style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.82rem">
+        Couldn't reach the AI estimator for <strong style="color:var(--fg)">${_seEsc(st.subCode || 'this sub code')}</strong>. Click <strong style="color:#a78bfa">&#10024; AI</strong> to retry, or enter Crew &amp; Hrs/Day manually.</div>`;
+    }
+    return `<div style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.82rem">
+      <strong style="color:#a78bfa">&#10024; Estimating ${_seEsc(st.subCode || 'this sub code')} automatically…</strong><br>No historical data — the AI is filling in labor, crew &amp; hours. Or click <strong style="color:#a78bfa">&#10024; AI</strong>.</div>`;
+  }
+  if (r.invalid) {
+    return `<div style="padding:1.75rem;text-align:center;color:var(--muted);font-size:0.82rem">Enter a quantity above to project labor hours and working days.</div>`;
+  }
+
+  const isAI = r.source === 'ai';
+  const card = (label, value, sub, color) =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.9rem 1.1rem;flex:1;min-width:150px">
+      <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
+      <div style="font-size:1.1rem;font-weight:700;color:${color}">${value}</div>
+      ${sub ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.15rem">${sub}</div>` : ''}
+    </div>`;
+
+  const confColor = isAI ? '#a78bfa' : ({ High: '#4ade80', Moderate: '#facc15', Low: '#f87171' }[r.conf] || '#facc15');
+  const pill = isAI
+    ? `<span style="background:rgba(167,139,250,0.14);color:#a78bfa;border:1px solid rgba(167,139,250,0.4);border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">&#10024; AI Estimate${r.conf && r.conf !== 'AI' ? ' · ' + r.conf : ''}</span>`
+    : `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${r.conf} Confidence</span>`;
+  const aiRate = (isAI && r.ai && r.ai.unitsPerCrewDay > 0)
+    ? `~${_SE_FMT(r.ai.unitsPerCrewDay, 0)} ${_seEsc(st.unit || 'units')}/crew-day` : '';
+  const noteRight = isAI
+    ? `<span style="font-size:0.7rem;color:var(--muted)">${aiRate ? aiRate + ' · ' : ''}${r.ai && r.ai.rationale ? _seEsc(r.ai.rationale) : 'AI-estimated industry standard — no historical jobs for this sub code'}</span>`
+    : `<span style="font-size:0.7rem;color:var(--muted)">${st.n} job${st.n !== 1 ? 's' : ''} · ${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)} ${_seEsc(st.unit || 'units')} observed${r.histDays != null ? ` · historical pace ${_SE_FMT(r.histDays, 1)}d` : ''}</span>`;
+
+  const perUnitSub = isAI ? 'AI estimate' : (r.hasModel ? (r.extrapolated ? 'historical avg' : 'power-law model') : 'historical average');
+
+  return `
+    ${r.extrapolated ? `<div style="margin-bottom:0.85rem;padding:0.6rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.75rem;color:#fbbf24">&#9888; Quantity is outside the observed range (${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)} ${_seEsc(st.unit || 'units')} across ${st.n} job${st.n !== 1 ? 's' : ''}) — using the historical average rate instead of the curve.</div>` : ''}
+    <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.7rem">
+      ${card('Est. Labor Hours', _SE_FMT(r.totalLaborHrs, 1) + ' hrs', isAI ? 'AI estimate' : (r.laborLow != null ? `Range: ${_SE_FMT(r.laborLow, 1)} – ${_SE_FMT(r.laborHigh, 1)} hrs` : ''), '#a78bfa')}
+      ${card('Est. Working Days', (r.days != null ? _SE_FMT(r.days, 1) + ' days' : '—'), `${_SE_FMT(r.crew, 0)} crew × ${_SE_FMT(r.hpd, 1)} hrs/day`, '#4ade80')}
+      ${r.histDays != null ? card('Historical Pace', _SE_FMT(r.histDays, 1) + ' days', `~${_SE_FMT(r.histLbrPD, 1)} labor hrs/crew-day observed`, '#60a5fa') : ''}
+      ${card('Labor Hrs / ' + (st.unit || 'Unit'), _SE_FMT(r.laborHrsPerUnit, 3), perUnitSub, '#f472b6')}
+      ${r.equipHrs != null ? card('Est. Equip Hours', _SE_FMT(r.equipHrs, 1) + ' hrs', isAI ? 'AI estimate' : 'avg across history', '#fb923c') : ''}
+    </div>
+    <div style="font-size:0.68rem;color:var(--muted);margin-bottom:0.6rem;line-height:1.5">“Est. Working Days” uses the crew &amp; hours/day set above.${r.histDays != null ? ' “Historical Pace” is how long it actually took at the crew-day throughput logged for this sub code — a reality check on your staffing plan.' : ''}</div>
+    ${_seIsSpanning(st.subCode) ? `<div style="font-size:0.68rem;color:#93c5fd;margin-bottom:0.6rem;line-height:1.5">&#8734; This runs <strong>every project day</strong> — in the schedule below it is pinned to span the full project length, regardless of the estimate above.</div>` : ''}
+    <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">${pill}${noteRight}</div>`;
+}
+
+// Daily-overhead sub codes (travel, project management, supervision) run every
+// working day, so they are pinned to the full project length rather than a
+// production-rate estimate that can under-count them.
+function _seIsSpanning(sc) {
+  const s = (sc || '').toLowerCase();
+  return s.includes('travel')
+    || s.includes('project management') || s.includes('project mgmt') || s.includes('proj mgmt') || s.includes('pm ') || s === 'pm'
+    || s.includes('supervis') || s.includes('superintend');
+}
+
+// Shared scheduler. Places each sub code's working-day window in BID (row) order,
+// honoring per-row "same day as previous" overlaps, and spans daily overhead
+// (travel / PM) across the whole project. Returned to both the on-screen summary
+// and the printable schedule so they never diverge.
+// Count working days from the project start through a target date (inclusive).
+// Used to turn a chosen deadline DATE into a working-day index on the timeline.
+function _seDayIndexForDate(startStr, targetStr, skipWeekends) {
+  const start  = new Date((startStr  || '') + 'T00:00:00');
+  const target = new Date((targetStr || '') + 'T00:00:00');
+  if (isNaN(start.getTime()) || isNaN(target.getTime())) return null;
+  if (target < start) return 1;
+  let count = 0; const d = new Date(start);
+  for (let guard = 0; guard < 100000 && d <= target; guard++) {
+    const dow = d.getDay();
+    if (!skipWeekends || (dow !== 0 && dow !== 6)) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return Math.max(1, count);
+}
+
+function _seBuildSchedule() {
+  const startStr = _seStart || _seTodayStr();
+  const computed = (_seRows || []).map((row, idx) => {
+    const r = _seComputeRow(row);
+    if (r.invalid || r.needsEstimate || r.days == null || !(r.days > 0)) return null;
+    // Duration: estimate-derived days, unless an admin overrode it by dragging the
+    // bar's right edge (_daysOverride).
+    const span = (row._daysOverride != null && !isNaN(row._daysOverride))
+      ? Math.max(1, Math.round(row._daysOverride))
+      : Math.max(1, Math.ceil(r.days));
+    return { r, row, idx, span, overridden: row._daysOverride != null,
+             spanning: _seIsSpanning(r.st.subCode), offField: !!row._offField };
+  }).filter(Boolean);
+  if (!computed.length) return null;
+
+  // Completed sub codes are dropped from the active schedule (their days no longer
+  // count toward the field end / deadline); they are still returned so the UI can
+  // list them and let the user un-complete.
+  const active    = computed.filter(c => !c.row._completed);
+  const completed = computed.filter(c =>  c.row._completed);
+  const spanning = active.filter(c => c.spanning);
+  const onField  = active.filter(c => !c.spanning && !c.offField);
+  const offField = active.filter(c => !c.spanning && c.offField);
+
+  // Place a list top-to-bottom in bid order. Each bar's DEFAULT start comes from a
+  // sequential lane ("same day as previous" joins the running group); a per-bar
+  // start override (set by dragging the bar) repositions just that bar without
+  // shifting the others, so any two sub codes — even across sections — can be run
+  // concurrently. Returns the list's last finish day.
+  function place(list, from) {
+    let groupStart = from, cursor = from, n = 0;
+    list.forEach(c => {
+      let defStart;
+      if (n === 0 || !c.row._sameDay) { defStart = n === 0 ? from : cursor; groupStart = defStart; }
+      else { defStart = groupStart; }
+      cursor = Math.max(cursor, defStart + c.span);   // sequential lane ignores overrides
+      const start = (c.row._startDay != null && !isNaN(c.row._startDay))
+        ? Math.max(1, Math.round(c.row._startDay)) : defStart;
+      c.startDay  = start;
+      c.finishDay = start + c.span - 1;
+      n++;
+    });
+    return list.length ? Math.max(...list.map(c => c.finishDay)) : (from - 1);
+  }
+
+  const fieldEnd    = place(onField, 1);
+  const offFieldEnd = place(offField, Math.max(1, fieldEnd + 1));
+  const workEnd     = Math.max(fieldEnd, offFieldEnd, 0);
+  const projectEnd  = workEnd > 0 ? workEnd : Math.max(1, ...spanning.map(c => c.span));
+
+  // Overhead spans the full project (never shorter).
+  spanning.forEach(c => { c.startDay = 1; c.finishDay = projectEnd; c.span = projectEnd; c.pinned = true; });
+
+  // Field deadline: a working-day index. Defaults to the on-field finish until set.
+  const deadlineSet = _seDeadlineDay != null;
+  const deadlineDay = deadlineSet ? Math.max(1, _seDeadlineDay) : (fieldEnd > 0 ? fieldEnd : projectEnd);
+  const axisMax     = Math.max(projectEnd, deadlineDay, 1);
+
+  return {
+    startStr, computed, active, completed, onField, offField, spanning,
+    fieldEnd, projectEnd, totalWD: projectEnd, axisMax, deadlineDay, deadlineSet,
+    totLbr:  active.reduce((s, c) => s + c.r.totalLaborHrs, 0),
+    startCal:    _seNthWorkingDay(startStr, 1, _seSkipWeekends),
+    endCal:      _seNthWorkingDay(startStr, projectEnd, _seSkipWeekends),
+    fieldCal:    _seNthWorkingDay(startStr, Math.max(1, fieldEnd), _seSkipWeekends),
+    deadlineCal: _seNthWorkingDay(startStr, deadlineDay, _seSkipWeekends),
+  };
+}
+
+function _seSummaryHtml() {
+  const sched = _seBuildSchedule();
+  if (!sched) return '';
+  const { startStr, computed, active, completed, onField, offField, spanning, fieldEnd, projectEnd,
+          totalWD, axisMax, deadlineDay, deadlineSet, totLbr, startCal, endCal, deadlineCal } = sched;
+  window._seAxisMax = axisMax;   // for the bar-drag handler
+  const activeCount = onField.length + offField.length + spanning.length;
+  const PALETTE = ['#4ade80', '#60a5fa', '#a78bfa', '#fb923c', '#38bdf8', '#f472b6', '#facc15', '#22d3ee'];
+  const OFF_COLOR = '#94a3b8';
+  const pct  = idx => axisMax > 0 ? (idx / axisMax * 100) : 0;
+  const dstr = d   => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
+  const _SE_STEP = 'width:17px;height:17px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:0.8rem;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto';
+  const _SE_TGL = kind => {
+    const c = kind === 'sd'   ? ['rgba(96,165,250,0.6)', 'rgba(96,165,250,0.18)', '#60a5fa']
+            : kind === 'off'  ? ['rgba(251,191,36,0.6)', 'rgba(251,191,36,0.18)', '#fbbf24']
+            : kind === 'done' ? ['rgba(74,222,128,0.6)', 'rgba(74,222,128,0.18)', '#4ade80']
+            : ['var(--border)', 'var(--bg)', 'var(--muted)'];
+    return `flex:0 0 auto;width:18px;height:18px;border-radius:4px;border:1px solid ${c[0]};background:${c[1]};color:${c[2]};font-size:0.68rem;cursor:pointer;line-height:1;padding:0;display:inline-flex;align-items:center;justify-content:center;margin-top:0.05rem`;
+  };
+
+  // Field deadline marker (only when a deadline is set).
+  const overBy  = fieldEnd - deadlineDay;    // > 0 → over
+  const dlMet   = overBy <= 0;
+  const dlColor = dlMet ? '#4ade80' : '#f87171';
+  const dlMark  = deadlineSet ? `<div style="position:absolute;left:${pct(deadlineDay)}%;top:-3px;bottom:-3px;width:2px;background:${dlColor};z-index:5;pointer-events:none"></div>` : '';
+  const _pad = n => String(n).padStart(2, '0');
+  const dlInputVal = deadlineCal ? `${deadlineCal.getFullYear()}-${_pad(deadlineCal.getMonth() + 1)}-${_pad(deadlineCal.getDate())}` : '';
+
+  const stat = (label, value, sub, color) =>
+    `<div><div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
+      <div style="font-size:1.55rem;font-weight:700;color:${color || '#4ade80'};line-height:1.1">${value}</div>
+      ${sub ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.2rem">${sub}</div>` : ''}</div>`;
+  const presetBtn = (label, val) =>
+    `<button onclick="_seSetAllSameDay(${val})" title="${val ? 'Start every sub code on the same day (fully overlapped)' : 'Run every sub code back-to-back (bid order)'}" style="padding:0.28rem 0.7rem;border-radius:6px;font-size:0.72rem;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--bg);color:var(--muted)">${label}</button>`;
+
+  // One draggable sub-code bar row (used for on-field and off-field bands).
+  const crewCell = c => `<div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.25rem">
+        <button onclick="_seAdjustCrew(${c.idx},-1)" title="Remove a laborer" style="${_SE_STEP}">&#8722;</button>
+        <span title="Laborers on this sub code"><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> lab</span>
+        <button onclick="_seAdjustCrew(${c.idx},1)" title="Add a laborer" style="${_SE_STEP}">&#43;</button>
+      </div>
+      <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h &middot; ${_SE_FMT(c.r.hpd, 0)}h/day</div>
+    </div>`;
+  const barRow = (c, color, first) => {
+    const left  = pct(c.startDay - 1);
+    const width = Math.max(2, c.span / axisMax * 100);
+    const sc    = c.r.st.subCode || '(custom)';
+    const on    = !!c.row._sameDay;
+    const off   = !!c.row._offField;
+    const sd = first
+      ? `<span style="flex:0 0 auto;width:18px"></span>`
+      : `<button onclick="_seToggleSameDay(${c.idx})" title="${on ? 'Starts the same day as the item above — click to run it after' : 'Runs after the item above — click to start it the same day'}" style="${_SE_TGL(on ? 'sd' : '')}">${on ? '&#8657;' : '&#8595;'}</button>`;
+    const flag = `<button onclick="_seToggleOffField(${c.idx})" title="${off ? 'Off-field work (done after the field). Click to move it back on-field' : 'On-field. Click to mark it off-field — scheduled after the field and excluded from the deadline'}" style="${_SE_TGL(off ? 'off' : '')}">&#9873;</button>`;
+    const done = `<button onclick="_seToggleCompleted(${c.idx})" title="Mark completed — drop its days from the schedule and deadline" style="${_SE_TGL('')}">&#10003;</button>`;
+    return `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.16rem 0">
+      <div style="width:236px;flex:0 0 236px;padding-left:0.3rem;display:flex;align-items:flex-start;gap:0.2rem;min-width:0">
+        ${sd}${flag}${done}
+        <div style="min-width:0">
+          <div style="font-size:0.72rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div>
+          <div style="font-size:0.62rem;color:var(--muted);display:flex;align-items:center;gap:0.28rem;min-width:0">
+            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</span>
+            <span style="flex:0 0 auto;display:inline-flex;align-items:center;gap:0.15rem;white-space:nowrap">&middot;
+              <input type="number" min="1" step="1" value="${Math.round(c.span)}" onchange="_seSetDays(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="Type the number of working days for this sub code" style="width:30px;background:var(--bg);border:1px solid ${c.overridden ? '#facc15' : 'var(--border)'};color:${c.overridden ? '#facc15' : 'var(--fg)'};border-radius:3px;padding:0.04rem 0.12rem;font-size:0.6rem;text-align:center;line-height:1.1">d</span>
+          </div>
+        </div>
+      </div>
+      <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
+        <div data-start="${c.startDay}" data-span="${c.span}" onmousedown="_seBarDrag(event,${c.idx})" title="Drag to move &middot; drag the right edge to change days${c.overridden ? ' (manual duration)' : ''} &middot; Days ${c.startDay}–${c.finishDay} &middot; ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;cursor:grab;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden;user-select:none">${c.span}d${c.overridden ? '<span style="opacity:0.65">&lowast;</span>' : ''}<div onmousedown="_seBarResize(event,${c.idx})" title="Drag to change the number of days" style="position:absolute;right:0;top:0;bottom:0;width:8px;cursor:ew-resize;background:rgba(0,0,0,0.22);border-radius:0 4px 4px 0"></div></div>
+        ${dlMark}
+      </div>
+      ${crewCell(c)}
+    </div>`;
+  };
+
+  // Sections = contiguous runs of the same cost code across on-field work, in bid order.
+  const sections = [];
+  onField.forEach(c => {
+    const cc = (c.r.st.costCode || '').trim() || '(No Cost Code)';
+    const last = sections[sections.length - 1];
+    if (last && last.cc === cc) last.items.push(c);
+    else sections.push({ cc, items: [c] });
+  });
+
+  let colorIdx = 0;
+  const sectionHtml = sections.map(sec => {
+    const color    = PALETTE[colorIdx++ % PALETTE.length];
+    const secStart = Math.min(...sec.items.map(c => c.startDay));
+    const secEnd   = Math.max(...sec.items.map(c => c.finishDay));
+    const secHrs   = sec.items.reduce((s, c) => s + c.r.totalLaborHrs, 0);
+    const secCrew  = Math.max(0, ...sec.items.map(c => Math.round(c.r.crew) || 0));
+
+    const header = `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.6rem 0 0.15rem">
+      <div style="width:236px;flex:0 0 236px;min-width:0">
+        <div style="font-size:0.77rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sec.cc)}">${_seEsc(sec.cc)}</div>
+        <div style="font-size:0.62rem;color:var(--muted)">${dstr(secStart)} &rarr; ${dstr(secEnd)}</div>
+      </div>
+      <div style="flex:1;position:relative;height:11px;background:var(--bg);border-radius:3px">
+        <div style="position:absolute;left:${pct(secStart - 1)}%;width:${Math.max(2, pct(secEnd) - pct(secStart - 1))}%;top:0;bottom:0;background:${color};opacity:0.35;border-radius:3px;border:1px solid ${color}"></div>
+        ${dlMark}
+      </div>
+      <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.63rem;color:var(--muted)">${secEnd - secStart + 1}d &middot; ${secCrew} crew &middot; ${_SE_FMT(secHrs, 0)}h</div>
+    </div>`;
+
+    const bars = sec.items.map(c => barRow(c, color, c === onField[0])).join('');
+    return header + bars;
+  }).join('');
+
+  // Off-field band — work done after the field is handed over (excluded from the deadline).
+  const offHtml = offField.length ? `
+    <div style="margin-top:0.7rem;padding-top:0.5rem;border-top:1px dashed var(--border)">
+      <div style="font-size:0.64rem;color:#fbbf24;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">&#9873; Off-field &middot; after the field &middot; ${Math.max(...offField.map(c => c.finishDay)) - fieldEnd}d</div>
+      ${offField.map((c, i) => barRow(c, OFF_COLOR, i === 0)).join('')}
+    </div>` : '';
+
+  // Completed band — days already dropped from the schedule.
+  const doneHtml = completed.length ? `
+    <div style="margin-top:0.7rem;padding-top:0.5rem;border-top:1px dashed var(--border)">
+      <div style="font-size:0.64rem;color:#4ade80;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">&#10003; Completed &middot; ${completed.length} &middot; ${completed.reduce((s, c) => s + c.span, 0)}d dropped from the schedule</div>
+      ${completed.map(c => {
+        const sc = c.r.st.subCode || '(custom)';
+        return `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.16rem 0;opacity:0.75">
+          <div style="width:236px;flex:0 0 236px;padding-left:0.3rem;display:flex;align-items:flex-start;gap:0.2rem;min-width:0">
+            <span style="flex:0 0 auto;width:18px"></span><span style="flex:0 0 auto;width:18px"></span>
+            <button onclick="_seToggleCompleted(${c.idx})" title="Not completed — add it back to the schedule" style="${_SE_TGL('done')}">&#10003;</button>
+            <div style="min-width:0"><div style="font-size:0.72rem;color:var(--muted);text-decoration:line-through;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div></div>
+          </div>
+          <div style="flex:1;font-size:0.65rem;color:#4ade80">&#10003; done &middot; ${c.span}d dropped</div>
+          <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted)">${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
+        </div>`;
+      }).join('')}
+    </div>` : '';
+
+  const spanW = Math.max(2, projectEnd / axisMax * 100);
+  const spanHtml = spanning.length ? `
+    <div style="margin-top:0.7rem;padding-top:0.5rem;border-top:1px dashed var(--border)">
+      <div style="font-size:0.64rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Every project day &middot; ${projectEnd}d</div>
+      ${spanning.map(c => {
+        const sc = c.r.st.subCode || '(custom)';
+        return `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.16rem 0">
+          <div style="width:236px;flex:0 0 236px;padding-left:0.3rem;min-width:0">
+            <div style="font-size:0.72rem;color:#cbd5e1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}">&#8734; ${_seEsc(sc)}</div>
+            <div style="font-size:0.62rem;color:var(--muted)">${dstr(1)} &rarr; ${dstr(projectEnd)}</div>
+          </div>
+          <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
+            <div title="Spans the full project (${projectEnd}d) · ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:0;width:${spanW}%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${projectEnd}d</div>
+            ${dlMark}
+          </div>
+          ${crewCell(c)}
+        </div>`;
+      }).join('')}
+    </div>` : '';
+
+  // Deadline flag strip (aligned above the tracks) + header status badge.
+  const dlFlag = deadlineSet ? `
+    <div style="display:flex;align-items:center;gap:0.55rem;margin-bottom:2px">
+      <div style="width:236px;flex:0 0 236px"></div>
+      <div style="flex:1;position:relative;height:15px">
+        <div style="position:absolute;left:${pct(deadlineDay)}%;transform:translateX(-50%);font-size:0.58rem;font-weight:700;color:${dlColor};white-space:nowrap;background:var(--surface);border:1px solid ${dlColor};border-radius:3px;padding:0 4px;line-height:1.35">&#9873; Deadline ${dstr(deadlineDay)}</div>
+      </div>
+      <div style="width:132px;flex:0 0 132px"></div>
+    </div>` : '';
+  const dlBadge = deadlineSet
+    ? `<span style="background:${dlColor}22;color:${dlColor};border:1px solid ${dlColor}55;border-radius:5px;padding:0.15rem 0.5rem;font-size:0.7rem;font-weight:700">${dlMet ? `&#10003; field ${Math.abs(overBy)}d early` : `&#9888; field ${Math.abs(overBy)}d over deadline`}</span>`
+    : '';
+
+  return `
+    <div style="margin-top:1.5rem;padding:1.2rem 1.4rem;background:rgba(74,222,128,0.06);border:2px solid rgba(74,222,128,0.28);border-radius:12px">
+      <div style="display:flex;flex-wrap:wrap;gap:0.9rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem">
+        <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${sections.length} section${sections.length !== 1 ? 's' : ''} · ${activeCount} sub code${activeCount !== 1 ? 's' : ''}${completed.length ? ` · <span style="color:#4ade80">${completed.length} done</span>` : ''}</div>
+        <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="Set the day work started (or starts). Past dates are fine.">Project start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="The date the field must be finished. On-field work is checked against it; off-field work can run past it.">Field deadline<input type="date" value="${dlInputVal}" onchange="_seSetDeadlineDate(this.value)" style="background:var(--bg);border:1px solid ${deadlineSet ? dlColor : 'var(--border)'};color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
+          ${dlBadge}
+          <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.72rem;color:var(--muted);cursor:pointer"><input type="checkbox" ${_seSkipWeekends ? 'checked' : ''} onchange="_seToggleWeekends(this.checked)" style="cursor:pointer">Skip weekends</label>
+          <div style="display:flex;gap:0.35rem">${presetBtn('All Sequential', false)}${presetBtn('All Same Day', true)}</div>
+          <button onclick="_sePrint()" title="Export this schedule as a clean, print-ready PDF" style="display:inline-flex;align-items:center;gap:0.35rem;padding:0.34rem 0.8rem;background:rgba(74,222,128,0.15);border:1.5px solid rgba(74,222,128,0.5);color:#4ade80;border-radius:6px;font-size:0.74rem;font-weight:700;cursor:pointer;white-space:nowrap">&#8659; Export PDF</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:2.5rem;flex-wrap:wrap;margin-bottom:1.15rem">
+        ${stat('Total Labor Hours', _SE_FMT(totLbr, 1) + ' hrs', `across ${active.length} sub code${active.length !== 1 ? 's' : ''}${completed.length ? ` &middot; ${completed.length} completed` : ''}`, '#a78bfa')}
+        ${stat('Working Days', String(totalWD), offField.length ? `field ${fieldEnd}d + off-field` : 'bid order &middot; adjustable', '#4ade80')}
+        ${stat(offField.length ? 'Field Complete' : 'Est. Completion', _seFmtDate(offField.length ? sched.fieldCal : endCal), offField.length ? 'field done · off-field follows' : 'starting ' + _seFmtDate(startCal), deadlineSet ? dlColor : '#60a5fa')}
+      </div>
+      <div style="margin-top:0.5rem">${dlFlag}${sectionHtml}${offHtml}${spanHtml}${doneHtml}</div>
+      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5"><strong style="color:var(--fg)">Drag any bar sideways</strong> to reschedule it — sub codes in different sections can run the same days. Drag a bar's right edge <strong style="color:var(--fg)">or type in the days box</strong> to set its duration (handy when a 1–2 day bar is too small to grab). <span style="color:#60a5fa">&#8595;/&#8657;</span> start a sub code the same day as the one above; the <span style="color:#fbbf24">&#9873;</span> flag marks work <strong style="color:var(--fg)">off-field</strong>, and <span style="color:#4ade80">&#10003;</span> marks it <strong style="color:var(--fg)">completed</strong> (its days drop from the schedule &amp; deadline). Set a <strong style="color:var(--fg)">Field deadline</strong> to see if on-field work lands in time. Travel &amp; PM span the full project.</div>
+    </div>`;
+}
+
+/* ── Row mutation + control handlers ─────────────────────────────────────── */
+function _seRefreshRow(idx) {
+  const r = document.getElementById(`se-results-${idx}`);
+  if (r) r.innerHTML = _seResultHtml(idx);
+  const s = document.getElementById('se-summary');
+  if (s) s.innerHTML = _seSummaryHtml();
+}
+function _seSetKey(idx, key) {
+  if (!_seRows || !_seRows[idx]) return;
+  _seRows[idx].key = key;
+  _seRows[idx].qty = ''; _seRows[idx].crew = null; _seRows[idx].hpd = null; _seRows[idx].ai = null;
+  _seRows[idx]._crewFromAI = false; _seRows[idx]._hpdFromAI = false;
+  _seRows[idx]._startDay = null; _seRows[idx]._daysOverride = null; _seRows[idx]._offField = false;
+  const el = document.getElementById(`se-row-${idx}`);
+  if (el) el.innerHTML = _seBuildRowHtml(idx);
+  const s = document.getElementById('se-summary');
+  if (s) s.innerHTML = _seSummaryHtml();
+}
+function _seSetName(idx, name) {
+  if (!_seRows || !_seRows[idx]) return;
+  const row = _seRows[idx];
+  row.subCode = name;
+  row.key = (row.costCode || '') + '||' + name;
+  // New name → prior estimate no longer applies; re-open it for auto AI so the
+  // user never has to click (the AI has the name + qty, it fills crew & hours).
+  row.ai = null; row._aiTried = false;
+  if (row._crewFromAI) { row.crew = null; row._crewFromAI = false; }
+  if (row._hpdFromAI)  { row.hpd  = null; row._hpdFromAI  = false; }
+  // NB: refresh results/summary only — do NOT re-render the whole row here, or a
+  // click on the ✨ AI button (which blurs this input first, firing change) would
+  // destroy the button node before the click lands.
+  _seRefreshRow(idx);
+  if ((name || '').trim()) setTimeout(_seAutoEstimateBlanks, 30);   // auto-fill on rename
+}
+function _seSetQty(idx, v)  { if (_seRows && _seRows[idx]) { _seRows[idx].qty  = v; _seRows[idx]._daysOverride = null; _seRefreshRow(idx); } }
+function _seSetCrew(idx, v) { if (_seRows && _seRows[idx]) { _seRows[idx].crew = v; _seRows[idx]._crewFromAI = false; _seRows[idx]._daysOverride = null; _seRefreshRow(idx); } }
+function _seSetHpd(idx, v)  { if (_seRows && _seRows[idx]) { _seRows[idx].hpd  = v; _seRows[idx]._hpdFromAI  = false; _seRows[idx]._daysOverride = null; _seRefreshRow(idx); } }
+function _seAddRow() {
+  if (!_seRows) _seRows = [];
+  const stats = window._seStats || [];
+  if (!stats.length) return _seAddAIRow();
+  _seRows.push({ key: stats[0].key, qty: '', crew: null, hpd: null });
+  renderScheduleEstimator();
+}
+function _seAddAIRow() {
+  if (!_seRows) _seRows = [];
+  _seRows.push(_seNewAIRow());
+  renderScheduleEstimator();
+}
+function _seRemoveRow(idx) {
+  if (!_seRows) return;
+  _seRows.splice(idx, 1);
+  if (_seRows.length === 0) _seRows = null;   // reseed on next render
+  renderScheduleEstimator();
+}
+function _seRenderSummary()    { const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); }
+function _seSetStart(v)        { _seStart = v; _seRenderSummary(); }
+function _seToggleWeekends(b)  { _seSkipWeekends = !!b; _seRenderSummary(); }
+function _seToggleSameDay(idx) { if (_seRows && _seRows[idx]) { _seRows[idx]._sameDay = !_seRows[idx]._sameDay; _seRenderSummary(); } }
+function _seSetAllSameDay(val) { (_seRows || []).forEach(r => { r._sameDay = !!val; }); _seRenderSummary(); }
+// Add/remove a laborer straight from the schedule; days recompute from the new
+// crew and the whole timeline shifts. Bases off the crew currently in effect
+// (a manual value or the AI/history default) and marks it a manual override.
+function _seAdjustCrew(idx, delta) {
+  const row = _seRows && _seRows[idx];
+  if (!row) return;
+  const r = _seComputeRow(row);
+  const cur = (r && r.crew) ? Math.round(r.crew) : 1;
+  row.crew = String(Math.max(1, cur + delta));
+  row._crewFromAI = false;
+  row._daysOverride = null;   // crew changed → recompute days from the estimate
+  const rowEl = document.getElementById(`se-row-${idx}`);   // keep the row's Crew input in sync
+  if (rowEl) rowEl.innerHTML = _seBuildRowHtml(idx);
+  _seRenderSummary();
+}
+
+// Mark a sub code off-field (done after the field, outside the deadline) or on-field.
+function _seToggleOffField(idx) {
+  if (!_seRows || !_seRows[idx]) return;
+  _seRows[idx]._offField = !_seRows[idx]._offField;
+  _seRows[idx]._startDay = null;   // re-place it in its new band; drag again if needed
+  _seRenderSummary();
+}
+
+// Mark a sub code completed — its days drop out of the active schedule and deadline.
+function _seToggleCompleted(idx) {
+  if (!_seRows || !_seRows[idx]) return;
+  _seRows[idx]._completed = !_seRows[idx]._completed;
+  _seRows[idx]._startDay = null;   // remaining work re-flows; drag again if needed
+  _seRenderSummary();
+}
+
+// Type the number of working days for a bar directly (same manual override as
+// dragging the bar's right edge — easier when a 1–2 day bar is too small to grab).
+// Blank or invalid input clears the override and reverts to the computed duration.
+function _seSetDays(idx, v) {
+  if (!_seRows || !_seRows[idx]) return;
+  const n = Math.round(parseFloat(v));
+  _seRows[idx]._daysOverride = (isFinite(n) && n >= 1) ? n : null;
+  _seRenderSummary();
+}
+
+// Turn a chosen Field-deadline DATE into a working-day index on the timeline.
+function _seSetDeadlineDate(v) {
+  if (!v) { _seDeadlineDay = null; _seRenderSummary(); return; }
+  const startStr = _seStart || _seTodayStr();
+  const dayIdx = _seDayIndexForDate(startStr, v, _seSkipWeekends);
+  _seDeadlineDay = dayIdx != null ? Math.max(1, dayIdx) : null;
+  _seRenderSummary();
+}
+
+// Drag a bar sideways to reschedule its start day (any bar, any section).
+function _seBarDrag(e, idx) {
+  if (e.button != null && e.button !== 0) return;
+  e.preventDefault();
+  const bar = e.currentTarget;
+  const track = bar.parentElement;
+  const w = (track && track.clientWidth) || 1;
+  const axisMax = window._seAxisMax || 1;
+  const pxPerDay = (w / axisMax) || 1;
+  const origStart = parseInt(bar.getAttribute('data-start')) || 1;
+  const startX = e.clientX;
+  let newStart = origStart;
+  bar.style.cursor = 'grabbing';
+  const move = ev => {
+    const dd = Math.round((ev.clientX - startX) / pxPerDay);
+    newStart = Math.max(1, Math.min(axisMax, origStart + dd));
+    bar.style.left = ((newStart - 1) / axisMax * 100) + '%';
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    if (_seRows && _seRows[idx]) _seRows[idx]._startDay = newStart;
+    _seRenderSummary();
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+// Drag a bar's right edge to override its duration in days.
+function _seBarResize(e, idx) {
+  if (e.button != null && e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();   // don't also start a move-drag
+  const bar = e.currentTarget.parentElement;
+  const track = bar && bar.parentElement;
+  const w = (track && track.clientWidth) || 1;
+  const axisMax = window._seAxisMax || 1;
+  const pxPerDay = (w / axisMax) || 1;
+  const origSpan = parseInt(bar.getAttribute('data-span')) || 1;
+  const startX = e.clientX;
+  let newSpan = origSpan;
+  const move = ev => {
+    const dd = Math.round((ev.clientX - startX) / pxPerDay);
+    newSpan = Math.max(1, origSpan + dd);
+    bar.style.width = (newSpan / axisMax * 100) + '%';
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    if (_seRows && _seRows[idx]) _seRows[idx]._daysOverride = newSpan;
+    _seRenderSummary();
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+/* ── Bid-item import ─────────────────────────────────────────────────────── */
+function _seImportBidsFromPicker() {
+  const el  = document.getElementById('se-import-proj');
+  const val = (el ? el.value : '').trim();
+  if (!val) { alert('Type or pick a project to import bid items from.'); return; }
+  // Accept a typed project name (from the searchable datalist) or a raw id.
+  const proj = projectsList.find(p => p.id === val)
+    || projectsList.find(p => (p['project-name'] || '').trim().toLowerCase() === val.toLowerCase());
+  if (!proj) { alert('No project matches “' + val + '”. Pick one from the list.'); return; }
+  _seImportBids(proj.id);
+}
+function _seImportBids(projId) {
+  const p = getProj(projId);
+  if (!p) { alert('Project not found.'); return; }
+  const statKeys = new Set((window._seStats || []).map(s => s.key));
+  const items = (p.bidItems || []).filter(b => (b.cost_code || b.sub_code));
+  if (!items.length) { alert('That project has no bid items to import.'); return; }
+  _seProjName = (p['project-name'] || '').trim() || null;   // label the exported PDF
+
+  const added = items.map(b => {
+    const cc  = b.cost_code || '';
+    const sc  = b.sub_code  || '';
+    const key = cc + '||' + sc;
+    const qty = (parseFloat(b.quantity) || 0) +
+      (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+    return { key, costCode: cc, subCode: sc, unit: b.unit || '',
+             qty: qty > 0 ? String(qty) : '', crew: null, hpd: null, ai: null, source: 'bid' };
+  });
+
+  // Replace a lone empty seed row; otherwise append.
+  const only = _seRows && _seRows.length === 1 ? _seRows[0] : null;
+  const seedEmpty = only && !only.qty && !only.subCode && !only.ai;
+  _seRows = seedEmpty ? added : (_seRows || []).concat(added);
+  renderScheduleEstimator();
+
+  const blanks = added.filter(r => !statKeys.has(r.key)).length;
+  if (blanks > 0) {
+    const s = document.getElementById('se-summary');
+    // Non-blocking hint appended above summary
+    const hint = document.createElement('div');
+    hint.style.cssText = 'margin-top:1rem;padding:0.6rem 0.9rem;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.35);border-radius:7px;font-size:0.76rem;color:#c4b5fd';
+    hint.innerHTML = `Imported ${added.length} bid item${added.length !== 1 ? 's' : ''}. ${blanks} have no history — the AI is filling them in automatically (or use <strong>&#10024; Estimate all</strong>).`;
+    if (s && s.parentNode) s.parentNode.insertBefore(hint, s);
+  }
+}
+
+/* ── AI "fill in the blanks" ─────────────────────────────────────────────── */
+const _SE_AI_CHUNK = 4;   // small batches keep each request fast/reliable (Opus is slower) and give smooth progress
+
+async function _seFetchEstimates(items) {
+  const division = (typeof DIVISION !== 'undefined' ? DIVISION : 'turf');
+  const r = await fetch('/api/ai/estimate-subcode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
+    body: JSON.stringify({ division, items }),
+  });
+  if (r.status === 503) throw new Error('AI is not configured on the server (missing API key).');
+  if (!r.ok) {
+    let msg = 'AI request failed (' + r.status + ')';
+    try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (e) {}
+    throw new Error(msg);
+  }
+  const j = await r.json();
+  return Array.isArray(j.estimates) ? j.estimates : [];
+}
+
+// Estimate a list of row objects, chunking to the backend's per-request cap and
+// applying partial results as each chunk returns. Marks every attempted row
+// _aiTried so the auto path never loops.
+//
+// Matching: when the model returns exactly one estimate per requested item we
+// TRUST THE ORDER (the model rarely reorders and routinely reformats the
+// sub-code string — punctuation/casing/"#9" vs "9s" — so a strict name check
+// would wrongly skip good estimates). Only when the counts differ (an item was
+// dropped/added) do we fall back to name matching and skip the unmatched ones.
+// onProgress(done, total, applied) fires after each chunk so callers can render
+// a progress bar. A chunk that errors is caught and skipped (its rows drop to
+// the "unavailable — retry" state) so one bad request never sinks the rest; the
+// error is only surfaced (thrown) when NOTHING got filled.
+async function _seRunEstimates(targetRows, onProgress) {
+  targetRows.forEach(r => { r._aiTried = true; });
+  let done = 0, applied = 0, firstError = null;
+  for (let i = 0; i < targetRows.length; i += _SE_AI_CHUNK) {
+    const chunk = targetRows.slice(i, i + _SE_AI_CHUNK);
+    const items = chunk.map(r => ({ costCode: r.costCode || '', subCode: (r.subCode || '').trim(), unit: r.unit || '', quantity: parseFloat(r.qty) || 0 }));
+    try {
+      const ests = await _seFetchEstimates(items);
+      const byOrder = ests.length === chunk.length;
+      chunk.forEach((r, j) => {
+        let est;
+        if (byOrder) {
+          est = ests[j] || null;
+        } else {
+          const sc = (r.subCode || '').trim().toLowerCase();
+          est = ests.find(e => e && String(e.sub_code || '').trim().toLowerCase() === sc) || null;
+        }
+        if (est) { _seApplyEstimate(r, est); applied++; }
+      });
+    } catch (e) {
+      if (!firstError) firstError = e;
+    }
+    chunk.forEach(r => { r._aiLoading = false; });   // reveal this chunk (filled or unavailable)
+    done += chunk.length;
+    if (onProgress) onProgress(done, targetRows.length, applied);
+  }
+  if (firstError && applied === 0) throw firstError;   // total failure → surface to the caller
+}
+function _seApplyEstimate(row, est) {
+  if (!est) return;
+  const crew = Math.max(1, Math.round(Number(est.crew_size) || 0) || 3);   // sane default crew
+  const hpd  = Number(est.hours_per_day) > 0 ? Number(est.hours_per_day) : 8;
+  const rate = Number(est.units_per_crew_day) || 0;                        // production rate (primary)
+  // Production-rate first: labor hrs/unit = crew·hrs ÷ daily output. This keeps
+  // days = qty ÷ units_per_crew_day (a believable few-day figure) instead of
+  // compounding an over-stated per-unit labor number through crew ÷ hours.
+  let lhpu = rate > 0 ? (crew * hpd) / rate : (Number(est.labor_hours_per_unit) || 0);
+  if (!(lhpu > 0)) lhpu = 0;
+  row.ai = {
+    laborHrsPerUnit: lhpu,
+    unitsPerCrewDay: rate,
+    crewSize:        crew,
+    hoursPerDay:     hpd,
+    equipHrsPerUnit: Number(est.equip_hours_per_unit) || 0,
+    confidence:      est.confidence || 'AI',
+    rationale:       est.rationale  || '',
+  };
+  if (!row.unit && est.unit) row.unit = String(est.unit);   // adopt AI's assumed unit
+  // Concretely fill the Crew and Hrs/Day fields from the AI estimate, unless the
+  // user has typed their own. _crewFromAI/_hpdFromAI let a re-estimate refresh
+  // them while a manual edit (which clears the flag) is preserved.
+  if (row.crew == null || row.crew === '' || row._crewFromAI) { row.crew = String(crew); row._crewFromAI = true; }
+  if (row.hpd  == null || row.hpd  === '' || row._hpdFromAI)  { row.hpd  = String(hpd);  row._hpdFromAI  = true; }
+}
+async function _seAIRow(idx) {
+  if (!_seRows || !_seRows[idx]) return;
+  const row = _seRows[idx];
+  const sc  = (_seStatForRow(row).subCode || '').trim();
+  if (!sc) { alert('Type a sub code name first, then click ✨ AI.'); return; }
+  row._aiLoading = true;
+  const el = document.getElementById(`se-row-${idx}`);
+  if (el) el.innerHTML = _seBuildRowHtml(idx);   // idx valid here (no async gap yet)
+  try {
+    await _seRunEstimates([row]);
+  } catch (err) {
+    alert('AI estimate failed: ' + err.message);
+  } finally {
+    row._aiLoading = false;
+    // Re-render by identity — the row's index may have shifted while awaiting
+    // (e.g. an earlier row was removed), so targeting the old idx would be stale.
+    if (document.getElementById('schedest-content')) renderScheduleEstimator();
+  }
+}
+async function _seAIFillBlanks() {
+  if (window._seFillBusy) return;
+  const statKeys = new Set((window._seStats || []).map(s => s.key));
+  const targets = (_seRows || []).filter(r =>
+    !statKeys.has(r.key) && !r.ai && !r._aiLoading && (r.subCode || '').trim());
+  if (!targets.length) {
+    alert('No blanks to estimate. Blanks are custom/imported sub codes with a name, no history, and no AI estimate yet.');
+    return;
+  }
+  window._seFillBusy = true;
+  window._seFillProgress = { done: 0, total: targets.length };
+  try {
+    targets.forEach(r => { r._aiLoading = true; });
+    if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show the progress bar
+    await _seRunEstimates(targets, (done, total) => {
+      window._seFillProgress = { done, total };
+      if (document.getElementById('schedest-content')) renderScheduleEstimator();  // advance the bar + reveal filled rows
+    });
+  } catch (err) {
+    alert('AI estimate failed: ' + err.message + (targets.length > _SE_AI_CHUNK ? ' (some may have been filled)' : ''));
+  } finally {
+    targets.forEach(r => { r._aiLoading = false; });
+    window._seFillBusy = false;   // always cleared, so the button can't get stuck
+    window._seFillProgress = null;
+    renderScheduleEstimator();
+  }
+}
+
+// Automatically estimate any blank (no history) sub code with AI industry
+// standards. Fired once per blank on render; failures are silent (the ✨ AI /
+// Estimate Blanks buttons surface errors on demand).
+async function _seAutoEstimateBlanks() {
+  if (window._seAutoBusy) return;
+  const statKeys = new Set((window._seStats || []).map(s => s.key));
+  const targets = (_seRows || []).filter(r =>
+    !statKeys.has(r.key) && !r.ai && !r._aiTried && (r.subCode || '').trim());
+  if (!targets.length) return;
+  window._seAutoBusy = true;
+  window._seFillProgress = { done: 0, total: targets.length };
+  targets.forEach(r => { r._aiLoading = true; });   // _aiTried is set inside _seRunEstimates
+  if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show the progress bar
+  try {
+    await _seRunEstimates(targets, (done, total) => {
+      window._seFillProgress = { done, total };
+      if (document.getElementById('schedest-content')) renderScheduleEstimator();
+    });
+  } catch (e) {
+    console.warn('[schedule-estimator] auto AI estimate failed:', e.message);
+  } finally {
+    targets.forEach(r => { r._aiLoading = false; });
+    window._seAutoBusy = false;
+    window._seFillProgress = null;
+    if (document.getElementById('schedest-content')) renderScheduleEstimator();
+  }
+}
+
+/* ── Printable schedule ──────────────────────────────────────────────────── */
+function _sePrint() {
+  const sched = _seBuildSchedule();
+  if (!sched) { alert('Add at least one sub code with a quantity (and an estimate) to build the schedule.'); return; }
+  const { startStr, onField, offField, spanning, fieldEnd, projectEnd, totalWD, axisMax,
+          deadlineDay, deadlineSet, deadlineCal, fieldCal, totLbr, startCal, endCal } = sched;
+
+  const esc2   = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const dstr   = d => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
+  const dshort = d => { const x = _seNthWorkingDay(startStr, d, _seSkipWeekends); return x ? x.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''; };
+  const pct    = idx => axisMax > 0 ? (idx / axisMax * 100) : 0;
+  const dlMet   = (fieldEnd - deadlineDay) <= 0;
+  const dlColor = dlMet ? '#16a34a' : '#dc2626';
+  // Print-friendly (higher-contrast) palette.
+  const PALETTE = ['#16a34a', '#2563eb', '#7c3aed', '#ea580c', '#0891b2', '#db2777', '#ca8a04', '#0d9488'];
+
+  // Contiguous cost-code sections across on-field work, in bid order.
+  const sections = [];
+  onField.forEach(c => {
+    const cc = (c.r.st.costCode || '').trim() || '(No Cost Code)';
+    const last = sections[sections.length - 1];
+    if (last && last.cc === cc) last.items.push(c);
+    else sections.push({ cc, items: [c] });
+  });
+
+  // Date axis ticks + matching vertical gridlines (as a stacked background on tracks).
+  const step = Math.max(1, Math.round(axisMax / 8));
+  const ticks = [];
+  for (let d = 1; d <= axisMax; d += step) ticks.push(d);
+  if (ticks[ticks.length - 1] !== axisMax) ticks.push(axisMax);
+  const gridBg   = ticks.map(d => `linear-gradient(#e6e8ec,#e6e8ec) ${pct(d - 1).toFixed(2)}% 0/1px 100% no-repeat`).join(',');
+  const trk      = `flex:1;position:relative;height:15px;border-radius:3px;background:${gridBg},#f5f6f8`;
+  const axisHtml = ticks.map(d => `<div style="position:absolute;left:${pct(d - 1).toFixed(2)}%;transform:translateX(-50%);font-size:8px;color:#666;white-space:nowrap">${dshort(d)}</div>`).join('');
+
+  let colorIdx = 0;
+  const ganttRows = sections.map(sec => {
+    const color    = PALETTE[colorIdx++ % PALETTE.length];
+    const secStart = Math.min(...sec.items.map(c => c.startDay));
+    const secEnd   = Math.max(...sec.items.map(c => c.finishDay));
+    const secHrs   = sec.items.reduce((s, c) => s + c.r.totalLaborHrs, 0);
+    const secCrew  = Math.max(0, ...sec.items.map(c => Math.round(c.r.crew) || 0));
+
+    const header = `<div class="row">
+      <div class="lbl"><div class="cc" style="color:${color}">${esc2(sec.cc)}</div><div class="dt">${dstr(secStart)} &rarr; ${dstr(secEnd)}</div></div>
+      <div style="${trk}"><div class="phase" style="left:${pct(secStart - 1).toFixed(2)}%;width:${Math.max(1, pct(secEnd) - pct(secStart - 1)).toFixed(2)}%;background:${color}"></div></div>
+      <div class="rt">${secEnd - secStart + 1}d &middot; ${secCrew} crew &middot; ${_SE_FMT(secHrs, 0)}h</div>
+    </div>`;
+
+    const bars = sec.items.map(c => barRowP(c, color)).join('');
+    return `<div class="sec">${header}${bars}</div>`;
+  }).join('');
+
+  function barRowP(c, color) {
+    const sc = c.r.st.subCode || '(custom)';
+    return `<div class="row">
+      <div class="lbl sub"><div class="nm">${esc2(sc)}</div><div class="dt">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</div></div>
+      <div style="${trk}"><div class="bar" style="left:${pct(c.startDay - 1).toFixed(2)}%;width:${Math.max(1.5, c.span / axisMax * 100).toFixed(2)}%;background:${color}">${c.span}d</div></div>
+      <div class="rt"><b>${_SE_FMT(c.r.crew, 0)}</b> lab &middot; ${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
+    </div>`;
+  }
+
+  const offRows = offField.length
+    ? `<div class="ovh" style="color:#b45309;border-top-color:#e0c088">&#9873; Off-field &middot; after the field &middot; ${Math.max(...offField.map(c => c.finishDay)) - fieldEnd}d</div>`
+      + offField.map(c => barRowP(c, '#94a3b8')).join('')
+    : '';
+
+  const spanW = Math.max(1.5, projectEnd / axisMax * 100).toFixed(2);
+  const spanRows = spanning.length ? `<div class="ovh">Every project day &middot; ${projectEnd}d</div>` + spanning.map(c => {
+    const sc = c.r.st.subCode || '(custom)';
+    return `<div class="row">
+      <div class="lbl sub"><div class="nm">&#8734; ${esc2(sc)}</div><div class="dt">${dstr(1)} &rarr; ${dstr(projectEnd)}</div></div>
+      <div style="${trk}"><div class="bar span" style="left:0;width:${spanW}%">${projectEnd}d</div></div>
+      <div class="rt"><b>${_SE_FMT(c.r.crew, 0)}</b> lab &middot; ${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
+    </div>`;
+  }).join('') : '';
+
+  // Detail table (exact numbers).
+  const ordered = onField.concat(offField, spanning);
+  const tbody = ordered.map(c => {
+    const r = c.r, st = r.st;
+    return `<tr>
+      <td>${esc2(st.costCode || '')}</td>
+      <td>${esc2(st.subCode || '(custom)')}${c.spanning ? ' *' : (c.offField ? ' †' : '')}</td>
+      <td class="r">${_SE_FMT(r.q, r.q % 1 ? 2 : 0)}${st.unit ? ' ' + esc2(st.unit) : ''}</td>
+      <td class="r">${_SE_FMT(r.totalLaborHrs, 1)}</td>
+      <td class="r">${_SE_FMT(r.crew, 0)}</td>
+      <td class="r">${_SE_FMT(r.hpd, 1)}</td>
+      <td class="r">${c.span}${c.overridden ? '*' : ''}</td>
+      <td>${dstr(c.startDay)}</td>
+      <td>${dstr(c.finishDay)}</td>
+    </tr>`;
+  }).join('');
+
+  const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const projLabel = _seProjName ? esc2(_seProjName) : 'Untitled Project';
+  const win = window.open('', '_blank');
+  if (!win) { alert('Pop-up blocked — allow pop-ups to export the schedule.'); return; }
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Project Schedule</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
+    body{color:#111;background:#fff;padding:0.6cm 0.7cm}
+    .dw-head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:3px solid #16a34a;padding-bottom:9px;margin-bottom:11px}
+    .dw-brand{display:flex;align-items:center;gap:9px}
+    .dw-logo{width:32px;height:32px;flex:0 0 32px;border-radius:8px;background:linear-gradient(135deg,#16a34a,#0891b2);color:#fff;font-size:17px;font-weight:800;display:flex;align-items:center;justify-content:center}
+    .dw-brand .nm{font-size:18px;font-weight:800;letter-spacing:-0.02em;color:#0f172a;line-height:1}
+    .dw-brand .tag{font-size:7.5px;letter-spacing:0.16em;text-transform:uppercase;color:#16a34a;font-weight:700;margin-top:2px}
+    .dw-title{text-align:right}
+    .dw-title .t{font-size:15px;font-weight:700;color:#0f172a;line-height:1.15;max-width:5in;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dw-title .s{font-size:9px;color:#777;margin-top:2px}
+    .meta{font-size:10px;color:#666;margin-bottom:12px}
+    h2{font-size:12px;color:#0f172a;margin-bottom:7px;padding-bottom:4px;border-bottom:1px solid #d5d8dd}
+    .kpis{display:flex;gap:30px;margin-bottom:14px;flex-wrap:wrap}
+    .kpi .l{font-size:8px;text-transform:uppercase;letter-spacing:0.05em;color:#888}
+    .kpi .v{font-size:15px;font-weight:700;color:#111}
+    .gantt{border:1px solid #e3e5e9;border-radius:6px;padding:8px 10px 12px}
+    .axis{display:flex;align-items:flex-end;height:16px;margin-bottom:3px}
+    .sec{page-break-inside:avoid}
+    .row{display:flex;align-items:center;height:19px;margin:2.5px 0;page-break-inside:avoid}
+    .lbl{width:220px;flex:0 0 220px;padding-right:8px;overflow:hidden}
+    .lbl.sub{padding-left:11px}
+    .lbl .cc{font-size:10px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .lbl .nm{font-size:9.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .lbl .dt{font-size:7.5px;color:#8a8f98;white-space:nowrap}
+    .bar{position:absolute;top:0;bottom:0;border-radius:3px;color:#fff;font-size:8px;font-weight:700;line-height:15px;text-align:center;overflow:hidden}
+    .bar.span{background:repeating-linear-gradient(45deg,#94a3b8,#94a3b8 4px,#cbd5e1 4px,#cbd5e1 8px)!important;color:#1f2937}
+    .phase{position:absolute;top:3px;bottom:3px;border-radius:2px;opacity:0.38}
+    .rt{width:122px;flex:0 0 122px;text-align:right;font-size:8px;color:#555;padding-left:6px;white-space:nowrap}
+    .ovh{font-size:8px;text-transform:uppercase;letter-spacing:0.05em;color:#888;margin-top:7px;border-top:1px dashed #ccc;padding-top:5px}
+    table{border-collapse:collapse;width:100%}
+    thead{display:table-header-group}
+    th,td{border:1px solid #ccc;padding:3px 6px;font-size:9px;white-space:nowrap}
+    th{background:#f4f4f4;text-align:left}
+    td.r,th.r{text-align:right}
+    tr{page-break-inside:avoid}
+    tr:nth-child(even) td{background:#fafafa}
+    .detail{page-break-before:always;padding-top:2px}
+    .fn{font-size:8px;color:#777;margin-top:6px}
+    @media print{@page{margin:0.7cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  </style></head><body>
+    <div class="dw-head">
+      <div class="dw-brand">
+        <div class="dw-logo">&#128202;</div>
+        <div><div class="nm">DataWatch</div><div class="tag">Schedule Estimator</div></div>
+      </div>
+      <div class="dw-title"><div class="t">${projLabel}</div><div class="s">Project Schedule &middot; Generated ${dateStr}</div></div>
+    </div>
+    <p class="meta">${sections.length} section${sections.length !== 1 ? 's' : ''} &middot; ${ordered.length} sub code${ordered.length !== 1 ? 's' : ''} &middot; bid order${_seSkipWeekends ? ', weekends excluded' : ''}</p>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Total Labor Hours</div><div class="v">${_SE_FMT(totLbr, 1)} hrs</div></div>
+      <div class="kpi"><div class="l">Working Days</div><div class="v">${totalWD}</div></div>
+      <div class="kpi"><div class="l">Start</div><div class="v">${_seFmtDate(startCal)}</div></div>
+      ${offField.length ? `<div class="kpi"><div class="l">Field Complete</div><div class="v">${_seFmtDate(fieldCal)}</div></div>` : ''}
+      ${deadlineSet ? `<div class="kpi"><div class="l">Field Deadline</div><div class="v" style="color:${dlColor}">${_seFmtDate(deadlineCal)} ${dlMet ? '&#10003;' : '&#9888;'}</div></div>` : ''}
+      <div class="kpi"><div class="l">Est. Completion</div><div class="v">${_seFmtDate(endCal)}</div></div>
+    </div>
+    <div class="gantt" style="position:relative">
+      ${deadlineSet ? `<div style="position:absolute;left:230px;right:132px;top:27px;bottom:12px;pointer-events:none"><div style="position:absolute;left:${pct(deadlineDay).toFixed(2)}%;top:0;bottom:0;width:1.5px;background:${dlColor}"></div></div>` : ''}
+      <div class="axis"><div style="width:220px;flex:0 0 220px"></div><div style="flex:1;position:relative;height:100%">${axisHtml}</div><div style="width:122px;flex:0 0 122px"></div></div>
+      ${ganttRows}${offRows}${spanRows}
+    </div>
+    <div class="detail">
+    <h2>Schedule Detail</h2>
+    <table><thead><tr>
+      <th>Cost Code</th><th>Sub Code</th><th class="r">Quantity</th><th class="r">Labor Hrs</th>
+      <th class="r">Crew</th><th class="r">Hrs/Day</th><th class="r">Work Days</th>
+      <th>Start</th><th>Finish</th>
+    </tr></thead><tbody>${tbody}</tbody></table>
+    <p class="fn">* Travel / project management span the full project. ${offField.length ? '&#8224; Off-field work is done after the field is handed over. ' : ''}A <b>*</b> after Work Days marks a manually set duration.${deadlineSet ? ` The vertical line is the field deadline (${_seFmtDate(deadlineCal)}).` : ''}</p>
+    </div>
+    <script>window.onload=function(){window.print();}<\/script>
+  </body></html>`);
+  win.document.close();
 }
 
 

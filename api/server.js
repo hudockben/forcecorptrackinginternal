@@ -81,6 +81,9 @@ app.post('/api/ai/schedule-analysis', require('./ai/schedule-analysis'));
 /** AI conflict resolution suggestions */
 app.post('/api/ai/conflict-resolve', require('./ai/conflict-resolve'));
 
+/** AI sub-code production estimate (Schedule Estimator "fill in the blanks") */
+app.post('/api/ai/estimate-subcode', require('./ai/estimate-subcode'));
+
 /** Debug / diagnostics */
 app.get('/api/debug', require('./debug'));
 
