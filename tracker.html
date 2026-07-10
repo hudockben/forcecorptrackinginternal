@@ -16964,6 +16964,7 @@ function _calcRemoveRow(idx) {
 let _seRows         = null;
 let _seStart        = null;          // 'YYYY-MM-DD'
 let _seSkipWeekends = true;
+let _seDeadlineDay  = null;          // field deadline as a working-day index (null = default to field end)
 
 const _SE_FMT = (v, d = 0) => (v == null || isNaN(v))
   ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -17386,59 +17387,111 @@ function _seIsSpanning(sc) {
 // honoring per-row "same day as previous" overlaps, and spans daily overhead
 // (travel / PM) across the whole project. Returned to both the on-screen summary
 // and the printable schedule so they never diverge.
+// Count working days from the project start through a target date (inclusive).
+// Used to turn a chosen deadline DATE into a working-day index on the timeline.
+function _seDayIndexForDate(startStr, targetStr, skipWeekends) {
+  const start  = new Date((startStr  || '') + 'T00:00:00');
+  const target = new Date((targetStr || '') + 'T00:00:00');
+  if (isNaN(start.getTime()) || isNaN(target.getTime())) return null;
+  if (target < start) return 1;
+  let count = 0; const d = new Date(start);
+  for (let guard = 0; guard < 100000 && d <= target; guard++) {
+    const dow = d.getDay();
+    if (!skipWeekends || (dow !== 0 && dow !== 6)) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return Math.max(1, count);
+}
+
 function _seBuildSchedule() {
   const startStr = _seStart || _seTodayStr();
   const computed = (_seRows || []).map((row, idx) => {
     const r = _seComputeRow(row);
     if (r.invalid || r.needsEstimate || r.days == null || !(r.days > 0)) return null;
-    return { r, row, idx, span: Math.max(1, Math.ceil(r.days)), spanning: _seIsSpanning(r.st.subCode) };
+    // Duration: estimate-derived days, unless an admin overrode it by dragging the
+    // bar's right edge (_daysOverride).
+    const span = (row._daysOverride != null && !isNaN(row._daysOverride))
+      ? Math.max(1, Math.round(row._daysOverride))
+      : Math.max(1, Math.ceil(r.days));
+    return { r, row, idx, span, overridden: row._daysOverride != null,
+             spanning: _seIsSpanning(r.st.subCode), offField: !!row._offField };
   }).filter(Boolean);
   if (!computed.length) return null;
 
-  const normal   = computed.filter(c => !c.spanning);
   const spanning = computed.filter(c => c.spanning);
+  const onField  = computed.filter(c => !c.spanning && !c.offField);
+  const offField = computed.filter(c => !c.spanning && c.offField);
 
-  // Place normal items top-to-bottom; a "same day as previous" row joins the
-  // running group (overlap) instead of starting after it (which compresses the
-  // finish, so the timeline reacts live as you map concurrent work).
-  let groupStart = 1, groupEnd = 0, placed = 0;
-  normal.forEach(c => {
-    if (placed === 0 || !c.row._sameDay) {
-      c.startDay = placed === 0 ? 1 : groupEnd + 1;
-      groupStart = c.startDay;
-      groupEnd   = c.startDay + c.span - 1;
-    } else {
-      c.startDay = groupStart;
-      groupEnd   = Math.max(groupEnd, groupStart + c.span - 1);
-    }
-    c.finishDay = c.startDay + c.span - 1;
-    placed++;
-  });
+  // Place a list top-to-bottom in bid order. Each bar's DEFAULT start comes from a
+  // sequential lane ("same day as previous" joins the running group); a per-bar
+  // start override (set by dragging the bar) repositions just that bar without
+  // shifting the others, so any two sub codes — even across sections — can be run
+  // concurrently. Returns the list's last finish day.
+  function place(list, from) {
+    let groupStart = from, cursor = from, n = 0;
+    list.forEach(c => {
+      let defStart;
+      if (n === 0 || !c.row._sameDay) { defStart = n === 0 ? from : cursor; groupStart = defStart; }
+      else { defStart = groupStart; }
+      cursor = Math.max(cursor, defStart + c.span);   // sequential lane ignores overrides
+      const start = (c.row._startDay != null && !isNaN(c.row._startDay))
+        ? Math.max(1, Math.round(c.row._startDay)) : defStart;
+      c.startDay  = start;
+      c.finishDay = start + c.span - 1;
+      n++;
+    });
+    return list.length ? Math.max(...list.map(c => c.finishDay)) : (from - 1);
+  }
 
-  const workEnd    = normal.length ? Math.max(...normal.map(c => c.finishDay)) : 0;
-  const projectEnd = normal.length ? Math.max(1, workEnd)
-    : Math.max(1, ...spanning.map(c => c.span));   // only overhead selected → its own length
+  const fieldEnd    = place(onField, 1);
+  const offFieldEnd = place(offField, Math.max(1, fieldEnd + 1));
+  const workEnd     = Math.max(fieldEnd, offFieldEnd, 0);
+  const projectEnd  = workEnd > 0 ? workEnd : Math.max(1, ...spanning.map(c => c.span));
 
   // Overhead spans the full project (never shorter).
   spanning.forEach(c => { c.startDay = 1; c.finishDay = projectEnd; c.span = projectEnd; c.pinned = true; });
 
+  // Field deadline: a working-day index. Defaults to the on-field finish until set.
+  const deadlineSet = _seDeadlineDay != null;
+  const deadlineDay = deadlineSet ? Math.max(1, _seDeadlineDay) : (fieldEnd > 0 ? fieldEnd : projectEnd);
+  const axisMax     = Math.max(projectEnd, deadlineDay, 1);
+
   return {
-    startStr, computed, normal, spanning,
-    totalWD: projectEnd,
+    startStr, computed, onField, offField, spanning,
+    fieldEnd, projectEnd, totalWD: projectEnd, axisMax, deadlineDay, deadlineSet,
     totLbr:  computed.reduce((s, c) => s + c.r.totalLaborHrs, 0),
-    startCal: _seNthWorkingDay(startStr, 1, _seSkipWeekends),
-    endCal:   _seNthWorkingDay(startStr, projectEnd, _seSkipWeekends),
+    startCal:    _seNthWorkingDay(startStr, 1, _seSkipWeekends),
+    endCal:      _seNthWorkingDay(startStr, projectEnd, _seSkipWeekends),
+    fieldCal:    _seNthWorkingDay(startStr, Math.max(1, fieldEnd), _seSkipWeekends),
+    deadlineCal: _seNthWorkingDay(startStr, deadlineDay, _seSkipWeekends),
   };
 }
 
 function _seSummaryHtml() {
   const sched = _seBuildSchedule();
   if (!sched) return '';
-  const { startStr, computed, normal, spanning, totalWD, totLbr, startCal, endCal } = sched;
+  const { startStr, computed, onField, offField, spanning, fieldEnd, projectEnd,
+          totalWD, axisMax, deadlineDay, deadlineSet, totLbr, startCal, endCal, deadlineCal } = sched;
+  window._seAxisMax = axisMax;   // for the bar-drag handler
   const PALETTE = ['#4ade80', '#60a5fa', '#a78bfa', '#fb923c', '#38bdf8', '#f472b6', '#facc15', '#22d3ee'];
-  const pct  = idx => totalWD > 0 ? (idx / totalWD * 100) : 0;
+  const OFF_COLOR = '#94a3b8';
+  const pct  = idx => axisMax > 0 ? (idx / axisMax * 100) : 0;
   const dstr = d   => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
   const _SE_STEP = 'width:17px;height:17px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:0.8rem;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto';
+  const _SE_TGL = kind => {
+    const c = kind === 'sd'  ? ['rgba(96,165,250,0.6)', 'rgba(96,165,250,0.18)', '#60a5fa']
+            : kind === 'off' ? ['rgba(251,191,36,0.6)', 'rgba(251,191,36,0.18)', '#fbbf24']
+            : ['var(--border)', 'var(--bg)', 'var(--muted)'];
+    return `flex:0 0 auto;width:18px;height:18px;border-radius:4px;border:1px solid ${c[0]};background:${c[1]};color:${c[2]};font-size:0.68rem;cursor:pointer;line-height:1;padding:0;display:inline-flex;align-items:center;justify-content:center;margin-top:0.05rem`;
+  };
+
+  // Field deadline marker (only when a deadline is set).
+  const overBy  = fieldEnd - deadlineDay;    // > 0 → over
+  const dlMet   = overBy <= 0;
+  const dlColor = dlMet ? '#4ade80' : '#f87171';
+  const dlMark  = deadlineSet ? `<div style="position:absolute;left:${pct(deadlineDay)}%;top:-3px;bottom:-3px;width:2px;background:${dlColor};z-index:5;pointer-events:none"></div>` : '';
+  const _pad = n => String(n).padStart(2, '0');
+  const dlInputVal = deadlineCal ? `${deadlineCal.getFullYear()}-${_pad(deadlineCal.getMonth() + 1)}-${_pad(deadlineCal.getDate())}` : '';
 
   const stat = (label, value, sub, color) =>
     `<div><div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
@@ -17447,9 +17500,44 @@ function _seSummaryHtml() {
   const presetBtn = (label, val) =>
     `<button onclick="_seSetAllSameDay(${val})" title="${val ? 'Start every sub code on the same day (fully overlapped)' : 'Run every sub code back-to-back (bid order)'}" style="padding:0.28rem 0.7rem;border-radius:6px;font-size:0.72rem;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--bg);color:var(--muted)">${label}</button>`;
 
-  // Sections = contiguous runs of the same cost code, in bid order.
+  // One draggable sub-code bar row (used for on-field and off-field bands).
+  const crewCell = c => `<div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.25rem">
+        <button onclick="_seAdjustCrew(${c.idx},-1)" title="Remove a laborer" style="${_SE_STEP}">&#8722;</button>
+        <span title="Laborers on this sub code"><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> lab</span>
+        <button onclick="_seAdjustCrew(${c.idx},1)" title="Add a laborer" style="${_SE_STEP}">&#43;</button>
+      </div>
+      <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h &middot; ${_SE_FMT(c.r.hpd, 0)}h/day</div>
+    </div>`;
+  const barRow = (c, color, first) => {
+    const left  = pct(c.startDay - 1);
+    const width = Math.max(2, c.span / axisMax * 100);
+    const sc    = c.r.st.subCode || '(custom)';
+    const on    = !!c.row._sameDay;
+    const off   = !!c.row._offField;
+    const sd = first
+      ? `<span style="flex:0 0 auto;width:18px"></span>`
+      : `<button onclick="_seToggleSameDay(${c.idx})" title="${on ? 'Starts the same day as the item above — click to run it after' : 'Runs after the item above — click to start it the same day'}" style="${_SE_TGL(on ? 'sd' : '')}">${on ? '&#8657;' : '&#8595;'}</button>`;
+    const flag = `<button onclick="_seToggleOffField(${c.idx})" title="${off ? 'Off-field work (done after the field). Click to move it back on-field' : 'On-field. Click to mark it off-field — scheduled after the field and excluded from the deadline'}" style="${_SE_TGL(off ? 'off' : '')}">&#9873;</button>`;
+    return `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.16rem 0">
+      <div style="width:236px;flex:0 0 236px;padding-left:0.3rem;display:flex;align-items:flex-start;gap:0.22rem;min-width:0">
+        ${sd}${flag}
+        <div style="min-width:0">
+          <div style="font-size:0.72rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div>
+          <div style="font-size:0.62rem;color:var(--muted)">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</div>
+        </div>
+      </div>
+      <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
+        <div data-start="${c.startDay}" data-span="${c.span}" onmousedown="_seBarDrag(event,${c.idx})" title="Drag to move &middot; drag the right edge to change days${c.overridden ? ' (manual duration)' : ''} &middot; Days ${c.startDay}–${c.finishDay} &middot; ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;cursor:grab;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden;user-select:none">${c.span}d${c.overridden ? '<span style="opacity:0.65">&lowast;</span>' : ''}<div onmousedown="_seBarResize(event,${c.idx})" title="Drag to change the number of days" style="position:absolute;right:0;top:0;bottom:0;width:8px;cursor:ew-resize;background:rgba(0,0,0,0.22);border-radius:0 4px 4px 0"></div></div>
+        ${dlMark}
+      </div>
+      ${crewCell(c)}
+    </div>`;
+  };
+
+  // Sections = contiguous runs of the same cost code across on-field work, in bid order.
   const sections = [];
-  normal.forEach(c => {
+  onField.forEach(c => {
     const cc = (c.r.st.costCode || '').trim() || '(No Cost Code)';
     const last = sections[sections.length - 1];
     if (last && last.cc === cc) last.items.push(c);
@@ -17464,92 +17552,81 @@ function _seSummaryHtml() {
     const secHrs   = sec.items.reduce((s, c) => s + c.r.totalLaborHrs, 0);
     const secCrew  = Math.max(0, ...sec.items.map(c => Math.round(c.r.crew) || 0));
 
-    const header = `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.6rem 0 0.15rem">
-      <div style="width:220px;flex:0 0 220px;min-width:0">
+    const header = `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.6rem 0 0.15rem">
+      <div style="width:236px;flex:0 0 236px;min-width:0">
         <div style="font-size:0.77rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sec.cc)}">${_seEsc(sec.cc)}</div>
         <div style="font-size:0.62rem;color:var(--muted)">${dstr(secStart)} &rarr; ${dstr(secEnd)}</div>
       </div>
       <div style="flex:1;position:relative;height:11px;background:var(--bg);border-radius:3px">
         <div style="position:absolute;left:${pct(secStart - 1)}%;width:${Math.max(2, pct(secEnd) - pct(secStart - 1))}%;top:0;bottom:0;background:${color};opacity:0.35;border-radius:3px;border:1px solid ${color}"></div>
+        ${dlMark}
       </div>
       <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.63rem;color:var(--muted)">${secEnd - secStart + 1}d &middot; ${secCrew} crew &middot; ${_SE_FMT(secHrs, 0)}h</div>
     </div>`;
 
-    const bars = sec.items.map(c => {
-      const left  = pct(c.startDay - 1);
-      const width = Math.max(2, c.span / totalWD * 100);
-      const sc    = c.r.st.subCode || '(custom)';
-      const first = c === normal[0];
-      const on    = !!c.row._sameDay;
-      const toggle = first ? `<span style="flex:0 0 auto;width:20px"></span>`
-        : `<button onclick="_seToggleSameDay(${c.idx})" title="${on ? 'Starts the same day as the item above (overlap) — click to run it after instead' : 'Runs after the item above — click to start it the same day (overlap)'}" style="flex:0 0 auto;width:20px;height:20px;border-radius:4px;border:1px solid ${on ? 'rgba(96,165,250,0.6)' : 'var(--border)'};background:${on ? 'rgba(96,165,250,0.18)' : 'var(--bg)'};color:${on ? '#60a5fa' : 'var(--muted)'};font-size:0.72rem;cursor:pointer;line-height:1;padding:0;margin-top:0.05rem">${on ? '&#8657;' : '&#8595;'}</button>`;
-      return `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.16rem 0">
-        <div style="width:220px;flex:0 0 220px;padding-left:0.5rem;display:flex;align-items:flex-start;gap:0.35rem;min-width:0">
-          ${toggle}
-          <div style="min-width:0">
-            <div style="font-size:0.72rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div>
-            <div style="font-size:0.62rem;color:var(--muted)">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</div>
-          </div>
-        </div>
-        <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
-          <div title="Days ${c.startDay}–${c.finishDay} · ${_SE_FMT(c.r.crew, 0)} laborers · ${_SE_FMT(c.r.hpd, 1)} hrs/day · ${_SE_FMT(c.r.totalLaborHrs, 0)} labor hrs" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${c.span}d</div>
-        </div>
-        <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
-          <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.25rem">
-            <button onclick="_seAdjustCrew(${c.idx},-1)" title="Remove a laborer" style="${_SE_STEP}">&#8722;</button>
-            <span title="Laborers on this sub code"><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> lab</span>
-            <button onclick="_seAdjustCrew(${c.idx},1)" title="Add a laborer" style="${_SE_STEP}">&#43;</button>
-          </div>
-          <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h &middot; ${_SE_FMT(c.r.hpd, 0)}h/day</div>
-        </div>
-      </div>`;
-    }).join('');
-
+    const bars = sec.items.map(c => barRow(c, color, c === onField[0])).join('');
     return header + bars;
   }).join('');
 
+  // Off-field band — work done after the field is handed over (excluded from the deadline).
+  const offHtml = offField.length ? `
+    <div style="margin-top:0.7rem;padding-top:0.5rem;border-top:1px dashed var(--border)">
+      <div style="font-size:0.64rem;color:#fbbf24;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">&#9873; Off-field &middot; after the field &middot; ${Math.max(...offField.map(c => c.finishDay)) - fieldEnd}d</div>
+      ${offField.map((c, i) => barRow(c, OFF_COLOR, i === 0)).join('')}
+    </div>` : '';
+
+  const spanW = Math.max(2, projectEnd / axisMax * 100);
   const spanHtml = spanning.length ? `
     <div style="margin-top:0.7rem;padding-top:0.5rem;border-top:1px dashed var(--border)">
-      <div style="font-size:0.64rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Every project day &middot; ${totalWD}d</div>
+      <div style="font-size:0.64rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Every project day &middot; ${projectEnd}d</div>
       ${spanning.map(c => {
         const sc = c.r.st.subCode || '(custom)';
-        return `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.16rem 0">
-          <div style="width:220px;flex:0 0 220px;padding-left:0.5rem;min-width:0">
+        return `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.16rem 0">
+          <div style="width:236px;flex:0 0 236px;padding-left:0.3rem;min-width:0">
             <div style="font-size:0.72rem;color:#cbd5e1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}">&#8734; ${_seEsc(sc)}</div>
-            <div style="font-size:0.62rem;color:var(--muted)">${dstr(1)} &rarr; ${dstr(totalWD)}</div>
+            <div style="font-size:0.62rem;color:var(--muted)">${dstr(1)} &rarr; ${dstr(projectEnd)}</div>
           </div>
           <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
-            <div title="Spans the full project (${totalWD}d) · ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:0;width:100%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${totalWD}d</div>
+            <div title="Spans the full project (${projectEnd}d) · ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:0;width:${spanW}%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${projectEnd}d</div>
+            ${dlMark}
           </div>
-          <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
-            <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.25rem">
-              <button onclick="_seAdjustCrew(${c.idx},-1)" title="Remove a laborer" style="${_SE_STEP}">&#8722;</button>
-              <span title="Laborers on this sub code"><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> lab</span>
-              <button onclick="_seAdjustCrew(${c.idx},1)" title="Add a laborer" style="${_SE_STEP}">&#43;</button>
-            </div>
-            <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
-          </div>
+          ${crewCell(c)}
         </div>`;
       }).join('')}
     </div>` : '';
+
+  // Deadline flag strip (aligned above the tracks) + header status badge.
+  const dlFlag = deadlineSet ? `
+    <div style="display:flex;align-items:center;gap:0.55rem;margin-bottom:2px">
+      <div style="width:236px;flex:0 0 236px"></div>
+      <div style="flex:1;position:relative;height:15px">
+        <div style="position:absolute;left:${pct(deadlineDay)}%;transform:translateX(-50%);font-size:0.58rem;font-weight:700;color:${dlColor};white-space:nowrap;background:var(--surface);border:1px solid ${dlColor};border-radius:3px;padding:0 4px;line-height:1.35">&#9873; Deadline ${dstr(deadlineDay)}</div>
+      </div>
+      <div style="width:132px;flex:0 0 132px"></div>
+    </div>` : '';
+  const dlBadge = deadlineSet
+    ? `<span style="background:${dlColor}22;color:${dlColor};border:1px solid ${dlColor}55;border-radius:5px;padding:0.15rem 0.5rem;font-size:0.7rem;font-weight:700">${dlMet ? `&#10003; field ${Math.abs(overBy)}d early` : `&#9888; field ${Math.abs(overBy)}d over deadline`}</span>`
+    : '';
 
   return `
     <div style="margin-top:1.5rem;padding:1.2rem 1.4rem;background:rgba(74,222,128,0.06);border:2px solid rgba(74,222,128,0.28);border-radius:12px">
       <div style="display:flex;flex-wrap:wrap;gap:0.9rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem">
         <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${sections.length} section${sections.length !== 1 ? 's' : ''} · ${computed.length} sub code${computed.length !== 1 ? 's' : ''}</div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
-          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="Set the day work started (or starts). Past dates are fine — the timeline shifts to match.">Project start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="Set the day work started (or starts). Past dates are fine.">Project start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="The date the field must be finished. On-field work is checked against it; off-field work can run past it.">Field deadline<input type="date" value="${dlInputVal}" onchange="_seSetDeadlineDate(this.value)" style="background:var(--bg);border:1px solid ${deadlineSet ? dlColor : 'var(--border)'};color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
+          ${dlBadge}
           <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.72rem;color:var(--muted);cursor:pointer"><input type="checkbox" ${_seSkipWeekends ? 'checked' : ''} onchange="_seToggleWeekends(this.checked)" style="cursor:pointer">Skip weekends</label>
           <div style="display:flex;gap:0.35rem">${presetBtn('All Sequential', false)}${presetBtn('All Same Day', true)}</div>
         </div>
       </div>
       <div style="display:flex;gap:2.5rem;flex-wrap:wrap;margin-bottom:1.15rem">
         ${stat('Total Labor Hours', _SE_FMT(totLbr, 1) + ' hrs', `across ${computed.length} sub code${computed.length !== 1 ? 's' : ''}`, '#a78bfa')}
-        ${stat('Working Days', String(totalWD), 'bid order &middot; adjustable below', '#4ade80')}
-        ${stat('Est. Completion', _seFmtDate(endCal), 'starting ' + _seFmtDate(startCal), '#60a5fa')}
+        ${stat('Working Days', String(totalWD), offField.length ? `field ${fieldEnd}d + off-field` : 'bid order &middot; adjustable', '#4ade80')}
+        ${stat(offField.length ? 'Field Complete' : 'Est. Completion', _seFmtDate(offField.length ? sched.fieldCal : endCal), offField.length ? 'field done · off-field follows' : 'starting ' + _seFmtDate(startCal), deadlineSet ? dlColor : '#60a5fa')}
       </div>
-      <div style="margin-top:0.5rem">${sectionHtml}${spanHtml}</div>
-      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5">Work flows <strong style="color:var(--fg)">top-to-bottom in bid order</strong>, grouped into <strong style="color:var(--fg)">cost-code sections</strong> with start &rarr; finish dates. Use the <span style="color:#60a5fa">&#8657;</span> toggle to start a sub code the <strong style="color:var(--fg)">same day</strong> as the one above (overlap) and watch the finish compress. <strong style="color:var(--fg)">Travel &amp; project management</strong> are pinned to span the full project. Each sub code is rounded up to whole working days.</div>
+      <div style="margin-top:0.5rem">${dlFlag}${sectionHtml}${offHtml}${spanHtml}</div>
+      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5"><strong style="color:var(--fg)">Drag any bar sideways</strong> to reschedule it — sub codes in different sections can run the same days. <span style="color:#60a5fa">&#8595;/&#8657;</span> start a sub code the same day as the one above; the <span style="color:#fbbf24">&#9873;</span> flag marks work <strong style="color:var(--fg)">off-field</strong> (done after the field, outside the deadline). Set a <strong style="color:var(--fg)">Field deadline</strong> to see if on-field work lands in time. Travel &amp; PM span the full project.</div>
     </div>`;
 }
 
@@ -17565,6 +17642,7 @@ function _seSetKey(idx, key) {
   _seRows[idx].key = key;
   _seRows[idx].qty = ''; _seRows[idx].crew = null; _seRows[idx].hpd = null; _seRows[idx].ai = null;
   _seRows[idx]._crewFromAI = false; _seRows[idx]._hpdFromAI = false;
+  _seRows[idx]._startDay = null; _seRows[idx]._daysOverride = null; _seRows[idx]._offField = false;
   const el = document.getElementById(`se-row-${idx}`);
   if (el) el.innerHTML = _seBuildRowHtml(idx);
   const s = document.getElementById('se-summary');
@@ -17586,9 +17664,9 @@ function _seSetName(idx, name) {
   _seRefreshRow(idx);
   if ((name || '').trim()) setTimeout(_seAutoEstimateBlanks, 30);   // auto-fill on rename
 }
-function _seSetQty(idx, v)  { if (_seRows && _seRows[idx]) { _seRows[idx].qty  = v; _seRefreshRow(idx); } }
-function _seSetCrew(idx, v) { if (_seRows && _seRows[idx]) { _seRows[idx].crew = v; _seRows[idx]._crewFromAI = false; _seRefreshRow(idx); } }
-function _seSetHpd(idx, v)  { if (_seRows && _seRows[idx]) { _seRows[idx].hpd  = v; _seRows[idx]._hpdFromAI  = false; _seRefreshRow(idx); } }
+function _seSetQty(idx, v)  { if (_seRows && _seRows[idx]) { _seRows[idx].qty  = v; _seRows[idx]._daysOverride = null; _seRefreshRow(idx); } }
+function _seSetCrew(idx, v) { if (_seRows && _seRows[idx]) { _seRows[idx].crew = v; _seRows[idx]._crewFromAI = false; _seRows[idx]._daysOverride = null; _seRefreshRow(idx); } }
+function _seSetHpd(idx, v)  { if (_seRows && _seRows[idx]) { _seRows[idx].hpd  = v; _seRows[idx]._hpdFromAI  = false; _seRows[idx]._daysOverride = null; _seRefreshRow(idx); } }
 function _seAddRow() {
   if (!_seRows) _seRows = [];
   const stats = window._seStats || [];
@@ -17622,9 +17700,83 @@ function _seAdjustCrew(idx, delta) {
   const cur = (r && r.crew) ? Math.round(r.crew) : 1;
   row.crew = String(Math.max(1, cur + delta));
   row._crewFromAI = false;
+  row._daysOverride = null;   // crew changed → recompute days from the estimate
   const rowEl = document.getElementById(`se-row-${idx}`);   // keep the row's Crew input in sync
   if (rowEl) rowEl.innerHTML = _seBuildRowHtml(idx);
   _seRenderSummary();
+}
+
+// Mark a sub code off-field (done after the field, outside the deadline) or on-field.
+function _seToggleOffField(idx) {
+  if (!_seRows || !_seRows[idx]) return;
+  _seRows[idx]._offField = !_seRows[idx]._offField;
+  _seRows[idx]._startDay = null;   // re-place it in its new band; drag again if needed
+  _seRenderSummary();
+}
+
+// Turn a chosen Field-deadline DATE into a working-day index on the timeline.
+function _seSetDeadlineDate(v) {
+  if (!v) { _seDeadlineDay = null; _seRenderSummary(); return; }
+  const startStr = _seStart || _seTodayStr();
+  const dayIdx = _seDayIndexForDate(startStr, v, _seSkipWeekends);
+  _seDeadlineDay = dayIdx != null ? Math.max(1, dayIdx) : null;
+  _seRenderSummary();
+}
+
+// Drag a bar sideways to reschedule its start day (any bar, any section).
+function _seBarDrag(e, idx) {
+  if (e.button != null && e.button !== 0) return;
+  e.preventDefault();
+  const bar = e.currentTarget;
+  const track = bar.parentElement;
+  const w = (track && track.clientWidth) || 1;
+  const axisMax = window._seAxisMax || 1;
+  const pxPerDay = (w / axisMax) || 1;
+  const origStart = parseInt(bar.getAttribute('data-start')) || 1;
+  const startX = e.clientX;
+  let newStart = origStart;
+  bar.style.cursor = 'grabbing';
+  const move = ev => {
+    const dd = Math.round((ev.clientX - startX) / pxPerDay);
+    newStart = Math.max(1, Math.min(axisMax, origStart + dd));
+    bar.style.left = ((newStart - 1) / axisMax * 100) + '%';
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    if (_seRows && _seRows[idx]) _seRows[idx]._startDay = newStart;
+    _seRenderSummary();
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+// Drag a bar's right edge to override its duration in days.
+function _seBarResize(e, idx) {
+  if (e.button != null && e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();   // don't also start a move-drag
+  const bar = e.currentTarget.parentElement;
+  const track = bar && bar.parentElement;
+  const w = (track && track.clientWidth) || 1;
+  const axisMax = window._seAxisMax || 1;
+  const pxPerDay = (w / axisMax) || 1;
+  const origSpan = parseInt(bar.getAttribute('data-span')) || 1;
+  const startX = e.clientX;
+  let newSpan = origSpan;
+  const move = ev => {
+    const dd = Math.round((ev.clientX - startX) / pxPerDay);
+    newSpan = Math.max(1, origSpan + dd);
+    bar.style.width = (newSpan / axisMax * 100) + '%';
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    if (_seRows && _seRows[idx]) _seRows[idx]._daysOverride = newSpan;
+    _seRenderSummary();
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
 }
 
 /* ── Bid-item import ─────────────────────────────────────────────────────── */
@@ -17838,18 +17990,21 @@ async function _seAutoEstimateBlanks() {
 function _sePrint() {
   const sched = _seBuildSchedule();
   if (!sched) { alert('Add at least one sub code with a quantity (and an estimate) to build the schedule.'); return; }
-  const { startStr, normal, spanning, totalWD, totLbr, startCal, endCal } = sched;
+  const { startStr, onField, offField, spanning, fieldEnd, projectEnd, totalWD, axisMax,
+          deadlineDay, deadlineSet, deadlineCal, fieldCal, totLbr, startCal, endCal } = sched;
 
   const esc2   = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const dstr   = d => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
   const dshort = d => { const x = _seNthWorkingDay(startStr, d, _seSkipWeekends); return x ? x.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''; };
-  const pct    = idx => totalWD > 0 ? (idx / totalWD * 100) : 0;
+  const pct    = idx => axisMax > 0 ? (idx / axisMax * 100) : 0;
+  const dlMet   = (fieldEnd - deadlineDay) <= 0;
+  const dlColor = dlMet ? '#16a34a' : '#dc2626';
   // Print-friendly (higher-contrast) palette.
   const PALETTE = ['#16a34a', '#2563eb', '#7c3aed', '#ea580c', '#0891b2', '#db2777', '#ca8a04', '#0d9488'];
 
-  // Contiguous cost-code sections, in bid order.
+  // Contiguous cost-code sections across on-field work, in bid order.
   const sections = [];
-  normal.forEach(c => {
+  onField.forEach(c => {
     const cc = (c.r.st.costCode || '').trim() || '(No Cost Code)';
     const last = sections[sections.length - 1];
     if (last && last.cc === cc) last.items.push(c);
@@ -17857,10 +18012,10 @@ function _sePrint() {
   });
 
   // Date axis ticks + matching vertical gridlines (as a stacked background on tracks).
-  const step = Math.max(1, Math.round(totalWD / 8));
+  const step = Math.max(1, Math.round(axisMax / 8));
   const ticks = [];
-  for (let d = 1; d <= totalWD; d += step) ticks.push(d);
-  if (ticks[ticks.length - 1] !== totalWD) ticks.push(totalWD);
+  for (let d = 1; d <= axisMax; d += step) ticks.push(d);
+  if (ticks[ticks.length - 1] !== axisMax) ticks.push(axisMax);
   const gridBg   = ticks.map(d => `linear-gradient(#e6e8ec,#e6e8ec) ${pct(d - 1).toFixed(2)}% 0/1px 100% no-repeat`).join(',');
   const trk      = `flex:1;position:relative;height:15px;border-radius:3px;background:${gridBg},#f5f6f8`;
   const axisHtml = ticks.map(d => `<div style="position:absolute;left:${pct(d - 1).toFixed(2)}%;transform:translateX(-50%);font-size:8px;color:#666;white-space:nowrap">${dshort(d)}</div>`).join('');
@@ -17879,41 +18034,49 @@ function _sePrint() {
       <div class="rt">${secEnd - secStart + 1}d &middot; ${secCrew} crew &middot; ${_SE_FMT(secHrs, 0)}h</div>
     </div>`;
 
-    const bars = sec.items.map(c => {
-      const sc = c.r.st.subCode || '(custom)';
-      return `<div class="row">
-        <div class="lbl sub"><div class="nm">${esc2(sc)}</div><div class="dt">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</div></div>
-        <div style="${trk}"><div class="bar" style="left:${pct(c.startDay - 1).toFixed(2)}%;width:${Math.max(1.5, c.span / totalWD * 100).toFixed(2)}%;background:${color}">${c.span}d</div></div>
-        <div class="rt"><b>${_SE_FMT(c.r.crew, 0)}</b> lab &middot; ${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
-      </div>`;
-    }).join('');
+    const bars = sec.items.map(c => barRowP(c, color)).join('');
     return header + bars;
   }).join('');
 
-  const spanRows = spanning.length ? `<div class="ovh">Every project day &middot; ${totalWD}d</div>` + spanning.map(c => {
+  function barRowP(c, color) {
     const sc = c.r.st.subCode || '(custom)';
     return `<div class="row">
-      <div class="lbl sub"><div class="nm">&#8734; ${esc2(sc)}</div><div class="dt">${dstr(1)} &rarr; ${dstr(totalWD)}</div></div>
-      <div style="${trk}"><div class="bar span" style="left:0;width:100%">${totalWD}d</div></div>
+      <div class="lbl sub"><div class="nm">${esc2(sc)}</div><div class="dt">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</div></div>
+      <div style="${trk}"><div class="bar" style="left:${pct(c.startDay - 1).toFixed(2)}%;width:${Math.max(1.5, c.span / axisMax * 100).toFixed(2)}%;background:${color}">${c.span}d</div></div>
+      <div class="rt"><b>${_SE_FMT(c.r.crew, 0)}</b> lab &middot; ${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
+    </div>`;
+  }
+
+  const offRows = offField.length
+    ? `<div class="ovh" style="color:#b45309;border-top-color:#e0c088">&#9873; Off-field &middot; after the field &middot; ${Math.max(...offField.map(c => c.finishDay)) - fieldEnd}d</div>`
+      + offField.map(c => barRowP(c, '#94a3b8')).join('')
+    : '';
+
+  const spanW = Math.max(1.5, projectEnd / axisMax * 100).toFixed(2);
+  const spanRows = spanning.length ? `<div class="ovh">Every project day &middot; ${projectEnd}d</div>` + spanning.map(c => {
+    const sc = c.r.st.subCode || '(custom)';
+    return `<div class="row">
+      <div class="lbl sub"><div class="nm">&#8734; ${esc2(sc)}</div><div class="dt">${dstr(1)} &rarr; ${dstr(projectEnd)}</div></div>
+      <div style="${trk}"><div class="bar span" style="left:0;width:${spanW}%">${projectEnd}d</div></div>
       <div class="rt"><b>${_SE_FMT(c.r.crew, 0)}</b> lab &middot; ${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
     </div>`;
   }).join('') : '';
 
   // Detail table (exact numbers).
-  const ordered = normal.concat(spanning);
+  const ordered = onField.concat(offField, spanning);
   const tbody = ordered.map(c => {
     const r = c.r, st = r.st;
     return `<tr>
       <td>${esc2(st.costCode || '')}</td>
-      <td>${esc2(st.subCode || '(custom)')}${c.spanning ? ' *' : ''}</td>
+      <td>${esc2(st.subCode || '(custom)')}${c.spanning ? ' *' : (c.offField ? ' †' : '')}</td>
       <td class="r">${_SE_FMT(r.q, r.q % 1 ? 2 : 0)}${st.unit ? ' ' + esc2(st.unit) : ''}</td>
       <td class="r">${_SE_FMT(r.totalLaborHrs, 1)}</td>
       <td class="r">${_SE_FMT(r.crew, 0)}</td>
       <td class="r">${_SE_FMT(r.hpd, 1)}</td>
-      <td class="r">${c.span}</td>
+      <td class="r">${c.span}${c.overridden ? '*' : ''}</td>
       <td>${dstr(c.startDay)}</td>
       <td>${dstr(c.finishDay)}</td>
-      <td>${c.spanning ? 'Overhead' : (r.source === 'ai' ? 'AI' : 'History')}</td>
+      <td>${c.spanning ? 'Overhead' : (c.offField ? 'Off-field' : (r.source === 'ai' ? 'AI' : 'History'))}</td>
     </tr>`;
   }).join('');
 
@@ -17956,18 +18119,21 @@ function _sePrint() {
       <div class="kpi"><div class="l">Total Labor Hours</div><div class="v">${_SE_FMT(totLbr, 1)} hrs</div></div>
       <div class="kpi"><div class="l">Working Days</div><div class="v">${totalWD}</div></div>
       <div class="kpi"><div class="l">Start</div><div class="v">${_seFmtDate(startCal)}</div></div>
+      ${offField.length ? `<div class="kpi"><div class="l">Field Complete</div><div class="v">${_seFmtDate(fieldCal)}</div></div>` : ''}
+      ${deadlineSet ? `<div class="kpi"><div class="l">Field Deadline</div><div class="v" style="color:${dlColor}">${_seFmtDate(deadlineCal)} ${dlMet ? '&#10003;' : '&#9888;'}</div></div>` : ''}
       <div class="kpi"><div class="l">Est. Completion</div><div class="v">${_seFmtDate(endCal)}</div></div>
     </div>
-    <div class="gantt">
+    <div class="gantt" style="position:relative">
+      ${deadlineSet ? `<div style="position:absolute;left:230px;right:132px;top:27px;bottom:12px;pointer-events:none"><div style="position:absolute;left:${pct(deadlineDay).toFixed(2)}%;top:0;bottom:0;width:1.5px;background:${dlColor}"></div></div>` : ''}
       <div class="axis"><div style="width:220px;flex:0 0 220px"></div><div style="flex:1;position:relative;height:100%">${axisHtml}</div><div style="width:122px;flex:0 0 122px"></div></div>
-      ${ganttRows}${spanRows}
+      ${ganttRows}${offRows}${spanRows}
     </div>
     <table><thead><tr>
       <th>Cost Code</th><th>Sub Code</th><th class="r">Quantity</th><th class="r">Labor Hrs</th>
       <th class="r">Crew</th><th class="r">Hrs/Day</th><th class="r">Work Days</th>
       <th>Start</th><th>Finish</th><th>Basis</th>
     </tr></thead><tbody>${tbody}</tbody></table>
-    <p class="fn">* Travel / project management are pinned to span the full project length.</p>
+    <p class="fn">* Travel / project management span the full project. ${offField.length ? '&#8224; Off-field work is done after the field is handed over. ' : ''}A <b>*</b> after Work Days marks a manually set duration.${deadlineSet ? ` The vertical line is the field deadline (${_seFmtDate(deadlineCal)}).` : ''}</p>
     <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
   win.document.close();
