@@ -4,17 +4,22 @@
  *
  * AI "fill in the blanks" estimator for the Turf Schedule Estimator. Given a
  * batch of sub codes (name, optional cost code, unit, planned quantity) that
- * have little or no historical data, it returns rough field-production
- * estimates so a schedule can still be built:
- *   - labor_hours_per_unit  (person-hours to complete one unit)
- *   - crew_size             (typical workers on the task at once)
- *   - hours_per_day         (productive field hours per working day)
- *   - equip_hours_per_unit  (machine hours per unit, 0 for hand work)
- *   - confidence + rationale
+ * have little or no historical data, it returns realistic, industry-standard
+ * field-production estimates so a schedule can still be built.
  *
- * One Anthropic call handles the whole batch. Bearer auth + ANTHROPIC_API_KEY
- * guard, mirroring api/ai/conflict-resolve.js. Advisory only — the frontend
- * clearly flags every value as AI-estimated.
+ * The estimate is PRODUCTION-RATE first — the way estimators actually think:
+ *   - units_per_crew_day : how many units a full crew completes in a working day
+ *   - crew_size          : typical workers on the task at once
+ *   - hours_per_day      : productive field hours per working day
+ *   - equip_hours_per_unit
+ *   - confidence + rationale
+ * The frontend derives labor-hours/unit and working days from these, so days
+ * come straight from a daily output rate instead of compounding a per-unit
+ * labor figure through crew ÷ hours (which is what produced wildly high day
+ * counts before).
+ *
+ * Bearer auth + ANTHROPIC_API_KEY guard, mirroring the other api/ai endpoints.
+ * Advisory only — the frontend clearly flags every value as AI-estimated.
  */
 
 const Anthropic = require('@anthropic-ai/sdk');
@@ -48,7 +53,7 @@ module.exports = async (req, res) => {
   if (items.length > 40)  return res.status(400).json({ error: 'Too many items (max 40 per request)' });
 
   const domain = division === 'turf'
-    ? 'artificial turf, synthetic athletic fields, and running-track construction'
+    ? 'artificial turf, synthetic athletic fields, running tracks, and the site/earthwork that goes with them'
     : `${division} construction`;
 
   const itemLines = items.map((it, i) => {
@@ -62,28 +67,34 @@ module.exports = async (req, res) => {
       + `${qty ? `, planned_quantity=${qty}` : ''}`;
   }).join('\n');
 
-  const prompt = `You are a senior field estimator for ${domain}. For each line item below, give a realistic production estimate for a typical crew. Base it on the sub code / work-description name, the unit of measure, and the planned quantity. If the unit is missing or unclear, assume the most common unit for that kind of work.
+  const prompt = `You are a senior field estimator for ${domain}. For each line item, give a REALISTIC production estimate for one typical crew, the way a scheduler would.
+
+Think in PRODUCTION RATE first: how many units of the given unit of measure does one full crew complete in a normal working day? A working crew completes a substantial quantity per day — most site, base, and installation tasks run in the hundreds to thousands of units per crew per day (e.g. placing & grading stone base at ~1,500-4,000 SY/day, laying turf at ~1,500-3,000 SY/day, fine grading at thousands of SF/day). Only slow, piece-by-piece work (e.g. installing individual goal posts, inlaid logos) runs in single-digit units per day. Do NOT produce estimates that would take a small job dozens of days — sanity-check that quantity ÷ units_per_crew_day gives a believable number of days.
+
+If the unit of measure is missing or unclear, assume the most common unit for that kind of work and report it in "unit".
 
 For EVERY item provide:
-- labor_hours_per_unit: crew person-hours to complete ONE unit of the given unit of measure
-- crew_size: typical number of workers on that task at once (whole number, >= 1)
-- hours_per_day: productive field hours per working day (usually 8; use 6-10 when appropriate)
-- equip_hours_per_unit: equipment/machine hours per unit (0 if it is hand work)
+- unit: the unit of measure you assumed (e.g. "SY", "SF", "ton", "LF", "ea")
+- crew_size: typical number of workers on the task at once (whole number >= 1)
+- hours_per_day: productive field hours per working day (usually 8; 6-10 if warranted)
+- units_per_crew_day: units one full crew completes in one working day (> 0)
+- equip_hours_per_unit: equipment/machine hours per unit (0 for hand work)
 - confidence: "High", "Moderate", or "Low"
-- rationale: one short sentence explaining the basis
+- rationale: one short sentence, ideally citing the assumed daily rate
 
 LINE ITEMS:
 ${itemLines}
 
-Respond with ONLY a JSON object in this EXACT format, with one entry per line item IN THE SAME ORDER:
+Respond with ONLY a JSON object in this EXACT format, one entry per line item IN THE SAME ORDER:
 {
   "estimates": [
     {
       "sub_code": "...",
       "cost_code": "...",
-      "labor_hours_per_unit": 0.0,
-      "crew_size": 0,
+      "unit": "SY",
+      "crew_size": 4,
       "hours_per_day": 8,
+      "units_per_crew_day": 2500,
       "equip_hours_per_unit": 0.0,
       "confidence": "Moderate",
       "rationale": "..."
@@ -94,7 +105,7 @@ Respond with ONLY a JSON object in this EXACT format, with one entry per line it
   try {
     const client  = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const message = await client.messages.create({
-      model:      'claude-haiku-4-5-20251001',
+      model:      'claude-sonnet-4-6',
       max_tokens: 3072,
       messages:   [{ role: 'user', content: prompt }],
     });

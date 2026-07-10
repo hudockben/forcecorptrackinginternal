@@ -16969,6 +16969,8 @@ let _seMode         = 'sequential';  // 'sequential' | 'parallel'
 const _SE_FMT = (v, d = 0) => (v == null || isNaN(v))
   ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
+function _seEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
 function _seNewAIRow() {
   return { key: '||', costCode: '', subCode: '', unit: '', qty: '', crew: null, hpd: null, ai: null, source: 'ai' };
 }
@@ -17074,9 +17076,10 @@ function _seStatForRow(row) {
 
 function _seDefaultCrew(st, ai) {
   // Prefer the crew implied by historical crew-day throughput (labor hrs/day ÷ an
-  // 8-hour day) so the default "Est. Working Days" reproduces the historical pace
-  // out of the box. Distinct named-employee counts undercount when labor is logged
-  // as lump crew-hours, so they are only a fallback.
+  // 8-hour day) so the default "Est. Working Days" closely tracks the historical
+  // pace out of the box (whole-crew rounding makes it approximate, not exact).
+  // Distinct named-employee counts undercount when labor is logged as lump
+  // crew-hours, so they are only a fallback.
   if (st && st.histLbrPD > 0) return Math.max(1, Math.round(st.histLbrPD / 8));
   if (st && st.typicalCrew)   return st.typicalCrew;
   if (ai && ai.crewSize > 0)  return Math.max(1, Math.round(ai.crewSize));
@@ -17101,7 +17104,15 @@ function _seComputeRow(row) {
   if (hasHistory) {
     const s = st.soe;
     hasModel     = !!(s && !s.laborTooFew && s.laborA != null && s.laborB != null && s.laborPts && s.laborPts.length >= 2);
-    extrapolated = (q < st.minX || q > st.maxX);
+    // Judge extrapolation against the range the labor curve was actually FIT on
+    // (laborPts), which can be narrower than the job range in st.minX/maxX; outside
+    // it we fall back to the average instead of evaluating the curve out-of-range.
+    if (hasModel) {
+      const lxs = s.laborPts.map(p => p.x);
+      extrapolated = (q < Math.min(...lxs) || q > Math.max(...lxs));
+    } else {
+      extrapolated = (q < st.minX || q > st.maxX);
+    }
     if (hasModel && !extrapolated) laborHrsPerUnit = Math.max(0, s.laborA * Math.pow(q, s.laborB));
     else if (hasModel)             laborHrsPerUnit = s.laborPts.reduce((a, p) => a + p.y, 0) / s.laborPts.length;
     else                           laborHrsPerUnit = st.avgLbrPerUnit;
@@ -17169,7 +17180,7 @@ function renderScheduleEstimator() {
   const projOpts = '<option value="">Import bid items from…</option>' +
     projectsList.slice()
       .sort((a, b) => (a['project-name'] || '').localeCompare(b['project-name'] || ''))
-      .map(p => `<option value="${esc(p.id)}">${esc(p['project-name'] || 'Untitled')}</option>`)
+      .map(p => `<option value="${_seEsc(p.id)}">${_seEsc(p['project-name'] || 'Untitled')}</option>`)
       .join('');
 
   const ghostBtn  = 'padding:0.42rem 0.85rem;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:7px;font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap';
@@ -17205,6 +17216,12 @@ function renderScheduleEstimator() {
       </div>
       <div id="se-summary">${_seSummaryHtml()}</div>
     </div>`;
+
+  // No history for a named sub code? Auto-fill it with AI industry standards.
+  const _statKeys = new Set(stats.map(s => s.key));
+  if (_seRows.some(r => !_statKeys.has(r.key) && !r.ai && !r._aiTried && (r.subCode || '').trim())) {
+    setTimeout(_seAutoEstimateBlanks, 30);
+  }
 }
 
 function _seBuildRowHtml(idx) {
@@ -17229,19 +17246,21 @@ function _seBuildRowHtml(idx) {
     subControl = `
       <label style="${lbl}">Sub Code <span style="color:#a78bfa;font-weight:600;text-transform:none;letter-spacing:0">(custom)</span></label>
       <div style="display:flex;gap:0.4rem">
-        <input type="text" value="${esc(st.subCode)}" placeholder="e.g. Base Prep" ${busy ? 'disabled' : ''}
+        <input type="text" value="${_seEsc(st.subCode)}" placeholder="e.g. Base Prep" ${busy ? 'disabled' : ''}
           onchange="_seSetName(${idx},this.value)" style="${inp};flex:1">
         <button onclick="_seAIRow(${idx})" ${busy ? 'disabled' : ''} title="Estimate this sub code with AI" style="${aiBtn}${busy ? ';opacity:0.6;cursor:default' : ''}">${busy ? '&#8230;' : (ai ? '&#10024; Redo' : '&#10024; AI')}</button>
       </div>`;
-    note = ai
-      ? `<span style="color:#a78bfa;font-weight:600">&#10024; AI estimate</span> · ${esc(ai.confidence || '')} confidence${ai.rationale ? `<br><span style="font-size:0.66rem;color:var(--muted)">${esc(ai.rationale)}</span>` : ''}`
+    note = busy
+      ? `<span style="color:#a78bfa;font-weight:600">&#10024; Estimating with AI…</span>`
+      : ai
+      ? `<span style="color:#a78bfa;font-weight:600">&#10024; AI estimate</span> · ${_seEsc(ai.confidence || '')} confidence${ai.rationale ? `<br><span style="font-size:0.66rem;color:var(--muted)">${_seEsc(ai.rationale)}</span>` : ''}`
       : `<span style="color:#fbbf24">No history yet</span> — click <strong style="color:#a78bfa">&#10024; AI</strong> to estimate labor &amp; crew.`;
   } else {
     const opts = (window._seStats || []).map(o =>
-      `<option value="${esc(o.key)}"${o.key === st.key ? ' selected' : ''}>${esc(o.subCode)}  (${esc(o.costCode)})  —  ${o.n} job${o.n !== 1 ? 's' : ''} · unit: ${esc(o.unit || 'n/a')}</option>`
+      `<option value="${_seEsc(o.key)}"${o.key === st.key ? ' selected' : ''}>${_seEsc(o.subCode)}  (${_seEsc(o.costCode)})  —  ${o.n} job${o.n !== 1 ? 's' : ''} · unit: ${_seEsc(o.unit || 'n/a')}</option>`
     ).join('');
     subControl = `<label style="${lbl}">Sub Code</label><select onchange="_seSetKey(${idx},this.value)" style="${inp}">${opts}</select>`;
-    note = `Observed range: <strong style="color:var(--fg)">${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)}</strong> ${esc(st.unit || 'units')}<br>Based on <strong style="color:var(--fg)">${st.n}</strong> historical job${st.n !== 1 ? 's' : ''}`;
+    note = `Observed range: <strong style="color:var(--fg)">${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)}</strong> ${_seEsc(st.unit || 'units')}<br>Based on <strong style="color:var(--fg)">${st.n}</strong> historical job${st.n !== 1 ? 's' : ''}`;
   }
 
   const removeBtn = ((_seRows || []).length > 1)
@@ -17252,16 +17271,16 @@ function _seBuildRowHtml(idx) {
     <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;padding:1rem;background:var(--surface);border:1px solid var(--border);border-radius:8px">
       <div style="flex:2;min-width:230px">${subControl}</div>
       <div style="flex:1;min-width:120px">
-        <label style="${lbl}">Quantity${st.unit ? ` <span style="color:var(--fg);font-weight:600;text-transform:none;letter-spacing:0">(${esc(st.unit)})</span>` : ''}</label>
-        <input type="number" min="0" step="any" placeholder="Enter qty…" value="${esc(row.qty)}" oninput="_seSetQty(${idx},this.value)" style="${inp}">
+        <label style="${lbl}">Quantity${st.unit ? ` <span style="color:var(--fg);font-weight:600;text-transform:none;letter-spacing:0">(${_seEsc(st.unit)})</span>` : ''}</label>
+        <input type="number" min="0" step="any" placeholder="Enter qty…" value="${_seEsc(row.qty)}" oninput="_seSetQty(${idx},this.value)" style="${inp}">
       </div>
       <div style="width:84px">
         <label style="${lbl}" title="People working this sub code at once">Crew</label>
-        <input type="number" min="0" step="any" value="${esc(crewVal)}" oninput="_seSetCrew(${idx},this.value)" style="${inp}">
+        <input type="number" min="0" step="any" value="${_seEsc(crewVal)}" oninput="_seSetCrew(${idx},this.value)" style="${inp}">
       </div>
       <div style="width:92px">
         <label style="${lbl}" title="Productive hours per working day">Hrs/Day</label>
-        <input type="number" min="0" step="any" value="${esc(hpdVal)}" oninput="_seSetHpd(${idx},this.value)" style="${inp}">
+        <input type="number" min="0" step="any" value="${_seEsc(hpdVal)}" oninput="_seSetHpd(${idx},this.value)" style="${inp}">
       </div>
       <div style="font-size:0.7rem;color:var(--muted);align-self:flex-end;padding-bottom:0.4rem;line-height:1.6;flex:1;min-width:180px">${note}</div>
       ${removeBtn}
@@ -17276,8 +17295,11 @@ function _seResultHtml(idx) {
   const st = r.st;
 
   if (r.needsEstimate) {
+    if (row._aiLoading) {
+      return `<div style="padding:1.5rem;text-align:center;color:#a78bfa;font-size:0.82rem">&#10024; Estimating <strong>${_seEsc(st.subCode || 'this sub code')}</strong> from industry standards…</div>`;
+    }
     return `<div style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.82rem">
-      No historical data for <strong style="color:var(--fg)">${esc(st.subCode || 'this sub code')}</strong>. Click <strong style="color:#a78bfa">&#10024; AI</strong> on this row (or <strong>Estimate Blanks</strong>) to fill in a labor &amp; crew estimate.</div>`;
+      No historical data for <strong style="color:var(--fg)">${_seEsc(st.subCode || 'this sub code')}</strong>. Click <strong style="color:#a78bfa">&#10024; AI</strong> on this row (or <strong>Estimate Blanks</strong>) to fill in a labor &amp; crew estimate.</div>`;
   }
   if (r.invalid) {
     return `<div style="padding:1.75rem;text-align:center;color:var(--muted);font-size:0.82rem">Enter a quantity above to project labor hours and working days.</div>`;
@@ -17295,14 +17317,16 @@ function _seResultHtml(idx) {
   const pill = isAI
     ? `<span style="background:rgba(167,139,250,0.14);color:#a78bfa;border:1px solid rgba(167,139,250,0.4);border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">&#10024; AI Estimate${r.conf && r.conf !== 'AI' ? ' · ' + r.conf : ''}</span>`
     : `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${r.conf} Confidence</span>`;
+  const aiRate = (isAI && r.ai && r.ai.unitsPerCrewDay > 0)
+    ? `~${_SE_FMT(r.ai.unitsPerCrewDay, 0)} ${_seEsc(st.unit || 'units')}/crew-day` : '';
   const noteRight = isAI
-    ? `<span style="font-size:0.7rem;color:var(--muted)">${r.ai && r.ai.rationale ? esc(r.ai.rationale) : 'AI-estimated — no historical jobs for this sub code'}</span>`
-    : `<span style="font-size:0.7rem;color:var(--muted)">${st.n} job${st.n !== 1 ? 's' : ''} · ${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)} ${esc(st.unit || 'units')} observed${r.histDays != null ? ` · historical pace ${_SE_FMT(r.histDays, 1)}d` : ''}</span>`;
+    ? `<span style="font-size:0.7rem;color:var(--muted)">${aiRate ? aiRate + ' · ' : ''}${r.ai && r.ai.rationale ? _seEsc(r.ai.rationale) : 'AI-estimated industry standard — no historical jobs for this sub code'}</span>`
+    : `<span style="font-size:0.7rem;color:var(--muted)">${st.n} job${st.n !== 1 ? 's' : ''} · ${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)} ${_seEsc(st.unit || 'units')} observed${r.histDays != null ? ` · historical pace ${_SE_FMT(r.histDays, 1)}d` : ''}</span>`;
 
   const perUnitSub = isAI ? 'AI estimate' : (r.hasModel ? (r.extrapolated ? 'historical avg' : 'power-law model') : 'historical average');
 
   return `
-    ${r.extrapolated ? `<div style="margin-bottom:0.85rem;padding:0.6rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.75rem;color:#fbbf24">&#9888; Quantity is outside the observed range (${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)} ${esc(st.unit || 'units')} across ${st.n} job${st.n !== 1 ? 's' : ''}) — using the historical average rate instead of the curve.</div>` : ''}
+    ${r.extrapolated ? `<div style="margin-bottom:0.85rem;padding:0.6rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.75rem;color:#fbbf24">&#9888; Quantity is outside the observed range (${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)} ${_seEsc(st.unit || 'units')} across ${st.n} job${st.n !== 1 ? 's' : ''}) — using the historical average rate instead of the curve.</div>` : ''}
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.7rem">
       ${card('Est. Labor Hours', _SE_FMT(r.totalLaborHrs, 1) + ' hrs', isAI ? 'AI estimate' : (r.laborLow != null ? `Range: ${_SE_FMT(r.laborLow, 1)} – ${_SE_FMT(r.laborHigh, 1)} hrs` : ''), '#a78bfa')}
       ${card('Est. Working Days', (r.days != null ? _SE_FMT(r.days, 1) + ' days' : '—'), `${_SE_FMT(r.crew, 0)} crew × ${_SE_FMT(r.hpd, 1)} hrs/day`, '#4ade80')}
@@ -17357,7 +17381,7 @@ function _seSummaryHtml() {
     const sc1   = _seNthWorkingDay(startStr, it.endIdx,   _seSkipWeekends);
     const sc    = it.r.st.subCode || '(custom)';
     return `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.3rem 0">
-      <div style="width:170px;flex:0 0 170px;font-size:0.73rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(sc)}${it.r.st.costCode ? ' (' + esc(it.r.st.costCode) + ')' : ''}">${esc(sc)}</div>
+      <div style="width:170px;flex:0 0 170px;font-size:0.73rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${it.r.st.costCode ? ' (' + _seEsc(it.r.st.costCode) + ')' : ''}">${_seEsc(sc)}</div>
       <div style="flex:1;position:relative;height:22px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
         <div title="Days ${it.startIdx}–${it.endIdx} · ${_seFmtDate(sc0)} → ${_seFmtDate(sc1)}" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${it.span}d</div>
       </div>
@@ -17370,7 +17394,7 @@ function _seSummaryHtml() {
       <div style="display:flex;flex-wrap:wrap;gap:0.9rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem">
         <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${rows.length} sub code${rows.length !== 1 ? 's' : ''}</div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
-          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)">Start<input type="date" value="${esc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem"></label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)">Start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem"></label>
           <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.72rem;color:var(--muted);cursor:pointer"><input type="checkbox" ${_seSkipWeekends ? 'checked' : ''} onchange="_seToggleWeekends(this.checked)" style="cursor:pointer">Skip weekends</label>
           <div style="display:flex;gap:0.35rem">${modeBtn('sequential', 'Sequential')}${modeBtn('parallel', 'Parallel')}</div>
         </div>
@@ -17479,6 +17503,8 @@ function _seImportBids(projId) {
 }
 
 /* ── AI "fill in the blanks" ─────────────────────────────────────────────── */
+const _SE_AI_CHUNK = 40;   // backend caps items per request at 40
+
 async function _seFetchEstimates(items) {
   const division = (typeof DIVISION !== 'undefined' ? DIVISION : 'turf');
   const r = await fetch('/api/ai/estimate-subcode', {
@@ -17495,46 +17521,72 @@ async function _seFetchEstimates(items) {
   const j = await r.json();
   return Array.isArray(j.estimates) ? j.estimates : [];
 }
+
+// Estimate a list of row objects, chunking to the backend's per-request cap and
+// applying partial results as each chunk returns. Marks every attempted row
+// _aiTried so the auto path never loops. Matches estimates by position, then by
+// sub-code name; if neither matches (model dropped/renamed an item) the row is
+// SKIPPED rather than filled with another sub code's numbers.
+async function _seRunEstimates(targetRows) {
+  targetRows.forEach(r => { r._aiTried = true; });
+  for (let i = 0; i < targetRows.length; i += _SE_AI_CHUNK) {
+    const chunk = targetRows.slice(i, i + _SE_AI_CHUNK);
+    const items = chunk.map(r => ({ costCode: r.costCode || '', subCode: (r.subCode || '').trim(), unit: r.unit || '', quantity: parseFloat(r.qty) || 0 }));
+    const ests  = await _seFetchEstimates(items);
+    chunk.forEach((r, j) => {
+      const sc = (r.subCode || '').trim().toLowerCase();
+      let est = ests[j];
+      if (!est || String(est.sub_code || '').trim().toLowerCase() !== sc) {
+        est = ests.find(e => e && String(e.sub_code || '').trim().toLowerCase() === sc) || null;
+      }
+      if (est) _seApplyEstimate(r, est);
+    });
+  }
+}
 function _seApplyEstimate(row, est) {
   if (!est) return;
+  const crew = Math.max(1, Math.round(Number(est.crew_size) || 0) || 3);   // sane default crew
+  const hpd  = Number(est.hours_per_day) > 0 ? Number(est.hours_per_day) : 8;
+  const rate = Number(est.units_per_crew_day) || 0;                        // production rate (primary)
+  // Production-rate first: labor hrs/unit = crew·hrs ÷ daily output. This keeps
+  // days = qty ÷ units_per_crew_day (a believable few-day figure) instead of
+  // compounding an over-stated per-unit labor number through crew ÷ hours.
+  let lhpu = rate > 0 ? (crew * hpd) / rate : (Number(est.labor_hours_per_unit) || 0);
+  if (!(lhpu > 0)) lhpu = 0;
   row.ai = {
-    laborHrsPerUnit: Number(est.labor_hours_per_unit) || 0,
-    crewSize:        Number(est.crew_size)            || 0,
-    hoursPerDay:     Number(est.hours_per_day)        || 8,
+    laborHrsPerUnit: lhpu,
+    unitsPerCrewDay: rate,
+    crewSize:        crew,
+    hoursPerDay:     hpd,
     equipHrsPerUnit: Number(est.equip_hours_per_unit) || 0,
     confidence:      est.confidence || 'AI',
     rationale:       est.rationale  || '',
   };
+  if (!row.unit && est.unit) row.unit = String(est.unit);   // adopt AI's assumed unit
 }
 async function _seAIRow(idx) {
   if (!_seRows || !_seRows[idx]) return;
   const row = _seRows[idx];
-  const st  = _seStatForRow(row);
-  const sc  = (st.subCode || '').trim();
+  const sc  = (_seStatForRow(row).subCode || '').trim();
   if (!sc) { alert('Type a sub code name first, then click ✨ AI.'); return; }
   row._aiLoading = true;
   const el = document.getElementById(`se-row-${idx}`);
-  if (el) el.innerHTML = _seBuildRowHtml(idx);
+  if (el) el.innerHTML = _seBuildRowHtml(idx);   // idx valid here (no async gap yet)
   try {
-    const ests = await _seFetchEstimates([{ costCode: st.costCode || '', subCode: sc, unit: st.unit || '', quantity: parseFloat(row.qty) || 0 }]);
-    _seApplyEstimate(row, ests[0]);
+    await _seRunEstimates([row]);
   } catch (err) {
     alert('AI estimate failed: ' + err.message);
+  } finally {
+    row._aiLoading = false;
+    // Re-render by identity — the row's index may have shifted while awaiting
+    // (e.g. an earlier row was removed), so targeting the old idx would be stale.
+    if (document.getElementById('schedest-content')) renderScheduleEstimator();
   }
-  row._aiLoading = false;
-  const el2 = document.getElementById(`se-row-${idx}`);
-  if (el2) el2.innerHTML = _seBuildRowHtml(idx);
-  const s = document.getElementById('se-summary');
-  if (s) s.innerHTML = _seSummaryHtml();
 }
 async function _seAIFillBlanks() {
   const statKeys = new Set((window._seStats || []).map(s => s.key));
-  const targets = [];
-  (_seRows || []).forEach((row, idx) => {
-    const virtual = !statKeys.has(row.key);
-    const sc = (row.subCode || '').trim();
-    if (virtual && !row.ai && sc) targets.push({ idx, row, sc });
-  });
+  const targets = (_seRows || []).filter(r =>
+    !statKeys.has(r.key) && !r.ai && (r.subCode || '').trim());
   if (!targets.length) {
     alert('No blanks to estimate. Blanks are custom/imported sub codes with a name, no history, and no AI estimate yet.');
     return;
@@ -17542,20 +17594,34 @@ async function _seAIFillBlanks() {
   const btn = document.getElementById('se-fillai-btn');
   if (btn) { btn.disabled = true; btn.innerHTML = 'Estimating…'; }
   try {
-    const items = targets.map(t => ({ costCode: t.row.costCode || '', subCode: t.sc, unit: t.row.unit || '', quantity: parseFloat(t.row.qty) || 0 }));
-    const ests  = await _seFetchEstimates(items);
-    targets.forEach((t, i) => {
-      let est = ests[i];
-      if (!est || (est.sub_code && String(est.sub_code).trim().toLowerCase() !== t.sc.toLowerCase())) {
-        const byName = ests.find(e => e && String(e.sub_code || '').trim().toLowerCase() === t.sc.toLowerCase());
-        if (byName) est = byName;
-      }
-      _seApplyEstimate(t.row, est);
-    });
+    await _seRunEstimates(targets);
   } catch (err) {
-    alert('AI estimate failed: ' + err.message);
+    alert('AI estimate failed: ' + err.message + (targets.length > _SE_AI_CHUNK ? ' (some may have been filled)' : ''));
   } finally {
     renderScheduleEstimator();
+  }
+}
+
+// Automatically estimate any blank (no history) sub code with AI industry
+// standards. Fired once per blank on render; failures are silent (the ✨ AI /
+// Estimate Blanks buttons surface errors on demand).
+async function _seAutoEstimateBlanks() {
+  if (window._seAutoBusy) return;
+  const statKeys = new Set((window._seStats || []).map(s => s.key));
+  const targets = (_seRows || []).filter(r =>
+    !statKeys.has(r.key) && !r.ai && !r._aiTried && (r.subCode || '').trim());
+  if (!targets.length) return;
+  window._seAutoBusy = true;
+  targets.forEach(r => { r._aiLoading = true; });   // _aiTried is set inside _seRunEstimates
+  if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show "Estimating…"
+  try {
+    await _seRunEstimates(targets);
+  } catch (e) {
+    console.warn('[schedule-estimator] auto AI estimate failed:', e.message);
+  } finally {
+    targets.forEach(r => { r._aiLoading = false; });
+    window._seAutoBusy = false;
+    if (document.getElementById('schedest-content')) renderScheduleEstimator();
   }
 }
 
