@@ -17176,11 +17176,10 @@ function renderScheduleEstimator() {
     _seRows = [ stats.length ? { key: stats[0].key, qty: '', crew: null, hpd: null } : _seNewAIRow() ];
   }
 
-  const projOpts = '<option value="">Import bid items from…</option>' +
-    projectsList.slice()
-      .sort((a, b) => (a['project-name'] || '').localeCompare(b['project-name'] || ''))
-      .map(p => `<option value="${_seEsc(p.id)}">${_seEsc(p['project-name'] || 'Untitled')}</option>`)
-      .join('');
+  const projDatalist = projectsList.slice()
+    .sort((a, b) => (a['project-name'] || '').localeCompare(b['project-name'] || ''))
+    .map(p => `<option value="${_seEsc(p['project-name'] || 'Untitled')}"></option>`)
+    .join('');
 
   const ghostBtn  = 'padding:0.42rem 0.85rem;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:7px;font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap';
   const purpleBtn = 'padding:0.42rem 0.85rem;background:rgba(167,139,250,0.15);border:1.5px solid rgba(167,139,250,0.5);color:#a78bfa;border-radius:7px;font-size:0.8rem;font-weight:700;cursor:pointer;white-space:nowrap';
@@ -17213,7 +17212,10 @@ function renderScheduleEstimator() {
           <div style="font-size:0.75rem;color:var(--muted);max-width:640px;line-height:1.5">Pick sub codes and quantities — the estimator uses your historical labor model and crew-day pace to project labor hours and working days for each, then builds a start-to-finish schedule. Blanks with no history can be filled by AI.</div>
         </div>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
-          <select id="se-import-proj" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.42rem 0.6rem;border-radius:7px;font-size:0.8rem;max-width:200px">${projOpts}</select>
+          <input id="se-import-proj" list="se-proj-datalist" placeholder="Search project to import…" autocomplete="off"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();_seImportBidsFromPicker();}"
+            style="background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.42rem 0.6rem;border-radius:7px;font-size:0.8rem;width:210px">
+          <datalist id="se-proj-datalist">${projDatalist}</datalist>
           <button onclick="_seImportBidsFromPicker()" style="${ghostBtn}">&#8681; Import</button>
           <button onclick="_sePrint()" style="${ghostBtn}">&#8659; Print</button>
         </div>
@@ -17444,6 +17446,7 @@ function _seSummaryHtml() {
     const secStart = Math.min(...sec.items.map(c => c.startDay));
     const secEnd   = Math.max(...sec.items.map(c => c.finishDay));
     const secHrs   = sec.items.reduce((s, c) => s + c.r.totalLaborHrs, 0);
+    const secCrew  = Math.max(0, ...sec.items.map(c => Math.round(c.r.crew) || 0));
 
     const header = `<div style="display:flex;align-items:center;gap:0.7rem;margin:0.6rem 0 0.15rem">
       <div style="width:220px;flex:0 0 220px;min-width:0">
@@ -17453,7 +17456,7 @@ function _seSummaryHtml() {
       <div style="flex:1;position:relative;height:11px;background:var(--bg);border-radius:3px">
         <div style="position:absolute;left:${pct(secStart - 1)}%;width:${Math.max(2, pct(secEnd) - pct(secStart - 1))}%;top:0;bottom:0;background:${color};opacity:0.35;border-radius:3px;border:1px solid ${color}"></div>
       </div>
-      <div style="width:74px;flex:0 0 74px;text-align:right;font-size:0.64rem;color:var(--muted)">${secEnd - secStart + 1}d &middot; ${_SE_FMT(secHrs, 0)}h</div>
+      <div style="width:118px;flex:0 0 118px;text-align:right;font-size:0.63rem;color:var(--muted)">${secEnd - secStart + 1}d &middot; ${secCrew} crew &middot; ${_SE_FMT(secHrs, 0)}h</div>
     </div>`;
 
     const bars = sec.items.map(c => {
@@ -17473,9 +17476,12 @@ function _seSummaryHtml() {
           </div>
         </div>
         <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
-          <div title="Days ${c.startDay}–${c.finishDay}" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${c.span}d</div>
+          <div title="Days ${c.startDay}–${c.finishDay} · ${_SE_FMT(c.r.crew, 0)} laborers · ${_SE_FMT(c.r.hpd, 1)} hrs/day · ${_SE_FMT(c.r.totalLaborHrs, 0)} labor hrs" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${c.span}d</div>
         </div>
-        <div style="width:74px;flex:0 0 74px;text-align:right;font-size:0.7rem;color:var(--muted)">${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
+        <div style="width:118px;flex:0 0 118px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
+          <div><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> laborer${Math.round(c.r.crew) === 1 ? '' : 's'}</div>
+          <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h &middot; ${_SE_FMT(c.r.hpd, 0)}h/day</div>
+        </div>
       </div>`;
     }).join('');
 
@@ -17493,9 +17499,12 @@ function _seSummaryHtml() {
             <div style="font-size:0.62rem;color:var(--muted)">${dstr(1)} &rarr; ${dstr(totalWD)}</div>
           </div>
           <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
-            <div title="Spans the full project (${totalWD}d)" style="position:absolute;left:0;width:100%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${totalWD}d</div>
+            <div title="Spans the full project (${totalWD}d) · ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:0;width:100%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${totalWD}d</div>
           </div>
-          <div style="width:74px;flex:0 0 74px;text-align:right;font-size:0.7rem;color:var(--muted)">${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
+          <div style="width:118px;flex:0 0 118px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
+            <div><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> laborer${Math.round(c.r.crew) === 1 ? '' : 's'}</div>
+            <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
+          </div>
         </div>`;
       }).join('')}
     </div>` : '';
@@ -17505,7 +17514,7 @@ function _seSummaryHtml() {
       <div style="display:flex;flex-wrap:wrap;gap:0.9rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem">
         <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${sections.length} section${sections.length !== 1 ? 's' : ''} · ${computed.length} sub code${computed.length !== 1 ? 's' : ''}</div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
-          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)">Start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem"></label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="Set the day work started (or starts). Past dates are fine — the timeline shifts to match.">Project start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
           <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.72rem;color:var(--muted);cursor:pointer"><input type="checkbox" ${_seSkipWeekends ? 'checked' : ''} onchange="_seToggleWeekends(this.checked)" style="cursor:pointer">Skip weekends</label>
           <div style="display:flex;gap:0.35rem">${presetBtn('All Sequential', false)}${presetBtn('All Same Day', true)}</div>
         </div>
@@ -17582,10 +17591,14 @@ function _seSetAllSameDay(val) { (_seRows || []).forEach(r => { r._sameDay = !!v
 
 /* ── Bid-item import ─────────────────────────────────────────────────────── */
 function _seImportBidsFromPicker() {
-  const sel = document.getElementById('se-import-proj');
-  const projId = sel ? sel.value : '';
-  if (!projId) { alert('Choose a project to import bid items from.'); return; }
-  _seImportBids(projId);
+  const el  = document.getElementById('se-import-proj');
+  const val = (el ? el.value : '').trim();
+  if (!val) { alert('Type or pick a project to import bid items from.'); return; }
+  // Accept a typed project name (from the searchable datalist) or a raw id.
+  const proj = projectsList.find(p => p.id === val)
+    || projectsList.find(p => (p['project-name'] || '').trim().toLowerCase() === val.toLowerCase());
+  if (!proj) { alert('No project matches “' + val + '”. Pick one from the list.'); return; }
+  _seImportBids(proj.id);
 }
 function _seImportBids(projId) {
   const p = getProj(projId);
