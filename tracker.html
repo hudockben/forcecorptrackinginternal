@@ -17254,7 +17254,9 @@ function _seBuildRowHtml(idx) {
       ? `<span style="color:#a78bfa;font-weight:600">&#10024; Estimating with AI…</span>`
       : ai
       ? `<span style="color:#a78bfa;font-weight:600">&#10024; AI estimate</span> · ${_seEsc(ai.confidence || '')} confidence${ai.rationale ? `<br><span style="font-size:0.66rem;color:var(--muted)">${_seEsc(ai.rationale)}</span>` : ''}`
-      : `<span style="color:#fbbf24">No history yet</span> — click <strong style="color:#a78bfa">&#10024; AI</strong> to estimate labor &amp; crew.`;
+      : row._aiTried
+      ? `<span style="color:#fbbf24">AI estimate unavailable</span> — click <strong style="color:#a78bfa">&#10024; AI</strong> to retry.`
+      : `<span style="color:#a78bfa">Estimating automatically…</span> or click <strong style="color:#a78bfa">&#10024; AI</strong>.`;
   } else {
     const opts = (window._seStats || []).map(o =>
       `<option value="${_seEsc(o.key)}"${o.key === st.key ? ' selected' : ''}>${_seEsc(o.subCode)}  (${_seEsc(o.costCode)})  —  ${o.n} job${o.n !== 1 ? 's' : ''} · unit: ${_seEsc(o.unit || 'n/a')}</option>`
@@ -17298,8 +17300,12 @@ function _seResultHtml(idx) {
     if (row._aiLoading) {
       return `<div style="padding:1.5rem;text-align:center;color:#a78bfa;font-size:0.82rem">&#10024; Estimating <strong>${_seEsc(st.subCode || 'this sub code')}</strong> from industry standards…</div>`;
     }
+    if (row._aiTried) {
+      return `<div style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.82rem">
+        Couldn't reach the AI estimator for <strong style="color:var(--fg)">${_seEsc(st.subCode || 'this sub code')}</strong>. Click <strong style="color:#a78bfa">&#10024; AI</strong> to retry, or enter Crew &amp; Hrs/Day manually.</div>`;
+    }
     return `<div style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.82rem">
-      No historical data for <strong style="color:var(--fg)">${_seEsc(st.subCode || 'this sub code')}</strong>. Click <strong style="color:#a78bfa">&#10024; AI</strong> on this row (or <strong>Estimate Blanks</strong>) to fill in a labor &amp; crew estimate.</div>`;
+      <strong style="color:#a78bfa">&#10024; Estimating ${_seEsc(st.subCode || 'this sub code')} automatically…</strong><br>No historical data — the AI is filling in labor, crew &amp; hours. Or click <strong style="color:#a78bfa">&#10024; AI</strong>.</div>`;
   }
   if (r.invalid) {
     return `<div style="padding:1.75rem;text-align:center;color:var(--muted);font-size:0.82rem">Enter a quantity above to project labor hours and working days.</div>`;
@@ -17420,6 +17426,7 @@ function _seSetKey(idx, key) {
   if (!_seRows || !_seRows[idx]) return;
   _seRows[idx].key = key;
   _seRows[idx].qty = ''; _seRows[idx].crew = null; _seRows[idx].hpd = null; _seRows[idx].ai = null;
+  _seRows[idx]._crewFromAI = false; _seRows[idx]._hpdFromAI = false;
   const el = document.getElementById(`se-row-${idx}`);
   if (el) el.innerHTML = _seBuildRowHtml(idx);
   const s = document.getElementById('se-summary');
@@ -17430,15 +17437,20 @@ function _seSetName(idx, name) {
   const row = _seRows[idx];
   row.subCode = name;
   row.key = (row.costCode || '') + '||' + name;
-  row.ai = null;                              // name changed → prior estimate no longer applies
+  // New name → prior estimate no longer applies; re-open it for auto AI so the
+  // user never has to click (the AI has the name + qty, it fills crew & hours).
+  row.ai = null; row._aiTried = false;
+  if (row._crewFromAI) { row.crew = null; row._crewFromAI = false; }
+  if (row._hpdFromAI)  { row.hpd  = null; row._hpdFromAI  = false; }
   // NB: refresh results/summary only — do NOT re-render the whole row here, or a
   // click on the ✨ AI button (which blurs this input first, firing change) would
   // destroy the button node before the click lands.
   _seRefreshRow(idx);
+  if ((name || '').trim()) setTimeout(_seAutoEstimateBlanks, 30);   // auto-fill on rename
 }
 function _seSetQty(idx, v)  { if (_seRows && _seRows[idx]) { _seRows[idx].qty  = v; _seRefreshRow(idx); } }
-function _seSetCrew(idx, v) { if (_seRows && _seRows[idx]) { _seRows[idx].crew = v; _seRefreshRow(idx); } }
-function _seSetHpd(idx, v)  { if (_seRows && _seRows[idx]) { _seRows[idx].hpd  = v; _seRefreshRow(idx); } }
+function _seSetCrew(idx, v) { if (_seRows && _seRows[idx]) { _seRows[idx].crew = v; _seRows[idx]._crewFromAI = false; _seRefreshRow(idx); } }
+function _seSetHpd(idx, v)  { if (_seRows && _seRows[idx]) { _seRows[idx].hpd  = v; _seRows[idx]._hpdFromAI  = false; _seRefreshRow(idx); } }
 function _seAddRow() {
   if (!_seRows) _seRows = [];
   const stats = window._seStats || [];
@@ -17563,6 +17575,11 @@ function _seApplyEstimate(row, est) {
     rationale:       est.rationale  || '',
   };
   if (!row.unit && est.unit) row.unit = String(est.unit);   // adopt AI's assumed unit
+  // Concretely fill the Crew and Hrs/Day fields from the AI estimate, unless the
+  // user has typed their own. _crewFromAI/_hpdFromAI let a re-estimate refresh
+  // them while a manual edit (which clears the flag) is preserved.
+  if (row.crew == null || row.crew === '' || row._crewFromAI) { row.crew = String(crew); row._crewFromAI = true; }
+  if (row.hpd  == null || row.hpd  === '' || row._hpdFromAI)  { row.hpd  = String(hpd);  row._hpdFromAI  = true; }
 }
 async function _seAIRow(idx) {
   if (!_seRows || !_seRows[idx]) return;
