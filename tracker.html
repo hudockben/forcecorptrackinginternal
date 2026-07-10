@@ -17450,6 +17450,29 @@ function _seDayIndexForDate(startStr, targetStr, skipWeekends) {
   return Math.max(1, count);
 }
 
+// Lenient date parser for the typed date fields — accepts what people actually
+// type: "7/15/2026", "07/15/2026", "7-15-26", "07152026", or ISO "2026-07-15".
+// A 2-digit or missing year defaults to the project-start year. Returns
+// 'YYYY-MM-DD' or null. Text inputs (not type=date) mean numbers always register.
+function _seParseDateInput(v) {
+  v = (v == null ? '' : String(v)).trim();
+  if (!v) return null;
+  const pad = n => String(n).padStart(2, '0');
+  const baseYear = parseInt(((_seStart || _seTodayStr()).match(/^(\d{4})/) || [])[1], 10);
+  const ok = (y, mo, da) => (mo >= 1 && mo <= 12 && da >= 1 && da <= 31) ? `${y}-${pad(mo)}-${pad(da)}` : null;
+  let m;
+  if ((m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)))              return ok(+m[1], +m[2], +m[3]);
+  if ((m = v.match(/^(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?$/))) {
+    let y = m[3] != null ? +m[3] : baseYear;
+    if (y < 100) y += 2000;
+    return ok(y, +m[1], +m[2]);
+  }
+  if ((m = v.match(/^(\d{2})(\d{2})(\d{4})$/)))                    return ok(+m[3], +m[1], +m[2]);
+  return null;
+}
+// 'YYYY-MM-DD' → 'MM/DD/YYYY' for display in the typed date fields.
+function _seIsoToMdy(iso) { const m = (iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? `${m[2]}/${m[3]}/${m[1]}` : (iso || ''); }
+
 function _seBuildSchedule() {
   const startStr = _seStart || _seTodayStr();
   const computed = (_seRows || []).map((row, idx) => {
@@ -17537,8 +17560,9 @@ function _seSummaryHtml() {
   // group shows the full date with year, so the year is redundant on every bar
   // and dropping it keeps the range from being clipped in the narrow label column.
   const dstrS = d  => { const x = _seNthWorkingDay(startStr, d, _seSkipWeekends); return x ? x.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '—'; };
-  // A working-day index → 'YYYY-MM-DD' for the per-bar start-date <input>.
+  // A working-day index → 'YYYY-MM-DD' / 'MM/DD/YYYY' for the per-bar date fields.
   const ymd   = d  => { const x = _seNthWorkingDay(startStr, d, _seSkipWeekends); if (!x || isNaN(x.getTime())) return ''; const p = n => String(n).padStart(2, '0'); return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`; };
+  const mdy   = d  => _seIsoToMdy(ymd(d));
   const _SE_STEP = 'width:17px;height:17px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:0.8rem;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto';
   const _SE_TGL = kind => {
     const c = kind === 'sd'   ? ['rgba(96,165,250,0.6)', 'rgba(96,165,250,0.18)', '#60a5fa']
@@ -17553,7 +17577,7 @@ function _seSummaryHtml() {
   const dlMet   = overBy <= 0;
   const dlColor = dlMet ? '#4ade80' : '#f87171';
   const dlMark  = deadlineSet ? `<div style="position:absolute;left:${pct(deadlineDay)}%;top:-3px;bottom:-3px;width:2px;background:${dlColor};z-index:5;pointer-events:none"></div>` : '';
-  const dlInputVal = _seDeadlineDate || '';   // show exactly the date the user picked (no round-trip drift)
+  const dlInputVal = _seIsoToMdy(_seDeadlineDate || '');   // show exactly the date the user picked (no round-trip drift)
 
   const stat = (label, value, sub, color) =>
     `<div><div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
@@ -17579,12 +17603,14 @@ function _seSummaryHtml() {
         ${sd}${flag}${done}
         <div style="min-width:0">
           <div style="font-size:0.72rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div>
-          <div style="display:flex;align-items:center;gap:0.25rem;margin-top:1px">
-            <input type="date" value="${ymd(c.startDay)}" onchange="_seSetStartDate(${c.idx}, this.value)" title="Type or pick the start date for this sub code (clear it to auto-place)" style="width:118px;background:var(--bg);border:1px solid ${c.row._startDay != null ? '#60a5fa' : 'var(--border)'};color:var(--fg);border-radius:3px;padding:0.05rem 0.2rem;font-size:0.58rem;line-height:1.1;cursor:pointer">
+          <div style="display:flex;align-items:center;gap:0.18rem;margin-top:1px;font-size:0.56rem;color:var(--muted)">
+            <input type="text" inputmode="numeric" value="${mdy(c.startDay)}" placeholder="M/D/YYYY" onchange="_seSetStartDate(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="Start date — just type it, e.g. 7/15/2026 (clear to auto-place)" style="width:74px;background:var(--bg);border:1px solid ${c.row._startDay != null ? '#60a5fa' : 'var(--border)'};color:var(--fg);border-radius:3px;padding:0.05rem 0.1rem;font-size:0.56rem;text-align:center;line-height:1.15">
+            &rarr;
+            <input type="text" inputmode="numeric" value="${mdy(c.finishDay)}" placeholder="M/D/YYYY" onchange="_seSetEndDate(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="End date — type it to set the duration, e.g. 7/28/2026" style="width:74px;background:var(--bg);border:1px solid ${c.overridden ? '#facc15' : 'var(--border)'};color:var(--fg);border-radius:3px;padding:0.05rem 0.1rem;font-size:0.56rem;text-align:center;line-height:1.15">
           </div>
           <div style="display:flex;align-items:center;gap:0.22rem;margin-top:2px;font-size:0.56rem;color:var(--muted)">
             <input type="number" min="1" step="1" value="${Math.round(c.span)}" onchange="_seSetDays(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="Type the number of working days for this sub code" style="width:34px;background:var(--bg);border:1px solid ${c.overridden ? '#facc15' : 'var(--border)'};color:${c.overridden ? '#facc15' : 'var(--fg)'};border-radius:3px;padding:0.05rem 0.15rem;font-size:0.6rem;text-align:center;line-height:1.15">
-            working days &middot; ends ${dstrS(c.finishDay)}
+            working days
           </div>
         </div>
       </div>
@@ -17685,8 +17711,8 @@ function _seSummaryHtml() {
       <div style="display:flex;flex-wrap:wrap;gap:0.9rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem">
         <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${sections.length} section${sections.length !== 1 ? 's' : ''} · ${activeCount} sub code${activeCount !== 1 ? 's' : ''}${completed.length ? ` · <span style="color:#4ade80">${completed.length} done</span>` : ''}</div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
-          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="Set the day work started (or starts). Past dates are fine.">Project start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
-          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="The date the field must be finished. On-field work is checked against it; off-field work can run past it.">Field deadline<input type="date" value="${dlInputVal}" onchange="_seSetDeadlineDate(this.value)" style="background:var(--bg);border:1px solid ${deadlineSet ? dlColor : 'var(--border)'};color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="Set the day work started (or starts). Past dates are fine.">Project start<input type="text" inputmode="numeric" value="${_seEsc(_seIsoToMdy(startStr))}" placeholder="M/D/YYYY" onchange="_seSetStart(this.value)" onkeydown="if(event.key==='Enter'){this.blur();}" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;width:100px"></label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="The date the field must be finished. On-field work is checked against it; off-field work can run past it.">Field deadline<input type="text" inputmode="numeric" value="${_seEsc(dlInputVal)}" placeholder="M/D/YYYY" onchange="_seSetDeadlineDate(this.value)" onkeydown="if(event.key==='Enter'){this.blur();}" style="background:var(--bg);border:1px solid ${deadlineSet ? dlColor : 'var(--border)'};color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;width:100px"></label>
           ${dlBadge}
           <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.72rem;color:var(--muted);cursor:pointer"><input type="checkbox" ${_seSkipWeekends ? 'checked' : ''} onchange="_seToggleWeekends(this.checked)" style="cursor:pointer">Skip weekends</label>
           <div style="display:flex;gap:0.35rem">${presetBtn('All Sequential', false)}${presetBtn('All Same Day', true)}</div>
@@ -17760,7 +17786,7 @@ function _seRemoveRow(idx) {
   renderScheduleEstimator();
 }
 function _seRenderSummary()    { const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); _seSaveState(); }
-function _seSetStart(v)        { _seStart = v; _seRenderSummary(); }
+function _seSetStart(v)        { const t = (v || '').trim(); if (!t) { _seStart = null; } else { const iso = _seParseDateInput(t); if (iso) _seStart = iso; } _seRenderSummary(); }
 function _seToggleWeekends(b)  { _seSkipWeekends = !!b; _seRenderSummary(); }
 function _seToggleSameDay(idx) { if (_seRows && _seRows[idx]) { _seRows[idx]._sameDay = !_seRows[idx]._sameDay; _seRows[idx]._startDay = null; _seRenderSummary(); } }   // clear any drag/typed start so the overlap actually takes effect
 function _seSetAllSameDay(val) { (_seRows || []).forEach(r => { r._sameDay = !!val; }); _seRenderSummary(); }
@@ -17812,10 +17838,29 @@ function _seSetDays(idx, v) {
 // supersedes a "same day as above" overlap.
 function _seSetStartDate(idx, v) {
   if (!_seRows || !_seRows[idx]) return;
-  if (!v) { _seRows[idx]._startDay = null; _seRenderSummary(); return; }
+  if (!(v || '').trim()) { _seRows[idx]._startDay = null; _seRenderSummary(); return; }   // cleared → auto-place
+  const iso = _seParseDateInput(v);
+  if (!iso) { _seRenderSummary(); return; }   // unparseable → revert to the shown date
   const startStr = _seStart || _seTodayStr();
-  const dayIdx = _seDayIndexForDate(startStr, v, _seSkipWeekends);
+  const dayIdx = _seDayIndexForDate(startStr, iso, _seSkipWeekends);
   if (dayIdx != null) { _seRows[idx]._startDay = Math.max(1, dayIdx); _seRows[idx]._sameDay = false; }
+  _seRenderSummary();
+}
+
+// Type/pick an exact END date for a bar — sets its duration relative to the
+// current start (end date and the days box are two ways to say the same thing).
+// Clearing reverts to the estimate-derived duration.
+function _seSetEndDate(idx, v) {
+  if (!_seRows || !_seRows[idx]) return;
+  if (!(v || '').trim()) { _seRows[idx]._daysOverride = null; _seRenderSummary(); return; }
+  const iso = _seParseDateInput(v);
+  if (!iso) { _seRenderSummary(); return; }
+  const sched = _seBuildSchedule();
+  const bar = sched && sched.computed.find(c => c.idx === idx);
+  if (!bar || bar.startDay == null) { _seRenderSummary(); return; }
+  const startStr = _seStart || _seTodayStr();
+  const endIdx = _seDayIndexForDate(startStr, iso, _seSkipWeekends);
+  if (endIdx != null) _seRows[idx]._daysOverride = Math.max(1, endIdx - bar.startDay + 1);
   _seRenderSummary();
 }
 
@@ -17824,7 +17869,8 @@ function _seSetDeadlineDate(v) {
   // Store the absolute date the user picked; the working-day index is recomputed
   // on every build (see _seBuildSchedule), so the deadline stays on this calendar
   // date even if Project start or the Skip-weekends toggle change afterward.
-  _seDeadlineDate = v || null;
+  const t = (v || '').trim();
+  _seDeadlineDate = t ? (_seParseDateInput(t) || _seDeadlineDate) : null;
   _seRenderSummary();
 }
 
