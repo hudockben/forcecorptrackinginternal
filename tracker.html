@@ -17483,6 +17483,10 @@ function _seSummaryHtml() {
   const OFF_COLOR = '#94a3b8';
   const pct  = idx => axisMax > 0 ? (idx / axisMax * 100) : 0;
   const dstr = d   => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
+  // Compact date (no year) for the per-bar rows — the section header above each
+  // group shows the full date with year, so the year is redundant on every bar
+  // and dropping it keeps the range from being clipped in the narrow label column.
+  const dstrS = d  => { const x = _seNthWorkingDay(startStr, d, _seSkipWeekends); return x ? x.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '—'; };
   const _SE_STEP = 'width:17px;height:17px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:0.8rem;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto';
   const _SE_TGL = kind => {
     const c = kind === 'sd'   ? ['rgba(96,165,250,0.6)', 'rgba(96,165,250,0.18)', '#60a5fa']
@@ -17532,10 +17536,10 @@ function _seSummaryHtml() {
         ${sd}${flag}${done}
         <div style="min-width:0">
           <div style="font-size:0.72rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div>
-          <div style="font-size:0.62rem;color:var(--muted);display:flex;align-items:center;gap:0.28rem;min-width:0">
-            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</span>
-            <span style="flex:0 0 auto;display:inline-flex;align-items:center;gap:0.15rem;white-space:nowrap">&middot;
-              <input type="number" min="1" step="1" value="${Math.round(c.span)}" onchange="_seSetDays(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="Type the number of working days for this sub code" style="width:30px;background:var(--bg);border:1px solid ${c.overridden ? '#facc15' : 'var(--border)'};color:${c.overridden ? '#facc15' : 'var(--fg)'};border-radius:3px;padding:0.04rem 0.12rem;font-size:0.6rem;text-align:center;line-height:1.1">d</span>
+          <div style="font-size:0.62rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}">${dstrS(c.startDay)} &rarr; ${dstrS(c.finishDay)}</div>
+          <div style="display:flex;align-items:center;gap:0.22rem;margin-top:2px">
+            <input type="number" min="1" step="1" value="${Math.round(c.span)}" onchange="_seSetDays(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="Type the number of working days for this sub code" style="width:34px;background:var(--bg);border:1px solid ${c.overridden ? '#facc15' : 'var(--border)'};color:${c.overridden ? '#facc15' : 'var(--fg)'};border-radius:3px;padding:0.05rem 0.15rem;font-size:0.6rem;text-align:center;line-height:1.15">
+            <span style="font-size:0.56rem;color:var(--muted)">working days</span>
           </div>
         </div>
       </div>
