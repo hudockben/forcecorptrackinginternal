@@ -17493,6 +17493,8 @@ function _seSummaryHtml() {
   // group shows the full date with year, so the year is redundant on every bar
   // and dropping it keeps the range from being clipped in the narrow label column.
   const dstrS = d  => { const x = _seNthWorkingDay(startStr, d, _seSkipWeekends); return x ? x.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '—'; };
+  // A working-day index → 'YYYY-MM-DD' for the per-bar start-date <input>.
+  const ymd   = d  => { const x = _seNthWorkingDay(startStr, d, _seSkipWeekends); if (!x || isNaN(x.getTime())) return ''; const p = n => String(n).padStart(2, '0'); return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`; };
   const _SE_STEP = 'width:17px;height:17px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:0.8rem;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto';
   const _SE_TGL = kind => {
     const c = kind === 'sd'   ? ['rgba(96,165,250,0.6)', 'rgba(96,165,250,0.18)', '#60a5fa']
@@ -17541,10 +17543,12 @@ function _seSummaryHtml() {
         ${sd}${flag}${done}
         <div style="min-width:0">
           <div style="font-size:0.72rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div>
-          <div style="font-size:0.62rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}">${dstrS(c.startDay)} &rarr; ${dstrS(c.finishDay)}</div>
-          <div style="display:flex;align-items:center;gap:0.22rem;margin-top:2px">
+          <div style="display:flex;align-items:center;gap:0.25rem;margin-top:1px">
+            <input type="date" value="${ymd(c.startDay)}" onchange="_seSetStartDate(${c.idx}, this.value)" title="Type or pick the start date for this sub code (clear it to auto-place)" style="width:118px;background:var(--bg);border:1px solid ${c.row._startDay != null ? '#60a5fa' : 'var(--border)'};color:var(--fg);border-radius:3px;padding:0.05rem 0.2rem;font-size:0.58rem;line-height:1.1;cursor:pointer">
+          </div>
+          <div style="display:flex;align-items:center;gap:0.22rem;margin-top:2px;font-size:0.56rem;color:var(--muted)">
             <input type="number" min="1" step="1" value="${Math.round(c.span)}" onchange="_seSetDays(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="Type the number of working days for this sub code" style="width:34px;background:var(--bg);border:1px solid ${c.overridden ? '#facc15' : 'var(--border)'};color:${c.overridden ? '#facc15' : 'var(--fg)'};border-radius:3px;padding:0.05rem 0.15rem;font-size:0.6rem;text-align:center;line-height:1.15">
-            <span style="font-size:0.56rem;color:var(--muted)">working days</span>
+            working days &middot; ends ${dstrS(c.finishDay)}
           </div>
         </div>
       </div>
@@ -17666,7 +17670,7 @@ function _seSummaryHtml() {
         ${stat(offField.length ? 'Field Complete' : 'Est. Completion', _seFmtDate(offField.length ? sched.fieldCal : endCal), offField.length ? 'field done · off-field follows' : 'starting ' + _seFmtDate(startCal), deadlineSet ? dlColor : '#60a5fa')}
       </div>
       <div style="margin-top:0.5rem">${dlFlag}${sectionHtml}${offHtml}${spanHtml}${doneHtml}</div>
-      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5"><strong style="color:var(--fg)">Drag any bar sideways</strong> to reschedule it — sub codes in different sections can run the same days. Drag a bar's right edge <strong style="color:var(--fg)">or type in the days box</strong> to set its duration (handy when a 1–2 day bar is too small to grab). <span style="color:#60a5fa">&#8595;/&#8657;</span> start a sub code the same day as the one above; the <span style="color:#fbbf24">&#9873;</span> flag marks work <strong style="color:var(--fg)">off-field</strong>, and <span style="color:#4ade80">&#10003;</span> marks it <strong style="color:var(--fg)">completed</strong> (its days drop from the schedule &amp; deadline). Set a <strong style="color:var(--fg)">Field deadline</strong> to see if on-field work lands in time. Travel &amp; PM span the full project.</div>
+      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5"><strong style="color:var(--fg)">Type a start date</strong> under any sub code to place it on an exact day (or drag the bar sideways) — sub codes in different sections can run the same days. Drag a bar's right edge <strong style="color:var(--fg)">or type in the days box</strong> to set its duration. <span style="color:#60a5fa">&#8595;/&#8657;</span> start a sub code the same day as the one above; the <span style="color:#fbbf24">&#9873;</span> flag marks work <strong style="color:var(--fg)">off-field</strong>, and <span style="color:#4ade80">&#10003;</span> marks it <strong style="color:var(--fg)">completed</strong> (its days drop from the schedule &amp; deadline). Set a <strong style="color:var(--fg)">Field deadline</strong> to see if on-field work lands in time. Travel &amp; PM span the full project.</div>
     </div>`;
 }
 
@@ -17728,7 +17732,7 @@ function _seRemoveRow(idx) {
 function _seRenderSummary()    { const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); }
 function _seSetStart(v)        { _seStart = v; _seRenderSummary(); }
 function _seToggleWeekends(b)  { _seSkipWeekends = !!b; _seRenderSummary(); }
-function _seToggleSameDay(idx) { if (_seRows && _seRows[idx]) { _seRows[idx]._sameDay = !_seRows[idx]._sameDay; _seRenderSummary(); } }
+function _seToggleSameDay(idx) { if (_seRows && _seRows[idx]) { _seRows[idx]._sameDay = !_seRows[idx]._sameDay; _seRows[idx]._startDay = null; _seRenderSummary(); } }   // clear any drag/typed start so the overlap actually takes effect
 function _seSetAllSameDay(val) { (_seRows || []).forEach(r => { r._sameDay = !!val; }); _seRenderSummary(); }
 // Add/remove a laborer straight from the schedule; days recompute from the new
 // crew and the whole timeline shifts. Bases off the crew currently in effect
@@ -17772,6 +17776,19 @@ function _seSetDays(idx, v) {
   _seRenderSummary();
 }
 
+// Type/pick an exact start DATE for a bar instead of sliding it — precise, and
+// far easier than dragging to a specific day. Converts the date to a working-day
+// index; clearing the field auto-places the bar again. An explicit start date
+// supersedes a "same day as above" overlap.
+function _seSetStartDate(idx, v) {
+  if (!_seRows || !_seRows[idx]) return;
+  if (!v) { _seRows[idx]._startDay = null; _seRenderSummary(); return; }
+  const startStr = _seStart || _seTodayStr();
+  const dayIdx = _seDayIndexForDate(startStr, v, _seSkipWeekends);
+  if (dayIdx != null) { _seRows[idx]._startDay = Math.max(1, dayIdx); _seRows[idx]._sameDay = false; }
+  _seRenderSummary();
+}
+
 // Record the chosen Field-deadline DATE (kept as an absolute calendar date).
 function _seSetDeadlineDate(v) {
   // Store the absolute date the user picked; the working-day index is recomputed
@@ -17802,8 +17819,10 @@ function _seBarDrag(e, idx) {
   const up = () => {
     document.removeEventListener('mousemove', move);
     document.removeEventListener('mouseup', up);
-    if (_seRows && _seRows[idx]) _seRows[idx]._startDay = newStart;
-    _seRenderSummary();
+    // Only pin a start when the bar was actually dragged — a plain click must not
+    // silently override placement (which would then block the same-day toggle).
+    if (_seRows && _seRows[idx] && newStart !== origStart) { _seRows[idx]._startDay = newStart; _seRenderSummary(); }
+    else { bar.style.cursor = 'grab'; }
   };
   document.addEventListener('mousemove', move);
   document.addEventListener('mouseup', up);
@@ -17830,8 +17849,9 @@ function _seBarResize(e, idx) {
   const up = () => {
     document.removeEventListener('mousemove', move);
     document.removeEventListener('mouseup', up);
-    if (_seRows && _seRows[idx]) _seRows[idx]._daysOverride = newSpan;
-    _seRenderSummary();
+    // Only override the duration when the edge actually moved — a stray click on
+    // the handle shouldn't mark the bar as manually sized.
+    if (_seRows && _seRows[idx] && newSpan !== origSpan) { _seRows[idx]._daysOverride = newSpan; _seRenderSummary(); }
   };
   document.addEventListener('mousemove', move);
   document.addEventListener('mouseup', up);
