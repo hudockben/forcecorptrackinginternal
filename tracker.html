@@ -17563,14 +17563,6 @@ function _seSummaryHtml() {
     `<button onclick="_seSetAllSameDay(${val})" title="${val ? 'Start every sub code on the same day (fully overlapped)' : 'Run every sub code back-to-back (bid order)'}" style="padding:0.28rem 0.7rem;border-radius:6px;font-size:0.72rem;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--bg);color:var(--muted)">${label}</button>`;
 
   // One draggable sub-code bar row (used for on-field and off-field bands).
-  const crewCell = c => `<div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
-      <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.25rem">
-        <button onclick="_seAdjustCrew(${c.idx},-1)" title="Remove a laborer" style="${_SE_STEP}">&#8722;</button>
-        <span title="Laborers on this sub code"><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> lab</span>
-        <button onclick="_seAdjustCrew(${c.idx},1)" title="Add a laborer" style="${_SE_STEP}">&#43;</button>
-      </div>
-      <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h &middot; ${_SE_FMT(c.r.hpd, 0)}h/day</div>
-    </div>`;
   const barRow = (c, color, first) => {
     const left  = pct(c.startDay - 1);
     const width = Math.max(2, c.span / axisMax * 100);
@@ -17600,7 +17592,6 @@ function _seSummaryHtml() {
         <div data-start="${c.startDay}" data-span="${c.span}" onmousedown="_seBarDrag(event,${c.idx})" title="Drag to move &middot; drag the right edge to change days${c.overridden ? ' (manual duration)' : ''} &middot; Days ${c.startDay}–${c.finishDay} &middot; ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;cursor:grab;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden;user-select:none">${c.span}d${c.overridden ? '<span style="opacity:0.65">&lowast;</span>' : ''}<div onmousedown="_seBarResize(event,${c.idx})" title="Drag to change the number of days" style="position:absolute;right:0;top:0;bottom:0;width:8px;cursor:ew-resize;background:rgba(0,0,0,0.22);border-radius:0 4px 4px 0"></div></div>
         ${dlMark}
       </div>
-      ${crewCell(c)}
     </div>`;
   };
 
@@ -17618,19 +17609,16 @@ function _seSummaryHtml() {
     const color    = PALETTE[colorIdx++ % PALETTE.length];
     const secStart = Math.min(...sec.items.map(c => c.startDay));
     const secEnd   = Math.max(...sec.items.map(c => c.finishDay));
-    const secHrs   = sec.items.reduce((s, c) => s + c.r.totalLaborHrs, 0);
-    const secCrew  = Math.max(0, ...sec.items.map(c => Math.round(c.r.crew) || 0));
 
     const header = `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.6rem 0 0.15rem">
       <div style="width:236px;flex:0 0 236px;min-width:0">
         <div style="font-size:0.77rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sec.cc)}">${_seEsc(sec.cc)}</div>
-        <div style="font-size:0.62rem;color:var(--muted)">${dstr(secStart)} &rarr; ${dstr(secEnd)}</div>
+        <div style="font-size:0.62rem;color:var(--muted)">${dstr(secStart)} &rarr; ${dstr(secEnd)} &middot; ${secEnd - secStart + 1}d</div>
       </div>
       <div style="flex:1;position:relative;height:11px;background:var(--bg);border-radius:3px">
         <div style="position:absolute;left:${pct(secStart - 1)}%;width:${Math.max(2, pct(secEnd) - pct(secStart - 1))}%;top:0;bottom:0;background:${color};opacity:0.35;border-radius:3px;border:1px solid ${color}"></div>
         ${dlMark}
       </div>
-      <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.63rem;color:var(--muted)">${secEnd - secStart + 1}d &middot; ${secCrew} crew &middot; ${_SE_FMT(secHrs, 0)}h</div>
     </div>`;
 
     const bars = sec.items.map(c => barRow(c, color, c === onField[0])).join('');
@@ -17657,7 +17645,6 @@ function _seSummaryHtml() {
             <div style="min-width:0"><div style="font-size:0.72rem;color:var(--muted);text-decoration:line-through;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div></div>
           </div>
           <div style="flex:1;font-size:0.65rem;color:#4ade80">&#10003; done &middot; ${c.span}d dropped</div>
-          <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted)">${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
         </div>`;
       }).join('')}
     </div>` : '';
@@ -17674,10 +17661,9 @@ function _seSummaryHtml() {
             <div style="font-size:0.62rem;color:var(--muted)">${dstr(1)} &rarr; ${dstr(projectEnd)}</div>
           </div>
           <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
-            <div title="Spans the full project (${projectEnd}d) · ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:0;width:${spanW}%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${projectEnd}d</div>
+            <div title="Spans the full project (${projectEnd}d)" style="position:absolute;left:0;width:${spanW}%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${projectEnd}d</div>
             ${dlMark}
           </div>
-          ${crewCell(c)}
         </div>`;
       }).join('')}
     </div>` : '';
@@ -17689,7 +17675,6 @@ function _seSummaryHtml() {
       <div style="flex:1;position:relative;height:15px">
         <div style="position:absolute;left:${pct(deadlineDay)}%;transform:translateX(-50%);font-size:0.58rem;font-weight:700;color:${dlColor};white-space:nowrap;background:var(--surface);border:1px solid ${dlColor};border-radius:3px;padding:0 4px;line-height:1.35">&#9873; Deadline ${dstr(deadlineDay)}</div>
       </div>
-      <div style="width:132px;flex:0 0 132px"></div>
     </div>` : '';
   const dlBadge = deadlineSet
     ? `<span style="background:${dlColor}22;color:${dlColor};border:1px solid ${dlColor}55;border-radius:5px;padding:0.15rem 0.5rem;font-size:0.7rem;font-weight:700">${dlMet ? `&#10003; field ${Math.abs(overBy)}d early` : `&#9888; field ${Math.abs(overBy)}d over deadline`}</span>`
