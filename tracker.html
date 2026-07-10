@@ -17643,19 +17643,26 @@ async function _seFetchEstimates(items) {
 
 // Estimate a list of row objects, chunking to the backend's per-request cap and
 // applying partial results as each chunk returns. Marks every attempted row
-// _aiTried so the auto path never loops. Matches estimates by position, then by
-// sub-code name; if neither matches (model dropped/renamed an item) the row is
-// SKIPPED rather than filled with another sub code's numbers.
+// _aiTried so the auto path never loops.
+//
+// Matching: when the model returns exactly one estimate per requested item we
+// TRUST THE ORDER (the model rarely reorders and routinely reformats the
+// sub-code string — punctuation/casing/"#9" vs "9s" — so a strict name check
+// would wrongly skip good estimates). Only when the counts differ (an item was
+// dropped/added) do we fall back to name matching and skip the unmatched ones.
 async function _seRunEstimates(targetRows) {
   targetRows.forEach(r => { r._aiTried = true; });
   for (let i = 0; i < targetRows.length; i += _SE_AI_CHUNK) {
     const chunk = targetRows.slice(i, i + _SE_AI_CHUNK);
     const items = chunk.map(r => ({ costCode: r.costCode || '', subCode: (r.subCode || '').trim(), unit: r.unit || '', quantity: parseFloat(r.qty) || 0 }));
     const ests  = await _seFetchEstimates(items);
+    const byOrder = ests.length === chunk.length;
     chunk.forEach((r, j) => {
-      const sc = (r.subCode || '').trim().toLowerCase();
-      let est = ests[j];
-      if (!est || String(est.sub_code || '').trim().toLowerCase() !== sc) {
+      let est;
+      if (byOrder) {
+        est = ests[j] || null;
+      } else {
+        const sc = (r.subCode || '').trim().toLowerCase();
         est = ests.find(e => e && String(e.sub_code || '').trim().toLowerCase() === sc) || null;
       }
       if (est) _seApplyEstimate(r, est);
@@ -17717,15 +17724,15 @@ async function _seAIFillBlanks() {
     return;
   }
   window._seFillBusy = true;
-  targets.forEach(r => { r._aiLoading = true; });
-  if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show "Estimating…"
   try {
+    targets.forEach(r => { r._aiLoading = true; });
+    if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show "Estimating…"
     await _seRunEstimates(targets);
   } catch (err) {
     alert('AI estimate failed: ' + err.message + (targets.length > _SE_AI_CHUNK ? ' (some may have been filled)' : ''));
   } finally {
     targets.forEach(r => { r._aiLoading = false; });
-    window._seFillBusy = false;
+    window._seFillBusy = false;   // always cleared, so the button can't get stuck
     renderScheduleEstimator();
   }
 }
