@@ -17196,13 +17196,28 @@ function renderScheduleEstimator() {
   const _statKeys0    = new Set(stats.map(s => s.key));
   const blankRows     = _seRows.filter(r => !_statKeys0.has(r.key) && !r.ai && (r.subCode || '').trim());
   const blankCount    = blankRows.length;
-  const blanksLoading = blankRows.some(r => r._aiLoading);
   const fillAllBtn    = 'display:inline-flex;align-items:center;gap:0.4rem;padding:0.55rem 1.15rem;background:#7c3aed;border:none;color:#fff;border-radius:8px;font-size:0.85rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 1px 6px rgba(124,58,237,0.4)';
-  const cta = blankCount > 0 ? `
+  const prog = window._seFillProgress || null;
+  let cta = '';
+  if (prog) {
+    const pctDone = prog.total ? Math.round(prog.done / prog.total * 100) : 0;
+    cta = `
+    <div style="margin-bottom:1.1rem;padding:0.8rem 1rem;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.45);border-radius:9px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;font-size:0.82rem;color:#c4b5fd;margin-bottom:0.55rem">
+        <span>&#10024; Estimating sub codes from industry standards…</span>
+        <strong style="color:#a78bfa">${prog.done} / ${prog.total} &middot; ${pctDone}%</strong>
+      </div>
+      <div style="height:9px;background:var(--bg);border-radius:5px;overflow:hidden;border:1px solid rgba(167,139,250,0.3)">
+        <div style="height:100%;width:${pctDone}%;background:linear-gradient(90deg,#7c3aed,#a78bfa);border-radius:5px;transition:width 0.3s"></div>
+      </div>
+    </div>`;
+  } else if (blankCount > 0) {
+    cta = `
     <div style="margin-bottom:1.1rem;padding:0.8rem 1rem;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.45);border-radius:9px;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
-      <div style="font-size:0.82rem;color:#c4b5fd"><strong style="color:#a78bfa">${blankCount} sub code${blankCount !== 1 ? 's' : ''}</strong> ${blankCount !== 1 ? 'have' : 'has'} no historical data${blanksLoading ? ' — estimating…' : ' and need an AI estimate.'}</div>
-      <button id="se-fillall-btn" onclick="_seAIFillBlanks()" ${blanksLoading ? 'disabled' : ''} style="${fillAllBtn}${blanksLoading ? ';opacity:0.6;cursor:default' : ''}">${blanksLoading ? '&#10024; Estimating…' : `&#10024; Estimate all ${blankCount} with AI`}</button>
-    </div>` : '';
+      <div style="font-size:0.82rem;color:#c4b5fd"><strong style="color:#a78bfa">${blankCount} sub code${blankCount !== 1 ? 's' : ''}</strong> ${blankCount !== 1 ? 'have' : 'has'} no historical data and need an AI estimate.</div>
+      <button id="se-fillall-btn" onclick="_seAIFillBlanks()" style="${fillAllBtn}">&#10024; Estimate all ${blankCount} with AI</button>
+    </div>`;
+  }
 
   el.innerHTML = `
     <div style="max-width:1060px">
@@ -17658,7 +17673,7 @@ function _seImportBids(projId) {
 }
 
 /* ── AI "fill in the blanks" ─────────────────────────────────────────────── */
-const _SE_AI_CHUNK = 40;   // backend caps items per request at 40
+const _SE_AI_CHUNK = 5;   // small batches keep each request fast/reliable (avoid timeouts & truncation) and give smooth progress
 
 async function _seFetchEstimates(items) {
   const division = (typeof DIVISION !== 'undefined' ? DIVISION : 'turf');
@@ -17686,24 +17701,37 @@ async function _seFetchEstimates(items) {
 // sub-code string — punctuation/casing/"#9" vs "9s" — so a strict name check
 // would wrongly skip good estimates). Only when the counts differ (an item was
 // dropped/added) do we fall back to name matching and skip the unmatched ones.
-async function _seRunEstimates(targetRows) {
+// onProgress(done, total, applied) fires after each chunk so callers can render
+// a progress bar. A chunk that errors is caught and skipped (its rows drop to
+// the "unavailable — retry" state) so one bad request never sinks the rest; the
+// error is only surfaced (thrown) when NOTHING got filled.
+async function _seRunEstimates(targetRows, onProgress) {
   targetRows.forEach(r => { r._aiTried = true; });
+  let done = 0, applied = 0, firstError = null;
   for (let i = 0; i < targetRows.length; i += _SE_AI_CHUNK) {
     const chunk = targetRows.slice(i, i + _SE_AI_CHUNK);
     const items = chunk.map(r => ({ costCode: r.costCode || '', subCode: (r.subCode || '').trim(), unit: r.unit || '', quantity: parseFloat(r.qty) || 0 }));
-    const ests  = await _seFetchEstimates(items);
-    const byOrder = ests.length === chunk.length;
-    chunk.forEach((r, j) => {
-      let est;
-      if (byOrder) {
-        est = ests[j] || null;
-      } else {
-        const sc = (r.subCode || '').trim().toLowerCase();
-        est = ests.find(e => e && String(e.sub_code || '').trim().toLowerCase() === sc) || null;
-      }
-      if (est) _seApplyEstimate(r, est);
-    });
+    try {
+      const ests = await _seFetchEstimates(items);
+      const byOrder = ests.length === chunk.length;
+      chunk.forEach((r, j) => {
+        let est;
+        if (byOrder) {
+          est = ests[j] || null;
+        } else {
+          const sc = (r.subCode || '').trim().toLowerCase();
+          est = ests.find(e => e && String(e.sub_code || '').trim().toLowerCase() === sc) || null;
+        }
+        if (est) { _seApplyEstimate(r, est); applied++; }
+      });
+    } catch (e) {
+      if (!firstError) firstError = e;
+    }
+    chunk.forEach(r => { r._aiLoading = false; });   // reveal this chunk (filled or unavailable)
+    done += chunk.length;
+    if (onProgress) onProgress(done, targetRows.length, applied);
   }
+  if (firstError && applied === 0) throw firstError;   // total failure → surface to the caller
 }
 function _seApplyEstimate(row, est) {
   if (!est) return;
@@ -17760,15 +17788,20 @@ async function _seAIFillBlanks() {
     return;
   }
   window._seFillBusy = true;
+  window._seFillProgress = { done: 0, total: targets.length };
   try {
     targets.forEach(r => { r._aiLoading = true; });
-    if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show "Estimating…"
-    await _seRunEstimates(targets);
+    if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show the progress bar
+    await _seRunEstimates(targets, (done, total) => {
+      window._seFillProgress = { done, total };
+      if (document.getElementById('schedest-content')) renderScheduleEstimator();  // advance the bar + reveal filled rows
+    });
   } catch (err) {
     alert('AI estimate failed: ' + err.message + (targets.length > _SE_AI_CHUNK ? ' (some may have been filled)' : ''));
   } finally {
     targets.forEach(r => { r._aiLoading = false; });
     window._seFillBusy = false;   // always cleared, so the button can't get stuck
+    window._seFillProgress = null;
     renderScheduleEstimator();
   }
 }
@@ -17783,15 +17816,20 @@ async function _seAutoEstimateBlanks() {
     !statKeys.has(r.key) && !r.ai && !r._aiTried && (r.subCode || '').trim());
   if (!targets.length) return;
   window._seAutoBusy = true;
+  window._seFillProgress = { done: 0, total: targets.length };
   targets.forEach(r => { r._aiLoading = true; });   // _aiTried is set inside _seRunEstimates
-  if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show "Estimating…"
+  if (document.getElementById('schedest-content')) renderScheduleEstimator();  // show the progress bar
   try {
-    await _seRunEstimates(targets);
+    await _seRunEstimates(targets, (done, total) => {
+      window._seFillProgress = { done, total };
+      if (document.getElementById('schedest-content')) renderScheduleEstimator();
+    });
   } catch (e) {
     console.warn('[schedule-estimator] auto AI estimate failed:', e.message);
   } finally {
     targets.forEach(r => { r._aiLoading = false; });
     window._seAutoBusy = false;
+    window._seFillProgress = null;
     if (document.getElementById('schedest-content')) renderScheduleEstimator();
   }
 }

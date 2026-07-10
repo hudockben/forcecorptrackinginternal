@@ -106,7 +106,7 @@ Respond with ONLY a JSON object in this EXACT format, one entry per line item IN
     const client  = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const message = await client.messages.create({
       model:      'claude-sonnet-4-6',
-      max_tokens: 3072,
+      max_tokens: 8192,   // headroom so a batch response is never truncated (→ JSON parse fail → 500)
       messages:   [{ role: 'user', content: prompt }],
     });
 
