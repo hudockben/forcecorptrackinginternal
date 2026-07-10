@@ -105,7 +105,7 @@ Respond with ONLY a JSON object in this EXACT format, one entry per line item IN
   try {
     const client  = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const message = await client.messages.create({
-      model:      'claude-sonnet-4-6',
+      model:      'claude-opus-4-8',   // flagship model — most accurate estimates (accuracy prioritized over cost)
       max_tokens: 8192,   // headroom so a batch response is never truncated (→ JSON parse fail → 500)
       messages:   [{ role: 'user', content: prompt }],
     });
@@ -124,3 +124,8 @@ Respond with ONLY a JSON object in this EXACT format, one entry per line item IN
     return res.status(500).json({ error: 'AI estimate failed', detail: err.message });
   }
 };
+
+// Opus is slower than Sonnet — give the function room so a batch never trips the
+// platform's default (short) serverless timeout. Vercel clamps this to the plan's
+// maximum if it is lower.
+module.exports.config = { maxDuration: 60 };

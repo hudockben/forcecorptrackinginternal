@@ -17673,7 +17673,7 @@ function _seImportBids(projId) {
 }
 
 /* ── AI "fill in the blanks" ─────────────────────────────────────────────── */
-const _SE_AI_CHUNK = 5;   // small batches keep each request fast/reliable (avoid timeouts & truncation) and give smooth progress
+const _SE_AI_CHUNK = 4;   // small batches keep each request fast/reliable (Opus is slower) and give smooth progress
 
 async function _seFetchEstimates(items) {
   const division = (typeof DIVISION !== 'undefined' ? DIVISION : 'turf');
