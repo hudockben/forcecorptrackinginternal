@@ -16964,13 +16964,51 @@ function _calcRemoveRow(idx) {
 let _seRows         = null;
 let _seStart        = null;          // 'YYYY-MM-DD'
 let _seSkipWeekends = true;
-let _seDeadlineDay  = null;          // field deadline as a working-day index (null = default to field end)
+let _seDeadlineDate = null;          // field deadline as an absolute 'YYYY-MM-DD' date (null = default to field end); the working-day index is derived at build time so it never drifts when Project start / Skip weekends change
 let _seProjName     = null;          // name of the last imported project (for the PDF header)
+let _seLoaded       = false;         // whether saved state has been restored this page load (one-shot)
+const _SE_STORE_KEY = 'fct_sched_est_' + DIVISION;   // per-division persistence key
 
 const _SE_FMT = (v, d = 0) => (v == null || isNaN(v))
   ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
 function _seEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+/* ── Persistence ─────────────────────────────────────────────────────────────
+   The estimator's working state lives in module vars, so it survives moving
+   between tabs but is lost on a full page reload. Save the rows and schedule
+   settings (start date, weekend rule, deadline, imported project) to
+   localStorage after every change and restore them the first time the tab
+   renders — so the user never has to rebuild a schedule they already set up,
+   including all their gantt adjustments (start dates, day overrides, same-day
+   overlaps, off-field / completed flags, and AI estimates). */
+function _seSaveState() {
+  if (!Array.isArray(_seRows)) return;
+  try {
+    // Strip render-only flags so a reload can't restore a stuck "estimating…" spinner.
+    const rows = _seRows.map(r => { const c = Object.assign({}, r); delete c._aiLoading; return c; });
+    localStorage.setItem(_SE_STORE_KEY, JSON.stringify({
+      v: 1, rows,
+      start:        _seStart,
+      skipWeekends: _seSkipWeekends,
+      deadlineDate: _seDeadlineDate,
+      projName:     _seProjName,
+    }));
+  } catch (e) { /* private mode / quota exceeded — non-fatal, state just won't persist */ }
+}
+function _seRestoreState() {
+  try {
+    const raw = localStorage.getItem(_SE_STORE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (!s || !Array.isArray(s.rows) || !s.rows.length) return;
+    _seRows = s.rows.map(r => { r._aiLoading = false; return r; });   // never reopen a spinner
+    if (typeof s.start        === 'string' || s.start        === null) _seStart        = s.start;
+    if (typeof s.skipWeekends === 'boolean')                           _seSkipWeekends = s.skipWeekends;
+    if (typeof s.deadlineDate === 'string' || s.deadlineDate === null) _seDeadlineDate = s.deadlineDate;
+    if (typeof s.projName     === 'string' || s.projName     === null) _seProjName     = s.projName;
+  } catch (e) { /* corrupt / old payload — ignore and start fresh */ }
+}
 
 function _seNewAIRow() {
   return { key: '||', costCode: '', subCode: '', unit: '', qty: '', crew: null, hpd: null, ai: null, source: 'ai' };
@@ -17096,12 +17134,16 @@ function _seComputeRow(row) {
   const hasHistory = !st.virtual &&
     (st.avgLbrPerUnit > 0 || (st.soe && !st.soe.laborTooFew && st.soe.laborA != null));
 
-  if (!hasHistory && !(ai && ai.laborHrsPerUnit != null)) return { st, needsEstimate: true };
+  // Require a POSITIVE per-unit labor figure from AI — a degenerate 0 (model
+  // returned no usable rate) should read as "needs estimate", not a 0-hr/0-day
+  // card that then silently drops out of the schedule.
+  if (!hasHistory && !(ai && ai.laborHrsPerUnit > 0)) return { st, needsEstimate: true };
 
   const q = parseFloat(row.qty);
   if (isNaN(q) || q <= 0) return { st, invalid: true };
 
   let laborHrsPerUnit, source, extrapolated = false, hasModel = false;
+  let rangeLo = st.minX, rangeHi = st.maxX;   // the range the extrapolation test is judged against
   if (hasHistory) {
     const s = st.soe;
     hasModel     = !!(s && !s.laborTooFew && s.laborA != null && s.laborB != null && s.laborPts && s.laborPts.length >= 2);
@@ -17110,10 +17152,9 @@ function _seComputeRow(row) {
     // it we fall back to the average instead of evaluating the curve out-of-range.
     if (hasModel) {
       const lxs = s.laborPts.map(p => p.x);
-      extrapolated = (q < Math.min(...lxs) || q > Math.max(...lxs));
-    } else {
-      extrapolated = (q < st.minX || q > st.maxX);
+      rangeLo = Math.min(...lxs); rangeHi = Math.max(...lxs);
     }
+    extrapolated = (q < rangeLo || q > rangeHi);
     if (hasModel && !extrapolated) laborHrsPerUnit = Math.max(0, s.laborA * Math.pow(q, s.laborB));
     else if (hasModel)             laborHrsPerUnit = s.laborPts.reduce((a, p) => a + p.y, 0) / s.laborPts.length;
     else                           laborHrsPerUnit = st.avgLbrPerUnit;
@@ -17161,7 +17202,7 @@ function _seComputeRow(row) {
     : ((extrapolated || st.n < 2) ? 'Low' : (hasModel && st.soe.laborR2 >= 0.5 ? 'High' : 'Moderate'));
 
   return {
-    st, q, source, hasHistory, hasModel, extrapolated,
+    st, q, source, hasHistory, hasModel, extrapolated, rangeLo, rangeHi,
     laborHrsPerUnit, totalLaborHrs, laborLow, laborHigh,
     histLbrPD, histDays, defCrew, defHpd, crew, hpd, days, equipHrs, conf, ai,
   };
@@ -17173,6 +17214,10 @@ function renderScheduleEstimator() {
 
   const stats = buildScheduleEstimatorStats();
   window._seStats = stats;
+
+  // Restore a previously-saved schedule once per page load (before seeding), so
+  // returning to the tab after a refresh shows exactly what was left behind.
+  if (!_seLoaded) { _seLoaded = true; if (_seRows == null) _seRestoreState(); }
 
   if (!_seRows || _seRows.length === 0) {
     _seRows = [ stats.length ? { key: stats[0].key, qty: '', crew: null, hpd: null } : _seNewAIRow() ];
@@ -17244,6 +17289,8 @@ function renderScheduleEstimator() {
       </div>
       <div id="se-summary">${_seSummaryHtml()}</div>
     </div>`;
+
+  _seSaveState();   // persist the current rows + settings after every full render
 
   // No history for a named sub code? Auto-fill it with AI industry standards.
   const _statKeys = new Set(stats.map(s => s.key));
@@ -17349,7 +17396,7 @@ function _seResultHtml(idx) {
 
   const confColor = isAI ? '#a78bfa' : ({ High: '#4ade80', Moderate: '#facc15', Low: '#f87171' }[r.conf] || '#facc15');
   const pill = isAI
-    ? `<span style="background:rgba(167,139,250,0.14);color:#a78bfa;border:1px solid rgba(167,139,250,0.4);border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">&#10024; AI Estimate${r.conf && r.conf !== 'AI' ? ' · ' + r.conf : ''}</span>`
+    ? `<span style="background:rgba(167,139,250,0.14);color:#a78bfa;border:1px solid rgba(167,139,250,0.4);border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">&#10024; AI Estimate${r.conf && r.conf !== 'AI' ? ' · ' + _seEsc(r.conf) : ''}</span>`
     : `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${r.conf} Confidence</span>`;
   const aiRate = (isAI && r.ai && r.ai.unitsPerCrewDay > 0)
     ? `~${_SE_FMT(r.ai.unitsPerCrewDay, 0)} ${_seEsc(st.unit || 'units')}/crew-day` : '';
@@ -17360,7 +17407,7 @@ function _seResultHtml(idx) {
   const perUnitSub = isAI ? 'AI estimate' : (r.hasModel ? (r.extrapolated ? 'historical avg' : 'power-law model') : 'historical average');
 
   return `
-    ${r.extrapolated ? `<div style="margin-bottom:0.85rem;padding:0.6rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.75rem;color:#fbbf24">&#9888; Quantity is outside the observed range (${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)} ${_seEsc(st.unit || 'units')} across ${st.n} job${st.n !== 1 ? 's' : ''}) — using the historical average rate instead of the curve.</div>` : ''}
+    ${r.extrapolated ? `<div style="margin-bottom:0.85rem;padding:0.6rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.75rem;color:#fbbf24">&#9888; Quantity is outside the modeled range (${_SE_FMT(r.rangeLo, 1)}–${_SE_FMT(r.rangeHi, 1)} ${_seEsc(st.unit || 'units')}) — using the historical average rate instead of the curve.</div>` : ''}
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.7rem">
       ${card('Est. Labor Hours', _SE_FMT(r.totalLaborHrs, 1) + ' hrs', isAI ? 'AI estimate' : (r.laborLow != null ? `Range: ${_SE_FMT(r.laborLow, 1)} – ${_SE_FMT(r.laborHigh, 1)} hrs` : ''), '#a78bfa')}
       ${card('Est. Working Days', (r.days != null ? _SE_FMT(r.days, 1) + ' days' : '—'), `${_SE_FMT(r.crew, 0)} crew × ${_SE_FMT(r.hpd, 1)} hrs/day`, '#4ade80')}
@@ -17402,6 +17449,29 @@ function _seDayIndexForDate(startStr, targetStr, skipWeekends) {
   }
   return Math.max(1, count);
 }
+
+// Lenient date parser for the typed date fields — accepts what people actually
+// type: "7/15/2026", "07/15/2026", "7-15-26", "07152026", or ISO "2026-07-15".
+// A 2-digit or missing year defaults to the project-start year. Returns
+// 'YYYY-MM-DD' or null. Text inputs (not type=date) mean numbers always register.
+function _seParseDateInput(v) {
+  v = (v == null ? '' : String(v)).trim();
+  if (!v) return null;
+  const pad = n => String(n).padStart(2, '0');
+  const baseYear = parseInt(((_seStart || _seTodayStr()).match(/^(\d{4})/) || [])[1], 10);
+  const ok = (y, mo, da) => (mo >= 1 && mo <= 12 && da >= 1 && da <= 31) ? `${y}-${pad(mo)}-${pad(da)}` : null;
+  let m;
+  if ((m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)))              return ok(+m[1], +m[2], +m[3]);
+  if ((m = v.match(/^(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?$/))) {
+    let y = m[3] != null ? +m[3] : baseYear;
+    if (y < 100) y += 2000;
+    return ok(y, +m[1], +m[2]);
+  }
+  if ((m = v.match(/^(\d{2})(\d{2})(\d{4})$/)))                    return ok(+m[3], +m[1], +m[2]);
+  return null;
+}
+// 'YYYY-MM-DD' → 'MM/DD/YYYY' for display in the typed date fields.
+function _seIsoToMdy(iso) { const m = (iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? `${m[2]}/${m[3]}/${m[1]}` : (iso || ''); }
 
 function _seBuildSchedule() {
   const startStr = _seStart || _seTodayStr();
@@ -17457,8 +17527,11 @@ function _seBuildSchedule() {
   spanning.forEach(c => { c.startDay = 1; c.finishDay = projectEnd; c.span = projectEnd; c.pinned = true; });
 
   // Field deadline: a working-day index. Defaults to the on-field finish until set.
-  const deadlineSet = _seDeadlineDay != null;
-  const deadlineDay = deadlineSet ? Math.max(1, _seDeadlineDay) : (fieldEnd > 0 ? fieldEnd : projectEnd);
+  // Derive the deadline's working-day index from the picked DATE every build, so
+  // it stays pinned to that calendar date when Project start or Skip weekends move.
+  const deadlineDayRaw = _seDeadlineDate ? _seDayIndexForDate(startStr, _seDeadlineDate, _seSkipWeekends) : null;
+  const deadlineSet = deadlineDayRaw != null;
+  const deadlineDay = deadlineSet ? Math.max(1, deadlineDayRaw) : (fieldEnd > 0 ? fieldEnd : projectEnd);
   const axisMax     = Math.max(projectEnd, deadlineDay, 1);
 
   return {
@@ -17483,6 +17556,13 @@ function _seSummaryHtml() {
   const OFF_COLOR = '#94a3b8';
   const pct  = idx => axisMax > 0 ? (idx / axisMax * 100) : 0;
   const dstr = d   => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
+  // Compact date (no year) for the per-bar rows — the section header above each
+  // group shows the full date with year, so the year is redundant on every bar
+  // and dropping it keeps the range from being clipped in the narrow label column.
+  const dstrS = d  => { const x = _seNthWorkingDay(startStr, d, _seSkipWeekends); return x ? x.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '—'; };
+  // A working-day index → 'YYYY-MM-DD' / 'MM/DD/YYYY' for the per-bar date fields.
+  const ymd   = d  => { const x = _seNthWorkingDay(startStr, d, _seSkipWeekends); if (!x || isNaN(x.getTime())) return ''; const p = n => String(n).padStart(2, '0'); return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`; };
+  const mdy   = d  => _seIsoToMdy(ymd(d));
   const _SE_STEP = 'width:17px;height:17px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:0.8rem;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto';
   const _SE_TGL = kind => {
     const c = kind === 'sd'   ? ['rgba(96,165,250,0.6)', 'rgba(96,165,250,0.18)', '#60a5fa']
@@ -17497,8 +17577,7 @@ function _seSummaryHtml() {
   const dlMet   = overBy <= 0;
   const dlColor = dlMet ? '#4ade80' : '#f87171';
   const dlMark  = deadlineSet ? `<div style="position:absolute;left:${pct(deadlineDay)}%;top:-3px;bottom:-3px;width:2px;background:${dlColor};z-index:5;pointer-events:none"></div>` : '';
-  const _pad = n => String(n).padStart(2, '0');
-  const dlInputVal = deadlineCal ? `${deadlineCal.getFullYear()}-${_pad(deadlineCal.getMonth() + 1)}-${_pad(deadlineCal.getDate())}` : '';
+  const dlInputVal = _seIsoToMdy(_seDeadlineDate || '');   // show exactly the date the user picked (no round-trip drift)
 
   const stat = (label, value, sub, color) =>
     `<div><div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
@@ -17508,14 +17587,6 @@ function _seSummaryHtml() {
     `<button onclick="_seSetAllSameDay(${val})" title="${val ? 'Start every sub code on the same day (fully overlapped)' : 'Run every sub code back-to-back (bid order)'}" style="padding:0.28rem 0.7rem;border-radius:6px;font-size:0.72rem;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--bg);color:var(--muted)">${label}</button>`;
 
   // One draggable sub-code bar row (used for on-field and off-field bands).
-  const crewCell = c => `<div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted);line-height:1.35">
-      <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.25rem">
-        <button onclick="_seAdjustCrew(${c.idx},-1)" title="Remove a laborer" style="${_SE_STEP}">&#8722;</button>
-        <span title="Laborers on this sub code"><strong style="color:var(--fg)">${_SE_FMT(c.r.crew, 0)}</strong> lab</span>
-        <button onclick="_seAdjustCrew(${c.idx},1)" title="Add a laborer" style="${_SE_STEP}">&#43;</button>
-      </div>
-      <div>${_SE_FMT(c.r.totalLaborHrs, 0)}h &middot; ${_SE_FMT(c.r.hpd, 0)}h/day</div>
-    </div>`;
   const barRow = (c, color, first) => {
     const left  = pct(c.startDay - 1);
     const width = Math.max(2, c.span / axisMax * 100);
@@ -17532,10 +17603,14 @@ function _seSummaryHtml() {
         ${sd}${flag}${done}
         <div style="min-width:0">
           <div style="font-size:0.72rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div>
-          <div style="font-size:0.62rem;color:var(--muted);display:flex;align-items:center;gap:0.28rem;min-width:0">
-            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</span>
-            <span style="flex:0 0 auto;display:inline-flex;align-items:center;gap:0.15rem;white-space:nowrap">&middot;
-              <input type="number" min="1" step="1" value="${Math.round(c.span)}" onchange="_seSetDays(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="Type the number of working days for this sub code" style="width:30px;background:var(--bg);border:1px solid ${c.overridden ? '#facc15' : 'var(--border)'};color:${c.overridden ? '#facc15' : 'var(--fg)'};border-radius:3px;padding:0.04rem 0.12rem;font-size:0.6rem;text-align:center;line-height:1.1">d</span>
+          <div style="display:flex;align-items:center;gap:0.18rem;margin-top:1px;font-size:0.56rem;color:var(--muted)">
+            <input type="text" inputmode="numeric" value="${mdy(c.startDay)}" placeholder="M/D/YYYY" onchange="_seSetStartDate(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="Start date — just type it, e.g. 7/15/2026 (clear to auto-place)" style="width:74px;background:var(--bg);border:1px solid ${c.row._startDay != null ? '#60a5fa' : 'var(--border)'};color:var(--fg);border-radius:3px;padding:0.05rem 0.1rem;font-size:0.56rem;text-align:center;line-height:1.15">
+            &rarr;
+            <input type="text" inputmode="numeric" value="${mdy(c.finishDay)}" placeholder="M/D/YYYY" onchange="_seSetEndDate(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="End date — type it to set the duration, e.g. 7/28/2026" style="width:74px;background:var(--bg);border:1px solid ${c.overridden ? '#facc15' : 'var(--border)'};color:var(--fg);border-radius:3px;padding:0.05rem 0.1rem;font-size:0.56rem;text-align:center;line-height:1.15">
+          </div>
+          <div style="display:flex;align-items:center;gap:0.22rem;margin-top:2px;font-size:0.56rem;color:var(--muted)">
+            <input type="number" min="1" step="1" value="${Math.round(c.span)}" onchange="_seSetDays(${c.idx}, this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" title="Type the number of working days for this sub code" style="width:34px;background:var(--bg);border:1px solid ${c.overridden ? '#facc15' : 'var(--border)'};color:${c.overridden ? '#facc15' : 'var(--fg)'};border-radius:3px;padding:0.05rem 0.15rem;font-size:0.6rem;text-align:center;line-height:1.15">
+            working days
           </div>
         </div>
       </div>
@@ -17543,7 +17618,6 @@ function _seSummaryHtml() {
         <div data-start="${c.startDay}" data-span="${c.span}" onmousedown="_seBarDrag(event,${c.idx})" title="Drag to move &middot; drag the right edge to change days${c.overridden ? ' (manual duration)' : ''} &middot; Days ${c.startDay}–${c.finishDay} &middot; ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${color};border-radius:4px;cursor:grab;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden;user-select:none">${c.span}d${c.overridden ? '<span style="opacity:0.65">&lowast;</span>' : ''}<div onmousedown="_seBarResize(event,${c.idx})" title="Drag to change the number of days" style="position:absolute;right:0;top:0;bottom:0;width:8px;cursor:ew-resize;background:rgba(0,0,0,0.22);border-radius:0 4px 4px 0"></div></div>
         ${dlMark}
       </div>
-      ${crewCell(c)}
     </div>`;
   };
 
@@ -17561,19 +17635,16 @@ function _seSummaryHtml() {
     const color    = PALETTE[colorIdx++ % PALETTE.length];
     const secStart = Math.min(...sec.items.map(c => c.startDay));
     const secEnd   = Math.max(...sec.items.map(c => c.finishDay));
-    const secHrs   = sec.items.reduce((s, c) => s + c.r.totalLaborHrs, 0);
-    const secCrew  = Math.max(0, ...sec.items.map(c => Math.round(c.r.crew) || 0));
 
     const header = `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.6rem 0 0.15rem">
       <div style="width:236px;flex:0 0 236px;min-width:0">
         <div style="font-size:0.77rem;font-weight:700;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sec.cc)}">${_seEsc(sec.cc)}</div>
-        <div style="font-size:0.62rem;color:var(--muted)">${dstr(secStart)} &rarr; ${dstr(secEnd)}</div>
+        <div style="font-size:0.62rem;color:var(--muted)">${dstr(secStart)} &rarr; ${dstr(secEnd)} &middot; ${secEnd - secStart + 1}d</div>
       </div>
       <div style="flex:1;position:relative;height:11px;background:var(--bg);border-radius:3px">
         <div style="position:absolute;left:${pct(secStart - 1)}%;width:${Math.max(2, pct(secEnd) - pct(secStart - 1))}%;top:0;bottom:0;background:${color};opacity:0.35;border-radius:3px;border:1px solid ${color}"></div>
         ${dlMark}
       </div>
-      <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.63rem;color:var(--muted)">${secEnd - secStart + 1}d &middot; ${secCrew} crew &middot; ${_SE_FMT(secHrs, 0)}h</div>
     </div>`;
 
     const bars = sec.items.map(c => barRow(c, color, c === onField[0])).join('');
@@ -17600,7 +17671,6 @@ function _seSummaryHtml() {
             <div style="min-width:0"><div style="font-size:0.72rem;color:var(--muted);text-decoration:line-through;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div></div>
           </div>
           <div style="flex:1;font-size:0.65rem;color:#4ade80">&#10003; done &middot; ${c.span}d dropped</div>
-          <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted)">${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
         </div>`;
       }).join('')}
     </div>` : '';
@@ -17617,10 +17687,9 @@ function _seSummaryHtml() {
             <div style="font-size:0.62rem;color:var(--muted)">${dstr(1)} &rarr; ${dstr(projectEnd)}</div>
           </div>
           <div style="flex:1;position:relative;height:20px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
-            <div title="Spans the full project (${projectEnd}d) · ${_SE_FMT(c.r.crew, 0)} laborers" style="position:absolute;left:0;width:${spanW}%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${projectEnd}d</div>
+            <div title="Spans the full project (${projectEnd}d)" style="position:absolute;left:0;width:${spanW}%;top:0;bottom:0;background:repeating-linear-gradient(45deg,#64748b,#64748b 6px,#475569 6px,#475569 12px);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:#0b1220;overflow:hidden">${projectEnd}d</div>
             ${dlMark}
           </div>
-          ${crewCell(c)}
         </div>`;
       }).join('')}
     </div>` : '';
@@ -17632,7 +17701,6 @@ function _seSummaryHtml() {
       <div style="flex:1;position:relative;height:15px">
         <div style="position:absolute;left:${pct(deadlineDay)}%;transform:translateX(-50%);font-size:0.58rem;font-weight:700;color:${dlColor};white-space:nowrap;background:var(--surface);border:1px solid ${dlColor};border-radius:3px;padding:0 4px;line-height:1.35">&#9873; Deadline ${dstr(deadlineDay)}</div>
       </div>
-      <div style="width:132px;flex:0 0 132px"></div>
     </div>` : '';
   const dlBadge = deadlineSet
     ? `<span style="background:${dlColor}22;color:${dlColor};border:1px solid ${dlColor}55;border-radius:5px;padding:0.15rem 0.5rem;font-size:0.7rem;font-weight:700">${dlMet ? `&#10003; field ${Math.abs(overBy)}d early` : `&#9888; field ${Math.abs(overBy)}d over deadline`}</span>`
@@ -17643,8 +17711,8 @@ function _seSummaryHtml() {
       <div style="display:flex;flex-wrap:wrap;gap:0.9rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem">
         <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${sections.length} section${sections.length !== 1 ? 's' : ''} · ${activeCount} sub code${activeCount !== 1 ? 's' : ''}${completed.length ? ` · <span style="color:#4ade80">${completed.length} done</span>` : ''}</div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
-          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="Set the day work started (or starts). Past dates are fine.">Project start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
-          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="The date the field must be finished. On-field work is checked against it; off-field work can run past it.">Field deadline<input type="date" value="${dlInputVal}" onchange="_seSetDeadlineDate(this.value)" style="background:var(--bg);border:1px solid ${deadlineSet ? dlColor : 'var(--border)'};color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="Set the day work started (or starts). Past dates are fine.">Project start<input type="text" inputmode="numeric" value="${_seEsc(_seIsoToMdy(startStr))}" placeholder="M/D/YYYY" onchange="_seSetStart(this.value)" onkeydown="if(event.key==='Enter'){this.blur();}" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;width:100px"></label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="The date the field must be finished. On-field work is checked against it; off-field work can run past it.">Field deadline<input type="text" inputmode="numeric" value="${_seEsc(dlInputVal)}" placeholder="M/D/YYYY" onchange="_seSetDeadlineDate(this.value)" onkeydown="if(event.key==='Enter'){this.blur();}" style="background:var(--bg);border:1px solid ${deadlineSet ? dlColor : 'var(--border)'};color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;width:100px"></label>
           ${dlBadge}
           <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.72rem;color:var(--muted);cursor:pointer"><input type="checkbox" ${_seSkipWeekends ? 'checked' : ''} onchange="_seToggleWeekends(this.checked)" style="cursor:pointer">Skip weekends</label>
           <div style="display:flex;gap:0.35rem">${presetBtn('All Sequential', false)}${presetBtn('All Same Day', true)}</div>
@@ -17657,7 +17725,7 @@ function _seSummaryHtml() {
         ${stat(offField.length ? 'Field Complete' : 'Est. Completion', _seFmtDate(offField.length ? sched.fieldCal : endCal), offField.length ? 'field done · off-field follows' : 'starting ' + _seFmtDate(startCal), deadlineSet ? dlColor : '#60a5fa')}
       </div>
       <div style="margin-top:0.5rem">${dlFlag}${sectionHtml}${offHtml}${spanHtml}${doneHtml}</div>
-      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5"><strong style="color:var(--fg)">Drag any bar sideways</strong> to reschedule it — sub codes in different sections can run the same days. Drag a bar's right edge <strong style="color:var(--fg)">or type in the days box</strong> to set its duration (handy when a 1–2 day bar is too small to grab). <span style="color:#60a5fa">&#8595;/&#8657;</span> start a sub code the same day as the one above; the <span style="color:#fbbf24">&#9873;</span> flag marks work <strong style="color:var(--fg)">off-field</strong>, and <span style="color:#4ade80">&#10003;</span> marks it <strong style="color:var(--fg)">completed</strong> (its days drop from the schedule &amp; deadline). Set a <strong style="color:var(--fg)">Field deadline</strong> to see if on-field work lands in time. Travel &amp; PM span the full project.</div>
+      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5"><strong style="color:var(--fg)">Type a start date</strong> under any sub code to place it on an exact day (or drag the bar sideways) — sub codes in different sections can run the same days. Drag a bar's right edge <strong style="color:var(--fg)">or type in the days box</strong> to set its duration. <span style="color:#60a5fa">&#8595;/&#8657;</span> start a sub code the same day as the one above; the <span style="color:#fbbf24">&#9873;</span> flag marks work <strong style="color:var(--fg)">off-field</strong>, and <span style="color:#4ade80">&#10003;</span> marks it <strong style="color:var(--fg)">completed</strong> (its days drop from the schedule &amp; deadline). Set a <strong style="color:var(--fg)">Field deadline</strong> to see if on-field work lands in time. Travel &amp; PM span the full project.</div>
     </div>`;
 }
 
@@ -17667,6 +17735,7 @@ function _seRefreshRow(idx) {
   if (r) r.innerHTML = _seResultHtml(idx);
   const s = document.getElementById('se-summary');
   if (s) s.innerHTML = _seSummaryHtml();
+  _seSaveState();
 }
 function _seSetKey(idx, key) {
   if (!_seRows || !_seRows[idx]) return;
@@ -17716,10 +17785,10 @@ function _seRemoveRow(idx) {
   if (_seRows.length === 0) _seRows = null;   // reseed on next render
   renderScheduleEstimator();
 }
-function _seRenderSummary()    { const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); }
-function _seSetStart(v)        { _seStart = v; _seRenderSummary(); }
+function _seRenderSummary()    { const s = document.getElementById('se-summary'); if (s) s.innerHTML = _seSummaryHtml(); _seSaveState(); }
+function _seSetStart(v)        { const t = (v || '').trim(); if (!t) { _seStart = null; } else { const iso = _seParseDateInput(t); if (iso) _seStart = iso; } _seRenderSummary(); }
 function _seToggleWeekends(b)  { _seSkipWeekends = !!b; _seRenderSummary(); }
-function _seToggleSameDay(idx) { if (_seRows && _seRows[idx]) { _seRows[idx]._sameDay = !_seRows[idx]._sameDay; _seRenderSummary(); } }
+function _seToggleSameDay(idx) { if (_seRows && _seRows[idx]) { _seRows[idx]._sameDay = !_seRows[idx]._sameDay; _seRows[idx]._startDay = null; _seRenderSummary(); } }   // clear any drag/typed start so the overlap actually takes effect
 function _seSetAllSameDay(val) { (_seRows || []).forEach(r => { r._sameDay = !!val; }); _seRenderSummary(); }
 // Add/remove a laborer straight from the schedule; days recompute from the new
 // crew and the whole timeline shifts. Bases off the crew currently in effect
@@ -17763,12 +17832,45 @@ function _seSetDays(idx, v) {
   _seRenderSummary();
 }
 
-// Turn a chosen Field-deadline DATE into a working-day index on the timeline.
-function _seSetDeadlineDate(v) {
-  if (!v) { _seDeadlineDay = null; _seRenderSummary(); return; }
+// Type/pick an exact start DATE for a bar instead of sliding it — precise, and
+// far easier than dragging to a specific day. Converts the date to a working-day
+// index; clearing the field auto-places the bar again. An explicit start date
+// supersedes a "same day as above" overlap.
+function _seSetStartDate(idx, v) {
+  if (!_seRows || !_seRows[idx]) return;
+  if (!(v || '').trim()) { _seRows[idx]._startDay = null; _seRenderSummary(); return; }   // cleared → auto-place
+  const iso = _seParseDateInput(v);
+  if (!iso) { _seRenderSummary(); return; }   // unparseable → revert to the shown date
   const startStr = _seStart || _seTodayStr();
-  const dayIdx = _seDayIndexForDate(startStr, v, _seSkipWeekends);
-  _seDeadlineDay = dayIdx != null ? Math.max(1, dayIdx) : null;
+  const dayIdx = _seDayIndexForDate(startStr, iso, _seSkipWeekends);
+  if (dayIdx != null) { _seRows[idx]._startDay = Math.max(1, dayIdx); _seRows[idx]._sameDay = false; }
+  _seRenderSummary();
+}
+
+// Type/pick an exact END date for a bar — sets its duration relative to the
+// current start (end date and the days box are two ways to say the same thing).
+// Clearing reverts to the estimate-derived duration.
+function _seSetEndDate(idx, v) {
+  if (!_seRows || !_seRows[idx]) return;
+  if (!(v || '').trim()) { _seRows[idx]._daysOverride = null; _seRenderSummary(); return; }
+  const iso = _seParseDateInput(v);
+  if (!iso) { _seRenderSummary(); return; }
+  const sched = _seBuildSchedule();
+  const bar = sched && sched.computed.find(c => c.idx === idx);
+  if (!bar || bar.startDay == null) { _seRenderSummary(); return; }
+  const startStr = _seStart || _seTodayStr();
+  const endIdx = _seDayIndexForDate(startStr, iso, _seSkipWeekends);
+  if (endIdx != null) _seRows[idx]._daysOverride = Math.max(1, endIdx - bar.startDay + 1);
+  _seRenderSummary();
+}
+
+// Record the chosen Field-deadline DATE (kept as an absolute calendar date).
+function _seSetDeadlineDate(v) {
+  // Store the absolute date the user picked; the working-day index is recomputed
+  // on every build (see _seBuildSchedule), so the deadline stays on this calendar
+  // date even if Project start or the Skip-weekends toggle change afterward.
+  const t = (v || '').trim();
+  _seDeadlineDate = t ? (_seParseDateInput(t) || _seDeadlineDate) : null;
   _seRenderSummary();
 }
 
@@ -17793,8 +17895,10 @@ function _seBarDrag(e, idx) {
   const up = () => {
     document.removeEventListener('mousemove', move);
     document.removeEventListener('mouseup', up);
-    if (_seRows && _seRows[idx]) _seRows[idx]._startDay = newStart;
-    _seRenderSummary();
+    // Only pin a start when the bar was actually dragged — a plain click must not
+    // silently override placement (which would then block the same-day toggle).
+    if (_seRows && _seRows[idx] && newStart !== origStart) { _seRows[idx]._startDay = newStart; _seRenderSummary(); }
+    else { bar.style.cursor = 'grab'; }
   };
   document.addEventListener('mousemove', move);
   document.addEventListener('mouseup', up);
@@ -17821,8 +17925,9 @@ function _seBarResize(e, idx) {
   const up = () => {
     document.removeEventListener('mousemove', move);
     document.removeEventListener('mouseup', up);
-    if (_seRows && _seRows[idx]) _seRows[idx]._daysOverride = newSpan;
-    _seRenderSummary();
+    // Only override the duration when the edge actually moved — a stray click on
+    // the handle shouldn't mark the bar as manually sized.
+    if (_seRows && _seRows[idx] && newSpan !== origSpan) { _seRows[idx]._daysOverride = newSpan; _seRenderSummary(); }
   };
   document.addEventListener('mousemove', move);
   document.addEventListener('mouseup', up);
@@ -17964,6 +18069,7 @@ function _seApplyEstimate(row, est) {
 async function _seAIRow(idx) {
   if (!_seRows || !_seRows[idx]) return;
   const row = _seRows[idx];
+  if (row._aiLoading) return;   // already estimating (e.g. auto-fill in flight) — don't double-fetch
   const sc  = (_seStatForRow(row).subCode || '').trim();
   if (!sc) { alert('Type a sub code name first, then click ✨ AI.'); return; }
   row._aiLoading = true;
