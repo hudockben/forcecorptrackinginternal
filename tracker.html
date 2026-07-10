@@ -17418,9 +17418,14 @@ function _seBuildSchedule() {
   }).filter(Boolean);
   if (!computed.length) return null;
 
-  const spanning = computed.filter(c => c.spanning);
-  const onField  = computed.filter(c => !c.spanning && !c.offField);
-  const offField = computed.filter(c => !c.spanning && c.offField);
+  // Completed sub codes are dropped from the active schedule (their days no longer
+  // count toward the field end / deadline); they are still returned so the UI can
+  // list them and let the user un-complete.
+  const active    = computed.filter(c => !c.row._completed);
+  const completed = computed.filter(c =>  c.row._completed);
+  const spanning = active.filter(c => c.spanning);
+  const onField  = active.filter(c => !c.spanning && !c.offField);
+  const offField = active.filter(c => !c.spanning && c.offField);
 
   // Place a list top-to-bottom in bid order. Each bar's DEFAULT start comes from a
   // sequential lane ("same day as previous" joins the running group); a per-bar
@@ -17457,9 +17462,9 @@ function _seBuildSchedule() {
   const axisMax     = Math.max(projectEnd, deadlineDay, 1);
 
   return {
-    startStr, computed, onField, offField, spanning,
+    startStr, computed, active, completed, onField, offField, spanning,
     fieldEnd, projectEnd, totalWD: projectEnd, axisMax, deadlineDay, deadlineSet,
-    totLbr:  computed.reduce((s, c) => s + c.r.totalLaborHrs, 0),
+    totLbr:  active.reduce((s, c) => s + c.r.totalLaborHrs, 0),
     startCal:    _seNthWorkingDay(startStr, 1, _seSkipWeekends),
     endCal:      _seNthWorkingDay(startStr, projectEnd, _seSkipWeekends),
     fieldCal:    _seNthWorkingDay(startStr, Math.max(1, fieldEnd), _seSkipWeekends),
@@ -17470,17 +17475,19 @@ function _seBuildSchedule() {
 function _seSummaryHtml() {
   const sched = _seBuildSchedule();
   if (!sched) return '';
-  const { startStr, computed, onField, offField, spanning, fieldEnd, projectEnd,
+  const { startStr, computed, active, completed, onField, offField, spanning, fieldEnd, projectEnd,
           totalWD, axisMax, deadlineDay, deadlineSet, totLbr, startCal, endCal, deadlineCal } = sched;
   window._seAxisMax = axisMax;   // for the bar-drag handler
+  const activeCount = onField.length + offField.length + spanning.length;
   const PALETTE = ['#4ade80', '#60a5fa', '#a78bfa', '#fb923c', '#38bdf8', '#f472b6', '#facc15', '#22d3ee'];
   const OFF_COLOR = '#94a3b8';
   const pct  = idx => axisMax > 0 ? (idx / axisMax * 100) : 0;
   const dstr = d   => _seFmtDate(_seNthWorkingDay(startStr, d, _seSkipWeekends));
   const _SE_STEP = 'width:17px;height:17px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:0.8rem;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto';
   const _SE_TGL = kind => {
-    const c = kind === 'sd'  ? ['rgba(96,165,250,0.6)', 'rgba(96,165,250,0.18)', '#60a5fa']
-            : kind === 'off' ? ['rgba(251,191,36,0.6)', 'rgba(251,191,36,0.18)', '#fbbf24']
+    const c = kind === 'sd'   ? ['rgba(96,165,250,0.6)', 'rgba(96,165,250,0.18)', '#60a5fa']
+            : kind === 'off'  ? ['rgba(251,191,36,0.6)', 'rgba(251,191,36,0.18)', '#fbbf24']
+            : kind === 'done' ? ['rgba(74,222,128,0.6)', 'rgba(74,222,128,0.18)', '#4ade80']
             : ['var(--border)', 'var(--bg)', 'var(--muted)'];
     return `flex:0 0 auto;width:18px;height:18px;border-radius:4px;border:1px solid ${c[0]};background:${c[1]};color:${c[2]};font-size:0.68rem;cursor:pointer;line-height:1;padding:0;display:inline-flex;align-items:center;justify-content:center;margin-top:0.05rem`;
   };
@@ -17519,9 +17526,10 @@ function _seSummaryHtml() {
       ? `<span style="flex:0 0 auto;width:18px"></span>`
       : `<button onclick="_seToggleSameDay(${c.idx})" title="${on ? 'Starts the same day as the item above — click to run it after' : 'Runs after the item above — click to start it the same day'}" style="${_SE_TGL(on ? 'sd' : '')}">${on ? '&#8657;' : '&#8595;'}</button>`;
     const flag = `<button onclick="_seToggleOffField(${c.idx})" title="${off ? 'Off-field work (done after the field). Click to move it back on-field' : 'On-field. Click to mark it off-field — scheduled after the field and excluded from the deadline'}" style="${_SE_TGL(off ? 'off' : '')}">&#9873;</button>`;
+    const done = `<button onclick="_seToggleCompleted(${c.idx})" title="Mark completed — drop its days from the schedule and deadline" style="${_SE_TGL('')}">&#10003;</button>`;
     return `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.16rem 0">
-      <div style="width:236px;flex:0 0 236px;padding-left:0.3rem;display:flex;align-items:flex-start;gap:0.22rem;min-width:0">
-        ${sd}${flag}
+      <div style="width:236px;flex:0 0 236px;padding-left:0.3rem;display:flex;align-items:flex-start;gap:0.2rem;min-width:0">
+        ${sd}${flag}${done}
         <div style="min-width:0">
           <div style="font-size:0.72rem;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div>
           <div style="font-size:0.62rem;color:var(--muted)">${dstr(c.startDay)} &rarr; ${dstr(c.finishDay)}</div>
@@ -17575,6 +17583,24 @@ function _seSummaryHtml() {
       ${offField.map((c, i) => barRow(c, OFF_COLOR, i === 0)).join('')}
     </div>` : '';
 
+  // Completed band — days already dropped from the schedule.
+  const doneHtml = completed.length ? `
+    <div style="margin-top:0.7rem;padding-top:0.5rem;border-top:1px dashed var(--border)">
+      <div style="font-size:0.64rem;color:#4ade80;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">&#10003; Completed &middot; ${completed.length} &middot; ${completed.reduce((s, c) => s + c.span, 0)}d dropped from the schedule</div>
+      ${completed.map(c => {
+        const sc = c.r.st.subCode || '(custom)';
+        return `<div style="display:flex;align-items:center;gap:0.55rem;margin:0.16rem 0;opacity:0.75">
+          <div style="width:236px;flex:0 0 236px;padding-left:0.3rem;display:flex;align-items:flex-start;gap:0.2rem;min-width:0">
+            <span style="flex:0 0 auto;width:18px"></span><span style="flex:0 0 auto;width:18px"></span>
+            <button onclick="_seToggleCompleted(${c.idx})" title="Not completed — add it back to the schedule" style="${_SE_TGL('done')}">&#10003;</button>
+            <div style="min-width:0"><div style="font-size:0.72rem;color:var(--muted);text-decoration:line-through;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_seEsc(sc)}${c.r.st.costCode ? ' — ' + _seEsc(c.r.st.costCode) : ''}">${_seEsc(sc)}</div></div>
+          </div>
+          <div style="flex:1;font-size:0.65rem;color:#4ade80">&#10003; done &middot; ${c.span}d dropped</div>
+          <div style="width:132px;flex:0 0 132px;text-align:right;font-size:0.66rem;color:var(--muted)">${_SE_FMT(c.r.totalLaborHrs, 0)}h</div>
+        </div>`;
+      }).join('')}
+    </div>` : '';
+
   const spanW = Math.max(2, projectEnd / axisMax * 100);
   const spanHtml = spanning.length ? `
     <div style="margin-top:0.7rem;padding-top:0.5rem;border-top:1px dashed var(--border)">
@@ -17611,7 +17637,7 @@ function _seSummaryHtml() {
   return `
     <div style="margin-top:1.5rem;padding:1.2rem 1.4rem;background:rgba(74,222,128,0.06);border:2px solid rgba(74,222,128,0.28);border-radius:12px">
       <div style="display:flex;flex-wrap:wrap;gap:0.9rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem">
-        <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${sections.length} section${sections.length !== 1 ? 's' : ''} · ${computed.length} sub code${computed.length !== 1 ? 's' : ''}</div>
+        <div style="font-size:0.72rem;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.08em">&#128197; Project Schedule · ${sections.length} section${sections.length !== 1 ? 's' : ''} · ${activeCount} sub code${activeCount !== 1 ? 's' : ''}${completed.length ? ` · <span style="color:#4ade80">${completed.length} done</span>` : ''}</div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
           <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="Set the day work started (or starts). Past dates are fine.">Project start<input type="date" value="${_seEsc(startStr)}" onchange="_seSetStart(this.value)" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
           <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted)" title="The date the field must be finished. On-field work is checked against it; off-field work can run past it.">Field deadline<input type="date" value="${dlInputVal}" onchange="_seSetDeadlineDate(this.value)" style="background:var(--bg);border:1px solid ${deadlineSet ? dlColor : 'var(--border)'};color:var(--fg);border-radius:5px;padding:0.25rem 0.4rem;font-size:0.75rem;cursor:pointer"></label>
@@ -17625,8 +17651,8 @@ function _seSummaryHtml() {
         ${stat('Working Days', String(totalWD), offField.length ? `field ${fieldEnd}d + off-field` : 'bid order &middot; adjustable', '#4ade80')}
         ${stat(offField.length ? 'Field Complete' : 'Est. Completion', _seFmtDate(offField.length ? sched.fieldCal : endCal), offField.length ? 'field done · off-field follows' : 'starting ' + _seFmtDate(startCal), deadlineSet ? dlColor : '#60a5fa')}
       </div>
-      <div style="margin-top:0.5rem">${dlFlag}${sectionHtml}${offHtml}${spanHtml}</div>
-      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5"><strong style="color:var(--fg)">Drag any bar sideways</strong> to reschedule it — sub codes in different sections can run the same days. <span style="color:#60a5fa">&#8595;/&#8657;</span> start a sub code the same day as the one above; the <span style="color:#fbbf24">&#9873;</span> flag marks work <strong style="color:var(--fg)">off-field</strong> (done after the field, outside the deadline). Set a <strong style="color:var(--fg)">Field deadline</strong> to see if on-field work lands in time. Travel &amp; PM span the full project.</div>
+      <div style="margin-top:0.5rem">${dlFlag}${sectionHtml}${offHtml}${spanHtml}${doneHtml}</div>
+      <div style="font-size:0.67rem;color:var(--muted);margin-top:0.85rem;line-height:1.5"><strong style="color:var(--fg)">Drag any bar sideways</strong> to reschedule it — sub codes in different sections can run the same days. <span style="color:#60a5fa">&#8595;/&#8657;</span> start a sub code the same day as the one above; the <span style="color:#fbbf24">&#9873;</span> flag marks work <strong style="color:var(--fg)">off-field</strong>, and <span style="color:#4ade80">&#10003;</span> marks it <strong style="color:var(--fg)">completed</strong> (its days drop from the schedule &amp; deadline). Set a <strong style="color:var(--fg)">Field deadline</strong> to see if on-field work lands in time. Travel &amp; PM span the full project.</div>
     </div>`;
 }
 
@@ -17711,6 +17737,14 @@ function _seToggleOffField(idx) {
   if (!_seRows || !_seRows[idx]) return;
   _seRows[idx]._offField = !_seRows[idx]._offField;
   _seRows[idx]._startDay = null;   // re-place it in its new band; drag again if needed
+  _seRenderSummary();
+}
+
+// Mark a sub code completed — its days drop out of the active schedule and deadline.
+function _seToggleCompleted(idx) {
+  if (!_seRows || !_seRows[idx]) return;
+  _seRows[idx]._completed = !_seRows[idx]._completed;
+  _seRows[idx]._startDay = null;   // remaining work re-flows; drag again if needed
   _seRenderSummary();
 }
 
@@ -18076,7 +18110,6 @@ function _sePrint() {
       <td class="r">${c.span}${c.overridden ? '*' : ''}</td>
       <td>${dstr(c.startDay)}</td>
       <td>${dstr(c.finishDay)}</td>
-      <td>${c.spanning ? 'Overhead' : (c.offField ? 'Off-field' : (r.source === 'ai' ? 'AI' : 'History'))}</td>
     </tr>`;
   }).join('');
 
@@ -18131,7 +18164,7 @@ function _sePrint() {
     <table><thead><tr>
       <th>Cost Code</th><th>Sub Code</th><th class="r">Quantity</th><th class="r">Labor Hrs</th>
       <th class="r">Crew</th><th class="r">Hrs/Day</th><th class="r">Work Days</th>
-      <th>Start</th><th>Finish</th><th>Basis</th>
+      <th>Start</th><th>Finish</th>
     </tr></thead><tbody>${tbody}</tbody></table>
     <p class="fn">* Travel / project management span the full project. ${offField.length ? '&#8224; Off-field work is done after the field is handed over. ' : ''}A <b>*</b> after Work Days marks a manually set duration.${deadlineSet ? ` The vertical line is the field deadline (${_seFmtDate(deadlineCal)}).` : ''}</p>
     <script>window.onload=function(){window.print();}<\/script>
