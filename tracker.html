@@ -16964,7 +16964,7 @@ function _calcRemoveRow(idx) {
 let _seRows         = null;
 let _seStart        = null;          // 'YYYY-MM-DD'
 let _seSkipWeekends = true;
-let _seDeadlineDay  = null;          // field deadline as a working-day index (null = default to field end)
+let _seDeadlineDate = null;          // field deadline as an absolute 'YYYY-MM-DD' date (null = default to field end); the working-day index is derived at build time so it never drifts when Project start / Skip weekends change
 let _seProjName     = null;          // name of the last imported project (for the PDF header)
 
 const _SE_FMT = (v, d = 0) => (v == null || isNaN(v))
@@ -17096,12 +17096,16 @@ function _seComputeRow(row) {
   const hasHistory = !st.virtual &&
     (st.avgLbrPerUnit > 0 || (st.soe && !st.soe.laborTooFew && st.soe.laborA != null));
 
-  if (!hasHistory && !(ai && ai.laborHrsPerUnit != null)) return { st, needsEstimate: true };
+  // Require a POSITIVE per-unit labor figure from AI — a degenerate 0 (model
+  // returned no usable rate) should read as "needs estimate", not a 0-hr/0-day
+  // card that then silently drops out of the schedule.
+  if (!hasHistory && !(ai && ai.laborHrsPerUnit > 0)) return { st, needsEstimate: true };
 
   const q = parseFloat(row.qty);
   if (isNaN(q) || q <= 0) return { st, invalid: true };
 
   let laborHrsPerUnit, source, extrapolated = false, hasModel = false;
+  let rangeLo = st.minX, rangeHi = st.maxX;   // the range the extrapolation test is judged against
   if (hasHistory) {
     const s = st.soe;
     hasModel     = !!(s && !s.laborTooFew && s.laborA != null && s.laborB != null && s.laborPts && s.laborPts.length >= 2);
@@ -17110,10 +17114,9 @@ function _seComputeRow(row) {
     // it we fall back to the average instead of evaluating the curve out-of-range.
     if (hasModel) {
       const lxs = s.laborPts.map(p => p.x);
-      extrapolated = (q < Math.min(...lxs) || q > Math.max(...lxs));
-    } else {
-      extrapolated = (q < st.minX || q > st.maxX);
+      rangeLo = Math.min(...lxs); rangeHi = Math.max(...lxs);
     }
+    extrapolated = (q < rangeLo || q > rangeHi);
     if (hasModel && !extrapolated) laborHrsPerUnit = Math.max(0, s.laborA * Math.pow(q, s.laborB));
     else if (hasModel)             laborHrsPerUnit = s.laborPts.reduce((a, p) => a + p.y, 0) / s.laborPts.length;
     else                           laborHrsPerUnit = st.avgLbrPerUnit;
@@ -17161,7 +17164,7 @@ function _seComputeRow(row) {
     : ((extrapolated || st.n < 2) ? 'Low' : (hasModel && st.soe.laborR2 >= 0.5 ? 'High' : 'Moderate'));
 
   return {
-    st, q, source, hasHistory, hasModel, extrapolated,
+    st, q, source, hasHistory, hasModel, extrapolated, rangeLo, rangeHi,
     laborHrsPerUnit, totalLaborHrs, laborLow, laborHigh,
     histLbrPD, histDays, defCrew, defHpd, crew, hpd, days, equipHrs, conf, ai,
   };
@@ -17349,7 +17352,7 @@ function _seResultHtml(idx) {
 
   const confColor = isAI ? '#a78bfa' : ({ High: '#4ade80', Moderate: '#facc15', Low: '#f87171' }[r.conf] || '#facc15');
   const pill = isAI
-    ? `<span style="background:rgba(167,139,250,0.14);color:#a78bfa;border:1px solid rgba(167,139,250,0.4);border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">&#10024; AI Estimate${r.conf && r.conf !== 'AI' ? ' · ' + r.conf : ''}</span>`
+    ? `<span style="background:rgba(167,139,250,0.14);color:#a78bfa;border:1px solid rgba(167,139,250,0.4);border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">&#10024; AI Estimate${r.conf && r.conf !== 'AI' ? ' · ' + _seEsc(r.conf) : ''}</span>`
     : `<span style="background:${confColor}22;color:${confColor};border:1px solid ${confColor}44;border-radius:4px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600">${r.conf} Confidence</span>`;
   const aiRate = (isAI && r.ai && r.ai.unitsPerCrewDay > 0)
     ? `~${_SE_FMT(r.ai.unitsPerCrewDay, 0)} ${_seEsc(st.unit || 'units')}/crew-day` : '';
@@ -17360,7 +17363,7 @@ function _seResultHtml(idx) {
   const perUnitSub = isAI ? 'AI estimate' : (r.hasModel ? (r.extrapolated ? 'historical avg' : 'power-law model') : 'historical average');
 
   return `
-    ${r.extrapolated ? `<div style="margin-bottom:0.85rem;padding:0.6rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.75rem;color:#fbbf24">&#9888; Quantity is outside the observed range (${_SE_FMT(st.minX, 1)}–${_SE_FMT(st.maxX, 1)} ${_seEsc(st.unit || 'units')} across ${st.n} job${st.n !== 1 ? 's' : ''}) — using the historical average rate instead of the curve.</div>` : ''}
+    ${r.extrapolated ? `<div style="margin-bottom:0.85rem;padding:0.6rem 0.9rem;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);border-radius:6px;font-size:0.75rem;color:#fbbf24">&#9888; Quantity is outside the modeled range (${_SE_FMT(r.rangeLo, 1)}–${_SE_FMT(r.rangeHi, 1)} ${_seEsc(st.unit || 'units')}) — using the historical average rate instead of the curve.</div>` : ''}
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.7rem">
       ${card('Est. Labor Hours', _SE_FMT(r.totalLaborHrs, 1) + ' hrs', isAI ? 'AI estimate' : (r.laborLow != null ? `Range: ${_SE_FMT(r.laborLow, 1)} – ${_SE_FMT(r.laborHigh, 1)} hrs` : ''), '#a78bfa')}
       ${card('Est. Working Days', (r.days != null ? _SE_FMT(r.days, 1) + ' days' : '—'), `${_SE_FMT(r.crew, 0)} crew × ${_SE_FMT(r.hpd, 1)} hrs/day`, '#4ade80')}
@@ -17457,8 +17460,11 @@ function _seBuildSchedule() {
   spanning.forEach(c => { c.startDay = 1; c.finishDay = projectEnd; c.span = projectEnd; c.pinned = true; });
 
   // Field deadline: a working-day index. Defaults to the on-field finish until set.
-  const deadlineSet = _seDeadlineDay != null;
-  const deadlineDay = deadlineSet ? Math.max(1, _seDeadlineDay) : (fieldEnd > 0 ? fieldEnd : projectEnd);
+  // Derive the deadline's working-day index from the picked DATE every build, so
+  // it stays pinned to that calendar date when Project start or Skip weekends move.
+  const deadlineDayRaw = _seDeadlineDate ? _seDayIndexForDate(startStr, _seDeadlineDate, _seSkipWeekends) : null;
+  const deadlineSet = deadlineDayRaw != null;
+  const deadlineDay = deadlineSet ? Math.max(1, deadlineDayRaw) : (fieldEnd > 0 ? fieldEnd : projectEnd);
   const axisMax     = Math.max(projectEnd, deadlineDay, 1);
 
   return {
@@ -17501,8 +17507,7 @@ function _seSummaryHtml() {
   const dlMet   = overBy <= 0;
   const dlColor = dlMet ? '#4ade80' : '#f87171';
   const dlMark  = deadlineSet ? `<div style="position:absolute;left:${pct(deadlineDay)}%;top:-3px;bottom:-3px;width:2px;background:${dlColor};z-index:5;pointer-events:none"></div>` : '';
-  const _pad = n => String(n).padStart(2, '0');
-  const dlInputVal = deadlineCal ? `${deadlineCal.getFullYear()}-${_pad(deadlineCal.getMonth() + 1)}-${_pad(deadlineCal.getDate())}` : '';
+  const dlInputVal = _seDeadlineDate || '';   // show exactly the date the user picked (no round-trip drift)
 
   const stat = (label, value, sub, color) =>
     `<div><div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.25rem">${label}</div>
@@ -17767,12 +17772,12 @@ function _seSetDays(idx, v) {
   _seRenderSummary();
 }
 
-// Turn a chosen Field-deadline DATE into a working-day index on the timeline.
+// Record the chosen Field-deadline DATE (kept as an absolute calendar date).
 function _seSetDeadlineDate(v) {
-  if (!v) { _seDeadlineDay = null; _seRenderSummary(); return; }
-  const startStr = _seStart || _seTodayStr();
-  const dayIdx = _seDayIndexForDate(startStr, v, _seSkipWeekends);
-  _seDeadlineDay = dayIdx != null ? Math.max(1, dayIdx) : null;
+  // Store the absolute date the user picked; the working-day index is recomputed
+  // on every build (see _seBuildSchedule), so the deadline stays on this calendar
+  // date even if Project start or the Skip-weekends toggle change afterward.
+  _seDeadlineDate = v || null;
   _seRenderSummary();
 }
 
@@ -17968,6 +17973,7 @@ function _seApplyEstimate(row, est) {
 async function _seAIRow(idx) {
   if (!_seRows || !_seRows[idx]) return;
   const row = _seRows[idx];
+  if (row._aiLoading) return;   // already estimating (e.g. auto-fill in flight) — don't double-fetch
   const sc  = (_seStatForRow(row).subCode || '').trim();
   if (!sc) { alert('Type a sub code name first, then click ✨ AI.'); return; }
   row._aiLoading = true;
