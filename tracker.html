@@ -23344,6 +23344,13 @@ let _csDirty     = false;
 
 const _CS_STATUSES   = ['Not Yet Started', 'In Progress', 'Complete', 'On Hold'];
 const _CS_PRIORITIES = ['High', 'Medium', 'Low'];
+// Work-week modes for the Est. Working Days count. `skip` = day-of-week indices
+// (0=Sun … 6=Sat) that do NOT count as working days.
+const _CS_WORKWEEKS = [
+  { v: 5, label: 'weekends excluded',  skip: [0, 6] },  // Mon–Fri
+  { v: 6, label: 'Saturdays included', skip: [0]    },  // Mon–Sat
+  { v: 7, label: 'all days counted',   skip: []     },  // 7-day
+];
 const _csKey = id => 'fct_conschedule_' + id;
 
 function _csEsc(s) { return _seEsc(s); }                    // reuse estimator escaper
@@ -23361,7 +23368,7 @@ function _csNewTask() {
 function _csNewDivider() { return { id:_csUid(), kind:'divider', description:'' }; }
 
 function _csBlankData() {
-  return { v:1, header:{ heading:'', projectTitle:'', pm:'',
+  return { v:1, workWeek:5, header:{ heading:'', projectTitle:'', pm:'',
            company:(fctUser && (fctUser.companyName || fctUser.companyCode)) || '',
            date:_csTodayStr() }, rows:[ _csNewTask() ] };
 }
@@ -23428,27 +23435,38 @@ function _csProjectSpan() {
     if (e && (!maxE || e > maxE)) maxE = e;
   });
   if (!minS || !maxE || maxE < minS) return null;
+  const mode = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
   let days = 0;
   const d = new Date(minS);
   for (let g = 0; g < 100000 && d <= maxE; g++) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) days++;
+    if (!mode.skip.includes(d.getDay())) days++;
     d.setDate(d.getDate() + 1);
   }
   return { start: minS, end: maxE, workingDays: days };
 }
 function _csHeaderStatsHtml() {
+  const ww = (_csData && _csData.workWeek) || 5;
+  const selStyle = 'background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:5px;font-size:0.68rem;font-style:italic;padding:0.08rem 0.35rem;margin-left:0.5rem;cursor:pointer;font-family:inherit';
+  const sel = `<select onchange="_csSetWorkWeek(this.value)" title="Choose which days count as working days" style="${selStyle}">`
+    + _CS_WORKWEEKS.map(m => `<option value="${m.v}" ${m.v === ww ? 'selected' : ''}>${m.label}</option>`).join('')
+    + `</select>`;
   const span = _csProjectSpan();
-  if (!span) return `<span style="color:var(--muted)">Add task start &amp; end dates to estimate working days.</span>`;
+  if (!span) return `<span style="color:var(--muted)">Add task start &amp; end dates to estimate working days.</span>${sel}`;
   const sep = `<span style="color:var(--border);margin:0 0.7rem">|</span>`;
   return `<span style="color:var(--muted)">Project Start</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.start)}</strong>${sep}`
        + `<span style="color:var(--muted)">Finish</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.end)}</strong>${sep}`
        + `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${span.workingDays}</strong>`
-       + `<span style="color:var(--muted);font-size:0.68rem;font-style:italic;margin-left:0.4rem">weekends excluded</span>`;
+       + sel;
 }
 function _csUpdateHeaderStats() {
   const el = document.getElementById('cs-header-stats');
   if (el) el.innerHTML = _csHeaderStatsHtml();
+}
+function _csSetWorkWeek(val) {
+  if (!_csData) return;
+  _csData.workWeek = parseInt(val, 10) || 5;
+  _csUpdateHeaderStats();
+  _csScheduleSave();
 }
 
 /* ── persistence ─────────────────────────────────────────────────────────── */
