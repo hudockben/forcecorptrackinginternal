@@ -23505,8 +23505,21 @@ function _csRenderGanttHtml() {
   const grid = months.map(m => `<div style="position:absolute;left:${pos(m)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.45"></div>`).join('');
   const axis = months.map(m => {
     const lbl = m.toLocaleDateString('en-US', { month: 'short' }) + (m.getMonth() === 0 ? ` '${String(m.getFullYear()).slice(2)}` : '');
-    return `<div style="position:absolute;left:${pos(m)}%;font-size:0.62rem;color:var(--muted);white-space:nowrap;padding-left:3px">${lbl}</div>`;
+    return `<div style="position:absolute;left:${pos(m)}%;top:0;font-size:0.62rem;font-weight:600;color:var(--muted);white-space:nowrap;padding-left:3px">${lbl}</div>`;
   }).join('');
+
+  // Finer date scale: weekly tick labels (day-of-month) aligned to Mondays,
+  // right beside the shaded weekends. Interval widens for long projects.
+  const totalDays = totalMs / 86400000;
+  const tickDays = totalDays <= 130 ? 7 : (totalDays <= 280 ? 14 : 28);
+  const ticks = [];
+  {
+    const d = new Date(minS); d.setHours(0, 0, 0, 0);
+    while (d.getDay() !== 1 && d <= maxE) d.setDate(d.getDate() + 1);   // first Monday in range
+    for (let g = 0; d <= maxE && g < 400; g++) { ticks.push(new Date(d)); d.setDate(d.getDate() + tickDays); }
+  }
+  const weekGrid   = ticks.map(t => `<div style="position:absolute;left:${pos(t)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.16"></div>`).join('');
+  const weekLabels = ticks.map(t => `<div style="position:absolute;left:${pos(t)}%;bottom:0;font-size:0.53rem;color:var(--muted);opacity:0.8;white-space:nowrap;padding-left:2px">${t.getDate()}</div>`).join('');
 
   // Non-working-day shading, following the work-week toggle.
   const mode = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
@@ -23591,12 +23604,12 @@ function _csRenderGanttHtml() {
 
   return `
     <div>
-      <div style="display:flex;align-items:flex-end;height:16px;margin-bottom:0.25rem">
+      <div style="display:flex;align-items:flex-end;height:26px;margin-bottom:0.25rem">
         <div style="width:${LABELW}px;flex-shrink:0"></div>
-        <div style="flex:1;position:relative;height:16px">${axis}</div>
+        <div style="flex:1;position:relative;height:26px">${axis}${weekLabels}</div>
       </div>
       <div style="position:relative">
-        <div style="position:absolute;left:${LABELW}px;right:0;top:0;bottom:0;pointer-events:none">${shade}${grid}${todayLine}</div>
+        <div style="position:absolute;left:${LABELW}px;right:0;top:0;bottom:0;pointer-events:none">${shade}${weekGrid}${grid}${todayLine}</div>
         ${body}
         ${arrows}
       </div>
