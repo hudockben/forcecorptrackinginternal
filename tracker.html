@@ -23480,6 +23480,46 @@ function _csGanttColor(status) {
        : status === 'On Hold'     ? '#fbbf24'
        : '#94a3b8';   // Not Yet Started
 }
+const _CS_CRIT = '#dc2626';   // critical-path red
+
+/**
+ * Critical path = the chain of dependency-linked tasks with no slack that ends
+ * at the project's finish date. Walks backward from the latest-finishing
+ * task(s) through "tight" finish-to-start links (successor starts within the
+ * same working day the predecessor ends, so weekends don't count as slack).
+ * Returns a Set of critical task ids; empty when no dependencies are set.
+ */
+function _csCriticalSet() {
+  const rows  = (_csData && _csData.rows) || [];
+  const tasks = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  const byId  = {}; tasks.forEach(t => byId[t.id] = t);
+  const mode  = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
+  const skip  = mode.skip;
+
+  // Working days strictly between two dates (weekends/off-days don't count).
+  function wdBetween(a, b) {
+    if (b <= a) return 0;
+    let n = 0; const d = new Date(a); d.setDate(d.getDate() + 1);
+    for (let g = 0; d < b && g < 20000; g++) { if (!skip.includes(d.getDay())) n++; d.setDate(d.getDate() + 1); }
+    return n;
+  }
+  const tightPreds = {};   // taskId → predecessor ids whose link is "tight" (drives it)
+  let hasDeps = false;
+  tasks.forEach(t => (Array.isArray(t.deps) ? t.deps : []).forEach(p => {
+    if (!byId[p]) return;
+    hasDeps = true;
+    if (wdBetween(_csParseDate(byId[p].end), _csParseDate(t.start)) <= 0) (tightPreds[t.id] = tightPreds[t.id] || []).push(p);
+  }));
+  if (!hasDeps) return new Set();
+
+  const projEnd = Math.max(...tasks.map(t => _csParseDate(t.end).getTime()));
+  const critical = new Set(), queue = [];
+  tasks.forEach(t => { if (_csParseDate(t.end).getTime() === projEnd) { critical.add(t.id); queue.push(t.id); } });
+  while (queue.length) {
+    (tightPreds[queue.shift()] || []).forEach(p => { if (!critical.has(p)) { critical.add(p); queue.push(p); } });
+  }
+  return critical;
+}
 function _csRenderGanttHtml() {
   const rows  = (_csData && _csData.rows) || [];
   const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
@@ -23545,6 +23585,7 @@ function _csRenderGanttHtml() {
     ? `<div style="position:absolute;left:${pos(today)}%;top:0;bottom:0;border-left:2px dashed #f87171;opacity:0.85" title="Today"></div>` : '';
 
   // Rows at a fixed height so dependency-arrow geometry is deterministic.
+  const critical = _csCriticalSet();
   const geo = {};   // task id → { yc, x1, x2 } in the track coordinate space
   const body = rows.map((r, i) => {
     const yTop = i * ROWH;
@@ -23555,7 +23596,7 @@ function _csRenderGanttHtml() {
       </div>`;
     }
     const s = _csParseDate(r.start), e = _csParseDate(r.end);
-    const color = _csGanttColor(r.status);
+    const color = critical.has(r.id) ? _CS_CRIT : _csGanttColor(r.status);
     const pct = Math.min(100, Math.max(0, parseFloat(r.pct) || 0));
     const hasDesc = !!(r.description || '').trim();
     const label = hasDesc ? _csEsc(r.description) : '(untitled task)';
@@ -23594,8 +23635,10 @@ function _csRenderGanttHtml() {
       const a = geo[depId], b = geo[r.id];    // a = predecessor, b = successor
       if (!a || !b) return;
       const x1 = a.x2, y1 = a.yc, x2 = b.x1, y2 = b.yc, kx = Math.min(100, x1 + 1.2);
-      paths += `<path d="M ${x1} ${y1} L ${kx} ${y1} L ${kx} ${y2} L ${x2} ${y2}" fill="none" stroke="#64748b" stroke-width="1.1" vector-effect="non-scaling-stroke" opacity="0.8"/>`;
-      heads += `<div style="position:absolute;left:${x2}%;top:${y2}px;transform:translate(-100%,-50%);width:0;height:0;border-top:3px solid transparent;border-bottom:3px solid transparent;border-left:5px solid #64748b;opacity:0.9"></div>`;
+      const crit = critical.has(depId) && critical.has(r.id);
+      const sc = crit ? _CS_CRIT : '#64748b';
+      paths += `<path d="M ${x1} ${y1} L ${kx} ${y1} L ${kx} ${y2} L ${x2} ${y2}" fill="none" stroke="${sc}" stroke-width="${crit ? 1.6 : 1.1}" vector-effect="non-scaling-stroke" opacity="${crit ? 0.95 : 0.8}"/>`;
+      heads += `<div style="position:absolute;left:${x2}%;top:${y2}px;transform:translate(-100%,-50%);width:0;height:0;border-top:3px solid transparent;border-bottom:3px solid transparent;border-left:5px solid ${sc};opacity:0.95"></div>`;
     });
   });
   const arrows = (paths || heads) ? `
@@ -23713,7 +23756,7 @@ function _csExportPdf() {
     </tr></thead><tbody>${tbody}</tbody></table>
     <h2>Gantt Chart</h2>
     <div class="gantt-wrap"><div class="gantt">${ganttHtml}</div></div>
-    <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; the dashed line marks today; arrows show finish-to-start dependencies.</p>
+    <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; <span style="color:#dc2626;font-weight:700">red</span> marks the critical path (dependency chain that drives the finish date); the dashed line marks today; arrows show finish-to-start dependencies.</p>
     <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
   win.document.close();
@@ -24093,7 +24136,7 @@ function renderConstructionSchedule() {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.7rem;border-bottom:2px solid var(--green);padding-bottom:0.35rem">
           <div style="font-size:1.05rem;font-weight:800;color:var(--fg)">Gantt Chart</div>
           <div style="display:flex;gap:0.9rem;flex-wrap:wrap;font-size:0.68rem;color:var(--muted)">
-            ${[['Complete','#60a5fa'],['In Progress','#4ade80'],['Not Yet Started','#94a3b8'],['On Hold','#fbbf24']].map(([l,c]) => `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${l}</span>`).join('')}
+            ${[['Complete','#60a5fa'],['In Progress','#4ade80'],['Not Yet Started','#94a3b8'],['On Hold','#fbbf24'],['Critical path','#dc2626']].map(([l,c]) => `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${l}</span>`).join('')}
           </div>
         </div>
         <div id="cs-gantt">${_csRenderGanttHtml()}</div>
