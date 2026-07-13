@@ -25,12 +25,16 @@ function isValidEmail(s) {
   return typeof s === 'string' && EMAIL_RE.test(s.trim());
 }
 
-// Validate + normalize caller-supplied attachments into Resend's shape.
+// Validate + normalize caller-supplied attachments into the Resend SDK's shape
+// ({ filename, content, contentType, inlineContentId }).
 // Input item: { filename, content (base64 string, no data: prefix), contentId? }.
 // Returns { ok, attachments } or { ok:false, error }. Enforces count, per-file
-// extension allowlist, and a total decoded-byte cap. Content is decoded to a
-// Buffer so the Resend SDK encodes it unambiguously (a base64 string could be
-// double-encoded across SDK versions).
+// extension allowlist, and a total decoded-byte cap. Content is validated by
+// decoding to a Buffer (to check it's real base64 and measure size) and
+// re-emitted as a canonical base64 STRING — the Resend SDK JSON.stringifies
+// attachments verbatim (it does NOT base64-encode Buffers, so a Buffer would
+// serialize to {"type":"Buffer",...} and corrupt the file), and the API's
+// `content` field is base64 text.
 function normalizeAttachments(raw) {
   if (raw == null) return { ok: true, attachments: [] };
   if (!Array.isArray(raw)) return { ok: false, error: 'attachments must be an array' };
@@ -53,10 +57,15 @@ function normalizeAttachments(raw) {
     if (!buf.length) return { ok: false, error: 'Attachment is empty' };
     total += buf.length;
     if (total > MAX_ATTACH_BYTES) return { ok: false, error: 'Attachments are too large' };
-    const item = { filename, content: buf, content_type: mime };
+    // Field names must match the Resend SDK's Attachment interface (camelCase):
+    // it reads `contentType` and `inlineContentId` and maps them to the API's
+    // content_type / inline_content_id. `inlineContentId` is what makes the
+    // attachment inline so <img src="cid:..."> resolves. `content` is a
+    // canonical base64 string (see the function header for why not a Buffer).
+    const item = { filename, content: buf.toString('base64'), contentType: mime };
     if (a.contentId != null) {
       const cid = String(a.contentId).trim().replace(/[^A-Za-z0-9._-]/g, '').slice(0, 80);
-      if (cid) item.content_id = cid;
+      if (cid) item.inlineContentId = cid;
     }
     out.push(item);
   }
@@ -138,9 +147,9 @@ function buildEmailHtml({ title, note, bodyHtml, companyName, generatedAt }) {
 }
 
 // Send via Resend. Returns { ok, id, error }. Never throws — callers check ok.
-// `attachments` (optional) is an array in Resend's shape:
-//   { filename, content: Buffer|base64String, content_id?, content_type? }
-// Inline images are referenced from the HTML via <img src="cid:<content_id>">.
+// `attachments` (optional) is an array in the Resend SDK's shape:
+//   { filename, content: Buffer|base64String, contentType?, inlineContentId? }
+// Inline images are referenced from the HTML via <img src="cid:<inlineContentId>">.
 async function sendEmail({ to, subject, html, replyTo, attachments }) {
   if (!RESEND_API_KEY)     return { ok: false, error: 'RESEND_API_KEY is not configured on the server.' };
   if (!EMAIL_FROM_ADDRESS) return { ok: false, error: 'EMAIL_FROM_ADDRESS is not configured on the server.' };
