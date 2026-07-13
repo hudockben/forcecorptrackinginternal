@@ -10,10 +10,66 @@ const EMAIL_REPLY_TO      = process.env.EMAIL_REPLY_TO || ''; // optional
 
 const MAX_RECIPIENTS = 50;          // hard cap per send
 const MAX_HTML_BYTES = 1_500_000;   // ~1.5 MB raw HTML; Resend itself caps higher
+const MAX_ATTACHMENTS = 6;          // per send
+const MAX_ATTACH_BYTES = 8_000_000; // ~8 MB total decoded; Resend caps at 40 MB/message
 const EMAIL_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
+
+// Inline images / small docs only — keeps the endpoint from relaying arbitrary
+// binaries. Extension → MIME sent to Resend for the attachment's content_type.
+const ATTACH_MIME = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf',
+};
 
 function isValidEmail(s) {
   return typeof s === 'string' && EMAIL_RE.test(s.trim());
+}
+
+// Validate + normalize caller-supplied attachments into the Resend SDK's shape
+// ({ filename, content, contentType, inlineContentId }).
+// Input item: { filename, content (base64 string, no data: prefix), contentId? }.
+// Returns { ok, attachments } or { ok:false, error }. Enforces count, per-file
+// extension allowlist, and a total decoded-byte cap. Content is validated by
+// decoding to a Buffer (to check it's real base64 and measure size) and
+// re-emitted as a canonical base64 STRING — the Resend SDK JSON.stringifies
+// attachments verbatim (it does NOT base64-encode Buffers, so a Buffer would
+// serialize to {"type":"Buffer",...} and corrupt the file), and the API's
+// `content` field is base64 text.
+function normalizeAttachments(raw) {
+  if (raw == null) return { ok: true, attachments: [] };
+  if (!Array.isArray(raw)) return { ok: false, error: 'attachments must be an array' };
+  if (raw.length > MAX_ATTACHMENTS) return { ok: false, error: `Too many attachments (max ${MAX_ATTACHMENTS})` };
+
+  const out = [];
+  let total = 0;
+  for (const a of raw) {
+    if (!a || typeof a !== 'object') return { ok: false, error: 'Invalid attachment' };
+    const filename = String(a.filename || '').trim().replace(/[\\/]/g, '').slice(0, 120);
+    if (!filename) return { ok: false, error: 'Attachment filename is required' };
+    const ext = (filename.split('.').pop() || '').toLowerCase();
+    const mime = ATTACH_MIME[ext];
+    if (!mime) return { ok: false, error: `Unsupported attachment type: .${ext}` };
+    if (typeof a.content !== 'string' || !a.content) return { ok: false, error: 'Attachment content is required' };
+    const b64 = a.content.includes(',') ? a.content.slice(a.content.indexOf(',') + 1) : a.content;
+    if (!/^[A-Za-z0-9+/=\s]+$/.test(b64)) return { ok: false, error: 'Attachment content must be base64' };
+    let buf;
+    try { buf = Buffer.from(b64, 'base64'); } catch { return { ok: false, error: 'Attachment content is not valid base64' }; }
+    if (!buf.length) return { ok: false, error: 'Attachment is empty' };
+    total += buf.length;
+    if (total > MAX_ATTACH_BYTES) return { ok: false, error: 'Attachments are too large' };
+    // Field names must match the Resend SDK's Attachment interface (camelCase):
+    // it reads `contentType` and `inlineContentId` and maps them to the API's
+    // content_type / inline_content_id. `inlineContentId` is what makes the
+    // attachment inline so <img src="cid:..."> resolves. `content` is a
+    // canonical base64 string (see the function header for why not a Buffer).
+    const item = { filename, content: buf.toString('base64'), contentType: mime };
+    if (a.contentId != null) {
+      const cid = String(a.contentId).trim().replace(/[^A-Za-z0-9._-]/g, '').slice(0, 80);
+      if (cid) item.inlineContentId = cid;
+    }
+    out.push(item);
+  }
+  return { ok: true, attachments: out };
 }
 
 // Conservative HTML sanitizer for report bodies. Email clients themselves
@@ -91,7 +147,10 @@ function buildEmailHtml({ title, note, bodyHtml, companyName, generatedAt }) {
 }
 
 // Send via Resend. Returns { ok, id, error }. Never throws — callers check ok.
-async function sendEmail({ to, subject, html, replyTo }) {
+// `attachments` (optional) is an array in the Resend SDK's shape:
+//   { filename, content: Buffer|base64String, contentType?, inlineContentId? }
+// Inline images are referenced from the HTML via <img src="cid:<inlineContentId>">.
+async function sendEmail({ to, subject, html, replyTo, attachments }) {
   if (!RESEND_API_KEY)     return { ok: false, error: 'RESEND_API_KEY is not configured on the server.' };
   if (!EMAIL_FROM_ADDRESS) return { ok: false, error: 'EMAIL_FROM_ADDRESS is not configured on the server.' };
   if (!Array.isArray(to) || to.length === 0) return { ok: false, error: 'No recipients.' };
@@ -113,6 +172,7 @@ async function sendEmail({ to, subject, html, replyTo }) {
       to,
       subject: subject || 'DataWatch Report',
       html,
+      ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       ...(replyTo || EMAIL_REPLY_TO ? { replyTo: replyTo || EMAIL_REPLY_TO } : {}),
     });
     if (result && result.error) return { ok: false, error: result.error.message || String(result.error) };
@@ -125,8 +185,11 @@ async function sendEmail({ to, subject, html, replyTo }) {
 module.exports = {
   MAX_RECIPIENTS,
   MAX_HTML_BYTES,
+  MAX_ATTACHMENTS,
+  MAX_ATTACH_BYTES,
   isValidEmail,
   sanitizeReportHtml,
+  normalizeAttachments,
   buildEmailHtml,
   sendEmail,
 };

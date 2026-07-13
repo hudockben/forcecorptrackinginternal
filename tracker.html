@@ -2362,6 +2362,7 @@
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="info">Project Dashboard</button>
   <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
+  <button class="tab-btn"        data-tab="construction">&#127959; Construction Schedule</button>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
   <button class="tab-btn"        data-tab="inventory">Infill Inventory</button>
@@ -2374,7 +2375,7 @@
       <button class="admin-dropdown-item" id="analytics-item-scale"   onclick="analyticsSwitchTab('scale')">&#128200; Scale of Economy</button>
       <button class="admin-dropdown-item" id="analytics-item-subcode" onclick="analyticsSwitchTab('subcode')">&#128202; Sub Code Performance</button>
       <button class="admin-dropdown-item" id="analytics-item-calc"    onclick="analyticsSwitchTab('calc')">&#129518; Turf Calculator</button>
-      <button class="admin-dropdown-item" id="analytics-item-schedest" onclick="analyticsSwitchTab('schedest')">&#9201; Schedule Estimator</button>
+      <button class="admin-dropdown-item" id="analytics-item-schedest" onclick="analyticsSwitchTab('schedest')">&#9201; Internal Schedule Estimator</button>
     </div>
   </div>
   <div class="admin-dropdown-wrap">
@@ -2789,6 +2790,11 @@
 <!-- ══════════════ SCHEDULE ESTIMATOR TAB ══════════════ -->
 <div class="tab-panel" id="tab-schedest">
   <div id="schedest-content" style="padding:1.25rem"><!-- rendered by JS --></div>
+</div>
+
+<!-- ══════════════ CONSTRUCTION SCHEDULE TAB ══════════════ -->
+<div class="tab-panel" id="tab-construction">
+  <div id="construction-root" style="padding:1.25rem"><!-- rendered by renderConstructionSchedule() --></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -4062,6 +4068,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'trucking')  renderTruckingTab();
     if (activeTab === 'inventory') renderInventoryTab();
     if (activeTab === 'schedule')   renderScheduleTab();
+    if (activeTab === 'construction') renderConstructionSchedule();
     if (activeTab === 'mob-entry')  renderMobileEntryForm();
   });
 });
@@ -17270,7 +17277,7 @@ function renderScheduleEstimator() {
     <div style="max-width:1060px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.1rem;gap:1rem;flex-wrap:wrap">
         <div>
-          <div style="font-size:0.95rem;font-weight:700;color:var(--fg);margin-bottom:0.15rem">&#9201; Schedule Estimator</div>
+          <div style="font-size:0.95rem;font-weight:700;color:var(--fg);margin-bottom:0.15rem">&#9201; Internal Schedule Estimator</div>
           <div style="font-size:0.75rem;color:var(--muted);max-width:640px;line-height:1.5">Pick sub codes and quantities — the estimator uses your historical labor model and crew-day pace to project labor hours and working days for each, then builds a start-to-finish schedule. Blanks with no history can be filled by AI.</div>
         </div>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
@@ -18284,7 +18291,7 @@ function _sePrint() {
     <div class="dw-head">
       <div class="dw-brand">
         <div class="dw-logo">&#128202;</div>
-        <div><div class="nm">DataWatch</div><div class="tag">Schedule Estimator</div></div>
+        <div><div class="nm">DataWatch</div><div class="tag">Internal Schedule Estimator</div></div>
       </div>
       <div class="dw-title"><div class="t">${projLabel}</div><div class="s">Project Schedule &middot; Generated ${dateStr}</div></div>
     </div>
@@ -23320,6 +23327,1088 @@ function _populateImportProjectSelect() {
       `<option value="${p.id}">${esc(p['project-name'] || p['job-number'] || p.id)}</option>`
     ).join('');
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CONSTRUCTION SCHEDULE  — per-job, database-persisted editable task schedule.
+   A simplified, saveable form of the Internal Schedule Estimator: pick a job,
+   auto-fill the header, then build & edit a task timeline. Every change is
+   saved to the DB under  fct_conschedule_<projectId>  so the work is never
+   redone and can be revisited/edited per job. Reusable task lists are stored
+   in  fct_conschedule_templates.
+   ══════════════════════════════════════════════════════════════════════════ */
+let _csProjId    = null;    // currently loaded project id (null → show picker)
+let _csData      = null;    // { v, header:{...}, rows:[...] }  (null while loading)
+let _csTemplates = null;    // cached template list (null until first load)
+let _csSaveTimer = null;
+let _csDirty     = false;
+
+const _CS_STATUSES   = ['Not Yet Started', 'In Progress', 'Complete', 'On Hold'];
+const _CS_PRIORITIES = ['High', 'Medium', 'Low'];
+// Work-week modes for the Est. Working Days count. `skip` = day-of-week indices
+// (0=Sun … 6=Sat) that do NOT count as working days.
+const _CS_WORKWEEKS = [
+  { v: 5, label: 'weekends excluded',  skip: [0, 6] },  // Mon–Fri
+  { v: 6, label: 'Saturdays included', skip: [0]    },  // Mon–Sat
+  { v: 7, label: 'all days counted',   skip: []     },  // 7-day
+];
+const _csKey = id => 'fct_conschedule_' + id;
+
+function _csEsc(s) { return _seEsc(s); }                    // reuse estimator escaper
+function _csUid()  { return 'r' + Math.random().toString(36).slice(2, 10); }
+function _csTodayStr() {
+  const d = new Date();
+  return (d.getMonth() + 1) + '/' + d.getDate() + '/' + String(d.getFullYear()).slice(2);
+}
+
+function _csNewTask() {
+  return { id:_csUid(), kind:'task', status:'Not Yet Started', priority:'High',
+           start:'', end:'', duration:'', code:'', subcode:'',
+           description:'', deliverable:'', pct:0, deps:[] };
+}
+function _csNewDivider() { return { id:_csUid(), kind:'divider', description:'' }; }
+
+function _csBlankData() {
+  return { v:1, workWeek:5, header:{ heading:'', projectTitle:'', pm:'',
+           company:(fctUser && (fctUser.companyName || fctUser.companyCode)) || '',
+           date:_csTodayStr() }, rows:[ _csNewTask() ] };
+}
+
+// Fill only header fields that are still empty, so a reload never clobbers edits.
+function _csAutofillHeader(p) {
+  const h = _csData.header;
+  if (!h.heading)      h.heading      = (p['client'] || p['project-name'] || '').trim();
+  if (!h.projectTitle) h.projectTitle = (p['project-name'] || '').trim();
+  if (!h.pm)           h.pm           = (p['pm'] || '').trim();
+  if (!h.company)      h.company      = (fctUser && (fctUser.companyName || fctUser.companyCode)) || '';
+  if (!h.date)         h.date         = _csTodayStr();
+}
+
+/* ── date + duration helpers ─────────────────────────────────────────────── */
+function _csParseDate(s) {
+  if (!s) return null;
+  let d;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) d = new Date(s + 'T00:00:00');
+  else {
+    const m = String(s).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (!m) return null;
+    let y = +m[3]; if (y < 100) y += 2000;
+    d = new Date(y, +m[1] - 1, +m[2]);
+  }
+  return isNaN(d.getTime()) ? null : d;
+}
+function _csCalcDuration(start, end) {
+  const a = _csParseDate(start), b = _csParseDate(end);
+  if (!a || !b) return null;
+  const days = Math.round((b - a) / 86400000);
+  return days >= 0 ? days : null;
+}
+// Duration is derived from the dates: the day count when both are set, else ''.
+function _csRowDuration(row) {
+  const d = _csCalcDuration(row.start, row.end);
+  return d == null ? '' : String(d);
+}
+function _csComputeOverall() {
+  const tasks = (_csData.rows || []).filter(r => r.kind === 'task');
+  if (!tasks.length) return 0;
+  let wsum = 0, w = 0;
+  tasks.forEach(t => {
+    const d = _csCalcDuration(t.start, t.end);
+    const dur = Math.max(1, d != null ? d : (parseFloat(t.duration) || 1));
+    const pct = Math.min(100, Math.max(0, parseFloat(t.pct) || 0));
+    wsum += dur * pct; w += dur;
+  });
+  return w ? Math.round(wsum / w) : 0;
+}
+
+/* ── project working-days estimate (header stat) ─────────────────────────── */
+function _csFmtShort(d) {
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function _csFmtShortNoYear(d) {
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+// Earliest start → latest end across task rows, plus the count of weekdays
+// (Mon–Fri) in that span. Returns null when no task has both dates.
+function _csProjectSpan() {
+  const tasks = (_csData.rows || []).filter(r => r.kind === 'task');
+  let minS = null, maxE = null;
+  tasks.forEach(t => {
+    const s = _csParseDate(t.start), e = _csParseDate(t.end);
+    if (s && (!minS || s < minS)) minS = s;
+    if (e && (!maxE || e > maxE)) maxE = e;
+  });
+  if (!minS || !maxE || maxE < minS) return null;
+  const mode = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
+  let days = 0;
+  const d = new Date(minS);
+  for (let g = 0; g < 100000 && d <= maxE; g++) {
+    if (!mode.skip.includes(d.getDay())) days++;
+    d.setDate(d.getDate() + 1);
+  }
+  return { start: minS, end: maxE, workingDays: days };
+}
+function _csHeaderStatsHtml() {
+  const ww = (_csData && _csData.workWeek) || 5;
+  const selStyle = 'background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:5px;font-size:0.68rem;font-style:italic;padding:0.08rem 0.35rem;margin-left:0.5rem;cursor:pointer;font-family:inherit';
+  const sel = `<select onchange="_csSetWorkWeek(this.value)" title="Choose which days count as working days" style="${selStyle}">`
+    + _CS_WORKWEEKS.map(m => `<option value="${m.v}" ${m.v === ww ? 'selected' : ''}>${m.label}</option>`).join('')
+    + `</select>`;
+  const span = _csProjectSpan();
+  if (!span) return `<span style="color:var(--muted)">Add task start &amp; end dates to estimate working days.</span>${sel}`;
+  const sep = `<span style="color:var(--border);margin:0 0.7rem">|</span>`;
+  return `<span style="color:var(--muted)">Project Start</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.start)}</strong>${sep}`
+       + `<span style="color:var(--muted)">Finish</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.end)}</strong>${sep}`
+       + `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${span.workingDays}</strong>`
+       + sel;
+}
+function _csUpdateHeaderStats() {
+  const el = document.getElementById('cs-header-stats');
+  if (el) el.innerHTML = _csHeaderStatsHtml();
+}
+function _csSetWorkWeek(val) {
+  if (!_csData) return;
+  _csData.workWeek = parseInt(val, 10) || 5;
+  _csUpdateHeaderStats();
+  _csUpdateGantt();
+  _csScheduleSave();
+}
+
+/* ── Gantt chart (rendered below the schedule, driven by the task dates) ─── */
+function _csGanttColor(status) {
+  return status === 'Complete'    ? '#60a5fa'
+       : status === 'In Progress' ? '#4ade80'
+       : status === 'On Hold'     ? '#fbbf24'
+       : '#94a3b8';   // Not Yet Started
+}
+const _CS_CRIT = '#dc2626';   // critical-path red
+
+/**
+ * Critical path = the longest chain of back-to-back tasks that drives the
+ * project's finish date. Each task's driving predecessors are its explicit
+ * "Depends On" links where they're "tight" (successor starts within the same
+ * working day the predecessor ends, so weekends don't count as slack). Where a
+ * task has no such link, the driver is *inferred* from the schedule — any task
+ * that finishes tight before it starts — so the path still forms even when the
+ * dependencies aren't fully wired. The critical set is the longest-duration
+ * chain (ties included) ending at the latest finish date. Returns a Set of
+ * critical task ids; empty when no chain of 2+ tasks can be traced.
+ */
+function _csCriticalSet() {
+  const rows  = (_csData && _csData.rows) || [];
+  const tasks = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  if (tasks.length < 2) return new Set();
+  const byId  = {}; tasks.forEach(t => byId[t.id] = t);
+  const mode  = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
+  const skip  = mode.skip;
+  const start = t => _csParseDate(t.start), end = t => _csParseDate(t.end);
+
+  // Working days strictly between two dates (weekends/off-days don't count).
+  function wdBetween(a, b) {
+    if (b <= a) return 0;
+    let n = 0; const d = new Date(a); d.setDate(d.getDate() + 1);
+    for (let g = 0; d < b && g < 20000; g++) { if (!skip.includes(d.getDay())) n++; d.setDate(d.getDate() + 1); }
+    return n;
+  }
+  const tight = (p, t) => wdBetween(end(p), start(t)) <= 0;
+
+  // Driving predecessors for a task: its explicit tight "Depends On" links if
+  // any, else inferred from the schedule (tasks finishing tight before it
+  // starts). Inference requires real precedence (p ends on/before t starts) so
+  // an overlapping/parallel task is never treated as a predecessor.
+  function drivers(t) {
+    const explicit = (Array.isArray(t.deps) ? t.deps : [])
+      .map(id => byId[id]).filter(p => p && tight(p, t));
+    if (explicit.length) return explicit;
+    return tasks.filter(p => p !== t && end(p) <= start(t) && tight(p, t));
+  }
+
+  // Longest-duration chain ending at each task (memoized DP; edges point to
+  // earlier predecessors so the graph is acyclic — the visiting guard only
+  // matters for degenerate same-instant data).
+  const dur = t => Math.max(1, (end(t) - start(t)) / 86400000 + 1);
+  const memo = {}, bestPred = {}, visiting = new Set();
+  function longest(t) {
+    if (memo[t.id] != null) return memo[t.id];
+    if (visiting.has(t.id)) return dur(t);
+    visiting.add(t.id);
+    let best = 0, picks = [];
+    drivers(t).forEach(p => {
+      const l = longest(p);
+      if (l > best + 1e-9) { best = l; picks = [p.id]; }
+      else if (Math.abs(l - best) <= 1e-9) picks.push(p.id);
+    });
+    visiting.delete(t.id);
+    bestPred[t.id] = picks;
+    return (memo[t.id] = dur(t) + best);
+  }
+
+  // Anchor at the latest-finishing task(s); keep the longest chain(s) to them.
+  const projEnd = Math.max(...tasks.map(t => end(t).getTime()));
+  let top = -1, roots = [];
+  tasks.filter(t => end(t).getTime() === projEnd).forEach(t => {
+    const l = longest(t);
+    if (l > top + 1e-9) { top = l; roots = [t.id]; }
+    else if (Math.abs(l - top) <= 1e-9) roots.push(t.id);
+  });
+
+  const critical = new Set(), queue = roots.slice();
+  while (queue.length) {
+    const id = queue.shift();
+    if (critical.has(id)) continue;
+    critical.add(id);
+    (bestPred[id] || []).forEach(p => queue.push(p));
+  }
+  return critical.size >= 2 ? critical : new Set();
+}
+function _csRenderGanttHtml() {
+  const rows  = (_csData && _csData.rows) || [];
+  const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  if (!dated.length) {
+    return `<div style="padding:1.4rem;text-align:center;color:var(--muted);font-size:0.8rem">Add start &amp; end dates to your tasks to see the Gantt chart.</div>`;
+  }
+  let minS = null, maxE = null;
+  dated.forEach(t => {
+    const s = _csParseDate(t.start), e = _csParseDate(t.end);
+    if (!minS || s < minS) minS = s;
+    if (!maxE || e > maxE) maxE = e;
+  });
+  const totalMs = Math.max(86400000, maxE - minS);
+  // Reserve a small right gutter (positions span 0–95%) so a task ending at the
+  // project end still has room for its duration label right after the bar.
+  const pos = d => (d - minS) / totalMs * 95;     // % across the timeline track
+  const clamp = x => Math.max(0, Math.min(100, x));
+  const LABELW = 190, ROWH = 34;
+
+  // Month boundaries inside the range → gridlines + axis labels.
+  const months = [];
+  const gm = new Date(minS.getFullYear(), minS.getMonth(), 1);
+  if (gm < minS) gm.setMonth(gm.getMonth() + 1);
+  for (let g = 0; g < 240 && gm <= maxE; g++) { months.push(new Date(gm)); gm.setMonth(gm.getMonth() + 1); }
+  const grid = months.map(m => `<div style="position:absolute;left:${pos(m)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.45"></div>`).join('');
+  const axis = months.map(m => {
+    const lbl = m.toLocaleDateString('en-US', { month: 'short' }) + (m.getMonth() === 0 ? ` '${String(m.getFullYear()).slice(2)}` : '');
+    return `<div style="position:absolute;left:${pos(m)}%;top:0;font-size:0.62rem;font-weight:600;color:var(--muted);white-space:nowrap;padding-left:3px">${lbl}</div>`;
+  }).join('');
+
+  // Finer date scale: weekly tick labels (day-of-month) aligned to Mondays,
+  // right beside the shaded weekends. Interval widens for long projects.
+  const totalDays = totalMs / 86400000;
+  const tickDays = totalDays <= 130 ? 7 : (totalDays <= 280 ? 14 : 28);
+  const ticks = [];
+  {
+    const d = new Date(minS); d.setHours(0, 0, 0, 0);
+    while (d.getDay() !== 1 && d <= maxE) d.setDate(d.getDate() + 1);   // first Monday in range
+    for (let g = 0; d <= maxE && g < 400; g++) { ticks.push(new Date(d)); d.setDate(d.getDate() + tickDays); }
+  }
+  const weekGrid   = ticks.map(t => `<div style="position:absolute;left:${pos(t)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.16"></div>`).join('');
+  const weekLabels = ticks.map(t => `<div style="position:absolute;left:${pos(t)}%;bottom:0;font-size:0.53rem;color:var(--muted);opacity:0.8;white-space:nowrap;padding-left:2px">${t.getDate()}</div>`).join('');
+
+  // Non-working-day shading, following the work-week toggle.
+  const mode = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
+  let shade = '';
+  if (mode.skip.length) {
+    const day = new Date(minS); day.setHours(0, 0, 0, 0);
+    for (let guard = 0; day <= maxE && guard < 4000; guard++) {
+      if (mode.skip.includes(day.getDay())) {
+        const runStart = new Date(day);
+        while (day <= maxE && mode.skip.includes(day.getDay())) day.setDate(day.getDate() + 1);
+        const x1 = clamp(pos(runStart)), x2 = clamp(pos(day));
+        if (x2 > x1) shade += `<div style="position:absolute;left:${x1}%;width:${x2 - x1}%;top:0;bottom:0;background:rgba(148,163,184,0.11)"></div>`;
+      } else {
+        day.setDate(day.getDate() + 1);
+      }
+    }
+  }
+
+  const today = _csParseDate(_csTodayStr());
+  const todayLine = (today && today >= minS && today <= maxE)
+    ? `<div style="position:absolute;left:${pos(today)}%;top:0;bottom:0;border-left:2px dashed #f87171;opacity:0.85" title="Today"></div>` : '';
+
+  // Rows at a fixed height so dependency-arrow geometry is deterministic.
+  const critical = _csCriticalSet();
+  const geo = {};   // task id → { yc, x1, x2 } in the track coordinate space
+  const body = rows.map((r, i) => {
+    const yTop = i * ROWH;
+    if (r.kind === 'divider') {
+      return `<div style="display:flex;align-items:center;height:${ROWH}px">
+        <div style="width:${LABELW}px;flex-shrink:0;font-size:0.66rem;font-weight:700;font-style:italic;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:0.5rem">${_csEsc(r.description) || '—'}</div>
+        <div style="flex:1;border-top:1px dashed var(--border);opacity:0.7"></div>
+      </div>`;
+    }
+    const s = _csParseDate(r.start), e = _csParseDate(r.end);
+    const color = critical.has(r.id) ? _CS_CRIT : _csGanttColor(r.status);
+    const pct = Math.min(100, Math.max(0, parseFloat(r.pct) || 0));
+    const hasDesc = !!(r.description || '').trim();
+    const label = hasDesc ? _csEsc(r.description) : '(untitled task)';
+    let bar = '';
+    if (s && e) {
+      const left = pos(s), endPct = pos(e), width = Math.max(0, endPct - left);
+      geo[r.id] = { yc: yTop + ROWH / 2, x1: left, x2: endPct };
+      const dur = _csRowDuration(r);
+      const tip = `${(r.description || '(untitled task)')}  ${r.start} → ${r.end}${dur ? `  (${dur}d)` : ''}  ${pct}% done`;
+      // Subtle duration label after the bar so it reads on the chart itself;
+      // anchor to the right edge when the bar ends near it so nothing overflows.
+      const durSty = `top:0;height:${ROWH}px;display:flex;align-items:center;font-size:0.57rem;color:var(--muted);white-space:nowrap;pointer-events:none`;
+      const durLabel = dur
+        ? `<span style="position:absolute;left:${endPct}%;padding-left:4px;${durSty}">${dur}d</span>`
+        : '';
+      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:10px;height:14px;background:${color}33;border:1px solid ${color};border-radius:4px;overflow:hidden">
+        <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
+      </div>${durLabel}`;
+    }
+    const dateRange = (s && e) ? `${_csFmtShortNoYear(s)} – ${_csFmtShortNoYear(e)}` : '';
+    return `<div style="display:flex;align-items:center;height:${ROWH}px">
+      <div style="width:${LABELW}px;flex-shrink:0;padding-right:0.5rem;overflow:hidden">
+        <div style="font-size:0.72rem;color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2" title="${_csEsc(r.description || '')}">${label}</div>
+        ${dateRange ? `<div style="font-size:0.56rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15;margin-top:1px">${dateRange}</div>` : ''}
+      </div>
+      <div style="flex:1;position:relative;height:${ROWH}px">${bar}</div>
+    </div>`;
+  }).join('');
+
+  // Dependency arrows (finish-to-start): predecessor end → successor start.
+  const bodyH = rows.length * ROWH;
+  let paths = '', heads = '';
+  rows.forEach(r => {
+    if (r.kind !== 'task' || !Array.isArray(r.deps) || !geo[r.id]) return;
+    r.deps.forEach(depId => {
+      const a = geo[depId], b = geo[r.id];    // a = predecessor, b = successor
+      if (!a || !b) return;
+      const x1 = a.x2, y1 = a.yc, x2 = b.x1, y2 = b.yc, kx = Math.min(100, x1 + 1.2);
+      const crit = critical.has(depId) && critical.has(r.id);
+      const sc = crit ? _CS_CRIT : '#64748b';
+      paths += `<path d="M ${x1} ${y1} L ${kx} ${y1} L ${kx} ${y2} L ${x2} ${y2}" fill="none" stroke="${sc}" stroke-width="${crit ? 1.6 : 1.1}" vector-effect="non-scaling-stroke" opacity="${crit ? 0.95 : 0.8}"/>`;
+      heads += `<div style="position:absolute;left:${x2}%;top:${y2}px;transform:translate(-100%,-50%);width:0;height:0;border-top:3px solid transparent;border-bottom:3px solid transparent;border-left:5px solid ${sc};opacity:0.95"></div>`;
+    });
+  });
+  const arrows = (paths || heads) ? `
+    <svg viewBox="0 0 100 ${bodyH}" preserveAspectRatio="none" style="position:absolute;left:${LABELW}px;top:0;width:calc(100% - ${LABELW}px);height:${bodyH}px;pointer-events:none;overflow:visible">${paths}</svg>
+    <div style="position:absolute;left:${LABELW}px;right:0;top:0;height:${bodyH}px;pointer-events:none">${heads}</div>` : '';
+
+  return `
+    <div>
+      <div style="display:flex;align-items:flex-end;height:26px;margin-bottom:0.25rem">
+        <div style="width:${LABELW}px;flex-shrink:0"></div>
+        <div style="flex:1;position:relative;height:26px">${axis}${weekLabels}</div>
+      </div>
+      <div style="position:relative">
+        <div style="position:absolute;left:${LABELW}px;right:0;top:0;bottom:0;pointer-events:none">${shade}${weekGrid}${grid}${todayLine}</div>
+        ${body}
+        ${arrows}
+      </div>
+    </div>`;
+}
+function _csUpdateGantt() {
+  const el = document.getElementById('cs-gantt');
+  if (el) el.innerHTML = _csRenderGanttHtml();
+}
+function _csTrunc(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function _csHexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; }
+
+// Render the Gantt to a PNG (canvas) so email can show a chart identical to the
+// on-screen one — bars + % fill, weekend shading, month/week axis, today line,
+// dependency arrows, and the critical path in red. Returns {dataUrl,width,height}.
+function _csGanttToPng() {
+  const rows = (_csData && _csData.rows) || [];
+  const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  if (!dated.length) return null;
+  let minS = null, maxE = null;
+  dated.forEach(t => { const s = _csParseDate(t.start), e = _csParseDate(t.end); if (!minS || s < minS) minS = s; if (!maxE || e > maxE) maxE = e; });
+  const totalMs = Math.max(86400000, maxE - minS);
+
+  const S = 2, W = 1000, LABELW = 185, ROWH = 30, AXIS = 34, PAD = 10, GUT = 0.95;
+  const bodyTop = AXIS + PAD, trackX = LABELW, trackW = W - LABELW - PAD;
+  const H = bodyTop + rows.length * ROWH + PAD;
+  const X = d => trackX + ((d - minS) / totalMs) * GUT * trackW;
+
+  const cv = document.createElement('canvas');
+  cv.width = W * S; cv.height = H * S;
+  const ctx = cv.getContext('2d');
+  ctx.scale(S, S);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+  ctx.textBaseline = 'middle';
+
+  // weekend / non-working-day shading
+  const mode = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
+  if (mode.skip.length) {
+    const day = new Date(minS); day.setHours(0, 0, 0, 0);
+    for (let g = 0; day <= maxE && g < 4000; g++) {
+      if (mode.skip.includes(day.getDay())) {
+        const rs = new Date(day); while (day <= maxE && mode.skip.includes(day.getDay())) day.setDate(day.getDate() + 1);
+        ctx.fillStyle = 'rgba(148,163,184,0.13)'; ctx.fillRect(X(rs), bodyTop, Math.max(0, X(day) - X(rs)), rows.length * ROWH);
+      } else day.setDate(day.getDate() + 1);
+    }
+  }
+  // month gridlines + labels
+  const months = []; const gm = new Date(minS.getFullYear(), minS.getMonth(), 1); if (gm < minS) gm.setMonth(gm.getMonth() + 1);
+  for (let g = 0; g < 240 && gm <= maxE; g++) { months.push(new Date(gm)); gm.setMonth(gm.getMonth() + 1); }
+  ctx.lineWidth = 1;
+  months.forEach(m => { const x = X(m); ctx.strokeStyle = '#d5d8dd'; ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.fillStyle = '#555'; ctx.font = 'bold 11px Arial'; ctx.fillText(m.toLocaleDateString('en-US', { month: 'short' }), x + 3, 9); });
+  // week ticks + day-of-month labels
+  const totalDays = totalMs / 86400000, tickDays = totalDays <= 130 ? 7 : (totalDays <= 280 ? 14 : 28);
+  { const d = new Date(minS); d.setHours(0, 0, 0, 0); while (d.getDay() !== 1 && d <= maxE) d.setDate(d.getDate() + 1);
+    ctx.font = '9px Arial';
+    for (let g = 0; d <= maxE && g < 400; g++) { const x = X(d); ctx.strokeStyle = 'rgba(213,216,221,0.55)'; ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.fillStyle = '#999'; ctx.fillText(String(d.getDate()), x + 2, 24); d.setDate(d.getDate() + tickDays); } }
+  // today marker
+  const today = _csParseDate(_csTodayStr());
+  if (today && today >= minS && today <= maxE) { const x = X(today); ctx.strokeStyle = '#f87171'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.setLineDash([]); }
+
+  // rows: labels + bars
+  const critical = _csCriticalSet(); const geo = {};
+  rows.forEach((r, i) => {
+    const y = bodyTop + i * ROWH, yc = y + ROWH / 2;
+    if (r.kind === 'divider') {
+      ctx.fillStyle = '#888'; ctx.font = 'italic bold 10px Arial'; ctx.fillText(_csTrunc(r.description || '—', 30), 6, yc);
+      ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(trackX, yc); ctx.lineTo(W - PAD, yc); ctx.stroke(); ctx.setLineDash([]); return;
+    }
+    const s = _csParseDate(r.start), e = _csParseDate(r.end), dur = _csRowDuration(r);
+    ctx.fillStyle = '#111'; ctx.font = '600 11px Arial'; ctx.fillText(_csTrunc(r.description || '(untitled)', 26), 6, y + 11);
+    ctx.fillStyle = '#888'; ctx.font = '9px Arial';
+    ctx.fillText(((s && e) ? `${_csFmtShortNoYear(s)} – ${_csFmtShortNoYear(e)}` : '') + (dur ? ' · ' + dur + 'd' : ''), 6, y + 22);
+    if (s && e) {
+      const x1 = X(s), x2 = X(e), bw = Math.max(4, x2 - x1), color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
+      geo[r.id] = { yc, x1, x2 };
+      const barY = yc - 7, pct = Math.min(100, Math.max(0, parseFloat(r.pct) || 0));
+      ctx.fillStyle = _csHexA(color, 0.2); ctx.fillRect(x1, barY, bw, 14);
+      ctx.fillStyle = color; ctx.fillRect(x1, barY, bw * pct / 100, 14);
+      ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.strokeRect(x1 + 0.5, barY + 0.5, bw - 1, 13);
+      ctx.fillStyle = '#666'; ctx.font = '9px Arial'; ctx.fillText((dur || '') + 'd', x2 + 4, yc);
+    }
+  });
+  // dependency arrows
+  rows.forEach(r => {
+    if (r.kind !== 'task' || !Array.isArray(r.deps) || !geo[r.id]) return;
+    r.deps.forEach(dep => {
+      const a = geo[dep], b = geo[r.id]; if (!a || !b) return;
+      const crit = critical.has(dep) && critical.has(r.id), col = crit ? '#dc2626' : '#64748b';
+      const x1 = a.x2, y1 = a.yc, x2 = b.x1, y2 = b.yc, kx = x1 + 11;
+      ctx.strokeStyle = col; ctx.lineWidth = crit ? 1.6 : 1.1; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(kx, y1); ctx.lineTo(kx, y2); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 - 5, y2 - 3); ctx.lineTo(x2 - 5, y2 + 3); ctx.closePath(); ctx.fill();
+    });
+  });
+
+  try { return { dataUrl: cv.toDataURL('image/png'), width: W, height: H }; } catch (e) { console.warn('[CS] gantt png failed', e.message); return null; }
+}
+
+/* ── Print / PDF export — DataWatch-branded schedule + Gantt ──────────────── */
+function _csExportPdf() {
+  if (!_csData) return;
+  const esc = _csEsc;
+  const h = _csData.header || {};
+  const rows = _csData.rows || [];
+  const overall = _csComputeOverall();
+  const span = _csProjectSpan();
+  const wwLabel = (_CS_WORKWEEKS.find(m => m.v === (_csData.workWeek || 5)) || {}).label || '';
+  const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const taskCount = rows.filter(r => r.kind === 'task').length;
+  const depName = id => { const t = rows.find(x => x.id === id); return t ? ((t.description || '').trim() || 'task') : ''; };
+
+  const kpis = [
+    span ? ['Project Start', _csFmtShort(span.start)] : null,
+    span ? ['Finish', _csFmtShort(span.end)] : null,
+    span ? ['Est. Working Days', `${span.workingDays} <span style="font-size:8px;color:#888;font-weight:400">(${esc(wwLabel)})</span>`] : null,
+    ['Overall % Done', `${overall}%`],
+    ['Tasks', String(taskCount)],
+  ].filter(Boolean).map(([l, v]) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
+
+  const tbody = rows.map(r => {
+    if (r.kind === 'divider') return `<tr class="divider"><td colspan="11">${esc(r.description) || '—'}</td></tr>`;
+    const deps = (Array.isArray(r.deps) ? r.deps : []).map(depName).filter(Boolean).join(', ');
+    const pct = Math.round(Math.min(100, Math.max(0, parseFloat(r.pct) || 0)));
+    return `<tr>
+      <td>${esc(r.status)}</td><td>${esc(r.priority)}</td>
+      <td>${r.start ? _csFmtShort(_csParseDate(r.start)) : ''}</td>
+      <td>${r.end ? _csFmtShort(_csParseDate(r.end)) : ''}</td>
+      <td class="c">${esc(_csRowDuration(r))}</td>
+      <td>${esc(r.code)}</td><td>${esc(r.subcode)}</td>
+      <td>${esc(r.description)}</td><td>${esc(r.deliverable)}</td>
+      <td class="c">${pct}%</td><td>${esc(deps)}</td>
+    </tr>`;
+  }).join('');
+
+  const ganttHtml = _csRenderGanttHtml();
+  const titleTxt = (h.heading || h.projectTitle || 'Project');
+
+  const win = window.open('', '_blank');
+  if (!win) { alert('Pop-up blocked — allow pop-ups to export the schedule.'); return; }
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Construction Schedule — ${esc(titleTxt)}</title>
+  <style>
+    :root{--border:#d5d8dd;--muted:#666;--fg:#111;--surface:#f4f4f4;--red:#dc2626;--blue:#16a34a}
+    *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
+    body{color:#111;background:#fff;padding:0.55cm 0.7cm}
+    .dw-head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:3px solid #16a34a;padding-bottom:9px;margin-bottom:11px}
+    .dw-brand{display:flex;align-items:center;gap:9px}
+    .dw-logo{width:32px;height:32px;flex:0 0 32px;border-radius:8px;background:linear-gradient(135deg,#16a34a,#0891b2);color:#fff;font-size:17px;font-weight:800;display:flex;align-items:center;justify-content:center}
+    .dw-brand .nm{font-size:18px;font-weight:800;letter-spacing:-0.02em;color:#0f172a;line-height:1}
+    .dw-brand .tag{font-size:7.5px;letter-spacing:0.16em;text-transform:uppercase;color:#16a34a;font-weight:700;margin-top:2px}
+    .dw-title{text-align:right}
+    .dw-title .t{font-size:16px;font-weight:800;color:#15803d;line-height:1.15;max-width:5.5in;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dw-title .s{font-size:9px;color:#777;margin-top:2px}
+    .info{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:9px}
+    .info .l{font-size:7px;text-transform:uppercase;letter-spacing:0.06em;color:#888;font-weight:700}
+    .info .v{font-size:11px;color:#111;font-weight:600}
+    .kpis{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:13px;border-top:1px solid #e3e5e9;border-bottom:1px solid #e3e5e9;padding:8px 0}
+    .kpi .l{font-size:8px;text-transform:uppercase;letter-spacing:0.05em;color:#888}
+    .kpi .v{font-size:14px;font-weight:700;color:#111}
+    h2{font-size:12px;color:#0f172a;margin:13px 0 7px;padding-bottom:4px;border-bottom:2px solid #16a34a}
+    table{border-collapse:collapse;width:100%}
+    thead{display:table-header-group}
+    th,td{border:1px solid #ccc;padding:3px 6px;font-size:8.5px;text-align:left;vertical-align:top}
+    th{background:#15803d;color:#fff;white-space:nowrap;font-size:7.5px;text-transform:uppercase;letter-spacing:0.03em}
+    td.c{text-align:center}
+    tr{page-break-inside:avoid}
+    tr:nth-child(even) td{background:#f7f8fa}
+    tr.divider td{background:#e5e7eb;font-style:italic;font-weight:700;color:#374151}
+    .gantt{border:1px solid #e3e5e9;border-radius:6px;padding:10px 12px}
+    .gantt-wrap{page-break-inside:avoid}
+    .fn{font-size:8px;color:#777;margin-top:8px}
+    @media print{@page{margin:0.55cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  </style></head><body>
+    <div class="dw-head">
+      <div class="dw-brand">
+        <div><div class="nm">DataWatch <span style="color:#cbd5e1;font-weight:400">|</span> FTSI</div><div class="tag">Construction Schedule</div></div>
+      </div>
+      <div class="dw-title"><div class="t">${esc(titleTxt)}</div><div class="s">Generated ${dateStr}</div></div>
+    </div>
+    <div class="info">
+      <div><div class="l">Project Title</div><div class="v">${esc(h.projectTitle) || '&mdash;'}</div></div>
+      <div><div class="l">Project Manager</div><div class="v">${esc(h.pm) || '&mdash;'}</div></div>
+      <div><div class="l">Company</div><div class="v">${esc(h.company) || '&mdash;'}</div></div>
+      <div><div class="l">Date</div><div class="v">${esc(h.date) || '&mdash;'}</div></div>
+    </div>
+    <div class="kpis">${kpis}</div>
+    <h2>Timeline</h2>
+    <table><thead><tr>
+      <th>Status</th><th>Priority</th><th>Start</th><th>End</th><th>Dur</th><th>Code</th><th>Subcode</th><th>Description</th><th>Deliverable</th><th>% Done</th><th>Depends On</th>
+    </tr></thead><tbody>${tbody}</tbody></table>
+    <h2>Gantt Chart</h2>
+    <div class="gantt-wrap"><div class="gantt">${ganttHtml}</div></div>
+    <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; <span style="color:#dc2626;font-weight:700">red</span> marks the critical path (dependency chain that drives the finish date); the dashed line marks today; arrows show finish-to-start dependencies.</p>
+    <script>window.onload=function(){window.print();}<\/script>
+  </body></html>`);
+  win.document.close();
+}
+
+/* ── Email the schedule — reuses the shared report-email modal ────────────── */
+// A proportional bar built from table cells (email clients can't do the
+// absolute-positioned / SVG on-screen Gantt, but handle table cells + bgcolor).
+function _csEmailBar(r, minMs, totalMs, critical) {
+  const s = _csParseDate(r.start), e = _csParseDate(r.end);
+  if (!s || !e) return '';
+  const left = Math.max(0, Math.min(99, (s.getTime() - minMs) / totalMs * 100));
+  const barW = Math.max(2, Math.min(100 - left, (e.getTime() - s.getTime()) / totalMs * 100));
+  const color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
+  const cell = 'font-size:0;line-height:11px;mso-line-height-rule:exactly';
+  return `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="table-layout:fixed;border-collapse:collapse"><tr>
+    <td width="${left.toFixed(1)}%" style="${cell}">&nbsp;</td>
+    <td width="${barW.toFixed(1)}%" bgcolor="${color}" style="${cell};border-radius:3px">&nbsp;</td>
+    <td style="${cell}">&nbsp;</td>
+  </tr></table>`;
+}
+// Build the email body: DataWatch header + info + KPIs + timeline table +
+// Gantt. When a rendered PNG is supplied it's embedded (identical to the
+// on-screen chart) via <img src="cid:cs-gantt">; otherwise a table-cell bar
+// chart is used as a fallback. All inline-styled to survive email clients.
+function _csBuildEmailReportHtml(png) {
+  const esc = _csEsc;
+  const h = _csData.header || {};
+  const rows = _csData.rows || [];
+  const overall = _csComputeOverall();
+  const span = _csProjectSpan();
+  const wwLabel = (_CS_WORKWEEKS.find(m => m.v === (_csData.workWeek || 5)) || {}).label || '';
+  const critical = _csCriticalSet();
+  const depName = id => { const t = rows.find(x => x.id === id); return t ? ((t.description || '').trim() || 'task') : ''; };
+  const titleTxt = (h.heading || h.projectTitle || 'Project');
+
+  const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  let minMs = null, maxMs = null;
+  dated.forEach(t => { const s = _csParseDate(t.start).getTime(), e = _csParseDate(t.end).getTime(); if (minMs == null || s < minMs) minMs = s; if (maxMs == null || e > maxMs) maxMs = e; });
+  const totalMs = Math.max(86400000, (maxMs || 0) - (minMs || 0));
+
+  const kpi = (l, v) => `<td style="padding:6px 16px 6px 0;vertical-align:top"><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:#888">${l}</div><div style="font-size:14px;font-weight:700;color:#111">${v}</div></td>`;
+  const kpis = [
+    span ? kpi('Project Start', _csFmtShort(span.start)) : '',
+    span ? kpi('Finish', _csFmtShort(span.end)) : '',
+    span ? kpi('Est. Working Days', `${span.workingDays} <span style="font-size:8px;color:#888;font-weight:400">(${esc(wwLabel)})</span>`) : '',
+    kpi('Overall % Done', `${overall}%`),
+    kpi('Tasks', String(rows.filter(r => r.kind === 'task').length)),
+  ].join('');
+
+  const th = t => `<th style="background:#15803d;color:#fff;font-size:9px;text-transform:uppercase;letter-spacing:.03em;padding:5px 7px;text-align:left;border:1px solid #cfd4da;white-space:nowrap">${t}</th>`;
+  const td = (v, c) => `<td style="font-size:10px;padding:4px 7px;border:1px solid #d7dbe0;${c ? 'text-align:center;' : ''}">${v}</td>`;
+  const tRows = rows.map((r, i) => {
+    if (r.kind === 'divider') return `<tr><td colspan="9" style="background:#e5e7eb;color:#374151;font-style:italic;font-weight:700;font-size:10px;padding:4px 7px;border:1px solid #d7dbe0">${esc(r.description) || '—'}</td></tr>`;
+    const deps = (Array.isArray(r.deps) ? r.deps : []).map(depName).filter(Boolean).join(', ');
+    const pct = Math.round(Math.min(100, Math.max(0, parseFloat(r.pct) || 0)));
+    const critMark = critical.has(r.id) ? ' <span style="color:#dc2626;font-weight:700">&#9670;</span>' : '';
+    return `<tr style="${i % 2 ? 'background:#f7f8fa;' : ''}">${td(esc(r.status) + critMark)}${td(esc(r.priority))}${td(r.start ? _csFmtShort(_csParseDate(r.start)) : '')}${td(r.end ? _csFmtShort(_csParseDate(r.end)) : '')}${td(esc(_csRowDuration(r)), true)}${td(esc(r.description))}${td(esc(r.deliverable))}${td(pct + '%', true)}${td(esc(deps))}</tr>`;
+  }).join('');
+
+  // Gantt: prefer the rendered PNG (identical to the on-screen chart). Fall back
+  // to a table-cell bar chart when no image was produced (e.g. no dated tasks).
+  let ganttBlock;
+  if (png && png.dataUrl) {
+    ganttBlock = `<img src="cid:cs-gantt" alt="Gantt chart — task timeline with the critical path in red; see the Timeline table above for exact dates." style="display:block;width:100%;max-width:${png.width}px;height:auto;border:1px solid #e3e5e9;border-radius:6px" />`;
+  } else {
+    const ganttRows = rows.map(r => {
+      if (r.kind === 'divider') return `<tr><td colspan="2" style="padding:7px 0 3px;font-style:italic;font-weight:700;font-size:10px;color:#888;border-top:1px dashed #ccc">${esc(r.description) || '—'}</td></tr>`;
+      const s = _csParseDate(r.start), e = _csParseDate(r.end);
+      const dr = (s && e) ? `${_csFmtShortNoYear(s)} &ndash; ${_csFmtShortNoYear(e)}` : '';
+      const dur = _csRowDuration(r);
+      return `<tr>
+        <td width="185" style="width:185px;padding:3px 8px 3px 0;vertical-align:middle">
+          <div style="font-size:11px;font-weight:600;color:#111;line-height:1.2">${esc(r.description) || '(untitled)'}</div>
+          ${dr ? `<div style="font-size:9px;color:#888">${dr}${dur ? ' &middot; ' + dur + 'd' : ''}</div>` : ''}
+        </td>
+        <td style="vertical-align:middle;padding:3px 0">${_csEmailBar(r, minMs, totalMs, critical)}</td>
+      </tr>`;
+    }).join('');
+    ganttBlock = `<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">${ganttRows}</table>`;
+  }
+
+  const legend = [['Complete', '#60a5fa'], ['In Progress', '#4ade80'], ['Not Yet Started', '#94a3b8'], ['On Hold', '#fbbf24'], ['Critical path', '#dc2626']]
+    .map(([l, c]) => `<span style="display:inline-block;margin-right:13px;font-size:9px;color:#666"><span style="display:inline-block;width:9px;height:9px;background:${c};border-radius:2px;vertical-align:middle;margin-right:3px">&nbsp;</span>${l}</span>`).join('');
+
+  const info = ['Project Title', 'Project Manager', 'Company', 'Date'].map((l, i) => {
+    const v = [h.projectTitle, h.pm, h.company, h.date][i];
+    return `<td style="padding:0 22px 0 0;vertical-align:top"><div style="font-size:8px;text-transform:uppercase;letter-spacing:.05em;color:#888;font-weight:700">${l}</div><div style="font-size:11px;color:#111;font-weight:600">${esc(v) || '—'}</div></td>`;
+  }).join('');
+
+  return `
+  <div style="font-family:Arial,Helvetica,sans-serif;color:#111;max-width:760px">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:3px solid #16a34a;padding-bottom:6px;margin-bottom:10px"><tr>
+      <td style="vertical-align:middle"><span style="font-size:17px;font-weight:800;color:#0f172a">DataWatch <span style="color:#cbd5e1;font-weight:400">|</span> FTSI</span><div style="font-size:8px;letter-spacing:.16em;text-transform:uppercase;color:#16a34a;font-weight:700;margin-top:2px">Construction Schedule</div></td>
+      <td style="text-align:right;vertical-align:middle"><div style="font-size:15px;font-weight:800;color:#15803d">${esc(titleTxt)}</div></td>
+    </tr></table>
+    <table cellpadding="0" cellspacing="0" style="margin-bottom:8px"><tr>${info}</tr></table>
+    <table cellpadding="0" cellspacing="0" style="border-top:1px solid #e3e5e9;border-bottom:1px solid #e3e5e9;margin-bottom:14px"><tr>${kpis}</tr></table>
+    <div style="font-size:12px;font-weight:700;color:#0f172a;border-bottom:2px solid #16a34a;padding-bottom:3px;margin-bottom:6px">Timeline</div>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:18px">
+      <tr>${['Status', 'Priority', 'Start', 'End', 'Dur', 'Description', 'Deliverable', '% Done', 'Depends On'].map(th).join('')}</tr>
+      ${tRows}
+    </table>
+    <div style="font-size:12px;font-weight:700;color:#0f172a;border-bottom:2px solid #16a34a;padding-bottom:3px;margin-bottom:5px">Gantt Chart</div>
+    <div style="margin-bottom:7px">${legend}</div>
+    ${ganttBlock}
+    <div style="font-size:8px;color:#999;margin-top:9px">Est. Working Days counts ${esc(wwLabel)}; &#9670; / red marks the critical path (drives the finish date). Open the schedule in DataWatch for the fully interactive Gantt.</div>
+  </div>`;
+}
+function _csEmailSchedule() {
+  if (!_csData) return;
+  if (typeof window.openReportEmailModal !== 'function') {
+    alert('Email module is still loading — please try again in a moment.');
+    return;
+  }
+  const h = _csData.header || {};
+  const titleTxt = (h.projectTitle || h.heading || 'Construction Schedule');
+  // Render the Gantt to a PNG at send time so the email chart is identical to
+  // the on-screen one; embed it inline via a cid: attachment. getHTML and
+  // getAttachments both re-render from the same (synchronous) _csData, so the
+  // <img src="cid:cs-gantt"> reference and the attachment always agree.
+  window.openReportEmailModal({
+    reportType:     'turf_construction_schedule',
+    projectId:      _csProjId,
+    projectName:    titleTxt,
+    defaultSubject: 'Construction Schedule — ' + titleTxt,
+    getHTML:        () => _csBuildEmailReportHtml(_csGanttToPng()),
+    getAttachments: () => {
+      const png = _csGanttToPng();
+      if (!png || !png.dataUrl) return [];
+      return [{ filename: 'construction-gantt.png', content: png.dataUrl.split(',')[1], contentId: 'cs-gantt' }];
+    },
+  });
+}
+
+/* ── persistence ─────────────────────────────────────────────────────────── */
+function _csSetSaveInd(state) {
+  const el = document.getElementById('cs-save-ind');
+  if (!el) return;
+  const map = {
+    dirty:  ['● Unsaved changes', 'var(--muted)'],
+    saving: ['Saving…',           'var(--muted)'],
+    saved:  ['Saved ✓',           '#4ade80'],
+    error:  ['⚠ Save failed — kept in this tab', 'var(--red)'],
+  };
+  const [txt, color] = map[state] || ['', ''];
+  el.textContent = txt; el.style.color = color;
+}
+function _csScheduleSave() {
+  _csDirty = true;
+  _csSetSaveInd('dirty');
+  if (_csSaveTimer) clearTimeout(_csSaveTimer);
+  _csSaveTimer = setTimeout(_csSaveNow, 700);
+}
+function _csSaveNow() {
+  if (_csSaveTimer) { clearTimeout(_csSaveTimer); _csSaveTimer = null; }
+  if (!_csProjId || !_csData) return;
+  _csSetSaveInd('saving');
+  const payload = Object.assign({}, _csData, { projectId:_csProjId, updatedAt:new Date().toISOString() });
+  fetch(`${API_BASE}/data/${_csKey(_csProjId)}`, {
+    method:'PUT',
+    headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${fctToken}` },
+    body: JSON.stringify({ value: payload }),
+  }).then(r => {
+    if (r.status === 401) { logout(); return; }
+    _csDirty = !r.ok;
+    _csSetSaveInd(r.ok ? 'saved' : 'error');
+    if (!r.ok) console.warn('[CS] save failed HTTP', r.status);
+  }).catch(e => { _csSetSaveInd('error'); console.warn('[CS] save error', e.message); });
+}
+
+/* ── job load / pick ─────────────────────────────────────────────────────── */
+async function _csLoadJob(projId) {
+  const p = getProj(projId);
+  if (!p) { alert('Project not found.'); return; }
+  _csProjId = projId;
+  _csData   = null;                 // triggers the "Loading…" view
+  renderConstructionSchedule();
+  const saved = await apiGet(_csKey(projId));
+  if (saved && typeof saved === 'object' && Array.isArray(saved.rows)) {
+    _csData = saved;
+    _csData.header = Object.assign({ heading:'', projectTitle:'', pm:'', company:'', date:'' }, saved.header || {});
+  } else {
+    _csData = _csBlankData();
+  }
+  _csAutofillHeader(p);
+  // Drop the old auto-prefilled "Task" placeholder from the Code column.
+  let _csMig = false;
+  (_csData.rows || []).forEach(r => { if (r.kind === 'task' && r.code === 'Task') { r.code = ''; _csMig = true; } });
+  _csDirty = false;
+  renderConstructionSchedule();
+  if (_csMig) _csScheduleSave();   // persist the one-time cleanup
+}
+function _csPickJob() {
+  const el  = document.getElementById('cs-job-input');
+  const val = (el ? el.value : '').trim();
+  if (!val) { alert('Type or pick a job to load.'); return; }
+  const p = projectsList.find(x => x.id === val)
+    || projectsList.find(x => (x['project-name'] || '').trim().toLowerCase() === val.toLowerCase());
+  if (!p) { alert('No job matches “' + val + '”. Pick one from the list.'); return; }
+  _csLoadJob(p.id);
+}
+function _csChangeJob() {
+  if (_csDirty) _csSaveNow();       // flush before leaving the job
+  _csProjId = null; _csData = null;
+  renderConstructionSchedule();
+}
+
+/* ── edits (no full re-render — preserves input focus while typing) ──────── */
+function _csEdit(id, field, value) {
+  const row = (_csData.rows || []).find(r => r.id === id);
+  if (!row) return;
+  row[field] = value;
+  if (field === 'start' || field === 'end') {
+    row.duration = _csRowDuration(row);            // always recompute from the dates
+    const de = document.getElementById('cs-dur-' + id);
+    if (de) de.textContent = row.duration;
+    _csUpdateSummary();
+    _csUpdateHeaderStats();
+  }
+  if (field === 'status') {
+    if (value === 'Complete' && (!row.pct || +row.pct === 0)) {
+      row.pct = 100;
+      const pe = document.getElementById('cs-pct-' + id);
+      if (pe) pe.value = 100;
+    }
+    const se = document.getElementById('cs-statuscell-' + id);
+    if (se) se.style.color = _csStatusColor(value);
+  }
+  if (field === 'pct' || field === 'status') _csUpdateSummary();
+  _csUpdateGantt();
+  _csScheduleSave();
+}
+function _csHeaderEdit(field, value) {
+  if (!_csData) return;
+  _csData.header[field] = value;
+  _csScheduleSave();
+}
+function _csUpdateSummary() {
+  const el = document.getElementById('cs-overall');
+  if (el) el.textContent = _csComputeOverall() + '%';
+}
+
+/* ── row operations (structural — full re-render) ────────────────────────── */
+function _csAddTask()    { _csData.rows.push(_csNewTask());    _csScheduleSave(); renderConstructionSchedule(); }
+function _csAddDivider() { _csData.rows.push(_csNewDivider()); _csScheduleSave(); renderConstructionSchedule(); }
+function _csDeleteRow(id) {
+  const row = _csData.rows.find(r => r.id === id);
+  const label = row && row.description ? ('“' + row.description + '”') : 'this row';
+  if (!confirm('Delete ' + label + '?')) return;
+  _csData.rows = _csData.rows.filter(r => r.id !== id);
+  _csScheduleSave(); renderConstructionSchedule();
+}
+function _csMoveRow(id, dir) {
+  const a = _csData.rows, i = a.findIndex(r => r.id === id), j = i + dir;
+  if (i < 0 || j < 0 || j >= a.length) return;
+  const t = a[i]; a[i] = a[j]; a[j] = t;
+  _csScheduleSave(); renderConstructionSchedule();
+}
+
+/* ── templates (reusable task lists across jobs) ─────────────────────────── */
+async function _csEnsureTemplates() {
+  if (_csTemplates !== null) return _csTemplates;
+  const t = await apiGet('fct_conschedule_templates');
+  _csTemplates = Array.isArray(t) ? t : [];
+  return _csTemplates;
+}
+function _csPersistTemplates() { apiPut('fct_conschedule_templates', _csTemplates || []); }
+async function _csSaveAsTemplate() {
+  if (!_csData || !(_csData.rows || []).length) { alert('Add some tasks first.'); return; }
+  const name = prompt('Save this task list as a reusable template. Template name:');
+  if (!name || !name.trim()) return;
+  await _csEnsureTemplates();
+  const rows = _csData.rows.map(r => r.kind === 'divider'
+    ? { kind:'divider', description:r.description }
+    : { kind:'task', status:'Not Yet Started', priority:r.priority || 'High',
+        start:'', end:'', duration:'', code:r.code || '',
+        subcode:r.subcode || '', description:r.description || '',
+        deliverable:r.deliverable || '', pct:0 });
+  _csTemplates.push({ id:_csUid(), name:name.trim(), rows });
+  _csPersistTemplates();
+  renderConstructionSchedule();
+}
+async function _csApplyTemplate(tid) {
+  if (!tid) return;
+  await _csEnsureTemplates();
+  const t = _csTemplates.find(x => x.id === tid);
+  if (!t) return;
+  const hasWork = (_csData.rows || []).some(r => r.description || r.start || r.end || (r.pct && +r.pct > 0));
+  if (hasWork && !confirm('Replace the current task list with template “' + t.name + '”? The job header is kept.')) return;
+  _csData.rows = (t.rows || []).map(r => Object.assign({}, r, { id:_csUid() }));
+  _csScheduleSave(); renderConstructionSchedule();
+}
+async function _csDeleteTemplate(tid) {
+  await _csEnsureTemplates();
+  const t = _csTemplates.find(x => x.id === tid);
+  if (!t || !confirm('Delete template “' + t.name + '”? This cannot be undone.')) return;
+  _csTemplates = _csTemplates.filter(x => x.id !== tid);
+  _csPersistTemplates(); renderConstructionSchedule();
+}
+
+/* ── view helpers ────────────────────────────────────────────────────────── */
+function _csStatusColor(s) {
+  return s === 'Complete'    ? 'var(--blue)'
+       : s === 'In Progress' ? 'var(--green)'
+       : s === 'On Hold'     ? 'var(--yellow)'
+       : 'var(--muted)';
+}
+const _CS_TD  = 'padding:0.25rem 0.3rem;border-bottom:1px solid var(--border);vertical-align:middle';
+const _CS_INP = 'width:100%;background:transparent;border:none;color:var(--fg);font-size:0.72rem;padding:0.15rem 0.15rem;outline:none;font-family:inherit';
+
+function _csCell(id, field, value, extra) {
+  return `<input value="${_csEsc(value)}" oninput="_csEdit('${id}','${field}',this.value)" style="${_CS_INP}${extra || ''}">`;
+}
+function _csSelect(id, field, value, opts, colorize) {
+  const options = opts.map(o => `<option value="${_csEsc(o)}" ${o === value ? 'selected' : ''}>${_csEsc(o)}</option>`).join('');
+  const style = _CS_INP + ';cursor:pointer' + (colorize ? (';font-weight:600;color:' + _csStatusColor(value)) : '');
+  const idAttr = colorize ? ` id="cs-statuscell-${id}"` : '';
+  return `<select${idAttr} onchange="_csEdit('${id}','${field}',this.value)" style="${style}">${options}</select>`;
+}
+
+/* ── task dependencies (finish-to-start predecessors) ────────────────────── */
+function _csDepsCell(row) {
+  const all  = (_csData.rows || []).filter(r => r.kind === 'task' && r.id !== row.id);
+  const deps = Array.isArray(row.deps) ? row.deps : [];
+  const chips = deps.map(depId => {
+    const t  = (_csData.rows || []).find(x => x.id === depId);
+    const nm = t ? ((t.description || '').trim() || 'task') : '(removed)';
+    return `<span style="display:inline-flex;align-items:center;gap:1px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0 2px 0 4px;font-size:0.62rem;color:var(--fg)">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:74px">${_csEsc(nm)}</span>
+      <span onclick="_csRemoveDep('${row.id}','${depId}')" style="cursor:pointer;color:var(--red);font-weight:700;padding:0 1px" title="Remove dependency">×</span>
+    </span>`;
+  }).join('');
+  const avail = all.filter(t => !deps.includes(t.id));
+  const add = avail.length
+    ? `<select onchange="_csAddDep('${row.id}',this.value);this.value=''" title="Add a predecessor (this task starts after it finishes)" style="background:transparent;border:1px dashed var(--border);color:var(--muted);border-radius:4px;font-size:0.62rem;padding:0 1px;cursor:pointer;max-width:100%">
+        <option value="">＋ dep</option>${avail.map(t => `<option value="${t.id}">${_csEsc(((t.description || '').trim() || 'Untitled task').slice(0, 32))}</option>`).join('')}
+      </select>`
+    : '';
+  return `<div style="display:flex;flex-wrap:wrap;gap:2px;align-items:center">${chips}${add}</div>`;
+}
+function _csAddDep(succId, predId) {
+  if (!predId) return;
+  const rows = _csData.rows || [];
+  const succ = rows.find(r => r.id === succId);
+  const pred = rows.find(r => r.id === predId);
+  if (!succ || !pred || predId === succId) return;
+  if (!Array.isArray(succ.deps)) succ.deps = [];
+  if (succ.deps.includes(predId)) return;
+  if (Array.isArray(pred.deps) && pred.deps.includes(succId)) { alert('That would create a circular dependency.'); return; }
+  succ.deps.push(predId);
+  _csScheduleSave();
+  renderConstructionSchedule();
+}
+function _csRemoveDep(succId, predId) {
+  const succ = (_csData.rows || []).find(r => r.id === succId);
+  if (!succ || !Array.isArray(succ.deps)) return;
+  succ.deps = succ.deps.filter(d => d !== predId);
+  _csScheduleSave();
+  renderConstructionSchedule();
+}
+
+function _csRowHtml(row, index, total) {
+  const btn = 'background:none;border:none;color:var(--muted);cursor:pointer;padding:0 2px;font-size:0.8rem';
+  const up   = `<button title="Move up" onclick="_csMoveRow('${row.id}',-1)" ${index === 0 ? 'disabled' : ''} style="${btn};${index === 0 ? 'opacity:0.3' : ''}">▲</button>`;
+  const down = `<button title="Move down" onclick="_csMoveRow('${row.id}',1)" ${index === total - 1 ? 'disabled' : ''} style="${btn};${index === total - 1 ? 'opacity:0.3' : ''}">▼</button>`;
+  const del  = `<button title="Delete row" onclick="_csDeleteRow('${row.id}')" style="background:none;border:none;color:var(--red);cursor:pointer;padding:0 4px;font-size:0.85rem">✕</button>`;
+  const actions = `<td style="${_CS_TD};white-space:nowrap;text-align:center">${up}${down}${del}</td>`;
+
+  if (row.kind === 'divider') {
+    return `<tr>
+      <td colspan="11" style="${_CS_TD};background:rgba(148,163,184,0.18)">
+        <input value="${_csEsc(row.description)}" placeholder="Section divider / note (e.g. Pause for vertical construction off of subbase?)"
+          oninput="_csEdit('${row.id}','description',this.value)"
+          style="${_CS_INP};font-style:italic;font-weight:600">
+      </td>${actions}</tr>`;
+  }
+
+  return `<tr>
+    <td style="${_CS_TD};min-width:110px">${_csSelect(row.id, 'status', row.status, _CS_STATUSES, true)}</td>
+    <td style="${_CS_TD};min-width:70px">${_csSelect(row.id, 'priority', row.priority, _CS_PRIORITIES, false)}</td>
+    <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
+    <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
+    <td style="${_CS_TD};min-width:48px;text-align:center"><span id="cs-dur-${row.id}" style="font-size:0.72rem;color:var(--fg)" title="Auto-calculated from the start and end dates">${_csEsc(_csRowDuration(row))}</span></td>
+    <td style="${_CS_TD};min-width:60px">${_csCell(row.id, 'code', row.code)}</td>
+    <td style="${_CS_TD};min-width:60px">${_csCell(row.id, 'subcode', row.subcode)}</td>
+    <td style="${_CS_TD}">${_csCell(row.id, 'description', row.description)}</td>
+    <td style="${_CS_TD};min-width:90px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
+    <td style="${_CS_TD};min-width:52px"><input id="cs-pct-${row.id}" type="number" min="0" max="100" value="${_csEsc(row.pct)}" oninput="_csEdit('${row.id}','pct',this.value)" style="${_CS_INP};text-align:center"></td>
+    <td style="${_CS_TD};min-width:100px">${_csDepsCell(row)}</td>
+    ${actions}</tr>`;
+}
+
+function renderConstructionSchedule() {
+  const el = document.getElementById('construction-root');
+  if (!el) return;
+
+  const ghostBtn = 'padding:0.42rem 0.85rem;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:7px;font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap';
+  const greenBtn = 'display:inline-flex;align-items:center;gap:0.35rem;padding:0.42rem 0.9rem;background:rgba(74,222,128,0.15);border:1.5px solid rgba(74,222,128,0.45);color:#4ade80;border-radius:7px;font-size:0.82rem;font-weight:700;cursor:pointer;white-space:nowrap';
+  const blueBtn  = 'display:inline-flex;align-items:center;gap:0.35rem;padding:0.42rem 0.9rem;background:rgba(96,165,250,0.15);border:1.5px solid rgba(96,165,250,0.5);color:#60a5fa;border-radius:7px;font-size:0.82rem;font-weight:700;cursor:pointer;white-space:nowrap';
+
+  /* ---- no job picked → picker screen ---- */
+  if (!_csProjId) {
+    const opts = projectsList.slice()
+      .sort((a, b) => (a['project-name'] || '').localeCompare(b['project-name'] || ''))
+      .map(p => `<option value="${_csEsc(p['project-name'] || 'Untitled')}"></option>`).join('');
+    el.innerHTML = `
+      <div style="max-width:640px;margin:2.5rem auto;text-align:center">
+        <div style="font-size:1.15rem;font-weight:800;color:var(--fg);margin-bottom:0.4rem">🏗 Construction Schedule</div>
+        <div style="font-size:0.82rem;color:var(--muted);line-height:1.5;margin-bottom:1.4rem">
+          Pick a job to build or edit its construction schedule. The header auto-fills from the job, and every change saves to the database — so you can come back to any job and pick up where you left off.
+        </div>
+        <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap">
+          <input id="cs-job-input" list="cs-job-datalist" placeholder="Search a job by name…" autocomplete="off"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();_csPickJob();}"
+            style="background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:0.5rem 0.75rem;border-radius:8px;font-size:0.85rem;width:300px">
+          <datalist id="cs-job-datalist">${opts}</datalist>
+          <button onclick="_csPickJob()" style="${greenBtn}">Load Schedule →</button>
+        </div>
+        ${projectsList.length ? '' : '<div style="margin-top:1rem;font-size:0.75rem;color:var(--muted)">Loading jobs… if this persists, open the Home tab first.</div>'}
+      </div>`;
+    return;
+  }
+
+  /* ---- job picked, still loading from DB ---- */
+  if (!_csData) {
+    el.innerHTML = `<div style="padding:2.5rem;text-align:center;color:var(--muted);font-size:0.9rem">Loading schedule…</div>`;
+    return;
+  }
+
+  /* ---- full editor ---- */
+  const h = _csData.header;
+  const overall = _csComputeOverall();
+  const rowsHtml = _csData.rows.map((r, i) => _csRowHtml(r, i, _csData.rows.length)).join('');
+
+  const tmplOptions = (_csTemplates || []).map(t => `<option value="${_csEsc(t.id)}">${_csEsc(t.name)}</option>`).join('');
+  const tmplApply = (_csTemplates && _csTemplates.length)
+    ? `<select onchange="if(this.value){_csApplyTemplate(this.value);this.value='';}" style="${ghostBtn};max-width:170px">
+         <option value="">Apply template…</option>${tmplOptions}
+       </select>`
+    : '';
+  const tmplDelete = (_csTemplates && _csTemplates.length)
+    ? `<select onchange="if(this.value){_csDeleteTemplate(this.value);this.value='';}" style="${ghostBtn};max-width:150px" title="Delete a saved template">
+         <option value="">Delete template…</option>${tmplOptions}
+       </select>`
+    : '';
+
+  const hInp = (field, val, ph) => `<input value="${_csEsc(val)}" placeholder="${ph}" oninput="_csHeaderEdit('${field}',this.value)"
+      style="width:100%;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--fg);font-size:0.85rem;padding:0.2rem 0.1rem;outline:none">`;
+  const hLbl = 'font-size:0.62rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.15rem;font-weight:700';
+
+  el.innerHTML = `
+    <div style="max-width:1200px;margin:0 auto">
+      <!-- toolbar -->
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+        <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
+          <button onclick="_csChangeJob()" style="${ghostBtn}">← Change job</button>
+          <span id="cs-save-ind" style="font-size:0.75rem;color:var(--muted)"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+          ${tmplApply}${tmplDelete}
+          <button onclick="_csSaveAsTemplate()" style="${ghostBtn}">☆ Save as template</button>
+          <button onclick="_csExportPdf()" style="${ghostBtn}">&#128438; Print / PDF</button>
+          <button onclick="_csEmailSchedule()" style="${ghostBtn}">&#9993; Email</button>
+          <button onclick="_csSaveNow()" style="${blueBtn}">Save now</button>
+        </div>
+      </div>
+
+      <!-- header card -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.1rem 1.25rem;margin-bottom:1.25rem">
+        <input value="${_csEsc(h.heading)}" placeholder="Project / site name (big heading)" oninput="_csHeaderEdit('heading',this.value)"
+          style="width:100%;background:transparent;border:none;color:var(--green);font-size:1.5rem;font-weight:800;padding:0 0 0.5rem;outline:none;border-bottom:2px solid var(--border);margin-bottom:0.9rem">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0.9rem 1.75rem">
+          <div><div style="${hLbl}">Project Title</div>${hInp('projectTitle', h.projectTitle, 'e.g. Softball Field')}</div>
+          <div><div style="${hLbl}">Project Manager</div>${hInp('pm', h.pm, 'e.g. George Oakes')}</div>
+          <div><div style="${hLbl}">Company Name</div>${hInp('company', h.company, '')}</div>
+          <div><div style="${hLbl}">Date</div>${hInp('date', h.date, '')}</div>
+        </div>
+        <div id="cs-header-stats" style="margin-top:0.95rem;padding-top:0.75rem;border-top:1px solid var(--border);font-size:0.75rem;display:flex;flex-wrap:wrap;align-items:center;gap:0.15rem">${_csHeaderStatsHtml()}</div>
+      </div>
+
+      <!-- timeline heading + overall % -->
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.5rem;border-bottom:2px solid var(--green);padding-bottom:0.35rem">
+        <div style="font-size:1.05rem;font-weight:800;color:var(--fg)">Timeline</div>
+        <div style="font-size:1.05rem;font-weight:800;color:var(--green)" title="Duration-weighted average of task % done"><span id="cs-overall">${overall}%</span></div>
+      </div>
+
+      <!-- task table -->
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="background:var(--green);color:#fff">
+              ${['Status','Priority','Start Date','End Date','Duration','Code','Subcode','Description','Deliverable','% Done','Depends On',''].map((th, i) => `<th style="padding:0.3rem 0.35rem;text-align:${i === 9 || i === 4 ? 'center' : 'left'};font-size:0.6rem;text-transform:uppercase;letter-spacing:0.03em;font-weight:700;white-space:nowrap">${th}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+
+      <!-- add row buttons -->
+      <div style="display:flex;gap:0.55rem;flex-wrap:wrap;margin-top:0.9rem">
+        <button onclick="_csAddTask()" style="${greenBtn}">＋ Add Task</button>
+        <button onclick="_csAddDivider()" style="${ghostBtn}">＋ Add Section Divider</button>
+      </div>
+
+      <!-- Gantt chart (below the schedule, same screen) -->
+      <div style="margin-top:2rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.7rem;border-bottom:2px solid var(--green);padding-bottom:0.35rem">
+          <div style="font-size:1.05rem;font-weight:800;color:var(--fg)">Gantt Chart</div>
+          <div style="display:flex;gap:0.9rem;flex-wrap:wrap;font-size:0.68rem;color:var(--muted)">
+            ${[['Complete','#60a5fa'],['In Progress','#4ade80'],['Not Yet Started','#94a3b8'],['On Hold','#fbbf24'],['Critical path','#dc2626']].map(([l,c]) => `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${l}</span>`).join('')}
+          </div>
+        </div>
+        <div id="cs-gantt">${_csRenderGanttHtml()}</div>
+      </div>
+    </div>`;
+
+  // Lazily load templates once, then refresh so the toolbar dropdowns populate.
+  if (_csTemplates === null) _csEnsureTemplates().then(() => { if (_csProjId && _csData) renderConstructionSchedule(); });
+
+  // Reflect the current unsaved/saved state on (re)render.
+  if (_csDirty) _csSetSaveInd('dirty');
+}
+
+
 </script>
 </body>
 </html>

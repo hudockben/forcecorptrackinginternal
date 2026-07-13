@@ -28,6 +28,7 @@ const {
   MAX_HTML_BYTES,
   isValidEmail,
   sanitizeReportHtml,
+  normalizeAttachments,
   buildEmailHtml,
   sendEmail,
 } = require('../lib/email');
@@ -38,6 +39,7 @@ const REPORT_TYPES = {
   turf_daily_pm:        { division: 'turf',      label: 'Daily PM Report'                  },
   turf_daily_summary:   { division: 'turf',      label: 'Daily Summary Report'             },
   turf_bid_items:       { division: 'turf',      label: 'Bid Line Items vs Actuals — Turf' },
+  turf_construction_schedule: { division: 'turf', label: 'Construction Schedule'           },
   paving_daily_pm:      { division: 'paving',    label: 'Daily PM Report'                    },
   paving_daily_summary: { division: 'paving',    label: 'Daily Summary Report'               },
   paving_bid_items:     { division: 'paving',    label: 'Bid Line Items vs Actuals — Paving' },
@@ -65,6 +67,7 @@ module.exports = async (req, res) => {
     subject,
     note,
     html,
+    attachments,
   } = body;
 
   // Validate report type + division access.
@@ -105,6 +108,12 @@ module.exports = async (req, res) => {
     return res.status(413).json({ ok: false, error: 'Report HTML is too large' });
   }
 
+  // Validate optional inline attachments (e.g. the rendered Gantt PNG).
+  const att = normalizeAttachments(attachments);
+  if (!att.ok) {
+    return res.status(400).json({ ok: false, error: att.error });
+  }
+
   const safeBody = sanitizeReportHtml(html);
 
   // Build subject — caller can override, fallback to a sensible default.
@@ -126,9 +135,10 @@ module.exports = async (req, res) => {
   });
 
   const result = await sendEmail({
-    to:      cleaned,
-    subject: finalSubject,
-    html:    wrapped,
+    to:          cleaned,
+    subject:     finalSubject,
+    html:        wrapped,
+    attachments: att.attachments,
   });
 
   if (!result.ok) {

@@ -24,7 +24,8 @@ function isAllowedKey(k) {
     || /^dust_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_paving_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_quarry_[a-zA-Z0-9_-]+$/.test(k)
-    || /^fct_scheduler[_a-zA-Z0-9-]*$/.test(k);
+    || /^fct_scheduler[_a-zA-Z0-9-]*$/.test(k)
+    || /^fct_conschedule_[a-zA-Z0-9_-]+$/.test(k);
 }
 
 /**
