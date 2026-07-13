@@ -23607,8 +23607,8 @@ function _csRowHtml(row, index, total) {
   }
 
   return `<tr>
-    <td style="${_CS_TD};min-width:120px">${_csSelect(row.id, 'status', row.status, _CS_STATUSES, true)}</td>
-    <td style="${_CS_TD};min-width:90px">${_csSelect(row.id, 'priority', row.priority, _CS_PRIORITIES, false)}</td>
+    <td style="${_CS_TD};min-width:150px">${_csSelect(row.id, 'status', row.status, _CS_STATUSES, true)}</td>
+    <td style="${_CS_TD};min-width:95px">${_csSelect(row.id, 'priority', row.priority, _CS_PRIORITIES, false)}</td>
     <td style="${_CS_TD};min-width:135px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
     <td style="${_CS_TD};min-width:135px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
     <td style="${_CS_TD};min-width:60px"><input id="cs-dur-${row.id}" type="number" min="0" value="${_csEsc(row.duration)}" oninput="_csEdit('${row.id}','duration',this.value)" style="${_CS_INP};text-align:center" title="Days between start and end — auto-filled from the dates; editable"></td>
