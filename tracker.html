@@ -23469,6 +23469,89 @@ function _csSetWorkWeek(val) {
   _csScheduleSave();
 }
 
+/* ── Gantt chart (rendered below the schedule, driven by the task dates) ─── */
+function _csGanttColor(status) {
+  return status === 'Complete'    ? '#60a5fa'
+       : status === 'In Progress' ? '#4ade80'
+       : status === 'On Hold'     ? '#fbbf24'
+       : '#94a3b8';   // Not Yet Started
+}
+function _csRenderGanttHtml() {
+  const rows  = (_csData && _csData.rows) || [];
+  const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  if (!dated.length) {
+    return `<div style="padding:1.4rem;text-align:center;color:var(--muted);font-size:0.8rem">Add start &amp; end dates to your tasks to see the Gantt chart.</div>`;
+  }
+  let minS = null, maxE = null;
+  dated.forEach(t => {
+    const s = _csParseDate(t.start), e = _csParseDate(t.end);
+    if (!minS || s < minS) minS = s;
+    if (!maxE || e > maxE) maxE = e;
+  });
+  const totalMs = Math.max(86400000, maxE - minS);
+  const pos = d => (d - minS) / totalMs * 100;    // % across the timeline track
+  const LABELW = 190;
+
+  // Month boundaries inside the range → gridlines + axis labels.
+  const months = [];
+  const gm = new Date(minS.getFullYear(), minS.getMonth(), 1);
+  if (gm < minS) gm.setMonth(gm.getMonth() + 1);
+  for (let g = 0; g < 240 && gm <= maxE; g++) { months.push(new Date(gm)); gm.setMonth(gm.getMonth() + 1); }
+
+  const grid = months.map(m => `<div style="position:absolute;left:${pos(m)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.45"></div>`).join('');
+  const axis = months.map(m => {
+    const lbl = m.toLocaleDateString('en-US', { month: 'short' }) + (m.getMonth() === 0 ? ` '${String(m.getFullYear()).slice(2)}` : '');
+    return `<div style="position:absolute;left:${pos(m)}%;font-size:0.62rem;color:var(--muted);white-space:nowrap;padding-left:3px">${lbl}</div>`;
+  }).join('');
+
+  const today = _csParseDate(_csTodayStr());
+  const todayLine = (today && today >= minS && today <= maxE)
+    ? `<div style="position:absolute;left:${pos(today)}%;top:0;bottom:0;border-left:2px dashed #f87171;opacity:0.85" title="Today"></div>` : '';
+
+  const body = rows.map(r => {
+    if (r.kind === 'divider') {
+      return `<div style="display:flex;align-items:center;height:22px;margin:0.25rem 0">
+        <div style="width:${LABELW}px;flex-shrink:0;font-size:0.66rem;font-weight:700;font-style:italic;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:0.5rem">${_csEsc(r.description) || '—'}</div>
+        <div style="flex:1;border-top:1px dashed var(--border)"></div>
+      </div>`;
+    }
+    const s = _csParseDate(r.start), e = _csParseDate(r.end);
+    const color = _csGanttColor(r.status);
+    const pct = Math.min(100, Math.max(0, parseFloat(r.pct) || 0));
+    const hasDesc = !!(r.description || '').trim();
+    const label = hasDesc ? _csEsc(r.description) : '(untitled task)';
+    let bar = '';
+    if (s && e) {
+      const left = pos(s), width = Math.max(0, pos(e) - pos(s));
+      const dur = _csRowDuration(r);
+      const tip = `${(r.description || '(untitled task)')}  ${r.start} → ${r.end}${dur ? `  (${dur}d)` : ''}  ${pct}% done`;
+      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:4px;height:15px;background:${color}33;border:1px solid ${color};border-radius:4px;overflow:hidden">
+        <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
+      </div>`;
+    }
+    return `<div style="display:flex;align-items:center;height:23px">
+      <div style="width:${LABELW}px;flex-shrink:0;font-size:0.72rem;color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:0.5rem" title="${_csEsc(r.description || '')}">${label}</div>
+      <div style="flex:1;position:relative;height:23px">${bar}</div>
+    </div>`;
+  }).join('');
+
+  return `
+    <div>
+      <div style="display:flex;align-items:flex-end;height:16px;margin-bottom:0.25rem">
+        <div style="width:${LABELW}px;flex-shrink:0"></div>
+        <div style="flex:1;position:relative;height:16px">${axis}</div>
+      </div>
+      <div style="position:relative;padding:0.15rem 0">
+        <div style="position:absolute;left:${LABELW}px;right:0;top:0;bottom:0;pointer-events:none">${grid}${todayLine}</div>
+        ${body}
+      </div>
+    </div>`;
+}
+function _csUpdateGantt() {
+  const el = document.getElementById('cs-gantt');
+  if (el) el.innerHTML = _csRenderGanttHtml();
+}
+
 /* ── persistence ─────────────────────────────────────────────────────────── */
 function _csSetSaveInd(state) {
   const el = document.getElementById('cs-save-ind');
@@ -23564,6 +23647,7 @@ function _csEdit(id, field, value) {
     if (se) se.style.color = _csStatusColor(value);
   }
   if (field === 'pct' || field === 'status') _csUpdateSummary();
+  _csUpdateGantt();
   _csScheduleSave();
 }
 function _csHeaderEdit(field, value) {
@@ -23792,6 +23876,17 @@ function renderConstructionSchedule() {
       <div style="display:flex;gap:0.55rem;flex-wrap:wrap;margin-top:0.9rem">
         <button onclick="_csAddTask()" style="${greenBtn}">＋ Add Task</button>
         <button onclick="_csAddDivider()" style="${ghostBtn}">＋ Add Section Divider</button>
+      </div>
+
+      <!-- Gantt chart (below the schedule, same screen) -->
+      <div style="margin-top:2rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.7rem;border-bottom:2px solid var(--blue);padding-bottom:0.35rem">
+          <div style="font-size:1.05rem;font-weight:800;color:var(--fg)">Gantt Chart</div>
+          <div style="display:flex;gap:0.9rem;flex-wrap:wrap;font-size:0.68rem;color:var(--muted)">
+            ${[['Complete','#60a5fa'],['In Progress','#4ade80'],['Not Yet Started','#94a3b8'],['On Hold','#fbbf24']].map(([l,c]) => `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${l}</span>`).join('')}
+          </div>
+        </div>
+        <div id="cs-gantt">${_csRenderGanttHtml()}</div>
       </div>
     </div>`;
 
