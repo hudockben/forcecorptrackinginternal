@@ -23543,13 +23543,21 @@ function _csRenderGanttHtml() {
     const label = hasDesc ? _csEsc(r.description) : '(untitled task)';
     let bar = '';
     if (s && e) {
-      const left = pos(s), width = Math.max(0, pos(e) - pos(s));
-      geo[r.id] = { yc: yTop + ROWH / 2, x1: left, x2: pos(e) };
+      const left = pos(s), endPct = pos(e), width = Math.max(0, endPct - left);
+      geo[r.id] = { yc: yTop + ROWH / 2, x1: left, x2: endPct };
       const dur = _csRowDuration(r);
       const tip = `${(r.description || '(untitled task)')}  ${r.start} → ${r.end}${dur ? `  (${dur}d)` : ''}  ${pct}% done`;
+      // Subtle duration label after the bar so it reads on the chart itself;
+      // anchor to the right edge when the bar ends near it so nothing overflows.
+      const durSty = `top:0;height:${ROWH}px;display:flex;align-items:center;font-size:0.57rem;color:var(--muted);white-space:nowrap;pointer-events:none`;
+      const durLabel = dur
+        ? (endPct > 90
+            ? `<span style="position:absolute;right:2px;${durSty}">${dur}d</span>`
+            : `<span style="position:absolute;left:${endPct}%;padding-left:4px;${durSty}">${dur}d</span>`)
+        : '';
       bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:5px;height:14px;background:${color}33;border:1px solid ${color};border-radius:4px;overflow:hidden">
         <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
-      </div>`;
+      </div>${durLabel}`;
     }
     return `<div style="display:flex;align-items:center;height:${ROWH}px">
       <div style="width:${LABELW}px;flex-shrink:0;font-size:0.72rem;color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:0.5rem" title="${_csEsc(r.description || '')}">${label}</div>
