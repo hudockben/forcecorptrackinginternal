@@ -107,6 +107,7 @@ function isLegacyKey(k) {
     || /^fct_trend_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_crm_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_lucius_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_conschedule_[a-zA-Z0-9_-]+$/.test(k)
     || /^dust_[a-zA-Z0-9_-]+$/.test(k);
 }
 
