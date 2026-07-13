@@ -23355,7 +23355,7 @@ function _csTodayStr() {
 
 function _csNewTask() {
   return { id:_csUid(), kind:'task', status:'Not Yet Started', priority:'High',
-           start:'', end:'', duration:'', code:'Task', subcode:'',
+           start:'', end:'', duration:'', code:'', subcode:'',
            description:'', deliverable:'', pct:0 };
 }
 function _csNewDivider() { return { id:_csUid(), kind:'divider', description:'' }; }
@@ -23413,6 +23413,43 @@ function _csComputeOverall() {
   return w ? Math.round(wsum / w) : 0;
 }
 
+/* ── project working-days estimate (header stat) ─────────────────────────── */
+function _csFmtShort(d) {
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+// Earliest start → latest end across task rows, plus the count of weekdays
+// (Mon–Fri) in that span. Returns null when no task has both dates.
+function _csProjectSpan() {
+  const tasks = (_csData.rows || []).filter(r => r.kind === 'task');
+  let minS = null, maxE = null;
+  tasks.forEach(t => {
+    const s = _csParseDate(t.start), e = _csParseDate(t.end);
+    if (s && (!minS || s < minS)) minS = s;
+    if (e && (!maxE || e > maxE)) maxE = e;
+  });
+  if (!minS || !maxE || maxE < minS) return null;
+  let days = 0;
+  const d = new Date(minS);
+  for (let g = 0; g < 100000 && d <= maxE; g++) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) days++;
+    d.setDate(d.getDate() + 1);
+  }
+  return { start: minS, end: maxE, workingDays: days };
+}
+function _csHeaderStatsHtml() {
+  const span = _csProjectSpan();
+  if (!span) return `<span style="color:var(--muted)">Add task start &amp; end dates to estimate working days.</span>`;
+  const sep = `<span style="color:var(--border);margin:0 0.7rem">|</span>`;
+  return `<span style="color:var(--muted)">Project Start</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.start)}</strong>${sep}`
+       + `<span style="color:var(--muted)">Finish</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.end)}</strong>${sep}`
+       + `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${span.workingDays}</strong>`;
+}
+function _csUpdateHeaderStats() {
+  const el = document.getElementById('cs-header-stats');
+  if (el) el.innerHTML = _csHeaderStatsHtml();
+}
+
 /* ── persistence ─────────────────────────────────────────────────────────── */
 function _csSetSaveInd(state) {
   const el = document.getElementById('cs-save-ind');
@@ -23464,8 +23501,12 @@ async function _csLoadJob(projId) {
     _csData = _csBlankData();
   }
   _csAutofillHeader(p);
+  // Drop the old auto-prefilled "Task" placeholder from the Code column.
+  let _csMig = false;
+  (_csData.rows || []).forEach(r => { if (r.kind === 'task' && r.code === 'Task') { r.code = ''; _csMig = true; } });
   _csDirty = false;
   renderConstructionSchedule();
+  if (_csMig) _csScheduleSave();   // persist the one-time cleanup
 }
 function _csPickJob() {
   const el  = document.getElementById('cs-job-input');
@@ -23492,6 +23533,7 @@ function _csEdit(id, field, value) {
     const de = document.getElementById('cs-dur-' + id);
     if (de) de.textContent = row.duration;
     _csUpdateSummary();
+    _csUpdateHeaderStats();
   }
   if (field === 'status') {
     if (value === 'Complete' && (!row.pct || +row.pct === 0)) {
@@ -23706,6 +23748,7 @@ function renderConstructionSchedule() {
           <div><div style="${hLbl}">Company Name</div>${hInp('company', h.company, '')}</div>
           <div><div style="${hLbl}">Date</div>${hInp('date', h.date, '')}</div>
         </div>
+        <div id="cs-header-stats" style="margin-top:0.95rem;padding-top:0.75rem;border-top:1px solid var(--border);font-size:0.75rem;display:flex;flex-wrap:wrap;align-items:center;gap:0.15rem">${_csHeaderStatsHtml()}</div>
       </div>
 
       <!-- timeline heading + overall % -->
