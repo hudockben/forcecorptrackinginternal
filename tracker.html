@@ -23363,7 +23363,7 @@ function _csTodayStr() {
 function _csNewTask() {
   return { id:_csUid(), kind:'task', status:'Not Yet Started', priority:'High',
            start:'', end:'', duration:'', code:'', subcode:'',
-           description:'', deliverable:'', pct:0 };
+           description:'', deliverable:'', pct:0, deps:[] };
 }
 function _csNewDivider() { return { id:_csUid(), kind:'divider', description:'' }; }
 
@@ -23466,6 +23466,7 @@ function _csSetWorkWeek(val) {
   if (!_csData) return;
   _csData.workWeek = parseInt(val, 10) || 5;
   _csUpdateHeaderStats();
+  _csUpdateGantt();
   _csScheduleSave();
 }
 
@@ -23490,29 +23491,49 @@ function _csRenderGanttHtml() {
   });
   const totalMs = Math.max(86400000, maxE - minS);
   const pos = d => (d - minS) / totalMs * 100;    // % across the timeline track
-  const LABELW = 190;
+  const clamp = x => Math.max(0, Math.min(100, x));
+  const LABELW = 190, ROWH = 24;
 
   // Month boundaries inside the range → gridlines + axis labels.
   const months = [];
   const gm = new Date(minS.getFullYear(), minS.getMonth(), 1);
   if (gm < minS) gm.setMonth(gm.getMonth() + 1);
   for (let g = 0; g < 240 && gm <= maxE; g++) { months.push(new Date(gm)); gm.setMonth(gm.getMonth() + 1); }
-
   const grid = months.map(m => `<div style="position:absolute;left:${pos(m)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.45"></div>`).join('');
   const axis = months.map(m => {
     const lbl = m.toLocaleDateString('en-US', { month: 'short' }) + (m.getMonth() === 0 ? ` '${String(m.getFullYear()).slice(2)}` : '');
     return `<div style="position:absolute;left:${pos(m)}%;font-size:0.62rem;color:var(--muted);white-space:nowrap;padding-left:3px">${lbl}</div>`;
   }).join('');
 
+  // Non-working-day shading, following the work-week toggle.
+  const mode = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
+  let shade = '';
+  if (mode.skip.length) {
+    const day = new Date(minS); day.setHours(0, 0, 0, 0);
+    for (let guard = 0; day <= maxE && guard < 4000; guard++) {
+      if (mode.skip.includes(day.getDay())) {
+        const runStart = new Date(day);
+        while (day <= maxE && mode.skip.includes(day.getDay())) day.setDate(day.getDate() + 1);
+        const x1 = clamp(pos(runStart)), x2 = clamp(pos(day));
+        if (x2 > x1) shade += `<div style="position:absolute;left:${x1}%;width:${x2 - x1}%;top:0;bottom:0;background:rgba(148,163,184,0.11)"></div>`;
+      } else {
+        day.setDate(day.getDate() + 1);
+      }
+    }
+  }
+
   const today = _csParseDate(_csTodayStr());
   const todayLine = (today && today >= minS && today <= maxE)
     ? `<div style="position:absolute;left:${pos(today)}%;top:0;bottom:0;border-left:2px dashed #f87171;opacity:0.85" title="Today"></div>` : '';
 
-  const body = rows.map(r => {
+  // Rows at a fixed height so dependency-arrow geometry is deterministic.
+  const geo = {};   // task id → { yc, x1, x2 } in the track coordinate space
+  const body = rows.map((r, i) => {
+    const yTop = i * ROWH;
     if (r.kind === 'divider') {
-      return `<div style="display:flex;align-items:center;height:22px;margin:0.25rem 0">
+      return `<div style="display:flex;align-items:center;height:${ROWH}px">
         <div style="width:${LABELW}px;flex-shrink:0;font-size:0.66rem;font-weight:700;font-style:italic;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:0.5rem">${_csEsc(r.description) || '—'}</div>
-        <div style="flex:1;border-top:1px dashed var(--border)"></div>
+        <div style="flex:1;border-top:1px dashed var(--border);opacity:0.7"></div>
       </div>`;
     }
     const s = _csParseDate(r.start), e = _csParseDate(r.end);
@@ -23523,17 +23544,35 @@ function _csRenderGanttHtml() {
     let bar = '';
     if (s && e) {
       const left = pos(s), width = Math.max(0, pos(e) - pos(s));
+      geo[r.id] = { yc: yTop + ROWH / 2, x1: left, x2: pos(e) };
       const dur = _csRowDuration(r);
       const tip = `${(r.description || '(untitled task)')}  ${r.start} → ${r.end}${dur ? `  (${dur}d)` : ''}  ${pct}% done`;
-      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:4px;height:15px;background:${color}33;border:1px solid ${color};border-radius:4px;overflow:hidden">
+      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:5px;height:14px;background:${color}33;border:1px solid ${color};border-radius:4px;overflow:hidden">
         <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
       </div>`;
     }
-    return `<div style="display:flex;align-items:center;height:23px">
+    return `<div style="display:flex;align-items:center;height:${ROWH}px">
       <div style="width:${LABELW}px;flex-shrink:0;font-size:0.72rem;color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:0.5rem" title="${_csEsc(r.description || '')}">${label}</div>
-      <div style="flex:1;position:relative;height:23px">${bar}</div>
+      <div style="flex:1;position:relative;height:${ROWH}px">${bar}</div>
     </div>`;
   }).join('');
+
+  // Dependency arrows (finish-to-start): predecessor end → successor start.
+  const bodyH = rows.length * ROWH;
+  let paths = '', heads = '';
+  rows.forEach(r => {
+    if (r.kind !== 'task' || !Array.isArray(r.deps) || !geo[r.id]) return;
+    r.deps.forEach(depId => {
+      const a = geo[depId], b = geo[r.id];    // a = predecessor, b = successor
+      if (!a || !b) return;
+      const x1 = a.x2, y1 = a.yc, x2 = b.x1, y2 = b.yc, kx = Math.min(100, x1 + 1.2);
+      paths += `<path d="M ${x1} ${y1} L ${kx} ${y1} L ${kx} ${y2} L ${x2} ${y2}" fill="none" stroke="#64748b" stroke-width="1.1" vector-effect="non-scaling-stroke" opacity="0.8"/>`;
+      heads += `<div style="position:absolute;left:${x2}%;top:${y2}px;transform:translate(-100%,-50%);width:0;height:0;border-top:3px solid transparent;border-bottom:3px solid transparent;border-left:5px solid #64748b;opacity:0.9"></div>`;
+    });
+  });
+  const arrows = (paths || heads) ? `
+    <svg viewBox="0 0 100 ${bodyH}" preserveAspectRatio="none" style="position:absolute;left:${LABELW}px;top:0;width:calc(100% - ${LABELW}px);height:${bodyH}px;pointer-events:none;overflow:visible">${paths}</svg>
+    <div style="position:absolute;left:${LABELW}px;right:0;top:0;height:${bodyH}px;pointer-events:none">${heads}</div>` : '';
 
   return `
     <div>
@@ -23541,9 +23580,10 @@ function _csRenderGanttHtml() {
         <div style="width:${LABELW}px;flex-shrink:0"></div>
         <div style="flex:1;position:relative;height:16px">${axis}</div>
       </div>
-      <div style="position:relative;padding:0.15rem 0">
-        <div style="position:absolute;left:${LABELW}px;right:0;top:0;bottom:0;pointer-events:none">${grid}${todayLine}</div>
+      <div style="position:relative">
+        <div style="position:absolute;left:${LABELW}px;right:0;top:0;bottom:0;pointer-events:none">${shade}${grid}${todayLine}</div>
         ${body}
+        ${arrows}
       </div>
     </div>`;
 }
@@ -23738,6 +23778,47 @@ function _csSelect(id, field, value, opts, colorize) {
   return `<select${idAttr} onchange="_csEdit('${id}','${field}',this.value)" style="${style}">${options}</select>`;
 }
 
+/* ── task dependencies (finish-to-start predecessors) ────────────────────── */
+function _csDepsCell(row) {
+  const all  = (_csData.rows || []).filter(r => r.kind === 'task' && r.id !== row.id);
+  const deps = Array.isArray(row.deps) ? row.deps : [];
+  const chips = deps.map(depId => {
+    const t  = (_csData.rows || []).find(x => x.id === depId);
+    const nm = t ? ((t.description || '').trim() || 'task') : '(removed)';
+    return `<span style="display:inline-flex;align-items:center;gap:1px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0 2px 0 4px;font-size:0.62rem;color:var(--fg)">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:74px">${_csEsc(nm)}</span>
+      <span onclick="_csRemoveDep('${row.id}','${depId}')" style="cursor:pointer;color:var(--red);font-weight:700;padding:0 1px" title="Remove dependency">×</span>
+    </span>`;
+  }).join('');
+  const avail = all.filter(t => !deps.includes(t.id));
+  const add = avail.length
+    ? `<select onchange="_csAddDep('${row.id}',this.value);this.value=''" title="Add a predecessor (this task starts after it finishes)" style="background:transparent;border:1px dashed var(--border);color:var(--muted);border-radius:4px;font-size:0.62rem;padding:0 1px;cursor:pointer;max-width:100%">
+        <option value="">＋ dep</option>${avail.map(t => `<option value="${t.id}">${_csEsc(((t.description || '').trim() || 'Untitled task').slice(0, 32))}</option>`).join('')}
+      </select>`
+    : '';
+  return `<div style="display:flex;flex-wrap:wrap;gap:2px;align-items:center">${chips}${add}</div>`;
+}
+function _csAddDep(succId, predId) {
+  if (!predId) return;
+  const rows = _csData.rows || [];
+  const succ = rows.find(r => r.id === succId);
+  const pred = rows.find(r => r.id === predId);
+  if (!succ || !pred || predId === succId) return;
+  if (!Array.isArray(succ.deps)) succ.deps = [];
+  if (succ.deps.includes(predId)) return;
+  if (Array.isArray(pred.deps) && pred.deps.includes(succId)) { alert('That would create a circular dependency.'); return; }
+  succ.deps.push(predId);
+  _csScheduleSave();
+  renderConstructionSchedule();
+}
+function _csRemoveDep(succId, predId) {
+  const succ = (_csData.rows || []).find(r => r.id === succId);
+  if (!succ || !Array.isArray(succ.deps)) return;
+  succ.deps = succ.deps.filter(d => d !== predId);
+  _csScheduleSave();
+  renderConstructionSchedule();
+}
+
 function _csRowHtml(row, index, total) {
   const btn = 'background:none;border:none;color:var(--muted);cursor:pointer;padding:0 2px;font-size:0.8rem';
   const up   = `<button title="Move up" onclick="_csMoveRow('${row.id}',-1)" ${index === 0 ? 'disabled' : ''} style="${btn};${index === 0 ? 'opacity:0.3' : ''}">▲</button>`;
@@ -23747,7 +23828,7 @@ function _csRowHtml(row, index, total) {
 
   if (row.kind === 'divider') {
     return `<tr>
-      <td colspan="10" style="${_CS_TD};background:rgba(148,163,184,0.18)">
+      <td colspan="11" style="${_CS_TD};background:rgba(148,163,184,0.18)">
         <input value="${_csEsc(row.description)}" placeholder="Section divider / note (e.g. Pause for vertical construction off of subbase?)"
           oninput="_csEdit('${row.id}','description',this.value)"
           style="${_CS_INP};font-style:italic;font-weight:600">
@@ -23765,6 +23846,7 @@ function _csRowHtml(row, index, total) {
     <td style="${_CS_TD}">${_csCell(row.id, 'description', row.description)}</td>
     <td style="${_CS_TD};min-width:90px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
     <td style="${_CS_TD};min-width:52px"><input id="cs-pct-${row.id}" type="number" min="0" max="100" value="${_csEsc(row.pct)}" oninput="_csEdit('${row.id}','pct',this.value)" style="${_CS_INP};text-align:center"></td>
+    <td style="${_CS_TD};min-width:100px">${_csDepsCell(row)}</td>
     ${actions}</tr>`;
 }
 
@@ -23865,7 +23947,7 @@ function renderConstructionSchedule() {
         <table style="width:100%;border-collapse:collapse">
           <thead>
             <tr style="background:var(--blue);color:#fff">
-              ${['Status','Priority','Start Date','End Date','Duration','Code','Subcode','Description','Deliverable','% Done',''].map((th, i) => `<th style="padding:0.3rem 0.35rem;text-align:${i === 9 || i === 4 ? 'center' : 'left'};font-size:0.6rem;text-transform:uppercase;letter-spacing:0.03em;font-weight:700;white-space:nowrap">${th}</th>`).join('')}
+              ${['Status','Priority','Start Date','End Date','Duration','Code','Subcode','Description','Deliverable','% Done','Depends On',''].map((th, i) => `<th style="padding:0.3rem 0.35rem;text-align:${i === 9 || i === 4 ? 'center' : 'left'};font-size:0.6rem;text-transform:uppercase;letter-spacing:0.03em;font-weight:700;white-space:nowrap">${th}</th>`).join('')}
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
