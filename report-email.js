@@ -9,6 +9,8 @@
  *     projectName,       // optional — used in default subject + group filtering
  *     defaultSubject,    // optional — fallback "Report — <project>"
  *     getHTML,           // () => string  — caller renders the report HTML on demand
+ *     getAttachments,    // optional () => [{filename, content(base64), contentId}]
+ *                        //   inline images referenced from HTML via <img src="cid:contentId">
  *   });
  *
  * The modal is appended to <body> on demand, fetches saved recipient
@@ -301,6 +303,14 @@
     catch (err) { setStatus('Couldn’t build report HTML: ' + err.message, 'error'); return; }
     if (!html) { setStatus('Report HTML is empty — try regenerating the report.', 'error'); return; }
 
+    // Optional inline attachments (e.g. a rendered Gantt PNG referenced from the
+    // HTML via <img src="cid:...">). Non-fatal — send text-only if it throws.
+    let attachments = [];
+    try {
+      const a = state.getAttachments ? state.getAttachments() : null;
+      if (Array.isArray(a)) attachments = a.filter(Boolean);
+    } catch (err) { attachments = []; }
+
     state.sending = true;
     setStatus('Sending…');
     const sendBtn = document.getElementById('rem-send');
@@ -318,6 +328,7 @@
           subject,
           note,
           html,
+          ...(attachments.length ? { attachments } : {}),
         }),
       });
       const j = await r.json();
@@ -448,6 +459,7 @@
       projectName:    opts.projectName || null,
       defaultSubject: opts.defaultSubject || REPORT_LABELS[opts.reportType] || 'Report',
       getHTML:        typeof opts.getHTML === 'function' ? opts.getHTML : null,
+      getAttachments: typeof opts.getAttachments === 'function' ? opts.getAttachments : null,
       recipients:     [],
       groups:         [],
       serverIsAdmin:  false,

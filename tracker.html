@@ -23662,6 +23662,93 @@ function _csUpdateGantt() {
   const el = document.getElementById('cs-gantt');
   if (el) el.innerHTML = _csRenderGanttHtml();
 }
+function _csTrunc(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function _csHexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; }
+
+// Render the Gantt to a PNG (canvas) so email can show a chart identical to the
+// on-screen one — bars + % fill, weekend shading, month/week axis, today line,
+// dependency arrows, and the critical path in red. Returns {dataUrl,width,height}.
+function _csGanttToPng() {
+  const rows = (_csData && _csData.rows) || [];
+  const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  if (!dated.length) return null;
+  let minS = null, maxE = null;
+  dated.forEach(t => { const s = _csParseDate(t.start), e = _csParseDate(t.end); if (!minS || s < minS) minS = s; if (!maxE || e > maxE) maxE = e; });
+  const totalMs = Math.max(86400000, maxE - minS);
+
+  const S = 2, W = 1000, LABELW = 185, ROWH = 30, AXIS = 34, PAD = 10, GUT = 0.95;
+  const bodyTop = AXIS + PAD, trackX = LABELW, trackW = W - LABELW - PAD;
+  const H = bodyTop + rows.length * ROWH + PAD;
+  const X = d => trackX + ((d - minS) / totalMs) * GUT * trackW;
+
+  const cv = document.createElement('canvas');
+  cv.width = W * S; cv.height = H * S;
+  const ctx = cv.getContext('2d');
+  ctx.scale(S, S);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+  ctx.textBaseline = 'middle';
+
+  // weekend / non-working-day shading
+  const mode = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
+  if (mode.skip.length) {
+    const day = new Date(minS); day.setHours(0, 0, 0, 0);
+    for (let g = 0; day <= maxE && g < 4000; g++) {
+      if (mode.skip.includes(day.getDay())) {
+        const rs = new Date(day); while (day <= maxE && mode.skip.includes(day.getDay())) day.setDate(day.getDate() + 1);
+        ctx.fillStyle = 'rgba(148,163,184,0.13)'; ctx.fillRect(X(rs), bodyTop, Math.max(0, X(day) - X(rs)), rows.length * ROWH);
+      } else day.setDate(day.getDate() + 1);
+    }
+  }
+  // month gridlines + labels
+  const months = []; const gm = new Date(minS.getFullYear(), minS.getMonth(), 1); if (gm < minS) gm.setMonth(gm.getMonth() + 1);
+  for (let g = 0; g < 240 && gm <= maxE; g++) { months.push(new Date(gm)); gm.setMonth(gm.getMonth() + 1); }
+  ctx.lineWidth = 1;
+  months.forEach(m => { const x = X(m); ctx.strokeStyle = '#d5d8dd'; ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.fillStyle = '#555'; ctx.font = 'bold 11px Arial'; ctx.fillText(m.toLocaleDateString('en-US', { month: 'short' }), x + 3, 9); });
+  // week ticks + day-of-month labels
+  const totalDays = totalMs / 86400000, tickDays = totalDays <= 130 ? 7 : (totalDays <= 280 ? 14 : 28);
+  { const d = new Date(minS); d.setHours(0, 0, 0, 0); while (d.getDay() !== 1 && d <= maxE) d.setDate(d.getDate() + 1);
+    ctx.font = '9px Arial';
+    for (let g = 0; d <= maxE && g < 400; g++) { const x = X(d); ctx.strokeStyle = 'rgba(213,216,221,0.55)'; ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.fillStyle = '#999'; ctx.fillText(String(d.getDate()), x + 2, 24); d.setDate(d.getDate() + tickDays); } }
+  // today marker
+  const today = _csParseDate(_csTodayStr());
+  if (today && today >= minS && today <= maxE) { const x = X(today); ctx.strokeStyle = '#f87171'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.setLineDash([]); }
+
+  // rows: labels + bars
+  const critical = _csCriticalSet(); const geo = {};
+  rows.forEach((r, i) => {
+    const y = bodyTop + i * ROWH, yc = y + ROWH / 2;
+    if (r.kind === 'divider') {
+      ctx.fillStyle = '#888'; ctx.font = 'italic bold 10px Arial'; ctx.fillText(_csTrunc(r.description || '—', 30), 6, yc);
+      ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(trackX, yc); ctx.lineTo(W - PAD, yc); ctx.stroke(); ctx.setLineDash([]); return;
+    }
+    const s = _csParseDate(r.start), e = _csParseDate(r.end), dur = _csRowDuration(r);
+    ctx.fillStyle = '#111'; ctx.font = '600 11px Arial'; ctx.fillText(_csTrunc(r.description || '(untitled)', 26), 6, y + 11);
+    ctx.fillStyle = '#888'; ctx.font = '9px Arial';
+    ctx.fillText(((s && e) ? `${_csFmtShortNoYear(s)} – ${_csFmtShortNoYear(e)}` : '') + (dur ? ' · ' + dur + 'd' : ''), 6, y + 22);
+    if (s && e) {
+      const x1 = X(s), x2 = X(e), bw = Math.max(4, x2 - x1), color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
+      geo[r.id] = { yc, x1, x2 };
+      const barY = yc - 7, pct = Math.min(100, Math.max(0, parseFloat(r.pct) || 0));
+      ctx.fillStyle = _csHexA(color, 0.2); ctx.fillRect(x1, barY, bw, 14);
+      ctx.fillStyle = color; ctx.fillRect(x1, barY, bw * pct / 100, 14);
+      ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.strokeRect(x1 + 0.5, barY + 0.5, bw - 1, 13);
+      ctx.fillStyle = '#666'; ctx.font = '9px Arial'; ctx.fillText((dur || '') + 'd', x2 + 4, yc);
+    }
+  });
+  // dependency arrows
+  rows.forEach(r => {
+    if (r.kind !== 'task' || !Array.isArray(r.deps) || !geo[r.id]) return;
+    r.deps.forEach(dep => {
+      const a = geo[dep], b = geo[r.id]; if (!a || !b) return;
+      const crit = critical.has(dep) && critical.has(r.id), col = crit ? '#dc2626' : '#64748b';
+      const x1 = a.x2, y1 = a.yc, x2 = b.x1, y2 = b.yc, kx = x1 + 11;
+      ctx.strokeStyle = col; ctx.lineWidth = crit ? 1.6 : 1.1; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(kx, y1); ctx.lineTo(kx, y2); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 - 5, y2 - 3); ctx.lineTo(x2 - 5, y2 + 3); ctx.closePath(); ctx.fill();
+    });
+  });
+
+  try { return { dataUrl: cv.toDataURL('image/png'), width: W, height: H }; } catch (e) { console.warn('[CS] gantt png failed', e.message); return null; }
+}
 
 /* ── Print / PDF export — DataWatch-branded schedule + Gantt ──────────────── */
 function _csExportPdf() {
@@ -23779,8 +23866,10 @@ function _csEmailBar(r, minMs, totalMs, critical) {
   </tr></table>`;
 }
 // Build the email body: DataWatch header + info + KPIs + timeline table +
-// email-safe Gantt. All inline-styled so it survives email-client rendering.
-function _csBuildEmailReportHtml() {
+// Gantt. When a rendered PNG is supplied it's embedded (identical to the
+// on-screen chart) via <img src="cid:cs-gantt">; otherwise a table-cell bar
+// chart is used as a fallback. All inline-styled to survive email clients.
+function _csBuildEmailReportHtml(png) {
   const esc = _csEsc;
   const h = _csData.header || {};
   const rows = _csData.rows || [];
@@ -23815,19 +23904,27 @@ function _csBuildEmailReportHtml() {
     return `<tr style="${i % 2 ? 'background:#f7f8fa;' : ''}">${td(esc(r.status) + critMark)}${td(esc(r.priority))}${td(r.start ? _csFmtShort(_csParseDate(r.start)) : '')}${td(r.end ? _csFmtShort(_csParseDate(r.end)) : '')}${td(esc(_csRowDuration(r)), true)}${td(esc(r.description))}${td(esc(r.deliverable))}${td(pct + '%', true)}${td(esc(deps))}</tr>`;
   }).join('');
 
-  const ganttRows = rows.map(r => {
-    if (r.kind === 'divider') return `<tr><td colspan="2" style="padding:7px 0 3px;font-style:italic;font-weight:700;font-size:10px;color:#888;border-top:1px dashed #ccc">${esc(r.description) || '—'}</td></tr>`;
-    const s = _csParseDate(r.start), e = _csParseDate(r.end);
-    const dr = (s && e) ? `${_csFmtShortNoYear(s)} &ndash; ${_csFmtShortNoYear(e)}` : '';
-    const dur = _csRowDuration(r);
-    return `<tr>
-      <td width="185" style="width:185px;padding:3px 8px 3px 0;vertical-align:middle">
-        <div style="font-size:11px;font-weight:600;color:#111;line-height:1.2">${esc(r.description) || '(untitled)'}</div>
-        ${dr ? `<div style="font-size:9px;color:#888">${dr}${dur ? ' &middot; ' + dur + 'd' : ''}</div>` : ''}
-      </td>
-      <td style="vertical-align:middle;padding:3px 0">${_csEmailBar(r, minMs, totalMs, critical)}</td>
-    </tr>`;
-  }).join('');
+  // Gantt: prefer the rendered PNG (identical to the on-screen chart). Fall back
+  // to a table-cell bar chart when no image was produced (e.g. no dated tasks).
+  let ganttBlock;
+  if (png && png.dataUrl) {
+    ganttBlock = `<img src="cid:cs-gantt" alt="Gantt chart — task timeline with the critical path in red; see the Timeline table above for exact dates." style="display:block;width:100%;max-width:${png.width}px;height:auto;border:1px solid #e3e5e9;border-radius:6px" />`;
+  } else {
+    const ganttRows = rows.map(r => {
+      if (r.kind === 'divider') return `<tr><td colspan="2" style="padding:7px 0 3px;font-style:italic;font-weight:700;font-size:10px;color:#888;border-top:1px dashed #ccc">${esc(r.description) || '—'}</td></tr>`;
+      const s = _csParseDate(r.start), e = _csParseDate(r.end);
+      const dr = (s && e) ? `${_csFmtShortNoYear(s)} &ndash; ${_csFmtShortNoYear(e)}` : '';
+      const dur = _csRowDuration(r);
+      return `<tr>
+        <td width="185" style="width:185px;padding:3px 8px 3px 0;vertical-align:middle">
+          <div style="font-size:11px;font-weight:600;color:#111;line-height:1.2">${esc(r.description) || '(untitled)'}</div>
+          ${dr ? `<div style="font-size:9px;color:#888">${dr}${dur ? ' &middot; ' + dur + 'd' : ''}</div>` : ''}
+        </td>
+        <td style="vertical-align:middle;padding:3px 0">${_csEmailBar(r, minMs, totalMs, critical)}</td>
+      </tr>`;
+    }).join('');
+    ganttBlock = `<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">${ganttRows}</table>`;
+  }
 
   const legend = [['Complete', '#60a5fa'], ['In Progress', '#4ade80'], ['Not Yet Started', '#94a3b8'], ['On Hold', '#fbbf24'], ['Critical path', '#dc2626']]
     .map(([l, c]) => `<span style="display:inline-block;margin-right:13px;font-size:9px;color:#666"><span style="display:inline-block;width:9px;height:9px;background:${c};border-radius:2px;vertical-align:middle;margin-right:3px">&nbsp;</span>${l}</span>`).join('');
@@ -23852,8 +23949,8 @@ function _csBuildEmailReportHtml() {
     </table>
     <div style="font-size:12px;font-weight:700;color:#0f172a;border-bottom:2px solid #16a34a;padding-bottom:3px;margin-bottom:5px">Gantt Chart</div>
     <div style="margin-bottom:7px">${legend}</div>
-    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">${ganttRows}</table>
-    <div style="font-size:8px;color:#999;margin-top:9px">Est. Working Days counts ${esc(wwLabel)}; &#9670; / red marks the critical path (drives the finish date). Open the schedule in DataWatch for the interactive Gantt with dependency arrows.</div>
+    ${ganttBlock}
+    <div style="font-size:8px;color:#999;margin-top:9px">Est. Working Days counts ${esc(wwLabel)}; &#9670; / red marks the critical path (drives the finish date). Open the schedule in DataWatch for the fully interactive Gantt.</div>
   </div>`;
 }
 function _csEmailSchedule() {
@@ -23864,13 +23961,21 @@ function _csEmailSchedule() {
   }
   const h = _csData.header || {};
   const titleTxt = (h.projectTitle || h.heading || 'Construction Schedule');
-  const html = _csBuildEmailReportHtml();
+  // Render the Gantt to a PNG at send time so the email chart is identical to
+  // the on-screen one; embed it inline via a cid: attachment. getHTML and
+  // getAttachments both re-render from the same (synchronous) _csData, so the
+  // <img src="cid:cs-gantt"> reference and the attachment always agree.
   window.openReportEmailModal({
     reportType:     'turf_construction_schedule',
     projectId:      _csProjId,
     projectName:    titleTxt,
     defaultSubject: 'Construction Schedule — ' + titleTxt,
-    getHTML:        () => html,
+    getHTML:        () => _csBuildEmailReportHtml(_csGanttToPng()),
+    getAttachments: () => {
+      const png = _csGanttToPng();
+      if (!png || !png.dataUrl) return [];
+      return [{ filename: 'construction-gantt.png', content: png.dataUrl.split(',')[1], contentId: 'cs-gantt' }];
+    },
   });
 }
 
