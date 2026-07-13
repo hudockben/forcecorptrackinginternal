@@ -23592,6 +23592,106 @@ function _csUpdateGantt() {
   if (el) el.innerHTML = _csRenderGanttHtml();
 }
 
+/* ── Print / PDF export — DataWatch-branded schedule + Gantt ──────────────── */
+function _csExportPdf() {
+  if (!_csData) return;
+  const esc = _csEsc;
+  const h = _csData.header || {};
+  const rows = _csData.rows || [];
+  const overall = _csComputeOverall();
+  const span = _csProjectSpan();
+  const wwLabel = (_CS_WORKWEEKS.find(m => m.v === (_csData.workWeek || 5)) || {}).label || '';
+  const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const taskCount = rows.filter(r => r.kind === 'task').length;
+  const depName = id => { const t = rows.find(x => x.id === id); return t ? ((t.description || '').trim() || 'task') : ''; };
+
+  const kpis = [
+    span ? ['Project Start', _csFmtShort(span.start)] : null,
+    span ? ['Finish', _csFmtShort(span.end)] : null,
+    span ? ['Est. Working Days', `${span.workingDays} <span style="font-size:8px;color:#888;font-weight:400">(${esc(wwLabel)})</span>`] : null,
+    ['Overall % Done', `${overall}%`],
+    ['Tasks', String(taskCount)],
+  ].filter(Boolean).map(([l, v]) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
+
+  const tbody = rows.map(r => {
+    if (r.kind === 'divider') return `<tr class="divider"><td colspan="11">${esc(r.description) || '—'}</td></tr>`;
+    const deps = (Array.isArray(r.deps) ? r.deps : []).map(depName).filter(Boolean).join(', ');
+    const pct = Math.round(Math.min(100, Math.max(0, parseFloat(r.pct) || 0)));
+    return `<tr>
+      <td>${esc(r.status)}</td><td>${esc(r.priority)}</td>
+      <td>${r.start ? _csFmtShort(_csParseDate(r.start)) : ''}</td>
+      <td>${r.end ? _csFmtShort(_csParseDate(r.end)) : ''}</td>
+      <td class="c">${esc(_csRowDuration(r))}</td>
+      <td>${esc(r.code)}</td><td>${esc(r.subcode)}</td>
+      <td>${esc(r.description)}</td><td>${esc(r.deliverable)}</td>
+      <td class="c">${pct}%</td><td>${esc(deps)}</td>
+    </tr>`;
+  }).join('');
+
+  const ganttHtml = _csRenderGanttHtml();
+  const titleTxt = (h.heading || h.projectTitle || 'Project');
+
+  const win = window.open('', '_blank');
+  if (!win) { alert('Pop-up blocked — allow pop-ups to export the schedule.'); return; }
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Construction Schedule — ${esc(titleTxt)}</title>
+  <style>
+    :root{--border:#d5d8dd;--muted:#666;--fg:#111;--surface:#f4f4f4;--red:#dc2626;--blue:#1d4ed8}
+    *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
+    body{color:#111;background:#fff;padding:0.55cm 0.7cm}
+    .dw-head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:3px solid #16a34a;padding-bottom:9px;margin-bottom:11px}
+    .dw-brand{display:flex;align-items:center;gap:9px}
+    .dw-logo{width:32px;height:32px;flex:0 0 32px;border-radius:8px;background:linear-gradient(135deg,#16a34a,#0891b2);color:#fff;font-size:17px;font-weight:800;display:flex;align-items:center;justify-content:center}
+    .dw-brand .nm{font-size:18px;font-weight:800;letter-spacing:-0.02em;color:#0f172a;line-height:1}
+    .dw-brand .tag{font-size:7.5px;letter-spacing:0.16em;text-transform:uppercase;color:#16a34a;font-weight:700;margin-top:2px}
+    .dw-title{text-align:right}
+    .dw-title .t{font-size:16px;font-weight:800;color:#1d4ed8;line-height:1.15;max-width:5.5in;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dw-title .s{font-size:9px;color:#777;margin-top:2px}
+    .info{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:9px}
+    .info .l{font-size:7px;text-transform:uppercase;letter-spacing:0.06em;color:#888;font-weight:700}
+    .info .v{font-size:11px;color:#111;font-weight:600}
+    .kpis{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:13px;border-top:1px solid #e3e5e9;border-bottom:1px solid #e3e5e9;padding:8px 0}
+    .kpi .l{font-size:8px;text-transform:uppercase;letter-spacing:0.05em;color:#888}
+    .kpi .v{font-size:14px;font-weight:700;color:#111}
+    h2{font-size:12px;color:#0f172a;margin:13px 0 7px;padding-bottom:4px;border-bottom:2px solid #1d4ed8}
+    table{border-collapse:collapse;width:100%}
+    thead{display:table-header-group}
+    th,td{border:1px solid #ccc;padding:3px 6px;font-size:8.5px;text-align:left;vertical-align:top}
+    th{background:#1d4ed8;color:#fff;white-space:nowrap;font-size:7.5px;text-transform:uppercase;letter-spacing:0.03em}
+    td.c{text-align:center}
+    tr{page-break-inside:avoid}
+    tr:nth-child(even) td{background:#f7f8fa}
+    tr.divider td{background:#e5e7eb;font-style:italic;font-weight:700;color:#374151}
+    .gantt{border:1px solid #e3e5e9;border-radius:6px;padding:10px 12px}
+    .gantt-wrap{page-break-inside:avoid}
+    .fn{font-size:8px;color:#777;margin-top:8px}
+    @media print{@page{margin:0.55cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  </style></head><body>
+    <div class="dw-head">
+      <div class="dw-brand">
+        <div class="dw-logo">&#127959;</div>
+        <div><div class="nm">DataWatch</div><div class="tag">Construction Schedule</div></div>
+      </div>
+      <div class="dw-title"><div class="t">${esc(titleTxt)}</div><div class="s">Generated ${dateStr}</div></div>
+    </div>
+    <div class="info">
+      <div><div class="l">Project Title</div><div class="v">${esc(h.projectTitle) || '&mdash;'}</div></div>
+      <div><div class="l">Project Manager</div><div class="v">${esc(h.pm) || '&mdash;'}</div></div>
+      <div><div class="l">Company</div><div class="v">${esc(h.company) || '&mdash;'}</div></div>
+      <div><div class="l">Date</div><div class="v">${esc(h.date) || '&mdash;'}</div></div>
+    </div>
+    <div class="kpis">${kpis}</div>
+    <h2>Timeline</h2>
+    <table><thead><tr>
+      <th>Status</th><th>Priority</th><th>Start</th><th>End</th><th>Dur</th><th>Code</th><th>Subcode</th><th>Description</th><th>Deliverable</th><th>% Done</th><th>Depends On</th>
+    </tr></thead><tbody>${tbody}</tbody></table>
+    <h2>Gantt Chart</h2>
+    <div class="gantt-wrap"><div class="gantt">${ganttHtml}</div></div>
+    <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; the dashed line marks today; arrows show finish-to-start dependencies.</p>
+    <script>window.onload=function(){window.print();}<\/script>
+  </body></html>`);
+  win.document.close();
+}
+
 /* ── persistence ─────────────────────────────────────────────────────────── */
 function _csSetSaveInd(state) {
   const el = document.getElementById('cs-save-ind');
@@ -23919,6 +24019,7 @@ function renderConstructionSchedule() {
         <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
           ${tmplApply}${tmplDelete}
           <button onclick="_csSaveAsTemplate()" style="${ghostBtn}">☆ Save as template</button>
+          <button onclick="_csExportPdf()" style="${ghostBtn}">&#128438; Print / PDF</button>
           <button onclick="_csSaveNow()" style="${blueBtn}">Save now</button>
         </div>
       </div>
