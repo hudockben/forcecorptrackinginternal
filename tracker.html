@@ -23493,7 +23493,9 @@ function _csRenderGanttHtml() {
     if (!maxE || e > maxE) maxE = e;
   });
   const totalMs = Math.max(86400000, maxE - minS);
-  const pos = d => (d - minS) / totalMs * 100;    // % across the timeline track
+  // Reserve a small right gutter (positions span 0–95%) so a task ending at the
+  // project end still has room for its duration label right after the bar.
+  const pos = d => (d - minS) / totalMs * 95;     // % across the timeline track
   const clamp = x => Math.max(0, Math.min(100, x));
   const LABELW = 190, ROWH = 34;
 
@@ -23567,9 +23569,7 @@ function _csRenderGanttHtml() {
       // anchor to the right edge when the bar ends near it so nothing overflows.
       const durSty = `top:0;height:${ROWH}px;display:flex;align-items:center;font-size:0.57rem;color:var(--muted);white-space:nowrap;pointer-events:none`;
       const durLabel = dur
-        ? (endPct > 90
-            ? `<span style="position:absolute;right:2px;${durSty}">${dur}d</span>`
-            : `<span style="position:absolute;left:${endPct}%;padding-left:4px;${durSty}">${dur}d</span>`)
+        ? `<span style="position:absolute;left:${endPct}%;padding-left:4px;${durSty}">${dur}d</span>`
         : '';
       bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:10px;height:14px;background:${color}33;border:1px solid ${color};border-radius:4px;overflow:hidden">
         <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
@@ -23663,7 +23663,7 @@ function _csExportPdf() {
   if (!win) { alert('Pop-up blocked — allow pop-ups to export the schedule.'); return; }
   win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Construction Schedule — ${esc(titleTxt)}</title>
   <style>
-    :root{--border:#d5d8dd;--muted:#666;--fg:#111;--surface:#f4f4f4;--red:#dc2626;--blue:#1d4ed8}
+    :root{--border:#d5d8dd;--muted:#666;--fg:#111;--surface:#f4f4f4;--red:#dc2626;--blue:#16a34a}
     *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
     body{color:#111;background:#fff;padding:0.55cm 0.7cm}
     .dw-head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:3px solid #16a34a;padding-bottom:9px;margin-bottom:11px}
@@ -23672,7 +23672,7 @@ function _csExportPdf() {
     .dw-brand .nm{font-size:18px;font-weight:800;letter-spacing:-0.02em;color:#0f172a;line-height:1}
     .dw-brand .tag{font-size:7.5px;letter-spacing:0.16em;text-transform:uppercase;color:#16a34a;font-weight:700;margin-top:2px}
     .dw-title{text-align:right}
-    .dw-title .t{font-size:16px;font-weight:800;color:#1d4ed8;line-height:1.15;max-width:5.5in;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dw-title .t{font-size:16px;font-weight:800;color:#15803d;line-height:1.15;max-width:5.5in;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .dw-title .s{font-size:9px;color:#777;margin-top:2px}
     .info{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:9px}
     .info .l{font-size:7px;text-transform:uppercase;letter-spacing:0.06em;color:#888;font-weight:700}
@@ -23680,11 +23680,11 @@ function _csExportPdf() {
     .kpis{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:13px;border-top:1px solid #e3e5e9;border-bottom:1px solid #e3e5e9;padding:8px 0}
     .kpi .l{font-size:8px;text-transform:uppercase;letter-spacing:0.05em;color:#888}
     .kpi .v{font-size:14px;font-weight:700;color:#111}
-    h2{font-size:12px;color:#0f172a;margin:13px 0 7px;padding-bottom:4px;border-bottom:2px solid #1d4ed8}
+    h2{font-size:12px;color:#0f172a;margin:13px 0 7px;padding-bottom:4px;border-bottom:2px solid #16a34a}
     table{border-collapse:collapse;width:100%}
     thead{display:table-header-group}
     th,td{border:1px solid #ccc;padding:3px 6px;font-size:8.5px;text-align:left;vertical-align:top}
-    th{background:#1d4ed8;color:#fff;white-space:nowrap;font-size:7.5px;text-transform:uppercase;letter-spacing:0.03em}
+    th{background:#15803d;color:#fff;white-space:nowrap;font-size:7.5px;text-transform:uppercase;letter-spacing:0.03em}
     td.c{text-align:center}
     tr{page-break-inside:avoid}
     tr:nth-child(even) td{background:#f7f8fa}
@@ -24054,7 +24054,7 @@ function renderConstructionSchedule() {
       <!-- header card -->
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.1rem 1.25rem;margin-bottom:1.25rem">
         <input value="${_csEsc(h.heading)}" placeholder="Project / site name (big heading)" oninput="_csHeaderEdit('heading',this.value)"
-          style="width:100%;background:transparent;border:none;color:var(--blue);font-size:1.5rem;font-weight:800;padding:0 0 0.5rem;outline:none;border-bottom:2px solid var(--border);margin-bottom:0.9rem">
+          style="width:100%;background:transparent;border:none;color:var(--green);font-size:1.5rem;font-weight:800;padding:0 0 0.5rem;outline:none;border-bottom:2px solid var(--border);margin-bottom:0.9rem">
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0.9rem 1.75rem">
           <div><div style="${hLbl}">Project Title</div>${hInp('projectTitle', h.projectTitle, 'e.g. Softball Field')}</div>
           <div><div style="${hLbl}">Project Manager</div>${hInp('pm', h.pm, 'e.g. George Oakes')}</div>
@@ -24065,16 +24065,16 @@ function renderConstructionSchedule() {
       </div>
 
       <!-- timeline heading + overall % -->
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.5rem;border-bottom:2px solid var(--blue);padding-bottom:0.35rem">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.5rem;border-bottom:2px solid var(--green);padding-bottom:0.35rem">
         <div style="font-size:1.05rem;font-weight:800;color:var(--fg)">Timeline</div>
-        <div style="font-size:1.05rem;font-weight:800;color:var(--blue)" title="Duration-weighted average of task % done"><span id="cs-overall">${overall}%</span></div>
+        <div style="font-size:1.05rem;font-weight:800;color:var(--green)" title="Duration-weighted average of task % done"><span id="cs-overall">${overall}%</span></div>
       </div>
 
       <!-- task table -->
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse">
           <thead>
-            <tr style="background:var(--blue);color:#fff">
+            <tr style="background:var(--green);color:#fff">
               ${['Status','Priority','Start Date','End Date','Duration','Code','Subcode','Description','Deliverable','% Done','Depends On',''].map((th, i) => `<th style="padding:0.3rem 0.35rem;text-align:${i === 9 || i === 4 ? 'center' : 'left'};font-size:0.6rem;text-transform:uppercase;letter-spacing:0.03em;font-weight:700;white-space:nowrap">${th}</th>`).join('')}
             </tr>
           </thead>
@@ -24090,7 +24090,7 @@ function renderConstructionSchedule() {
 
       <!-- Gantt chart (below the schedule, same screen) -->
       <div style="margin-top:2rem">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.7rem;border-bottom:2px solid var(--blue);padding-bottom:0.35rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.7rem;border-bottom:2px solid var(--green);padding-bottom:0.35rem">
           <div style="font-size:1.05rem;font-weight:800;color:var(--fg)">Gantt Chart</div>
           <div style="display:flex;gap:0.9rem;flex-wrap:wrap;font-size:0.68rem;color:var(--muted)">
             ${[['Complete','#60a5fa'],['In Progress','#4ade80'],['Not Yet Started','#94a3b8'],['On Hold','#fbbf24']].map(([l,c]) => `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${l}</span>`).join('')}
