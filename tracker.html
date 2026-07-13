@@ -23395,12 +23395,18 @@ function _csCalcDuration(start, end) {
   const days = Math.round((b - a) / 86400000);
   return days >= 0 ? days : null;
 }
+// Duration is derived from the dates: the day count when both are set, else ''.
+function _csRowDuration(row) {
+  const d = _csCalcDuration(row.start, row.end);
+  return d == null ? '' : String(d);
+}
 function _csComputeOverall() {
   const tasks = (_csData.rows || []).filter(r => r.kind === 'task');
   if (!tasks.length) return 0;
   let wsum = 0, w = 0;
   tasks.forEach(t => {
-    const dur = Math.max(1, parseFloat(t.duration) || 1);
+    const d = _csCalcDuration(t.start, t.end);
+    const dur = Math.max(1, d != null ? d : (parseFloat(t.duration) || 1));
     const pct = Math.min(100, Math.max(0, parseFloat(t.pct) || 0));
     wsum += dur * pct; w += dur;
   });
@@ -23482,12 +23488,9 @@ function _csEdit(id, field, value) {
   if (!row) return;
   row[field] = value;
   if (field === 'start' || field === 'end') {
-    const dur = _csCalcDuration(row.start, row.end);
-    if ((row.duration === '' || row.duration == null) && dur != null) {
-      row.duration = String(dur);
-      const de = document.getElementById('cs-dur-' + id);
-      if (de) de.value = row.duration;
-    }
+    row.duration = _csRowDuration(row);            // always recompute from the dates
+    const de = document.getElementById('cs-dur-' + id);
+    if (de) de.textContent = row.duration;
     _csUpdateSummary();
   }
   if (field === 'status') {
@@ -23499,7 +23502,7 @@ function _csEdit(id, field, value) {
     const se = document.getElementById('cs-statuscell-' + id);
     if (se) se.style.color = _csStatusColor(value);
   }
-  if (field === 'pct' || field === 'duration' || field === 'status') _csUpdateSummary();
+  if (field === 'pct' || field === 'status') _csUpdateSummary();
   _csScheduleSave();
 }
 function _csHeaderEdit(field, value) {
@@ -23545,7 +23548,7 @@ async function _csSaveAsTemplate() {
   const rows = _csData.rows.map(r => r.kind === 'divider'
     ? { kind:'divider', description:r.description }
     : { kind:'task', status:'Not Yet Started', priority:r.priority || 'High',
-        start:'', end:'', duration:r.duration || '', code:r.code || '',
+        start:'', end:'', duration:'', code:r.code || '',
         subcode:r.subcode || '', description:r.description || '',
         deliverable:r.deliverable || '', pct:0 });
   _csTemplates.push({ id:_csUid(), name:name.trim(), rows });
@@ -23611,7 +23614,7 @@ function _csRowHtml(row, index, total) {
     <td style="${_CS_TD};min-width:70px">${_csSelect(row.id, 'priority', row.priority, _CS_PRIORITIES, false)}</td>
     <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
     <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
-    <td style="${_CS_TD};min-width:48px"><input id="cs-dur-${row.id}" type="number" min="0" value="${_csEsc(row.duration)}" oninput="_csEdit('${row.id}','duration',this.value)" style="${_CS_INP};text-align:center" title="Days between start and end — auto-filled from the dates; editable"></td>
+    <td style="${_CS_TD};min-width:48px;text-align:center"><span id="cs-dur-${row.id}" style="font-size:0.72rem;color:var(--fg)" title="Auto-calculated from the start and end dates">${_csEsc(_csRowDuration(row))}</span></td>
     <td style="${_CS_TD};min-width:60px">${_csCell(row.id, 'code', row.code)}</td>
     <td style="${_CS_TD};min-width:60px">${_csCell(row.id, 'subcode', row.subcode)}</td>
     <td style="${_CS_TD}">${_csCell(row.id, 'description', row.description)}</td>
