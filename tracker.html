@@ -23577,8 +23577,8 @@ function _csStatusColor(s) {
        : s === 'On Hold'     ? 'var(--yellow)'
        : 'var(--muted)';
 }
-const _CS_TD  = 'padding:0.3rem 0.4rem;border-bottom:1px solid var(--border);vertical-align:middle';
-const _CS_INP = 'width:100%;background:transparent;border:none;color:var(--fg);font-size:0.8rem;padding:0.15rem 0.2rem;outline:none;font-family:inherit';
+const _CS_TD  = 'padding:0.25rem 0.3rem;border-bottom:1px solid var(--border);vertical-align:middle';
+const _CS_INP = 'width:100%;background:transparent;border:none;color:var(--fg);font-size:0.72rem;padding:0.15rem 0.15rem;outline:none;font-family:inherit';
 
 function _csCell(id, field, value, extra) {
   return `<input value="${_csEsc(value)}" oninput="_csEdit('${id}','${field}',this.value)" style="${_CS_INP}${extra || ''}">`;
@@ -23607,16 +23607,16 @@ function _csRowHtml(row, index, total) {
   }
 
   return `<tr>
-    <td style="${_CS_TD};min-width:150px">${_csSelect(row.id, 'status', row.status, _CS_STATUSES, true)}</td>
-    <td style="${_CS_TD};min-width:95px">${_csSelect(row.id, 'priority', row.priority, _CS_PRIORITIES, false)}</td>
-    <td style="${_CS_TD};min-width:135px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
-    <td style="${_CS_TD};min-width:135px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
-    <td style="${_CS_TD};min-width:60px"><input id="cs-dur-${row.id}" type="number" min="0" value="${_csEsc(row.duration)}" oninput="_csEdit('${row.id}','duration',this.value)" style="${_CS_INP};text-align:center" title="Days between start and end — auto-filled from the dates; editable"></td>
-    <td style="${_CS_TD};min-width:80px">${_csCell(row.id, 'code', row.code)}</td>
-    <td style="${_CS_TD};min-width:80px">${_csCell(row.id, 'subcode', row.subcode)}</td>
-    <td style="${_CS_TD};min-width:220px">${_csCell(row.id, 'description', row.description)}</td>
-    <td style="${_CS_TD};min-width:120px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
-    <td style="${_CS_TD};min-width:70px"><input id="cs-pct-${row.id}" type="number" min="0" max="100" value="${_csEsc(row.pct)}" oninput="_csEdit('${row.id}','pct',this.value)" style="${_CS_INP};text-align:center"></td>
+    <td style="${_CS_TD};min-width:110px">${_csSelect(row.id, 'status', row.status, _CS_STATUSES, true)}</td>
+    <td style="${_CS_TD};min-width:70px">${_csSelect(row.id, 'priority', row.priority, _CS_PRIORITIES, false)}</td>
+    <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
+    <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
+    <td style="${_CS_TD};min-width:48px"><input id="cs-dur-${row.id}" type="number" min="0" value="${_csEsc(row.duration)}" oninput="_csEdit('${row.id}','duration',this.value)" style="${_CS_INP};text-align:center" title="Days between start and end — auto-filled from the dates; editable"></td>
+    <td style="${_CS_TD};min-width:60px">${_csCell(row.id, 'code', row.code)}</td>
+    <td style="${_CS_TD};min-width:60px">${_csCell(row.id, 'subcode', row.subcode)}</td>
+    <td style="${_CS_TD}">${_csCell(row.id, 'description', row.description)}</td>
+    <td style="${_CS_TD};min-width:90px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
+    <td style="${_CS_TD};min-width:52px"><input id="cs-pct-${row.id}" type="number" min="0" max="100" value="${_csEsc(row.pct)}" oninput="_csEdit('${row.id}','pct',this.value)" style="${_CS_INP};text-align:center"></td>
     ${actions}</tr>`;
 }
 
@@ -23679,7 +23679,7 @@ function renderConstructionSchedule() {
   const hLbl = 'font-size:0.62rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.15rem;font-weight:700';
 
   el.innerHTML = `
-    <div style="max-width:1200px">
+    <div style="max-width:1200px;margin:0 auto">
       <!-- toolbar -->
       <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
         <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
@@ -23713,10 +23713,10 @@ function renderConstructionSchedule() {
 
       <!-- task table -->
       <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;min-width:1000px">
+        <table style="width:100%;border-collapse:collapse">
           <thead>
             <tr style="background:var(--blue);color:#fff">
-              ${['Status','Priority','Start Date','End Date','Duration','Code','Subcode','Description','Deliverable','% Done',''].map((th, i) => `<th style="padding:0.4rem 0.45rem;text-align:${i === 9 || i === 4 ? 'center' : 'left'};font-size:0.68rem;text-transform:uppercase;letter-spacing:0.04em;font-weight:700;white-space:nowrap">${th}</th>`).join('')}
+              ${['Status','Priority','Start Date','End Date','Duration','Code','Subcode','Description','Deliverable','% Done',''].map((th, i) => `<th style="padding:0.3rem 0.35rem;text-align:${i === 9 || i === 4 ? 'center' : 'left'};font-size:0.6rem;text-transform:uppercase;letter-spacing:0.03em;font-weight:700;white-space:nowrap">${th}</th>`).join('')}
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
