@@ -23443,7 +23443,8 @@ function _csHeaderStatsHtml() {
   const sep = `<span style="color:var(--border);margin:0 0.7rem">|</span>`;
   return `<span style="color:var(--muted)">Project Start</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.start)}</strong>${sep}`
        + `<span style="color:var(--muted)">Finish</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.end)}</strong>${sep}`
-       + `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${span.workingDays}</strong>`;
+       + `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${span.workingDays}</strong>`
+       + `<span style="color:var(--muted);font-size:0.68rem;font-style:italic;margin-left:0.4rem">weekends excluded</span>`;
 }
 function _csUpdateHeaderStats() {
   const el = document.getElementById('cs-header-stats');
