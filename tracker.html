@@ -23762,6 +23762,118 @@ function _csExportPdf() {
   win.document.close();
 }
 
+/* ── Email the schedule — reuses the shared report-email modal ────────────── */
+// A proportional bar built from table cells (email clients can't do the
+// absolute-positioned / SVG on-screen Gantt, but handle table cells + bgcolor).
+function _csEmailBar(r, minMs, totalMs, critical) {
+  const s = _csParseDate(r.start), e = _csParseDate(r.end);
+  if (!s || !e) return '';
+  const left = Math.max(0, Math.min(99, (s.getTime() - minMs) / totalMs * 100));
+  const barW = Math.max(2, Math.min(100 - left, (e.getTime() - s.getTime()) / totalMs * 100));
+  const color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
+  const cell = 'font-size:0;line-height:11px;mso-line-height-rule:exactly';
+  return `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="table-layout:fixed;border-collapse:collapse"><tr>
+    <td width="${left.toFixed(1)}%" style="${cell}">&nbsp;</td>
+    <td width="${barW.toFixed(1)}%" bgcolor="${color}" style="${cell};border-radius:3px">&nbsp;</td>
+    <td style="${cell}">&nbsp;</td>
+  </tr></table>`;
+}
+// Build the email body: DataWatch header + info + KPIs + timeline table +
+// email-safe Gantt. All inline-styled so it survives email-client rendering.
+function _csBuildEmailReportHtml() {
+  const esc = _csEsc;
+  const h = _csData.header || {};
+  const rows = _csData.rows || [];
+  const overall = _csComputeOverall();
+  const span = _csProjectSpan();
+  const wwLabel = (_CS_WORKWEEKS.find(m => m.v === (_csData.workWeek || 5)) || {}).label || '';
+  const critical = _csCriticalSet();
+  const depName = id => { const t = rows.find(x => x.id === id); return t ? ((t.description || '').trim() || 'task') : ''; };
+  const titleTxt = (h.heading || h.projectTitle || 'Project');
+
+  const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  let minMs = null, maxMs = null;
+  dated.forEach(t => { const s = _csParseDate(t.start).getTime(), e = _csParseDate(t.end).getTime(); if (minMs == null || s < minMs) minMs = s; if (maxMs == null || e > maxMs) maxMs = e; });
+  const totalMs = Math.max(86400000, (maxMs || 0) - (minMs || 0));
+
+  const kpi = (l, v) => `<td style="padding:6px 16px 6px 0;vertical-align:top"><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:#888">${l}</div><div style="font-size:14px;font-weight:700;color:#111">${v}</div></td>`;
+  const kpis = [
+    span ? kpi('Project Start', _csFmtShort(span.start)) : '',
+    span ? kpi('Finish', _csFmtShort(span.end)) : '',
+    span ? kpi('Est. Working Days', `${span.workingDays} <span style="font-size:8px;color:#888;font-weight:400">(${esc(wwLabel)})</span>`) : '',
+    kpi('Overall % Done', `${overall}%`),
+    kpi('Tasks', String(rows.filter(r => r.kind === 'task').length)),
+  ].join('');
+
+  const th = t => `<th style="background:#15803d;color:#fff;font-size:9px;text-transform:uppercase;letter-spacing:.03em;padding:5px 7px;text-align:left;border:1px solid #cfd4da;white-space:nowrap">${t}</th>`;
+  const td = (v, c) => `<td style="font-size:10px;padding:4px 7px;border:1px solid #d7dbe0;${c ? 'text-align:center;' : ''}">${v}</td>`;
+  const tRows = rows.map((r, i) => {
+    if (r.kind === 'divider') return `<tr><td colspan="9" style="background:#e5e7eb;color:#374151;font-style:italic;font-weight:700;font-size:10px;padding:4px 7px;border:1px solid #d7dbe0">${esc(r.description) || '—'}</td></tr>`;
+    const deps = (Array.isArray(r.deps) ? r.deps : []).map(depName).filter(Boolean).join(', ');
+    const pct = Math.round(Math.min(100, Math.max(0, parseFloat(r.pct) || 0)));
+    const critMark = critical.has(r.id) ? ' <span style="color:#dc2626;font-weight:700">&#9670;</span>' : '';
+    return `<tr style="${i % 2 ? 'background:#f7f8fa;' : ''}">${td(esc(r.status) + critMark)}${td(esc(r.priority))}${td(r.start ? _csFmtShort(_csParseDate(r.start)) : '')}${td(r.end ? _csFmtShort(_csParseDate(r.end)) : '')}${td(esc(_csRowDuration(r)), true)}${td(esc(r.description))}${td(esc(r.deliverable))}${td(pct + '%', true)}${td(esc(deps))}</tr>`;
+  }).join('');
+
+  const ganttRows = rows.map(r => {
+    if (r.kind === 'divider') return `<tr><td colspan="2" style="padding:7px 0 3px;font-style:italic;font-weight:700;font-size:10px;color:#888;border-top:1px dashed #ccc">${esc(r.description) || '—'}</td></tr>`;
+    const s = _csParseDate(r.start), e = _csParseDate(r.end);
+    const dr = (s && e) ? `${_csFmtShortNoYear(s)} &ndash; ${_csFmtShortNoYear(e)}` : '';
+    const dur = _csRowDuration(r);
+    return `<tr>
+      <td width="185" style="width:185px;padding:3px 8px 3px 0;vertical-align:middle">
+        <div style="font-size:11px;font-weight:600;color:#111;line-height:1.2">${esc(r.description) || '(untitled)'}</div>
+        ${dr ? `<div style="font-size:9px;color:#888">${dr}${dur ? ' &middot; ' + dur + 'd' : ''}</div>` : ''}
+      </td>
+      <td style="vertical-align:middle;padding:3px 0">${_csEmailBar(r, minMs, totalMs, critical)}</td>
+    </tr>`;
+  }).join('');
+
+  const legend = [['Complete', '#60a5fa'], ['In Progress', '#4ade80'], ['Not Yet Started', '#94a3b8'], ['On Hold', '#fbbf24'], ['Critical path', '#dc2626']]
+    .map(([l, c]) => `<span style="display:inline-block;margin-right:13px;font-size:9px;color:#666"><span style="display:inline-block;width:9px;height:9px;background:${c};border-radius:2px;vertical-align:middle;margin-right:3px">&nbsp;</span>${l}</span>`).join('');
+
+  const info = ['Project Title', 'Project Manager', 'Company', 'Date'].map((l, i) => {
+    const v = [h.projectTitle, h.pm, h.company, h.date][i];
+    return `<td style="padding:0 22px 0 0;vertical-align:top"><div style="font-size:8px;text-transform:uppercase;letter-spacing:.05em;color:#888;font-weight:700">${l}</div><div style="font-size:11px;color:#111;font-weight:600">${esc(v) || '—'}</div></td>`;
+  }).join('');
+
+  return `
+  <div style="font-family:Arial,Helvetica,sans-serif;color:#111;max-width:760px">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:3px solid #16a34a;padding-bottom:6px;margin-bottom:10px"><tr>
+      <td style="vertical-align:middle"><span style="font-size:17px;font-weight:800;color:#0f172a">DataWatch <span style="color:#cbd5e1;font-weight:400">|</span> FTSI</span><div style="font-size:8px;letter-spacing:.16em;text-transform:uppercase;color:#16a34a;font-weight:700;margin-top:2px">Construction Schedule</div></td>
+      <td style="text-align:right;vertical-align:middle"><div style="font-size:15px;font-weight:800;color:#15803d">${esc(titleTxt)}</div></td>
+    </tr></table>
+    <table cellpadding="0" cellspacing="0" style="margin-bottom:8px"><tr>${info}</tr></table>
+    <table cellpadding="0" cellspacing="0" style="border-top:1px solid #e3e5e9;border-bottom:1px solid #e3e5e9;margin-bottom:14px"><tr>${kpis}</tr></table>
+    <div style="font-size:12px;font-weight:700;color:#0f172a;border-bottom:2px solid #16a34a;padding-bottom:3px;margin-bottom:6px">Timeline</div>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:18px">
+      <tr>${['Status', 'Priority', 'Start', 'End', 'Dur', 'Description', 'Deliverable', '% Done', 'Depends On'].map(th).join('')}</tr>
+      ${tRows}
+    </table>
+    <div style="font-size:12px;font-weight:700;color:#0f172a;border-bottom:2px solid #16a34a;padding-bottom:3px;margin-bottom:5px">Gantt Chart</div>
+    <div style="margin-bottom:7px">${legend}</div>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">${ganttRows}</table>
+    <div style="font-size:8px;color:#999;margin-top:9px">Est. Working Days counts ${esc(wwLabel)}; &#9670; / red marks the critical path (drives the finish date). Open the schedule in DataWatch for the interactive Gantt with dependency arrows.</div>
+  </div>`;
+}
+function _csEmailSchedule() {
+  if (!_csData) return;
+  if (typeof window.openReportEmailModal !== 'function') {
+    alert('Email module is still loading — please try again in a moment.');
+    return;
+  }
+  const h = _csData.header || {};
+  const titleTxt = (h.projectTitle || h.heading || 'Construction Schedule');
+  const html = _csBuildEmailReportHtml();
+  window.openReportEmailModal({
+    reportType:     'turf_construction_schedule',
+    projectId:      _csProjId,
+    projectName:    titleTxt,
+    defaultSubject: 'Construction Schedule — ' + titleTxt,
+    getHTML:        () => html,
+  });
+}
+
 /* ── persistence ─────────────────────────────────────────────────────────── */
 function _csSetSaveInd(state) {
   const el = document.getElementById('cs-save-ind');
@@ -24090,6 +24202,7 @@ function renderConstructionSchedule() {
           ${tmplApply}${tmplDelete}
           <button onclick="_csSaveAsTemplate()" style="${ghostBtn}">☆ Save as template</button>
           <button onclick="_csExportPdf()" style="${ghostBtn}">&#128438; Print / PDF</button>
+          <button onclick="_csEmailSchedule()" style="${ghostBtn}">&#9993; Email</button>
           <button onclick="_csSaveNow()" style="${blueBtn}">Save now</button>
         </div>
       </div>
