@@ -23483,18 +23483,24 @@ function _csGanttColor(status) {
 const _CS_CRIT = '#dc2626';   // critical-path red
 
 /**
- * Critical path = the chain of dependency-linked tasks with no slack that ends
- * at the project's finish date. Walks backward from the latest-finishing
- * task(s) through "tight" finish-to-start links (successor starts within the
- * same working day the predecessor ends, so weekends don't count as slack).
- * Returns a Set of critical task ids; empty when no dependencies are set.
+ * Critical path = the longest chain of back-to-back tasks that drives the
+ * project's finish date. Each task's driving predecessors are its explicit
+ * "Depends On" links where they're "tight" (successor starts within the same
+ * working day the predecessor ends, so weekends don't count as slack). Where a
+ * task has no such link, the driver is *inferred* from the schedule — any task
+ * that finishes tight before it starts — so the path still forms even when the
+ * dependencies aren't fully wired. The critical set is the longest-duration
+ * chain (ties included) ending at the latest finish date. Returns a Set of
+ * critical task ids; empty when no chain of 2+ tasks can be traced.
  */
 function _csCriticalSet() {
   const rows  = (_csData && _csData.rows) || [];
   const tasks = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  if (tasks.length < 2) return new Set();
   const byId  = {}; tasks.forEach(t => byId[t.id] = t);
   const mode  = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
   const skip  = mode.skip;
+  const start = t => _csParseDate(t.start), end = t => _csParseDate(t.end);
 
   // Working days strictly between two dates (weekends/off-days don't count).
   function wdBetween(a, b) {
@@ -23503,22 +23509,56 @@ function _csCriticalSet() {
     for (let g = 0; d < b && g < 20000; g++) { if (!skip.includes(d.getDay())) n++; d.setDate(d.getDate() + 1); }
     return n;
   }
-  const tightPreds = {};   // taskId → predecessor ids whose link is "tight" (drives it)
-  let hasDeps = false;
-  tasks.forEach(t => (Array.isArray(t.deps) ? t.deps : []).forEach(p => {
-    if (!byId[p]) return;
-    hasDeps = true;
-    if (wdBetween(_csParseDate(byId[p].end), _csParseDate(t.start)) <= 0) (tightPreds[t.id] = tightPreds[t.id] || []).push(p);
-  }));
-  if (!hasDeps) return new Set();
+  const tight = (p, t) => wdBetween(end(p), start(t)) <= 0;
 
-  const projEnd = Math.max(...tasks.map(t => _csParseDate(t.end).getTime()));
-  const critical = new Set(), queue = [];
-  tasks.forEach(t => { if (_csParseDate(t.end).getTime() === projEnd) { critical.add(t.id); queue.push(t.id); } });
-  while (queue.length) {
-    (tightPreds[queue.shift()] || []).forEach(p => { if (!critical.has(p)) { critical.add(p); queue.push(p); } });
+  // Driving predecessors for a task: its explicit tight "Depends On" links if
+  // any, else inferred from the schedule (tasks finishing tight before it
+  // starts). Inference requires real precedence (p ends on/before t starts) so
+  // an overlapping/parallel task is never treated as a predecessor.
+  function drivers(t) {
+    const explicit = (Array.isArray(t.deps) ? t.deps : [])
+      .map(id => byId[id]).filter(p => p && tight(p, t));
+    if (explicit.length) return explicit;
+    return tasks.filter(p => p !== t && end(p) <= start(t) && tight(p, t));
   }
-  return critical;
+
+  // Longest-duration chain ending at each task (memoized DP; edges point to
+  // earlier predecessors so the graph is acyclic — the visiting guard only
+  // matters for degenerate same-instant data).
+  const dur = t => Math.max(1, (end(t) - start(t)) / 86400000 + 1);
+  const memo = {}, bestPred = {}, visiting = new Set();
+  function longest(t) {
+    if (memo[t.id] != null) return memo[t.id];
+    if (visiting.has(t.id)) return dur(t);
+    visiting.add(t.id);
+    let best = 0, picks = [];
+    drivers(t).forEach(p => {
+      const l = longest(p);
+      if (l > best + 1e-9) { best = l; picks = [p.id]; }
+      else if (Math.abs(l - best) <= 1e-9) picks.push(p.id);
+    });
+    visiting.delete(t.id);
+    bestPred[t.id] = picks;
+    return (memo[t.id] = dur(t) + best);
+  }
+
+  // Anchor at the latest-finishing task(s); keep the longest chain(s) to them.
+  const projEnd = Math.max(...tasks.map(t => end(t).getTime()));
+  let top = -1, roots = [];
+  tasks.filter(t => end(t).getTime() === projEnd).forEach(t => {
+    const l = longest(t);
+    if (l > top + 1e-9) { top = l; roots = [t.id]; }
+    else if (Math.abs(l - top) <= 1e-9) roots.push(t.id);
+  });
+
+  const critical = new Set(), queue = roots.slice();
+  while (queue.length) {
+    const id = queue.shift();
+    if (critical.has(id)) continue;
+    critical.add(id);
+    (bestPred[id] || []).forEach(p => queue.push(p));
+  }
+  return critical.size >= 2 ? critical : new Set();
 }
 function _csRenderGanttHtml() {
   const rows  = (_csData && _csData.rows) || [];
