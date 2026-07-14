@@ -627,7 +627,12 @@
       if (opts.keepalive) init.keepalive = true;
       fetch(`${API_BASE}/truck-division`, init)
         .then(r => _handleSaveResponse(r, 'tdDivPut')).catch(() => _showSaveError(false));
-      _flushIcBillingIfDirty(opts);
+      // Auto-mirror qualifying rows into Intercompany Billing: create entries for
+      // newly-billable rows, keep already-sent ones in sync, and void any that
+      // dropped to $0. Skipped on the page-unload path (keepalive) — the reconcile
+      // needs a GET the browser won't reliably run mid-unload; the next load's
+      // backfill reconciles instead.
+      if (!opts.keepalive) autoSyncIntercompanyTrucking();
     }
 
     // Flush any pending debounced save immediately. Hooked to beforeunload
@@ -647,44 +652,243 @@
       if (document.visibilityState === 'hidden') _flushPendingDivSave();
     });
 
-    // Flush local IC-billing edits without clobbering entries that were added
-    // concurrently (newly-sent rows, dust sends, edits from another tab). We
-    // re-fetch the server's current list, re-apply only the trucking-row field
-    // updates held in memory, then PUT the merged result.
-    async function _flushIcBillingIfDirty(opts = {}) {
-      if (!_icBillingDirty) return;
-      _icBillingDirty = false;
+    /* ═══════════════════════════════════════════
+       INTERCOMPANY BILLING — AUTO-SEND
+       Mirrors qualifying truck-tracking rows into the shared Intercompany
+       Billing blob automatically (no button click), matching the Dust Control
+       and Quarry divisions. A row is mirrored once it names a customer enrolled
+       in Intercompany under the 'trucking' division AND has a real invoice total
+       (hours × haul fee > 0). Each entry is keyed by source_id (the truck row
+       id) — Intercompany dedups trucking entries by (source, source_id) — so a
+       row creates exactly one entry, stamped with a sent_at timestamp that the
+       "✓ IC" row badge and the expanded-panel note display and that later edits
+       preserve.
+
+       Safeguards mirror the Dust implementation:
+        - Never writes on a failed/partial billing-blob read (that would wipe
+          every other division's entries from the shared blob).
+        - Voids a previously-synced entry when its row drops to a $0 total, so IC
+          never bills a figure the row no longer carries.
+        - Leaves entries whose customer is no longer enrolled untouched — never
+          wipes history (or IC-side invoice/payment dates) on un-enrollment.
+        - Preserves Intercompany-owned fields (invoice_sent_date,
+          payment_received_date, …) that the Intercompany screen edits directly.
+        - Reflects sent-state in the UI only after the PUT actually persists.
+    ═══════════════════════════════════════════ */
+    let _icAutoSyncRunning = false;
+    let _icAutoSyncQueued  = false;
+
+    // Fields the trucking row owns. A change in any of these warrants rewriting
+    // the mirrored entry; Intercompany-side fields (invoice/payment dates) are
+    // deliberately excluded so an IC-side edit never looks like a trucking change.
+    function _icTruckEntrySig(e) {
+      return JSON.stringify([
+        e.company_id, e.company_name, e.task_number, e.actual_date,
+        e.driver, e.unit, e.actual_start, e.actual_end,
+        e.total_hours, e.haul_fee, e.total,
+        e.customer, e.description, e.division, e.notes,
+      ]);
+    }
+
+    // Guarded read of the shared billing blob. Returns the array, or null to
+    // signal "do not proceed" (failed / partial / unexpected read). Never treats
+    // a failed read as an empty blob — that would let us overwrite the whole
+    // shared blob and wipe every other division's billing.
+    async function _readIcBilling() {
       try {
-        // GET cannot run reliably from a page-unload context — it has to
-        // complete before the merged PUT can be built. On unload paths
-        // we skip the merge dance and let the next session reconcile.
-        if (opts.keepalive) return;
         const r = await fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
           headers: { Authorization: `Bearer ${token}` }
         });
-        if (!r.ok) return;
+        if (!r.ok) return null;
         const { value } = await r.json();
-        const latest = Array.isArray(value) ? value : [];
-        const updatesById = new Map();
-        icBillingArr.forEach(e => {
-          if (e.source === 'trucking' && e.source_id) updatesById.set(e.source_id, e);
-        });
-        const merged = latest.map(e => {
-          if (e.source === 'trucking' && e.source_id && updatesById.has(e.source_id)) {
-            const upd = updatesById.get(e.source_id);
-            return { ...e, total_hours: upd.total_hours, haul_fee: upd.haul_fee, total: upd.total };
+        if (value != null && !Array.isArray(value)) return null;   // unexpected shape
+        return Array.isArray(value) ? value : [];                  // 200 + null ⇒ genuinely empty
+      } catch { return null; }
+    }
+
+    // Reconcile every truck row into `entries` (MUTATED in place):
+    //  • create an entry for a newly-billable row (stamped sent_at = now),
+    //  • keep an existing entry in sync when a trucking-owned field changed
+    //    (preserving its original sent_at and any Intercompany-side fields),
+    //  • void a previously-synced entry whose row dropped to a $0 total,
+    //  • never touch an entry whose customer is no longer enrolled.
+    // Returns what changed so the caller can update the UI after a good write.
+    function _reconcileTruckingBilling(entries, coByName) {
+      const bySourceId = new Map();
+      entries.forEach(e => {
+        if (e.source === 'trucking' && e.source_id) bySourceId.set(e.source_id, e);
+      });
+
+      let changed = false;
+      const sentNow  = [];   // {id, sentAt}
+      const clearNow = [];   // ids whose stale entry we voided
+
+      for (const row of divEntries) {
+        const tot  = (parseFloat(row.total_hours) || 0) * (parseFloat(row.haul_fee) || 0);
+        const prev = bySourceId.get(row.id);
+
+        if (!(tot > 0)) {
+          // Row no longer has a billable total — void any stale entry.
+          if (prev) {
+            const i = entries.indexOf(prev);
+            if (i !== -1) { entries.splice(i, 1); changed = true; }
+            bySourceId.delete(row.id);
+            clearNow.push(row.id);
           }
-          return e;
+          continue;
+        }
+
+        const matched = coByName.get((row.customer || '').trim().toLowerCase());
+        if (!matched) {
+          // Customer isn't enrolled in IC trucking billing. Don't create an
+          // entry — and don't delete an existing one either: it was valid when
+          // sent, and un-enrolling a customer shouldn't retroactively wipe its
+          // history (or any IC-side invoice/payment dates on it).
+          continue;
+        }
+
+        const sentAt = prev?.sent_at || new Date().toISOString();
+        const entry  = {
+          ...(prev || {}),                    // preserve Intercompany-side fields
+          id: prev?.id || (Date.now().toString(36) + Math.random().toString(36).slice(2)),
+          source: 'trucking', source_id: row.id,
+          company_id: matched.id, company_name: matched.name,
+          task_number: row.task_number, actual_date: row.actual_date,
+          driver: row.driver, unit: row.unit,
+          actual_start: row.actual_start, actual_end: row.actual_end,
+          total_hours: row.total_hours, haul_fee: row.haul_fee, total: tot,
+          customer: row.customer, description: row.description,
+          division: row.division, notes: row.notes,
+          sent_at: sentAt,
+          sent_by: (typeof user !== 'undefined' && user?.username) || '',
+        };
+        // On first mirror, snapshot the invoice/payment fields the trucking
+        // office fills in the sub-row. On later syncs leave whatever's on the IC
+        // entry — the Intercompany screen owns invoice_sent_date / payment dates.
+        if (!prev) {
+          entry.qb_invoice        = row.qb_invoice        || '';
+          entry.invoiced_date     = row.invoiced_date     || '';
+          entry.invoice_sent_date = row.invoice_sent_date || '';
+          entry.invoice_status    = row.invoice_status    || 'Unpaid';
+          entry.date_paid         = row.date_paid         || '';
+        }
+
+        if (prev) {
+          if (_icTruckEntrySig(prev) !== _icTruckEntrySig(entry)) {
+            const i = entries.indexOf(prev);
+            if (i !== -1) entries[i] = entry; else entries.unshift(entry);
+            bySourceId.set(row.id, entry);
+            changed = true;
+          }
+          sentNow.push({ id: row.id, sentAt });
+        } else {
+          entries.unshift(entry);
+          bySourceId.set(row.id, entry);
+          changed = true;
+          sentNow.push({ id: row.id, sentAt });
+        }
+      }
+
+      return { changed, sentNow, clearNow };
+    }
+
+    // Refresh the "✓ IC {sent}" row badge and the expanded-panel timestamp for
+    // the given rows in place — no full re-render, so a row the user is mid-edit
+    // on is never disrupted.
+    function _refreshTruckIcBadges(sentNow) {
+      sentNow.forEach(({ id, sentAt }) => {
+        const mainBadge = document.getElementById('ic-main-' + id);
+        if (mainBadge) { mainBadge.innerHTML = `&#10003; IC ${fmtSentAt(sentAt)}`; mainBadge.style.color = '#22c55e'; }
+        const tsEl = document.getElementById('ic-ts-' + id);
+        if (tsEl) { tsEl.textContent = fmtSentAt(sentAt); tsEl.style.color = '#22c55e'; }
+      });
+    }
+
+    // Clear the badge + reset the panel note for rows whose IC entry was voided.
+    function _clearTruckIcBadges(clearNow) {
+      clearNow.forEach(id => {
+        const mainBadge = document.getElementById('ic-main-' + id);
+        if (mainBadge) mainBadge.innerHTML = '';
+        const tsEl = document.getElementById('ic-ts-' + id);
+        if (tsEl) { tsEl.textContent = 'Needs customer & total'; tsEl.style.color = 'var(--muted)'; }
+      });
+    }
+
+    async function autoSyncIntercompanyTrucking() {
+      // Coalesce: if a sync is already in flight, run once more after it finishes
+      // rather than piling up concurrent read-modify-writes on the shared blob.
+      if (_icAutoSyncRunning) { _icAutoSyncQueued = true; return; }
+      _icAutoSyncRunning = true;
+      try {
+        const companies = await tdGet('fct_intercompany_companies');
+        const coList = Array.isArray(companies) ? companies : [];
+        if (!coList.length) return;              // nothing to match against
+
+        // customer name (lowercased) → matched IC company, restricted to 'trucking'
+        const coByName = new Map();
+        coList.forEach(c => {
+          if ((c.divisions || []).includes('trucking')) {
+            coByName.set((c.name || '').trim().toLowerCase(), c);
+          }
         });
-        icBillingArr = merged;
-        icSentMap.clear();
-        merged.forEach(e => { if (e.source === 'trucking' && e.source_id) icSentMap.set(e.source_id, e); });
-        await fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ value: merged })
-        });
-      } catch { /* non-fatal */ }
+        if (!coByName.size) return;
+
+        // Probe read: is any write warranted at all? Skips a needless second read
+        // + PUT in the common steady state where nothing IC-relevant changed.
+        const probe = await _readIcBilling();
+        if (probe == null) return;
+        if (!_reconcileTruckingBilling(probe, coByName).changed) { _icBillingDirty = false; return; }
+
+        // Re-read immediately before writing and reconcile onto the FRESH blob so
+        // IC-side edits (invoice/payment dates), deletes, and other divisions'
+        // writes that landed since the probe are preserved rather than clobbered
+        // by a stale snapshot. (A residual last-writer-wins window remains between
+        // this read and the PUT — the shared blob has no compare-and-swap.)
+        const entries = await _readIcBilling();
+        if (entries == null) return;
+        const { changed, sentNow, clearNow } = _reconcileTruckingBilling(entries, coByName);
+        if (!changed) { _icBillingDirty = false; return; }
+
+        let ok;
+        if (entries.length === 0) {
+          // Everything was voided and nothing else remained. The backend refuses
+          // a plain empty-array PUT (bulk-wipe guard), so force this intentional
+          // clear or the void silently fails and a stale figure lingers in IC.
+          try {
+            const r = await fetch(`${API_BASE}/data/fct_intercompany_billing_entries?force=1`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ value: entries })
+            });
+            ok = r.ok;
+          } catch { ok = false; }
+        } else {
+          try {
+            const r = await fetch(`${API_BASE}/data/fct_intercompany_billing_entries`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ value: entries })
+            });
+            ok = r.ok;
+            if (!ok) await _handleSaveResponse(r, 'autoSyncIntercompanyTrucking');
+          } catch { ok = false; }
+        }
+
+        // Only reflect sent-state in the UI once the blob actually persisted, so a
+        // failed PUT never leaves a badge claiming a row reached IC.
+        if (ok) {
+          icBillingArr = entries;
+          icSentMap.clear();
+          entries.forEach(e => { if (e.source === 'trucking' && e.source_id) icSentMap.set(e.source_id, e); });
+          _icBillingDirty = false;
+          _refreshTruckIcBadges(sentNow);
+          _clearTruckIcBadges(clearNow);
+        }
+      } catch { /* non-fatal — the next save or poll retries */ }
+      finally {
+        _icAutoSyncRunning = false;
+        if (_icAutoSyncQueued) { _icAutoSyncQueued = false; autoSyncIntercompanyTrucking(); }
+      }
     }
 
     /* Fix entries that were saved before the CSV normalisation was in place.
@@ -758,7 +962,10 @@
       }
       _recoverEntriesFromIcBilling();
       _migrateExistingEntries();
-      _syncStaleIcEntries();
+      // Backfill: mirror any qualifying rows into Intercompany Billing on load —
+      // creates entries for rows entered before auto-send existed and keeps
+      // already-sent ones in sync, without waiting for the next edit.
+      autoSyncIntercompanyTrucking();
       renderDashboard();
     }
 
@@ -798,22 +1005,6 @@
         tdDivPut();
         console.log('[recovery] restored', recovered.length, 'truck entry/entries from IC billing');
       }
-    }
-
-    function _syncStaleIcEntries() {
-      let changed = false;
-      icBillingArr.forEach((icEntry, idx) => {
-        if (icEntry.source !== 'trucking' || !icEntry.source_id) return;
-        const te = divEntries.find(e => e.id === icEntry.source_id);
-        if (!te) return;
-        const tot = (parseFloat(te.total_hours) || 0) * (parseFloat(te.haul_fee) || 0);
-        if (icEntry.total_hours !== te.total_hours || icEntry.haul_fee !== te.haul_fee) {
-          icBillingArr[idx] = { ...icEntry, total_hours: te.total_hours, haul_fee: te.haul_fee, total: tot };
-          icSentMap.set(icEntry.source_id, icBillingArr[idx]);
-          changed = true;
-        }
-      });
-      if (changed) _icBillingDirty = true;
     }
 
     function saveTruckLists() {
@@ -979,107 +1170,6 @@
       divEntries = divEntries.filter(e => e.id !== id);
       schedSave();
       renderTrackingTab();
-    }
-
-    async function sendToIntercompany(id) {
-      const e = divEntries.find(r => r.id === id);
-      if (!e) return;
-
-      const btn    = document.getElementById('ic-btn-' + id);
-      const status = document.getElementById('ic-status-' + id);
-      if (btn) btn.disabled = true;
-      if (status) { status.style.color = 'var(--muted)'; status.textContent = 'Checking…'; }
-
-      const IC_CO_KEY      = 'fct_intercompany_companies';
-      const IC_BILLING_KEY = 'fct_intercompany_billing_entries';
-
-      try {
-        // Load company list
-        const coRes = await fetch(`${API_BASE}/data/${IC_CO_KEY}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const { value: companies } = await coRes.json();
-        const coList = Array.isArray(companies) ? companies : [];
-
-        const customer = (e.customer || '').trim().toLowerCase();
-        const matched  = coList.find(c => c.name.trim().toLowerCase() === customer
-          && (c.divisions || []).includes('trucking'));
-
-        if (!matched) {
-          if (status) { status.style.color = 'var(--red)'; status.textContent = 'Customer not in Intercompany list.'; }
-          setTimeout(() => { if (status) status.textContent = ''; }, 3500);
-          if (btn) btn.disabled = false;
-          return;
-        }
-
-        // Load existing billing entries
-        const beRes = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const { value: existing } = await beRes.json();
-        let entries = Array.isArray(existing) ? existing : [];
-
-        // Avoid exact duplicates (same source row already sent)
-        if (entries.some(x => x.source === 'trucking' && x.source_id === id)) {
-          if (status) { status.style.color = '#f59e0b'; status.textContent = 'Already sent.'; }
-          setTimeout(() => { if (status) status.textContent = ''; }, 2500);
-          if (btn) btn.disabled = false;
-          return;
-        }
-
-        const tot = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
-        const entry = {
-          id: Date.now().toString(36) + Math.random().toString(36).slice(2),
-          source: 'trucking', source_id: id,
-          company_id: matched.id, company_name: matched.name,
-          task_number: e.task_number, actual_date: e.actual_date,
-          driver: e.driver, unit: e.unit,
-          actual_start: e.actual_start, actual_end: e.actual_end,
-          total_hours: e.total_hours, haul_fee: e.haul_fee, total: tot,
-          customer: e.customer, description: e.description,
-          division: e.division, notes: e.notes,
-          qb_invoice: e.qb_invoice, invoiced_date: e.invoiced_date,
-          invoice_sent_date: e.invoice_sent_date,
-          invoice_status: e.invoice_status, date_paid: e.date_paid,
-          sent_at: new Date().toISOString(),
-          sent_by: (typeof user !== 'undefined' && user?.username) || ''
-        };
-        entries.unshift(entry);
-
-        const putRes = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ value: entries })
-        });
-        if (!putRes.ok) {
-          // Surface real failures (403 from missing division access, 5xx, etc.)
-          // instead of pretending the send worked.
-          const msg = putRes.status === 403
-            ? 'No permission to write Intercompany — ask an admin.'
-            : `Save failed (HTTP ${putRes.status}).`;
-          if (status) { status.style.color = 'var(--red)'; status.textContent = msg; }
-          setTimeout(() => { if (status) status.textContent = ''; }, 4500);
-          if (btn) btn.disabled = false;
-          return;
-        }
-
-        // Keep the in-memory IC list in sync with the server. If we don't, a
-        // later schedSave→tdDivPut that flushes _icBillingDirty would PUT a
-        // stale icBillingArr (without this entry) and silently wipe it.
-        icBillingArr = entries;
-        icSentMap.set(id, entry);
-        const tsEl = document.getElementById('ic-ts-' + id);
-        if (tsEl) tsEl.textContent = fmtSentAt(entry?.sent_at);
-        const mainBadge = document.getElementById('ic-main-' + id);
-        if (mainBadge) { mainBadge.innerHTML = `&#10003; IC ${fmtSentAt(entry?.sent_at)}`; mainBadge.style.color = '#22c55e'; }
-        if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
-        setTimeout(() => { if (status) status.textContent = ''; }, 3000);
-      } catch (err) {
-        if (status) { status.style.color = 'var(--red)'; status.textContent = 'Error — try again.'; }
-        setTimeout(() => { if (status) status.textContent = ''; }, 3500);
-      }
-
-      if (btn) btn.disabled = false;
     }
 
     function toggleInvoiceRow(id) {
@@ -1541,18 +1631,16 @@
                     <div style="${subLabel}">Date Paid</div>
                     ${invInp(e.id,'date_paid','date','',e.date_paid)}
                   </div>
-                  <div style="display:flex;flex-direction:column;gap:0.3rem;padding-bottom:0.1rem">
-                    <div style="display:flex;align-items:center;gap:0.5rem">
-                      <button onclick="sendToIntercompany('${e.id}')"
-                        id="ic-btn-${e.id}"
-                        style="font-size:0.68rem;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;padding:0.32rem 0.8rem;background:rgba(167,139,250,0.1);color:#a78bfa;border:1px solid rgba(167,139,250,0.3);border-radius:4px;cursor:pointer;white-space:nowrap;transition:background 0.15s,border-color 0.15s"
-                        onmouseover="this.style.background='rgba(167,139,250,0.2)';this.style.borderColor='#a78bfa'"
-                        onmouseout="this.style.background='rgba(167,139,250,0.1)';this.style.borderColor='rgba(167,139,250,0.3)'">
-                        &#8644; Intercompany Billing
-                      </button>
-                      <span id="ic-status-${e.id}" style="font-size:0.7rem;font-weight:600;min-width:1em"></span>
-                    </div>
-                    <span id="ic-ts-${e.id}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icSentMap.has(e.id) ? fmtSentAt(icSentMap.get(e.id)?.sent_at) : ''}</span>
+                  <div style="display:flex;flex-direction:column;gap:0.25rem;padding-bottom:0.1rem;min-width:180px">
+                    <div style="${subLabel}">Intercompany Billing</div>
+                    <span style="font-size:0.72rem;color:var(--muted);white-space:nowrap">&#8644; Auto-sends to Intercompany</span>
+                    <span id="ic-ts-${e.id}" style="font-size:0.63rem;font-weight:600;letter-spacing:0.02em;color:${icSentMap.has(e.id) ? '#22c55e' : 'var(--muted)'}">${
+                      icSentMap.has(e.id)
+                        ? fmtSentAt(icSentMap.get(e.id)?.sent_at)
+                        : (((parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0) > 0 && (e.customer||'').trim())
+                            ? 'Awaiting sync — check Intercompany company list'
+                            : 'Needs customer &amp; total')
+                    }</span>
                   </div>
                 </div>
               </td>
