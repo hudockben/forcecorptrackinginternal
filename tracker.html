@@ -24366,7 +24366,10 @@ document.addEventListener('input', e => {
       row.subcode = '';
       const sel = (window.CSS && CSS.escape) ? CSS.escape(id) : id;
       const sc = document.querySelector(`.cb-input[data-cs-id="${sel}"][data-cs-field="subcode"]`);
-      if (sc) { sc.value = ''; delete sc.dataset.cbValue; }
+      // Don't yank text out from under the user if they're mid-edit in the
+      // subcode box (can happen when the code commits on blur-into-subcode);
+      // their own commit will overwrite the stale value.
+      if (sc && document.activeElement !== sc) { sc.value = ''; delete sc.dataset.cbValue; }
       _csScheduleSave();
     }
   }
