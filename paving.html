@@ -8661,6 +8661,7 @@ function _syncTRRowField(tr, field) {
     truck_type:      'equipment',
     date:            'date',
     material_hauled: 'material',
+    loads:           'quantity',
     rate:            'equip_unit_cost',
     hours:           'equip_hours',
     cost_code:       'cost_code',
@@ -9526,6 +9527,7 @@ document.getElementById('trucking-root').addEventListener('change', e => {
           equip_unit_cost: String(rate),
           equip_hours:     String(hours),
           material:        tr.material_hauled || '',
+          quantity:        tr.loads           || '',
           cost_code:       tr.cost_code       || '',
           sub_code:        tr.sub_code        || '',
         };
