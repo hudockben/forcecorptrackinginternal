@@ -23447,12 +23447,15 @@ function _csProjectSpan() {
   }
   return { start: minS, end: maxE, workingDays: days };
 }
-function _csHeaderStatsHtml() {
+function _csHeaderStatsHtml(includeSelector) {
+  if (includeSelector === undefined) includeSelector = true;
   const ww = (_csData && _csData.workWeek) || 5;
   const selStyle = 'background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:5px;font-size:0.68rem;font-style:italic;padding:0.08rem 0.35rem;margin-left:0.5rem;cursor:pointer;font-family:inherit';
-  const sel = `<select onchange="_csSetWorkWeek(this.value)" title="Choose which days count as working days" style="${selStyle}">`
-    + _CS_WORKWEEKS.map(m => `<option value="${m.v}" ${m.v === ww ? 'selected' : ''}>${m.label}</option>`).join('')
-    + `</select>`;
+  const sel = includeSelector
+    ? `<select onchange="_csSetWorkWeek(this.value)" title="Choose which days count as working days" style="${selStyle}">`
+        + _CS_WORKWEEKS.map(m => `<option value="${m.v}" ${m.v === ww ? 'selected' : ''}>${m.label}</option>`).join('')
+        + `</select>`
+    : '';
   const span = _csProjectSpan();
   if (!span) return `<span style="color:var(--muted)">Add task start &amp; end dates to estimate working days.</span>${sel}`;
   const sep = `<span style="color:var(--border);margin:0 0.7rem">|</span>`;
@@ -23465,10 +23468,38 @@ function _csUpdateHeaderStats() {
   const el = document.getElementById('cs-header-stats');
   if (el) el.innerHTML = _csHeaderStatsHtml();
 }
+// Read-only mirror of the editable header card, shown above the Gantt chart so
+// the same identifying header appears over both the Timeline and the Gantt —
+// matching what prints (page 2) and emails below the schedule.
+function _csHeaderDisplayHtml() {
+  const h = (_csData && _csData.header) || {};
+  const hLbl = 'font-size:0.62rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.15rem;font-weight:700';
+  // Mirror the editable card exactly: show the heading in green, or — when it's
+  // still blank — the same muted placeholder the editable input shows, so both
+  // on-screen headers read identically.
+  const hasHeading = !!(h.heading && String(h.heading).trim());
+  const headingStyle = `font-size:1.5rem;font-weight:800;padding:0 0 0.5rem;border-bottom:2px solid var(--border);margin-bottom:0.9rem;color:${hasHeading ? 'var(--green)' : 'var(--muted)'}`;
+  const headingHtml = hasHeading ? _csEsc(h.heading) : 'Project / site name (big heading)';
+  const field = (label, val) => `<div><div style="${hLbl}">${label}</div>`
+    + `<div style="font-size:0.85rem;color:var(--fg);padding:0.2rem 0.1rem;border-bottom:1px solid var(--border);min-height:1.25em">${_csEsc(val) || '—'}</div></div>`;
+  return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.1rem 1.25rem;margin-bottom:1.25rem">
+      <div style="${headingStyle}">${headingHtml}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0.9rem 1.75rem">
+        ${field('Project Title', h.projectTitle)}${field('Project Manager', h.pm)}${field('Company Name', h.company)}${field('Date', h.date)}
+      </div>
+      <div style="margin-top:0.95rem;padding-top:0.75rem;border-top:1px solid var(--border);font-size:0.75rem;display:flex;flex-wrap:wrap;align-items:center;gap:0.15rem">${_csHeaderStatsHtml(false)}</div>
+    </div>`;
+}
+function _csUpdateGanttHeader() {
+  const el = document.getElementById('cs-gantt-header');
+  if (el) el.innerHTML = _csHeaderDisplayHtml();
+}
 function _csSetWorkWeek(val) {
   if (!_csData) return;
   _csData.workWeek = parseInt(val, 10) || 5;
   _csUpdateHeaderStats();
+  _csUpdateGanttHeader();
   _csUpdateGantt();
   _csScheduleSave();
 }
@@ -23829,6 +23860,23 @@ function _csExportPdf() {
   const ganttHtml = _csRenderGanttHtml();
   const titleTxt = (h.heading || h.projectTitle || 'Project');
 
+  // Branded header (DataWatch banner + project info + KPIs). Rendered once above
+  // the Timeline and again above the Gantt so both printed pages carry it.
+  const headerBlock = `
+    <div class="dw-head">
+      <div class="dw-brand">
+        <div><div class="nm">DataWatch <span style="color:#cbd5e1;font-weight:400">|</span> FTSI</div><div class="tag">Construction Schedule</div></div>
+      </div>
+      <div class="dw-title"><div class="t">${esc(titleTxt)}</div><div class="s">Generated ${dateStr}</div></div>
+    </div>
+    <div class="info">
+      <div><div class="l">Project Title</div><div class="v">${esc(h.projectTitle) || '&mdash;'}</div></div>
+      <div><div class="l">Project Manager</div><div class="v">${esc(h.pm) || '&mdash;'}</div></div>
+      <div><div class="l">Company</div><div class="v">${esc(h.company) || '&mdash;'}</div></div>
+      <div><div class="l">Date</div><div class="v">${esc(h.date) || '&mdash;'}</div></div>
+    </div>
+    <div class="kpis">${kpis}</div>`;
+
   const win = window.open('', '_blank');
   if (!win) { alert('Pop-up blocked — allow pop-ups to export the schedule.'); return; }
   win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Construction Schedule — ${esc(titleTxt)}</title>
@@ -23860,30 +23908,22 @@ function _csExportPdf() {
     tr:nth-child(even) td{background:#f7f8fa}
     tr.divider td{background:#e5e7eb;font-style:italic;font-weight:700;color:#374151}
     .gantt{border:1px solid #e3e5e9;border-radius:6px;padding:10px 12px}
+    .gantt-page{page-break-before:always}
     .gantt-wrap{page-break-inside:avoid}
     .fn{font-size:8px;color:#777;margin-top:8px}
     @media print{@page{margin:0.55cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style></head><body>
-    <div class="dw-head">
-      <div class="dw-brand">
-        <div><div class="nm">DataWatch <span style="color:#cbd5e1;font-weight:400">|</span> FTSI</div><div class="tag">Construction Schedule</div></div>
-      </div>
-      <div class="dw-title"><div class="t">${esc(titleTxt)}</div><div class="s">Generated ${dateStr}</div></div>
-    </div>
-    <div class="info">
-      <div><div class="l">Project Title</div><div class="v">${esc(h.projectTitle) || '&mdash;'}</div></div>
-      <div><div class="l">Project Manager</div><div class="v">${esc(h.pm) || '&mdash;'}</div></div>
-      <div><div class="l">Company</div><div class="v">${esc(h.company) || '&mdash;'}</div></div>
-      <div><div class="l">Date</div><div class="v">${esc(h.date) || '&mdash;'}</div></div>
-    </div>
-    <div class="kpis">${kpis}</div>
+    ${headerBlock}
     <h2>Timeline</h2>
     <table><thead><tr>
       <th>Status</th><th>Priority</th><th>Start</th><th>End</th><th>Dur</th><th>Code</th><th>Subcode</th><th>Description</th><th>Deliverable</th><th>% Done</th><th>Depends On</th>
     </tr></thead><tbody>${tbody}</tbody></table>
-    <h2>Gantt Chart</h2>
-    <div class="gantt-wrap"><div class="gantt">${ganttHtml}</div></div>
-    <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; <span style="color:#dc2626;font-weight:700">red</span> marks the critical path (dependency chain that drives the finish date); the dashed line marks today; arrows show finish-to-start dependencies.</p>
+    <div class="gantt-page">
+      ${headerBlock}
+      <h2>Gantt Chart</h2>
+      <div class="gantt-wrap"><div class="gantt">${ganttHtml}</div></div>
+      <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; <span style="color:#dc2626;font-weight:700">red</span> marks the critical path (dependency chain that drives the finish date); the dashed line marks today; arrows show finish-to-start dependencies.</p>
+    </div>
     <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
   win.document.close();
@@ -23974,23 +24014,31 @@ function _csBuildEmailReportHtml(png) {
     return `<td style="padding:0 22px 0 0;vertical-align:top"><div style="font-size:8px;text-transform:uppercase;letter-spacing:.05em;color:#888;font-weight:700">${l}</div><div style="font-size:11px;color:#111;font-weight:600">${esc(v) || '—'}</div></td>`;
   }).join('');
 
-  return `
-  <div style="font-family:Arial,Helvetica,sans-serif;color:#111;max-width:760px">
+  // Branded header (DataWatch banner + project info + KPIs). Repeated above the
+  // Gantt so the same header sits over both the Timeline and the Gantt sections.
+  const headerBlock = `
     <table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:3px solid #16a34a;padding-bottom:6px;margin-bottom:10px"><tr>
       <td style="vertical-align:middle"><span style="font-size:17px;font-weight:800;color:#0f172a">DataWatch <span style="color:#cbd5e1;font-weight:400">|</span> FTSI</span><div style="font-size:8px;letter-spacing:.16em;text-transform:uppercase;color:#16a34a;font-weight:700;margin-top:2px">Construction Schedule</div></td>
       <td style="text-align:right;vertical-align:middle"><div style="font-size:15px;font-weight:800;color:#15803d">${esc(titleTxt)}</div></td>
     </tr></table>
     <table cellpadding="0" cellspacing="0" style="margin-bottom:8px"><tr>${info}</tr></table>
-    <table cellpadding="0" cellspacing="0" style="border-top:1px solid #e3e5e9;border-bottom:1px solid #e3e5e9;margin-bottom:14px"><tr>${kpis}</tr></table>
+    <table cellpadding="0" cellspacing="0" style="border-top:1px solid #e3e5e9;border-bottom:1px solid #e3e5e9;margin-bottom:14px"><tr>${kpis}</tr></table>`;
+
+  return `
+  <div style="font-family:Arial,Helvetica,sans-serif;color:#111;max-width:760px">
+    ${headerBlock}
     <div style="font-size:12px;font-weight:700;color:#0f172a;border-bottom:2px solid #16a34a;padding-bottom:3px;margin-bottom:6px">Timeline</div>
     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:18px">
       <tr>${['Status', 'Priority', 'Start', 'End', 'Dur', 'Description', 'Deliverable', '% Done', 'Depends On'].map(th).join('')}</tr>
       ${tRows}
     </table>
-    <div style="font-size:12px;font-weight:700;color:#0f172a;border-bottom:2px solid #16a34a;padding-bottom:3px;margin-bottom:5px">Gantt Chart</div>
-    <div style="margin-bottom:7px">${legend}</div>
-    ${ganttBlock}
-    <div style="font-size:8px;color:#999;margin-top:9px">Est. Working Days counts ${esc(wwLabel)}; &#9670; / red marks the critical path (drives the finish date). Open the schedule in DataWatch for the fully interactive Gantt.</div>
+    <div style="page-break-before:always;padding-top:6px">
+      ${headerBlock}
+      <div style="font-size:12px;font-weight:700;color:#0f172a;border-bottom:2px solid #16a34a;padding-bottom:3px;margin-bottom:5px">Gantt Chart</div>
+      <div style="margin-bottom:7px">${legend}</div>
+      ${ganttBlock}
+      <div style="font-size:8px;color:#999;margin-top:9px">Est. Working Days counts ${esc(wwLabel)}; &#9670; / red marks the critical path (drives the finish date). Open the schedule in DataWatch for the fully interactive Gantt.</div>
+    </div>
   </div>`;
 }
 function _csEmailSchedule() {
@@ -24103,6 +24151,7 @@ function _csEdit(id, field, value) {
     if (de) de.textContent = row.duration;
     _csUpdateSummary();
     _csUpdateHeaderStats();
+    _csUpdateGanttHeader();     // project span in the Gantt header depends on task dates
   }
   if (field === 'status') {
     if (value === 'Complete' && (!row.pct || +row.pct === 0)) {
@@ -24120,6 +24169,7 @@ function _csEdit(id, field, value) {
 function _csHeaderEdit(field, value) {
   if (!_csData) return;
   _csData.header[field] = value;
+  _csUpdateGanttHeader();      // keep the repeated header above the Gantt in sync
   _csScheduleSave();
 }
 function _csUpdateSummary() {
@@ -24391,6 +24441,8 @@ function renderConstructionSchedule() {
 
       <!-- Gantt chart (below the schedule, same screen) -->
       <div style="margin-top:2rem">
+        <!-- same header card as above the Timeline, repeated over the Gantt so it appears on both "pages" (screen, print & email) -->
+        <div id="cs-gantt-header">${_csHeaderDisplayHtml()}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.7rem;border-bottom:2px solid var(--green);padding-bottom:0.35rem">
           <div style="font-size:1.05rem;font-weight:800;color:var(--fg)">Gantt Chart</div>
           <div style="display:flex;gap:0.9rem;flex-wrap:wrap;font-size:0.68rem;color:var(--muted)">
