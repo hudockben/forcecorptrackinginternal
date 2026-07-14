@@ -4050,6 +4050,28 @@ function cbCommitInput(input) {
     }
   }
 }
+
+// Restore a bid-item sub-code combobox cell's visible label + cbValue to a
+// saved cost/sub code. Used to undo an ambiguous commit — a `change` that fired
+// with no resolved value (cbValue cleared by typing, or a native blur change)
+// while the box still showed text — which would otherwise overwrite a good
+// cost_code/sub_code with blanks. Only a truly emptied box clears the code.
+function _restoreSubCodeCell(cellId, projectId, costCode, subCode) {
+  const cell  = document.getElementById(cellId);
+  const input = cell && cell.querySelector('.cb-input');
+  if (!input) return;
+  if (costCode || subCode) {
+    const proj = getProj(projectId);
+    const bi = proj && (proj.bidItems || []).find(b =>
+      (b.cost_code || '') === (costCode || '') && (b.sub_code || '') === (subCode || ''));
+    const base = [costCode, subCode].filter(Boolean).join(' / ');
+    input.value = bi && bi.description ? base + ' — ' + bi.description : base;
+    input.dataset.cbValue = (costCode || '') + '||' + (subCode || '');
+  } else {
+    input.value = '';
+    delete input.dataset.cbValue;
+  }
+}
 document.addEventListener('mousedown', (e) => {
   const opt = e.target.closest('.cb-opt');
   if (opt) {
@@ -8883,6 +8905,14 @@ function _handlePOEvent(e) {
     // trailing whitespace in a description would otherwise wipe the code on blur.
     // cbOnInput clears this the moment the user actually types.
     el.dataset.cbValue = mapped;
+    // Ambiguous commit guard: no resolved value but the box still shows text
+    // (typed a partial filter then clicked/tabbed away, or a native blur change
+    // beat the pick) — restore the saved code instead of wiping it. A truly
+    // emptied box (no text) still falls through below and clears the code.
+    if (!mapped && el.value.trim()) {
+      _restoreSubCodeCell('po-subcode-cell-' + po.id, po.project_id, po.cost_code, po.sub_code);
+      return;
+    }
     const [cc, sc] = mapped.split('||');
     // No-op commit (focus+blur, or re-picking the same item): the combobox still
     // fires a change, but re-applying the same value would needlessly re-sync.
@@ -9847,6 +9877,14 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     // trailing whitespace in a description would otherwise wipe the code on blur.
     // cbOnInput clears this the moment the user actually types.
     el.dataset.cbValue = mapped;
+    // Ambiguous commit guard: no resolved value but the box still shows text
+    // (typed a partial filter then clicked/tabbed away, or a native blur change
+    // beat the pick) — restore the saved code instead of wiping it. A truly
+    // emptied box (no text) still falls through below and clears the code.
+    if (!mapped && el.value.trim()) {
+      _restoreSubCodeCell('tr-subcode-cell-' + tr.id, tr.project_id, tr.cost_code, tr.sub_code);
+      return;
+    }
     const [cc, sc] = mapped.split('||');
     // No-op commit (focus+blur, or re-picking the same item) — skip redundant re-sync.
     if ((cc || '') === (tr.cost_code || '') && (sc || '') === (tr.sub_code || '')) return;
