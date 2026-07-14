@@ -3863,11 +3863,12 @@ function apiPut(key, value, opts = {}) {
 const _cbState = new WeakMap();
 const _cbEsc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-function cbHtml(listKey, currentValue, placeholder, passthroughAttrs) {
+function cbHtml(listKey, currentValue, placeholder, passthroughAttrs, wrapperAttrs) {
   const ph = placeholder == null ? '— select —' : placeholder;
   const passAttrs = passthroughAttrs ? ' ' + passthroughAttrs : '';
   const passFlag  = passthroughAttrs ? ' data-passthrough="1"' : '';
-  return `<div class="cb" data-list="${_cbEsc(listKey)}"${passFlag}>` +
+  const wrapAttrs = wrapperAttrs ? ' ' + wrapperAttrs : '';
+  return `<div class="cb" data-list="${_cbEsc(listKey)}"${passFlag}${wrapAttrs}>` +
     `<input type="text" class="cb-input" value="${_cbEsc(currentValue || '')}" ` +
       `placeholder="${_cbEsc(ph)}" autocomplete="off" spellcheck="false" ` +
       `onfocus="cbOnFocus(this)" oninput="cbOnInput(event, this)" ` +
@@ -3896,6 +3897,21 @@ function cbOptionsFor(listKey) {
     const proj = getProj(po.project_id);
     if (!proj || !Array.isArray(proj.bidItems)) return [];
     return proj.bidItems.filter(b => b.cost_code || b.sub_code).sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b => ({ value: (b.cost_code||'') + '||' + (b.sub_code||''), label: [b.cost_code, b.sub_code].filter(Boolean).join(' / ') + (b.description ? ' — ' + b.description : '') }));
+  }
+  // Construction-schedule Code column: the picked job's cost codes (from its
+  // bid items), same source the daily-tracking cost-code dropdown uses.
+  if (listKey === 'cs_codes') {
+    if (!_csProjId) return [];
+    return getCostCodes(_csProjId).slice().sort((a, b) => a.localeCompare(b));
+  }
+  // Construction-schedule Subcode column: only the sub codes tied to this
+  // row's cost code (falls back to all sub codes when no code is set yet) —
+  // mirrors the daily-tracking cost-code → sub-code relationship.
+  if (listKey.startsWith('cs_subcodes:')) {
+    if (!_csProjId) return [];
+    const rowId = listKey.slice(12);
+    const row = ((_csData && _csData.rows) || []).find(r => r.id === rowId);
+    return getSubCodes(_csProjId, row ? (row.code || '') : '').slice().sort((a, b) => a.localeCompare(b));
   }
   return [];
 }
@@ -3972,7 +3988,38 @@ function cbRenderMenu(input) {
     ).join('');
   }
   menu.hidden = false;
+  const cb = input.closest('.cb');
+  if (cb && cb.dataset.cbFixed === '1') _cbPositionFixed(input, menu);
 }
+/* Opt-in (data-cb-fixed="1" on the .cb) fixed-position menu so the dropdown
+   escapes any overflow-clipping / horizontally-scrolling ancestor. The
+   construction-schedule Code/Subcode comboboxes sit inside an overflow-x:auto
+   table wrapper that would otherwise clip the list; other cb callers are
+   unaffected. Coordinates are viewport-relative (no transformed ancestors on
+   this page), and open upward when there isn't room below. */
+function _cbPositionFixed(input, menu) {
+  const r = input.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.left = r.left + 'px';
+  menu.style.minWidth = r.width + 'px';
+  const menuH = Math.min(menu.scrollHeight || 220, 220);
+  const below = window.innerHeight - r.bottom;
+  if (below < menuH + 8 && r.top > below) {
+    menu.style.top = 'auto';
+    menu.style.bottom = (window.innerHeight - r.top + 2) + 'px';
+  } else {
+    menu.style.bottom = 'auto';
+    menu.style.top = (r.bottom + 2) + 'px';
+  }
+}
+function _cbRepositionFixedMenus() {
+  document.querySelectorAll('.cb[data-cb-fixed="1"] .cb-menu:not([hidden])').forEach(menu => {
+    const input = menu.previousElementSibling;
+    if (input) _cbPositionFixed(input, menu);
+  });
+}
+window.addEventListener('scroll', _cbRepositionFixedMenus, true);
+window.addEventListener('resize', _cbRepositionFixedMenus);
 function cbScrollHi(input) {
   const hi = input.nextElementSibling && input.nextElementSibling.querySelector('.cb-opt.hi');
   if (hi) hi.scrollIntoView({ block: 'nearest' });
@@ -24289,6 +24336,47 @@ function _csSelect(id, field, value, opts, colorize) {
   const idAttr = colorize ? ` id="cs-statuscell-${id}"` : '';
   return `<select${idAttr} onchange="_csEdit('${id}','${field}',this.value)" style="${style}">${options}</select>`;
 }
+/* Code / Subcode are typable-search comboboxes driven by the picked job's bid
+   items (like daily tracking): the Code list is the job's cost codes; the
+   Subcode list is only the sub codes tied to this row's cost code. Commits
+   route through the delegated 'input' handler below. data-cb-fixed keeps the
+   dropdown from being clipped by the table's horizontal-scroll wrapper. */
+function _csCodeCell(row) {
+  return cbHtml('cs_codes', row.code || '', 'code',
+    `data-cs-id="${_cbEsc(row.id)}" data-cs-field="code"`, 'data-cb-fixed="1"');
+}
+function _csSubcodeCell(row) {
+  return cbHtml('cs_subcodes:' + row.id, row.subcode || '', 'sub code',
+    `data-cs-id="${_cbEsc(row.id)}" data-cs-field="subcode"`, 'data-cb-fixed="1"');
+}
+/* The Code/Subcode comboboxes fire a synthetic 'input' on commit (real
+   keystrokes are stopped inside cbOnInput, so only the committed value bubbles
+   here). Route it to _csEdit; when the Code changes, drop a now-invalid
+   Subcode so the pair stays consistent — the cost-code → sub-code dependency
+   the daily-tracking table enforces. */
+document.addEventListener('input', e => {
+  const el = e.target;
+  if (!el || !el.dataset || !el.dataset.csField || !_csData) return;
+  const id = el.dataset.csId;
+  const field = el.dataset.csField;
+  _csEdit(id, field, el.value);
+  if (field === 'code') {
+    const row = (_csData.rows || []).find(r => r.id === id);
+    if (row && row.subcode && !getSubCodes(_csProjId, el.value).includes(row.subcode)) {
+      const stale = row.subcode;
+      row.subcode = '';
+      const sel = (window.CSS && CSS.escape) ? CSS.escape(id) : id;
+      const sc = document.querySelector(`.cb-input[data-cs-id="${sel}"][data-cs-field="subcode"]`);
+      // Clear the box only while it still shows the now-invalid value. If the
+      // user has already typed a different subcode into it (blur-into-subcode
+      // race), leave their text alone — their own commit overwrites. Either way
+      // the stale value is dropped from the model and can't be re-committed on
+      // the subcode's own blur.
+      if (sc && sc.value === stale) { sc.value = ''; delete sc.dataset.cbValue; }
+      _csScheduleSave();
+    }
+  }
+});
 
 /* ── task dependencies (finish-to-start predecessors) ────────────────────── */
 function _csDepsCell(row) {
@@ -24353,8 +24441,8 @@ function _csRowHtml(row, index, total) {
     <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
     <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
     <td style="${_CS_TD};min-width:48px;text-align:center"><span id="cs-dur-${row.id}" style="font-size:0.72rem;color:var(--fg)" title="Auto-calculated from the start and end dates">${_csEsc(_csRowDuration(row))}</span></td>
-    <td style="${_CS_TD};min-width:60px">${_csCell(row.id, 'code', row.code)}</td>
-    <td style="${_CS_TD};min-width:60px">${_csCell(row.id, 'subcode', row.subcode)}</td>
+    <td style="${_CS_TD};min-width:82px">${_csCodeCell(row)}</td>
+    <td style="${_CS_TD};min-width:96px">${_csSubcodeCell(row)}</td>
     <td style="${_CS_TD}">${_csCell(row.id, 'description', row.description)}</td>
     <td style="${_CS_TD};min-width:90px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
     <td style="${_CS_TD};min-width:52px"><input id="cs-pct-${row.id}" type="number" min="0" max="100" value="${_csEsc(row.pct)}" oninput="_csEdit('${row.id}','pct',this.value)" style="${_CS_INP};text-align:center"></td>
@@ -24362,9 +24450,27 @@ function _csRowHtml(row, index, total) {
     ${actions}</tr>`;
 }
 
+// Harvest any uncommitted Code/Subcode combobox text into the model before a
+// structural re-render blows the inputs away. The comboboxes commit on a 120ms
+// blur timer, so a synchronous re-render (Add Task, move/delete row, apply
+// template) would otherwise detach the input before its deferred commit fires
+// and silently drop what the user just typed — the plain inputs this replaced
+// saved live on every keystroke, so this keeps that guarantee. Keyed by row id,
+// so it's correct even when the re-render reordered or removed rows.
+function _csFlushCells() {
+  if (!_csData) return;
+  const root = document.getElementById('construction-root');
+  if (!root) return;
+  root.querySelectorAll('.cb-input[data-cs-id][data-cs-field]').forEach(inp => {
+    const row = (_csData.rows || []).find(r => r.id === inp.dataset.csId);
+    if (row && row[inp.dataset.csField] !== inp.value) row[inp.dataset.csField] = inp.value;
+  });
+}
+
 function renderConstructionSchedule() {
   const el = document.getElementById('construction-root');
   if (!el) return;
+  _csFlushCells();   // preserve in-progress Code/Subcode typing across re-renders
 
   const ghostBtn = 'padding:0.42rem 0.85rem;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:7px;font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap';
   const greenBtn = 'display:inline-flex;align-items:center;gap:0.35rem;padding:0.42rem 0.9rem;background:rgba(74,222,128,0.15);border:1.5px solid rgba(74,222,128,0.45);color:#4ade80;border-radius:7px;font-size:0.82rem;font-weight:700;cursor:pointer;white-space:nowrap';
