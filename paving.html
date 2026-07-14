@@ -3343,6 +3343,10 @@ function drPutNow(rowId, row) {
 }
 
 function _drPutNow(rowId, row) {
+  // An in-place row value edit (quantity, loads→quantity, rate, hours, …) does
+  // not change the daily-row count, so the row-count-keyed aggregate cache
+  // would otherwise serve stale running-quantity / cost totals. Invalidate it.
+  _aggCacheRowCount = -1;
   const walId = 'put_' + rowId;
   _walAdd(walId, { method: 'PUT', rowId, row, projectId: row._projectId || null });
   _drSaveStart();
@@ -6960,16 +6964,21 @@ function deleteDailyRowsBySubCode(costCode, subCode) {
     if (confirm.disabled) return;
     close();
     if (dailyCount) {
+      const _removedRowIds = new Set();
       projectsList.forEach(p => {
         if (!Array.isArray(p.dailyRows)) return;
         // Preserve auto-injected rows: a sub_code removed from the bid items
         // should NOT wipe payroll-approved labor history. Those rows stay
         // locked + badged in the daily tab; payroll can resplit if needed.
-        p.dailyRows = p.dailyRows.filter(r =>
-          r.sub_code !== subCode ||
-          (r.timesheet_entry_id != null && r.timesheet_entry_id !== '')
-        );
+        p.dailyRows = p.dailyRows.filter(r => {
+          const keep = r.sub_code !== subCode ||
+            (r.timesheet_entry_id != null && r.timesheet_entry_id !== '');
+          if (!keep) _removedRowIds.add(r.id);
+          return keep;
+        });
       });
+      // Detach any trucking entries whose linked daily row was just removed.
+      _detachTruckingRows(rowId => _removedRowIds.has(rowId));
       // API also skips injected rows (timesheet_entry_id IS NULL clause).
       drDeleteBySubCode(subCode);
       projectsList.forEach(p => renderDailyTable(p.id));
@@ -8650,6 +8659,22 @@ function deleteTR(id) {
   renderTruckingTab();
 }
 
+// Detach any trucking entries whose linked daily-row id matches `pred`. Used
+// when a TR-linked daily row is deleted (directly in Daily Tracking, or via a
+// sub-code removal): without this the TR keeps a dangling tr_row_id, so its
+// field syncs silently no-op and it disappears from the equipment report
+// (which skips entries that still have a tr_row_id). Nulling the link lets the
+// entry re-count and be re-linked by a later project/sub-code edit.
+function _detachTruckingRows(pred) {
+  if (!Array.isArray(truckingEntries)) return 0;
+  let n = 0;
+  truckingEntries.forEach(tr => {
+    if (tr.tr_row_id != null && pred(tr.tr_row_id)) { tr.tr_row_id = null; n++; }
+  });
+  if (n) saveTruckingEntries();
+  return n;
+}
+
 function _syncTRRowField(tr, field) {
   if (!tr.project_id || !tr.tr_row_id) return;
   const proj = getProj(tr.project_id);
@@ -8672,7 +8697,6 @@ function _syncTRRowField(tr, field) {
     r.equip_unit_cost = String(parseFloat(tr.rate)  || 0);
     r.equip_hours     = String(parseFloat(tr.hours) || 0);
   }
-  r.job_class = 'Trucking';
   drPutNow(r.id, r);
   renderDailyTable(tr.project_id);
 }
@@ -11564,7 +11588,10 @@ function _buildEquipAgg(filters = {}) {
     const pname = tr.project_id ? (projMap[tr.project_id] || '') : '';
     if (project && pname !== project) return;
     const hrs  = parseFloat(tr.hours) || 0;
-    const cost = (parseFloat(tr.loads) || 0) * (parseFloat(tr.rate) || 0);
+    // Equipment cost is rate (per-hour, = equip_unit_cost) × hours — the same
+    // basis used by the row Total, the CSV export, and the linked daily row's
+    // equip_total. (Loads is tons hauled, a production quantity, not a cost driver.)
+    const cost = hrs * (parseFloat(tr.rate) || 0);
     if (!agg[name]) agg[name] = {
       hours: 0, cost: 0, projects: new Set(), dates: new Set(),
       costCodes: new Set(), unitCosts: [], source: 'trucking',
@@ -17314,7 +17341,12 @@ document.addEventListener('click', e => {
       const p = getProj(projId); if (!p) return;
       const deletedRow = p.dailyRows[i];
       p.dailyRows.splice(i, 1);
-      if (deletedRow) drDelete(deletedRow.id);
+      if (deletedRow) {
+        drDelete(deletedRow.id);
+        // If a trucking entry owned this daily row, detach it so later field
+        // syncs don't silently no-op and the entry re-counts in reports.
+        _detachTruckingRows(id => id === deletedRow.id);
+      }
       renderDailyTable(projId);
     } else if (tab === 'po') {
       deletePO(btn.dataset.poId);
