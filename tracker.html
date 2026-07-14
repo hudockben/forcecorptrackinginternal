@@ -24363,13 +24363,16 @@ document.addEventListener('input', e => {
   if (field === 'code') {
     const row = (_csData.rows || []).find(r => r.id === id);
     if (row && row.subcode && !getSubCodes(_csProjId, el.value).includes(row.subcode)) {
+      const stale = row.subcode;
       row.subcode = '';
       const sel = (window.CSS && CSS.escape) ? CSS.escape(id) : id;
       const sc = document.querySelector(`.cb-input[data-cs-id="${sel}"][data-cs-field="subcode"]`);
-      // Don't yank text out from under the user if they're mid-edit in the
-      // subcode box (can happen when the code commits on blur-into-subcode);
-      // their own commit will overwrite the stale value.
-      if (sc && document.activeElement !== sc) { sc.value = ''; delete sc.dataset.cbValue; }
+      // Clear the box only while it still shows the now-invalid value. If the
+      // user has already typed a different subcode into it (blur-into-subcode
+      // race), leave their text alone — their own commit overwrites. Either way
+      // the stale value is dropped from the model and can't be re-committed on
+      // the subcode's own blur.
+      if (sc && sc.value === stale) { sc.value = ''; delete sc.dataset.cbValue; }
       _csScheduleSave();
     }
   }
@@ -24447,9 +24450,27 @@ function _csRowHtml(row, index, total) {
     ${actions}</tr>`;
 }
 
+// Harvest any uncommitted Code/Subcode combobox text into the model before a
+// structural re-render blows the inputs away. The comboboxes commit on a 120ms
+// blur timer, so a synchronous re-render (Add Task, move/delete row, apply
+// template) would otherwise detach the input before its deferred commit fires
+// and silently drop what the user just typed — the plain inputs this replaced
+// saved live on every keystroke, so this keeps that guarantee. Keyed by row id,
+// so it's correct even when the re-render reordered or removed rows.
+function _csFlushCells() {
+  if (!_csData) return;
+  const root = document.getElementById('construction-root');
+  if (!root) return;
+  root.querySelectorAll('.cb-input[data-cs-id][data-cs-field]').forEach(inp => {
+    const row = (_csData.rows || []).find(r => r.id === inp.dataset.csId);
+    if (row && row[inp.dataset.csField] !== inp.value) row[inp.dataset.csField] = inp.value;
+  });
+}
+
 function renderConstructionSchedule() {
   const el = document.getElementById('construction-root');
   if (!el) return;
+  _csFlushCells();   // preserve in-progress Code/Subcode typing across re-renders
 
   const ghostBtn = 'padding:0.42rem 0.85rem;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:7px;font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap';
   const greenBtn = 'display:inline-flex;align-items:center;gap:0.35rem;padding:0.42rem 0.9rem;background:rgba(74,222,128,0.15);border:1.5px solid rgba(74,222,128,0.45);color:#4ade80;border-radius:7px;font-size:0.82rem;font-weight:700;cursor:pointer;white-space:nowrap';
