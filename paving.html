@@ -2580,6 +2580,27 @@
   </div>
 </div>
 
+<!-- ══════════════ JOB SUMMARY REPORT MODAL ══════════════ -->
+<div id="job-summary-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:600;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;width:440px;max-width:94vw;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,0.6);">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--border);">
+      <div>
+        <div style="font-weight:700;font-size:0.9rem;color:var(--text)">Job Summary Report</div>
+        <div id="job-summary-modal-sub" style="font-size:0.72rem;color:var(--muted);margin-top:0.2rem"></div>
+      </div>
+      <button class="modal-close" onclick="closeJobSummaryModal()">&#10005;</button>
+    </div>
+    <div style="padding:1rem 1.25rem;font-size:0.78rem;color:var(--muted);line-height:1.55">
+      End-of-job summary: cost &amp; sub-code groups with bid vs. running quantities and actual cost, plus a merged purchases list (purchase orders and material entered directly on job rows).
+    </div>
+    <div style="padding:0 1.25rem 1rem;display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn btn-ghost" onclick="closeJobSummaryModal()">Cancel</button>
+      <button class="btn" style="background:#1d4ed8;color:#fff" onclick="jobSummaryPrint()">&#8595; Print / Save PDF</button>
+      <button class="btn btn-green" onclick="jobSummaryEmail()">&#9993;&#65039; Email</button>
+    </div>
+  </div>
+</div>
+
 <!-- ══════════════ DAILY PRODUCTION RATE FULL-SCREEN ══════════════ -->
 <div id="prod-fullscreen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;flex-direction:column;">
   <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
@@ -7653,6 +7674,7 @@ function projectCardHTML(p) {
     ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.3rem 0.85rem;background:#166534;color:#fff;border:1px solid #16a34a;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>` : ''}
     <button class="btn btn-green" style="font-size:0.75rem;padding:0.3rem 0.85rem;" onclick="event.stopPropagation();openDailyView('${p.id}')">Daily Tracking &#8594;</button>
     ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.3rem 0.85rem;background:#9a3412;color:#fff;border:1px solid #f97316;" onclick="event.stopPropagation();openProductionRateView('${p.id}')">Daily Production Rate &#8594;</button>` : ''}
+    <button class="btn" style="font-size:0.75rem;padding:0.3rem 0.85rem;background:#155e75;color:#fff;border:1px solid #06b6d4;" onclick="event.stopPropagation();openJobSummaryModal('${p.id}')">Job Summary Report &#8594;</button>
     <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
       title="${p.pinned ? 'Unpin from Home' : 'Pin to Home'}"
       style="color:${p.pinned ? 'var(--green)' : 'var(--muted)'};font-size:0.8rem;padding:0.25rem 0.5rem">
@@ -14406,6 +14428,329 @@ function generateBidEmail() {
     defaultSubject: subject,
     getHTML:        () => emailHtml,
   });
+}
+
+/* ── Job Summary Report (end-of-job) ─────────────────────────────────
+   A lean summary combining:
+     A. Cost & sub-code groups from bid items — Bid Qty, Running Qty,
+        Bid $, Actual $, Variance.
+     B. A merged purchases list — formal purchase orders (from the PO tab)
+        AND material entered directly on job rows without a PO, each line
+        tagged by source. Rows synced from a PO (po_row_id set) are shown
+        via their PO, not duplicated in the manual list.  */
+let _jobSummaryProjId = null;
+
+function openJobSummaryModal(projId) {
+  const p = getProj(projId); if (!p) return;
+  _jobSummaryProjId = projId;
+  const sub = document.getElementById('job-summary-modal-sub');
+  if (sub) sub.textContent = (p['project-name'] || 'Project') + (p['job-number'] ? ' · ' + p['job-number'] : '');
+  document.getElementById('job-summary-modal').style.display = 'flex';
+}
+
+function closeJobSummaryModal() {
+  const m = document.getElementById('job-summary-modal');
+  if (m) m.style.display = 'none';
+  _jobSummaryProjId = null;
+}
+
+function jobSummaryPrint() {
+  const projId = _jobSummaryProjId;      // capture before close nulls it
+  closeJobSummaryModal();
+  if (projId) exportJobSummary(projId);
+}
+
+function jobSummaryEmail() {
+  const projId = _jobSummaryProjId;      // capture before close nulls it
+  closeJobSummaryModal();
+  if (!projId) return;
+  if (typeof window.openReportEmailModal !== 'function') {
+    alert('Email module is still loading — please try again in a moment.');
+    return;
+  }
+  const p = getProj(projId); if (!p) return;
+  const projName = p['project-name'] || 'Project';
+  const jobNo    = p['job-number'] || null;
+  const built = exportJobSummary(projId, { returnHtml: true });
+  if (!built) return;
+  const emailHtml = built.html.replace(/<script>window\.onload\s*=\s*\(\)\s*=>\s*\{\s*window\.print\(\);?\s*\}<\/script>/i, '');
+  const subject = 'Job Summary — ' + projName + (jobNo ? ' (' + jobNo + ')' : '');
+  window.openReportEmailModal({
+    reportType:     'paving_job_summary',
+    projectId:      projId,
+    projectName:    projName,
+    defaultSubject: subject,
+    getHTML:        () => emailHtml,
+  });
+}
+
+function exportJobSummary(projId, opts = {}) {
+  const p = getProj(projId); if (!p) return null;
+  const name  = p['project-name'] || 'Project';
+  const jobNo = p['job-number'] ? ` — ${p['job-number']}` : '';
+  const dash  = '—';
+  const money = v => (v >= 0 ? '$' + fmt(v) : '-$' + fmt(Math.abs(v)));
+  const qfmt  = n => Number(Math.round(n * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const items = p.bidItems || [];
+
+  // ── Section A: Cost & sub-code groups from bid items ──────────────
+  const groupOrder = [];
+  const groups = {};
+  items.forEach(b => {
+    const cc = b.cost_code || '';
+    if (!groups[cc]) { groups[cc] = []; groupOrder.push(cc); }
+    groups[cc].push(b);
+  });
+  const _effQty = b => (parseFloat(b.quantity) || 0) +
+    (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+
+  let bidRowsHTML = '';
+  let grandBid = 0, mappedActual = 0;
+  groupOrder.forEach(cc => {
+    const gItems = groups[cc];
+    bidRowsHTML += `<tr class="group-hdr"><td colspan="7"><strong>${esc(cc) || '(No Code)'}</strong></td></tr>`;
+    let gBid = 0, gActual = 0;
+    gItems.forEach(b => {
+      const bidQty = _effQty(b);
+      const uc     = parseFloat(b.unit_cost) || 0;
+      const bidTot = bidQty * uc;
+      const rqty   = runningQtyForBidItem(b, projId);
+      const actual = actualForBidItem(b, projId);
+      const varc   = bidTot - actual;
+      gBid += bidTot; gActual += actual;
+      bidRowsHTML += `<tr>
+        <td class="sub">${esc(b.sub_code) || dash}${b.description ? `<span class="desc"> — ${esc(b.description)}</span>` : ''}</td>
+        <td class="ctr">${esc(b.unit || '')}</td>
+        <td class="num">${bidQty ? qfmt(bidQty) : dash}</td>
+        <td class="num">${rqty ? qfmt(rqty) : dash}</td>
+        <td class="num">${bidTot ? '$' + fmt(bidTot) : dash}</td>
+        <td class="num actual">${actual ? '$' + fmt(actual) : dash}</td>
+        <td class="num ${varc >= 0 ? 'under' : 'over'}">${bidTot ? money(varc) : dash}</td>
+      </tr>`;
+    });
+    grandBid += gBid; mappedActual += gActual;
+    const gVar = gBid - gActual;
+    bidRowsHTML += `<tr class="subtotal">
+      <td colspan="4"><em>${esc(cc) || '(No Code)'} — Subtotal</em></td>
+      <td class="num">${gBid ? '$' + fmt(gBid) : dash}</td>
+      <td class="num actual">${gActual ? '$' + fmt(gActual) : dash}</td>
+      <td class="num ${gVar >= 0 ? 'under' : 'over'}">${gBid ? money(gVar) : dash}</td>
+    </tr>`;
+  });
+
+  // True project actual = every job row (labor + equipment + material),
+  // including rows whose codes don't map to any bid item above. Surface
+  // that remainder so the Actual column totals honestly.
+  const totalActual = (p.dailyRows || []).reduce((s, r) => s + dailyRowCost(r), 0);
+  const unmatched   = totalActual - mappedActual;
+  if (unmatched > 0.005) {
+    bidRowsHTML += `<tr class="group-hdr"><td colspan="7"><strong>Unmatched Job Rows</strong> <span style="font-weight:400;color:#777">(cost entered on job rows with no matching bid item)</span></td></tr>`;
+    bidRowsHTML += `<tr class="subtotal">
+      <td colspan="4"><em>Unmatched — Subtotal</em></td>
+      <td class="num">${dash}</td>
+      <td class="num actual">$${fmt(unmatched)}</td>
+      <td class="num">${dash}</td>
+    </tr>`;
+  }
+  if (!bidRowsHTML) {
+    bidRowsHTML = `<tr><td colspan="7" style="text-align:center;color:#888;padding:8px">No bid items on this project.</td></tr>`;
+  }
+
+  const grandActual = totalActual;
+  const grandVar    = grandBid - grandActual;
+
+  // ── Section B: Merged purchases (PO tab + direct job-row material) ─
+  const allPOs = (typeof purchaseOrders !== 'undefined' && Array.isArray(purchaseOrders)) ? purchaseOrders : [];
+  const projPOs = allPOs.filter(po => po && po.project_id === projId);
+
+  // A daily row auto-created from a PO line is linked via the *line's*
+  // po_row_id (which stores that row's id); the row itself carries no
+  // marker. Collect those ids so PO material is counted once — via the PO
+  // totals below — and never again as a job-row purchase.
+  const poRowIds = new Set();
+  allPOs.forEach(po => (po.lines || []).forEach(l => {
+    if (l && l.po_row_id != null && l.po_row_id !== '') poRowIds.add(String(l.po_row_id));
+  }));
+
+  let purchRowsHTML = '';
+  let purchTotal = 0;
+
+  projPOs.forEach(po => {
+    const t = _poTotals(po);
+    const codeLbl = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
+    purchTotal += t.total;
+    purchRowsHTML += `<tr>
+      <td class="src">${esc(po.po_number) || dash}</td>
+      <td>${esc(po.supplier) || dash}</td>
+      <td>${esc(codeLbl) || dash}</td>
+      <td>${esc(po.title) || dash}</td>
+      <td class="num">${t.qty ? qfmt(t.qty) : dash}</td>
+      <td class="num">${t.total ? '$' + fmt(t.total) : dash}</td>
+    </tr>`;
+  });
+
+  // Material typed straight onto a job row that is NOT synced from a PO
+  // line. These are the entries the PO tab would miss.
+  const manualRows = (p.dailyRows || []).filter(r =>
+    !poRowIds.has(String(r.id)) && (parseFloat(r.material_cost) || 0) > 0);
+  manualRows.forEach(r => {
+    const amt     = parseFloat(r.material_cost) || 0;
+    const qty     = parseFloat(r.units_purchased) || parseFloat(r.quantity) || 0;
+    const codeLbl = [r.cost_code, r.sub_code].filter(Boolean).join(' / ');
+    const src     = r.po_num ? `Job row (ref ${esc(r.po_num)})` : 'Job row — no PO';
+    purchTotal += amt;
+    purchRowsHTML += `<tr class="jobrow">
+      <td class="src">${src}</td>
+      <td>${esc(r.supplier) || dash}</td>
+      <td>${esc(codeLbl) || dash}</td>
+      <td>${esc(r.material) || dash}</td>
+      <td class="num">${qty ? qfmt(qty) : dash}</td>
+      <td class="num">${amt ? '$' + fmt(amt) : dash}</td>
+    </tr>`;
+  });
+
+  if (!purchRowsHTML) {
+    purchRowsHTML = `<tr><td colspan="6" style="text-align:center;color:#888;padding:8px">No purchase orders or material entries recorded.</td></tr>`;
+  }
+
+  // ── Header work metrics (from job rows) ───────────────────────────
+  const rowsAll    = p.dailyRows || [];
+  const daysWorked = new Set(rowsAll.map(r => r.date).filter(Boolean)).size;
+  let laborHours = 0, laborCost = 0, equipCost = 0, truckingCost = 0;
+  rowsAll.forEach(r => {
+    const c = calcDaily(r);
+    laborHours += parseFloat(r.labor_hours) || 0;
+    laborCost  += c.labor_cost;
+    // Trucking rows carry their haul cost as equipment (rate × hours) and
+    // are tagged job_class "Trucking" — split them out from other equipment.
+    if ((r.job_class || '').toLowerCase() === 'trucking') truckingCost += c.equip_total;
+    else equipCost += c.equip_total;
+  });
+
+  // ── Financial summary bar ─────────────────────────────────────────
+  const contractVal = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+  const profitVal   = contractVal ? contractVal - grandActual : null;
+  const profitCls   = profitVal === null ? '' : profitVal >= 0 ? 'sqft-under' : 'sqft-over';
+  const profitPct   = (profitVal !== null && contractVal) ? ` (${(profitVal / contractVal * 100).toFixed(1)}%)` : '';
+  const finBarHTML = `<div class="sum-bar">
+    <div class="sum-metric"><div class="sum-label">Contract Value</div><div class="sum-val">${contractVal ? '$' + fmt(contractVal) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Bid Cost</div><div class="sum-val">${grandBid ? '$' + fmt(grandBid) : dash}</div></div>
+    <div class="sum-sep"></div>
+    <div class="sum-metric"><div class="sum-label">Profit (Contract − Actual)</div><div class="sum-val ${profitCls}">${profitVal === null ? dash : money(profitVal) + profitPct}</div></div>
+  </div>`;
+
+  const workBarHTML = `<div class="sum-bar">
+    <div class="sum-metric"><div class="sum-label">Days Worked</div><div class="sum-val">${daysWorked || dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Labor Hours</div><div class="sum-val">${laborHours ? qfmt(laborHours) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Labor Cost</div><div class="sum-val">${laborCost ? '$' + fmt(laborCost) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Equipment Cost</div><div class="sum-val">${equipCost ? '$' + fmt(equipCost) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Trucking Cost</div><div class="sum-val">${truckingCost ? '$' + fmt(truckingCost) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Total Purchases</div><div class="sum-val">${purchTotal ? '$' + fmt(purchTotal) : dash}</div></div>
+    <div class="sum-sep"></div>
+    <div class="sum-metric"><div class="sum-label">Actual Cost</div><div class="sum-val sqft-actual">${grandActual ? '$' + fmt(grandActual) : dash}</div></div>
+  </div>`;
+
+  const divLabel = (typeof DIVISION !== 'undefined' && DIVISION)
+    ? DIVISION.charAt(0).toUpperCase() + DIVISION.slice(1) + ' Division'
+    : 'Force Corp Tracking';
+  const genStamp = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const mastheadHTML = `<div class="masthead">
+    <div>
+      <div class="mast-word">DataWatch</div>
+      <div class="mast-sub">${esc(divLabel)}</div>
+    </div>
+    <div class="mast-meta">
+      <div class="mast-rpt">Job Summary Report</div>
+      <div class="mast-date">Generated ${esc(genStamp)}</div>
+    </div>
+  </div>`;
+
+  const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>${esc(name)} — Job Summary</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; font-size: 11px; color: #000; background: #fff; padding: 22px; }
+    .masthead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; border-bottom: 3px solid #22c55e; padding-bottom: 8px; margin-bottom: 12px; }
+    .mast-word { font-size: 24px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; color: #22c55e; line-height: 1; }
+    .mast-sub { font-size: 8px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: #6b7280; margin-top: 5px; }
+    .mast-meta { text-align: right; }
+    .mast-rpt { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #111; }
+    .mast-date { font-size: 8px; color: #9ca3af; margin-top: 3px; }
+    h2 { font-size: 15px; font-weight: 800; margin-bottom: 2px; }
+    h3 { font-size: 12px; font-weight: 700; margin: 16px 0 5px; text-transform: uppercase; letter-spacing: 0.05em; color: #333; }
+    p.meta { font-size: 9px; color: #555; margin-bottom: 12px; }
+    p.note { font-size: 9px; color: #666; margin: 4px 0 0; font-style: italic; }
+    .sum-bar { display: flex; align-items: center; gap: 18px; background: #f3f9f4; border: 1px solid #c6e0cb; border-radius: 4px; padding: 8px 14px; margin-bottom: 6px; flex-wrap: wrap; }
+    .sum-metric { display: flex; flex-direction: column; gap: 1px; }
+    .sum-label { font-size: 7px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #666; }
+    .sum-val { font-size: 12px; font-weight: 700; color: #000; }
+    .sqft-actual { color: #92400e; }
+    .sqft-under { color: #166534; }
+    .sqft-over { color: #991b1b; }
+    .sum-sep { width: 1px; height: 30px; background: #c6e0cb; align-self: center; }
+    table { width: 100%; border-collapse: collapse; table-layout: auto; margin-bottom: 4px; }
+    th, td { border: 1px solid #ccc; padding: 3px 6px; vertical-align: top; }
+    th { background: #f0f0f0; font-size: 8px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; text-align: left; }
+    td.sub { min-width: 150px; white-space: normal; word-break: break-word; }
+    td.src { white-space: nowrap; font-weight: 600; }
+    .desc { color: #666; font-weight: 400; }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    td.ctr { text-align: center; color: #555; }
+    td.under { color: #166534; }
+    td.over  { color: #991b1b; }
+    td.actual { color: #92400e; }
+    tr.group-hdr td { background: #e8f5e9; font-size: 10px; padding: 4px 6px; }
+    tr.subtotal td { background: #f5f5f5; font-style: italic; font-size: 10px; border-top: 1px solid #aaa; }
+    tr.totals td { font-weight: 800; font-size: 11px; background: #f9f9f9; border-top: 2px solid #999; }
+    tr.jobrow td.src { color: #92400e; }
+    @page { size: landscape; margin: 1cm; }
+    @media print { body { padding: 0; } h3 { page-break-after: avoid; } tr { page-break-inside: avoid; } }
+  </style>
+  </head><body>
+  ${mastheadHTML}
+  <h2>${esc(name)}${esc(jobNo)}</h2>
+  ${p['client'] ? `<p class="meta">${esc(p['client'])}</p>` : ''}
+  ${finBarHTML}
+  ${workBarHTML}
+
+  <h3>Cost &amp; Sub-Code Groups</h3>
+  <table>
+    <thead><tr>
+      <th>Sub Code</th><th class="ctr" style="text-align:center">Unit</th>
+      <th class="num">Bid Qty</th><th class="num">Running Qty</th>
+      <th class="num">Bid Cost</th><th class="num">Actual Cost</th><th class="num">Variance</th>
+    </tr></thead>
+    <tbody>${bidRowsHTML}</tbody>
+    <tfoot><tr class="totals">
+      <td colspan="4">Project Totals</td>
+      <td class="num">${grandBid ? '$' + fmt(grandBid) : dash}</td>
+      <td class="num actual">${grandActual ? '$' + fmt(grandActual) : dash}</td>
+      <td class="num ${grandVar >= 0 ? 'under' : 'over'}">${grandBid ? money(grandVar) : dash}</td>
+    </tr></tfoot>
+  </table>
+
+  <h3>Purchases — Purchase Orders &amp; Job-Row Material</h3>
+  <table>
+    <thead><tr>
+      <th>Source</th><th>Vendor</th><th>Cost / Sub Code</th><th>Description</th>
+      <th class="num">Qty</th><th class="num">Total $</th>
+    </tr></thead>
+    <tbody>${purchRowsHTML}</tbody>
+    <tfoot><tr class="totals">
+      <td colspan="5">Total Purchases</td>
+      <td class="num">${purchTotal ? '$' + fmt(purchTotal) : dash}</td>
+    </tr></tfoot>
+  </table>
+  <p class="note">Purchases include formal POs plus material entered directly on job rows. Rows tagged “Job row” were not entered through the Purchase Order tab.</p>
+  <script>window.onload = () => { window.print(); }<\/script>
+  </body></html>`;
+
+  if (opts && opts.returnHtml) {
+    return { html: _html, name, jobNo };
+  }
+  const win = window.open('', '_blank');
+  if (win) { win.document.write(_html); win.document.close(); }
+  return null;
 }
 
 function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
