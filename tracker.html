@@ -3488,9 +3488,11 @@ function drPutNow(rowId, row) {
 
 function _drPutNow(rowId, row) {
   // An in-place row value edit (quantity, loads→quantity, rate, hours, …) does
-  // not change the daily-row count, so the row-count-keyed aggregate cache
-  // would otherwise serve stale running-quantity / cost totals. Invalidate it.
+  // not change the daily-row count, so the row-count-keyed aggregate caches
+  // would otherwise serve stale running-quantity / cost totals. Invalidate both
+  // (buildDailyAgg's _aggCache and buildProjectSubCodeAgg's _projSubAggCache).
   _aggCacheRowCount = -1;
+  _projSubAggCacheRowCount = -1;
   const walId = 'put_' + rowId;
   _walAdd(walId, { method: 'PUT', rowId, row, projectId: row._projectId || null });
   _drSaveStart();
@@ -6865,7 +6867,7 @@ function deleteINV(id) {
   if (entry && entry.inv_row_id && entry.project_id) {
     const proj = getProj(entry.project_id);
     if (proj) {
-      proj.dailyRows = proj.dailyRows.filter(r => r.id !== entry.inv_row_id);
+      proj.dailyRows = proj.dailyRows.filter(r => String(r.id) !== String(entry.inv_row_id));
       drDelete(entry.inv_row_id);
       renderDailyTable(entry.project_id);
     }
@@ -7001,7 +7003,7 @@ function _syncINVRowField(entry, field) {
   if (!entry.project_id || !entry.inv_row_id) return;
   const proj = getProj(entry.project_id);
   if (!proj) return;
-  const r = proj.dailyRows.find(r => r.id === entry.inv_row_id);
+  const r = proj.dailyRows.find(r => String(r.id) === String(entry.inv_row_id));
   if (!r) return;
   const map = {
     employee:        'employee',
@@ -7227,12 +7229,12 @@ function deleteDailyRowsBySubCode(costCode, subCode) {
         p.dailyRows = p.dailyRows.filter(r => {
           const keep = r.sub_code !== subCode ||
             (r.timesheet_entry_id != null && r.timesheet_entry_id !== '');
-          if (!keep) _removedRowIds.add(r.id);
+          if (!keep) _removedRowIds.add(String(r.id));
           return keep;
         });
       });
       // Detach any trucking entries whose linked daily row was just removed.
-      _detachTruckingRows(rowId => _removedRowIds.has(rowId));
+      _detachLinkedRows(id => _removedRowIds.has(id));
       // API also skips injected rows (timesheet_entry_id IS NULL clause).
       drDeleteBySubCode(subCode);
       projectsList.forEach(p => renderDailyTable(p.id));
@@ -8334,7 +8336,7 @@ function deletePOLine(poId, lineId) {
   if (line && line.po_row_id && po.project_id) {
     const proj = getProj(po.project_id);
     if (proj) {
-      proj.dailyRows = proj.dailyRows.filter(r => r.id !== line.po_row_id);
+      proj.dailyRows = proj.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
       drDelete(line.po_row_id);
     }
   }
@@ -8352,7 +8354,7 @@ function deletePO(id) {
     if (proj) {
       (po.lines || []).forEach(line => {
         if (line.po_row_id) {
-          proj.dailyRows = proj.dailyRows.filter(r => r.id !== line.po_row_id);
+          proj.dailyRows = proj.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
           drDelete(line.po_row_id);
         }
       });
@@ -8373,7 +8375,7 @@ function _syncPOHeaderToLines(po) {
   if (!proj) return;
   (po.lines || []).forEach(line => {
     if (!line.po_row_id) return;
-    const r = proj.dailyRows.find(r => r.id === line.po_row_id);
+    const r = proj.dailyRows.find(r => String(r.id) === String(line.po_row_id));
     if (!r) return;
     r.material  = po.title    || '';
     r.supplier  = po.supplier || '';
@@ -8390,7 +8392,7 @@ function _syncPOLineToRow(po, line) {
   if (!po.project_id || !line.po_row_id) return;
   const proj = getProj(po.project_id);
   if (!proj) return;
-  const r = proj.dailyRows.find(r => r.id === line.po_row_id);
+  const r = proj.dailyRows.find(r => String(r.id) === String(line.po_row_id));
   if (!r) return;
   r.date           = line.date     || '';
   r.employee       = line.employee || '';
@@ -8899,7 +8901,7 @@ function _handlePOEvent(e) {
     // ever lives in cbValue. Never fall back to el.value — that's the human label
     // (no "||"), which would corrupt cost_code with a label fragment, e.g. when a
     // bid item was deleted/renamed after this PO referenced it.
-    const mapped = el.dataset.cbValue || '';
+    let mapped = el.dataset.cbValue || '';
     // Keep (don't delete) the resolved value so a later focus+blur round-trips it
     // exactly instead of re-deriving from the label — a renamed bid item or
     // trailing whitespace in a description would otherwise wipe the code on blur.
@@ -8907,11 +8909,20 @@ function _handlePOEvent(e) {
     el.dataset.cbValue = mapped;
     // Ambiguous commit guard: no resolved value but the box still shows text
     // (typed a partial filter then clicked/tabbed away, or a native blur change
-    // beat the pick) — restore the saved code instead of wiping it. A truly
-    // emptied box (no text) still falls through below and clears the code.
+    // beat the pick). First try to resolve a fully-typed EXACT label to its
+    // bid-item value the way cbCommitInput does, so a validly typed label still
+    // commits; only when it's genuinely unresolvable do we restore the saved
+    // code instead of wiping it. A truly emptied box (no text) falls through
+    // below and clears the code.
     if (!mapped && el.value.trim()) {
-      _restoreSubCodeCell('po-subcode-cell-' + po.id, po.project_id, po.cost_code, po.sub_code);
-      return;
+      const _typed = el.value.trim().toLowerCase();
+      const _m = cbOptionsFor('po_subcodes:' + po.id)
+        .find(o => typeof o === 'object' && o.label.toLowerCase() === _typed);
+      if (_m) { mapped = _m.value; el.dataset.cbValue = mapped; }
+      else {
+        _restoreSubCodeCell('po-subcode-cell-' + po.id, po.project_id, po.cost_code, po.sub_code);
+        return;
+      }
     }
     const [cc, sc] = mapped.split('||');
     // No-op commit (focus+blur, or re-picking the same item): the combobox still
@@ -8962,7 +8973,7 @@ function _handlePOEvent(e) {
       if (oldP) {
         (po.lines||[]).forEach(line => {
           if (line.po_row_id) {
-            oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== line.po_row_id);
+            oldP.dailyRows = oldP.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
             drDelete(line.po_row_id);
             line.po_row_id = null;
           }
@@ -9025,7 +9036,7 @@ function deleteTR(id) {
   if (tr && tr.tr_row_id && oldProj) {
     const proj = getProj(oldProj);
     if (proj) {
-      proj.dailyRows = proj.dailyRows.filter(r => r.id !== tr.tr_row_id);
+      proj.dailyRows = proj.dailyRows.filter(r => String(r.id) !== String(tr.tr_row_id));
       drDelete(tr.tr_row_id);
       renderDailyTable(oldProj);
     }
@@ -9035,27 +9046,37 @@ function deleteTR(id) {
   renderTruckingTab();
 }
 
-// Detach any trucking entries whose linked daily-row id matches `pred`. Used
-// when a TR-linked daily row is deleted (directly in Daily Tracking, or via a
-// sub-code removal): without this the TR keeps a dangling tr_row_id, so its
-// field syncs silently no-op and it disappears from the equipment report
-// (which skips entries that still have a tr_row_id). Nulling the link lets the
-// entry re-count and be re-linked by a later project/sub-code edit.
-function _detachTruckingRows(pred) {
-  if (!Array.isArray(truckingEntries)) return 0;
-  let n = 0;
-  truckingEntries.forEach(tr => {
-    if (tr.tr_row_id != null && pred(tr.tr_row_id)) { tr.tr_row_id = null; n++; }
-  });
-  if (n) saveTruckingEntries();
-  return n;
+// Detach any linked entries whose owning daily-row id matches `pred`, across all
+// three linked-row types: trucking (tr_row_id), inventory (inv_row_id), and PO
+// delivery lines (po_row_id). Used when a linked daily row is deleted (directly
+// in Daily Tracking, or via a sub-code removal): without this the owner keeps a
+// dangling *_row_id, so its field syncs silently no-op and it drops out of
+// reports. `pred` receives the id as a STRING — daily-row ids come back from the
+// DB as strings after a reload while the owner blobs still carry the original
+// numeric id, so both sides must be compared as strings.
+function _detachLinkedRows(pred) {
+  const hit = id => id != null && pred(String(id));
+  let nTr = 0, nInv = 0, nPo = 0;
+  if (Array.isArray(truckingEntries)) {
+    truckingEntries.forEach(tr => { if (hit(tr.tr_row_id)) { tr.tr_row_id = null; nTr++; } });
+  }
+  if (Array.isArray(inventoryEntries)) {
+    inventoryEntries.forEach(en => { if (hit(en.inv_row_id)) { en.inv_row_id = null; nInv++; } });
+  }
+  if (Array.isArray(purchaseOrders)) {
+    purchaseOrders.forEach(po => (po.lines || []).forEach(ln => { if (hit(ln.po_row_id)) { ln.po_row_id = null; nPo++; } }));
+  }
+  if (nTr) saveTruckingEntries();
+  if (nInv) saveInventoryEntries();
+  if (nPo) savePurchaseOrders();
+  return nTr + nInv + nPo;
 }
 
 function _syncTRRowField(tr, field) {
   if (!tr.project_id || !tr.tr_row_id) return;
   const proj = getProj(tr.project_id);
   if (!proj) return;
-  const r = proj.dailyRows.find(r => r.id === tr.tr_row_id);
+  const r = proj.dailyRows.find(r => String(r.id) === String(tr.tr_row_id));
   if (!r) return;
   const map = {
     driver:          'employee',
@@ -9871,7 +9892,7 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     // ever lives in cbValue. Never fall back to el.value — that's the human label
     // (no "||"), which would corrupt cost_code with a label fragment, e.g. when a
     // bid item was deleted/renamed after this entry referenced it.
-    const mapped = el.dataset.cbValue || '';
+    let mapped = el.dataset.cbValue || '';
     // Keep (don't delete) the resolved value so a later focus+blur round-trips it
     // exactly instead of re-deriving from the label — a renamed bid item or
     // trailing whitespace in a description would otherwise wipe the code on blur.
@@ -9879,11 +9900,20 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     el.dataset.cbValue = mapped;
     // Ambiguous commit guard: no resolved value but the box still shows text
     // (typed a partial filter then clicked/tabbed away, or a native blur change
-    // beat the pick) — restore the saved code instead of wiping it. A truly
-    // emptied box (no text) still falls through below and clears the code.
+    // beat the pick). First try to resolve a fully-typed EXACT label to its
+    // bid-item value the way cbCommitInput does, so a validly typed label still
+    // commits; only when it's genuinely unresolvable do we restore the saved
+    // code instead of wiping it. A truly emptied box (no text) falls through
+    // below and clears the code.
     if (!mapped && el.value.trim()) {
-      _restoreSubCodeCell('tr-subcode-cell-' + tr.id, tr.project_id, tr.cost_code, tr.sub_code);
-      return;
+      const _typed = el.value.trim().toLowerCase();
+      const _m = cbOptionsFor('tr_subcodes:' + tr.id)
+        .find(o => typeof o === 'object' && o.label.toLowerCase() === _typed);
+      if (_m) { mapped = _m.value; el.dataset.cbValue = mapped; }
+      else {
+        _restoreSubCodeCell('tr-subcode-cell-' + tr.id, tr.project_id, tr.cost_code, tr.sub_code);
+        return;
+      }
     }
     const [cc, sc] = mapped.split('||');
     // No-op commit (focus+blur, or re-picking the same item) — skip redundant re-sync.
@@ -9947,7 +9977,7 @@ document.getElementById('trucking-root').addEventListener('change', e => {
     if (oldProj && tr.tr_row_id) {
       const oldP = getProj(oldProj);
       if (oldP) {
-        oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== tr.tr_row_id);
+        oldP.dailyRows = oldP.dailyRows.filter(r => String(r.id) !== String(tr.tr_row_id));
         drDelete(tr.tr_row_id);
         renderDailyTable(oldProj);
       }
@@ -10103,7 +10133,7 @@ document.getElementById('inventory-root').addEventListener('change', e => {
     if (oldProj && entry.inv_row_id) {
       const oldP = getProj(oldProj);
       if (oldP) {
-        oldP.dailyRows = oldP.dailyRows.filter(r => r.id !== entry.inv_row_id);
+        oldP.dailyRows = oldP.dailyRows.filter(r => String(r.id) !== String(entry.inv_row_id));
         drDelete(entry.inv_row_id);
         renderDailyTable(oldProj);
       }
@@ -19131,7 +19161,7 @@ document.addEventListener('click', e => {
         drDelete(deletedRow.id);
         // If a trucking entry owned this daily row, detach it so later field
         // syncs don't silently no-op and the entry re-counts in reports.
-        _detachTruckingRows(id => id === deletedRow.id);
+        _detachLinkedRows(id => id === String(deletedRow.id));
       }
       renderDailyTable(projId);
     } else if (tab === 'po') {
