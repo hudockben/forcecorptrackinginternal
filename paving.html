@@ -14635,8 +14635,6 @@ function exportJobSummary(projId, opts = {}) {
   const finBarHTML = `<div class="sum-bar">
     <div class="sum-metric"><div class="sum-label">Contract Value</div><div class="sum-val">${contractVal ? '$' + fmt(contractVal) : dash}</div></div>
     <div class="sum-metric"><div class="sum-label">Bid Cost</div><div class="sum-val">${grandBid ? '$' + fmt(grandBid) : dash}</div></div>
-    <div class="sum-metric"><div class="sum-label">Actual Cost</div><div class="sum-val sqft-actual">${grandActual ? '$' + fmt(grandActual) : dash}</div></div>
-    <div class="sum-metric"><div class="sum-label">Total Purchases</div><div class="sum-val">${purchTotal ? '$' + fmt(purchTotal) : dash}</div></div>
     <div class="sum-sep"></div>
     <div class="sum-metric"><div class="sum-label">Profit (Contract − Actual)</div><div class="sum-val ${profitCls}">${profitVal === null ? dash : money(profitVal) + profitPct}</div></div>
   </div>`;
@@ -14647,6 +14645,9 @@ function exportJobSummary(projId, opts = {}) {
     <div class="sum-metric"><div class="sum-label">Labor Cost</div><div class="sum-val">${laborCost ? '$' + fmt(laborCost) : dash}</div></div>
     <div class="sum-metric"><div class="sum-label">Equipment Cost</div><div class="sum-val">${equipCost ? '$' + fmt(equipCost) : dash}</div></div>
     <div class="sum-metric"><div class="sum-label">Trucking Cost</div><div class="sum-val">${truckingCost ? '$' + fmt(truckingCost) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Total Purchases</div><div class="sum-val">${purchTotal ? '$' + fmt(purchTotal) : dash}</div></div>
+    <div class="sum-sep"></div>
+    <div class="sum-metric"><div class="sum-label">Actual Cost</div><div class="sum-val sqft-actual">${grandActual ? '$' + fmt(grandActual) : dash}</div></div>
   </div>`;
 
   const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
