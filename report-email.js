@@ -441,9 +441,11 @@
     turf_daily_pm:        'Daily PM Report — Turf',
     turf_daily_summary:   'Daily Summary — Turf',
     turf_bid_items:       'Bid Line Items vs Actuals — Turf',
+    turf_job_summary:     'Job Summary — Turf',
     paving_daily_pm:      'Daily PM Report — Paving',
     paving_daily_summary: 'Daily Summary — Paving',
     paving_bid_items:     'Bid Line Items vs Actuals — Paving',
+    paving_job_summary:   'Job Summary — Paving',
     dust_tracking_summary:'Dust Control Tracking Report',
   };
 
