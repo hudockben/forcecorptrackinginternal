@@ -15104,7 +15104,6 @@ function exportJobSummary(projId, opts = {}) {
     tr.jobrow td.src { color: #92400e; }
     @page { size: landscape; margin: 1cm; }
     .masthead, .sum-bar { page-break-inside: avoid; }
-    h3.brk { page-break-before: always; }
     @media print { body { padding: 0; } h3 { page-break-after: avoid; } tr { page-break-inside: avoid; } }
   </style>
   </head><body>
@@ -15130,7 +15129,7 @@ function exportJobSummary(projId, opts = {}) {
     </tr></tbody>
   </table>
 
-  <h3 class="brk">Purchases — Purchase Orders &amp; Job-Row Material</h3>
+  <h3>Purchases — Purchase Orders &amp; Job-Row Material</h3>
   <table>
     <thead><tr>
       <th>Source</th><th>Vendor</th><th>Cost / Sub Code</th><th>Description</th>
