@@ -8073,6 +8073,7 @@ function _syncPOLineToRow(po, line) {
   r.date           = line.date     || '';
   r.employee       = line.employee || '';
   r.units_purchased= line.qty      || '';
+  r.quantity       = line.qty      || '';   // mirror qty into the Qty column (parity with trucking loads)
   r.unit_cost      = line.unit_cost|| '';
   const q = parseFloat(line.qty) || 0, u = parseFloat(line.unit_cost) || 0, t = parseFloat(line.tax) || 0;
   r.material_cost  = String(q * u + t);
@@ -8098,6 +8099,7 @@ function _ensurePOLineRow(po, line) {
     supplier:        po.supplier   || '',
     po_num:          po.po_number  || '',
     units_purchased: line.qty      || '',
+    quantity:        line.qty      || '',   // mirror qty into the Qty column (parity with trucking loads)
     unit_cost:       line.unit_cost|| '',
     material_cost:   String(q * u + t),
     field_type:      'Material',
