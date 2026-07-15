@@ -14962,6 +14962,15 @@ function exportJobSummary(projId, opts = {}) {
   const allPOs = (typeof purchaseOrders !== 'undefined' && Array.isArray(purchaseOrders)) ? purchaseOrders : [];
   const projPOs = allPOs.filter(po => po && po.project_id === projId);
 
+  // A daily row auto-created from a PO line is linked via the *line's*
+  // po_row_id (which stores that row's id); the row itself carries no
+  // marker. Collect those ids so PO material is counted once — via the PO
+  // totals below — and never again as a job-row purchase.
+  const poRowIds = new Set();
+  allPOs.forEach(po => (po.lines || []).forEach(l => {
+    if (l && l.po_row_id != null && l.po_row_id !== '') poRowIds.add(String(l.po_row_id));
+  }));
+
   let purchRowsHTML = '';
   let purchTotal = 0;
 
@@ -14980,8 +14989,9 @@ function exportJobSummary(projId, opts = {}) {
   });
 
   // Material typed straight onto a job row that is NOT synced from a PO
-  // line (po_row_id unset). These are the entries the PO tab would miss.
-  const manualRows = (p.dailyRows || []).filter(r => !r.po_row_id && (parseFloat(r.material_cost) || 0) > 0);
+  // line. These are the entries the PO tab would miss.
+  const manualRows = (p.dailyRows || []).filter(r =>
+    !poRowIds.has(String(r.id)) && (parseFloat(r.material_cost) || 0) > 0);
   manualRows.forEach(r => {
     const amt     = parseFloat(r.material_cost) || 0;
     const qty     = parseFloat(r.units_purchased) || parseFloat(r.quantity) || 0;
@@ -15002,6 +15012,20 @@ function exportJobSummary(projId, opts = {}) {
     purchRowsHTML = `<tr><td colspan="6" style="text-align:center;color:#888;padding:8px">No purchase orders or material entries recorded.</td></tr>`;
   }
 
+  // ── Header work metrics (from job rows) ───────────────────────────
+  const rowsAll    = p.dailyRows || [];
+  const daysWorked = new Set(rowsAll.map(r => r.date).filter(Boolean)).size;
+  let laborHours = 0, laborCost = 0, equipCost = 0, truckingCost = 0;
+  rowsAll.forEach(r => {
+    const c = calcDaily(r);
+    laborHours += parseFloat(r.labor_hours) || 0;
+    laborCost  += c.labor_cost;
+    // Trucking rows carry their haul cost as equipment (rate × hours) and
+    // are tagged job_class "Trucking" — split them out from other equipment.
+    if ((r.job_class || '').toLowerCase() === 'trucking') truckingCost += c.equip_total;
+    else equipCost += c.equip_total;
+  });
+
   // ── Financial summary bar ─────────────────────────────────────────
   const contractVal = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
   const profitVal   = contractVal ? contractVal - grandActual : null;
@@ -15014,6 +15038,14 @@ function exportJobSummary(projId, opts = {}) {
     <div class="sum-metric"><div class="sum-label">Total Purchases</div><div class="sum-val">${purchTotal ? '$' + fmt(purchTotal) : dash}</div></div>
     <div class="sum-sep"></div>
     <div class="sum-metric"><div class="sum-label">Profit (Contract − Actual)</div><div class="sum-val ${profitCls}">${profitVal === null ? dash : money(profitVal) + profitPct}</div></div>
+  </div>`;
+
+  const workBarHTML = `<div class="sum-bar">
+    <div class="sum-metric"><div class="sum-label">Days Worked</div><div class="sum-val">${daysWorked || dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Labor Hours</div><div class="sum-val">${laborHours ? qfmt(laborHours) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Labor Cost</div><div class="sum-val">${laborCost ? '$' + fmt(laborCost) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Equipment Cost</div><div class="sum-val">${equipCost ? '$' + fmt(equipCost) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Trucking Cost</div><div class="sum-val">${truckingCost ? '$' + fmt(truckingCost) : dash}</div></div>
   </div>`;
 
   const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -15055,6 +15087,7 @@ function exportJobSummary(projId, opts = {}) {
   <h2>Job Summary — ${esc(name)}${esc(jobNo)}</h2>
   <p class="meta">${esc(p['client'] || '')}${p['client'] ? ' · ' : ''}Printed ${new Date().toLocaleDateString()}</p>
   ${finBarHTML}
+  ${workBarHTML}
 
   <h3>Cost &amp; Sub-Code Groups</h3>
   <table>
