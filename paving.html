@@ -14650,11 +14650,32 @@ function exportJobSummary(projId, opts = {}) {
     <div class="sum-metric"><div class="sum-label">Actual Cost</div><div class="sum-val sqft-actual">${grandActual ? '$' + fmt(grandActual) : dash}</div></div>
   </div>`;
 
+  const divLabel = (typeof DIVISION !== 'undefined' && DIVISION)
+    ? DIVISION.charAt(0).toUpperCase() + DIVISION.slice(1) + ' Division'
+    : 'Force Corp Tracking';
+  const genStamp = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const mastheadHTML = `<div class="masthead">
+    <div>
+      <div class="mast-word">DataWatch</div>
+      <div class="mast-sub">${esc(divLabel)}</div>
+    </div>
+    <div class="mast-meta">
+      <div class="mast-rpt">Job Summary Report</div>
+      <div class="mast-date">Generated ${esc(genStamp)}</div>
+    </div>
+  </div>`;
+
   const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>${esc(name)} — Job Summary</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; font-size: 11px; color: #000; background: #fff; padding: 22px; }
+    .masthead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; border-bottom: 3px solid #3b82f6; padding-bottom: 8px; margin-bottom: 12px; }
+    .mast-word { font-size: 24px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; color: #3b82f6; line-height: 1; }
+    .mast-sub { font-size: 8px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: #6b7280; margin-top: 5px; }
+    .mast-meta { text-align: right; }
+    .mast-rpt { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #111; }
+    .mast-date { font-size: 8px; color: #9ca3af; margin-top: 3px; }
     h2 { font-size: 15px; font-weight: 800; margin-bottom: 2px; }
     h3 { font-size: 12px; font-weight: 700; margin: 16px 0 5px; text-transform: uppercase; letter-spacing: 0.05em; color: #333; }
     p.meta { font-size: 9px; color: #555; margin-bottom: 12px; }
@@ -14686,8 +14707,9 @@ function exportJobSummary(projId, opts = {}) {
     @media print { body { padding: 0; } h3 { page-break-after: avoid; } tr { page-break-inside: avoid; } }
   </style>
   </head><body>
-  <h2>Job Summary — ${esc(name)}${esc(jobNo)}</h2>
-  <p class="meta">${esc(p['client'] || '')}${p['client'] ? ' · ' : ''}Printed ${new Date().toLocaleDateString()}</p>
+  ${mastheadHTML}
+  <h2>${esc(name)}${esc(jobNo)}</h2>
+  ${p['client'] ? `<p class="meta">${esc(p['client'])}</p>` : ''}
   ${finBarHTML}
   ${workBarHTML}
 
