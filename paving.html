@@ -14704,6 +14704,8 @@ function exportJobSummary(projId, opts = {}) {
     tr.totals td { font-weight: 800; font-size: 11px; background: #f9f9f9; border-top: 2px solid #999; }
     tr.jobrow td.src { color: #92400e; }
     @page { size: landscape; margin: 1cm; }
+    .masthead, .sum-bar { page-break-inside: avoid; }
+    h3.brk { page-break-before: always; }
     @media print { body { padding: 0; } h3 { page-break-after: avoid; } tr { page-break-inside: avoid; } }
   </style>
   </head><body>
@@ -14720,26 +14722,26 @@ function exportJobSummary(projId, opts = {}) {
       <th class="num">Bid Qty</th><th class="num">Running Qty</th>
       <th class="num">Bid Cost</th><th class="num">Actual Cost</th><th class="num">Variance</th>
     </tr></thead>
-    <tbody>${bidRowsHTML}</tbody>
-    <tfoot><tr class="totals">
+    <tbody>${bidRowsHTML}
+    <tr class="totals">
       <td colspan="4">Project Totals</td>
       <td class="num">${grandBid ? '$' + fmt(grandBid) : dash}</td>
       <td class="num actual">${grandActual ? '$' + fmt(grandActual) : dash}</td>
       <td class="num ${grandVar >= 0 ? 'under' : 'over'}">${grandBid ? money(grandVar) : dash}</td>
-    </tr></tfoot>
+    </tr></tbody>
   </table>
 
-  <h3>Purchases — Purchase Orders &amp; Job-Row Material</h3>
+  <h3 class="brk">Purchases — Purchase Orders &amp; Job-Row Material</h3>
   <table>
     <thead><tr>
       <th>Source</th><th>Vendor</th><th>Cost / Sub Code</th><th>Description</th>
       <th class="num">Qty</th><th class="num">Total $</th>
     </tr></thead>
-    <tbody>${purchRowsHTML}</tbody>
-    <tfoot><tr class="totals">
+    <tbody>${purchRowsHTML}
+    <tr class="totals">
       <td colspan="5">Total Purchases</td>
       <td class="num">${purchTotal ? '$' + fmt(purchTotal) : dash}</td>
-    </tr></tfoot>
+    </tr></tbody>
   </table>
   <p class="note">Purchases include formal POs plus material entered directly on job rows. Rows tagged “Job row” were not entered through the Purchase Order tab.</p>
   <script>window.onload = () => { window.print(); }<\/script>
