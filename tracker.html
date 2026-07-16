@@ -7664,7 +7664,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">—</td>
     <td class="foot-bid">${totalBid ? '$'+fmt(totalBid) : '—'}</td>
     <td class="foot-actual">${totalActual ? '$'+fmt(totalActual) : '—'}</td>
-    <td class="foot-label num">${totalCumHrs ? fmt(totalCumHrs) : '—'}</td>
+    <td class="foot-label num">${totalCumHrs ? qfmt(totalCumHrs) : '—'}</td>
     <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
     <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>`;
@@ -7928,7 +7928,7 @@ function renderBidTable(projId, opts = {}) {
         <td class="bid-calc" title="${_paTip}" style="color:var(--muted);font-style:italic;${_paStyle}">${_paUC > 0 ? '$'+fmt(_paUC) : '—'}</td>
         <td class="bid-calc" id="bic-${b.id}">${bidTot ? '$'+fmt(bidTot) : '—'}</td>
         <td class="bid-actual">${actual ? '$'+fmt(actual) : '—'}</td>
-        <td class="bid-calc">${cumHrs ? fmt(cumHrs) : '—'}</td>
+        <td class="bid-calc">${cumHrs ? qfmt(cumHrs) : '—'}</td>
         <td class="bid-calc">${numLab || '—'}</td>
         <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
         <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>`;
@@ -7982,7 +7982,7 @@ function renderBidTable(projId, opts = {}) {
       <td class="bid-calc">—</td><td class="bid-calc">—</td>
       <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
       <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
-      <td class="bid-calc">${gCumHrs ? fmt(gCumHrs) : '—'}</td>
+      <td class="bid-calc">${gCumHrs ? qfmt(gCumHrs) : '—'}</td>
       <td class="bid-calc">—</td>
       <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
       <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>
@@ -9583,12 +9583,12 @@ function _invBreakdownHTML(year, selectedMonths) {
     return `<tr style="border-bottom:1px solid var(--border);background:${bg}">
       ${td(escT(label || rt))}
       ${td(v.cnt, true)}
-      ${td(dash(v.laborHrs), true)}
+      ${td(qfmt(v.laborHrs), true)}
       ${td('$' + dash(v.laborDol), true, 'var(--green)')}
       ${td(v.cnt, true)}
-      ${td(dash(v.bags), true)}
-      ${td(dash(v.poundage), true)}
-      ${td(dash(v.equipHrs), true)}
+      ${td(qfmt(v.bags), true)}
+      ${td(qfmt(v.poundage), true)}
+      ${td(qfmt(v.equipHrs), true)}
       ${td('$' + dash(v.utilityDol), true, 'var(--yellow)')}
       ${td('$' + dash(total), true, 'var(--yellow)')}
       ${td(v.cnt, true)}
@@ -9731,14 +9731,14 @@ function renderInventoryTab() {
   const totRow = `<tr style="background:#0d1a0d;position:sticky;top:0;z-index:4">
     <th colspan="3" style="padding:0.3rem 0.6rem;text-align:right;color:#888;font-size:0.72rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;border:1px solid var(--border)">Totals</th>
     <th colspan="3" style="border:1px solid var(--border);background:var(--bg)"></th>
-    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totHours ? fmt(totHours) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totHours ? qfmt(totHours) : '—'}</th>
     <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--green);border:1px solid var(--border)">${totEE ? '$'+fmt(totEE) : '—'}</th>
     <th style="border:1px solid var(--border);background:var(--bg)"></th>
-    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totBags ? fmt(totBags) : '—'}</th>
-    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totLbs ? fmt(totLbs) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totBags ? qfmt(totBags) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totLbs ? qfmt(totLbs) : '—'}</th>
     <th style="border:1px solid var(--border);background:var(--bg)"></th>
     <th style="border:1px solid var(--border);background:var(--bg)"></th>
-    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totEquipH ? fmt(totEquipH) : '—'}</th>
+    <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--text);border:1px solid var(--border)">${totEquipH ? qfmt(totEquipH) : '—'}</th>
     <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--yellow);border:1px solid var(--border)">${totEquip ? '$'+fmt(totEquip) : '—'}</th>
     <th colspan="5" style="border:1px solid var(--border);background:var(--bg)"></th>
     <th style="padding:0.3rem 0.6rem;text-align:right;font-size:0.72rem;font-weight:700;color:var(--yellow);border:1px solid var(--border)">${totMat ? '$'+fmt(totMat) : '—'}</th>
@@ -11857,8 +11857,8 @@ function renderMobTodayEntries(projId) {
 
   const fmtRow = r => {
     const code = [r.cost_code, r.sub_code].filter(Boolean).join(' / ');
-    const hrs  = r.labor_hours > 0 ? `${fmt(r.labor_hours,1)}h` : '';
-    const qty  = r.quantity > 0 ? `${fmt(r.quantity,1)} units` : '';
+    const hrs  = r.labor_hours > 0 ? `${qfmt(r.labor_hours)}h` : '';
+    const qty  = r.quantity > 0 ? `${qfmt(r.quantity)} units` : '';
     const jc   = r.job_class ? `<span style="color:var(--muted)">${esc(r.job_class)}</span>` : '';
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.3rem 0;border-bottom:1px solid var(--border)">
       <div>
@@ -15230,7 +15230,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
         ${r(_paUCPDF > 0 ? '$' + fmt(_paUCPDF) : dash)}
         ${r(bidTot ? '$' + fmt(bidTot) : dash)}
         ${r(actual ? '$' + fmt(actual) : dash, 'actual')}
-        ${r(cumHrs ? fmt(cumHrs) : dash)}
+        ${r(cumHrs ? qfmt(cumHrs) : dash)}
         ${r(numLab || dash)}
         ${r(diffTxt, diffCls)}
         ${r(bidTot ? '$' + fmt(proj) : dash, projCls)}
