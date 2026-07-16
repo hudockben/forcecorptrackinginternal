@@ -1414,7 +1414,7 @@
       const strip = document.getElementById('rubberInventoryStrip');
       if (!wrap || !strip) return;
       if (!rows.length) { wrap.style.display = 'none'; strip.innerHTML = ''; return; }
-      const fmt = n => Number(n || 0).toLocaleString();
+      const fmt = n => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
       strip.innerHTML = rows.map(r => {
         const stock     = Number(r.in_stock) || 0;
         const stockCls  = stock <= 0 ? 'lo' : stock < 50 ? 'mid' : 'ok';
