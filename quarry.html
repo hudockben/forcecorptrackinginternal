@@ -281,6 +281,41 @@
     .year-filter-select:focus { border-color: var(--accent); }
     .year-filter-select:disabled { opacity: 0.45; cursor: not-allowed; }
 
+    /* ── Multi-select filter (checkbox dropdown) ── */
+    .ms-filter { position: relative; display: inline-block; }
+    .ms-toggle {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      justify-content: space-between; min-width: 8.5rem; white-space: nowrap;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text);
+      font-family: inherit; font-size: 0.78rem; font-weight: 400;
+      letter-spacing: normal; text-transform: none;
+      padding: 0.38rem 0.6rem; cursor: pointer; outline: none;
+    }
+    .ms-toggle:hover, .ms-toggle:focus,
+    .ms-filter.is-open .ms-toggle { border-color: var(--accent); }
+    .ms-toggle.has-selection { border-color: var(--accent); }
+    .ms-toggle:disabled { opacity: 0.45; cursor: not-allowed; }
+    .ms-toggle .ms-caret { color: var(--muted); font-size: 0.6rem; transition: transform 0.15s; }
+    .ms-filter.is-open .ms-toggle .ms-caret { transform: rotate(180deg); }
+    .ms-menu {
+      position: absolute; z-index: 50; top: calc(100% + 4px); left: 0;
+      min-width: 100%; max-width: 22rem; max-height: 17rem; overflow-y: auto;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.25rem;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+    }
+    .ms-opt {
+      display: flex; align-items: center; gap: 0.5rem;
+      font-size: 0.78rem; color: var(--text); font-weight: 400;
+      text-transform: none; letter-spacing: normal;
+      padding: 0.35rem 0.5rem; border-radius: 4px; cursor: pointer; white-space: nowrap;
+    }
+    .ms-opt:hover { background: var(--surface2); }
+    .ms-opt input { accent-color: var(--accent); cursor: pointer; margin: 0; flex: none; }
+    .ms-opt.ms-all { font-weight: 700; }
+    .ms-sep { height: 1px; background: var(--border); margin: 0.25rem; }
+
     /* ── Home dashboard ── */
     .home-wrap { padding: 1rem 1.25rem 2rem; }
     .home-toolbar {
@@ -926,11 +961,11 @@
         </div>
         <div class="year-filter-wrap">
           Month
-          <select class="year-filter-select" id="dailyMonthFilter" onchange="setMonthFilter('daily', this.value)" disabled></select>
+          <div class="ms-filter" id="dailyMonthFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Months</span><span class="ms-caret">▾</span></button></div>
         </div>
         <div class="year-filter-wrap">
           Location
-          <select class="year-filter-select" id="dailyLocationFilter" onchange="setLocationFilter('daily', this.value)" disabled></select>
+          <div class="ms-filter" id="dailyLocationFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Locations</span><span class="ms-caret">▾</span></button></div>
         </div>
         <button class="btn-add-row btn-danger" id="dailyDeleteFilteredBtn" onclick="deleteFilteredRows('daily')" disabled>Delete 0 Rows</button>
         <div class="sales-summary" id="dailySummary"></div>
@@ -972,11 +1007,11 @@
         </div>
         <div class="year-filter-wrap">
           Month
-          <select class="year-filter-select" id="crushingMonthFilter" onchange="setMonthFilter('crushing', this.value)" disabled></select>
+          <div class="ms-filter" id="crushingMonthFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Months</span><span class="ms-caret">▾</span></button></div>
         </div>
         <div class="year-filter-wrap">
           Location
-          <select class="year-filter-select" id="crushingLocationFilter" onchange="setLocationFilter('crushing', this.value)" disabled></select>
+          <div class="ms-filter" id="crushingLocationFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Locations</span><span class="ms-caret">▾</span></button></div>
         </div>
         <button class="btn-add-row btn-danger" id="crushingDeleteFilteredBtn" onclick="deleteFilteredRows('crushing')" disabled>Delete 0 Rows</button>
         <div class="sales-summary" id="crushSummary"></div>
@@ -1023,11 +1058,19 @@
         </div>
         <div class="year-filter-wrap">
           Month
-          <select class="year-filter-select" id="salesMonthFilter" onchange="setMonthFilter('sales', this.value)" disabled></select>
+          <div class="ms-filter" id="salesMonthFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Months</span><span class="ms-caret">▾</span></button></div>
         </div>
         <div class="year-filter-wrap">
           Location
-          <select class="year-filter-select" id="salesLocationFilter" onchange="setLocationFilter('sales', this.value)" disabled></select>
+          <div class="ms-filter" id="salesLocationFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Locations</span><span class="ms-caret">▾</span></button></div>
+        </div>
+        <div class="year-filter-wrap">
+          Customer
+          <div class="ms-filter" id="salesCustomerFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Customers</span><span class="ms-caret">▾</span></button></div>
+        </div>
+        <div class="year-filter-wrap">
+          Product
+          <div class="ms-filter" id="salesProductFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Products</span><span class="ms-caret">▾</span></button></div>
         </div>
         <button class="btn-add-row btn-danger" id="salesDeleteFilteredBtn" onclick="deleteFilteredRows('sales')" disabled>Delete 0 Rows</button>
         <div class="sales-summary" id="salesSummary"></div>
@@ -2145,68 +2188,31 @@
       return v === 'all' ? 'all years' : v;
     }
 
-    // ── Per-tab location filter ─────────────────────────────────
-    const locationFilters = { daily: 'all', crushing: 'all', sales: 'all' };
+    // ── Multi-select filters (location / month / customer / product) ──
+    // Each filter holds a Set of selected values; an empty Set means "all"
+    // (no filtering) so the default view is unchanged. Location + Month
+    // apply to every tracking tab; Customer + Product exist only on the
+    // Sales table, so their state is Sales-only and the shared row-match
+    // helpers no-op for other tabs (an absent Set reads as empty → matches
+    // everything). A row matches a filter if its value is in the Set.
+    const locationFilters = { daily: new Set(), crushing: new Set(), sales: new Set() };
+    const monthFilters    = { daily: new Set(), crushing: new Set(), sales: new Set() };
+    const customerFilters = { sales: new Set() };
+    const productFilters  = { sales: new Set() };
 
-    function getRowLocation(row) {
-      return (row && row.locationName) ? String(row.locationName).trim() : '';
-    }
-    function rowMatchesLocation(tab, row) {
-      const f = locationFilters[tab];
-      if (!f || f === 'all') return true;
-      const loc = getRowLocation(row);
-      if (f === '__none__') return loc === '';
-      return loc.toLowerCase() === f.toLowerCase();
-    }
-    function setLocationFilter(tab, value) {
-      locationFilters[tab] = value;
-      if (tab === 'daily')         renderDaily();
-      else if (tab === 'crushing') renderCrush();
-      else if (tab === 'sales')    renderSales();
-    }
-    function renderLocationFilterOptions(tab, rows) {
-      const sel = document.getElementById(tab + 'LocationFilter');
-      if (!sel) return;
-      let hasNone = false;
-      const set = new Set();
-      rows.forEach(r => {
-        const l = getRowLocation(r);
-        if (!l) hasNone = true;
-        else set.add(l);
-      });
-      const sorted = [...set].sort((a, b) => a.localeCompare(b));
-      let html = '<option value="all">All Locations</option>';
-      if (hasNone) html += '<option value="__none__">— No Location —</option>';
-      html += sorted.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
-      sel.innerHTML = html;
-      const desired = locationFilters[tab];
-      const valid = new Set(['all', ...(hasNone ? ['__none__'] : []), ...sorted]);
-      if (valid.has(desired)) {
-        sel.value = desired;
-      } else {
-        sel.value = 'all';
-        locationFilters[tab] = 'all';
-      }
-      sel.disabled = false;
-    }
-    function locationFilterLabel(tab) {
-      const v = locationFilters[tab];
-      if (v === 'all') return 'all locations';
-      if (v === '__none__') return 'no location';
-      return v;
-    }
-
-    // ── Per-tab month filter ────────────────────────────────────
-    // Narrows the visible rows to a single calendar month, alongside
-    // the year + location filters. Defaults to 'all' so behavior is
-    // unchanged (whole year) until a month is chosen. Months are a
-    // fixed Jan–Dec list (stored as '01'…'12') rather than only the
-    // months present in the data, so the picker is always predictable.
-    const monthFilters = { daily: 'all', crushing: 'all', sales: 'all' };
     const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
                          'July', 'August', 'September', 'October', 'November', 'December'];
     const MONTH_VALUES = MONTH_NAMES.map((_, i) => String(i + 1).padStart(2, '0'));
 
+    function getRowLocation(row) {
+      return (row && row.locationName) ? String(row.locationName).trim() : '';
+    }
+    function getRowCustomer(row) {
+      return (row && row.customerName) ? String(row.customerName).trim() : '';
+    }
+    function getRowProduct(row) {
+      return (row && row.productName) ? String(row.productName).trim() : '';
+    }
     // Returns the zero-padded month key ('01'…'12'). Named distinctly from
     // the analytics-only getRowMonth() further down (which returns a 0-based
     // number) so the two don't collide via function-declaration hoisting.
@@ -2215,38 +2221,199 @@
       const m = dateStr.match(/^\d{4}-(\d{2})/);
       return m ? m[1] : null;
     }
-    function rowMatchesMonth(tab, row) {
-      const f = monthFilters[tab];
-      if (!f || f === 'all') return true;
-      return getRowMonthKey(row && row.date) === f;
+
+    // Per-kind config for the multi-select filter component.
+    const MS_CONFIG = {
+      location: { state: locationFilters, allLabel: 'All Locations', noun: 'locations',
+                  getVal: getRowLocation, noneLabel: '— No Location —', descAll: 'all locations' },
+      month:    { state: monthFilters,    allLabel: 'All Months',    noun: 'months',
+                  getVal: (r) => getRowMonthKey(r && r.date), noneLabel: null, descAll: 'all months' },
+      customer: { state: customerFilters, allLabel: 'All Customers', noun: 'customers',
+                  getVal: getRowCustomer, noneLabel: '— No Customer —', descAll: 'all customers' },
+      product:  { state: productFilters,  allLabel: 'All Products',  noun: 'products',
+                  getVal: getRowProduct, noneLabel: '— No Product —', descAll: 'all products' },
+    };
+
+    function msElId(tab, kind) {
+      return tab + kind.charAt(0).toUpperCase() + kind.slice(1) + 'Filter';
     }
-    function setMonthFilter(tab, value) {
-      monthFilters[tab] = value;
-      if (tab === 'daily')         renderDaily();
-      else if (tab === 'crushing') renderCrush();
-      else if (tab === 'sales')    renderSales();
+    function msSet(kind, tab) {
+      const cfg = MS_CONFIG[kind];
+      if (!cfg.state[tab]) cfg.state[tab] = new Set();
+      return cfg.state[tab];
     }
-    function renderMonthFilterOptions(tab) {
-      const sel = document.getElementById(tab + 'MonthFilter');
-      if (!sel) return;
-      sel.innerHTML = ['<option value="all">All Months</option>']
-        .concat(MONTH_NAMES.map((name, i) => `<option value="${MONTH_VALUES[i]}">${name}</option>`))
-        .join('');
-      const desired = monthFilters[tab];
-      if (desired === 'all' || MONTH_VALUES.includes(desired)) {
-        sel.value = desired;
-      } else {
-        sel.value = 'all';
-        monthFilters[tab] = 'all';
+    // Human-readable text for a single stored selection.
+    function msValueDisplay(kind, v) {
+      if (v === '__none__') {
+        const nl = MS_CONFIG[kind].noneLabel;
+        return nl ? nl.replace(/^—\s*/, '').replace(/\s*—$/, '') : 'None';
       }
-      sel.disabled = false;
+      if (kind === 'month') {
+        const i = MONTH_VALUES.indexOf(v);
+        return i === -1 ? v : MONTH_NAMES[i];
+      }
+      return v;
     }
-    function monthFilterLabel(tab) {
-      const v = monthFilters[tab];
-      if (!v || v === 'all') return 'all months';
-      const idx = MONTH_VALUES.indexOf(v);
-      return idx === -1 ? 'all months' : MONTH_NAMES[idx];
+    // Compact label shown on the toggle button.
+    function msToggleLabel(kind, tab) {
+      const cfg = MS_CONFIG[kind];
+      const set = cfg.state[tab];
+      if (!set || set.size === 0) return cfg.allLabel;
+      if (set.size === 1) return msValueDisplay(kind, [...set][0]);
+      return `${set.size} ${cfg.noun}`;
     }
+    // Descriptive label used in empty-state + delete-confirmation messages.
+    function msDescLabel(kind, tab) {
+      const cfg = MS_CONFIG[kind];
+      const set = cfg.state[tab];
+      if (!set || set.size === 0) return cfg.descAll;
+      return [...set].map(v => msValueDisplay(kind, v)).join(', ');
+    }
+    // A row matches if the Set is empty (all) or contains the row's value.
+    // Comparison is case-insensitive so free-typed values still match.
+    function msMatches(kind, tab, row) {
+      const cfg = MS_CONFIG[kind];
+      const set = cfg.state[tab];
+      if (!set || set.size === 0) return true;
+      const v = cfg.getVal(row) || '';
+      if (v === '') return set.has('__none__');
+      if (set.has(v)) return true;
+      const lv = v.toLowerCase();
+      for (const s of set) if (s !== '__none__' && s.toLowerCase() === lv) return true;
+      return false;
+    }
+
+    function rowMatchesLocation(tab, row) { return msMatches('location', tab, row); }
+    function rowMatchesMonth(tab, row)    { return msMatches('month', tab, row); }
+    function rowMatchesCustomer(tab, row) { return msMatches('customer', tab, row); }
+    function rowMatchesProduct(tab, row)  { return msMatches('product', tab, row); }
+
+    function locationFilterLabel(tab) { return msDescLabel('location', tab); }
+    function monthFilterLabel(tab)    { return msDescLabel('month', tab); }
+    function customerFilterLabel(tab) { return msDescLabel('customer', tab); }
+    function productFilterLabel(tab)  { return msDescLabel('product', tab); }
+
+    // Option builders → [{ value, label }].
+    function msMonthOptions() {
+      return MONTH_VALUES.map((v, i) => ({ value: v, label: MONTH_NAMES[i] }));
+    }
+    function msDataOptions(rows, getVal, noneLabel) {
+      let hasNone = false;
+      const set = new Set();
+      rows.forEach(r => { const v = getVal(r); if (!v) hasNone = true; else set.add(v); });
+      const opts = [...set].sort((a, b) => a.localeCompare(b)).map(v => ({ value: v, label: v }));
+      if (hasNone && noneLabel) opts.unshift({ value: '__none__', label: noneLabel });
+      return opts;
+    }
+    function msOptionsFor(kind, rows) {
+      if (kind === 'month') return msMonthOptions();
+      const cfg = MS_CONFIG[kind];
+      return msDataOptions(rows, cfg.getVal, cfg.noneLabel);
+    }
+
+    // Rebuild a filter's dropdown markup from its options + current Set.
+    // Called on data changes — NOT on every checkbox toggle (see msApply) —
+    // so an open menu stays open while the user picks several values.
+    function msRender(kind, tab, rows) {
+      const el = document.getElementById(msElId(tab, kind));
+      if (!el) return;
+      const cfg = MS_CONFIG[kind];
+      const set = msSet(kind, tab);
+      const options = msOptionsFor(kind, rows);
+      // Drop selections no longer present as options (e.g. a customer whose
+      // last row was deleted) so a stale filter can't hide everything.
+      const valid = new Set(options.map(o => o.value));
+      [...set].forEach(v => { if (!valid.has(v)) set.delete(v); });
+      const hasSel = set.size > 0;
+      const optRows = options.map(o =>
+        `<label class="ms-opt"><input type="checkbox" value="${escapeHtml(o.value)}" ${set.has(o.value) ? 'checked' : ''} ` +
+          `onchange="msOnCheck('${tab}','${kind}',this)"><span>${escapeHtml(o.label)}</span></label>`
+      ).join('');
+      el.innerHTML =
+        `<button type="button" class="ms-toggle${hasSel ? ' has-selection' : ''}" aria-expanded="false" ` +
+          `onclick="msToggleOpen('${tab}','${kind}')">` +
+          `<span class="ms-toggle-label">${escapeHtml(msToggleLabel(kind, tab))}</span><span class="ms-caret">▾</span></button>` +
+        `<div class="ms-menu" hidden>` +
+          `<label class="ms-opt ms-all"><input type="checkbox" ${hasSel ? '' : 'checked'} ` +
+            `onchange="msClear('${tab}','${kind}')"><span>${escapeHtml(cfg.allLabel)}</span></label>` +
+          `<div class="ms-sep"></div>${optRows}</div>`;
+    }
+    // Render every multi-select filter that applies to a tab.
+    function msRenderFilters(tab, rows) {
+      msRender('month', tab, rows);
+      msRender('location', tab, rows);
+      if (tab === 'sales') {
+        msRender('customer', tab, rows);
+        msRender('product', tab, rows);
+      }
+    }
+
+    // ── Open/close + selection plumbing ──
+    let msOpenId = null;
+    function msClose(id) {
+      const el = id && document.getElementById(id);
+      if (!el) { if (msOpenId === id) msOpenId = null; return; }
+      const menu = el.querySelector('.ms-menu');
+      if (menu) menu.hidden = true;
+      el.classList.remove('is-open');
+      const btn = el.querySelector('.ms-toggle');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+      if (msOpenId === id) msOpenId = null;
+    }
+    function msToggleOpen(tab, kind) {
+      const id = msElId(tab, kind);
+      if (msOpenId && msOpenId !== id) msClose(msOpenId);
+      const el = document.getElementById(id);
+      const menu = el && el.querySelector('.ms-menu');
+      if (!menu) return;
+      const open = menu.hidden; // was hidden → we're opening it
+      menu.hidden = !open;
+      el.classList.toggle('is-open', open);
+      const btn = el.querySelector('.ms-toggle');
+      if (btn) btn.setAttribute('aria-expanded', String(open));
+      msOpenId = open ? id : null;
+    }
+    // Update the toggle label + "All" checkbox in place (menu stays open),
+    // then re-filter the table without rebuilding the filter menus.
+    function msApply(tab, kind) {
+      const el = document.getElementById(msElId(tab, kind));
+      const set = msSet(kind, tab);
+      const hasSel = set.size > 0;
+      if (el) {
+        const lbl = el.querySelector('.ms-toggle-label');
+        if (lbl) lbl.textContent = msToggleLabel(kind, tab);
+        const btn = el.querySelector('.ms-toggle');
+        if (btn) btn.classList.toggle('has-selection', hasSel);
+        const allCb = el.querySelector('.ms-all input[type="checkbox"]');
+        if (allCb) allCb.checked = !hasSel;
+      }
+      if (tab === 'daily')         renderDaily(true);
+      else if (tab === 'crushing') renderCrush(true);
+      else if (tab === 'sales')    renderSales(true);
+    }
+    function msOnCheck(tab, kind, input) {
+      const set = msSet(kind, tab);
+      if (input.checked) set.add(input.value); else set.delete(input.value);
+      msApply(tab, kind);
+    }
+    function msClear(tab, kind) {
+      msSet(kind, tab).clear();
+      const el = document.getElementById(msElId(tab, kind));
+      if (el) el.querySelectorAll('.ms-menu input[type="checkbox"]').forEach(cb => {
+        cb.checked = !!cb.closest('.ms-all'); // keep "All" checked, clear the rest
+      });
+      msApply(tab, kind);
+    }
+    // Close an open menu when clicking anywhere outside it, or on Escape.
+    document.addEventListener('click', (e) => {
+      if (!msOpenId) return;
+      const el = document.getElementById(msOpenId);
+      if (el && el.contains(e.target)) return;
+      msClose(msOpenId);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && msOpenId) msClose(msOpenId);
+    });
 
     // ── Bulk delete filtered rows (repair tool) ──────────────────
     const TRACKING_DELETE_CFG = {
@@ -2279,7 +2446,7 @@
       const rows = cfg.getRows();
       // Timesheet-injected rows are Payroll-owned — they're never deletable
       // from the filtered-delete tool here, so don't count them.
-      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r)).length;
+      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && rowMatchesCustomer(tab, r) && rowMatchesProduct(tab, r) && !isTimesheetRow(r)).length;
     }
 
     function refreshDeleteFilteredBtn(tab) {
@@ -2298,16 +2465,17 @@
       if (!cfg) return;
       const rows = cfg.getRows();
       // Never delete timesheet-injected rows (Payroll-owned) via this tool.
-      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r);
+      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && rowMatchesCustomer(tab, r) && rowMatchesProduct(tab, r) && !isTimesheetRow(r);
       const toDelete = rows.filter(matches);
       if (!toDelete.length) return;
 
-      const yr  = yearFilterLabel(tab);
-      const mo  = monthFilterLabel(tab);
-      const loc = locationFilterLabel(tab);
+      const parts = [yearFilterLabel(tab), monthFilterLabel(tab), locationFilterLabel(tab)];
+      // Customer + Product filters are Sales-only; only surface them there.
+      if (tab === 'sales') parts.push(customerFilterLabel(tab), productFilterLabel(tab));
+      const filterDesc = parts.join(' · ');
       const ok = window.confirm(
         `Delete ${toDelete.length} ${cfg.label} row${toDelete.length === 1 ? '' : 's'} ` +
-        `matching ${yr} · ${mo} · ${loc}?\n\n` +
+        `matching ${filterDesc}?\n\n` +
         `This cannot be undone. Tip: re-upload the corrected CSV after deleting.`
       );
       if (!ok) return;
@@ -2525,7 +2693,7 @@
       });
     });
 
-    function renderSales() {
+    function renderSales(keepFilters) {
       const tbody = document.getElementById('salesTbody');
       if (!tbody) return;
       const addBtn = document.getElementById('salesAddBtn');
@@ -2538,9 +2706,10 @@
         updateSalesSummary();
         return;
       }
-      renderYearFilterOptions('sales', salesRows);
-      renderMonthFilterOptions('sales');
-      renderLocationFilterOptions('sales', salesRows);
+      if (!keepFilters) {
+        renderYearFilterOptions('sales', salesRows);
+        msRenderFilters('sales', salesRows);
+      }
       if (!salesRows.length) {
         tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
         updateSalesSummary();
@@ -2548,9 +2717,9 @@
       }
       const visibleEntries = salesRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row));
+        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))} · ${escapeHtml(customerFilterLabel('sales'))} · ${escapeHtml(productFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
         updateSalesSummary();
         return;
       }
@@ -2589,6 +2758,8 @@
         if (!rowMatchesYear('sales', r)) return;
         if (!rowMatchesMonth('sales', r)) return;
         if (!rowMatchesLocation('sales', r)) return;
+        if (!rowMatchesCustomer('sales', r)) return;
+        if (!rowMatchesProduct('sales', r)) return;
         const t = Number(r.tons);
         const p = Number(r.pricePerTon);
         if (Number.isFinite(t)) totalTons += t;
@@ -2789,7 +2960,7 @@
     const TS_LOCK_BADGE =
       '<span class="ts-lock-badge" title="Injected from an approved timesheet — manage it in Payroll">🔒 TS</span>';
 
-    function renderCrush() {
+    function renderCrush(keepFilters) {
       const tbody = document.getElementById('crushTbody');
       if (!tbody) return;
       const addBtn = document.getElementById('crushAddBtn');
@@ -2802,9 +2973,10 @@
         updateCrushSummary();
         return;
       }
-      renderYearFilterOptions('crushing', crushRows);
-      renderMonthFilterOptions('crushing');
-      renderLocationFilterOptions('crushing', crushRows);
+      if (!keepFilters) {
+        renderYearFilterOptions('crushing', crushRows);
+        msRenderFilters('crushing', crushRows);
+      }
       if (!crushRows.length) {
         tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateCrushSummary();
@@ -3132,7 +3304,7 @@
       return { laborCost, fuelCost, totalCost };
     }
 
-    function renderDaily() {
+    function renderDaily(keepFilters) {
       const tbody = document.getElementById('dailyTbody');
       if (!tbody) return;
       const addBtn = document.getElementById('dailyAddBtn');
@@ -3145,9 +3317,10 @@
         updateDailySummary();
         return;
       }
-      renderYearFilterOptions('daily', dailyRows);
-      renderMonthFilterOptions('daily');
-      renderLocationFilterOptions('daily', dailyRows);
+      if (!keepFilters) {
+        renderYearFilterOptions('daily', dailyRows);
+        msRenderFilters('daily', dailyRows);
+      }
       if (!dailyRows.length) {
         tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateDailySummary();
