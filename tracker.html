@@ -7499,6 +7499,50 @@ function toggleBidItemComplete(projId, biId) {
   bi.is_complete = !bi.is_complete;
   saveProject(projId);
   renderScheduleTab();
+  if (bidViewProjId === projId) renderBidTable(projId);   // keep the bid page badge in sync if it's open
+}
+
+/* ── Bid sub-code completion (Schedule tab flag OR Construction Schedule task) ──
+   A bid sub code is treated as complete when it's flagged via the Schedule tab's
+   "Mark Complete" button (bi.is_complete) OR its matching Construction Schedule
+   task(s) are all marked Complete. The construction schedule lives under a
+   separate, async-loaded key (_csKey), so its completion is cached per project
+   and pulled in when the bid view opens (openBidView → _loadBidCsCompletion). */
+const _bidCsComplete = {};   // projId -> Set of "costcode||subcode" (normalized) complete in the Construction Schedule
+function _bidCsKey(cc, sc) {
+  return (cc || '').trim().toLowerCase() + '||' + (sc || '').trim().toLowerCase();
+}
+function _csCompletionSet(data) {
+  // A sub code counts as complete only when every construction task carrying it
+  // is Complete (or 100%) — a half-finished second task on the same sub code
+  // keeps it open. Tasks without a sub code are ignored.
+  const seen = new Map();   // key -> all-tasks-complete-so-far
+  if (data && Array.isArray(data.rows)) {
+    data.rows.forEach(r => {
+      if (!r || r.kind !== 'task') return;
+      const sc = (r.subcode || '').trim();
+      if (!sc) return;
+      const key  = _bidCsKey(r.code, sc);
+      const done = r.status === 'Complete' || (parseFloat(r.pct) || 0) >= 100;
+      seen.set(key, seen.has(key) ? (seen.get(key) && done) : done);
+    });
+  }
+  const set = new Set();
+  seen.forEach((allDone, key) => { if (allDone) set.add(key); });
+  return set;
+}
+async function _loadBidCsCompletion(projId) {
+  if (!projId) return;
+  const data = await apiGet(_csKey(projId));
+  _bidCsComplete[projId] = _csCompletionSet(data);
+  if (bidViewProjId === projId) renderBidTable(projId);   // re-render now that CS completion is known
+}
+function bidItemComplete(b, projId) {
+  if (!b) return false;
+  if (b.is_complete) return true;                          // Schedule tab flag
+  if (!(b.sub_code || '').trim()) return false;
+  const set = _bidCsComplete[projId];
+  return !!(set && set.has(_bidCsKey(b.cost_code, b.sub_code)));
 }
 
 function actualForBidItem(b, projId) {
@@ -7920,9 +7964,15 @@ function renderBidTable(projId, opts = {}) {
       childTr.className = 'bid-group-child';
       childTr.dataset.group = groupId;
 
+      const _biDone = bidItemComplete(b, projId);
+      const _doneBadge = _biDone
+        ? ` <span style="display:inline-block;margin-left:0.35rem;font-size:0.58rem;font-weight:700;color:#4ade80;background:rgba(34,197,94,0.14);border:1px solid rgba(34,197,94,0.4);border-radius:3px;padding:0.05rem 0.32rem;vertical-align:middle;white-space:nowrap;letter-spacing:0.02em" title="Marked complete in the schedule">✓ Complete</span>`
+        : '';
       const calcCellsA = `
         <td class="bid-calc">${rqty ? qfmt(rqty) : '—'}</td>
-        <td class="bid-calc">${pct}</td>`;
+        ${_biDone
+          ? `<td class="bid-calc" style="color:#4ade80;font-weight:700" title="Marked complete in the schedule">✓ Done</td>`
+          : `<td class="bid-calc">${pct}</td>`}`;
       const calcCellsB = `
         <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual/rqty) : '—'}</td>
         <td class="bid-calc" title="${_paTip}" style="color:var(--muted);font-style:italic;${_paStyle}">${_paUC > 0 ? '$'+fmt(_paUC) : '—'}</td>
@@ -7935,14 +7985,14 @@ function renderBidTable(projId, opts = {}) {
 
       const UNIT_OPTS = ['','SF','LF','SY','CY','TN','TON','EA','LS','HR','GAL','LB','AC'];
       childTr.innerHTML = readonly
-        ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}</td>
+        ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}${_doneBadge}</td>
            <td class="bid-calc" style="font-size:0.72rem;color:var(--muted)">${esc(b.unit)||'—'}</td>
            <td class="bid-calc">${bidQty ? qfmt(bidQty) : '—'}</td>
            <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
            ${calcCellsA}${calcCellsB}`
         : `<td class="bid-del"><button class="del-btn" data-tab="bid-item" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
            <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
-             oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
+             oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)">${_doneBadge}</td>
            <td><select style="font-size:0.75rem;padding:0.15rem 0.3rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;width:60px"
              onchange="updateBidItem('${projId}','${b.id}','unit',this.value)">${UNIT_OPTS.map(u=>`<option value="${u}"${b.unit===u?' selected':''}>${u||'—'}</option>`).join('')}</select></td>
            <td>
@@ -16471,6 +16521,7 @@ function openBidView(projId) {
   document.getElementById('bid-fs-tfoot').id = 'bfoot-' + projId;
   document.getElementById('bid-fullscreen').style.display = 'flex';
   renderBidTable(projId);
+  _loadBidCsCompletion(projId);   // pull construction-schedule completion (async), then re-render with badges
 }
 
 function closeBidView() {

@@ -7271,6 +7271,24 @@ function toggleBidItemComplete(projId, biId) {
   renderBidTable(projId);
 }
 
+/* ── Bid sub-code completion (Schedule tab flag) ───────────────────────────
+   A bid sub code is treated as complete when it's flagged via the Schedule
+   tab's "Mark Complete" button (bi.is_complete). _bidCsComplete mirrors the
+   tracker build for a Construction Schedule source; this division has no
+   construction schedule, so the set stays empty and completion is driven by
+   the Schedule tab flag alone. */
+const _bidCsComplete = {};
+function _bidCsKey(cc, sc) {
+  return (cc || '').trim().toLowerCase() + '||' + (sc || '').trim().toLowerCase();
+}
+function bidItemComplete(b, projId) {
+  if (!b) return false;
+  if (b.is_complete) return true;
+  if (!(b.sub_code || '').trim()) return false;
+  const set = _bidCsComplete[projId];
+  return !!(set && set.has(_bidCsKey(b.cost_code, b.sub_code)));
+}
+
 function actualForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
@@ -7575,9 +7593,15 @@ function renderBidTable(projId, opts = {}) {
       childTr.className = 'bid-group-child';
       childTr.dataset.group = groupId;
 
+      const _biDone = bidItemComplete(b, projId);
+      const _doneBadge = _biDone
+        ? ` <span style="display:inline-block;margin-left:0.35rem;font-size:0.58rem;font-weight:700;color:#4ade80;background:rgba(34,197,94,0.14);border:1px solid rgba(34,197,94,0.4);border-radius:3px;padding:0.05rem 0.32rem;vertical-align:middle;white-space:nowrap;letter-spacing:0.02em" title="Marked complete in the schedule">✓ Complete</span>`
+        : '';
       const calcCellsA = `
         <td class="bid-calc">${rqty ? qfmt(rqty) : '—'}</td>
-        <td class="bid-calc">${pct}</td>`;
+        ${_biDone
+          ? `<td class="bid-calc" style="color:#4ade80;font-weight:700" title="Marked complete in the schedule">✓ Done</td>`
+          : `<td class="bid-calc">${pct}</td>`}`;
       const calcCellsB = `
         <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual/rqty) : '—'}</td>
         <td class="bid-calc" title="${_paTip}" style="color:var(--muted);font-style:italic;${_paStyle}">${_paUC > 0 ? '$'+fmt(_paUC) : '—'}</td>
@@ -7590,14 +7614,14 @@ function renderBidTable(projId, opts = {}) {
 
       const UNIT_OPTS = ['','SF','LF','SY','CY','TN','TON','EA','LS','HR','GAL','LB','AC'];
       childTr.innerHTML = readonly
-        ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}</td>
+        ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}${_doneBadge}</td>
            <td class="bid-calc" style="font-size:0.72rem;color:var(--muted)">${esc(b.unit)||'—'}</td>
            <td class="bid-calc">${bidQty ? qfmt(bidQty) : '—'}</td>
            <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
            ${calcCellsA}${calcCellsB}`
         : `<td class="bid-del"><button class="del-btn" data-tab="bid-item" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
            <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
-             oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)"></td>
+             oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)">${_doneBadge}</td>
            <td><select style="font-size:0.75rem;padding:0.15rem 0.3rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;width:60px"
              onchange="updateBidItem('${projId}','${b.id}','unit',this.value)">${UNIT_OPTS.map(u=>`<option value="${u}"${b.unit===u?' selected':''}>${u||'—'}</option>`).join('')}</select></td>
            <td>
