@@ -7599,9 +7599,7 @@ function renderBidTable(projId, opts = {}) {
         : '';
       const calcCellsA = `
         <td class="bid-calc">${rqty ? qfmt(rqty) : '—'}</td>
-        ${_biDone
-          ? `<td class="bid-calc" style="color:#4ade80;font-weight:700" title="Marked complete in the schedule">✓ Done</td>`
-          : `<td class="bid-calc">${pct}</td>`}`;
+        <td class="bid-calc">${pct}</td>`;
       const calcCellsB = `
         <td class="bid-calc">${rqty > 0 && actual ? '$'+fmt(actual/rqty) : '—'}</td>
         <td class="bid-calc" title="${_paTip}" style="color:var(--muted);font-style:italic;${_paStyle}">${_paUC > 0 ? '$'+fmt(_paUC) : '—'}</td>
