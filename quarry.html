@@ -1029,6 +1029,14 @@
           Location
           <select class="year-filter-select" id="salesLocationFilter" onchange="setLocationFilter('sales', this.value)" disabled></select>
         </div>
+        <div class="year-filter-wrap">
+          Customer
+          <select class="year-filter-select" id="salesCustomerFilter" onchange="setCustomerFilter('sales', this.value)" disabled></select>
+        </div>
+        <div class="year-filter-wrap">
+          Product
+          <select class="year-filter-select" id="salesProductFilter" onchange="setProductFilter('sales', this.value)" disabled></select>
+        </div>
         <button class="btn-add-row btn-danger" id="salesDeleteFilteredBtn" onclick="deleteFilteredRows('sales')" disabled>Delete 0 Rows</button>
         <div class="sales-summary" id="salesSummary"></div>
       </div>
@@ -2248,6 +2256,83 @@
       return idx === -1 ? 'all months' : MONTH_NAMES[idx];
     }
 
+    // ── Sales customer + product filters ────────────────────────
+    // Customer and Product columns only exist on the Sales table, so
+    // these two filters are Sales-only. The state is still keyed by tab
+    // so the shared row-match helpers below are safe to call for any
+    // tab: a tab with no entry (daily/crushing) reads undefined → 'all'
+    // → matches everything, i.e. a no-op.
+    const customerFilters = { sales: 'all' };
+    const productFilters  = { sales: 'all' };
+
+    function getRowCustomer(row) {
+      return (row && row.customerName) ? String(row.customerName).trim() : '';
+    }
+    function getRowProduct(row) {
+      return (row && row.productName) ? String(row.productName).trim() : '';
+    }
+    function rowMatchesCustomer(tab, row) {
+      const f = customerFilters[tab];
+      if (!f || f === 'all') return true;
+      const c = getRowCustomer(row);
+      if (f === '__none__') return c === '';
+      return c.toLowerCase() === f.toLowerCase();
+    }
+    function rowMatchesProduct(tab, row) {
+      const f = productFilters[tab];
+      if (!f || f === 'all') return true;
+      const p = getRowProduct(row);
+      if (f === '__none__') return p === '';
+      return p.toLowerCase() === f.toLowerCase();
+    }
+    function setCustomerFilter(tab, value) {
+      customerFilters[tab] = value;
+      if (tab === 'sales') renderSales();
+    }
+    function setProductFilter(tab, value) {
+      productFilters[tab] = value;
+      if (tab === 'sales') renderSales();
+    }
+    // Shared builder for the "only values present in the data" dropdowns
+    // (customer / product). Mirrors renderLocationFilterOptions.
+    function renderValueFilterOptions(selId, rows, getVal, allLabel, noneLabel, state, tab) {
+      const sel = document.getElementById(selId);
+      if (!sel) return;
+      let hasNone = false;
+      const set = new Set();
+      rows.forEach(r => { const v = getVal(r); if (!v) hasNone = true; else set.add(v); });
+      const sorted = [...set].sort((a, b) => a.localeCompare(b));
+      let html = `<option value="all">${allLabel}</option>`;
+      if (hasNone) html += `<option value="__none__">${noneLabel}</option>`;
+      html += sorted.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+      sel.innerHTML = html;
+      const desired = state[tab];
+      const valid = new Set(['all', ...(hasNone ? ['__none__'] : []), ...sorted]);
+      if (valid.has(desired)) sel.value = desired;
+      else { sel.value = 'all'; state[tab] = 'all'; }
+      sel.disabled = false;
+    }
+    function renderCustomerFilterOptions(tab, rows) {
+      renderValueFilterOptions(tab + 'CustomerFilter', rows, getRowCustomer,
+        'All Customers', '— No Customer —', customerFilters, tab);
+    }
+    function renderProductFilterOptions(tab, rows) {
+      renderValueFilterOptions(tab + 'ProductFilter', rows, getRowProduct,
+        'All Products', '— No Product —', productFilters, tab);
+    }
+    function customerFilterLabel(tab) {
+      const v = customerFilters[tab];
+      if (!v || v === 'all') return 'all customers';
+      if (v === '__none__') return 'no customer';
+      return v;
+    }
+    function productFilterLabel(tab) {
+      const v = productFilters[tab];
+      if (!v || v === 'all') return 'all products';
+      if (v === '__none__') return 'no product';
+      return v;
+    }
+
     // ── Bulk delete filtered rows (repair tool) ──────────────────
     const TRACKING_DELETE_CFG = {
       daily: {
@@ -2279,7 +2364,7 @@
       const rows = cfg.getRows();
       // Timesheet-injected rows are Payroll-owned — they're never deletable
       // from the filtered-delete tool here, so don't count them.
-      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r)).length;
+      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && rowMatchesCustomer(tab, r) && rowMatchesProduct(tab, r) && !isTimesheetRow(r)).length;
     }
 
     function refreshDeleteFilteredBtn(tab) {
@@ -2298,16 +2383,17 @@
       if (!cfg) return;
       const rows = cfg.getRows();
       // Never delete timesheet-injected rows (Payroll-owned) via this tool.
-      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r);
+      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && rowMatchesCustomer(tab, r) && rowMatchesProduct(tab, r) && !isTimesheetRow(r);
       const toDelete = rows.filter(matches);
       if (!toDelete.length) return;
 
-      const yr  = yearFilterLabel(tab);
-      const mo  = monthFilterLabel(tab);
-      const loc = locationFilterLabel(tab);
+      const parts = [yearFilterLabel(tab), monthFilterLabel(tab), locationFilterLabel(tab)];
+      // Customer + Product filters are Sales-only; only surface them there.
+      if (tab === 'sales') parts.push(customerFilterLabel(tab), productFilterLabel(tab));
+      const filterDesc = parts.join(' · ');
       const ok = window.confirm(
         `Delete ${toDelete.length} ${cfg.label} row${toDelete.length === 1 ? '' : 's'} ` +
-        `matching ${yr} · ${mo} · ${loc}?\n\n` +
+        `matching ${filterDesc}?\n\n` +
         `This cannot be undone. Tip: re-upload the corrected CSV after deleting.`
       );
       if (!ok) return;
@@ -2541,6 +2627,8 @@
       renderYearFilterOptions('sales', salesRows);
       renderMonthFilterOptions('sales');
       renderLocationFilterOptions('sales', salesRows);
+      renderCustomerFilterOptions('sales', salesRows);
+      renderProductFilterOptions('sales', salesRows);
       if (!salesRows.length) {
         tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
         updateSalesSummary();
@@ -2548,9 +2636,9 @@
       }
       const visibleEntries = salesRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row));
+        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))} · ${escapeHtml(customerFilterLabel('sales'))} · ${escapeHtml(productFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
         updateSalesSummary();
         return;
       }
@@ -2589,6 +2677,8 @@
         if (!rowMatchesYear('sales', r)) return;
         if (!rowMatchesMonth('sales', r)) return;
         if (!rowMatchesLocation('sales', r)) return;
+        if (!rowMatchesCustomer('sales', r)) return;
+        if (!rowMatchesProduct('sales', r)) return;
         const t = Number(r.tons);
         const p = Number(r.pricePerTon);
         if (Number.isFinite(t)) totalTons += t;
