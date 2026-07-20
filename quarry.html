@@ -925,6 +925,10 @@
           <select class="year-filter-select" id="dailyYearFilter" onchange="setYearFilter('daily', this.value)" disabled></select>
         </div>
         <div class="year-filter-wrap">
+          Month
+          <select class="year-filter-select" id="dailyMonthFilter" onchange="setMonthFilter('daily', this.value)" disabled></select>
+        </div>
+        <div class="year-filter-wrap">
           Location
           <select class="year-filter-select" id="dailyLocationFilter" onchange="setLocationFilter('daily', this.value)" disabled></select>
         </div>
@@ -965,6 +969,10 @@
         <div class="year-filter-wrap">
           Year
           <select class="year-filter-select" id="crushingYearFilter" onchange="setYearFilter('crushing', this.value)" disabled></select>
+        </div>
+        <div class="year-filter-wrap">
+          Month
+          <select class="year-filter-select" id="crushingMonthFilter" onchange="setMonthFilter('crushing', this.value)" disabled></select>
         </div>
         <div class="year-filter-wrap">
           Location
@@ -1012,6 +1020,10 @@
         <div class="year-filter-wrap">
           Year
           <select class="year-filter-select" id="salesYearFilter" onchange="setYearFilter('sales', this.value)" disabled></select>
+        </div>
+        <div class="year-filter-wrap">
+          Month
+          <select class="year-filter-select" id="salesMonthFilter" onchange="setMonthFilter('sales', this.value)" disabled></select>
         </div>
         <div class="year-filter-wrap">
           Location
@@ -2184,6 +2196,58 @@
       return v;
     }
 
+    // ── Per-tab month filter ────────────────────────────────────
+    // Narrows the visible rows to a single calendar month, alongside
+    // the year + location filters. Defaults to 'all' so behavior is
+    // unchanged (whole year) until a month is chosen. Months are a
+    // fixed Jan–Dec list (stored as '01'…'12') rather than only the
+    // months present in the data, so the picker is always predictable.
+    const monthFilters = { daily: 'all', crushing: 'all', sales: 'all' };
+    const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+                         'July', 'August', 'September', 'October', 'November', 'December'];
+    const MONTH_VALUES = MONTH_NAMES.map((_, i) => String(i + 1).padStart(2, '0'));
+
+    // Returns the zero-padded month key ('01'…'12'). Named distinctly from
+    // the analytics-only getRowMonth() further down (which returns a 0-based
+    // number) so the two don't collide via function-declaration hoisting.
+    function getRowMonthKey(dateStr) {
+      if (!dateStr || typeof dateStr !== 'string') return null;
+      const m = dateStr.match(/^\d{4}-(\d{2})/);
+      return m ? m[1] : null;
+    }
+    function rowMatchesMonth(tab, row) {
+      const f = monthFilters[tab];
+      if (!f || f === 'all') return true;
+      return getRowMonthKey(row && row.date) === f;
+    }
+    function setMonthFilter(tab, value) {
+      monthFilters[tab] = value;
+      if (tab === 'daily')         renderDaily();
+      else if (tab === 'crushing') renderCrush();
+      else if (tab === 'sales')    renderSales();
+    }
+    function renderMonthFilterOptions(tab) {
+      const sel = document.getElementById(tab + 'MonthFilter');
+      if (!sel) return;
+      sel.innerHTML = ['<option value="all">All Months</option>']
+        .concat(MONTH_NAMES.map((name, i) => `<option value="${MONTH_VALUES[i]}">${name}</option>`))
+        .join('');
+      const desired = monthFilters[tab];
+      if (desired === 'all' || MONTH_VALUES.includes(desired)) {
+        sel.value = desired;
+      } else {
+        sel.value = 'all';
+        monthFilters[tab] = 'all';
+      }
+      sel.disabled = false;
+    }
+    function monthFilterLabel(tab) {
+      const v = monthFilters[tab];
+      if (!v || v === 'all') return 'all months';
+      const idx = MONTH_VALUES.indexOf(v);
+      return idx === -1 ? 'all months' : MONTH_NAMES[idx];
+    }
+
     // ── Bulk delete filtered rows (repair tool) ──────────────────
     const TRACKING_DELETE_CFG = {
       daily: {
@@ -2215,7 +2279,7 @@
       const rows = cfg.getRows();
       // Timesheet-injected rows are Payroll-owned — they're never deletable
       // from the filtered-delete tool here, so don't count them.
-      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r)).length;
+      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r)).length;
     }
 
     function refreshDeleteFilteredBtn(tab) {
@@ -2234,15 +2298,16 @@
       if (!cfg) return;
       const rows = cfg.getRows();
       // Never delete timesheet-injected rows (Payroll-owned) via this tool.
-      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r);
+      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && !isTimesheetRow(r);
       const toDelete = rows.filter(matches);
       if (!toDelete.length) return;
 
       const yr  = yearFilterLabel(tab);
+      const mo  = monthFilterLabel(tab);
       const loc = locationFilterLabel(tab);
       const ok = window.confirm(
         `Delete ${toDelete.length} ${cfg.label} row${toDelete.length === 1 ? '' : 's'} ` +
-        `matching ${yr} · ${loc}?\n\n` +
+        `matching ${yr} · ${mo} · ${loc}?\n\n` +
         `This cannot be undone. Tip: re-upload the corrected CSV after deleting.`
       );
       if (!ok) return;
@@ -2474,6 +2539,7 @@
         return;
       }
       renderYearFilterOptions('sales', salesRows);
+      renderMonthFilterOptions('sales');
       renderLocationFilterOptions('sales', salesRows);
       if (!salesRows.length) {
         tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
@@ -2482,9 +2548,9 @@
       }
       const visibleEntries = salesRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesLocation('sales', row));
+        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
         updateSalesSummary();
         return;
       }
@@ -2521,6 +2587,7 @@
       let totalTons = 0, totalSales = 0, count = 0;
       salesRows.forEach(r => {
         if (!rowMatchesYear('sales', r)) return;
+        if (!rowMatchesMonth('sales', r)) return;
         if (!rowMatchesLocation('sales', r)) return;
         const t = Number(r.tons);
         const p = Number(r.pricePerTon);
@@ -2736,6 +2803,7 @@
         return;
       }
       renderYearFilterOptions('crushing', crushRows);
+      renderMonthFilterOptions('crushing');
       renderLocationFilterOptions('crushing', crushRows);
       if (!crushRows.length) {
         tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
@@ -2744,12 +2812,12 @@
       }
       const visibleEntries = crushRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesLocation('crushing', row))
+        .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesMonth('crushing', row) && rowMatchesLocation('crushing', row))
         // Newest first so payroll-injected (tsq-) rows surface at the top rather
         // than being appended out of sight — matches the Daily tab.
         .sort((a, b) => String(b.row.date || '').localeCompare(String(a.row.date || '')));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))} · ${escapeHtml(locationFilterLabel('crushing'))}. Adjust the filters above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))} · ${escapeHtml(monthFilterLabel('crushing'))} · ${escapeHtml(locationFilterLabel('crushing'))}. Adjust the filters above.</td></tr>`;
         updateCrushSummary();
         return;
       }
@@ -2818,6 +2886,7 @@
       let totalHours = 0, totalEstTons = 0, totalCost = 0, count = 0;
       crushRows.forEach(r => {
         if (!rowMatchesYear('crushing', r)) return;
+        if (!rowMatchesMonth('crushing', r)) return;
         if (!rowMatchesLocation('crushing', r)) return;
         const c = crushCalc(r);
         const hc = Number(r.hoursCrushing);
@@ -3077,6 +3146,7 @@
         return;
       }
       renderYearFilterOptions('daily', dailyRows);
+      renderMonthFilterOptions('daily');
       renderLocationFilterOptions('daily', dailyRows);
       if (!dailyRows.length) {
         tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries yet. Click “+ Add Row” to get started.</td></tr>`;
@@ -3085,14 +3155,14 @@
       }
       const visibleEntries = dailyRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesLocation('daily', row))
+        .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesMonth('daily', row) && rowMatchesLocation('daily', row))
         // Newest work-date first. Payroll approval appends injected (tsq-) rows
         // to the end of the blob, so without this they'd render at the very
         // bottom — "invisible" under a long list of older manual rows. Stable
         // sort preserves the existing order among same-date rows.
         .sort((a, b) => String(b.row.date || '').localeCompare(String(a.row.date || '')));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries for ${escapeHtml(yearFilterLabel('daily'))} · ${escapeHtml(locationFilterLabel('daily'))}. Adjust the filters above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries for ${escapeHtml(yearFilterLabel('daily'))} · ${escapeHtml(monthFilterLabel('daily'))} · ${escapeHtml(locationFilterLabel('daily'))}. Adjust the filters above.</td></tr>`;
         updateDailySummary();
         return;
       }
@@ -3153,6 +3223,7 @@
       let totalHours = 0, totalCost = 0, count = 0;
       dailyRows.forEach(r => {
         if (!rowMatchesYear('daily', r)) return;
+        if (!rowMatchesMonth('daily', r)) return;
         if (!rowMatchesLocation('daily', r)) return;
         const c = dailyCalc(r);
         const h = Number(r.hours);
