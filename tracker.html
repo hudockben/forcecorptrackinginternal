@@ -16456,6 +16456,45 @@ function closeDailyView() {
   }
 }
 
+// True when this row id still has an unsynced local write — a debounced PUT
+// that hasn't fired yet, or a POST/PUT sitting in the WAL waiting to land.
+function _drRowHasPendingWrite(id) {
+  const sid = String(id);
+  const wal = _walRead();
+  return _drSavePending[sid] !== undefined
+      || wal['put_'  + sid] !== undefined
+      || wal['post_' + sid] !== undefined;
+}
+
+/**
+ * Merge a freshly-fetched daily-row snapshot into memory WITHOUT clobbering
+ * rows that still have an unsynced local write. A plain `p.dailyRows = rows`
+ * swaps in the server snapshot, which may predate a pending debounced PUT or
+ * an in-flight POST; a later edit to another field of that row then re-sends
+ * the whole (stale) row and silently reverts the pending change. This is the
+ * same hazard the initial-load path guards against — see the merge branch in
+ * _loadAndMigrateDailyRows/_distributeRows.
+ *
+ * For any row id with a pending local write we keep the in-memory copy (it is
+ * the freshest); every other row takes the server value, so Reload still
+ * refreshes normally. Rows the snapshot doesn't yet contain but whose insert
+ * is still in flight are preserved too, so a just-added row can't vanish.
+ */
+function _mergeReloadedRows(prev, incoming) {
+  if (!Array.isArray(prev) || prev.length === 0) return incoming;
+  const prevById = new Map(prev.map(r => [String(r.id), r]));
+  const merged = incoming.map(r =>
+    _drRowHasPendingWrite(r.id) && prevById.has(String(r.id))
+      ? prevById.get(String(r.id))
+      : r
+  );
+  const incomingIds = new Set(incoming.map(r => String(r.id)));
+  prev.forEach(r => {
+    if (!incomingIds.has(String(r.id)) && _drRowHasPendingWrite(r.id)) merged.push(r);
+  });
+  return merged;
+}
+
 /**
  * Re-fetch daily rows for a project from the server, then re-render.
  * Falls back to the legacy fct_projects blob if the DB has no rows —
@@ -16475,7 +16514,10 @@ async function reloadDailyRows(projId) {
     if (r.ok) {
       const { rows } = await r.json();
       if (Array.isArray(rows) && rows.length > 0) {
-        p.dailyRows = rows;
+        // Merge (not replace) so a Reload clicked while a save is still in
+        // flight can't swap in a stale row and let a follow-up edit revert
+        // the pending change.
+        p.dailyRows = _mergeReloadedRows(p.dailyRows, rows);
         if (dailyViewProjId === projId) renderDailyTable(projId);
         return;
       }
@@ -16486,7 +16528,7 @@ async function reloadDailyRows(projId) {
       if (Array.isArray(legacy)) {
         const old = legacy.find(lp => lp && lp.id === projId);
         if (old && Array.isArray(old.dailyRows) && old.dailyRows.length > 0) {
-          p.dailyRows = old.dailyRows;
+          p.dailyRows = _mergeReloadedRows(p.dailyRows, old.dailyRows);
           if (dailyViewProjId === projId) renderDailyTable(projId);
           // Persist to DB now that the NOT NULL bugs are fixed
           drPostBulk(projId, old.dailyRows);
