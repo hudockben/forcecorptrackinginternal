@@ -3296,6 +3296,7 @@ async function drGetAll(opts) {
 
 /** Insert one row into the DB — WAL-protected with retry + indicator. */
 function drPost(projectId, row) {
+  _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   const walId = 'post_' + row.id;
   _walAdd(walId, { method: 'POST', projectId, row, rowId: row.id });
   _drSaveStart();
@@ -3321,6 +3322,7 @@ function drPost(projectId, row) {
 
 /** Insert multiple rows at once (awaitable — used for migration and CSV import). */
 async function drPostBulk(projectId, rows) {
+  _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   const walIds = rows.map(r => 'post_' + r.id);
   rows.forEach((r, i) => _walAdd(walIds[i], { method: 'POST', projectId, row: r, rowId: r.id }));
   _drSaveStart();
@@ -3425,6 +3427,7 @@ window.addEventListener('online', () => {
 
 /** Delete one row by its JS id. */
 function drDelete(rowId) {
+  _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   _drSaveStart();
   _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
     method: 'DELETE',
@@ -3438,6 +3441,7 @@ function drDelete(rowId) {
 
 /** Delete all rows for a project (called when deleting the project itself). */
 function drDeleteByProject(projectId) {
+  _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   _drSaveStart();
   _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&projectId=${encodeURIComponent(projectId)}`, {
     method: 'DELETE',
@@ -3450,6 +3454,7 @@ function drDeleteByProject(projectId) {
 
 /** Delete all rows matching a cost code + sub code across all projects. */
 function drDeleteByCode(costCode, subCode) {
+  _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   _drSaveStart();
   _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&costCode=${encodeURIComponent(costCode)}&subCode=${encodeURIComponent(subCode)}`, {
     method: 'DELETE',
@@ -3462,6 +3467,7 @@ function drDeleteByCode(costCode, subCode) {
 
 /** Delete all rows matching a sub code across ALL cost codes. */
 function drDeleteBySubCode(subCode) {
+  _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   _drSaveStart();
   _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&subCode=${encodeURIComponent(subCode)}`, {
     method: 'DELETE',
