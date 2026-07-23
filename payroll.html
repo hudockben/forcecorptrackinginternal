@@ -1165,6 +1165,96 @@
       vertical-align: middle;
     }
 
+    /* ── Bulk approve & inject modal ── */
+    .bulk-intro {
+      padding: 0.7rem 0.9rem;
+      border-radius: 6px;
+      background: rgba(59,130,246,0.06);
+      border: 1px solid rgba(59,130,246,0.2);
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+    .bulk-intro strong { color: var(--text); }
+    .bulk-groups-wrap {
+      max-height: min(56vh, 540px);
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+    .bulk-group {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.9rem 1rem;
+      background: var(--surface2, var(--bg));
+    }
+    .bulk-group.skip { opacity: 0.85; border-style: dashed; }
+    .bulk-group-head {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.75rem;
+    }
+    .bulk-group-title { font-weight: 700; color: var(--text); font-size: 0.9rem; }
+    .bulk-group-meta  { color: var(--muted); font-size: 0.78rem; }
+    .bulk-badge {
+      font-size: 0.58rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      font-weight: 700;
+    }
+    .bulk-badge.split    { background: rgba(59,130,246,0.15);  color: var(--blue, #3b82f6); }
+    .bulk-badge.quarry   { background: rgba(234,179,8,0.15);   color: #eab308; }
+    .bulk-badge.trucking { background: rgba(45,212,191,0.15);  color: #2dd4bf; }
+    .bulk-badge.plain    { background: rgba(148,163,184,0.15); color: var(--muted); }
+    .bulk-badge.warn     { background: rgba(239,68,68,0.14);   color: var(--red); }
+    .bulk-fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.7rem 1rem;
+    }
+    .bulk-field { display: flex; flex-direction: column; gap: 0.3rem; }
+    .bulk-field > span {
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .bulk-note {
+      margin-top: 0.6rem;
+      font-size: 0.74rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .bulk-days {
+      margin-top: 0.7rem;
+      max-height: 160px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+    }
+    .bulk-days table { width: 100%; border-collapse: collapse; font-size: 0.76rem; }
+    .bulk-days th, .bulk-days td {
+      padding: 0.3rem 0.6rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .bulk-days th {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: var(--bg);
+      position: sticky;
+      top: 0;
+    }
+    .bulk-days td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+
     /* ── Mobile ── */
     @media (max-width: 800px) {
       header { padding: 0.7rem 1rem; flex-wrap: wrap; gap: 0.5rem; }
@@ -1492,6 +1582,36 @@
       <div class="modal-footer">
         <button class="btn-cancel" onclick="closeTrucking()">Cancel</button>
         <button class="btn-save"   id="truckingSaveBtn" onclick="truckingSave()">Approve &amp; Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Bulk approve & inject modal ──
+       Groups the selected / all-pending entries by project + injection type so
+       the supervisor assigns the cost code (or haul fee, rate, …) ONCE per
+       project and every day in that group is approved + injected with that
+       template — each day's own hours flow through automatically. Loops the
+       same /timesheet-entries?action=approve endpoint the single flow uses. -->
+  <div class="modal-backdrop" id="bulkBackdrop">
+    <div class="modal split-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title" id="bulkTitle">Bulk Approve &amp; Inject</div>
+        <button class="modal-close" onclick="closeBulk()">&#10005;</button>
+      </div>
+      <div class="split-summary" id="bulkSummary"></div>
+      <div class="bulk-intro">
+        Set the cost code / sub code (or haul fee, rate) <strong>once per project</strong>
+        below — each day is approved with its own hours injected automatically, so
+        you never re-enter the same task. Turf &amp; Paving put all work hours on the
+        labor row and add a travel row for any day with travel hours (same cost/sub code).
+        Fuel &amp; production numbers are left blank — open a single day later to add them.
+      </div>
+      <div class="bulk-groups-wrap" id="bulkGroupsWrap"></div>
+      <div class="modal-msg" id="bulkMsg"></div>
+      <div class="modal-footer">
+        <div id="bulkProgress" style="flex:1;font-size:0.8rem;color:var(--muted);align-self:center"></div>
+        <button class="btn-cancel" onclick="closeBulk()">Cancel</button>
+        <button class="btn-save"   id="bulkRunBtn" onclick="bulkRun()">Approve</button>
       </div>
     </div>
   </div>
@@ -3010,53 +3130,36 @@
       }
     }
 
-    async function bulkApprove() {
-      const ids = Array.from(selectedIds);
-      if (!ids.length) return;
-      // Block bulk approve when any selected entry needs an individual approval
-      // step (turf/paving split, quarry row, or trucking row). Those must be
-      // approved one at a time so each gets its own division-specific injection.
-      const splitOnes = ids
-        .map(id => filtered.find(x => x.id === id))
-        .filter(e => e && (entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e)));
-      if (splitOnes.length) {
-        alert(
-          `Bulk approve isn't supported for Turf, Paving, Quarry, or Trucking entries (${splitOnes.length} selected).\n\n` +
-          `Each of those entries injects a row into its division — open them one at a time using the Approve button.`
-        );
-        return;
-      }
-      if (!confirm(`Approve ${ids.length} entries?`)) return;
-      await runApprovals(ids);
+    // "Approve Selected" — the checked pending rows. Entries whose division
+    // injects a cost row (turf/paving split, quarry, trucking) go through the
+    // bulk approve+inject modal so a project's cost code is assigned once;
+    // status-only entries (dust / time-off) take the fast confirm path.
+    function bulkApprove() {
+      const entries = Array.from(selectedIds)
+        .map(id => filtered.find(x => x.id === id) || allEntries.find(x => x.id === id))
+        .filter(e => e && e.status === 'submitted');
+      if (!entries.length) return;
+      routeBulkApprove(entries, `${entries.length} selected`);
     }
 
-    async function approveAllSubmitted() {
-      const all = filtered.filter(e => e.status === 'submitted');
-      const splitOnes = all.filter(e => entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e));
-      if (splitOnes.length) {
-        alert(
-          `"Approve All" isn't supported when Turf, Paving, Quarry, or Trucking entries are in view ` +
-          `(${splitOnes.length} of ${all.length} inject a row into their division on approval).\n\n` +
-          `Approve those individually, or filter the view to a status-only division (Dust) first.`
-        );
+    // "Approve All Submitted" — every pending entry in the current view.
+    function approveAllSubmitted() {
+      const entries = filtered.filter(e => e.status === 'submitted');
+      if (!entries.length) return;
+      routeBulkApprove(entries, 'all pending in view');
+    }
+
+    // Decide between the fast path (no injection needed) and the bulk
+    // approve+inject modal (one or more entries inject a division cost row).
+    function routeBulkApprove(entries, scopeLabel) {
+      const anyInject = entries.some(e =>
+        entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e));
+      if (!anyInject) {
+        if (!confirm(`Approve ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}?`)) return;
+        runApprovals(entries.map(e => e.id));
         return;
       }
-      const ids = all.map(e => e.id);
-      if (!ids.length) return;
-      // Build a quick scope summary so the supervisor knows what they're signing off on
-      const from   = document.getElementById('flt-from').value;
-      const to     = document.getElementById('flt-to').value;
-      const userQ  = (document.getElementById('flt-user').value || '').trim();
-      const divQ   = document.getElementById('flt-division').value;
-      const scopeBits = [];
-      if (from && to)      scopeBits.push(`${from} → ${to}`);
-      else if (from)       scopeBits.push(`from ${from}`);
-      else if (to)         scopeBits.push(`through ${to}`);
-      if (userQ)           scopeBits.push(`employee "${userQ}"`);
-      if (divQ)            scopeBits.push(`${divQ} division`);
-      const scope = scopeBits.length ? `\n\nScope: ${scopeBits.join(' · ')}` : '';
-      if (!confirm(`Approve ALL ${ids.length} pending entries in the current view?${scope}`)) return;
-      await runApprovals(ids);
+      openBulkApprove(entries, scopeLabel);
     }
 
     async function runApprovals(ids) {
@@ -4275,6 +4378,404 @@
       } finally {
         btn.disabled = false;
       }
+    }
+
+    // ── Bulk approve & inject ─────────────────────────────────────────────
+    // A supervisor reviewing a week often approves many days of the SAME task.
+    // Instead of stepping through the per-entry inject modal once per day, this
+    // groups the pending entries by project + injection type, lets the cost
+    // code / sub code (or haul fee / rate) be set ONCE per project, then loops
+    // the existing /timesheet-entries?action=approve endpoint — one call per
+    // entry, each with that entry's own hours — so every injected cost row is
+    // written exactly as the single flow would write it.
+    let bulkGroups  = [];      // [{ key, type, division, activity, job_id, job_label, entries, ccList, eqList, template }]
+    let bulkSkipped = [];      // [{ e, why }] — entries that can't be bulk-approved
+    let bulkRunning = false;
+    const bulkR2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
+    // Partition entries into per-project injection groups (+ a plain bucket for
+    // status-only entries, + a skipped list for entries missing what injection
+    // needs). Mirrors the server's own per-entry guard rails.
+    function buildBulkGroups(entries) {
+      const map = new Map();
+      const skipped = [];
+      for (const e of entries) {
+        const isSplit  = entryNeedsSplit(e);
+        const isQuarry = entryNeedsQuarry(e);
+        const isTruck  = entryNeedsTrucking(e);
+        if (isSplit && !e.job_id) { skipped.push({ e, why: 'no project/job on the entry' }); continue; }
+        const activity = isQuarry ? quarryActivityOf(e) : null;
+        if (isQuarry && !activity) { skipped.push({ e, why: 'quarry job has no Daily/Crushing activity' }); continue; }
+        let key;
+        if (isSplit)       key = `split|${e.division}|${e.job_id}`;
+        else if (isQuarry) key = `quarry|${activity}|${e.job_id}`;
+        else if (isTruck)  key = 'trucking';
+        else               key = 'plain';
+        let g = map.get(key);
+        if (!g) {
+          g = {
+            key,
+            type: isSplit ? 'split' : isQuarry ? 'quarry' : isTruck ? 'trucking' : 'plain',
+            division: e.division,
+            activity,
+            job_id: e.job_id,
+            job_label: e.job_label || '',
+            entries: [],
+            ccList: [], eqList: [], _loaded: false,
+            template: {
+              cost_code: '', sub_code: '', equipment: '',
+              equipmentName: '', taskName: '', rate: '', hourlyRate: '',
+              haul_fee: '', division_col: '',
+            },
+          };
+          map.set(key, g);
+        }
+        g.entries.push(e);
+      }
+      const order = { split: 0, quarry: 1, trucking: 2, plain: 3 };
+      const groups = Array.from(map.values()).sort((a, b) => order[a.type] - order[b.type]);
+      return { groups, skipped };
+    }
+
+    async function openBulkApprove(entries, scopeLabel) {
+      const { groups, skipped } = buildBulkGroups(entries);
+      bulkGroups  = groups;
+      bulkSkipped = skipped;
+      bulkRunning = false;
+
+      const total = groups.reduce((s, g) => s + g.entries.length, 0);
+      document.getElementById('bulkTitle').textContent =
+        `Bulk Approve & Inject — ${total} ${total === 1 ? 'entry' : 'entries'}`;
+
+      // Scope summary — same filter context the old Approve-All confirm showed.
+      const from  = document.getElementById('flt-from').value;
+      const to    = document.getElementById('flt-to').value;
+      const userQ = (document.getElementById('flt-user').value || '').trim();
+      const divQ  = document.getElementById('flt-division').value;
+      const bits = [`<div>Scope: <strong>${escapeHtml(scopeLabel)}</strong></div>`];
+      if (from && to) bits.push(`<div>Dates: <strong>${escapeHtml(from)} → ${escapeHtml(to)}</strong></div>`);
+      else if (from)  bits.push(`<div>Dates: <strong>from ${escapeHtml(from)}</strong></div>`);
+      else if (to)    bits.push(`<div>Dates: <strong>through ${escapeHtml(to)}</strong></div>`);
+      if (userQ)      bits.push(`<div>Employee: <strong>${escapeHtml(userQ)}</strong></div>`);
+      if (divQ)       bits.push(`<div>Division filter: <strong>${escapeHtml(prettyDiv(divQ))}</strong></div>`);
+      bits.push(`<div>Projects: <strong>${groups.filter(g => g.type !== 'plain').length}</strong></div>`);
+      document.getElementById('bulkSummary').innerHTML = bits.join('');
+
+      const msg = document.getElementById('bulkMsg');
+      msg.textContent = ''; msg.className = 'modal-msg';
+      document.getElementById('bulkProgress').textContent = '';
+      const cancelBtn = document.querySelector('#bulkBackdrop .btn-cancel');
+      if (cancelBtn) cancelBtn.disabled = false;
+
+      document.getElementById('bulkBackdrop').classList.add('open');
+      renderBulkGroups();     // first paint — cost-code lists may still be loading
+      updateBulkRunBtn();
+
+      // Lazy-load lookups per group, then repaint and prefill quarry rates.
+      const needQuarry = groups.some(g => g.type === 'quarry');
+      await Promise.all([
+        ...groups.filter(g => g.type === 'split').map(async g => {
+          try {
+            g.ccList = await loadCostCodesFor(g.division, g.job_id);
+            g.eqList = await loadEquipmentForSplit(g.division, g.job_id);
+          } catch (_) { /* leave empty — free-text entry still works */ }
+          g._loaded = true;
+        }),
+        needQuarry ? loadQuarryListsOnce() : Promise.resolve(),
+      ]);
+      // Rate pre-fill matches the single quarry modal: employee's configured
+      // quarry rate, else the flat default — editable, applied to every day.
+      for (const g of groups) {
+        if (g.type !== 'quarry') continue;
+        const r = quarryEmployeeRate(g.entries[0] && g.entries[0].username);
+        const val = (r != null ? r : QUARRY_DEFAULT_RATE);
+        if (g.activity === 'crushing') { if (!String(g.template.hourlyRate).trim()) g.template.hourlyRate = String(val); }
+        else                           { if (!String(g.template.rate).trim())       g.template.rate       = String(val); }
+      }
+      renderBulkGroups();
+      updateBulkRunBtn();
+    }
+
+    function closeBulk(force) {
+      if (bulkRunning && !force) return;   // don't tear down mid-run
+      document.getElementById('bulkBackdrop').classList.remove('open');
+      bulkGroups  = [];
+      bulkSkipped = [];
+    }
+    bindBackdropClose(document.getElementById('bulkBackdrop'), closeBulk);
+
+    // ── Bulk field inputs (datalist-backed, self-contained) ──
+    function _bulkList(idx, field, value, options, ph) {
+      const listId = `blk_${field}_${idx}`;
+      const opts = (options || []).map(o => `<option value="${escapeHtml(o)}"></option>`).join('');
+      return `<input type="text" list="${listId}" value="${escapeHtml(value == null ? '' : value)}" ` +
+             `placeholder="${escapeHtml(ph || 'Select or type…')}" autocomplete="off" ` +
+             `oninput="bulkSet(${idx},'${field}',this.value)"><datalist id="${listId}">${opts}</datalist>`;
+    }
+    function _bulkNum(idx, field, value, ph) {
+      const v = (value === '' || value == null) ? '' : String(value);
+      return `<input type="number" min="0" step="0.01" value="${escapeHtml(v)}" ` +
+             `placeholder="${escapeHtml(ph || '0')}" oninput="bulkSet(${idx},'${field}',this.value)">`;
+    }
+    function _bulkText(idx, field, value, ph) {
+      return `<input type="text" maxlength="100" value="${escapeHtml(value == null ? '' : value)}" ` +
+             `placeholder="${escapeHtml(ph || '')}" oninput="bulkSet(${idx},'${field}',this.value)">`;
+    }
+
+    function bulkSet(idx, field, value) {
+      const g = bulkGroups[idx];
+      if (!g) return;
+      g.template[field] = value;
+      updateBulkRunBtn();
+    }
+    // Cost code drives the sub-code list, so committing one repaints the group.
+    function bulkCostCode(idx, value) {
+      const g = bulkGroups[idx];
+      if (!g) return;
+      g.template.cost_code = value;
+      g.template.sub_code  = '';   // sub codes are scoped to a cost code
+      renderBulkGroups();
+      updateBulkRunBtn();
+    }
+
+    function bulkDaysTable(g) {
+      const rows = g.entries.map(e => {
+        const w = bulkR2(e.computed_hours), t = bulkR2(e.travel_hours);
+        return `<tr><td>${escapeHtml(e.username || '')}</td>` +
+               `<td>${escapeHtml(prettyDate(e.work_date))}</td>` +
+               `<td class="num">${num2(w)}</td>` +
+               `<td class="num">${t ? num2(t) : '—'}</td>` +
+               `<td class="num">${num2(w + t)}</td></tr>`;
+      }).join('');
+      return `<div class="bulk-days"><table><thead><tr>` +
+             `<th>Employee</th><th>Date</th><th>Work h</th><th>Travel h</th><th>Total h</th>` +
+             `</tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    function bulkGroupCard(g, idx) {
+      const days = g.entries.length;
+      const hrs  = g.entries.reduce((s, e) => s + bulkR2(e.computed_hours) + bulkR2(e.travel_hours), 0);
+      const metaHrs = `${days} ${days === 1 ? 'day' : 'days'} · ${num2(hrs)} h`;
+      let badgeClass, badgeText, title, meta, fields;
+
+      if (g.type === 'split') {
+        const ccCodes = (g.ccList || []).map(c => c.cost_code);
+        const found   = (g.ccList || []).find(c => c.cost_code === g.template.cost_code);
+        const subOpts = found ? (found.sub_codes || []) : [];
+        const eqOpts  = g.eqList || [];
+        const ccPh    = g._loaded ? 'Select or type…' : 'Loading…';
+        badgeClass = 'split'; badgeText = prettyDiv(g.division);
+        title = g.job_label || `Job ${g.job_id}`; meta = metaHrs;
+        fields = `
+          <div class="bulk-fields">
+            <div class="bulk-field"><span>Cost Code</span>
+              <input type="text" list="blk_cc_${idx}" value="${escapeHtml(g.template.cost_code || '')}"
+                     placeholder="${escapeHtml(ccPh)}" autocomplete="off"
+                     onchange="bulkCostCode(${idx}, this.value)">
+              <datalist id="blk_cc_${idx}">${ccCodes.map(o => `<option value="${escapeHtml(o)}"></option>`).join('')}</datalist>
+            </div>
+            <div class="bulk-field"><span>Sub Code</span>
+              ${_bulkList(idx, 'sub_code', g.template.sub_code, subOpts, subOpts.length ? 'Select or type…' : '—')}
+            </div>
+            <div class="bulk-field"><span>Equipment <span style="text-transform:none;font-weight:400">(optional)</span></span>
+              ${_bulkList(idx, 'equipment', g.template.equipment, eqOpts, '— none —')}
+            </div>
+          </div>
+          <div class="bulk-note">All work hours post to this cost code; any day with travel hours gets a
+            matching travel row at the same code. Equipment is tagged without equipment-hours — open a single
+            day to set those.</div>`;
+      } else if (g.type === 'quarry' && g.activity === 'crushing') {
+        badgeClass = 'quarry'; badgeText = 'Quarry Crushing';
+        title = quarryLocationLabel(g.entries[0]) || g.job_label || 'Quarry'; meta = metaHrs;
+        fields = `
+          <div class="bulk-fields">
+            <div class="bulk-field"><span>Hourly Rate ($/h)</span>${_bulkNum(idx, 'hourlyRate', g.template.hourlyRate, '0')}</div>
+          </div>
+          <div class="bulk-note">Hourly rate applies to every day here. Hours crushing, loads, tons &amp; fuel are
+            left blank — open a single day to add them.</div>`;
+      } else if (g.type === 'quarry') {
+        badgeClass = 'quarry'; badgeText = 'Quarry Daily';
+        title = quarryLocationLabel(g.entries[0]) || g.job_label || 'Quarry'; meta = metaHrs;
+        fields = `
+          <div class="bulk-fields">
+            <div class="bulk-field"><span>Equipment</span>${_bulkList(idx, 'equipmentName', g.template.equipmentName, quarryEquipOptions, 'Select or type…')}</div>
+            <div class="bulk-field"><span>Task</span>${_bulkList(idx, 'taskName', g.template.taskName, quarryTaskOptions, 'Select or type…')}</div>
+            <div class="bulk-field"><span>Rate ($/h)</span>${_bulkNum(idx, 'rate', g.template.rate, '0')}</div>
+          </div>
+          <div class="bulk-note">Rate applies to every day here. Fuel gallons &amp; PPG are left blank — open a
+            single day to add them.</div>`;
+      } else if (g.type === 'trucking') {
+        badgeClass = 'trucking'; badgeText = 'Trucking';
+        title = 'Truck Tracking'; meta = metaHrs;
+        fields = `
+          <div class="bulk-fields">
+            <div class="bulk-field"><span>Haul Fee ($/hr) <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkNum(idx, 'haul_fee', g.template.haul_fee, '0.00')}</div>
+            <div class="bulk-field"><span>Division <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkText(idx, 'division_col', g.template.division_col, 'e.g. Paving')}</div>
+          </div>
+          <div class="bulk-note">Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
+            customer come from each timesheet.</div>`;
+      } else {
+        badgeClass = 'plain'; badgeText = 'No injection';
+        title = 'Status-only entries';
+        meta = `${days} ${days === 1 ? 'entry' : 'entries'} approved as-is`;
+        fields = `<div class="bulk-note">These entries just change status to approved — no cost row is injected.</div>`;
+      }
+
+      return `<div class="bulk-group">
+        <div class="bulk-group-head">
+          <span class="bulk-badge ${badgeClass}">${escapeHtml(badgeText)}</span>
+          <span class="bulk-group-title">${escapeHtml(title)}</span>
+          <span class="bulk-group-meta">${escapeHtml(meta)}</span>
+        </div>
+        ${fields}
+        ${bulkDaysTable(g)}
+      </div>`;
+    }
+
+    function bulkSkippedCard() {
+      const rows = bulkSkipped.map(s =>
+        `<tr><td>${escapeHtml(s.e.username || '')}</td>` +
+        `<td>${escapeHtml(prettyDate(s.e.work_date))}</td>` +
+        `<td>${escapeHtml(prettyDiv(s.e.division))}</td>` +
+        `<td>${escapeHtml(s.why)}</td></tr>`).join('');
+      return `<div class="bulk-group skip">
+        <div class="bulk-group-head">
+          <span class="bulk-badge warn">Can't bulk</span>
+          <span class="bulk-group-title">${bulkSkipped.length} entr${bulkSkipped.length === 1 ? 'y' : 'ies'} skipped</span>
+          <span class="bulk-group-meta">approve these individually with the row's Approve button</span>
+        </div>
+        <div class="bulk-days"><table><thead><tr><th>Employee</th><th>Date</th><th>Division</th><th>Reason</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>
+      </div>`;
+    }
+
+    function renderBulkGroups() {
+      const wrap = document.getElementById('bulkGroupsWrap');
+      const cards = bulkGroups.map((g, idx) => bulkGroupCard(g, idx));
+      if (bulkSkipped.length) cards.push(bulkSkippedCard());
+      wrap.innerHTML = cards.join('') || '<div class="bulk-note">Nothing to approve.</div>';
+    }
+
+    function updateBulkRunBtn() {
+      const btn = document.getElementById('bulkRunBtn');
+      if (!btn) return;
+      const total = bulkGroups.reduce((s, g) => s + g.entries.length, 0);
+      const notReady = bulkGroups.some(g =>
+        g.type === 'split' &&
+        !(String(g.template.cost_code || '').trim() || String(g.template.sub_code || '').trim()));
+      btn.disabled = bulkRunning || total === 0 || notReady;
+      btn.textContent = bulkRunning
+        ? 'Approving…'
+        : `Approve ${total} ${total === 1 ? 'Entry' : 'Entries'}`;
+    }
+
+    // Materialize one entry's approve body from its group's template. Each day's
+    // OWN hours are used so the server's "labor total must equal work + travel"
+    // check passes per entry. Returns null for plain (status-only) approvals.
+    function buildBulkBody(g, e) {
+      if (g.type === 'plain') return null;
+      if (g.type === 'split') {
+        const work   = bulkR2(e.computed_hours);
+        const travel = bulkR2(e.travel_hours);
+        const cc = String(g.template.cost_code || '').trim();
+        const sc = String(g.template.sub_code || '').trim();
+        const eq = String(g.template.equipment || '').trim();
+        const rows = [];
+        if (work   > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: eq, labor_hours: work,   equip_hours: 0, is_travel: false });
+        if (travel > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: '', labor_hours: travel, equip_hours: 0, is_travel: true });
+        return { split: rows };
+      }
+      if (g.type === 'quarry') {
+        if (g.activity === 'crushing') {
+          return { quarry: {
+            hourlyRate: g.template.hourlyRate, hoursCrushing: 0, fuelGallons: 0,
+            fuelCost: 0, loadsToCrusher: 0, tonsPerLoad: 0, comments: '',
+          } };
+        }
+        return { quarry: {
+          equipmentName: String(g.template.equipmentName || ''),
+          taskName:      String(g.template.taskName || ''),
+          rate:          g.template.rate, fuelGallons: 0, ppg: 0,
+        } };
+      }
+      if (g.type === 'trucking') {
+        return { trucking: { haul_fee: g.template.haul_fee, division: g.template.division_col } };
+      }
+      return null;
+    }
+
+    async function bulkRun() {
+      if (bulkRunning) return;
+      const msg = document.getElementById('bulkMsg');
+      msg.className = 'modal-msg'; msg.textContent = '';
+
+      // Every split group must have a cost or sub code before injecting.
+      const notReady = bulkGroups.filter(g =>
+        g.type === 'split' &&
+        !(String(g.template.cost_code || '').trim() || String(g.template.sub_code || '').trim()));
+      if (notReady.length) {
+        msg.classList.add('error');
+        msg.textContent = 'Pick a cost code or sub code for: ' +
+          notReady.map(g => g.job_label || prettyDiv(g.division)).join(', ');
+        return;
+      }
+
+      const tasks = [];
+      for (const g of bulkGroups) {
+        for (const e of g.entries) tasks.push({ id: e.id, body: buildBulkBody(g, e) });
+      }
+      if (!tasks.length) return;
+
+      bulkRunning = true;
+      updateBulkRunBtn();
+      const cancelBtn = document.querySelector('#bulkBackdrop .btn-cancel');
+      if (cancelBtn) cancelBtn.disabled = true;
+      const prog = document.getElementById('bulkProgress');
+
+      let ok = 0;
+      const failures = [];
+      for (let i = 0; i < tasks.length; i++) {
+        prog.textContent = `Approving ${i + 1} / ${tasks.length}…`;
+        const t = tasks[i];
+        try {
+          const res = await fetch(
+            '/api/timesheet-entries?action=approve&id=' + encodeURIComponent(t.id),
+            t.body
+              ? { method: 'POST', headers: authHeaders(true), body: JSON.stringify(t.body) }
+              : { method: 'POST', headers: authHeaders() });
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok || !j.ok) { failures.push({ id: t.id, error: (j && j.error) || ('HTTP ' + res.status) }); continue; }
+          ok++;
+          if (j.entry) applyEntryUpdate(j.entry);
+          selectedIds.delete(t.id);
+        } catch (err) {
+          failures.push({ id: t.id, error: err.message });
+        }
+      }
+
+      bulkRunning = false;
+      renderRows();
+      renderStats();
+      updateBulk();
+      prog.textContent = '';
+
+      if (!failures.length) {
+        msg.classList.add('success');
+        msg.textContent = `Approved & injected ${ok} ${ok === 1 ? 'entry' : 'entries'}.`;
+        setTimeout(() => closeBulk(true), 900);
+        return;
+      }
+      // Keep the modal open; trim approved entries so a re-run only retries failures.
+      const failIds = new Set(failures.map(f => f.id));
+      for (const g of bulkGroups) g.entries = g.entries.filter(e => failIds.has(e.id));
+      bulkGroups = bulkGroups.filter(g => g.entries.length);
+      msg.classList.add('error');
+      msg.textContent = `Approved ${ok}. ${failures.length} failed — ` +
+        `${failures.slice(0, 3).map(f => f.error).join('; ')}${failures.length > 3 ? '…' : ''}. ` +
+        `Fix and press Approve again to retry the rest.`;
+      if (cancelBtn) cancelBtn.disabled = false;
+      renderBulkGroups();
+      updateBulkRunBtn();
     }
 
     // ── Header buttons ────────────────────────────────────────────────────
