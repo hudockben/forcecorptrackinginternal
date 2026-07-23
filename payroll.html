@@ -4392,6 +4392,14 @@
     let bulkSkipped = [];      // [{ e, why }] — entries that can't be bulk-approved
     let bulkRunning = false;
     const bulkR2 = n => Math.round((Number(n) || 0) * 100) / 100;
+    // The quarry rate is client-supplied (unlike turf/paving, whose labor rate
+    // the server derives per employee). Resolve it PER ENTRY so a group that
+    // spans employees with different configured rates injects each one's own
+    // rate — matching what the single quarry modal would do.
+    const bulkQuarryRate = e => {
+      const r = quarryEmployeeRate(e && e.username);
+      return r != null ? r : QUARRY_DEFAULT_RATE;
+    };
 
     // Partition entries into per-project injection groups (+ a plain bucket for
     // status-only entries, + a skipped list for entries missing what injection
@@ -4404,6 +4412,12 @@
         const isQuarry = entryNeedsQuarry(e);
         const isTruck  = entryNeedsTrucking(e);
         if (isSplit && !e.job_id) { skipped.push({ e, why: 'no project/job on the entry' }); continue; }
+        // A turf/paving split must allocate work+travel hours to at least one
+        // row; with zero of both there is nothing to inject (the server would
+        // reject an empty split). Surface it as skipped instead of a hard fail.
+        if (isSplit && bulkR2(e.computed_hours) + bulkR2(e.travel_hours) <= 0) {
+          skipped.push({ e, why: 'entry has 0 hours — nothing to inject' }); continue;
+        }
         const activity = isQuarry ? quarryActivityOf(e) : null;
         if (isQuarry && !activity) { skipped.push({ e, why: 'quarry job has no Daily/Crushing activity' }); continue; }
         let key;
@@ -4483,14 +4497,17 @@
         }),
         needQuarry ? loadQuarryListsOnce() : Promise.resolve(),
       ]);
-      // Rate pre-fill matches the single quarry modal: employee's configured
-      // quarry rate, else the flat default — editable, applied to every day.
+      // Rate pre-fill: when every day in the group resolves to the SAME rate
+      // (the common single-employee case), show that number for transparency.
+      // When rates differ across employees, leave the field blank — buildBulkBody
+      // then resolves each day's own rate. A value typed here overrides all.
       for (const g of groups) {
         if (g.type !== 'quarry') continue;
-        const r = quarryEmployeeRate(g.entries[0] && g.entries[0].username);
-        const val = (r != null ? r : QUARRY_DEFAULT_RATE);
-        if (g.activity === 'crushing') { if (!String(g.template.hourlyRate).trim()) g.template.hourlyRate = String(val); }
-        else                           { if (!String(g.template.rate).trim())       g.template.rate       = String(val); }
+        const rates = new Set(g.entries.map(e => bulkQuarryRate(e)));
+        const field = g.activity === 'crushing' ? 'hourlyRate' : 'rate';
+        if (rates.size === 1 && !String(g.template[field]).trim()) {
+          g.template[field] = String([...rates][0]);
+        }
       }
       renderBulkGroups();
       updateBulkRunBtn();
@@ -4571,6 +4588,7 @@
             <div class="bulk-field"><span>Cost Code</span>
               <input type="text" list="blk_cc_${idx}" value="${escapeHtml(g.template.cost_code || '')}"
                      placeholder="${escapeHtml(ccPh)}" autocomplete="off"
+                     oninput="bulkSet(${idx},'cost_code',this.value)"
                      onchange="bulkCostCode(${idx}, this.value)">
               <datalist id="blk_cc_${idx}">${ccCodes.map(o => `<option value="${escapeHtml(o)}"></option>`).join('')}</datalist>
             </div>
@@ -4589,10 +4607,10 @@
         title = quarryLocationLabel(g.entries[0]) || g.job_label || 'Quarry'; meta = metaHrs;
         fields = `
           <div class="bulk-fields">
-            <div class="bulk-field"><span>Hourly Rate ($/h)</span>${_bulkNum(idx, 'hourlyRate', g.template.hourlyRate, '0')}</div>
+            <div class="bulk-field"><span>Hourly Rate ($/h)</span>${_bulkNum(idx, 'hourlyRate', g.template.hourlyRate, 'auto · per employee')}</div>
           </div>
-          <div class="bulk-note">Hourly rate applies to every day here. Hours crushing, loads, tons &amp; fuel are
-            left blank — open a single day to add them.</div>`;
+          <div class="bulk-note">Blank uses each employee's own quarry rate; type a value to apply one rate to
+            every day. Hours crushing, loads, tons &amp; fuel are left blank — open a single day to add them.</div>`;
       } else if (g.type === 'quarry') {
         badgeClass = 'quarry'; badgeText = 'Quarry Daily';
         title = quarryLocationLabel(g.entries[0]) || g.job_label || 'Quarry'; meta = metaHrs;
@@ -4600,10 +4618,10 @@
           <div class="bulk-fields">
             <div class="bulk-field"><span>Equipment</span>${_bulkList(idx, 'equipmentName', g.template.equipmentName, quarryEquipOptions, 'Select or type…')}</div>
             <div class="bulk-field"><span>Task</span>${_bulkList(idx, 'taskName', g.template.taskName, quarryTaskOptions, 'Select or type…')}</div>
-            <div class="bulk-field"><span>Rate ($/h)</span>${_bulkNum(idx, 'rate', g.template.rate, '0')}</div>
+            <div class="bulk-field"><span>Rate ($/h)</span>${_bulkNum(idx, 'rate', g.template.rate, 'auto · per employee')}</div>
           </div>
-          <div class="bulk-note">Rate applies to every day here. Fuel gallons &amp; PPG are left blank — open a
-            single day to add them.</div>`;
+          <div class="bulk-note">Blank uses each employee's own quarry rate; type a value to apply one rate to
+            every day. Fuel gallons &amp; PPG are left blank — open a single day to add them.</div>`;
       } else if (g.type === 'trucking') {
         badgeClass = 'trucking'; badgeText = 'Trucking';
         title = 'Truck Tracking'; meta = metaHrs;
@@ -4687,15 +4705,19 @@
       }
       if (g.type === 'quarry') {
         if (g.activity === 'crushing') {
+          const hourlyRate = String(g.template.hourlyRate).trim() !== ''
+            ? g.template.hourlyRate : bulkQuarryRate(e);
           return { quarry: {
-            hourlyRate: g.template.hourlyRate, hoursCrushing: 0, fuelGallons: 0,
+            hourlyRate, hoursCrushing: 0, fuelGallons: 0,
             fuelCost: 0, loadsToCrusher: 0, tonsPerLoad: 0, comments: '',
           } };
         }
+        const rate = String(g.template.rate).trim() !== ''
+          ? g.template.rate : bulkQuarryRate(e);
         return { quarry: {
           equipmentName: String(g.template.equipmentName || ''),
           taskName:      String(g.template.taskName || ''),
-          rate:          g.template.rate, fuelGallons: 0, ppg: 0,
+          rate, fuelGallons: 0, ppg: 0,
         } };
       }
       if (g.type === 'trucking') {
@@ -4733,7 +4755,8 @@
       const prog = document.getElementById('bulkProgress');
 
       let ok = 0;
-      const failures = [];
+      const failures  = [];   // genuinely retryable failures
+      const conflicts = [];    // 409 — no longer pending (approved elsewhere / status changed)
       for (let i = 0; i < tasks.length; i++) {
         prog.textContent = `Approving ${i + 1} / ${tasks.length}…`;
         const t = tasks[i];
@@ -4744,6 +4767,17 @@
               ? { method: 'POST', headers: authHeaders(true), body: JSON.stringify(t.body) }
               : { method: 'POST', headers: authHeaders() });
           const j = await res.json().catch(() => ({}));
+          // 409 = the entry isn't 'submitted' anymore (e.g. approved in another
+          // tab). Retrying can never succeed, so don't strand it in the retry
+          // pool; reflect the real state when the server says it's approved.
+          if (res.status === 409) {
+            const err = (j && j.error) || 'no longer pending';
+            const e = filtered.find(x => x.id === t.id) || allEntries.find(x => x.id === t.id);
+            if (e && /is approved/.test(err)) e.status = 'approved';
+            selectedIds.delete(t.id);
+            conflicts.push({ id: t.id, error: err });
+            continue;
+          }
           if (!res.ok || !j.ok) { failures.push({ id: t.id, error: (j && j.error) || ('HTTP ' + res.status) }); continue; }
           ok++;
           if (j.entry) applyEntryUpdate(j.entry);
@@ -4759,18 +4793,21 @@
       updateBulk();
       prog.textContent = '';
 
+      const conflictNote = conflicts.length
+        ? ` ${conflicts.length} already approved (skipped).` : '';
       if (!failures.length) {
-        msg.classList.add('success');
-        msg.textContent = `Approved & injected ${ok} ${ok === 1 ? 'entry' : 'entries'}.`;
-        setTimeout(() => closeBulk(true), 900);
+        msg.classList.add(ok ? 'success' : 'error');
+        msg.textContent = `Approved & injected ${ok} ${ok === 1 ? 'entry' : 'entries'}.${conflictNote}`;
+        setTimeout(() => closeBulk(true), conflicts.length ? 1600 : 900);
         return;
       }
-      // Keep the modal open; trim approved entries so a re-run only retries failures.
-      const failIds = new Set(failures.map(f => f.id));
-      for (const g of bulkGroups) g.entries = g.entries.filter(e => failIds.has(e.id));
+      // Keep the modal open; drop everything that succeeded OR conflicted so a
+      // re-run only retries genuinely-retryable failures (never the 409s).
+      const retryIds = new Set(failures.map(f => f.id));
+      for (const g of bulkGroups) g.entries = g.entries.filter(e => retryIds.has(e.id));
       bulkGroups = bulkGroups.filter(g => g.entries.length);
       msg.classList.add('error');
-      msg.textContent = `Approved ${ok}. ${failures.length} failed — ` +
+      msg.textContent = `Approved ${ok}.${conflictNote} ${failures.length} failed — ` +
         `${failures.slice(0, 3).map(f => f.error).join('; ')}${failures.length > 3 ? '…' : ''}. ` +
         `Fix and press Approve again to retry the rest.`;
       if (cancelBtn) cancelBtn.disabled = false;
