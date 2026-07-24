@@ -78,6 +78,32 @@ module.exports = async (req, res) => {
         console.error('[employees GET] paving blob read failed (non-fatal):', err.message);
       }
 
+      // Kiewit Pinetree — blob lives at "<company>:fct_kiewit_lists"
+      try {
+        const kBlob = await sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_kiewit_lists'}`;
+        const kList = kBlob.length && kBlob[0].value && Array.isArray(kBlob[0].value.employees)
+          ? kBlob[0].value.employees
+          : [];
+        for (const e of kList) {
+          const name = (typeof e === 'string' ? e : (e && e.name)) || '';
+          const trimmed = name.trim();
+          if (!trimmed) continue;
+          const key = trimmed.toLowerCase();
+          if (byName.has(key)) continue;
+          byName.set(key, {
+            id:                 null,
+            name:               trimmed,
+            job_class:          (typeof e === 'object' && e.job_class) || null,
+            prevailing_rate:    null,
+            non_prevailing_rate:null,
+            is_supervisor:      false,
+            source:             'kiewit',
+          });
+        }
+      } catch (err) {
+        console.error('[employees GET] kiewit blob read failed (non-fatal):', err.message);
+      }
+
       // Quarry — quarry_employees table
       try {
         const qRows = await sql`

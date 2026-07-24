@@ -2142,11 +2142,11 @@
       border: 1px solid var(--border); background: var(--surface); color: var(--muted);
       cursor: pointer; transition: all 0.1s;
     }
-    .pp-tag-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .pp-tag-btn.active { background: var(--blue); color: #111; border-color: var(--blue); }
     .pp-tag-btn.active.rain { background: #fdb913; border-color: #fdb913; }
     .pp-tag-btn.active.holiday { background: #f59e0b; border-color: #f59e0b; color: #000; }
-    .pp-tag-btn.active.inspect { background: #8b5cf6; border-color: #8b5cf6; }
-    .pp-tag-btn.active.other { background: #6b7280; border-color: #6b7280; }
+    .pp-tag-btn.active.inspect { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+    .pp-tag-btn.active.other { background: #6b7280; border-color: #6b7280; color: #fff; }
     .pp-tag-btn.active.half { background: var(--yellow); border-color: var(--yellow); color: #000; }
     @media print {
       body > *:not(#pp-overlay) { display: none !important; }
@@ -2339,7 +2339,7 @@
       white-space: normal;
       overflow-wrap: anywhere;
     }
-    .cb-opt.hi, .cb-opt:hover { background: #e0a200; color: #fff; }
+    .cb-opt.hi, .cb-opt:hover { background: #e0a200; color: #111; }
     .cb-opt-empty { padding: 0.3rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
@@ -23290,7 +23290,7 @@ function renderConstructionSchedule() {
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse">
           <thead>
-            <tr style="background:var(--green);color:#fff">
+            <tr style="background:var(--green);color:#111">
               ${['Status','Priority','Start Date','End Date','Duration','Code','Subcode','Description','Deliverable','% Done','Depends On',''].map((th, i) => `<th style="padding:0.3rem 0.35rem;text-align:${i === 9 || i === 4 ? 'center' : 'left'};font-size:0.6rem;text-transform:uppercase;letter-spacing:0.03em;font-weight:700;white-space:nowrap">${th}</th>`).join('')}
             </tr>
           </thead>

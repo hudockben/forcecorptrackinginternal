@@ -39,6 +39,7 @@ const ACTIVE_PROJECT_STATUSES = ['Awarded', 'In Progress', 'Substantially Comple
 const SOURCE_DIVISIONS = [
   { division: 'turf',   prefix: 'fct_project_',        index: 'fct_projects_index'        },
   { division: 'paving', prefix: 'fct_paving_project_', index: 'fct_paving_projects_index' },
+  { division: 'kiewit', prefix: 'fct_kiewit_project_', index: 'fct_kiewit_projects_index' },
 ];
 
 const HORIZON_DAYS = 120; // how far ahead to export Projection Planner assignments
