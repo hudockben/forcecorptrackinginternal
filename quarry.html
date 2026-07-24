@@ -4147,8 +4147,13 @@
       total.costPerTon = total.tonsCrushed > 0 ? total.crushCost / total.tonsCrushed : 0;
       total.lossPct = total.tonsCrushed > 0
         ? (1 - total.finalScreenTons / total.tonsCrushed) * 100 : 0;
-      // The division loss is "configured" only if at least one pit has a figure.
-      total.hasLoss = locations.some(e => e.hasLoss);
+      // The division loss/final only reconciles with the per-pit cards when EVERY
+      // pit that crushed has a figure entered — otherwise an un-configured pit
+      // would be counted at 0% loss in the total while showing "—" on its own
+      // card. So treat the division as "configured" only when all crushing pits
+      // are; a partially-configured division shows "—" for loss and final tons.
+      const crushingPits = locations.filter(e => e.tonsCrushed > 0);
+      total.hasLoss = crushingPits.length > 0 && crushingPits.every(e => e.hasLoss);
 
       return { locations, total };
     }
@@ -4163,17 +4168,21 @@
         el.innerHTML = `<div class="home-panel"><div class="home-empty">${escapeHtml(emptyMsg)}</div></div>`;
         return;
       }
-      const signCls = (v) => v > 0.0001 ? 'is-positive' : v < -0.0001 ? 'is-negative' : '';
       const card = (e, isTotal) => {
         const badgeCls = e.grossMargin > 0.0001 ? 'is-positive' : e.grossMargin < -0.0001 ? 'is-negative' : '';
-        const lossTxt = e.tonsCrushed > 0
-          ? (e.hasLoss ? e.lossPct.toFixed(1) + '%' : (isTotal && e.lossPct > 0 ? e.lossPct.toFixed(1) + '%' : '—'))
-          : '—';
+        // hasLoss on a pit means "figure entered"; on the total it means every
+        // crushing pit has one — either way it's the single gate for showing a
+        // real loss/final vs "—", so the total reconciles with the pit cards.
+        const showLoss = e.tonsCrushed > 0 && e.hasLoss;
+        const lossTxt = showLoss ? e.lossPct.toFixed(1) + '%' : '—';
         const lossSub = e.tonsCrushed > 0
-          ? (e.hasLoss || (isTotal && e.lossPct > 0) ? 'Jaws → final screen' : 'Not set — add on Analytics')
+          ? (e.hasLoss ? 'Jaws → final screen' : (isTotal ? 'Set every pit on Analytics' : 'Not set — add on Analytics'))
           : 'No crushing yet';
-        const finalTxt = (e.tonsCrushed > 0 && (e.hasLoss || (isTotal && e.lossPct > 0)))
-          ? formatTons(e.finalScreenTons) : '—';
+        const finalTxt = showLoss ? formatTons(e.finalScreenTons) : '—';
+        // Per-ton costs need a denominator; show "—" (not "$0.00") when there's
+        // no basis, matching the Performance by Location table.
+        const cpsTxt = e.tonsSold > 0 ? formatMoney(e.avgCostPerTonSold) : '—';
+        const cptTxt = e.tonsCrushed > 0 ? formatMoney(e.costPerTon) : '—';
         return `
         <div class="loc-card${isTotal ? ' is-total' : ''}"${isTotal ? ' style="border-top-color:var(--muted)"' : ''}>
           <div class="loc-card-head">
@@ -4189,16 +4198,16 @@
             <div class="loc-kpi">
               <div class="loc-kpi-label">Tons Sold</div>
               <div class="loc-kpi-value">${formatTons(e.tonsSold)}</div>
-              <div class="loc-kpi-sub">${formatMoney(e.avgPricePerTon)}/ton avg</div>
+              <div class="loc-kpi-sub">${e.tonsSold > 0 ? formatMoney(e.avgPricePerTon) + '/ton avg' : 'No sales'}</div>
             </div>
             <div class="loc-kpi">
               <div class="loc-kpi-label">Avg Cost / Ton Sold</div>
-              <div class="loc-kpi-value">${formatMoney(e.avgCostPerTonSold)}</div>
+              <div class="loc-kpi-value">${cpsTxt}</div>
               <div class="loc-kpi-sub">Total cost ÷ tons sold</div>
             </div>
             <div class="loc-kpi">
               <div class="loc-kpi-label">Cost / Ton</div>
-              <div class="loc-kpi-value">${formatMoney(e.costPerTon)}</div>
+              <div class="loc-kpi-value">${cptTxt}</div>
               <div class="loc-kpi-sub">Crushing ÷ tons crushed</div>
             </div>
             <div class="loc-kpi">
@@ -4697,10 +4706,12 @@
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         Object.keys(value).forEach(k => {
           const loc = String(k).trim();
-          const n = Number(value[k]);
+          // Round first, THEN bound-check, so a value like 99.999 that rounds up
+          // to 100 is rejected rather than stored as a forbidden 100% loss.
+          const n = Math.round(Number(value[k]) * 100) / 100;
           // A loss can't be negative or ≥ 100% (you'd lose everything).
           if (loc && Number.isFinite(n) && n > 0 && n < 100) {
-            out[loc] = Math.round(n * 100) / 100;
+            out[loc] = n;
           }
         });
       }
@@ -4782,9 +4793,10 @@
       const loc = input.dataset.loc || '';
       if (!loc) return;
       const raw = String(input.value).trim();
-      const n = raw === '' ? 0 : Number(raw.replace(/[^0-9.]/g, ''));
+      // Round first, THEN bound-check (99.999 rounds to 100 → rejected, not stored).
+      const n = raw === '' ? 0 : Math.round(Number(raw.replace(/[^0-9.]/g, '')) * 100) / 100;
       if (Number.isFinite(n) && n > 0 && n < 100) {
-        quarryLossPct[loc] = Math.round(n * 100) / 100;
+        quarryLossPct[loc] = n;
       } else {
         delete quarryLossPct[loc];
       }
@@ -6103,10 +6115,9 @@
       }
       const cell = (e, isTotal) => {
         const cls = e.grossMargin > 0.0001 ? 'pos' : e.grossMargin < -0.0001 ? 'neg' : '';
-        const lossTxt = e.tonsCrushed > 0 && (e.hasLoss || (isTotal && e.lossPct > 0))
-          ? e.lossPct.toFixed(1) + '%' : '—';
-        const finalTxt = e.tonsCrushed > 0 && (e.hasLoss || (isTotal && e.lossPct > 0))
-          ? formatTons(e.finalScreenTons) : '—';
+        const showLoss = e.tonsCrushed > 0 && e.hasLoss;
+        const lossTxt = showLoss ? e.lossPct.toFixed(1) + '%' : '—';
+        const finalTxt = showLoss ? formatTons(e.finalScreenTons) : '—';
         const style = isTotal ? ' style="border-top:2px solid var(--border);font-weight:700"' : '';
         return `<tr${style}>
           <td>${escapeHtml(e.name)}</td>
@@ -6245,7 +6256,7 @@
       }
       const cell = (e, isTotal) => {
         const tph = e.crushHours > 0 ? e.tonsCrushed / e.crushHours : 0;
-        const showLoss = e.hasLoss || (isTotal && e.lossPct > 0);
+        const showLoss = e.tonsCrushed > 0 && e.hasLoss;
         const lossTxt = showLoss ? e.lossPct.toFixed(1) + '%' : '—';
         const finalTxt = showLoss ? formatTons(e.finalScreenTons) : '—';
         const style = isTotal ? ' style="border-top:2px solid var(--border);font-weight:700"' : '';
