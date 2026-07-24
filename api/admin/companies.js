@@ -2,7 +2,7 @@
 
 const { neon } = require('@neondatabase/serverless');
 
-const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive'];
+const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive'];
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');

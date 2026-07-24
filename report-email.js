@@ -446,6 +446,11 @@
     paving_daily_summary: 'Daily Summary — Paving',
     paving_bid_items:     'Bid Line Items vs Actuals — Paving',
     paving_job_summary:   'Job Summary — Paving',
+    kiewit_daily_pm:      'Daily PM Report — Kiewit Pinetree',
+    kiewit_daily_summary: 'Daily Summary — Kiewit Pinetree',
+    kiewit_bid_items:     'Bid Line Items vs Actuals — Kiewit Pinetree',
+    kiewit_job_summary:   'Job Summary — Kiewit Pinetree',
+    kiewit_construction_schedule: 'Construction Schedule — Kiewit Pinetree',
     dust_tracking_summary:'Dust Control Tracking Report',
   };
 

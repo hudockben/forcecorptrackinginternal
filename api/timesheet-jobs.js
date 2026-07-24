@@ -28,7 +28,7 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('./lib/auth');
 
-const SUPPORTED = ['turf', 'dust', 'paving', 'trucking', 'quarry'];
+const SUPPORTED = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry'];
 const ACTIVE_PROJECT_STATUSES = ['Awarded', 'In Progress', 'Substantially Complete'];
 
 /**
@@ -92,6 +92,10 @@ async function turfJobs(sql, companyCode) {
 
 async function pavingJobs(sql, companyCode) {
   return projectsFromBlobs(sql, companyCode, 'fct_paving_project_', 'fct_paving_projects_index');
+}
+
+async function kiewitJobs(sql, companyCode) {
+  return projectsFromBlobs(sql, companyCode, 'fct_kiewit_project_', 'fct_kiewit_projects_index');
 }
 
 async function truckingJobs(sql, companyCode) {
@@ -207,6 +211,7 @@ module.exports = async (req, res) => {
     let jobs = [];
     if      (division === 'turf')     jobs = await turfJobs(sql, payload.companyCode);
     else if (division === 'paving')   jobs = await pavingJobs(sql, payload.companyCode);
+    else if (division === 'kiewit')   jobs = await kiewitJobs(sql, payload.companyCode);
     else if (division === 'trucking') jobs = await truckingJobs(sql, payload.companyCode);
     else if (division === 'dust')     jobs = await dustJobs(sql, payload.companyCode);
     else if (division === 'quarry')   jobs = await quarryJobs(sql, payload.companyCode);

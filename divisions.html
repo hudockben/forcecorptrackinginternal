@@ -648,6 +648,7 @@
                 <th>Turf</th>
                 <th>Dust</th>
                 <th>Paving</th>
+                <th>Kiewit</th>
                 <th>Trucking</th>
                 <th>Quarry</th>
                 <th>Billing</th>
@@ -659,7 +660,7 @@
               </tr>
             </thead>
             <tbody id="userListBody">
-              <tr><td colspan="12" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+              <tr><td colspan="13" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -707,6 +708,16 @@
             <div class="div-role-row">
               <span class="div-role-label">Paving</span>
               <select id="mu-role-paving">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3">Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Kiewit Pinetree</span>
+              <select id="mu-role-kiewit">
                 <option value="no_access" selected>No Access</option>
                 <option value="level1">Level 1 — View only</option>
                 <option value="level2">Level 2 — Insert &amp; edit</option>
@@ -902,6 +913,18 @@
                   <line x1="4" y1="5" x2="20" y2="5"/>
                 </svg>`,
       },
+      kiewit: {
+        name:  'Kiewit Pinetree',
+        desc:  'Mobile-home setup tracking, cost tracking, scheduling, purchase orders, trucking, and analytics for housing Kiewit employees.',
+        color: '#FDB913',
+        href:  'kiewit-pinetree.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#FDB913" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 11l9-7 9 7"/>
+                  <path d="M5 10v10h14V10"/>
+                  <rect x="9" y="14" width="6" height="6"/>
+                </svg>`,
+      },
       trucking: {
         name:  'Trucking',
         desc:  'Fleet dispatch, load tracking, driver management, and haul cost reporting for trucking operations.',
@@ -985,7 +1008,7 @@
       },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -1176,7 +1199,7 @@
       level1:    'View',
       no_access: '—',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll'];
 
     // Tracks which sub-tab is active and whether the supervisors panel has
     // been hydrated yet (lazy-loaded on first visit to skip the
@@ -1225,7 +1248,7 @@
 
     async function loadUserList() {
       const tbody = document.getElementById('userListBody');
-      tbody.innerHTML = '<tr><td colspan="12" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="13" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
       try {
         const res  = await fetch('/api/company/users', {
           headers: { Authorization: `Bearer ${token}` }
@@ -1233,7 +1256,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Failed');
         if (!data.users.length) {
-          tbody.innerHTML = '<tr><td colspan="12" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="13" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
           return;
         }
         tbody.innerHTML = data.users.map(u => {
@@ -1242,6 +1265,7 @@
           const turf         = dr.turf         || (u.division_roles === null ? u.role : 'no_access');
           const dust         = dr.dust         || 'no_access';
           const paving       = dr.paving       || 'no_access';
+          const kiewit       = dr.kiewit       || 'no_access';
           const trucking     = dr.trucking     || 'no_access';
           const quarry       = dr.quarry       || 'no_access';
           const intercompany = dr.intercompany || 'no_access';
@@ -1256,6 +1280,7 @@
               <td>${divRoleBadge(turf)}</td>
               <td>${divRoleBadge(dust)}</td>
               <td>${divRoleBadge(paving)}</td>
+              <td>${divRoleBadge(kiewit)}</td>
               <td>${divRoleBadge(trucking)}</td>
               <td>${divRoleBadge(quarry)}</td>
               <td>${divRoleBadge(intercompany)}</td>
@@ -1272,7 +1297,7 @@
             </tr>`;
         }).join('');
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="12" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
       }
     }
 
@@ -1291,6 +1316,7 @@
       document.getElementById('mu-role-turf').value         = dr.turf         || (legacy ? u.role : 'no_access');
       document.getElementById('mu-role-dust').value         = dr.dust         || 'no_access';
       document.getElementById('mu-role-paving').value       = dr.paving       || 'no_access';
+      document.getElementById('mu-role-kiewit').value       = dr.kiewit       || 'no_access';
       document.getElementById('mu-role-trucking').value     = dr.trucking     || 'no_access';
       document.getElementById('mu-role-quarry').value       = dr.quarry       || 'no_access';
       document.getElementById('mu-role-intercompany').value = dr.intercompany || 'no_access';
@@ -1315,6 +1341,7 @@
       document.getElementById('mu-role-turf').value         = 'level3';
       document.getElementById('mu-role-dust').value         = 'no_access';
       document.getElementById('mu-role-paving').value       = 'no_access';
+      document.getElementById('mu-role-kiewit').value       = 'no_access';
       document.getElementById('mu-role-trucking').value     = 'no_access';
       document.getElementById('mu-role-quarry').value       = 'no_access';
       document.getElementById('mu-role-intercompany').value = 'no_access';
@@ -1348,6 +1375,7 @@
         turf:         document.getElementById('mu-role-turf').value,
         dust:         document.getElementById('mu-role-dust').value,
         paving:       document.getElementById('mu-role-paving').value,
+        kiewit:       document.getElementById('mu-role-kiewit').value,
         trucking:     document.getElementById('mu-role-trucking').value,
         quarry:       document.getElementById('mu-role-quarry').value,
         intercompany: document.getElementById('mu-role-intercompany').value,

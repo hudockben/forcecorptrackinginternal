@@ -77,13 +77,13 @@ const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('./lib/auth');
 const { syncForKey } = require('./lib/sync-normalized');
 
-const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry'];
+const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry'];
 const VALID_TIME_OFF  = ['vacation', 'sick', 'jury_duty', 'bereavement', 'holiday'];
 
 // Auto-inject into daily_tracking is only meaningful for divisions whose cost
 // tracking lives there (rows per project). Turf and paving qualify; the other
 // divisions either store labor elsewhere or don't track per-project cost.
-const AUTO_INJECT_DIVISIONS = ['turf', 'paving'];
+const AUTO_INJECT_DIVISIONS = ['turf', 'paving', 'kiewit'];
 
 // Quarry auto-injects too, but into the quarry division's OWN cost tracking —
 // the fct_quarry_daily / fct_quarry_crushing app_data blobs (mirrored to
@@ -210,7 +210,12 @@ function dbToEntry(r) {
 // locations with no such concept. Resolve it for a whole batch of entries
 // with a single app_data read (same key = ANY(...) pattern timesheet-jobs.js
 // uses) so the payroll list can show Yes/No per row.
-const PW_PROJECT_PREFIX = { turf: 'fct_project_', paving: 'fct_paving_project_' };
+const PW_PROJECT_PREFIX = { turf: 'fct_project_', paving: 'fct_paving_project_', kiewit: 'fct_kiewit_project_' };
+
+// Roster blob (employees + equipment) per division. turf uses the shared
+// fct_lists; paving and kiewit each keep their own roster blob. Any division
+// not listed falls back to the turf roster.
+const DIVISION_LISTS_KEY = { turf: 'fct_lists', paving: 'fct_paving_lists', kiewit: 'fct_kiewit_lists' };
 
 // app_data key for an entry's project, or null when its division has no
 // prevailing-wage concept (or the entry has no job attached).
@@ -372,9 +377,7 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   const projBlob = projRows.length ? projRows[0].value : null;
   const isPrevailingWage = !!(projBlob && projBlob.prevailing_wage === true);
 
-  const listsKey = division === 'paving'
-    ? `${companyCode}:fct_paving_lists`
-    : `${companyCode}:fct_lists`;
+  const listsKey = `${companyCode}:${DIVISION_LISTS_KEY[division] || 'fct_lists'}`;
   const listsRows = await sql`SELECT value FROM app_data WHERE key = ${listsKey}`;
   const listsBlob = listsRows.length ? listsRows[0].value : null;
   const blobEmps = listsBlob && Array.isArray(listsBlob.employees) ? listsBlob.employees : [];

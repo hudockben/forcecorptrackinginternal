@@ -29,6 +29,7 @@ const VALID_REPORT_TYPES = new Set([
   'executive',
   'turf_daily_pm', 'turf_daily_summary',
   'paving_daily_pm', 'paving_daily_summary',
+  'kiewit_daily_pm', 'kiewit_daily_summary',
   'quarry_breakeven',
   'dust_tracking_summary',
   'scheduler_dispatch',
