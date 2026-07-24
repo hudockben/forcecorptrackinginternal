@@ -403,6 +403,82 @@
       color: var(--muted); font-size: 0.68rem; letter-spacing: 0.02em;
     }
 
+    /* ── Per-location separation (Home + Analytics) ── */
+    .home-section-label {
+      font-size: 0.66rem; font-weight: 700; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--muted);
+      margin: 0.2rem 0 0.75rem; display: flex; align-items: center; gap: 0.6rem;
+    }
+    .home-section-label::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+    .loc-cards {
+      display: grid; gap: 0.85rem; margin-bottom: 1.4rem;
+      grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+    }
+    .loc-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1rem 1.05rem;
+      border-top: 3px solid var(--accent);
+    }
+    .loc-card-head {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 0.6rem; margin-bottom: 0.85rem;
+    }
+    .loc-card-name {
+      font-size: 0.95rem; font-weight: 700; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .loc-card-badge {
+      font-size: 0.68rem; font-weight: 700; white-space: nowrap;
+      font-variant-numeric: tabular-nums; padding: 0.15rem 0.5rem;
+      border-radius: 999px; background: var(--surface2); color: var(--muted);
+    }
+    .loc-card-badge.is-positive { color: #4ade80; background: rgba(74,222,128,0.12); }
+    .loc-card-badge.is-negative { color: #ef4444; background: rgba(239,68,68,0.12); }
+    .loc-kpi-grid {
+      display: grid; gap: 0.55rem;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .loc-kpi {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.55rem 0.65rem;
+      display: flex; flex-direction: column; gap: 0.2rem;
+    }
+    .loc-kpi.is-wide { grid-column: 1 / -1; }
+    .loc-kpi-label {
+      font-size: 0.54rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .loc-kpi-value {
+      font-size: 1.12rem; font-weight: 700; color: var(--text);
+      font-variant-numeric: tabular-nums; line-height: 1.15;
+    }
+    .loc-kpi-value.is-positive { color: #4ade80; }
+    .loc-kpi-value.is-negative { color: #ef4444; }
+    .loc-kpi-value.is-loss { color: #fbbf24; }
+    .loc-kpi-sub { font-size: 0.58rem; color: var(--muted); letter-spacing: 0.02em; }
+
+    /* Jaws → Final Screen loss editor */
+    .loss-editor { display: flex; flex-direction: column; gap: 0.5rem; }
+    .loss-editor-row {
+      display: grid; grid-template-columns: 1fr auto auto;
+      align-items: center; gap: 0.75rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.5rem 0.7rem;
+    }
+    .loss-editor-row .loss-loc { font-size: 0.8rem; font-weight: 600; color: var(--text); }
+    .loss-editor-row .loss-final { font-size: 0.7rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .loss-input-wrap { display: flex; align-items: center; gap: 0.25rem; }
+    .loss-input-wrap input {
+      width: 4.5rem; text-align: right; padding: 0.35rem 0.45rem;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 5px;
+      color: var(--text); font-size: 0.8rem; font-variant-numeric: tabular-nums;
+    }
+    .loss-input-wrap input:focus { outline: none; border-color: var(--accent); }
+    .loss-input-wrap .loss-pct-sign { color: var(--muted); font-size: 0.8rem; }
+    .loss-editor-note { font-size: 0.68rem; color: var(--muted); margin-bottom: 0.7rem; line-height: 1.5; }
+
     .home-yoy {
       width: 100%; border-collapse: separate; border-spacing: 0;
       font-size: 0.78rem;
@@ -857,6 +933,7 @@
         </div>
       </div>
 
+      <div class="home-section-label">Division Total</div>
       <div class="kpi-grid">
         <div class="kpi-tile is-accent">
           <div class="kpi-label">Total Sales</div>
@@ -903,6 +980,9 @@
         </div>
       </div>
 
+      <div class="home-section-label">By Location</div>
+      <div class="loc-cards" id="homeLocationCards"></div>
+
       <div class="home-row">
         <div class="home-panel">
           <div class="home-panel-title">Top Customers (by sales)</div>
@@ -911,17 +991,6 @@
         <div class="home-panel">
           <div class="home-panel-title">Top Products (by tons sold)</div>
           <div class="home-rank-list" id="homeTopProducts"></div>
-        </div>
-      </div>
-
-      <div class="home-row">
-        <div class="home-panel">
-          <div class="home-panel-title">Sales by Location</div>
-          <div class="home-rank-list" id="homeSalesByLocation"></div>
-        </div>
-        <div class="home-panel">
-          <div class="home-panel-title">Cost by Location</div>
-          <div class="home-rank-list" id="homeCostByLocation"></div>
         </div>
       </div>
 
@@ -1114,6 +1183,7 @@
         </div>
       </div>
 
+      <div class="home-section-label">Division Total</div>
       <div class="kpi-grid">
         <div class="kpi-tile is-accent">
           <div class="kpi-label">Total Sales</div>
@@ -1181,6 +1251,20 @@
           <div class="kpi-value" id="anKpiCustomers">0</div>
           <div class="kpi-sub" id="anKpiCustomersSub">Unique buyers</div>
         </div>
+      </div>
+
+      <div class="home-section-label">By Location</div>
+      <div class="loc-cards" id="analyticsLocationCards"></div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Jaws → Final Screen Loss by Location</div>
+        <div class="loss-editor-note">
+          Enter the fixed processing loss for each pit — the share of tonnage fed into the primary
+          jaws that never becomes sellable final-screened product (fines, waste, moisture). Homer City
+          and McGees Mills run different setups, so each carries its own figure. Final screen tons =
+          tons to crusher × (1 − loss %). Saved automatically and applied across the Home and Analytics dashboards.
+        </div>
+        <div class="loss-editor" id="analyticsLossEditor"></div>
       </div>
 
       <div class="home-panel" style="margin-bottom: 1.1rem">
@@ -1253,7 +1337,11 @@
                 <th>Cost</th>
                 <th>Margin</th>
                 <th>Tons Sold</th>
+                <th>Cost / Ton Sold</th>
+                <th>Cost / Ton (Prod.)</th>
                 <th>Tons Crushed</th>
+                <th>Loss %</th>
+                <th>Final Screen Tons</th>
                 <th>Hours</th>
               </tr>
             </thead>
@@ -1327,7 +1415,9 @@
               <tr>
                 <th>Location</th>
                 <th>Loads</th>
-                <th>Est. Tons</th>
+                <th>Est. Tons (Jaws)</th>
+                <th>Loss %</th>
+                <th>Final Screen Tons</th>
                 <th>Hours Crushing</th>
                 <th>Tons / Hour</th>
                 <th>Total Cost</th>
@@ -3270,6 +3360,10 @@
           putBenchmarks(quarryBenchmarks, { keepalive: true }).catch(() => {});
           benchmarksSavePending = null;
         }
+        if (lossPctSavePending || lossPctSaveInFlight) {
+          putLossPct(quarryLossPct, { keepalive: true }).catch(() => {});
+          lossPctSavePending = null;
+        }
       } catch (_) { /* best-effort on unload */ }
     }
     window.addEventListener('beforeunload', _quarryFlushOnUnload);
@@ -3950,6 +4044,9 @@
       if (!dailyFetchedOnce) tasks.push(refreshDaily());
       if (!crushFetchedOnce) tasks.push(refreshCrush());
       if (!salesFetchedOnce) tasks.push(refreshSales());
+      // Per-pit loss %, so the location cards can show final-screen tonnage.
+      // Skip while a local edit is still saving so we don't clobber it.
+      if (!lossPctSavePending && !lossPctSaveInFlight) tasks.push(refreshLossPct());
       if (tasks.length) {
         await Promise.allSettled(tasks);
         renderHome();
@@ -3959,6 +4056,177 @@
     function homeRowSales(r) {
       const t = Number(r.tons), p = Number(r.pricePerTon);
       return (Number.isFinite(t) && Number.isFinite(p)) ? t * p : 0;
+    }
+
+    const NO_LOCATION = '— No location —';
+
+    // Aggregate every metric the location-separated dashboards need, bucketed by
+    // pit. Homer City and McGees Mills run different setups, so nothing here is
+    // blended across locations — each pit stands alone and a Division Total is
+    // rebuilt from the raw sums. Cost metrics follow the confirmed definitions:
+    //   • Avg Cost / Ton Sold  = total pit cost (daily + crushing) ÷ tons sold
+    //   • Cost / Ton           = crushing cost ÷ tons crushed (production cost)
+    // Final screen tons apply the per-pit jaws→screen loss to tons crushed.
+    function computeByLocation(visibleDaily, visibleCrush, visibleSales) {
+      const map = new Map();
+      const ensure = (name) => {
+        const key = (name || '').trim() || NO_LOCATION;
+        if (!map.has(key)) map.set(key, {
+          name: key,
+          totalSales: 0, tonsSold: 0, salesCount: 0,
+          dailyCost: 0, dailyHours: 0,
+          crushCost: 0, crushHours: 0, tonsCrushed: 0, crushLoads: 0,
+        });
+        return map.get(key);
+      };
+
+      visibleSales.forEach(r => {
+        const e = ensure(r.locationName);
+        e.totalSales += homeRowSales(r);
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) e.tonsSold += t;
+        e.salesCount++;
+      });
+      visibleDaily.forEach(r => {
+        const e = ensure(r.locationName);
+        e.dailyCost += dailyCalc(r).totalCost;
+        const h = Number(r.hours);
+        if (Number.isFinite(h)) e.dailyHours += h;
+      });
+      visibleCrush.forEach(r => {
+        const e = ensure(r.locationName);
+        const c = crushCalc(r);
+        e.crushCost += c.totalCost;
+        e.tonsCrushed += c.estimatedTons;
+        const h = Number(r.hoursCrushing);
+        if (Number.isFinite(h)) e.crushHours += h;
+        const l = Number(r.loadsToCrusher);
+        if (Number.isFinite(l)) e.crushLoads += l;
+      });
+
+      // Per-pit derived metrics.
+      const decorate = (e) => {
+        e.totalCost = e.dailyCost + e.crushCost;
+        e.totalHours = e.dailyHours + e.crushHours;
+        e.grossMargin = e.totalSales - e.totalCost;
+        e.marginPct = e.totalSales > 0 ? (e.grossMargin / e.totalSales) * 100 : 0;
+        e.avgPricePerTon = e.tonsSold > 0 ? e.totalSales / e.tonsSold : 0;
+        e.avgCostPerTonSold = e.tonsSold > 0 ? e.totalCost / e.tonsSold : 0;
+        e.costPerTon = e.tonsCrushed > 0 ? e.crushCost / e.tonsCrushed : 0;
+        e.lossPct = locationLossPct(e.name);
+        e.hasLoss = hasLossPct(e.name);
+        e.finalScreenTons = finalScreenTons(e.tonsCrushed, e.name);
+        return e;
+      };
+      const locations = [...map.values()].map(decorate)
+        .sort((a, b) => b.totalSales - a.totalSales || b.tonsCrushed - a.tonsCrushed);
+
+      // Division total = raw sums re-derived (never an average of averages). The
+      // division loss % is tonnage-weighted: the tons genuinely lost across all
+      // pits ÷ all tons crushed, so a big pit can't be hidden by a small one.
+      const total = {
+        name: 'Division Total',
+        totalSales: 0, tonsSold: 0, salesCount: 0,
+        dailyCost: 0, dailyHours: 0,
+        crushCost: 0, crushHours: 0, tonsCrushed: 0, crushLoads: 0,
+        finalScreenTons: 0,
+      };
+      locations.forEach(e => {
+        total.totalSales += e.totalSales;   total.tonsSold += e.tonsSold;
+        total.salesCount += e.salesCount;   total.dailyCost += e.dailyCost;
+        total.dailyHours += e.dailyHours;   total.crushCost += e.crushCost;
+        total.crushHours += e.crushHours;   total.tonsCrushed += e.tonsCrushed;
+        total.crushLoads += e.crushLoads;   total.finalScreenTons += e.finalScreenTons;
+      });
+      total.totalCost = total.dailyCost + total.crushCost;
+      total.totalHours = total.dailyHours + total.crushHours;
+      total.grossMargin = total.totalSales - total.totalCost;
+      total.marginPct = total.totalSales > 0 ? (total.grossMargin / total.totalSales) * 100 : 0;
+      total.avgPricePerTon = total.tonsSold > 0 ? total.totalSales / total.tonsSold : 0;
+      total.avgCostPerTonSold = total.tonsSold > 0 ? total.totalCost / total.tonsSold : 0;
+      total.costPerTon = total.tonsCrushed > 0 ? total.crushCost / total.tonsCrushed : 0;
+      total.lossPct = total.tonsCrushed > 0
+        ? (1 - total.finalScreenTons / total.tonsCrushed) * 100 : 0;
+      // The division loss/final only reconciles with the per-pit cards when EVERY
+      // pit that crushed has a figure entered — otherwise an un-configured pit
+      // would be counted at 0% loss in the total while showing "—" on its own
+      // card. So treat the division as "configured" only when all crushing pits
+      // are; a partially-configured division shows "—" for loss and final tons.
+      const crushingPits = locations.filter(e => e.tonsCrushed > 0);
+      total.hasLoss = crushingPits.length > 0 && crushingPits.every(e => e.hasLoss);
+
+      return { locations, total };
+    }
+
+    // Renders the side-by-side per-location KPI cards into a container. Each card
+    // leads with the four headline metrics the division asked to separate, then
+    // the jaws→final-screen loss and its resulting sellable tonnage.
+    function renderLocationCards(containerId, byLoc, emptyMsg) {
+      const el = document.getElementById(containerId);
+      if (!el) return;
+      if (!byLoc.locations.length) {
+        el.innerHTML = `<div class="home-panel"><div class="home-empty">${escapeHtml(emptyMsg)}</div></div>`;
+        return;
+      }
+      const card = (e, isTotal) => {
+        const badgeCls = e.grossMargin > 0.0001 ? 'is-positive' : e.grossMargin < -0.0001 ? 'is-negative' : '';
+        // hasLoss on a pit means "figure entered"; on the total it means every
+        // crushing pit has one — either way it's the single gate for showing a
+        // real loss/final vs "—", so the total reconciles with the pit cards.
+        const showLoss = e.tonsCrushed > 0 && e.hasLoss;
+        const lossTxt = showLoss ? e.lossPct.toFixed(1) + '%' : '—';
+        const lossSub = e.tonsCrushed > 0
+          ? (e.hasLoss ? 'Jaws → final screen' : (isTotal ? 'Set every pit on Analytics' : 'Not set — add on Analytics'))
+          : 'No crushing yet';
+        const finalTxt = showLoss ? formatTons(e.finalScreenTons) : '—';
+        // Per-ton costs need a denominator; show "—" (not "$0.00") when there's
+        // no basis, matching the Performance by Location table.
+        const cpsTxt = e.tonsSold > 0 ? formatMoney(e.avgCostPerTonSold) : '—';
+        const cptTxt = e.tonsCrushed > 0 ? formatMoney(e.costPerTon) : '—';
+        return `
+        <div class="loc-card${isTotal ? ' is-total' : ''}"${isTotal ? ' style="border-top-color:var(--muted)"' : ''}>
+          <div class="loc-card-head">
+            <div class="loc-card-name">${escapeHtml(e.name)}</div>
+            <div class="loc-card-badge ${badgeCls}" title="Gross margin (sales − cost)">${formatMoney(e.grossMargin)} · ${Number.isFinite(e.marginPct) ? e.marginPct.toFixed(1) : '0.0'}%</div>
+          </div>
+          <div class="loc-kpi-grid">
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Total Sales</div>
+              <div class="loc-kpi-value">${formatMoney(e.totalSales)}</div>
+              <div class="loc-kpi-sub">${e.salesCount} sale${e.salesCount === 1 ? '' : 's'}</div>
+            </div>
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Tons Sold</div>
+              <div class="loc-kpi-value">${formatTons(e.tonsSold)}</div>
+              <div class="loc-kpi-sub">${e.tonsSold > 0 ? formatMoney(e.avgPricePerTon) + '/ton avg' : 'No sales'}</div>
+            </div>
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Avg Cost / Ton Sold</div>
+              <div class="loc-kpi-value">${cpsTxt}</div>
+              <div class="loc-kpi-sub">Total cost ÷ tons sold</div>
+            </div>
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Cost / Ton</div>
+              <div class="loc-kpi-value">${cptTxt}</div>
+              <div class="loc-kpi-sub">Crushing ÷ tons crushed</div>
+            </div>
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Jaws → Screen Loss</div>
+              <div class="loc-kpi-value is-loss">${lossTxt}</div>
+              <div class="loc-kpi-sub">${lossSub}</div>
+            </div>
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Final Screen Tons</div>
+              <div class="loc-kpi-value">${finalTxt}</div>
+              <div class="loc-kpi-sub">${formatTons(e.tonsCrushed)} to crusher</div>
+            </div>
+          </div>
+        </div>`;
+      };
+      const cards = byLoc.locations.map(e => card(e, false)).join('');
+      // Show the Division Total card only when more than one pit is in play.
+      const totalCard = byLoc.locations.length > 1 ? card(byLoc.total, true) : '';
+      el.innerHTML = cards + totalCard;
     }
 
     function renderHome() {
@@ -4068,35 +4336,12 @@
         it => ({ name: it.name, value: `${formatTons(it.tons)} tons`, secondary: formatMoney(it.sales), weight: it.tons })
       );
 
-      // ── Sales by location ──
-      const salesLocAgg = new Map();
-      visibleSales.forEach(r => {
-        const key = (r.locationName || '').trim() || '— No location —';
-        const cur = salesLocAgg.get(key) || { name: key, total: 0, tons: 0 };
-        cur.total += homeRowSales(r);
-        const t = Number(r.tons);
-        if (Number.isFinite(t)) cur.tons += t;
-        salesLocAgg.set(key, cur);
-      });
-      renderHomeRanked('homeSalesByLocation',
-        [...salesLocAgg.values()].sort((a, b) => b.total - a.total).slice(0, 5),
-        it => ({ name: it.name, value: formatMoney(it.total), secondary: `${formatTons(it.tons)} tons`, weight: it.total })
-      );
-
-      // ── Cost by location (daily + crushing combined) ──
-      const costLocAgg = new Map();
-      const addLocCost = (name, cost) => {
-        const key = (name || '').trim() || '— No location —';
-        const cur = costLocAgg.get(key) || { name: key, cost: 0 };
-        cur.cost += cost;
-        costLocAgg.set(key, cur);
-      };
-      visibleDaily.forEach(r => addLocCost(r.locationName, dailyCalc(r).totalCost));
-      visibleCrush.forEach(r => addLocCost(r.locationName, crushCalc(r).totalCost));
-      renderHomeRanked('homeCostByLocation',
-        [...costLocAgg.values()].sort((a, b) => b.cost - a.cost).slice(0, 5),
-        it => ({ name: it.name, value: formatMoney(it.cost), weight: it.cost })
-      );
+      // ── By location — side-by-side pit cards (Homer City vs McGees Mills) ──
+      // Each pit's headline metrics plus its jaws→final-screen loss, so the
+      // combined division numbers above are never all you see.
+      const byLoc = computeByLocation(visibleDaily, visibleCrush, visibleSales);
+      renderLocationCards('homeLocationCards', byLoc,
+        'Add entries with a Location on Daily, Crushing, or Sales to separate the pits.');
 
       // ── Year over year (always uses the full dataset) ──
       const yearAgg = new Map();
@@ -4441,6 +4686,124 @@
       const nm = String(row.productName || '').trim().toLowerCase();
       return nm !== '' && sets.names.has(nm);
     }
+
+    // ── Jaws → Final Screen loss % (per location) ─────────────────
+    // A fixed processing-loss percentage entered per pit: what fraction of the
+    // tonnage fed into the primary jaw crusher does NOT make it to sellable
+    // final-screened product (fines, waste, moisture). Stored as
+    // { '<location>': percent } — e.g. { 'Homer City': 8, 'McGees Mills': 12 }.
+    // Final screen tons = tons to crusher × (1 − loss% / 100). Homer City and
+    // McGees Mills run different setups, so each pit carries its own figure.
+    const QUARRY_LOSS_PCT_KEY = 'fct_quarry_loss_pct';
+    let quarryLossPct = {};
+    let lossPctLoaded = false;
+    let lossPctFetchedOnce = false;
+    let lossPctSavePending = null;
+    let lossPctSaveInFlight = false;
+
+    function normalizeLossPct(value) {
+      const out = {};
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.keys(value).forEach(k => {
+          const loc = String(k).trim();
+          // Round first, THEN bound-check, so a value like 99.999 that rounds up
+          // to 100 is rejected rather than stored as a forbidden 100% loss.
+          const n = Math.round(Number(value[k]) * 100) / 100;
+          // A loss can't be negative or ≥ 100% (you'd lose everything).
+          if (loc && Number.isFinite(n) && n > 0 && n < 100) {
+            out[loc] = n;
+          }
+        });
+      }
+      return out;
+    }
+    async function fetchLossPct() {
+      const res = await fetch(`/api/data/${QUARRY_LOSS_PCT_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_LOSS_PCT_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeLossPct(data.value);
+    }
+    async function putLossPct(value, opts = {}) {
+      const init = {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value }),
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_LOSS_PCT_KEY}`, init);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_LOSS_PCT_KEY} → ${res.status} ${text}`);
+      }
+    }
+    function scheduleLossPctSave() {
+      lossPctSavePending = quarryLossPct;
+      if (lossPctSaveInFlight) return;
+      flushLossPctSave();
+    }
+    async function flushLossPctSave() {
+      while (lossPctSavePending) {
+        const snapshot = lossPctSavePending;
+        lossPctSavePending = null;
+        lossPctSaveInFlight = true;
+        try {
+          await putLossPct(snapshot);
+        } catch (err) {
+          console.error('[quarry] loss % save failed:', err);
+          alert('Could not save the processing-loss % — please check your connection and try again.');
+        } finally {
+          lossPctSaveInFlight = false;
+        }
+      }
+    }
+    async function refreshLossPct() {
+      try {
+        quarryLossPct = await fetchLossPct();
+        lossPctLoaded = true;
+      } catch (err) {
+        console.error('[quarry] loss % load failed:', err);
+        if (!lossPctFetchedOnce) { quarryLossPct = {}; lossPctLoaded = true; }
+      } finally {
+        lossPctFetchedOnce = true;
+      }
+    }
+    // Configured loss % for a location (0 when none entered / unknown pit).
+    function locationLossPct(loc) {
+      const key = (loc || '').trim();
+      const v = quarryLossPct[key];
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    }
+    // True when a real figure has been entered for this pit (vs. the 0 default).
+    function hasLossPct(loc) {
+      const key = (loc || '').trim();
+      return Number.isFinite(quarryLossPct[key]) && quarryLossPct[key] > 0;
+    }
+    // Sellable output after the jaws-to-final-screen loss is applied. With no
+    // configured loss the output equals the input (loss treated as 0%).
+    function finalScreenTons(tonsToCrusher, loc) {
+      const t = Number(tonsToCrusher);
+      if (!Number.isFinite(t) || t <= 0) return 0;
+      return t * (1 - locationLossPct(loc) / 100);
+    }
+    // Editable per-location loss input (Analytics loss editor). Empty / 0 clears
+    // the entry; a value in (0,100) is stored and re-renders both dashboards.
+    function onLossPctInput(input) {
+      const loc = input.dataset.loc || '';
+      if (!loc) return;
+      const raw = String(input.value).trim();
+      // Round first, THEN bound-check (99.999 rounds to 100 → rejected, not stored).
+      const n = raw === '' ? 0 : Math.round(Number(raw.replace(/[^0-9.]/g, '')) * 100) / 100;
+      if (Number.isFinite(n) && n > 0 && n < 100) {
+        quarryLossPct[loc] = n;
+      } else {
+        delete quarryLossPct[loc];
+      }
+      scheduleLossPctSave();
+      renderAnalytics();  // per-location cards, loss editor, and tables refresh
+    }
+
     // ── Royalty owners editor (per pit) ───────────────────────────
     let royaltyEditLoc = null;
     function openRoyaltyOwners(loc) {
@@ -5426,6 +5789,9 @@
       if (!dailyFetchedOnce) tasks.push(refreshDaily());
       if (!crushFetchedOnce) tasks.push(refreshCrush());
       if (!salesFetchedOnce) tasks.push(refreshSales());
+      // Re-pull the per-pit loss % so edits made on another device show up,
+      // unless a local save is still in flight (keep the local value then).
+      if (!lossPctSavePending && !lossPctSaveInFlight) tasks.push(refreshLossPct());
       if (tasks.length) {
         await Promise.allSettled(tasks);
         renderAnalytics();
@@ -5551,15 +5917,62 @@
           : 'Add entries on Daily, Crushing, or Sales to populate analytics.';
       }
 
+      // Per-pit breakdown shared by the cards, the loss editor, and the tables.
+      const byLoc = computeByLocation(a.visibleDaily, a.visibleCrush, a.visibleSales);
+      renderLocationCards('analyticsLocationCards', byLoc,
+        'Add entries with a Location on Daily, Crushing, or Sales to separate the pits.');
+      renderLossEditor(byLoc);
+
       renderAnalyticsMonthly(a);
       renderAnalyticsCustomer(a);
       renderAnalyticsProduct(a);
-      renderAnalyticsLocation(a);
+      renderAnalyticsLocation(byLoc);
       renderAnalyticsEquipment(a);
       renderAnalyticsTask(a);
       renderAnalyticsEmployee(a);
-      renderAnalyticsCrush(a);
+      renderAnalyticsCrush(byLoc);
       renderAnalyticsYoy();
+    }
+
+    // The per-pit loss editor: every pit that appears in the data (plus any pit
+    // that already has a figure or is defined in Manage Lists → Location) gets a
+    // row with an editable %. Empty means "not set" (treated as 0% loss).
+    function renderLossEditor(byLoc) {
+      const el = document.getElementById('analyticsLossEditor');
+      if (!el) return;
+      const names = new Set();
+      byLoc.locations.forEach(e => { if (e.name && e.name !== NO_LOCATION) names.add(e.name); });
+      (quarryLists.location || []).forEach(it => {
+        const nm = String(it && it.name || '').trim();
+        if (nm) names.add(nm);
+      });
+      Object.keys(quarryLossPct).forEach(nm => { if (nm) names.add(nm); });
+      const list = [...names].sort((a, b) => a.localeCompare(b));
+      if (!list.length) {
+        el.innerHTML = `<div class="home-empty">No locations yet. Add one in Manage Lists → Location, then set its loss %.</div>`;
+        return;
+      }
+      // Tons crushed per pit (from the current year filter) for the live preview.
+      const crushedByLoc = new Map(byLoc.locations.map(e => [e.name, e.tonsCrushed]));
+      el.innerHTML = list.map(name => {
+        const pct = locationLossPct(name);
+        const set = hasLossPct(name);
+        const crushed = crushedByLoc.get(name) || 0;
+        const finalTxt = (set && crushed > 0)
+          ? `${formatTons(crushed * (1 - pct / 100))} final of ${formatTons(crushed)} crushed`
+          : (crushed > 0 ? `${formatTons(crushed)} crushed` : 'No crushing this period');
+        return `<div class="loss-editor-row">
+          <span class="loss-loc">${escapeHtml(name)}</span>
+          <span class="loss-input-wrap">
+            <input type="number" min="0" max="99.99" step="0.1" inputmode="decimal"
+              value="${set ? pct : ''}" placeholder="0"
+              data-loc="${escapeHtml(name)}"
+              onchange="onLossPctInput(this)" aria-label="Loss % for ${escapeHtml(name)}">
+            <span class="loss-pct-sign">%</span>
+          </span>
+          <span class="loss-final">${finalTxt}</span>
+        </div>`;
+      }).join('');
     }
 
     function renderAnalyticsMonthly(a) {
@@ -5691,54 +6104,38 @@
       }).join('');
     }
 
-    function renderAnalyticsLocation(a) {
+    function renderAnalyticsLocation(byLoc) {
       const tbody = document.querySelector('#analyticsLocationTable tbody');
       if (!tbody) return;
-      const map = new Map();
-      const ensure = (name) => {
-        const key = (name || '').trim() || '— No location —';
-        if (!map.has(key)) map.set(key, { name: key, sales: 0, cost: 0, tonsSold: 0, tonsCrushed: 0, hours: 0 });
-        return map.get(key);
-      };
-      a.visibleSales.forEach(r => {
-        const e = ensure(r.locationName);
-        e.sales += homeRowSales(r);
-        const t = Number(r.tons);
-        if (Number.isFinite(t)) e.tonsSold += t;
-      });
-      a.visibleDaily.forEach(r => {
-        const e = ensure(r.locationName);
-        const c = dailyCalc(r);
-        e.cost += c.totalCost;
-        const h = Number(r.hours);
-        if (Number.isFinite(h)) e.hours += h;
-      });
-      a.visibleCrush.forEach(r => {
-        const e = ensure(r.locationName);
-        const c = crushCalc(r);
-        e.cost += c.totalCost;
-        e.tonsCrushed += c.estimatedTons;
-        const h = Number(r.hoursCrushing);
-        if (Number.isFinite(h)) e.hours += h;
-      });
-      const rows = [...map.values()].sort((x, y) => (y.sales - y.cost) - (x.sales - x.cost));
+      const rows = byLoc.locations.slice().sort((x, y) => y.grossMargin - x.grossMargin);
+      const COLS = 11;
       if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="7" class="home-empty">No data yet.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${COLS}" class="home-empty">No data yet.</td></tr>`;
         return;
       }
-      tbody.innerHTML = rows.map(r => {
-        const margin = r.sales - r.cost;
-        const cls = margin > 0.0001 ? 'pos' : margin < -0.0001 ? 'neg' : '';
-        return `<tr>
-          <td>${escapeHtml(r.name)}</td>
-          <td>${formatMoney(r.sales)}</td>
-          <td>${formatMoney(r.cost)}</td>
-          <td class="${cls}">${formatMoney(margin)}</td>
-          <td>${formatTons(r.tonsSold)}</td>
-          <td>${formatTons(r.tonsCrushed)}</td>
-          <td>${formatTons(r.hours)}</td>
+      const cell = (e, isTotal) => {
+        const cls = e.grossMargin > 0.0001 ? 'pos' : e.grossMargin < -0.0001 ? 'neg' : '';
+        const showLoss = e.tonsCrushed > 0 && e.hasLoss;
+        const lossTxt = showLoss ? e.lossPct.toFixed(1) + '%' : '—';
+        const finalTxt = showLoss ? formatTons(e.finalScreenTons) : '—';
+        const style = isTotal ? ' style="border-top:2px solid var(--border);font-weight:700"' : '';
+        return `<tr${style}>
+          <td>${escapeHtml(e.name)}</td>
+          <td>${formatMoney(e.totalSales)}</td>
+          <td>${formatMoney(e.totalCost)}</td>
+          <td class="${cls}">${formatMoney(e.grossMargin)}</td>
+          <td>${formatTons(e.tonsSold)}</td>
+          <td>${e.tonsSold > 0 ? formatMoney(e.avgCostPerTonSold) : '—'}</td>
+          <td>${e.tonsCrushed > 0 ? formatMoney(e.costPerTon) : '—'}</td>
+          <td>${formatTons(e.tonsCrushed)}</td>
+          <td>${lossTxt}</td>
+          <td>${finalTxt}</td>
+          <td>${formatTons(e.totalHours)}</td>
         </tr>`;
-      }).join('');
+      };
+      let html = rows.map(e => cell(e, false)).join('');
+      if (rows.length > 1) html += cell(byLoc.total, true);
+      tbody.innerHTML = html;
     }
 
     function renderAnalyticsEquipment(a) {
@@ -5846,40 +6243,38 @@
         </tr>`).join('');
     }
 
-    function renderAnalyticsCrush(a) {
+    function renderAnalyticsCrush(byLoc) {
       const tbody = document.querySelector('#analyticsCrushTable tbody');
       if (!tbody) return;
-      const map = new Map();
-      a.visibleCrush.forEach(r => {
-        const key = (r.locationName || '').trim() || '— No location —';
-        const cur = map.get(key) || { name: key, loads: 0, tons: 0, hours: 0, cost: 0 };
-        const c = crushCalc(r);
-        const l = Number(r.loadsToCrusher);
-        if (Number.isFinite(l)) cur.loads += l;
-        cur.tons += c.estimatedTons;
-        const h = Number(r.hoursCrushing);
-        if (Number.isFinite(h)) cur.hours += h;
-        cur.cost += c.totalCost;
-        map.set(key, cur);
-      });
-      const rows = [...map.values()].sort((x, y) => y.tons - x.tons);
+      // Only pits that actually crushed material appear here.
+      const rows = byLoc.locations.filter(e => e.tonsCrushed > 0 || e.crushLoads > 0 || e.crushHours > 0)
+        .sort((x, y) => y.tonsCrushed - x.tonsCrushed);
+      const COLS = 9;
       if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="7" class="home-empty">No crushing entries yet.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${COLS}" class="home-empty">No crushing entries yet.</td></tr>`;
         return;
       }
-      tbody.innerHTML = rows.map(r => {
-        const tph = r.hours > 0 ? r.tons / r.hours : 0;
-        const cpt = r.tons > 0 ? r.cost / r.tons : 0;
-        return `<tr>
-          <td>${escapeHtml(r.name)}</td>
-          <td>${formatTons(r.loads)}</td>
-          <td>${formatTons(r.tons)}</td>
-          <td>${formatTons(r.hours)}</td>
+      const cell = (e, isTotal) => {
+        const tph = e.crushHours > 0 ? e.tonsCrushed / e.crushHours : 0;
+        const showLoss = e.tonsCrushed > 0 && e.hasLoss;
+        const lossTxt = showLoss ? e.lossPct.toFixed(1) + '%' : '—';
+        const finalTxt = showLoss ? formatTons(e.finalScreenTons) : '—';
+        const style = isTotal ? ' style="border-top:2px solid var(--border);font-weight:700"' : '';
+        return `<tr${style}>
+          <td>${escapeHtml(e.name)}</td>
+          <td>${formatTons(e.crushLoads)}</td>
+          <td>${formatTons(e.tonsCrushed)}</td>
+          <td>${lossTxt}</td>
+          <td>${finalTxt}</td>
+          <td>${formatTons(e.crushHours)}</td>
           <td>${formatTons(tph)}</td>
-          <td>${formatMoney(r.cost)}</td>
-          <td>${formatMoney(cpt)}</td>
+          <td>${formatMoney(e.crushCost)}</td>
+          <td>${formatMoney(e.costPerTon)}</td>
         </tr>`;
-      }).join('');
+      };
+      let html = rows.map(e => cell(e, false)).join('');
+      if (rows.length > 1) html += cell(byLoc.total, true);
+      tbody.innerHTML = html;
     }
 
     function renderAnalyticsYoy() {
