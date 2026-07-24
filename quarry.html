@@ -1783,7 +1783,23 @@
       `<strong>${user?.username || ''}</strong>&nbsp;·&nbsp;${user?.companyName || user?.companyCode || ''}`;
 
     // ── Tab switching ───────────────────────────────────────────
+    // ── TEMP DIAGNOSTIC (remove after debugging the tab freeze) ──
+    // Shows an on-screen badge with how long each tab switch takes and how big
+    // the page DOM is, so we can see where a freeze happens without the console.
+    function _diagBadge(msg) {
+      let el = document.getElementById('quarryDiag');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'quarryDiag';
+        el.style.cssText = 'position:fixed;right:8px;bottom:8px;z-index:99999;background:#111;color:#0f0;'
+          + 'font:12px/1.4 monospace;padding:8px 10px;border:1px solid #0f0;border-radius:6px;'
+          + 'max-width:340px;white-space:pre-wrap;pointer-events:none;opacity:.92';
+        document.body.appendChild(el);
+      }
+      el.textContent = msg;
+    }
     function switchTab(tab) {
+      const _t0 = performance.now();
       document.querySelectorAll('.tab-btn').forEach(b =>
         b.classList.toggle('active', b.dataset.tab === tab));
       document.querySelectorAll('.tab-panel').forEach(p =>
@@ -1794,6 +1810,19 @@
       if (tab === 'home') refreshHome();
       if (tab === 'analytics') refreshAnalytics();
       if (tab === 'breakeven') refreshBreakeven();
+      const _syncMs = Math.round(performance.now() - _t0);
+      try {
+        const nodes = document.getElementsByTagName('*').length;
+        const rows = (typeof dailyRows !== 'undefined' ? dailyRows.length : 0)
+          + (typeof crushRows !== 'undefined' ? crushRows.length : 0)
+          + (typeof salesRows !== 'undefined' ? salesRows.length : 0);
+        const _frameStart = performance.now();
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const paintMs = Math.round(performance.now() - _frameStart);
+          _diagBadge(`tab: ${tab}\nsync work: ${_syncMs} ms\ntime to repaint: ${paintMs} ms`
+            + `\nDOM nodes: ${nodes.toLocaleString()}\ndata rows: ${rows.toLocaleString()}`);
+        }));
+      } catch (_) {}
     }
 
     // ── Switch division ─────────────────────────────────────────
