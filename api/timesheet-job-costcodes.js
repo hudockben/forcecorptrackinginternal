@@ -22,7 +22,7 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('./lib/auth');
 
-const SUPPORTED_DIVISIONS = ['turf', 'paving'];
+const SUPPORTED_DIVISIONS = ['turf', 'paving', 'kiewit'];
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');

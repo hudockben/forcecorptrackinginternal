@@ -6,7 +6,7 @@ const jwt        = require('jsonwebtoken');
 const { syncProjects, syncLists, syncPurchaseOrders, syncInventory } = require('../lib/sync-normalized');
 
 // All divisions the platform supports — order determines display order on the selector
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll'];
 
 // Restrictive divisions — must NEVER be granted implicitly via the legacy
 // fallback path (company allowed_divisions / user.divisions). They require

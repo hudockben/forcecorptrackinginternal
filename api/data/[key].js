@@ -23,6 +23,7 @@ function isAllowedKey(k) {
     || /^fct_intercompany[_a-zA-Z0-9-]*$/.test(k)
     || /^dust_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_paving_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_kiewit_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_quarry_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_scheduler[_a-zA-Z0-9-]*$/.test(k)
     || /^fct_conschedule_[a-zA-Z0-9_-]+$/.test(k);

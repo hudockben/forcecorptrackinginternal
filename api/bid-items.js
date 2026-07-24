@@ -74,7 +74,7 @@ module.exports = async (req, res) => {
 
   // Only known project blob key shapes are accepted — anything else
   // would let a caller probe arbitrary app_data rows.
-  if (!/^fct_(project|paving_project)_[a-zA-Z0-9_-]+$/.test(projectKey)) {
+  if (!/^fct_(project|paving_project|kiewit_project)_[a-zA-Z0-9_-]+$/.test(projectKey)) {
     return res.status(400).json({ error: 'Invalid projectKey' });
   }
 
@@ -103,6 +103,8 @@ module.exports = async (req, res) => {
   const scopedProjectKey = `${companyCode}:${projectKey}`;
   const indexKey = projectKey.startsWith('fct_paving_project_')
     ? 'fct_paving_projects_index'
+    : projectKey.startsWith('fct_kiewit_project_')
+    ? 'fct_kiewit_projects_index'
     : 'fct_projects_index';
   const scopedIndexKey = `${companyCode}:${indexKey}`;
 

@@ -77,13 +77,13 @@ const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('./lib/auth');
 const { syncForKey } = require('./lib/sync-normalized');
 
-const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'trucking', 'quarry'];
+const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry'];
 const VALID_TIME_OFF  = ['vacation', 'sick', 'jury_duty', 'bereavement', 'holiday'];
 
 // Auto-inject into daily_tracking is only meaningful for divisions whose cost
 // tracking lives there (rows per project). Turf and paving qualify; the other
 // divisions either store labor elsewhere or don't track per-project cost.
-const AUTO_INJECT_DIVISIONS = ['turf', 'paving'];
+const AUTO_INJECT_DIVISIONS = ['turf', 'paving', 'kiewit'];
 
 // Quarry auto-injects too, but into the quarry division's OWN cost tracking —
 // the fct_quarry_daily / fct_quarry_crushing app_data blobs (mirrored to
@@ -210,7 +210,7 @@ function dbToEntry(r) {
 // locations with no such concept. Resolve it for a whole batch of entries
 // with a single app_data read (same key = ANY(...) pattern timesheet-jobs.js
 // uses) so the payroll list can show Yes/No per row.
-const PW_PROJECT_PREFIX = { turf: 'fct_project_', paving: 'fct_paving_project_' };
+const PW_PROJECT_PREFIX = { turf: 'fct_project_', paving: 'fct_paving_project_', kiewit: 'fct_kiewit_project_' };
 
 // app_data key for an entry's project, or null when its division has no
 // prevailing-wage concept (or the entry has no job attached).
