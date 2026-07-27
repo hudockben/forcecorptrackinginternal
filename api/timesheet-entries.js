@@ -1377,7 +1377,7 @@ module.exports = async (req, res) => {
       }
 
       if (existing.entry_type !== 'daily' || !AUTO_INJECT_DIVISIONS.includes(existing.division)) {
-        return res.status(400).json({ error: 'Resplit applies only to daily entries in turf/paving/quarry/trucking' });
+        return res.status(400).json({ error: 'Resplit applies only to daily entries in turf/paving/kiewit/quarry/trucking' });
       }
       if (!existing.job_id) {
         return res.status(400).json({ error: 'Cannot inject: entry has no job_id (project)' });

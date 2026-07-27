@@ -929,6 +929,7 @@
     }
     function prettyDivision(d) {
       if (!d) return '';
+      if (d === 'kiewit') return 'Kiewit Pinetree';
       return d.charAt(0).toUpperCase() + d.slice(1);
     }
     function prettyOffType(t) {
