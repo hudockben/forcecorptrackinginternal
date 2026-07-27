@@ -193,6 +193,7 @@
     .div-tag.quarry   { background: rgba(6,182,212,0.10);  color: #06b6d4; border: 1px solid rgba(6,182,212,0.22); }
     .div-tag.turf     { background: rgba(34,197,94,0.10);  color: #22c55e; border: 1px solid rgba(34,197,94,0.2); }
     .div-tag.paving   { background: rgba(148,163,184,0.14); color: #94a3b8; border: 1px solid rgba(148,163,184,0.28); }
+    .div-tag.kiewit   { background: rgba(139,92,246,0.14);  color: #8b5cf6; border: 1px solid rgba(139,92,246,0.30); }
     .div-tag.js-inline { margin-right: 0.4rem; vertical-align: middle; }
     .co-item-notes { font-size: 0.72rem; color: var(--muted); }
     .co-item-actions { display: flex; flex-direction: column; gap: 0.3rem; flex-shrink: 0; }
@@ -2906,8 +2907,8 @@
         const headers = { Authorization: `Bearer ${token}` };
 
         // Fetch all sources in parallel — projects from both normalized table and blob for best coverage.
-        // Daily rows + trucking are fetched per division (turf default + paving) and merged.
-        const [projRes, blobRes, rowsRes, truckRes, invRes, pavRowsRes, pavTruckRes] = await Promise.all([
+        // Daily rows + trucking are fetched per division (turf default + paving + kiewit) and merged.
+        const [projRes, blobRes, rowsRes, truckRes, invRes, pavRowsRes, pavTruckRes, kieRowsRes, kieTruckRes] = await Promise.all([
           fetch(`${API_BASE}/projects`, { headers }),
           fetch(`${API_BASE}/data/fct_projects`, { headers }),
           fetch(`${API_BASE}/daily-rows?since=${startDate}&limit=50000`, { headers }),
@@ -2915,6 +2916,8 @@
           fetch(`${API_BASE}/data/fct_inventory`, { headers }),
           fetch(`${API_BASE}/daily-rows?division=paving&since=${startDate}&limit=50000`, { headers }),
           fetch(`${API_BASE}/trucking?division=paving`, { headers }),
+          fetch(`${API_BASE}/daily-rows?division=kiewit&since=${startDate}&limit=50000`, { headers }),
+          fetch(`${API_BASE}/trucking?division=kiewit`, { headers }),
         ]);
 
         // daily-rows and trucking are required (turf). Paving sources are best-effort —
@@ -2962,16 +2965,35 @@
             pavingTrucking = Array.isArray(tj.truckingEntries) ? tj.truckingEntries : [];
           } catch { /* non-fatal */ }
         }
+
+        // Merge kiewit daily-rows + trucking entries (best-effort — non-fatal on error).
+        let kiewitRows = [];
+        let kiewitTrucking = [];
+        if (kieRowsRes && kieRowsRes.ok) {
+          try {
+            const kj = await kieRowsRes.json();
+            kiewitRows = Array.isArray(kj.rows) ? kj.rows : [];
+          } catch { /* non-fatal */ }
+        }
+        if (kieTruckRes && kieTruckRes.ok) {
+          try {
+            const tj = await kieTruckRes.json();
+            kiewitTrucking = Array.isArray(tj.truckingEntries) ? tj.truckingEntries : [];
+          } catch { /* non-fatal */ }
+        }
+
         // Tag each row with its source division so projects can be grouped
-        // (Turf vs Paving) in the report below. Turf is the default source;
-        // paving rows/trucking come from the ?division=paving endpoints.
+        // (Turf vs Paving vs Kiewit) in the report below. Turf is the default
+        // source; paving/kiewit rows/trucking come from the ?division= endpoints.
         (allRows || []).forEach(r => { r._division = 'turf'; });
         pavingRows.forEach(r => { r._division = 'paving'; });
+        kiewitRows.forEach(r => { r._division = 'kiewit'; });
         (truckingEntries || []).forEach(t => { t._division = 'turf'; });
         pavingTrucking.forEach(t => { t._division = 'paving'; });
+        kiewitTrucking.forEach(t => { t._division = 'kiewit'; });
 
-        const mergedRows     = (allRows || []).concat(pavingRows);
-        const mergedTrucking = (truckingEntries || []).concat(pavingTrucking);
+        const mergedRows     = (allRows || []).concat(pavingRows).concat(kiewitRows);
+        const mergedTrucking = (truckingEntries || []).concat(pavingTrucking).concat(kiewitTrucking);
 
         // Parse infill inventory entries (non-fatal if unavailable)
         let allInvEntries = [];
@@ -3075,13 +3097,14 @@
         });
 
         // Phase 2 — batch-fetch individual project blobs for any IDs not yet in projMap.
-        // Try both the turf (fct_project_*) and paving (fct_paving_project_*) blob keys
-        // so paving projects (which never sync to /api/projects) can be resolved.
+        // Try the turf (fct_project_*), paving (fct_paving_project_*) and kiewit
+        // (fct_kiewit_project_*) blob keys so paving/kiewit projects (which never
+        // sync to /api/projects) can be resolved.
         const unknownPids = Object.keys(byProject).filter(pid => !projMap[pid]);
         if (unknownPids.length) {
           try {
             const batchKeys = unknownPids
-              .flatMap(pid => ['fct_project_' + pid, 'fct_paving_project_' + pid])
+              .flatMap(pid => ['fct_project_' + pid, 'fct_paving_project_' + pid, 'fct_kiewit_project_' + pid])
               .join(',');
             const batchRes2 = await fetch(
               `${API_BASE}/data/_batch?keys=${encodeURIComponent(batchKeys)}`, { headers }
@@ -3090,7 +3113,10 @@
               const bj2 = await batchRes2.json();
               Object.entries(bj2.values || {}).forEach(([key, val]) => {
                 if (!val) return;
-                const pid = key.replace(/^fct_paving_project_/, '').replace(/^fct_project_/, '');
+                const pid = key
+                  .replace(/^fct_kiewit_project_/, '')
+                  .replace(/^fct_paving_project_/, '')
+                  .replace(/^fct_project_/, '');
                 if (pid && (val['project-name'] || val.name) && !projMap[pid]) {
                   projMap[pid] = val;
                 }
@@ -3112,7 +3138,7 @@
             const proj  = projMap[p.pid];
             const name  = proj['project-name'] || proj.name || p.pid;
             const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost;
-            const division = p.division === 'paving' ? 'paving' : 'turf';
+            const division = (p.division === 'paving' || p.division === 'kiewit') ? p.division : 'turf';
             return { ...p, name, total, division };
           })
           .sort((a, b) => a.name.localeCompare(b.name));
@@ -3178,11 +3204,11 @@
 
         const totalRowLabel = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + (infillRow ? ' + infill' : '');
 
-        // ── Group project rows by division (Turf vs Paving) ──────────
+        // ── Group project rows by division (Turf / Paving / Kiewit) ──
         function divBadge(div) {
-          return div === 'paving'
-            ? '<span class="div-tag paving js-inline">Paving</span>'
-            : '<span class="div-tag turf js-inline">Turf</span>';
+          if (div === 'paving') return '<span class="div-tag paving js-inline">Paving</span>';
+          if (div === 'kiewit') return '<span class="div-tag kiewit js-inline">Kiewit Pinetree</span>';
+          return '<span class="div-tag turf js-inline">Turf</span>';
         }
 
         function renderProjRow(r) {
@@ -3223,31 +3249,47 @@
             + '</tr>';
         }
 
-        const turfProj   = reportRows.filter(r => r.division !== 'paving');
-        const pavingProj = reportRows.filter(r => r.division === 'paving');
-        // Show per-division subtotals only when both divisions are represented,
-        // otherwise the subtotal would just duplicate the grand total.
-        const groupByDiv = turfProj.length > 0 && pavingProj.length > 0;
+        // Turf is the anchor division: any row not tagged paving/kiewit counts as
+        // turf, and infill production always rolls into the Turf group.
+        const DIV_GROUPS = [
+          { key: 'turf',   label: 'Turf'            },
+          { key: 'paving', label: 'Paving'          },
+          { key: 'kiewit', label: 'Kiewit Pinetree' },
+        ];
+        const projByDiv = {
+          turf:   reportRows.filter(r => r.division !== 'paving' && r.division !== 'kiewit'),
+          paving: reportRows.filter(r => r.division === 'paving'),
+          kiewit: reportRows.filter(r => r.division === 'kiewit'),
+        };
+        const activeDivs = DIV_GROUPS.filter(d => projByDiv[d.key].length > 0);
+        // Show per-division subtotals only when more than one division is
+        // represented, otherwise a subtotal just duplicates the grand total.
+        const groupByDiv = activeDivs.length > 1;
 
         let bodyHtml;
         if (groupByDiv) {
-          const turfSub = sumRows(turfProj);
-          if (infillRow) {
-            turfSub.laborCost   += infillRow.laborCost;
-            turfSub.equipCost   += infillRow.equipCost;
-            turfSub.total       += infillRow.total;
-            turfSub.hoursWorked += infillRow.hoursWorked;
+          bodyHtml = activeDivs.map(d => {
+            const rows = projByDiv[d.key];
+            const sub  = sumRows(rows);
+            // Infill production is a turf input — fold it into the Turf group.
+            const withInfill = d.key === 'turf' && infillRow;
+            if (withInfill) {
+              sub.laborCost   += infillRow.laborCost;
+              sub.equipCost   += infillRow.equipCost;
+              sub.total       += infillRow.total;
+              sub.hoursWorked += infillRow.hoursWorked;
+            }
+            const lbl = d.label + ' Subtotal — ' + rows.length + ' project'
+              + (rows.length !== 1 ? 's' : '') + (withInfill ? ' + infill' : '');
+            return rows.map(renderProjRow).join('')
+              + (withInfill ? renderInfillRow(infillRow) : '')
+              + subtotalRow(lbl, sub);
+          }).join('');
+          // Infill with no turf projects to nest under — append standalone so it
+          // still appears (it's already counted in the grand totals below).
+          if (infillRow && projByDiv.turf.length === 0) {
+            bodyHtml += renderInfillRow(infillRow);
           }
-          const pavingSub = sumRows(pavingProj);
-          const turfLbl = 'Turf Subtotal — ' + turfProj.length + ' project'
-            + (turfProj.length !== 1 ? 's' : '') + (infillRow ? ' + infill' : '');
-          const pavingLbl = 'Paving Subtotal — ' + pavingProj.length + ' project'
-            + (pavingProj.length !== 1 ? 's' : '');
-          bodyHtml = turfProj.map(renderProjRow).join('')
-            + renderInfillRow(infillRow)
-            + subtotalRow(turfLbl, turfSub)
-            + pavingProj.map(renderProjRow).join('')
-            + subtotalRow(pavingLbl, pavingSub);
         } else {
           bodyHtml = reportRows.map(renderProjRow).join('')
             + renderInfillRow(infillRow);
