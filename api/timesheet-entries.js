@@ -292,8 +292,13 @@ function normalizeSplitRow(raw, idx) {
   if (!Number.isFinite(equip_hours) || equip_hours < 0 || equip_hours > 24) {
     return { error: `split[${idx}].equip_hours must be between 0 and 24` };
   }
-  if (!Number.isFinite(quantity) || quantity < 0) {
-    return { error: `split[${idx}].quantity must be a non-negative number` };
+  // Upper bound guards the NUMERIC(14,4) daily_tracking.quantity column (max
+  // < 1e10). Without it a fat-fingered quantity overflows on INSERT, and since
+  // insertSplitRows writes each row as its own autocommitted statement, an
+  // overflow on a later row orphans the earlier ones. 1e9 is far above any real
+  // bid quantity while staying clear of the column ceiling.
+  if (!Number.isFinite(quantity) || quantity < 0 || quantity > 1e9) {
+    return { error: `split[${idx}].quantity must be between 0 and 1,000,000,000` };
   }
   if (labor_hours <= 0 && equip_hours <= 0) {
     return { error: `split[${idx}] must have labor_hours or equip_hours greater than 0` };
@@ -1266,6 +1271,20 @@ module.exports = async (req, res) => {
           // and can retry. Without this we'd have an approved entry with
           // zero injected rows — invisible to the cost tracking tab.
           console.error('[timesheet-entries] injection failed, rolling back approval:', injErr.message);
+          // insertSplitRows inserts each daily_tracking row as its own
+          // autocommitted statement (neon-serverless has no multi-statement
+          // transaction), so a mid-loop failure can leave earlier rows behind.
+          // Scrub every injected row for this entry so a partial split can't
+          // linger as phantom cost in the division tab (invisible to un-approve,
+          // undeletable from the tab) and a retried approve can't double-inject.
+          if (splitRows) {
+            try {
+              await sql`
+                DELETE FROM daily_tracking
+                WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
+              `;
+            } catch (cleanupErr) { console.error('[timesheet-entries] split rollback cleanup failed:', cleanupErr.message); }
+          }
           // Quarry/trucking write the blob before mirroring; if the mirror sync
           // threw, scrub any half-written blob row so it can't linger as a
           // phantom row in the division's tracking tab while the entry is pending.
