@@ -3103,9 +3103,18 @@
         const unknownPids = Object.keys(byProject).filter(pid => !projMap[pid]);
         if (unknownPids.length) {
           try {
-            const batchKeys = unknownPids
-              .flatMap(pid => ['fct_project_' + pid, 'fct_paving_project_' + pid, 'fct_kiewit_project_' + pid])
-              .join(',');
+            // Each project id belongs to exactly one division (each division's
+            // daily-rows are fetched + tagged separately), so request only that
+            // division's blob key instead of guessing across all three prefixes.
+            // Keeps the batch GET URL compact even with many paving/kiewit jobs.
+            const projKeyFor = pid => {
+              const div = byProject[pid] && byProject[pid].division;
+              const prefix = div === 'paving' ? 'fct_paving_project_'
+                           : div === 'kiewit' ? 'fct_kiewit_project_'
+                           : 'fct_project_';
+              return prefix + pid;
+            };
+            const batchKeys = unknownPids.map(projKeyFor).join(',');
             const batchRes2 = await fetch(
               `${API_BASE}/data/_batch?keys=${encodeURIComponent(batchKeys)}`, { headers }
             );
