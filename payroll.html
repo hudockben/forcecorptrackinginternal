@@ -1388,6 +1388,7 @@
           <option value="turf">Turf</option>
           <option value="dust">Dust</option>
           <option value="paving">Paving</option>
+          <option value="kiewit">Kiewit Pinetree</option>
           <option value="trucking">Trucking</option>
           <option value="quarry">Quarry</option>
         </select>
@@ -2955,6 +2956,7 @@
     }
     function prettyDiv(d) {
       if (!d) return '';
+      if (d === 'kiewit') return 'Kiewit Pinetree';
       return d.charAt(0).toUpperCase() + d.slice(1);
     }
     function prettyOff(t) {
@@ -3091,10 +3093,10 @@
       }
     }
 
-    // Turf/paving daily entries auto-inject into division cost tracking on
-    // approval. They go through the split modal instead of the single-shot
+    // Turf/paving/kiewit daily entries auto-inject into division cost tracking
+    // on approval. They go through the split modal instead of the single-shot
     // POST. Other divisions (and time-off entries) keep the legacy flow.
-    const SPLIT_DIVISIONS = ['turf', 'paving'];
+    const SPLIT_DIVISIONS = ['turf', 'paving', 'kiewit'];
     function entryNeedsSplit(e) {
       return e && e.entry_type === 'daily' && SPLIT_DIVISIONS.includes(e.division);
     }
@@ -3276,6 +3278,7 @@
               <option value="turf">Turf</option>
               <option value="dust">Dust</option>
               <option value="paving">Paving</option>
+              <option value="kiewit">Kiewit Pinetree</option>
               <option value="trucking">Trucking</option>
               <option value="quarry">Quarry</option>
             </select>
@@ -3478,7 +3481,7 @@
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // SPLIT MODAL — approval & resplit for turf/paving entries
+    // SPLIT MODAL — approval & resplit for turf/paving/kiewit entries
     // ──────────────────────────────────────────────────────────────────────
     //
     // State for the open modal. splitMode is 'approve' (entry is currently
@@ -3516,12 +3519,14 @@
       }
       const globalSet = new Set(splitEquipmentGlobal);
       let projEquip = [];
-      if (jobId && (division === 'turf' || division === 'paving')) {
+      if (jobId && (division === 'turf' || division === 'paving' || division === 'kiewit')) {
         const cacheKey = `${division}::${jobId}`;
         if (_projEquipCache[cacheKey]) {
           projEquip = _projEquipCache[cacheKey];
         } else {
-          const prefix = division === 'paving' ? 'fct_paving_project_' : 'fct_project_';
+          const prefix = division === 'paving' ? 'fct_paving_project_'
+                       : division === 'kiewit' ? 'fct_kiewit_project_'
+                       : 'fct_project_';
           try {
             const res = await fetch('/api/data/' + encodeURIComponent(prefix + jobId), { headers: authHeaders() });
             if (res.ok) {
