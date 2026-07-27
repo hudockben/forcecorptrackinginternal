@@ -369,6 +369,7 @@
     .ci-div-label.trucking { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
     .ci-div-label.dust     { background: rgba(251,191,36,0.12); color: #f59e0b; border: 1px solid rgba(251,191,36,0.3); }
     .ci-div-label.quarry   { background: rgba(6,182,212,0.14);  color: #06b6d4; border: 1px solid rgba(6,182,212,0.32); }
+    .ci-div-label.kiewit   { background: rgba(139,92,246,0.16); color: #8b5cf6; border: 1px solid rgba(139,92,246,0.34); }
     .ci-div-stats { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-left: auto; }
     .ci-div-stat  { font-size: 0.65rem; color: var(--muted); }
     .ci-div-stat strong { color: var(--text); font-weight: 600; }
@@ -393,6 +394,7 @@
     .ci-subtab-btn.st-truck  { color: #ef4444; border-bottom-color: #ef4444; }
     .ci-subtab-btn.st-dust   { color: #f59e0b; border-bottom-color: #f59e0b; }
     .ci-subtab-btn.st-quarry { color: #06b6d4; border-bottom-color: #06b6d4; }
+    .ci-subtab-btn.st-kiewit { color: #8b5cf6; border-bottom-color: #8b5cf6; }
 
     /* ── Pending billing card (Dust Control) ── */
     .ci-pending-card {
@@ -843,6 +845,7 @@
       <button class="ci-subtab-btn"          id="ciSubDust"      onclick="switchCiDiv('dust')">Dust Control</button>
       <button class="ci-subtab-btn"          id="ciSubDustOther" onclick="switchCiDiv('dust-other-billing')">Dust — Other Billing</button>
       <button class="ci-subtab-btn"          id="ciSubQuarry"    onclick="switchCiDiv('quarry')">Quarry</button>
+      <button class="ci-subtab-btn"          id="ciSubKiewit"    onclick="switchCiDiv('kiewit')">Kiewit Pinetree</button>
     </div>
     <div class="ci-toolbar">
       <div class="ci-toolbar-group">
@@ -902,6 +905,17 @@
           <div class="ci-rate-wrap">
             <span class="rate-pre">$</span>
             <input type="number" id="ciQuarryLaborRate" value="121" min="0" step="0.01" oninput="onRateChange()">
+            <span class="rate-suf">/hr</span>
+          </div>
+        </div>
+      </div>
+      <div class="ci-rates-group" id="ciKiewitRatesGroup" style="display:none">
+        <span class="rates-label">IC Rates</span>
+        <div class="rate-field">
+          <label for="ciKiewitLaborRate">Labor</label>
+          <div class="ci-rate-wrap">
+            <span class="rate-pre">$</span>
+            <input type="number" id="ciKiewitLaborRate" value="121" min="0" step="0.01" oninput="onRateChange()">
             <span class="rate-suf">/hr</span>
           </div>
         </div>
@@ -1068,6 +1082,7 @@
     let icDustRate        = parseFloat(localStorage.getItem('ic_dust_rate')         ?? '121') || 121;
     let icUbRate          = parseFloat(localStorage.getItem('ic_ub_rate')           ?? '0')   || 0;
     let icQuarryLaborRate = parseFloat(localStorage.getItem('ic_quarry_labor_rate') ?? '121') || 121;
+    let icKiewitLaborRate = parseFloat(localStorage.getItem('ic_kiewit_labor_rate') ?? '121') || 121;
 
     // Per-customer dust UB $/gal overrides (lower-cased customer name → rate),
     // loaded from dust-config. When a customer carries its own UB rate the
@@ -1086,11 +1101,13 @@
       const dr  = document.getElementById('ciDustRate');
       const ur  = document.getElementById('ciUbRate');
       const qlr = document.getElementById('ciQuarryLaborRate');
+      const klr = document.getElementById('ciKiewitLaborRate');
       if (tr)  tr.value  = icTruckRate;
       if (lr)  lr.value  = icLaborRate;
       if (dr)  dr.value  = icDustRate;
       if (ur)  ur.value  = icUbRate;
       if (qlr) qlr.value = icQuarryLaborRate;
+      if (klr) klr.value = icKiewitLaborRate;
     }
     initRateInputs();
 
@@ -1131,6 +1148,7 @@
             // Only override dust UB rate if it was explicitly saved here (non-zero)
             if (value.ub    != null && parseFloat(value.ub) > 0) icUbRate = parseFloat(value.ub);
             if (value.quarryLabor != null) icQuarryLaborRate = parseFloat(value.quarryLabor) || icQuarryLaborRate;
+            if (value.kiewitLabor != null) icKiewitLaborRate = parseFloat(value.kiewitLabor) || icKiewitLaborRate;
           }
         }
 
@@ -1182,12 +1200,14 @@
         truck: icTruckRate, labor: icLaborRate,
         dust: icDustRate, ub: icUbRate,
         quarryLabor: icQuarryLaborRate,
+        kiewitLabor: icKiewitLaborRate,
       };
       localStorage.setItem('ic_truck_rate',        icTruckRate);
       localStorage.setItem('ic_labor_rate',        icLaborRate);
       localStorage.setItem('ic_dust_rate',         icDustRate);
       localStorage.setItem('ic_ub_rate',           icUbRate);
       localStorage.setItem('ic_quarry_labor_rate', icQuarryLaborRate);
+      localStorage.setItem('ic_kiewit_labor_rate', icKiewitLaborRate);
       _pendingRatesPayload = payload;
       const init = {
         method: 'PUT',
@@ -1207,6 +1227,8 @@
       icUbRate          = parseFloat(document.getElementById('ciUbRate').value)          || 0;
       const qlrEl       = document.getElementById('ciQuarryLaborRate');
       if (qlrEl) icQuarryLaborRate = parseFloat(qlrEl.value) || 0;
+      const klrEl       = document.getElementById('ciKiewitLaborRate');
+      if (klrEl) icKiewitLaborRate = parseFloat(klrEl.value) || 0;
       saveRates();
       renderCompanyInfo();
     }
@@ -1219,12 +1241,16 @@
       if (obBtn) obBtn.className = 'ci-subtab-btn' + (div === 'dust-other-billing' ? ' st-dust'   : '');
       const qBtn  = document.getElementById('ciSubQuarry');
       if (qBtn)  qBtn.className  = 'ci-subtab-btn' + (div === 'quarry'             ? ' st-quarry' : '');
+      const kBtn  = document.getElementById('ciSubKiewit');
+      if (kBtn)  kBtn.className  = 'ci-subtab-btn' + (div === 'kiewit'             ? ' st-kiewit' : '');
       const rg = document.getElementById('ciRatesGroup');
       const dg = document.getElementById('ciDustRatesGroup');
       const qg = document.getElementById('ciQuarryRatesGroup');
+      const kg = document.getElementById('ciKiewitRatesGroup');
       if (rg) rg.style.display = div === 'trucking' ? '' : 'none';
       if (dg) dg.style.display = div === 'dust'     ? '' : 'none';
       if (qg) qg.style.display = div === 'quarry'   ? '' : 'none';
+      if (kg) kg.style.display = div === 'kiewit'   ? '' : 'none';
       // Rebuild filter dropdowns. Year options come from whichever source
       // backs this tab; company list flips to quarry locations on Quarry.
       buildYearFilterOptions();
@@ -1402,6 +1428,7 @@
     let icBillingEntries   = [];
     let quarryDailyRows    = [];
     let quarryCrushingRows = [];
+    let kiewitLaborRows    = [];
     const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const fmt$   = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     const fmtH   = v => (Math.floor(v * 100) / 100).toFixed(2) + ' hrs';
@@ -1473,6 +1500,66 @@
       } catch { quarryCrushingRows = []; }
     }
 
+    // ── Kiewit Pinetree labor (auto-pulled from the kiewit division for the
+    //    IC Kiewit sub-tab). Kiewit is project-based like turf/paving: its
+    //    labor lives in daily_tracking (division='kiewit') — approved timesheet
+    //    hours plus any manually-entered rows. Only labor rows (hours > 0) are
+    //    billable at a flat $/hr IC rate, so material/PO rows are skipped. Daily
+    //    rows carry only a project id, so project names are resolved from the
+    //    fct_kiewit_project_ blobs (same source the Reports tab uses). ──
+    async function loadKiewitLabor() {
+      try {
+        const r = await fetch(`${API_BASE}/daily-rows?division=kiewit&limit=50000`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) { kiewitLaborRows = []; return; }
+        const { rows } = await r.json();
+        const labor = (Array.isArray(rows) ? rows : [])
+          .filter(row => (parseFloat(row.labor_hours) || 0) > 0);
+
+        // Resolve project names by batch-fetching the distinct project blobs.
+        const pids = [...new Set(labor.map(row => row._projectId).filter(Boolean))];
+        const nameById = {};
+        if (pids.length) {
+          try {
+            const keys = pids.map(pid => 'fct_kiewit_project_' + pid).join(',');
+            const br = await fetch(`${API_BASE}/data/_batch?keys=${encodeURIComponent(keys)}`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (br.ok) {
+              const bj = await br.json();
+              Object.entries(bj.values || {}).forEach(([key, val]) => {
+                if (!val) return;
+                const pid  = key.replace(/^fct_kiewit_project_/, '');
+                const name = val['project-name'] || val.name;
+                if (pid && name) nameById[pid] = String(name);
+              });
+            }
+          } catch { /* non-fatal — fall back to a generic label */ }
+        }
+
+        kiewitLaborRows = labor.map(row => {
+          const hrs  = parseFloat(row.labor_hours) || 0;
+          const rate = parseFloat(row.rate)        || 0;
+          const pid  = row._projectId ? String(row._projectId) : '';
+          return {
+            id:             row.id ? String(row.id) : '',
+            actual_date:    typeof row.date === 'string' ? row.date : '',
+            project_id:     pid,
+            project_name:   nameById[pid] || 'Unassigned Project',
+            employee_name:  row.employee  || '',
+            cost_code:      row.cost_code || '',
+            sub_code:       row.sub_code  || '',
+            equipment_name: row.equipment || '',
+            total_hours:    hrs,
+            rate:           rate,
+            labor_cost:     hrs * rate,
+            from_timesheet: row.timesheet_entry_id != null,
+          };
+        });
+      } catch { kiewitLaborRows = []; }
+    }
+
     async function loadBillingEntries() {
       try {
         const r = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
@@ -1542,7 +1629,7 @@
     async function loadAndRenderCompanyInfo() {
       document.getElementById('ciBody').innerHTML =
         '<div class="ci-empty"><strong>Loading</strong>Fetching billing entries…</div>';
-      await Promise.all([loadCompanies(), loadBillingEntries(), loadQuarryDaily(), loadQuarryCrushing(), loadRates()]);
+      await Promise.all([loadCompanies(), loadBillingEntries(), loadQuarryDaily(), loadQuarryCrushing(), loadKiewitLabor(), loadRates()]);
 
       buildYearFilterOptions();
       buildCompanyFilterOptions();
@@ -1557,7 +1644,9 @@
     function buildYearFilterOptions() {
       const yearSel = document.getElementById('ciYearFilter');
       if (!yearSel) return;
-      const dateBucket = ciDivFilter === 'quarry' ? quarryDailyRows.concat(quarryCrushingRows) : icBillingEntries;
+      const dateBucket = ciDivFilter === 'quarry' ? quarryDailyRows.concat(quarryCrushingRows)
+                       : ciDivFilter === 'kiewit' ? kiewitLaborRows
+                       : icBillingEntries;
       const years = [...new Set(
         dateBucket.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
       )].sort().reverse();
@@ -1589,6 +1678,19 @@
           [...seen.entries()].map(([id, name]) =>
             `<option value="${escT(id)}">${escT(name)}</option>`
           ).join('');
+      } else if (ciDivFilter === 'kiewit') {
+        // Kiewit rows have no company field — the project is the closest analog,
+        // so the "company" dropdown lists projects (matching the Quarry pattern).
+        const seen = new Map();
+        kiewitLaborRows.forEach(r => {
+          const id = r.project_id || r.project_name;
+          if (!id) return;
+          if (!seen.has(id)) seen.set(id, r.project_name || id);
+        });
+        opts = `<option value="all">All Projects</option>` +
+          [...seen.entries()].map(([id, name]) =>
+            `<option value="${escT(id)}">${escT(name)}</option>`
+          ).join('');
       } else {
         const seenIds = [...new Set(icBillingEntries.map(e => e.company_id).filter(Boolean))];
         opts = '<option value="all">All Companies</option>' +
@@ -1613,6 +1715,13 @@
       //    location (since quarry rows have no customer/company field). ──
       if (ciDivFilter === 'quarry') {
         renderQuarryCompanyInfo(body, yearFilter, coFilter);
+        return;
+      }
+
+      // ── Kiewit sub-tab: auto-pulled from daily_tracking (division='kiewit'),
+      //    grouped by project (kiewit rows have no company field). ──
+      if (ciDivFilter === 'kiewit') {
+        renderKiewitCompanyInfo(body, yearFilter, coFilter);
         return;
       }
 
@@ -2250,6 +2359,174 @@
                 <div class="ci-co-stat-lbl">Labor Cost</div>
               </div>
               ${icStatCard}
+            </div>
+          </div>
+          ${section}
+        </div>`;
+      }).join('');
+    }
+
+    // ── Kiewit Pinetree Company Info — auto-pulled kiewit division labor,
+    //    grouped by project, per-month expandable detail. IC Total is labor
+    //    hours × the editable Kiewit IC labor rate (mirrors the Quarry tab). ──
+    function renderKiewitCompanyInfo(body, yearFilter, projectFilter) {
+      let rows = kiewitLaborRows;
+      if (yearFilter !== 'all') rows = rows.filter(r => (r.actual_date || '').startsWith(yearFilter));
+      if (projectFilter !== 'all') {
+        rows = rows.filter(r => (r.project_id || r.project_name) === projectFilter);
+      }
+
+      const count = document.getElementById('ciCount');
+      count.textContent = rows.length ? `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}` : '';
+
+      if (!rows.length) {
+        const hasAny = kiewitLaborRows.length > 0;
+        body.innerHTML = `<div class="ci-empty">
+          <strong>No Kiewit Pinetree Entries</strong>
+          ${hasAny
+            ? `No Kiewit Pinetree labor matches the current filter selection.`
+            : `No Kiewit Pinetree labor yet. Approve timesheet entries for the Kiewit Pinetree division (or add daily rows there) and they'll appear here automatically.`}
+        </div>`;
+        return;
+      }
+
+      // Group by project (the closest analog to "company" for kiewit).
+      const byProject = {};
+      rows.forEach(r => {
+        const key = r.project_id || r.project_name || 'unknown';
+        if (!byProject[key]) byProject[key] = { name: r.project_name || 'Unassigned Project', id: r.project_id, rows: [] };
+        byProject[key].rows.push(r);
+      });
+
+      function buildKiewitSection(projRows, sectionId) {
+        const byMonth = {};
+        projRows.forEach(r => {
+          const mRaw = parseInt((r.actual_date || '').slice(5, 7), 10) - 1;
+          const mIdx = isNaN(mRaw) ? -1 : mRaw;
+          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, labor: 0, icTotal: 0, entries: [] };
+          byMonth[mKey].jobs++;
+          byMonth[mKey].hours   += parseFloat(r.total_hours) || 0;
+          byMonth[mKey].labor   += parseFloat(r.labor_cost)  || 0;
+          byMonth[mKey].icTotal += (parseFloat(r.total_hours) || 0) * icKiewitLaborRate;
+          byMonth[mKey].entries.push(r);
+        });
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+
+        const totJobs  = projRows.length;
+        const totHours = projRows.reduce((s, r) => s + (parseFloat(r.total_hours) || 0), 0);
+        const totLabor = projRows.reduce((s, r) => s + (parseFloat(r.labor_cost)  || 0), 0);
+        const totIc    = totHours * icKiewitLaborRate;
+
+        const detailHead = `<th>Date</th><th>Employee</th><th>Cost Code</th><th>Equipment</th><th class="r">Labor Hours</th><th class="r">Rate</th><th class="r">Labor Cost</th><th class="r ic-val">IC Total</th>`;
+
+        const monthRows = sortedMonths.map((m, mi) => {
+          const detId = `${sectionId}-m${mi}`;
+          const sorted = [...m.entries].sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''));
+          const entryRows = sorted.map(r => {
+            const hrs   = parseFloat(r.total_hours) || 0;
+            const rate  = parseFloat(r.rate)        || 0;
+            const labor = parseFloat(r.labor_cost)  || 0;
+            const icAmt = hrs * icKiewitLaborRate;
+            const code  = [r.cost_code, r.sub_code].filter(Boolean).join(' / ');
+            return `<tr>
+              <td>${r.actual_date || '—'}</td>
+              <td>${escT(r.employee_name || '—')}</td>
+              <td>${escT(code || '—')}</td>
+              <td>${escT(r.equipment_name || '—')}</td>
+              <td class="r">${fmtH(hrs)}</td>
+              <td class="r">${rate > 0 ? fmt$(rate) + '/hr' : '—'}</td>
+              <td class="r">${labor > 0 ? fmt$(labor) : '—'}</td>
+              <td class="r ic-val">${fmt$(icAmt)}</td>
+            </tr>`;
+          }).join('');
+
+          return `
+            <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
+              <td><span class="ci-month-arrow">▶</span>${m.label}</td>
+              <td class="r">${m.jobs}</td>
+              <td class="r">${fmtH(m.hours)}</td>
+              <td class="r">${m.labor > 0 ? fmt$(m.labor) : '—'}</td>
+              <td class="r ic-val">${fmt$(m.icTotal)}</td>
+            </tr>
+            <tr class="ci-mdet-row" id="${detId}">
+              <td colspan="5" class="ci-mdet-inner">
+                <table class="ci-detail-table">
+                  <thead><tr>${detailHead}</tr></thead>
+                  <tbody>${entryRows}</tbody>
+                </table>
+              </td>
+            </tr>`;
+        }).join('');
+
+        return `
+        <div class="ci-div-section">
+          <div class="ci-div-header">
+            <span class="ci-div-label kiewit">Daily Tracking</span>
+            <div class="ci-div-stats">
+              <div class="ci-div-stat"><strong>${totJobs}</strong> entr${totJobs === 1 ? 'y' : 'ies'}</div>
+              <div class="ci-div-stat"><strong>${fmtH(totHours)}</strong></div>
+              <div class="ci-div-stat"><strong>${fmt$(totLabor)}</strong></div>
+              <div class="ci-div-stat ic-val"><strong>${fmt$(totIc)}</strong> IC</div>
+            </div>
+          </div>
+          <table class="ci-month-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th class="r">Entries</th>
+                <th class="r">Labor Hours</th>
+                <th class="r">Labor Cost</th>
+                <th class="r ic-val">IC Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${monthRows}
+              <tr class="ci-month-total">
+                <td>Total</td>
+                <td class="r">${totJobs}</td>
+                <td class="r">${fmtH(totHours)}</td>
+                <td class="r">${totLabor > 0 ? fmt$(totLabor) : '—'}</td>
+                <td class="r ic-val">${fmt$(totIc)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`;
+      }
+
+      // Sort cards by IC total descending so the biggest project is first.
+      const cards = Object.values(byProject)
+        .map(proj => {
+          const hrs   = proj.rows.reduce((s, r) => s + (parseFloat(r.total_hours) || 0), 0);
+          const labor = proj.rows.reduce((s, r) => s + (parseFloat(r.labor_cost)  || 0), 0);
+          const ic    = hrs * icKiewitLaborRate;
+          return { ...proj, totHours: hrs, totLabor: labor, totIc: ic };
+        })
+        .sort((a, b) => b.totIc - a.totIc);
+
+      body.innerHTML = cards.map((proj, idx) => {
+        const section = buildKiewitSection(proj.rows, `ci-kw-${idx}`);
+        return `
+        <div class="ci-co-card">
+          <div class="ci-co-header">
+            <div class="ci-co-name">${escT(proj.name)}</div>
+            <div class="ci-co-meta">
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${proj.rows.length}</div>
+                <div class="ci-co-stat-lbl">Entries</div>
+              </div>
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${fmtH(proj.totHours)}</div>
+                <div class="ci-co-stat-lbl">Labor Hours</div>
+              </div>
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val">${fmt$(proj.totLabor)}</div>
+                <div class="ci-co-stat-lbl">Labor Cost</div>
+              </div>
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val ic-val">${fmt$(proj.totIc)}</div>
+                <div class="ci-co-stat-lbl">Intercompany</div>
+              </div>
             </div>
           </div>
           ${section}
@@ -3427,7 +3704,17 @@
         if (!_isEditing()) renderCompanyInfo();
       }
 
-      setInterval(() => Promise.allSettled([pollBillingEntries(), pollCompanies(), pollQuarryDaily()]), POLL_MS);
+      async function pollKiewitLabor() {
+        // Only poll when the Kiewit sub-tab is being viewed. Compares a quick
+        // hash before re-rendering so an unchanged pull is a no-op.
+        if (_activeTabId() !== 'company-info' || ciDivFilter !== 'kiewit') return;
+        const prev = JSON.stringify(kiewitLaborRows);
+        await loadKiewitLabor();
+        if (JSON.stringify(kiewitLaborRows) === prev) return;
+        if (!_isEditing()) renderCompanyInfo();
+      }
+
+      setInterval(() => Promise.allSettled([pollBillingEntries(), pollCompanies(), pollQuarryDaily(), pollKiewitLabor()]), POLL_MS);
     })();
 
     /* ═══════════════════════════════════════════
