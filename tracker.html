@@ -23972,6 +23972,12 @@ const _CS_SCHED = [
 ];
 const _CS_SCHED_HINT = _CS_SCHED.map(m => m.label + ' — ' + m.hint).join('\n');
 const _csSchedOf = r => { const v = r && r.sched; return (v === 'par' || v === 'ongoing') ? v : 'seq'; };
+// Off-field work (landscaping, sidewalks, parking) is scheduled after the field
+// itself and is allowed to finish past the field deadline, so it's kept out of
+// the field completion date and its working-day count.
+const _csIsOff = r => !!(r && r.offField);
+const _CS_OFF_TINT = '#f59e0b';   // amber that reads on both the dark UI and white print
+const _CS_OFF_HINT = 'Off-field work — landscaping, sidewalks and the like. Scheduled after the field and allowed to finish past the field deadline, so it does not count toward it.';
 // How a task is named in the "same time as" picker — its sub code, else its
 // cost code, else what it's called.
 function _csTaskRefName(t) {
@@ -24009,10 +24015,20 @@ function _csTodayStr() {
 
 function _csNewTask() {
   return { id:_csUid(), kind:'task', status:'Not Yet Started', priority:'High',
-           start:'', end:'', duration:'', sched:'seq', code:'', subcode:'',
+           start:'', end:'', duration:'', sched:'seq', offField:false, code:'', subcode:'',
            description:'', deliverable:'', pct:0, deps:[] };
 }
 function _csNewDivider() { return { id:_csUid(), kind:'divider', description:'' }; }
+// A milestone marks a date rather than a span of work — Notice to Proceed,
+// Substantial Completion, Owner Turnover. It has no duration and so adds no
+// days; when no date is set it simply lands wherever it sits in the sequence.
+function _csNewMilestone() {
+  return { id:_csUid(), kind:'milestone', status:'Not Yet Started', start:'',
+           offField:false, code:'', subcode:'', description:'', deliverable:'', deps:[] };
+}
+const _csIsMilestone = r => !!(r && r.kind === 'milestone');
+// Rows that carry a position on the chart: work and milestones, not dividers.
+const _csScheduleRows = () => ((_csData && _csData.rows) || []).filter(r => r.kind === 'task' || r.kind === 'milestone');
 
 function _csBlankData() {
   return { v:1, workWeek:5, header:{ heading:'', projectTitle:'', pm:'',
@@ -24098,10 +24114,11 @@ function _csFmtShortNoYear(d) {
 // (Mon–Fri) in that span. Returns null when no task has both dates. Ongoing
 // work is skipped — it rides along with the job instead of driving its finish.
 function _csProjectSpan() {
-  const tasks = (_csData.rows || []).filter(r => r.kind === 'task' && _csSchedOf(r) !== 'ongoing');
+  const tasks = _csScheduleRows().filter(r => _csSchedOf(r) !== 'ongoing' && !_csIsOff(r));
   let minS = null, maxE = null;
   tasks.forEach(t => {
-    const s = _csParseDate(t.start), e = _csParseDate(t.end);
+    // a milestone is a single instant, so its date stands as both ends
+    const s = _csParseDate(t.start), e = _csIsMilestone(t) ? s : _csParseDate(t.end);
     if (s && (!minS || s < minS)) minS = s;
     if (e && (!maxE || e > maxE)) maxE = e;
   });
@@ -24126,17 +24143,31 @@ function _csHeaderStatsHtml(includeSelector) {
     : '';
   const span = _csProjectSpan();
   const estDays = _csEstDaysUnscheduled();
+  const gsp = _csGanttSpans();
+  const hasOff = _csHasOffField();
+  const offDays = gsp ? gsp.offDays : 0;
+  // With off-field work on the board the finish splits in two: the field
+  // deadline, and when everything including landscaping is done.
+  const offTail = (label, allEnd) => {
+    if (!hasOff) return '';
+    const bits = [];
+    if (offDays) bits.push(offDays + 'd');
+    if (allEnd) bits.push('all work ' + _csFmtShort(allEnd));
+    return `&nbsp;<span style="color:${_CS_OFF_TINT}">⚑&nbsp;off-field${bits.length ? ' +' + bits.join(' → ') : ''}</span>`;
+  };
   if (!span) {
-    if (!estDays) return `<span style="color:var(--muted)">Add task start &amp; end dates — or just estimated durations — to see working days.</span>${sel}`;
+    if (!estDays && !offDays) return `<span style="color:var(--muted)">Add task start &amp; end dates — or just estimated durations — to see working days.</span>${sel}`;
     return `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${estDays}</strong>`
-         + `&nbsp;<span style="color:var(--muted)">(estimated duration)</span>${sel}`;
+         + `&nbsp;<span style="color:var(--muted)">(estimated duration)</span>`
+         + offTail('', null) + sel;
   }
   const sep = `<span style="color:var(--border);margin:0 0.7rem">|</span>`;
   const unsched = estDays ? `&nbsp;<span style="color:var(--muted)">(+&nbsp;${estDays}d unscheduled)</span>` : '';
+  const allEnd = (gsp && gsp.allEnd && gsp.allEnd > span.end) ? gsp.allEnd : null;
   return `<span style="color:var(--muted)">Project Start</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.start)}</strong>${sep}`
-       + `<span style="color:var(--muted)">Finish</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.end)}</strong>${sep}`
+       + `<span style="color:var(--muted)">${hasOff ? 'Field Complete' : 'Finish'}</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.end)}</strong>${sep}`
        + `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${span.workingDays}</strong>${unsched}`
-       + sel;
+       + offTail('', allEnd) + sel;
 }
 function _csUpdateHeaderStats() {
   const el = document.getElementById('cs-header-stats');
@@ -24176,6 +24207,46 @@ function _csSetWorkWeek(val) {
   _csUpdateGanttHeader();
   _csUpdateGantt();
   _csScheduleSave();
+}
+
+/* ── baseline ────────────────────────────────────────────────────────────
+   A snapshot of the approved plan to measure slippage against. Positions are
+   stored relative to the schedule's own first day (offset + length in days)
+   rather than as calendar dates, so a duration-only schedule — which is
+   anchored to "today" — doesn't drift a day further behind every morning. */
+function _csBaseline() { return (_csData && _csData.baseline) || null; }
+function _csSetBaseline() {
+  const sp = _csGanttSpans();
+  if (!sp) { alert('Add some tasks with dates or durations first, then set the baseline.'); return; }
+  const b = _csBaseline();
+  if (b && !confirm('Replace the baseline saved ' + _csFmtShort(new Date(b.savedAt)) + '? The current schedule becomes the new plan of record.')) return;
+  let min = null;
+  Object.keys(sp.spans).forEach(id => { const v = sp.spans[id]; if (!min || v.start < min) min = v.start; });
+  const days = ms => Math.round(ms / 86400000 * 10) / 10;
+  const rows = {};
+  _csScheduleRows().forEach(r => {
+    const v = sp.spans[r.id];
+    if (v) rows[r.id] = { off: days(v.start - min), len: days(v.end - v.start), ms: _csIsMilestone(r) };
+  });
+  _csData.baseline = { savedAt: new Date().toISOString(), fieldDays: sp.estDays, offDays: sp.offDays, rows };
+  _csScheduleSave();
+  renderConstructionSchedule();
+}
+function _csClearBaseline() {
+  if (!_csData || !_csData.baseline) return;
+  if (!confirm('Clear the saved baseline? The planned-vs-current comparison goes away.')) return;
+  delete _csData.baseline;
+  _csScheduleSave();
+  renderConstructionSchedule();
+}
+// Days the schedule has slipped against its baseline (negative = ahead).
+function _csBaselineVariance() {
+  const b = _csBaseline(); if (!b) return null;
+  const sp = _csGanttSpans(); if (!sp) return null;
+  return {
+    field: Math.round((sp.estDays - (b.fieldDays || 0)) * 10) / 10,
+    off:   Math.round((sp.offDays - (b.offDays || 0)) * 10) / 10,
+  };
 }
 
 /* ── Gantt chart (rendered below the schedule, driven by the task dates) ─── */
@@ -24277,24 +24348,26 @@ function _csCriticalSet() {
    `estDays` is the length the duration-only chain actually adds, which is what
    the working-day stat reports. */
 function _csGanttSpans() {
-  const tasks = ((_csData && _csData.rows) || []).filter(r => r.kind === 'task');
+  const tasks = _csScheduleRows();
   const midnight = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
   const spans = {};
   let hasReal = false, hasVirtual = false, latestEnd = null;
   tasks.forEach(t => {
-    const s = _csParseDate(t.start), e = _csParseDate(t.end);
+    const s = _csParseDate(t.start), e = _csIsMilestone(t) ? s : _csParseDate(t.end);
     if (s && e && e >= s) {
       const mode = _csSchedOf(t);
-      spans[t.id] = { start: s, end: e, virtual: false, sched: mode };
+      spans[t.id] = { start: s, end: e, virtual: false, sched: mode, off: _csIsOff(t), milestone: _csIsMilestone(t) };
       hasReal = true;
-      if (mode !== 'ongoing' && (!latestEnd || e > latestEnd)) latestEnd = e;
+      if (mode !== 'ongoing' && !_csIsOff(t) && (!latestEnd || e > latestEnd)) latestEnd = e;
     }
   });
 
   const estOf = t => { const n = parseFloat(t.duration); return isFinite(n) && n > 0 ? n : 0; };
   const ongoing = [], pending = [];
   tasks.forEach(t => {
-    if (spans[t.id] || _csHasBothDates(t)) return;   // dated rows (even mis-ordered) are never sketched
+    if (spans[t.id]) return;
+    if (_csIsMilestone(t)) { pending.push(t); return; }   // undated: lands where it sits in the order
+    if (_csHasBothDates(t)) return;                       // dated rows (even mis-ordered) are never sketched
     if (!estOf(t)) return;
     (_csSchedOf(t) === 'ongoing' ? ongoing : pending).push(t);
   });
@@ -24309,17 +24382,20 @@ function _csGanttSpans() {
     const ref = t.schedRef;
     if (_csSchedOf(t) === 'par' && ref && ref !== t.id && byId[ref]) (followers[ref] = followers[ref] || []).push(t);
   });
+  // Field work is laid out first and off-field work picks up after it, which is
+  // what lets landscaping run past the field deadline.
+  const queue = pending.filter(t => !_csIsOff(t)).concat(pending.filter(_csIsOff));
   const ordered = [], seen = {};
   const emit = t => {
     if (seen[t.id]) return;
     seen[t.id] = 1; ordered.push(t);
     (followers[t.id] || []).forEach(emit);
   };
-  pending.forEach(t => {
+  queue.forEach(t => {
     const waiting = _csSchedOf(t) === 'par' && t.schedRef && t.schedRef !== t.id && byId[t.schedRef];
     if (!waiting) emit(t);          // anchors first; their followers ride along
   });
-  pending.forEach(emit);            // whatever's left (reference loops), in order
+  queue.forEach(emit);              // whatever's left (reference loops), in order
 
   // A "group" is a sequential task plus everything running alongside it. The
   // next sequential task waits for the whole group, so concurrent work only
@@ -24327,25 +24403,38 @@ function _csGanttSpans() {
   const anchor = midnight(latestEnd || new Date());
   const chainStart = new Date(anchor);
   let groupStart = new Date(anchor), groupEnd = new Date(anchor), chainEnd = new Date(anchor);
+  let fieldChainEnd = new Date(anchor);
   ordered.forEach(t => {
     let start, end;
+    const off = _csIsOff(t);
+    if (_csIsMilestone(t)) {
+      // An instant, not a span: it marks where the work so far lands and adds
+      // nothing to the schedule's length.
+      const at = new Date(groupEnd);
+      spans[t.id] = { start: at, end: at, virtual: true, sched: 'seq', off, milestone: true };
+      hasVirtual = true;
+      return;
+    }
     if (_csSchedOf(t) === 'par') {
       const ref = t.schedRef ? spans[t.schedRef] : null;
       start = new Date(ref ? ref.start : groupStart);
       end = new Date(start.getTime() + estOf(t) * 86400000);
-      spans[t.id] = { start, end, virtual: true, sched: 'par' };
+      spans[t.id] = { start, end, virtual: true, sched: 'par', off };
     } else {
       start = new Date(groupEnd);
       end = new Date(start.getTime() + estOf(t) * 86400000);
-      spans[t.id] = { start, end, virtual: true, sched: 'seq' };
+      spans[t.id] = { start, end, virtual: true, sched: 'seq', off };
       groupStart = new Date(start);
     }
     if (end > groupEnd) groupEnd = new Date(end);
     if (end > chainEnd) chainEnd = new Date(end);
+    if (!off && end > fieldChainEnd) fieldChainEnd = new Date(end);
     hasVirtual = true;
   });
   const estDays = ordered.length
-    ? Math.max(0, Math.round((chainEnd - chainStart) / 86400000 * 10) / 10) : 0;
+    ? Math.max(0, Math.round((fieldChainEnd - chainStart) / 86400000 * 10) / 10) : 0;
+  const offDays = ordered.length
+    ? Math.max(0, Math.round((chainEnd - fieldChainEnd) / 86400000 * 10) / 10) : 0;
 
   // Ongoing work spans everything else that's been placed; when it's the only
   // thing on the schedule it simply runs its own estimate from the anchor.
@@ -24361,13 +24450,39 @@ function _csGanttSpans() {
       const est = parseFloat(t.duration);
       const start = minAll ? new Date(minAll) : midnight(chainStart || latestEnd || new Date());
       const end = maxAll ? new Date(maxAll) : new Date(start.getTime() + est * 86400000);
-      spans[t.id] = { start, end, virtual: true, sched: 'ongoing' };
+      spans[t.id] = { start, end, virtual: true, sched: 'ongoing', off: _csIsOff(t) };
       hasVirtual = true;
     });
   }
-  return (hasReal || hasVirtual) ? { spans, hasReal, hasVirtual, estDays } : null;
+
+  // The field deadline is the last of the on-field work; off-field work is
+  // allowed to run past it, and "all work" is where everything lands.
+  let fieldEnd = null, allEnd = null, hasOff = false;
+  Object.keys(spans).forEach(id => {
+    const v = spans[id];
+    if (v.off) hasOff = true;
+    if (v.sched === 'ongoing') return;
+    if (!allEnd || v.end > allEnd) allEnd = v.end;
+    if (!v.off && (!fieldEnd || v.end > fieldEnd)) fieldEnd = v.end;
+  });
+  return (hasReal || hasVirtual)
+    ? { spans, hasReal, hasVirtual, estDays, offDays, fieldEnd, allEnd, hasOff } : null;
 }
-function _csRenderGanttHtml() {
+// Days of off-field work tacked on after the field deadline.
+function _csOffDaysAfterField() {
+  const sp = _csGanttSpans();
+  return sp ? sp.offDays : 0;
+}
+function _csHasOffField() {
+  return _csScheduleRows().some(_csIsOff);
+}
+function _csHasMilestones() {
+  return ((_csData && _csData.rows) || []).some(_csIsMilestone);
+}
+/* `opts` lets the print export shrink the chart so it lands on the same page as
+   the header it sits under; on screen the defaults apply. */
+function _csRenderGanttHtml(opts) {
+  opts = opts || {};
   const rows = (_csData && _csData.rows) || [];
   const sp = _csGanttSpans();
   if (!sp) {
@@ -24386,8 +24501,12 @@ function _csRenderGanttHtml() {
   const clamp = x => Math.max(0, Math.min(100, x));
   // Label gutter is wide enough for real task names, and rows are tall enough
   // for those names to wrap onto a second line rather than be cut off.
-  const LABELW = 250, ROWH = 44;
-  const BARTOP = Math.round((ROWH - 14) / 2);
+  const LABELW = opts.labelW || 250, ROWH = opts.rowH || 44;
+  const BARH   = opts.barH || 14;
+  const BARTOP = Math.max(1, Math.round((ROWH - BARH) / 2));
+  const NAMEFS = opts.nameFs || '0.72rem';     // task name
+  const SUBFS  = opts.subFs  || '0.56rem';     // dates / estimate under it
+  const TAGFS  = opts.tagFs  || '0.57rem';     // duration tag beside the bar
 
   // Axis: month gridlines + weekly day-of-month ticks on a real calendar; when
   // nothing has dates, a generic "Day N" scale over the estimated sequence.
@@ -24446,6 +24565,9 @@ function _csRenderGanttHtml() {
   const today = _csParseDate(_csTodayStr());
   const todayLine = (sp.hasReal && today && today >= minS && today <= maxE)
     ? `<div style="position:absolute;left:${pos(today)}%;top:0;bottom:0;border-left:2px dashed #f87171;opacity:0.85" title="Today"></div>` : '';
+  // Where the field itself is done — off-field bars are the ones running past it.
+  const deadlineLine = (sp.hasOff && sp.fieldEnd && sp.fieldEnd >= minS && sp.fieldEnd <= maxE)
+    ? `<div style="position:absolute;left:${pos(sp.fieldEnd)}%;top:0;bottom:0;border-left:2px dashed ${_CS_OFF_TINT};opacity:0.9" title="Field deadline — ${_csEsc(_csFmtShort(sp.fieldEnd))}"></div>` : '';
 
   // Rows at a fixed height so dependency-arrow geometry is deterministic.
   const critical = _csCriticalSet();
@@ -24454,7 +24576,7 @@ function _csRenderGanttHtml() {
     const yTop = i * ROWH;
     if (r.kind === 'divider') {
       return `<div style="display:flex;align-items:center;height:${ROWH}px">
-        <div style="width:${LABELW}px;flex-shrink:0;font-size:0.66rem;font-weight:700;font-style:italic;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2;padding-right:0.6rem" title="${_csEsc(r.description || '')}">${_csEsc(r.description) || '—'}</div>
+        <div style="width:${LABELW}px;flex-shrink:0;font-size:${NAMEFS};font-weight:700;font-style:italic;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2;padding-right:0.6rem" title="${_csEsc(r.description || '')}">${_csEsc(r.description) || '—'}</div>
         <div style="flex:1;border-top:1px dashed var(--border);opacity:0.7"></div>
       </div>`;
     }
@@ -24462,44 +24584,69 @@ function _csRenderGanttHtml() {
     const color = critical.has(r.id) ? _CS_CRIT : _csGanttColor(r.status);
     const pct = Math.min(100, Math.max(0, parseFloat(r.pct) || 0));
     const hasDesc = !!(r.description || '').trim();
-    const label = hasDesc ? _csEsc(r.description) : '(untitled task)';
+    const label = (_csIsOff(r) ? `<span style="color:${_CS_OFF_TINT}">⚑</span> ` : '')
+                + (_csIsMilestone(r) ? `<span style="color:${_CS_OFF_TINT}">◆</span> ` : '')
+                + (hasDesc ? _csEsc(r.description) : (_csIsMilestone(r) ? '(untitled milestone)' : '(untitled task)'));
     let bar = '';
-    if (v) {
+    // Baseline ghost: where this row sat in the approved plan, drawn under the
+    // live bar. Offsets are relative to the schedule's own start.
+    const bl = _csBaseline(), blRow = bl && bl.rows && bl.rows[r.id];
+    if (blRow) {
+      const bs = pos(new Date(minS.getTime() + blRow.off * 86400000));
+      const be = pos(new Date(minS.getTime() + (blRow.off + blRow.len) * 86400000));
+      const bw = Math.max(0, be - bs);
+      bar += blRow.ms
+        ? `<span title="Baseline milestone" style="position:absolute;left:${bs}%;top:${BARTOP + BARH + 1}px;width:7px;height:7px;margin-left:-3px;background:#94a3b8;opacity:0.75;transform:rotate(45deg)"></span>`
+        : `<span title="Baseline — ${blRow.len}d planned" style="position:absolute;left:${bs}%;width:${bw}%;min-width:6px;top:${BARTOP + BARH + 1}px;height:4px;background:#94a3b8;opacity:0.75;border-radius:2px"></span>`;
+    }
+    if (v && v.milestone) {
+      // A milestone is a point in time: a diamond, not a bar.
+      const at = pos(v.start);
+      geo[r.id] = { yc: yTop + ROWH / 2, x1: at, x2: at };
+      const done = (r.status === 'Complete');
+      const mcol = critical.has(r.id) ? _CS_CRIT : (done ? '#60a5fa' : _CS_OFF_TINT);
+      const when = v.virtual ? 'lands at the end of the work above' : _csFmtShort(v.start);
+      bar += `<span title="${_csEsc((r.description || 'Milestone') + ' — ' + when)}" style="position:absolute;left:${at}%;top:${BARTOP + 1}px;width:11px;height:11px;margin-left:-5.5px;background:${done ? mcol : 'transparent'};border:2px solid ${mcol};transform:rotate(45deg)"></span>`
+           + `<span style="position:absolute;left:${at}%;padding-left:10px;top:0;height:${ROWH}px;display:flex;align-items:center;font-size:${TAGFS};color:var(--muted);white-space:nowrap;pointer-events:none">${v.virtual ? '' : _csEsc(_csFmtShortNoYear(v.start))}</span>`;
+    } else if (v) {
       const left = pos(v.start), endPct = pos(v.end), width = Math.max(0, endPct - left);
       geo[r.id] = { yc: yTop + ROWH / 2, x1: left, x2: endPct };
       const dur = _csRowDuration(r);
       const isOng = v.sched === 'ongoing';
       const refT = v.sched === 'par' ? _csSchedRefTask(r) : null;
-      const timingNote = isOng ? ' — ongoing across the job, adds no days'
-                       : v.sched === 'par' ? ' — at the same time as ' + (refT ? _csTaskRefName(refT) : 'the task above') : '';
+      const timingNote = (isOng ? ' — ongoing across the job, adds no days'
+                       : v.sched === 'par' ? ' — at the same time as ' + (refT ? _csTaskRefName(refT) : 'the task above') : '')
+                       + (_csIsOff(r) ? ' — off-field, may finish after the field deadline' : '');
       const tip = v.virtual
         ? `${(r.description || '(untitled task)')}  est. ${dur}d${timingNote || ' — sketched in sequence'} (no dates set)  ${pct}% done`
         : `${(r.description || '(untitled task)')}  ${r.start} → ${r.end}${dur ? `  (${dur}d)` : ''}${timingNote}  ${pct}% done`;
       // Subtle duration label after the bar so it reads on the chart itself;
       // anchor to the right edge when the bar ends near it so nothing overflows.
-      const durSty = `top:0;height:${ROWH}px;display:flex;align-items:center;font-size:0.57rem;color:var(--muted);white-space:nowrap;pointer-events:none`;
+      const durSty = `top:0;height:${ROWH}px;display:flex;align-items:center;font-size:${TAGFS};color:var(--muted);white-space:nowrap;pointer-events:none`;
       // An ongoing bar spans the whole chart, so its label sits inside it
       // rather than trailing off the right edge.
       const durLabel = (dur && !isOng)
         ? `<span style="position:absolute;left:${endPct}%;padding-left:4px;${durSty}">${dur}d${v.virtual ? ' est.' : ''}</span>`
         : '';
       const ongLabel = isOng
-        ? `<span style="position:absolute;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:0.52rem;letter-spacing:0.09em;text-transform:uppercase;color:var(--muted);white-space:nowrap;pointer-events:none">ongoing${dur ? ' · est. ' + dur + 'd' : ''}</span>`
+        ? `<span style="position:absolute;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:${TAGFS};letter-spacing:0.09em;text-transform:uppercase;color:var(--muted);white-space:nowrap;pointer-events:none">ongoing${dur ? ' · est. ' + dur + 'd' : ''}</span>`
         : '';
       const edge = isOng ? 'dotted' : (v.virtual ? 'dashed' : 'solid');
-      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:${BARTOP}px;height:14px;background:${color}${isOng ? '18' : (v.virtual ? '22' : '33')};border:1px ${edge} ${color};border-radius:4px;overflow:hidden">
+      bar += `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:${BARTOP}px;height:${BARH}px;background:${color}${isOng ? '18' : (v.virtual ? '22' : '33')};border:1px ${edge} ${color};border-radius:4px;overflow:hidden">
         <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
         ${ongLabel}
       </div>${durLabel}`;
     }
-    const dateRange = !v ? ''
+    const offNote = _csIsOff(r) ? ' · off-field' : '';
+    const dateRange = (!v ? ''
+      : v.milestone ? (v.virtual ? 'milestone' : 'milestone · ' + _csFmtShortNoYear(v.start))
       : v.sched === 'ongoing' ? `ongoing${_csRowDuration(r) ? ' · est. ' + _csRowDuration(r) + 'd' : ''}`
       : v.virtual ? `est. ${_csRowDuration(r)}d${v.sched === 'par' ? ' · same time' : ''}`
-      : `${_csFmtShortNoYear(v.start)} – ${_csFmtShortNoYear(v.end)}${v.sched === 'par' ? ' · same time' : ''}`;
+      : `${_csFmtShortNoYear(v.start)} – ${_csFmtShortNoYear(v.end)}${v.sched === 'par' ? ' · same time' : ''}`) + offNote;
     return `<div style="display:flex;align-items:center;height:${ROWH}px">
       <div style="width:${LABELW}px;flex-shrink:0;padding-right:0.6rem;overflow:hidden">
-        <div style="font-size:0.72rem;color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2" title="${_csEsc(r.description || '')}">${label}</div>
-        ${dateRange ? `<div style="font-size:0.56rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15;margin-top:1px">${dateRange}</div>` : ''}
+        <div style="font-size:${NAMEFS};color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2" title="${_csEsc(r.description || '')}">${label}</div>
+        ${dateRange ? `<div style="font-size:${SUBFS};color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15;margin-top:1px">${dateRange}</div>` : ''}
       </div>
       <div style="flex:1;position:relative;height:${ROWH}px">${bar}</div>
     </div>`;
@@ -24531,7 +24678,7 @@ function _csRenderGanttHtml() {
         <div style="flex:1;position:relative;height:26px">${axis}${weekLabels}</div>
       </div>
       <div style="position:relative">
-        <div style="position:absolute;left:${LABELW}px;right:0;top:0;bottom:0;pointer-events:none">${shade}${weekGrid}${grid}${todayLine}</div>
+        <div style="position:absolute;left:${LABELW}px;right:0;top:0;bottom:0;pointer-events:none">${shade}${weekGrid}${grid}${deadlineLine}${todayLine}</div>
         ${body}
         ${arrows}
       </div>
@@ -24633,6 +24780,15 @@ function _csGanttToPng() {
     }
   }
 
+  // field deadline — off-field bars are the ones reaching past it
+  if (sp.hasOff && sp.fieldEnd && sp.fieldEnd >= minS && sp.fieldEnd <= maxE) {
+    const x = X(sp.fieldEnd);
+    ctx.strokeStyle = '#d97706'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
+    ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#b45309'; ctx.font = 'bold 8px Arial';
+    ctx.fillText('FIELD DEADLINE', x + 3, AXIS - 4);
+  }
+
   // rows: labels + bars
   const critical = _csCriticalSet(); const geo = {};
   rows.forEach((r, i) => {
@@ -24643,16 +24799,33 @@ function _csGanttToPng() {
       ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(trackX, yc); ctx.lineTo(W - PAD, yc); ctx.stroke(); ctx.setLineDash([]); return;
     }
     const v = spans[r.id], dur = _csRowDuration(r);
+    const bl = _csBaseline(), blRow = bl && bl.rows && bl.rows[r.id];
     ctx.fillStyle = '#111'; ctx.font = '600 11px Arial';
-    const nameLines = _csWrapCanvasText(ctx, r.description || '(untitled)', LABELMAX, 2);
+    const nameLines = _csWrapCanvasText(ctx, (_csIsOff(r) ? '\u2691 ' : '') + (_csIsMilestone(r) ? '\u25C6 ' : '') + (r.description || (_csIsMilestone(r) ? '(untitled milestone)' : '(untitled)')), LABELMAX, 2);
     nameLines.forEach((ln, k) => ctx.fillText(ln, LABELPAD, y + 11 + k * 12));
     ctx.fillStyle = '#888'; ctx.font = '9px Arial';
     const subTxt = !v ? ''
+      : v.milestone ? (v.virtual ? 'milestone' : 'milestone · ' + _csFmtShortNoYear(v.start))
       : v.sched === 'ongoing' ? `ongoing${dur ? ' · est. ' + dur + 'd' : ''}`
       : v.virtual ? `est. ${dur}d${v.sched === 'par' ? ' · same time' : ''}`
       : `${_csFmtShortNoYear(v.start)} – ${_csFmtShortNoYear(v.end)}${dur ? ' · ' + dur + 'd' : ''}${v.sched === 'par' ? ' · same time' : ''}`;
-    ctx.fillText(subTxt, LABELPAD, y + 11 + nameLines.length * 12 + 2);
-    if (v) {
+    ctx.fillText(subTxt + (_csIsOff(r) ? ' · off-field' : ''), LABELPAD, y + 11 + nameLines.length * 12 + 2);
+    if (blRow) {   // baseline ghost under the live bar
+      const bx1 = X(new Date(minS.getTime() + blRow.off * 86400000));
+      const bx2 = X(new Date(minS.getTime() + (blRow.off + blRow.len) * 86400000));
+      ctx.fillStyle = 'rgba(148,163,184,0.55)';
+      ctx.fillRect(bx1, yc + 8, Math.max(3, bx2 - bx1), 3);
+    }
+    if (v && v.milestone) {
+      const mx = X(v.start), done = (r.status === 'Complete');
+      const mcol = critical.has(r.id) ? '#dc2626' : (done ? '#2563eb' : '#d97706');
+      geo[r.id] = { yc, x1: mx, x2: mx };
+      ctx.save(); ctx.translate(mx, yc); ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = done ? mcol : '#fff'; ctx.fillRect(-5, -5, 10, 10);
+      ctx.strokeStyle = mcol; ctx.lineWidth = 1.6; ctx.strokeRect(-5, -5, 10, 10);
+      ctx.restore();
+      if (!v.virtual) { ctx.fillStyle = '#666'; ctx.font = '9px Arial'; ctx.fillText(_csFmtShortNoYear(v.start), mx + 9, yc); }
+    } else if (v) {
       const x1 = X(v.start), x2 = X(v.end), bw = Math.max(4, x2 - x1), color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
       geo[r.id] = { yc, x1, x2 };
       const barY = yc - 7, pct = Math.min(100, Math.max(0, parseFloat(r.pct) || 0));
@@ -24702,16 +24875,27 @@ function _csExportPdf() {
   const depName = id => { const t = rows.find(x => x.id === id); return t ? ((t.description || '').trim() || 'task') : ''; };
 
   const estDays = _csEstDaysUnscheduled();
+  const gsp = _csGanttSpans();
+  const baseVar = _csBaselineVariance();
+  const hasOff = _csHasOffField();
+  const offDays = gsp ? gsp.offDays : 0;
+  const allEnd = (gsp && gsp.allEnd && span && gsp.allEnd > span.end) ? gsp.allEnd : null;
   const wdNote = t => `<span style="font-size:8px;color:#888;font-weight:400">${t}</span>`;
   const wdVal = span
     ? `${span.workingDays} ${wdNote(`(${esc(wwLabel)})`)}${estDays ? ' ' + wdNote(`+ ${estDays}d unscheduled`) : ''}`
     : (estDays ? `${estDays} ${wdNote('(estimated duration)')}` : null);
   const kpis = [
     span ? ['Project Start', _csFmtShort(span.start)] : null,
-    span ? ['Finish', _csFmtShort(span.end)] : null,
+    span ? [hasOff ? 'Field Complete' : 'Finish', _csFmtShort(span.end)] : null,
     wdVal ? ['Est. Working Days', wdVal] : null,
+    (hasOff && (allEnd || offDays))
+      ? ['All Work Complete', (allEnd ? _csFmtShort(allEnd) : '&mdash;') + (offDays ? ' ' + wdNote(`+ ${offDays}d off-field`) : '')]
+      : null,
     ['Overall % Done', `${overall}%`],
     ['Tasks', String(taskCount)],
+    baseVar ? ['vs Baseline', (baseVar.field > 0 ? `<span style="color:#dc2626">+${baseVar.field}d behind</span>`
+              : baseVar.field < 0 ? `<span style="color:#15803d">${-baseVar.field}d ahead</span>` : 'On plan')
+              + ` ${wdNote('set ' + esc(_csFmtShort(new Date(_csBaseline().savedAt))))}`] : null,
   ].filter(Boolean).map(([l, v]) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
 
   // The Timing column only appears once some task actually uses it, so an
@@ -24729,6 +24913,18 @@ function _csExportPdf() {
     if (r.kind === 'divider') return `<tr class="divider"><td colspan="${NCOL}">${esc(r.description) || '—'}</td></tr>`;
     const deps = (Array.isArray(r.deps) ? r.deps : []).map(depName).filter(Boolean).join(', ');
     const pct = Math.round(Math.min(100, Math.max(0, parseFloat(r.pct) || 0)));
+    if (r.kind === 'milestone') {
+      const at = gsp && gsp.spans[r.id];
+      return `<tr style="background:#fdf6e7">
+        <td>${esc(r.status)}</td><td></td>
+        <td>${at && !at.virtual ? _csFmtShort(at.start) : (at ? '<span style="color:#888">at end of work above</span>' : '')}</td>
+        <td></td><td class="c" style="color:#b45309;font-weight:700">&#9670;</td>
+        ${showSched ? '<td></td>' : ''}
+        <td>${esc(r.code)}</td><td>${esc(r.subcode)}</td>
+        <td style="font-weight:700"><span style="color:#b45309">&#9670;</span> ${esc(r.description) || 'Milestone'}</td>
+        <td>${esc(r.deliverable)}</td><td></td><td>${esc(deps)}</td>
+      </tr>`;
+    }
     return `<tr>
       <td>${esc(r.status)}</td><td>${esc(r.priority)}</td>
       <td>${r.start ? _csFmtShort(_csParseDate(r.start)) : ''}</td>
@@ -24736,12 +24932,28 @@ function _csExportPdf() {
       <td class="c">${esc(_csRowDuration(r))}</td>
       ${showSched ? `<td>${esc(_csSchedLabel(r))}</td>` : ''}
       <td>${esc(r.code)}</td><td>${esc(r.subcode)}</td>
-      <td>${esc(r.description)}</td><td>${esc(r.deliverable)}</td>
+      <td>${_csIsOff(r) ? '<span style="color:#b45309;font-weight:700">&#9873;</span> ' : ''}${esc(r.description)}</td><td>${esc(r.deliverable)}</td>
       <td class="c">${pct}%</td><td>${esc(deps)}</td>
     </tr>`;
   }).join('');
 
-  const ganttHtml = _csRenderGanttHtml();
+  // Size the chart to the room left under the repeated header so the Gantt
+  // lands on that same page instead of being bumped to a blank one. Below ~28px
+  // a row can't hold a readable two-line name, so past that the chart keeps its
+  // size and simply flows onto a second page.
+  const GANTT_ROOM = 560;     // measured page height minus header, heading, footnote
+  const GANTT_CHROME = 52;    // axis strip, padding and border inside the chart
+  const rowSlots = Math.max(1, rows.length);
+  const fitRowH = Math.floor((GANTT_ROOM - GANTT_CHROME) / rowSlots);
+  const rowH = Math.max(28, Math.min(44, fitRowH));
+  const nameFs = Math.max(8, Math.min(11.5, (rowH - 2) / 3.22));
+  const ganttHtml = rowH >= 44 ? _csRenderGanttHtml() : _csRenderGanttHtml({
+    rowH,
+    barH:   Math.max(8, Math.min(14, rowH - 20)),
+    nameFs: nameFs.toFixed(1) + 'px',
+    subFs:  (nameFs * 0.8).toFixed(1) + 'px',
+    tagFs:  (nameFs * 0.82).toFixed(1) + 'px',
+  });
   const titleTxt = (h.heading || h.projectTitle || 'Project');
 
   // Branded header (DataWatch banner + project info + KPIs). Rendered once above
@@ -24795,8 +25007,9 @@ function _csExportPdf() {
     tr:nth-child(even) td{background:#f7f8fa}
     tr.divider td{background:#e5e7eb;font-style:italic;font-weight:700;color:#374151}
     .gantt{border:1px solid #e3e5e9;border-radius:6px;padding:10px 12px}
-    .gantt-page{page-break-before:always;padding-top:22px}
-    .gantt-wrap{page-break-inside:avoid}
+    .gantt-page{page-break-before:always;padding-top:10px}
+    /* No page-break-inside:avoid here — a chart too tall for the page should
+       flow onto the next one, not push itself off and leave a blank page. */
     .fn{font-size:8px;color:#777;margin-top:8px}
     @media print{@page{margin:0.55cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style></head><body>
@@ -24810,7 +25023,7 @@ function _csExportPdf() {
       ${headerBlock}
       <h2>Gantt Chart</h2>
       <div class="gantt-wrap"><div class="gantt">${ganttHtml}</div></div>
-      <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; <span style="color:#dc2626;font-weight:700">red</span> marks the critical path (dependency chain that drives the finish date); the dashed line marks today; arrows show finish-to-start dependencies. Dashed bars are duration-only estimates charted in sequence, not scheduled dates${showSched ? '; dotted bars run ongoing across the job. "Same time" and ongoing work is excluded from the working-day count, since it runs alongside the rest of the schedule' : ''}.</p>
+      <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; <span style="color:#dc2626;font-weight:700">red</span> marks the critical path (dependency chain that drives the finish date); the dashed line marks today; arrows show finish-to-start dependencies. Dashed bars are duration-only estimates charted in sequence, not scheduled dates${showSched ? '; dotted bars run ongoing across the job. "Same time" and ongoing work is excluded from the working-day count, since it runs alongside the rest of the schedule' : ''}.${hasOff ? ' <span style="color:#b45309;font-weight:700">&#9873;</span> marks off-field work (landscaping and the like), which is scheduled after the field and may finish past the amber field-deadline line — it is excluded from the field completion date and its working-day count.' : ''}</p>
     </div>
     <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
@@ -24856,16 +25069,26 @@ function _csBuildEmailReportHtml(png) {
 
   const kpi = (l, v) => `<td style="padding:6px 16px 6px 0;vertical-align:top"><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:#888">${l}</div><div style="font-size:14px;font-weight:700;color:#111">${v}</div></td>`;
   const estDays = _csEstDaysUnscheduled();
+  const baseVar = _csBaselineVariance();
+  const hasOff = _csHasOffField();
+  const offDays = gsp ? gsp.offDays : 0;
+  const allEnd = (gsp && gsp.allEnd && span && gsp.allEnd > span.end) ? gsp.allEnd : null;
   const wdNote = t => `<span style="font-size:8px;color:#888;font-weight:400">${t}</span>`;
   const wdVal = span
     ? `${span.workingDays} ${wdNote(`(${esc(wwLabel)})`)}${estDays ? ' ' + wdNote(`+ ${estDays}d unscheduled`) : ''}`
     : (estDays ? `${estDays} ${wdNote('(estimated duration)')}` : '');
   const kpis = [
     span ? kpi('Project Start', _csFmtShort(span.start)) : '',
-    span ? kpi('Finish', _csFmtShort(span.end)) : '',
+    span ? kpi(hasOff ? 'Field Complete' : 'Finish', _csFmtShort(span.end)) : '',
     wdVal ? kpi('Est. Working Days', wdVal) : '',
+    (hasOff && (allEnd || offDays))
+      ? kpi('All Work Complete', (allEnd ? _csFmtShort(allEnd) : '&mdash;') + (offDays ? ' ' + wdNote(`+ ${offDays}d off-field`) : ''))
+      : '',
     kpi('Overall % Done', `${overall}%`),
     kpi('Tasks', String(rows.filter(r => r.kind === 'task').length)),
+    baseVar ? kpi('vs Baseline', (baseVar.field > 0 ? `<span style="color:#dc2626">+${baseVar.field}d behind</span>`
+              : baseVar.field < 0 ? `<span style="color:#15803d">${-baseVar.field}d ahead</span>` : 'On plan')
+              + ` ${wdNote('set ' + esc(_csFmtShort(new Date(_csBaseline().savedAt))))}`) : '',
   ].join('');
 
   const th = t => `<th style="background:#15803d;color:#fff;font-size:9px;text-transform:uppercase;letter-spacing:.03em;padding:5px 7px;text-align:left;border:1px solid #cfd4da;white-space:nowrap">${t}</th>`;
@@ -24873,11 +25096,15 @@ function _csBuildEmailReportHtml(png) {
   // Timing rides along only when the schedule actually uses it.
   const showSched = _csUsesSched();
   const tRows = rows.map((r, i) => {
+    if (r.kind === 'milestone') {
+      const at = gsp && gsp.spans[r.id];
+      return `<tr style="background:#fdf6e7">${td(esc(r.status))}${td('')}${td(at && !at.virtual ? _csFmtShort(at.start) : (at ? 'at end of work above' : ''))}${td('')}${td('<span style="color:#b45309;font-weight:700">&#9670;</span>', true)}${showSched ? td('') : ''}${td('<span style="color:#b45309;font-weight:700">&#9670;</span> <strong>' + (esc(r.description) || 'Milestone') + '</strong>')}${td(esc(r.deliverable))}${td('')}${td((Array.isArray(r.deps) ? r.deps : []).map(depName).filter(Boolean).join(', '))}</tr>`;
+    }
     if (r.kind === 'divider') return `<tr><td colspan="${showSched ? 10 : 9}" style="background:#e5e7eb;color:#374151;font-style:italic;font-weight:700;font-size:10px;padding:4px 7px;border:1px solid #d7dbe0">${esc(r.description) || '—'}</td></tr>`;
     const deps = (Array.isArray(r.deps) ? r.deps : []).map(depName).filter(Boolean).join(', ');
     const pct = Math.round(Math.min(100, Math.max(0, parseFloat(r.pct) || 0)));
     const critMark = critical.has(r.id) ? ' <span style="color:#dc2626;font-weight:700">&#9670;</span>' : '';
-    return `<tr style="${i % 2 ? 'background:#f7f8fa;' : ''}">${td(esc(r.status) + critMark)}${td(esc(r.priority))}${td(r.start ? _csFmtShort(_csParseDate(r.start)) : '')}${td(r.end ? _csFmtShort(_csParseDate(r.end)) : '')}${td(esc(_csRowDuration(r)), true)}${showSched ? td(esc(_csSchedLabel(r))) : ''}${td(esc(r.description))}${td(esc(r.deliverable))}${td(pct + '%', true)}${td(esc(deps))}</tr>`;
+    return `<tr style="${i % 2 ? 'background:#f7f8fa;' : ''}">${td(esc(r.status) + critMark)}${td(esc(r.priority))}${td(r.start ? _csFmtShort(_csParseDate(r.start)) : '')}${td(r.end ? _csFmtShort(_csParseDate(r.end)) : '')}${td(esc(_csRowDuration(r)), true)}${showSched ? td(esc(_csSchedLabel(r))) : ''}${td((_csIsOff(r) ? '<span style="color:#b45309;font-weight:700">&#9873;</span> ' : '') + esc(r.description))}${td(esc(r.deliverable))}${td(pct + '%', true)}${td(esc(deps))}</tr>`;
   }).join('');
 
   // Gantt: prefer the rendered PNG (identical to the on-screen chart). Fall back
@@ -24895,6 +25122,7 @@ function _csBuildEmailReportHtml(png) {
       const modeNote = mode === 'ongoing' ? 'ongoing' : (mode === 'par' ? 'same time' : '');
       let sub = dr ? (dr + (dur ? ' &middot; ' + dur + 'd' : '')) : (dur ? 'est. ' + dur + 'd' : '');
       if (modeNote) sub = sub ? sub + ' &middot; ' + modeNote : modeNote;
+      if (_csIsOff(r)) sub = sub ? sub + ' &middot; off-field' : 'off-field';
       return `<tr>
         <td width="235" style="width:235px;padding:3px 8px 3px 0;vertical-align:middle">
           <div style="font-size:11px;font-weight:600;color:#111;line-height:1.2">${esc(r.description) || '(untitled)'}</div>
@@ -24937,7 +25165,7 @@ function _csBuildEmailReportHtml(png) {
       <div style="font-size:12px;font-weight:700;color:#0f172a;border-bottom:2px solid #16a34a;padding-bottom:3px;margin-bottom:5px">Gantt Chart</div>
       <div style="margin-bottom:7px">${legend}</div>
       ${ganttBlock}
-      <div style="font-size:8px;color:#999;margin-top:9px">Est. Working Days counts ${esc(wwLabel)}${showSched ? ', and excludes "Same time" and ongoing work since it runs alongside the rest of the schedule' : ''}; &#9670; / red marks the critical path (drives the finish date). Open the schedule in DataWatch for the fully interactive Gantt.</div>
+      <div style="font-size:8px;color:#999;margin-top:9px">${hasOff ? '<span style="color:#b45309;font-weight:700">&#9873;</span> marks off-field work (landscaping and the like), scheduled after the field and allowed to finish past the field deadline — it is excluded from the field completion date and its working-day count. ' : ''}Est. Working Days counts ${esc(wwLabel)}${showSched ? ', and excludes "Same time" and ongoing work since it runs alongside the rest of the schedule' : ''}; &#9670; / red marks the critical path (drives the finish date). Open the schedule in DataWatch for the fully interactive Gantt.</div>
     </div>
   </div>`;
 }
@@ -25092,7 +25320,8 @@ function _csUpdateSummary() {
 
 /* ── row operations (structural — full re-render) ────────────────────────── */
 function _csAddTask()    { _csData.rows.push(_csNewTask());    _csScheduleSave(); renderConstructionSchedule(); }
-function _csAddDivider() { _csData.rows.push(_csNewDivider()); _csScheduleSave(); renderConstructionSchedule(); }
+function _csAddDivider()   { _csData.rows.push(_csNewDivider());   _csScheduleSave(); renderConstructionSchedule(); }
+function _csAddMilestone() { _csData.rows.push(_csNewMilestone()); _csScheduleSave(); renderConstructionSchedule(); }
 function _csDeleteRow(id) {
   const row = _csData.rows.find(r => r.id === id);
   const label = row && row.description ? ('“' + row.description + '”') : 'this row';
@@ -25122,13 +25351,17 @@ async function _csSaveAsTemplate() {
   await _csEnsureTemplates();
   const rows = _csData.rows.map(r => r.kind === 'divider'
     ? { kind:'divider', description:r.description }
+    : r.kind === 'milestone'
+    ? { kind:'milestone', status:'Not Yet Started', start:'', tid:r.id, offField:!!r.offField,
+        code:r.code || '', subcode:r.subcode || '', description:r.description || '',
+        deliverable:r.deliverable || '', deps:[] }
     : { kind:'task', status:'Not Yet Started', priority:r.priority || 'High',
         // dates are job-specific, but the day count (derived or typed) carries
         // over as the template's duration estimate
         start:'', end:'', duration:_csRowDuration(r) || '', sched:_csSchedOf(r),
         // tid/schedRef travel together so "same time as" survives the trip
         // through a template, where every row gets a fresh id on the way out
-        tid:r.id, schedRef:r.schedRef || '', code:r.code || '',
+        tid:r.id, schedRef:r.schedRef || '', offField:!!r.offField, code:r.code || '',
         subcode:r.subcode || '', description:r.description || '',
         deliverable:r.deliverable || '', pct:0 });
   _csTemplates.push({ id:_csUid(), name:name.trim(), rows });
@@ -25154,6 +25387,7 @@ async function _csApplyTemplate(tid) {
     delete r.tid;
   });
   _csData.rows = rows;
+  delete _csData.baseline;      // a fresh task list has nothing to compare against
   _csScheduleSave(); renderConstructionSchedule();
 }
 async function _csDeleteTemplate(tid) {
@@ -25203,7 +25437,7 @@ function _csDurCell(row) {
    choices name the other tasks by cost/sub code. */
 function _csSchedCell(row) {
   const mode = _csSchedOf(row);
-  const others = ((_csData && _csData.rows) || []).filter(r => r.kind === 'task' && r.id !== row.id);
+  const others = ((_csData && _csData.rows) || []).filter(r => r.kind === 'task' && r.id !== row.id);   // milestones have no span to share
   const pinned = _csSchedRefTask(row);
   const cur = mode !== 'par' ? mode : (pinned ? 'par:' + pinned.id : 'par');
   const opt = (v, label) => `<option value="${_csEsc(v)}"${v === cur ? ' selected' : ''}>${_csEsc(label)}</option>`;
@@ -25213,6 +25447,22 @@ function _csSchedCell(row) {
   return `<select id="cs-sched-${row.id}" onchange="_csSetSched('${row.id}',this.value)" title="${_csEsc(_CS_SCHED_HINT)}" style="${_CS_INP};cursor:pointer${tint}">`
        + opt('seq', 'In sequence') + opt('ongoing', 'Ongoing')
        + opt('par', 'Same time as the task above') + refOpts + `</select>`;
+}
+function _csToggleOff(id) {
+  if (!_csData) return;
+  const row = (_csData.rows || []).find(r => r.id === id);
+  if (!row) return;
+  row.offField = !row.offField;
+  const be = document.getElementById('cs-off-' + id);
+  if (be) {
+    be.style.color = row.offField ? _CS_OFF_TINT : 'var(--muted)';
+    be.style.opacity = row.offField ? '1' : '0.45';
+  }
+  _csUpdateSummary();
+  _csUpdateHeaderStats();
+  _csUpdateGanttHeader();
+  _csUpdateGantt();
+  _csScheduleSave();
 }
 // Timing is one select covering three modes, so decode the picked value: a
 // bare mode, or "par:<task id>" pinning this task alongside that one.
@@ -25291,7 +25541,7 @@ document.addEventListener('input', e => {
 
 /* ── task dependencies (finish-to-start predecessors) ────────────────────── */
 function _csDepsCell(row) {
-  const all  = (_csData.rows || []).filter(r => r.kind === 'task' && r.id !== row.id);
+  const all  = _csScheduleRows().filter(r => r.id !== row.id);
   const deps = Array.isArray(row.deps) ? row.deps : [];
   const chips = deps.map(depId => {
     const t  = (_csData.rows || []).find(x => x.id === depId);
@@ -25335,7 +25585,28 @@ function _csRowHtml(row, index, total) {
   const up   = `<button title="Move up" onclick="_csMoveRow('${row.id}',-1)" ${index === 0 ? 'disabled' : ''} style="${btn};${index === 0 ? 'opacity:0.3' : ''}">▲</button>`;
   const down = `<button title="Move down" onclick="_csMoveRow('${row.id}',1)" ${index === total - 1 ? 'disabled' : ''} style="${btn};${index === total - 1 ? 'opacity:0.3' : ''}">▼</button>`;
   const del  = `<button title="Delete row" onclick="_csDeleteRow('${row.id}')" style="background:none;border:none;color:var(--red);cursor:pointer;padding:0 4px;font-size:0.85rem">✕</button>`;
-  const actions = `<td style="${_CS_TD};white-space:nowrap;text-align:center">${up}${down}${del}</td>`;
+  const off  = row.kind === 'task'
+    ? `<button id="cs-off-${row.id}" title="${_csEsc(_CS_OFF_HINT)}" onclick="_csToggleOff('${row.id}')" style="${btn};font-size:0.85rem;color:${_csIsOff(row) ? _CS_OFF_TINT : 'var(--muted)'};opacity:${_csIsOff(row) ? '1' : '0.45'}">⚑</button>`
+    : '';
+  const actions = `<td style="${_CS_TD};white-space:nowrap;text-align:center">${off}${up}${down}${del}</td>`;
+
+  if (row.kind === 'milestone') {
+    const blank = `<td style="${_CS_TD}"></td>`;
+    return `<tr style="background:rgba(245,158,11,0.09)">
+      <td style="${_CS_TD};min-width:114px">${_csSelect(row.id, 'status', row.status, _CS_STATUSES, true)}</td>
+      ${blank}
+      <td style="${_CS_TD};min-width:112px"><input type="date" value="${_csEsc(row.start)}" title="Milestone date — leave blank to have it land at the end of the work above" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
+      ${blank}
+      <td style="${_CS_TD};text-align:center;color:${_CS_OFF_TINT}" title="Milestone — a date, not a span of work">◆</td>
+      ${blank}
+      <td style="${_CS_TD};min-width:150px">${_csCodeCell(row)}</td>
+      <td style="${_CS_TD};min-width:150px">${_csSubcodeCell(row)}</td>
+      <td style="${_CS_TD};min-width:233px">${_csCell(row.id, 'description', row.description, ';font-weight:700')}</td>
+      <td style="${_CS_TD};min-width:108px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
+      ${blank}
+      <td style="${_CS_TD};min-width:100px">${_csDepsCell(row)}</td>
+      ${actions}</tr>`;
+  }
 
   if (row.kind === 'divider') {
     return `<tr>
@@ -25448,6 +25719,17 @@ function renderConstructionSchedule() {
         </div>
         <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
           ${tmplApply}${tmplDelete}
+          ${(() => {
+            const b = _csBaseline(), varc = _csBaselineVariance();
+            if (!b) return `<button onclick="_csSetBaseline()" style="${ghostBtn}" title="Save the current schedule as the plan of record, to measure slippage against">◧ Set baseline</button>`;
+            const d = varc ? varc.field : 0;
+            const tone = d > 0 ? 'var(--red)' : (d < 0 ? '#4ade80' : 'var(--muted)');
+            const txt  = d > 0 ? `+${d}d behind` : (d < 0 ? `${-d}d ahead` : 'on plan');
+            return `<span style="font-size:0.72rem;color:var(--muted)">Baseline ${_csEsc(_csFmtShort(new Date(b.savedAt)))}`
+                 + ` <strong style="color:${tone}">${txt}</strong></span>`
+                 + `<button onclick="_csSetBaseline()" style="${ghostBtn}" title="Replace the baseline with the current schedule">◧ Re-baseline</button>`
+                 + `<button onclick="_csClearBaseline()" style="${ghostBtn}" title="Remove the saved baseline">Clear</button>`;
+          })()}
           <button onclick="_csSaveAsTemplate()" style="${ghostBtn}">☆ Save as template</button>
           <button onclick="_csExportPdf()" style="${ghostBtn}">&#128438; Print / PDF</button>
           <button onclick="_csEmailSchedule()" style="${ghostBtn}">&#9993; Email</button>
@@ -25489,6 +25771,7 @@ function renderConstructionSchedule() {
       <!-- add row buttons -->
       <div style="display:flex;gap:0.55rem;flex-wrap:wrap;margin-top:0.9rem">
         <button onclick="_csAddTask()" style="${greenBtn}">＋ Add Task</button>
+        <button onclick="_csAddMilestone()" style="${ghostBtn}">◆ Add Milestone</button>
         <button onclick="_csAddDivider()" style="${ghostBtn}">＋ Add Section Divider</button>
       </div>
 
@@ -25499,7 +25782,7 @@ function renderConstructionSchedule() {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.7rem;border-bottom:2px solid var(--green);padding-bottom:0.35rem">
           <div style="font-size:1.05rem;font-weight:800;color:var(--fg)">Gantt Chart</div>
           <div style="display:flex;gap:0.9rem;flex-wrap:wrap;font-size:0.68rem;color:var(--muted)">
-            ${[['Complete','#60a5fa'],['In Progress','#4ade80'],['Not Yet Started','#94a3b8'],['On Hold','#fbbf24'],['Critical path','#dc2626']].map(([l,c]) => `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${l}</span>`).join('')}<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;border:1.5px dashed var(--muted)"></span>Estimate (no dates)</span><span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;border:1.5px dotted var(--muted)"></span>Ongoing</span>
+            ${[['Complete','#60a5fa'],['In Progress','#4ade80'],['Not Yet Started','#94a3b8'],['On Hold','#fbbf24'],['Critical path','#dc2626']].map(([l,c]) => `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${l}</span>`).join('')}<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;border:1.5px dashed var(--muted)"></span>Estimate (no dates)</span><span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;border:1.5px dotted var(--muted)"></span>Ongoing</span>${_csHasMilestones() ? `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="color:${_CS_OFF_TINT}">◆</span>Milestone</span>` : ''}${_csBaseline() ? `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:4px;border-radius:2px;background:#94a3b8;opacity:0.6"></span>Baseline</span>` : ''}${_csHasOffField() ? `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="color:${_CS_OFF_TINT}">⚑</span>Off-field</span><span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:0;border-top:2px dashed ${_CS_OFF_TINT}"></span>Field deadline</span>` : ''}
           </div>
         </div>
         <div id="cs-gantt">${_csRenderGanttHtml()}</div>
