@@ -22389,7 +22389,10 @@ function _csGanttSpans() {
   }
   return (hasReal || hasVirtual) ? { spans, hasReal, hasVirtual, estDays } : null;
 }
-function _csRenderGanttHtml() {
+/* `opts` lets the print export shrink the chart so it lands on the same page as
+   the header it sits under; on screen the defaults apply. */
+function _csRenderGanttHtml(opts) {
+  opts = opts || {};
   const rows = (_csData && _csData.rows) || [];
   const sp = _csGanttSpans();
   if (!sp) {
@@ -22408,8 +22411,12 @@ function _csRenderGanttHtml() {
   const clamp = x => Math.max(0, Math.min(100, x));
   // Label gutter is wide enough for real task names, and rows are tall enough
   // for those names to wrap onto a second line rather than be cut off.
-  const LABELW = 250, ROWH = 44;
-  const BARTOP = Math.round((ROWH - 14) / 2);
+  const LABELW = opts.labelW || 250, ROWH = opts.rowH || 44;
+  const BARH   = opts.barH || 14;
+  const BARTOP = Math.max(1, Math.round((ROWH - BARH) / 2));
+  const NAMEFS = opts.nameFs || '0.72rem';     // task name
+  const SUBFS  = opts.subFs  || '0.56rem';     // dates / estimate under it
+  const TAGFS  = opts.tagFs  || '0.57rem';     // duration tag beside the bar
 
   // Axis: month gridlines + weekly day-of-month ticks on a real calendar; when
   // nothing has dates, a generic "Day N" scale over the estimated sequence.
@@ -22476,7 +22483,7 @@ function _csRenderGanttHtml() {
     const yTop = i * ROWH;
     if (r.kind === 'divider') {
       return `<div style="display:flex;align-items:center;height:${ROWH}px">
-        <div style="width:${LABELW}px;flex-shrink:0;font-size:0.66rem;font-weight:700;font-style:italic;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2;padding-right:0.6rem" title="${_csEsc(r.description || '')}">${_csEsc(r.description) || '—'}</div>
+        <div style="width:${LABELW}px;flex-shrink:0;font-size:${NAMEFS};font-weight:700;font-style:italic;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2;padding-right:0.6rem" title="${_csEsc(r.description || '')}">${_csEsc(r.description) || '—'}</div>
         <div style="flex:1;border-top:1px dashed var(--border);opacity:0.7"></div>
       </div>`;
     }
@@ -22499,17 +22506,17 @@ function _csRenderGanttHtml() {
         : `${(r.description || '(untitled task)')}  ${r.start} → ${r.end}${dur ? `  (${dur}d)` : ''}${timingNote}  ${pct}% done`;
       // Subtle duration label after the bar so it reads on the chart itself;
       // anchor to the right edge when the bar ends near it so nothing overflows.
-      const durSty = `top:0;height:${ROWH}px;display:flex;align-items:center;font-size:0.57rem;color:var(--muted);white-space:nowrap;pointer-events:none`;
+      const durSty = `top:0;height:${ROWH}px;display:flex;align-items:center;font-size:${TAGFS};color:var(--muted);white-space:nowrap;pointer-events:none`;
       // An ongoing bar spans the whole chart, so its label sits inside it
       // rather than trailing off the right edge.
       const durLabel = (dur && !isOng)
         ? `<span style="position:absolute;left:${endPct}%;padding-left:4px;${durSty}">${dur}d${v.virtual ? ' est.' : ''}</span>`
         : '';
       const ongLabel = isOng
-        ? `<span style="position:absolute;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:0.52rem;letter-spacing:0.09em;text-transform:uppercase;color:var(--muted);white-space:nowrap;pointer-events:none">ongoing${dur ? ' · est. ' + dur + 'd' : ''}</span>`
+        ? `<span style="position:absolute;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:${TAGFS};letter-spacing:0.09em;text-transform:uppercase;color:var(--muted);white-space:nowrap;pointer-events:none">ongoing${dur ? ' · est. ' + dur + 'd' : ''}</span>`
         : '';
       const edge = isOng ? 'dotted' : (v.virtual ? 'dashed' : 'solid');
-      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:${BARTOP}px;height:14px;background:${color}${isOng ? '18' : (v.virtual ? '22' : '33')};border:1px ${edge} ${color};border-radius:4px;overflow:hidden">
+      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:${BARTOP}px;height:${BARH}px;background:${color}${isOng ? '18' : (v.virtual ? '22' : '33')};border:1px ${edge} ${color};border-radius:4px;overflow:hidden">
         <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
         ${ongLabel}
       </div>${durLabel}`;
@@ -22520,8 +22527,8 @@ function _csRenderGanttHtml() {
       : `${_csFmtShortNoYear(v.start)} – ${_csFmtShortNoYear(v.end)}${v.sched === 'par' ? ' · same time' : ''}`;
     return `<div style="display:flex;align-items:center;height:${ROWH}px">
       <div style="width:${LABELW}px;flex-shrink:0;padding-right:0.6rem;overflow:hidden">
-        <div style="font-size:0.72rem;color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2" title="${_csEsc(r.description || '')}">${label}</div>
-        ${dateRange ? `<div style="font-size:0.56rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15;margin-top:1px">${dateRange}</div>` : ''}
+        <div style="font-size:${NAMEFS};color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2" title="${_csEsc(r.description || '')}">${label}</div>
+        ${dateRange ? `<div style="font-size:${SUBFS};color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15;margin-top:1px">${dateRange}</div>` : ''}
       </div>
       <div style="flex:1;position:relative;height:${ROWH}px">${bar}</div>
     </div>`;
@@ -22763,7 +22770,23 @@ function _csExportPdf() {
     </tr>`;
   }).join('');
 
-  const ganttHtml = _csRenderGanttHtml();
+  // Size the chart to the room left under the repeated header so the Gantt
+  // lands on that same page instead of being bumped to a blank one. Below ~28px
+  // a row can't hold a readable two-line name, so past that the chart keeps its
+  // size and simply flows onto a second page.
+  const GANTT_ROOM = 560;     // measured page height minus header, heading, footnote
+  const GANTT_CHROME = 52;    // axis strip, padding and border inside the chart
+  const rowSlots = Math.max(1, rows.length);
+  const fitRowH = Math.floor((GANTT_ROOM - GANTT_CHROME) / rowSlots);
+  const rowH = Math.max(28, Math.min(44, fitRowH));
+  const nameFs = Math.max(8, Math.min(11.5, (rowH - 2) / 3.22));
+  const ganttHtml = rowH >= 44 ? _csRenderGanttHtml() : _csRenderGanttHtml({
+    rowH,
+    barH:   Math.max(8, Math.min(14, rowH - 20)),
+    nameFs: nameFs.toFixed(1) + 'px',
+    subFs:  (nameFs * 0.8).toFixed(1) + 'px',
+    tagFs:  (nameFs * 0.82).toFixed(1) + 'px',
+  });
   const titleTxt = (h.heading || h.projectTitle || 'Project');
 
   // Branded header (Kiewit Pinetree banner + project info + KPIs). Rendered once above
@@ -22817,8 +22840,9 @@ function _csExportPdf() {
     tr:nth-child(even) td{background:#f7f8fa}
     tr.divider td{background:#e5e7eb;font-style:italic;font-weight:700;color:#374151}
     .gantt{border:1px solid #e3e5e9;border-radius:6px;padding:10px 12px}
-    .gantt-page{page-break-before:always;padding-top:22px}
-    .gantt-wrap{page-break-inside:avoid}
+    .gantt-page{page-break-before:always;padding-top:10px}
+    /* No page-break-inside:avoid here — a chart too tall for the page should
+       flow onto the next one, not push itself off and leave a blank page. */
     .fn{font-size:8px;color:#777;margin-top:8px}
     @media print{@page{margin:0.55cm;size:landscape}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style></head><body>
