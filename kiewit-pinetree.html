@@ -22283,7 +22283,10 @@ function _csRenderGanttHtml() {
   // project end still has room for its duration label right after the bar.
   const pos = d => (d - minS) / totalMs * 95;     // % across the timeline track
   const clamp = x => Math.max(0, Math.min(100, x));
-  const LABELW = 190, ROWH = 34;
+  // Label gutter is wide enough for real task names, and rows are tall enough
+  // for those names to wrap onto a second line rather than be cut off.
+  const LABELW = 250, ROWH = 44;
+  const BARTOP = Math.round((ROWH - 14) / 2);
 
   // Axis: month gridlines + weekly day-of-month ticks on a real calendar; when
   // nothing has dates, a generic "Day N" scale over the estimated sequence.
@@ -22350,7 +22353,7 @@ function _csRenderGanttHtml() {
     const yTop = i * ROWH;
     if (r.kind === 'divider') {
       return `<div style="display:flex;align-items:center;height:${ROWH}px">
-        <div style="width:${LABELW}px;flex-shrink:0;font-size:0.66rem;font-weight:700;font-style:italic;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:0.5rem">${_csEsc(r.description) || '—'}</div>
+        <div style="width:${LABELW}px;flex-shrink:0;font-size:0.66rem;font-weight:700;font-style:italic;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2;padding-right:0.6rem" title="${_csEsc(r.description || '')}">${_csEsc(r.description) || '—'}</div>
         <div style="flex:1;border-top:1px dashed var(--border);opacity:0.7"></div>
       </div>`;
     }
@@ -22373,14 +22376,14 @@ function _csRenderGanttHtml() {
       const durLabel = dur
         ? `<span style="position:absolute;left:${endPct}%;padding-left:4px;${durSty}">${dur}d${v.virtual ? ' est.' : ''}</span>`
         : '';
-      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:10px;height:14px;background:${color}${v.virtual ? '22' : '33'};border:1px ${v.virtual ? 'dashed' : 'solid'} ${color};border-radius:4px;overflow:hidden">
+      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:${BARTOP}px;height:14px;background:${color}${v.virtual ? '22' : '33'};border:1px ${v.virtual ? 'dashed' : 'solid'} ${color};border-radius:4px;overflow:hidden">
         <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
       </div>${durLabel}`;
     }
     const dateRange = v ? (v.virtual ? `est. ${_csRowDuration(r)}d` : `${_csFmtShortNoYear(v.start)} – ${_csFmtShortNoYear(v.end)}`) : '';
     return `<div style="display:flex;align-items:center;height:${ROWH}px">
-      <div style="width:${LABELW}px;flex-shrink:0;padding-right:0.5rem;overflow:hidden">
-        <div style="font-size:0.72rem;color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2" title="${_csEsc(r.description || '')}">${label}</div>
+      <div style="width:${LABELW}px;flex-shrink:0;padding-right:0.6rem;overflow:hidden">
+        <div style="font-size:0.72rem;color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:break-word;line-height:1.2" title="${_csEsc(r.description || '')}">${label}</div>
         ${dateRange ? `<div style="font-size:0.56rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15;margin-top:1px">${dateRange}</div>` : ''}
       </div>
       <div style="flex:1;position:relative;height:${ROWH}px">${bar}</div>
@@ -22424,6 +22427,32 @@ function _csUpdateGantt() {
   if (el) el.innerHTML = _csRenderGanttHtml();
 }
 function _csTrunc(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+// Greedy word wrap for canvas text: up to `maxLines` lines that each fit
+// `maxWidth`, with the last one ellipsised if the text still doesn't fit. Used
+// so long task names wrap in the PNG chart rather than being cut mid-word.
+function _csWrapCanvasText(ctx, text, maxWidth, maxLines) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  if (!words.length) return [''];
+  const lines = [];
+  let cur = '';
+  for (let i = 0; i < words.length; i++) {
+    const next = cur ? cur + ' ' + words[i] : words[i];
+    if (!cur || ctx.measureText(next).width <= maxWidth) { cur = next; continue; }
+    if (lines.length + 1 >= maxLines) {          // no room for another line: keep
+      cur += ' ' + words.slice(i).join(' ');     // the remainder here so what's
+      break;                                     // dropped is marked with an ellipsis
+    }
+    lines.push(cur);
+    cur = words[i];
+  }
+  // Ellipsise the final line while it still overflows.
+  let tail = cur;
+  for (let g = 0; g < 500 && tail.length > 1 && ctx.measureText(tail).width > maxWidth; g++) {
+    tail = tail.replace(/…$/, '').slice(0, -1) + '…';
+  }
+  lines.push(tail);
+  return lines;
+}
 function _csHexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; }
 
 // Render the Gantt to a PNG (canvas) so email can show a chart identical to the
@@ -22438,7 +22467,8 @@ function _csGanttToPng() {
   Object.values(spans).forEach(v => { if (!minS || v.start < minS) minS = v.start; if (!maxE || v.end > maxE) maxE = v.end; });
   const totalMs = Math.max(86400000, maxE - minS);
 
-  const S = 2, W = 1000, LABELW = 185, ROWH = 30, AXIS = 34, PAD = 10, GUT = 0.95;
+  const S = 2, W = 1080, LABELW = 245, ROWH = 44, AXIS = 34, PAD = 10, GUT = 0.95;
+  const LABELPAD = 6, LABELMAX = LABELW - LABELPAD - 10;   // room for a wrapped task name
   const bodyTop = AXIS + PAD, trackX = LABELW, trackW = W - LABELW - PAD;
   const H = bodyTop + rows.length * ROWH + PAD;
   const X = d => trackX + ((d - minS) / totalMs) * GUT * trackW;
@@ -22493,13 +22523,16 @@ function _csGanttToPng() {
   rows.forEach((r, i) => {
     const y = bodyTop + i * ROWH, yc = y + ROWH / 2;
     if (r.kind === 'divider') {
-      ctx.fillStyle = '#888'; ctx.font = 'italic bold 10px Arial'; ctx.fillText(_csTrunc(r.description || '—', 30), 6, yc);
+      ctx.fillStyle = '#888'; ctx.font = 'italic bold 10px Arial';
+      ctx.fillText(_csWrapCanvasText(ctx, r.description || '—', LABELMAX, 1)[0], LABELPAD, yc);
       ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(trackX, yc); ctx.lineTo(W - PAD, yc); ctx.stroke(); ctx.setLineDash([]); return;
     }
     const v = spans[r.id], dur = _csRowDuration(r);
-    ctx.fillStyle = '#111'; ctx.font = '600 11px Arial'; ctx.fillText(_csTrunc(r.description || '(untitled)', 26), 6, y + 11);
+    ctx.fillStyle = '#111'; ctx.font = '600 11px Arial';
+    const nameLines = _csWrapCanvasText(ctx, r.description || '(untitled)', LABELMAX, 2);
+    nameLines.forEach((ln, k) => ctx.fillText(ln, LABELPAD, y + 11 + k * 12));
     ctx.fillStyle = '#888'; ctx.font = '9px Arial';
-    ctx.fillText(v ? (v.virtual ? `est. ${dur}d` : `${_csFmtShortNoYear(v.start)} – ${_csFmtShortNoYear(v.end)}${dur ? ' · ' + dur + 'd' : ''}`) : '', 6, y + 22);
+    ctx.fillText(v ? (v.virtual ? `est. ${dur}d` : `${_csFmtShortNoYear(v.start)} – ${_csFmtShortNoYear(v.end)}${dur ? ' · ' + dur + 'd' : ''}`) : '', LABELPAD, y + 11 + nameLines.length * 12 + 2);
     if (v) {
       const x1 = X(v.start), x2 = X(v.end), bw = Math.max(4, x2 - x1), color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
       geo[r.id] = { yc, x1, x2 };
@@ -22611,10 +22644,12 @@ function _csExportPdf() {
     .kpi .l{font-size:8px;text-transform:uppercase;letter-spacing:0.05em;color:#888}
     .kpi .v{font-size:14px;font-weight:700;color:#111}
     h2{font-size:12px;color:#0f172a;margin:13px 0 7px;padding-bottom:4px;border-bottom:2px solid #b8860b}
-    table{border-collapse:collapse;width:100%}
+    /* Fixed layout + explicit column widths: long codes and descriptions wrap
+       inside their own column instead of starving the neighbouring ones. */
+    table{border-collapse:collapse;width:100%;table-layout:fixed}
     thead{display:table-header-group}
-    th,td{border:1px solid #ccc;padding:3px 6px;font-size:8.5px;text-align:left;vertical-align:top}
-    th{background:#8a6d10;color:#fff;white-space:nowrap;font-size:7.5px;text-transform:uppercase;letter-spacing:0.03em}
+    th,td{border:1px solid #ccc;padding:3px 6px;font-size:8.5px;text-align:left;vertical-align:top;overflow-wrap:break-word;word-break:normal}
+    th{background:#8a6d10;color:#fff;font-size:7.5px;text-transform:uppercase;letter-spacing:0.03em}
     td.c{text-align:center}
     tr{page-break-inside:avoid}
     tr:nth-child(even) td{background:#f7f8fa}
@@ -22627,7 +22662,9 @@ function _csExportPdf() {
   </style></head><body>
     ${headerBlock}
     <h2>Timeline</h2>
-    <table><thead><tr>
+    <table>
+    <colgroup>${[9, 5, 7, 7, 3.5, 11.5, 10.5, 16.5, 8, 4.5, 17.5].map(w => `<col style="width:${w}%">`).join('')}</colgroup>
+    <thead><tr>
       <th>Status</th><th>Priority</th><th>Start</th><th>End</th><th>Dur</th><th>Code</th><th>Subcode</th><th>Description</th><th>Deliverable</th><th>% Done</th><th>Depends On</th>
     </tr></thead><tbody>${tbody}</tbody></table>
     <div class="gantt-page">
@@ -22709,13 +22746,13 @@ function _csBuildEmailReportHtml(png) {
     ganttBlock = `<img src="cid:cs-gantt" alt="Gantt chart — task timeline with the critical path in red; see the Timeline table above for exact dates." style="display:block;width:100%;max-width:${png.width}px;height:auto;border:1px solid #e3e5e9;border-radius:6px" />`;
   } else {
     const ganttRows = rows.map(r => {
-      if (r.kind === 'divider') return `<tr><td colspan="2" style="padding:7px 0 3px;font-style:italic;font-weight:700;font-size:10px;color:#888;border-top:1px dashed #ccc">${esc(r.description) || '—'}</td></tr>`;
+      if (r.kind === 'divider') return `<tr><td colspan="2" style="padding:7px 0 3px;font-style:italic;font-weight:700;font-size:10px;color:#888;border-top:1px dashed #ccc;word-break:normal;overflow-wrap:break-word">${esc(r.description) || '—'}</td></tr>`;
       const v = spans[r.id];
       const dr = (v && !v.virtual) ? `${_csFmtShortNoYear(v.start)} &ndash; ${_csFmtShortNoYear(v.end)}` : '';
       const dur = _csRowDuration(r);
       const sub = dr ? (dr + (dur ? ' &middot; ' + dur + 'd' : '')) : (dur ? 'est. ' + dur + 'd' : '');
       return `<tr>
-        <td width="185" style="width:185px;padding:3px 8px 3px 0;vertical-align:middle">
+        <td width="235" style="width:235px;padding:3px 8px 3px 0;vertical-align:middle">
           <div style="font-size:11px;font-weight:600;color:#111;line-height:1.2">${esc(r.description) || '(untitled)'}</div>
           ${sub ? `<div style="font-size:9px;color:#888">${sub}</div>` : ''}
         </td>
@@ -22978,7 +23015,9 @@ const _CS_TD  = 'padding:0.25rem 0.3rem;border-bottom:1px solid var(--border);ve
 const _CS_INP = 'width:100%;background:transparent;border:none;color:var(--fg);font-size:0.72rem;padding:0.15rem 0.15rem;outline:none;font-family:inherit';
 
 function _csCell(id, field, value, extra) {
-  return `<input value="${_csEsc(value)}" oninput="_csEdit('${id}','${field}',this.value)" style="${_CS_INP}${extra || ''}">`;
+  // title mirrors the value (and follows it as you type) so text longer than the
+  // column is still readable on hover.
+  return `<input value="${_csEsc(value)}" title="${_csEsc(value)}" oninput="_csEdit('${id}','${field}',this.value);this.title=this.value" style="${_CS_INP}${extra || ''}">`;
 }
 function _csSelect(id, field, value, opts, colorize) {
   const options = opts.map(o => `<option value="${_csEsc(o)}" ${o === value ? 'selected' : ''}>${_csEsc(o)}</option>`).join('');
@@ -23120,10 +23159,10 @@ function _csRowHtml(row, index, total) {
     <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
     <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
     <td style="${_CS_TD};min-width:56px;text-align:center">${_csDurCell(row)}</td>
-    <td style="${_CS_TD};min-width:82px">${_csCodeCell(row)}</td>
-    <td style="${_CS_TD};min-width:96px">${_csSubcodeCell(row)}</td>
-    <td style="${_CS_TD}">${_csCell(row.id, 'description', row.description)}</td>
-    <td style="${_CS_TD};min-width:90px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
+    <td style="${_CS_TD};min-width:150px">${_csCodeCell(row)}</td>
+    <td style="${_CS_TD};min-width:150px">${_csSubcodeCell(row)}</td>
+    <td style="${_CS_TD};min-width:260px">${_csCell(row.id, 'description', row.description)}</td>
+    <td style="${_CS_TD};min-width:120px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
     <td style="${_CS_TD};min-width:52px"><input id="cs-pct-${row.id}" type="number" min="0" max="100" value="${_csEsc(row.pct)}" oninput="_csEdit('${row.id}','pct',this.value)" style="${_CS_INP};text-align:center"></td>
     <td style="${_CS_TD};min-width:100px">${_csDepsCell(row)}</td>
     ${actions}</tr>`;
