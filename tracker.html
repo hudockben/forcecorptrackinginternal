@@ -24001,10 +24001,29 @@ function _csCalcDuration(start, end) {
   const days = Math.round((b - a) / 86400000);
   return days >= 0 ? days : null;
 }
-// Duration is derived from the dates: the day count when both are set, else ''.
+// Once both dates are set they own the Duration column — even while mis-ordered
+// (end before start), so a reversed pair never falls back to a stale estimate.
+function _csHasBothDates(row) { return !!(_csParseDate(row.start) && _csParseDate(row.end)); }
+// Duration: derived from the dates when both are set; otherwise the manually
+// entered estimate — so a generic schedule can be roughed out from durations
+// alone before any dates are pinned down.
 function _csRowDuration(row) {
   const d = _csCalcDuration(row.start, row.end);
-  return d == null ? '' : String(d);
+  if (d != null) return String(d);
+  if (_csHasBothDates(row)) return '';           // end before start: no valid span
+  const est = parseFloat(row.duration);
+  return isFinite(est) && est >= 0 ? String(est) : '';
+}
+// Total estimated days across tasks scheduled by duration alone (no dates) —
+// feeds the header working-days stat so duration-only schedules get one.
+function _csEstDaysUnscheduled() {
+  let n = 0;
+  ((_csData && _csData.rows) || []).forEach(r => {
+    if (r.kind !== 'task' || _csHasBothDates(r)) return;
+    const est = parseFloat(r.duration);
+    if (isFinite(est) && est > 0) n += est;
+  });
+  return Math.round(n * 10) / 10;
 }
 function _csComputeOverall() {
   const tasks = (_csData.rows || []).filter(r => r.kind === 'task');
@@ -24056,11 +24075,17 @@ function _csHeaderStatsHtml(includeSelector) {
         + `</select>`
     : '';
   const span = _csProjectSpan();
-  if (!span) return `<span style="color:var(--muted)">Add task start &amp; end dates to estimate working days.</span>${sel}`;
+  const estDays = _csEstDaysUnscheduled();
+  if (!span) {
+    if (!estDays) return `<span style="color:var(--muted)">Add task start &amp; end dates — or just estimated durations — to see working days.</span>${sel}`;
+    return `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${estDays}</strong>`
+         + `&nbsp;<span style="color:var(--muted)">(sum of task duration estimates)</span>${sel}`;
+  }
   const sep = `<span style="color:var(--border);margin:0 0.7rem">|</span>`;
+  const unsched = estDays ? `&nbsp;<span style="color:var(--muted)">(+&nbsp;${estDays}d unscheduled)</span>` : '';
   return `<span style="color:var(--muted)">Project Start</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.start)}</strong>${sep}`
        + `<span style="color:var(--muted)">Finish</span>&nbsp;<strong style="color:var(--fg)">${_csFmtShort(span.end)}</strong>${sep}`
-       + `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${span.workingDays}</strong>`
+       + `<span style="color:var(--muted)">Est. Working Days</span>&nbsp;<strong style="color:var(--blue);font-size:0.85rem">${span.workingDays}</strong>${unsched}`
        + sel;
 }
 function _csUpdateHeaderStats() {
@@ -24194,7 +24219,8 @@ function _csRenderGanttHtml() {
   const rows  = (_csData && _csData.rows) || [];
   const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
   if (!dated.length) {
-    return `<div style="padding:1.4rem;text-align:center;color:var(--muted);font-size:0.8rem">Add start &amp; end dates to your tasks to see the Gantt chart.</div>`;
+    const est = _csEstDaysUnscheduled();
+    return `<div style="padding:1.4rem;text-align:center;color:var(--muted);font-size:0.8rem">Add start &amp; end dates to your tasks to see the Gantt chart.${est ? ` Duration-only tasks (${est}d estimated) chart once they have dates.` : ''}</div>`;
   }
   let minS = null, maxE = null;
   dated.forEach(t => {
@@ -24285,6 +24311,9 @@ function _csRenderGanttHtml() {
       bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:10px;height:14px;background:${color}33;border:1px solid ${color};border-radius:4px;overflow:hidden">
         <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
       </div>${durLabel}`;
+    } else {
+      const dur = _csRowDuration(r);
+      if (dur) bar = `<span style="position:absolute;left:0;top:0;height:${ROWH}px;display:flex;align-items:center;font-size:0.6rem;font-style:italic;color:var(--muted)">est. ${dur}d — dates not set</span>`;
     }
     const dateRange = (s && e) ? `${_csFmtShortNoYear(s)} – ${_csFmtShortNoYear(e)}` : '';
     return `<div style="display:flex;align-items:center;height:${ROWH}px">
@@ -24394,7 +24423,7 @@ function _csGanttToPng() {
     const s = _csParseDate(r.start), e = _csParseDate(r.end), dur = _csRowDuration(r);
     ctx.fillStyle = '#111'; ctx.font = '600 11px Arial'; ctx.fillText(_csTrunc(r.description || '(untitled)', 26), 6, y + 11);
     ctx.fillStyle = '#888'; ctx.font = '9px Arial';
-    ctx.fillText(((s && e) ? `${_csFmtShortNoYear(s)} – ${_csFmtShortNoYear(e)}` : '') + (dur ? ' · ' + dur + 'd' : ''), 6, y + 22);
+    ctx.fillText([(s && e) ? `${_csFmtShortNoYear(s)} – ${_csFmtShortNoYear(e)}` : '', dur ? dur + 'd' + ((s && e) ? '' : ' est.') : ''].filter(Boolean).join(' · '), 6, y + 22);
     if (s && e) {
       const x1 = X(s), x2 = X(e), bw = Math.max(4, x2 - x1), color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
       geo[r.id] = { yc, x1, x2 };
@@ -24433,10 +24462,15 @@ function _csExportPdf() {
   const taskCount = rows.filter(r => r.kind === 'task').length;
   const depName = id => { const t = rows.find(x => x.id === id); return t ? ((t.description || '').trim() || 'task') : ''; };
 
+  const estDays = _csEstDaysUnscheduled();
+  const wdNote = t => `<span style="font-size:8px;color:#888;font-weight:400">${t}</span>`;
+  const wdVal = span
+    ? `${span.workingDays} ${wdNote(`(${esc(wwLabel)})`)}${estDays ? ' ' + wdNote(`+ ${estDays}d unscheduled`) : ''}`
+    : (estDays ? `${estDays} ${wdNote('(duration estimates)')}` : null);
   const kpis = [
     span ? ['Project Start', _csFmtShort(span.start)] : null,
     span ? ['Finish', _csFmtShort(span.end)] : null,
-    span ? ['Est. Working Days', `${span.workingDays} <span style="font-size:8px;color:#888;font-weight:400">(${esc(wwLabel)})</span>`] : null,
+    wdVal ? ['Est. Working Days', wdVal] : null,
     ['Overall % Done', `${overall}%`],
     ['Tasks', String(taskCount)],
   ].filter(Boolean).map(([l, v]) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
@@ -24565,10 +24599,15 @@ function _csBuildEmailReportHtml(png) {
   const totalMs = Math.max(86400000, (maxMs || 0) - (minMs || 0));
 
   const kpi = (l, v) => `<td style="padding:6px 16px 6px 0;vertical-align:top"><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:#888">${l}</div><div style="font-size:14px;font-weight:700;color:#111">${v}</div></td>`;
+  const estDays = _csEstDaysUnscheduled();
+  const wdNote = t => `<span style="font-size:8px;color:#888;font-weight:400">${t}</span>`;
+  const wdVal = span
+    ? `${span.workingDays} ${wdNote(`(${esc(wwLabel)})`)}${estDays ? ' ' + wdNote(`+ ${estDays}d unscheduled`) : ''}`
+    : (estDays ? `${estDays} ${wdNote('(duration estimates)')}` : '');
   const kpis = [
     span ? kpi('Project Start', _csFmtShort(span.start)) : '',
     span ? kpi('Finish', _csFmtShort(span.end)) : '',
-    span ? kpi('Est. Working Days', `${span.workingDays} <span style="font-size:8px;color:#888;font-weight:400">(${esc(wwLabel)})</span>`) : '',
+    wdVal ? kpi('Est. Working Days', wdVal) : '',
     kpi('Overall % Done', `${overall}%`),
     kpi('Tasks', String(rows.filter(r => r.kind === 'task').length)),
   ].join('');
@@ -24594,10 +24633,11 @@ function _csBuildEmailReportHtml(png) {
       const s = _csParseDate(r.start), e = _csParseDate(r.end);
       const dr = (s && e) ? `${_csFmtShortNoYear(s)} &ndash; ${_csFmtShortNoYear(e)}` : '';
       const dur = _csRowDuration(r);
+      const sub = dr ? (dr + (dur ? ' &middot; ' + dur + 'd' : '')) : (dur ? 'est. ' + dur + 'd' : '');
       return `<tr>
         <td width="185" style="width:185px;padding:3px 8px 3px 0;vertical-align:middle">
           <div style="font-size:11px;font-weight:600;color:#111;line-height:1.2">${esc(r.description) || '(untitled)'}</div>
-          ${dr ? `<div style="font-size:9px;color:#888">${dr}${dur ? ' &middot; ' + dur + 'd' : ''}</div>` : ''}
+          ${sub ? `<div style="font-size:9px;color:#888">${sub}</div>` : ''}
         </td>
         <td style="vertical-align:middle;padding:3px 0">${_csEmailBar(r, minMs, totalMs, critical)}</td>
       </tr>`;
@@ -24717,9 +24757,16 @@ async function _csLoadJob(projId) {
     _csData = _csBlankData();
   }
   _csAutofillHeader(p);
-  // Drop the old auto-prefilled "Task" placeholder from the Code column.
+  // One-time cleanups: drop the old auto-prefilled "Task" placeholder from the
+  // Code column, and clear duration on dated rows — older saves persisted the
+  // date-derived count there, which would otherwise resurface as a phantom
+  // "estimate" the moment a date is cleared.
   let _csMig = false;
-  (_csData.rows || []).forEach(r => { if (r.kind === 'task' && r.code === 'Task') { r.code = ''; _csMig = true; } });
+  (_csData.rows || []).forEach(r => {
+    if (r.kind !== 'task') return;
+    if (r.code === 'Task') { r.code = ''; _csMig = true; }
+    if (r.duration && _csHasBothDates(r)) { r.duration = ''; _csMig = true; }
+  });
   _csDirty = false;
   renderConstructionSchedule();
   if (_csMig) _csScheduleSave();   // persist the one-time cleanup
@@ -24745,12 +24792,16 @@ function _csEdit(id, field, value) {
   if (!row) return;
   row[field] = value;
   if (field === 'start' || field === 'end') {
-    row.duration = _csRowDuration(row);            // always recompute from the dates
-    const de = document.getElementById('cs-dur-' + id);
-    if (de) de.textContent = row.duration;
+    if (_csHasBothDates(row)) row.duration = '';   // dates own the Duration cell now
+    _csSyncDurCell(row);
     _csUpdateSummary();
     _csUpdateHeaderStats();
     _csUpdateGanttHeader();     // project span in the Gantt header depends on task dates
+  }
+  if (field === 'duration') {   // manual estimate: reweights the overall % and
+    _csUpdateSummary();         // the working-days stat for date-less tasks
+    _csUpdateHeaderStats();
+    _csUpdateGanttHeader();
   }
   if (field === 'status') {
     if (value === 'Complete' && (!row.pct || +row.pct === 0)) {
@@ -24809,7 +24860,9 @@ async function _csSaveAsTemplate() {
   const rows = _csData.rows.map(r => r.kind === 'divider'
     ? { kind:'divider', description:r.description }
     : { kind:'task', status:'Not Yet Started', priority:r.priority || 'High',
-        start:'', end:'', duration:'', code:r.code || '',
+        // dates are job-specific, but the day count (derived or typed) carries
+        // over as the template's duration estimate
+        start:'', end:'', duration:_csRowDuration(r) || '', code:r.code || '',
         subcode:r.subcode || '', description:r.description || '',
         deliverable:r.deliverable || '', pct:0 });
   _csTemplates.push({ id:_csUid(), name:name.trim(), rows });
@@ -24821,7 +24874,7 @@ async function _csApplyTemplate(tid) {
   await _csEnsureTemplates();
   const t = _csTemplates.find(x => x.id === tid);
   if (!t) return;
-  const hasWork = (_csData.rows || []).some(r => r.description || r.start || r.end || (r.pct && +r.pct > 0));
+  const hasWork = (_csData.rows || []).some(r => r.description || r.start || r.end || r.duration || (r.pct && +r.pct > 0));
   if (hasWork && !confirm('Replace the current task list with template “' + t.name + '”? The job header is kept.')) return;
   _csData.rows = (t.rows || []).map(r => Object.assign({}, r, { id:_csUid() }));
   _csScheduleSave(); renderConstructionSchedule();
@@ -24852,6 +24905,35 @@ function _csSelect(id, field, value, opts, colorize) {
   const style = _CS_INP + ';cursor:pointer' + (colorize ? (';font-weight:600;color:' + _csStatusColor(value)) : '');
   const idAttr = colorize ? ` id="cs-statuscell-${id}"` : '';
   return `<select${idAttr} onchange="_csEdit('${id}','${field}',this.value)" style="${style}">${options}</select>`;
+}
+/* Duration is dual-mode: auto-derived (read-only) while both dates are set,
+   otherwise a hand-typed estimate in days — so a schedule can be filled out
+   generically with durations only, no start/end dates required. */
+const _CS_DUR_AUTO_TIP = 'Auto-calculated from the start and end dates';
+const _CS_DUR_EST_TIP  = 'Estimated duration in days — used when the start and end dates are not set';
+function _csDurCell(row) {
+  const derived = _csHasBothDates(row);
+  return `<input id="cs-dur-${row.id}" type="number" min="0" step="any" placeholder="days"
+    value="${_csEsc(_csRowDuration(row))}" ${derived ? 'readonly' : ''}
+    oninput="_csEdit('${row.id}','duration',this.value)" onchange="_csDurCommit('${row.id}')"
+    title="${derived ? _CS_DUR_AUTO_TIP : _CS_DUR_EST_TIP}"
+    style="${_CS_INP};text-align:center${derived ? ';color:var(--muted)' : ''}">`;
+}
+function _csSyncDurCell(row) {
+  const de = document.getElementById('cs-dur-' + row.id);
+  if (!de) return;
+  const derived = _csHasBothDates(row);
+  de.readOnly = derived;
+  de.value = _csRowDuration(row);
+  de.title = derived ? _CS_DUR_AUTO_TIP : _CS_DUR_EST_TIP;
+  de.style.color = derived ? 'var(--muted)' : 'var(--fg)';
+}
+// On blur, snap the box back to the normalized model value so stray text the
+// number input tolerated while typing (e.g. "5e", "-3") doesn't linger.
+function _csDurCommit(id) {
+  if (!_csData) return;
+  const row = (_csData.rows || []).find(r => r.id === id);
+  if (row) _csSyncDurCell(row);
 }
 /* Code / Subcode are typable-search comboboxes driven by the picked job's bid
    items (like daily tracking): the Code list is the job's cost codes; the
@@ -24957,7 +25039,7 @@ function _csRowHtml(row, index, total) {
     <td style="${_CS_TD};min-width:70px">${_csSelect(row.id, 'priority', row.priority, _CS_PRIORITIES, false)}</td>
     <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
     <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
-    <td style="${_CS_TD};min-width:48px;text-align:center"><span id="cs-dur-${row.id}" style="font-size:0.72rem;color:var(--fg)" title="Auto-calculated from the start and end dates">${_csEsc(_csRowDuration(row))}</span></td>
+    <td style="${_CS_TD};min-width:56px;text-align:center">${_csDurCell(row)}</td>
     <td style="${_CS_TD};min-width:82px">${_csCodeCell(row)}</td>
     <td style="${_CS_TD};min-width:96px">${_csSubcodeCell(row)}</td>
     <td style="${_CS_TD}">${_csCell(row.id, 'description', row.description)}</td>
