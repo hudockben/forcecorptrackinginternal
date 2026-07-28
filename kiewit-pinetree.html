@@ -22237,18 +22237,46 @@ function _csCriticalSet() {
   }
   return critical.size >= 2 ? critical : new Set();
 }
-function _csRenderGanttHtml() {
-  const rows  = (_csData && _csData.rows) || [];
-  const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
-  if (!dated.length) {
-    const est = _csEstDaysUnscheduled();
-    return `<div style="padding:1.4rem;text-align:center;color:var(--muted);font-size:0.8rem">Add start &amp; end dates to your tasks to see the Gantt chart.${est ? ` Duration-only tasks (${est}d estimated) chart once they have dates.` : ''}</div>`;
-  }
-  let minS = null, maxE = null;
-  dated.forEach(t => {
+/* Spans to chart: real dates where both are set; duration-only tasks are
+   sketched in sequence — each starts where the previous one ends — anchored
+   after the last dated task, or (when nothing is dated) at today, with the
+   axis switching to generic day numbers so no concrete calendar is implied. */
+function _csGanttSpans() {
+  const tasks = ((_csData && _csData.rows) || []).filter(r => r.kind === 'task');
+  const spans = {};
+  let hasReal = false, hasVirtual = false, latestEnd = null;
+  tasks.forEach(t => {
     const s = _csParseDate(t.start), e = _csParseDate(t.end);
-    if (!minS || s < minS) minS = s;
-    if (!maxE || e > maxE) maxE = e;
+    if (s && e && e >= s) {
+      spans[t.id] = { start: s, end: e, virtual: false };
+      hasReal = true;
+      if (!latestEnd || e > latestEnd) latestEnd = e;
+    }
+  });
+  let cursor = null;
+  tasks.forEach(t => {
+    if (spans[t.id] || _csHasBothDates(t)) return;   // dated rows (even mis-ordered) are never sketched
+    const est = parseFloat(t.duration);
+    if (!isFinite(est) || est <= 0) return;
+    if (!cursor) { cursor = latestEnd ? new Date(latestEnd) : new Date(); cursor.setHours(0, 0, 0, 0); }
+    const start = new Date(cursor), end = new Date(start.getTime() + est * 86400000);
+    spans[t.id] = { start, end, virtual: true };
+    cursor = end;
+    hasVirtual = true;
+  });
+  return (hasReal || hasVirtual) ? { spans, hasReal, hasVirtual } : null;
+}
+function _csRenderGanttHtml() {
+  const rows = (_csData && _csData.rows) || [];
+  const sp = _csGanttSpans();
+  if (!sp) {
+    return `<div style="padding:1.4rem;text-align:center;color:var(--muted);font-size:0.8rem">Add start &amp; end dates — or just estimated durations — to your tasks to see the Gantt chart.</div>`;
+  }
+  const spans = sp.spans;
+  let minS = null, maxE = null;
+  Object.values(spans).forEach(v => {
+    if (!minS || v.start < minS) minS = v.start;
+    if (!maxE || v.end > maxE) maxE = v.end;
   });
   const totalMs = Math.max(86400000, maxE - minS);
   // Reserve a small right gutter (positions span 0–95%) so a task ending at the
@@ -22257,34 +22285,47 @@ function _csRenderGanttHtml() {
   const clamp = x => Math.max(0, Math.min(100, x));
   const LABELW = 190, ROWH = 34;
 
-  // Month boundaries inside the range → gridlines + axis labels.
-  const months = [];
-  const gm = new Date(minS.getFullYear(), minS.getMonth(), 1);
-  if (gm < minS) gm.setMonth(gm.getMonth() + 1);
-  for (let g = 0; g < 240 && gm <= maxE; g++) { months.push(new Date(gm)); gm.setMonth(gm.getMonth() + 1); }
-  const grid = months.map(m => `<div style="position:absolute;left:${pos(m)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.45"></div>`).join('');
-  const axis = months.map(m => {
-    const lbl = m.toLocaleDateString('en-US', { month: 'short' }) + (m.getMonth() === 0 ? ` '${String(m.getFullYear()).slice(2)}` : '');
-    return `<div style="position:absolute;left:${pos(m)}%;top:0;font-size:0.62rem;font-weight:600;color:var(--muted);white-space:nowrap;padding-left:3px">${lbl}</div>`;
-  }).join('');
-
-  // Finer date scale: weekly tick labels (day-of-month) aligned to Mondays,
-  // right beside the shaded weekends. Interval widens for long projects.
-  const totalDays = totalMs / 86400000;
-  const tickDays = totalDays <= 130 ? 7 : (totalDays <= 280 ? 14 : 28);
-  const ticks = [];
-  {
-    const d = new Date(minS); d.setHours(0, 0, 0, 0);
-    while (d.getDay() !== 1 && d <= maxE) d.setDate(d.getDate() + 1);   // first Monday in range
-    for (let g = 0; d <= maxE && g < 400; g++) { ticks.push(new Date(d)); d.setDate(d.getDate() + tickDays); }
+  // Axis: month gridlines + weekly day-of-month ticks on a real calendar; when
+  // nothing has dates, a generic "Day N" scale over the estimated sequence.
+  let grid = '', axis = '', weekGrid = '', weekLabels = '';
+  if (sp.hasReal) {
+    const months = [];
+    const gm = new Date(minS.getFullYear(), minS.getMonth(), 1);
+    if (gm < minS) gm.setMonth(gm.getMonth() + 1);
+    for (let g = 0; g < 240 && gm <= maxE; g++) { months.push(new Date(gm)); gm.setMonth(gm.getMonth() + 1); }
+    grid = months.map(m => `<div style="position:absolute;left:${pos(m)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.45"></div>`).join('');
+    axis = months.map(m => {
+      const lbl = m.toLocaleDateString('en-US', { month: 'short' }) + (m.getMonth() === 0 ? ` '${String(m.getFullYear()).slice(2)}` : '');
+      return `<div style="position:absolute;left:${pos(m)}%;top:0;font-size:0.62rem;font-weight:600;color:var(--muted);white-space:nowrap;padding-left:3px">${lbl}</div>`;
+    }).join('');
+    // Finer date scale: weekly tick labels (day-of-month) aligned to Mondays,
+    // right beside the shaded weekends. Interval widens for long projects.
+    const totalDays = totalMs / 86400000;
+    const tickDays = totalDays <= 130 ? 7 : (totalDays <= 280 ? 14 : 28);
+    const ticks = [];
+    {
+      const d = new Date(minS); d.setHours(0, 0, 0, 0);
+      while (d.getDay() !== 1 && d <= maxE) d.setDate(d.getDate() + 1);   // first Monday in range
+      for (let g = 0; d <= maxE && g < 400; g++) { ticks.push(new Date(d)); d.setDate(d.getDate() + tickDays); }
+    }
+    weekGrid   = ticks.map(t => `<div style="position:absolute;left:${pos(t)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.16"></div>`).join('');
+    weekLabels = ticks.map(t => `<div style="position:absolute;left:${pos(t)}%;bottom:0;font-size:0.53rem;color:var(--muted);opacity:0.8;white-space:nowrap;padding-left:2px">${t.getDate()}</div>`).join('');
+  } else {
+    axis = `<div style="position:absolute;left:0;top:0;font-size:0.6rem;font-style:italic;color:var(--muted)">Estimated sequence — durations only, no dates set</div>`;
+    const totalDays = Math.ceil(totalMs / 86400000);
+    const step = totalDays <= 60 ? 7 : (totalDays <= 180 ? 14 : 28);
+    for (let k = 0; k <= totalDays; k += step) {
+      const x = pos(new Date(minS.getTime() + k * 86400000));
+      weekGrid   += `<div style="position:absolute;left:${x}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.16"></div>`;
+      weekLabels += `<div style="position:absolute;left:${x}%;bottom:0;font-size:0.53rem;color:var(--muted);opacity:0.8;white-space:nowrap;padding-left:2px">Day ${k + 1}</div>`;
+    }
   }
-  const weekGrid   = ticks.map(t => `<div style="position:absolute;left:${pos(t)}%;top:0;bottom:0;border-left:1px solid var(--border);opacity:0.16"></div>`).join('');
-  const weekLabels = ticks.map(t => `<div style="position:absolute;left:${pos(t)}%;bottom:0;font-size:0.53rem;color:var(--muted);opacity:0.8;white-space:nowrap;padding-left:2px">${t.getDate()}</div>`).join('');
 
-  // Non-working-day shading, following the work-week toggle.
+  // Non-working-day shading, following the work-week toggle. Only meaningful on
+  // a real calendar — the day-number scale has no weekends.
   const mode = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
   let shade = '';
-  if (mode.skip.length) {
+  if (sp.hasReal && mode.skip.length) {
     const day = new Date(minS); day.setHours(0, 0, 0, 0);
     for (let guard = 0; day <= maxE && guard < 4000; guard++) {
       if (mode.skip.includes(day.getDay())) {
@@ -22299,7 +22340,7 @@ function _csRenderGanttHtml() {
   }
 
   const today = _csParseDate(_csTodayStr());
-  const todayLine = (today && today >= minS && today <= maxE)
+  const todayLine = (sp.hasReal && today && today >= minS && today <= maxE)
     ? `<div style="position:absolute;left:${pos(today)}%;top:0;bottom:0;border-left:2px dashed #f87171;opacity:0.85" title="Today"></div>` : '';
 
   // Rows at a fixed height so dependency-arrow geometry is deterministic.
@@ -22313,31 +22354,30 @@ function _csRenderGanttHtml() {
         <div style="flex:1;border-top:1px dashed var(--border);opacity:0.7"></div>
       </div>`;
     }
-    const s = _csParseDate(r.start), e = _csParseDate(r.end);
+    const v = spans[r.id];
     const color = critical.has(r.id) ? _CS_CRIT : _csGanttColor(r.status);
     const pct = Math.min(100, Math.max(0, parseFloat(r.pct) || 0));
     const hasDesc = !!(r.description || '').trim();
     const label = hasDesc ? _csEsc(r.description) : '(untitled task)';
     let bar = '';
-    if (s && e) {
-      const left = pos(s), endPct = pos(e), width = Math.max(0, endPct - left);
+    if (v) {
+      const left = pos(v.start), endPct = pos(v.end), width = Math.max(0, endPct - left);
       geo[r.id] = { yc: yTop + ROWH / 2, x1: left, x2: endPct };
       const dur = _csRowDuration(r);
-      const tip = `${(r.description || '(untitled task)')}  ${r.start} → ${r.end}${dur ? `  (${dur}d)` : ''}  ${pct}% done`;
+      const tip = v.virtual
+        ? `${(r.description || '(untitled task)')}  est. ${dur}d — sketched in sequence (no dates set)  ${pct}% done`
+        : `${(r.description || '(untitled task)')}  ${r.start} → ${r.end}${dur ? `  (${dur}d)` : ''}  ${pct}% done`;
       // Subtle duration label after the bar so it reads on the chart itself;
       // anchor to the right edge when the bar ends near it so nothing overflows.
       const durSty = `top:0;height:${ROWH}px;display:flex;align-items:center;font-size:0.57rem;color:var(--muted);white-space:nowrap;pointer-events:none`;
       const durLabel = dur
-        ? `<span style="position:absolute;left:${endPct}%;padding-left:4px;${durSty}">${dur}d</span>`
+        ? `<span style="position:absolute;left:${endPct}%;padding-left:4px;${durSty}">${dur}d${v.virtual ? ' est.' : ''}</span>`
         : '';
-      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:10px;height:14px;background:${color}33;border:1px solid ${color};border-radius:4px;overflow:hidden">
+      bar = `<div class="cs-gantt-bar" title="${_csEsc(tip)}" style="position:absolute;left:${left}%;width:${width}%;min-width:8px;top:10px;height:14px;background:${color}${v.virtual ? '22' : '33'};border:1px ${v.virtual ? 'dashed' : 'solid'} ${color};border-radius:4px;overflow:hidden">
         <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
       </div>${durLabel}`;
-    } else {
-      const dur = _csRowDuration(r);
-      if (dur) bar = `<span style="position:absolute;left:0;top:0;height:${ROWH}px;display:flex;align-items:center;font-size:0.6rem;font-style:italic;color:var(--muted)">est. ${dur}d — dates not set</span>`;
     }
-    const dateRange = (s && e) ? `${_csFmtShortNoYear(s)} – ${_csFmtShortNoYear(e)}` : '';
+    const dateRange = v ? (v.virtual ? `est. ${_csRowDuration(r)}d` : `${_csFmtShortNoYear(v.start)} – ${_csFmtShortNoYear(v.end)}`) : '';
     return `<div style="display:flex;align-items:center;height:${ROWH}px">
       <div style="width:${LABELW}px;flex-shrink:0;padding-right:0.5rem;overflow:hidden">
         <div style="font-size:0.72rem;color:${hasDesc ? 'var(--fg)' : 'var(--muted)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2" title="${_csEsc(r.description || '')}">${label}</div>
@@ -22391,10 +22431,11 @@ function _csHexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${
 // dependency arrows, and the critical path in red. Returns {dataUrl,width,height}.
 function _csGanttToPng() {
   const rows = (_csData && _csData.rows) || [];
-  const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
-  if (!dated.length) return null;
+  const sp = _csGanttSpans();
+  if (!sp) return null;
+  const spans = sp.spans;
   let minS = null, maxE = null;
-  dated.forEach(t => { const s = _csParseDate(t.start), e = _csParseDate(t.end); if (!minS || s < minS) minS = s; if (!maxE || e > maxE) maxE = e; });
+  Object.values(spans).forEach(v => { if (!minS || v.start < minS) minS = v.start; if (!maxE || v.end > maxE) maxE = v.end; });
   const totalMs = Math.max(86400000, maxE - minS);
 
   const S = 2, W = 1000, LABELW = 185, ROWH = 30, AXIS = 34, PAD = 10, GUT = 0.95;
@@ -22409,9 +22450,9 @@ function _csGanttToPng() {
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
   ctx.textBaseline = 'middle';
 
-  // weekend / non-working-day shading
+  // weekend / non-working-day shading (real calendar only)
   const mode = _CS_WORKWEEKS.find(m => m.v === ((_csData && _csData.workWeek) || 5)) || _CS_WORKWEEKS[0];
-  if (mode.skip.length) {
+  if (sp.hasReal && mode.skip.length) {
     const day = new Date(minS); day.setHours(0, 0, 0, 0);
     for (let g = 0; day <= maxE && g < 4000; g++) {
       if (mode.skip.includes(day.getDay())) {
@@ -22420,19 +22461,32 @@ function _csGanttToPng() {
       } else day.setDate(day.getDate() + 1);
     }
   }
-  // month gridlines + labels
-  const months = []; const gm = new Date(minS.getFullYear(), minS.getMonth(), 1); if (gm < minS) gm.setMonth(gm.getMonth() + 1);
-  for (let g = 0; g < 240 && gm <= maxE; g++) { months.push(new Date(gm)); gm.setMonth(gm.getMonth() + 1); }
   ctx.lineWidth = 1;
-  months.forEach(m => { const x = X(m); ctx.strokeStyle = '#d5d8dd'; ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.fillStyle = '#555'; ctx.font = 'bold 11px Arial'; ctx.fillText(m.toLocaleDateString('en-US', { month: 'short' }), x + 3, 9); });
-  // week ticks + day-of-month labels
-  const totalDays = totalMs / 86400000, tickDays = totalDays <= 130 ? 7 : (totalDays <= 280 ? 14 : 28);
-  { const d = new Date(minS); d.setHours(0, 0, 0, 0); while (d.getDay() !== 1 && d <= maxE) d.setDate(d.getDate() + 1);
+  if (sp.hasReal) {
+    // month gridlines + labels
+    const months = []; const gm = new Date(minS.getFullYear(), minS.getMonth(), 1); if (gm < minS) gm.setMonth(gm.getMonth() + 1);
+    for (let g = 0; g < 240 && gm <= maxE; g++) { months.push(new Date(gm)); gm.setMonth(gm.getMonth() + 1); }
+    months.forEach(m => { const x = X(m); ctx.strokeStyle = '#d5d8dd'; ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.fillStyle = '#555'; ctx.font = 'bold 11px Arial'; ctx.fillText(m.toLocaleDateString('en-US', { month: 'short' }), x + 3, 9); });
+    // week ticks + day-of-month labels
+    const totalDays = totalMs / 86400000, tickDays = totalDays <= 130 ? 7 : (totalDays <= 280 ? 14 : 28);
+    { const d = new Date(minS); d.setHours(0, 0, 0, 0); while (d.getDay() !== 1 && d <= maxE) d.setDate(d.getDate() + 1);
+      ctx.font = '9px Arial';
+      for (let g = 0; d <= maxE && g < 400; g++) { const x = X(d); ctx.strokeStyle = 'rgba(213,216,221,0.55)'; ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.fillStyle = '#999'; ctx.fillText(String(d.getDate()), x + 2, 24); d.setDate(d.getDate() + tickDays); } }
+    // today marker
+    const today = _csParseDate(_csTodayStr());
+    if (today && today >= minS && today <= maxE) { const x = X(today); ctx.strokeStyle = '#f87171'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.setLineDash([]); }
+  } else {
+    // no dates anywhere: generic day-number scale over the estimated sequence
+    ctx.fillStyle = '#888'; ctx.font = 'italic 10px Arial';
+    ctx.fillText('Estimated sequence — durations only, no dates set', trackX, 9);
+    const totalDays = Math.ceil(totalMs / 86400000), step = totalDays <= 60 ? 7 : (totalDays <= 180 ? 14 : 28);
     ctx.font = '9px Arial';
-    for (let g = 0; d <= maxE && g < 400; g++) { const x = X(d); ctx.strokeStyle = 'rgba(213,216,221,0.55)'; ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.fillStyle = '#999'; ctx.fillText(String(d.getDate()), x + 2, 24); d.setDate(d.getDate() + tickDays); } }
-  // today marker
-  const today = _csParseDate(_csTodayStr());
-  if (today && today >= minS && today <= maxE) { const x = X(today); ctx.strokeStyle = '#f87171'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke(); ctx.setLineDash([]); }
+    for (let k = 0; k <= totalDays; k += step) {
+      const x = X(new Date(minS.getTime() + k * 86400000));
+      ctx.strokeStyle = 'rgba(213,216,221,0.55)'; ctx.beginPath(); ctx.moveTo(x, AXIS); ctx.lineTo(x, H - PAD); ctx.stroke();
+      ctx.fillStyle = '#999'; ctx.fillText('Day ' + (k + 1), x + 2, 24);
+    }
+  }
 
   // rows: labels + bars
   const critical = _csCriticalSet(); const geo = {};
@@ -22442,18 +22496,21 @@ function _csGanttToPng() {
       ctx.fillStyle = '#888'; ctx.font = 'italic bold 10px Arial'; ctx.fillText(_csTrunc(r.description || '—', 30), 6, yc);
       ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(trackX, yc); ctx.lineTo(W - PAD, yc); ctx.stroke(); ctx.setLineDash([]); return;
     }
-    const s = _csParseDate(r.start), e = _csParseDate(r.end), dur = _csRowDuration(r);
+    const v = spans[r.id], dur = _csRowDuration(r);
     ctx.fillStyle = '#111'; ctx.font = '600 11px Arial'; ctx.fillText(_csTrunc(r.description || '(untitled)', 26), 6, y + 11);
     ctx.fillStyle = '#888'; ctx.font = '9px Arial';
-    ctx.fillText([(s && e) ? `${_csFmtShortNoYear(s)} – ${_csFmtShortNoYear(e)}` : '', dur ? dur + 'd' + ((s && e) ? '' : ' est.') : ''].filter(Boolean).join(' · '), 6, y + 22);
-    if (s && e) {
-      const x1 = X(s), x2 = X(e), bw = Math.max(4, x2 - x1), color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
+    ctx.fillText(v ? (v.virtual ? `est. ${dur}d` : `${_csFmtShortNoYear(v.start)} – ${_csFmtShortNoYear(v.end)}${dur ? ' · ' + dur + 'd' : ''}`) : '', 6, y + 22);
+    if (v) {
+      const x1 = X(v.start), x2 = X(v.end), bw = Math.max(4, x2 - x1), color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
       geo[r.id] = { yc, x1, x2 };
       const barY = yc - 7, pct = Math.min(100, Math.max(0, parseFloat(r.pct) || 0));
-      ctx.fillStyle = _csHexA(color, 0.2); ctx.fillRect(x1, barY, bw, 14);
+      ctx.fillStyle = _csHexA(color, v.virtual ? 0.12 : 0.2); ctx.fillRect(x1, barY, bw, 14);
       ctx.fillStyle = color; ctx.fillRect(x1, barY, bw * pct / 100, 14);
-      ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.strokeRect(x1 + 0.5, barY + 0.5, bw - 1, 13);
-      ctx.fillStyle = '#666'; ctx.font = '9px Arial'; ctx.fillText((dur || '') + 'd', x2 + 4, yc);
+      ctx.strokeStyle = color; ctx.lineWidth = 1;
+      if (v.virtual) ctx.setLineDash([4, 3]);
+      ctx.strokeRect(x1 + 0.5, barY + 0.5, bw - 1, 13);
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#666'; ctx.font = '9px Arial'; ctx.fillText((dur || '') + 'd' + (v.virtual ? ' est.' : ''), x2 + 4, yc);
     }
   });
   // dependency arrows
@@ -22577,7 +22634,7 @@ function _csExportPdf() {
       ${headerBlock}
       <h2>Gantt Chart</h2>
       <div class="gantt-wrap"><div class="gantt">${ganttHtml}</div></div>
-      <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; <span style="color:#dc2626;font-weight:700">red</span> marks the critical path (dependency chain that drives the finish date); the dashed line marks today; arrows show finish-to-start dependencies.</p>
+      <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; <span style="color:#dc2626;font-weight:700">red</span> marks the critical path (dependency chain that drives the finish date); the dashed line marks today; arrows show finish-to-start dependencies. Dashed bars are duration-only estimates charted in sequence, not scheduled dates.</p>
     </div>
     <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
@@ -22587,9 +22644,9 @@ function _csExportPdf() {
 /* ── Email the schedule — reuses the shared report-email modal ────────────── */
 // A proportional bar built from table cells (email clients can't do the
 // absolute-positioned / SVG on-screen Gantt, but handle table cells + bgcolor).
-function _csEmailBar(r, minMs, totalMs, critical) {
-  const s = _csParseDate(r.start), e = _csParseDate(r.end);
-  if (!s || !e) return '';
+function _csEmailBar(r, v, minMs, totalMs, critical) {
+  if (!v) return '';
+  const s = v.start, e = v.end;
   const left = Math.max(0, Math.min(99, (s.getTime() - minMs) / totalMs * 100));
   const barW = Math.max(2, Math.min(100 - left, (e.getTime() - s.getTime()) / totalMs * 100));
   const color = critical.has(r.id) ? '#dc2626' : _csGanttColor(r.status);
@@ -22615,9 +22672,10 @@ function _csBuildEmailReportHtml(png) {
   const depName = id => { const t = rows.find(x => x.id === id); return t ? ((t.description || '').trim() || 'task') : ''; };
   const titleTxt = (h.heading || h.projectTitle || 'Project');
 
-  const dated = rows.filter(r => r.kind === 'task' && _csParseDate(r.start) && _csParseDate(r.end));
+  const gsp = _csGanttSpans();
+  const spans = gsp ? gsp.spans : {};
   let minMs = null, maxMs = null;
-  dated.forEach(t => { const s = _csParseDate(t.start).getTime(), e = _csParseDate(t.end).getTime(); if (minMs == null || s < minMs) minMs = s; if (maxMs == null || e > maxMs) maxMs = e; });
+  Object.values(spans).forEach(v => { const s = v.start.getTime(), e = v.end.getTime(); if (minMs == null || s < minMs) minMs = s; if (maxMs == null || e > maxMs) maxMs = e; });
   const totalMs = Math.max(86400000, (maxMs || 0) - (minMs || 0));
 
   const kpi = (l, v) => `<td style="padding:6px 16px 6px 0;vertical-align:top"><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:#888">${l}</div><div style="font-size:14px;font-weight:700;color:#111">${v}</div></td>`;
@@ -22652,8 +22710,8 @@ function _csBuildEmailReportHtml(png) {
   } else {
     const ganttRows = rows.map(r => {
       if (r.kind === 'divider') return `<tr><td colspan="2" style="padding:7px 0 3px;font-style:italic;font-weight:700;font-size:10px;color:#888;border-top:1px dashed #ccc">${esc(r.description) || '—'}</td></tr>`;
-      const s = _csParseDate(r.start), e = _csParseDate(r.end);
-      const dr = (s && e) ? `${_csFmtShortNoYear(s)} &ndash; ${_csFmtShortNoYear(e)}` : '';
+      const v = spans[r.id];
+      const dr = (v && !v.virtual) ? `${_csFmtShortNoYear(v.start)} &ndash; ${_csFmtShortNoYear(v.end)}` : '';
       const dur = _csRowDuration(r);
       const sub = dr ? (dr + (dur ? ' &middot; ' + dur + 'd' : '')) : (dur ? 'est. ' + dur + 'd' : '');
       return `<tr>
@@ -22661,7 +22719,7 @@ function _csBuildEmailReportHtml(png) {
           <div style="font-size:11px;font-weight:600;color:#111;line-height:1.2">${esc(r.description) || '(untitled)'}</div>
           ${sub ? `<div style="font-size:9px;color:#888">${sub}</div>` : ''}
         </td>
-        <td style="vertical-align:middle;padding:3px 0">${_csEmailBar(r, minMs, totalMs, critical)}</td>
+        <td style="vertical-align:middle;padding:3px 0">${_csEmailBar(r, v, minMs, totalMs, critical)}</td>
       </tr>`;
     }).join('');
     ganttBlock = `<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">${ganttRows}</table>`;
@@ -23208,7 +23266,7 @@ function renderConstructionSchedule() {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.7rem;border-bottom:2px solid var(--green);padding-bottom:0.35rem">
           <div style="font-size:1.05rem;font-weight:800;color:var(--fg)">Gantt Chart</div>
           <div style="display:flex;gap:0.9rem;flex-wrap:wrap;font-size:0.68rem;color:var(--muted)">
-            ${[['Complete','#ffd24d'],['In Progress','#4ade80'],['Not Yet Started','#94a3b8'],['On Hold','#fbbf24'],['Critical path','#dc2626']].map(([l,c]) => `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${l}</span>`).join('')}
+            ${[['Complete','#ffd24d'],['In Progress','#4ade80'],['Not Yet Started','#94a3b8'],['On Hold','#fbbf24'],['Critical path','#dc2626']].map(([l,c]) => `<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${l}</span>`).join('')}<span style="display:inline-flex;align-items:center;gap:0.3rem"><span style="width:10px;height:10px;border-radius:2px;border:1.5px dashed var(--muted)"></span>Estimate (no dates)</span>
           </div>
         </div>
         <div id="cs-gantt">${_csRenderGanttHtml()}</div>
