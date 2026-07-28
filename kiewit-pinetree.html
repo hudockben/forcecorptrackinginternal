@@ -2312,6 +2312,25 @@
     }
     .cb-opt.hi, .cb-opt:hover { background: #e0a200; color: #111; }
     .cb-opt-empty { padding: 0.3rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
+
+    /* Construction-schedule timeline: a scroll pane of its own, so the column
+       headers stay put and the horizontal scrollbar is always within reach
+       instead of sitting below every row. */
+    .cs-tablewrap {
+      overflow: auto;
+      max-height: 70vh;
+      border: 1px solid var(--border, #2a2a3a);
+      border-radius: 8px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(148, 163, 184, 0.5) rgba(148, 163, 184, 0.12);
+      overscroll-behavior-x: contain;
+    }
+    .cs-tablewrap thead th { position: sticky; top: 0; z-index: 3; }
+    .cs-tablewrap::-webkit-scrollbar { width: 12px; height: 12px; }
+    .cs-tablewrap::-webkit-scrollbar-track { background: rgba(148, 163, 184, 0.12); border-radius: 6px; }
+    .cs-tablewrap::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.5); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+    .cs-tablewrap::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.75); background-clip: padding-box; }
+    .cs-tablewrap::-webkit-scrollbar-corner { background: transparent; }
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
   <script src="report-email.js" defer></script>
@@ -21969,13 +21988,31 @@ const _CS_PRIORITIES = ['High', 'Medium', 'Low'];
 // work — concurrent crews, or an everyday item like travel — shouldn't push the
 // finish date out, so only "In sequence" rows add to the working-day count.
 const _CS_SCHED = [
-  { v:'seq',     label:'In sequence', hint:'Starts after the task above finishes — its days add to the schedule.' },
-  { v:'par',     label:'Same time',   hint:'Runs at the same time as the task above — only the longest task in the group adds days.' },
-  { v:'ongoing', label:'Ongoing',     hint:'Runs across the whole job (travel, supervision, general conditions) — never adds days.' },
+  { v:'seq',     label:'In sequence',   hint:'Starts after the task above finishes — its days add to the schedule.' },
+  { v:'par',     label:'Same time as…', hint:'Runs at the same time as the cost code you pick — only the longest task in the group adds days.' },
+  { v:'ongoing', label:'Ongoing',       hint:'Runs across the whole job (travel, supervision, general conditions) — never adds days.' },
 ];
 const _CS_SCHED_HINT = _CS_SCHED.map(m => m.label + ' — ' + m.hint).join('\n');
 const _csSchedOf = r => { const v = r && r.sched; return (v === 'par' || v === 'ongoing') ? v : 'seq'; };
-const _csSchedLabel = r => (_CS_SCHED.find(m => m.v === _csSchedOf(r)) || _CS_SCHED[0]).label;
+// How a task is named in the "same time as" picker — its sub code, else its
+// cost code, else what it's called.
+function _csTaskRefName(t) {
+  if (!t) return 'task';
+  const sub = (t.subcode || '').trim(), code = (t.code || '').trim(), desc = (t.description || '').trim();
+  return sub || code || desc || 'Untitled task';
+}
+// The task a concurrent row is pinned to, or null when it just follows the row
+// above it (or the one it named has since been deleted).
+function _csSchedRefTask(row) {
+  if (!row || _csSchedOf(row) !== 'par' || !row.schedRef) return null;
+  return ((_csData && _csData.rows) || []).find(r => r.kind === 'task' && r.id === row.schedRef && r.id !== row.id) || null;
+}
+function _csSchedLabel(r) {
+  const mode = _csSchedOf(r);
+  if (mode !== 'par') return (_CS_SCHED.find(m => m.v === mode) || _CS_SCHED[0]).label;
+  const ref = _csSchedRefTask(r);
+  return ref ? 'Same time as ' + _csTaskRefName(ref) : 'Same time as the task above';
+}
 // Work-week modes for the Est. Working Days count. `skip` = day-of-week indices
 // (0=Sun … 6=Sat) that do NOT count as working days.
 const _CS_WORKWEEKS = [
@@ -22276,24 +22313,61 @@ function _csGanttSpans() {
     }
   });
 
-  let cursor = null, chainStart = null, groupStart = null;
-  const ongoing = [];
+  const estOf = t => { const n = parseFloat(t.duration); return isFinite(n) && n > 0 ? n : 0; };
+  const ongoing = [], pending = [];
   tasks.forEach(t => {
     if (spans[t.id] || _csHasBothDates(t)) return;   // dated rows (even mis-ordered) are never sketched
-    const est = parseFloat(t.duration);
-    if (!isFinite(est) || est <= 0) return;
-    const mode = _csSchedOf(t);
-    if (mode === 'ongoing') { ongoing.push(t); return; }
-    if (!cursor) { cursor = midnight(latestEnd || new Date()); chainStart = new Date(cursor); }
-    // "Same time" shares the group's start; anything else opens a new group.
-    const start = (mode === 'par' && groupStart) ? new Date(groupStart) : new Date(cursor);
-    if (mode !== 'par' || !groupStart) groupStart = new Date(start);
-    const end = new Date(start.getTime() + est * 86400000);
-    spans[t.id] = { start, end, virtual: true, sched: mode };
-    if (end > cursor) cursor = new Date(end);
+    if (!estOf(t)) return;
+    (_csSchedOf(t) === 'ongoing' ? ongoing : pending).push(t);
+  });
+
+  // Place each "same time as" row straight after the task it names, so a single
+  // ordered walk can resolve every reference — including one pointing further
+  // down the list. A reference that dangles or forms a loop just keeps its own
+  // position and falls back to the group it sits in.
+  const byId = {}; pending.forEach(t => byId[t.id] = t);
+  const followers = {};
+  pending.forEach(t => {
+    const ref = t.schedRef;
+    if (_csSchedOf(t) === 'par' && ref && ref !== t.id && byId[ref]) (followers[ref] = followers[ref] || []).push(t);
+  });
+  const ordered = [], seen = {};
+  const emit = t => {
+    if (seen[t.id]) return;
+    seen[t.id] = 1; ordered.push(t);
+    (followers[t.id] || []).forEach(emit);
+  };
+  pending.forEach(t => {
+    const waiting = _csSchedOf(t) === 'par' && t.schedRef && t.schedRef !== t.id && byId[t.schedRef];
+    if (!waiting) emit(t);          // anchors first; their followers ride along
+  });
+  pending.forEach(emit);            // whatever's left (reference loops), in order
+
+  // A "group" is a sequential task plus everything running alongside it. The
+  // next sequential task waits for the whole group, so concurrent work only
+  // stretches the schedule when it outlasts the task it runs with.
+  const anchor = midnight(latestEnd || new Date());
+  const chainStart = new Date(anchor);
+  let groupStart = new Date(anchor), groupEnd = new Date(anchor), chainEnd = new Date(anchor);
+  ordered.forEach(t => {
+    let start, end;
+    if (_csSchedOf(t) === 'par') {
+      const ref = t.schedRef ? spans[t.schedRef] : null;
+      start = new Date(ref ? ref.start : groupStart);
+      end = new Date(start.getTime() + estOf(t) * 86400000);
+      spans[t.id] = { start, end, virtual: true, sched: 'par' };
+    } else {
+      start = new Date(groupEnd);
+      end = new Date(start.getTime() + estOf(t) * 86400000);
+      spans[t.id] = { start, end, virtual: true, sched: 'seq' };
+      groupStart = new Date(start);
+    }
+    if (end > groupEnd) groupEnd = new Date(end);
+    if (end > chainEnd) chainEnd = new Date(end);
     hasVirtual = true;
   });
-  const estDays = (cursor && chainStart) ? Math.round((cursor - chainStart) / 86400000 * 10) / 10 : 0;
+  const estDays = ordered.length
+    ? Math.max(0, Math.round((chainEnd - chainStart) / 86400000 * 10) / 10) : 0;
 
   // Ongoing work spans everything else that's been placed; when it's the only
   // thing on the schedule it simply runs its own estimate from the anchor.
@@ -22417,8 +22491,9 @@ function _csRenderGanttHtml() {
       geo[r.id] = { yc: yTop + ROWH / 2, x1: left, x2: endPct };
       const dur = _csRowDuration(r);
       const isOng = v.sched === 'ongoing';
+      const refT = v.sched === 'par' ? _csSchedRefTask(r) : null;
       const timingNote = isOng ? ' — ongoing across the job, adds no days'
-                       : v.sched === 'par' ? ' — at the same time as the task above' : '';
+                       : v.sched === 'par' ? ' — at the same time as ' + (refT ? _csTaskRefName(refT) : 'the task above') : '';
       const tip = v.virtual
         ? `${(r.description || '(untitled task)')}  est. ${dur}d${timingNote || ' — sketched in sequence'} (no dates set)  ${pct}% done`
         : `${(r.description || '(untitled task)')}  ${r.start} → ${r.end}${dur ? `  (${dur}d)` : ''}${timingNote}  ${pct}% done`;
@@ -23072,7 +23147,10 @@ async function _csSaveAsTemplate() {
     : { kind:'task', status:'Not Yet Started', priority:r.priority || 'High',
         // dates are job-specific, but the day count (derived or typed) carries
         // over as the template's duration estimate
-        start:'', end:'', duration:_csRowDuration(r) || '', sched:_csSchedOf(r), code:r.code || '',
+        start:'', end:'', duration:_csRowDuration(r) || '', sched:_csSchedOf(r),
+        // tid/schedRef travel together so "same time as" survives the trip
+        // through a template, where every row gets a fresh id on the way out
+        tid:r.id, schedRef:r.schedRef || '', code:r.code || '',
         subcode:r.subcode || '', description:r.description || '',
         deliverable:r.deliverable || '', pct:0 });
   _csTemplates.push({ id:_csUid(), name:name.trim(), rows });
@@ -23086,7 +23164,18 @@ async function _csApplyTemplate(tid) {
   if (!t) return;
   const hasWork = (_csData.rows || []).some(r => r.description || r.start || r.end || r.duration || (r.pct && +r.pct > 0));
   if (hasWork && !confirm('Replace the current task list with template “' + t.name + '”? The job header is kept.')) return;
-  _csData.rows = (t.rows || []).map(r => Object.assign({}, r, { id:_csUid() }));
+  // Re-point each "same time as" link at the freshly created row it refers to.
+  const idMap = {};
+  const rows = (t.rows || []).map(r => {
+    const id = _csUid();
+    if (r.tid) idMap[r.tid] = id;
+    return Object.assign({}, r, { id });
+  });
+  rows.forEach(r => {
+    r.schedRef = (r.schedRef && idMap[r.schedRef]) || '';
+    delete r.tid;
+  });
+  _csData.rows = rows;
   _csScheduleSave(); renderConstructionSchedule();
 }
 async function _csDeleteTemplate(tid) {
@@ -23131,13 +23220,38 @@ function _csDurCell(row) {
     title="${derived ? _CS_DUR_AUTO_TIP : _CS_DUR_EST_TIP}"
     style="${_CS_INP};text-align:center${derived ? ';color:var(--muted)' : ''}">`;
 }
-/* Timing: whether a task's days extend the schedule, run alongside the task
-   above it, or ride along with the whole job. */
+/* Timing: whether a task's days extend the schedule, run alongside another cost
+   code, or ride along with the whole job. One control — the "same time as"
+   choices name the other tasks by cost/sub code. */
 function _csSchedCell(row) {
-  const cur = _csSchedOf(row);
-  const opts = _CS_SCHED.map(m => `<option value="${m.v}" ${m.v === cur ? 'selected' : ''}>${_csEsc(m.label)}</option>`).join('');
-  const tint = cur === 'seq' ? '' : ';color:var(--blue)';
-  return `<select onchange="_csEdit('${row.id}','sched',this.value)" title="${_csEsc(_CS_SCHED_HINT)}" style="${_CS_INP};cursor:pointer${tint}">${opts}</select>`;
+  const mode = _csSchedOf(row);
+  const others = ((_csData && _csData.rows) || []).filter(r => r.kind === 'task' && r.id !== row.id);
+  const pinned = _csSchedRefTask(row);
+  const cur = mode !== 'par' ? mode : (pinned ? 'par:' + pinned.id : 'par');
+  const opt = (v, label) => `<option value="${_csEsc(v)}"${v === cur ? ' selected' : ''}>${_csEsc(label)}</option>`;
+  // Labels spell out the whole choice so the closed select still reads clearly.
+  const refOpts = others.map(t => opt('par:' + t.id, 'Same time as ' + _csTrunc(_csTaskRefName(t), 34))).join('');
+  const tint = mode === 'seq' ? '' : ';color:var(--blue)';
+  return `<select id="cs-sched-${row.id}" onchange="_csSetSched('${row.id}',this.value)" title="${_csEsc(_CS_SCHED_HINT)}" style="${_CS_INP};cursor:pointer${tint}">`
+       + opt('seq', 'In sequence') + opt('ongoing', 'Ongoing')
+       + opt('par', 'Same time as the task above') + refOpts + `</select>`;
+}
+// Timing is one select covering three modes, so decode the picked value: a
+// bare mode, or "par:<task id>" pinning this task alongside that one.
+function _csSetSched(id, val) {
+  if (!_csData) return;
+  const row = (_csData.rows || []).find(r => r.id === id);
+  if (!row) return;
+  if (String(val).indexOf('par:') === 0) { row.sched = 'par'; row.schedRef = String(val).slice(4); }
+  else if (val === 'par')                { row.sched = 'par'; row.schedRef = ''; }
+  else                                   { row.sched = (val === 'ongoing' ? 'ongoing' : 'seq'); row.schedRef = ''; }
+  const se = document.getElementById('cs-sched-' + id);
+  if (se) se.style.color = row.sched === 'seq' ? 'var(--fg)' : 'var(--blue)';
+  _csUpdateSummary();
+  _csUpdateHeaderStats();
+  _csUpdateGanttHeader();
+  _csUpdateGantt();
+  _csScheduleSave();
 }
 function _csSyncDurCell(row) {
   const de = document.getElementById('cs-dur-' + row.id);
@@ -23255,16 +23369,16 @@ function _csRowHtml(row, index, total) {
   }
 
   return `<tr>
-    <td style="${_CS_TD};min-width:110px">${_csSelect(row.id, 'status', row.status, _CS_STATUSES, true)}</td>
-    <td style="${_CS_TD};min-width:70px">${_csSelect(row.id, 'priority', row.priority, _CS_PRIORITIES, false)}</td>
-    <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
-    <td style="${_CS_TD};min-width:118px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
+    <td style="${_CS_TD};min-width:114px">${_csSelect(row.id, 'status', row.status, _CS_STATUSES, true)}</td>
+    <td style="${_CS_TD};min-width:64px">${_csSelect(row.id, 'priority', row.priority, _CS_PRIORITIES, false)}</td>
+    <td style="${_CS_TD};min-width:112px"><input type="date" value="${_csEsc(row.start)}" onchange="_csEdit('${row.id}','start',this.value)" style="${_CS_INP}"></td>
+    <td style="${_CS_TD};min-width:112px"><input type="date" value="${_csEsc(row.end)}" onchange="_csEdit('${row.id}','end',this.value)" style="${_CS_INP}"></td>
     <td style="${_CS_TD};min-width:56px;text-align:center">${_csDurCell(row)}</td>
-    <td style="${_CS_TD};min-width:108px">${_csSchedCell(row)}</td>
+    <td style="${_CS_TD};min-width:165px">${_csSchedCell(row)}</td>
     <td style="${_CS_TD};min-width:150px">${_csCodeCell(row)}</td>
     <td style="${_CS_TD};min-width:150px">${_csSubcodeCell(row)}</td>
-    <td style="${_CS_TD};min-width:260px">${_csCell(row.id, 'description', row.description)}</td>
-    <td style="${_CS_TD};min-width:120px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
+    <td style="${_CS_TD};min-width:233px">${_csCell(row.id, 'description', row.description)}</td>
+    <td style="${_CS_TD};min-width:108px">${_csCell(row.id, 'deliverable', row.deliverable)}</td>
     <td style="${_CS_TD};min-width:52px"><input id="cs-pct-${row.id}" type="number" min="0" max="100" value="${_csEsc(row.pct)}" oninput="_csEdit('${row.id}','pct',this.value)" style="${_CS_INP};text-align:center"></td>
     <td style="${_CS_TD};min-width:100px">${_csDepsCell(row)}</td>
     ${actions}</tr>`;
@@ -23347,7 +23461,7 @@ function renderConstructionSchedule() {
   const hLbl = 'font-size:0.62rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.15rem;font-weight:700';
 
   el.innerHTML = `
-    <div style="max-width:1200px;margin:0 auto">
+    <div style="max-width:1600px;margin:0 auto">
       <!-- toolbar -->
       <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
         <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
@@ -23383,7 +23497,7 @@ function renderConstructionSchedule() {
       </div>
 
       <!-- task table -->
-      <div style="overflow-x:auto">
+      <div class="cs-tablewrap">
         <table style="width:100%;border-collapse:collapse">
           <thead>
             <tr style="background:var(--green);color:#111">
