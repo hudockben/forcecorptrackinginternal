@@ -5797,9 +5797,9 @@ async function loadPurchaseOrders() {
   _migratePOs();
 }
 
-function _migratePOs() {
+function _migratePOs(list = purchaseOrders) {
   // Upgrade flat single-line POs to the new lines[] format
-  purchaseOrders.forEach(po => {
+  list.forEach(po => {
     if (!po.lines) {
       const hasData = po.qty || po.unit_cost;
       po.lines = hasData ? [{
@@ -5813,6 +5813,23 @@ function _migratePOs() {
         po_row_id:   po.po_row_id || null,
       }] : [];
     }
+    // Tax used to be typed in as a flat dollar amount; it's now entered as a
+    // percentage of the line amount. Convert once, so existing POs keep the tax
+    // dollars they were saved with. Anything the percentage can't reproduce —
+    // a tax with no amount to take a percentage of, or one whose rate doesn't
+    // round-trip to within half a cent — keeps tax_pct unset, so _lineTax's
+    // fallback goes on returning the exact stored figure.
+    (po.lines || []).forEach(l => {
+      if (!l || l.tax_pct != null) return;
+      const t = parseFloat(l.tax) || 0;
+      if (t <= 0) { l.tax_pct = ''; return; }
+      const amt = _lineAmt(l);
+      if (amt <= 0) return;
+      const pct = Math.round(t / amt * 1e6) / 1e4;
+      if (Math.abs(amt * pct / 100 - t) >= 0.005) return;
+      l.tax_pct = String(pct);
+      _recalcLineTax(l);   // keep the stored dollars and the shown dollars identical
+    });
   });
 }
 
@@ -8388,13 +8405,40 @@ function saveLists() { apiPut('fct_lists', lists); }
 /* ── Purchase Orders Tab ── */
 let _poExpanded = new Set();   // PO ids with delivery lines visible
 
+// Delivery-line math. Tax is entered as a percentage (`tax_pct`) and applied on
+// top of the line amount; the resulting dollar figure is mirrored into `tax` so
+// every downstream consumer — daily rows, project rollups, CSV exports, the
+// normalized po_deliveries table — keeps reading a dollar amount. Lines saved
+// before the percent field existed fall back to their stored dollar tax.
+function _lineAmt(line) {
+  return (parseFloat(line.qty) || 0) * (parseFloat(line.unit_cost) || 0);
+}
+function _lineTaxPct(line) {
+  const p = parseFloat(line.tax_pct);
+  return isNaN(p) ? null : p;
+}
+function _lineTax(line) {
+  const p = _lineTaxPct(line);
+  return p === null ? (parseFloat(line.tax) || 0) : _lineAmt(line) * p / 100;
+}
+// Re-derive the stored dollar tax after qty / unit cost / tax % changes.
+// A line with no tax_pct key at all is a legacy dollar-tax line — leave it
+// alone. A blank tax_pct is the user clearing the field, which zeroes the tax
+// (don't route that through _lineTax, whose fallback would revive the old
+// dollar figure the percentage had just written there).
+function _recalcLineTax(line) {
+  if (line.tax_pct == null) return;
+  const p = _lineTaxPct(line);
+  const t = p === null ? 0 : _lineAmt(line) * p / 100;
+  line.tax = t ? String(t) : '';
+}
+
 function _poTotals(po) {
   let qty = 0, amt = 0, tax = 0;
   (po.lines || []).forEach(l => {
-    const q = parseFloat(l.qty)       || 0;
-    const u = parseFloat(l.unit_cost) || 0;
-    const t = parseFloat(l.tax)       || 0;
-    qty += q; amt += q * u; tax += t;
+    qty += parseFloat(l.qty) || 0;
+    amt += _lineAmt(l);
+    tax += _lineTax(l);
   });
   return { qty, amt, tax, total: amt + tax };
 }
@@ -8415,7 +8459,7 @@ function addPO() {
   purchaseOrders.push(po);
   _poExpanded.add(po.id);
   // Auto-add first delivery line
-  po.lines.push({ id: uid(), invoice_num: '', date: _localDateStr(), qty: '', unit_cost: '', tax: '', employee: '', po_row_id: null });
+  po.lines.push({ id: uid(), invoice_num: '', date: _localDateStr(), qty: '', unit_cost: '', tax: '', tax_pct: '', employee: '', po_row_id: null });
   savePurchaseOrders();
   renderPOTab();
 }
@@ -8424,7 +8468,7 @@ function addPOLine(poId) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
   if (!po.lines) po.lines = [];
-  po.lines.push({ id: uid(), invoice_num: '', date: _localDateStr(), qty: '', unit_cost: '', tax: '', employee: '', po_row_id: null });
+  po.lines.push({ id: uid(), invoice_num: '', date: _localDateStr(), qty: '', unit_cost: '', tax: '', tax_pct: '', employee: '', po_row_id: null });
   _poExpanded.add(poId);
   savePurchaseOrders();
   renderPOTab();
@@ -8499,8 +8543,7 @@ function _syncPOLineToRow(po, line) {
   r.employee       = line.employee || '';
   r.units_purchased= line.qty      || '';
   r.unit_cost      = line.unit_cost|| '';
-  const q = parseFloat(line.qty) || 0, u = parseFloat(line.unit_cost) || 0, t = parseFloat(line.tax) || 0;
-  r.material_cost  = String(q * u + t);
+  r.material_cost  = String(_lineAmt(line) + _lineTax(line));
   drPutNow(r.id, r);
   renderDailyTable(po.project_id);
 }
@@ -8510,7 +8553,6 @@ function _ensurePOLineRow(po, line) {
   if (!po.project_id || line.po_row_id) return;
   const proj = getProj(po.project_id);
   if (!proj) return;
-  const q = parseFloat(line.qty) || 0, u = parseFloat(line.unit_cost) || 0, t = parseFloat(line.tax) || 0;
   const row = {
     ...defaultDailyRow(),
     id:              uid(),
@@ -8524,7 +8566,7 @@ function _ensurePOLineRow(po, line) {
     po_num:          po.po_number  || '',
     units_purchased: line.qty      || '',
     unit_cost:       line.unit_cost|| '',
-    material_cost:   String(q * u + t),
+    material_cost:   String(_lineAmt(line) + _lineTax(line)),
     field_type:      'Material',
   };
   proj.dailyRows.push(row);
@@ -8586,7 +8628,7 @@ function applyPOFilters() {
 
 function exportPOCSV() {
   const pos = applyPOFilters();
-  const headers = ['PO #','Project','Sub Code','Title','Supplier','Invoice #','Delivery Date','Qty','Unit Cost','Amount','Tax','Total','Employee','Status'];
+  const headers = ['PO #','Project','Sub Code','Title','Supplier','Invoice #','Delivery Date','Qty','Unit Cost','Amount','Tax %','Tax','Total','Employee','Status'];
   const escape = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
   const csvLines = [headers.map(escape).join(',')];
   pos.forEach(po => {
@@ -8594,11 +8636,11 @@ function exportPOCSV() {
     const projName = proj ? (proj['project-name'] || '') : '';
     const lines = (po.lines || []);
     if (lines.length === 0) {
-      csvLines.push([po.po_number, projName, po.sub_code||'', po.title||'', po.supplier||'', '', '', '', '', '', '', '', '', po.status||''].map(escape).join(','));
+      csvLines.push([po.po_number, projName, po.sub_code||'', po.title||'', po.supplier||'', '', '', '', '', '', '', '', '', '', po.status||''].map(escape).join(','));
     } else {
       lines.forEach((l, i) => {
-        const q = parseFloat(l.qty) || 0, u = parseFloat(l.unit_cost) || 0, t = parseFloat(l.tax) || 0;
-        const amt = q * u;
+        const q = parseFloat(l.qty) || 0, u = parseFloat(l.unit_cost) || 0;
+        const amt = _lineAmt(l), t = _lineTax(l), pct = _lineTaxPct(l);
         csvLines.push([
           i === 0 ? po.po_number : '', // only show PO # on first line
           i === 0 ? projName : '',
@@ -8606,7 +8648,7 @@ function exportPOCSV() {
           i === 0 ? (po.title||'') : '',
           po.supplier||'',
           l.invoice_num||'', l.date||'',
-          q||'', u||'', amt.toFixed(2), t.toFixed(2), (amt+t).toFixed(2),
+          q||'', u||'', amt.toFixed(2), pct === null ? '' : pct, t.toFixed(2), (amt+t).toFixed(2),
           l.employee||'',
           i === 0 ? (po.status||'') : '',
         ].map(escape).join(','));
@@ -8780,15 +8822,19 @@ function renderPOTab() {
 
         // ── Delivery lines sub-table (when expanded) ───────────────────
         const lineRows = (po.lines||[]).map(line => {
-          const q = parseFloat(line.qty)||0, u = parseFloat(line.unit_cost)||0, t = parseFloat(line.tax)||0;
-          const lineAmt = q*u, lineTot = lineAmt+t;
+          const lineAmt = _lineAmt(line), lineTax = _lineTax(line), lineTot = lineAmt + lineTax;
           return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
             <td style="padding:0.3rem 0.5rem;min-width:120px">${inp('invoice_num','text',line.invoice_num,po.id,line.id,'placeholder="Invoice / Ticket #"')}</td>
             <td style="padding:0.3rem 0.5rem;min-width:115px">${inp('date','date',line.date,po.id,line.id)}</td>
             <td style="padding:0.3rem 0.5rem;min-width:70px">${inp('qty','number',line.qty,po.id,line.id,'step="any" placeholder="0"')}</td>
             <td style="padding:0.3rem 0.5rem;min-width:90px">${inp('unit_cost','number',line.unit_cost,po.id,line.id,'step="any" placeholder="0.00"')}</td>
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem" id="po-line-amt-${line.id}">${lineAmt > 0 ? '$'+fmt(lineAmt) : '—'}</td>
-            <td style="padding:0.3rem 0.5rem;min-width:80px">${inp('tax','number',line.tax,po.id,line.id,'step="any" placeholder="0.00"')}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:95px">
+              <div style="display:flex;align-items:center;gap:0.15rem">
+                ${inp('tax_pct','number',line.tax_pct,po.id,line.id,'step="any" placeholder="0"')}<span style="color:var(--muted);font-size:0.72rem">%</span>
+              </div>
+              <div id="po-line-tax-${line.id}" style="text-align:right;font-size:0.62rem;color:var(--muted);padding-right:0.6rem">${lineTax > 0 ? '$'+fmt(lineTax) : ''}</div>
+            </td>
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600" id="po-line-tot-${line.id}">${lineTot > 0 ? '$'+fmt(lineTot) : '—'}</td>
             <td style="padding:0.3rem 0.5rem;min-width:130px">${cbHtml('employees', line.employee || '', '— select —', `data-po-id="${po.id}" data-line-id="${line.id}" data-line-field="employee"`)}</td>
             ${perm.canEdit ? `<td style="padding:0.3rem 0.4rem;text-align:center"><button onclick="deletePOLine('${po.id}','${line.id}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.8rem;opacity:0.6" title="Remove delivery">&#10005;</button></td>` : '<td></td>'}
@@ -8797,10 +8843,12 @@ function renderPOTab() {
 
         const totRow = (po.lines||[]).length > 1 ? `
           <tr style="border-top:1px solid var(--border);background:rgba(255,255,255,0.03)">
-            <td colspan="4" style="padding:0.3rem 0.5rem;font-size:0.72rem;color:var(--muted);font-weight:600">RUNNING TOTAL — ${(po.lines||[]).length} deliveries</td>
-            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:700">$${fmt(tot.amt)}</td>
+            <td colspan="2" style="padding:0.3rem 0.5rem;font-size:0.72rem;color:var(--muted);font-weight:600;white-space:nowrap">RUNNING TOTAL — ${lCount} deliveries</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--text);font-size:0.8rem;font-weight:700" id="po-sub-qty-${po.id}">${qfmt(tot.qty)}</td>
             <td></td>
-            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:700">$${fmt(tot.total)}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:700" id="po-sub-amt-${po.id}">$${fmt(tot.amt)}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);font-size:0.8rem;font-weight:700" id="po-sub-tax-${po.id}">$${fmt(tot.tax)}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:700" id="po-sub-tot-${po.id}">$${fmt(tot.total)}</td>
             <td colspan="2"></td>
           </tr>` : '';
 
@@ -8816,7 +8864,7 @@ function renderPOTab() {
                     <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Qty</th>
                     <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Unit Cost</th>
                     <th style="padding:0.25rem 0.5rem;text-align:right;font-weight:600">Amount</th>
-                    <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Tax</th>
+                    <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Tax %</th>
                     <th style="padding:0.25rem 0.5rem;text-align:right;font-weight:600">Total</th>
                     <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Employee</th>
                     <th style="width:32px"></th>
@@ -8900,15 +8948,16 @@ function _togglePOLines(poId) {
 function exportProjectPOsCSV(projId) {
   const proj = getProj(projId);
   const linked = purchaseOrders.filter(po => po.project_id === projId);
-  const rows = [['PO #', 'Title', 'Invoice #', 'Delivery Date', 'Qty', 'Unit Cost', 'Amount', 'Tax', 'Total', 'Employee', 'Status']];
+  const rows = [['PO #', 'Title', 'Invoice #', 'Delivery Date', 'Qty', 'Unit Cost', 'Amount', 'Tax %', 'Tax', 'Total', 'Employee', 'Status']];
   linked.forEach(po => {
     const lines = po.lines || [];
     if (lines.length === 0) {
-      rows.push([po.po_number||'', po.title||'', '', '', '', '', '', '', '', '', po.status||'']);
+      rows.push([po.po_number||'', po.title||'', '', '', '', '', '', '', '', '', '', po.status||'']);
     } else {
       lines.forEach((l, i) => {
-        const q=parseFloat(l.qty)||0, u=parseFloat(l.unit_cost)||0, t=parseFloat(l.tax)||0;
-        rows.push([i===0?po.po_number:'', i===0?po.title||'':'', l.invoice_num||'', l.date||'', q||'', u||'', (q*u).toFixed(2), t.toFixed(2), (q*u+t).toFixed(2), l.employee||'', i===0?po.status||'':'']);
+        const q=parseFloat(l.qty)||0, u=parseFloat(l.unit_cost)||0;
+        const amt=_lineAmt(l), t=_lineTax(l), pct=_lineTaxPct(l);
+        rows.push([i===0?po.po_number:'', i===0?po.title||'':'', l.invoice_num||'', l.date||'', q||'', u||'', amt.toFixed(2), pct === null ? '' : pct, t.toFixed(2), (amt+t).toFixed(2), l.employee||'', i===0?po.status||'':'']);
       });
     }
   });
@@ -8967,14 +9016,16 @@ function _handlePOEvent(e) {
     // No-op commit (e.g. focus+blur of the employee combobox) — skip redundant work.
     if (line[lineField] === el.value) return;
     line[lineField] = el.value;
-    // Live update line amount/total cells
-    if (['qty','unit_cost','tax'].includes(lineField)) {
-      const q = parseFloat(line.qty)||0, u = parseFloat(line.unit_cost)||0, t = parseFloat(line.tax)||0;
-      const la = q*u;
+    // Live update line amount/tax/total cells
+    if (['qty','unit_cost','tax_pct'].includes(lineField)) {
+      _recalcLineTax(line);   // tax % is applied on top of the line amount
+      const la = _lineAmt(line), lt = _lineTax(line);
       const amtEl = document.getElementById('po-line-amt-' + lineId);
+      const taxEl = document.getElementById('po-line-tax-' + lineId);
       const totEl = document.getElementById('po-line-tot-' + lineId);
       if (amtEl) amtEl.textContent = la > 0 ? '$'+fmt(la) : '—';
-      if (totEl) totEl.textContent = (la+t) > 0 ? '$'+fmt(la+t) : '—';
+      if (taxEl) taxEl.textContent = lt > 0 ? '$'+fmt(lt) : '';
+      if (totEl) totEl.textContent = (la+lt) > 0 ? '$'+fmt(la+lt) : '—';
       // Update running totals on header row
       const tot = _poTotals(po);
       const hAmt = document.getElementById('po-amt-' + poId);
@@ -8983,6 +9034,15 @@ function _handlePOEvent(e) {
       if (hAmt) hAmt.textContent = tot.amt > 0 ? '$'+fmt(tot.amt) : '—';
       if (hTot) hTot.textContent = tot.total > 0 ? '$'+fmt(tot.total) : '—';
       if (hQty) hQty.textContent = tot.qty > 0 ? fmt(tot.qty) : '—';
+      // …and on the deliveries running-total row
+      const sQty = document.getElementById('po-sub-qty-' + poId);
+      const sAmt = document.getElementById('po-sub-amt-' + poId);
+      const sTax = document.getElementById('po-sub-tax-' + poId);
+      const sTot = document.getElementById('po-sub-tot-' + poId);
+      if (sQty) sQty.textContent = qfmt(tot.qty);
+      if (sAmt) sAmt.textContent = '$'+fmt(tot.amt);
+      if (sTax) sTax.textContent = '$'+fmt(tot.tax);
+      if (sTot) sTot.textContent = '$'+fmt(tot.total);
     }
     // Ensure a daily row exists once we have qty data
     if (po.project_id && (line.qty || line.unit_cost)) _ensurePOLineRow(po, line);
@@ -19782,10 +19842,13 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (!r.ok) return;
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+    // Migrate before diffing: the conversion adds tax_pct to every line, so an
+    // as-yet-unconverted blob would otherwise read as a change on every poll
+    // and re-render the tab in a loop until someone saves a PO.
+    _migratePOs(incoming);
     if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
     if (_isEditing()) return; // don't overwrite pending edits
     purchaseOrders = incoming;
-    _migratePOs();
     if (activeTab === 'po') renderPOTab();
   }
 
