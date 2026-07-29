@@ -11,7 +11,14 @@
  * Frontend PO shape:
  *   { id, po_number, date_created, project_id, cost_code, sub_code, title,
  *     supplier, status, notes,
- *     lines: [{ id, invoice_num, date, qty, unit_cost, tax, employee, po_row_id }] }
+ *     lines: [{ id, invoice_num, date, qty, unit_cost, tax, tax_pct, employee,
+ *              po_row_id }] }
+ *
+ * `tax_pct` is what the user types (a percentage of qty × unit_cost); `tax` is
+ * the dollar amount it works out to, kept in sync by the frontend. Only `tax`
+ * is mirrored to po_deliveries — the JSON blob carries `tax_pct` and is the
+ * source of truth on read, so the normalized fallback below losing it is fine:
+ * the frontend re-derives the percentage from the dollar amount.
  */
 const { neon }            = require('@neondatabase/serverless');
 const { requireDivision } = require('./lib/auth');
