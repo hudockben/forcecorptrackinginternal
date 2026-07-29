@@ -5575,9 +5575,9 @@ async function loadPurchaseOrders() {
   _migratePOs();
 }
 
-function _migratePOs() {
+function _migratePOs(list = purchaseOrders) {
   // Upgrade flat single-line POs to the new lines[] format
-  purchaseOrders.forEach(po => {
+  list.forEach(po => {
     if (!po.lines) {
       const hasData = po.qty || po.unit_cost;
       po.lines = hasData ? [{
@@ -5592,16 +5592,21 @@ function _migratePOs() {
       }] : [];
     }
     // Tax used to be typed in as a flat dollar amount; it's now entered as a
-    // percentage of the line amount. Convert once, so existing POs keep the
-    // exact tax dollars they were saved with.
+    // percentage of the line amount. Convert once, so existing POs keep the tax
+    // dollars they were saved with. Anything the percentage can't reproduce —
+    // a tax with no amount to take a percentage of, or one whose rate doesn't
+    // round-trip to within half a cent — keeps tax_pct unset, so _lineTax's
+    // fallback goes on returning the exact stored figure.
     (po.lines || []).forEach(l => {
       if (!l || l.tax_pct != null) return;
       const t = parseFloat(l.tax) || 0;
+      if (t <= 0) { l.tax_pct = ''; return; }
       const amt = _lineAmt(l);
-      if (t > 0 && amt > 0) l.tax_pct = String(Math.round(t / amt * 1e6) / 1e4);
-      else if (t <= 0)      l.tax_pct = '';
-      // A dollar tax with no qty/unit cost can't be expressed as a percentage —
-      // leave tax_pct unset so _lineTax keeps returning the stored amount.
+      if (amt <= 0) return;
+      const pct = Math.round(t / amt * 1e6) / 1e4;
+      if (Math.abs(amt * pct / 100 - t) >= 0.005) return;
+      l.tax_pct = String(pct);
+      _recalcLineTax(l);   // keep the stored dollars and the shown dollars identical
     });
   });
 }
@@ -8011,9 +8016,14 @@ function _lineTax(line) {
   return p === null ? (parseFloat(line.tax) || 0) : _lineAmt(line) * p / 100;
 }
 // Re-derive the stored dollar tax after qty / unit cost / tax % changes.
+// A line with no tax_pct key at all is a legacy dollar-tax line — leave it
+// alone. A blank tax_pct is the user clearing the field, which zeroes the tax
+// (don't route that through _lineTax, whose fallback would revive the old
+// dollar figure the percentage had just written there).
 function _recalcLineTax(line) {
-  if (_lineTaxPct(line) === null) return;
-  const t = _lineTax(line);
+  if (line.tax_pct == null) return;
+  const p = _lineTaxPct(line);
+  const t = p === null ? 0 : _lineAmt(line) * p / 100;
   line.tax = t ? String(t) : '';
 }
 
@@ -17852,10 +17862,13 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (!r.ok) return;
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+    // Migrate before diffing: the conversion adds tax_pct to every line, so an
+    // as-yet-unconverted blob would otherwise read as a change on every poll
+    // and re-render the tab in a loop until someone saves a PO.
+    _migratePOs(incoming);
     if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
     if (_isEditing()) return; // don't overwrite pending edits
     purchaseOrders = incoming;
-    _migratePOs();
     if (activeTab === 'po') renderPOTab();
   }
 
