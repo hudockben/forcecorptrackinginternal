@@ -2202,10 +2202,20 @@
       .mob-collapsible-body {
         overflow: hidden;
         transition: max-height 0.22s ease, opacity 0.18s ease;
-        max-height: 2000px;
+        /* Tall enough for a long crew list or a stack of equipment blocks —
+           anything shorter clips the section instead of expanding it. */
+        max-height: 6000px;
         opacity: 1;
       }
       .mob-collapsible-body.mob-collapsed { max-height: 0; opacity: 0; }
+      /* Extra equipment blocks are separated by a rule rather than nested in
+         their own cards — keeps the section compact on a phone screen. */
+      .mob-equip-block + .mob-equip-block {
+        border-top: 1px solid var(--border);
+        margin-top: 0.9rem;
+        padding-top: 0.8rem;
+      }
+      .mob-equip-block-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem; }
       .mob-emp-row {
         display: flex;
         align-items: center;
@@ -11151,6 +11161,9 @@ function renderMobileEntryForm(successMsg) {
       <span class="mob-emp-name">${esc(e.name)}</span>
     </label>`).join('');
 
+  const operatorOpts = `<option value="">— none (shared equipment) —</option>` +
+    empList.map(e => `<option value="${esc(e.name)}">${esc(e.name)}</option>`).join('');
+
   const today = _localDateStr();
 
   // #1 — Repeat Last Entry button
@@ -11208,20 +11221,20 @@ function renderMobileEntryForm(successMsg) {
 
     <div class="mob-form-card">
       <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="mobToggleSection('mob-equip-body',this)">
-        <div class="mob-section-title" style="margin:0">Equipment <span style="font-weight:400;color:var(--muted);font-size:0.7rem">(optional)</span></div>
+        <div style="display:flex;align-items:center;gap:0.5rem">
+          <div class="mob-section-title" style="margin:0">Equipment <span style="font-weight:400;color:var(--muted);font-size:0.7rem">(optional)</span></div>
+          <span id="mob-equip-count" style="font-size:0.7rem;color:var(--green);font-weight:600;display:none"></span>
+        </div>
         <span class="mob-chevron" style="color:var(--muted);font-size:0.7rem;transition:transform 0.15s;transform:rotate(-90deg)">▼</span>
       </div>
       <div id="mob-equip-body" class="mob-collapsible-body mob-collapsed" style="margin-top:0.65rem">
-        <label class="mob-form-label">Equipment / Truck</label>
-        <select id="mob-equip" class="mob-input" onchange="mobEquipUCFill()">${equipOpts}</select>
-        <input  id="mob-equip-uc" type="hidden" value="0">
-        <label class="mob-form-label">Hours</label>
-        <input  id="mob-equip-hrs" type="number" class="mob-input" placeholder="0.0" step="0.25" min="0">
-        <label class="mob-form-label">Operator <span style="font-weight:400;color:var(--muted)">(optional — assigns equipment to this employee)</span></label>
-        <select id="mob-equip-operator" class="mob-input">
-          <option value="">— none (shared equipment) —</option>
-          ${empList.map(e => `<option value="${esc(e.name)}">${esc(e.name)}</option>`).join('')}
-        </select>
+        <div id="mob-equip-blocks">
+          ${_mobEquipBlockHTML(0, equipOpts, operatorOpts, false)}
+        </div>
+        <button type="button" onclick="mobAddEquipBlock()"
+          style="width:100%;padding:0.55rem;background:var(--bg);border:1px dashed var(--border);border-radius:6px;color:var(--green);font-size:0.82rem;cursor:pointer;margin-top:0.85rem">
+          + Add Another Piece of Equipment
+        </button>
       </div>
     </div>
 
@@ -11299,6 +11312,87 @@ function mobRemoveCodeBlock(btn) {
   });
 }
 
+/* Equipment blocks mirror the code blocks above: any number of pieces, each
+   with its own hours and its own operator, so one submission can put several
+   machines on several employees. */
+function _mobEquipBlockHTML(idx, equipOpts, operatorOpts, removable) {
+  if (!equipOpts) {
+    equipOpts = `<option value="">— none —</option>` +
+      (lists.equipment||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(eq =>
+        `<option value="${esc(eq.name)}" data-uc="${eq.unit_cost||0}">${esc(eq.name)}</option>`).join('');
+  }
+  if (!operatorOpts) {
+    operatorOpts = `<option value="">— none (shared equipment) —</option>` +
+      (lists.employees||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(e =>
+        `<option value="${esc(e.name)}">${esc(e.name)}</option>`).join('');
+  }
+  return `
+    <div class="mob-equip-block" data-eq-idx="${idx}">
+      <div class="mob-equip-block-hdr">
+        <div class="mob-section-title" style="margin:0">Equipment ${idx + 1}</div>
+        <button type="button" onclick="mobRemoveEquipBlock(this)"
+          style="background:none;border:none;color:var(--red);font-size:0.8rem;cursor:pointer;padding:0;${removable ? '' : 'display:none'}">✕ Remove</button>
+      </div>
+      <label class="mob-form-label">Equipment / Truck</label>
+      <select class="mob-input mob-eq-sel" onchange="mobEquipUCFill(this);mobUpdateEquipCount()">${equipOpts}</select>
+      <input type="hidden" class="mob-eq-uc" value="0">
+      <label class="mob-form-label">Hours</label>
+      <input type="number" class="mob-input mob-eq-hrs" placeholder="0.0" step="0.25" min="0">
+      <label class="mob-form-label">Operator <span style="font-weight:400;color:var(--muted)">(optional — assigns equipment to this employee)</span></label>
+      <select class="mob-input mob-eq-op">${operatorOpts}</select>
+    </div>`;
+}
+
+function mobAddEquipBlock() {
+  const container = document.getElementById('mob-equip-blocks');
+  if (!container) return null;
+  const existing = container.querySelectorAll('.mob-equip-block').length;
+  const div = document.createElement('div');
+  div.innerHTML = _mobEquipBlockHTML(existing, null, null, true);
+  const block = div.firstElementChild;
+  container.appendChild(block);
+  _mobReindexEquipBlocks();
+  return block;
+}
+
+function mobRemoveEquipBlock(btn) {
+  const block = btn.closest('.mob-equip-block');
+  if (!block) return;
+  block.remove();
+  _mobReindexEquipBlocks();
+  mobUpdateEquipCount();
+}
+
+/** Renumber the blocks and hide Remove when only one is left. */
+function _mobReindexEquipBlocks() {
+  const blocks = [...document.querySelectorAll('#mob-equip-blocks .mob-equip-block')];
+  blocks.forEach((el, i) => {
+    el.dataset.eqIdx = i;
+    const title = el.querySelector('.mob-section-title');
+    if (title) title.textContent = `Equipment ${i + 1}`;
+    const rm = el.querySelector('.mob-equip-block-hdr button');
+    if (rm) rm.style.display = blocks.length > 1 ? '' : 'none';
+  });
+}
+
+function mobUpdateEquipCount() {
+  const badge = document.getElementById('mob-equip-count');
+  if (!badge) return;
+  const n = [...document.querySelectorAll('#mob-equip-blocks .mob-eq-sel')].filter(s => s.value).length;
+  if (n > 0) { badge.textContent = `${n} selected`; badge.style.display = 'inline'; }
+  else       { badge.style.display = 'none'; }
+}
+
+/** Blocks the user actually touched — a name, hours, or both. */
+function _mobCollectEquipBlocks() {
+  return [...document.querySelectorAll('#mob-equip-blocks .mob-equip-block')].map(el => ({
+    name:     (el.querySelector('.mob-eq-sel')?.value || '').trim(),
+    uc:       parseFloat(el.querySelector('.mob-eq-uc')?.value)  || 0,
+    hours:    parseFloat(el.querySelector('.mob-eq-hrs')?.value) || 0,
+    operator: el.querySelector('.mob-eq-op')?.value || '',
+  })).filter(e => e.name || e.hours > 0);
+}
+
 // #1 — Pre-fill form from last submission
 function mobRepeatLastEntry() {
   if (!_mobLastEntry) return;
@@ -11330,17 +11424,27 @@ function mobRepeatLastEntry() {
       if (qtyInp) qtyInp.value = b.quantity || '';
     }, i * 20);
   });
-  if (le.equipName) {
+  // Restore equipment blocks (an entry saved before multi-equipment carried one piece)
+  const eqBlocks = le.equipBlocks
+    || (le.equipName ? [{ name: le.equipName, uc: le.equipUC, hours: le.equipHrs, operator: le.equipOperator }] : []);
+  if (eqBlocks.length) {
     const equipBody = document.getElementById('mob-equip-body');
     if (equipBody) equipBody.classList.remove('mob-collapsed');
     const equipHeader = equipBody?.closest('.mob-form-card')?.querySelector('.mob-chevron');
     if (equipHeader) equipHeader.style.transform = 'rotate(0deg)';
   }
-  document.getElementById('mob-equip').value      = le.equipName || '';
-  mobEquipUCFill();
-  document.getElementById('mob-equip-hrs').value  = le.equipHrs || '';
-  const opSel = document.getElementById('mob-equip-operator');
-  if (opSel) opSel.value = le.equipOperator || '';
+  eqBlocks.forEach((eq, i) => {
+    if (i > 0) mobAddEquipBlock();
+    const block = document.querySelectorAll('#mob-equip-blocks .mob-equip-block')[i];
+    if (!block) return;
+    const eqSel = block.querySelector('.mob-eq-sel');
+    if (eqSel) { eqSel.value = eq.name || ''; mobEquipUCFill(eqSel); }
+    const eqHrs = block.querySelector('.mob-eq-hrs');
+    if (eqHrs) eqHrs.value = eq.hours || '';
+    const eqOp = block.querySelector('.mob-eq-op');
+    if (eqOp) eqOp.value = eq.operator || '';
+  });
+  mobUpdateEquipCount();
   (le.checkedEmps || []).forEach(emp => {
     const cb = document.getElementById('mob-emp-' + emp);
     if (cb) cb.checked = true;
@@ -11378,12 +11482,14 @@ function mobUpdateSubCodesFor(ccSel) {
     [...scSet].sort().map(sc => `<option value="${esc(sc)}">${esc(sc)}</option>`).join('');
 }
 
-function mobEquipUCFill() {
-  const sel = document.getElementById('mob-equip');
-  const opt = sel.selectedOptions[0];
-  const uc  = opt ? (parseFloat(opt.dataset.uc) || 0) : 0;
-  const ucEl = document.getElementById('mob-equip-uc');
-  if (ucEl && uc > 0) ucEl.value = uc;
+function mobEquipUCFill(sel) {
+  if (!sel) return;
+  const block = sel.closest('.mob-equip-block');
+  const opt   = sel.selectedOptions[0];
+  const uc    = opt ? (parseFloat(opt.dataset.uc) || 0) : 0;
+  const ucEl  = block ? block.querySelector('.mob-eq-uc') : null;
+  // Always write it — switching machines must not leave the old rate behind.
+  if (ucEl) ucEl.value = uc;
 }
 
 function renderMobTodayEntries(projId) {
@@ -11413,6 +11519,7 @@ function renderMobTodayEntries(projId) {
       <div>
         <span style="font-size:0.82rem;color:var(--text)">${esc(r.employee)}</span>
         ${jc ? ' · ' + jc : ''}
+        ${r.equipment ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">&#128663; ${esc(r.equipment)}${r.equip_hours > 0 ? ' · ' + qfmt(r.equip_hours) + 'h' : ''}</div>` : ''}
         ${r.notes ? `<div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">📝 ${esc(r.notes)}</div>` : ''}
       </div>
       <div style="text-align:right;font-size:0.78rem;color:var(--muted);flex-shrink:0;margin-left:0.5rem">
@@ -11434,7 +11541,9 @@ function renderMobTodayEntries(projId) {
   const summaryParts  = [];
   if (uniqueEmps > 0)    summaryParts.push(`${uniqueEmps} emp`);
   if (totalLaborHrs > 0) summaryParts.push(`${fmt(totalLaborHrs,1)} hrs`);
-  if (equipRows.length)  summaryParts.push(`${equipRows.length} equip`);
+  // Count every piece in play, including the ones merged onto an operator's row
+  const equipCount = rows.filter(r => (r.equipment || '').trim()).length;
+  if (equipCount > 0) summaryParts.push(`${equipCount} equip`);
 
   el.innerHTML = `
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:0.4rem">
@@ -11453,10 +11562,6 @@ async function submitMobileEntry() {
   const projId    = document.getElementById('mob-project').value;
   const date      = document.getElementById('mob-date').value;
   const fieldType = document.getElementById('mob-field-type').value;
-  const equipName     = document.getElementById('mob-equip').value;
-  const equipUC       = parseFloat(document.getElementById('mob-equip-uc').value) || 0;
-  const equipHrs      = parseFloat(document.getElementById('mob-equip-hrs').value) || 0;
-  const equipOperator = document.getElementById('mob-equip-operator')?.value || '';
   const checkedEmps = [...document.querySelectorAll('.mob-emp-cb:checked')].map(cb => cb.value);
   const entryNotes  = (document.getElementById('mob-notes')?.value || '').trim();
 
@@ -11473,10 +11578,17 @@ async function submitMobileEntry() {
     };
   });
 
+  // Collect every equipment block — each piece carries its own hours and operator
+  const equipBlocks = _mobCollectEquipBlocks();
+
   if (!projId)              { alert('Please select a project.'); return; }
   if (!date)                { alert('Please select a date.'); return; }
-  if (checkedEmps.length === 0 && !equipName) { alert('Select at least one employee or add equipment.'); return; }
+  if (checkedEmps.length === 0 && equipBlocks.length === 0) { alert('Select at least one employee or add equipment.'); return; }
   if (checkedEmps.length > 0 && codeBlocks.every(b => b.hours <= 0)) { alert('Enter hours in at least one code block.'); return; }
+  const eqNoName = equipBlocks.findIndex(e => !e.name);
+  if (eqNoName >= 0) { alert(`Pick the machine for Equipment ${eqNoName + 1}, or clear its hours.`); return; }
+  const eqNoHours = equipBlocks.find(e => e.hours <= 0);
+  if (eqNoHours) { alert(`Enter hours for ${eqNoHours.name}, or remove it.`); return; }
 
   const proj = getProj(projId);
   if (!proj) { alert('Project not found.'); return; }
@@ -11492,42 +11604,51 @@ async function submitMobileEntry() {
   });
 
   const newRows = [];
+  // First labor row created for each employee — the row an operator's equipment
+  // merges onto, so one machine stays on the same line as its operator's time.
+  const primaryRowByEmp = {};
 
-  // One labor row per employee per code block.
-  // If an equipment operator is set and matches this employee on the first
-  // code block, merge equipment onto that row instead of a separate row.
-  const equipMerged = equipName && equipHrs > 0 && equipOperator;
-  codeBlocks.forEach((b, bi) => {
+  // One labor row per employee per code block
+  codeBlocks.forEach(b => {
     if (b.hours <= 0 && checkedEmps.length > 0) return;
     checkedEmps.forEach(emp => {
       const empData = empRateMap[emp] || {};
-      const isOperator = equipMerged && bi === 0 && emp === equipOperator;
-      newRows.push({
+      const row = {
         id: uid(), date, field_type: fieldType, employee: emp,
         cost_code: b.cc, sub_code: b.sc,
         job_class: b.jobClass || empData.job_class || '',
         rate: empData.rate || 0, labor_hours: b.hours,
-        equipment:       isOperator ? equipName : '',
-        equip_unit_cost: isOperator ? equipUC   : 0,
-        equip_hours:     isOperator ? equipHrs  : 0,
+        equipment: '', equip_unit_cost: 0, equip_hours: 0,
         material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
         quantity: b.quantity, num_laborers: 0, notes: entryNotes,
-      });
+      };
+      newRows.push(row);
+      if (!primaryRowByEmp[emp]) primaryRowByEmp[emp] = row;
     });
   });
 
-  // Standalone equipment row only if no operator was selected (shared equipment)
-  if (equipName && equipHrs > 0 && !equipOperator) {
-    const firstBlock = codeBlocks[0] || {};
+  // Equipment. The first piece assigned to an operator rides on that operator's
+  // labor row; every additional piece — and any piece whose operator isn't on the
+  // crew — gets its own row, still credited to the operator when one was picked.
+  // Rows without an operator stay unattributed (shared equipment), as before.
+  const firstBlock = codeBlocks[0] || {};
+  equipBlocks.forEach(eq => {
+    const primary = eq.operator ? primaryRowByEmp[eq.operator] : null;
+    if (primary && !primary.equipment) {
+      primary.equipment       = eq.name;
+      primary.equip_unit_cost = eq.uc;
+      primary.equip_hours     = eq.hours;
+      return;
+    }
     newRows.push({
-      id: uid(), date, field_type: fieldType, employee: '',
+      id: uid(), date, field_type: fieldType, employee: eq.operator || '',
       cost_code: firstBlock.cc || '', sub_code: firstBlock.sc || '', job_class: '',
       rate: 0, labor_hours: 0,
-      equipment: equipName, equip_unit_cost: equipUC, equip_hours: equipHrs,
+      equipment: eq.name, equip_unit_cost: eq.uc, equip_hours: eq.hours,
       material: '', supplier: '', po_num: '', units_purchased: 0, unit_cost: 0, material_cost: 0,
       quantity: 0, num_laborers: 0, notes: entryNotes,
     });
-  }
+  });
 
   if (newRows.length === 0) { alert('Nothing to submit.'); return; }
 
@@ -11535,7 +11656,7 @@ async function submitMobileEntry() {
   localStorage.setItem('mob_last_proj', projId);
 
   // Save state for Repeat Last Entry
-  _mobLastEntry = { projId, fieldType, codeBlocks, checkedEmps, equipName, equipUC, equipHrs, equipOperator,
+  _mobLastEntry = { projId, fieldType, codeBlocks, checkedEmps, equipBlocks,
     notes: entryNotes,
     // legacy fields for badge summary
     cc: codeBlocks[0]?.cc, sc: codeBlocks[0]?.sc, hours: codeBlocks[0]?.hours };
@@ -11551,9 +11672,11 @@ async function submitMobileEntry() {
   // #3 — Update badge
   updateMobEntryBadge();
 
-  const empCount   = checkedEmps.length;
+  const empCount     = checkedEmps.length;
   const blockSummary = codeBlocks.filter(b=>b.hours>0).map(b=>`${b.cc||'?'} ${b.hours}h`).join(' · ');
-  const equipLabel = equipName && equipHrs > 0 ? ` + ${equipName} (${equipHrs}h)` : '';
+  const equipLabel   = equipBlocks.length
+    ? ' + ' + equipBlocks.map(e => `${e.name} (${e.hours}h${e.operator ? ' — ' + e.operator : ''})`).join(', ')
+    : '';
   const msg = `${newRows.length} row${newRows.length!==1?'s':''} added — ${empCount} emp · ${blockSummary}${equipLabel}`;
 
   renderMobileEntryForm(msg);
