@@ -359,6 +359,64 @@ async function main() {
   check('re-tagging restores the product balance',
     productRow('Homer City', '2A Modified')[6], '130');
 
+  // ── Product filter, search, and status filter ──
+  // Product and search cut at the row level, so a filtered view isn't a subset
+  // of the totals — it IS the balance for that slice.
+  console.log('\n— Filters & search —');
+  const msPick = (elKind, kind, value) => {
+    const cb = [...doc.getElementById('inventory' + elKind + 'Filter')
+      .querySelectorAll('.ms-menu input[type="checkbox"]')].find(c => c.value === value);
+    cb.checked = true;
+    win.msOnCheck('inventory', kind, cb);
+  };
+  check('clear-filters button is hidden with nothing set',
+    doc.getElementById('inventoryClearFilters').hidden, true);
+
+  msPick('Product', 'product', '2A Modified');
+  check('KPI on hand is that product alone', num('invKpiOnHand'), 210);   // 130 + 80
+  check('produced is that product alone',    num('invKpiProduced'), 280);
+  check('sold is that product alone',        num('invKpiSold'), 70);      // 50 + 20
+  check('the untagged opening drops out',    num('invKpiOpening'), 0);
+  check('by-product table shows only that product',
+    prodRowsAll().every(r => r[1] === '2A Modified'), true);
+  checkIncludes('scope label names the product', txt('invKpiOnHandSub'), '2A Modified');
+  check('clear-filters button appears', doc.getElementById('inventoryClearFilters').hidden, false);
+  win.msClear('inventory', 'product');
+  check('clearing the product filter restores the total', num('invKpiOnHand'), EXPECT_TOTAL);
+
+  // Search is the quick-find equivalent — same row-level cut.
+  win.setInventorySearch('rip');
+  check('search narrows to the matching material', num('invKpiOnHand'), -30);
+  check('search matches case-insensitively on a partial name',
+    prodRowsAll().every(r => r[1] === 'Rip Rap'), true);
+  check('pits with no match drop out entirely', prodRowsAll().length, 1);
+  check('search clear button appears', doc.getElementById('inventorySearchClear').hidden, false);
+  win.setInventorySearch('homer');
+  check('search also matches a pit name', num('invKpiOnHand'), EXPECT_HOMER);
+  win.setInventorySearch('untagged');
+  check('search reaches the untagged bucket', num('invKpiOnHand'), 475);
+  win.setInventorySearch('zzz no such material');
+  check('a search with no matches zeroes out', num('invKpiOnHand'), 0);
+  checkIncludes('and says why the table is empty',
+    doc.querySelector('#inventoryProductBalanceTable tbody').textContent, 'No materials match');
+  win.setInventorySearch('');
+  check('clearing the search restores the total', num('invKpiOnHand'), EXPECT_TOTAL);
+
+  // Status is a property of the finished balance, so it narrows the table only.
+  msPick('Stock', 'stock', 'negative');
+  check('status filter leaves only oversold materials',
+    prodRowsAll().every(r => r[1] === 'Rip Rap'), true);
+  // The pit row and its division rollup are both oversold, so both survive.
+  check('the oversold pit row survives',
+    prodRowsAll().filter(r => r[0] === 'Homer City').length, 1);
+  check('so does its division rollup',
+    prodRowsAll().filter(r => r[0] === 'Division Total').length, 1);
+  check('totals still read for the whole slice', num('invKpiOnHand'), EXPECT_TOTAL);
+  win.clearInventoryFilters();
+  check('clear filters resets everything', num('invKpiOnHand'), EXPECT_TOTAL);
+  check('clear-filters button hides again', doc.getElementById('inventoryClearFilters').hidden, true);
+  check('by-product table is whole again', prodRowsAll().length > 1, true);
+
   console.log('\n— Total row foots —');
   const money = (s) => Number(String(s).replace(/[^0-9.\-]/g, ''));
   const tot = cellsOf([...doc.querySelectorAll('#inventoryLocationTable tbody tr')]
@@ -484,7 +542,7 @@ async function main() {
   checkIncludes('needs-attention card reports a pit or the all-clear',
     txt('homeKpiLow'), 'stocked');
   // Drive the flow math over months that do have activity.
-  const locsFor = (c) => win.computeInventory({ cutoff: c, applyLocationFilter: false }).locations;
+  const locsFor = (c) => win.computeInventory({ cutoff: c, applyFilters: false }).locations;
   const mar = win.homeMonthFlow(locsFor('2026-03-31'), '2026-03-31');
   check('March produced', mar.produced, 180);          // Homer 200 jaws − 10% loss
   check('March sold',     mar.sold,     50);

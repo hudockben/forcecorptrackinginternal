@@ -898,6 +898,28 @@
       padding: 0.3rem 0.5rem; font-variant-numeric: tabular-nums;
     }
     .inv-date-input:focus, .inv-basis-select:focus { outline: none; border-color: var(--accent); }
+    .inv-search-wrap { position: relative; display: inline-flex; align-items: center; }
+    .inv-search-icon {
+      position: absolute; left: 0.55rem; color: var(--muted);
+      font-size: 0.95rem; pointer-events: none; line-height: 1;
+    }
+    .inv-search {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-family: inherit; font-size: 0.78rem;
+      padding: 0.3rem 1.6rem 0.3rem 1.6rem; width: 15rem;
+    }
+    .inv-search::placeholder { color: var(--muted); }
+    .inv-search:focus { outline: none; border-color: var(--accent); }
+    /* The native clear affordance is inconsistent across browsers — we draw our own. */
+    .inv-search::-webkit-search-cancel-button { display: none; }
+    .inv-search-clear {
+      position: absolute; right: 0.35rem; background: none; border: none;
+      color: var(--muted); font-size: 0.7rem; cursor: pointer; padding: 0.2rem 0.25rem;
+      line-height: 1; font-family: inherit;
+    }
+    .inv-search-clear:hover { color: var(--text); }
+    .inv-clear-filters { border-color: rgba(249,115,22,0.35); color: var(--accent); }
+    .inv-clear-filters:hover { border-color: var(--accent); color: var(--accent); }
     .inv-warn {
       font-size: 0.72rem; color: #fbbf24; line-height: 1.5;
       background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.25);
@@ -1252,6 +1274,24 @@
             <div class="ms-filter" id="inventoryLocationFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Locations</span><span class="ms-caret">▾</span></button></div>
           </div>
           <div class="year-filter-wrap">
+            Product
+            <div class="ms-filter" id="inventoryProductFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Products</span><span class="ms-caret">▾</span></button></div>
+          </div>
+          <div class="year-filter-wrap">
+            Status
+            <div class="ms-filter" id="inventoryStockFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">Any Status</span><span class="ms-caret">▾</span></button></div>
+          </div>
+          <div class="inv-search-wrap">
+            <span class="inv-search-icon" aria-hidden="true">⌕</span>
+            <input type="search" class="inv-search" id="inventorySearch" placeholder="Search materials or pits…"
+              autocomplete="off" spellcheck="false" aria-label="Search inventory by material or pit"
+              oninput="setInventorySearch(this.value)" />
+            <button type="button" class="inv-search-clear" id="inventorySearchClear" hidden
+              onclick="setInventorySearch('')" aria-label="Clear search">✕</button>
+          </div>
+          <button type="button" class="btn-secondary inv-clear-filters" id="inventoryClearFilters" hidden
+            onclick="clearInventoryFilters()">Clear filters</button>
+          <div class="year-filter-wrap">
             Stock Added
             <select class="inv-basis-select" id="inventoryBasisSelect" onchange="setInventoryBasis(this.value)">
               <option value="final">Final screen tons</option>
@@ -1270,7 +1310,8 @@
           <li><strong>Stock Added</strong> picks the production basis. <em>Final screen tons</em> (the default) applies each pit's jaws&nbsp;→&nbsp;screen loss % from Analytics, so only sellable product is added to stock; <em>tons to crusher</em> uses the raw crushed tonnage. Pits with no loss % entered are treated the same either way.</li>
           <li><strong>Opening balance</strong> is the stockpile that already existed before you started tracking — enter it per pit below. Production and sales dated on or before its <em>as-of</em> date are skipped so nothing is counted twice.</li>
           <li><strong>Adjustments</strong> are everything the two tracking tabs can't see: physical-count corrections, waste hauled off, material used internally, transfers between pits. Enter tons as a negative number to take material out.</li>
-          <li>Crushing entries aren't tagged with a product, so on-hand is tracked <strong>per pit</strong>, not per product. <em>Tons Sold by Product</em> below shows what is moving out of the selected pits.</li>
+          <li>Every balance splits <strong>by product</strong> as well as by pit — see <em>On Hand by Product</em> below. Crushing runs booked before the Product column existed have nothing to tag them with, so their tons sit in <strong>Untagged</strong> until you set a Product on those rows.</li>
+          <li><strong>Location</strong>, <strong>Product</strong> and the <strong>search box</strong> narrow every figure on this tab, so filtering to one material shows that material's balance — days of supply included. <strong>Status</strong> filters the by-product table to what's low, oversold, or empty.</li>
         </ul>
       </div>
 
@@ -2605,7 +2646,9 @@
     const monthFilters    = { daily: new Set(), crushing: new Set(), sales: new Set() };
     const customerFilters = { sales: new Set() };
     // Crushing carries Product too now that runs are tagged with what they made.
-    const productFilters  = { sales: new Set(), crushing: new Set() };
+    const productFilters  = { sales: new Set(), crushing: new Set(), inventory: new Set() };
+    // Inventory-only: filter the by-product rows down to a stock status.
+    const stockFilters    = { inventory: new Set() };
 
     const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
                          'July', 'August', 'September', 'October', 'November', 'December'];
@@ -2639,6 +2682,9 @@
                   getVal: getRowCustomer, noneLabel: '— No Customer —', descAll: 'all customers' },
       product:  { state: productFilters,  allLabel: 'All Products',  noun: 'products',
                   getVal: getRowProduct, noneLabel: '— No Product —', descAll: 'all products' },
+      // Not a row value — matched against a computed balance's stock status.
+      stock:    { state: stockFilters,    allLabel: 'Any Status',    noun: 'statuses',
+                  getVal: (r) => r && r.status, noneLabel: null, descAll: 'any status' },
     };
 
     function msElId(tab, kind) {
@@ -2659,6 +2705,7 @@
         const i = MONTH_VALUES.indexOf(v);
         return i === -1 ? v : MONTH_NAMES[i];
       }
+      if (kind === 'stock') return INV_STATUS_LABEL[v] || v;
       return v;
     }
     // Compact label shown on the toggle button.
@@ -2714,6 +2761,11 @@
     }
     function msOptionsFor(kind, rows) {
       if (kind === 'month') return msMonthOptions();
+      // Fixed list — a status the data happens not to contain right now is still
+      // worth offering, so "show me anything oversold" works before it happens.
+      if (kind === 'stock') {
+        return INV_STATUS_ORDER.map(v => ({ value: v, label: INV_STATUS_LABEL[v] }));
+      }
       const cfg = MS_CONFIG[kind];
       return msDataOptions(rows, cfg.getVal, cfg.noneLabel);
     }
@@ -2751,7 +2803,8 @@
       if (tab !== 'inventory') msRender('month', tab, rows);
       msRender('location', tab, rows);
       if (tab === 'sales') msRender('customer', tab, rows);
-      if (tab === 'sales' || tab === 'crushing') msRender('product', tab, rows);
+      if (tab === 'sales' || tab === 'crushing' || tab === 'inventory') msRender('product', tab, rows);
+      if (tab === 'inventory') msRender('stock', tab, rows);
     }
 
     // ── Open/close + selection plumbing ──
@@ -4709,7 +4762,7 @@
       // for the current year) rather than by summing only that year's rows.
       // The Inventory tab's own Location filter has no say over this dashboard.
       const invCutoff = homeInventoryCutoff();
-      const inv = computeInventory({ cutoff: invCutoff, applyLocationFilter: false });
+      const inv = computeInventory({ cutoff: invCutoff, applyFilters: false });
       const it = inv.total;
       setTone('homeKpiOnHand', formatTons(it.onHand), false, it.onHand < -0.005);
       const pitCount = inv.locations.length;
@@ -5311,6 +5364,7 @@
     const INV_RATE_WINDOW_DAYS = 90;   // trailing window behind the sales-rate KPI
     const INV_LOW_DAYS = 14;           // days of supply below which a pit reads "Low stock"
     const INV_NO_PRODUCT = '— Untagged —';
+    const INV_STATUS_ORDER = ['in-stock', 'low', 'negative', 'empty'];
 
     function emptyInventory() {
       return { basis: 'final', openings: [], adjustments: [] };
@@ -5325,6 +5379,9 @@
     // Sales shows up as an excluded row in the warning banner instead of
     // silently inflating the pile.
     let inventoryAsOf = todayIso();
+    // Free-text quick-find over material and pit names. View state, like the
+    // filters — never persisted.
+    let inventorySearch = '';
 
     function normalizeInvAdjRow(r) {
       const row = (r && typeof r === 'object') ? r : {};
@@ -5473,7 +5530,10 @@
     // applies to every row at that pit regardless of product — "we counted the
     // yard on this day" has to exclude everything before it, or a product-tagged
     // sale from before the count would double-deplete the pit total.
-    function invOpeningIndex() {
+    // `keep` filters which entries contribute tonnage. The count date is taken
+    // from every entry regardless — a pit-wide cutoff can't change just because
+    // the view is filtered to one product.
+    function invOpeningIndex(keep) {
       const byLoc = new Map();
       (quarryInventory.openings || []).forEach(o => {
         const loc = invLocKey(o.locationName);
@@ -5482,6 +5542,7 @@
         const e = byLoc.get(loc);
         if (o.asOf && o.asOf > e.asOf) e.asOf = o.asOf;
         if (!Number.isFinite(t) || t === 0) return;
+        if (keep && !keep(o)) return;
         const prod = invProdKey(o.productName);
         e.tons += t;
         e.products.set(prod, (e.products.get(prod) || 0) + t);
@@ -5493,6 +5554,24 @@
       const idx = index || invOpeningIndex();
       return idx.get(locKey) || INV_EMPTY_OPENING;
     }
+    // Quick-find over material and pit names. An untagged row answers to
+    // "untagged" so the catch-all bucket is reachable by typing too.
+    function invSearchMatches(row) {
+      const q = inventorySearch.trim().toLowerCase();
+      if (!q) return true;
+      const prod = (row && row.productName ? String(row.productName) : '').trim().toLowerCase();
+      const loc  = (row && row.locationName ? String(row.locationName) : '').trim().toLowerCase();
+      if (prod.includes(q) || loc.includes(q)) return true;
+      if (!prod && INV_NO_PRODUCT.toLowerCase().includes(q)) return true;
+      if (!loc  && NO_LOCATION.toLowerCase().includes(q)) return true;
+      return false;
+    }
+    function inventoryFiltersActive() {
+      return (locationFilters.inventory && locationFilters.inventory.size > 0)
+          || (productFilters.inventory  && productFilters.inventory.size  > 0)
+          || (stockFilters.inventory    && stockFilters.inventory.size    > 0)
+          || inventorySearch.trim() !== '';
+    }
     function invIsoDate(dateStr) {
       const s = String(dateStr || '');
       return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '';
@@ -5503,6 +5582,14 @@
       const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
       d.setUTCDate(d.getUTCDate() + days);
       return d.toISOString().slice(0, 10);
+    }
+    // Shared by pit balances and per-product balances so the Status filter means
+    // the same thing wherever it's applied.
+    function invStockStatus(b) {
+      if (b.onHand < -0.005) return 'negative';
+      if (b.onHand <= 0.005) return 'empty';
+      if (b.daysOfSupply !== null && b.daysOfSupply < INV_LOW_DAYS) return 'low';
+      return 'in-stock';
     }
     // Sellable tons a crushing row adds to the pile, per the chosen basis.
     function invProducedTons(row) {
@@ -5520,35 +5607,45 @@
       return 'in';
     }
 
-    // opts.cutoff              — As-Of date to balance through; defaults to the
-    //                            Inventory tab's picker. Home passes its own so
-    //                            the balance follows its Year filter.
-    // opts.applyLocationFilter — false to ignore the Inventory tab's Location
-    //                            filter (Home has no business inheriting it).
+    // opts.cutoff       — As-Of date to balance through; defaults to the
+    //                     Inventory tab's picker. Home passes its own so the
+    //                     balance follows its Year filter.
+    // opts.applyFilters — false to ignore the Inventory tab's Location/Product
+    //                     filters and search box (Home has no business
+    //                     inheriting them). The Status filter is display-only
+    //                     and never narrows what's aggregated here.
+    //
+    // Location, Product and search all cut at the row level, so a filtered view
+    // isn't a subset of the totals — it IS the balance for that slice. Filter to
+    // "2A Modified" and every figure on the tab, days of supply included, is 2A's.
     function computeInventory(opts) {
       const o = opts || {};
       const cutoff = o.cutoff !== undefined ? o.cutoff : (inventoryAsOf || '');
-      const useLocFilter = o.applyLocationFilter !== false;
-      const inLocFilter = (row) => !useLocFilter || msMatches('location', 'inventory', row);
+      const useFilters = o.applyFilters !== false;
+      const inLocFilter = (row) => !useFilters || msMatches('location', 'inventory', row);
+      const inRowFilter = (row) => !useFilters
+        || (msMatches('location', 'inventory', row)
+            && msMatches('product', 'inventory', row)
+            && invSearchMatches(row));
       const rateFrom = invShiftDays(cutoff || todayIso(), -INV_RATE_WINDOW_DAYS);
       const skipped = { undated: 0, future: 0, preOpening: 0 };
       // Only report rows the user is actually looking at — a Homer City row
       // excluded while the view is filtered to McGees Mills isn't missing from
       // the balances on screen.
       const bumpSkip = (row, why) => {
-        if (!inLocFilter(row)) return;
+        if (!inRowFilter(row)) return;
         if (why === 'undated') skipped.undated++;
         else if (why === 'future') skipped.future++;
         else if (why === 'pre-opening') skipped.preOpening++;
       };
 
       // Built once — every row below asks it for its pit's count date.
-      const openIdx = invOpeningIndex();
+      const openIdx = invOpeningIndex(inRowFilter);
 
       const map = new Map();
       const emptyProduct = (name) => ({
         name, opening: 0, produced: 0, tonsCrushed: 0, tonsSold: 0,
-        salesTotal: 0, salesCount: 0, adjustments: 0, onHand: 0,
+        salesTotal: 0, salesCount: 0, soldRecent: 0, adjustments: 0, onHand: 0,
       });
       const ensure = (key) => {
         if (!map.has(key)) {
@@ -5581,6 +5678,7 @@
 
       crushRows.forEach(r => {
         const key = invLocKey(r.locationName);
+        if (!inRowFilter(r)) return;
         const why = invRowWindow(r.date, invOpeningFor(key, openIdx).asOf, cutoff);
         if (why !== 'in') { bumpSkip(r, why); return; }
         const e = ensure(key);
@@ -5599,6 +5697,7 @@
 
       salesRows.forEach(r => {
         const key = invLocKey(r.locationName);
+        if (!inRowFilter(r)) return;
         const why = invRowWindow(r.date, invOpeningFor(key, openIdx).asOf, cutoff);
         if (why !== 'in') { bumpSkip(r, why); return; }
         const e = ensure(key);
@@ -5608,7 +5707,7 @@
           e.tonsSold += t;
           p.tonsSold += t;
           const d = invIsoDate(r.date);
-          if (rateFrom && d > rateFrom) e.soldRecent += t;
+          if (rateFrom && d > rateFrom) { e.soldRecent += t; p.soldRecent += t; }
         }
         const amt = homeRowSales(r);
         e.salesTotal += amt;
@@ -5621,6 +5720,7 @@
 
       (quarryInventory.adjustments || []).forEach(r => {
         const key = invLocKey(r.locationName);
+        if (!inRowFilter(r)) return;
         const why = invRowWindow(r.date, invOpeningFor(key, openIdx).asOf, cutoff);
         if (why !== 'in') { bumpSkip(r, why); return; }
         const t = Number(r.tons);
@@ -5638,6 +5738,9 @@
         e.products.forEach(p => {
           p.onHand = p.opening + p.produced - p.tonsSold + p.adjustments;
           p.avgPricePerTon = p.tonsSold > 0 ? p.salesTotal / p.tonsSold : 0;
+          p.dailyRate = p.soldRecent > 0 ? p.soldRecent / INV_RATE_WINDOW_DAYS : 0;
+          p.daysOfSupply = (p.dailyRate > 0 && p.onHand > 0) ? p.onHand / p.dailyRate : null;
+          p.status = invStockStatus(p);
         });
         e.productList = [...e.products.values()]
           .filter(p => p.opening || p.produced || p.tonsSold || p.adjustments)
@@ -5655,17 +5758,19 @@
         e.avgPricePerTon = e.tonsSold > 0 ? e.salesTotal / e.tonsSold : 0;
         e.dailyRate   = e.soldRecent > 0 ? e.soldRecent / INV_RATE_WINDOW_DAYS : 0;
         e.daysOfSupply = (e.dailyRate > 0 && e.onHand > 0) ? e.onHand / e.dailyRate : null;
-        e.status      = e.onHand < -0.005 ? 'negative'
-                      : e.onHand <= 0.005 ? 'empty'
-                      : (e.daysOfSupply !== null && e.daysOfSupply < INV_LOW_DAYS) ? 'low'
-                      : 'in-stock';
+        e.status      = invStockStatus(e);
         return e;
       };
 
       const all = [...map.values()].map(decorate);
+      // A pit only carries an opening entry until rows land on it, so filtering
+      // to a product it never made would otherwise leave an all-zero card behind.
+      const narrowed = useFilters
+        && ((productFilters.inventory && productFilters.inventory.size > 0) || inventorySearch.trim() !== '');
       // Location filter — the no-location bucket matches only "— No Location —".
       const visible = all
         .filter(e => inLocFilter({ locationName: e.name === NO_LOCATION ? '' : e.name }))
+        .filter(e => !narrowed || e.productList.length > 0)
         .sort((a, b) => b.onHand - a.onHand || a.name.localeCompare(b.name));
 
       // Division total = raw sums re-derived, never an average of averages.
@@ -5693,7 +5798,7 @@
           tp.opening     += p.opening;     tp.produced    += p.produced;
           tp.tonsCrushed += p.tonsCrushed; tp.tonsSold    += p.tonsSold;
           tp.salesTotal  += p.salesTotal;  tp.salesCount  += p.salesCount;
-          tp.adjustments += p.adjustments;
+          tp.adjustments += p.adjustments; tp.soldRecent  += p.soldRecent;
         });
       });
       decorate(total);
@@ -5771,10 +5876,27 @@
       return `${MONTH_NAMES[i] ? MONTH_NAMES[i].slice(0, 3) : m[2]} ${m[1]}`;
     }
     function invScopeLabel(byInv) {
-      const set = locationFilters.inventory;
-      if (!set || set.size === 0) return 'All Pits';
-      if (byInv.locations.length === 1) return byInv.locations[0].name;
-      return msDescLabel('location', 'inventory');
+      const parts = [];
+      const locSet = locationFilters.inventory;
+      if (!locSet || locSet.size === 0) {
+        parts.push(byInv.locations.length === 1 ? byInv.locations[0].name : 'All Pits');
+      } else {
+        parts.push(byInv.locations.length === 1 ? byInv.locations[0].name : msDescLabel('location', 'inventory'));
+      }
+      if (productFilters.inventory && productFilters.inventory.size > 0) {
+        parts.push(msDescLabel('product', 'inventory'));
+      }
+      if (inventorySearch.trim()) parts.push(`“${inventorySearch.trim()}”`);
+      return parts.join(' · ');
+    }
+    // Every active filter, for empty states and the "no matches" message.
+    function invFilterDesc() {
+      const parts = [];
+      if (locationFilters.inventory && locationFilters.inventory.size) parts.push(msDescLabel('location', 'inventory'));
+      if (productFilters.inventory  && productFilters.inventory.size)  parts.push(msDescLabel('product', 'inventory'));
+      if (stockFilters.inventory    && stockFilters.inventory.size)    parts.push(msDescLabel('stock', 'inventory'));
+      if (inventorySearch.trim()) parts.push(`search “${inventorySearch.trim()}”`);
+      return parts.length ? parts.join(' · ') : 'the current filters';
     }
     const INV_STATUS_LABEL = {
       'in-stock': 'In stock', low: 'Low stock', negative: 'Oversold', empty: 'Empty',
@@ -5807,6 +5929,12 @@
       }
       const asOfInput = document.getElementById('inventoryAsOfInput');
       if (asOfInput && asOfInput.value !== inventoryAsOf) asOfInput.value = inventoryAsOf;
+      const searchEl = document.getElementById('inventorySearch');
+      if (searchEl && searchEl.value !== inventorySearch) searchEl.value = inventorySearch;
+      const searchClear = document.getElementById('inventorySearchClear');
+      if (searchClear) searchClear.hidden = inventorySearch === '';
+      const clearBtn = document.getElementById('inventoryClearFilters');
+      if (clearBtn) clearBtn.hidden = !inventoryFiltersActive();
       const basisSel = document.getElementById('inventoryBasisSelect');
       if (basisSel) {
         if (basisSel.value !== quarryInventory.basis) basisSel.value = quarryInventory.basis;
@@ -6015,12 +6143,21 @@
             + `Set <strong>Product</strong> on the Crushing Tracking tab and these rows fill in. Pit totals are right either way.`
           : `Every pile, split by what it is. Rows sum to the pit totals above.`;
       }
+      // Status is the one filter that can't cut at the row level — it's a
+      // property of the finished balance — so it narrows this table only, and
+      // leaves the totals above reading for the whole filtered slice.
+      const byStatus = (p) => msMatches('stock', 'inventory', p);
       const rows = [];
       byInv.locations.forEach(e => {
-        e.productList.forEach(p => rows.push({ loc: e.name, p }));
+        e.productList.forEach(p => { if (byStatus(p)) rows.push({ loc: e.name, p }); });
       });
       if (!rows.length) {
-        body.innerHTML = `<tr><td colspan="7"><div class="home-empty">${dataReady ? 'No product balances yet — add Crushing or Sales entries.' : 'Loading…'}</div></td></tr>`;
+        const filtered = inventoryFiltersActive();
+        body.innerHTML = `<tr><td colspan="7"><div class="home-empty">${
+          !dataReady ? 'Loading…'
+          : filtered ? `No materials match ${escapeHtml(invFilterDesc())}. Adjust the filters above.`
+          : 'No product balances yet — add Crushing or Sales entries.'
+        }</div></td></tr>`;
         return;
       }
       const cell = (v, signed) => v
@@ -6039,7 +6176,7 @@
       const perPit = rows.map(r => row(r.loc, r.p, false)).join('');
       // Division rollup only earns its space once a product spans more than one pit.
       const totalRows = byInv.locations.length > 1
-        ? byInv.total.productList.map(p => row('Division Total', p, true)).join('')
+        ? byInv.total.productList.filter(byStatus).map(p => row('Division Total', p, true)).join('')
         : '';
       body.innerHTML = perPit + totalRows;
     }
@@ -6086,12 +6223,15 @@
       if (!body) return;
       const names = new Set(byInv.locations.map(e => e.name));
       const cutoff = inventoryAsOf || '';
+      const openIdx = invOpeningIndex();
       const agg = new Map();
       let totalTons = 0;
       salesRows.forEach(r => {
         const key = invLocKey(r.locationName);
         if (!names.has(key)) return;
-        if (invRowWindow(r.date, invOpeningFor(key).asOf, cutoff) !== 'in') return;
+        // Same Product filter + search the rest of the tab runs on.
+        if (!msMatches('product', 'inventory', r) || !invSearchMatches(r)) return;
+        if (invRowWindow(r.date, invOpeningFor(key, openIdx).asOf, cutoff) !== 'in') return;
         const pk = (r.productName || '').trim() || '— No product —';
         const cur = agg.get(pk) || { name: pk, tons: 0, sales: 0, orders: 0 };
         const tn = Number(r.tons);
@@ -6219,6 +6359,22 @@
     // ── Inventory setters ──
     function setInventoryAsOf(value) {
       inventoryAsOf = /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? String(value) : '';
+      renderInventory();
+    }
+    // keepFilters so the dropdown menus aren't rebuilt (and closed) mid-typing.
+    function setInventorySearch(value) {
+      inventorySearch = String(value == null ? '' : value);
+      const el = document.getElementById('inventorySearch');
+      if (el && el.value !== inventorySearch) el.value = inventorySearch;
+      renderInventory(true);
+    }
+    function clearInventoryFilters() {
+      locationFilters.inventory.clear();
+      productFilters.inventory.clear();
+      stockFilters.inventory.clear();
+      inventorySearch = '';
+      const el = document.getElementById('inventorySearch');
+      if (el) el.value = '';
       renderInventory();
     }
     // Every mutator below is gated on inventoryLoaded. The tab paints before
