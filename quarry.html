@@ -889,6 +889,66 @@
     .be-chart-wrap { width: 100%; overflow-x: auto; }
     .be-chart-wrap svg { display: block; width: 100%; height: auto; }
     .be-chart-empty { font-size: 0.78rem; color: var(--muted); text-align: center; padding: 1.5rem 1rem; }
+
+    /* ── Inventory tab ── */
+    .inv-toolbar-actions { display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap; }
+    .inv-date-input, .inv-basis-select {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-family: inherit; font-size: 0.78rem;
+      padding: 0.3rem 0.5rem; font-variant-numeric: tabular-nums;
+    }
+    .inv-date-input:focus, .inv-basis-select:focus { outline: none; border-color: var(--accent); }
+    .inv-warn {
+      font-size: 0.72rem; color: #fbbf24; line-height: 1.5;
+      background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.25);
+      border-radius: 6px; padding: 0.55rem 0.75rem; margin-bottom: 1.1rem;
+    }
+    .inv-warn.is-hidden { display: none; }
+    /* On-hand emphasis inside the per-pit cards + tables */
+    .loc-kpi.is-onhand { border-color: rgba(249,115,22,0.45); background: rgba(249,115,22,0.07); }
+    .loc-kpi-value.is-stock { color: #60a5fa; }
+    .home-yoy tbody td.inv-onhand { font-weight: 700; }
+    .home-yoy tbody tr.inv-row-total td {
+      border-top: 2px solid var(--border); font-weight: 700; background: #14141d;
+    }
+    /* Opening-balance editor — one row per pit: name · tons · as-of · note */
+    .inv-open-editor { display: flex; flex-direction: column; gap: 0.5rem; }
+    .inv-open-row {
+      display: grid; grid-template-columns: 1fr auto auto minmax(0, 15rem);
+      align-items: center; gap: 0.75rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.5rem 0.7rem;
+    }
+    @media (max-width: 900px) { .inv-open-row { grid-template-columns: 1fr auto; } }
+    .inv-open-row .inv-open-loc { font-size: 0.8rem; font-weight: 600; color: var(--text); }
+    .inv-open-row .inv-open-note {
+      font-size: 0.68rem; color: var(--muted); text-align: right;
+      font-variant-numeric: tabular-nums; line-height: 1.4;
+    }
+    .inv-open-field {
+      display: flex; align-items: center; gap: 0.35rem;
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted); white-space: nowrap;
+    }
+    .inv-open-field input {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+      color: var(--text); font-family: inherit; font-size: 0.8rem;
+      padding: 0.35rem 0.45rem; font-variant-numeric: tabular-nums;
+    }
+    .inv-open-field input[type="number"] { width: 7rem; text-align: right; }
+    .inv-open-field input:focus { outline: none; border-color: var(--accent); }
+    /* Adjustments ledger */
+    .inv-adj-table { min-width: 1000px; }
+    .inv-adj-table tbody td.col-num .cell-input { text-align: right; }
+    .inv-pill {
+      display: inline-block; padding: 0.12rem 0.5rem; border-radius: 999px;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.04em;
+      text-transform: uppercase; white-space: nowrap;
+      border: 1px solid transparent; background: var(--surface2); color: var(--muted);
+    }
+    .inv-pill.in-stock { color: #4ade80; background: rgba(74,222,128,0.12); border-color: rgba(74,222,128,0.25); }
+    .inv-pill.low      { color: #fbbf24; background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.25); }
+    .inv-pill.negative { color: #ef4444; background: rgba(239,68,68,0.12);  border-color: rgba(239,68,68,0.25); }
   </style>
 </head>
 <body>
@@ -913,6 +973,7 @@
     <button class="tab-btn"        data-tab="daily"    onclick="switchTab('daily')">Daily Tracking</button>
     <button class="tab-btn"        data-tab="crushing" onclick="switchTab('crushing')">Crushing Tracking</button>
     <button class="tab-btn"        data-tab="sales"     onclick="switchTab('sales')">Sales Tracking</button>
+    <button class="tab-btn"        data-tab="inventory" onclick="switchTab('inventory')">Inventory</button>
     <button class="tab-btn"        data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
     <button class="tab-btn"        data-tab="breakeven" onclick="switchTab('breakeven')">Break-Even</button>
     <div class="tab-bar-spacer"></div>
@@ -1167,6 +1228,209 @@
       </div>
     </div>
   </div>
+
+  <!-- ── Inventory tab panel — running stockpile per pit ── -->
+  <div class="tab-panel"        id="tab-inventory">
+    <div class="home-wrap">
+      <div class="home-toolbar">
+        <div>
+          <div class="home-title">Quarry Inventory</div>
+          <div class="home-sub" id="inventorySubtitle">Loading…</div>
+        </div>
+        <div class="inv-toolbar-actions">
+          <div class="year-filter-wrap">
+            As Of
+            <input type="date" class="inv-date-input" id="inventoryAsOfInput" onchange="setInventoryAsOf(this.value)" />
+          </div>
+          <div class="year-filter-wrap">
+            Location
+            <div class="ms-filter" id="inventoryLocationFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Locations</span><span class="ms-caret">▾</span></button></div>
+          </div>
+          <div class="year-filter-wrap">
+            Stock Added
+            <select class="inv-basis-select" id="inventoryBasisSelect" onchange="setInventoryBasis(this.value)">
+              <option value="final">Final screen tons</option>
+              <option value="crusher">Tons to crusher</option>
+            </select>
+          </div>
+          <button class="btn-add-row btn-bulk-upload" id="inventoryPdfBtn" onclick="downloadInventoryPDF()">⇩ Print / PDF</button>
+        </div>
+      </div>
+
+      <div class="be-explainer">
+        <strong>What is sitting in the stockpiles right now, pit by pit.</strong>
+        <div class="be-formula">On hand&nbsp;=&nbsp;Opening balance&nbsp;+&nbsp;Produced (Crushing)&nbsp;−&nbsp;Sold (Sales)&nbsp;+&nbsp;Adjustments</div>
+        <ul>
+          <li><strong>Produced</strong> comes straight off the <strong>Crushing Tracking</strong> tab (loads to crusher × tons/load). <strong>Sold</strong> comes straight off the <strong>Sales Tracking</strong> tab. Both update the moment you edit those tabs — nothing here is typed twice.</li>
+          <li><strong>Stock Added</strong> picks the production basis. <em>Final screen tons</em> (the default) applies each pit's jaws&nbsp;→&nbsp;screen loss % from Analytics, so only sellable product is added to stock; <em>tons to crusher</em> uses the raw crushed tonnage. Pits with no loss % entered are treated the same either way.</li>
+          <li><strong>Opening balance</strong> is the stockpile that already existed before you started tracking — enter it per pit below. Production and sales dated on or before its <em>as-of</em> date are skipped so nothing is counted twice.</li>
+          <li><strong>Adjustments</strong> are everything the two tracking tabs can't see: physical-count corrections, waste hauled off, material used internally, transfers between pits. Enter tons as a negative number to take material out.</li>
+          <li>Crushing entries aren't tagged with a product, so on-hand is tracked <strong>per pit</strong>, not per product. <em>Tons Sold by Product</em> below shows what is moving out of the selected pits.</li>
+        </ul>
+      </div>
+
+      <div class="inv-warn is-hidden" id="inventoryWarning"></div>
+
+      <div class="home-section-label">Division Total</div>
+      <div class="kpi-grid">
+        <div class="kpi-tile is-accent">
+          <div class="kpi-label">Tons On Hand</div>
+          <div class="kpi-value" id="invKpiOnHand">0</div>
+          <div class="kpi-sub" id="invKpiOnHandSub">Across 0 locations</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Produced to Date</div>
+          <div class="kpi-value" id="invKpiProduced">0</div>
+          <div class="kpi-sub" id="invKpiProducedSub">From crushing entries</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Sold to Date</div>
+          <div class="kpi-value" id="invKpiSold">0</div>
+          <div class="kpi-sub" id="invKpiSoldSub">From sales entries</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Inventory Value</div>
+          <div class="kpi-value" id="invKpiValue">$0.00</div>
+          <div class="kpi-sub" id="invKpiValueSub">On hand × cost / ton</div>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-tile">
+          <div class="kpi-label">Opening Balance</div>
+          <div class="kpi-value" id="invKpiOpening">0</div>
+          <div class="kpi-sub" id="invKpiOpeningSub">Entered per pit</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Adjustments</div>
+          <div class="kpi-value" id="invKpiAdj">0</div>
+          <div class="kpi-sub" id="invKpiAdjSub">Across 0 entries</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Avg Tons Sold / Day</div>
+          <div class="kpi-value" id="invKpiRate">0</div>
+          <div class="kpi-sub" id="invKpiRateSub">Trailing 90 days</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Days of Supply</div>
+          <div class="kpi-value" id="invKpiDays">—</div>
+          <div class="kpi-sub">On hand ÷ daily sales rate</div>
+        </div>
+      </div>
+
+      <div class="home-section-label">By Location</div>
+      <div class="loc-cards" id="inventoryLocationCards"></div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Inventory Roll-Forward by Location</div>
+        <div class="be-monthly-note" id="inventoryRollNote"></div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="inventoryLocationTable">
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th>Opening</th>
+                <th>Tons Crushed (Jaws)</th>
+                <th>Loss %</th>
+                <th>Produced (Stock In)</th>
+                <th>Sold</th>
+                <th>Adjustments</th>
+                <th>On Hand</th>
+                <th>Cost / Ton</th>
+                <th>Inventory Value</th>
+                <th>Last Crushed</th>
+                <th>Last Sold</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title" id="inventoryMonthlyTitle">Monthly Movement — Running Balance</div>
+        <div class="be-monthly-note" id="inventoryMonthlyNote"></div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="inventoryMonthlyTable">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th>Produced</th>
+                <th>Sold</th>
+                <th>Adjustments</th>
+                <th>Net Change</th>
+                <th>Ending Balance</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Tons Sold by Product</div>
+        <div class="be-monthly-note">
+          What is leaving the selected pits, by product. Crushing entries aren't product-tagged, so this is an
+          outbound mix — not a per-product on-hand balance.
+        </div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="inventoryProductTable">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Tons Sold</th>
+                <th>Sales</th>
+                <th>Avg $/Ton</th>
+                <th>Orders</th>
+                <th>% of Tons</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">Opening Balances by Location</div>
+        <div class="loss-editor-note">
+          The stockpile each pit already had before tracking started. Leave <strong>As Of</strong> blank to count every
+          crushing and sales entry on top of the opening figure; set it to the date you counted the pile and anything
+          dated on or before that day is skipped, so the pile isn't counted twice. Saved automatically.
+        </div>
+        <div class="inv-open-editor" id="inventoryOpeningEditor"></div>
+      </div>
+
+      <div class="home-panel">
+        <div class="home-panel-title">Inventory Adjustments</div>
+        <div class="be-monthly-note">
+          Everything Crushing and Sales can't see. Positive tons add to the pile, negative tons take material out
+          (waste hauled off, internal use, a physical count that came in short). Saved automatically.
+        </div>
+        <div class="sales-toolbar">
+          <button class="btn-add-row" id="invAdjAddBtn" onclick="addInvAdjRow()">+ Add Row</button>
+          <div class="sales-summary" id="invAdjSummary"></div>
+        </div>
+        <div class="sales-table-wrap">
+          <table class="sales-table inv-adj-table">
+            <thead>
+              <tr>
+                <th class="col-date">Date</th>
+                <th>Location</th>
+                <th class="col-num">Tons (±)</th>
+                <th>Reason</th>
+                <th class="col-comments">Notes</th>
+                <th class="col-actions"></th>
+              </tr>
+            </thead>
+            <tbody id="invAdjTbody">
+              <tr><td colspan="6" class="sales-empty">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="tab-panel"        id="tab-analytics">
     <div class="home-wrap">
       <div class="home-toolbar">
@@ -1791,6 +2055,7 @@
       if (tab === 'sales') refreshSales();
       if (tab === 'crushing') refreshCrush();
       if (tab === 'daily') refreshDaily();
+      if (tab === 'inventory') refreshInventory();
       if (tab === 'home') refreshHome();
       if (tab === 'analytics') refreshAnalytics();
       if (tab === 'breakeven') refreshBreakeven();
@@ -2285,7 +2550,9 @@
     // Sales table, so their state is Sales-only and the shared row-match
     // helpers no-op for other tabs (an absent Set reads as empty → matches
     // everything). A row matches a filter if its value is in the Set.
-    const locationFilters = { daily: new Set(), crushing: new Set(), sales: new Set() };
+    // Inventory carries a Location filter too, but no Month filter — its balances
+    // are cumulative through the tab's "As Of" date, not per-month slices.
+    const locationFilters = { daily: new Set(), crushing: new Set(), sales: new Set(), inventory: new Set() };
     const monthFilters    = { daily: new Set(), crushing: new Set(), sales: new Set() };
     const customerFilters = { sales: new Set() };
     const productFilters  = { sales: new Set() };
@@ -2430,7 +2697,8 @@
     }
     // Render every multi-select filter that applies to a tab.
     function msRenderFilters(tab, rows) {
-      msRender('month', tab, rows);
+      // Inventory has no Month filter (see locationFilters above).
+      if (tab !== 'inventory') msRender('month', tab, rows);
       msRender('location', tab, rows);
       if (tab === 'sales') {
         msRender('customer', tab, rows);
@@ -2477,9 +2745,10 @@
         const allCb = el.querySelector('.ms-all input[type="checkbox"]');
         if (allCb) allCb.checked = !hasSel;
       }
-      if (tab === 'daily')         renderDaily(true);
-      else if (tab === 'crushing') renderCrush(true);
-      else if (tab === 'sales')    renderSales(true);
+      if (tab === 'daily')          renderDaily(true);
+      else if (tab === 'crushing')  renderCrush(true);
+      else if (tab === 'sales')     renderSales(true);
+      else if (tab === 'inventory') renderInventory(true);
     }
     function msOnCheck(tab, kind, input) {
       const set = msSet(kind, tab);
@@ -2676,6 +2945,17 @@
         }
         scheduleDailySave();
         renderDaily();
+      } else if (tab === 'inv') {
+        // Inventory adjustments ledger — location only.
+        const rows = quarryInventory.adjustments;
+        if (!inventoryLoaded || !rows[idx]) return;
+        const oldId = String(rows[idx][idField] || '');
+        const newId = item ? String(item.id || '') : '';
+        if (oldId === newId && (rows[idx][nameField] || '') === value) return;
+        rows[idx][idField]   = item ? item.id : '';
+        rows[idx][nameField] = value;
+        scheduleInventorySave();
+        renderInventory();
       }
     }
 
@@ -3363,6 +3643,10 @@
         if (lossPctSavePending || lossPctSaveInFlight) {
           putLossPct(quarryLossPct, { keepalive: true }).catch(() => {});
           lossPctSavePending = null;
+        }
+        if (inventorySavePending || inventorySaveInFlight) {
+          putInventory(invSnapshot(), { keepalive: true }).catch(() => {});
+          inventorySavePending = null;
         }
       } catch (_) { /* best-effort on unload */ }
     }
@@ -4802,6 +5086,895 @@
       }
       scheduleLossPctSave();
       renderAnalytics();  // per-location cards, loss editor, and tables refresh
+    }
+
+    /* ═══════════════════════════════════════════
+       INVENTORY — running stockpile, broken out per pit
+       Nothing on this tab is typed twice: production is read straight off the
+       Crushing rows and depletion off the Sales rows, so the balance moves the
+       moment either tab is edited. Per pit:
+
+         on hand = opening + produced − sold + adjustments
+
+       • produced — crushCalc().estimatedTons per crushing row, run through the
+         pit's jaws→screen loss when the basis is "final screen tons" (default)
+         so only sellable product lands in stock.
+       • opening  — the pile that existed before tracking started, entered per
+         pit with an optional "as of" date; rows dated on/before it are skipped
+         so the same tonnage isn't counted twice.
+       • adjustments — the ledger below (counts, waste, internal use, transfers).
+
+       Balances are cumulative through the tab's As-Of date (not year-sliced),
+       which is why this tab carries a date cutoff instead of a Year filter.
+       Only the persisted pieces (basis, openings, adjustments) live in the
+       blob; the As-Of cutoff and Location filter are view state.
+    ═══════════════════════════════════════════ */
+    const QUARRY_INVENTORY_KEY = 'fct_quarry_inventory';
+    const INV_ADJ_REASONS = [
+      'Physical Count Correction', 'Waste / Fines Removed', 'Internal Use',
+      'Transfer In', 'Transfer Out', 'Shrinkage', 'Other',
+    ];
+    const INV_RATE_WINDOW_DAYS = 90;   // trailing window behind the sales-rate KPI
+    const INV_LOW_DAYS = 14;           // days of supply below which a pit reads "Low stock"
+
+    function emptyInventory() {
+      return { basis: 'final', openings: {}, adjustments: [] };
+    }
+
+    let quarryInventory = emptyInventory();
+    let inventoryLoaded = false;
+    let inventoryFetchedOnce = false;
+    let inventorySavePending = null;
+    let inventorySaveInFlight = false;
+    // View-only cutoff. Seeded to today so a future-dated typo on Crushing or
+    // Sales shows up as an excluded row in the warning banner instead of
+    // silently inflating the pile.
+    let inventoryAsOf = todayIso();
+
+    function normalizeInvAdjRow(r) {
+      const row = (r && typeof r === 'object') ? r : {};
+      const t = Number(row.tons);
+      return {
+        id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
+        date: typeof row.date === 'string' ? row.date : '',
+        locationId: row.locationId || '',
+        locationName: row.locationName || '',
+        // Signed: negative tons take material out of the pile.
+        tons: (row.tons === '' || row.tons === null || row.tons === undefined || !Number.isFinite(t)) ? '' : t,
+        reason: typeof row.reason === 'string' ? row.reason : '',
+        comments: typeof row.comments === 'string' ? row.comments : '',
+      };
+    }
+    function normalizeInventory(value) {
+      const out = emptyInventory();
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+      if (value.basis === 'crusher') out.basis = 'crusher';
+      const openings = value.openings;
+      if (openings && typeof openings === 'object' && !Array.isArray(openings)) {
+        Object.keys(openings).forEach(k => {
+          const loc = String(k).trim();
+          if (!loc) return;
+          // Accept both the current { tons, asOf } shape and a bare number.
+          const raw = openings[k];
+          const obj = (raw && typeof raw === 'object') ? raw : { tons: raw, asOf: '' };
+          const tons = Math.round(Number(obj.tons) * 100) / 100;
+          const asOf = (typeof obj.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.asOf)) ? obj.asOf : '';
+          if (!Number.isFinite(tons)) return;
+          // Keep a zeroed entry only when it still carries an as-of cutoff.
+          if (tons !== 0 || asOf) out.openings[loc] = { tons, asOf };
+        });
+      }
+      if (Array.isArray(value.adjustments)) out.adjustments = value.adjustments.map(normalizeInvAdjRow);
+      return out;
+    }
+
+    async function fetchInventory() {
+      const res = await fetch(`/api/data/${QUARRY_INVENTORY_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_INVENTORY_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeInventory(data.value);
+    }
+    async function putInventory(value, opts = {}) {
+      const init = {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value }),
+      };
+      if (opts.keepalive) init.keepalive = true;
+      const res = await fetch(`/api/data/${QUARRY_INVENTORY_KEY}`, init);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_INVENTORY_KEY} → ${res.status} ${text}`);
+      }
+    }
+    function invSnapshot() {
+      return {
+        basis: quarryInventory.basis,
+        openings: JSON.parse(JSON.stringify(quarryInventory.openings || {})),
+        adjustments: (quarryInventory.adjustments || []).map(r => ({ ...r })),
+      };
+    }
+    function scheduleInventorySave() {
+      inventorySavePending = invSnapshot();
+      if (inventorySaveInFlight) return;
+      flushInventorySave();
+    }
+    async function flushInventorySave() {
+      while (inventorySavePending) {
+        const snapshot = inventorySavePending;
+        inventorySavePending = null;
+        inventorySaveInFlight = true;
+        try {
+          await putInventory(snapshot);
+        } catch (err) {
+          console.error('[quarry] inventory save failed:', err);
+          alert('Could not save the inventory changes — please check your connection and try again.');
+        } finally {
+          inventorySaveInFlight = false;
+        }
+      }
+    }
+    async function refreshInventoryStore() {
+      try {
+        quarryInventory = await fetchInventory();
+        inventoryLoaded = true;
+      } catch (err) {
+        console.error('[quarry] inventory load failed:', err);
+        if (!inventoryFetchedOnce) { quarryInventory = emptyInventory(); inventoryLoaded = true; }
+      } finally {
+        inventoryFetchedOnce = true;
+      }
+    }
+    async function refreshInventory() {
+      // Paint from whatever is already in memory, then pull the tabs this
+      // balance is derived from and re-render once they land.
+      renderInventory();
+      const tasks = [];
+      if (!crushFetchedOnce) tasks.push(refreshCrush());
+      if (!salesFetchedOnce) tasks.push(refreshSales());
+      // Per-pit loss % drives the sellable-tons basis; skip the re-pull while a
+      // local edit of either blob is still in flight so we don't clobber it.
+      if (!lossPctSavePending && !lossPctSaveInFlight) tasks.push(refreshLossPct());
+      if (!inventorySavePending && !inventorySaveInFlight) tasks.push(refreshInventoryStore());
+      if (tasks.length) {
+        await Promise.allSettled(tasks);
+        renderInventory();
+      }
+    }
+
+    // ── Inventory math ──
+    function invLocKey(name) {
+      return (name || '').trim() || NO_LOCATION;
+    }
+    function invOpeningFor(locKey) {
+      const o = quarryInventory.openings[locKey];
+      const tons = o ? Number(o.tons) : 0;
+      return { tons: Number.isFinite(tons) ? tons : 0, asOf: (o && o.asOf) || '' };
+    }
+    function invIsoDate(dateStr) {
+      const s = String(dateStr || '');
+      return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '';
+    }
+    function invShiftDays(iso, days) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+      if (!m) return '';
+      const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    }
+    // Sellable tons a crushing row adds to the pile, per the chosen basis.
+    function invProducedTons(row) {
+      const est = crushCalc(row).estimatedTons;
+      return quarryInventory.basis === 'crusher' ? est : finalScreenTons(est, row.locationName);
+    }
+    // A row lands in the balance when it is dated, falls after the pit's opening
+    // count, and is on or before the As-Of cutoff. ISO dates sort as strings.
+    // Returns why it was skipped so the warning banner can explain itself.
+    function invRowWindow(dateStr, openingAsOf, cutoff) {
+      const d = invIsoDate(dateStr);
+      if (!d) return 'undated';
+      if (openingAsOf && d <= openingAsOf) return 'pre-opening';
+      if (cutoff && d > cutoff) return 'future';
+      return 'in';
+    }
+
+    function computeInventory() {
+      const cutoff = inventoryAsOf || '';
+      const rateFrom = invShiftDays(cutoff || todayIso(), -INV_RATE_WINDOW_DAYS);
+      const skipped = { undated: 0, future: 0, preOpening: 0 };
+      const bumpSkip = (why) => {
+        if (why === 'undated') skipped.undated++;
+        else if (why === 'future') skipped.future++;
+        else if (why === 'pre-opening') skipped.preOpening++;
+      };
+
+      const map = new Map();
+      const ensure = (key) => {
+        if (!map.has(key)) {
+          const op = invOpeningFor(key);
+          map.set(key, {
+            name: key, opening: op.tons, openingAsOf: op.asOf,
+            tonsCrushed: 0, produced: 0, crushCost: 0, crushCount: 0,
+            tonsSold: 0, salesTotal: 0, salesCount: 0, soldRecent: 0,
+            adjustments: 0, adjCount: 0,
+            lastCrushed: '', lastSold: '',
+          });
+        }
+        return map.get(key);
+      };
+      // Seed pits that so far only carry an opening balance.
+      Object.keys(quarryInventory.openings).forEach(loc => ensure(loc));
+
+      crushRows.forEach(r => {
+        const key = invLocKey(r.locationName);
+        const why = invRowWindow(r.date, invOpeningFor(key).asOf, cutoff);
+        if (why !== 'in') { bumpSkip(why); return; }
+        const e = ensure(key);
+        const c = crushCalc(r);
+        e.tonsCrushed += c.estimatedTons;
+        e.produced    += invProducedTons(r);
+        e.crushCost   += c.totalCost;
+        e.crushCount++;
+        const d = invIsoDate(r.date);
+        if (d > e.lastCrushed) e.lastCrushed = d;
+      });
+
+      salesRows.forEach(r => {
+        const key = invLocKey(r.locationName);
+        const why = invRowWindow(r.date, invOpeningFor(key).asOf, cutoff);
+        if (why !== 'in') { bumpSkip(why); return; }
+        const e = ensure(key);
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) {
+          e.tonsSold += t;
+          const d = invIsoDate(r.date);
+          if (rateFrom && d > rateFrom) e.soldRecent += t;
+        }
+        e.salesTotal += homeRowSales(r);
+        e.salesCount++;
+        const d = invIsoDate(r.date);
+        if (d > e.lastSold) e.lastSold = d;
+      });
+
+      (quarryInventory.adjustments || []).forEach(r => {
+        const key = invLocKey(r.locationName);
+        const why = invRowWindow(r.date, invOpeningFor(key).asOf, cutoff);
+        if (why !== 'in') { bumpSkip(why); return; }
+        const t = Number(r.tons);
+        if (!Number.isFinite(t) || t === 0) return;
+        const e = ensure(key);
+        e.adjustments += t;
+        e.adjCount++;
+      });
+
+      const decorate = (e) => {
+        e.onHand      = e.opening + e.produced - e.tonsSold + e.adjustments;
+        e.lossPct     = locationLossPct(e.name);
+        e.hasLoss     = hasLossPct(e.name);
+        // Cost basis for the pile: crushing cost spread over the tons that
+        // actually entered stock, so the loss is carried by the sellable tons.
+        e.costPerTon  = e.produced > 0 ? e.crushCost / e.produced : 0;
+        e.value       = e.onHand > 0 ? e.onHand * e.costPerTon : 0;
+        e.avgPricePerTon = e.tonsSold > 0 ? e.salesTotal / e.tonsSold : 0;
+        e.dailyRate   = e.soldRecent > 0 ? e.soldRecent / INV_RATE_WINDOW_DAYS : 0;
+        e.daysOfSupply = (e.dailyRate > 0 && e.onHand > 0) ? e.onHand / e.dailyRate : null;
+        e.status      = e.onHand < -0.005 ? 'negative'
+                      : e.onHand <= 0.005 ? 'empty'
+                      : (e.daysOfSupply !== null && e.daysOfSupply < INV_LOW_DAYS) ? 'low'
+                      : 'in-stock';
+        return e;
+      };
+
+      const all = [...map.values()].map(decorate);
+      // Location filter — the no-location bucket matches only "— No Location —".
+      const visible = all
+        .filter(e => msMatches('location', 'inventory', {
+          locationName: e.name === NO_LOCATION ? '' : e.name,
+        }))
+        .sort((a, b) => b.onHand - a.onHand || a.name.localeCompare(b.name));
+
+      // Division total = raw sums re-derived, never an average of averages.
+      const total = {
+        name: 'Division Total',
+        opening: 0, openingAsOf: '',
+        tonsCrushed: 0, produced: 0, crushCost: 0, crushCount: 0,
+        tonsSold: 0, salesTotal: 0, salesCount: 0, soldRecent: 0,
+        adjustments: 0, adjCount: 0, lastCrushed: '', lastSold: '',
+      };
+      visible.forEach(e => {
+        total.opening     += e.opening;      total.tonsCrushed += e.tonsCrushed;
+        total.produced    += e.produced;     total.crushCost   += e.crushCost;
+        total.crushCount  += e.crushCount;   total.tonsSold    += e.tonsSold;
+        total.salesTotal  += e.salesTotal;   total.salesCount  += e.salesCount;
+        total.soldRecent  += e.soldRecent;   total.adjustments += e.adjustments;
+        total.adjCount    += e.adjCount;
+        if (e.lastCrushed > total.lastCrushed) total.lastCrushed = e.lastCrushed;
+        if (e.lastSold    > total.lastSold)    total.lastSold    = e.lastSold;
+      });
+      decorate(total);
+      // A blended loss only means something when every crushing pit has one.
+      const crushingPits = visible.filter(e => e.tonsCrushed > 0);
+      total.hasLoss = crushingPits.length > 0 && crushingPits.every(e => e.hasLoss);
+      total.lossPct = total.tonsCrushed > 0
+        ? (1 - visible.reduce((s, e) => s + finalScreenTons(e.tonsCrushed, e.name), 0) / total.tonsCrushed) * 100
+        : 0;
+      // Inventory value adds up per pit — each pile carries its own cost/ton.
+      total.value = visible.reduce((s, e) => s + e.value, 0);
+
+      return { locations: visible, all, total, cutoff, skipped };
+    }
+
+    // Month-by-month movement for the pits currently in view, rolled forward
+    // from their combined opening balance. Only months with activity get a row;
+    // the running balance carries across the gaps.
+    function computeInventoryMonthly(entries) {
+      const names = new Set(entries.map(e => e.name));
+      const cutoff = inventoryAsOf || '';
+      const months = new Map();
+      const bump = (dateStr, field, amt) => {
+        const mk = invIsoDate(dateStr).slice(0, 7);
+        if (!mk) return;
+        if (!months.has(mk)) months.set(mk, { month: mk, produced: 0, sold: 0, adj: 0 });
+        months.get(mk)[field] += amt;
+      };
+      const inScope = (r) => {
+        const key = invLocKey(r.locationName);
+        if (!names.has(key)) return false;
+        return invRowWindow(r.date, invOpeningFor(key).asOf, cutoff) === 'in';
+      };
+
+      crushRows.forEach(r => { if (inScope(r)) bump(r.date, 'produced', invProducedTons(r)); });
+      salesRows.forEach(r => {
+        if (!inScope(r)) return;
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) bump(r.date, 'sold', t);
+      });
+      (quarryInventory.adjustments || []).forEach(r => {
+        if (!inScope(r)) return;
+        const t = Number(r.tons);
+        if (Number.isFinite(t) && t !== 0) bump(r.date, 'adj', t);
+      });
+
+      const opening = entries.reduce((s, e) => s + e.opening, 0);
+      const rows = [...months.values()].sort((a, b) => a.month.localeCompare(b.month));
+      let running = opening;
+      rows.forEach(m => {
+        m.net = m.produced - m.sold + m.adj;
+        running += m.net;
+        m.ending = running;
+      });
+      return { rows, opening, ending: running };
+    }
+
+    function invMonthLabel(mk) {
+      const m = /^(\d{4})-(\d{2})$/.exec(String(mk || ''));
+      if (!m) return String(mk || '');
+      const i = Number(m[2]) - 1;
+      return `${MONTH_NAMES[i] ? MONTH_NAMES[i].slice(0, 3) : m[2]} ${m[1]}`;
+    }
+    function invScopeLabel(byInv) {
+      const set = locationFilters.inventory;
+      if (!set || set.size === 0) return 'All Pits';
+      if (byInv.locations.length === 1) return byInv.locations[0].name;
+      return msDescLabel('location', 'inventory');
+    }
+    const INV_STATUS_LABEL = {
+      'in-stock': 'In stock', low: 'Low stock', negative: 'Oversold', empty: 'Empty',
+    };
+    function invStatusPill(e) {
+      const cls = e.status === 'in-stock' ? 'in-stock' : e.status === 'low' ? 'low' : e.status === 'negative' ? 'negative' : '';
+      return `<span class="inv-pill ${cls}">${INV_STATUS_LABEL[e.status] || '—'}</span>`;
+    }
+    function invDash(txt, ok) { return ok ? txt : '—'; }
+
+    // ── Inventory rendering ──
+    function renderInventory(keepFilters) {
+      const dataReady = crushLoaded && salesLoaded && inventoryLoaded;
+      // Build the Location filter options from every source that can carry one.
+      if (!keepFilters) {
+        const filterRows = [...crushRows, ...salesRows, ...(quarryInventory.adjustments || [])]
+          .concat(Object.keys(quarryInventory.openings).map(loc => ({ locationName: loc })));
+        msRenderFilters('inventory', filterRows);
+      }
+      const asOfInput = document.getElementById('inventoryAsOfInput');
+      if (asOfInput && asOfInput.value !== inventoryAsOf) asOfInput.value = inventoryAsOf;
+      const basisSel = document.getElementById('inventoryBasisSelect');
+      if (basisSel && basisSel.value !== quarryInventory.basis) basisSel.value = quarryInventory.basis;
+
+      const byInv = computeInventory();
+      const t = byInv.total;
+      const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      const asOfTxt = byInv.cutoff || 'today';
+      const scope = invScopeLabel(byInv);
+
+      // ── Division-total KPIs ──
+      const onHandEl = document.getElementById('invKpiOnHand');
+      if (onHandEl) {
+        onHandEl.textContent = formatTons(t.onHand);
+        onHandEl.classList.toggle('is-negative', t.onHand < -0.005);
+      }
+      const pits = byInv.locations.length;
+      setText('invKpiOnHandSub', pits
+        ? `${scope} · ${pits} location${pits === 1 ? '' : 's'}`
+        : 'No locations yet');
+      setText('invKpiProduced', formatTons(t.produced));
+      setText('invKpiProducedSub', quarryInventory.basis === 'crusher'
+        ? `${formatTons(t.tonsCrushed)} tons to crusher · no loss applied`
+        : `${formatTons(t.tonsCrushed)} to crusher${t.hasLoss ? ` · ${t.lossPct.toFixed(1)}% loss` : ''}`);
+      setText('invKpiSold', formatTons(t.tonsSold));
+      setText('invKpiSoldSub', `Across ${t.salesCount} sale${t.salesCount === 1 ? '' : 's'}`);
+      setText('invKpiValue', formatMoney(t.value));
+      setText('invKpiValueSub', t.produced > 0
+        ? `At ${formatMoney(t.costPerTon)}/ton crushing cost`
+        : 'No crushing cost basis yet');
+
+      setText('invKpiOpening', formatTons(t.opening));
+      const openCount = byInv.locations.filter(e => e.opening !== 0 || e.openingAsOf).length;
+      setText('invKpiOpeningSub', openCount
+        ? `Entered for ${openCount} pit${openCount === 1 ? '' : 's'}`
+        : 'None entered');
+      const adjEl = document.getElementById('invKpiAdj');
+      if (adjEl) {
+        adjEl.textContent = (t.adjustments > 0 ? '+' : '') + formatTons(t.adjustments);
+        adjEl.classList.toggle('is-negative', t.adjustments < -0.005);
+        adjEl.classList.toggle('is-positive', t.adjustments > 0.005);
+      }
+      setText('invKpiAdjSub', `Across ${t.adjCount} entr${t.adjCount === 1 ? 'y' : 'ies'}`);
+      setText('invKpiRate', formatTons(t.dailyRate));
+      setText('invKpiRateSub', `${formatTons(t.soldRecent)} tons · trailing ${INV_RATE_WINDOW_DAYS} days`);
+      setText('invKpiDays', t.daysOfSupply !== null ? Math.round(t.daysOfSupply) + ' days' : '—');
+
+      // ── Subtitle + excluded-row warning ──
+      const sub = document.getElementById('inventorySubtitle');
+      if (sub) {
+        sub.textContent = !dataReady
+          ? 'Loading…'
+          : (byInv.locations.length
+            ? `${t.crushCount} crushing · ${t.salesCount} sales · ${t.adjCount} adjustment${t.adjCount === 1 ? '' : 's'} counted through ${asOfTxt} · ${scope}`
+            : 'Add entries with a Location on Crushing or Sales to build the inventory.');
+      }
+      const warnEl = document.getElementById('inventoryWarning');
+      if (warnEl) {
+        const s = byInv.skipped;
+        const parts = [];
+        if (s.undated)    parts.push(`<strong>${s.undated}</strong> entr${s.undated === 1 ? 'y has' : 'ies have'} no date`);
+        if (s.future)     parts.push(`<strong>${s.future}</strong> dated after ${escapeHtml(asOfTxt)}`);
+        if (s.preOpening) parts.push(`<strong>${s.preOpening}</strong> dated on or before a pit's opening count`);
+        if (parts.length && dataReady) {
+          warnEl.innerHTML = `Not counted in the balances above: ${parts.join(' · ')}. `
+            + `Undated rows need a date on Crushing, Sales, or the adjustments ledger; the rest are excluded on purpose.`;
+          warnEl.classList.remove('is-hidden');
+        } else {
+          warnEl.classList.add('is-hidden');
+        }
+      }
+
+      renderInventoryCards(byInv, dataReady);
+      renderInventoryRollForward(byInv, dataReady);
+      renderInventoryMonthly(byInv, dataReady);
+      renderInventoryProducts(byInv, dataReady);
+      renderInventoryOpenings(byInv);
+      renderInvAdjTable();
+    }
+
+    function renderInventoryCards(byInv, dataReady) {
+      const el = document.getElementById('inventoryLocationCards');
+      if (!el) return;
+      if (!byInv.locations.length) {
+        el.innerHTML = `<div class="home-panel"><div class="home-empty">${
+          dataReady
+            ? 'No inventory yet — add Crushing and Sales entries with a Location, or enter an opening balance below.'
+            : 'Loading…'
+        }</div></div>`;
+        return;
+      }
+      const card = (e, isTotal) => {
+        const days = e.daysOfSupply !== null ? Math.round(e.daysOfSupply) + ' days' : '—';
+        const daysSub = e.dailyRate > 0
+          ? `At ${formatTons(e.dailyRate)} tons/day sold`
+          : `No sales in the last ${INV_RATE_WINDOW_DAYS} days`;
+        const lossSub = e.tonsCrushed > 0
+          ? (quarryInventory.basis === 'crusher'
+              ? 'Raw tons to crusher'
+              : (e.hasLoss ? `After ${e.lossPct.toFixed(1)}% screen loss` : 'No loss % set — jaws tonnage'))
+          : 'No crushing yet';
+        return `
+        <div class="loc-card${isTotal ? ' is-total' : ''}"${isTotal ? ' style="border-top-color:var(--muted)"' : ''}>
+          <div class="loc-card-head">
+            <div class="loc-card-name">${escapeHtml(e.name)}</div>
+            ${invStatusPill(e)}
+          </div>
+          <div class="loc-kpi-grid">
+            <div class="loc-kpi is-wide is-onhand">
+              <div class="loc-kpi-label">Tons On Hand</div>
+              <div class="loc-kpi-value ${e.onHand < -0.005 ? 'is-negative' : 'is-stock'}">${formatTons(e.onHand)}</div>
+              <div class="loc-kpi-sub">Opening ${formatTons(e.opening)} + produced ${formatTons(e.produced)} − sold ${formatTons(e.tonsSold)}${e.adjustments ? ` ${e.adjustments < 0 ? '−' : '+'} adj ${formatTons(Math.abs(e.adjustments))}` : ''}</div>
+            </div>
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Produced</div>
+              <div class="loc-kpi-value">${formatTons(e.produced)}</div>
+              <div class="loc-kpi-sub">${lossSub}</div>
+            </div>
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Sold</div>
+              <div class="loc-kpi-value">${formatTons(e.tonsSold)}</div>
+              <div class="loc-kpi-sub">${e.salesCount} sale${e.salesCount === 1 ? '' : 's'}${e.tonsSold > 0 ? ` · ${formatMoney(e.avgPricePerTon)}/ton` : ''}</div>
+            </div>
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Inventory Value</div>
+              <div class="loc-kpi-value">${invDash(formatMoney(e.value), e.produced > 0 && e.onHand > 0)}</div>
+              <div class="loc-kpi-sub">${e.produced > 0 ? formatMoney(e.costPerTon) + '/ton cost' : 'No cost basis'}</div>
+            </div>
+            <div class="loc-kpi">
+              <div class="loc-kpi-label">Days of Supply</div>
+              <div class="loc-kpi-value">${days}</div>
+              <div class="loc-kpi-sub">${daysSub}</div>
+            </div>
+            <div class="loc-kpi is-wide">
+              <div class="loc-kpi-label">Last Activity</div>
+              <div class="loc-kpi-value" style="font-size:0.9rem">${invDash(escapeHtml(e.lastCrushed), !!e.lastCrushed)} crushed · ${invDash(escapeHtml(e.lastSold), !!e.lastSold)} sold</div>
+              <div class="loc-kpi-sub">${e.openingAsOf ? `Opening counted ${escapeHtml(e.openingAsOf)}` : 'No opening count date set'}</div>
+            </div>
+          </div>
+        </div>`;
+      };
+      const cards = byInv.locations.map(e => card(e, false)).join('');
+      // Only worth a Division Total card when more than one pit is in play.
+      const totalCard = byInv.locations.length > 1 ? card(byInv.total, true) : '';
+      el.innerHTML = cards + totalCard;
+    }
+
+    function renderInventoryRollForward(byInv, dataReady) {
+      const body = document.querySelector('#inventoryLocationTable tbody');
+      if (!body) return;
+      const note = document.getElementById('inventoryRollNote');
+      if (note) {
+        note.innerHTML = quarryInventory.basis === 'crusher'
+          ? `<strong>Produced (Stock In)</strong> is the raw tonnage to the crusher — the jaws→screen loss is <strong>not</strong> applied on this basis. `
+            + `Switch <em>Stock Added</em> to “Final screen tons” to net it out.`
+          : `<strong>Produced (Stock In)</strong> is tons to the crusher less each pit's jaws→screen loss %, so only sellable product is added to stock. `
+            + `Pits showing “—” for loss have no figure entered on Analytics and add their full jaws tonnage.`;
+      }
+      if (!byInv.locations.length) {
+        body.innerHTML = `<tr><td colspan="12"><div class="home-empty">${dataReady ? 'No inventory to roll forward yet.' : 'Loading…'}</div></td></tr>`;
+        return;
+      }
+      const row = (e, isTotal) => {
+        const showLoss = quarryInventory.basis !== 'crusher' && e.tonsCrushed > 0 && e.hasLoss;
+        return `
+        <tr${isTotal ? ' class="inv-row-total"' : ''}>
+          <td>${escapeHtml(e.name)}</td>
+          <td>${formatTons(e.opening)}${e.openingAsOf ? ` <span style="color:var(--muted);font-size:0.9em">(${escapeHtml(e.openingAsOf)})</span>` : ''}</td>
+          <td>${formatTons(e.tonsCrushed)}</td>
+          <td>${showLoss ? e.lossPct.toFixed(1) + '%' : '—'}</td>
+          <td>${formatTons(e.produced)}</td>
+          <td>${formatTons(e.tonsSold)}</td>
+          <td class="${e.adjustments > 0.005 ? 'pos' : e.adjustments < -0.005 ? 'neg' : ''}">${e.adjustments ? (e.adjustments > 0 ? '+' : '') + formatTons(e.adjustments) : '—'}</td>
+          <td class="inv-onhand ${e.onHand < -0.005 ? 'neg' : ''}">${formatTons(e.onHand)}</td>
+          <td>${invDash(formatMoney(e.costPerTon), e.produced > 0)}</td>
+          <td>${invDash(formatMoney(e.value), e.produced > 0 && e.onHand > 0)}</td>
+          <td>${invDash(escapeHtml(e.lastCrushed), !!e.lastCrushed)}</td>
+          <td>${invDash(escapeHtml(e.lastSold), !!e.lastSold)}</td>
+        </tr>`;
+      };
+      const rows = byInv.locations.map(e => row(e, false)).join('');
+      const totalRow = byInv.locations.length > 1 ? row(byInv.total, true) : '';
+      body.innerHTML = rows + totalRow;
+    }
+
+    function renderInventoryMonthly(byInv, dataReady) {
+      const body = document.querySelector('#inventoryMonthlyTable tbody');
+      if (!body) return;
+      const scope = invScopeLabel(byInv);
+      const title = document.getElementById('inventoryMonthlyTitle');
+      if (title) title.textContent = `Monthly Movement — Running Balance · ${scope}`;
+      const { rows, opening, ending } = computeInventoryMonthly(byInv.locations);
+      const note = document.getElementById('inventoryMonthlyNote');
+      if (note) {
+        note.innerHTML = `Oldest month first, so each <strong>Ending Balance</strong> carries into the next month — the last row `
+          + `is what is on the ground today (${formatTons(ending)} tons). Months with no crushing, sales, or adjustments are skipped; `
+          + `the balance carries straight across them.`;
+      }
+      if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="6"><div class="home-empty">${dataReady ? 'No dated crushing, sales, or adjustment activity to roll forward yet.' : 'Loading…'}</div></td></tr>`;
+        return;
+      }
+      const openingRow = `
+        <tr>
+          <td>Opening balance</td>
+          <td>—</td><td>—</td><td>—</td><td>—</td>
+          <td class="inv-onhand">${formatTons(opening)}</td>
+        </tr>`;
+      body.innerHTML = openingRow + rows.map(m => `
+        <tr>
+          <td>${invMonthLabel(m.month)}</td>
+          <td>${m.produced ? formatTons(m.produced) : '—'}</td>
+          <td>${m.sold ? formatTons(m.sold) : '—'}</td>
+          <td class="${m.adj > 0.005 ? 'pos' : m.adj < -0.005 ? 'neg' : ''}">${m.adj ? (m.adj > 0 ? '+' : '') + formatTons(m.adj) : '—'}</td>
+          <td class="${m.net > 0.005 ? 'pos' : m.net < -0.005 ? 'neg' : ''}">${(m.net > 0 ? '+' : '') + formatTons(m.net)}</td>
+          <td class="inv-onhand ${m.ending < -0.005 ? 'neg' : ''}">${formatTons(m.ending)}</td>
+        </tr>`).join('');
+    }
+
+    function renderInventoryProducts(byInv, dataReady) {
+      const body = document.querySelector('#inventoryProductTable tbody');
+      if (!body) return;
+      const names = new Set(byInv.locations.map(e => e.name));
+      const cutoff = inventoryAsOf || '';
+      const agg = new Map();
+      let totalTons = 0;
+      salesRows.forEach(r => {
+        const key = invLocKey(r.locationName);
+        if (!names.has(key)) return;
+        if (invRowWindow(r.date, invOpeningFor(key).asOf, cutoff) !== 'in') return;
+        const pk = (r.productName || '').trim() || '— No product —';
+        const cur = agg.get(pk) || { name: pk, tons: 0, sales: 0, orders: 0 };
+        const tn = Number(r.tons);
+        if (Number.isFinite(tn)) { cur.tons += tn; totalTons += tn; }
+        cur.sales += homeRowSales(r);
+        cur.orders++;
+        agg.set(pk, cur);
+      });
+      const rows = [...agg.values()].sort((a, b) => b.tons - a.tons);
+      if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="6"><div class="home-empty">${dataReady ? 'No sales for the selected locations yet.' : 'Loading…'}</div></td></tr>`;
+        return;
+      }
+      body.innerHTML = rows.map(p => `
+        <tr>
+          <td>${escapeHtml(p.name)}</td>
+          <td>${formatTons(p.tons)}</td>
+          <td>${formatMoney(p.sales)}</td>
+          <td>${p.tons > 0 ? formatMoney(p.sales / p.tons) : '—'}</td>
+          <td>${p.orders}</td>
+          <td>${totalTons > 0 ? ((p.tons / totalTons) * 100).toFixed(1) + '%' : '—'}</td>
+        </tr>`).join('');
+    }
+
+    function renderInventoryOpenings(byInv) {
+      const el = document.getElementById('inventoryOpeningEditor');
+      if (!el) return;
+      // Every pit worth an opening figure: one seen in the data, one already
+      // carrying an entry, or one configured under Manage Lists → Location.
+      const names = new Set();
+      byInv.all.forEach(e => { if (e.name !== NO_LOCATION) names.add(e.name); });
+      Object.keys(quarryInventory.openings).forEach(loc => names.add(loc));
+      (quarryLists.location || []).forEach(it => { if (it && it.name) names.add(String(it.name).trim()); });
+      const sorted = [...names].filter(Boolean).sort((a, b) => a.localeCompare(b));
+      if (!sorted.length) {
+        el.innerHTML = `<div class="home-empty">No locations yet — add one under ⚙ Manage Lists, or enter a Location on a Crushing or Sales row.</div>`;
+        return;
+      }
+      const byName = new Map(byInv.all.map(e => [e.name, e]));
+      el.innerHTML = sorted.map(name => {
+        const op = invOpeningFor(name);
+        const e = byName.get(name);
+        const note = e
+          ? `On hand ${formatTons(e.onHand)} · produced ${formatTons(e.produced)} · sold ${formatTons(e.tonsSold)}`
+          : 'No crushing or sales entries yet';
+        return `
+        <div class="inv-open-row">
+          <div class="inv-open-loc">${escapeHtml(name)}</div>
+          <label class="inv-open-field">Tons
+            <input type="number" step="0.01" data-loc="${escapeHtml(name)}"
+              value="${op.tons ? op.tons : ''}" placeholder="0"
+              onchange="onInvOpeningTons(this)" aria-label="Opening tons for ${escapeHtml(name)}" />
+          </label>
+          <label class="inv-open-field">As Of
+            <input type="date" data-loc="${escapeHtml(name)}" value="${escapeHtml(op.asOf)}"
+              onchange="onInvOpeningAsOf(this)" aria-label="Opening count date for ${escapeHtml(name)}" />
+          </label>
+          <div class="inv-open-note">${escapeHtml(note)}</div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderInvAdjTable() {
+      const tbody = document.getElementById('invAdjTbody');
+      if (!tbody) return;
+      const addBtn = document.getElementById('invAdjAddBtn');
+      if (addBtn) addBtn.disabled = !inventoryLoaded;
+      const rows = quarryInventory.adjustments || [];
+      if (!inventoryLoaded) {
+        tbody.innerHTML = `<tr><td colspan="6" class="sales-empty">Loading…</td></tr>`;
+        updateInvAdjSummary();
+        return;
+      }
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="sales-empty">No adjustments. Inventory is running purely off Crushing and Sales — click “+ Add Row” to record a count correction, waste, internal use, or a transfer.</td></tr>`;
+        updateInvAdjSummary();
+        return;
+      }
+      // Newest first for display; the data store keeps its own order, so each
+      // row carries its original index back to the setters.
+      const visible = rows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .sort((a, b) => String(b.row.date || '').localeCompare(String(a.row.date || '')));
+      tbody.innerHTML = visible.map(({ row, originalIdx: i }) => {
+        const reasonOpts = ['<option value="">—</option>'].concat(
+          INV_ADJ_REASONS.map(r => `<option value="${escapeHtml(r)}"${row.reason === r ? ' selected' : ''}>${escapeHtml(r)}</option>`)
+        ).join('');
+        return `
+          <tr>
+            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateInvAdjCell(${i}, 'date', this.value)" /></td>
+            <td>${cbHtml('inv:' + i, 'location', row.locationName || '')}</td>
+            <td class="col-num"><input class="cell-input" type="number" step="0.01" value="${row.tons === '' ? '' : row.tons}" placeholder="0" title="Negative tons take material out of the pile" oninput="updateInvAdjTons(${i}, this.value)" onchange="renderInventory()" /></td>
+            <td><select class="cell-select" onchange="updateInvAdjText(${i}, 'reason', this.value)">${reasonOpts}</select></td>
+            <td class="col-comments"><input class="cell-input" type="text" value="${escapeHtml(row.comments)}" placeholder="Notes…" oninput="updateInvAdjText(${i}, 'comments', this.value)" /></td>
+            <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteInvAdjRow(${i})">✕</button></td>
+          </tr>`;
+      }).join('');
+      updateInvAdjSummary();
+    }
+
+    function updateInvAdjSummary() {
+      const el = document.getElementById('invAdjSummary');
+      if (!el) return;
+      let added = 0, removed = 0, count = 0;
+      (quarryInventory.adjustments || []).forEach(r => {
+        const t = Number(r.tons);
+        if (!Number.isFinite(t) || t === 0) { count++; return; }
+        if (t > 0) added += t; else removed += t;
+        count++;
+      });
+      el.innerHTML = `Rows<strong>${count}</strong>· Added<strong>+${formatTons(added)}</strong>`
+        + `· Removed<strong>${formatTons(removed)}</strong>· Net<strong>${(added + removed) > 0 ? '+' : ''}${formatTons(added + removed)}</strong>`;
+    }
+
+    // ── Inventory setters ──
+    function setInventoryAsOf(value) {
+      inventoryAsOf = /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? String(value) : '';
+      renderInventory();
+    }
+    function setInventoryBasis(value) {
+      const basis = value === 'crusher' ? 'crusher' : 'final';
+      if (quarryInventory.basis === basis) return;
+      quarryInventory.basis = basis;
+      scheduleInventorySave();
+      renderInventory();
+    }
+    function onInvOpeningTons(input) {
+      const loc = input.dataset.loc || '';
+      if (!loc) return;
+      const raw = String(input.value).trim();
+      const n = raw === '' ? null : Math.round(Number(raw) * 100) / 100;
+      const asOf = (quarryInventory.openings[loc] || {}).asOf || '';
+      if (n === null || !Number.isFinite(n) || n === 0) {
+        // Keep a zeroed entry only when its as-of cutoff is still doing work.
+        if (asOf) quarryInventory.openings[loc] = { tons: 0, asOf };
+        else delete quarryInventory.openings[loc];
+      } else {
+        quarryInventory.openings[loc] = { tons: n, asOf };
+      }
+      scheduleInventorySave();
+      renderInventory();
+    }
+    function onInvOpeningAsOf(input) {
+      const loc = input.dataset.loc || '';
+      if (!loc) return;
+      const raw = String(input.value || '');
+      const asOf = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : '';
+      const tons = Number((quarryInventory.openings[loc] || {}).tons) || 0;
+      if (!asOf && tons === 0) delete quarryInventory.openings[loc];
+      else quarryInventory.openings[loc] = { tons, asOf };
+      scheduleInventorySave();
+      renderInventory();
+    }
+    function addInvAdjRow() {
+      if (!inventoryLoaded) return;
+      quarryInventory.adjustments.unshift(normalizeInvAdjRow({ date: todayIso() }));
+      scheduleInventorySave();
+      renderInventory();
+    }
+    function deleteInvAdjRow(index) {
+      if (!inventoryLoaded || !quarryInventory.adjustments[index]) return;
+      quarryInventory.adjustments.splice(index, 1);
+      scheduleInventorySave();
+      renderInventory();
+    }
+    function updateInvAdjCell(index, field, value) {
+      if (!inventoryLoaded || !quarryInventory.adjustments[index]) return;
+      quarryInventory.adjustments[index][field] = value;
+      scheduleInventorySave();
+      renderInventory();
+    }
+    // Fields that don't move any balance (notes, reason) save without a
+    // re-render — which would otherwise yank the caret out mid-word.
+    function updateInvAdjText(index, field, value) {
+      if (!inventoryLoaded || !quarryInventory.adjustments[index]) return;
+      quarryInventory.adjustments[index][field] = value;
+      scheduleInventorySave();
+    }
+    // Live-updates the ledger summary while typing; the full re-render (and so
+    // the KPIs, cards, and tables) fires from the input's onchange on blur.
+    function updateInvAdjTons(index, raw) {
+      if (!inventoryLoaded || !quarryInventory.adjustments[index]) return;
+      const s = String(raw).trim();
+      const n = Number(s);
+      quarryInventory.adjustments[index].tons = (s === '' || !Number.isFinite(n)) ? '' : n;
+      updateInvAdjSummary();
+      scheduleInventorySave();
+    }
+
+    // Print/PDF of the inventory position — same shell as the Analytics export.
+    function downloadInventoryPDF() {
+      const byInv = computeInventory();
+      const t = byInv.total;
+      const scope = invScopeLabel(byInv);
+      const asOfTxt = byInv.cutoff || 'today';
+      const generated = new Date().toLocaleString();
+
+      const cloneTable = (selector, title) => {
+        const tbl = document.querySelector(selector);
+        if (!tbl) return '';
+        const tbody = tbl.querySelector('tbody');
+        const hasData = tbody && tbody.children.length && !tbody.querySelector('.home-empty');
+        if (!hasData) return `<h2>${title}</h2><div class="empty-note">No data for this period.</div>`;
+        return `<h2>${title}</h2><table class="rep">${tbl.innerHTML}</table>`;
+      };
+      const kpiCard = (label, value, sub) => `
+        <div class="kpi">
+          <div class="kpi-l">${label}</div>
+          <div class="kpi-v">${value}</div>
+          ${sub ? `<div class="kpi-s">${sub}</div>` : ''}
+        </div>`;
+      const kpis = `
+        <div class="kpi-grid">
+          ${kpiCard('Tons On Hand', formatTons(t.onHand), `${byInv.locations.length} location(s)`)}
+          ${kpiCard('Produced to Date', formatTons(t.produced), `${formatTons(t.tonsCrushed)} tons to crusher`)}
+          ${kpiCard('Sold to Date', formatTons(t.tonsSold), `Across ${t.salesCount} sales`)}
+          ${kpiCard('Inventory Value', formatMoney(t.value), t.produced > 0 ? `At ${formatMoney(t.costPerTon)}/ton` : 'No cost basis')}
+          ${kpiCard('Opening Balance', formatTons(t.opening), 'Entered per pit')}
+          ${kpiCard('Adjustments', (t.adjustments > 0 ? '+' : '') + formatTons(t.adjustments), `Across ${t.adjCount} entries`)}
+          ${kpiCard('Avg Tons Sold / Day', formatTons(t.dailyRate), `Trailing ${INV_RATE_WINDOW_DAYS} days`)}
+          ${kpiCard('Days of Supply', t.daysOfSupply !== null ? Math.round(t.daysOfSupply) + ' days' : '—', 'On hand ÷ daily sales')}
+        </div>`;
+      const sections = [
+        cloneTable('#inventoryLocationTable', 'Inventory Roll-Forward by Location'),
+        cloneTable('#inventoryMonthlyTable',  'Monthly Movement — Running Balance'),
+        cloneTable('#inventoryProductTable',  'Tons Sold by Product'),
+      ].join('');
+
+      const doc = window.open('', '_blank', 'width=1100,height=800');
+      if (!doc) {
+        alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
+        return;
+      }
+      const basisTxt = quarryInventory.basis === 'crusher' ? 'tons to crusher' : 'final screen tons';
+      doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Quarry Inventory — ${escapeHtml(asOfTxt)}</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.25rem; }
+  h1 { font-size: 17px; margin: 0 0 0.15rem; }
+  h2 { font-size: 12px; margin: 1rem 0 0.4rem; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+  .meta { font-size: 10px; color: #555; margin-bottom: 1rem; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 0.8rem; }
+  .kpi { border: 1px solid #ccc; border-radius: 5px; padding: 6px 8px; background: #fafafa; }
+  .kpi-l { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #555; }
+  .kpi-v { font-size: 14px; font-weight: 700; margin-top: 2px; }
+  .kpi-s { font-size: 8.5px; color: #666; margin-top: 2px; }
+  table.rep { width: 100%; border-collapse: collapse; margin-bottom: 0.5rem; }
+  table.rep th, table.rep td { border: 1px solid #ccc; padding: 4px 6px; text-align: right; white-space: nowrap; font-size: 10px; }
+  table.rep th:first-child, table.rep td:first-child { text-align: left; }
+  table.rep thead th { background: #f0f0f0; font-weight: 700; font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+  table.rep tbody tr:nth-child(even) { background: #fafafa; }
+  table.rep tbody tr.inv-row-total td { font-weight: 700; border-top: 2px solid #999; background: #f3f3f3; }
+  table.rep td.pos { color: #15803d; }
+  table.rep td.neg { color: #b91c1c; }
+  .empty-note { font-size: 10px; color: #888; padding: 6px 0; }
+  @page { size: landscape; margin: 0.4in; }
+  @media print { body { padding: 0.1in; } }
+</style></head><body>
+<h1>Quarry Inventory &mdash; ${escapeHtml(scope)}</h1>
+<div class="meta">As of ${escapeHtml(asOfTxt)} &middot; Generated ${generated} &middot; Stock added on ${basisTxt}
+  &middot; On hand = opening + produced (Crushing) &minus; sold (Sales) + adjustments</div>
+${kpis}
+${sections}
+<script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>
+</body></html>`);
+      doc.document.close();
     }
 
     // ── Royalty owners editor (per pit) ───────────────────────────
