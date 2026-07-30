@@ -994,50 +994,51 @@
         </div>
       </div>
 
-      <div class="home-section-label">Division Total</div>
+      <div class="home-section-label">Stockpile &amp; Flow</div>
       <div class="kpi-grid">
         <div class="kpi-tile is-accent">
-          <div class="kpi-label">Total Sales</div>
-          <div class="kpi-value" id="homeKpiSales">$0.00</div>
-          <div class="kpi-sub" id="homeKpiSalesSub">0 tons sold</div>
+          <div class="kpi-label">Tons On Hand</div>
+          <div class="kpi-value" id="homeKpiOnHand">0</div>
+          <div class="kpi-sub" id="homeKpiOnHandSub">Across 0 locations</div>
         </div>
         <div class="kpi-tile">
-          <div class="kpi-label">Total Cost</div>
-          <div class="kpi-value" id="homeKpiCost">$0.00</div>
-          <div class="kpi-sub" id="homeKpiCostSub">Daily $0 · Crushing $0</div>
+          <div class="kpi-label">Days of Supply</div>
+          <div class="kpi-value" id="homeKpiDays">—</div>
+          <div class="kpi-sub" id="homeKpiDaysSub">On hand ÷ daily sales rate</div>
         </div>
         <div class="kpi-tile">
-          <div class="kpi-label">Gross Margin</div>
-          <div class="kpi-value" id="homeKpiMargin">$0.00</div>
-          <div class="kpi-sub" id="homeKpiMarginSub">Sales − Cost</div>
+          <div class="kpi-label">Net Change</div>
+          <div class="kpi-value" id="homeKpiNetChange">0</div>
+          <div class="kpi-sub" id="homeKpiNetChangeSub">Crushed vs sold</div>
         </div>
         <div class="kpi-tile">
-          <div class="kpi-label">Margin %</div>
-          <div class="kpi-value" id="homeKpiMarginPct">0.0%</div>
-          <div class="kpi-sub">Of total sales</div>
+          <div class="kpi-label">Needs Attention</div>
+          <div class="kpi-value" id="homeKpiLow">—</div>
+          <div class="kpi-sub" id="homeKpiLowSub">Lowest pit by days of supply</div>
         </div>
       </div>
 
+      <div class="home-section-label">Per-Ton Economics</div>
       <div class="kpi-grid">
-        <div class="kpi-tile">
-          <div class="kpi-label">Tons Sold</div>
-          <div class="kpi-value" id="homeKpiTonsSold">0</div>
-          <div class="kpi-sub" id="homeKpiTonsSoldSub">Across 0 sales</div>
+        <div class="kpi-tile is-accent">
+          <div class="kpi-label">Margin / Ton</div>
+          <div class="kpi-value" id="homeKpiMarginTon">$0.00</div>
+          <div class="kpi-sub" id="homeKpiMarginTonSub">Price − cost, per ton sold</div>
         </div>
         <div class="kpi-tile">
-          <div class="kpi-label">Tons Crushed</div>
-          <div class="kpi-value" id="homeKpiTonsCrushed">0</div>
-          <div class="kpi-sub" id="homeKpiTonsCrushedSub">Estimated · 0 hrs crushing</div>
+          <div class="kpi-label">Avg Price / Ton</div>
+          <div class="kpi-value" id="homeKpiPriceTon">$0.00</div>
+          <div class="kpi-sub" id="homeKpiPriceTonSub">Sales ÷ tons sold</div>
         </div>
         <div class="kpi-tile">
-          <div class="kpi-label">Hours Worked</div>
-          <div class="kpi-value" id="homeKpiHours">0</div>
-          <div class="kpi-sub" id="homeKpiHoursSub">Daily 0 · Crushing 0</div>
+          <div class="kpi-label">Cost / Ton</div>
+          <div class="kpi-value" id="homeKpiCostTon">$0.00</div>
+          <div class="kpi-sub" id="homeKpiCostTonSub">Daily + crushing ÷ tons sold</div>
         </div>
         <div class="kpi-tile">
-          <div class="kpi-label">Avg Cost / Ton</div>
-          <div class="kpi-value" id="homeKpiAvgCpT">$0.00</div>
-          <div class="kpi-sub">Crushing cost ÷ tons crushed</div>
+          <div class="kpi-label">Break-Even</div>
+          <div class="kpi-value" id="homeKpiBreakEven">—</div>
+          <div class="kpi-sub" id="homeKpiBreakEvenSub">Tons sold vs tons needed</div>
         </div>
       </div>
 
@@ -4331,6 +4332,13 @@
       // Per-pit loss %, so the location cards can show final-screen tonnage.
       // Skip while a local edit is still saving so we don't clobber it.
       if (!lossPctSavePending && !lossPctSaveInFlight) tasks.push(refreshLossPct());
+      // Openings + adjustments behind the stockpile cards, same guard.
+      if (!inventorySavePending && !inventorySaveInFlight) tasks.push(refreshInventoryStore());
+      // Fixed costs + royalty feed the break-even card. Without them it can only
+      // report "set fixed costs", which looks like the figure is broken rather
+      // than unconfigured.
+      if (!monthlyFixedSavePending && !monthlyFixedSaveInFlight) tasks.push(refreshMonthlyFixed());
+      if (!royaltySavePending && !royaltySaveInFlight) tasks.push(refreshRoyalty());
       if (tasks.length) {
         await Promise.allSettled(tasks);
         renderHome();
@@ -4513,6 +4521,76 @@
       el.innerHTML = cards + totalCard;
     }
 
+    // Date the Home stockpile cards balance through. A stock figure is a point
+    // in time: for the current year (or All Years) that's today, and for a past
+    // year it's that year's close, so picking 2025 shows what was on the ground
+    // at the end of 2025 rather than a nonsensical "2025 slice" of a balance.
+    function homeInventoryCutoff() {
+      const today = todayIso();
+      const y = yearFilters.home;
+      if (!y || y === 'all') return today;
+      const yearEnd = `${y}-12-31`;
+      return yearEnd < today ? yearEnd : today;
+    }
+
+    // Production vs depletion over the cutoff's own month, for the pits in view.
+    function homeMonthFlow(entries, cutoff) {
+      const month = String(cutoff || todayIso()).slice(0, 7);
+      const names = new Set(entries.map(e => e.name));
+      const out = { month, produced: 0, sold: 0, adj: 0, net: 0 };
+      const inScope = (r) => {
+        const key = invLocKey(r.locationName);
+        if (!names.has(key)) return false;
+        if (invIsoDate(r.date).slice(0, 7) !== month) return false;
+        return invRowWindow(r.date, invOpeningFor(key).asOf, cutoff) === 'in';
+      };
+      crushRows.forEach(r => { if (inScope(r)) out.produced += invProducedTons(r); });
+      salesRows.forEach(r => {
+        if (!inScope(r)) return;
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) out.sold += t;
+      });
+      (quarryInventory.adjustments || []).forEach(r => {
+        if (!inScope(r)) return;
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) out.adj += t;
+      });
+      out.net = out.produced - out.sold + out.adj;
+      return out;
+    }
+
+    // The one pit worth looking at first: oversold beats low stock beats fine.
+    // "Oversold" means sales exceed what production plus the opening balance can
+    // account for — usually a missed crushing entry or an opening never entered.
+    function homeStockAlert(entries) {
+      if (!entries.length) return { value: '—', sub: 'No locations yet', tone: '' };
+      const oversold = entries.filter(e => e.onHand < -0.005)
+        .sort((a, b) => a.onHand - b.onHand);
+      if (oversold.length) {
+        const e = oversold[0];
+        return {
+          value: e.name, tone: 'bad',
+          sub: `Oversold by ${formatTons(Math.abs(e.onHand))} tons — check for missing crushing or opening balance`,
+        };
+      }
+      const withSupply = entries.filter(e => e.daysOfSupply !== null)
+        .sort((a, b) => a.daysOfSupply - b.daysOfSupply);
+      const lowest = withSupply[0];
+      if (lowest && lowest.daysOfSupply < INV_LOW_DAYS) {
+        return {
+          value: lowest.name, tone: 'bad',
+          sub: `${Math.round(lowest.daysOfSupply)} days of stock left at the current sales rate`,
+        };
+      }
+      if (lowest) {
+        return {
+          value: 'All pits stocked', tone: 'good',
+          sub: `Lowest is ${lowest.name} at ${Math.round(lowest.daysOfSupply)} days`,
+        };
+      }
+      return { value: 'All pits stocked', tone: 'good', sub: 'No sales rate to measure against yet' };
+    }
+
     function renderHome() {
       const sub = document.getElementById('homeSubtitle');
       const allRows = [...dailyRows, ...crushRows, ...salesRows];
@@ -4556,30 +4634,76 @@
       const avgCostPerTon = crushTonsCrushed > 0 ? crushCost / crushTonsCrushed : 0;
 
       const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-      setText('homeKpiSales',  formatMoney(totalSales));
-      setText('homeKpiSalesSub', `${formatTons(totalTonsSold)} tons sold across ${salesCount} sale${salesCount === 1 ? '' : 's'}`);
-      setText('homeKpiCost',   formatMoney(totalCost));
-      setText('homeKpiCostSub', `Daily ${formatMoney(dailyCost)} · Crushing ${formatMoney(crushCost)}`);
-      const marginEl = document.getElementById('homeKpiMargin');
-      if (marginEl) {
-        marginEl.textContent = formatMoney(grossMargin);
-        marginEl.classList.toggle('is-positive', grossMargin > 0.0001);
-        marginEl.classList.toggle('is-negative', grossMargin < -0.0001);
-      }
-      const marginPctEl = document.getElementById('homeKpiMarginPct');
-      if (marginPctEl) {
-        marginPctEl.textContent = (Number.isFinite(marginPct) ? marginPct.toFixed(1) : '0.0') + '%';
-        marginPctEl.classList.toggle('is-positive', marginPct > 0.05);
-        marginPctEl.classList.toggle('is-negative', marginPct < -0.05);
-      }
+      const setTone = (id, txt, good, bad) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = txt;
+        el.classList.toggle('is-positive', !!good);
+        el.classList.toggle('is-negative', !!bad);
+      };
 
-      setText('homeKpiTonsSold',    formatTons(totalTonsSold));
-      setText('homeKpiTonsSoldSub', `Across ${salesCount} sale${salesCount === 1 ? '' : 's'}`);
-      setText('homeKpiTonsCrushed', formatTons(crushTonsCrushed));
-      setText('homeKpiTonsCrushedSub', `Estimated · ${formatTons(crushHours)} hrs crushing`);
-      setText('homeKpiHours',       formatTons(totalHours));
-      setText('homeKpiHoursSub',    `Daily ${formatTons(dailyHours)} · Crushing ${formatTons(crushHours)}`);
-      setText('homeKpiAvgCpT',      formatMoney(avgCostPerTon));
+      // ── Stockpile & flow ──
+      // A stock balance is a point in time, not a year's worth of activity, so
+      // it follows the Year filter by balancing through that year's end (today
+      // for the current year) rather than by summing only that year's rows.
+      // The Inventory tab's own Location filter has no say over this dashboard.
+      const invCutoff = homeInventoryCutoff();
+      const inv = computeInventory({ cutoff: invCutoff, applyLocationFilter: false });
+      const it = inv.total;
+      setTone('homeKpiOnHand', formatTons(it.onHand), false, it.onHand < -0.005);
+      const pitCount = inv.locations.length;
+      setText('homeKpiOnHandSub', pitCount
+        ? `${pitCount} location${pitCount === 1 ? '' : 's'} · as of ${invCutoff}`
+        : 'Set up Inventory to track the piles');
+      setText('homeKpiDays', it.daysOfSupply !== null ? Math.round(it.daysOfSupply) + ' days' : '—');
+      setText('homeKpiDaysSub', it.dailyRate > 0
+        ? `At ${formatTons(it.dailyRate)} tons/day sold`
+        : `No sales in the last ${INV_RATE_WINDOW_DAYS} days`);
+
+      // Net change over the cutoff's month — is the pile growing or shrinking?
+      const flow = homeMonthFlow(inv.locations, invCutoff);
+      setTone('homeKpiNetChange', (flow.net > 0 ? '+' : '') + formatTons(flow.net),
+        flow.net > 0.005, flow.net < -0.005);
+      setText('homeKpiNetChangeSub',
+        `${invMonthLabel(flow.month)} · crushed ${formatTons(flow.produced)} · sold ${formatTons(flow.sold)}`);
+
+      const alert = homeStockAlert(inv.locations);
+      setTone('homeKpiLow', alert.value, alert.tone === 'good', alert.tone === 'bad');
+      setText('homeKpiLowSub', alert.sub);
+
+      // ── Per-ton economics ──
+      // Cost/ton here is total pit cost ÷ tons sold, so margin/ton = price/ton
+      // − cost/ton exactly. (Analytics keeps the production figure, crushing ÷
+      // tons crushed, which answers a different question.)
+      const pricePerTon  = totalTonsSold > 0 ? totalSales / totalTonsSold : 0;
+      const costPerTon   = totalTonsSold > 0 ? totalCost / totalTonsSold : 0;
+      const marginPerTon = pricePerTon - costPerTon;
+      const haveTons = totalTonsSold > 0;
+      setTone('homeKpiMarginTon', haveTons ? formatMoney(marginPerTon) : '—',
+        haveTons && marginPerTon > 0.0001, haveTons && marginPerTon < -0.0001);
+      setText('homeKpiMarginTonSub', haveTons
+        ? `${marginPct.toFixed(1)}% margin · ${formatMoney(grossMargin)} total`
+        : 'No tons sold in range');
+      setText('homeKpiPriceTon', haveTons ? formatMoney(pricePerTon) : '—');
+      setText('homeKpiPriceTonSub', haveTons
+        ? `${formatTons(totalTonsSold)} tons across ${salesCount} sale${salesCount === 1 ? '' : 's'}`
+        : 'Sales ÷ tons sold');
+      setText('homeKpiCostTon', haveTons ? formatMoney(costPerTon) : '—');
+      setText('homeKpiCostTonSub', haveTons
+        ? `Daily ${formatMoney(dailyCost)} · Crushing ${formatMoney(crushCost)}`
+        : 'Daily + crushing ÷ tons sold');
+
+      // Break-even reuses the Break-Even tab's engine on Home's Year filter, so
+      // the two never disagree; beStatus already covers "no fixed costs entered".
+      const be = computeBreakeven('home').total;
+      const beSt = beStatus(be);
+      setTone('homeKpiBreakEven',
+        beSt.cls === 'good' ? 'Above' : beSt.cls === 'bad' ? 'Below' : 'Needs setup',
+        beSt.cls === 'good', beSt.cls === 'bad');
+      setText('homeKpiBreakEvenSub',
+        (be.breakEvenTons != null && be.contribution != null && be.contribution > 0 && be.monthlyFixed > 0)
+          ? `Selling ${formatTons(be.avgTonsPerMonth)} t/mo · need ${formatTons(be.breakEvenTons)}`
+          : beSt.label);
 
       if (sub) {
         const yr = yearFilterLabel('home');
@@ -5280,15 +5404,23 @@
       return 'in';
     }
 
-    function computeInventory() {
-      const cutoff = inventoryAsOf || '';
+    // opts.cutoff              — As-Of date to balance through; defaults to the
+    //                            Inventory tab's picker. Home passes its own so
+    //                            the balance follows its Year filter.
+    // opts.applyLocationFilter — false to ignore the Inventory tab's Location
+    //                            filter (Home has no business inheriting it).
+    function computeInventory(opts) {
+      const o = opts || {};
+      const cutoff = o.cutoff !== undefined ? o.cutoff : (inventoryAsOf || '');
+      const useLocFilter = o.applyLocationFilter !== false;
+      const inLocFilter = (row) => !useLocFilter || msMatches('location', 'inventory', row);
       const rateFrom = invShiftDays(cutoff || todayIso(), -INV_RATE_WINDOW_DAYS);
       const skipped = { undated: 0, future: 0, preOpening: 0 };
       // Only report rows the user is actually looking at — a Homer City row
       // excluded while the view is filtered to McGees Mills isn't missing from
       // the balances on screen.
       const bumpSkip = (row, why) => {
-        if (!msMatches('location', 'inventory', row)) return;
+        if (!inLocFilter(row)) return;
         if (why === 'undated') skipped.undated++;
         else if (why === 'future') skipped.future++;
         else if (why === 'pre-opening') skipped.preOpening++;
@@ -5374,9 +5506,7 @@
       const all = [...map.values()].map(decorate);
       // Location filter — the no-location bucket matches only "— No Location —".
       const visible = all
-        .filter(e => msMatches('location', 'inventory', {
-          locationName: e.name === NO_LOCATION ? '' : e.name,
-        }))
+        .filter(e => inLocFilter({ locationName: e.name === NO_LOCATION ? '' : e.name }))
         .sort((a, b) => b.onHand - a.onHand || a.name.localeCompare(b.name));
 
       // Division total = raw sums re-derived, never an average of averages.
@@ -6220,8 +6350,11 @@ ${sections}
     // selected year. Variable cost per ton uses tons crushed when present
     // (matching the Home "Avg Cost/Ton" basis) and falls back to tons sold
     // for sales-only pits.
-    function computeBreakeven() {
-      const inYear = (r) => rowMatchesYear('breakeven', r);
+    // `tab` picks which Year filter scopes the figures — the Break-Even tab by
+    // default, 'home' when the Home dashboard asks for the same numbers.
+    function computeBreakeven(tab) {
+      const yearTab = tab || 'breakeven';
+      const inYear = (r) => rowMatchesYear(yearTab, r);
       const locs = new Map();
       const ensure = (name) => {
         const key = (name || '').trim() || BE_NO_LOC;

@@ -403,6 +403,57 @@ async function main() {
   checkIncludes('export carries the monthly movement', printed, 'Monthly Movement');
   checkIncludes('export self-prints on load', printed, 'window.print()');
 
+  // ── Home dashboard cards ──
+  // The stockpile row reads the same engine as the Inventory tab, but balances
+  // through Home's own Year filter and ignores the Inventory Location filter.
+  console.log('\n— Home stockpile & flow cards —');
+  win.switchTab('home');
+  await sleep(150);
+  check('old Total Sales tile is gone', !!doc.getElementById('homeKpiSales'), false);
+  check('old Tons Crushed tile is gone', !!doc.getElementById('homeKpiTonsCrushed'), false);
+  check('Home on hand matches the Inventory tab', num('homeKpiOnHand'), EXPECT_TOTAL);
+  checkIncludes('on-hand sub names the as-of date', txt('homeKpiOnHandSub'), '2 locations · as of ');
+  // The card covers the cutoff's own month — July here, which has no activity.
+  check('net change is flat in a month with no activity', txt('homeKpiNetChange').trim(), '0');
+  checkIncludes('net change names its month', txt('homeKpiNetChangeSub'), '2026 · crushed');
+  checkIncludes('needs-attention card reports a pit or the all-clear',
+    txt('homeKpiLow'), 'stocked');
+  // Drive the flow math over months that do have activity.
+  const locsFor = (c) => win.computeInventory({ cutoff: c, applyLocationFilter: false }).locations;
+  const mar = win.homeMonthFlow(locsFor('2026-03-31'), '2026-03-31');
+  check('March produced', mar.produced, 180);          // Homer 200 jaws − 10% loss
+  check('March sold',     mar.sold,     50);
+  check('March net',      mar.net,      130);
+  const jun = win.homeMonthFlow(locsFor('2026-06-30'), '2026-06-30');
+  check('June net is the adjustment alone', jun.net, -25);
+
+  console.log('\n— Home per-ton economics —');
+  // Sales 50×12 + 30×10 + 20×15 + 40×9 = 1,560 over 140 tons = $11.14/ton.
+  // Cost is crushing only (no daily rows) = 440 → $3.14/ton. Margin $8.00/ton.
+  check('avg price / ton', txt('homeKpiPriceTon').trim(), '$11.14');
+  check('cost / ton',      txt('homeKpiCostTon').trim(),  '$3.14');
+  check('margin / ton foots against price − cost',
+    (money(txt('homeKpiPriceTon')) - money(txt('homeKpiCostTon'))).toFixed(2),
+    money(txt('homeKpiMarginTon')).toFixed(2));
+  checkIncludes('margin sub carries the headline total', txt('homeKpiMarginTonSub'), '% margin · $');
+  check('break-even card says setup is needed with no fixed costs',
+    txt('homeKpiBreakEven').trim(), 'Needs setup');
+  checkIncludes('break-even sub explains what is missing',
+    txt('homeKpiBreakEvenSub'), 'Set fixed costs');
+
+  // A stock balance is a point in time: a past year closes at its year end, the
+  // current year and All Years run to today. (Driven directly — the Year filter
+  // only offers years the data actually contains.)
+  const cutoffFor = (y) => win.eval(
+    `(function(){const s=yearFilters.home;yearFilters.home=${JSON.stringify(y)};` +
+    `const c=homeInventoryCutoff();yearFilters.home=s;return c;})()`);
+  const today = new Date();
+  const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  check('past year closes at its year end', cutoffFor('2025'), '2025-12-31');
+  check('current year runs to today',      cutoffFor(String(today.getFullYear())), todayIso);
+  check('all years runs to today',         cutoffFor('all'), todayIso);
+  check('a future year does not run past today', cutoffFor('2099'), todayIso);
+
   // ── Other tabs still work (no regressions from the shared filter plumbing) ──
   console.log('\n— Existing tabs —');
   win.switchTab('crushing');
@@ -421,6 +472,7 @@ async function main() {
 
   const lateErrors = (win.__errors || []).filter(Boolean);
   check('no uncaught script errors overall', lateErrors.length ? lateErrors.join(' | ') : 0, 0);
+  await sleep(200);   // let in-flight renders finish before the DOM goes away
   dom.window.close();
 
   // ── Empty division: every section must degrade to an empty state ──
@@ -458,6 +510,7 @@ async function main() {
   const emptyErrors = (ewin.__errors || []).filter(Boolean);
   check('no uncaught script errors on the empty division',
     emptyErrors.length ? emptyErrors.join(' | ') : 0, 0);
+  await sleep(200);
   emptyDom.window.close();
 
   // ── Editing while the blob is still in flight must not clobber the server ──
@@ -496,6 +549,7 @@ async function main() {
   const raceErrors = (rwin.__errors || []).filter(Boolean);
   check('no uncaught script errors during the load race',
     raceErrors.length ? raceErrors.join(' | ') : 0, 0);
+  await sleep(200);
   raceDom.window.close();
 
   console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
