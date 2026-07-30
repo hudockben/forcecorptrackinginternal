@@ -612,7 +612,7 @@
     }
 
     /* Crushing Tracking — reuses sales-* layout, overrides for wider grid */
-    .crush-table { min-width: 2100px; }
+    .crush-table { min-width: 2260px; }
     .daily-table { min-width: 1700px; }
     .col-comments { min-width: 14rem; }
     .cell-readonly.is-calc {
@@ -911,34 +911,13 @@
     .home-yoy tbody tr.inv-row-total td {
       border-top: 2px solid var(--border); font-weight: 700; background: #14141d;
     }
-    /* Opening-balance editor — one row per pit: name · tons · as-of · note */
-    .inv-open-editor { display: flex; flex-direction: column; gap: 0.5rem; }
-    .inv-open-row {
-      display: grid; grid-template-columns: 1fr auto auto minmax(0, 15rem);
-      align-items: center; gap: 0.75rem;
-      background: var(--surface2); border: 1px solid var(--border);
-      border-radius: 6px; padding: 0.5rem 0.7rem;
-    }
-    @media (max-width: 900px) { .inv-open-row { grid-template-columns: 1fr auto; } }
-    .inv-open-row .inv-open-loc { font-size: 0.8rem; font-weight: 600; color: var(--text); }
-    .inv-open-row .inv-open-note {
-      font-size: 0.68rem; color: var(--muted); text-align: right;
-      font-variant-numeric: tabular-nums; line-height: 1.4;
-    }
-    .inv-open-field {
-      display: flex; align-items: center; gap: 0.35rem;
-      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
-      text-transform: uppercase; color: var(--muted); white-space: nowrap;
-    }
-    .inv-open-field input {
-      background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
-      color: var(--text); font-family: inherit; font-size: 0.8rem;
-      padding: 0.35rem 0.45rem; font-variant-numeric: tabular-nums;
-    }
-    .inv-open-field input[type="number"] { width: 7rem; text-align: right; }
-    .inv-open-field input:focus { outline: none; border-color: var(--accent); }
-    /* Adjustments ledger */
-    .inv-adj-table { min-width: 1000px; }
+    /* Opening balances + adjustments ledgers */
+    /* Five narrow columns — capped so Location and Product don't sprawl across
+       the full panel width on a wide screen. */
+    .inv-open-table { min-width: 820px; max-width: 1100px; }
+    .inv-adj-table  { min-width: 1140px; }
+    /* Production booked before crushing runs carried a product */
+    .home-yoy tbody td.inv-untagged { color: #fbbf24; }
     .inv-adj-table tbody td.col-num .cell-input { text-align: right; }
     .inv-pill {
       display: inline-block; padding: 0.12rem 0.5rem; border-radius: 999px;
@@ -1045,6 +1024,26 @@
       <div class="home-section-label">By Location</div>
       <div class="loc-cards" id="homeLocationCards"></div>
 
+      <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">On Hand by Product</div>
+        <div class="be-monthly-note" id="homeProductNote"></div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="homeProductStockTable">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Opening</th>
+                <th>Produced</th>
+                <th>Sold</th>
+                <th>Adjustments</th>
+                <th>On Hand</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="home-row">
         <div class="home-panel">
           <div class="home-panel-title">Top Customers (by sales)</div>
@@ -1144,6 +1143,10 @@
           Location
           <div class="ms-filter" id="crushingLocationFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Locations</span><span class="ms-caret">▾</span></button></div>
         </div>
+        <div class="year-filter-wrap">
+          Product
+          <div class="ms-filter" id="crushingProductFilter"><button type="button" class="ms-toggle" disabled><span class="ms-toggle-label">All Products</span><span class="ms-caret">▾</span></button></div>
+        </div>
         <button class="btn-add-row btn-danger" id="crushingDeleteFilteredBtn" onclick="deleteFilteredRows('crushing')" disabled>Delete 0 Rows</button>
         <div class="sales-summary" id="crushSummary"></div>
       </div>
@@ -1154,6 +1157,7 @@
               <th class="col-date">Date</th>
               <th>Location</th>
               <th>Employee</th>
+              <th>Product</th>
               <th class="col-num">Hourly Rate</th>
               <th class="col-num">Hours</th>
               <th class="col-total">Total Payroll</th>
@@ -1172,7 +1176,7 @@
             </tr>
           </thead>
           <tbody id="crushTbody">
-            <tr><td colspan="18" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="19" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1349,6 +1353,27 @@
       </div>
 
       <div class="home-panel" style="margin-bottom: 1.1rem">
+        <div class="home-panel-title">On Hand by Product</div>
+        <div class="be-monthly-note" id="inventoryByProductNote"></div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="inventoryProductBalanceTable">
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th>Product</th>
+                <th>Opening</th>
+                <th>Produced</th>
+                <th>Sold</th>
+                <th>Adjustments</th>
+                <th>On Hand</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem">
         <div class="home-panel-title" id="inventoryMonthlyTitle">Monthly Movement — Running Balance</div>
         <div class="be-monthly-note" id="inventoryMonthlyNote"></div>
         <div style="overflow:auto">
@@ -1392,13 +1417,33 @@
       </div>
 
       <div class="home-panel" style="margin-bottom: 1.1rem">
-        <div class="home-panel-title">Opening Balances by Location</div>
-        <div class="loss-editor-note">
-          The stockpile each pit already had before tracking started. Leave <strong>As Of</strong> blank to count every
-          crushing and sales entry on top of the opening figure; set it to the date you counted the pile and anything
-          dated on or before that day is skipped, so the pile isn't counted twice. Saved automatically.
+        <div class="home-panel-title">Opening Balances</div>
+        <div class="be-monthly-note">
+          The stockpiles that already existed before tracking started. Add one row per pile — leave
+          <strong>Product</strong> blank for a pit-level figure, or name it to open a product's balance directly.
+          <strong>As Of</strong> is the day you counted: crushing and sales dated on or before it are skipped so the
+          pile isn't counted twice, and the latest date entered for a pit applies to that whole pit. Saved automatically.
         </div>
-        <div class="inv-open-editor" id="inventoryOpeningEditor"></div>
+        <div class="sales-toolbar">
+          <button class="btn-add-row" id="invOpenAddBtn" onclick="addInvOpeningRow()">+ Add Opening Balance</button>
+          <div class="sales-summary" id="invOpenSummary"></div>
+        </div>
+        <div class="sales-table-wrap">
+          <table class="sales-table inv-open-table">
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th>Product</th>
+                <th class="col-num">Tons</th>
+                <th class="col-date">As Of</th>
+                <th class="col-actions"></th>
+              </tr>
+            </thead>
+            <tbody id="invOpenTbody">
+              <tr><td colspan="5" class="sales-empty">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div class="home-panel">
@@ -1417,6 +1462,7 @@
               <tr>
                 <th class="col-date">Date</th>
                 <th>Location</th>
+                <th>Product</th>
                 <th class="col-num">Tons (±)</th>
                 <th>Reason</th>
                 <th class="col-comments">Notes</th>
@@ -1424,7 +1470,7 @@
               </tr>
             </thead>
             <tbody id="invAdjTbody">
-              <tr><td colspan="6" class="sales-empty">Loading…</td></tr>
+              <tr><td colspan="7" class="sales-empty">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -1973,8 +2019,10 @@
           Upload a CSV with these columns (header row required):
           <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Hourly Rate</code>, <code>Hours</code>,
           <code>Fuel Gallons</code>, <code>Fuel Cost</code>, <code>Loads to Crusher</code>,
-          <code>Tons / Load</code>, <code>Hours Crushing</code>, <code>Comments</code>.
+          <code>Tons / Load</code>, <code>Hours Crushing</code>, <code>Comments</code>, <code>Product</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
+          <strong>Product</strong> is what the run was making — leave it blank and the tons land in
+          Inventory's <em>Untagged</em> bucket.
           The downloaded template also includes the computed columns (Total Payroll, Total Fuel,
           Estimated Tons, Tons/Hour, Total Cost, Cost/Ton) so column positions line up with the tracker —
           values in those columns are recomputed on import.
@@ -1987,7 +2035,7 @@
           <button class="btn-secondary" onclick="downloadBulkTemplate('crushing')">Download Template</button>
           <label class="bulk-checkbox">
             <input type="checkbox" id="crushingUploadAutoCreate" checked />
-            Auto-add new locations / employees
+            Auto-add new locations / employees / products
           </label>
         </div>
         <div id="crushingUploadResult"></div>
@@ -2556,7 +2604,8 @@
     const locationFilters = { daily: new Set(), crushing: new Set(), sales: new Set(), inventory: new Set() };
     const monthFilters    = { daily: new Set(), crushing: new Set(), sales: new Set() };
     const customerFilters = { sales: new Set() };
-    const productFilters  = { sales: new Set() };
+    // Crushing carries Product too now that runs are tagged with what they made.
+    const productFilters  = { sales: new Set(), crushing: new Set() };
 
     const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
                          'July', 'August', 'September', 'October', 'November', 'December'];
@@ -2701,10 +2750,8 @@
       // Inventory has no Month filter (see locationFilters above).
       if (tab !== 'inventory') msRender('month', tab, rows);
       msRender('location', tab, rows);
-      if (tab === 'sales') {
-        msRender('customer', tab, rows);
-        msRender('product', tab, rows);
-      }
+      if (tab === 'sales') msRender('customer', tab, rows);
+      if (tab === 'sales' || tab === 'crushing') msRender('product', tab, rows);
     }
 
     // ── Open/close + selection plumbing ──
@@ -2830,8 +2877,9 @@
       if (!toDelete.length) return;
 
       const parts = [yearFilterLabel(tab), monthFilterLabel(tab), locationFilterLabel(tab)];
-      // Customer + Product filters are Sales-only; only surface them there.
-      if (tab === 'sales') parts.push(customerFilterLabel(tab), productFilterLabel(tab));
+      // Customer is Sales-only; Product applies to Sales and Crushing.
+      if (tab === 'sales') parts.push(customerFilterLabel(tab));
+      if (tab === 'sales' || tab === 'crushing') parts.push(productFilterLabel(tab));
       const filterDesc = parts.join(' · ');
       const ok = window.confirm(
         `Delete ${toDelete.length} ${cfg.label} row${toDelete.length === 1 ? '' : 's'} ` +
@@ -2946,9 +2994,9 @@
         }
         scheduleDailySave();
         renderDaily();
-      } else if (tab === 'inv') {
-        // Inventory adjustments ledger — location only.
-        const rows = quarryInventory.adjustments;
+      } else if (tab === 'inv' || tab === 'invopen') {
+        // Inventory adjustments ledger / opening balances — location + product.
+        const rows = tab === 'inv' ? quarryInventory.adjustments : quarryInventory.openings;
         if (!inventoryLoaded || !rows[idx]) return;
         const oldId = String(rows[idx][idField] || '');
         const newId = item ? String(item.id || '') : '';
@@ -3222,6 +3270,10 @@
         locationName: row.locationName || '',
         employeeId: row.employeeId || '',
         employeeName: row.employeeName || '',
+        // What this run was making. Blank on every row predating product
+        // tracking — those tons land in the Untagged bucket on Inventory.
+        productId: row.productId || '',
+        productName: row.productName || '',
         comments: typeof row.comments === 'string' ? row.comments : '',
       };
       CRUSH_NUM_FIELDS.forEach(f => {
@@ -3340,7 +3392,7 @@
       if (bulkBtn) bulkBtn.disabled = !crushLoaded;
 
       if (!crushLoaded) {
-        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="19" class="sales-empty">Loading…</td></tr>`;
         updateCrushSummary();
         return;
       }
@@ -3349,18 +3401,18 @@
         msRenderFilters('crushing', crushRows);
       }
       if (!crushRows.length) {
-        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="19" class="sales-empty">No crushing entries yet. Click “+ Add Row” to get started.</td></tr>`;
         updateCrushSummary();
         return;
       }
       const visibleEntries = crushRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesMonth('crushing', row) && rowMatchesLocation('crushing', row))
+        .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesMonth('crushing', row) && rowMatchesLocation('crushing', row) && rowMatchesProduct('crushing', row))
         // Newest first so payroll-injected (tsq-) rows surface at the top rather
         // than being appended out of sight — matches the Daily tab.
         .sort((a, b) => String(b.row.date || '').localeCompare(String(a.row.date || '')));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="18" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))} · ${escapeHtml(monthFilterLabel('crushing'))} · ${escapeHtml(locationFilterLabel('crushing'))}. Adjust the filters above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="19" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))} · ${escapeHtml(monthFilterLabel('crushing'))} · ${escapeHtml(locationFilterLabel('crushing'))} · ${escapeHtml(productFilterLabel('crushing'))}. Adjust the filters above.</td></tr>`;
         updateCrushSummary();
         return;
       }
@@ -3381,6 +3433,7 @@
               <td class="col-date">${ro(row.date)}</td>
               <td>${ro(row.locationName)}</td>
               <td>${ro(row.employeeName)}</td>
+              <td>${ro(row.productName)}</td>
               <td class="col-num">${ro(row.hourlyRate)}</td>
               <td class="col-num">${ro(row.hours)}</td>
               <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
@@ -3403,6 +3456,7 @@
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value)" /></td>
             <td>${cbHtml('crush:' + i, 'location', row.locationName || '')}</td>
             <td>${cbHtml('crush:' + i, 'employee', row.employeeName || '')}</td>
+            <td>${cbHtml('crush:' + i, 'product',  row.productName  || '')}</td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hourlyRate === '' ? '' : row.hourlyRate}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'hourlyRate', this.value)" /></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateCrushNumber(${i}, 'hours', this.value)" /></td>
             <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
@@ -3431,6 +3485,7 @@
         if (!rowMatchesYear('crushing', r)) return;
         if (!rowMatchesMonth('crushing', r)) return;
         if (!rowMatchesLocation('crushing', r)) return;
+        if (!rowMatchesProduct('crushing', r)) return;
         const c = crushCalc(r);
         const hc = Number(r.hoursCrushing);
         if (Number.isFinite(hc)) totalHours += hc;
@@ -3890,6 +3945,7 @@
           { name: 'date',           label: 'Date',             aliases: ['date'],                          required: true, type: 'date', outKey: 'date' },
           { name: 'location',       label: 'Location',         aliases: ['location', 'locationname'],                      type: 'list', list: 'location',  idKey: 'locationId', nameKey: 'locationName' },
           { name: 'employee',       label: 'Employee',         aliases: ['employee', 'employeename'],      required: true, type: 'list', list: 'employees', idKey: 'employeeId', nameKey: 'employeeName' },
+          { name: 'product',        label: 'Product',          aliases: ['product', 'productname', 'material'],            type: 'list', list: 'product',   idKey: 'productId',  nameKey: 'productName' },
           { name: 'hourlyRate',     label: 'Hourly Rate',      aliases: ['hourlyrate', 'rate'],                            type: 'num',  outKey: 'hourlyRate', fillFromEmployee: 'rate' },
           { name: 'hours',          label: 'Hours',            aliases: ['hours'],                         required: true, type: 'num',  outKey: 'hours' },
           { name: 'fuelGallons',    label: 'Fuel Gallons',     aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],     type: 'num',  outKey: 'fuelGallons' },
@@ -3899,7 +3955,10 @@
           { name: 'hoursCrushing',  label: 'Hours Crushing',   aliases: ['hourscrushing'],                                 type: 'num',  outKey: 'hoursCrushing' },
           { name: 'comments',       label: 'Comments',         aliases: ['comments', 'comment', 'notes'],                  type: 'text', outKey: 'comments' },
         ],
-        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
+        // Positionally matched to `fields` above.
+        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'Crushed Stone', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
+        // Product is appended last so every pre-existing column keeps the
+        // position it lines up with in the tracker.
         templateLayout: [
           'date', 'location', 'employee', 'hourlyRate', 'hours',
           { label: 'Total Payroll',  computed: true },
@@ -3912,6 +3971,7 @@
           { label: 'Total Cost',     computed: true },
           { label: 'Cost / Ton',     computed: true },
           'comments',
+          'product',
         ],
         state: {
           isLoaded: () => crushLoaded,
@@ -4537,12 +4597,13 @@
     function homeMonthFlow(entries, cutoff) {
       const month = String(cutoff || todayIso()).slice(0, 7);
       const names = new Set(entries.map(e => e.name));
+      const openIdx = invOpeningIndex();
       const out = { month, produced: 0, sold: 0, adj: 0, net: 0 };
       const inScope = (r) => {
         const key = invLocKey(r.locationName);
         if (!names.has(key)) return false;
         if (invIsoDate(r.date).slice(0, 7) !== month) return false;
-        return invRowWindow(r.date, invOpeningFor(key).asOf, cutoff) === 'in';
+        return invRowWindow(r.date, invOpeningFor(key, openIdx).asOf, cutoff) === 'in';
       };
       crushRows.forEach(r => { if (inScope(r)) out.produced += invProducedTons(r); });
       salesRows.forEach(r => {
@@ -4750,6 +4811,9 @@
       const byLoc = computeByLocation(visibleDaily, visibleCrush, visibleSales);
       renderLocationCards('homeLocationCards', byLoc,
         'Add entries with a Location on Daily, Crushing, or Sales to separate the pits.');
+
+      // ── On hand by product (division-wide, same balance the Inventory tab shows) ──
+      renderHomeProductStock(inv);
 
       // ── Year over year (always uses the full dataset) ──
       const yearAgg = new Map();
@@ -5224,9 +5288,15 @@
          pit's jaws→screen loss when the basis is "final screen tons" (default)
          so only sellable product lands in stock.
        • opening  — the pile that existed before tracking started, entered per
-         pit with an optional "as of" date; rows dated on/before it are skipped
-         so the same tonnage isn't counted twice.
+         pit (and optionally per product) with an "as of" date; rows dated
+         on/before it are skipped so the same tonnage isn't counted twice.
        • adjustments — the ledger below (counts, waste, internal use, transfers).
+
+       Every balance is also split by product. Sales have always carried one;
+       crushing runs now do too. Production booked before that column existed
+       has no product, so it lands in an Untagged bucket rather than being
+       guessed at — the pit total is right either way, and the per-product rows
+       fill in as runs get tagged.
 
        Balances are cumulative through the tab's As-Of date (not year-sliced),
        which is why this tab carries a date cutoff instead of a Year filter.
@@ -5240,9 +5310,10 @@
     ];
     const INV_RATE_WINDOW_DAYS = 90;   // trailing window behind the sales-rate KPI
     const INV_LOW_DAYS = 14;           // days of supply below which a pit reads "Low stock"
+    const INV_NO_PRODUCT = '— Untagged —';
 
     function emptyInventory() {
-      return { basis: 'final', openings: {}, adjustments: [] };
+      return { basis: 'final', openings: [], adjustments: [] };
     }
 
     let quarryInventory = emptyInventory();
@@ -5263,10 +5334,27 @@
         date: typeof row.date === 'string' ? row.date : '',
         locationId: row.locationId || '',
         locationName: row.locationName || '',
+        productId: row.productId || '',
+        productName: row.productName || '',
         // Signed: negative tons take material out of the pile.
         tons: (row.tons === '' || row.tons === null || row.tons === undefined || !Number.isFinite(t)) ? '' : t,
         reason: typeof row.reason === 'string' ? row.reason : '',
         comments: typeof row.comments === 'string' ? row.comments : '',
+      };
+    }
+    // One opening entry = one pile: a location, optionally a product, the tons
+    // that were there, and the date they were counted.
+    function normalizeInvOpeningRow(r) {
+      const row = (r && typeof r === 'object') ? r : {};
+      const t = Math.round(Number(row.tons) * 100) / 100;
+      return {
+        id: row.id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
+        locationId: row.locationId || '',
+        locationName: row.locationName || '',
+        productId: row.productId || '',
+        productName: row.productName || '',
+        tons: (row.tons === '' || row.tons === null || row.tons === undefined || !Number.isFinite(t)) ? '' : t,
+        asOf: (typeof row.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(row.asOf)) ? row.asOf : '',
       };
     }
     function normalizeInventory(value) {
@@ -5274,18 +5362,23 @@
       if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
       if (value.basis === 'crusher') out.basis = 'crusher';
       const openings = value.openings;
-      if (openings && typeof openings === 'object' && !Array.isArray(openings)) {
+      if (Array.isArray(openings)) {
+        out.openings = openings.map(normalizeInvOpeningRow);
+      } else if (openings && typeof openings === 'object') {
+        // Migrate the original per-location map { '<loc>': { tons, asOf } } (and
+        // the bare-number variant) into pit-level, product-less entries.
         Object.keys(openings).forEach(k => {
           const loc = String(k).trim();
           if (!loc) return;
-          // Accept both the current { tons, asOf } shape and a bare number.
           const raw = openings[k];
           const obj = (raw && typeof raw === 'object') ? raw : { tons: raw, asOf: '' };
           const tons = Math.round(Number(obj.tons) * 100) / 100;
-          const asOf = (typeof obj.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.asOf)) ? obj.asOf : '';
           if (!Number.isFinite(tons)) return;
+          const asOf = (typeof obj.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.asOf)) ? obj.asOf : '';
           // Keep a zeroed entry only when it still carries an as-of cutoff.
-          if (tons !== 0 || asOf) out.openings[loc] = { tons, asOf };
+          if (tons !== 0 || asOf) {
+            out.openings.push(normalizeInvOpeningRow({ locationName: loc, tons, asOf }));
+          }
         });
       }
       if (Array.isArray(value.adjustments)) out.adjustments = value.adjustments.map(normalizeInvAdjRow);
@@ -5316,7 +5409,7 @@
     function invSnapshot() {
       return {
         basis: quarryInventory.basis,
-        openings: JSON.parse(JSON.stringify(quarryInventory.openings || {})),
+        openings: (quarryInventory.openings || []).map(r => ({ ...r })),
         adjustments: (quarryInventory.adjustments || []).map(r => ({ ...r })),
       };
     }
@@ -5372,10 +5465,33 @@
     function invLocKey(name) {
       return (name || '').trim() || NO_LOCATION;
     }
-    function invOpeningFor(locKey) {
-      const o = quarryInventory.openings[locKey];
-      const tons = o ? Number(o.tons) : 0;
-      return { tons: Number.isFinite(tons) ? tons : 0, asOf: (o && o.asOf) || '' };
+    function invProdKey(name) {
+      return (name || '').trim() || INV_NO_PRODUCT;
+    }
+    // Openings rolled up per pit: total tons, the per-product split, and the
+    // pit's count date. The date is the LATEST across the pit's entries and
+    // applies to every row at that pit regardless of product — "we counted the
+    // yard on this day" has to exclude everything before it, or a product-tagged
+    // sale from before the count would double-deplete the pit total.
+    function invOpeningIndex() {
+      const byLoc = new Map();
+      (quarryInventory.openings || []).forEach(o => {
+        const loc = invLocKey(o.locationName);
+        const t = Number(o.tons);
+        if (!byLoc.has(loc)) byLoc.set(loc, { tons: 0, asOf: '', products: new Map() });
+        const e = byLoc.get(loc);
+        if (o.asOf && o.asOf > e.asOf) e.asOf = o.asOf;
+        if (!Number.isFinite(t) || t === 0) return;
+        const prod = invProdKey(o.productName);
+        e.tons += t;
+        e.products.set(prod, (e.products.get(prod) || 0) + t);
+      });
+      return byLoc;
+    }
+    const INV_EMPTY_OPENING = { tons: 0, asOf: '', products: new Map() };
+    function invOpeningFor(locKey, index) {
+      const idx = index || invOpeningIndex();
+      return idx.get(locKey) || INV_EMPTY_OPENING;
     }
     function invIsoDate(dateStr) {
       const s = String(dateStr || '');
@@ -5426,66 +5542,109 @@
         else if (why === 'pre-opening') skipped.preOpening++;
       };
 
+      // Built once — every row below asks it for its pit's count date.
+      const openIdx = invOpeningIndex();
+
       const map = new Map();
+      const emptyProduct = (name) => ({
+        name, opening: 0, produced: 0, tonsCrushed: 0, tonsSold: 0,
+        salesTotal: 0, salesCount: 0, adjustments: 0, onHand: 0,
+      });
       const ensure = (key) => {
         if (!map.has(key)) {
-          const op = invOpeningFor(key);
-          map.set(key, {
+          const op = invOpeningFor(key, openIdx);
+          const entry = {
             name: key, opening: op.tons, openingAsOf: op.asOf,
             tonsCrushed: 0, produced: 0, crushCost: 0, crushCount: 0,
             tonsSold: 0, salesTotal: 0, salesCount: 0, soldRecent: 0,
             adjustments: 0, adjCount: 0,
             lastCrushed: '', lastSold: '',
+            products: new Map(),
+          };
+          // Seed the product buckets that already carry an opening balance.
+          op.products.forEach((tons, prod) => {
+            const p = emptyProduct(prod);
+            p.opening = tons;
+            entry.products.set(prod, p);
           });
+          map.set(key, entry);
         }
         return map.get(key);
       };
+      const ensureProduct = (e, prodName) => {
+        const key = invProdKey(prodName);
+        if (!e.products.has(key)) e.products.set(key, emptyProduct(key));
+        return e.products.get(key);
+      };
       // Seed pits that so far only carry an opening balance.
-      Object.keys(quarryInventory.openings).forEach(loc => ensure(loc));
+      openIdx.forEach((_v, loc) => ensure(loc));
 
       crushRows.forEach(r => {
         const key = invLocKey(r.locationName);
-        const why = invRowWindow(r.date, invOpeningFor(key).asOf, cutoff);
+        const why = invRowWindow(r.date, invOpeningFor(key, openIdx).asOf, cutoff);
         if (why !== 'in') { bumpSkip(r, why); return; }
         const e = ensure(key);
         const c = crushCalc(r);
+        const produced = invProducedTons(r);
         e.tonsCrushed += c.estimatedTons;
-        e.produced    += invProducedTons(r);
+        e.produced    += produced;
         e.crushCost   += c.totalCost;
         e.crushCount++;
+        const p = ensureProduct(e, r.productName);
+        p.tonsCrushed += c.estimatedTons;
+        p.produced    += produced;
         const d = invIsoDate(r.date);
         if (d > e.lastCrushed) e.lastCrushed = d;
       });
 
       salesRows.forEach(r => {
         const key = invLocKey(r.locationName);
-        const why = invRowWindow(r.date, invOpeningFor(key).asOf, cutoff);
+        const why = invRowWindow(r.date, invOpeningFor(key, openIdx).asOf, cutoff);
         if (why !== 'in') { bumpSkip(r, why); return; }
         const e = ensure(key);
+        const p = ensureProduct(e, r.productName);
         const t = Number(r.tons);
         if (Number.isFinite(t)) {
           e.tonsSold += t;
+          p.tonsSold += t;
           const d = invIsoDate(r.date);
           if (rateFrom && d > rateFrom) e.soldRecent += t;
         }
-        e.salesTotal += homeRowSales(r);
+        const amt = homeRowSales(r);
+        e.salesTotal += amt;
         e.salesCount++;
+        p.salesTotal += amt;
+        p.salesCount++;
         const d = invIsoDate(r.date);
         if (d > e.lastSold) e.lastSold = d;
       });
 
       (quarryInventory.adjustments || []).forEach(r => {
         const key = invLocKey(r.locationName);
-        const why = invRowWindow(r.date, invOpeningFor(key).asOf, cutoff);
+        const why = invRowWindow(r.date, invOpeningFor(key, openIdx).asOf, cutoff);
         if (why !== 'in') { bumpSkip(r, why); return; }
         const t = Number(r.tons);
         if (!Number.isFinite(t) || t === 0) return;
         const e = ensure(key);
         e.adjustments += t;
         e.adjCount++;
+        ensureProduct(e, r.productName).adjustments += t;
       });
 
       const decorate = (e) => {
+        // Per-product balances first — same arithmetic, one pile at a time.
+        // They sum back to the pit total by construction, so the two views can
+        // never disagree even when production is untagged.
+        e.products.forEach(p => {
+          p.onHand = p.opening + p.produced - p.tonsSold + p.adjustments;
+          p.avgPricePerTon = p.tonsSold > 0 ? p.salesTotal / p.tonsSold : 0;
+        });
+        e.productList = [...e.products.values()]
+          .filter(p => p.opening || p.produced || p.tonsSold || p.adjustments)
+          .sort((a, b) => b.onHand - a.onHand || a.name.localeCompare(b.name));
+        // Production booked before the Crushing tab had a Product column.
+        const untagged = e.products.get(INV_NO_PRODUCT);
+        e.untaggedProduced = untagged ? untagged.produced : 0;
         e.onHand      = e.opening + e.produced - e.tonsSold + e.adjustments;
         e.lossPct     = locationLossPct(e.name);
         e.hasLoss     = hasLossPct(e.name);
@@ -5516,6 +5675,7 @@
         tonsCrushed: 0, produced: 0, crushCost: 0, crushCount: 0,
         tonsSold: 0, salesTotal: 0, salesCount: 0, soldRecent: 0,
         adjustments: 0, adjCount: 0, lastCrushed: '', lastSold: '',
+        products: new Map(),
       };
       visible.forEach(e => {
         total.opening     += e.opening;      total.tonsCrushed += e.tonsCrushed;
@@ -5526,6 +5686,15 @@
         total.adjCount    += e.adjCount;
         if (e.lastCrushed > total.lastCrushed) total.lastCrushed = e.lastCrushed;
         if (e.lastSold    > total.lastSold)    total.lastSold    = e.lastSold;
+        // Same product across pits rolls into one division-level bucket.
+        e.products.forEach((p, prod) => {
+          if (!total.products.has(prod)) total.products.set(prod, emptyProduct(prod));
+          const tp = total.products.get(prod);
+          tp.opening     += p.opening;     tp.produced    += p.produced;
+          tp.tonsCrushed += p.tonsCrushed; tp.tonsSold    += p.tonsSold;
+          tp.salesTotal  += p.salesTotal;  tp.salesCount  += p.salesCount;
+          tp.adjustments += p.adjustments;
+        });
       });
       decorate(total);
       // A blended loss only means something when every crushing pit has one.
@@ -5558,6 +5727,7 @@
     function computeInventoryMonthly(entries) {
       const names = new Set(entries.map(e => e.name));
       const cutoff = inventoryAsOf || '';
+      const openIdx = invOpeningIndex();
       const months = new Map();
       const bump = (dateStr, field, amt) => {
         const mk = invIsoDate(dateStr).slice(0, 7);
@@ -5568,7 +5738,7 @@
       const inScope = (r) => {
         const key = invLocKey(r.locationName);
         if (!names.has(key)) return false;
-        return invRowWindow(r.date, invOpeningFor(key).asOf, cutoff) === 'in';
+        return invRowWindow(r.date, invOpeningFor(key, openIdx).asOf, cutoff) === 'in';
       };
 
       crushRows.forEach(r => { if (inScope(r)) bump(r.date, 'produced', invProducedTons(r)); });
@@ -5632,7 +5802,7 @@
       // Build the Location filter options from every source that can carry one.
       if (!keepFilters) {
         const filterRows = [...crushRows, ...salesRows, ...(quarryInventory.adjustments || [])]
-          .concat(Object.keys(quarryInventory.openings).map(loc => ({ locationName: loc })));
+          .concat(quarryInventory.openings || []);
         msRenderFilters('inventory', filterRows);
       }
       const asOfInput = document.getElementById('inventoryAsOfInput');
@@ -5715,11 +5885,11 @@
 
       renderInventoryCards(byInv, dataReady);
       renderInventoryRollForward(byInv, dataReady);
+      renderInventoryByProduct(byInv, dataReady);
       renderInventoryMonthly(byInv, dataReady);
       renderInventoryProducts(byInv, dataReady);
-      renderInventoryOpenings(byInv);
-      if (keepAdjTable) updateInvAdjSummary();
-      else renderInvAdjTable();
+      if (keepAdjTable) { updateInvOpenSummary(); updateInvAdjSummary(); }
+      else { renderInventoryOpenings(); renderInvAdjTable(); }
     }
 
     function renderInventoryCards(byInv, dataReady) {
@@ -5827,6 +5997,53 @@
       body.innerHTML = rows + totalRow;
     }
 
+    // On-hand split by product, per pit, with a division rollup. Products with a
+    // balance but no production behind them are the tell that crushing runs
+    // aren't tagged yet — the note above the table says so rather than leaving
+    // a pile of negative rows to be puzzled over.
+    function renderInventoryByProduct(byInv, dataReady) {
+      const body = document.querySelector('#inventoryProductBalanceTable tbody');
+      if (!body) return;
+      const note = document.getElementById('inventoryByProductNote');
+      const untagged = byInv.total.products.get(INV_NO_PRODUCT);
+      const untaggedTons = untagged ? untagged.produced : 0;
+      if (note) {
+        note.innerHTML = untaggedTons > 0.005
+          ? `<strong>${formatTons(untaggedTons)} tons</strong> of production carry no product — they sit in `
+            + `<strong>${escapeHtml(INV_NO_PRODUCT)}</strong> below. Sales have always named a product, so until crushing `
+            + `runs are tagged too, a product can show more sold than produced while Untagged holds the balance. `
+            + `Set <strong>Product</strong> on the Crushing Tracking tab and these rows fill in. Pit totals are right either way.`
+          : `Every pile, split by what it is. Rows sum to the pit totals above.`;
+      }
+      const rows = [];
+      byInv.locations.forEach(e => {
+        e.productList.forEach(p => rows.push({ loc: e.name, p }));
+      });
+      if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="7"><div class="home-empty">${dataReady ? 'No product balances yet — add Crushing or Sales entries.' : 'Loading…'}</div></td></tr>`;
+        return;
+      }
+      const cell = (v, signed) => v
+        ? `${signed && v > 0 ? '+' : ''}${formatTons(v)}`
+        : '—';
+      const row = (loc, p, isTotal) => `
+        <tr${isTotal ? ' class="inv-row-total"' : ''}>
+          <td>${escapeHtml(loc)}</td>
+          <td${p.name === INV_NO_PRODUCT ? ' class="inv-untagged"' : ''}>${escapeHtml(p.name)}</td>
+          <td>${cell(p.opening)}</td>
+          <td>${cell(p.produced)}</td>
+          <td>${cell(p.tonsSold)}</td>
+          <td class="${p.adjustments > 0.005 ? 'pos' : p.adjustments < -0.005 ? 'neg' : ''}">${cell(p.adjustments, true)}</td>
+          <td class="inv-onhand ${p.onHand < -0.005 ? 'neg' : ''}">${formatTons(p.onHand)}</td>
+        </tr>`;
+      const perPit = rows.map(r => row(r.loc, r.p, false)).join('');
+      // Division rollup only earns its space once a product spans more than one pit.
+      const totalRows = byInv.locations.length > 1
+        ? byInv.total.productList.map(p => row('Division Total', p, true)).join('')
+        : '';
+      body.innerHTML = perPit + totalRows;
+    }
+
     function renderInventoryMonthly(byInv, dataReady) {
       const body = document.querySelector('#inventoryMonthlyTable tbody');
       if (!body) return;
@@ -5899,46 +6116,51 @@
         </tr>`).join('');
     }
 
-    function renderInventoryOpenings(byInv) {
-      const el = document.getElementById('inventoryOpeningEditor');
-      if (!el) return;
-      // Every pit worth an opening figure: one seen in the data, one already
-      // carrying an entry, or one configured under Manage Lists → Location.
-      const names = new Set();
-      byInv.all.forEach(e => { if (e.name !== NO_LOCATION) names.add(e.name); });
-      Object.keys(quarryInventory.openings).forEach(loc => names.add(loc));
-      (quarryLists.location || []).forEach(it => { if (it && it.name) names.add(String(it.name).trim()); });
-      const sorted = [...names].filter(Boolean).sort((a, b) => a.localeCompare(b));
-      if (!sorted.length) {
-        el.innerHTML = `<div class="home-empty">No locations yet — add one under ⚙ Manage Lists, or enter a Location on a Crushing or Sales row.</div>`;
+    function renderInventoryOpenings() {
+      const tbody = document.getElementById('invOpenTbody');
+      if (!tbody) return;
+      const addBtn = document.getElementById('invOpenAddBtn');
+      if (addBtn) addBtn.disabled = !inventoryLoaded;
+      const rows = quarryInventory.openings || [];
+      if (!inventoryLoaded) {
+        tbody.innerHTML = `<tr><td colspan="5" class="sales-empty">Loading…</td></tr>`;
+        updateInvOpenSummary();
         return;
       }
-      const byName = new Map(byInv.all.map(e => [e.name, e]));
-      // Inputs stay locked until the blob lands, so an early edit can't save an
-      // empty store over the real openings and adjustments.
-      const dis = inventoryLoaded ? '' : ' disabled';
-      el.innerHTML = sorted.map(name => {
-        const op = invOpeningFor(name);
-        const e = byName.get(name);
-        const note = !inventoryLoaded
-          ? 'Loading…'
-          : (e ? `On hand ${formatTons(e.onHand)} · produced ${formatTons(e.produced)} · sold ${formatTons(e.tonsSold)}`
-               : 'No crushing or sales entries yet');
-        return `
-        <div class="inv-open-row">
-          <div class="inv-open-loc">${escapeHtml(name)}</div>
-          <label class="inv-open-field">Tons
-            <input type="number" min="0" step="0.01" data-loc="${escapeHtml(name)}"
-              value="${op.tons ? op.tons : ''}" placeholder="0"${dis}
-              onchange="onInvOpeningTons(this)" aria-label="Opening tons for ${escapeHtml(name)}" />
-          </label>
-          <label class="inv-open-field">As Of
-            <input type="date" data-loc="${escapeHtml(name)}" value="${escapeHtml(op.asOf)}"${dis}
-              onchange="onInvOpeningAsOf(this)" aria-label="Opening count date for ${escapeHtml(name)}" />
-          </label>
-          <div class="inv-open-note">${escapeHtml(note)}</div>
-        </div>`;
-      }).join('');
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="5" class="sales-empty">No opening balances. On-hand counts only what's been crushed since tracking began — click “+ Add Opening Balance” to enter the piles that were already there.</td></tr>`;
+        updateInvOpenSummary();
+        return;
+      }
+      const visible = rows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .sort((a, b) => String(a.row.locationName || '').localeCompare(String(b.row.locationName || ''))
+                     || String(a.row.productName  || '').localeCompare(String(b.row.productName  || '')));
+      tbody.innerHTML = visible.map(({ row, originalIdx: i }) => `
+          <tr>
+            <td>${cbHtml('invopen:' + i, 'location', row.locationName || '')}</td>
+            <td>${cbHtml('invopen:' + i, 'product',  row.productName  || '')}</td>
+            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.tons === '' ? '' : row.tons}" placeholder="0" oninput="updateInvOpeningTons(${i}, this.value)" onchange="renderInventory(true, true)" /></td>
+            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.asOf)}" title="The day you counted this pile — entries dated on or before it are skipped" onchange="updateInvOpeningCell(${i}, 'asOf', this.value)" /></td>
+            <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteInvOpeningRow(${i})">✕</button></td>
+          </tr>`).join('');
+      updateInvOpenSummary();
+    }
+
+    function updateInvOpenSummary() {
+      const el = document.getElementById('invOpenSummary');
+      if (!el) return;
+      const rows = quarryInventory.openings || [];
+      let tons = 0;
+      const pits = new Set(), products = new Set();
+      rows.forEach(r => {
+        const t = Number(r.tons);
+        if (Number.isFinite(t)) tons += t;
+        pits.add(invLocKey(r.locationName));
+        if ((r.productName || '').trim()) products.add(r.productName.trim());
+      });
+      el.innerHTML = `Rows<strong>${rows.length}</strong>· Tons<strong>${formatTons(tons)}</strong>`
+        + `· Pits<strong>${pits.size}</strong>· Products<strong>${products.size}</strong>`;
     }
 
     function renderInvAdjTable() {
@@ -5948,12 +6170,12 @@
       if (addBtn) addBtn.disabled = !inventoryLoaded;
       const rows = quarryInventory.adjustments || [];
       if (!inventoryLoaded) {
-        tbody.innerHTML = `<tr><td colspan="6" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="sales-empty">Loading…</td></tr>`;
         updateInvAdjSummary();
         return;
       }
       if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="6" class="sales-empty">No adjustments. Inventory is running purely off Crushing and Sales — click “+ Add Row” to record a count correction, waste, internal use, or a transfer.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="sales-empty">No adjustments. Inventory is running purely off Crushing and Sales — click “+ Add Row” to record a count correction, waste, internal use, or a transfer.</td></tr>`;
         updateInvAdjSummary();
         return;
       }
@@ -5970,6 +6192,7 @@
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateInvAdjCell(${i}, 'date', this.value)" /></td>
             <td>${cbHtml('inv:' + i, 'location', row.locationName || '')}</td>
+            <td>${cbHtml('inv:' + i, 'product',  row.productName  || '')}</td>
             <td class="col-num"><input class="cell-input" type="number" step="0.01" value="${row.tons === '' ? '' : row.tons}" placeholder="0" title="Negative tons take material out of the pile" oninput="updateInvAdjTons(${i}, this.value)" onchange="renderInventory(true, true)" /></td>
             <td><select class="cell-select" onchange="updateInvAdjText(${i}, 'reason', this.value)">${reasonOpts}</select></td>
             <td class="col-comments"><input class="cell-input" type="text" value="${escapeHtml(row.comments)}" placeholder="Notes…" oninput="updateInvAdjText(${i}, 'comments', this.value)" /></td>
@@ -6009,37 +6232,35 @@
       scheduleInventorySave();
       renderInventory();
     }
-    function onInvOpeningTons(input) {
+    function addInvOpeningRow() {
       if (!inventoryLoaded) return;
-      const loc = input.dataset.loc || '';
-      if (!loc) return;
-      const raw = String(input.value).trim();
-      const n = raw === '' ? null : Math.round(Number(raw) * 100) / 100;
-      const asOf = (quarryInventory.openings[loc] || {}).asOf || '';
-      // A stockpile can't open negative — a typo'd "-500" clears the entry
-      // (and the re-render puts the field back to blank) rather than quietly
-      // dragging the balance down.
-      if (n === null || !Number.isFinite(n) || n <= 0) {
-        // Keep a zeroed entry only when its as-of cutoff is still doing work.
-        if (asOf) quarryInventory.openings[loc] = { tons: 0, asOf };
-        else delete quarryInventory.openings[loc];
-      } else {
-        quarryInventory.openings[loc] = { tons: n, asOf };
-      }
+      quarryInventory.openings.unshift(normalizeInvOpeningRow({}));
       scheduleInventorySave();
       renderInventory();
     }
-    function onInvOpeningAsOf(input) {
-      if (!inventoryLoaded) return;
-      const loc = input.dataset.loc || '';
-      if (!loc) return;
-      const raw = String(input.value || '');
-      const asOf = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : '';
-      const tons = Number((quarryInventory.openings[loc] || {}).tons) || 0;
-      if (!asOf && tons === 0) delete quarryInventory.openings[loc];
-      else quarryInventory.openings[loc] = { tons, asOf };
+    function deleteInvOpeningRow(index) {
+      if (!inventoryLoaded || !quarryInventory.openings[index]) return;
+      quarryInventory.openings.splice(index, 1);
       scheduleInventorySave();
       renderInventory();
+    }
+    function updateInvOpeningCell(index, field, value) {
+      if (!inventoryLoaded || !quarryInventory.openings[index]) return;
+      quarryInventory.openings[index][field] =
+        (field === 'asOf' && !/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) ? '' : value;
+      scheduleInventorySave();
+      renderInventory();
+    }
+    // A stockpile can't open negative — a typo'd "-500" is rejected outright
+    // (the re-render puts the field back) rather than quietly dragging the
+    // balance down. Full re-render fires from onchange, as on the ledger.
+    function updateInvOpeningTons(index, raw) {
+      if (!inventoryLoaded || !quarryInventory.openings[index]) return;
+      const s = String(raw).trim();
+      const n = Math.round(Number(s) * 100) / 100;
+      quarryInventory.openings[index].tons = (s === '' || !Number.isFinite(n) || n < 0) ? '' : n;
+      updateInvOpenSummary();
+      scheduleInventorySave();
     }
     function addInvAdjRow() {
       if (!inventoryLoaded) return;
@@ -7055,6 +7276,38 @@ ${sections}
       wrap.innerHTML = rows.length
         ? buildBreakevenChartSVG(rows)
         : '<div class="be-chart-empty">No monthly data to chart yet.</div>';
+    }
+
+    // What's actually on the ground, by material. Untagged production is called
+    // out rather than silently making a product look oversold.
+    function renderHomeProductStock(inv) {
+      const body = document.querySelector('#homeProductStockTable tbody');
+      if (!body) return;
+      const rows = inv.total.productList || [];
+      const untagged = inv.total.products.get(INV_NO_PRODUCT);
+      const untaggedTons = untagged ? untagged.produced : 0;
+      const note = document.getElementById('homeProductNote');
+      if (note) {
+        note.innerHTML = untaggedTons > 0.005
+          ? `<strong>${formatTons(untaggedTons)} tons</strong> of production aren't tagged with a product yet and sit in `
+            + `<strong>${escapeHtml(INV_NO_PRODUCT)}</strong>. Set <strong>Product</strong> on Crushing Tracking to split them out — `
+            + `the pit totals above are right either way.`
+          : `Balances as of ${escapeHtml(inv.cutoff)}. Full per-pit detail is on the Inventory tab.`;
+      }
+      if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="6"><div class="home-empty">No stock yet — add Crushing and Sales entries, or an opening balance on the Inventory tab.</div></td></tr>`;
+        return;
+      }
+      const cell = (v, signed) => v ? `${signed && v > 0 ? '+' : ''}${formatTons(v)}` : '—';
+      body.innerHTML = rows.map(p => `
+        <tr>
+          <td${p.name === INV_NO_PRODUCT ? ' class="inv-untagged"' : ''}>${escapeHtml(p.name)}</td>
+          <td>${cell(p.opening)}</td>
+          <td>${cell(p.produced)}</td>
+          <td>${cell(p.tonsSold)}</td>
+          <td class="${p.adjustments > 0.005 ? 'pos' : p.adjustments < -0.005 ? 'neg' : ''}">${cell(p.adjustments, true)}</td>
+          <td class="inv-onhand ${p.onHand < -0.005 ? 'neg' : ''}">${formatTons(p.onHand)}</td>
+        </tr>`).join('');
     }
 
     function renderHomeRanked(elId, items, mapper) {

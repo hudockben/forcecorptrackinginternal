@@ -22,10 +22,10 @@ const AS_OF     = '2026-07-30';
 // Homer City: 10% jaws→screen loss. McGees Mills: none configured.
 const CRUSH = [
   // 10 loads × 20 t = 200 t to crusher → 180 sellable. Cost 30×8 + 50×4 = 440.
-  { id: 'c1', date: '2026-03-10', locationName: 'Homer City',   hourlyRate: 30, hours: 8,
+  { id: 'c1', date: '2026-03-10', locationName: 'Homer City',   productName: '2A Modified', hourlyRate: 30, hours: 8,
     fuelGallons: 50, fuelCost: 4, loadsToCrusher: 10, tonsPerLoad: 20, hoursCrushing: 6 },
   // 5 loads × 20 t = 100 t, no loss configured → 100 sellable.
-  { id: 'c2', date: '2026-04-05', locationName: 'McGees Mills', hourlyRate: 0,  hours: 0,
+  { id: 'c2', date: '2026-04-05', locationName: 'McGees Mills', productName: '2A Modified', hourlyRate: 0,  hours: 0,
     fuelGallons: 0,  fuelCost: 0, loadsToCrusher: 5,  tonsPerLoad: 20, hoursCrushing: 4 },
   // Dated past the As-Of cutoff → excluded, and flagged in the warning banner.
   { id: 'c3', date: '2026-12-31', locationName: 'Homer City',   loadsToCrusher: 99, tonsPerLoad: 20 },
@@ -83,6 +83,11 @@ function checkIncludes(label, haystack, needle) {
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${ok ? '' : `: ${JSON.stringify(String(haystack).slice(0, 300))} is missing ${JSON.stringify(needle)}`}`);
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// BULK_CONFIGS is a script-scoped const, so reach it through the page's own scope.
+const BULK_HAS_PRODUCT = (win) => win.eval(
+  "BULK_CONFIGS.crushing.fields.some(f => f.name === 'product') && " +
+  "BULK_CONFIGS.crushing.templateLayout.includes('product') && " +
+  "BULK_CONFIGS.crushing.sample().length === BULK_CONFIGS.crushing.fields.length");
 
 function stubFetch(blobs, writes, gate) {
   return async (url, init) => {
@@ -155,6 +160,11 @@ async function main() {
 
   const txt = (id) => (doc.getElementById(id) || {}).textContent || '';
   const num = (id) => Number(txt(id).replace(/[^0-9.\-]/g, ''));
+  const tonsOf = (s) => Number(String(s).replace(/[^0-9.\-]/g, '')) || 0;
+  const UNTAGGED = '— Untagged —';
+  const prodRowsAll = () => [...doc.querySelectorAll('#inventoryProductBalanceTable tbody tr')]
+    .map(tr => [...tr.children].map(td => td.textContent.trim()));
+  const productRow = (loc, prod) => prodRowsAll().find(r => r[0] === loc && r[1] === prod);
 
   // ── Division-total KPIs ──
   console.log('\n— Division totals (final-screen basis) —');
@@ -287,26 +297,68 @@ async function main() {
   check('delete removes the row', doc.querySelectorAll('#invAdjTbody tr').length, 1);
 
   // ── Opening-balance editor ──
-  console.log('\n— Opening balances editor —');
-  const openRows = [...doc.querySelectorAll('#inventoryOpeningEditor .inv-open-row')];
-  check('one editor row per configured pit', openRows.length, 2);
-  const homerOpen = openRows.find(r => r.querySelector('.inv-open-loc').textContent.trim() === 'Homer City');
-  check('Homer City opening tons prefilled', homerOpen.querySelector('input[type="number"]').value, '500');
-  check('Homer City as-of prefilled',        homerOpen.querySelector('input[type="date"]').value, '2026-01-31');
-  const mcgeesOpen = openRows.find(r => r.querySelector('.inv-open-loc').textContent.trim() === 'McGees Mills');
-  const mcgeesTons = mcgeesOpen.querySelector('input[type="number"]');
-  mcgeesTons.value = '250';
-  win.onInvOpeningTons(mcgeesTons);
+  console.log('\n— Opening balances ledger —');
+  // The fixture stores the original per-location map shape; it must migrate.
+  const openRows = () => [...doc.querySelectorAll('#invOpenTbody tr')];
+  check('legacy per-location map migrates to one row', openRows().length, 1);
+  check('migrated location', openRows()[0].querySelector('.cb-input').value, 'Homer City');
+  check('migrated product is blank (pit-level)',
+    openRows()[0].querySelectorAll('.cb-input')[1].value, '');
+  check('migrated tons',  openRows()[0].querySelector('input[type="number"]').value, '500');
+  check('migrated as-of', openRows()[0].querySelector('input[type="date"]').value, '2026-01-31');
+  // Add a product-specific opening and watch it land in that product's balance.
+  win.addInvOpeningRow();
+  win.cbDispatch('invopen:0', 'location', 'McGees Mills');
+  win.cbDispatch('invopen:0', 'product',  '57 Stone');
+  win.updateInvOpeningTons(0, '250');
+  win.renderInventory();
   check('opening balance feeds straight into on hand', num('invKpiOnHand'), EXPECT_TOTAL + 250);
-  const restored = [...doc.querySelectorAll('#inventoryOpeningEditor .inv-open-row')]
-    .find(r => r.querySelector('.inv-open-loc').textContent.trim() === 'McGees Mills')
-    .querySelector('input[type="number"]');
-  restored.value = '';
-  win.onInvOpeningTons(restored);
-  check('clearing the opening balance restores on hand', num('invKpiOnHand'), EXPECT_TOTAL);
+  const stone = productRow('McGees Mills', '57 Stone');
+  check('new opening lands on its own product row', stone && stone[6], '250');
+  win.deleteInvOpeningRow(0);
+  check('removing the opening restores on hand', num('invKpiOnHand'), EXPECT_TOTAL);
 
   // ── Totals have to foot: on hand × cost/ton must equal inventory value ──
   // Each pile carries its own cost, so the division rate is on-hand-weighted.
+  // ── Per-product balances ──
+  // Products must sum back to the pit total even though older crushing rows
+  // carry no product — those tons sit in Untagged rather than being guessed at.
+  console.log('\n— On hand by product —');
+  const homerProducts = prodRowsAll().filter(r => r[0] === 'Homer City');
+  // Homer City: 2A produced 180 sold 50 → 130; Rip Rap sold 30 with no tagged
+  // production → −30; Untagged holds the 500 opening less the 25-ton adjustment.
+  check('Homer City · 2A Modified on hand', productRow('Homer City', '2A Modified')[6], '130');
+  check('Homer City · Rip Rap goes negative without tagged production',
+    productRow('Homer City', 'Rip Rap')[6], '-30');
+  check('Homer City · Untagged holds the opening', productRow('Homer City', UNTAGGED)[6], '475');
+  check('McGees Mills · 2A Modified on hand', productRow('McGees Mills', '2A Modified')[6], '80');
+  check('Homer City products sum to the pit total',
+    homerProducts.reduce((s, r) => s + tonsOf(r[6]), 0), EXPECT_HOMER);
+  check('division rollup merges the same product across pits',
+    productRow('Division Total', '2A Modified')[6], '210');       // 130 + 80
+  check('division products sum to the division total',
+    prodRowsAll().filter(r => r[0] === 'Division Total').reduce((s, r) => s + tonsOf(r[6]), 0), EXPECT_TOTAL);
+  checkIncludes('fully-tagged production gets the plain note',
+    doc.getElementById('inventoryByProductNote').innerHTML, 'Rows sum to the pit totals');
+
+  // Untag a crushing run (the state every pre-existing row is in) — its tons
+  // move to Untagged, the product it fed goes negative, and the pit total holds.
+  win.cbDispatch('crush:0', 'product', '');
+  win.renderInventory();   // the crushing edit re-renders its own tab; Inventory refreshes on switch
+  check('untagging production leaves the pit total alone', num('invKpiOnHand'), EXPECT_TOTAL);
+  check('the product it fed now shows only its sales',
+    productRow('Homer City', '2A Modified')[6], '-50');
+  check('its tons move into Untagged', productRow('Homer City', UNTAGGED)[6], '655');
+  checkIncludes('untagged production is explained, not left to puzzle over',
+    doc.getElementById('inventoryByProductNote').innerHTML, 'of production carry no product');
+  win.renderHome();
+  checkIncludes('Home says the same thing',
+    doc.getElementById('homeProductNote').innerHTML, "aren't tagged with a product yet");
+  win.cbDispatch('crush:0', 'product', '2A Modified');
+  win.renderInventory();
+  check('re-tagging restores the product balance',
+    productRow('Homer City', '2A Modified')[6], '130');
+
   console.log('\n— Total row foots —');
   const money = (s) => Number(String(s).replace(/[^0-9.\-]/g, ''));
   const tot = cellsOf([...doc.querySelectorAll('#inventoryLocationTable tbody tr')]
@@ -350,16 +402,22 @@ async function main() {
 
   // ── A negative opening balance is rejected, not quietly applied ──
   console.log('\n— Negative opening balance —');
-  const negInput = [...doc.querySelectorAll('#inventoryOpeningEditor .inv-open-row')]
-    .find(r => r.querySelector('.inv-open-loc').textContent.trim() === 'McGees Mills')
-    .querySelector('input[type="number"]');
-  negInput.value = '-400';
-  win.onInvOpeningTons(negInput);
+  // On a fresh row, so a rejected value can't be confused with clearing a real one.
+  win.addInvOpeningRow();
+  win.cbDispatch('invopen:0', 'location', 'McGees Mills');
+  win.updateInvOpeningTons(0, '-400');
+  win.renderInventory();
   check('negative opening does not move the balance', num('invKpiOnHand'), EXPECT_TOTAL);
-  check('negative opening field reverts to blank',
-    [...doc.querySelectorAll('#inventoryOpeningEditor .inv-open-row')]
-      .find(r => r.querySelector('.inv-open-loc').textContent.trim() === 'McGees Mills')
-      .querySelector('input[type="number"]').value, '');
+  // Rows render sorted by location, so find McGees rather than assuming row 0.
+  const mcgeesOpenTons = () => [...doc.querySelectorAll('#invOpenTbody tr')]
+    .find(tr => tr.querySelector('.cb-input').value === 'McGees Mills')
+    .querySelector('input[type="number"]');
+  check('negative opening field reverts to blank', mcgeesOpenTons().value, '');
+  win.updateInvOpeningTons(0, '400');
+  win.renderInventory();
+  check('a valid figure on the same row is accepted', num('invKpiOnHand'), EXPECT_TOTAL + 400);
+  win.deleteInvOpeningRow(0);
+  check('and removing it restores the balance', num('invKpiOnHand'), EXPECT_TOTAL);
 
   // ── The excluded-row banner reports only what the filter has in view ──
   console.log('\n— Warning respects the location filter —');
@@ -382,11 +440,18 @@ async function main() {
   const last = invWrites[invWrites.length - 1].value;
   check('saved shape', Object.keys(last).sort().join(','), 'adjustments,basis,openings');
   check('saved basis', last.basis, 'final');
-  check('saved opening for Homer City', JSON.stringify(last.openings['Homer City']), '{"tons":500,"asOf":"2026-01-31"}');
+  check('openings persist as a list, not the legacy map', Array.isArray(last.openings), true);
+  const savedHomer = last.openings.find(o => o.locationName === 'Homer City');
+  check('saved opening tons',  savedHomer && savedHomer.tons, 500);
+  check('saved opening as-of', savedHomer && savedHomer.asOf, '2026-01-31');
+  check('saved opening carries a product field', savedHomer && 'productName' in savedHomer, true);
   check('saved adjustment count', last.adjustments.length, 1);
   check('saved adjustment tons', last.adjustments[0].tons, -25);
   check('as-of cutoff is view state, never persisted', 'asOf' in last, false);
-  check('no crushing or sales rows were written', writes.some(w => w.key === 'fct_quarry_crushing' || w.key === 'fct_quarry_sales'), false);
+  check('no sales rows were written', writes.some(w => w.key === 'fct_quarry_sales'), false);
+  // The product-tagging test above edited a crushing row — it must round-trip.
+  const crushWrite = writes.filter(w => w.key === 'fct_quarry_crushing').pop();
+  check('crushing product persists on the row', crushWrite && crushWrite.value[0].productName, '2A Modified');
 
   // ── Print / PDF export ──
   console.log('\n— Print / PDF —');
@@ -461,6 +526,16 @@ async function main() {
   check('crushing tab still renders rows', doc.querySelectorAll('#crushTbody tr').length > 0, true);
   checkIncludes('crushing month filter still renders',
     doc.getElementById('crushingMonthFilter').innerHTML, 'All Months');
+  // The Product column that makes per-product inventory possible.
+  const crushHeaders = [...doc.querySelectorAll('.crush-table thead th')].map(th => th.textContent.trim());
+  check('crushing has a Product column', crushHeaders.includes('Product'), true);
+  check('Product sits after Employee', crushHeaders.indexOf('Product'), crushHeaders.indexOf('Employee') + 1);
+  check('every crushing row renders a cell per header',
+    doc.querySelector('#crushTbody tr').children.length, crushHeaders.length);
+  checkIncludes('crushing gained a Product filter',
+    doc.getElementById('crushingProductFilter').innerHTML, 'All Products');
+  check('CSV template offers a Product column',
+    BULK_HAS_PRODUCT(win), true);
   win.switchTab('home');
   await sleep(60);
   check('home tab still renders location cards',
@@ -497,8 +572,10 @@ async function main() {
     edoc.querySelector('#inventoryMonthlyTable tbody').textContent, 'No dated crushing, sales, or adjustment activity');
   checkIncludes('empty ledger shows a prompt',
     edoc.getElementById('invAdjTbody').textContent, 'No adjustments');
-  checkIncludes('empty openings editor points at Manage Lists',
-    edoc.getElementById('inventoryOpeningEditor').textContent, 'No locations yet');
+  checkIncludes('empty openings ledger explains what it is for',
+    edoc.getElementById('invOpenTbody').textContent, 'No opening balances');
+  checkIncludes('empty by-product table shows a prompt',
+    edoc.querySelector('#inventoryProductBalanceTable tbody').textContent, 'No product balances yet');
   check('warning banner stays hidden with nothing to warn about',
     edoc.getElementById('inventoryWarning').classList.contains('is-hidden'), true);
   check('adding an adjustment works from empty', (() => {
@@ -525,19 +602,14 @@ async function main() {
   await sleep(250);
   rwin.switchTab('inventory');
   await sleep(150);   // painted, blob still in flight
-  const raceOpenRows = [...rdoc.querySelectorAll('#inventoryOpeningEditor .inv-open-row')];
-  check('openings editor renders from Manage Lists while loading', raceOpenRows.length, 2);
-  const raceTons = raceOpenRows[0].querySelector('input[type="number"]');
-  check('opening tons input is locked while loading', raceTons.disabled, true);
-  check('opening as-of input is locked while loading',
-    raceOpenRows[0].querySelector('input[type="date"]').disabled, true);
   check('basis select is locked while loading', rdoc.getElementById('inventoryBasisSelect').disabled, true);
   check('add-adjustment button is locked while loading', rdoc.getElementById('invAdjAddBtn').disabled, true);
+  check('add-opening button is locked while loading', rdoc.getElementById('invOpenAddBtn').disabled, true);
   // Fire the setters directly — the guard, not just the disabled attribute, has to hold.
-  raceTons.value = '300';
-  rwin.onInvOpeningTons(raceTons);
   rwin.setInventoryBasis('crusher');
   rwin.addInvAdjRow();
+  rwin.addInvOpeningRow();
+  rwin.updateInvOpeningTons(0, '300');
   await sleep(40);
   check('no inventory PUT fired before the blob landed',
     raceWrites.filter(w => w.key === 'fct_quarry_inventory').length, 0);
