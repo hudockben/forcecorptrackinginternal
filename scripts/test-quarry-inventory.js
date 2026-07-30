@@ -84,12 +84,14 @@ function checkIncludes(label, haystack, needle) {
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-function stubFetch(blobs, writes) {
+function stubFetch(blobs, writes, gate) {
   return async (url, init) => {
     const u = String(url);
     const m = /\/api\/data\/([^?]+)/.exec(u);
     const key = m ? decodeURIComponent(m[1]) : '';
     if (m && (!init || !init.method || init.method === 'GET')) {
+      // Optionally hold one key back so the tab paints before its data lands.
+      if (gate && gate.key === key) await gate.promise;
       return {
         ok: true, status: 200,
         json: async () => ({ value: Object.prototype.hasOwnProperty.call(blobs, key) ? blobs[key] : null }),
@@ -105,7 +107,7 @@ function stubFetch(blobs, writes) {
   };
 }
 
-function loadPage(blobs, writes) {
+function loadPage(blobs, writes, gate) {
   const html = fs.readFileSync(HTML_PATH, 'utf8');
   return new JSDOM(html, {
     runScripts: 'dangerously',
@@ -116,7 +118,7 @@ function loadPage(blobs, writes) {
       win.localStorage.setItem('fct_user', JSON.stringify({
         userId: 1, username: 'tester', name: 'Test User', companyCode: 'TEST', companyName: 'Test Co',
       }));
-      win.fetch = stubFetch(blobs, writes);
+      win.fetch = stubFetch(blobs, writes, gate);
       win.alert = (msg) => console.log('  [alert suppressed]', String(msg).slice(0, 120));
       win.print = () => {};
       const errs = [];
@@ -273,6 +275,13 @@ async function main() {
   win.updateInvAdjCell(0, 'date', '2026-07-01');
   win.cbDispatch('inv:0', 'location', 'McGees Mills');
   check('new adjustment moves the balance', num('invKpiOnHand'), EXPECT_TOTAL + 15);
+  // A tons edit must refresh the balances without rebuilding the ledger under
+  // the cursor — otherwise the click that moved focus gets swallowed.
+  const liveTonsInput = doc.querySelector('#invAdjTbody tr input[type="number"]');
+  win.renderInventory(true, true);
+  check('tons edit leaves the ledger inputs in place', doc.contains(liveTonsInput), true);
+  win.renderInventory();
+  check('a normal render does rebuild the ledger', doc.contains(liveTonsInput), false);
   win.deleteInvAdjRow(0);
   check('delete restores the balance', num('invKpiOnHand'), EXPECT_TOTAL);
   check('delete removes the row', doc.querySelectorAll('#invAdjTbody tr').length, 1);
@@ -295,6 +304,74 @@ async function main() {
   restored.value = '';
   win.onInvOpeningTons(restored);
   check('clearing the opening balance restores on hand', num('invKpiOnHand'), EXPECT_TOTAL);
+
+  // ── Totals have to foot: on hand × cost/ton must equal inventory value ──
+  // Each pile carries its own cost, so the division rate is on-hand-weighted.
+  console.log('\n— Total row foots —');
+  const money = (s) => Number(String(s).replace(/[^0-9.\-]/g, ''));
+  const tot = cellsOf([...doc.querySelectorAll('#inventoryLocationTable tbody tr')]
+    .find(tr => tr.classList.contains('inv-row-total')));
+  // Compare the rate the row implies (value ÷ on hand) against the rate the
+  // row prints. Weighting the division rate by produced tons instead — the old
+  // behaviour — lands ~27% off on this fixture, well outside cent rounding.
+  check('total cost/ton is the on-hand-weighted rate',
+    (money(tot[9]) / money(tot[7])).toFixed(2), money(tot[8]).toFixed(2));
+  const homer = cellsOf([...doc.querySelectorAll('#inventoryLocationTable tbody tr')]
+    .find(tr => tr.children[0].textContent.includes('Homer City')));
+  check('per-pit cost/ton is consistent with its value',
+    (money(homer[9]) / money(homer[7])).toFixed(2), money(homer[8]).toFixed(2));
+  const mcgees = cellsOf([...doc.querySelectorAll('#inventoryLocationTable tbody tr')]
+    .find(tr => tr.children[0].textContent.includes('McGees Mills')));
+  check('total value is the sum of the pit values',
+    (money(homer[9]) + money(mcgees[9])).toFixed(2), money(tot[9]).toFixed(2));
+  check('KPI value matches the total row', money(txt('invKpiValue')), money(tot[9]));
+
+  // ── Tons with no crushing behind them carry no cost — say so, don't hide it ──
+  // As-Of before any crushing: Homer City's 500-ton opening is all that's left,
+  // and there is no production rate to value it at.
+  console.log('\n— Uncosted tonnage —');
+  win.setInventoryAsOf('2026-02-01');
+  check('on hand is the opening balance alone', num('invKpiOnHand'), 500);
+  check('nothing produced in the window', num('invKpiProduced'), 0);
+  check('value is zero without a cost basis', money(txt('invKpiValue')), 0);
+  checkIncludes('the uncosted tonnage is called out',
+    txt('invKpiValueSub'), '500 tons on hand with no crushing cost basis');
+  win.setInventoryAsOf(AS_OF);
+  checkIncludes('normal window reports the carrying rate', txt('invKpiValueSub'), 'Carried at $');
+
+  // ── The As-Of picker cleared means no cutoff at all, not "through today" ──
+  console.log('\n— No-cutoff labelling —');
+  win.setInventoryAsOf('');
+  checkIncludes('subtitle says there is no cutoff',
+    txt('inventorySubtitle'), 'counted with no date cutoff');
+  check('future-dated crushing now counts', num('invKpiProduced'), 280 + (99 * 20 * 0.9));
+  win.setInventoryAsOf(AS_OF);
+  check('restoring the cutoff restores the balance', num('invKpiOnHand'), EXPECT_TOTAL);
+
+  // ── A negative opening balance is rejected, not quietly applied ──
+  console.log('\n— Negative opening balance —');
+  const negInput = [...doc.querySelectorAll('#inventoryOpeningEditor .inv-open-row')]
+    .find(r => r.querySelector('.inv-open-loc').textContent.trim() === 'McGees Mills')
+    .querySelector('input[type="number"]');
+  negInput.value = '-400';
+  win.onInvOpeningTons(negInput);
+  check('negative opening does not move the balance', num('invKpiOnHand'), EXPECT_TOTAL);
+  check('negative opening field reverts to blank',
+    [...doc.querySelectorAll('#inventoryOpeningEditor .inv-open-row')]
+      .find(r => r.querySelector('.inv-open-loc').textContent.trim() === 'McGees Mills')
+      .querySelector('input[type="number"]').value, '');
+
+  // ── The excluded-row banner reports only what the filter has in view ──
+  console.log('\n— Warning respects the location filter —');
+  const mcgeesCb = [...doc.getElementById('inventoryLocationFilter')
+    .querySelectorAll('.ms-menu input[type="checkbox"]')].find(cb => cb.value === 'McGees Mills');
+  mcgeesCb.checked = true;
+  win.msOnCheck('inventory', 'location', mcgeesCb);
+  check('Homer City exclusions are not reported while viewing McGees Mills',
+    doc.getElementById('inventoryWarning').classList.contains('is-hidden'), true);
+  win.msClear('inventory', 'location');
+  check('unfiltered view reports them again',
+    doc.getElementById('inventoryWarning').classList.contains('is-hidden'), false);
 
   // ── Persistence: only basis / openings / adjustments go to the blob ──
   // Saves coalesce behind one in-flight PUT, so let the queue drain first.
@@ -383,8 +460,50 @@ async function main() {
     emptyErrors.length ? emptyErrors.join(' | ') : 0, 0);
   emptyDom.window.close();
 
+  // ── Editing while the blob is still in flight must not clobber the server ──
+  // The tab paints before its data lands; an unguarded edit in that window
+  // would PUT an empty store over the real openings and adjustments.
+  console.log('\n— Edits during load —');
+  const raceWrites = [];
+  let release;
+  const raceDom = loadPage(BLOBS, raceWrites,
+    { key: 'fct_quarry_inventory', promise: new Promise(r => { release = r; }) });
+  const rwin = raceDom.window, rdoc = raceDom.window.document;
+  await sleep(250);
+  rwin.switchTab('inventory');
+  await sleep(150);   // painted, blob still in flight
+  const raceOpenRows = [...rdoc.querySelectorAll('#inventoryOpeningEditor .inv-open-row')];
+  check('openings editor renders from Manage Lists while loading', raceOpenRows.length, 2);
+  const raceTons = raceOpenRows[0].querySelector('input[type="number"]');
+  check('opening tons input is locked while loading', raceTons.disabled, true);
+  check('opening as-of input is locked while loading',
+    raceOpenRows[0].querySelector('input[type="date"]').disabled, true);
+  check('basis select is locked while loading', rdoc.getElementById('inventoryBasisSelect').disabled, true);
+  check('add-adjustment button is locked while loading', rdoc.getElementById('invAdjAddBtn').disabled, true);
+  // Fire the setters directly — the guard, not just the disabled attribute, has to hold.
+  raceTons.value = '300';
+  rwin.onInvOpeningTons(raceTons);
+  rwin.setInventoryBasis('crusher');
+  rwin.addInvAdjRow();
+  await sleep(40);
+  check('no inventory PUT fired before the blob landed',
+    raceWrites.filter(w => w.key === 'fct_quarry_inventory').length, 0);
+  release();
+  for (let i = 0; i < 80 && /Loading/i.test(rdoc.getElementById('inventorySubtitle').textContent); i++) await sleep(25);
+  rwin.setInventoryAsOf(AS_OF);
+  check('server data survived the load race', num2(rdoc, 'invKpiOnHand'), EXPECT_TOTAL);
+  check('controls unlock once loaded', rdoc.getElementById('inventoryBasisSelect').disabled, false);
+  const raceErrors = (rwin.__errors || []).filter(Boolean);
+  check('no uncaught script errors during the load race',
+    raceErrors.length ? raceErrors.join(' | ') : 0, 0);
+  raceDom.window.close();
+
   console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
   process.exit(failures ? 1 : 0);
+}
+
+function num2(d, id) {
+  return Number(((d.getElementById(id) || {}).textContent || '').replace(/[^0-9.\-]/g, ''));
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

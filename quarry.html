@@ -5284,7 +5284,11 @@
       const cutoff = inventoryAsOf || '';
       const rateFrom = invShiftDays(cutoff || todayIso(), -INV_RATE_WINDOW_DAYS);
       const skipped = { undated: 0, future: 0, preOpening: 0 };
-      const bumpSkip = (why) => {
+      // Only report rows the user is actually looking at — a Homer City row
+      // excluded while the view is filtered to McGees Mills isn't missing from
+      // the balances on screen.
+      const bumpSkip = (row, why) => {
+        if (!msMatches('location', 'inventory', row)) return;
         if (why === 'undated') skipped.undated++;
         else if (why === 'future') skipped.future++;
         else if (why === 'pre-opening') skipped.preOpening++;
@@ -5310,7 +5314,7 @@
       crushRows.forEach(r => {
         const key = invLocKey(r.locationName);
         const why = invRowWindow(r.date, invOpeningFor(key).asOf, cutoff);
-        if (why !== 'in') { bumpSkip(why); return; }
+        if (why !== 'in') { bumpSkip(r, why); return; }
         const e = ensure(key);
         const c = crushCalc(r);
         e.tonsCrushed += c.estimatedTons;
@@ -5324,7 +5328,7 @@
       salesRows.forEach(r => {
         const key = invLocKey(r.locationName);
         const why = invRowWindow(r.date, invOpeningFor(key).asOf, cutoff);
-        if (why !== 'in') { bumpSkip(why); return; }
+        if (why !== 'in') { bumpSkip(r, why); return; }
         const e = ensure(key);
         const t = Number(r.tons);
         if (Number.isFinite(t)) {
@@ -5341,7 +5345,7 @@
       (quarryInventory.adjustments || []).forEach(r => {
         const key = invLocKey(r.locationName);
         const why = invRowWindow(r.date, invOpeningFor(key).asOf, cutoff);
-        if (why !== 'in') { bumpSkip(why); return; }
+        if (why !== 'in') { bumpSkip(r, why); return; }
         const t = Number(r.tons);
         if (!Number.isFinite(t) || t === 0) return;
         const e = ensure(key);
@@ -5402,6 +5406,18 @@
         : 0;
       // Inventory value adds up per pit — each pile carries its own cost/ton.
       total.value = visible.reduce((s, e) => s + e.value, 0);
+      // ...so the division's rate has to be the on-hand-weighted one, not
+      // crushing ÷ produced. Weighting by produced tons would leave the total
+      // row not footing (on hand × cost/ton ≠ value) even though every pit row
+      // above it does. Falls back to the production rate when nothing's in stock.
+      total.costPerTon = total.onHand > 0.005
+        ? total.value / total.onHand
+        : (total.produced > 0 ? total.crushCost / total.produced : 0);
+      // Tons sitting at a pit that hasn't crushed anything in the window have no
+      // rate to carry, so they contribute $0 to the value above. Surfaced next to
+      // the figure rather than left to quietly understate it.
+      total.uncostedTons = visible.reduce(
+        (s, e) => s + ((e.produced <= 0 && e.onHand > 0) ? e.onHand : 0), 0);
 
       return { locations: visible, all, total, cutoff, skipped };
     }
@@ -5468,9 +5484,20 @@
       return `<span class="inv-pill ${cls}">${INV_STATUS_LABEL[e.status] || '—'}</span>`;
     }
     function invDash(txt, ok) { return ok ? txt : '—'; }
+    // Sub-line under Inventory Value. Never lets uncosted tonnage pass silently.
+    function invValueSubText(t) {
+      const uncosted = t.uncostedTons > 0.005 ? ` · ${formatTons(t.uncostedTons)} tons not costed` : '';
+      if (t.produced > 0) return `Carried at ${formatMoney(t.costPerTon)}/ton${uncosted}`;
+      return t.onHand > 0
+        ? `${formatTons(t.onHand)} tons on hand with no crushing cost basis`
+        : 'No crushing cost basis yet';
+    }
 
     // ── Inventory rendering ──
-    function renderInventory(keepFilters) {
+    // keepAdjTable leaves the adjustments tbody standing: a tons edit changes
+    // every balance above it but not the ledger's own markup, and rebuilding it
+    // out from under the cursor would swallow the user's next click.
+    function renderInventory(keepFilters, keepAdjTable) {
       const dataReady = crushLoaded && salesLoaded && inventoryLoaded;
       // Build the Location filter options from every source that can carry one.
       if (!keepFilters) {
@@ -5481,12 +5508,19 @@
       const asOfInput = document.getElementById('inventoryAsOfInput');
       if (asOfInput && asOfInput.value !== inventoryAsOf) asOfInput.value = inventoryAsOf;
       const basisSel = document.getElementById('inventoryBasisSelect');
-      if (basisSel && basisSel.value !== quarryInventory.basis) basisSel.value = quarryInventory.basis;
+      if (basisSel) {
+        if (basisSel.value !== quarryInventory.basis) basisSel.value = quarryInventory.basis;
+        // Locked until the blob lands — see the note on the setters below.
+        basisSel.disabled = !inventoryLoaded;
+      }
 
       const byInv = computeInventory();
       const t = byInv.total;
       const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-      const asOfTxt = byInv.cutoff || 'today';
+      // With the As-Of picker cleared there is no cutoff at all — every dated
+      // row counts, future ones included — so don't call that "through today".
+      const asOfTxt = byInv.cutoff || 'no date cutoff';
+      const countedTxt = byInv.cutoff ? `counted through ${byInv.cutoff}` : 'counted with no date cutoff';
       const scope = invScopeLabel(byInv);
 
       // ── Division-total KPIs ──
@@ -5506,9 +5540,7 @@
       setText('invKpiSold', formatTons(t.tonsSold));
       setText('invKpiSoldSub', `Across ${t.salesCount} sale${t.salesCount === 1 ? '' : 's'}`);
       setText('invKpiValue', formatMoney(t.value));
-      setText('invKpiValueSub', t.produced > 0
-        ? `At ${formatMoney(t.costPerTon)}/ton crushing cost`
-        : 'No crushing cost basis yet');
+      setText('invKpiValueSub', invValueSubText(t));
 
       setText('invKpiOpening', formatTons(t.opening));
       const openCount = byInv.locations.filter(e => e.opening !== 0 || e.openingAsOf).length;
@@ -5532,7 +5564,7 @@
         sub.textContent = !dataReady
           ? 'Loading…'
           : (byInv.locations.length
-            ? `${t.crushCount} crushing · ${t.salesCount} sales · ${t.adjCount} adjustment${t.adjCount === 1 ? '' : 's'} counted through ${asOfTxt} · ${scope}`
+            ? `${t.crushCount} crushing · ${t.salesCount} sales · ${t.adjCount} adjustment${t.adjCount === 1 ? '' : 's'} ${countedTxt} · ${scope}`
             : 'Add entries with a Location on Crushing or Sales to build the inventory.');
       }
       const warnEl = document.getElementById('inventoryWarning');
@@ -5556,7 +5588,8 @@
       renderInventoryMonthly(byInv, dataReady);
       renderInventoryProducts(byInv, dataReady);
       renderInventoryOpenings(byInv);
-      renderInvAdjTable();
+      if (keepAdjTable) updateInvAdjSummary();
+      else renderInvAdjTable();
     }
 
     function renderInventoryCards(byInv, dataReady) {
@@ -5673,9 +5706,12 @@
       const { rows, opening, ending } = computeInventoryMonthly(byInv.locations);
       const note = document.getElementById('inventoryMonthlyNote');
       if (note) {
-        note.innerHTML = `Oldest month first, so each <strong>Ending Balance</strong> carries into the next month — the last row `
-          + `is what is on the ground today (${formatTons(ending)} tons). Months with no crushing, sales, or adjustments are skipped; `
-          + `the balance carries straight across them.`;
+        // Don't promise a running balance when there are no months to run.
+        note.innerHTML = rows.length
+          ? `Oldest month first, so each <strong>Ending Balance</strong> carries into the next month — the last row `
+            + `is what is on the ground today (${formatTons(ending)} tons). Months with no crushing, sales, or adjustments are skipped; `
+            + `the balance carries straight across them.`
+          : `Each month's <strong>Ending Balance</strong> carries into the next, so the last row is what is on the ground today.`;
       }
       if (!rows.length) {
         body.innerHTML = `<tr><td colspan="6"><div class="home-empty">${dataReady ? 'No dated crushing, sales, or adjustment activity to roll forward yet.' : 'Loading…'}</div></td></tr>`;
@@ -5748,22 +5784,26 @@
         return;
       }
       const byName = new Map(byInv.all.map(e => [e.name, e]));
+      // Inputs stay locked until the blob lands, so an early edit can't save an
+      // empty store over the real openings and adjustments.
+      const dis = inventoryLoaded ? '' : ' disabled';
       el.innerHTML = sorted.map(name => {
         const op = invOpeningFor(name);
         const e = byName.get(name);
-        const note = e
-          ? `On hand ${formatTons(e.onHand)} · produced ${formatTons(e.produced)} · sold ${formatTons(e.tonsSold)}`
-          : 'No crushing or sales entries yet';
+        const note = !inventoryLoaded
+          ? 'Loading…'
+          : (e ? `On hand ${formatTons(e.onHand)} · produced ${formatTons(e.produced)} · sold ${formatTons(e.tonsSold)}`
+               : 'No crushing or sales entries yet');
         return `
         <div class="inv-open-row">
           <div class="inv-open-loc">${escapeHtml(name)}</div>
           <label class="inv-open-field">Tons
-            <input type="number" step="0.01" data-loc="${escapeHtml(name)}"
-              value="${op.tons ? op.tons : ''}" placeholder="0"
+            <input type="number" min="0" step="0.01" data-loc="${escapeHtml(name)}"
+              value="${op.tons ? op.tons : ''}" placeholder="0"${dis}
               onchange="onInvOpeningTons(this)" aria-label="Opening tons for ${escapeHtml(name)}" />
           </label>
           <label class="inv-open-field">As Of
-            <input type="date" data-loc="${escapeHtml(name)}" value="${escapeHtml(op.asOf)}"
+            <input type="date" data-loc="${escapeHtml(name)}" value="${escapeHtml(op.asOf)}"${dis}
               onchange="onInvOpeningAsOf(this)" aria-label="Opening count date for ${escapeHtml(name)}" />
           </label>
           <div class="inv-open-note">${escapeHtml(note)}</div>
@@ -5800,7 +5840,7 @@
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateInvAdjCell(${i}, 'date', this.value)" /></td>
             <td>${cbHtml('inv:' + i, 'location', row.locationName || '')}</td>
-            <td class="col-num"><input class="cell-input" type="number" step="0.01" value="${row.tons === '' ? '' : row.tons}" placeholder="0" title="Negative tons take material out of the pile" oninput="updateInvAdjTons(${i}, this.value)" onchange="renderInventory()" /></td>
+            <td class="col-num"><input class="cell-input" type="number" step="0.01" value="${row.tons === '' ? '' : row.tons}" placeholder="0" title="Negative tons take material out of the pile" oninput="updateInvAdjTons(${i}, this.value)" onchange="renderInventory(true, true)" /></td>
             <td><select class="cell-select" onchange="updateInvAdjText(${i}, 'reason', this.value)">${reasonOpts}</select></td>
             <td class="col-comments"><input class="cell-input" type="text" value="${escapeHtml(row.comments)}" placeholder="Notes…" oninput="updateInvAdjText(${i}, 'comments', this.value)" /></td>
             <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteInvAdjRow(${i})">✕</button></td>
@@ -5828,7 +5868,11 @@
       inventoryAsOf = /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? String(value) : '';
       renderInventory();
     }
+    // Every mutator below is gated on inventoryLoaded. The tab paints before
+    // its blob lands, so an edit made in that window would otherwise save an
+    // empty store over the real openings and adjustments on the server.
     function setInventoryBasis(value) {
+      if (!inventoryLoaded) return;
       const basis = value === 'crusher' ? 'crusher' : 'final';
       if (quarryInventory.basis === basis) return;
       quarryInventory.basis = basis;
@@ -5836,12 +5880,16 @@
       renderInventory();
     }
     function onInvOpeningTons(input) {
+      if (!inventoryLoaded) return;
       const loc = input.dataset.loc || '';
       if (!loc) return;
       const raw = String(input.value).trim();
       const n = raw === '' ? null : Math.round(Number(raw) * 100) / 100;
       const asOf = (quarryInventory.openings[loc] || {}).asOf || '';
-      if (n === null || !Number.isFinite(n) || n === 0) {
+      // A stockpile can't open negative — a typo'd "-500" clears the entry
+      // (and the re-render puts the field back to blank) rather than quietly
+      // dragging the balance down.
+      if (n === null || !Number.isFinite(n) || n <= 0) {
         // Keep a zeroed entry only when its as-of cutoff is still doing work.
         if (asOf) quarryInventory.openings[loc] = { tons: 0, asOf };
         else delete quarryInventory.openings[loc];
@@ -5852,6 +5900,7 @@
       renderInventory();
     }
     function onInvOpeningAsOf(input) {
+      if (!inventoryLoaded) return;
       const loc = input.dataset.loc || '';
       if (!loc) return;
       const raw = String(input.value || '');
@@ -5903,7 +5952,8 @@
       const byInv = computeInventory();
       const t = byInv.total;
       const scope = invScopeLabel(byInv);
-      const asOfTxt = byInv.cutoff || 'today';
+      const asOfTxt = byInv.cutoff || 'no date cutoff';
+      const asOfMeta = byInv.cutoff ? `As of ${byInv.cutoff}` : 'No date cutoff — every dated entry counted';
       const generated = new Date().toLocaleString();
 
       const cloneTable = (selector, title) => {
@@ -5925,7 +5975,7 @@
           ${kpiCard('Tons On Hand', formatTons(t.onHand), `${byInv.locations.length} location(s)`)}
           ${kpiCard('Produced to Date', formatTons(t.produced), `${formatTons(t.tonsCrushed)} tons to crusher`)}
           ${kpiCard('Sold to Date', formatTons(t.tonsSold), `Across ${t.salesCount} sales`)}
-          ${kpiCard('Inventory Value', formatMoney(t.value), t.produced > 0 ? `At ${formatMoney(t.costPerTon)}/ton` : 'No cost basis')}
+          ${kpiCard('Inventory Value', formatMoney(t.value), escapeHtml(invValueSubText(t)))}
           ${kpiCard('Opening Balance', formatTons(t.opening), 'Entered per pit')}
           ${kpiCard('Adjustments', (t.adjustments > 0 ? '+' : '') + formatTons(t.adjustments), `Across ${t.adjCount} entries`)}
           ${kpiCard('Avg Tons Sold / Day', formatTons(t.dailyRate), `Trailing ${INV_RATE_WINDOW_DAYS} days`)}
@@ -5968,7 +6018,7 @@
   @media print { body { padding: 0.1in; } }
 </style></head><body>
 <h1>Quarry Inventory &mdash; ${escapeHtml(scope)}</h1>
-<div class="meta">As of ${escapeHtml(asOfTxt)} &middot; Generated ${generated} &middot; Stock added on ${basisTxt}
+<div class="meta">${escapeHtml(asOfMeta)} &middot; Generated ${generated} &middot; Stock added on ${basisTxt}
   &middot; On hand = opening + produced (Crushing) &minus; sold (Sales) + adjustments</div>
 ${kpis}
 ${sections}
