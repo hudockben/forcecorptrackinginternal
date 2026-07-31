@@ -14674,10 +14674,10 @@ function closeJobSummaryModal() {
 function jobSummaryPrint() {
   const projId = _jobSummaryProjId;      // capture before close nulls it
   closeJobSummaryModal();
-  if (projId) exportJobSummary(projId);
+  if (projId) exportJobSummary(projId).catch(e => console.warn('[JobSummary]', e.message));
 }
 
-function jobSummaryEmail() {
+async function jobSummaryEmail() {
   const projId = _jobSummaryProjId;      // capture before close nulls it
   closeJobSummaryModal();
   if (!projId) return;
@@ -14688,7 +14688,7 @@ function jobSummaryEmail() {
   const p = getProj(projId); if (!p) return;
   const projName = p['project-name'] || 'Project';
   const jobNo    = p['job-number'] || null;
-  const built = exportJobSummary(projId, { returnHtml: true });
+  const built = await exportJobSummary(projId, { returnHtml: true, forEmail: true });
   if (!built) return;
   const emailHtml = built.html.replace(/<script>window\.onload\s*=\s*\(\)\s*=>\s*\{\s*window\.print\(\);?\s*\}<\/script>/i, '');
   const subject = 'Job Summary — ' + projName + (jobNo ? ' (' + jobNo + ')' : '');
@@ -14698,11 +14698,297 @@ function jobSummaryEmail() {
     projectName:    projName,
     defaultSubject: subject,
     getHTML:        () => emailHtml,
+    getAttachments: () => (built.ganttPng && built.ganttPng.dataUrl)
+      ? [{ filename: 'schedule-gantt.png', content: built.ganttPng.dataUrl.split(',')[1], contentId: 'job-gantt' }]
+      : [],
   });
 }
 
-function exportJobSummary(projId, opts = {}) {
+/* ── Job Summary — Schedule page ──────────────────────────────────────────
+   The report's third page: the job's schedule and the Gantt chart drawn from
+   it, printed on a sheet of its own so cost, purchases and schedule each read
+   cleanly. Two sources, in order of preference:
+     1. the job's saved Construction Schedule — the editable task timeline and
+        the Gantt built from it;
+     2. failing that, the bid items' start / target dates, which is what the
+        Schedule tab charts — so a job that never had a task schedule built
+        still prints its planned timeline.                                    */
+function _jsEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+const _JS_DAY_MS = 86400000;
+// Print-friendly fills for the Schedule-tab status colors — the on-screen
+// chart is drawn for a dark UI, these read on white paper.
+const _JS_BAR_COLORS = {
+  'on-track':    { fill: '#86efac', edge: '#15803d', ink: '#14532d', label: 'On Track' },
+  'at-risk':     { fill: '#fde68a', edge: '#b45309', ink: '#78350f', label: 'At Risk' },
+  'behind':      { fill: '#fca5a5', edge: '#dc2626', ink: '#7f1d1d', label: 'Behind' },
+  'complete':    { fill: '#93c5fd', edge: '#1d4ed8', ink: '#1e3a8a', label: 'Complete' },
+  'not-started': { fill: '#c7d2fe', edge: '#6366f1', ink: '#312e81', label: 'Not Started' },
+  'no-data':     { fill: '#e5e7eb', edge: '#9ca3af', ink: '#374151', label: 'No Data' },
+};
+const _jsBarColor = s => _JS_BAR_COLORS[s] || _JS_BAR_COLORS['no-data'];
+const _jsMs    = s => new Date(s + 'T12:00:00').getTime();
+const _jsDayLb = ms => new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+const _jsDateLb = ms => new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+/* Schedule page built from the bid items' planned dates. Returns the pieces
+   the caller assembles — `section(chart)` wraps a chart in the page, `svg` is
+   the chart itself and `rasterSvg` the same drawing at a fixed size for the
+   emailed copy. Null when no bid item carries a start or target date, since
+   then there is no timeline to draw. */
+function _jsBidScheduleHtml(proj) {
+  const items = (proj.bidItems || []).filter(bi => bi.start_date || bi.target_date);
+  if (!items.length) return null;
+
+  const deadline = _schedGetDeadline(proj);
+  const daysLeft = _schedDaysRemaining(deadline);
+  const agg      = _schedPaceForProject(proj);
+  const todayStr = _localDateStr();
+  const todayMs  = _jsMs(todayStr);
+  const dash     = '—';
+
+  // One pass per item: status, progress, and where the current pace lands it.
+  const rows = items.map(bi => {
+    const c = _schedCalcRow(bi, agg, daysLeft, deadline);
+    let projFin = null;
+    if (!c.forcedComplete && c.pct < 100 && !c.isLumpSum) {
+      const pace = c.recentPace > 0 ? c.recentPace : c.currentPace;
+      if (pace > 0 && c.unitsLeft > 0) projFin = _addWorkingDays(todayStr, c.unitsLeft / pace);
+    }
+    return {
+      bi, c, projFin,
+      startMs: bi.start_date  ? _jsMs(bi.start_date)  : null,
+      endMs:   bi.target_date ? _jsMs(bi.target_date) : (deadline ? _jsMs(deadline) : null),
+      projMs:  projFin ? _jsMs(projFin) : null,
+      name:    bi.sub_code || bi.cost_code || '(No Code)',
+      sub:     [bi.sub_code ? bi.cost_code : '', (bi.unit || '').toUpperCase()].filter(Boolean).join(' · '),
+    };
+  }).sort((a, b) => (a.startMs || a.endMs || 0) - (b.startMs || b.endMs || 0));
+
+  // Chart window: every dated point plus today and the deadline, padded a few
+  // days each side so nothing sits hard against an edge.
+  const marks = [todayMs];
+  rows.forEach(r => [r.startMs, r.endMs, r.projMs].forEach(m => { if (m) marks.push(m); }));
+  if (deadline) marks.push(_jsMs(deadline));
+  const rangeStart = Math.min.apply(null, marks) - 3 * _JS_DAY_MS;
+  const rangeEnd   = Math.max.apply(null, marks) + 3 * _JS_DAY_MS;
+  const totalMs    = Math.max(rangeEnd - rangeStart, _JS_DAY_MS);
+
+  // Geometry in viewBox units — the SVG scales to the page width, so the chart
+  // fills the sheet whatever the paper turns out to be.
+  const W = 1000, LEFT = 232, RIGHT = 14, HDR = 38, FOOT = 10;
+  const chartW = W - LEFT - RIGHT;
+  const rowH   = Math.max(15, Math.min(28, Math.floor(420 / rows.length)));
+  const barH   = Math.max(7, Math.min(14, rowH - 9));
+  const barTop = (rowH - barH) / 2;
+  const H      = HDR + rows.length * rowH + FOOT;
+  const X      = ms => LEFT + ((ms - rangeStart) / totalMs) * chartW;
+  const clampX = v => Math.max(LEFT, Math.min(W - RIGHT, v));
+
+  // Month gridlines, labelled along the top strip.
+  let grid = '', ticks = '';
+  const gm = new Date(rangeStart); gm.setDate(1); gm.setHours(12, 0, 0, 0);
+  if (gm.getTime() < rangeStart) gm.setMonth(gm.getMonth() + 1);
+  for (let g = 0; g < 400 && gm.getTime() <= rangeEnd; g++) {
+    const gx = X(gm.getTime());
+    grid  += `<line x1="${gx.toFixed(1)}" y1="${HDR}" x2="${gx.toFixed(1)}" y2="${H - FOOT}" stroke="#e2e5ea" stroke-width="1"/>`;
+    ticks += `<text x="${(gx + 3).toFixed(1)}" y="13" font-size="10" fill="#6b7280" font-weight="600">${_jsDayLb(gm.getTime())}</text>`;
+    gm.setMonth(gm.getMonth() + 1);
+  }
+
+  const tx = clampX(X(todayMs));
+  const todayMark = `<line x1="${tx.toFixed(1)}" y1="${HDR - 8}" x2="${tx.toFixed(1)}" y2="${H - FOOT}" stroke="#f59e0b" stroke-width="1.4" stroke-dasharray="4,3"/>
+    <text x="${tx.toFixed(1)}" y="${HDR - 11}" font-size="8" fill="#b45309" text-anchor="middle" font-weight="700">TODAY</text>`;
+  let deadlineMark = '';
+  if (deadline) {
+    const dx = clampX(X(_jsMs(deadline)));
+    deadlineMark = `<line x1="${dx.toFixed(1)}" y1="${HDR - 8}" x2="${dx.toFixed(1)}" y2="${H - FOOT}" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="4,3"/>
+      <text x="${dx.toFixed(1)}" y="${HDR - 11}" font-size="8" fill="#dc2626" text-anchor="middle" font-weight="700">DEADLINE</text>`;
+  }
+
+  const bars = rows.map((r, i) => {
+    const y = HDR + i * rowH;
+    const c = _jsBarColor(r.c.status);
+    const p = [];
+    if (i % 2) p.push(`<rect x="0" y="${y}" width="${W}" height="${rowH}" fill="#f7f8fa"/>`);
+
+    const trim = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
+    const twoLine = rowH >= 20 && !!r.sub;
+    p.push(`<text x="${LEFT - 7}" y="${(y + rowH / 2 + (twoLine ? -1 : 3)).toFixed(1)}" font-size="${Math.min(10, Math.max(7, rowH - 6))}" fill="#111" text-anchor="end">${_jsEsc(trim(r.name, 32))}</text>`);
+    if (twoLine) {
+      p.push(`<text x="${LEFT - 7}" y="${(y + rowH / 2 + 8).toFixed(1)}" font-size="7" fill="#9ca3af" text-anchor="end">${_jsEsc(trim(r.sub, 38))}</text>`);
+    }
+
+    // Planned span; a date-less end gets a short start marker instead of a bar.
+    const s = r.startMs != null ? r.startMs : todayMs;
+    if (r.endMs != null && r.endMs > s) {
+      const x1 = clampX(X(s)), x2 = clampX(X(r.endMs)), bw = Math.max(2, x2 - x1);
+      p.push(`<rect x="${x1.toFixed(1)}" y="${(y + barTop).toFixed(1)}" width="${bw.toFixed(1)}" height="${barH}" rx="3" fill="${c.fill}" stroke="${c.edge}" stroke-width="0.9" opacity="0.45"/>`);
+      const pct = Math.max(0, Math.min(100, r.c.forcedComplete ? 100 : r.c.pct));
+      if (pct > 0) {
+        p.push(`<rect x="${x1.toFixed(1)}" y="${(y + barTop).toFixed(1)}" width="${(bw * pct / 100).toFixed(1)}" height="${barH}" rx="3" fill="${c.fill}" stroke="${c.edge}" stroke-width="0.9"/>`);
+      }
+      if (bw > 34 && barH >= 10) {
+        p.push(`<text x="${((x1 + x2) / 2).toFixed(1)}" y="${(y + barTop + barH / 2 + 3).toFixed(1)}" font-size="8" fill="${c.ink}" text-anchor="middle" font-weight="700">${Math.round(pct)}%</text>`);
+      }
+    } else {
+      const x1 = clampX(X(s));
+      p.push(`<rect x="${x1.toFixed(1)}" y="${(y + barTop).toFixed(1)}" width="7" height="${barH}" rx="2" fill="${c.fill}" stroke="${c.edge}" stroke-width="0.9"/>`);
+    }
+
+    // Where today's pace lands the code, when that is not the target itself.
+    if (r.projMs && (r.endMs == null || Math.abs(r.projMs - r.endMs) > _JS_DAY_MS)) {
+      const px = X(r.projMs);
+      if (px >= LEFT && px <= W - RIGHT) {
+        const cy = y + rowH / 2, d = Math.max(3.5, barH / 2.6);
+        const col = r.projMs > (r.endMs || todayMs) ? '#dc2626' : '#15803d';
+        p.push(`<polygon points="${px.toFixed(1)},${(cy - d).toFixed(1)} ${(px + d).toFixed(1)},${cy.toFixed(1)} ${px.toFixed(1)},${(cy + d).toFixed(1)} ${(px - d).toFixed(1)},${cy.toFixed(1)}" fill="${col}"/>`);
+      }
+    }
+    return p.join('');
+  }).join('');
+
+  const svgInner = `${grid}${bars}
+    <rect x="0" y="0" width="${W}" height="${HDR - 2}" fill="#fff"/>
+    ${ticks}${todayMark}${deadlineMark}
+    <line x1="${LEFT}" y1="0" x2="${LEFT}" y2="${H}" stroke="#d5d8dd" stroke-width="1"/>
+    <line x1="0" y1="${HDR}" x2="${W}" y2="${HDR}" stroke="#d5d8dd" stroke-width="1"/>`;
+  const svgTag = size => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" ${size} preserveAspectRatio="xMinYMin meet" style="display:block">${svgInner}</svg>`;
+  // The printed report scales the chart to the sheet; the emailed one gets the
+  // same drawing at a fixed size, ready to rasterize.
+  const svg       = svgTag('width="100%" height="auto"');
+  const rasterSvg = svgTag(`width="${W}" height="${H}"`);
+
+  // ── KPI strip ──────────────────────────────────────────────────────────
+  const starts  = rows.map(r => r.startMs).filter(m => m != null);
+  const targets = rows.filter(r => r.bi.target_date).map(r => _jsMs(r.bi.target_date));
+  let wDone = 0, wAll = 0;
+  rows.forEach(r => {
+    const w = (r.c.bidQty || 0) * (parseFloat(r.bi.unit_cost) || 0) || 1;
+    wDone += w * Math.max(0, Math.min(100, r.c.forcedComplete ? 100 : r.c.pct));
+    wAll  += w;
+  });
+  const overall = wAll ? Math.round(wDone / wAll) : 0;
+  const late    = rows.filter(r => r.c.status === 'behind' || r.c.status === 'at-risk').length;
+  const kpis = [
+    starts.length  ? ['Schedule Start', _jsDateLb(Math.min.apply(null, starts))] : null,
+    targets.length ? ['Planned Finish', _jsDateLb(Math.max.apply(null, targets))] : null,
+    deadline       ? ['Project Deadline', _jsDateLb(_jsMs(deadline))] : null,
+    daysLeft !== null ? ['Working Days Left', daysLeft >= 0 ? String(daysLeft) : `<span class="sqft-over">${Math.abs(daysLeft)}d overdue</span>`] : null,
+    ['Scheduled Codes', String(rows.length)],
+    ['Overall % Complete', overall + '%'],
+    late ? ['Behind / At Risk', `<span class="sqft-over">${late}</span>`] : null,
+  ].filter(Boolean)
+   .map(([l, v]) => `<div class="sum-metric"><div class="sum-label">${l}</div><div class="sum-val">${v}</div></div>`).join('');
+
+  const legend = Object.keys(_JS_BAR_COLORS).map(k => {
+    const c = _JS_BAR_COLORS[k];
+    return `<span><i style="background:${c.fill};border:1px solid ${c.edge}"></i>${c.label}</span>`;
+  }).join('') + '<span><i style="background:#dc2626;transform:rotate(45deg)"></i>Projected finish at current pace</span>';
+
+  const qf = n => Number(Math.round(n * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const detail = rows.map(r => {
+    const c = _jsBarColor(r.c.status);
+    const pct = Math.round(Math.max(0, Math.min(100, r.c.forcedComplete ? 100 : r.c.pct)));
+    const lateFin = r.projMs && r.endMs && r.projMs > r.endMs;
+    return `<tr>
+      <td>${_jsEsc(r.bi.cost_code) || dash}</td>
+      <td class="sub">${_jsEsc(r.bi.sub_code) || dash}${r.bi.description ? `<span class="desc"> — ${_jsEsc(r.bi.description)}</span>` : ''}</td>
+      <td class="ctr">${_jsEsc(r.bi.unit || '')}</td>
+      <td>${r.bi.start_date ? _jsDateLb(_jsMs(r.bi.start_date)) : dash}</td>
+      <td>${r.bi.target_date ? _jsDateLb(_jsMs(r.bi.target_date)) : dash}</td>
+      <td class="num">${r.c.bidQty ? qf(r.c.bidQty) : dash}</td>
+      <td class="num">${r.c.runningQty ? qf(r.c.runningQty) : dash}</td>
+      <td class="ctr">${pct}%</td>
+      <td class="${lateFin ? 'over' : ''}">${r.projFin ? _jsDateLb(_jsMs(r.projFin)) : dash}</td>
+      <td class="ctr" style="color:${c.edge};font-weight:700">${c.label}</td>
+    </tr>`;
+  }).join('');
+
+  const section = chart => `
+    <div class="sum-bar sched-bar">${kpis}</div>
+    <div class="gantt-box">${chart}</div>
+    <div class="sched-legend">${legend}</div>
+    <p class="note">Planned timeline from the bid items' start and target dates. Bars are shaded by schedule status and filled to percent complete; the dashed amber line marks today and the dashed red line the project deadline. A diamond marks where the current pace lands the code when that differs from its target.</p>
+
+    <h3 class="sched-detail-h">Schedule — Cost Code Detail</h3>
+    <table class="sched-table">
+      <thead><tr>
+        <th>Cost Code</th><th>Sub Code</th><th class="ctr" style="text-align:center">Unit</th>
+        <th>Start</th><th>Target</th>
+        <th class="num">Bid Qty</th><th class="num">Running Qty</th>
+        <th class="ctr" style="text-align:center">% Done</th><th>Projected Finish</th>
+        <th class="ctr" style="text-align:center">Status</th>
+      </tr></thead>
+      <tbody>${detail}</tbody>
+    </table>`;
+  return { section, svg, rasterSvg, w: W, h: H };
+}
+
+/* Rasterize a self-contained SVG so it can ride along as an inline image.
+   Resolves to null whenever the browser refuses — the caller then falls back
+   to the vector chart, which still prints. */
+function _jsSvgToPng(svg, w, h) {
+  return new Promise(resolve => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const scale = 2;
+          const cv = document.createElement('canvas');
+          cv.width = w * scale; cv.height = h * scale;
+          const ctx = cv.getContext('2d');
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+          ctx.drawImage(img, 0, 0, cv.width, cv.height);
+          resolve({ dataUrl: cv.toDataURL('image/png'), width: w, height: h });
+        } catch (e) { console.warn('[JobSummary] gantt raster failed:', e.message); resolve(null); }
+      };
+      img.onerror = () => resolve(null);
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    } catch (e) { resolve(null); }
+  });
+}
+
+// The emailed chart, as an inline image the mail client can actually show.
+function _jsGanttImg(png) {
+  return `<img src="cid:job-gantt" alt="Schedule Gantt chart — see the schedule detail table below for exact dates."`
+    + ` style="display:block;width:100%;max-width:${png.width}px;height:auto" />`;
+}
+
+/* The report's schedule page: the bid-item timeline that the Schedule tab
+   charts, or an honest note when the job carries no planned dates at all — so
+   the section never prints an empty sheet without saying why. */
+async function _jsScheduleSectionHtml(projId, forEmail) {
+  const p = getProj(projId); if (!p) return { html: '', png: null };
+  // The timeline reads project deadlines the Schedule tab loads on demand —
+  // pull them in if this session has not needed them yet.
+  if (!_schedDeadlinesLoaded) {
+    try { await loadScheduleDeadlines(); } catch (e) { /* the chart just loses the deadline line */ }
+  }
+  try {
+    const bid = _jsBidScheduleHtml(p);
+    if (bid) {
+      const png = forEmail ? await _jsSvgToPng(bid.rasterSvg, bid.w, bid.h) : null;
+      return { html: bid.section(png ? _jsGanttImg(png) : bid.svg), png };
+    }
+  } catch (e) { console.warn('[JobSummary] bid timeline failed:', e.message); }
+  return { png: null, html: `<p class="note" style="font-style:normal;font-size:10px">No schedule has been built for this job yet. Put start and target dates on the bid items and the timeline and Gantt chart will print here.</p>` };
+}
+
+async function exportJobSummary(projId, opts = {}) {
   const p = getProj(projId); if (!p) return null;
+  // A pop-up is only granted inside the click that asked for the report, so
+  // the window is claimed up front and written into once the schedule — which
+  // has to be fetched — is in hand.
+  const win = (opts && opts.returnHtml) ? null : window.open('', '_blank');
+  if (win) {
+    try {
+      win.document.write('<!DOCTYPE html><meta charset="utf-8"><title>Job Summary</title>'
+        + '<body style="font:13px/1.5 system-ui,sans-serif;color:#475569;padding:26px">Building the job summary report&hellip;');
+    } catch (e) { /* not writable yet — the real write below still lands */ }
+  }
   const name  = p['project-name'] || 'Project';
   const jobNo = p['job-number'] ? ` — ${p['job-number']}` : '';
   const dash  = '—';
@@ -14882,6 +15168,8 @@ function exportJobSummary(projId, opts = {}) {
     </div>
   </div>`;
 
+  const schedule = await _jsScheduleSectionHtml(projId, opts && opts.forEmail);
+
   const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>${esc(name)} — Job Summary</title>
   <style>
@@ -14920,6 +15208,26 @@ function exportJobSummary(projId, opts = {}) {
     tr.subtotal td { background: #d9e2ea; font-weight: 700; font-style: italic; font-size: 10px; border-top: 1.5px solid #64748b; border-bottom: 1px solid #94a3b8; }
     tr.totals td { font-weight: 800; font-size: 11px; background: #f9f9f9; border-top: 2px solid #999; }
     tr.jobrow td.src { color: #92400e; }
+    /* ── Schedule page ─────────────────────────────────────────────────
+       The job's timeline and Gantt chart on a sheet of their own. The vars
+       feed the shared Gantt renderer, which is written against the app's
+       theme tokens. */
+    :root { --border: #d5d8dd; --muted: #6b7280; --fg: #111; }
+    .sched-page { page-break-before: always; }
+    .sched-bar { background: #f6f8fa; border-color: #d8dee6; }
+    .sched-bar .sum-sep { background: #d8dee6; }
+    .kpi-note { font-size: 7.5px; font-weight: 400; color: #8a8a8a; }
+    .gantt-box { border: 1px solid #e3e5e9; border-radius: 5px; padding: 9px 11px; margin-top: 7px; }
+    .gantt-box svg { max-width: 100%; }
+    .sched-legend { display: flex; gap: 13px; flex-wrap: wrap; margin-top: 6px; font-size: 8px; color: #555; }
+    .sched-legend i { display: inline-block; width: 9px; height: 8px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
+    .sched-table thead { display: table-header-group; }
+    .sched-table td { font-size: 9px; }
+    .sched-table td.sub { min-width: 130px; }
+    tr.ms-row td { background: #fdf6e7; }
+    .crit { color: #dc2626; font-weight: 700; }
+    .off, .ms { color: #b45309; font-weight: 700; }
+    h3.sched-detail-h { margin-top: 15px; }
     @page { size: landscape; margin: 1cm; }
     .masthead, .sum-bar { page-break-inside: avoid; }
     @media print { body { padding: 0; } h3 { page-break-after: avoid; } tr { page-break-inside: avoid; } }
@@ -14960,14 +15268,21 @@ function exportJobSummary(projId, opts = {}) {
     </tr></tbody>
   </table>
   <p class="note">Purchases include formal POs plus material entered directly on job rows. Rows tagged “Job row” were not entered through the Purchase Order tab.</p>
+
+  <div class="sched-page">
+    ${mastheadHTML}
+    <h2>${esc(name)}${esc(jobNo)}</h2>
+    ${p['client'] ? `<p class="meta">${esc(p['client'])}</p>` : ''}
+    <h3>Schedule &amp; Gantt Chart</h3>
+    ${schedule.html}
+  </div>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
   if (opts && opts.returnHtml) {
-    return { html: _html, name, jobNo };
+    return { html: _html, name, jobNo, ganttPng: schedule.png };
   }
-  const win = window.open('', '_blank');
-  if (win) { win.document.write(_html); win.document.close(); }
+  if (win) { win.document.open(); win.document.write(_html); win.document.close(); }
   return null;
 }
 
