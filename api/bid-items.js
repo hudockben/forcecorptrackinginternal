@@ -158,11 +158,22 @@ module.exports = async (req, res) => {
       WHERE key = ${scopedIndexKey}
     `;
 
-    // 3. Mirror into the normalized bid_items table. Frontend doesn't
-    //    read from this directly, but /api/projects and any analytics
-    //    queries do. If this fails the blob is still correct and the
-    //    next full saveProject will reconcile via syncProjects.
-    try {
+    // 3. Mirror into the normalized bid_items table — turf only.
+    //
+    //    api/lib/sync-normalized.js routes fct_project_* and fct_projects*
+    //    into projects/bid_items and nothing else, so a paving or kiewit
+    //    project never gets a projects row. bid_items.project_id is a FK to
+    //    projects(id), so mirroring one of their bid items violated the
+    //    constraint on every single edit: caught below, logged, and never
+    //    reconciled — there is no syncProjects pass for those blobs to fix
+    //    it later. The blob is the source of truth the whole app reads, so
+    //    skipping the write loses nothing and stops the noise.
+    //
+    //    If the mirror is ever meant to carry all divisions it needs a
+    //    division column first (projects/bid_items have none, unlike
+    //    daily_tracking) and syncForKey needs to route the other prefixes.
+    const mirrorsToNormalized = projectKey.startsWith('fct_project_');
+    if (mirrorsToNormalized) try {
       await sql`
         INSERT INTO bid_items (
           id, project_id, company_code, cost_code, sub_code, description,
@@ -190,9 +201,10 @@ module.exports = async (req, res) => {
           updated_at    = NOW()
       `;
     } catch (mirrorErr) {
-      // Non-fatal — the blob was updated. Log with identifiers so the
-      // divergence is traceable; the next saveProject's syncProjects
-      // will reconcile.
+      // Non-fatal — the blob was updated, and the blob is what the app
+      // reads. Log with identifiers so the divergence is traceable; the
+      // next full saveProject of this turf project reconciles it through
+      // syncProjects.
       console.warn(
         `[bid-items] normalized mirror failed for company=${companyCode} ` +
         `project=${projectId} bidItem=${item.id}: ${mirrorErr.message}`

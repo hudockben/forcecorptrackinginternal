@@ -14,6 +14,10 @@ const {
 } = require('../lib/auth');
 
 const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory', 'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists'];
+// The only prefixes /api/data/_keys will enumerate. Keeping this to the three
+// project-blob prefixes is what stops it becoming a general key scanner.
+const KEY_SCAN_PREFIXES = ['fct_project_', 'fct_paving_project_', 'fct_kiewit_project_'];
+
 function isAllowedKey(k) {
   return ALLOWED_KEYS.includes(k)
     || /^fct_project_[a-zA-Z0-9_-]+$/.test(k)
@@ -76,6 +80,46 @@ module.exports = async (req, res) => {
     const result = {};
     rows.forEach(r => { result[r.key.replace(prefix, '')] = r.value; });
     return res.json({ values: result });
+  }
+
+  // GET /api/data/_keys?prefix=fct_paving_project_
+  //   → { prefix, ids: ['abc', 'def', ...] }
+  //
+  // Lists the project ids this company has stored under one project-blob
+  // prefix. Used by the client's project recovery pass, which previously
+  // asked /api/projects for ids — that reads the normalized table, which only
+  // ever receives turf projects, so paving and kiewit recovered nothing.
+  //
+  // Deliberately NOT a general key scanner: the prefix must be one of the
+  // three project prefixes, so this cannot be turned into an enumeration of
+  // auth, config or any other blob. Returns ids only; the caller fetches the
+  // blobs it actually wants through _batch.
+  if (key === '_keys' && req.method === 'GET') {
+    const prefix = String(req.query.prefix || '');
+    if (!KEY_SCAN_PREFIXES.includes(prefix)) {
+      return res.status(400).json({ error: `prefix must be one of: ${KEY_SCAN_PREFIXES.join(', ')}` });
+    }
+    // Division access is decided by the prefix itself; the suffix is a project
+    // id and carries no authorization meaning.
+    if (!isKeyAllowedForUser(prefix + 'x', payload)) {
+      return res.status(403).json({ error: 'You do not have access to this division\'s data' });
+    }
+    const scoped = `${payload.companyCode}:${prefix}`;
+    // LEFT(...)= rather than LIKE: in SQL LIKE an underscore matches any single
+    // character, so 'fct_project_%' also matches 'fct_projects_index' and any
+    // other near-miss key. Comparing a fixed-length slice has no wildcards.
+    // value IS NOT NULL skips tombstones: deleting a project stores null under
+    // its key rather than removing the row, so a null here means "deleted",
+    // not "lost". Callers can therefore treat every id returned as a project
+    // that should exist.
+    const rows = await sql`
+      SELECT key FROM app_data
+      WHERE LEFT(key, ${scoped.length}) = ${scoped} AND value IS NOT NULL
+    `;
+    const ids = rows
+      .map(r => r.key.slice(scoped.length))
+      .filter(id => /^[a-zA-Z0-9_-]+$/.test(id));
+    return res.json({ prefix, ids });
   }
 
   if (!isAllowedKey(key)) {
