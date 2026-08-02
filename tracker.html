@@ -8971,12 +8971,20 @@ function commitBidCopy() {
 
   const targetId2 = target.id;
   const targetName = target['project-name'] || 'Untitled Project';
-  saveProject(targetId2);
   _bidScInvalidate();
   closeBidCopy();
 
-  // Land on the destination — the next thing you do is adjust its quantities.
+  // Leave the bid view BEFORE saving. Closing it force-flushes pending project
+  // saves with keepalive:true, and one full blob carrying a copied bid can
+  // exceed the browser's 64KB keepalive quota on its own (~400 lines) and be
+  // dropped. Saving afterwards puts it on the ordinary fetch path, which has
+  // no such cap.
   closeBidView();
+  saveProject(targetId2);
+  // addProject() rendered the cards before this project had a name, so its
+  // card would still read "Untitled Project" behind the bid view.
+  renderProjectsTab();
+  // Land on the destination — the next thing you do is adjust its quantities.
   openBidView(targetId2);
 
   const parts = [];

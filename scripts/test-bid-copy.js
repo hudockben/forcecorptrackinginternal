@@ -89,8 +89,20 @@ assert('the destructive mode confirms first',
   !!commitFn && /mode === 'replace'[\s\S]{0,300}confirm\(/.test(commitFn[0]));
 assert('the destination is persisted', !!commitFn && /saveProject\(targetId2\)/.test(commitFn[0]));
 assert('the sub code catalog is invalidated', !!commitFn && /_bidScInvalidate\(\)/.test(commitFn[0]));
-assert('the view lands on the destination',
-  !!commitFn && /closeBidView\(\);\s*\n\s*openBidView\(targetId2\);/.test(commitFn[0]));
+assert('the view lands on the destination', !!commitFn && /openBidView\(targetId2\);/.test(commitFn[0]));
+// closeBidView() force-flushes pending project saves with keepalive:true, and
+// the browser rejects a keepalive body over 64KB outright — a copied bid of
+// roughly 400+ lines exceeds that on its own and would never reach the server
+// (localStorage would still have it, so it looks fine until the next device).
+// Saving AFTER the flush puts it on the ordinary fetch path, which has no cap.
+assert('the save happens after leaving the bid view, not before',
+  !!commitFn && commitFn[0].indexOf('closeBidView()') < commitFn[0].indexOf('saveProject(targetId2)'),
+  'saveProject must not be pending when closeBidView force-flushes with keepalive');
+// addProject() renders the cards before the new project has a name.
+assert('the project cards are refreshed so a new one shows its name',
+  !!commitFn && /renderProjectsTab\(\);/.test(commitFn[0]));
+assert('  after the name is set', !!commitFn &&
+  commitFn[0].indexOf("target['project-name'] = name") < commitFn[0].indexOf('renderProjectsTab()'));
 assert('preview and commit share the add-vs-update planner',
   !!commitFn && /_pcPlan\(/.test(commitFn[0])
   && /function _bcpRefresh\(\)[\s\S]+?_pcPlan\(/.test(src));
