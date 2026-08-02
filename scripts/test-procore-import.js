@@ -210,5 +210,97 @@ assert('an empty existing list plans everything as new',
   _pcPlan(items, []).added === items.length);
 
 // ─────────────────────────────────────────────────────────────────────
+// 3) REGRESSIONS — each of these was a real bug caught in audit
+// ─────────────────────────────────────────────────────────────────────
+console.log('\n[regression — apostrophes in an imported cost code]');
+// Procore section names carry apostrophes ("Owner's Allowance"). The bid
+// group header passes the cost code into inline onclick handlers, where it
+// lands inside a JS string literal — esc() only escapes " for the attribute
+// layer, so an apostrophe used to end the string and break + Sub Code,
+// rename and delete on the whole group.
+const escJsSrc = src.match(/function escJs\(s\) \{[\s\S]+?\n\}/);
+assert('escJs helper exists', !!escJsSrc);
+const jsBox = {};
+vm.createContext(jsBox);
+vm.runInContext(escJsSrc[0], jsBox);
+const { escJs } = jsBox;
+assert('escJs escapes an apostrophe',      escJs("Owner's Allowance") === "Owner\\'s Allowance");
+assert('escJs escapes a backslash first',  escJs('a\\b') === 'a\\\\b');
+assert('escJs escapes & before "',         escJs('Erosion & Sediment') === 'Erosion &amp; Sediment');
+assert('escJs escapes a double quote',     escJs('6" Curb') === '6&quot; Curb');
+assert('escJs escapes angle brackets',     escJs('a<b>c') === 'a&lt;b&gt;c');
+// Round-trip: HTML-decode the attribute, then read it as a JS string literal.
+const htmlDecode = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+for (const raw of ["Owner's Allowance", 'Pitcher\'s Mound', 'Erosion & Sediment', '6" Curb', "a'b\\c"]) {
+  const attr = `addBidSubCode('p1','${escJs(raw)}')`;
+  let got = null;
+  try { got = vm.runInNewContext(`(function(a,b){return b})${htmlDecode(attr).slice('addBidSubCode'.length)}`); } catch { /* got stays null */ }
+  assert(`round-trips ${JSON.stringify(raw)}`, got === raw, JSON.stringify(got));
+}
+
+const grpHdr = src.match(/hdrTr\.innerHTML = readonly[\s\S]+?`;\n/);
+assert('group header rename handler uses escJs',   !!grpHdr && /updateBidGroupCode\('\$\{projId\}','\$\{escJs\(costCode\)\}'/.test(grpHdr[0]));
+assert('group header + Sub Code uses escJs',       !!grpHdr && /addBidSubCode\('\$\{projId\}','\$\{escJs\(costCode\)\}'\)/.test(grpHdr[0]));
+assert('group header delete + confirm use escJs',  !!grpHdr && /confirm\('Delete all sub codes under[^`]*escJs\(costCode\)[\s\S]*?removeBidGroup\('\$\{projId\}','\$\{escJs\(costCode\)\}'\)/.test(grpHdr[0]));
+assert('no bare esc(costCode) left in a handler',
+  !!grpHdr && !/onc(lick|hange)="[^"]*\$\{esc\(costCode\)\}/.test(grpHdr[0]));
+// Scale of Economy reads its codes off bid items, so imported codes reach it too.
+assert('_soeEditUnit handler uses escJs',
+  /_soeEditUnit\('\$\{escJs\(s\.costCode\)\}','\$\{escJs\(s\.subCode\)\}'/.test(src));
+
+console.log('\n[regression — header column resolution]');
+// A "Description" column sitting to the left of "Name" used to win, because
+// columns were resolved by leftmost matching cell instead of alias priority.
+const withDescription = [
+  (() => { const r = []; r[0] = 'Description'; r[2] = 'Name'; r[4] = 'Quantity'; r[5] = 'U/M'; r[6] = 'Unit Cost'; return r; })(),
+  (() => { const r = []; r[1] = 'Field Construction'; return r; })(),
+  (() => { const r = []; r[0] = 'long prose'; r[2] = 'Bulk Excavation'; r[4] = '100'; r[5] = 'sq ft'; r[6] = '0.62'; return r; })(),
+];
+const descOut = _pcParseEstimate(withDescription).items;
+assert('Name wins over a Description column to its left',
+  descOut.length === 1 && descOut[0].sub_code === 'Bulk Excavation',
+  descOut.map(i => i.sub_code).join(' | '));
+assert('section column tracks the real Name column',
+  descOut.length === 1 && descOut[0].cost_code === 'Field Construction',
+  JSON.stringify(descOut[0] && descOut[0].cost_code));
+
+console.log('\n[regression — file types and sparse sheets]');
+// .tsv was offered by the file picker but _parseCSVLine only splits on commas,
+// so every tab-separated file failed with a misleading "not a Procore export".
+assert('file picker no longer offers .tsv', /id="pc-file" accept="\.xlsx,\.xlsm,\.csv"/.test(src));
+assert('reader no longer claims to handle .tsv/.txt',
+  /if \(\/\\\.csv\$\/i\.test\(name\)\) \{/.test(src));
+// A formatted-but-empty cell near the bottom of a sheet (very common in
+// Excel-touched files) used to stretch the row array to ~1M entries.
+const sheetFn = src.match(/function _pcSheetRows[\s\S]+?\n\}\n/);
+assert('empty rows are dropped rather than materialised',
+  !!sheetFn && /cells\.some\(v => v !== '' && v != null\)/.test(sheetFn[0]));
+assert('no full-array densify pass', !!sheetFn && !/for \(let i = 0; i < out\.length; i\+\+\)/.test(sheetFn[0]));
+
+console.log('\n[regression — stale bid filter after import]');
+// Importing while a cost-code filter was active left the filter on, so the
+// table stayed almost empty however many lines had just landed.
+assert('commit clears an active bid filter',
+  !!commitFn && /bidFilters = \{\}/.test(commitFn[0]) && /_updateBidFilterButtons\(\)/.test(commitFn[0]));
+assert('  and only when this project is the one on screen',
+  !!commitFn && /bidViewProjId === projId && \(bidFilters\.cost_code \|\| bidFilters\.sub_code\)/.test(commitFn[0]));
+assert('  clearing happens before the re-render',
+  !!commitFn && commitFn[0].indexOf('bidFilters = {}') < commitFn[0].indexOf('renderBidTable(projId)'));
+
+console.log('\n[regression — superseded file reads]');
+// Reading is async. A second file picked before the first finished, or a
+// cancel-and-reopen, could otherwise publish the older file's lines under
+// the newer file's name.
+const prevFn = src.match(/async function previewProcoreImport\([\s\S]+?\n\}\n/);
+assert('preview takes a read token',        !!prevFn && /const token = \+\+_pcReadToken/.test(prevFn[0]));
+assert('  parses into a local, not straight into _pcParsed',
+  !!prevFn && /const parsed = _pcParseEstimate\(await _pcRowsFromFile\(file\)\)/.test(prevFn[0]));
+assert('  a superseded success bails out',  !!prevFn && /if \(token !== _pcReadToken\) return;\n\s*if \(!parsed\.items\.length\)/.test(prevFn[0]));
+assert('  a superseded failure bails out too',
+  !!prevFn && /catch \(err\) \{\n\s*if \(token !== _pcReadToken\) return;/.test(prevFn[0]));
+assert('closing the modal invalidates an in-flight read',
+  /function closeProcoreImport\([\s\S]+?_pcReadToken\+\+[\s\S]+?\n\}/.test(src));
+
+// ─────────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

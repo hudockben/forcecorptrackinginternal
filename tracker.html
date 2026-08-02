@@ -4182,6 +4182,20 @@ function statusClass(s) {
 }
 function esc(s) { return String(s || '').replace(/"/g, '&quot;'); }
 function escT(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// For a value passed as an argument inside an inline onclick= handler. esc()
+// only covers the HTML attribute layer, but the browser then parses the
+// attribute as JavaScript, so an apostrophe in the value ends the string
+// literal and breaks the handler ("Owner's Allowance" as a cost code). Escape
+// the JS layer first, then the attribute layer.
+function escJs(s) {
+  return String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 /* ═══════════════════════════════════════════
    TABS
@@ -8013,10 +8027,14 @@ function _pcSheetRows(xml, shared) {
       }
       if (idx >= 0) cells[idx] = val;
     });
-    const at = (rAttr > 0 ? rAttr : out.length + 1) - 1;
-    out[at] = cells;
+    // Rows with no actual content are dropped rather than stored. Excel files
+    // routinely carry a formatted-but-empty cell near the bottom of the sheet,
+    // and honouring its row number would stretch this array to a million
+    // entries. Readers below index with `rows[i] || []`, so gaps are fine.
+    if (cells.some(v => v !== '' && v != null)) {
+      out[(rAttr > 0 ? rAttr : out.length + 1) - 1] = cells;
+    }
   });
-  for (let i = 0; i < out.length; i++) if (!out[i]) out[i] = [];
   return out;
 }
 
@@ -8064,7 +8082,7 @@ async function _pcRowsFromFile(file) {
     if (!path) throw new Error('No worksheet found inside that workbook.');
     return _pcSheetRows(await _pcZipRead(zip, path), shared);
   }
-  if (/\.csv$|\.tsv$|\.txt$/i.test(name)) {
+  if (/\.csv$/i.test(name)) {
     const text = await _pcReadFile(file, true);
     return text.split(/\r?\n/).map(l => _parseCSVLine(l));
   }
@@ -8090,7 +8108,16 @@ const _PC_HEADER_ALIASES = {
 function _pcFindHeader(rows) {
   for (let i = 0; i < Math.min(rows.length, 40); i++) {
     const cells = (rows[i] || []).map(_pcNorm);
-    const col = key => cells.findIndex(c => _PC_HEADER_ALIASES[key].includes(c));
+    // Resolved by alias priority, not by whichever column sits leftmost —
+    // otherwise an export carrying both "Description" and "Name" would pick
+    // up whichever came first rather than the real item name.
+    const col = key => {
+      for (const alias of _PC_HEADER_ALIASES[key]) {
+        const at = cells.indexOf(alias);
+        if (at >= 0) return at;
+      }
+      return -1;
+    };
     const name = col('name'), qty = col('quantity'), uc = col('unit_cost');
     if (name >= 0 && qty >= 0 && uc >= 0) {
       return { row: i, name, quantity: qty, unit_cost: uc, unit: col('unit'), code: col('code'), codeName: col('codeName') };
@@ -8146,6 +8173,7 @@ function _pcParseEstimate(rows) {
 
 let _pcParsed = null;    // { items } from the last previewed file
 let _pcProjId = null;
+let _pcReadToken = 0;    // guards against a superseded file read publishing late
 
 function showProcoreImport(projId) {
   const p = getProj(projId); if (!p) return;
@@ -8173,7 +8201,7 @@ function showProcoreImport(projId) {
       </div>
 
       <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
-        <input type="file" id="pc-file" accept=".xlsx,.xlsm,.csv,.tsv" style="font-size:0.82rem;color:var(--text)"
+        <input type="file" id="pc-file" accept=".xlsx,.xlsm,.csv" style="font-size:0.82rem;color:var(--text)"
           onchange="previewProcoreImport()">
         <button class="btn btn-green" style="font-size:0.8rem;padding:0.3rem 0.9rem" onclick="previewProcoreImport()">Preview</button>
       </div>
@@ -8226,6 +8254,7 @@ function closeProcoreImport() {
   const m = document.getElementById('pc-modal'); if (m) m.remove();
   _pcParsed = null;
   _pcProjId = null;
+  _pcReadToken++;   // any read still in flight belongs to a modal that's gone
 }
 
 async function previewProcoreImport() {
@@ -8235,19 +8264,26 @@ async function previewProcoreImport() {
   const file = input.files && input.files[0];
   if (!file) { status.innerHTML = '<span style="color:var(--yellow)">Choose a Procore estimate file first.</span>'; return; }
 
+  // Reading is async, so a second file picked before the first finishes — or
+  // a cancel-and-reopen — can otherwise land the older file's lines under the
+  // newer file's name. Only the newest read is allowed to publish a result.
+  const token = ++_pcReadToken;
   status.innerHTML = '<span style="color:var(--muted)">Reading ' + _pcEsc(file.name) + '…</span>';
   document.getElementById('pc-preview').style.display = 'none';
   _pcSetCommitEnabled(false);
   try {
-    _pcParsed = _pcParseEstimate(await _pcRowsFromFile(file));
-    if (!_pcParsed.items.length) {
+    const parsed = _pcParseEstimate(await _pcRowsFromFile(file));
+    if (token !== _pcReadToken) return;
+    if (!parsed.items.length) {
       _pcParsed = null;
       status.innerHTML = '<span style="color:var(--yellow)">No line items found in that file. Check that it\'s the estimate export and not a summary or budget report.</span>';
       return;
     }
+    _pcParsed = parsed;
     status.innerHTML = '';
     _pcRenderPreview();
   } catch (err) {
+    if (token !== _pcReadToken) return;
     _pcParsed = null;
     status.innerHTML = '<span style="color:var(--red)">' + _pcEsc(err.message || 'Could not read that file.') + '</span>';
   }
@@ -8424,6 +8460,14 @@ function commitProcoreImport() {
 
   saveProject(projId);
   closeProcoreImport();
+
+  // A cost code / sub code filter left over from before the import would hide
+  // most of what was just brought in, so the table would look almost unchanged
+  // no matter how many lines landed. Clear it and show everything.
+  if (bidViewProjId === projId && (bidFilters.cost_code || bidFilters.sub_code)) {
+    bidFilters = {};
+    _updateBidFilterButtons();
+  }
   renderBidTable(projId);
 
   const parts = [];
@@ -8532,10 +8576,10 @@ function renderBidTable(projId, opts = {}) {
           <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
           <input class="bid-grp-input" value="${esc(costCode)}" placeholder="Cost Code"
             onclick="event.stopPropagation()"
-            onchange="updateBidGroupCode('${projId}','${esc(costCode)}',this.value)">
-          <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${esc(costCode)}')">+ Sub Code</button>
+            onchange="updateBidGroupCode('${projId}','${escJs(costCode)}',this.value)">
+          <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${escJs(costCode)}')">+ Sub Code</button>
           <button class="del-btn" style="float:right;margin-top:0.1rem" title="Delete entire group"
-            onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${esc(costCode)}\\'?'))removeBidGroup('${projId}','${esc(costCode)}')">✕</button>
+            onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${escJs(costCode)}\\'?'))removeBidGroup('${projId}','${escJs(costCode)}')">✕</button>
         </td>`;
 
     hdrTr.addEventListener('click', () => {
@@ -14901,7 +14945,7 @@ function renderScaleOfEconomy() {
         <td style="padding:0.5rem 0.6rem;text-align:center;font-size:0.75rem" onclick="event.stopPropagation()">
           <span style="cursor:pointer;color:${s.unit ? 'var(--muted)' : 'var(--border)'};border-bottom:1px dashed ${s.unit ? 'var(--border)' : 'rgba(96,165,250,0.4)'}"
             title="Click to set unit"
-            onclick="_soeEditUnit('${esc(s.costCode)}','${esc(s.subCode)}',this)">${esc(s.unit||'—')}</span>
+            onclick="_soeEditUnit('${escJs(s.costCode)}','${escJs(s.subCode)}',this)">${esc(s.unit||'—')}</span>
         </td>
         <td style="padding:0.5rem 0.6rem;text-align:center">${s.n}</td>
         <td style="padding:0.5rem 0.6rem;text-align:right;font-variant-numeric:tabular-nums">$${fmt(s.avgUC)}</td>
