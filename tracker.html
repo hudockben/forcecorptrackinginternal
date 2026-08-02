@@ -2545,6 +2545,7 @@
     <div style="margin-left:auto;display:flex;gap:0.5rem">
       <button class="btn btn-ghost" id="bid-fs-email">&#9993; Email</button>
       <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
+      <button class="btn btn-ghost" id="bid-fs-procore" title="Fill these bid items in from a Procore estimate export (.xlsx or .csv)">&#8681; Import Procore Estimate</button>
       <button class="btn btn-green" id="bid-fs-add">+ Add Item</button>
     </div>
   </div>
@@ -7845,6 +7846,590 @@ function addBidSubCode(projId, costCode) {
   else p.bidItems.push(newItem);
   saveProject(projId);
   renderBidTable(projId);
+}
+
+/* ═══════════════════════════════════════════
+   PROCORE ESTIMATE IMPORT → BID ITEMS
+
+   Turns a Procore estimate export into bid line items so a 200-line
+   estimate doesn't have to be keyed in by hand. Only four things are
+   read off the estimate:
+
+     Cost Code  ← the section rows (column A: "Design and Permitting",
+                  "Field Construction", "Away Bullpen", …)
+     Sub Code   ← each line item's Name (column B, indented under its
+                  section in Procore)
+     Quantity   ← the Quantity column
+     Unit Cost  ← the Unit Cost column
+
+   U/M rides along too so the Unit dropdown lands on the right value —
+   everything else in the export (labor mins, markup, sales price, cost
+   types, phases) is ignored.
+
+   .xlsx is unzipped in the browser with DecompressionStream, so there
+   is no library to load and the estimate never leaves the machine.
+   Everything from the estimate's "Summary" block down is skipped so
+   the totals rows never turn into bid items.
+═══════════════════════════════════════════ */
+
+// Procore writes free-text units ("sq ft", "cu yd", "ea"); the bid table's
+// Unit dropdown only accepts its own fixed list. Anything unrecognised is
+// left blank rather than guessed at.
+const _PC_UNIT_MAP = {
+  'sf':'SF','sq ft':'SF','sqft':'SF','sq. ft.':'SF','sq.ft.':'SF','square feet':'SF','square foot':'SF','s.f.':'SF','ft2':'SF','ft^2':'SF',
+  'lf':'LF','ft':'LF','feet':'LF','foot':'LF','linear feet':'LF','linear foot':'LF','lin ft':'LF','l.f.':'LF',
+  'sy':'SY','sq yd':'SY','sq. yd.':'SY','square yard':'SY','square yards':'SY','s.y.':'SY',
+  'cy':'CY','cu yd':'CY','cu. yd.':'CY','cubic yard':'CY','cubic yards':'CY','c.y.':'CY','yd3':'CY','yd^3':'CY',
+  'ton':'TON','tons':'TON','tn':'TON',
+  'ea':'EA','ea.':'EA','each':'EA','unit':'EA','units':'EA','pc':'EA','pcs':'EA',
+  'ls':'LS','l.s.':'LS','lump sum':'LS','lumpsum':'LS',
+  'hr':'HR','hrs':'HR','hour':'HR','hours':'HR','man hour':'HR','man hours':'HR',
+  'gal':'GAL','gals':'GAL','gallon':'GAL','gallons':'GAL',
+  'lb':'LB','lbs':'LB','pound':'LB','pounds':'LB',
+  'ac':'AC','acre':'AC','acres':'AC',
+};
+
+function _pcNorm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }
+function _pcUnit(raw) { return _PC_UNIT_MAP[_pcNorm(raw)] || ''; }
+
+// Numeric cell → number, or null when the cell isn't a number at all.
+// The null case is what keeps the estimate's summary/label rows ("Profit",
+// "Total labor") from being mistaken for line items.
+function _pcNum(v) {
+  const s = String(v == null ? '' : v).replace(/[$,\s]/g, '').replace(/^\((.*)\)$/, '-$1');
+  if (!s) return null;
+  if (!/^-?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) return null;
+  const n = parseFloat(s);
+  return isFinite(n) ? n : null;
+}
+
+// Trim binary-float noise (5.340000000000001 → 5.34) before it lands in a field.
+function _pcFix(n) { return String(Math.round(n * 1e6) / 1e6); }
+
+// Bid lines are matched on cost code + sub code, case/whitespace insensitive.
+function _pcKey(cc, sc) { return _pcNorm(cc) + '||' + _pcNorm(sc); }
+
+function _pcEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/* ── .xlsx reading: ZIP central directory + raw deflate ── */
+
+function _pcZipOpen(buf) {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  // End-of-central-directory record, scanned backwards past any trailing comment
+  let eocd = -1;
+  const floor = Math.max(0, u8.length - 66000);
+  for (let i = u8.length - 22; i >= floor; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('That file isn\'t a valid .xlsx workbook (no ZIP directory found).');
+  const count = dv.getUint16(eocd + 10, true);
+  const entries = {};
+  let p = dv.getUint32(eocd + 16, true);
+  for (let i = 0; i < count && p + 46 <= u8.length; i++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const nameLen  = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const cmtLen   = dv.getUint16(p + 32, true);
+    entries[new TextDecoder().decode(u8.subarray(p + 46, p + 46 + nameLen))] = {
+      method: dv.getUint16(p + 10, true),
+      compSz: dv.getUint32(p + 20, true),
+      lhOff:  dv.getUint32(p + 42, true),
+    };
+    p += 46 + nameLen + extraLen + cmtLen;
+  }
+  return { dv, u8, entries };
+}
+
+async function _pcZipRead(zip, name) {
+  const e = zip.entries[name];
+  if (!e) return null;
+  const { dv, u8 } = zip;
+  // The local header repeats the name/extra lengths and they can differ
+  // from the central directory's, so the data offset is read from here.
+  if (dv.getUint32(e.lhOff, true) !== 0x04034b50) throw new Error('That .xlsx file looks corrupt.');
+  const start = e.lhOff + 30 + dv.getUint16(e.lhOff + 26, true) + dv.getUint16(e.lhOff + 28, true);
+  const raw = u8.subarray(start, start + e.compSz);
+  if (e.method === 0) return new TextDecoder().decode(raw);
+  if (e.method !== 8) throw new Error('That .xlsx uses an unsupported compression method. Re-save it from Excel, or export the estimate as CSV.');
+  if (typeof DecompressionStream !== 'function') {
+    throw new Error('This browser can\'t open .xlsx files. Export the Procore estimate as CSV instead, or use a current version of Chrome, Edge, Safari or Firefox.');
+  }
+  const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return await new Response(stream).text();
+}
+
+function _pcXml(xml, what) {
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('Could not read the ' + what + ' inside the workbook.');
+  return doc;
+}
+
+function _pcSharedStrings(xml) {
+  if (!xml) return [];
+  return [..._pcXml(xml, 'shared strings').getElementsByTagName('si')].map(si =>
+    [...si.getElementsByTagName('t')]
+      // <rPh> holds Japanese phonetic hints, not the visible cell text
+      .filter(t => !t.closest || !t.closest('rPh'))
+      .map(t => t.textContent).join('')
+  );
+}
+
+// 'AB12' → 27 (0-based column index)
+function _pcColIdx(ref) {
+  let n = 0;
+  for (let i = 0; i < ref.length; i++) {
+    const c = ref.charCodeAt(i);
+    if (c < 65 || c > 90) break;
+    n = n * 26 + (c - 64);
+  }
+  return n - 1;
+}
+
+function _pcSheetRows(xml, shared) {
+  const doc = _pcXml(xml, 'worksheet');
+  const out = [];
+  [...doc.getElementsByTagName('row')].forEach(rowEl => {
+    const rAttr = parseInt(rowEl.getAttribute('r'), 10);
+    const cells = [];
+    [...rowEl.getElementsByTagName('c')].forEach((c, ci) => {
+      const ref = c.getAttribute('r');
+      const idx = ref ? _pcColIdx(ref) : ci;
+      const t   = c.getAttribute('t');
+      let val = '';
+      if (t === 'inlineStr') {
+        const is = c.getElementsByTagName('is')[0];
+        val = is ? [...is.getElementsByTagName('t')].map(x => x.textContent).join('') : '';
+      } else {
+        const v = c.getElementsByTagName('v')[0];
+        const raw = v ? v.textContent : '';
+        if (t === 's')      val = shared[parseInt(raw, 10)] || '';
+        else if (t === 'e') val = '';                       // #REF!, #DIV/0! etc.
+        else if (t === 'b') val = raw === '1' ? 'TRUE' : 'FALSE';
+        else                val = raw;                      // number, date serial, or cached formula result
+      }
+      if (idx >= 0) cells[idx] = val;
+    });
+    const at = (rAttr > 0 ? rAttr : out.length + 1) - 1;
+    out[at] = cells;
+  });
+  for (let i = 0; i < out.length; i++) if (!out[i]) out[i] = [];
+  return out;
+}
+
+function _pcFirstSheetPath(zip, wbXml, relsXml) {
+  try {
+    if (wbXml && relsXml) {
+      const sheet = _pcXml(wbXml, 'workbook').getElementsByTagName('sheet')[0];
+      const rid = sheet && (sheet.getAttribute('r:id') ||
+        sheet.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id'));
+      if (rid) {
+        const rel = [..._pcXml(relsXml, 'workbook relationships').getElementsByTagName('Relationship')]
+          .find(r => r.getAttribute('Id') === rid);
+        const target = rel && rel.getAttribute('Target');
+        if (target) {
+          const path = target.replace(/^\/+/, '').replace(/^xl\//, '');
+          if (zip.entries['xl/' + path]) return 'xl/' + path;
+        }
+      }
+    }
+  } catch { /* fall through to the filename scan below */ }
+  const sheets = Object.keys(zip.entries)
+    .filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n))
+    .sort((a, b) => (parseInt(a.match(/\d+/)[0], 10) - parseInt(b.match(/\d+/)[0], 10)));
+  return sheets[0] || null;
+}
+
+function _pcReadFile(file, asText) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('Could not read that file.'));
+    fr.onload  = () => resolve(fr.result);
+    if (asText) fr.readAsText(file); else fr.readAsArrayBuffer(file);
+  });
+}
+
+// File → 2D array of cell strings, indexed [rowIdx][colIdx].
+async function _pcRowsFromFile(file) {
+  const name = file.name || '';
+  if (/\.xlsx$|\.xlsm$/i.test(name)) {
+    const zip = _pcZipOpen(await _pcReadFile(file, false));
+    const shared = _pcSharedStrings(await _pcZipRead(zip, 'xl/sharedStrings.xml'));
+    const path = _pcFirstSheetPath(zip,
+      await _pcZipRead(zip, 'xl/workbook.xml'),
+      await _pcZipRead(zip, 'xl/_rels/workbook.xml.rels'));
+    if (!path) throw new Error('No worksheet found inside that workbook.');
+    return _pcSheetRows(await _pcZipRead(zip, path), shared);
+  }
+  if (/\.csv$|\.tsv$|\.txt$/i.test(name)) {
+    const text = await _pcReadFile(file, true);
+    return text.split(/\r?\n/).map(l => _parseCSVLine(l));
+  }
+  if (/\.xls$/i.test(name)) {
+    throw new Error('Old-style .xls files aren\'t supported — in Procore pick the Excel (.xlsx) export, or re-save the file as .xlsx or .csv.');
+  }
+  throw new Error('Unsupported file type. Export the Procore estimate as .xlsx or .csv.');
+}
+
+/* ── Procore estimate → bid line items ── */
+
+const _PC_HEADER_ALIASES = {
+  name:      ['name', 'item', 'item name', 'cost item', 'description'],
+  quantity:  ['quantity', 'qty'],
+  unit:      ['u/m', 'uom', 'um', 'unit of measure', 'units', 'unit'],
+  unit_cost: ['unit cost', 'unit price', 'unitcost'],
+  code:      ['cost code'],
+  codeName:  ['cost code name'],
+};
+
+// Procore puts a title/date block above the table, so the header row is
+// found by content rather than assumed to be row 1.
+function _pcFindHeader(rows) {
+  for (let i = 0; i < Math.min(rows.length, 40); i++) {
+    const cells = (rows[i] || []).map(_pcNorm);
+    const col = key => cells.findIndex(c => _PC_HEADER_ALIASES[key].includes(c));
+    const name = col('name'), qty = col('quantity'), uc = col('unit_cost');
+    if (name >= 0 && qty >= 0 && uc >= 0) {
+      return { row: i, name, quantity: qty, unit_cost: uc, unit: col('unit'), code: col('code'), codeName: col('codeName') };
+    }
+  }
+  return null;
+}
+
+function _pcParseEstimate(rows) {
+  const h = _pcFindHeader(rows);
+  if (!h) {
+    throw new Error('This doesn\'t look like a Procore estimate export — no header row with Name, Quantity and Unit Cost was found. Use Procore\'s estimate export without editing the columns.');
+  }
+  // Sections sit one column left of Name — that's column A when Name is B.
+  const groupCol = h.name > 0 ? h.name - 1 : 0;
+  const cell = (r, i) => (i == null || i < 0) ? '' : String(r && r[i] != null ? r[i] : '').trim();
+
+  const items = [];
+  let costCode = '';
+  for (let i = h.row + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const name  = cell(r, h.name);
+    const group = cell(r, groupCol);
+
+    // Section row: something in column A, nothing in Name.
+    if (!name) {
+      if (!group) continue;
+      if (/^summary$/i.test(group)) break;   // totals block — nothing below it is a line item
+      costCode = group;
+      continue;
+    }
+
+    const qty = _pcNum(cell(r, h.quantity));
+    const uc  = _pcNum(cell(r, h.unit_cost));
+    // A named row with no numbers anywhere is a label, not a line item.
+    if (qty === null && uc === null) continue;
+
+    items.push({
+      cost_code: costCode,
+      sub_code:  name,
+      unit:      _pcUnit(cell(r, h.unit)),
+      raw_unit:  cell(r, h.unit),
+      quantity:  qty === null ? '' : _pcFix(qty),
+      unit_cost: uc  === null ? '' : _pcFix(uc),
+      pcode:     [cell(r, h.code), cell(r, h.codeName)].filter(Boolean).join(' · '),
+      row:       i + 1,
+    });
+  }
+  return { items };
+}
+
+/* ── Import modal ── */
+
+let _pcParsed = null;    // { items } from the last previewed file
+let _pcProjId = null;
+
+function showProcoreImport(projId) {
+  const p = getProj(projId); if (!p) return;
+  _pcProjId = projId;
+  _pcParsed = null;
+  const old = document.getElementById('pc-modal'); if (old) old.remove();
+
+  const existing = (p.bidItems || []).length;
+  const modal = document.createElement('div');
+  modal.id = 'pc-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1.5rem';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.4rem 1.5rem;width:min(1000px,96vw);max-height:92vh;display:flex;flex-direction:column;gap:0.9rem">
+      <div>
+        <div style="font-weight:700;font-size:1rem">Import Procore Estimate</div>
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:0.15rem">${_pcEsc(p['project-name'] || 'Untitled Project')} &nbsp;·&nbsp; ${existing} existing bid item${existing !== 1 ? 's' : ''}</div>
+      </div>
+
+      <div style="font-size:0.78rem;color:var(--muted);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem 0.75rem;line-height:1.55">
+        Export the estimate from Procore (Excel or CSV) and drop it in below. Each estimate
+        <strong style="color:var(--text)">section</strong> becomes a <strong style="color:var(--text)">Cost Code</strong>,
+        and each line item underneath it becomes a <strong style="color:var(--text)">Sub Code</strong> carrying its
+        <strong style="color:var(--text)">Quantity</strong> and <strong style="color:var(--text)">Unit Cost</strong>.
+        Nothing else from the estimate is read, and the file stays on this computer.
+      </div>
+
+      <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+        <input type="file" id="pc-file" accept=".xlsx,.xlsm,.csv,.tsv" style="font-size:0.82rem;color:var(--text)"
+          onchange="previewProcoreImport()">
+        <button class="btn btn-green" style="font-size:0.8rem;padding:0.3rem 0.9rem" onclick="previewProcoreImport()">Preview</button>
+      </div>
+
+      <div style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start;font-size:0.8rem">
+        <label style="display:flex;align-items:center;gap:0.45rem;cursor:pointer;user-select:none;white-space:nowrap">
+          <input type="checkbox" id="pc-skip-zero" style="width:14px;height:14px;cursor:pointer" onchange="_pcRenderPreview()">
+          <span>Skip lines with no quantity</span>
+        </label>
+        <div style="display:flex;gap:1.1rem;flex-wrap:wrap;align-items:center">
+          <span style="color:var(--muted)">If a line already exists:</span>
+          <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;white-space:nowrap">
+            <input type="radio" name="pc-mode" value="merge" checked onchange="_pcRenderPreview()"><span>Update it</span></label>
+          <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;white-space:nowrap">
+            <input type="radio" name="pc-mode" value="append" onchange="_pcRenderPreview()"><span>Add as new</span></label>
+          <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;white-space:nowrap">
+            <input type="radio" name="pc-mode" value="replace" onchange="_pcRenderPreview()"><span style="color:var(--red)">Replace all bid items</span></label>
+        </div>
+      </div>
+
+      <div id="pc-status" style="font-size:0.82rem"></div>
+
+      <div id="pc-preview" style="display:none;flex:1;min-height:0;flex-direction:column;gap:0.5rem">
+        <div id="pc-summary" style="font-size:0.82rem"></div>
+        <div style="overflow:auto;flex:1;min-height:120px;max-height:46vh;border:1px solid var(--border);border-radius:6px">
+          <table style="width:100%;border-collapse:collapse;font-size:0.76rem">
+            <thead style="position:sticky;top:0;background:var(--surface2);z-index:1"><tr>
+              <th style="text-align:left;padding:0.35rem 0.5rem;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Sub Code</th>
+              <th style="text-align:left;padding:0.35rem 0.5rem;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Unit</th>
+              <th style="text-align:right;padding:0.35rem 0.5rem;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Quantity</th>
+              <th style="text-align:right;padding:0.35rem 0.5rem;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Unit Cost</th>
+              <th style="text-align:right;padding:0.35rem 0.5rem;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Line Total</th>
+              <th style="text-align:left;padding:0.35rem 0.5rem;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600"></th>
+            </tr></thead>
+            <tbody id="pc-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:0.5rem;padding-top:0.1rem">
+        <button class="btn btn-ghost" onclick="closeProcoreImport()">Cancel</button>
+        <button class="btn btn-green" id="pc-commit" disabled style="opacity:0.5" onclick="commitProcoreImport()">Import</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) closeProcoreImport(); });
+}
+
+function closeProcoreImport() {
+  const m = document.getElementById('pc-modal'); if (m) m.remove();
+  _pcParsed = null;
+  _pcProjId = null;
+}
+
+async function previewProcoreImport() {
+  const input = document.getElementById('pc-file');
+  const status = document.getElementById('pc-status');
+  if (!input || !status) return;
+  const file = input.files && input.files[0];
+  if (!file) { status.innerHTML = '<span style="color:var(--yellow)">Choose a Procore estimate file first.</span>'; return; }
+
+  status.innerHTML = '<span style="color:var(--muted)">Reading ' + _pcEsc(file.name) + '…</span>';
+  document.getElementById('pc-preview').style.display = 'none';
+  _pcSetCommitEnabled(false);
+  try {
+    _pcParsed = _pcParseEstimate(await _pcRowsFromFile(file));
+    if (!_pcParsed.items.length) {
+      _pcParsed = null;
+      status.innerHTML = '<span style="color:var(--yellow)">No line items found in that file. Check that it\'s the estimate export and not a summary or budget report.</span>';
+      return;
+    }
+    status.innerHTML = '';
+    _pcRenderPreview();
+  } catch (err) {
+    _pcParsed = null;
+    status.innerHTML = '<span style="color:var(--red)">' + _pcEsc(err.message || 'Could not read that file.') + '</span>';
+  }
+}
+
+function _pcSetCommitEnabled(on) {
+  const btn = document.getElementById('pc-commit');
+  if (!btn) return;
+  btn.disabled = !on;
+  btn.style.opacity = on ? '' : '0.5';
+}
+
+// Which parsed lines the current options actually import.
+function _pcVisibleRows() {
+  if (!_pcParsed) return [];
+  const skipZero = document.getElementById('pc-skip-zero');
+  return (skipZero && skipZero.checked)
+    ? _pcParsed.items.filter(r => (parseFloat(r.quantity) || 0) > 0)
+    : _pcParsed.items;
+}
+
+function _pcMode() {
+  const el = document.querySelector('input[name="pc-mode"]:checked');
+  return el ? el.value : 'merge';
+}
+
+// Decide add-vs-update for every line. Preview and commit both go through
+// here so what's shown is exactly what happens. Each existing bid item can
+// be claimed only once, so a sub code duplicated inside the estimate adds a
+// second line instead of overwriting the first one twice.
+function _pcPlan(rows, existingItems) {
+  const pool = new Map();
+  (existingItems || []).forEach(b => {
+    const k = _pcKey(b.cost_code, b.sub_code);
+    if (!pool.has(k)) pool.set(k, []);
+    pool.get(k).push(b);
+  });
+  let updated = 0, added = 0;
+  const plan = rows.map(r => {
+    const bucket = pool.get(_pcKey(r.cost_code, r.sub_code));
+    const hit = bucket && bucket.length ? bucket.shift() : null;
+    if (hit) { updated++; return { r, action: 'update', target: hit }; }
+    added++;
+    return { r, action: 'add', target: null };
+  });
+  return { plan, updated, added };
+}
+
+function _pcRenderPreview() {
+  if (!_pcParsed) return;
+  const p = getProj(_pcProjId); if (!p) return;
+  const tbody   = document.getElementById('pc-tbody');
+  const summary = document.getElementById('pc-summary');
+  const wrap    = document.getElementById('pc-preview');
+  if (!tbody || !summary || !wrap) return;
+
+  const mode = _pcMode();
+  const rows = _pcVisibleRows();
+  const { plan, updated, added } = _pcPlan(rows, mode === 'merge' ? (p.bidItems || []) : []);
+
+  // Duplicated cost code + sub code pairs inside the estimate itself. They
+  // import fine, but the tracker matches daily costs on that pair, so the
+  // user needs to know they'll have two lines competing for the same spend.
+  const seen = new Set(), dupes = [];
+  rows.forEach(r => {
+    const k = _pcKey(r.cost_code, r.sub_code);
+    if (seen.has(k)) dupes.push(r); else seen.add(k);
+  });
+
+  const zeroQty  = _pcParsed.items.filter(r => !((parseFloat(r.quantity) || 0) > 0)).length;
+  const noCode   = rows.filter(r => !r.cost_code).length;
+  const noUnit   = rows.filter(r => r.raw_unit && !r.unit).length;
+  const value    = rows.reduce((s, r) => s + (parseFloat(r.quantity) || 0) * (parseFloat(r.unit_cost) || 0), 0);
+  const groups   = [];
+  const byGroup  = new Map();
+  plan.forEach(entry => {
+    const cc = entry.r.cost_code || '';
+    if (!byGroup.has(cc)) { byGroup.set(cc, []); groups.push(cc); }
+    byGroup.get(cc).push(entry);
+  });
+
+  let html = '';
+  groups.forEach(cc => {
+    const entries = byGroup.get(cc);
+    const gTotal = entries.reduce((s, e) => s + (parseFloat(e.r.quantity) || 0) * (parseFloat(e.r.unit_cost) || 0), 0);
+    html += `<tr style="background:var(--surface2)">
+      <td colspan="5" style="padding:0.35rem 0.5rem;font-weight:700;border-bottom:1px solid var(--border)">${_pcEsc(cc) || '<span style="color:var(--muted);font-weight:400">(no section — will import with a blank cost code)</span>'}
+        <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.6rem">${entries.length} sub code${entries.length !== 1 ? 's' : ''}${gTotal ? ' · $' + fmt(gTotal, 0) : ''}</span></td>
+      <td style="border-bottom:1px solid var(--border)"></td></tr>`;
+    entries.forEach(({ r, action }) => {
+      const lineTot = (parseFloat(r.quantity) || 0) * (parseFloat(r.unit_cost) || 0);
+      const tag = action === 'update'
+        ? '<span style="color:var(--blue);font-size:0.68rem;font-weight:700">UPDATE</span>'
+        : '<span style="color:var(--green);font-size:0.68rem;font-weight:700">NEW</span>';
+      const unitCell = r.unit
+        ? _pcEsc(r.unit)
+        : (r.raw_unit ? `<span style="color:var(--yellow)" title="&quot;${_pcEsc(r.raw_unit)}&quot; isn't one of the tracker's units — this line imports with a blank unit">${_pcEsc(r.raw_unit)} ⚠</span>` : '<span style="color:var(--muted)">—</span>');
+      html += `<tr>
+        <td style="padding:0.28rem 0.5rem 0.28rem 1.4rem;border-bottom:1px solid var(--border)">${_pcEsc(r.sub_code)}${r.pcode ? `<span style="color:var(--muted);font-size:0.68rem;margin-left:0.5rem">${_pcEsc(r.pcode)}</span>` : ''}</td>
+        <td style="padding:0.28rem 0.5rem;border-bottom:1px solid var(--border)">${unitCell}</td>
+        <td style="padding:0.28rem 0.5rem;border-bottom:1px solid var(--border);text-align:right">${r.quantity === '' ? '—' : qfmt(parseFloat(r.quantity))}</td>
+        <td style="padding:0.28rem 0.5rem;border-bottom:1px solid var(--border);text-align:right">${r.unit_cost === '' ? '—' : '$' + fmt(parseFloat(r.unit_cost))}</td>
+        <td style="padding:0.28rem 0.5rem;border-bottom:1px solid var(--border);text-align:right">${lineTot ? '$' + fmt(lineTot) : '—'}</td>
+        <td style="padding:0.28rem 0.5rem;border-bottom:1px solid var(--border)">${tag}</td>
+      </tr>`;
+    });
+  });
+  tbody.innerHTML = html || `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:1rem">Nothing to import with the current options.</td></tr>`;
+
+  const notes = [];
+  if (mode === 'replace') {
+    const n = (p.bidItems || []).length;
+    if (n) notes.push(`<span style="color:var(--red)">${n} existing bid item${n !== 1 ? 's' : ''} will be deleted</span>`);
+  } else if (updated) {
+    notes.push(`<span style="color:var(--blue)">${updated} existing line${updated !== 1 ? 's' : ''} updated</span>`);
+  }
+  if (zeroQty) {
+    const skipping = document.getElementById('pc-skip-zero').checked;
+    notes.push(`<span style="color:var(--muted)">${zeroQty} line${zeroQty !== 1 ? 's' : ''} with no quantity ${skipping ? 'skipped' : 'included'}</span>`);
+  }
+  if (noCode) notes.push(`<span style="color:var(--yellow)">${noCode} line${noCode !== 1 ? 's' : ''} above the first section — blank cost code</span>`);
+  if (noUnit) notes.push(`<span style="color:var(--yellow)">${noUnit} unrecognised unit${noUnit !== 1 ? 's' : ''} — imports blank</span>`);
+  if (dupes.length) {
+    const list = dupes.slice(0, 4).map(r => _pcEsc([r.cost_code, r.sub_code].filter(Boolean).join(' / '))).join(', ');
+    notes.push(`<span style="color:var(--yellow)">${dupes.length} duplicate sub code${dupes.length !== 1 ? 's' : ''} in the estimate (${list}${dupes.length > 4 ? ', …' : ''}) — imported as separate lines, rename them so daily costs land on the right one</span>`);
+  }
+
+  summary.innerHTML =
+    `<strong style="color:var(--green)">${rows.length}</strong> line${rows.length !== 1 ? 's' : ''} across `
+    + `<strong>${groups.length}</strong> cost code${groups.length !== 1 ? 's' : ''}`
+    + (added ? ` &nbsp;·&nbsp; <span style="color:var(--green)">${added} new</span>` : '')
+    + (value ? ` &nbsp;·&nbsp; <strong>$${fmt(value, 0)}</strong> bid value` : '')
+    + (notes.length ? `<div style="margin-top:0.35rem;font-size:0.76rem;display:flex;flex-direction:column;gap:0.15rem">${notes.map(n => '<div>' + n + '</div>').join('')}</div>` : '');
+
+  wrap.style.display = 'flex';
+  const btn = document.getElementById('pc-commit');
+  if (btn) btn.textContent = rows.length ? `Import ${rows.length} line${rows.length !== 1 ? 's' : ''}` : 'Import';
+  _pcSetCommitEnabled(rows.length > 0);
+}
+
+function commitProcoreImport() {
+  const projId = _pcProjId;
+  const p = getProj(projId); if (!p || !_pcParsed) return;
+  const rows = _pcVisibleRows();
+  if (!rows.length) return;
+  const mode = _pcMode();
+
+  if (!Array.isArray(p.bidItems)) p.bidItems = [];
+  if (mode === 'replace') {
+    const n = p.bidItems.length;
+    if (n && !confirm(`Delete all ${n} existing bid item${n !== 1 ? 's' : ''} on this project and replace them with ${rows.length} line${rows.length !== 1 ? 's' : ''} from the estimate?\n\nStart dates, target dates and change orders on those items will be lost.`)) return;
+    p.bidItems = [];
+  }
+
+  const { plan, updated, added } = _pcPlan(rows, mode === 'merge' ? p.bidItems : []);
+  plan.forEach(({ r, action, target }) => {
+    if (action === 'update') {
+      // Only the four estimate fields move — dates, change orders and the
+      // item's id stay put so its daily costs and history stay attached.
+      target.quantity  = r.quantity;
+      target.unit_cost = r.unit_cost;
+      if (r.unit) target.unit = r.unit;
+    } else {
+      p.bidItems.push({
+        id: uid(),
+        cost_code: r.cost_code,
+        sub_code:  r.sub_code,
+        unit:      r.unit,
+        quantity:  r.quantity,
+        unit_cost: r.unit_cost,
+      });
+    }
+  });
+
+  saveProject(projId);
+  closeProcoreImport();
+  renderBidTable(projId);
+
+  const parts = [];
+  if (added)   parts.push(`${added} line${added !== 1 ? 's' : ''} added`);
+  if (updated) parts.push(`${updated} updated`);
+  alert(`Imported from the Procore estimate — ${parts.join(', ')}.`);
 }
 
 // Off-bid daily costs for a project: daily rows that match NO bid line under
@@ -17221,6 +17806,7 @@ function openBidView(projId) {
   document.getElementById('bid-fs-add').onclick = () => { addBidItem(projId); };
   document.getElementById('bid-fs-pdf').onclick = () => showBidPDFOptions(projId, 'pdf');
   document.getElementById('bid-fs-email').onclick = () => showBidPDFOptions(projId, 'email');
+  document.getElementById('bid-fs-procore').onclick = () => showProcoreImport(projId);
   // Point the generic tbody/tfoot ids to the fullscreen elements
   document.getElementById('bid-fs-tbody').id = 'btbody-' + projId;
   document.getElementById('bid-fs-tfoot').id = 'bfoot-' + projId;
