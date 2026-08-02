@@ -2541,6 +2541,7 @@
     <div style="margin-left:auto;display:flex;gap:0.5rem">
       <button class="btn btn-ghost" id="bid-fs-email">&#9993; Email</button>
       <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
+      <button class="btn btn-ghost" id="bid-fs-copy" title="Copy these bid items into another project, or into a new one">&#10697; Copy Bid</button>
       <button class="btn btn-ghost" id="bid-fs-procore" title="Fill these bid items in from a Procore estimate export (.xlsx or .csv)">&#8681; Import Procore Estimate</button>
       <button class="btn btn-green" id="bid-fs-add">+ Add Item</button>
     </div>
@@ -8442,6 +8443,257 @@ function _bidSubCodeCommit(input, projId, biId) {
   // to show what the new name actually pools with.
   if (bidViewProjId === projId) renderBidTable(projId);
 }
+
+/* ═══════════════════════════════════════════
+   COPY A BID INTO ANOTHER PROJECT
+
+   The same scope gets bid over and over across jobs. This lifts the bid
+   lines off one project — all of them or just the cost codes you pick —
+   into a brand new project or an existing one.
+
+   Only the estimate travels: cost code, sub code, unit, quantity and
+   unit cost. Start dates, target dates, completion flags and change
+   orders stay behind, because those describe how the source job ran,
+   not what the work is. Daily costs never move.
+═══════════════════════════════════════════ */
+
+let _bcpSrcId = null;
+
+function showBidCopy(projId) {
+  const src = getProj(projId); if (!src) return;
+  const items = src.bidItems || [];
+  if (!items.length) { alert('This project has no bid items to copy yet.'); return; }
+  _bcpSrcId = projId;
+
+  const codes = [];
+  const seen = new Set();
+  items.forEach(b => { const cc = b.cost_code || ''; if (!seen.has(cc)) { seen.add(cc); codes.push(cc); } });
+
+  const targets = projectsList.filter(p => p.id !== projId)
+    .slice().sort((a, b) => (a['project-name'] || '').localeCompare(b['project-name'] || ''));
+
+  const old = document.getElementById('bcp-modal'); if (old) old.remove();
+  const modal = document.createElement('div');
+  modal.id = 'bcp-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1.5rem';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.4rem 1.5rem;width:min(720px,96vw);max-height:92vh;display:flex;flex-direction:column;gap:0.9rem">
+      <div>
+        <div style="font-weight:700;font-size:1rem">Copy Bid</div>
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:0.15rem">from ${_pcEsc(src['project-name'] || 'Untitled Project')} &nbsp;·&nbsp; ${items.length} bid item${items.length !== 1 ? 's' : ''}</div>
+      </div>
+
+      <div style="font-size:0.78rem;color:var(--muted);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.6rem 0.75rem;line-height:1.55">
+        Copies the <strong style="color:var(--text)">cost codes, sub codes, units, quantities and unit costs</strong>.
+        Dates, completion flags, change orders and daily costs stay on this job.
+      </div>
+
+      <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;font-size:0.82rem">
+        <label style="color:var(--muted);white-space:nowrap">Copy into:</label>
+        <select id="bcp-target" onchange="_bcpRefresh()"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem;min-width:230px">
+          <option value="">— A new project —</option>
+          ${targets.map(p => `<option value="${_pcEsc(p.id)}">${_pcEsc(p['project-name'] || 'Untitled Project')}${(p.bidItems || []).length ? ` (${(p.bidItems || []).length} bid items)` : ''}</option>`).join('')}
+        </select>
+        <input id="bcp-name" type="text" placeholder="New project name"
+          value="${_pcEsc('Copy of ' + (src['project-name'] || 'Untitled Project'))}"
+          style="flex:1;min-width:200px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem">
+      </div>
+
+      <div id="bcp-modes" style="display:none;gap:1.1rem;flex-wrap:wrap;align-items:center;font-size:0.8rem">
+        <span style="color:var(--muted)">If a line already exists there:</span>
+        <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;white-space:nowrap">
+          <input type="radio" name="bcp-mode" value="merge" checked onchange="_bcpRefresh()"><span>Update it</span></label>
+        <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;white-space:nowrap">
+          <input type="radio" name="bcp-mode" value="append" onchange="_bcpRefresh()"><span>Add as new</span></label>
+        <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;white-space:nowrap">
+          <input type="radio" name="bcp-mode" value="replace" onchange="_bcpRefresh()"><span style="color:var(--red)">Replace all</span></label>
+      </div>
+
+      <label style="display:flex;align-items:center;gap:0.45rem;cursor:pointer;user-select:none;font-size:0.8rem;white-space:nowrap">
+        <input type="checkbox" id="bcp-qty" checked style="width:14px;height:14px;cursor:pointer" onchange="_bcpRefresh()">
+        <span>Copy quantities too <span style="color:var(--muted)">— clear this to carry the scope and pricing across without the takeoff</span></span>
+      </label>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem">
+        <span id="bcp-count" style="font-size:0.8rem;color:var(--muted)"></span>
+        <button class="btn btn-ghost" style="font-size:0.75rem;padding:0.2rem 0.6rem" onclick="_bcpToggleAll()">Select all / none</button>
+      </div>
+      <div id="bcp-codes" style="overflow:auto;flex:1;min-height:80px;max-height:38vh;display:flex;flex-direction:column;gap:0.3rem;padding-right:0.2rem">
+        ${codes.map(cc => {
+          const n = items.filter(b => (b.cost_code || '') === cc).length;
+          const v = items.filter(b => (b.cost_code || '') === cc)
+            .reduce((s, b) => s + (parseFloat(b.quantity) || 0) * (parseFloat(b.unit_cost) || 0), 0);
+          return `<label style="display:flex;align-items:center;gap:0.65rem;cursor:pointer;padding:0.35rem 0.6rem;border-radius:4px;border:1px solid var(--border);background:var(--surface2)">
+            <input type="checkbox" class="bcp-cc" value="${_pcEsc(cc)}" checked style="accent-color:var(--green);width:14px;height:14px;flex-shrink:0" onchange="_bcpRefresh()">
+            <span style="font-size:0.82rem;color:var(--text);flex:1">${_pcEsc(cc) || '(No Code)'}</span>
+            <span style="font-size:0.72rem;color:var(--muted);white-space:nowrap">${n} sub code${n !== 1 ? 's' : ''}${v ? ' · $' + fmt(v, 0) : ''}</span>
+          </label>`;
+        }).join('')}
+      </div>
+
+      <div id="bcp-summary" style="font-size:0.82rem"></div>
+
+      <div style="display:flex;justify-content:flex-end;gap:0.5rem">
+        <button class="btn btn-ghost" onclick="closeBidCopy()">Cancel</button>
+        <button class="btn btn-green" id="bcp-go" onclick="commitBidCopy()">Copy</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) closeBidCopy(); });
+  _bcpRefresh();
+}
+
+function closeBidCopy() {
+  const m = document.getElementById('bcp-modal'); if (m) m.remove();
+  _bcpSrcId = null;
+}
+
+function _bcpMode() {
+  const el = document.querySelector('input[name="bcp-mode"]:checked');
+  return el ? el.value : 'merge';
+}
+
+// The lines the current selection would copy. Only the estimate fields — the
+// source item's id, dates and change orders are deliberately left behind.
+function _bcpRows() {
+  const src = getProj(_bcpSrcId); if (!src) return [];
+  const codes = new Set([...document.querySelectorAll('.bcp-cc:checked')].map(cb => cb.value));
+  const qtyBox = document.getElementById('bcp-qty');
+  const keepQty = !qtyBox || qtyBox.checked;
+  return (src.bidItems || [])
+    .filter(b => codes.has(b.cost_code || ''))
+    .map(b => ({
+      cost_code: b.cost_code || '',
+      sub_code:  b.sub_code  || '',
+      unit:      b.unit      || '',
+      quantity:  keepQty ? (b.quantity == null ? '' : String(b.quantity)) : '',
+      unit_cost: b.unit_cost == null ? '' : String(b.unit_cost),
+    }));
+}
+
+function _bcpToggleAll() {
+  const boxes = [...document.querySelectorAll('.bcp-cc')];
+  const allOn = boxes.every(cb => cb.checked);
+  boxes.forEach(cb => { cb.checked = !allOn; });
+  _bcpRefresh();
+}
+
+function _bcpRefresh() {
+  const boxes = [...document.querySelectorAll('.bcp-cc')];
+  const countEl = document.getElementById('bcp-count');
+  const sumEl   = document.getElementById('bcp-summary');
+  const nameEl  = document.getElementById('bcp-name');
+  const modesEl = document.getElementById('bcp-modes');
+  const goEl    = document.getElementById('bcp-go');
+  const targetEl = document.getElementById('bcp-target');
+  if (!countEl || !sumEl || !targetEl) return;
+
+  const targetId = targetEl.value;
+  const target   = targetId ? getProj(targetId) : null;
+  // The name box only applies to a new project; merge modes only matter when
+  // the destination already has lines to collide with.
+  if (nameEl)  nameEl.style.display  = targetId ? 'none' : '';
+  if (modesEl) modesEl.style.display = (target && (target.bidItems || []).length) ? 'flex' : 'none';
+
+  const sel = boxes.filter(cb => cb.checked).length;
+  countEl.textContent = `${sel} of ${boxes.length} cost code${boxes.length !== 1 ? 's' : ''} selected`;
+
+  const rows  = _bcpRows();
+  const value = rows.reduce((s, r) => s + (parseFloat(r.quantity) || 0) * (parseFloat(r.unit_cost) || 0), 0);
+  const mode  = (target && (target.bidItems || []).length) ? _bcpMode() : 'append';
+  const { updated, added } = _pcPlan(rows, mode === 'merge' ? (target.bidItems || []) : []);
+
+  const notes = [];
+  if (mode === 'replace' && target) {
+    const n = (target.bidItems || []).length;
+    if (n) notes.push(`<span style="color:var(--red)">${n} existing bid item${n !== 1 ? 's' : ''} on the destination will be deleted</span>`);
+  } else if (updated) {
+    notes.push(`<span style="color:var(--blue)">${updated} existing line${updated !== 1 ? 's' : ''} updated</span>`);
+  }
+  const qtyBox = document.getElementById('bcp-qty');
+  if (qtyBox && !qtyBox.checked) notes.push('<span style="color:var(--muted)">quantities left blank</span>');
+
+  sumEl.innerHTML = rows.length
+    ? `<strong style="color:var(--green)">${rows.length}</strong> line${rows.length !== 1 ? 's' : ''} copied`
+      + (added ? ` &nbsp;·&nbsp; <span style="color:var(--green)">${added} new</span>` : '')
+      + (value ? ` &nbsp;·&nbsp; <strong>$${fmt(value, 0)}</strong>` : '')
+      + (notes.length ? `<div style="margin-top:0.35rem;font-size:0.76rem;display:flex;flex-direction:column;gap:0.15rem">${notes.map(n => '<div>' + n + '</div>').join('')}</div>` : '')
+    : '<span style="color:var(--yellow)">Nothing selected to copy.</span>';
+
+  if (goEl) {
+    goEl.disabled = rows.length === 0;
+    goEl.style.opacity = rows.length ? '' : '0.5';
+    goEl.textContent = rows.length ? `Copy ${rows.length} line${rows.length !== 1 ? 's' : ''}` : 'Copy';
+  }
+}
+
+function commitBidCopy() {
+  const src = getProj(_bcpSrcId); if (!src) return;
+  const rows = _bcpRows();
+  if (!rows.length) return;
+  const targetEl = document.getElementById('bcp-target');
+  const targetId = targetEl ? targetEl.value : '';
+
+  let target;
+  if (targetId) {
+    target = getProj(targetId);
+    if (!target) return;
+  } else {
+    const nameEl = document.getElementById('bcp-name');
+    const name = ((nameEl && nameEl.value) || '').trim();
+    if (!name) { alert('Give the new project a name.'); if (nameEl) nameEl.focus(); return; }
+    // addProject() writes the new blob before the index, so the index can
+    // never point at a project the server hasn't stored yet.
+    const before = new Set(projectsList.map(p => p.id));
+    addProject();
+    target = projectsList.find(p => !before.has(p.id));
+    if (!target) { alert('Could not create the new project.'); return; }
+    target['project-name'] = name;
+  }
+  if (!Array.isArray(target.bidItems)) target.bidItems = [];
+
+  const mode = (target.bidItems.length) ? _bcpMode() : 'append';
+  if (mode === 'replace' && target.bidItems.length) {
+    const n = target.bidItems.length;
+    if (!confirm(`Delete all ${n} existing bid item${n !== 1 ? 's' : ''} on "${target['project-name'] || 'Untitled'}" and replace them with ${rows.length} copied line${rows.length !== 1 ? 's' : ''}?\n\nStart dates, target dates and change orders on those items will be lost.`)) return;
+    target.bidItems = [];
+  }
+
+  const { plan, updated, added } = _pcPlan(rows, mode === 'merge' ? target.bidItems : []);
+  plan.forEach(({ r, action, target: hit }) => {
+    if (action === 'update') {
+      hit.quantity  = r.quantity;
+      hit.unit_cost = r.unit_cost;
+      if (r.unit) hit.unit = r.unit;
+    } else {
+      target.bidItems.push({
+        id: uid(),
+        cost_code: r.cost_code,
+        sub_code:  r.sub_code,
+        unit:      r.unit,
+        quantity:  r.quantity,
+        unit_cost: r.unit_cost,
+      });
+    }
+  });
+
+  const targetId2 = target.id;
+  const targetName = target['project-name'] || 'Untitled Project';
+  saveProject(targetId2);
+  _bidScInvalidate();
+  closeBidCopy();
+
+  // Land on the destination — the next thing you do is adjust its quantities.
+  closeBidView();
+  openBidView(targetId2);
+
+  const parts = [];
+  if (added)   parts.push(`${added} line${added !== 1 ? 's' : ''} added`);
+  if (updated) parts.push(`${updated} updated`);
+  alert(`Copied into "${targetName}" — ${parts.join(', ')}.`);
+}
+
 
 
 // Nearest scrollable ancestor — the bid view is a scroll pane, so a re-render
@@ -17551,6 +17803,7 @@ function openBidView(projId) {
   document.getElementById('bid-fs-pdf').onclick = () => showBidPDFOptions(projId, 'pdf');
   document.getElementById('bid-fs-email').onclick = () => showBidPDFOptions(projId, 'email');
   document.getElementById('bid-fs-procore').onclick = () => showProcoreImport(projId);
+  document.getElementById('bid-fs-copy').onclick = () => showBidCopy(projId);
   // Point the generic tbody/tfoot ids to the fullscreen elements
   document.getElementById('bid-fs-tbody').id = 'btbody-' + projId;
   document.getElementById('bid-fs-tfoot').id = 'bfoot-' + projId;
