@@ -24,6 +24,21 @@ const fs   = require('fs');
 const path = require('path');
 const vm   = require('vm');
 
+// The picker ships in all three division pages. With no argument this
+// re-runs itself once per file so each one is checked independently.
+const FILES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
+const TARGET = process.argv[2];
+if (!TARGET) {
+  const { spawnSync } = require('child_process');
+  let bad = 0;
+  for (const f of FILES) {
+    console.log(`\n══════════ ${f} ══════════`);
+    if (spawnSync(process.execPath, [__filename, f], { stdio: 'inherit' }).status !== 0) bad++;
+  }
+  console.log(bad ? `\n${bad} file(s) FAILED` : `\nall ${FILES.length} division pages pass`);
+  process.exit(bad ? 1 : 0);
+}
+
 let passed = 0;
 let failed = 0;
 function assert(label, cond, detail) {
@@ -31,12 +46,12 @@ function assert(label, cond, detail) {
   else { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
 }
 
-const src = fs.readFileSync(path.resolve(__dirname, '../tracker.html'), 'utf8');
+const src = fs.readFileSync(path.resolve(__dirname, '..', TARGET), 'utf8');
 
 // ─────────────────────────────────────────────────────────────────────
 // 1) STRUCTURAL
 // ─────────────────────────────────────────────────────────────────────
-console.log('\n[structural — wiring]');
+console.log(`\n[structural — wiring (${TARGET})]`);
 
 assert('sub code cell renders a combobox',
   /cbHtml\(`bid_subcodes:\$\{projId\}:\$\{b\.id\}`, b\.sub_code, 'Sub code'/.test(src));
@@ -46,6 +61,20 @@ assert('  seeds data-cb-value so an untouched focus/blur is not an edit',
   /\$\{b\.sub_code \? ` data-cb-value="\$\{esc\(b\.sub_code\)\}"` : ''\}/.test(src));
 assert('  uses a fixed-position menu (the bid table is a scroll pane)',
   /bid_subcodes[\s\S]{0,400}data-cb-fixed="1"/.test(src));
+// data-cb-fixed is inert without the machinery behind it, and then the menu
+// gets clipped by the bid view's overflow:auto pane instead of overlaying it.
+assert('  and the page actually implements fixed positioning',
+  /function _cbPositionFixed\(input, menu\)/.test(src)
+  && /if \(cb && cb\.dataset\.cbFixed === '1'\) _cbPositionFixed\(input, menu\)/.test(src));
+// cbHtml has to accept and emit wrapper attributes, or data-cb-fixed never
+// reaches the .cb element and the flag above is silently dropped.
+assert('  and cbHtml forwards wrapper attributes to the .cb element',
+  /function cbHtml\(listKey, currentValue, placeholder, passthroughAttrs, wrapperAttrs\)/.test(src)
+  && /const wrapAttrs = wrapperAttrs \? ' ' \+ wrapperAttrs : '';/.test(src)
+  && /<div class="cb" data-list="\$\{_cbEsc\(listKey\)\}"\$\{passFlag\}\$\{wrapAttrs\}>/.test(src));
+assert('  fixed menus follow scroll and resize',
+  /addEventListener\('scroll', _cbRepositionFixedMenus, true\)/.test(src)
+  && /addEventListener\('resize', _cbRepositionFixedMenus\)/.test(src));
 assert('cbOptionsFor serves the bid_subcodes list',
   /listKey\.startsWith\('bid_subcodes:'\)\) return _bidSubCodeOptions\(listKey\)/.test(src));
 assert('the readonly bid table stays plain text',
@@ -85,11 +114,14 @@ assert('a Procore import invalidates',
 // ─────────────────────────────────────────────────────────────────────
 // 2) BEHAVIOURAL
 // ─────────────────────────────────────────────────────────────────────
-function block(startLabel, endLabel) {
+// The picker block is followed by different code in each page, so the end is
+// whichever candidate marker turns up first.
+function block(startLabel, endLabels) {
   const a = src.indexOf(startLabel);
-  const b = src.indexOf(endLabel, a);
-  if (a < 0 || b < 0) throw new Error(`block: missing ${startLabel} / ${endLabel}`);
-  return src.slice(a, b);
+  if (a < 0) throw new Error(`block: missing start ${startLabel}`);
+  const ends = [].concat(endLabels).map(e => src.indexOf(e, a)).filter(i => i > 0);
+  if (!ends.length) throw new Error(`block: missing end for ${startLabel}`);
+  return src.slice(a, Math.min(...ends));
 }
 
 const sandbox = {
@@ -99,8 +131,9 @@ const sandbox = {
   _cbLabel: o => (typeof o === 'string' ? o : o.label),
 };
 vm.createContext(sandbox);
-vm.runInContext(block('// Matching key: what counts as', '// Off-bid daily costs for a project'), sandbox);
-vm.runInContext(block('function cbFilterFor(', 'function cbOnFocus('), sandbox);
+vm.runInContext(block('// Matching key: what counts as',
+  ['// Off-bid daily costs for a project', 'function removeBidGroup(', 'function renderBidTable(']), sandbox);
+vm.runInContext(block('function cbFilterFor(', ['function cbOnFocus(']), sandbox);
 const { _bidScNorm, _bidSubCodeStats, _bidSubCodeCanonical, _bidSubCodeOptions, _bidSubCodeFilter, cbFilterFor } = sandbox;
 
 // Two past jobs that ran the same work under different cost codes, one

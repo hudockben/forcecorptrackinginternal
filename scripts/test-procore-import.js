@@ -29,6 +29,21 @@ const fs   = require('fs');
 const path = require('path');
 const vm   = require('vm');
 
+// The importer ships in all three division pages. With no argument this
+// re-runs itself once per file so each one is checked independently.
+const FILES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
+const TARGET = process.argv[2];
+if (!TARGET) {
+  const { spawnSync } = require('child_process');
+  let bad = 0;
+  for (const f of FILES) {
+    console.log(`\n══════════ ${f} ══════════`);
+    if (spawnSync(process.execPath, [__filename, f], { stdio: 'inherit' }).status !== 0) bad++;
+  }
+  console.log(bad ? `\n${bad} file(s) FAILED` : `\nall ${FILES.length} division pages pass`);
+  process.exit(bad ? 1 : 0);
+}
+
 let passed = 0;
 let failed = 0;
 function assert(label, cond, detail) {
@@ -41,12 +56,12 @@ function assert(label, cond, detail) {
   }
 }
 
-const src = fs.readFileSync(path.resolve(__dirname, '../tracker.html'), 'utf8');
+const src = fs.readFileSync(path.resolve(__dirname, '..', TARGET), 'utf8');
 
 // ─────────────────────────────────────────────────────────────────────
 // 1) STRUCTURAL
 // ─────────────────────────────────────────────────────────────────────
-console.log('\n[structural — tracker.html]');
+console.log(`\n[structural — ${TARGET}]`);
 
 assert('bid view has the Import Procore button',
   /<button[^>]*id="bid-fs-procore"/.test(src));

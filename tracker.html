@@ -8651,8 +8651,10 @@ function _bidSubCodeFilter(listKey, rawQuery, options) {
     if (l === q) {
       // Same name, different capitalisation or spacing. Calling it out is the
       // whole point — the history is keyed on the exact string.
+      // Keep the usage note alongside the flag — how much history the name
+      // carries is exactly what makes the choice obvious here.
       same.push(o.label === typed ? o
-        : { ...o, meta: 'existing spelling — pick this to keep the same history', metaCls: 'warn' });
+        : { ...o, meta: 'existing spelling · ' + o.meta, metaCls: 'warn' });
     } else if (l.startsWith(q)) prefix.push(o);
     else if (l.includes(q)) rest.push(o);
   });
