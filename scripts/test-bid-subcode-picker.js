@@ -58,9 +58,15 @@ assert('sub code cell renders a combobox',
 assert('  commits through _bidSubCodeCommit',
   /onchange="_bidSubCodeCommit\(this,'\$\{projId\}','\$\{b\.id\}'\)"/.test(src));
 assert('  seeds data-cb-value so an untouched focus/blur is not an edit',
-  /\$\{b\.sub_code \? ` data-cb-value="\$\{esc\(b\.sub_code\)\}"` : ''\}/.test(src));
+  /\$\{b\.sub_code \? ` data-cb-value="\$\{_cbEsc\(b\.sub_code\)\}"` : ''\}/.test(src));
+// data-cb-value has to decode back to exactly what the input's value decodes
+// to. esc() leaves & alone while _cbEsc escapes it, so mixing them means a
+// name like "Erosion &amp; Sediment" comes back different and a bare
+// focus/blur silently saves the altered version over the real one.
+assert('  and escapes it the same way as the input value (not esc)',
+  !/data-cb-value="\$\{esc\(b\.sub_code\)\}"/.test(src));
 assert('  uses a fixed-position menu (the bid table is a scroll pane)',
-  /bid_subcodes[\s\S]{0,400}data-cb-fixed="1"/.test(src));
+  /cbHtml\(`bid_subcodes:[\s\S]{0,900}data-cb-fixed="1"/.test(src));
 // data-cb-fixed is inert without the machinery behind it, and then the menu
 // gets clipped by the bid view's overflow:auto pane instead of overlaying it.
 assert('  and the page actually implements fixed positioning',
@@ -99,6 +105,23 @@ assert('option rows stay plain text when no note is present',
   !!renderFn && /: _cbEsc\(_cbLabel\(opt\)\)\)/.test(renderFn[0]));
 assert('data-val never carries the note (it becomes the input value)',
   !!renderFn && /data-val="\$\{_cbEsc\(_cbLabel\(opt\)\)\}"/.test(renderFn[0]));
+
+console.log('\n[structural — a re-render keeps the reader in place]');
+// Committing a sub code rebuilds the whole table. On a 200-line estimate,
+// losing the scroll position or the collapsed groups means hunting for your
+// place again after every single edit.
+assert('renderBidTable finds its scroll container', /function _bidScrollParent\(el\)/.test(src));
+const renderFn2 = src.match(/function renderBidTable\(projId, opts = \{\}\)[\s\S]+?\n\}\n/);
+assert('  captures collapsed groups before wiping the body',
+  !!renderFn2 && /const collapsedGroups = new Set\(\);[\s\S]{0,200}data-collapsed="1"/.test(renderFn2[0])
+  && renderFn2[0].indexOf('collapsedGroups') < renderFn2[0].indexOf("tbody.innerHTML = ''"));
+assert('  captures the scroll position before wiping the body',
+  !!renderFn2 && /const savedScroll = scroller \? scroller\.scrollTop : 0;/.test(renderFn2[0])
+  && renderFn2[0].indexOf('savedScroll') < renderFn2[0].indexOf("tbody.innerHTML = ''"));
+assert('  re-collapses those groups afterwards',
+  !!renderFn2 && /collapsedGroups\.forEach\(gid =>[\s\S]{0,400}classList\.add\('bg-hidden'\)/.test(renderFn2[0]));
+assert('  and restores the scroll position',
+  !!renderFn2 && /if \(scroller && savedScroll\) scroller\.scrollTop = savedScroll;/.test(renderFn2[0]));
 
 console.log('\n[structural — catalog cache invalidation]');
 // The cache key is built from row counts, which do not change when a sub code

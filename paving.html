@@ -8393,6 +8393,16 @@ function _bidSubCodeCommit(input, projId, biId) {
 }
 
 
+// Nearest scrollable ancestor — the bid view is a scroll pane, so a re-render
+// has to put the reader back where they were.
+function _bidScrollParent(el) {
+  for (let n = el && el.parentElement; n; n = n.parentElement) {
+    const o = getComputedStyle(n).overflowY;
+    if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) return n;
+  }
+  return null;
+}
+
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
@@ -8400,6 +8410,14 @@ function renderBidTable(projId, opts = {}) {
   const p = getProj(projId); if (!p) return;
   const projDone = (p['status'] || '') === 'Complete';
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
+  // Editing one line rebuilds the whole table, so collapsed groups and the
+  // scroll position have to survive it — on a 200-line estimate, losing either
+  // means hunting for your place again after every edit.
+  const collapsedGroups = new Set();
+  tbody.querySelectorAll('tr.bid-group-hdr[data-collapsed="1"]').forEach(tr => collapsedGroups.add(tr.dataset.group));
+  const scroller   = _bidScrollParent(tbody);
+  const savedScroll = scroller ? scroller.scrollTop : 0;
+
   tbody.innerHTML = '';
 
   const items = p.bidItems || [];
@@ -8523,7 +8541,12 @@ function renderBidTable(projId, opts = {}) {
            ${calcCellsA}${calcCellsB}`
         : `<td class="bid-del"><button class="del-btn" data-tab="bid-item" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
            <td>${cbHtml(`bid_subcodes:${projId}:${b.id}`, b.sub_code, 'Sub code',
-             `onchange="_bidSubCodeCommit(this,'${projId}','${b.id}')"${b.sub_code ? ` data-cb-value="${esc(b.sub_code)}"` : ''}`,
+             // _cbEsc, not esc: this attribute has to decode back to exactly
+             // what the input's value decodes to. esc() leaves & alone, so a
+             // name containing entity-looking text ("Erosion &amp; Sediment")
+             // would come back different and a bare focus/blur would save the
+             // altered version over the real one.
+             `onchange="_bidSubCodeCommit(this,'${projId}','${b.id}')"${b.sub_code ? ` data-cb-value="${_cbEsc(b.sub_code)}"` : ''}`,
              'data-cb-fixed="1"')}${_doneBadge}</td>
            <td><select style="font-size:0.75rem;padding:0.15rem 0.3rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;width:60px"
              onchange="updateBidItem('${projId}','${b.id}','unit',this.value)">${UNIT_OPTS.map(u=>`<option value="${u}"${b.unit===u?' selected':''}>${u||'—'}</option>`).join('')}</select></td>
@@ -8572,6 +8595,17 @@ function renderBidTable(projId, opts = {}) {
       : `<td></td>${totalLabel}${totalCells}`;
     tbody.appendChild(totalTr);
   });
+
+  // Re-collapse whatever was collapsed before, then put the scroll back.
+  collapsedGroups.forEach(gid => {
+    const hdr = tbody.querySelector(`tr.bid-group-hdr[data-group="${gid}"]`);
+    if (!hdr) return;
+    hdr.dataset.collapsed = '1';
+    const tog = document.getElementById('btog-' + gid);
+    if (tog) tog.style.transform = 'rotate(-90deg)';
+    tbody.querySelectorAll(`tr[data-group="${gid}"]`).forEach(r => { if (r !== hdr) r.classList.add('bg-hidden'); });
+  });
+  if (scroller && savedScroll) scroller.scrollTop = savedScroll;
 
   renderBidFooter(projId, opts);
   if (bidViewProjId === projId) _updateBidFilterButtons();
