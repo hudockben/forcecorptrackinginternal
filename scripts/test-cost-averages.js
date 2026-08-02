@@ -100,5 +100,51 @@ assert('Bid Qty is still summed across jobs',
 assert('the Scale of Economy hand-off still gets the real running quantity',
   /_soeSendFromCT\(this,'','\$\{esc\(sc\)\}',\$\{rqty\}/.test(render));
 
+console.log('\n[Export CSV emits what the table drew]');
+// The export used to recompute from a different source (buildDailyAgg + costRows,
+// keyed per cost code + sub code, ignoring the filter bar) and pushed 20 values
+// under 18 headers — so from "Cum Labor Hrs" rightward every number sat under the
+// wrong heading, with projected cost appearing as "Days Worked" and two columns
+// spilling past the header row entirely. It now emits the rendered rows.
+const exportFn = src.match(/function exportCostCSV\(\)[\s\S]+?\n\}\n/);
+assert('renderCostTable resets the export rows', /_ctExportRows = \[\];/.test(render));
+assert('  and captures the company row', /_ctExportRows\.push\(\{\s*\n\s*sub_code: sc, job: 'All jobs',/.test(render));
+assert('  and one row per job', /_ctExportRows\.push\(\{\s*\n\s*sub_code: sc, job: pa\.project,/.test(render));
+assert('the export reads those rows', !!exportFn && /_ctExportRows\.forEach\(/.test(exportFn[0]));
+assert('  and no longer recomputes from its own source',
+  !!exportFn && !/buildDailyAgg\(\)/.test(exportFn[0]) && !/costRows/.test(exportFn[0]));
+assert('  rendering first if the tab has not drawn yet',
+  !!exportFn && /if \(!_ctExportRows\.length\) renderCostTable\(\);/.test(exportFn[0]));
+
+// The alignment bug itself: headers and values must be the same length.
+if (exportFn) {
+  const heads = (exportFn[0].match(/const headers = \[([\s\S]+?)\];/) || [, ''])[1]
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const push = (exportFn[0].match(/rows\.push\(\[([\s\S]+?)\]\.map\(/) || [, ''])[1];
+  let depth = 0, cur = '', vals = [];
+  for (const ch of push) {
+    if ('([{'.includes(ch)) depth++;
+    if (')]}'.includes(ch)) depth--;
+    if (ch === ',' && depth === 0) { if (cur.trim()) vals.push(cur.trim()); cur = ''; }
+    else cur += ch;
+  }
+  if (cur.trim()) vals.push(cur.trim());
+  assert(`every header has exactly one value under it (${heads.length} headers, ${vals.length} values)`,
+    heads.length === vals.length && heads.length === 17,
+    `${heads.length} vs ${vals.length}`);
+  assert('  the columns are the table\'s own, plus a Job column',
+    heads[0] === "'Sub Code'" && heads[1] === "'Job'"
+    && heads.includes("'Avg Qty'") && heads.includes("'Days Worked'")
+    && heads.includes("'Cum. Labor Hrs'") && heads.includes("'MU / Equip Hr'"),
+    heads.join(' '));
+  // Order matters: a value under the wrong header is the bug being guarded.
+  const order = ['sub_code','job','bid_qty','bid_unit_cost','bid_total','avg_qty','running_total',
+    'production_rate','total_cost','labor_hours','days','avg_laborers','mu_labor',
+    'equip_total','equip_hours','equip_cost_hr','mu_equip'];
+  assert('  and each value sits under its own header',
+    order.every((k, i) => new RegExp(`r\\.${k}\\b`).test(vals[i] || '')),
+    order.map((k, i) => (new RegExp(`r\\.${k}\\b`).test(vals[i] || '') ? '' : `${i}:${k}`)).filter(Boolean).join(' '));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

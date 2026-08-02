@@ -12139,9 +12139,15 @@ function _saveBidQuickEdit(btn) {
   if (saved) renderCostTable();
 }
 
+// Every row the cost table just drew, in the order it drew them. Export CSV
+// emits exactly this, so the file and the screen cannot drift apart — they are
+// the same numbers, computed once.
+let _ctExportRows = [];
+
 function renderCostTable() {
   const tbody = document.getElementById('cost-tbody');
   tbody.innerHTML = '';
+  _ctExportRows = [];
 
   // Filtered projects (by project name + sqft filter bar)
   const projectIds = getFilteredProjectIds();
@@ -12290,6 +12296,14 @@ function renderCostTable() {
     const projEntries = Object.keys(scProjAgg).filter(pk => pk.startsWith(sc + '||'));
     const hasProjects = projEntries.length > 0;
 
+    _ctExportRows.push({
+      sub_code: sc, job: 'All jobs',
+      bid_qty: bq, bid_unit_cost: buc, bid_total: btotal,
+      avg_qty, running_total: rtotal, production_rate: past_avg, total_cost: actualTotal,
+      labor_hours: a.labor_hours, days: avgDays, avg_laborers: avg_lab, mu_labor: mu_lab,
+      equip_total: a.equip_cost, equip_hours: a.equip_hours, equip_cost_hr: eq_cph, mu_equip: mu_eq,
+    });
+
     // ── Sub code header row (level 1) — clickable, shows all data columns ──
     const scTr = document.createElement('tr');
     scTr.className = 'cost-group-hdr';
@@ -12374,6 +12388,14 @@ function renderCostTable() {
                        : (p_btot > 0 && p_actual >= p_btot * 0.8) ? ' warn' : '';
       if (p_alertCls) alertItems.push({ sc, proj: pa.project, pct: Math.round(p_actual / p_btot * 100), level: p_alertCls.trim() });
 
+      _ctExportRows.push({
+        sub_code: sc, job: pa.project,
+        bid_qty: p_bqTot, bid_unit_cost: p_buc, bid_total: p_btot,
+        avg_qty: p_rqty, running_total: p_rtotal, production_rate: p_past_avg, total_cost: p_actual,
+        labor_hours: pa.labor_hours, days: p_days, avg_laborers: p_avg_lab, mu_labor: p_mu_lab,
+        equip_total: pa.equip_cost, equip_hours: pa.equip_hours, equip_cost_hr: p_eq_cph, mu_equip: p_mu_eq,
+      });
+
       const projTr = document.createElement('tr');
       projTr.className = 'cost-group-proj ct-hidden';
       projTr.dataset.group = groupId;
@@ -12450,43 +12472,27 @@ function addCostRow() {
 }
 
 function exportCostCSV() {
-  const agg = buildDailyAgg();
-  const headers = ['Cost Code','Sub Code','Status','Bid Qty','Bid Item Cost','Total Cost (Bid)',
+  // Emits exactly the rows the table drew — same numbers, same order, same
+  // filters. Each sub code appears once for the company (the per-job averages
+  // shown on the collapsed row) and once per job, which is what expanding the
+  // row reveals. The Job column says which you are looking at.
+  if (!_ctExportRows.length) renderCostTable();
+  const headers = ['Sub Code','Job','Bid Qty','Bid Unit Cost','Total Cost (Bid)',
     'Avg Qty','Running Total','Production Rate','Total Cost',
-    'Cum Labor Hrs','Days Worked','Avg Laborers','MU/Labor Hr',
-    'Equip Total','Equip Hours','Equip Cost/Hr','MU/Equip Hr'];
+    'Cum. Labor Hrs','Days Worked','Avg Laborers','MU / Labor Hr',
+    'Equip Total','Equip Hours','Equip Cost / Hr','MU / Equip Hr'];
+  const n = (v, dp) => (Number.isFinite(v) && v !== 0) ? v.toFixed(dp) : (v === 0 ? (0).toFixed(dp) : '');
   const rows = [headers.join(',')];
-
-  const allKeys = [
-    ...costRows.map(r => (r.cost_code||'')+'||'+(r.sub_code||'')),
-    ...Object.keys(agg).filter(k => !costRows.some(r => (r.cost_code||'')+'||'+(r.sub_code||'')===k))
-  ];
-
-  allKeys.forEach(key => {
-    const cr  = costRows.find(r => (r.cost_code||'')+'||'+(r.sub_code||'')===key);
-    const a   = agg[key] || { running_qty:0, total_cost:0, labor_hours:0, equip_hours:0, equip_cost:0, dates:new Set() };
-    const bq  = parseFloat(cr?.quantity)      || 0;
-    const bic = parseFloat(cr?.bid_item_cost) || 0;
-    const rqty = a.running_qty, rtotal = a.total_cost;
-    const past_avg = rqty ? rtotal / rqty : 0;
-    const total_bid = bq * bic;
-    const days = a.dates.size;
+  _ctExportRows.forEach(r => {
     rows.push([
-      cr?.cost_code || key.split('||')[0], cr?.sub_code || key.split('||')[1],
-      cr?.status || '',
-      bq, bic, total_bid.toFixed(2),
-      (a.qty_count ? a.running_qty / a.qty_count : 0).toFixed(2), rtotal.toFixed(2), past_avg.toFixed(4),
-      a.imported_total ? a.imported_total.toFixed(2) : '',
-      bq ? ((rqty/bq)*100).toFixed(2) : '',
-      bq ? (rtotal + (bq-rqty)*past_avg).toFixed(2) : '',
-      a.labor_hours.toFixed(1), days,
-      (days && a.labor_hours) ? (a.labor_hours/days/8).toFixed(2) : '',
-      a.labor_hours ? (rqty/a.labor_hours).toFixed(4) : '',
-      a.equip_cost.toFixed(2), a.equip_hours.toFixed(1),
-      a.equip_hours ? (a.equip_cost/a.equip_hours).toFixed(4) : '',
-      a.equip_hours ? (rqty/a.equip_hours).toFixed(4) : '',
-    ].map(v => `"${v}"`).join(','));
+      r.sub_code, r.job,
+      n(r.bid_qty, 2), n(r.bid_unit_cost, 2), n(r.bid_total, 2),
+      n(r.avg_qty, 2), n(r.running_total, 2), n(r.production_rate, 4), n(r.total_cost, 2),
+      n(r.labor_hours, 1), n(r.days, 1), n(r.avg_laborers, 1), n(r.mu_labor, 4),
+      n(r.equip_total, 2), n(r.equip_hours, 1), n(r.equip_cost_hr, 4), n(r.mu_equip, 4),
+    ].map(v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`).join(','));
   });
+  if (rows.length - 1 !== _ctExportRows.length) { console.warn('[cost csv] row count mismatch'); }
   downloadCSV(rows.join('\n'), 'cost_tracking.csv');
 }
 
