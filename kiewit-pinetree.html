@@ -2730,6 +2730,7 @@
     <span><span class="dot dot-warn"></span> Running cost &gt;80% of bid</span>
     <span><span class="dot dot-over"></span> Over budget (&gt;100% of bid)</span>
     <span>Production Rate = Running Total ÷ Running Qty (company average cost per unit across all jobs)</span>
+    <span>Avg Qty and Days Worked on a sub code row are <strong>per-job averages</strong> — expand the row for each job's own figures</span>
     <span>Dim rows = cost codes found in daily tracking with no bid entry yet</span>
   </div>
 </div>
@@ -12122,12 +12123,25 @@ function renderCostTable() {
     const btotal   = b.total;
     const buc      = bq ? btotal / bq : 0;
     const rqty     = a.running_qty;
-    const avg_qty  = a.qty_count ? rqty / a.qty_count : 0;
+    // Avg Qty and Days Worked on a sub code row are per-job averages, so the
+    // parent is exactly the mean of the figures the expanded rows show. A
+    // company total would say nothing about what one job looks like, which is
+    // the number you want when sizing the next one.
+    const _projKeys = Object.keys(scProjAgg).filter(pk => pk.startsWith(sc + '||'));
+    const jobCount = _projKeys.length;
+    const avg_qty  = jobCount
+      ? _projKeys.reduce((s, pk) => s + scProjAgg[pk].running_qty, 0) / jobCount
+      : (a.qty_count ? rqty / a.qty_count : 0);
     const rtotal   = a.total_cost;
     const past_avg = rqty ? rtotal / rqty : 0;
-    const days     = a.dates.size;
+    // Distinct dates across every job — two jobs working the same day count
+    // once here, so this can't stand in for "days per job".
+    const daysAll  = a.dates.size;
+    const avgDays  = jobCount
+      ? _projKeys.reduce((s, pk) => s + scProjAgg[pk].dates.size, 0) / jobCount
+      : daysAll;
     const avg_lab  = a.num_laborers_count ? a.num_laborers_sum / a.num_laborers_count
-                   : (days && a.labor_hours) ? a.labor_hours / days / 8 : 0;
+                   : (daysAll && a.labor_hours) ? a.labor_hours / daysAll / 8 : 0;
     const mu_lab   = a.labor_hours ? rqty / a.labor_hours : 0;
     const eq_cph   = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
     const mu_eq    = a.equip_hours ? rqty / a.equip_hours : 0;
@@ -12165,12 +12179,12 @@ function renderCostTable() {
       <td class="calc">${bq ? fmt(bq,2) : '—'}</td>
       <td class="calc">${buc ? '$'+fmt(buc) : isDailyOnly ? '<span style="color:#555;font-size:0.68rem">No bid entry</span>' : '—'}</td>
       <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
-      <td class="calc">${fmt(avg_qty,2)}</td>
+      <td class="calc" title="${jobCount ? `Average quantity per job across ${jobCount} job${jobCount!==1?'s':''} — expand for each job's actual quantity` : 'No daily quantities logged yet'}">${fmt(avg_qty,2)}</td>
       <td class="calc">$${fmt(rtotal)}</td>
       <td class="calc" title="Production Rate: company average cost per unit across all jobs">${rqty ? '$'+fmt(past_avg) : '—'}</td>
       <td class="calc">$${fmt(actualTotal)}</td>
       <td class="calc">${fmt(a.labor_hours,1)}</td>
-      <td class="calc">${days}</td>
+      <td class="calc" title="${jobCount ? `Average days worked per job across ${jobCount} job${jobCount!==1?'s':''} — expand for each job's actual days` : 'No days logged yet'}">${fmt(avgDays,1)}</td>
       <td class="calc">${avg_lab ? fmt(avg_lab,1) : '—'}</td>
       <td class="calc">${mu_lab  ? fmt(mu_lab,4)  : '—'}</td>
       <td class="calc">$${fmt(a.equip_cost)}</td>
@@ -12206,8 +12220,7 @@ function renderCostTable() {
         return sum + bq * (parseFloat(b.unit_cost)||0);
       }, 0);
       const p_buc     = p_bqTot > 0 ? p_btot / p_bqTot : 0;
-      const p_rqty    = pa.running_qty;
-      const p_avg_qty = pa.qty_count ? p_rqty / pa.qty_count : 0;
+      const p_rqty    = pa.running_qty;   // this job's actual quantity to date
       const p_rtotal  = pa.total_cost;
       const p_past_avg = p_rqty ? p_rtotal / p_rqty : 0;
       const p_days    = pa.dates.size;
@@ -12229,7 +12242,7 @@ function renderCostTable() {
         <td class="calc">${p_bqTot ? fmt(p_bqTot,2)  : '—'}</td>
         <td class="calc">${p_buc   ? '$'+fmt(p_buc)   : '—'}</td>
         <td class="calc">${p_btot  ? '$'+fmt(p_btot)  : '—'}</td>
-        <td class="calc">${fmt(p_avg_qty,2)}</td>
+        <td class="calc" title="Quantity logged on this job">${fmt(p_rqty,2)}</td>
         <td class="calc">$${fmt(p_rtotal)}</td>
         <td class="calc">${p_rqty ? '$'+fmt(p_past_avg) : '—'}</td>
         <td class="calc${p_alertCls}">$${fmt(p_actual)}</td>
