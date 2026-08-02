@@ -154,7 +154,8 @@ const sandbox = {
   _cbLabel: o => (typeof o === 'string' ? o : o.label),
 };
 vm.createContext(sandbox);
-vm.runInContext(block('// Matching key: what counts as',
+// Starts at the shared UNIT_OPTS constant, which the unit lookup needs.
+vm.runInContext(block('// The Unit dropdown',
   ['// Off-bid daily costs for a project', 'function removeBidGroup(', 'function renderBidTable(']), sandbox);
 vm.runInContext(block('function cbFilterFor(', ['function cbOnFocus(']), sandbox);
 const { _bidScNorm, _bidSubCodeStats, _bidSubCodeCanonical, _bidSubCodeOptions, _bidSubCodeFilter, cbFilterFor } = sandbox;
@@ -232,6 +233,50 @@ for (const same of ['Turf Installation', '  Turf Installation  ']) {
     r[0].label === 'Turf Installation' && !/existing spelling/.test(r[0].meta), JSON.stringify(r[0] && r[0].meta));
   assert('  and is not offered as a new sub code', !r.some(o => /new sub code/.test(o.meta || '')));
 }
+
+console.log('\n[behavioural — unit inherited from how the work is measured elsewhere]');
+sandbox.soeUnitOverrides = {};
+sandbox.projectsList.push(
+  { id: 'u1', bidItems: [{ id: 'x1', cost_code: 'A', sub_code: 'Placement of #57s', unit: 'SF' },
+                         { id: 'x2', cost_code: 'A', sub_code: 'Export Spoil',      unit: 'TON' },
+                         { id: 'x3', cost_code: 'A', sub_code: 'Unmeasured Work',   unit: '' }], dailyRows: [] },
+  { id: 'u2', bidItems: [{ id: 'y1', cost_code: 'B', sub_code: 'Placement of #57s', unit: 'SF' },
+                         { id: 'y2', cost_code: 'C', sub_code: 'Placement of #57s', unit: 'TON' }], dailyRows: [] },
+);
+sandbox._bidScInvalidate();
+const { _bidSubCodeUnit } = sandbox;
+assert('picks the unit most bid lines use', _bidSubCodeUnit('Placement of #57s', 'A') === 'SF',
+  _bidSubCodeUnit('Placement of #57s', 'A'));
+assert('carries across cost codes, like the history does',
+  _bidSubCodeUnit('Export Spoil', 'ZZZ') === 'TON', _bidSubCodeUnit('Export Spoil', 'ZZZ'));
+assert('matches the name case-insensitively', _bidSubCodeUnit('export spoil', 'A') === 'TON');
+assert('a sub code never measured stays blank', _bidSubCodeUnit('Unmeasured Work', 'A') === '');
+assert('an unknown sub code stays blank', _bidSubCodeUnit('Never Seen', 'A') === '');
+// An explicit Scale-of-Economy unit is a decision; it outranks the tally.
+sandbox.soeUnitOverrides['A||Export Spoil'] = 'CY';
+assert('an explicit SoE override wins for that exact code + sub code',
+  _bidSubCodeUnit('Export Spoil', 'A') === 'CY');
+assert('  but not for a different cost code', _bidSubCodeUnit('Export Spoil', 'B') === 'TON');
+// Whatever comes back has to be selectable in the dropdown.
+sandbox.soeUnitOverrides['A||Export Spoil'] = 'furlongs';
+assert('a unit the dropdown would not show is discarded', _bidSubCodeUnit('Export Spoil', 'A') === '');
+delete sandbox.soeUnitOverrides['A||Export Spoil'];
+assert('the option note advertises the unit before you pick',
+  /(^|· )TON( ·|$)/.test(Object.fromEntries(
+    _bidSubCodeOptions('bid_subcodes:cur:x').map(o => [o.label, o.meta]))['Export Spoil'] || ''),
+  Object.fromEntries(_bidSubCodeOptions('bid_subcodes:cur:x').map(o => [o.label, o.meta]))['Export Spoil']);
+
+console.log('\n[structural — the unit is filled, never overwritten]');
+const commitFn2 = src.match(/function _bidSubCodeCommit\([\s\S]+?\n\}\n/);
+assert('commit fills the unit only when the line has none',
+  !!commitFn2 && /if \(!bi\.unit\) \{[\s\S]{0,200}_bidSubCodeUnit\(next, bi\.cost_code\)/.test(commitFn2[0]));
+assert('  and routes it through updateBidItem so it persists',
+  !!commitFn2 && /updateBidItem\(projId, biId, 'unit', u\)/.test(commitFn2[0]));
+assert('  after the catalog is invalidated, so the new name counts',
+  !!commitFn2 && commitFn2[0].indexOf('_bidScInvalidate()') < commitFn2[0].indexOf('if (!bi.unit)'));
+assert('UNIT_OPTS is shared, not redefined per row',
+  /^const UNIT_OPTS = \['','SF','LF','SY','CY','TN','TON','EA','LS','HR','GAL','LB','AC'\];$/m.test(src)
+  && !/      const UNIT_OPTS = \[/.test(src));
 
 console.log('\n[behavioural — canonicalisation]');
 assert('snaps a case variant',        _bidSubCodeCanonical('turf installation') === 'Turf Installation');

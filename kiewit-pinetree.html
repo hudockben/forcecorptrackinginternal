@@ -8218,6 +8218,10 @@ function commitProcoreImport() {
    still one click, just an explicit one.
 ═══════════════════════════════════════════ */
 
+// The Unit dropdown's fixed list. Shared so an auto-filled unit can never be a
+// value the dropdown wouldn't show.
+const UNIT_OPTS = ['','SF','LF','SY','CY','TN','TON','EA','LS','HR','GAL','LB','AC'];
+
 // Matching key: what counts as "the same name typed differently".
 function _bidScNorm(s) { return String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' '); }
 
@@ -8243,7 +8247,7 @@ function _bidSubCodeStats() {
     if (!name) return null;
     const k = _bidScNorm(name);
     let e = byNorm.get(k);
-    if (!e) { e = { name, jobs: new Set(), rows: 0, hours: 0, perProj: new Map(), spellings: new Map() }; byNorm.set(k, e); }
+    if (!e) { e = { name, jobs: new Set(), rows: 0, hours: 0, perProj: new Map(), spellings: new Map(), units: new Map() }; byNorm.set(k, e); }
     e.spellings.set(name, (e.spellings.get(name) || 0) + 1);
     if (projId) {
       e.jobs.add(projId);
@@ -8253,7 +8257,11 @@ function _bidSubCodeStats() {
   };
 
   projectsList.forEach(p => {
-    (p.bidItems || []).forEach(b => touch(b.sub_code, p.id));
+    (p.bidItems || []).forEach(b => {
+      const e = touch(b.sub_code, p.id);
+      // How this work has been measured elsewhere, so a new line can inherit it.
+      if (e && b.unit) e.units.set(b.unit, (e.units.get(b.unit) || 0) + 1);
+    });
     (p.dailyRows || []).forEach(r => {
       const e = touch(r.sub_code, p.id);
       if (!e) return;
@@ -8270,6 +8278,11 @@ function _bidSubCodeStats() {
     e.spellings.forEach((n, spelling) => { if (n > bestN) { bestN = n; best = spelling; } });
     e.name = best;
     e.variantCount = e.spellings.size;
+    // Same majority rule for the unit: whatever most bid lines measure it in.
+    let bu = '', buN = 0;
+    e.units.forEach((n, u) => { if (n > buN) { buN = n; bu = u; } });
+    e.unit = bu;
+    e.unitCount = e.units.size;
   });
 
   _bidScCache = { byNorm };
@@ -8300,9 +8313,21 @@ function _bidScStatsFor(e, projId) {
   };
 }
 
-function _bidScMeta(e, s, dupOnThisJob) {
+// How this sub code is measured. An explicit Scale-of-Economy override for
+// this exact cost code + sub code wins; otherwise the unit most of its bid
+// lines use. Anything the Unit dropdown wouldn't show is discarded.
+function _bidSubCodeUnit(subCode, costCode) {
+  const explicit = (typeof soeUnitOverrides !== 'undefined' && soeUnitOverrides)
+    ? soeUnitOverrides[(costCode || '') + '||' + (subCode || '')] : '';
+  const e = _bidSubCodeStats().byNorm.get(_bidScNorm(subCode));
+  const u = explicit || (e ? e.unit : '');
+  return UNIT_OPTS.includes(u) ? u : '';
+}
+
+function _bidScMeta(e, s, dupOnThisJob, unit) {
   const bits = [];
   if (dupOnThisJob) bits.push('already on this job');
+  if (unit) bits.push(unit);
   if (s.jobs === 0) {
     bits.push('no history yet');
   } else {
@@ -8324,10 +8349,13 @@ function _bidSubCodeOptions(listKey) {
   if (p) (p.bidItems || []).forEach(b => {
     if (b.id !== biId && b.sub_code) mine.add(_bidScNorm(b.sub_code));
   });
+  // This row's cost code, so the unit shown is the one that would be filled in.
+  const row = p && (p.bidItems || []).find(b => b.id === biId);
+  const rowCode = row ? (row.cost_code || '') : '';
   const out = [];
   _bidSubCodeStats().byNorm.forEach((e, k) => {
     const s = _bidScStatsFor(e, projId);
-    out.push({ value: e.name, label: e.name, meta: _bidScMeta(e, s, mine.has(k)), _jobs: s.jobs, _hours: s.hours });
+    out.push({ value: e.name, label: e.name, meta: _bidScMeta(e, s, mine.has(k), _bidSubCodeUnit(e.name, rowCode)), _jobs: s.jobs, _hours: s.hours });
   });
   // Best-established first, so the names worth reusing are the ones in reach.
   out.sort((a, b) => (b._jobs - a._jobs) || (b._hours - a._hours) || a.label.localeCompare(b.label));
@@ -8372,6 +8400,13 @@ function _bidSubCodeCommit(input, projId, biId) {
   if (next === (bi.sub_code || '')) return;   // focus/blur with no edit — leave it alone
   updateBidItem(projId, biId, 'sub_code', next);
   _bidScInvalidate();
+  // Fill the unit in from how this sub code is measured elsewhere, but only
+  // when the line hasn't got one — a unit already on the row was a decision,
+  // and re-deriving it from history would quietly overrule it.
+  if (!bi.unit) {
+    const u = _bidSubCodeUnit(next, bi.cost_code);
+    if (u) updateBidItem(projId, biId, 'unit', u);
+  }
   // Past Avg UC and Hist. Estimate are derived from the sub code, so re-render
   // to show what the new name actually pools with.
   if (bidViewProjId === projId) renderBidTable(projId);
@@ -8517,7 +8552,6 @@ function renderBidTable(projId, opts = {}) {
         <td class="${bidTot ? diffCls : 'bid-actual'}">${diffTxt}</td>
         <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>`;
 
-      const UNIT_OPTS = ['','SF','LF','SY','CY','TN','TON','EA','LS','HR','GAL','LB','AC'];
       childTr.innerHTML = readonly
         ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}${_doneBadge}</td>
            <td class="bid-calc" style="font-size:0.72rem;color:var(--muted)">${esc(b.unit)||'—'}</td>
