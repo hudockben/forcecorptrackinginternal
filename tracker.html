@@ -2340,6 +2340,15 @@
     }
     .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
     .cb-opt-empty { padding: 0.3rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
+    /* Options that carry a usage note (bid sub codes) lay the name and the
+       note out on one line, name truncating first. */
+    .cb-opt-rich { display: flex; justify-content: space-between; align-items: baseline; gap: 0.9rem; }
+    .cb-opt-rich > .cb-opt-name { overflow: hidden; text-overflow: ellipsis; }
+    .cb-opt-meta { font-size: 0.68rem; color: var(--muted, #6b7280); white-space: nowrap; flex-shrink: 0; }
+    .cb-opt-meta.warn { color: #fbbf24; }
+    .cb-opt-meta.new  { color: #4ade80; }
+    .cb-opt.hi .cb-opt-meta, .cb-opt:hover .cb-opt-meta { color: #dbeafe; }
+    .cb[data-list^="bid_subcodes"] .cb-menu { max-width: 460px; }
 
     /* Construction-schedule timeline: a scroll pane of its own, so the column
        headers stay put and the horizontal scrollbar is always within reach
@@ -3963,6 +3972,9 @@ function cbOptionsFor(listKey) {
     if (!_csProjId) return [];
     return getCostCodes(_csProjId).slice().sort((a, b) => a.localeCompare(b));
   }
+  // Bid line sub codes: every name already in use anywhere, ranked by how much
+  // production history each one carries.
+  if (listKey.startsWith('bid_subcodes:')) return _bidSubCodeOptions(listKey);
   // Construction-schedule Subcode column: only the sub codes tied to this
   // row's cost code (falls back to all sub codes when no code is set yet) —
   // mirrors the daily-tracking cost-code → sub-code relationship.
@@ -3977,6 +3989,16 @@ function cbOptionsFor(listKey) {
 
 const _cbLabel = o => typeof o === 'string' ? o : o.label;
 const _cbValue = o => typeof o === 'string' ? o : o.value;
+
+// How a list narrows itself as the user types. Everything defaults to the
+// plain substring match this component has always used; a list only needs an
+// entry here when it wants its own ordering or wants to offer rows that aren't
+// in the source list (the bid sub code picker offers "create this one").
+function cbFilterFor(listKey, rawQuery, options) {
+  if (String(listKey || '').startsWith('bid_subcodes')) return _bidSubCodeFilter(listKey, rawQuery, options);
+  const q = String(rawQuery || '').trim().toLowerCase();
+  return q ? options.filter(o => _cbLabel(o).toLowerCase().includes(q)) : options;
+}
 
 function cbOnFocus(input) {
   const cb = input.closest('.cb');
@@ -3999,7 +4021,8 @@ function cbOnInput(event, input) {
   const state = _cbState.get(input);
   if (!state) return;
   const q = input.value.trim().toLowerCase();
-  state.filtered = q ? state.options.filter(o => _cbLabel(o).toLowerCase().includes(q)) : state.options;
+  const cb = input.closest('.cb');
+  state.filtered = cbFilterFor(cb ? cb.dataset.list : '', input.value, state.options);
   const exact = state.filtered.findIndex(o => _cbLabel(o).toLowerCase() === q);
   state.highlight = exact >= 0 ? exact : (state.filtered.length ? 0 : -1);
   cbRenderMenu(input);
@@ -4042,9 +4065,15 @@ function cbRenderMenu(input) {
   if (state.filtered.length === 0) {
     menu.innerHTML = '<div class="cb-opt-empty">No matches</div>';
   } else {
-    menu.innerHTML = state.filtered.map((opt, i) =>
-      `<div class="cb-opt${i === state.highlight ? ' hi' : ''}" data-val="${_cbEsc(_cbLabel(opt))}"${typeof opt === 'object' ? ` data-cb-val="${_cbEsc(opt.value)}"` : ''}>${_cbEsc(_cbLabel(opt))}</div>`
-    ).join('');
+    menu.innerHTML = state.filtered.map((opt, i) => {
+      const meta = (opt && typeof opt === 'object') ? opt.meta : '';
+      // data-val is always the bare label — it becomes the input's value on
+      // pick, so a note must never end up inside it.
+      return `<div class="cb-opt${i === state.highlight ? ' hi' : ''}${meta ? ' cb-opt-rich' : ''}" data-val="${_cbEsc(_cbLabel(opt))}"${typeof opt === 'object' ? ` data-cb-val="${_cbEsc(opt.value)}"` : ''}>`
+        + (meta ? `<span class="cb-opt-name">${_cbEsc(_cbLabel(opt))}</span><span class="cb-opt-meta${opt.metaCls ? ' ' + opt.metaCls : ''}">${_cbEsc(meta)}</span>`
+                : _cbEsc(_cbLabel(opt)))
+        + `</div>`;
+    }).join('');
   }
   menu.hidden = false;
   const cb = input.closest('.cb');
@@ -8459,6 +8488,7 @@ function commitProcoreImport() {
   });
 
   saveProject(projId);
+  _bidScInvalidate();   // the estimate just introduced a batch of sub codes
   closeProcoreImport();
 
   // A cost code / sub code filter left over from before the import would hide
@@ -8474,6 +8504,181 @@ function commitProcoreImport() {
   if (added)   parts.push(`${added} line${added !== 1 ? 's' : ''} added`);
   if (updated) parts.push(`${updated} updated`);
   alert(`Imported from the Procore estimate — ${parts.join(', ')}.`);
+}
+
+/* ═══════════════════════════════════════════
+   BID SUB CODE PICKER
+
+   Production benchmarks pool on the sub code NAME ALONE — see
+   computeSizeAwarePastAvg, which gathers every job carrying the same sub
+   code regardless of the cost code it was filed under, and matches the
+   name exactly. So "Turf Installation", "turf installation" and
+   "Turf  Installation" are three separate pots, and a bid line typed with
+   a fresh variant quietly stops sharing history with the work it is
+   actually the same as.
+
+   Typing a sub code on a bid line therefore searches every name already in
+   use — on bid items and on daily tracking rows, across all jobs — shows
+   how much history each one carries, and snaps a near-miss onto the
+   spelling the data already uses. Creating a genuinely new sub code is
+   still one click, just an explicit one.
+═══════════════════════════════════════════ */
+
+// Matching key: what counts as "the same name typed differently".
+function _bidScNorm(s) { return String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' '); }
+
+let _bidScCache = null, _bidScCacheKey = '', _bidScEpoch = 0;
+
+// Renaming a sub code changes no row count, so the cache key can't be derived
+// from sizes alone — every path that rewrites one bumps this instead.
+function _bidScInvalidate() { _bidScEpoch++; }
+
+// Every sub code in use anywhere, with the history behind it. Keyed by the
+// normalised name; `name` is the spelling most of the data actually uses, so
+// snapping a near-miss moves the odd line onto the majority spelling rather
+// than the other way round.
+function _bidSubCodeStats() {
+  const cacheKey = projectsList.reduce((s, p) =>
+    s + (p.bidItems ? p.bidItems.length : 0) + (p.dailyRows ? p.dailyRows.length : 0), 0)
+    + '|' + projectsList.length + '|' + _bidScEpoch;
+  if (_bidScCache && _bidScCacheKey === cacheKey) return _bidScCache;
+
+  const byNorm = new Map();
+  const touch = (raw, projId) => {
+    const name = String(raw == null ? '' : raw).trim();
+    if (!name) return null;
+    const k = _bidScNorm(name);
+    let e = byNorm.get(k);
+    if (!e) { e = { name, jobs: new Set(), rows: 0, hours: 0, perProj: new Map(), spellings: new Map() }; byNorm.set(k, e); }
+    e.spellings.set(name, (e.spellings.get(name) || 0) + 1);
+    if (projId) {
+      e.jobs.add(projId);
+      if (!e.perProj.has(projId)) e.perProj.set(projId, { rows: 0, hours: 0 });
+    }
+    return e;
+  };
+
+  projectsList.forEach(p => {
+    (p.bidItems || []).forEach(b => touch(b.sub_code, p.id));
+    (p.dailyRows || []).forEach(r => {
+      const e = touch(r.sub_code, p.id);
+      if (!e) return;
+      const hrs = parseFloat(r.labor_hours) || 0;
+      e.rows++; e.hours += hrs;
+      const own = e.perProj.get(p.id);
+      own.rows++; own.hours += hrs;
+    });
+  });
+
+  byNorm.forEach(e => {
+    // Canonical spelling = the one the most records already use.
+    let best = e.name, bestN = -1;
+    e.spellings.forEach((n, spelling) => { if (n > bestN) { bestN = n; best = spelling; } });
+    e.name = best;
+    e.variantCount = e.spellings.size;
+  });
+
+  _bidScCache = { byNorm };
+  _bidScCacheKey = cacheKey;
+  return _bidScCache;
+}
+
+// The spelling the data already uses for this name, or the text as typed when
+// it is genuinely new.
+function _bidSubCodeCanonical(typed) {
+  const t = String(typed == null ? '' : typed).trim();
+  if (!t) return '';
+  const hit = _bidSubCodeStats().byNorm.get(_bidScNorm(t));
+  return hit ? hit.name : t;
+}
+
+// What this name carries EXCLUDING the job being bid — the same exclusion
+// computeSizeAwarePastAvg makes, so the note matches the benchmark the line
+// will actually get. Counting the current job would make a name that exists
+// only here read as though it had precedent behind it.
+function _bidScStatsFor(e, projId) {
+  const own = e.perProj.get(projId);
+  return {
+    jobs:  e.jobs.size - (e.jobs.has(projId) ? 1 : 0),
+    rows:  e.rows  - (own ? own.rows  : 0),
+    hours: e.hours - (own ? own.hours : 0),
+    onThisJob: e.jobs.has(projId),
+  };
+}
+
+function _bidScMeta(e, s, dupOnThisJob) {
+  const bits = [];
+  if (dupOnThisJob) bits.push('already on this job');
+  if (s.jobs === 0) {
+    bits.push('no history yet');
+  } else {
+    bits.push(s.jobs === 1 ? '1 past job' : s.jobs + ' past jobs');
+    if (s.rows > 0) bits.push(s.hours > 0 ? fmt(s.hours, 0) + ' hrs logged' : s.rows + ' entries');
+    else bits.push('bid only');
+  }
+  if (e.variantCount > 1) bits.push(e.variantCount + ' spellings in use');
+  return bits.join(' · ');
+}
+
+// listKey is 'bid_subcodes:<projId>:<bidItemId>' so the list can flag names
+// already sitting on this job — two lines under one name split the actuals
+// between them.
+function _bidSubCodeOptions(listKey) {
+  const [, projId, biId] = String(listKey || '').split(':');
+  const p = getProj(projId);
+  const mine = new Set();
+  if (p) (p.bidItems || []).forEach(b => {
+    if (b.id !== biId && b.sub_code) mine.add(_bidScNorm(b.sub_code));
+  });
+  const out = [];
+  _bidSubCodeStats().byNorm.forEach((e, k) => {
+    const s = _bidScStatsFor(e, projId);
+    out.push({ value: e.name, label: e.name, meta: _bidScMeta(e, s, mine.has(k)), _jobs: s.jobs, _hours: s.hours });
+  });
+  // Best-established first, so the names worth reusing are the ones in reach.
+  out.sort((a, b) => (b._jobs - a._jobs) || (b._hours - a._hours) || a.label.localeCompare(b.label));
+  return out;
+}
+
+function _bidSubCodeFilter(listKey, rawQuery, options) {
+  const typed = String(rawQuery == null ? '' : rawQuery).trim();
+  const q = _bidScNorm(typed);
+  if (!q) return options;
+
+  const same = [], prefix = [], rest = [];
+  options.forEach(o => {
+    const l = _bidScNorm(o.label);
+    if (l === q) {
+      // Same name, different capitalisation or spacing. Calling it out is the
+      // whole point — the history is keyed on the exact string.
+      same.push(o.label === typed ? o
+        : { ...o, meta: 'existing spelling — pick this to keep the same history', metaCls: 'warn' });
+    } else if (l.startsWith(q)) prefix.push(o);
+    else if (l.includes(q)) rest.push(o);
+  });
+
+  const out = same.concat(prefix, rest);
+  if (!same.length) {
+    out.unshift({ value: typed, label: typed, meta: 'new sub code — starts its own history', metaCls: 'new' });
+  }
+  return out;
+}
+
+// Commit a bid line's sub code. Runs on the combobox's change event, which
+// fires on pick, Enter, Tab and blur.
+function _bidSubCodeCommit(input, projId, biId) {
+  const p = getProj(projId); if (!p) return;
+  const bi = (p.bidItems || []).find(b => b.id === biId); if (!bi) return;
+  const picked = input.dataset.cbValue;
+  const next = _bidSubCodeCanonical(picked ? picked : input.value);
+  input.value = next;
+  if (next) input.dataset.cbValue = next; else delete input.dataset.cbValue;
+  if (next === (bi.sub_code || '')) return;   // focus/blur with no edit — leave it alone
+  updateBidItem(projId, biId, 'sub_code', next);
+  _bidScInvalidate();
+  // Past Avg UC and Hist. Estimate are derived from the sub code, so re-render
+  // to show what the new name actually pools with.
+  if (bidViewProjId === projId) renderBidTable(projId);
 }
 
 // Off-bid daily costs for a project: daily rows that match NO bid line under
@@ -8670,8 +8875,9 @@ function renderBidTable(projId, opts = {}) {
            <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
            ${calcCellsA}${calcCellsB}`
         : `<td class="bid-del"><button class="del-btn" data-tab="bid-item" onclick="removeBidItem('${projId}','${b.id}')">✕</button></td>
-           <td><input type="text" value="${esc(b.sub_code)}" placeholder="Sub code"
-             oninput="updateBidItem('${projId}','${b.id}','sub_code',this.value)">${_doneBadge}</td>
+           <td>${cbHtml(`bid_subcodes:${projId}:${b.id}`, b.sub_code, 'Sub code',
+             `onchange="_bidSubCodeCommit(this,'${projId}','${b.id}')"${b.sub_code ? ` data-cb-value="${esc(b.sub_code)}"` : ''}`,
+             'data-cb-fixed="1"')}${_doneBadge}</td>
            <td><select style="font-size:0.75rem;padding:0.15rem 0.3rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;width:60px"
              onchange="updateBidItem('${projId}','${b.id}','unit',this.value)">${UNIT_OPTS.map(u=>`<option value="${u}"${b.unit===u?' selected':''}>${u||'—'}</option>`).join('')}</select></td>
            <td>
@@ -20707,6 +20913,7 @@ document.addEventListener('input', e => {
     if (_isInj && !INJECTED_EDITABLE_FIELDS.has(f)) return;
     const _prevSubCode = p.dailyRows[i].sub_code;
     p.dailyRows[i][f] = el.value;
+    if (f === 'sub_code') _bidScInvalidate();   // bid sub code picker reads these names
     // Filter sub_code dropdown to only show sub codes for the selected cost code
     if (f === 'cost_code') {
       const newSubCodes = getSubCodes(projId, el.value); // includes daily-row values
