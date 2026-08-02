@@ -5562,16 +5562,23 @@ async function loadProjects() {
         });
       }
     } catch (e) { console.warn('[recovery] orphan DB check failed:', e.message); }
-    // Pass 3 — normalized projects table: find IDs in the DB that are
-    // missing from the blob index, then recover only those whose
-    // fct_project_* blob still exists (avoids resurrecting deleted projects).
+    // Pass 3 — stored blobs: find every fct_project_* key this company has and
+    // restore any whose id is missing from the blob index. Only blobs that
+    // still exist are restored, so deleted projects are not resurrected.
+    //
+    // This used to ask /api/projects for ids, which reads the normalized
+    // projects table. Only turf project blobs are ever synced into that table
+    // (api/lib/sync-normalized.js routes fct_project_* and nothing else), so
+    // for paving and kiewit it returned turf ids, looked them up under this
+    // division's prefix, found nothing, and recovered nothing — the pass was
+    // dead. Listing the keys directly works the same way for every division.
     try {
-      const res = await fetch(`${API_BASE}/projects`, {
+      const res = await fetch(`${API_BASE}/data/_keys?prefix=fct_project_`, {
         headers: { 'Authorization': `Bearer ${fctToken}` }
       });
       if (res.ok) {
-        const { projects: dbProjects } = await res.json();
-        const missingIds = (dbProjects || []).map(p => p.id).filter(id => id && !_recoveredIds.has(id));
+        const { ids } = await res.json();
+        const missingIds = (ids || []).filter(id => id && !_recoveredIds.has(id));
         if (missingIds.length) {
           const batch = await apiBatchGet(missingIds.map(id => 'fct_project_' + id));
           missingIds.forEach(id => {
@@ -5584,7 +5591,7 @@ async function loadProjects() {
           });
         }
       }
-    } catch (e) { console.warn('[recovery] projects table check failed:', e.message); }
+    } catch (e) { console.warn('[recovery] blob key scan failed:', e.message); }
     if (projectsList.length > _preRecoveryCount) {
       console.log('[recovery] restored', projectsList.length - _preRecoveryCount, 'missing project(s)');
       await _loadAndMigrateDailyRows();
