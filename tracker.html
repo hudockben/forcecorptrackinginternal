@@ -2892,7 +2892,7 @@
         <tr class="group-row">
           <th class="g-base"  colspan="1">Sub Code</th>
           <th class="g-cost"  colspan="3">Bid Plan</th>
-          <th class="g-sum"   colspan="4">Company Actuals (from Daily)</th>
+          <th class="g-sum"   colspan="3">Company Actuals (from Daily)</th>
           <th class="g-labor" colspan="4">Labor</th>
           <th class="g-equip" colspan="4">Equipment</th>
         </tr>
@@ -2902,8 +2902,7 @@
           <th>Bid Unit Cost</th>
           <th class="calc-hdr">Total Cost (Bid)</th>
           <th class="calc-hdr">Avg Qty</th>
-          <th class="calc-hdr">Running Total</th>
-          <th class="calc-hdr">Production Rate</th>
+          <th class="calc-hdr">Actual Unit Cost</th>
           <th class="calc-hdr">Total Cost</th>
           <th class="calc-hdr">Cum. Labor Hrs</th>
           <th class="calc-hdr">Days Worked</th>
@@ -2922,7 +2921,7 @@
     <span><span class="dot dot-calc"></span> Computed from all daily tracking entries</span>
     <span><span class="dot dot-warn"></span> Running cost &gt;80% of bid</span>
     <span><span class="dot dot-over"></span> Over budget (&gt;100% of bid)</span>
-    <span>Production Rate = Running Total ÷ Running Qty (company average cost per unit across all jobs)</span>
+    <span>Actual Unit Cost = Total Cost ÷ quantity logged — what the work really cost per unit, to set against Bid Unit Cost</span>
     <span>Avg Qty and Days Worked on a sub code row are <strong>per-job averages</strong> — expand the row for each job's own figures</span>
     <span>Dim rows = cost codes found in daily tracking with no bid entry yet</span>
   </div>
@@ -12649,7 +12648,7 @@ function renderCostTable() {
   }
 
   if (scList.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="16">No bid items found. Add bid items in Project Dashboard to populate this view.</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="15">No bid items found. Add bid items in Project Dashboard to populate this view.</td></tr>';
     return;
   }
 
@@ -12700,7 +12699,7 @@ function renderCostTable() {
     _ctExportRows.push({
       sub_code: sc, job: 'All jobs',
       bid_qty: bq, bid_unit_cost: buc, bid_total: btotal,
-      avg_qty, running_total: rtotal, production_rate: past_avg, total_cost: actualTotal,
+      avg_qty, actual_unit_cost: past_avg, total_cost: actualTotal,
       labor_hours: a.labor_hours, days: avgDays, avg_laborers: avg_lab, mu_labor: mu_lab,
       equip_total: a.equip_cost, equip_hours: a.equip_hours, equip_cost_hr: eq_cph, mu_equip: mu_eq,
     });
@@ -12735,8 +12734,7 @@ function renderCostTable() {
       <td class="calc">${buc ? '$'+fmt(buc) : isDailyOnly ? '<span style="color:#555;font-size:0.68rem">No bid entry</span>' : '—'}</td>
       <td class="calc">${btotal ? '$'+fmt(btotal) : '—'}</td>
       <td class="calc" title="${jobCount ? `Average quantity per job across ${jobCount} job${jobCount!==1?'s':''} — expand for each job's actual quantity` : 'No daily quantities logged yet'}">${fmt(avg_qty,2)}</td>
-      <td class="calc">$${fmt(rtotal)}</td>
-      <td class="calc" title="Production Rate: company average cost per unit across all jobs">${rqty ? '$'+fmt(past_avg) : '—'}</td>
+      <td class="calc" title="What the work actually cost per unit — total cost \u00f7 quantity logged, across all jobs. Compare with Bid Unit Cost.">${rqty ? '$'+fmt(past_avg) : '—'}</td>
       <td class="calc">$${fmt(actualTotal)}</td>
       <td class="calc">${fmt(a.labor_hours,1)}</td>
       <td class="calc" title="${jobCount ? `Average days worked per job across ${jobCount} job${jobCount!==1?'s':''} — expand for each job's actual days` : 'No days logged yet'}">${fmt(avgDays,1)}</td>
@@ -12792,7 +12790,7 @@ function renderCostTable() {
       _ctExportRows.push({
         sub_code: sc, job: pa.project,
         bid_qty: p_bqTot, bid_unit_cost: p_buc, bid_total: p_btot,
-        avg_qty: p_rqty, running_total: p_rtotal, production_rate: p_past_avg, total_cost: p_actual,
+        avg_qty: p_rqty, actual_unit_cost: p_past_avg, total_cost: p_actual,
         labor_hours: pa.labor_hours, days: p_days, avg_laborers: p_avg_lab, mu_labor: p_mu_lab,
         equip_total: pa.equip_cost, equip_hours: pa.equip_hours, equip_cost_hr: p_eq_cph, mu_equip: p_mu_eq,
       });
@@ -12806,8 +12804,7 @@ function renderCostTable() {
         <td class="calc">${p_buc   ? '$'+fmt(p_buc)   : '—'}</td>
         <td class="calc">${p_btot  ? '$'+fmt(p_btot)  : '—'}</td>
         <td class="calc" title="Quantity logged on this job">${fmt(p_rqty,2)}</td>
-        <td class="calc">$${fmt(p_rtotal)}</td>
-        <td class="calc">${p_rqty ? '$'+fmt(p_past_avg) : '—'}</td>
+        <td class="calc" title="What this job actually cost per unit">${p_rqty ? '$'+fmt(p_past_avg) : '—'}</td>
         <td class="calc${p_alertCls}">$${fmt(p_actual)}</td>
         <td class="calc">${fmt(pa.labor_hours,1)}</td>
         <td class="calc">${p_days}</td>
@@ -12879,7 +12876,7 @@ function exportCostCSV() {
   // row reveals. The Job column says which you are looking at.
   if (!_ctExportRows.length) renderCostTable();
   const headers = ['Sub Code','Job','Bid Qty','Bid Unit Cost','Total Cost (Bid)',
-    'Avg Qty','Running Total','Production Rate','Total Cost',
+    'Avg Qty','Actual Unit Cost','Total Cost',
     'Cum. Labor Hrs','Days Worked','Avg Laborers','MU / Labor Hr',
     'Equip Total','Equip Hours','Equip Cost / Hr','MU / Equip Hr'];
   const n = (v, dp) => (Number.isFinite(v) && v !== 0) ? v.toFixed(dp) : (v === 0 ? (0).toFixed(dp) : '');
@@ -12888,7 +12885,7 @@ function exportCostCSV() {
     rows.push([
       r.sub_code, r.job,
       n(r.bid_qty, 2), n(r.bid_unit_cost, 2), n(r.bid_total, 2),
-      n(r.avg_qty, 2), n(r.running_total, 2), n(r.production_rate, 4), n(r.total_cost, 2),
+      n(r.avg_qty, 2), n(r.actual_unit_cost, 4), n(r.total_cost, 2),
       n(r.labor_hours, 1), n(r.days, 1), n(r.avg_laborers, 1), n(r.mu_labor, 4),
       n(r.equip_total, 2), n(r.equip_hours, 1), n(r.equip_cost_hr, 4), n(r.mu_equip, 4),
     ].map(v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`).join(','));

@@ -92,13 +92,32 @@ assert('the legend says both are per-job averages',
   /Avg Qty and Days Worked on a sub code row are <strong>per-job averages<\/strong>/.test(src));
 
 console.log('\n[nothing else was rewired]');
-assert('Production Rate is still cost ÷ quantity',
+assert('Actual Unit Cost is still cost ÷ quantity',
   /const past_avg = rqty \? rtotal \/ rqty : 0;/.test(render));
-assert('Running Total is still the summed cost', /const rtotal {3}= a\.total_cost;/.test(render));
+// rtotal no longer has a column of its own but still feeds the unit cost and
+// the Scale of Economy hand-off.
+assert('the summed cost is still computed', /const rtotal {3}= a\.total_cost;/.test(render));
 assert('Bid Qty is still summed across jobs',
   /scBidMap\[sc\]\.qty {3}\+= bq;/.test(src));
 assert('the Scale of Economy hand-off still gets the real running quantity',
   /_soeSendFromCT\(this,'','\$\{esc\(sc\)\}',\$\{rqty\}/.test(render));
+
+console.log('\n[the table is 15 columns wide, everywhere]');
+// Removing Running Total shifted every band and the empty-state row; a stale
+// colspan leaves a ragged table the moment there is nothing to show.
+const thead = src.slice(src.indexOf('<table id="tracker">'), src.indexOf('<tbody id="cost-tbody">'));
+const bands = [...thead.matchAll(/colspan="(\d+)"/g)].map(m => +m[1]);
+assert('the group bands add up to 15', bands.reduce((a, c) => a + c, 0) === 15, bands.join('+'));
+assert('  Company Actuals is down to three columns', /class="g-sum" +colspan="3"/.test(thead), bands.join('+'));
+assert('there are 15 column headers',
+  (thead.slice(thead.indexOf('<tr class="col-row">')).match(/<th/g) || []).length === 15);
+assert('Actual Unit Cost replaced Production Rate',
+  /<th class="calc-hdr">Actual Unit Cost<\/th>/.test(thead)
+  && !/Production Rate/.test(thead) && !/Running Total/.test(thead));
+assert('the empty-state row spans 15, not the old 16',
+  /<td colspan="15">No bid items found\./.test(src));
+assert('the legend explains the renamed column',
+  /Actual Unit Cost = Total Cost \u00f7 quantity logged/.test(src) || /Actual Unit Cost = Total Cost ÷ quantity logged/.test(src));
 
 console.log('\n[Export CSV emits what the table drew]');
 // The export used to recompute from a different source (buildDailyAgg + costRows,
@@ -130,16 +149,17 @@ if (exportFn) {
   }
   if (cur.trim()) vals.push(cur.trim());
   assert(`every header has exactly one value under it (${heads.length} headers, ${vals.length} values)`,
-    heads.length === vals.length && heads.length === 17,
+    heads.length === vals.length && heads.length === 16,
     `${heads.length} vs ${vals.length}`);
   assert('  the columns are the table\'s own, plus a Job column',
     heads[0] === "'Sub Code'" && heads[1] === "'Job'"
     && heads.includes("'Avg Qty'") && heads.includes("'Days Worked'")
-    && heads.includes("'Cum. Labor Hrs'") && heads.includes("'MU / Equip Hr'"),
+    && heads.includes("'Actual Unit Cost'") && heads.includes("'MU / Equip Hr'")
+    && !heads.includes("'Running Total'") && !heads.includes("'Production Rate'"),
     heads.join(' '));
   // Order matters: a value under the wrong header is the bug being guarded.
-  const order = ['sub_code','job','bid_qty','bid_unit_cost','bid_total','avg_qty','running_total',
-    'production_rate','total_cost','labor_hours','days','avg_laborers','mu_labor',
+  const order = ['sub_code','job','bid_qty','bid_unit_cost','bid_total','avg_qty',
+    'actual_unit_cost','total_cost','labor_hours','days','avg_laborers','mu_labor',
     'equip_total','equip_hours','equip_cost_hr','mu_equip'];
   assert('  and each value sits under its own header',
     order.every((k, i) => new RegExp(`r\\.${k}\\b`).test(vals[i] || '')),
