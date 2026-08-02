@@ -3812,6 +3812,7 @@ function cbFilterFor(listKey, rawQuery, options) {
 function cbOnFocus(input) {
   const cb = input.closest('.cb');
   if (!cb) return;
+  delete input.dataset.cbPicked;   // stale marker from a previous visit
   const options = cbOptionsFor(cb.dataset.list);
   _cbState.set(input, {
     options,
@@ -3849,7 +3850,7 @@ function cbOnKey(event, input) {
   } else if (event.key === 'Enter') {
     event.preventDefault();
     const pick = list[state.highlight];
-    if (pick != null) { input.value = _cbLabel(pick); if (typeof pick === 'object') input.dataset.cbValue = pick.value; }
+    if (pick != null) { input.value = _cbLabel(pick); if (typeof pick === 'object') input.dataset.cbValue = pick.value; input.dataset.cbPicked = '1'; }
     cbCommitInput(input);
     if (!dailyNavFromEl(input, 'down')) input.blur();
   } else if (event.key === 'Escape') {
@@ -3860,7 +3861,7 @@ function cbOnKey(event, input) {
     input.blur();
   } else if (event.key === 'Tab') {
     const pick = list[state.highlight];
-    if (pick != null) { input.value = _cbLabel(pick); if (typeof pick === 'object') input.dataset.cbValue = pick.value; }
+    if (pick != null) { input.value = _cbLabel(pick); if (typeof pick === 'object') input.dataset.cbValue = pick.value; input.dataset.cbPicked = '1'; }
     cbCommitInput(input);
   }
 }
@@ -3979,6 +3980,7 @@ document.addEventListener('mousedown', (e) => {
     if (input) {
       input.value = opt.dataset.val || '';
       if (opt.dataset.cbVal) input.dataset.cbValue = opt.dataset.cbVal; else delete input.dataset.cbValue;
+      input.dataset.cbPicked = '1';   // an explicit choice, not a bare focus/blur
       cbCommitInput(input);
       if (!dailyNavFromEl(input, 'down')) input.blur();
     }
@@ -8394,19 +8396,33 @@ function _bidSubCodeCommit(input, projId, biId) {
   const p = getProj(projId); if (!p) return;
   const bi = (p.bidItems || []).find(b => b.id === biId); if (!bi) return;
   const picked = input.dataset.cbValue;
+  // Whether this came from actually choosing something — clicking an option,
+  // Enter, Tab — rather than tabbing through the field and back out.
+  const chosen = input.dataset.cbPicked === '1';
+  delete input.dataset.cbPicked;
   const next = _bidSubCodeCanonical(picked ? picked : input.value);
   input.value = next;
   if (next) input.dataset.cbValue = next; else delete input.dataset.cbValue;
-  if (next === (bi.sub_code || '')) return;   // focus/blur with no edit — leave it alone
-  updateBidItem(projId, biId, 'sub_code', next);
-  _bidScInvalidate();
-  // Fill the unit in from how this sub code is measured elsewhere, but only
-  // when the line hasn't got one — a unit already on the row was a decision,
-  // and re-deriving it from history would quietly overrule it.
-  if (!bi.unit) {
-    const u = _bidSubCodeUnit(next, bi.cost_code);
-    if (u) updateBidItem(projId, biId, 'unit', u);
+
+  const renamed = next !== (bi.sub_code || '');
+  if (renamed) {
+    updateBidItem(projId, biId, 'sub_code', next);
+    _bidScInvalidate();
   }
+
+  // Fill the unit in from how this sub code is measured elsewhere. Only when
+  // the line hasn't got one — a unit already on the row was a decision, and
+  // re-deriving it from history would quietly overrule it. Re-choosing the
+  // same name counts as asking, which is how a line that arrived without a
+  // unit (an import where Procore's U/M didn't map) gets fixed without having
+  // to rename it. A line with no sub code gets no unit.
+  let filled = false;
+  if (next && !bi.unit && (renamed || chosen)) {
+    const u = _bidSubCodeUnit(next, bi.cost_code);
+    if (u) { updateBidItem(projId, biId, 'unit', u); filled = true; }
+  }
+
+  if (!renamed && !filled) return;   // focus/blur with no edit — leave it alone
   // Past Avg UC and Hist. Estimate are derived from the sub code, so re-render
   // to show what the new name actually pools with.
   if (bidViewProjId === projId) renderBidTable(projId);

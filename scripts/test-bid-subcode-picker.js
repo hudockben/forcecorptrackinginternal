@@ -269,11 +269,31 @@ assert('the option note advertises the unit before you pick',
 console.log('\n[structural — the unit is filled, never overwritten]');
 const commitFn2 = src.match(/function _bidSubCodeCommit\([\s\S]+?\n\}\n/);
 assert('commit fills the unit only when the line has none',
-  !!commitFn2 && /if \(!bi\.unit\) \{[\s\S]{0,200}_bidSubCodeUnit\(next, bi\.cost_code\)/.test(commitFn2[0]));
+  !!commitFn2 && /if \(next && !bi\.unit && \(renamed \|\| chosen\)\) \{[\s\S]{0,200}_bidSubCodeUnit\(next, bi\.cost_code\)/.test(commitFn2[0]));
 assert('  and routes it through updateBidItem so it persists',
   !!commitFn2 && /updateBidItem\(projId, biId, 'unit', u\)/.test(commitFn2[0]));
 assert('  after the catalog is invalidated, so the new name counts',
-  !!commitFn2 && commitFn2[0].indexOf('_bidScInvalidate()') < commitFn2[0].indexOf('if (!bi.unit)'));
+  !!commitFn2 && commitFn2[0].indexOf('_bidScInvalidate()') < commitFn2[0].indexOf('!bi.unit'));
+// A line whose sub code was just cleared must not pick up a unit — an SoE
+// override can be keyed to a blank sub code ("CostCode||"), which would
+// otherwise put a unit on a line that has no work on it.
+assert('  never onto a line with no sub code', !!commitFn2 && /if \(next && !bi\.unit/.test(commitFn2[0]));
+// Re-choosing the same name is how a line that arrived without a unit — an
+// import where Procore's U/M didn't map — gets fixed without renaming it.
+// Tabbing through the field and back out is not a choice and must stay inert.
+assert('re-choosing the same name still fills a blank unit',
+  !!commitFn2 && /const chosen = input\.dataset\.cbPicked === '1';/.test(commitFn2[0])
+  && /\(renamed \|\| chosen\)/.test(commitFn2[0]));
+assert('  and the marker is consumed so it cannot fire twice',
+  !!commitFn2 && /delete input\.dataset\.cbPicked;/.test(commitFn2[0]));
+assert('  a no-op focus/blur still returns without writing',
+  !!commitFn2 && /if \(!renamed && !filled\) return;/.test(commitFn2[0]));
+assert('picking an option marks it as an explicit choice',
+  /input\.dataset\.cbPicked = '1';\s*\/\/ an explicit choice/.test(src));
+assert('  Enter and Tab mark it too',
+  (src.match(/if \(pick != null\) \{ input\.value = _cbLabel\(pick\); if \(typeof pick === 'object'\) input\.dataset\.cbValue = pick\.value; input\.dataset\.cbPicked = '1'; \}/g) || []).length === 2);
+assert('  and focus clears a stale marker',
+  /function cbOnFocus\(input\)[\s\S]{0,200}delete input\.dataset\.cbPicked;/.test(src));
 assert('UNIT_OPTS is shared, not redefined per row',
   /^const UNIT_OPTS = \['','SF','LF','SY','CY','TN','TON','EA','LS','HR','GAL','LB','AC'\];$/m.test(src)
   && !/      const UNIT_OPTS = \[/.test(src));
