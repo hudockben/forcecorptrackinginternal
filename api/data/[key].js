@@ -108,8 +108,13 @@ module.exports = async (req, res) => {
     // LEFT(...)= rather than LIKE: in SQL LIKE an underscore matches any single
     // character, so 'fct_project_%' also matches 'fct_projects_index' and any
     // other near-miss key. Comparing a fixed-length slice has no wildcards.
+    // value IS NOT NULL skips tombstones: deleting a project stores null under
+    // its key rather than removing the row, so a null here means "deleted",
+    // not "lost". Callers can therefore treat every id returned as a project
+    // that should exist.
     const rows = await sql`
-      SELECT key FROM app_data WHERE LEFT(key, ${scoped.length}) = ${scoped}
+      SELECT key FROM app_data
+      WHERE LEFT(key, ${scoped.length}) = ${scoped} AND value IS NOT NULL
     `;
     const ids = rows
       .map(r => r.key.slice(scoped.length))

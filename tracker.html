@@ -5631,6 +5631,41 @@ async function loadProjects() {
     return;
   }
 
+  // Nothing in the index and nothing in the legacy blob. Before concluding
+  // there are no projects, check whether project blobs are still sitting on
+  // the server. An index written empty — or lost — otherwise hides every
+  // project on any device without a localStorage cache, even though nothing
+  // was deleted, and none of the recovery passes above run because they all
+  // sit inside the populated-index branch.
+  //
+  // This cannot resurrect a deleted project: deleting one stores null under
+  // its key rather than removing the row, and _keys skips nulls. A company
+  // that genuinely has no projects gets an empty list and falls through.
+  try {
+    const res = await fetch(`${API_BASE}/data/_keys?prefix=fct_project_`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (res.ok) {
+      const { ids } = await res.json();
+      if (ids && ids.length) {
+        const batch = await apiBatchGet(ids.map(id => 'fct_project_' + id));
+        const rescued = ids
+          .map(id => batch['fct_project_' + id])
+          .filter(p => p && typeof p === 'object' && p.id);
+        if (rescued.length) {
+          console.warn('[recovery] project index was empty —', rescued.length,
+            'project blob(s) still on the server; restoring and rewriting the index');
+          projectsList = rescued;
+          projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
+          await _loadAndMigrateDailyRows();
+          saveProjectIndex();
+          try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
+          return;
+        }
+      }
+    }
+  } catch (e) { console.warn('[recovery] empty-index blob scan failed:', e.message); }
+
   projectsList = [];
   await _loadAndMigrateDailyRows();
 }

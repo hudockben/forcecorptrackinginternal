@@ -39,7 +39,12 @@ const KEYS = [
   'ACME:fct_kiewit_project_k1', 'ACME:fct_kiewit_project_k2',
   'ACME:fct_lists', 'ACME:auth_users',  // unrelated blobs
   'OTHERCO:fct_project_x1',             // another company
+  'ACME:fct_project_gone',              // deleted: the row survives with value NULL
 ];
+// Deleting a project stores null under its key rather than removing the row.
+// A null must never come back as a live project id, or recovery would
+// resurrect it.
+const TOMBSTONED = new Set(['ACME:fct_project_gone']);
 
 let authPayload = { companyCode: 'ACME', isPlatformAdmin: true };
 let denyDivision = null;
@@ -51,7 +56,10 @@ Module._load = function (req, parent) {
       const q = strings.join(' ').replace(/\s+/g, ' ');
       if (/LEFT\(key/.test(q)) {
         const [len, scoped] = vals;
-        return Promise.resolve(KEYS.filter(k => k.slice(0, len) === scoped).map(key => ({ key })));
+        if (!/value IS NOT NULL/.test(q)) throw new Error('key scan must skip tombstones (value IS NOT NULL)');
+        return Promise.resolve(
+          KEYS.filter(k => k.slice(0, len) === scoped && !TOMBSTONED.has(k)).map(key => ({ key }))
+        );
       }
       if (/LIKE/.test(q)) throw new Error('LIKE used for the key scan — underscores are wildcards there');
       return Promise.resolve([]);
@@ -101,6 +109,9 @@ const call = (prefix, opts = {}) => new Promise(resolve => {
   assert('the projects array blob is not returned either', !t.body.ids.some(id => id.startsWith('s')), JSON.stringify(t.body.ids));
   assert('turf prefix does not pick up paving or kiewit projects',
     !t.body.ids.includes('p1') && !t.body.ids.includes('k1'), JSON.stringify(t.body.ids));
+
+  console.log('\n[deleted projects stay deleted]');
+  assert('a tombstoned project id is not listed', !t.body.ids.includes('gone'), JSON.stringify(t.body.ids));
 
   console.log('\n[it is not a general key scanner]');
   for (const bad of ['fct_', '', 'auth_', 'fct_lists', 'fct_quarry_', '%']) {
