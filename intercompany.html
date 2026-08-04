@@ -746,6 +746,14 @@
       display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
       padding: 0 0 0.9rem;
     }
+    .ic-fin-chips { display: inline-flex; gap: 0.3rem; flex-wrap: wrap; }
+    .ic-chip {
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 999px; padding: 0.2rem 0.6rem; font-size: 0.72rem; cursor: pointer;
+      font-family: inherit; transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+    .ic-chip:hover { color: var(--text); border-color: var(--accent-dim); }
+    .ic-chip.on { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff; }
     .ic-fin-filters-label {
       font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
     }
@@ -3242,21 +3250,23 @@
        division pages each holding their own copy is what produced a profit
        column that meant different things on different pages. */
     let _icFin = null;
-    let _icFilters = { division: '', status: '', q: '' };
+    // statuses: a Set of picked values, or null for all. Division stays single —
+    // there are three of them and the summary table already splits by division.
+    let _icFilters = { division: '', statuses: null, q: '' };
 
     function _icFilteredRows() {
       if (!_icFin || !Array.isArray(_icFin.rows)) return [];
       const q  = (_icFilters.q || '').trim().toLowerCase();
       const dv = _icFilters.division || '';
-      const st = _icFilters.status || '';
+      const sts = _icFilters.statuses;
       return _icFin.rows.filter(r =>
-        (!dv || r.division === dv) &&
-        (!st || r.status === st) &&
+        (!dv  || r.division === dv) &&
+        (!sts || sts.has(r.status || '')) &&
         (!q  || String(r.name).toLowerCase().includes(q) || String(r.jobNumber).toLowerCase().includes(q))
       );
     }
 
-    const _icAnyFilter = () => !!(_icFilters.division || _icFilters.status || (_icFilters.q || '').trim());
+    const _icAnyFilter = () => !!(_icFilters.division || _icFilters.statuses || (_icFilters.q || '').trim());
 
     /* Mirrors summarise() on the server so the figures can follow the filters
        without a round trip. Only sums rows the server has already costed — the
@@ -3286,7 +3296,20 @@
     }
 
     function icClearFilters() {
-      _icFilters = { division: '', status: '', q: '' };
+      _icFilters = { division: '', statuses: null, q: '' };
+      _renderIcFinancials();
+    }
+
+    /* Statuses are toggled as chips rather than picked from a list. There are
+       only a handful and they are short, so showing them all beats hiding them
+       behind a dropdown — and the picked set is readable at a glance. */
+    function icToggleStatus(v) {
+      const all = [...new Set((_icFin.rows || []).map(r => r.status || ''))];
+      const cur = _icFilters.statuses ? new Set(_icFilters.statuses) : new Set(all);
+      if (cur.has(v)) cur.delete(v); else cur.add(v);
+      // Everything on excludes nothing, so store it as no filter rather than a
+      // set of every value — otherwise the bar reads as filtered while it is not.
+      _icFilters.statuses = (cur.size === 0 || cur.size === all.length) ? null : cur;
       _renderIcFinancials();
     }
 
@@ -3295,7 +3318,7 @@
       if (!el || !_icFin) return;
       const rows = _icFin.rows || [];
       const divs = (_icFin.divisions || []).filter(d => d.jobs > 0);
-      const statuses = [...new Set(rows.map(r => r.status).filter(Boolean))].sort();
+      const statuses = [...new Set(rows.map(r => r.status || ''))].sort();
       const inp = 'background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.26rem 0.5rem;font-size:0.76rem;outline:none';
       el.innerHTML = `
         <div class="ic-fin-filters">
@@ -3304,10 +3327,13 @@
             <option value="">All divisions</option>
             ${divs.map(d => `<option value="${esc(d.key)}"${d.key === _icFilters.division ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
           </select>
-          <select style="${inp}" onchange="icSetFilter('status', this.value)">
-            <option value="">All statuses</option>
-            ${statuses.map(v => `<option value="${esc(v)}"${v === _icFilters.status ? ' selected' : ''}>${esc(v)}</option>`).join('')}
-          </select>
+          <span class="ic-fin-chips">
+            ${statuses.map(v => {
+              const on = !_icFilters.statuses || _icFilters.statuses.has(v);
+              return `<button class="ic-chip${on ? ' on' : ''}" onclick="icToggleStatus('${esc(String(v).replace(/'/g, "\\'"))}')"
+                title="${on ? 'Showing' : 'Hidden'} — click to toggle">${v === '' ? '(blank)' : esc(v)}</button>`;
+            }).join('')}
+          </span>
           <input type="search" placeholder="Job name or number" value="${esc(_icFilters.q)}"
             style="${inp};min-width:200px" oninput="icSetFilter('q', this.value)">
           <button class="btn-pdf" style="padding:0.24rem 0.6rem" onclick="icClearFilters()">Clear</button>

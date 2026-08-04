@@ -2807,8 +2807,8 @@
   </div>
   <div id="finff-list" style="overflow-y:auto;flex:1;padding:0.3rem 0;"></div>
   <div style="padding:0.4rem 0.5rem;border-top:1px solid var(--border);display:flex;gap:0.4rem;justify-content:flex-end;">
-    <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearFinNameFilter()">Clear</button>
-    <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyFinNameFilter()">Apply</button>
+    <button class="btn btn-ghost" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="clearFinFilter()">Clear</button>
+    <button class="btn btn-green" style="font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="applyFinFilter()">Apply</button>
   </div>
 </div>
 
@@ -17033,7 +17033,9 @@ function _scpSetTier(t) {
    Purchase Orders columns use. The table, the Excel export and the print
    view all read the same filtered set, so what you export is what you are
    looking at. */
-let finFilters = { q: '', status: '', names: null };   // names: Set of picked job names, null = all
+// names / statuses: Set of picked values, or null for "all". A Set is only
+// stored when it genuinely excludes something — see applyFinFilter().
+let finFilters = { q: '', statuses: null, names: null };
 
 // Every job, computed and sorted. Filtering happens separately so the filter
 // controls can list every value that exists, not just the ones surviving the
@@ -17076,16 +17078,16 @@ function _financialsRows() {
 // the expensive part and the search box re-renders on every keystroke.
 function _financialsFiltered(rows) {
   const q     = (finFilters.q || '').trim().toLowerCase();
-  const st    = finFilters.status || '';
+  const sts   = finFilters.statuses;
   const names = finFilters.names;
   return (rows || _financialsRows()).filter(r =>
-    (!st    || r.status === st) &&
+    (!sts   || sts.has(r.status || '')) &&
     (!names || names.has(r.name)) &&
     (!q     || r.name.toLowerCase().includes(q) || String(r.job).toLowerCase().includes(q))
   );
 }
 
-const _finFiltered = () => !!((finFilters.q || '').trim() || finFilters.status || finFilters.names);
+const _finFiltered = () => !!((finFilters.q || '').trim() || finFilters.statuses || finFilters.names);
 
 // Totals cover whatever is on screen. Both profits skip the rows that cannot
 // contribute one, so each carries its own base for the percentage.
@@ -17114,24 +17116,38 @@ function finSetFilter(key, val) {
 }
 
 function finClearFilters() {
-  finFilters = { q: '', status: '', names: null };
+  finFilters = { q: '', statuses: null, names: null };
   renderFinancials();
 }
 
-/* ── Job Name filter ──────────────────────────────────────────────────────
-   The checklist the Purchase Orders columns use: every job name with a box,
-   a search to narrow the list, and Apply / Clear. Nothing is committed until
-   Apply, so half-made picks never move the figures underneath. */
-function openFinNameFilter(btn) {
-  const names = [...new Set(_financialsRows().map(r => r.name))].sort((a, b) => a.localeCompare(b));
-  const picked = finFilters.names;
+/* ── Checklist filters ────────────────────────────────────────────────────
+   The control the Purchase Orders columns use: every value with a box, a
+   search to narrow the list, and Apply / Clear. Nothing is committed until
+   Apply, so half-made picks never move the figures underneath. One panel
+   serves both fields — Job Name and Status pick from the same machinery, so
+   both are multi-select and neither can drift from the other. */
+const FIN_FILTER_FIELDS = {
+  names:    { label: 'Job Name', of: r => r.name },
+  statuses: { label: 'Status',   of: r => r.status || '' },
+};
+let _finffField = 'names';
+
+function openFinFilter(field, btn) {
+  const def = FIN_FILTER_FIELDS[field];
+  if (!def) return;
+  _finffField = field;
+  // Blank values stay listed as "(blank)" — a job with no status has to be
+  // reachable, or it can never be included once a filter is on.
+  const values = [...new Set(_financialsRows().map(def.of))]
+    .sort((a, b) => String(a).localeCompare(String(b)));
+  const picked = finFilters[field];
   const list = document.getElementById('finff-list');
   if (!list) return;
 
   list.innerHTML = `<label class="dff-item" id="finff-all-label">
     <input type="checkbox" id="finff-all" ${picked ? '' : 'checked'}> <span>(Select All)</span>
-  </label>` + names.map(v =>
-    `<label class="dff-item"><input type="checkbox" class="finff-val-cb" value="${esc(v)}" ${(!picked || picked.has(v)) ? 'checked' : ''}> <span>${esc(v)}</span></label>`
+  </label>` + values.map(v =>
+    `<label class="dff-item"><input type="checkbox" class="finff-val-cb" value="${esc(v)}" ${(!picked || picked.has(v)) ? 'checked' : ''}> <span>${v === '' ? '<em style="color:var(--muted)">(blank)</em>' : esc(v)}</span></label>`
   ).join('');
 
   document.getElementById('finff-all').addEventListener('change', e => {
@@ -17158,19 +17174,19 @@ function openFinNameFilter(btn) {
   dd.style.top  = (rect.bottom + 4) + 'px';
 }
 
-function applyFinNameFilter() {
+function applyFinFilter() {
   const cbs = [...document.querySelectorAll('.finff-val-cb')];
   const checked = cbs.filter(c => c.checked).map(c => c.value);
   const allChecked = document.getElementById('finff-all')?.checked;
   // Every box ticked is the same as no filter — storing it as one would leave
   // the button reading "filtered" while nothing is being excluded.
-  finFilters.names = (allChecked || checked.length === cbs.length) ? null : new Set(checked);
+  finFilters[_finffField] = (allChecked || checked.length === cbs.length) ? null : new Set(checked);
   document.getElementById('fin-filter-dd').style.display = 'none';
   renderFinancials();
 }
 
-function clearFinNameFilter() {
-  finFilters.names = null;
+function clearFinFilter() {
+  finFilters[_finffField] = null;
   document.getElementById('fin-filter-dd').style.display = 'none';
   renderFinancials();
 }
@@ -17179,22 +17195,22 @@ function renderFinancials() {
   const el = document.getElementById('fin-content');
   if (!el) return;
 
-  const statuses = [...new Set(_financialsRows().map(r => r.status).filter(Boolean))].sort();
   const inp = 'background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.28rem 0.5rem;font-size:0.78rem;outline:none';
-  const nPicked = finFilters.names ? finFilters.names.size : 0;
+  const btnS = 'font-size:0.75rem;padding:0.24rem 0.55rem';
+  const nName = finFilters.names    ? finFilters.names.size    : 0;
+  const nStat = finFilters.statuses ? finFilters.statuses.size : 0;
 
   el.innerHTML = `
     <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem">
       <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Filters:</span>
-      <button class="cfb finfb${nPicked ? ' active' : ''}" id="fin-name-btn"
-        title="Pick which jobs to show" style="font-size:0.75rem;padding:0.24rem 0.55rem">
-        ${nPicked ? `Job Name (${nPicked})` : 'Job Name'} ▼</button>
+      <button class="cfb finfb${nName ? ' active' : ''}" data-fin-f="names"
+        title="Pick which jobs to show" style="${btnS}">
+        ${nName ? `Job Name (${nName})` : 'Job Name'} ▼</button>
+      <button class="cfb finfb${nStat ? ' active' : ''}" data-fin-f="statuses"
+        title="Pick one or more statuses to show" style="${btnS}">
+        ${nStat ? `Status (${nStat})` : 'Status'} ▼</button>
       <input id="fin-q" type="search" placeholder="Job name or number" value="${esc(finFilters.q)}"
         style="${inp};min-width:200px" oninput="finSetFilter('q', this.value)">
-      <select id="fin-status" style="${inp}" onchange="finSetFilter('status', this.value)">
-        <option value="">All statuses</option>
-        ${statuses.map(s => `<option value="${esc(s)}"${s === finFilters.status ? ' selected' : ''}>${esc(s)}</option>`).join('')}
-      </select>
       <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem" onclick="finClearFilters()">Clear</button>
       <div style="margin-left:auto;display:flex;gap:0.5rem">
         <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem"
@@ -17349,7 +17365,7 @@ function printFinancials() {
 
   const filterNote = [
     finFilters.names ? finFilters.names.size + ' selected job' + (finFilters.names.size === 1 ? '' : 's') : '',
-    finFilters.status ? 'Status: ' + esc2(finFilters.status) : '',
+    finFilters.statuses ? 'Status: ' + esc2([...finFilters.statuses].map(s => s || '(blank)').join(', ')) : '',
     (finFilters.q || '').trim() ? 'Search: "' + esc2(finFilters.q.trim()) + '"' : '',
   ].filter(Boolean).join(' · ');
 
@@ -18128,7 +18144,7 @@ document.addEventListener('click', e => {
   const btn = e.target.closest('.finfb');
   if (!btn) return;
   e.stopPropagation();
-  openFinNameFilter(btn);
+  openFinFilter(btn.dataset.finF || 'names', btn);
 });
 
 // Purchase Orders column filter handlers

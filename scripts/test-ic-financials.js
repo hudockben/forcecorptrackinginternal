@@ -158,16 +158,19 @@ const icFns = (() => {
     }
     throw new Error(`${name} is not closed`);
   };
-  const code = ['_icFilteredRows', '_icSummarise', 'icSetFilter', 'icClearFilters'].map(grab).join('\n\n');
+  const code = ['_icFilteredRows', '_icSummarise', 'icSetFilter', 'icClearFilters', 'icToggleStatus'].map(grab).join('\n\n');
   return new Function(`
-    let _icFin = null, _icFilters = { division: '', status: '', q: '' };
-    const _icAnyFilter = () => !!(_icFilters.division || _icFilters.status || (_icFilters.q || '').trim());
+    let _icFin = null, _icFilters = { division: '', statuses: null, q: '' };
+    const _icAnyFilter = () => !!(_icFilters.division || _icFilters.statuses || (_icFilters.q || '').trim());
     function _renderIcFinancialsBody() {}
     function _renderIcFinancials() {}
     ${code}
     return {
       load: d => { _icFin = d; },
       set: (k, v) => icSetFilter(k, v),
+      toggleStatus: v => icToggleStatus(v),
+      statuses: () => _icFilters.statuses ? [..._icFilters.statuses] : null,
+      pickStatuses: v => { _icFilters.statuses = v ? new Set(v) : null; },
       clear: () => icClearFilters(),
       rows: () => _icFilteredRows(),
       summarise: _icSummarise,
@@ -204,7 +207,7 @@ assert('  and no filter is reported active', icFns.any() === false);
 icFns.set('division', 'turf');
 assert('filtering by division keeps only that division',
   icFns.rows().length === 3 && icFns.rows().every(r => r.division === 'turf'));
-icFns.set('status', 'In Progress');
+icFns.pickStatuses(['In Progress']);
 assert('  division and status compose',
   icFns.rows().length === 1 && icFns.rows()[0].name.startsWith('Franklin'));
 icFns.clear();
@@ -216,6 +219,27 @@ icFns.set('q', '26049');
 assert('  and a job number', icFns.rows().length === 1);
 icFns.set('q', 'zzzz');
 assert('  a search matching nothing returns nothing, not everything', icFns.rows().length === 0);
+icFns.clear();
+
+console.log('\n[more than one status at once]');
+icFns.clear();
+icFns.pickStatuses(['In Progress', 'Complete']);
+assert('two statuses keep the jobs in either',
+  icFns.rows().length === 4 && !icFns.rows().some(r => r.status === 'Awarded'),
+  `${icFns.rows().length} rows`);
+icFns.pickStatuses(['Awarded']);
+assert('  narrowing to one keeps only that one',
+  icFns.rows().length === 1 && icFns.rows()[0].name === 'Moon Township');
+// Toggling is how the chips work: on a full set, the first click removes one.
+icFns.clear();
+icFns.toggleStatus('Awarded');
+assert('toggling a chip off from "all" excludes just that status',
+  icFns.rows().length === 4 && !icFns.rows().some(r => r.status === 'Awarded'),
+  JSON.stringify(icFns.statuses()));
+icFns.toggleStatus('Awarded');
+assert('  toggling it back on stores no filter rather than a set of everything',
+  icFns.statuses() === null && icFns.rows().length === 5 && icFns.any() === false,
+  'or the bar reads as filtered while excluding nothing');
 icFns.clear();
 
 console.log('\n[the figures follow the filters]');
@@ -247,6 +271,16 @@ assert('typing does not rebuild the filter bar under the caret',
   && !/function icSetFilter[\s\S]{0,220}_renderIcFinancialsFilters\(\)/.test(ic));
 assert('the filter bar is hidden when printing',
   /@media print \{ \.ic-fin-filters \{ display: none/.test(ic));
+
+console.log('\n[the status chips]');
+assert('statuses are chips, not a single-pick dropdown',
+  /class="ic-chip/.test(ic) && /onclick="icToggleStatus\(/.test(ic)
+  && !/icSetFilter\('status'/.test(ic));
+assert('  a picked chip is visibly on', /\.ic-chip\.on \{/.test(ic));
+assert('  a blank status is still listed and reachable',
+  /\(blank\)/.test(ic) && /r\.status \|\| ''/.test(ic));
+assert('no filter key that no longer exists is read',
+  !/_icFilters\.status\b/.test(ic));
 
 console.log('\n[export and print]');
 assert('the export ships the filtered rows, not the whole feed',

@@ -77,10 +77,13 @@ function loadFinancials(file, projects) {
     `${code}
      return {
        renderFinancials, exportFinancialsCSV, printFinancials,
-       setFilters: f => { finFilters = f; },
+       setFilters: f => { finFilters = { q: f.q || '', statuses: f.statuses || null, names: f.names || null }; },
        pickNames: n => { finFilters.names = n ? new Set(n) : null; },
        picked: () => finFilters.names ? [...finFilters.names] : null,
-       applyNames: applyFinNameFilter, clearNames: clearFinNameFilter, openNames: openFinNameFilter,
+       applyNames: applyFinFilter, clearNames: clearFinFilter,
+       openNames: btn => openFinFilter('names', btn), openStatuses: btn => openFinFilter('statuses', btn),
+       pickStatuses: v => { finFilters.statuses = v ? new Set(v) : null; },
+       pickedStatuses: () => finFilters.statuses ? [...finFilters.statuses] : null,
        rows: _financialsRows, filtered: _financialsFiltered,
        totals: _financialsTotals, renderTable: _renderFinancialsTable,
      };`
@@ -119,7 +122,7 @@ function loadFinancials(file, projects) {
     // Stand the checklist up as if the user had ticked these boxes, so Apply's
     // real logic runs against it.
     tickBoxes: (names, ticked) => {
-      dd.boxes = names.map(v => ({ value: v, checked: ticked.includes(v) }));
+      dd.boxes = names.map(v => ({ value: v, checked: ticked.includes(v), addEventListener() {} }));
       dd.all.checked = dd.boxes.every(b => b.checked);
     },
     // What the user sees: filter bar plus the table it controls.
@@ -289,7 +292,7 @@ for (const file of FILES) {
   const withFilters = (f) => { const m = loadFinancials(file, JOBS); m.setFilters(f); m.renderFinancials(); return m; };
 
   console.log('  — status filter —');
-  const done = withFilters({ q: '', status: 'Complete' });
+  const done = withFilters({ q: '', statuses: new Set(['Complete']) });
   assert('filtering to Complete keeps only that job',
     done.html().includes('Saint Edmunds Field') && !done.html().includes('Franklin Regional Tennis Court'));
   assert('  the count shows the filtered share', done.html().includes('1 of 5 jobs'));
@@ -299,24 +302,23 @@ for (const file of FILES) {
     /Totals cover the filtered rows only/.test(done.html()));
 
   console.log('  — search box —');
-  const searched = withFilters({ q: 'franklin', status: '' });
+  const searched = withFilters({ q: 'franklin' });
   assert('search matches on job name', searched.html().includes('Franklin Regional Tennis Court'));
   assert('  and excludes the rest', !searched.html().includes('Saint Edmunds Field'));
   assert('search matches on job number',
-    withFilters({ q: '1039', status: '' }).html().includes('Saint Edmunds Field'));
+    withFilters({ q: '1039' }).html().includes('Saint Edmunds Field'));
   assert('search is case-insensitive',
-    withFilters({ q: 'FRANKLIN', status: '' }).html().includes('Franklin Regional Tennis Court'));
+    withFilters({ q: 'FRANKLIN' }).html().includes('Franklin Regional Tennis Court'));
   assert('a filter matching nothing says so instead of rendering an empty table',
-    /No jobs match these filters/.test(withFilters({ q: 'zzzznope', status: '' }).html()));
+    /No jobs match these filters/.test(withFilters({ q: 'zzzznope' }).html()));
 
   console.log('  — the unfiltered view is unchanged —');
-  const plain = withFilters({ q: '', status: '' });
+  const plain = withFilters({ q: '' });
   assert('no filter shows every job and the plain count', plain.html().includes('(5 jobs)'));
   assert('  and does not claim the totals are filtered',
     !/Totals cover the filtered rows only/.test(plain.html()));
-  assert('the status dropdown offers every status in the data, not just visible ones',
-    ['In Progress', 'Complete'].every(s => done.html().includes(`<option value="${s}"`)),
-    'filtering to Complete must still offer Active');
+  assert('the status control is a multi-select checklist, not a single-pick dropdown',
+    /data-fin-f="statuses"/.test(done.html()) && !/onchange="finSetFilter\('status'/.test(done.html()));
 
   console.log('  — job name filter —');
   // The Purchase Orders pattern: a checklist of job names. Picking narrows the
@@ -358,6 +360,56 @@ for (const file of FILES) {
   assert('clearing restores every job',
     pick.picked() === null && JOBS.every(j => pick.html().includes(j['project-name'])));
 
+  console.log('  — more than one status at once —');
+  const multi = loadFinancials(file, JOBS);
+  multi.pickStatuses(['In Progress', 'Complete']);
+  multi.renderFinancials();
+  assert('two statuses keep the jobs in either',
+    multi.filtered().length === JOBS.length, `${multi.filtered().length} of ${JOBS.length}`);
+  multi.pickStatuses(['Complete']);
+  multi.renderFinancials();
+  assert('narrowing to one keeps only that one',
+    multi.filtered().length === 1 && multi.filtered()[0].status === 'Complete');
+  multi.pickStatuses(['Bidding', 'Awarded']);
+  multi.renderFinancials();
+  assert('statuses no job holds match nothing', multi.filtered().length === 0);
+  assert('  and the table says so, rather than showing everything',
+    /No jobs match these filters/.test(multi.html()));
+  multi.pickStatuses(null);
+  multi.renderFinancials();
+  assert('no pick means every status', multi.filtered().length === JOBS.length);
+  assert('  and the button carries the count when some are picked', (() => {
+    const m2 = loadFinancials(file, JOBS);
+    m2.pickStatuses(['In Progress', 'Complete']);
+    m2.renderFinancials();
+    return /Status \(2\)/.test(m2.html()) && /class="cfb finfb active" data-fin-f="statuses"/.test(m2.html());
+  })());
+  // A blank status has to stay reachable, or such a job can never be included.
+  const blankJobs = JOBS.concat([job({ id: 'nostatus', name: 'No Status Job', job: '999', status: '', contract: 1000, bid: 900, actual: 800 })]);
+  const blank = loadFinancials(file, blankJobs);
+  blank.pickStatuses(['']);
+  blank.renderFinancials();
+  assert('a job with no status can still be picked',
+    blank.filtered().length === 1 && blank.filtered()[0].name === 'No Status Job');
+  blank.openStatuses({ getBoundingClientRect: () => ({ left: 0, bottom: 0 }) });
+  assert('  and the checklist lists it as (blank)', /\(blank\)/.test(blank.dd.list.innerHTML));
+
+  console.log('  — one dropdown, two fields —');
+  const two = loadFinancials(file, JOBS);
+  two.renderFinancials();
+  two.openStatuses({ getBoundingClientRect: () => ({ left: 0, bottom: 0 }) });
+  const statusList = two.dd.list.innerHTML;
+  assert('opening Status lists statuses, not job names',
+    statusList.includes('In Progress') && !statusList.includes('Half Built Job'));
+  two.tickBoxes(['In Progress', 'Complete'], ['Complete']);
+  two.applyNames();
+  assert('  Apply commits to whichever field was opened',
+    two.pickedStatuses() && two.pickedStatuses()[0] === 'Complete' && two.picked() === null,
+    'the job-name filter must be untouched');
+  two.openNames({ getBoundingClientRect: () => ({ left: 0, bottom: 0 }) });
+  assert('opening Job Name lists job names again',
+    two.dd.list.innerHTML.includes('Half Built Job'));
+
   console.log('  — the checklist itself —');
   const dd = loadFinancials(file, JOBS);
   dd.renderFinancials();
@@ -383,7 +435,7 @@ for (const file of FILES) {
   console.log('  — the pick composes with the other filters —');
   const both2 = loadFinancials(file, JOBS);
   both2.pickNames(['Franklin Regional Tennis Court', 'Saint Edmunds Field']);
-  both2.setFilters({ q: '', status: 'Complete', names: both2.picked() ? new Set(both2.picked()) : null });
+  both2.setFilters({ q: '', statuses: new Set(['Complete']), names: both2.picked() ? new Set(both2.picked()) : null });
   both2.renderFinancials();
   assert('a picked job that fails the status filter drops out',
     both2.html().includes('Saint Edmunds Field') && !both2.html().includes('Franklin Regional Tennis Court'));
@@ -403,7 +455,7 @@ for (const file of FILES) {
     !statusHtml.includes('badge-default'));
 
   console.log('  — excel export —');
-  const exp = withFilters({ q: '', status: '' });
+  const exp = withFilters({ q: '' });
   exp.exportFinancialsCSV();
   const csv = exp.captured.csv;
   const csvRows = csv.split('\r\n');
@@ -436,14 +488,14 @@ for (const file of FILES) {
   })(), 'break-even is a fact, not a blank');
 
   console.log('  — export follows the filter —');
-  const expFiltered = withFilters({ q: '', status: 'Complete' });
+  const expFiltered = withFilters({ q: '', statuses: new Set(['Complete']) });
   expFiltered.exportFinancialsCSV();
   const fcsv = expFiltered.captured.csv.split('\r\n');
   assert('a filtered export ships only the filtered rows', fcsv.length === 3, `${fcsv.length} lines`);
   assert('  and its totals match the filtered set', fcsv[2].startsWith('Totals,,,210000.00'));
 
   console.log('  — print view —');
-  const pr = withFilters({ q: '', status: '' });
+  const pr = withFilters({ q: '' });
   pr.printFinancials();
   const doc = pr.captured.print;
   assert('the print view opens a document', !!doc && doc.includes('<!DOCTYPE html>'));
@@ -455,7 +507,7 @@ for (const file of FILES) {
   assert('  the division reads as a name, not a lowercase key',
     /<h2>Financials — [A-Z]/.test(doc), (doc.match(/<h2>[^<]*/) || [''])[0]);
   assert('  the header repeats across pages', /thead\s*\{\s*display:\s*table-header-group/.test(doc));
-  const prF = withFilters({ q: '', status: 'Complete' });
+  const prF = withFilters({ q: '', statuses: new Set(['Complete']) });
   prF.printFinancials();
   assert('a filtered print names the filter on the page',
     /Status:\s*Complete/.test(prF.captured.print), 'so a printout cannot be mistaken for the full book');
@@ -463,7 +515,7 @@ for (const file of FILES) {
     !prF.captured.print.includes('Franklin Regional Tennis Court'));
 
   console.log('  — nothing to export —');
-  const none = withFilters({ q: 'zzzznope', status: '' });
+  const none = withFilters({ q: 'zzzznope' });
   none.exportFinancialsCSV();
   none.printFinancials();
   assert('exporting an empty result warns instead of shipping an empty file',
@@ -492,13 +544,18 @@ for (const file of FILES) {
   const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   assert(`${file} has a search box, status filter and clear`,
     /oninput="finSetFilter\('q', this\.value\)"/.test(src)
-    && /onchange="finSetFilter\('status', this\.value\)"/.test(src)
+    && /data-fin-f="statuses"/.test(src)
     && /onclick="finClearFilters\(\)"/.test(src));
   assert(`  ${file} has Excel and Print buttons`,
     /onclick="exportFinancialsCSV\(\)"/.test(src) && /onclick="printFinancials\(\)"/.test(src));
-  assert(`  ${file} has the Job Name checklist and its dropdown`,
-    /class="cfb finfb/.test(src) && /id="fin-filter-dd"/.test(src)
-    && /onclick="applyFinNameFilter\(\)"/.test(src) && /onclick="clearFinNameFilter\(\)"/.test(src));
+  assert(`  ${file} has both checklists on one dropdown`,
+    /data-fin-f="names"/.test(src) && /data-fin-f="statuses"/.test(src)
+    && /id="fin-filter-dd"/.test(src)
+    && /onclick="applyFinFilter\(\)"/.test(src) && /onclick="clearFinFilter\(\)"/.test(src));
+  // A removed property still read from somewhere is a silent undefined, not an
+  // error — finFilters.status survived a rename into the printout once.
+  assert(`  ${file} reads no filter key that no longer exists`,
+    !/finFilters\.status\b/.test(src) && !/openFinNameFilter|applyFinNameFilter|clearFinNameFilter/.test(src));
   assert(`  ${file} opens it on click and closes it on an outside click`,
     /e\.target\.closest\('\.finfb'\)/.test(src) && /!e\.target\.classList\.contains\('finfb'\)/.test(src));
 }
