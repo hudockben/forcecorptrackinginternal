@@ -16988,6 +16988,9 @@ let finFilters = { q: '', status: '' };
 // Ticked job ids. Kept across filter changes so narrowing the list to find the
 // next job does not throw away what has already been picked.
 let finSelected = new Set();
+// Ticking narrows the table to the ticked jobs. Toggled off to bring the rest
+// back so more can be picked, without dropping what is already ticked.
+let finShowSelectedOnly = false;
 
 // Every job, computed and sorted. Filtering happens separately so the status
 // dropdown can list every status that exists, not just the ones surviving the
@@ -17049,7 +17052,11 @@ function _financialsActive(rows) {
 }
 
 function finToggleRow(id, on) {
+  const wasEmpty = finSelected.size === 0;
   if (on) finSelected.add(id); else finSelected.delete(id);
+  // The first tick collapses the list to it; later ticks leave the mode alone,
+  // so choosing to see everything again is not undone by the next pick.
+  if (on && wasEmpty) finShowSelectedOnly = true;
   _renderFinancialsTable();
   // The row redraws, so put the caret back on the box that was just clicked.
   const cb = document.getElementById('fin-cb-' + id);
@@ -17059,13 +17066,21 @@ function finToggleRow(id, on) {
 // Select-all acts on the filtered rows only — never on jobs hidden behind a
 // filter, which the user cannot see to review.
 function finToggleAll(on) {
+  const wasEmpty = finSelected.size === 0;
   const shown = _financialsFiltered();
   shown.forEach(r => { if (on) finSelected.add(r.id); else finSelected.delete(r.id); });
+  if (on && wasEmpty) finShowSelectedOnly = true;
+  _renderFinancialsTable();
+}
+
+function finSetSelectedOnly(on) {
+  finShowSelectedOnly = !!on;
   _renderFinancialsTable();
 }
 
 function finClearSelection() {
   finSelected = new Set();
+  finShowSelectedOnly = false;
   _renderFinancialsTable();
 }
 
@@ -17133,19 +17148,24 @@ function _renderFinancialsTable() {
   const el = document.getElementById('fin-table');
   if (!el) return;
 
-  const all  = _financialsRows();
+  const all = _financialsRows();
+  if (!all.length) { el.innerHTML = '<div class="home-empty">No projects yet.</div>'; return; }
+
   // A tick on a job that has since been deleted would keep the table in
   // selection mode, reporting a hidden job with no row to untick.
   if (finSelected.size) {
     const live = new Set(all.map(r => r.id));
     finSelected.forEach(id => { if (!live.has(id)) finSelected.delete(id); });
   }
+
   const rows = _financialsFiltered(all);
   const act  = _financialsActive(all);
   const selShown = rows.filter(r => finSelected.has(r.id)).length;
-
-  if (!all.length) { el.innerHTML = '<div class="home-empty">No projects yet.</div>'; return; }
-  if (!rows.length) { el.innerHTML = '<div class="home-empty">No jobs match these filters.</div>'; return; }
+  // Ticking a job narrows the list to the ticked ones. "Show all jobs" puts the
+  // rest back without dropping the selection, which is the only way to pick a
+  // second job once the first has collapsed the list.
+  const selOnly = finShowSelectedOnly && finSelected.size > 0;
+  const visible = selOnly ? act : rows;
 
   const money   = v => v ? '$' + fmt(v) : '<span style="color:var(--muted)">—</span>';
   const signed  = v => v >= 0 ? '$' + fmt(v) : '-$' + fmt(Math.abs(v));
@@ -17156,10 +17176,10 @@ function _renderFinancialsTable() {
     ? `<span class="proj-badge ${statusBadgeClass(r.status)}">${esc(r.status)}</span>`
     : '<span style="color:var(--muted)">—</span>';
 
-  const body = rows.map(r => `<tr onclick="goToProject('${r.id}')" style="cursor:pointer${finSelected.has(r.id) ? ';background:var(--surface2)' : ''}">
+  const body = visible.map(r => `<tr onclick="goToProject('${r.id}')" style="cursor:pointer${finSelected.has(r.id) ? ';background:var(--surface2)' : ''}">
       <td style="text-align:center" onclick="event.stopPropagation()">
         <input type="checkbox" id="fin-cb-${r.id}" style="cursor:pointer"
-          title="Include this job in the totals, export and printout"
+          title="Show only the ticked jobs, and total, export and print just those"
           onclick="event.stopPropagation();finToggleRow('${r.id}', this.checked)"${finSelected.has(r.id) ? ' checked' : ''}>
       </td>
       <td>
@@ -17186,11 +17206,17 @@ function _renderFinancialsTable() {
     : _finFiltered()
       ? `${rows.length} of ${all.length} jobs`
       : `${rows.length} job${rows.length === 1 ? '' : 's'}`;
-  // Offered whenever a selection exists, not just a visible one: filtering the
-  // ticks off screen is the case where the way out matters most.
-  const selNote = finSelected.size
-    ? ` &nbsp;<button class="btn btn-ghost" style="font-size:0.68rem;padding:0.12rem 0.45rem;font-weight:400" onclick="finClearSelection()">Clear selection</button>`
+
+  const btn = (label, call) =>
+    ` &nbsp;<button class="btn btn-ghost" style="font-size:0.68rem;padding:0.12rem 0.45rem;font-weight:400" onclick="${call}">${label}</button>`;
+  // Both controls are offered whenever a selection exists, not just a visible
+  // one: a selection filtered off screen is when the way back matters most.
+  const modeNote = finSelected.size
+    ? (selOnly ? btn(`Show all ${rows.length} job${rows.length === 1 ? '' : 's'}`, 'finSetSelectedOnly(false)')
+               : btn('Show selected only', 'finSetSelectedOnly(true)'))
     : '';
+  const selNote = finSelected.size ? btn('Clear selection', 'finClearSelection()') : '';
+
   // A tick on a job the filters then hid would silently shrink the figures.
   const hiddenSel = finSelected.size - selShown;
   const selMsg = !finSelected.size
@@ -17200,8 +17226,19 @@ function _renderFinancialsTable() {
       : `Totals cover the ${selShown} selected job${selShown === 1 ? '' : 's'} — as do the Excel export and the printout.`
         + (hiddenSel > 0 ? ` ${hiddenSel} other selected job${hiddenSel === 1 ? ' is' : 's are'} hidden by the current filters and left out.` : '');
 
-  el.innerHTML = `
-    <p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${count})</span>${selNote}</p>
+  // The heading carries both escape hatches, so it renders even when there is
+  // no table under it — otherwise an empty result hides the way out of itself.
+  const head = `<p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${count})</span>${modeNote}${selNote}</p>`;
+
+  const emptyMsg = !rows.length
+    ? '<div class="home-empty">No jobs match these filters.</div>'
+    : !visible.length
+      ? '<div class="home-empty">None of the selected jobs match these filters.</div>'
+      : '';
+
+  if (emptyMsg) { el.innerHTML = head + emptyMsg; return; }
+
+  el.innerHTML = head + `
     <div class="proj-table-wrap">
       <table class="proj-table">
         <thead><tr>

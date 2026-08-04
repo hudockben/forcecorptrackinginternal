@@ -73,6 +73,7 @@ function loadFinancials(file, projects) {
        select: ids => { finSelected = new Set(ids); },
        selected: () => [...finSelected],
        toggleRow: finToggleRow, toggleAll: finToggleAll, clearSelection: finClearSelection,
+       setSelectedOnly: finSetSelectedOnly, selectedOnly: () => finShowSelectedOnly,
        rows: _financialsRows, filtered: _financialsFiltered, active: _financialsActive,
        totals: _financialsTotals, renderTable: _renderFinancialsTable,
      };`
@@ -315,8 +316,33 @@ for (const file of FILES) {
   assert('totals narrow to the ticked jobs',
     ph.includes('$689,312.32') && !ph.includes('$2,489,312.32'), 'expected 479,312.32 + 210,000');
   assert('  and the table says so', /Totals cover the 2 selected jobs/.test(ph));
-  assert('every job is still listed, so more can be ticked',
-    JOBS.every(j => ph.includes(j['project-name'])));
+
+  console.log('  — ticking a job shows only that job —');
+  const tick = loadFinancials(file, JOBS);
+  tick.renderFinancials();
+  tick.toggleRow('a', true);
+  const th = tick.html();
+  assert('the list collapses to the ticked job',
+    th.includes('Franklin Regional Tennis Court') && !th.includes('Saint Edmunds Field'), th.slice(0, 200));
+  assert('  and the way back is offered', /finSetSelectedOnly\(false\)/.test(th) && /Show all 5 jobs/.test(th));
+  // Collapsing to one job with no way back would make a second pick impossible.
+  tick.setSelectedOnly(false);
+  const back = tick.html();
+  assert('showing all again brings the other jobs back', JOBS.every(j => back.includes(j['project-name'])));
+  assert('  without dropping the tick', tick.selected().includes('a') && /id="fin-cb-a"[^>]*\schecked>/.test(back));
+  assert('  and offers to collapse again', /finSetSelectedOnly\(true\)/.test(back));
+  tick.toggleRow('b', true);
+  assert('a second tick while showing all does not re-collapse the list',
+    tick.selectedOnly() === false && tick.html().includes('Half Built Job'),
+    'choosing to see everything must not be undone by the next pick');
+  assert('  but both ticks are held', tick.selected().length === 2);
+  tick.setSelectedOnly(true);
+  assert('collapsing now shows exactly the two ticked jobs',
+    tick.html().includes('Franklin Regional Tennis Court') && tick.html().includes('Saint Edmunds Field')
+    && !tick.html().includes('Half Built Job'));
+  tick.clearSelection();
+  assert('clearing the selection returns the full list',
+    tick.selectedOnly() === false && JOBS.every(j => tick.html().includes(j['project-name'])));
 
   console.log('  — select all —');
   const allSel = loadFinancials(file, JOBS);
