@@ -17022,6 +17022,9 @@ function _scpSetTier(t) {
    The table, the Excel export and the print view all read the same filtered
    set, so what you export is what you are looking at. */
 let finFilters = { q: '', status: '' };
+// Ticked job ids. Kept across filter changes so narrowing the list to find the
+// next job does not throw away what has already been picked.
+let finSelected = new Set();
 
 // Every job, computed and sorted. Filtering happens separately so the status
 // dropdown can list every status that exists, not just the ones surviving the
@@ -17070,6 +17073,36 @@ function _financialsFiltered() {
 }
 
 const _finFiltered = () => !!((finFilters.q || '').trim() || finFilters.status);
+
+/* What the totals, the export and the printout describe: the ticked jobs when
+   any are ticked, otherwise everything the filters leave. Ticks are intersected
+   with the filters rather than overriding them, so the figures always describe
+   rows that are actually on screen. */
+function _financialsActive() {
+  const shown = _financialsFiltered();
+  return finSelected.size ? shown.filter(r => finSelected.has(r.id)) : shown;
+}
+
+function finToggleRow(id, on) {
+  if (on) finSelected.add(id); else finSelected.delete(id);
+  _renderFinancialsTable();
+  // The row redraws, so put the caret back on the box that was just clicked.
+  const cb = document.getElementById('fin-cb-' + id);
+  if (cb) cb.focus();
+}
+
+// Select-all acts on the filtered rows only — never on jobs hidden behind a
+// filter, which the user cannot see to review.
+function finToggleAll(on) {
+  const shown = _financialsFiltered();
+  shown.forEach(r => { if (on) finSelected.add(r.id); else finSelected.delete(r.id); });
+  _renderFinancialsTable();
+}
+
+function finClearSelection() {
+  finSelected = new Set();
+  _renderFinancialsTable();
+}
 
 // Totals cover whatever is on screen. Both profits skip the rows that cannot
 // contribute one, so each carries its own base for the percentage.
@@ -17137,6 +17170,8 @@ function _renderFinancialsTable() {
 
   const all  = _financialsRows();
   const rows = _financialsFiltered();
+  const act  = _financialsActive();
+  const selShown = rows.filter(r => finSelected.has(r.id)).length;
 
   if (!all.length) { el.innerHTML = '<div class="home-empty">No projects yet.</div>'; return; }
   if (!rows.length) { el.innerHTML = '<div class="home-empty">No jobs match these filters.</div>'; return; }
@@ -17150,7 +17185,12 @@ function _renderFinancialsTable() {
     ? `<span class="proj-badge ${statusBadgeClass(r.status)}">${esc(r.status)}</span>`
     : '<span style="color:var(--muted)">—</span>';
 
-  const body = rows.map(r => `<tr onclick="goToProject('${r.id}')" style="cursor:pointer">
+  const body = rows.map(r => `<tr onclick="goToProject('${r.id}')" style="cursor:pointer${finSelected.has(r.id) ? ';background:var(--surface2)' : ''}">
+      <td style="text-align:center" onclick="event.stopPropagation()">
+        <input type="checkbox" id="fin-cb-${r.id}" style="cursor:pointer"
+          title="Include this job in the totals, export and printout"
+          onclick="event.stopPropagation();finToggleRow('${r.id}', this.checked)"${finSelected.has(r.id) ? ' checked' : ''}>
+      </td>
       <td>
         <div class="pt-name">${esc(r.name)}</div>
         ${r.client ? `<div class="pt-meta">${esc(r.client)}</div>` : ''}
@@ -17165,16 +17205,26 @@ function _renderFinancialsTable() {
       <td class="pt-num" style="${profCol(r.actProfit)}">${r.actProfit === null ? '—' : signed(r.actProfit) + pctSpan(r.actProfit, r.contract)}</td>
     </tr>`).join('');
 
-  const t = _financialsTotals(rows);
-  const count = _finFiltered()
-    ? `${rows.length} of ${all.length} jobs`
-    : `${rows.length} job${rows.length === 1 ? '' : 's'}`;
+  // Totals describe the ticked jobs when there are any.
+  const t = _financialsTotals(act);
+  const count = selShown
+    ? `${selShown} of ${rows.length} selected`
+    : _finFiltered()
+      ? `${rows.length} of ${all.length} jobs`
+      : `${rows.length} job${rows.length === 1 ? '' : 's'}`;
+  const selNote = selShown
+    ? ` &nbsp;<button class="btn btn-ghost" style="font-size:0.68rem;padding:0.12rem 0.45rem;font-weight:400" onclick="finClearSelection()">Clear selection</button>`
+    : '';
+  // A tick on a job the filters then hid would silently shrink the figures.
+  const hiddenSel = finSelected.size - selShown;
 
   el.innerHTML = `
-    <p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${count})</span></p>
+    <p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${count})</span>${selNote}</p>
     <div class="proj-table-wrap">
       <table class="proj-table">
         <thead><tr>
+          <th style="width:1.6rem;text-align:center"><input type="checkbox" id="fin-cb-all" title="Select every job the filters leave"
+            style="cursor:pointer" onclick="finToggleAll(this.checked)"${selShown && selShown === rows.length ? ' checked' : ''}></th>
           <th>Job Name</th>
           <th>Job #</th>
           <th>Status</th>
@@ -17187,7 +17237,8 @@ function _renderFinancialsTable() {
         </tr></thead>
         <tbody>${body}</tbody>
         <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
-          <td>Totals</td>
+          <td></td>
+          <td>${selShown ? 'Selected' : 'Totals'}</td>
           <td></td>
           <td></td>
           <td class="pt-num" style="color:var(--blue)">${money(t.contract)}</td>
@@ -17204,8 +17255,14 @@ function _renderFinancialsTable() {
       Actual Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
       figure once it is complete, and high in between on jobs that have barely started.
       ${t.noContract ? `${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount, so ${t.noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
-      ${_finFiltered() ? 'Totals cover the filtered rows only.' : ''}
+      ${selShown ? `Totals cover the ${selShown} selected job${selShown === 1 ? '' : 's'} — as do the Excel export and the printout.`
+        : _finFiltered() ? 'Totals cover the filtered rows only.' : ''}
+      ${hiddenSel > 0 ? `${hiddenSel} other selected job${hiddenSel === 1 ? ' is' : 's are'} hidden by the current filters and left out.` : ''}
     </p>`;
+
+  // Part-selected reads as neither on nor off, which is what the box means.
+  const cbAll = document.getElementById('fin-cb-all');
+  if (cbAll) cbAll.indeterminate = selShown > 0 && selShown < rows.length;
 }
 
 // Column order is shared by the table, the export and the print view.
@@ -17217,8 +17274,8 @@ function _finDivisionLabel() {
 }
 
 function exportFinancialsCSV() {
-  const rows = _financialsFiltered();
-  if (!rows.length) { alert('Nothing to export — no jobs match these filters.'); return; }
+  const rows = _financialsActive();
+  if (!rows.length) { alert('Nothing to export — no jobs are selected, or none match these filters.'); return; }
   // Values go out unformatted so Excel treats them as numbers and can total
   // them. A blank cell means "not applicable", which is not the same as zero.
   const q = v => {
@@ -17244,8 +17301,8 @@ function exportFinancialsCSV() {
 }
 
 function printFinancials() {
-  const rows = _financialsFiltered();
-  if (!rows.length) { alert('Nothing to print — no jobs match these filters.'); return; }
+  const rows = _financialsActive();
+  if (!rows.length) { alert('Nothing to print — no jobs are selected, or none match these filters.'); return; }
   const t = _financialsTotals(rows);
 
   const esc2 = s => String(s === null || s === undefined ? '' : s)
@@ -17267,6 +17324,7 @@ function printFinancials() {
     </tr>`).join('');
 
   const filterNote = [
+    finSelected.size ? 'Selected jobs only' : '',
     finFilters.status ? 'Status: ' + esc2(finFilters.status) : '',
     (finFilters.q || '').trim() ? 'Search: "' + esc2(finFilters.q.trim()) + '"' : '',
   ].filter(Boolean).join(' · ');

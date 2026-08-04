@@ -68,7 +68,11 @@ function loadFinancials(file, projects) {
      return {
        renderFinancials, exportFinancialsCSV, printFinancials,
        setFilters: f => { finFilters = f; },
-       rows: _financialsRows, filtered: _financialsFiltered, totals: _financialsTotals,
+       select: ids => { finSelected = new Set(ids); },
+       selected: () => [...finSelected],
+       toggleRow: finToggleRow, toggleAll: finToggleAll, clearSelection: finClearSelection,
+       rows: _financialsRows, filtered: _financialsFiltered, active: _financialsActive,
+       totals: _financialsTotals,
      };`
   )(
     projects,
@@ -287,6 +291,88 @@ for (const file of FILES) {
   assert('the status dropdown offers every status in the data, not just visible ones',
     ['In Progress', 'Complete'].every(s => done.html().includes(`<option value="${s}"`)),
     'filtering to Complete must still offer Active');
+
+  console.log('  — selecting jobs —');
+  // Ticking rows is only useful if it changes what you take away from the
+  // screen, so the totals, the export and the printout all have to narrow with
+  // it — and say that they have.
+  const picked = loadFinancials(file, JOBS);
+  picked.select(['a', 'b']);
+  picked.renderFinancials();
+  const ph = picked.html();
+  assert('every row offers a checkbox', (ph.match(/id="fin-cb-[a-e]"/g) || []).length === JOBS.length);
+  // The handler contains the literal "this.checked", so match the attribute
+  // itself — whitespace, then checked, then the end of the tag.
+  const isTicked = id => new RegExp(`id="fin-cb-${id}"[^>]*\\schecked>`).test(ph);
+  assert('  the ticked ones come back ticked', isTicked('a') && isTicked('b'));
+  assert('  and the unticked ones do not', !isTicked('c') && !isTicked('d'));
+  assert('  the checkbox does not open the project', /onclick="event\.stopPropagation\(\);finToggleRow/.test(ph));
+  assert('the heading counts the selection', ph.includes('2 of 5 selected'));
+  assert('  and offers a way back out', /finClearSelection\(\)/.test(ph));
+  assert('the totals row says it is describing a selection', ph.includes('>Selected</td>'));
+  assert('totals narrow to the ticked jobs',
+    ph.includes('$689,312.32') && !ph.includes('$2,489,312.32'), 'expected 479,312.32 + 210,000');
+  assert('  and the table says so', /Totals cover the 2 selected jobs/.test(ph));
+  assert('every job is still listed, so more can be ticked',
+    JOBS.every(j => ph.includes(j['project-name'])));
+
+  console.log('  — select all —');
+  const allSel = loadFinancials(file, JOBS);
+  allSel.renderFinancials();
+  allSel.toggleAll(true);
+  assert('select-all takes every filtered job', allSel.selected().length === JOBS.length);
+  assert('  and the header box reads as checked', /id="fin-cb-all"[^>]*checked/.test(allSel.html()));
+  allSel.toggleAll(false);
+  assert('unselect-all clears them', allSel.selected().length === 0);
+  const partial = loadFinancials(file, JOBS);
+  partial.setFilters({ q: '', status: 'Complete' });
+  partial.renderFinancials();
+  partial.toggleAll(true);
+  assert('select-all under a filter takes only the visible jobs',
+    partial.selected().length === 1 && partial.selected()[0] === 'b',
+    'must not tick jobs the user cannot see');
+
+  console.log('  — selection and filters together —');
+  const both = loadFinancials(file, JOBS);
+  both.select(['a', 'b']);
+  both.setFilters({ q: '', status: 'Complete' });
+  both.renderFinancials();
+  assert('a selection is intersected with the filters, not overriding them',
+    both.active().length === 1 && both.active()[0].id === 'b');
+  assert('  and a tick the filters hid is called out, not silently dropped',
+    /1 other selected job is hidden by the current filters/.test(both.html()), both.html().slice(-400));
+  const noneVisible = loadFinancials(file, JOBS);
+  noneVisible.select(['a']);
+  noneVisible.setFilters({ q: '', status: 'Complete' });
+  noneVisible.renderFinancials();
+  noneVisible.exportFinancialsCSV();
+  assert('exporting when no ticked job is visible warns rather than shipping everything',
+    noneVisible.captured.csv === null && noneVisible.captured.alerts.length === 1,
+    JSON.stringify(noneVisible.captured.alerts));
+
+  console.log('  — export and print follow the selection —');
+  const selExp = loadFinancials(file, JOBS);
+  selExp.select(['b']);
+  selExp.renderFinancials();
+  selExp.exportFinancialsCSV();
+  const selRows = selExp.captured.csv.split('\r\n');
+  assert('the export ships only the ticked jobs', selRows.length === 3, `${selRows.length} lines`);
+  assert('  and its totals match them', selRows[2].startsWith('Totals,,,210000.00'));
+  selExp.printFinancials();
+  assert('the printout carries only the ticked jobs',
+    selExp.captured.print.includes('Saint Edmunds Field') && !selExp.captured.print.includes('Half Built Job'));
+  assert('  and says it is a hand-picked subset',
+    /Selected jobs only/.test(selExp.captured.print), 'or it reads as the whole book');
+
+  console.log('  — no selection is the old behaviour —');
+  const plainSel = loadFinancials(file, JOBS);
+  plainSel.renderFinancials();
+  assert('with nothing ticked the totals cover every job',
+    plainSel.html().includes('$2,489,312.32'));
+  assert('  the totals row is labelled Totals, not Selected',
+    plainSel.html().includes('>Totals</td>') && !plainSel.html().includes('>Selected</td>'));
+  assert('  and no clear-selection control is offered',
+    !/finClearSelection\(\)/.test(plainSel.html()));
 
   console.log('  — status colours —');
   // There is no 'Active' status in this app. The set is Bidding / Awarded /
