@@ -28,6 +28,7 @@ const fs   = require('fs');
 const path = require('path');
 
 const FILES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
+const FIN_HEADERS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
 
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
@@ -46,18 +47,39 @@ function extractFunction(src, name) {
   throw new Error(`${name} is not closed`);
 }
 
-// Real projection chain + the renderer, over a stub DOM.
-const FNS = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'renderFinancials'];
-function render(file, projects) {
+// The whole Financials block — filter state, table, export and print all live
+// together — plus the real projection chain it depends on, over a stub DOM.
+const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject'];
+function loadFinancials(file, projects) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
-  const block = FNS.map(n => extractFunction(src, n)).join('\n\n');
-  const host  = { innerHTML: '' };
-  new Function('projectsList', 'document', 'dailyRowCost', 'fmt', 'esc',
+  const start = src.indexOf('/* ── Financials ───');
+  const end   = src.indexOf('function renderSubCodePerf');
+  if (start < 0 || end < 0) throw new Error(`Financials block not found in ${file}`);
+  const code = CHAIN.map(n => extractFunction(src, n)).join('\n\n') + '\n\n' + src.slice(start, end);
+
+  const bar = { innerHTML: '' }, table = { innerHTML: '' };
+  const captured = { csv: null, print: null, alerts: [], download: null };
+
+  const api = new Function(
+    'projectsList', 'document', 'window', 'alert', 'Blob', 'URL',
+    'dailyRowCost', 'fmt', 'esc',
     'actualForBidItem', 'runningQtyForBidItem', 'bidItemComplete', 'getProj',
-    `${block}; renderFinancials();`
+    `${code}
+     return {
+       renderFinancials, exportFinancialsCSV, printFinancials,
+       setFilters: f => { finFilters = f; },
+       rows: _financialsRows, filtered: _financialsFiltered, totals: _financialsTotals,
+     };`
   )(
     projects,
-    { getElementById: id => (id === 'fin-content' ? host : null) },
+    {
+      getElementById: id => (id === 'fin-content' ? bar : id === 'fin-table' ? table : null),
+      createElement: () => ({ href: '', download: '', click() { captured.download = this.download; } }),
+    },
+    { open: () => ({ document: { write: h => { captured.print = h; }, close() {} } }) },
+    m => captured.alerts.push(m),
+    function (parts) { captured.csv = parts.join(''); },
+    { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} },
     r => r.cost || 0,
     (n, d = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }),
     s => String(s || '').replace(/"/g, '&quot;'),
@@ -66,7 +88,20 @@ function render(file, projects) {
     (b, id) => !!b._done,
     () => null,
   );
-  return host.innerHTML;
+
+  return {
+    ...api,
+    captured,
+    // What the user sees: filter bar plus the table it controls.
+    html: () => bar.innerHTML + table.innerHTML,
+  };
+}
+
+// Back-compat helper for the assertions that only care about rendered HTML.
+function render(file, projects) {
+  const f = loadFinancials(file, projects);
+  f.renderFinancials();
+  return f.html();
 }
 
 // A complete bid line projects at exactly its actual, which keeps the
@@ -211,6 +246,114 @@ for (const file of FILES) {
   assert('switching to it renders', /if \(tab === 'financials'\) renderFinancials\(\);/.test(src));
   assert('restricted roles do not get it',
     /'financials'\]/.test(src) || /!perm\.visibleTabs\.has\('financials'\)/.test(src));
+}
+
+// ── Filters, Excel export and print ─────────────────────────────────────────
+// The three have to agree: what you filter to is what you export and what you
+// print. An export that quietly ships all 55 jobs when the screen shows 4 is
+// the kind of thing nobody notices until it is in someone else's inbox.
+console.log('\n══════════ filters, excel and print ══════════');
+for (const file of FILES) {
+  console.log(`\n[${file}]`);
+
+  const withFilters = (f) => { const m = loadFinancials(file, JOBS); m.setFilters(f); m.renderFinancials(); return m; };
+
+  console.log('  — status filter —');
+  const done = withFilters({ q: '', status: 'Complete' });
+  assert('filtering to Complete keeps only that job',
+    done.html().includes('Saint Edmunds Field') && !done.html().includes('Franklin Regional Tennis Court'));
+  assert('  the count shows the filtered share', done.html().includes('1 of 5 jobs'));
+  assert('  totals cover the filtered rows, not all of them',
+    done.html().includes('$210,000.00') && !done.html().includes('$2,489,312.32'), 'contract total should be just the one job');
+  assert('  and the table says the totals are filtered',
+    /Totals cover the filtered rows only/.test(done.html()));
+
+  console.log('  — search box —');
+  const searched = withFilters({ q: 'franklin', status: '' });
+  assert('search matches on job name', searched.html().includes('Franklin Regional Tennis Court'));
+  assert('  and excludes the rest', !searched.html().includes('Saint Edmunds Field'));
+  assert('search matches on job number',
+    withFilters({ q: '1039', status: '' }).html().includes('Saint Edmunds Field'));
+  assert('search is case-insensitive',
+    withFilters({ q: 'FRANKLIN', status: '' }).html().includes('Franklin Regional Tennis Court'));
+  assert('a filter matching nothing says so instead of rendering an empty table',
+    /No jobs match these filters/.test(withFilters({ q: 'zzzznope', status: '' }).html()));
+
+  console.log('  — the unfiltered view is unchanged —');
+  const plain = withFilters({ q: '', status: '' });
+  assert('no filter shows every job and the plain count', plain.html().includes('(5 jobs)'));
+  assert('  and does not claim the totals are filtered',
+    !/Totals cover the filtered rows only/.test(plain.html()));
+  assert('the status dropdown offers every status in the data, not just visible ones',
+    ['Active', 'Complete'].every(s => done.html().includes(`<option value="${s}"`)),
+    'filtering to Complete must still offer Active');
+
+  console.log('  — excel export —');
+  const exp = withFilters({ q: '', status: '' });
+  exp.exportFinancialsCSV();
+  const csv = exp.captured.csv;
+  const csvRows = csv.split('\r\n');
+  assert('the export produces a CSV', !!csv);
+  assert('  headers match the table', csvRows[0].replace(/^﻿/, '') === FIN_HEADERS.join(','));
+  assert('  one row per job plus a header and a totals row', csvRows.length === JOBS.length + 2);
+  assert('  numbers go out raw so Excel can total them',
+    /,479312\.32,375931\.05,261562\.30,/.test(csv), csvRows[1]);
+  assert('  no currency symbols or thousands separators to break the parse',
+    !/[$]/.test(csv) && !/\d,\d\d\d\./.test(csv));
+  assert('  a not-applicable profit is blank, not zero',
+    csvRows.find(l => l.startsWith('No Contract Yet')).endsWith(',,'), csvRows.find(l => l.startsWith('No Contract Yet')));
+  assert('  the last row totals', csvRows[csvRows.length - 1].startsWith('Totals,,,2489312.32'));
+  assert('  a name containing a comma is quoted', (() => {
+    const m = loadFinancials(file, [job({ id: 'q', name: 'Smith, Jones & Co', job: '1', status: 'Active', contract: 100, bid: 90, actual: 80 })]);
+    m.renderFinancials(); m.exportFinancialsCSV();
+    return m.captured.csv.includes('"Smith, Jones & Co"');
+  })());
+  assert('  the filename names the division and the date',
+    /^financials-.*-\d{4}-\d{2}-\d{2}\.csv$/.test(exp.captured.download), exp.captured.download);
+
+  console.log('  — export follows the filter —');
+  const expFiltered = withFilters({ q: '', status: 'Complete' });
+  expFiltered.exportFinancialsCSV();
+  const fcsv = expFiltered.captured.csv.split('\r\n');
+  assert('a filtered export ships only the filtered rows', fcsv.length === 3, `${fcsv.length} lines`);
+  assert('  and its totals match the filtered set', fcsv[2].startsWith('Totals,,,210000.00'));
+
+  console.log('  — print view —');
+  const pr = withFilters({ q: '', status: '' });
+  pr.printFinancials();
+  const doc = pr.captured.print;
+  assert('the print view opens a document', !!doc && doc.includes('<!DOCTYPE html>'));
+  assert('  it prints itself on load', /window\.print\(\)/.test(doc));
+  assert('  it carries every column', FIN_HEADERS.every(h => doc.includes(`>${h}</th>`)));
+  assert('  every job is on it', JOBS.every(j => doc.includes(j['project-name'])));
+  assert('  it totals', doc.includes('$2,489,312.32'));
+  assert('  it prints on white, not the dark app theme', /background:\s*#fff/.test(doc));
+  assert('  the header repeats across pages', /thead\s*\{\s*display:\s*table-header-group/.test(doc));
+  const prF = withFilters({ q: '', status: 'Complete' });
+  prF.printFinancials();
+  assert('a filtered print names the filter on the page',
+    /Status:\s*Complete/.test(prF.captured.print), 'so a printout cannot be mistaken for the full book');
+  assert('  and prints only those rows',
+    !prF.captured.print.includes('Franklin Regional Tennis Court'));
+
+  console.log('  — nothing to export —');
+  const none = withFilters({ q: 'zzzznope', status: '' });
+  none.exportFinancialsCSV();
+  none.printFinancials();
+  assert('exporting an empty result warns instead of shipping an empty file',
+    none.captured.csv === null && none.captured.alerts.length === 2, JSON.stringify(none.captured.alerts));
+}
+
+// The buttons have to exist on the page, not just the functions behind them.
+console.log('\n[the controls are wired up]');
+for (const file of FILES) {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  assert(`${file} has a search box, status filter and clear`,
+    /oninput="finSetFilter\('q', this\.value\)"/.test(src)
+    && /onchange="finSetFilter\('status', this\.value\)"/.test(src)
+    && /onclick="finClearFilters\(\)"/.test(src));
+  assert(`  ${file} has Excel and Print buttons`,
+    /onclick="exportFinancialsCSV\(\)"/.test(src) && /onclick="printFinancials\(\)"/.test(src));
 }
 
 // ── Home tab projects table ─────────────────────────────────────────────────

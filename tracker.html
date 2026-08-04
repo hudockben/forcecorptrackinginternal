@@ -17476,14 +17476,20 @@ function _scpSetTier(t) {
 
 /* ── Financials ───────────────────────────────────────────────────────────
    One row per job: what it sold for, what it was bid at, what it has cost,
-   and what that leaves. Profit follows the rest of the app — contract minus
-   PROJECTED final cost, not minus cost-to-date — so a job that is only half
-   spent isn't flattered into looking twice as profitable as it will end up.
-   Projected is listed next to it so the subtraction is visible on the row. */
-function renderFinancials() {
-  const el = document.getElementById('fin-content');
-  if (!el) return;
+   and what that leaves. Projected Profit follows the rest of the app —
+   contract minus PROJECTED final cost, not minus cost-to-date — so a job
+   that is only half spent isn't flattered into looking twice as profitable
+   as it will end up. Projected Cost is listed next to it so the subtraction
+   is visible on the row.
 
+   The table, the Excel export and the print view all read the same filtered
+   set, so what you export is what you are looking at. */
+let finFilters = { q: '', status: '' };
+
+// Every job, computed and sorted. Filtering happens separately so the status
+// dropdown can list every status that exists, not just the ones surviving the
+// current filter.
+function _financialsRows() {
   const _eb = b => (parseFloat(b.quantity) || 0)
     + (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
 
@@ -17514,15 +17520,94 @@ function renderFinancials() {
   // Live work first, finished work below it, newest job number first in each.
   const _jobNum = j => { const d = String(j).replace(/\D/g, ''); return d ? parseInt(d, 10) : -1; };
   rows.sort((a, b) => (a.done - b.done) || (_jobNum(b.job) - _jobNum(a.job)) || a.name.localeCompare(b.name));
+  return rows;
+}
 
-  if (!rows.length) {
-    el.innerHTML = '<div class="home-empty">No projects yet.</div>';
-    return;
-  }
+function _financialsFiltered() {
+  const q  = (finFilters.q || '').trim().toLowerCase();
+  const st = finFilters.status || '';
+  return _financialsRows().filter(r =>
+    (!st || r.status === st) &&
+    (!q  || r.name.toLowerCase().includes(q) || String(r.job).toLowerCase().includes(q))
+  );
+}
+
+const _finFiltered = () => !!((finFilters.q || '').trim() || finFilters.status);
+
+// Totals cover whatever is on screen. Both profits skip the rows that cannot
+// contribute one, so each carries its own base for the percentage.
+function _financialsTotals(rows) {
+  const sum = k => rows.reduce((s, r) => s + (r[k] || 0), 0);
+  const withContract = rows.filter(r => r.profit    !== null);
+  const withSpend    = rows.filter(r => r.actProfit !== null);
+  return {
+    contract:  sum('contract'),
+    bid:       sum('bid'),
+    actual:    sum('actual'),
+    projected: sum('projected'),
+    profit:      withContract.length ? withContract.reduce((s, r) => s + r.profit,    0) : null,
+    profitBase:  withContract.reduce((s, r) => s + r.contract, 0),
+    actProfit:   withSpend.length    ? withSpend.reduce((s, r) => s + r.actProfit, 0) : null,
+    actBase:     withSpend.reduce((s, r) => s + r.contract, 0),
+    noContract:  rows.length - withContract.length,
+  };
+}
+
+function finSetFilter(key, val) {
+  finFilters[key] = val;
+  // Only the table is redrawn — rebuilding the bar would drop the caret out of
+  // the search box on every keystroke.
+  _renderFinancialsTable();
+}
+
+function finClearFilters() {
+  finFilters = { q: '', status: '' };
+  renderFinancials();
+}
+
+function renderFinancials() {
+  const el = document.getElementById('fin-content');
+  if (!el) return;
+
+  const statuses = [...new Set(_financialsRows().map(r => r.status).filter(Boolean))].sort();
+  const inp = 'background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.28rem 0.5rem;font-size:0.78rem;outline:none';
+
+  el.innerHTML = `
+    <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem">
+      <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Filters:</span>
+      <input id="fin-q" type="search" placeholder="Job name or number" value="${esc(finFilters.q)}"
+        style="${inp};min-width:210px" oninput="finSetFilter('q', this.value)">
+      <select id="fin-status" style="${inp}" onchange="finSetFilter('status', this.value)">
+        <option value="">All statuses</option>
+        ${statuses.map(s => `<option value="${esc(s)}"${s === finFilters.status ? ' selected' : ''}>${esc(s)}</option>`).join('')}
+      </select>
+      <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem" onclick="finClearFilters()">Clear</button>
+      <div style="margin-left:auto;display:flex;gap:0.5rem">
+        <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem"
+          title="Download the rows below as a spreadsheet (CSV, opens in Excel)" onclick="exportFinancialsCSV()">&#8681; Excel</button>
+        <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem"
+          title="Open a printable copy of the rows below — use your browser's Save as PDF" onclick="printFinancials()">&#128424; Print / PDF</button>
+      </div>
+    </div>
+    <div id="fin-table"></div>`;
+
+  _renderFinancialsTable();
+}
+
+function _renderFinancialsTable() {
+  const el = document.getElementById('fin-table');
+  if (!el) return;
+
+  const all  = _financialsRows();
+  const rows = _financialsFiltered();
+
+  if (!all.length) { el.innerHTML = '<div class="home-empty">No projects yet.</div>'; return; }
+  if (!rows.length) { el.innerHTML = '<div class="home-empty">No jobs match these filters.</div>'; return; }
 
   const money   = v => v ? '$' + fmt(v) : '<span style="color:var(--muted)">—</span>';
   const signed  = v => v >= 0 ? '$' + fmt(v) : '-$' + fmt(Math.abs(v));
   const profCol = v => v == null ? 'color:var(--muted)' : v >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+  const pctSpan = (v, base) => base ? ` <span style="font-size:0.7em;opacity:0.8">(${(v / base * 100).toFixed(1)}%)</span>` : '';
 
   const statusCell = r => {
     if (!r.status) return '<span style="color:var(--muted)">—</span>';
@@ -17533,12 +17618,7 @@ function renderFinancials() {
     return `<span style="color:${col};font-size:0.72rem;font-weight:600">${esc(r.status)}</span>`;
   };
 
-  const body = rows.map(r => {
-    const _pctOf = v => (v !== null && r.contract)
-      ? ` <span style="font-size:0.7em;opacity:0.8">(${(v / r.contract * 100).toFixed(1)}%)</span>` : '';
-    const pct    = _pctOf(r.profit);
-    const actPct = _pctOf(r.actProfit);
-    return `<tr onclick="goToProject('${r.id}')" style="cursor:pointer">
+  const body = rows.map(r => `<tr onclick="goToProject('${r.id}')" style="cursor:pointer">
       <td>
         <div class="pt-name">${esc(r.name)}</div>
         ${r.client ? `<div class="pt-meta">${esc(r.client)}</div>` : ''}
@@ -17549,28 +17629,17 @@ function renderFinancials() {
       <td class="pt-num" style="color:var(--green)">${money(r.bid)}</td>
       <td class="pt-num" style="color:var(--yellow)">${money(r.actual)}</td>
       <td class="pt-num">${money(r.projected)}</td>
-      <td class="pt-num" style="${profCol(r.profit)}">${r.profit === null ? '—' : signed(r.profit) + pct}</td>
-      <td class="pt-num" style="${profCol(r.actProfit)}">${r.actProfit === null ? '—' : signed(r.actProfit) + actPct}</td>
-    </tr>`;
-  }).join('');
+      <td class="pt-num" style="${profCol(r.profit)}">${r.profit === null ? '—' : signed(r.profit) + pctSpan(r.profit, r.contract)}</td>
+      <td class="pt-num" style="${profCol(r.actProfit)}">${r.actProfit === null ? '—' : signed(r.actProfit) + pctSpan(r.actProfit, r.contract)}</td>
+    </tr>`).join('');
 
-  const sum = k => rows.reduce((s, r) => s + (r[k] || 0), 0);
-  // Only jobs carrying a contract can contribute profit, so the total is the
-  // sum of the cells actually shown rather than a figure no row adds up to.
-  const withContract = rows.filter(r => r.profit !== null);
-  const totProfit    = withContract.reduce((s, r) => s + r.profit, 0);
-  const totContract  = withContract.reduce((s, r) => s + r.contract, 0);
-  const totProfitPct = totContract ? ` <span style="font-size:0.7em;opacity:0.8">(${(totProfit / totContract * 100).toFixed(1)}%)</span>` : '';
-  const noContract   = rows.length - withContract.length;
-  // Actual Profit needs spend as well as a contract, so it totals its own
-  // subset rather than borrowing the projected-profit one.
-  const withSpend     = rows.filter(r => r.actProfit !== null);
-  const totActProfit  = withSpend.reduce((s, r) => s + r.actProfit, 0);
-  const totActBase    = withSpend.reduce((s, r) => s + r.contract, 0);
-  const totActPct     = totActBase ? ` <span style="font-size:0.7em;opacity:0.8">(${(totActProfit / totActBase * 100).toFixed(1)}%)</span>` : '';
+  const t = _financialsTotals(rows);
+  const count = _finFiltered()
+    ? `${rows.length} of ${all.length} jobs`
+    : `${rows.length} job${rows.length === 1 ? '' : 's'}`;
 
   el.innerHTML = `
-    <p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${rows.length} job${rows.length === 1 ? '' : 's'})</span></p>
+    <p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${count})</span></p>
     <div class="proj-table-wrap">
       <table class="proj-table">
         <thead><tr>
@@ -17589,12 +17658,12 @@ function renderFinancials() {
           <td>Totals</td>
           <td></td>
           <td></td>
-          <td class="pt-num" style="color:var(--blue)">${money(sum('contract'))}</td>
-          <td class="pt-num" style="color:var(--green)">${money(sum('bid'))}</td>
-          <td class="pt-num" style="color:var(--yellow)">${money(sum('actual'))}</td>
-          <td class="pt-num">${money(sum('projected'))}</td>
-          <td class="pt-num" style="${withContract.length ? profCol(totProfit) : 'color:var(--muted)'}">${withContract.length ? signed(totProfit) + totProfitPct : '—'}</td>
-          <td class="pt-num" style="${withSpend.length ? profCol(totActProfit) : 'color:var(--muted)'}">${withSpend.length ? signed(totActProfit) + totActPct : '—'}</td>
+          <td class="pt-num" style="color:var(--blue)">${money(t.contract)}</td>
+          <td class="pt-num" style="color:var(--green)">${money(t.bid)}</td>
+          <td class="pt-num" style="color:var(--yellow)">${money(t.actual)}</td>
+          <td class="pt-num">${money(t.projected)}</td>
+          <td class="pt-num" style="${t.profit === null ? 'color:var(--muted)' : profCol(t.profit)}">${t.profit === null ? '—' : signed(t.profit) + pctSpan(t.profit, t.profitBase)}</td>
+          <td class="pt-num" style="${t.actProfit === null ? 'color:var(--muted)' : profCol(t.actProfit)}">${t.actProfit === null ? '—' : signed(t.actProfit) + pctSpan(t.actProfit, t.actBase)}</td>
         </tr></tfoot>
       </table>
     </div>
@@ -17602,8 +17671,115 @@ function renderFinancials() {
       Projected Profit is contract value minus <strong>projected</strong> final cost, matching the project pages.
       Actual Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
       figure once it is complete, and high in between on jobs that have barely started.
-      ${noContract ? `${noContract} job${noContract === 1 ? ' has' : 's have'} no contract amount, so ${noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
+      ${t.noContract ? `${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount, so ${t.noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
+      ${_finFiltered() ? 'Totals cover the filtered rows only.' : ''}
     </p>`;
+}
+
+// Column order is shared by the table, the export and the print view.
+const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
+
+function _finDivisionLabel() {
+  return (typeof DIVISION !== 'undefined' && DIVISION) ? String(DIVISION) : 'Financials';
+}
+
+function exportFinancialsCSV() {
+  const rows = _financialsFiltered();
+  if (!rows.length) { alert('Nothing to export — no jobs match these filters.'); return; }
+  // Values go out unformatted so Excel treats them as numbers and can total
+  // them. A blank cell means "not applicable", which is not the same as zero.
+  const q = v => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const n = v => (v === null || v === undefined) ? '' : Number(v).toFixed(2);
+  const lines = [FIN_COLUMNS.map(q).join(',')];
+  rows.forEach(r => lines.push([
+    q(r.name), q(r.job), q(r.status),
+    n(r.contract), n(r.bid), n(r.actual), n(r.projected), n(r.profit), n(r.actProfit),
+  ].join(',')));
+  const t = _financialsTotals(rows);
+  lines.push(['Totals', '', '', n(t.contract), n(t.bid), n(t.actual), n(t.projected), n(t.profit), n(t.actProfit)].join(','));
+
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'financials-' + _finDivisionLabel().toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function printFinancials() {
+  const rows = _financialsFiltered();
+  if (!rows.length) { alert('Nothing to print — no jobs match these filters.'); return; }
+  const t = _financialsTotals(rows);
+
+  const esc2 = s => String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const money  = v => v ? '$' + fmt(v) : '—';
+  const signed = v => v === null ? '—' : (v >= 0 ? '$' + fmt(v) : '-$' + fmt(Math.abs(v)));
+  const pct    = (v, base) => (v !== null && base) ? ` (${(v / base * 100).toFixed(1)}%)` : '';
+
+  const body = rows.map(r => `<tr>
+      <td>${esc2(r.name)}</td>
+      <td>${esc2(r.job) || '—'}</td>
+      <td>${esc2(r.status) || '—'}</td>
+      <td class="n">${money(r.contract)}</td>
+      <td class="n">${money(r.bid)}</td>
+      <td class="n">${money(r.actual)}</td>
+      <td class="n">${money(r.projected)}</td>
+      <td class="n ${r.profit    === null ? '' : r.profit    >= 0 ? 'pos' : 'neg'}">${signed(r.profit)}${pct(r.profit, r.contract)}</td>
+      <td class="n ${r.actProfit === null ? '' : r.actProfit >= 0 ? 'pos' : 'neg'}">${signed(r.actProfit)}${pct(r.actProfit, r.contract)}</td>
+    </tr>`).join('');
+
+  const filterNote = [
+    finFilters.status ? 'Status: ' + esc2(finFilters.status) : '',
+    (finFilters.q || '').trim() ? 'Search: "' + esc2(finFilters.q.trim()) + '"' : '',
+  ].filter(Boolean).join(' · ');
+
+  const win = window.open('', '_blank');
+  if (!win) { alert('Your browser blocked the print window. Allow pop-ups for this site and try again.'); return; }
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Financials — ${esc2(_finDivisionLabel())}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; font-size: 10px; color: #111; background: #fff; padding: 22px; }
+    h2 { font-size: 14px; margin-bottom: 3px; }
+    p.meta { font-size: 9px; color: #555; margin-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; font-size: 8px; text-transform: uppercase; letter-spacing: 0.05em; color: #555;
+         border-bottom: 1px solid #999; padding: 4px 6px; }
+    th.n, td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    td { padding: 4px 6px; border-bottom: 1px solid #e5e5e5; }
+    tfoot td { border-top: 2px solid #999; border-bottom: none; font-weight: 700; }
+    .pos { color: #15803d; } .neg { color: #b91c1c; }
+    tbody tr:nth-child(even) { background: #fafafa; }
+    p.note { margin-top: 10px; font-size: 8px; color: #555; line-height: 1.5; }
+    @media print { body { padding: 0; } thead { display: table-header-group; } tr { break-inside: avoid; } }
+  </style></head><body>
+  <h2>Financials — ${esc2(_finDivisionLabel())}</h2>
+  <p class="meta">${rows.length} job${rows.length === 1 ? '' : 's'} &nbsp;·&nbsp; printed ${esc2(new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }))}${filterNote ? ' &nbsp;·&nbsp; ' + filterNote : ''}</p>
+  <table>
+    <thead><tr>
+      <th>Job Name</th><th>Job #</th><th>Status</th>
+      <th class="n">Contract Value</th><th class="n">Bid Budget</th><th class="n">Actual</th>
+      <th class="n">Projected Cost</th><th class="n">Projected Profit</th><th class="n">Actual Profit</th>
+    </tr></thead>
+    <tbody>${body}</tbody>
+    <tfoot><tr>
+      <td>Totals</td><td></td><td></td>
+      <td class="n">${money(t.contract)}</td>
+      <td class="n">${money(t.bid)}</td>
+      <td class="n">${money(t.actual)}</td>
+      <td class="n">${money(t.projected)}</td>
+      <td class="n">${signed(t.profit)}${pct(t.profit, t.profitBase)}</td>
+      <td class="n">${signed(t.actProfit)}${pct(t.actProfit, t.actBase)}</td>
+    </tr></tfoot>
+  </table>
+  <p class="note">Projected Profit is contract value minus projected final cost. Actual Profit is contract value minus cost spent so far — blank until a job has spend, final once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
+  <script>window.onload = () => { window.print(); }<\/script>
+  </body></html>`);
+  win.document.close();
 }
 
 function renderSubCodePerf() {
