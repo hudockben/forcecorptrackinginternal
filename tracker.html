@@ -1052,6 +1052,9 @@
     /* ── Metric strip ── */
     .home-metric-strip {
       display: flex;
+      /* Nine cards will not fit one row on most screens, and the values are
+         nowrap + ellipsis, so without wrapping the money gets cut mid-number. */
+      flex-wrap: wrap;
       border: 1px solid var(--border);
       border-radius: 6px;
       overflow: hidden;
@@ -1059,7 +1062,7 @@
       background: var(--surface);
     }
     .home-metric-item {
-      flex: 1;
+      flex: 1 1 150px;
       padding: 1rem 1.25rem;
       border-right: 1px solid var(--border);
       display: flex;
@@ -4451,25 +4454,42 @@ function renderHomeTab() {
   const weekAgo = _localDateStr(new Date(today - 7 * 24 * 60 * 60 * 1000));
 
   // ── Cross-project aggregates (sum from each project's own data) ──
-  let totalBid = 0, totalActual = 0, totalProjected = 0;
+  // In-progress work drives every headline figure but the last. Actual Profit
+  // is what finished work returned, so it totals the completed jobs instead.
+  let ipCount = 0, ipContract = 0, ipBid = 0, ipActual = 0;
+  let ipProfit = 0, ipProfitBase = 0, doneActProfit = 0, doneCount = 0;
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
 
   projectsList.forEach(p => {
     const _effBidQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
     const projBid    = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b) * (parseFloat(b.unit_cost)||0), 0);
     const projActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
-    const projected  = projectedCostForProject(p);
-    totalBid       += projBid;
-    totalActual    += projActual;
-    totalProjected += projected;
+    const projContract = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+    if ((p['status'] || '') === 'In Progress') {
+      ipCount++;
+      ipContract  += projContract;
+      ipBid       += projBid;
+      ipActual    += projActual;
+      // Only a job carrying a contract can contribute a profit figure; without
+      // one there is no revenue to subtract the cost from. Projecting a cost is
+      // the expensive part of this loop, so it is only done where it is read.
+      if (projContract) { ipProfit += projContract - projectedCostForProject(p); ipProfitBase += projContract; }
+    } else if (projIsDone(p) && projContract && projActual) {
+      // Realised profit needs both a contract and real spend behind it.
+      doneActProfit += projContract - projActual;
+      doneCount++;
+    }
     // status counts from bid items
     (p.bidItems||[]).forEach(b => {
       if (b.status) statusCounts[b.status] = (statusCounts[b.status] || 0) + 1;
     });
   });
 
-  const overallPct = totalBid ? (totalActual / totalBid) * 100 : 0;
-  const overClass  = overallPct >= 100 ? 'red' : overallPct >= 85 ? 'yellow' : 'green';
+  const ipVariance = ipBid - ipActual;
+  const ipPct      = ipBid ? (ipActual / ipBid) * 100 : 0;
+  const ipOverClass = ipPct >= 100 ? 'red' : ipPct >= 85 ? 'yellow' : 'green';
+  const money0 = v => (v < 0 ? '-$' : '$') + fmt(Math.abs(v), 0);
+  const posNeg = v => 'color:var(--' + (v >= 0 ? 'green' : 'red') + ')';
   const allDaily   = getAllDailyRows();
   const openPOs    = purchaseOrders.filter(p => p.status === 'pending').length;
   const thisWeek   = allDaily.filter(r => r.date >= weekAgo).length;
@@ -4791,24 +4811,39 @@ function renderHomeTab() {
 
     <div class="home-metric-strip">
       <div class="home-metric-item">
-        <span class="home-metric-label">Projects</span>
-        <span class="home-metric-value" style="color:var(--blue)">${projectsList.length}</span>
-        <span class="home-metric-sub">${statusCounts.Active || 0} active</span>
+        <span class="home-metric-label">Active Projects</span>
+        <span class="home-metric-value" style="color:var(--blue)">${ipCount}</span>
+        <span class="home-metric-sub">in progress of ${projectsList.length}</span>
+      </div>
+      <div class="home-metric-item">
+        <span class="home-metric-label">Total Contract Value</span>
+        <span class="home-metric-value" style="color:var(--blue)">$${fmt(ipContract, 0)}</span>
+        <span class="home-metric-sub">in progress jobs</span>
       </div>
       <div class="home-metric-item">
         <span class="home-metric-label">Total Bid Budget</span>
-        <span class="home-metric-value" style="color:var(--green)">$${fmt(totalBid, 0)}</span>
-        <span class="home-metric-sub">across all projects</span>
+        <span class="home-metric-value" style="color:var(--green)">$${fmt(ipBid, 0)}</span>
+        <span class="home-metric-sub">in progress jobs</span>
       </div>
       <div class="home-metric-item">
-        <span class="home-metric-label">Actual Spend</span>
-        <span class="home-metric-value" style="color:var(--${overClass})">$${fmt(totalActual, 0)}</span>
-        <span class="home-metric-sub">${fmtPct(overallPct)} of bid</span>
+        <span class="home-metric-label">Total Actual Spend</span>
+        <span class="home-metric-value" style="color:var(--${ipOverClass})">$${fmt(ipActual, 0)}</span>
+        <span class="home-metric-sub">${fmtPct(ipPct)} of bid budget</span>
       </div>
       <div class="home-metric-item">
-        <span class="home-metric-label">Projected Cost</span>
-        <span class="home-metric-value">$${fmt(totalProjected, 0)}</span>
-        <span class="home-metric-sub">at current rates</span>
+        <span class="home-metric-label">Total Variance</span>
+        <span class="home-metric-value" style="${posNeg(ipVariance)}">${money0(ipVariance)}</span>
+        <span class="home-metric-sub">${ipVariance >= 0 ? 'under' : 'over'} bid budget</span>
+      </div>
+      <div class="home-metric-item">
+        <span class="home-metric-label">Total Projected Profit</span>
+        <span class="home-metric-value" style="${posNeg(ipProfit)}">${money0(ipProfit)}</span>
+        <span class="home-metric-sub">${ipProfitBase ? fmtPct(ipProfit / ipProfitBase * 100) + ' margin' : 'in progress jobs'}</span>
+      </div>
+      <div class="home-metric-item">
+        <span class="home-metric-label">Total Actual Profit</span>
+        <span class="home-metric-value" style="${posNeg(doneActProfit)}">${money0(doneActProfit)}</span>
+        <span class="home-metric-sub">${doneCount} completed job${doneCount === 1 ? '' : 's'}</span>
       </div>
       <div class="home-metric-item${openPOs > 0 ? ' clickable' : ''}"
         ${openPOs > 0 ? `onclick="poFilters={status:new Set(['pending'])};document.querySelector('.tab-btn[data-tab=po]').click()"` : ''}>
