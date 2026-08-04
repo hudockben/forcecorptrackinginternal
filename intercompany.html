@@ -693,6 +693,32 @@
     }
     .rpt-subtab-btn:hover { color: var(--text); }
     .rpt-subtab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    /* ── Intercompany Financials report ── */
+    .ic-fin-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-bottom: 1.5rem; }
+    .ic-fin-table th {
+      text-align: left; font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase;
+      color: #6a6a8a; border-bottom: 1px solid #d8d8e8; padding: 0.4rem 0.6rem; white-space: nowrap;
+    }
+    .ic-fin-table td { padding: 0.42rem 0.6rem; border-bottom: 1px solid #eeeef6; }
+    .ic-fin-table tfoot td { border-top: 2px solid #c8c8dc; border-bottom: none; font-weight: 700; }
+    .ic-fin-table th.ic-num, .ic-fin-table td.ic-num {
+      text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .ic-fin-name { font-weight: 600; color: #2a2a44; }
+    .ic-fin-jobs tbody tr:nth-child(even) { background: #fafaff; }
+    .ic-pos { color: #15803d; }
+    .ic-neg { color: #b91c1c; }
+    .ic-fin-caption {
+      font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: #6a6a8a; margin: 0.5rem 0 0.5rem;
+    }
+    .ic-fin-note { font-size: 0.72rem; color: #6a6a8a; line-height: 1.55; margin-top: 0.75rem; }
+    @media print {
+      .tab-bar, .rpt-subtab-bar, .rpt-toolbar { display: none !important; }
+      .ic-fin-table { font-size: 9px; }
+      .ic-fin-table thead { display: table-header-group; }
+      .ic-fin-table tr { break-inside: avoid; }
+    }
     .rpt-sub-panel { display: none; }
     .rpt-sub-panel.active { display: block; }
     .rpt-toolbar {
@@ -955,6 +981,26 @@
   <div class="tab-panel" id="tab-reports">
     <div class="rpt-subtab-bar">
       <button class="rpt-subtab-btn active" data-sub="job-summary" onclick="switchRptSubTab('job-summary')">Job Summary</button>
+      <button class="rpt-subtab-btn" data-sub="financials" onclick="switchRptSubTab('financials')">Financials</button>
+    </div>
+
+    <!-- Financials sub-panel — every division's jobs in one table -->
+    <div class="rpt-sub-panel" id="rpt-financials">
+      <div class="rpt-toolbar">
+        <button class="btn-run-report" onclick="runIcFinancials()">Run Report</button>
+        <button class="btn-pdf" id="icFinPdfBtn" style="display:none" onclick="printIcFinancials()">&#8659; Print / PDF</button>
+        <button class="btn-pdf" id="icFinCsvBtn" style="display:none" onclick="exportIcFinancialsCSV()">&#8659; Excel</button>
+        <div class="tab-bar-spacer"></div>
+        <div class="rpt-info" id="icFinInfo"></div>
+      </div>
+      <div class="rpt-body">
+        <div class="rpt-print-header" id="icFinPrintHeader">
+          <span class="rpt-print-title">Financials — All Divisions</span>
+        </div>
+        <div id="icFinBody">
+          <div class="ci-empty"><strong>All Divisions</strong>Click Run Report to pull every division's jobs into one table.</div>
+        </div>
+      </div>
     </div>
 
     <!-- Job Summary sub-panel -->
@@ -3156,6 +3202,162 @@
         b.classList.toggle('active', b.dataset.sub === sub));
       document.querySelectorAll('.rpt-sub-panel').forEach(p =>
         p.classList.toggle('active', p.id === 'rpt-' + sub));
+    }
+
+    /* ── Intercompany Financials ──────────────────────────────────────────
+       Every division that runs jobs, in one table. The figures come from
+       /api/executive/financials so the cost logic stays in one place — the
+       division pages each holding their own copy is what produced a profit
+       column that meant different things on different pages. */
+    let _icFin = null;
+
+    const _icMoney = (v, dp) => {
+      if (v === null || v === undefined) return '—';
+      const n = Math.abs(Number(v) || 0);
+      return (Number(v) < 0 ? '-$' : '$') + n.toLocaleString('en-US',
+        { minimumFractionDigits: dp === undefined ? 2 : dp, maximumFractionDigits: dp === undefined ? 2 : dp });
+    };
+    const _icPct = (v, base) => (v === null || !base) ? '' :
+      ' (' + (v / base * 100).toFixed(1) + '%)';
+    const _icSign = v => v === null ? '' : (Number(v) >= 0 ? 'ic-pos' : 'ic-neg');
+
+    async function runIcFinancials() {
+      const body = document.getElementById('icFinBody');
+      const info = document.getElementById('icFinInfo');
+      body.innerHTML = '<div class="ci-empty"><strong>Loading…</strong>Pulling jobs from every division.</div>';
+      info.textContent = '';
+      try {
+        const r = await fetch(`${API_BASE}/executive/financials`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        _icFin = await r.json();
+      } catch (err) {
+        _icFin = null;
+        body.innerHTML = '<div class="ci-empty"><strong>Could not load</strong>' + esc(err.message) + '</div>';
+        return;
+      }
+      _renderIcFinancials();
+    }
+
+    function _renderIcFinancials() {
+      const body = document.getElementById('icFinBody');
+      const info = document.getElementById('icFinInfo');
+      if (!_icFin || !Array.isArray(_icFin.rows)) return;
+
+      const rows = _icFin.rows.slice().sort((a, b) =>
+        (Number(a.complete) - Number(b.complete))
+        || a.divisionName.localeCompare(b.divisionName)
+        || String(b.jobNumber).localeCompare(String(a.jobNumber)));
+
+      document.getElementById('icFinPdfBtn').style.display = rows.length ? '' : 'none';
+      document.getElementById('icFinCsvBtn').style.display = rows.length ? '' : 'none';
+
+      if (!rows.length) {
+        body.innerHTML = '<div class="ci-empty"><strong>No jobs</strong>No division has any jobs to report on yet.</div>';
+        return;
+      }
+
+      const t = _icFin.totals || {};
+      info.textContent = rows.length + ' job' + (rows.length === 1 ? '' : 's') + ' across '
+        + (_icFin.divisions || []).filter(d => d.jobs > 0).length + ' divisions';
+
+      // Per-division summary, then the combined line. Same seven figures the
+      // division home strips carry, so the numbers reconcile screen to screen.
+      const divRow = d => `<tr>
+        <td class="ic-fin-name">${esc(d.name)}${d.error ? ' <span class="ic-neg">(unavailable)</span>' : ''}</td>
+        <td class="ic-num">${d.activeProjects}</td>
+        <td class="ic-num">${_icMoney(d.contract, 0)}</td>
+        <td class="ic-num">${_icMoney(d.bid, 0)}</td>
+        <td class="ic-num">${_icMoney(d.actual, 0)}</td>
+        <td class="ic-num ${_icSign(d.variance)}">${_icMoney(d.variance, 0)}</td>
+        <td class="ic-num ${_icSign(d.projProfit)}">${_icMoney(d.projProfit, 0)}${_icPct(d.projProfit, d.projProfitBase)}</td>
+        <td class="ic-num ${_icSign(d.actProfit)}">${_icMoney(d.actProfit, 0)}${_icPct(d.actProfit, d.actProfitBase)}</td>
+      </tr>`;
+
+      const jobRow = r => `<tr>
+        <td class="ic-fin-name">${esc(r.name)}</td>
+        <td>${esc(r.jobNumber) || '—'}</td>
+        <td>${esc(r.divisionName)}</td>
+        <td>${esc(r.status) || '—'}</td>
+        <td class="ic-num">${_icMoney(r.contract)}</td>
+        <td class="ic-num">${_icMoney(r.bid)}</td>
+        <td class="ic-num">${_icMoney(r.actual)}</td>
+        <td class="ic-num">${_icMoney(r.projected)}</td>
+        <td class="ic-num ${_icSign(r.profit)}">${_icMoney(r.profit)}</td>
+        <td class="ic-num ${_icSign(r.actProfit)}">${_icMoney(r.actProfit)}</td>
+      </tr>`;
+
+      body.innerHTML = `
+        <table class="ic-fin-table">
+          <thead><tr>
+            <th>Division</th><th class="ic-num">Active Projects</th>
+            <th class="ic-num">Contract Value</th><th class="ic-num">Bid Budget</th>
+            <th class="ic-num">Actual Spend</th><th class="ic-num">Variance</th>
+            <th class="ic-num">Projected Profit</th><th class="ic-num">Actual Profit</th>
+          </tr></thead>
+          <tbody>${(_icFin.divisions || []).filter(d => d.jobs > 0).map(divRow).join('')}</tbody>
+          <tfoot><tr>
+            <td>All Divisions</td>
+            <td class="ic-num">${t.activeProjects || 0}</td>
+            <td class="ic-num">${_icMoney(t.contract, 0)}</td>
+            <td class="ic-num">${_icMoney(t.bid, 0)}</td>
+            <td class="ic-num">${_icMoney(t.actual, 0)}</td>
+            <td class="ic-num ${_icSign(t.variance)}">${_icMoney(t.variance, 0)}</td>
+            <td class="ic-num ${_icSign(t.projProfit)}">${_icMoney(t.projProfit, 0)}${_icPct(t.projProfit, t.projProfitBase)}</td>
+            <td class="ic-num ${_icSign(t.actProfit)}">${_icMoney(t.actProfit, 0)}${_icPct(t.actProfit, t.actProfitBase)}</td>
+          </tr></tfoot>
+        </table>
+
+        <div class="ic-fin-caption">Every job, newest first, live work above finished.</div>
+        <table class="ic-fin-table ic-fin-jobs">
+          <thead><tr>
+            <th>Job Name</th><th>Job #</th><th>Division</th><th>Status</th>
+            <th class="ic-num">Contract Value</th><th class="ic-num">Bid Budget</th>
+            <th class="ic-num">Actual</th><th class="ic-num">Projected Cost</th>
+            <th class="ic-num">Projected Profit</th><th class="ic-num">Actual Profit</th>
+          </tr></thead>
+          <tbody>${rows.map(jobRow).join('')}</tbody>
+        </table>
+        <p class="ic-fin-note">
+          The first six figures cover jobs that are <strong>In Progress</strong>. Actual Profit covers
+          <strong>completed</strong> jobs — contract value minus what was actually spent — since a realised
+          figure only means something once a job is done. Jobs with no contract amount contribute their
+          costs but no profit.
+        </p>`;
+    }
+
+    function exportIcFinancialsCSV() {
+      if (!_icFin || !_icFin.rows || !_icFin.rows.length) return;
+      const q = v => {
+        const s = v === null || v === undefined ? '' : String(v);
+        return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      // Unformatted so Excel totals the columns; blank where a figure does not
+      // apply, which is not the same claim as zero.
+      const n = v => (v === null || v === undefined) ? '' : Number(v).toFixed(2);
+      const m = v => v ? Number(v).toFixed(2) : '';
+      const head = ['Job Name', 'Job #', 'Division', 'Status', 'Contract Value', 'Bid Budget',
+                    'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
+      const lines = [head.map(q).join(',')];
+      _icFin.rows.forEach(r => lines.push([
+        q(r.name), q(r.jobNumber), q(r.divisionName), q(r.status),
+        m(r.contract), m(r.bid), m(r.actual), m(r.projected), n(r.profit), n(r.actProfit),
+      ].join(',')));
+      const t = _icFin.totals || {};
+      lines.push(['All Divisions (in progress)', '', '', '', m(t.contract), m(t.bid), m(t.actual), '', n(t.projProfit), n(t.actProfit)].join(','));
+
+      const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'financials-all-divisions-' + new Date().toISOString().slice(0, 10) + '.csv';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    function printIcFinancials() {
+      if (!_icFin || !_icFin.rows || !_icFin.rows.length) return;
+      window.print();
     }
 
     async function runJobSummaryReport() {

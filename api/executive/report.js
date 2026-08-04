@@ -119,6 +119,7 @@ async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legac
 
 const readTurfProjects   = (sql, cc) => readProjectBlobs(sql, cc, 'fct_projects_index',        'fct_project_',        'fct_projects');
 const readPavingProjects = (sql, cc) => readProjectBlobs(sql, cc, 'fct_paving_projects_index', 'fct_paving_project_', 'fct_paving_projects');
+const readKiewitProjects = (sql, cc) => readProjectBlobs(sql, cc, 'fct_kiewit_projects_index', 'fct_kiewit_project_', 'fct_kiewit_projects');
 
 // Rubber inventory blob — same shape as the home page's `inventoryEntries`.
 // Entries with project_id are treated as "used by a project", entries without
@@ -1624,6 +1625,9 @@ function mockReport() {
   };
 }
 
+/* The intercompany Financials report reuses this module's cost logic rather
+   than growing a second copy of it. Attached to the handler export so the
+   endpoint keeps its default shape. */
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -1736,3 +1740,13 @@ module.exports = async (req, res) => {
   report.generatedAt = new Date().toISOString();
   return res.json(report);
 };
+
+module.exports.readTurfProjects   = readTurfProjects;
+module.exports.readPavingProjects = readPavingProjects;
+module.exports.readKiewitProjects = readKiewitProjects;
+module.exports.buildFinancials    = buildFinancials;
+module.exports.projName           = projName;
+module.exports.projJob            = projJob;
+module.exports.projStatus         = projStatus;
+module.exports.projContract       = projContract;
+module.exports.projIsComplete     = projIsComplete;
