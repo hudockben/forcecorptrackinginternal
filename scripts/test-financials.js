@@ -71,7 +71,7 @@ function render(file, projects) {
 
 // A complete bid line projects at exactly its actual, which keeps the
 // arithmetic in most expectations obvious. rqty/done are overridable so a job
-// can be left mid-flight, where Project Profit and Actual Profit diverge.
+// can be left mid-flight, where Projected Profit and Actual Profit diverge.
 const job = (o) => ({
   id: o.id, 'project-name': o.name, 'job-number': o.job, status: o.status,
   'contract-amount': o.contract,
@@ -107,7 +107,7 @@ for (const file of FILES) {
 
   console.log('\n[every job is listed with the agreed column names]');
   assert('the header uses the agreed vocabulary',
-    ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Project Cost', 'Project Profit', 'Actual Profit']
+    ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit']
       .every(h => html.includes(`>${h}</th>`)));
   assert('  the old names are gone',
     !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>/.test(html));
@@ -142,13 +142,13 @@ for (const file of FILES) {
   console.log('\n[the two profit columns are different numbers]');
   const d = rowOf('Half Built Job');
   assert('a quarter-built job projects $400,000', d.includes('$400,000.00'), d);
-  assert('Project Profit is contract minus projected ($600,000)', d.includes('$600,000.00'), d);
+  assert('Projected Profit is contract minus projected ($600,000)', d.includes('$600,000.00'), d);
   assert('Actual Profit is contract minus spend to date ($900,000)', d.includes('$900,000.00'), d);
 
   console.log('\n[a signed job that has not started]');
   const e = rowOf('Not Started Job');
   assert('it still projects its bid', e.includes('$600,000.00'));
-  assert('Project Profit is contract minus bid ($200,000)', e.includes('$200,000.00'));
+  assert('Projected Profit is contract minus bid ($200,000)', e.includes('$200,000.00'));
   assert('Actual Profit stays blank rather than posting the contract as margin',
     !e.includes('$800,000.00</span>') && !/\(100\.0%\)/.test(e), e);
 
@@ -156,7 +156,7 @@ for (const file of FILES) {
   assert('contract total sums every job',   html.includes('$2,489,312.32'));
   assert('actual total sums every job',     html.includes('$568,562.30'));
   assert('project cost total sums every job', html.includes('$1,468,562.30'));
-  assert('Project Profit total covers only jobs with a contract',
+  assert('Projected Profit total covers only jobs with a contract',
     html.includes('$1,032,750.02'), 'expected 217,750.02 + 15,000 + 600,000 + 200,000');
   assert('Actual Profit total covers only jobs with a contract AND spend',
     html.includes('$1,132,750.02'), 'expected 217,750.02 + 15,000 + 900,000');
@@ -168,7 +168,7 @@ for (const file of FILES) {
     html.indexOf('No Contract Yet') < html.indexOf('Franklin Regional'));
   assert('rows open the project', html.includes(`goToProject('a')`));
   assert('both profit bases are stated on screen',
-    /Project Profit is contract value minus <strong>projected<\/strong> final cost/.test(html)
+    /Projected Profit is contract value minus <strong>projected<\/strong> final cost/.test(html)
     && /Actual Profit is contract value minus cost <strong>spent so far<\/strong>/.test(html));
 
   console.log('\n[a total with nothing to total is unknown, not zero]');
@@ -189,7 +189,7 @@ for (const file of FILES) {
     job({ id: 'z', name: 'Signed Not Started', job: '902', status: 'Active', contract: 500000, bid: 400000, actual: 0, rqty: 0, done: false }),
   ]);
   const noSpendFoot = noSpendHtml.slice(noSpendHtml.indexOf('<tfoot>'));
-  assert('Project Profit still totals when a job has a contract but no spend',
+  assert('Projected Profit still totals when a job has a contract but no spend',
     noSpendFoot.includes('$100,000.00'), noSpendFoot);
   assert('  while Actual Profit dashes', /—/.test(noSpendFoot));
 
@@ -225,12 +225,12 @@ for (const file of FILES) {
 
   console.log(`\n[${file}]`);
   assert('the header uses the agreed vocabulary',
-    ['Contract Value', 'Bid Budget', 'Project Cost', 'Project Profit', 'Actual Profit']
+    ['Contract Value', 'Bid Budget', 'Projected Cost', 'Projected Profit', 'Actual Profit']
       .every(h => thead.includes(`>${h}</th>`)), thead);
   assert('  the old names are gone',
     !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>/.test(thead));
-  assert('  Actual Profit sits after Project Profit',
-    thead.indexOf('Project Profit') < thead.indexOf('Actual Profit'));
+  assert('  Actual Profit sits after Projected Profit',
+    thead.indexOf('Projected Profit') < thead.indexOf('Actual Profit'));
   const ths = (thead.match(/<th[ >]/g) || []).length;
   const tds = (row.match(/<td[ >]/g) || []).length;
   assert(`every header has a cell under it (${ths} headers, ${tds} cells)`, ths === tds);
@@ -241,7 +241,7 @@ for (const file of FILES) {
   // spend means a signed-but-unstarted job would post its contract as margin.
   assert('Actual Profit is contract minus actual, guarded on both',
     /const actProfit\s*=\s*\(contractVal && actual\)\s*\?\s*contractVal - actual\s*:\s*null;/.test(src));
-  assert('  Project Profit still subtracts projected, not actual',
+  assert('  Projected Profit still subtracts projected, not actual',
     /const profit\s*=\s*contractVal \? contractVal - projCost : null;/.test(src));
 }
 
