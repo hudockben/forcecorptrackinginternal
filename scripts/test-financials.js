@@ -49,7 +49,7 @@ function extractFunction(src, name) {
 
 // The whole Financials block — filter state, table, export and print all live
 // together — plus the real projection chain it depends on, over a stub DOM.
-const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject'];
+const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'statusBadgeClass'];
 function loadFinancials(file, projects) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   const start = src.indexOf('/* ── Financials ───');
@@ -119,15 +119,15 @@ const job = (o) => ({
 });
 
 const JOBS = [
-  job({ id: 'a', name: 'Franklin Regional Tennis Court', job: '1042', status: 'Active',   contract: 479312.32, bid: 375931.05, actual: 261562.30 }),
+  job({ id: 'a', name: 'Franklin Regional Tennis Court', job: '1042', status: 'In Progress',   contract: 479312.32, bid: 375931.05, actual: 261562.30 }),
   job({ id: 'b', name: 'Saint Edmunds Field',            job: '1039', status: 'Complete', contract: 210000,    bid: 180000,    actual: 195000 }),
-  job({ id: 'c', name: 'No Contract Yet',                job: '1044', status: 'Active',   contract: 0,         bid: 50000,     actual: 12000 }),
+  job({ id: 'c', name: 'No Contract Yet',                job: '1044', status: 'In Progress',   contract: 0,         bid: 50000,     actual: 12000 }),
   // A quarter of the quantity down: projects to $400,000 against $100,000 spent,
   // so the two profit columns must not agree.
-  job({ id: 'd', name: 'Half Built Job',                 job: '1001', status: 'Active',   contract: 1000000,   bid: 500000,    actual: 100000, rqty: 0.25, done: false }),
+  job({ id: 'd', name: 'Half Built Job',                 job: '1001', status: 'In Progress',   contract: 1000000,   bid: 500000,    actual: 100000, rqty: 0.25, done: false }),
   // Contract signed, nothing spent — the case that would read as pure margin
   // if Actual Profit were contract minus zero.
-  job({ id: 'e', name: 'Not Started Job',                job: '1002', status: 'Active',   contract: 800000,    bid: 600000,    actual: 0,      rqty: 0,    done: false }),
+  job({ id: 'e', name: 'Not Started Job',                job: '1002', status: 'In Progress',   contract: 800000,    bid: 600000,    actual: 0,      rqty: 0,    done: false }),
 ];
 
 for (const file of FILES) {
@@ -152,7 +152,7 @@ for (const file of FILES) {
   console.log('\n[a job in progress]');
   const a = rowOf('Franklin Regional Tennis Court');
   assert('shows its job number',      a.includes('1042'));
-  assert('shows its status',          a.includes('Active'));
+  assert('shows its status',          a.includes('In Progress'));
   assert('shows the contract amount', a.includes('$479,312.32'), a);
   assert('shows the bid amount',      a.includes('$375,931.05'));
   assert('shows the actual cost',     a.includes('$261,562.30'));
@@ -210,8 +210,8 @@ for (const file of FILES) {
   // Rendering "$0.00" in profit-green across a portfolio where no job carries
   // a contract asserts break-even on figures nobody has entered yet.
   const noneHtml = render(file, [
-    job({ id: 'x', name: 'Unpriced One', job: '900', status: 'Active', contract: 0, bid: 1000, actual: 500 }),
-    job({ id: 'y', name: 'Unpriced Two', job: '901', status: 'Active', contract: 0, bid: 2000, actual: 900 }),
+    job({ id: 'x', name: 'Unpriced One', job: '900', status: 'In Progress', contract: 0, bid: 1000, actual: 500 }),
+    job({ id: 'y', name: 'Unpriced Two', job: '901', status: 'In Progress', contract: 0, bid: 2000, actual: 900 }),
   ]);
   const foot = noneHtml.slice(noneHtml.indexOf('<tfoot>'));
   assert('neither profit total claims $0.00 when no job has a contract',
@@ -221,7 +221,7 @@ for (const file of FILES) {
     foot.includes('$3,000.00') && foot.includes('$1,400.00'));
   // The spend-only exclusion is separate from the contract-only one.
   const noSpendHtml = render(file, [
-    job({ id: 'z', name: 'Signed Not Started', job: '902', status: 'Active', contract: 500000, bid: 400000, actual: 0, rqty: 0, done: false }),
+    job({ id: 'z', name: 'Signed Not Started', job: '902', status: 'In Progress', contract: 500000, bid: 400000, actual: 0, rqty: 0, done: false }),
   ]);
   const noSpendFoot = noSpendHtml.slice(noSpendHtml.indexOf('<tfoot>'));
   assert('Projected Profit still totals when a job has a contract but no spend',
@@ -285,8 +285,22 @@ for (const file of FILES) {
   assert('  and does not claim the totals are filtered',
     !/Totals cover the filtered rows only/.test(plain.html()));
   assert('the status dropdown offers every status in the data, not just visible ones',
-    ['Active', 'Complete'].every(s => done.html().includes(`<option value="${s}"`)),
+    ['In Progress', 'Complete'].every(s => done.html().includes(`<option value="${s}"`)),
     'filtering to Complete must still offer Active');
+
+  console.log('  — status colours —');
+  // There is no 'Active' status in this app. The set is Bidding / Awarded /
+  // In Progress / Substantially Complete / Complete / On Hold, so a colour map
+  // keyed on 'Active' left In Progress — the commonest status — rendered as
+  // muted grey alongside everything else it failed to match.
+  const statusHtml = render(file, ['Bidding', 'Awarded', 'In Progress', 'Substantially Complete', 'Complete', 'On Hold']
+    .map((s, i) => job({ id: 's' + i, name: 'Job ' + s, job: String(900 + i), status: s, contract: 100, bid: 90, actual: 80 })));
+  for (const [s, cls] of [['Bidding', 'badge-bidding'], ['Awarded', 'badge-awarded'], ['In Progress', 'badge-in-progress'],
+                          ['Substantially Complete', 'badge-substantially'], ['Complete', 'badge-complete'], ['On Hold', 'badge-on-hold']]) {
+    assert(`${s} gets its own colour`, statusHtml.includes(`proj-badge ${cls}">${s}<`), `expected ${cls}`);
+  }
+  assert('  no status falls through to the default badge',
+    !statusHtml.includes('badge-default'));
 
   console.log('  — excel export —');
   const exp = withFilters({ q: '', status: '' });
@@ -304,12 +318,22 @@ for (const file of FILES) {
     csvRows.find(l => l.startsWith('No Contract Yet')).endsWith(',,'), csvRows.find(l => l.startsWith('No Contract Yet')));
   assert('  the last row totals', csvRows[csvRows.length - 1].startsWith('Totals,,,2489312.32'));
   assert('  a name containing a comma is quoted', (() => {
-    const m = loadFinancials(file, [job({ id: 'q', name: 'Smith, Jones & Co', job: '1', status: 'Active', contract: 100, bid: 90, actual: 80 })]);
+    const m = loadFinancials(file, [job({ id: 'q', name: 'Smith, Jones & Co', job: '1', status: 'In Progress', contract: 100, bid: 90, actual: 80 })]);
     m.renderFinancials(); m.exportFinancialsCSV();
     return m.captured.csv.includes('"Smith, Jones & Co"');
   })());
   assert('  the filename names the division and the date',
     /^financials-.*-\d{4}-\d{2}-\d{2}\.csv$/.test(exp.captured.download), exp.captured.download);
+  // A cost the table shows as "—" must not export as 0.00. Zero and
+  // not-entered are different claims, and the export is what gets summed.
+  assert('  a cost the table dashes exports blank, not 0.00',
+    csvRows.find(l => l.startsWith('No Contract Yet')).startsWith('No Contract Yet,1044,In Progress,,'),
+    csvRows.find(l => l.startsWith('No Contract Yet')));
+  assert('  but a genuine $0.00 profit still exports as 0.00', (() => {
+    const m = loadFinancials(file, [job({ id: 'be', name: 'Break Even', job: '1', status: 'Complete', contract: 5000, bid: 5000, actual: 5000 })]);
+    m.renderFinancials(); m.exportFinancialsCSV();
+    return /,0\.00,0\.00\r?\n?/.test(m.captured.csv.split('\r\n')[1] + '\n');
+  })(), 'break-even is a fact, not a blank');
 
   console.log('  — export follows the filter —');
   const expFiltered = withFilters({ q: '', status: 'Complete' });
@@ -328,6 +352,8 @@ for (const file of FILES) {
   assert('  every job is on it', JOBS.every(j => doc.includes(j['project-name'])));
   assert('  it totals', doc.includes('$2,489,312.32'));
   assert('  it prints on white, not the dark app theme', /background:\s*#fff/.test(doc));
+  assert('  the division reads as a name, not a lowercase key',
+    /<h2>Financials — [A-Z]/.test(doc), (doc.match(/<h2>[^<]*/) || [''])[0]);
   assert('  the header repeats across pages', /thead\s*\{\s*display:\s*table-header-group/.test(doc));
   const prF = withFilters({ q: '', status: 'Complete' });
   prF.printFinancials();

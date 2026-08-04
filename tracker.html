@@ -17609,14 +17609,9 @@ function _renderFinancialsTable() {
   const profCol = v => v == null ? 'color:var(--muted)' : v >= 0 ? 'color:var(--green)' : 'color:var(--red)';
   const pctSpan = (v, base) => base ? ` <span style="font-size:0.7em;opacity:0.8">(${(v / base * 100).toFixed(1)}%)</span>` : '';
 
-  const statusCell = r => {
-    if (!r.status) return '<span style="color:var(--muted)">—</span>';
-    const col = r.status === 'Active'   ? 'var(--green)'
-              : r.status === 'Complete' ? 'var(--blue)'
-              : r.status === 'On Hold'  ? 'var(--yellow)'
-              : 'var(--muted)';
-    return `<span style="color:${col};font-size:0.72rem;font-weight:600">${esc(r.status)}</span>`;
-  };
+  const statusCell = r => r.status
+    ? `<span class="proj-badge ${statusBadgeClass(r.status)}">${esc(r.status)}</span>`
+    : '<span style="color:var(--muted)">—</span>';
 
   const body = rows.map(r => `<tr onclick="goToProject('${r.id}')" style="cursor:pointer">
       <td>
@@ -17680,7 +17675,8 @@ function _renderFinancialsTable() {
 const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
 
 function _finDivisionLabel() {
-  return (typeof DIVISION !== 'undefined' && DIVISION) ? String(DIVISION) : 'Financials';
+  const d = (typeof DIVISION !== 'undefined' && DIVISION) ? String(DIVISION) : '';
+  return d ? d.charAt(0).toUpperCase() + d.slice(1) : 'All Jobs';
 }
 
 function exportFinancialsCSV() {
@@ -17693,13 +17689,14 @@ function exportFinancialsCSV() {
     return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   const n = v => (v === null || v === undefined) ? '' : Number(v).toFixed(2);
+  const m = v => v ? Number(v).toFixed(2) : '';   // blank where the table shows —
   const lines = [FIN_COLUMNS.map(q).join(',')];
   rows.forEach(r => lines.push([
     q(r.name), q(r.job), q(r.status),
-    n(r.contract), n(r.bid), n(r.actual), n(r.projected), n(r.profit), n(r.actProfit),
+    m(r.contract), m(r.bid), m(r.actual), m(r.projected), n(r.profit), n(r.actProfit),
   ].join(',')));
   const t = _financialsTotals(rows);
-  lines.push(['Totals', '', '', n(t.contract), n(t.bid), n(t.actual), n(t.projected), n(t.profit), n(t.actProfit)].join(','));
+  lines.push(['Totals', '', '', m(t.contract), m(t.bid), m(t.actual), m(t.projected), n(t.profit), n(t.actProfit)].join(','));
 
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
