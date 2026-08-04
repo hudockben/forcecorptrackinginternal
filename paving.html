@@ -7499,6 +7499,34 @@ function laborerCountForBidItem(b, projId) {
   return names.size;
 }
 
+// Daily costs whose cost/sub code matches no bid line. Same wildcard rule as
+// actualForBidItem(), so on-bid spend is never miscounted as off-bid. Accepts a
+// project id or the project object itself.
+function offBidForProject(projIdOrProj) {
+  const p = (projIdOrProj && typeof projIdOrProj === 'object') ? projIdOrProj : getProj(projIdOrProj);
+  if (!p) return { total: 0, codes: [] };
+  const bids = p.bidItems || [];
+  const hasKey  = b => !!((b.cost_code || '') || (b.sub_code || ''));
+  const matches = (b, r) =>
+    (b.cost_code ? r.cost_code === b.cost_code : true) &&
+    (b.sub_code  ? r.sub_code  === b.sub_code  : true);
+  const map = new Map();
+  (p.dailyRows || []).forEach(r => {
+    if (bids.some(b => hasKey(b) && matches(b, r))) return;  // on-bid — skip
+    const cost = dailyRowCost(r);
+    if (!cost) return;
+    const key = (r.cost_code || '') + '\u0000' + (r.sub_code || '');
+    const e = map.get(key) || { cost_code: r.cost_code || '', sub_code: r.sub_code || '', actual: 0 };
+    e.actual += cost;
+    map.set(key, e);
+  });
+  const codes = [...map.values()]
+    .filter(c => Math.abs(c.actual) > 0.005)
+    .sort((a, b) => b.actual - a.actual);
+  const total = codes.reduce((s, c) => s + c.actual, 0);
+  return { total, codes };
+}
+
 // A finished project's projected cost is simply what it cost — nothing is left
 // to extrapolate. Shared so the rows, the group totals and the footer agree.
 function projIsDone(p) {
@@ -7547,9 +7575,12 @@ function projectedCostForProject(p) {
     const done   = bidItemComplete(b, p.id);
     return s + projForBidItem(b, actual, rqty, bidQty, bidTot, done);
   }, 0);
-  // Per-line sums miss daily rows whose codes don't map to a bid item;
-  // project total must never undercut what we've already spent.
-  return Math.max(sumLines, totalActual);
+  // Daily rows matching no bid line are real spend that no line's projection
+  // accounts for, so they add ON TOP of the line sum — taking the larger of the
+  // two instead would lose them behind bid work that has not started yet.
+  const offBid = offBidForProject(p).total;
+  // Backstop: never undercut what has already gone out the door.
+  return Math.max(sumLines + offBid, totalActual);
 }
 
 function renderBidFooter(projId, opts = {}) {
@@ -7581,7 +7612,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">${totalCumHrs ? qfmt(totalCumHrs) : '—'}</td>
     <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
-    <td class="${projCls}">${(totalBid || totalProj) ? '$'+fmt(totalProj) : '—'}</td>`;
+    <td class="${totalBid ? projCls : 'foot-actual'}">${(totalBid || totalProj) ? '$'+fmt(totalProj) : '—'}</td>`;
   footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td>`;
 
   // Update the summary bar in the fullscreen view (only when this project is open).

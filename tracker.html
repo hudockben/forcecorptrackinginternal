@@ -7841,9 +7841,13 @@ function projectedCostForProject(p) {
     const rqty   = runningQtyForBidItem(b, p.id);
     return s + projForBidItem(b, actual, rqty, bidQty, bidTot, bidItemComplete(b, p.id));
   }, 0);
-  // Per-line sums miss daily rows whose codes match no bid item (off-bid spend);
-  // the project total must never undercut what has already been spent.
-  return Math.max(sumLines, totalActual);
+  // Daily rows matching no bid line are real spend that no line's projection
+  // accounts for, so they add ON TOP of the line sum — taking the larger of the
+  // two instead would lose them behind bid work that has not started yet. The
+  // ⚠ off-bid badge in the bid header lists the codes responsible.
+  const offBid = offBidForProject(p).total;
+  // Backstop: never undercut what has already gone out the door.
+  return Math.max(sumLines + offBid, totalActual);
 }
 
 function renderBidFooter(projId, opts = {}) {
@@ -7879,7 +7883,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">${totalCumHrs ? qfmt(totalCumHrs) : '—'}</td>
     <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
-    <td class="${projCls}">${(totalBid || totalProj) ? '$'+fmt(totalProj) : '—'}</td>`;
+    <td class="${totalBid ? projCls : 'foot-actual'}">${(totalBid || totalProj) ? '$'+fmt(totalProj) : '—'}</td>`;
   footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td><td class="foot-label num" title="Total estimated labor hours to complete all bid items at historical pace">${totalEstHrs ? '≈ '+fmt(totalEstHrs,0)+' hrs' : '—'}</td>`;
 
   // Update the summary bar in the fullscreen view (only when this project is open).
@@ -9067,8 +9071,11 @@ function commitBidCopy() {
 // These are real spend that never shows against a bid item — almost always a
 // cost/sub code whose spelling or case doesn't match the bid line. The match
 // rule mirrors actualForBidItem() exactly. Returns { total, codes:[{...}] }.
-function offBidForProject(projId) {
-  const p = getProj(projId); if (!p) return { total: 0, codes: [] };
+// Accepts a project id or the project object itself — projectedCostForProject
+// already holds the object and must not depend on it being in the store.
+function offBidForProject(projIdOrProj) {
+  const p = (projIdOrProj && typeof projIdOrProj === 'object') ? projIdOrProj : getProj(projIdOrProj);
+  if (!p) return { total: 0, codes: [] };
   const bids = p.bidItems || [];
   const hasKey  = b => !!((b.cost_code || '') || (b.sub_code || ''));
   const matches = (b, r) =>

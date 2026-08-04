@@ -205,7 +205,7 @@ function projBidLines(p) {
     // the Schedule-tab flag travels in the blob — the division pages also treat
     // a sub code as done when the Construction Schedule says so, which lives in
     // a separate key this rollup does not read.
-    is_complete: !!(b.is_complete ?? b.isComplete),
+    is_complete: !!(b.is_complete || b.isComplete),
   }));
 }
 const projBidTotal = p => projBidLines(p).reduce((s, b) => s + b.quantity * b.unit_cost, 0);
@@ -523,15 +523,9 @@ async function buildFinancials(sql, companyCode, division, projects) {
       projected += proj;
     }
 
-    // A finished project cost what it cost; otherwise the per-line sum still
-    // misses off-bid spend (below), so the projection must never undercut what
-    // has already gone out the door.
-    projected = projDone ? actual : Math.max(projected, actual);
-
     // Off-bid: daily groups that match NO bid line (wildcard-aware). They are
-    // included in `actual` above and reach `projected` only through the floor
-    // applied just now — no bid item claims them. Flag them with the offending
-    // codes + amounts. By construction actual === on-bid spend + offBid.
+    // included in `actual` above but attributed to no bid item. Flag them with
+    // the offending codes + amounts. By construction actual === on-bid + offBid.
     let offBid = 0;
     const offBidCodes = [];
     for (const g of groups) {
@@ -540,6 +534,11 @@ async function buildFinancials(sql, companyCode, division, projects) {
       offBidCodes.push({ cost_code: g.cost_code, sub_code: g.sub_code, actual: g.actual });
     }
     offBidCodes.sort((a, b) => b.actual - a.actual);
+
+    // A finished project cost what it cost. Otherwise off-bid spend belongs to
+    // no bid line's projection, so it adds ON TOP of the line sum — and the
+    // result still may not undercut what has already gone out the door.
+    projected = projDone ? actual : Math.max(projected + offBid, actual);
 
     bid_total       += bid;
     actual_total    += actual;

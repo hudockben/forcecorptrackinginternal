@@ -44,7 +44,7 @@ function assert(label, cond, detail) {
 }
 const near = (a, b) => Math.abs(a - b) < 0.01;
 
-// Pull the real function out of the page and evaluate it, so these are
+// Pull the real functions out of the page and evaluate them, so these are
 // behavioural assertions rather than assertions about the source text.
 function loadProjFor(file) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
@@ -53,6 +53,32 @@ function loadProjFor(file) {
   const end = src.indexOf('\nfunction projectedCostForProject(', start);
   if (end < 0) throw new Error(`projectedCostForProject not found after projForBidItem in ${file}`);
   return new Function(`${src.slice(start, end)}; return projForBidItem;`)();
+}
+
+// Lift one top-level function out of the page by brace-matching its body.
+function extractFunction(src, name) {
+  const start = src.indexOf(`function ${name}(`);
+  if (start < 0) throw new Error(`${name} not found`);
+  let depth = 0;
+  for (let j = src.indexOf('{', start); j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}' && --depth === 0) return src.slice(start, j + 1);
+  }
+  throw new Error(`${name} is not closed`);
+}
+
+// The whole projection block with its data lookups injected, so the footer
+// total can be checked against the rows it is supposed to sum. offBidForProject
+// comes along for the ride so the real wildcard matching is under test too.
+const PROJECTION_FNS = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject'];
+function loadProjectionBlock(file, stubs) {
+  const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const block = PROJECTION_FNS.map(n => extractFunction(src, n)).join('\n\n');
+  return new Function('actualForBidItem', 'runningQtyForBidItem', 'bidItemComplete', 'dailyRowCost', 'getProj',
+    `${block}
+     return { projIsDone, projForBidItem, projectedCostForProject, offBidForProject };`
+  )(stubs.actualForBidItem, stubs.runningQtyForBidItem, stubs.bidItemComplete, stubs.dailyRowCost,
+    () => { throw new Error('getProj should not be reached — the project object is passed directly'); });
 }
 
 // Franklin Regional Tennis Court, as shown in the bid table. `now` is pinned so
@@ -134,6 +160,15 @@ for (const file of FILES) {
     assert('a complete line with no spend falls back to its bid',
       near(projForBidItem({}, 0, 0, 4, 3300, true), 3300));
 
+    console.log('\n[a line with quantity logged but no cost yet]');
+    // Used to project $0 — (0 / rqty) * bidQty — burying a bid line that has
+    // simply not had its costs keyed in yet. The bid is the honest estimate.
+    assert('projects its bid, not $0',
+      near(projForBidItem({}, 0, 250, 500, 40000, false), 40000),
+      `got $${projForBidItem({}, 0, 250, 500, 40000, false).toFixed(2)}`);
+    assert('  and still $0 when the line carries no bid either',
+      near(projForBidItem({}, 0, 250, 500, 0, false), 0));
+
     console.log('\n[in-progress extrapolation is untouched]');
     // Half the quantity down at $100/unit → projects the full 100 units.
     assert('a half-done line still scales up by qty burn rate',
@@ -141,6 +176,61 @@ for (const file of FILES) {
     // Half the schedule elapsed → projects double the spend.
     assert('a half-elapsed line still scales up by time',
       near(projForBidItem({ start_date: '2026-07-05', target_date: '2026-09-03' }, 5000, 0, 0, 0, false), 10000));
+
+    // ── The footer must equal the rows it sits under ─────────────────────────
+    // The original complaint was a total that counted money no row showed. The
+    // footer runs projectedCostForProject() while the rows run projForBidItem()
+    // line by line; if those two ever disagree the table stops adding up.
+    console.log('\n[the footer reconciles with the rows]');
+    const bidItems = ROWS.map(([label, bidQty, uc, actual, rqty, start, target, done], i) => ({
+      id: 'b' + i, cost_code: 'CC', sub_code: 'S' + i,
+      quantity: bidQty, unit_cost: uc,
+      start_date: start, target_date: target,
+      _actual: actual, _rqty: rqty, _done: done,
+    }));
+    const lineActual = bidItems.reduce((s, b) => s + b._actual, 0);
+    const mod = loadProjectionBlock(file, {
+      actualForBidItem:     b => b._actual,
+      runningQtyForBidItem: b => b._rqty,
+      bidItemComplete:      b => b._done,
+      dailyRowCost:         r => r.cost,
+    });
+    // A daily row carrying a bid line's own codes is on-bid, so no off-bid spend.
+    const onBidRow  = { cost_code: 'CC', sub_code: 'S0', cost: lineActual };
+    const onBidOnly = { id: 'p1', status: 'Active', bidItems, dailyRows: [onBidRow] };
+    const rowSum = bidItems.reduce((s, b) =>
+      s + mod.projForBidItem(b, b._actual, b._rqty, b.quantity, b.quantity * b.unit_cost, b._done), 0);
+    assert('the project total is exactly the sum of the row projections',
+      near(mod.projectedCostForProject(onBidOnly), rowSum),
+      `footer $${mod.projectedCostForProject(onBidOnly).toFixed(2)} vs rows $${rowSum.toFixed(2)}`);
+    assert('  and that total covers every row it shows',
+      mod.projectedCostForProject(onBidOnly) >= lineActual);
+
+    // Daily rows whose codes match no bid line are real money the per-line sum
+    // cannot see, so they add ON TOP of it. Taking max(sumLines, actual) instead
+    // silently drops them whenever un-started bid work is the larger number —
+    // here $50k of off-bid spend hid behind $50,551.82 of un-started bid work.
+    const offBidRow = { cost_code: 'ZZZ', sub_code: 'NOMATCH', cost: 50000 };
+    const withOffBid = { ...onBidOnly, dailyRows: [onBidRow, offBidRow] };
+    assert('off-bid spend adds to the project total, it does not just floor it',
+      near(mod.projectedCostForProject(withOffBid), rowSum + 50000),
+      `got $${mod.projectedCostForProject(withOffBid).toFixed(2)}, expected $${(rowSum + 50000).toFixed(2)}`);
+    assert('  only unmatched codes count as off-bid',
+      near(mod.offBidForProject(withOffBid).total, 50000),
+      `got $${mod.offBidForProject(withOffBid).total.toFixed(2)}`);
+    assert('  the total still covers total actual when off-bid spend dominates',
+      mod.projectedCostForProject({ ...onBidOnly, dailyRows: [onBidRow, { ...offBidRow, cost: 900000 }] })
+        >= lineActual + 900000 - 0.01);
+
+    console.log('\n[a finished project cost what it cost]');
+    for (const status of ['Complete', 'complete', 'Closed', 'closed']) {
+      const donePrj = { ...onBidOnly, status, dailyRows: [{ cost: 12345 }] };
+      assert(`status "${status}" projects its actual`,
+        near(mod.projectedCostForProject(donePrj), 12345));
+    }
+    assert('an in-flight project does NOT collapse to its actual',
+      mod.projectedCostForProject({ ...onBidOnly, status: 'Active' }) > 0
+      && !near(mod.projectedCostForProject({ ...onBidOnly, status: 'Active', dailyRows: [{ cost: 1 }] }), 1));
   } finally {
     global.Date = RealDate;
   }
