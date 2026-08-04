@@ -622,11 +622,11 @@ function makeFinancialTile({ key, name, accent, projects, financials }) {
       },
       { label: 'Cost vs Bid', value: cvbFmt.text, sub: cvbSub },
       {
-        label: 'Projected',
+        label: 'Projected Cost',
         value: matchedProjected > 0 ? fmtCurrency(matchedProjected) : '—',
         sub:   matchedContract > 0  ? `vs ${fmtCurrency(matchedContract)} contract` : undefined,
       },
-      { label: 'Profit', value: profitText, sub: profitSub },
+      { label: 'Projected Profit', value: profitText, sub: profitSub },
     ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
   };
 }
@@ -1551,8 +1551,8 @@ function mockReport() {
           kpis: [
             { label: 'Active Projects', value: '—' },
             { label: 'Cost vs Bid',     value: '—' },
-            { label: 'Projected',       value: '—' },
-            { label: 'Profit',          value: '—' },
+            { label: 'Projected Cost',    value: '—' },
+            { label: 'Projected Profit',  value: '—' },
           ],
         },
         {
@@ -1561,8 +1561,8 @@ function mockReport() {
           kpis: [
             { label: 'Active Projects', value: '—' },
             { label: 'Cost vs Bid',     value: '—' },
-            { label: 'Projected',       value: '—' },
-            { label: 'Profit',          value: '—' },
+            { label: 'Projected Cost',    value: '—' },
+            { label: 'Projected Profit',  value: '—' },
           ],
         },
         {
