@@ -61,6 +61,14 @@ function loadFinancials(file, projects) {
   // rowCost counts how often the per-project cost walk runs, which is how the
   // cost of a re-render is measured below.
   const captured = { csv: null, print: null, alerts: [], download: null, rowCost: 0 };
+  // Enough of the job-name dropdown for its real open/apply/clear to run.
+  const dd = {
+    panel:  { style: { display: 'none' } },
+    list:   { innerHTML: '', querySelectorAll: () => dd.boxes },
+    search: { value: '', oninput: null },
+    all:    { checked: true, addEventListener() {} },
+    boxes:  [],
+  };
 
   const api = new Function(
     'projectsList', 'document', 'window', 'alert', 'Blob', 'URL',
@@ -70,16 +78,25 @@ function loadFinancials(file, projects) {
      return {
        renderFinancials, exportFinancialsCSV, printFinancials,
        setFilters: f => { finFilters = f; },
-       select: ids => { finSelected = new Set(ids); },
-       selected: () => [...finSelected],
-       toggleRow: finToggleRow, toggleAll: finToggleAll, clearSelection: finClearSelection,
-       rows: _financialsRows, filtered: _financialsFiltered, active: _financialsActive,
+       pickNames: n => { finFilters.names = n ? new Set(n) : null; },
+       picked: () => finFilters.names ? [...finFilters.names] : null,
+       applyNames: applyFinNameFilter, clearNames: clearFinNameFilter, openNames: openFinNameFilter,
+       rows: _financialsRows, filtered: _financialsFiltered,
        totals: _financialsTotals, renderTable: _renderFinancialsTable,
      };`
   )(
     projects,
     {
-      getElementById: id => (id === 'fin-content' ? bar : id === 'fin-table' ? table : null),
+      getElementById: id => ({
+        'fin-content': bar,
+        'fin-table': table,
+        'fin-filter-dd': dd.panel,
+        'finff-list': dd.list,
+        'finff-search': dd.search,
+        'finff-all': dd.all,
+      }[id] || null),
+      // The job-name checklist queries its boxes by class.
+      querySelectorAll: sel => (sel === '.finff-val-cb' ? dd.boxes : []),
       createElement: () => ({ href: '', download: '', click() { captured.download = this.download; } }),
     },
     { open: () => ({ document: { write: h => { captured.print = h; }, close() {} } }) },
@@ -98,6 +115,13 @@ function loadFinancials(file, projects) {
   return {
     ...api,
     captured,
+    dd,
+    // Stand the checklist up as if the user had ticked these boxes, so Apply's
+    // real logic runs against it.
+    tickBoxes: (names, ticked) => {
+      dd.boxes = names.map(v => ({ value: v, checked: ticked.includes(v) }));
+      dd.all.checked = dd.boxes.every(b => b.checked);
+    },
     // What the user sees: filter bar plus the table it controls.
     html: () => bar.innerHTML + table.innerHTML,
   };
@@ -294,131 +318,75 @@ for (const file of FILES) {
     ['In Progress', 'Complete'].every(s => done.html().includes(`<option value="${s}"`)),
     'filtering to Complete must still offer Active');
 
-  console.log('  — selecting jobs —');
-  // Ticking rows is only useful if it changes what you take away from the
-  // screen, so the totals, the export and the printout all have to narrow with
-  // it — and say that they have.
-  const picked = loadFinancials(file, JOBS);
-  picked.select(['a', 'b']);
-  picked.renderFinancials();
-  const ph = picked.html();
-  assert('every row offers a checkbox', (ph.match(/id="fin-cb-[a-e]"/g) || []).length === JOBS.length);
-  // The handler contains the literal "this.checked", so match the attribute
-  // itself — whitespace, then checked, then the end of the tag.
-  const isTicked = id => new RegExp(`id="fin-cb-${id}"[^>]*\\schecked>`).test(ph);
-  assert('  the ticked ones come back ticked', isTicked('a') && isTicked('b'));
-  assert('  and the unticked ones do not', !isTicked('c') && !isTicked('d'));
-  assert('  the checkbox does not open the project', /onclick="event\.stopPropagation\(\);finToggleRow/.test(ph));
-  assert('the heading counts the selection', ph.includes('2 of 5 selected'));
-  assert('  and offers a way back out', /finClearSelection\(\)/.test(ph));
-  assert('the totals row says it is describing a selection', ph.includes('>Selected</td>'));
-  assert('totals narrow to the ticked jobs',
-    ph.includes('$689,312.32') && !ph.includes('$2,489,312.32'), 'expected 479,312.32 + 210,000');
-  assert('  and the table says so', /Totals cover the 2 selected jobs/.test(ph));
-  assert('every job is still listed, so more can be ticked',
-    JOBS.every(j => ph.includes(j['project-name'])));
+  console.log('  — job name filter —');
+  // The Purchase Orders pattern: a checklist of job names. Picking narrows the
+  // table, and the totals, export and printout follow it.
+  const pick = loadFinancials(file, JOBS);
+  pick.pickNames(['Franklin Regional Tennis Court', 'Saint Edmunds Field']);
+  pick.renderFinancials();
+  const pk = pick.html();
+  assert('only the picked jobs are listed',
+    pk.includes('Franklin Regional Tennis Court') && pk.includes('Saint Edmunds Field')
+    && !pk.includes('Half Built Job') && !pk.includes('No Contract Yet'), pk.slice(0, 200));
+  assert('  the heading counts them', pk.includes('2 of 5 jobs'));
+  assert('  the filter button shows how many are picked', /Job Name \(2\)/.test(pk));
+  assert('  and reads as active', /class="cfb finfb active"/.test(pk));
+  assert('totals cover only the picked jobs',
+    pk.includes('$689,312.32') && !pk.includes('$2,489,312.32'), 'expected 479,312.32 + 210,000');
+  assert('  and the table says the totals are filtered',
+    /Totals cover the filtered rows only/.test(pk));
 
-  console.log('  — select all —');
-  const allSel = loadFinancials(file, JOBS);
-  allSel.renderFinancials();
-  allSel.toggleAll(true);
-  assert('select-all takes every filtered job', allSel.selected().length === JOBS.length);
-  assert('  and the header box reads as checked', /id="fin-cb-all"[^>]*checked/.test(allSel.html()));
-  allSel.toggleAll(false);
-  assert('unselect-all clears them', allSel.selected().length === 0);
-  const partial = loadFinancials(file, JOBS);
-  partial.setFilters({ q: '', status: 'Complete' });
-  partial.renderFinancials();
-  partial.toggleAll(true);
-  assert('select-all under a filter takes only the visible jobs',
-    partial.selected().length === 1 && partial.selected()[0] === 'b',
-    'must not tick jobs the user cannot see');
+  console.log('  — the filter drives export and print —');
+  pick.exportFinancialsCSV();
+  const pkCsv = pick.captured.csv.split('\r\n');
+  assert('the export ships only the picked jobs', pkCsv.length === 4, pkCsv.length + ' lines');
+  assert('  and totals them', pkCsv[3].startsWith('Totals,,,689312.32'));
+  pick.printFinancials();
+  assert('the printout carries only the picked jobs',
+    pick.captured.print.includes('Saint Edmunds Field') && !pick.captured.print.includes('Half Built Job'));
+  assert('  and names the pick on the page', /2 selected jobs/.test(pick.captured.print));
 
-  console.log('  — selection and filters together —');
-  const both = loadFinancials(file, JOBS);
-  both.select(['a', 'b']);
-  both.setFilters({ q: '', status: 'Complete' });
-  both.renderFinancials();
-  assert('a selection is intersected with the filters, not overriding them',
-    both.active().length === 1 && both.active()[0].id === 'b');
-  assert('  and a tick the filters hid is called out, not silently dropped',
-    /1 other selected job is hidden by the current filters/.test(both.html()), both.html().slice(-400));
-  // Filtering every ticked job off screen leaves the totals describing nothing.
-  // The screen has to say so and stay recoverable, or it reads as a figure for
-  // the rows that ARE visible.
-  const noneVisible = loadFinancials(file, JOBS);
-  noneVisible.select(['a']);
-  noneVisible.setFilters({ q: '', status: 'Complete' });
-  noneVisible.renderFinancials();
-  const nvh = noneVisible.html();
-  assert('with every tick filtered away the heading counts ticks, not visible rows',
-    nvh.includes('0 of 1 selected') && !nvh.includes('1 of 1 jobs'), nvh.match(/\([^)]*\)<\/span>/) || '');
-  assert('  the reason the totals are empty is stated',
-    /None of the selected jobs match these filters/.test(nvh));
-  assert('  and the way out is still offered',
-    /finClearSelection\(\)/.test(nvh), 'clearing the selection is the only recovery besides the filter');
-  noneVisible.exportFinancialsCSV();
-  assert('exporting when no ticked job is visible warns rather than shipping everything',
-    noneVisible.captured.csv === null && noneVisible.captured.alerts.length === 1,
-    JSON.stringify(noneVisible.captured.alerts));
+  console.log('  — no pick means every job —');
+  const noPick = loadFinancials(file, JOBS);
+  noPick.renderFinancials();
+  assert('with nothing picked every job is listed', JOBS.every(j => noPick.html().includes(j['project-name'])));
+  assert('  the button is not marked active', !/class="cfb finfb active"/.test(noPick.html()));
+  assert('  and the button carries no count', /Job Name<\/button>|Job Name ▼/.test(noPick.html()));
 
-  console.log('  — export and print follow the selection —');
-  const selExp = loadFinancials(file, JOBS);
-  selExp.select(['b']);
-  selExp.renderFinancials();
-  selExp.exportFinancialsCSV();
-  const selRows = selExp.captured.csv.split('\r\n');
-  assert('the export ships only the ticked jobs', selRows.length === 3, `${selRows.length} lines`);
-  assert('  and its totals match them', selRows[2].startsWith('Totals,,,210000.00'));
-  selExp.printFinancials();
-  assert('the printout carries only the ticked jobs',
-    selExp.captured.print.includes('Saint Edmunds Field') && !selExp.captured.print.includes('Half Built Job'));
-  assert('  and says it is a hand-picked subset',
-    /Selected jobs only/.test(selExp.captured.print), 'or it reads as the whole book');
+  console.log('  — clearing the pick —');
+  pick.clearNames();
+  assert('clearing restores every job',
+    pick.picked() === null && JOBS.every(j => pick.html().includes(j['project-name'])));
 
-  console.log('  — no selection is the old behaviour —');
-  const plainSel = loadFinancials(file, JOBS);
-  plainSel.renderFinancials();
-  assert('with nothing ticked the totals cover every job',
-    plainSel.html().includes('$2,489,312.32'));
-  assert('  the totals row is labelled Totals, not Selected',
-    plainSel.html().includes('>Totals</td>') && !plainSel.html().includes('>Selected</td>'));
-  assert('  and no clear-selection control is offered',
-    !/finClearSelection\(\)/.test(plainSel.html()));
+  console.log('  — the checklist itself —');
+  const dd = loadFinancials(file, JOBS);
+  dd.renderFinancials();
+  dd.openNames({ getBoundingClientRect: () => ({ left: 10, bottom: 20 }) });
+  assert('opening it lists every job name once',
+    JOBS.every(j => dd.dd.list.innerHTML.includes(j['project-name'])));
+  assert('  with a Select All row', dd.dd.list.innerHTML.includes('(Select All)'));
+  assert('  and opens the panel', dd.dd.panel.style.display === 'flex');
+  const names = JOBS.map(j => j['project-name']);
+  dd.tickBoxes(names, ['Saint Edmunds Field']);
+  dd.applyNames();
+  assert('Apply commits just the ticked names',
+    dd.picked().length === 1 && dd.picked()[0] === 'Saint Edmunds Field');
+  assert('  and closes the panel', dd.dd.panel.style.display === 'none');
+  assert('  and the table follows', dd.html().includes('Saint Edmunds Field') && !dd.html().includes('Half Built Job'));
+  // Everything ticked excludes nothing, so it must clear rather than store a
+  // set of every name — otherwise the button reads "filtered" while it is not.
+  dd.tickBoxes(names, names);
+  dd.applyNames();
+  assert('ticking every name is stored as no filter at all', dd.picked() === null);
+  assert('  so the button is not marked active', !/class="cfb finfb active"/.test(dd.html()));
 
-  console.log('  — a keystroke costs one row build —');
-  // Building the rows walks every project's bid items and daily rows and runs
-  // the cost projection on each. The search box re-renders on every keystroke,
-  // so the table must build them once, not once per helper that needs them.
-  const perf = loadFinancials(file, JOBS);
-  perf.renderFinancials();
-  perf.captured.rowCost = 0;
-  perf.rows();
-  const oneBuild = perf.captured.rowCost;
-  assert('building the rows costs something measurable', oneBuild > 0);
-  perf.captured.rowCost = 0;
-  perf.setFilters({ q: 'fra', status: '' });
-  perf.renderTable();
-  assert('a re-render builds the rows exactly once',
-    perf.captured.rowCost === oneBuild,
-    `${perf.captured.rowCost} vs ${oneBuild} for a single build`);
-
-  console.log('  — a tick on a job that no longer exists —');
-  // Left in the set, it would keep the table in selection mode reporting a
-  // hidden job with no row to untick and no way to reach it.
-  const stale = loadFinancials(file, JOBS);
-  stale.select(['a', 'ghost-id-that-was-deleted']);
-  stale.renderFinancials();
-  assert('the stale tick is dropped', !stale.selected().includes('ghost-id-that-was-deleted'));
-  assert('  the real one is kept', stale.selected().includes('a'));
-  assert('  and no phantom hidden job is reported',
-    !/other selected job/.test(stale.html()), stale.html().slice(-300));
-  const allStale = loadFinancials(file, JOBS);
-  allStale.select(['ghost-1', 'ghost-2']);
-  allStale.renderFinancials();
-  assert('a selection of only stale ticks falls back to no selection at all',
-    allStale.selected().length === 0 && allStale.html().includes('(5 jobs)')
-    && allStale.html().includes('>Totals</td>'), 'must not strand the table in selection mode');
+  console.log('  — the pick composes with the other filters —');
+  const both2 = loadFinancials(file, JOBS);
+  both2.pickNames(['Franklin Regional Tennis Court', 'Saint Edmunds Field']);
+  both2.setFilters({ q: '', status: 'Complete', names: both2.picked() ? new Set(both2.picked()) : null });
+  both2.renderFinancials();
+  assert('a picked job that fails the status filter drops out',
+    both2.html().includes('Saint Edmunds Field') && !both2.html().includes('Franklin Regional Tennis Court'));
 
   console.log('  — status colours —');
   // There is no 'Active' status in this app. The set is Bidding / Awarded /
@@ -502,6 +470,22 @@ for (const file of FILES) {
     none.captured.csv === null && none.captured.alerts.length === 2, JSON.stringify(none.captured.alerts));
 }
 
+// A removed helper still called from somewhere is a runtime ReferenceError the
+// page parses straight past — the export and print both threw that way once.
+console.log('\n[nothing calls a helper that no longer exists]');
+for (const file of FILES) {
+  const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const block = src.slice(src.indexOf('/* ── Financials ───'), src.indexOf('function renderSubCodePerf'));
+  const declared = new Set([...block.matchAll(/function (\w+)\s*\(/g)].map(m => m[1]));
+  const called   = new Set([...block.matchAll(/\b(_financials\w+|fin[A-Z]\w+)\s*\(/g)].map(m => m[1]));
+  const missing  = [...called].filter(n => !declared.has(n));
+  assert(`${file}: every Financials helper it calls is defined`,
+    missing.length === 0, missing.join(', '));
+  const stale = ['finSelected', '_financialsActive', 'finShowSelectedOnly', 'finToggleRow']
+    .filter(n => block.includes(n));
+  assert(`  and the removed row-selection code is gone`, stale.length === 0, stale.join(', '));
+}
+
 // The buttons have to exist on the page, not just the functions behind them.
 console.log('\n[the controls are wired up]');
 for (const file of FILES) {
@@ -512,6 +496,11 @@ for (const file of FILES) {
     && /onclick="finClearFilters\(\)"/.test(src));
   assert(`  ${file} has Excel and Print buttons`,
     /onclick="exportFinancialsCSV\(\)"/.test(src) && /onclick="printFinancials\(\)"/.test(src));
+  assert(`  ${file} has the Job Name checklist and its dropdown`,
+    /class="cfb finfb/.test(src) && /id="fin-filter-dd"/.test(src)
+    && /onclick="applyFinNameFilter\(\)"/.test(src) && /onclick="clearFinNameFilter\(\)"/.test(src));
+  assert(`  ${file} opens it on click and closes it on an outside click`,
+    /e\.target\.closest\('\.finfb'\)/.test(src) && /!e\.target\.classList\.contains\('finfb'\)/.test(src));
 }
 
 // ── Home tab projects table ─────────────────────────────────────────────────
