@@ -4460,7 +4460,7 @@ function renderHomeTab() {
       : 'color:var(--green)';
     const contractVal   = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
     const contractTxt   = contractVal ? '$' + fmt(contractVal) : '—';
-    const profit        = contractVal ? contractVal - actual : null;
+    const profit        = contractVal ? contractVal - projCost : null;
     const profitTxt     = profit !== null ? (profit >= 0 ? '$' + fmt(profit) : '-$' + fmt(Math.abs(profit))) : '—';
     const profitStyle   = profit === null ? 'color:var(--muted)' : profit >= 0 ? 'color:var(--green)' : 'color:var(--red)';
     const profitPct     = (profit !== null && contractVal) ? ` (${(profit / contractVal * 100).toFixed(1)}%)` : '';
@@ -17123,16 +17123,16 @@ function renderFinancials() {
           <td class="pt-num" style="color:var(--green)">${money(sum('bid'))}</td>
           <td class="pt-num" style="color:var(--yellow)">${money(sum('actual'))}</td>
           <td class="pt-num">${money(sum('projected'))}</td>
-          <td class="pt-num" style="${profCol(totProfit)}">${signed(totProfit)}${totProfitPct}</td>
-          <td class="pt-num" style="${profCol(totActProfit)}">${withSpend.length ? signed(totActProfit) + totActPct : '—'}</td>
+          <td class="pt-num" style="${withContract.length ? profCol(totProfit) : 'color:var(--muted)'}">${withContract.length ? signed(totProfit) + totProfitPct : '—'}</td>
+          <td class="pt-num" style="${withSpend.length ? profCol(totActProfit) : 'color:var(--muted)'}">${withSpend.length ? signed(totActProfit) + totActPct : '—'}</td>
         </tr></tfoot>
       </table>
     </div>
     <p style="font-size:0.72rem;color:var(--muted);margin-top:0.6rem;line-height:1.5">
       Project Profit is contract value minus <strong>projected</strong> final cost, matching the project pages.
-      Actual Profit is contract value minus cost <strong>spent so far</strong> — it is the final figure once a job is complete,
-      and reads high on jobs that have barely started.
-      ${noContract ? `${noContract} job${noContract === 1 ? ' has' : 's have'} no contract amount, so ${noContract === 1 ? 'it is' : 'they are'} excluded from the profit total.` : ''}
+      Actual Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
+      figure once it is complete, and high in between on jobs that have barely started.
+      ${noContract ? `${noContract} job${noContract === 1 ? ' has' : 's have'} no contract amount, so ${noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
     </p>`;
 }
 
