@@ -201,6 +201,11 @@ function projBidLines(p) {
     description: b.description || '',
     unit:        b.unit || '',
     status:      b.status || 'Active',
+    // Drives the projection: a completed line's actual IS its final cost. Only
+    // the Schedule-tab flag travels in the blob — the division pages also treat
+    // a sub code as done when the Construction Schedule says so, which lives in
+    // a separate key this rollup does not read.
+    is_complete: !!(b.is_complete || b.isComplete),
   }));
 }
 const projBidTotal = p => projBidLines(p).reduce((s, b) => s + b.quantity * b.unit_cost, 0);
@@ -483,6 +488,7 @@ async function buildFinancials(sql, companyCode, division, projects) {
     // Per-bid-item projection — mirrors projectedCostForProject(): scale each
     // bid item by its own wildcard-matched actuals/quantities.
     let bid = 0, projected = 0;
+    const projDone = projIsComplete(p);
     for (const b of bidLines) {
       const itemBid = b.quantity * b.unit_cost;
       bid += itemBid;
@@ -494,25 +500,32 @@ async function buildFinancials(sql, companyCode, division, projects) {
         }
       }
 
+      // Mirrors projForBidItem(): spend already booked is a floor, so no branch
+      // may project a line below its own actual cost.
       let proj;
       const startMs  = b.start_date  ? new Date(b.start_date  + 'T00:00:00Z').getTime() : null;
       const targetMs = b.target_date ? new Date(b.target_date + 'T00:00:00Z').getTime() : null;
-      if (a > 0 && startMs != null && targetMs != null && today > startMs && targetMs > startMs) {
+      if (!(a > 0)) {
+        proj = itemBid;
+      } else if (projDone || b.is_complete) {
+        proj = a;
+      } else if (startMs != null && targetMs != null && today > startMs && targetMs > startMs) {
         const total   = targetMs - startMs;
         const elapsed = today - startMs;
         proj = Math.max(a, a * (total / elapsed));
       } else if (rq > 0 && b.quantity > 0) {
-        proj = (a / rq) * b.quantity;
+        // rq > quantity means the line overran its bid qty; scaling back down to
+        // the bid qty would project less than we have spent, hence the floor.
+        proj = Math.max(a, (a / rq) * b.quantity);
       } else {
-        proj = itemBid;
+        proj = Math.max(a, itemBid);
       }
       projected += proj;
     }
 
     // Off-bid: daily groups that match NO bid line (wildcard-aware). They are
-    // included in `actual` above but not attributed to any bid item (so they
-    // don't feed `projected`). Flag them with the offending codes + amounts.
-    // By construction actual === on-bid spend + offBid.
+    // included in `actual` above but attributed to no bid item. Flag them with
+    // the offending codes + amounts. By construction actual === on-bid + offBid.
     let offBid = 0;
     const offBidCodes = [];
     for (const g of groups) {
@@ -521,6 +534,11 @@ async function buildFinancials(sql, companyCode, division, projects) {
       offBidCodes.push({ cost_code: g.cost_code, sub_code: g.sub_code, actual: g.actual });
     }
     offBidCodes.sort((a, b) => b.actual - a.actual);
+
+    // A finished project cost what it cost. Otherwise off-bid spend belongs to
+    // no bid line's projection, so it adds ON TOP of the line sum — and the
+    // result still may not undercut what has already gone out the door.
+    projected = projDone ? actual : Math.max(projected + offBid, actual);
 
     bid_total       += bid;
     actual_total    += actual;
