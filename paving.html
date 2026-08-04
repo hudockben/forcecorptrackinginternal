@@ -17170,16 +17170,27 @@ function _renderFinancialsTable() {
 
   // Totals describe the ticked jobs when there are any.
   const t = _financialsTotals(act);
-  const count = selShown
+  // Once anything is ticked the heading counts ticks, even when the filters
+  // have hidden all of them — "1 of 2 jobs" beside empty totals reads as a
+  // figure for that one job.
+  const count = finSelected.size
     ? `${selShown} of ${rows.length} selected`
     : _finFiltered()
       ? `${rows.length} of ${all.length} jobs`
       : `${rows.length} job${rows.length === 1 ? '' : 's'}`;
-  const selNote = selShown
+  // Offered whenever a selection exists, not just a visible one: filtering the
+  // ticks off screen is the case where the way out matters most.
+  const selNote = finSelected.size
     ? ` &nbsp;<button class="btn btn-ghost" style="font-size:0.68rem;padding:0.12rem 0.45rem;font-weight:400" onclick="finClearSelection()">Clear selection</button>`
     : '';
   // A tick on a job the filters then hid would silently shrink the figures.
   const hiddenSel = finSelected.size - selShown;
+  const selMsg = !finSelected.size
+    ? (_finFiltered() ? 'Totals cover the filtered rows only.' : '')
+    : selShown === 0
+      ? 'None of the selected jobs match these filters, so there is nothing to total. Clear the selection or the filters.'
+      : `Totals cover the ${selShown} selected job${selShown === 1 ? '' : 's'} — as do the Excel export and the printout.`
+        + (hiddenSel > 0 ? ` ${hiddenSel} other selected job${hiddenSel === 1 ? ' is' : 's are'} hidden by the current filters and left out.` : '');
 
   el.innerHTML = `
     <p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${count})</span>${selNote}</p>
@@ -17201,7 +17212,7 @@ function _renderFinancialsTable() {
         <tbody>${body}</tbody>
         <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
           <td></td>
-          <td>${selShown ? 'Selected' : 'Totals'}</td>
+          <td>${finSelected.size ? 'Selected' : 'Totals'}</td>
           <td></td>
           <td></td>
           <td class="pt-num" style="color:var(--blue)">${money(t.contract)}</td>
@@ -17218,9 +17229,7 @@ function _renderFinancialsTable() {
       Actual Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
       figure once it is complete, and high in between on jobs that have barely started.
       ${t.noContract ? `${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount, so ${t.noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
-      ${selShown ? `Totals cover the ${selShown} selected job${selShown === 1 ? '' : 's'} — as do the Excel export and the printout.`
-        : _finFiltered() ? 'Totals cover the filtered rows only.' : ''}
-      ${hiddenSel > 0 ? `${hiddenSel} other selected job${hiddenSel === 1 ? ' is' : 's are'} hidden by the current filters and left out.` : ''}
+      ${selMsg}
     </p>`;
 
   // Part-selected reads as neither on nor off, which is what the box means.

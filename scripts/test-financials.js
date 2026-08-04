@@ -341,10 +341,20 @@ for (const file of FILES) {
     both.active().length === 1 && both.active()[0].id === 'b');
   assert('  and a tick the filters hid is called out, not silently dropped',
     /1 other selected job is hidden by the current filters/.test(both.html()), both.html().slice(-400));
+  // Filtering every ticked job off screen leaves the totals describing nothing.
+  // The screen has to say so and stay recoverable, or it reads as a figure for
+  // the rows that ARE visible.
   const noneVisible = loadFinancials(file, JOBS);
   noneVisible.select(['a']);
   noneVisible.setFilters({ q: '', status: 'Complete' });
   noneVisible.renderFinancials();
+  const nvh = noneVisible.html();
+  assert('with every tick filtered away the heading counts ticks, not visible rows',
+    nvh.includes('0 of 1 selected') && !nvh.includes('1 of 1 jobs'), nvh.match(/\([^)]*\)<\/span>/) || '');
+  assert('  the reason the totals are empty is stated',
+    /None of the selected jobs match these filters/.test(nvh));
+  assert('  and the way out is still offered',
+    /finClearSelection\(\)/.test(nvh), 'clearing the selection is the only recovery besides the filter');
   noneVisible.exportFinancialsCSV();
   assert('exporting when no ticked job is visible warns rather than shipping everything',
     noneVisible.captured.csv === null && noneVisible.captured.alerts.length === 1,
