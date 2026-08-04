@@ -143,7 +143,118 @@ assert('the basis of each profit is stated on the page',
 assert('a failed division is marked rather than silently dropped',
   /\(unavailable\)/.test(ic));
 
+// ── Filters ─────────────────────────────────────────────────────────────────
+// Run the page's own filter and summary functions, so these check behaviour
+// rather than that the source mentions the right words.
+console.log('\n[filters]');
+const icFns = (() => {
+  const grab = name => {
+    const start = ic.indexOf(`function ${name}(`);
+    if (start < 0) throw new Error(`${name} not found in intercompany.html`);
+    let depth = 0;
+    for (let j = ic.indexOf('{', start); j < ic.length; j++) {
+      if (ic[j] === '{') depth++;
+      else if (ic[j] === '}' && --depth === 0) return ic.slice(start, j + 1);
+    }
+    throw new Error(`${name} is not closed`);
+  };
+  const code = ['_icFilteredRows', '_icSummarise', 'icSetFilter', 'icClearFilters'].map(grab).join('\n\n');
+  return new Function(`
+    let _icFin = null, _icFilters = { division: '', status: '', q: '' };
+    const _icAnyFilter = () => !!(_icFilters.division || _icFilters.status || (_icFilters.q || '').trim());
+    function _renderIcFinancialsBody() {}
+    function _renderIcFinancials() {}
+    ${code}
+    return {
+      load: d => { _icFin = d; },
+      set: (k, v) => icSetFilter(k, v),
+      clear: () => icClearFilters(),
+      rows: () => _icFilteredRows(),
+      summarise: _icSummarise,
+      any: () => _icAnyFilter(),
+    };`)();
+})();
+
+const R = (o) => ({
+  name: o.name, jobNumber: o.job, division: o.division, divisionName: o.division,
+  status: o.status, inProgress: o.status === 'In Progress', complete: o.status === 'Complete',
+  contract: o.contract, bid: o.bid, actual: o.actual, projected: o.projected,
+  variance: o.bid - o.actual,
+  profit: o.contract ? o.contract - o.projected : null,
+  actProfit: (o.contract && o.actual) ? o.contract - o.actual : null,
+});
+const FEED = {
+  rows: [
+    R({ name: 'Franklin Regional Tennis Court', job: '26049', division: 'turf',   status: 'In Progress', contract: 479312, bid: 375931, actual: 353615, projected: 402408 }),
+    R({ name: 'Moon Township',                  job: '26004', division: 'turf',   status: 'Awarded',     contract: 3426006, bid: 2708243, actual: 97921, projected: 2719835 }),
+    R({ name: 'Atwood Borough',                 job: '26040', division: 'paving', status: 'In Progress', contract: 123894, bid: 106616, actual: 51390, projected: 84285 }),
+    R({ name: 'Acquisition Costs',              job: '',      division: 'kiewit', status: 'In Progress', contract: 4100000, bid: 5191999, actual: 0, projected: 5191999 }),
+    R({ name: 'Old Finished Job',               job: '25001', division: 'turf',   status: 'Complete',    contract: 200000, bid: 180000, actual: 170000, projected: 170000 }),
+  ],
+  divisions: [
+    { key: 'turf', name: 'Turf', jobs: 3 },
+    { key: 'paving', name: 'Paving', jobs: 1 },
+    { key: 'kiewit', name: 'Kiewit', jobs: 1 },
+  ],
+};
+icFns.load(FEED);
+
+assert('unfiltered, every job is in', icFns.rows().length === 5);
+assert('  and no filter is reported active', icFns.any() === false);
+icFns.set('division', 'turf');
+assert('filtering by division keeps only that division',
+  icFns.rows().length === 3 && icFns.rows().every(r => r.division === 'turf'));
+icFns.set('status', 'In Progress');
+assert('  division and status compose',
+  icFns.rows().length === 1 && icFns.rows()[0].name.startsWith('Franklin'));
+icFns.clear();
+assert('clearing restores everything', icFns.rows().length === 5 && icFns.any() === false);
+icFns.set('q', 'atwood');
+assert('search matches a job name, case-insensitively',
+  icFns.rows().length === 1 && icFns.rows()[0].division === 'paving');
+icFns.set('q', '26049');
+assert('  and a job number', icFns.rows().length === 1);
+icFns.set('q', 'zzzz');
+assert('  a search matching nothing returns nothing, not everything', icFns.rows().length === 0);
+icFns.clear();
+
+console.log('\n[the figures follow the filters]');
+// Filtering to Kiewit leaves the one job that is bid above its contract.
+icFns.set('division', 'kiewit');
+const kiewit = icFns.summarise(icFns.rows());
+assert('a filtered summary covers only the filtered rows',
+  kiewit.activeProjects === 1 && near(kiewit.contract, 4100000), JSON.stringify(kiewit));
+assert('  and its projected profit is the loss on that job',
+  near(kiewit.projProfit, -1091999), `got ${kiewit.projProfit}`);
+assert('  with no completed job, actual profit is unknown rather than zero',
+  kiewit.actProfit === null);
+icFns.clear();
+const all = icFns.summarise(icFns.rows());
+assert('unfiltered, Awarded work stays out of the live figures',
+  all.activeProjects === 3 && !near(all.contract, 4100000 + 479312 + 123894 + 3426006),
+  `got ${all.activeProjects} active`);
+assert('  and the completed job supplies the actual profit',
+  near(all.actProfit, 30000), `got ${all.actProfit}`);
+
+console.log('\n[the page wires them up]');
+assert('the summary is recomputed from the filtered rows, not the server totals',
+  /const t = _icSummarise\(rows\);/.test(ic) && !/const t = _icFin\.totals/.test(ic));
+assert('  the division rows too', /shownDivs\.map\(divRow\)/.test(ic));
+assert('an empty result says whether a filter caused it',
+  /_icAnyFilter\(\)[\s\S]{0,120}No matches/.test(ic));
+assert('typing does not rebuild the filter bar under the caret',
+  /function icSetFilter[\s\S]{0,220}_renderIcFinancialsBody\(\);/.test(ic)
+  && !/function icSetFilter[\s\S]{0,220}_renderIcFinancialsFilters\(\)/.test(ic));
+assert('the filter bar is hidden when printing',
+  /@media print \{ \.ic-fin-filters \{ display: none/.test(ic));
+
 console.log('\n[export and print]');
+assert('the export ships the filtered rows, not the whole feed',
+  /function exportIcFinancialsCSV\(\) \{\s*\n\s*const rows = _icFilteredRows\(\);/.test(ic)
+  && /rows\.forEach\(r => lines\.push\(\[/.test(ic));
+assert('  and totals them from the same set', /const t = _icSummarise\(rows\);\s*\n\s*lines\.push/.test(ic));
+assert('print refuses when the filters leave nothing',
+  /function printIcFinancials\(\) \{\s*\n\s*if \(!_icFilteredRows\(\)\.length\) return;/.test(ic));
 assert('Excel export exists', /function exportIcFinancialsCSV/.test(ic));
 assert('  values go out unformatted so Excel can total them',
   /Number\(v\)\.toFixed\(2\)/.test(ic) && /\\ufeff/.test(ic));
