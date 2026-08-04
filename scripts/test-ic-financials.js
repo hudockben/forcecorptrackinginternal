@@ -150,7 +150,33 @@ assert('  values go out unformatted so Excel can total them',
 assert('  and a figure that does not apply is blank, not zero',
   /const n = v => \(v === null \|\| v === undefined\) \? '' :/.test(ic));
 assert('print exists and hides the chrome',
-  /function printIcFinancials/.test(ic) && /@media print[\s\S]{0,200}rpt-toolbar \{ display: none/.test(ic));
+  /function printIcFinancials/.test(ic) && /@media print[\s\S]{0,240}rpt-toolbar[^}]*display: none/.test(ic));
+
+console.log('\n[it is styled for the dark page it sits on]');
+// The page is dark (--bg #0a0a0f, --text #e0e0e0). Hardcoded light colours
+// here rendered near-black text and a white zebra stripe on a dark table.
+const block = ic.slice(ic.indexOf('/* ── Intercompany Financials report'),
+                       ic.indexOf('.rpt-sub-panel { display: none; }'));
+const screenCss = block.slice(0, block.indexOf('@media print'));
+assert('no hardcoded hex colours outside the print rules',
+  !/#[0-9a-fA-F]{3,6}/.test(screenCss),
+  (screenCss.match(/#[0-9a-fA-F]{3,6}/g) || []).join(', '));
+assert('  it uses the page\'s own theme variables',
+  /color: var\(--text\)/.test(screenCss) && /color: var\(--muted\)/.test(screenCss)
+  && /border-bottom: 1px solid var\(--border\)/.test(screenCss));
+assert('  profit and loss use the theme green and red',
+  /\.ic-pos \{ color: var\(--green\); \}/.test(screenCss)
+  && /\.ic-neg \{ color: var\(--red\); \}/.test(screenCss));
+assert('  the zebra stripe is a tint, not a pale fill',
+  /nth-child\(even\) td \{ background: rgba\(255,255,255,0\.0\d\)/.test(screenCss),
+  'a light stripe on a dark table reads as a different table');
+// Paper is white whatever the screen is.
+const printCss = block.slice(block.indexOf('@media print'));
+assert('printing inverts to dark-on-white rather than sending a dark page',
+  /body \{ background: #fff !important; color: #111 !important; \}/.test(printCss));
+assert('  and the figures stay legible on paper',
+  /\.ic-fin-table td \{ color: #111 !important/.test(printCss)
+  && /\.ic-pos \{ color: #15803d !important/.test(printCss));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
