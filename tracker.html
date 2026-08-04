@@ -4539,7 +4539,7 @@ function renderHomeTab() {
         const projStyle = bid > 0
           ? (projCost > bid ? 'color:var(--red)' : projCost > bid * 0.85 ? 'color:var(--yellow)' : 'color:var(--green)')
           : 'color:var(--muted)';
-        const projTxt = bid > 0 ? '$' + fmt(projCost) : '—';
+        const projTxt = (bid > 0 || projCost > 0) ? '$' + fmt(projCost) : '—';
 
         const name      = p['project-name'] || 'Untitled Project';
         const meta      = [p['job-number'], p['client'], p['status']].filter(Boolean).map(v => esc(v)).join(' · ');
@@ -4628,7 +4628,7 @@ function renderHomeTab() {
     const varTxt    = !bid ? '—' : variance >= 0 ? `$${fmt(Math.abs(variance))} under` : `$${fmt(Math.abs(variance))} over`;
     const isComplete    = (p['status'] || '') === 'Complete';
     const projCost      = isComplete ? actual : projectedCostForProject(p);
-    const projTxt       = bid > 0 ? '$' + fmt(projCost) : '—';
+    const projTxt       = (bid > 0 || projCost > 0) ? '$' + fmt(projCost) : '—';
     const projStyle     = !bid ? 'color:var(--muted)'
       : projCost > bid ? 'color:var(--red)'
       : projCost > bid * 0.85 ? 'color:var(--yellow)'
@@ -7794,8 +7794,25 @@ function laborerCountForBidItem(b, projId) {
   return names.size;
 }
 
-function projForBidItem(b, actual, rqty, bidQty, bidTot) {
-  if (b.start_date && b.target_date && actual > 0) {
+// A finished project's projected cost is simply what it cost — nothing is left
+// to extrapolate. Shared so the rows, the group totals and the footer agree.
+function projIsDone(p) {
+  return ['complete','closed'].includes((p && p['status'] || '').toLowerCase());
+}
+
+/* Projected final cost for a single bid line. Money already spent is a floor,
+   never an estimate — no branch may project below the line's actual cost.
+   Ordered most- to least-specific:
+     1. Nothing spent yet     → the bid total is the only estimate we have.
+     2. Line marked complete  → work is done, so the actual IS the final cost.
+     3. Start + target dates  → scale spend by elapsed-vs-planned duration.
+     4. Running quantity      → scale spend by qty burn rate across the bid qty.
+     5. No running qty        → the bid total, or the actual once we've spent
+                                past it (or the line carries no bid at all). */
+function projForBidItem(b, actual, rqty, bidQty, bidTot, isComplete) {
+  if (!(actual > 0)) return bidTot;
+  if (isComplete) return actual;
+  if (b.start_date && b.target_date) {
     const now   = new Date();
     const start = new Date(b.start_date + 'T00:00:00');
     const end   = new Date(b.target_date + 'T00:00:00');
@@ -7805,18 +7822,28 @@ function projForBidItem(b, actual, rqty, bidQty, bidTot) {
       return Math.max(actual, (actual / elapsed) * totalDays);
     }
   }
-  return rqty > 0 ? (actual / rqty) * bidQty : bidTot;
+  // rqty > bidQty means the line already overran its bid quantity; scaling back
+  // down to the bid qty would project less than we've spent, hence the floor.
+  if (rqty > 0) return Math.max(actual, (actual / rqty) * bidQty);
+  // No running quantity to burn from — nothing to extrapolate, so the best
+  // estimate is the bid, or the actual once spend has passed it.
+  return Math.max(actual, bidTot);
 }
 
 function projectedCostForProject(p) {
   const _effQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
-  return (p.bidItems||[]).reduce((s,b) => {
+  const totalActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
+  if (projIsDone(p)) return totalActual;
+  const sumLines = (p.bidItems||[]).reduce((s,b) => {
     const bidQty = _effQty(b);
     const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
     const actual = actualForBidItem(b, p.id);
     const rqty   = runningQtyForBidItem(b, p.id);
-    return s + projForBidItem(b, actual, rqty, bidQty, bidTot);
+    return s + projForBidItem(b, actual, rqty, bidQty, bidTot, bidItemComplete(b, p.id));
   }, 0);
+  // Per-line sums miss daily rows whose codes match no bid item (off-bid spend);
+  // the project total must never undercut what has already been spent.
+  return Math.max(sumLines, totalActual);
 }
 
 function renderBidFooter(projId, opts = {}) {
@@ -7852,7 +7879,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">${totalCumHrs ? qfmt(totalCumHrs) : '—'}</td>
     <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
-    <td class="${projCls}">${totalBid ? '$'+fmt(totalProj) : '—'}</td>`;
+    <td class="${projCls}">${(totalBid || totalProj) ? '$'+fmt(totalProj) : '—'}</td>`;
   footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td><td class="foot-label num" title="Total estimated labor hours to complete all bid items at historical pace">${totalEstHrs ? '≈ '+fmt(totalEstHrs,0)+' hrs' : '—'}</td>`;
 
   // Update the summary bar in the fullscreen view (only when this project is open).
@@ -7878,7 +7905,7 @@ function renderBidFooter(projId, opts = {}) {
            ${fmet('Contract Value', contractVal ? '$'+fmt(contractVal) : '—', 'var(--blue)')}
            ${fmet('Bid Cost', totalBid ? '$'+fmt(totalBid) : '—', '#86efac')}
            ${fmet('Actual Cost', totalActual ? '$'+fmt(totalActual) : '—', 'var(--yellow)')}
-           ${fmet('Projected Cost', totalBid ? '$'+fmt(totalProj) : '—', projCol)}
+           ${fmet('Projected Cost', (totalBid || totalProj) ? '$'+fmt(totalProj) : '—', projCol)}
            <div style="width:1px;height:30px;background:var(--border);align-self:center"></div>
            ${fmet('Profit', profitDisp, profitCol)}
          </div>`;
@@ -9184,13 +9211,17 @@ function renderBidTable(projId, opts = {}) {
       const rqty    = runningQtyForBidItem(b, projId);
       const cumHrs  = cumulativeHoursForBidItem(b, projId);
       const numLab  = laborerCountForBidItem(b, projId);
-      const proj    = projForBidItem(b, actual, rqty, bidQty, bidTot);
+      const _biDone = bidItemComplete(b, projId);
+      const proj    = projForBidItem(b, actual, rqty, bidQty, bidTot, projIsDone(p) || _biDone);
       const diff    = bidTot - actual;
       const diffCls = diff >= 0 ? 'bid-under' : 'bid-over';
       const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
       const pct     = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : '—';
       const projCls = (proj - bidTot) <= 0 ? 'bid-under' : 'bid-over';
-      const projTxt = bidTot ? '$' + fmt(proj) : '—';
+      // Show the projection whenever there is one — an un-bid line still has a
+      // real projected cost (its actual spend), and blanking it hid money that
+      // the group and project totals were counting all along.
+      const projTxt = (bidTot || proj) ? '$' + fmt(proj) : '—';
 
       gBidTotal += bidTot; gActual += actual; gCumHrs += cumHrs; gProj += proj;
 
@@ -9223,7 +9254,6 @@ function renderBidTable(projId, opts = {}) {
       childTr.className = 'bid-group-child';
       childTr.dataset.group = groupId;
 
-      const _biDone = bidItemComplete(b, projId);
       const _doneBadge = _biDone
         ? `<div style="margin-top:0.18rem"><span style="display:inline-block;font-size:0.56rem;font-weight:700;color:#4ade80;background:rgba(34,197,94,0.14);border:1px solid rgba(34,197,94,0.4);border-radius:3px;padding:0.06rem 0.34rem;white-space:nowrap;letter-spacing:0.02em" title="Marked complete in the schedule">✓ Complete</span></div>`
         : '';
@@ -9297,7 +9327,7 @@ function renderBidTable(projId, opts = {}) {
       <td class="bid-calc">${gCumHrs ? qfmt(gCumHrs) : '—'}</td>
       <td class="bid-calc">—</td>
       <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
-      <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${gBidTotal ? '$'+fmt(gProj) : '—'}</td>
+      <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${(gBidTotal || gProj) ? '$'+fmt(gProj) : '—'}</td>
       ${readonly ? '' : `<td></td><td></td><td class="bid-calc" title="Total estimated labor hours to complete this group at historical pace">${gEstHrs ? '≈ '+fmt(gEstHrs,0)+' hrs' : '—'}</td>`}` ;
     const totalLabel = `<td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode)||'(No Code)'} — Total</td>`;
 
@@ -17151,7 +17181,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
       const rqty   = runningQtyForBidItem(b, projId);
       const cumHrs = cumulativeHoursForBidItem(b, projId);
       const numLab = laborerCountForBidItem(b, projId);
-      const proj   = projForBidItem(b, actual, rqty, bidQty, bidTot);
+      const proj   = projForBidItem(b, actual, rqty, bidQty, bidTot, projIsDone(p) || bidItemComplete(b, projId));
       const diff   = bidTot - actual;
       const pct    = bidQty ? (rqty / bidQty * 100).toFixed(1) + '%' : dash;
       const ruc    = rqty > 0 && actual ? '$' + fmt(actual / rqty) : dash;
@@ -17177,7 +17207,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
         ${r(cumHrs ? qfmt(cumHrs) : dash)}
         ${r(numLab || dash)}
         ${r(diffTxt, diffCls)}
-        ${r(bidTot ? '$' + fmt(proj) : dash, projCls)}
+        ${r((bidTot || proj) ? '$' + fmt(proj) : dash, bidTot ? projCls : '')}
         ${r(b.start_date  ? new Date(b.start_date  + 'T12:00:00').toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : dash)}
         ${r(b.target_date ? new Date(b.target_date + 'T12:00:00').toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : dash)}
       </tr>`;
@@ -17195,7 +17225,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
       ${r(gHrs ? fmt(gHrs) : dash)}
       ${r(dash)}
       ${r(gDiffTxt, gDiffCls)}
-      ${r(gBid ? '$' + fmt(gProj) : dash, gProjCls)}
+      ${r((gBid || gProj) ? '$' + fmt(gProj) : dash, gBid ? gProjCls : '')}
       ${r(dash)}${r(dash)}
     </tr>`;
 
@@ -17235,7 +17265,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
       <div class="sqft-metric"><div class="sqft-label">Contract Value</div><div class="sqft-val">${contractVal ? '$'+fmt(contractVal) : dash}</div></div>
       <div class="sqft-metric"><div class="sqft-label">Bid Cost</div><div class="sqft-val">${grandBid ? '$'+fmt(grandBid) : dash}</div></div>
       <div class="sqft-metric"><div class="sqft-label">Actual Cost</div><div class="sqft-val sqft-actual">${grandActual ? '$'+fmt(grandActual) : dash}</div></div>
-      <div class="sqft-metric"><div class="sqft-label">Projected Cost</div><div class="sqft-val">${grandBid ? '$'+fmt(grandProj) : dash}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Projected Cost</div><div class="sqft-val">${(grandBid || grandProj) ? '$'+fmt(grandProj) : dash}</div></div>
       <div class="sqft-sep"></div>
       <div class="sqft-metric"><div class="sqft-label">Profit</div><div class="sqft-val ${profitCls}">${profitTxt}${profitPct}</div></div>
     </div>`;
@@ -17293,7 +17323,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
       ${r(grandHrs   ? fmt(grandHrs)          : dash)}
       ${r(dash)}
       ${r(totDiffTxt, totDiffCls)}
-      ${r(grandBid   ? '$' + fmt(grandProj)   : dash, totProjCls)}
+      ${r((grandBid || grandProj) ? '$' + fmt(grandProj) : dash, grandBid ? totProjCls : '')}
       ${r(dash)}${r(dash)}
     </tr></tfoot>
   </table>
