@@ -4595,7 +4595,7 @@ function renderHomeTab() {
                 <span class="proj-home-fin-val" style="color:var(--yellow)">$${fmt(actual)}</span>
               </div>
               <div class="proj-home-fin-item">
-                <span class="proj-home-fin-label">Project Cost</span>
+                <span class="proj-home-fin-label">Projected Cost</span>
                 <span class="proj-home-fin-val" style="${projStyle}">${projTxt}</span>
               </div>
               <div class="proj-home-fin-item">
@@ -4796,7 +4796,7 @@ function renderHomeTab() {
         <span class="home-metric-sub">${fmtPct(overallPct)} of bid</span>
       </div>
       <div class="home-metric-item">
-        <span class="home-metric-label">Project Cost</span>
+        <span class="home-metric-label">Projected Cost</span>
         <span class="home-metric-value">$${fmt(totalProjected, 0)}</span>
         <span class="home-metric-sub">at current rates</span>
       </div>
@@ -4827,8 +4827,8 @@ function renderHomeTab() {
               <th>Bid Budget</th>
               <th>Actual</th>
               <th>Variance</th>
-              <th>Project Cost</th>
-              <th>Project Profit</th>
+              <th>Projected Cost</th>
+              <th>Projected Profit</th>
               <th title="Contract value minus actual cost. Final once the job is complete.">Actual Profit</th>
               <th></th>
             </tr></thead>
@@ -7934,9 +7934,9 @@ function renderBidFooter(projId, opts = {}) {
            ${fmet('Contract Value', contractVal ? '$'+fmt(contractVal) : '—', 'var(--blue)')}
            ${fmet('Bid Budget', totalBid ? '$'+fmt(totalBid) : '—', '#86efac')}
            ${fmet('Actual Cost', totalActual ? '$'+fmt(totalActual) : '—', 'var(--yellow)')}
-           ${fmet('Project Cost', (totalBid || totalProj) ? '$'+fmt(totalProj) : '—', projCol)}
+           ${fmet('Projected Cost', (totalBid || totalProj) ? '$'+fmt(totalProj) : '—', projCol)}
            <div style="width:1px;height:30px;background:var(--border);align-self:center"></div>
-           ${fmet('Project Profit', profitDisp, profitCol)}
+           ${fmet('Projected Profit', profitDisp, profitCol)}
          </div>`;
       const sqft = parseFloat(p['sqft']) || 0;
       if (sqft > 0) {
@@ -17298,9 +17298,9 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
       <div class="sqft-metric"><div class="sqft-label">Contract Value</div><div class="sqft-val">${contractVal ? '$'+fmt(contractVal) : dash}</div></div>
       <div class="sqft-metric"><div class="sqft-label">Bid Budget</div><div class="sqft-val">${grandBid ? '$'+fmt(grandBid) : dash}</div></div>
       <div class="sqft-metric"><div class="sqft-label">Actual Cost</div><div class="sqft-val sqft-actual">${grandActual ? '$'+fmt(grandActual) : dash}</div></div>
-      <div class="sqft-metric"><div class="sqft-label">Project Cost</div><div class="sqft-val">${(grandBid || grandProj) ? '$'+fmt(grandProj) : dash}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Projected Cost</div><div class="sqft-val">${(grandBid || grandProj) ? '$'+fmt(grandProj) : dash}</div></div>
       <div class="sqft-sep"></div>
-      <div class="sqft-metric"><div class="sqft-label">Project Profit</div><div class="sqft-val ${profitCls}">${profitTxt}${profitPct}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Projected Profit</div><div class="sqft-val ${profitCls}">${profitTxt}${profitPct}</div></div>
     </div>`;
 
   const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -17580,8 +17580,8 @@ function renderFinancials() {
           <th>Contract Value</th>
           <th>Bid Budget</th>
           <th>Actual</th>
-          <th title="Estimated final cost — never less than what has already been spent">Project Cost</th>
-          <th title="Contract minus projected final cost">Project Profit</th>
+          <th title="Estimated final cost — never less than what has already been spent">Projected Cost</th>
+          <th title="Contract minus projected final cost">Projected Profit</th>
           <th title="Contract value minus actual cost. Final once the job is complete.">Actual Profit</th>
         </tr></thead>
         <tbody>${body}</tbody>
@@ -17599,7 +17599,7 @@ function renderFinancials() {
       </table>
     </div>
     <p style="font-size:0.72rem;color:var(--muted);margin-top:0.6rem;line-height:1.5">
-      Project Profit is contract value minus <strong>projected</strong> final cost, matching the project pages.
+      Projected Profit is contract value minus <strong>projected</strong> final cost, matching the project pages.
       Actual Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
       figure once it is complete, and high in between on jobs that have barely started.
       ${noContract ? `${noContract} job${noContract === 1 ? ' has' : 's have'} no contract amount, so ${noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
