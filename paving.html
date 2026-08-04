@@ -4226,7 +4226,7 @@ function renderMobileProjCards() {
     const varColor = variance >= 0 ? 'var(--green)' : 'var(--red)';
     const varTxt   = !bid ? '—' : (variance >= 0 ? '' : '−') + '$' + fmt(Math.abs(variance));
     const status   = p['status'] || '';
-    const statusColor = status === 'Complete' ? 'var(--blue)' : status === 'Active' ? 'var(--green)' : status === 'At Risk' ? 'var(--red)' : 'var(--muted)';
+    const statusColor = statusTextColor(status);
     const meta = [p['job-number'], p['client']].filter(Boolean).join(' · ');
     return `<div class="mob-proj-card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
@@ -4496,9 +4496,7 @@ function renderHomeTab() {
     let statusCell;
     if (atRisk > 0)       statusCell = `<span style="color:var(--red);font-size:0.7rem;font-weight:600">⚠ ${atRisk} At Risk</span>`;
     else if (onHold > 0)  statusCell = `<span style="color:var(--yellow);font-size:0.7rem;font-weight:600">◼ ${onHold} On Hold</span>`;
-    else if (status === 'Active')   statusCell = `<span style="color:var(--green);font-size:0.7rem">Active</span>`;
-    else if (status === 'Complete') statusCell = `<span style="color:var(--blue);font-size:0.7rem">Complete</span>`;
-    else if (status)                statusCell = `<span style="color:var(--muted);font-size:0.7rem">${esc(status)}</span>`;
+    else if (status)                statusCell = `<span style="color:${statusTextColor(status)};font-size:0.7rem">${esc(status)}</span>`;
     else                            statusCell = `<span style="color:var(--muted)">—</span>`;
     let deadlineNote = '';
     if (!projDone && daysLeft !== null) {
@@ -7320,6 +7318,15 @@ function toggleProjectAssignment(projId, field, name, checked) {
   // Re-render daily table if open so dropdown options update immediately
   const dailyTbody = document.getElementById('daily-tbody-' + projId);
   if (dailyTbody) renderDailyTable(projId);
+}
+
+// Foreground colour for a project status, matching the .badge-* palette that
+// statusBadgeClass() uses. For places that render status as plain text rather
+// than a badge — the Home projects table and the mobile project card — so both
+// spellings of "what colour is this status" stay in step.
+function statusTextColor(s) {
+  return ({ 'Bidding':'var(--blue)', 'Awarded':'#86efac', 'In Progress':'var(--green)',
+    'Substantially Complete':'#34d399', 'Complete':'#60a5fa', 'On Hold':'var(--yellow)' })[s] || 'var(--muted)';
 }
 
 function statusBadgeClass(s) {

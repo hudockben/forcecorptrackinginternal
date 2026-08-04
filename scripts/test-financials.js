@@ -414,6 +414,41 @@ for (const file of FILES) {
     /const profit\s*=\s*contractVal \? contractVal - projCost : null;/.test(src));
 }
 
+// ── Status colours, everywhere status is shown ──────────────────────────────
+// Colouring status by a value the app never writes is silently wrong: the cell
+// still renders, just grey. Both spellings — the badge class and the plain
+// text colour — have to cover the real set and agree with each other.
+console.log('\n══════════ status colours ══════════');
+const REAL_STATUSES = ['Bidding', 'Awarded', 'In Progress', 'Substantially Complete', 'Complete', 'On Hold'];
+for (const file of FILES) {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const mod = new Function(
+    `${extractFunction(src, 'statusTextColor')}
+     ${extractFunction(src, 'statusBadgeClass')}
+     return { statusTextColor, statusBadgeClass };`)();
+
+  console.log(`\n[${file}]`);
+  assert('the status list the project form offers is the one we colour',
+    REAL_STATUSES.every(s => src.includes(`'${s}'`)));
+  for (const s of REAL_STATUSES) {
+    assert(`${s} is coloured, not left grey`,
+      mod.statusTextColor(s) !== 'var(--muted)' && mod.statusBadgeClass(s) !== 'badge-default');
+  }
+  assert('an unknown status still falls back safely',
+    mod.statusTextColor('Wat') === 'var(--muted)' && mod.statusBadgeClass('Wat') === 'badge-default');
+  assert('no colour lookup keys on a status this app never writes',
+    !/=== 'Active'/.test(src), "'Active' is not in the project status list");
+
+  // The Home cell shows At Risk / On Hold counts from the bid items ahead of
+  // the project's own status — that ordering must survive the colour change.
+  const homeCell = src.slice(src.indexOf('let statusCell;'), src.indexOf('let deadlineNote'));
+  assert('the Home cell still puts At Risk and On Hold counts first',
+    homeCell.indexOf('At Risk') < homeCell.indexOf('statusTextColor')
+    && homeCell.indexOf('On Hold') < homeCell.indexOf('statusTextColor'));
+  assert('  and colours the status through the shared helper',
+    /statusCell = `<span style="color:\$\{statusTextColor\(status\)\}/.test(homeCell));
+}
+
 // The divisions that have no bid items or analytics tab are out of scope.
 console.log('\n[divisions without jobs are untouched]');
 for (const file of ['trucking.html', 'dust.html', 'quarry.html', 'intercompany.html']) {
