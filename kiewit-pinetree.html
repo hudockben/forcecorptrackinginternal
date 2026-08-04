@@ -4405,7 +4405,7 @@ function renderHomeTab() {
             </div>
             <div class="proj-home-financials">
               <div class="proj-home-fin-item">
-                <span class="proj-home-fin-label">Bid</span>
+                <span class="proj-home-fin-label">Bid Budget</span>
                 <span class="proj-home-fin-val" style="color:var(--green)">$${fmt(bid)}</span>
               </div>
               <div class="proj-home-fin-item">
@@ -4413,7 +4413,7 @@ function renderHomeTab() {
                 <span class="proj-home-fin-val" style="color:var(--yellow)">$${fmt(actual)}</span>
               </div>
               <div class="proj-home-fin-item">
-                <span class="proj-home-fin-label">Projected</span>
+                <span class="proj-home-fin-label">Project Cost</span>
                 <span class="proj-home-fin-val" style="${projStyle}">${projTxt}</span>
               </div>
               <div class="proj-home-fin-item">
@@ -4464,6 +4464,10 @@ function renderHomeTab() {
     const profitTxt     = profit !== null ? (profit >= 0 ? '$' + fmt(profit) : '-$' + fmt(Math.abs(profit))) : '—';
     const profitStyle   = profit === null ? 'color:var(--muted)' : profit >= 0 ? 'color:var(--green)' : 'color:var(--red)';
     const profitPct     = (profit !== null && contractVal) ? ` (${(profit / contractVal * 100).toFixed(1)}%)` : '';
+    const actProfit     = (contractVal && actual) ? contractVal - actual : null;
+    const actProfitTxt  = actProfit !== null ? (actProfit >= 0 ? '$' + fmt(actProfit) : '-$' + fmt(Math.abs(actProfit))) : '—';
+    const actProfitStyle= actProfit === null ? 'color:var(--muted)' : actProfit >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    const actProfitPct  = (actProfit !== null && contractVal) ? ` (${(actProfit / contractVal * 100).toFixed(1)}%)` : '';
     const barColor  = !bid ? 'var(--muted)' : actual/bid >= 1 ? 'var(--red)' : actual/bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
     const name      = p['project-name'] || 'Untitled Project';
     const meta      = [p['job-number'], p['client']].filter(Boolean).map(v => esc(v)).join(' · ');
@@ -4504,6 +4508,7 @@ function renderHomeTab() {
       <td class="pt-num" style="${varStyle}">${varTxt}</td>
       <td class="pt-num" style="${projStyle}">${projTxt}</td>
       <td class="pt-num" style="${profitStyle}">${profitTxt}<span style="font-size:0.7em;opacity:0.8">${profitPct}</span></td>
+      <td class="pt-num" style="${actProfitStyle}">${actProfitTxt}<span style="font-size:0.7em;opacity:0.8">${actProfitPct}</span></td>
       <td>
         <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
           title="${p.pinned ? 'Unpin' : 'Pin to Home'}"
@@ -4599,7 +4604,7 @@ function renderHomeTab() {
         <span class="home-metric-sub">${statusCounts.Active || 0} active</span>
       </div>
       <div class="home-metric-item">
-        <span class="home-metric-label">Total Bid</span>
+        <span class="home-metric-label">Total Bid Budget</span>
         <span class="home-metric-value" style="color:var(--green)">$${fmt(totalBid, 0)}</span>
         <span class="home-metric-sub">across all projects</span>
       </div>
@@ -4609,7 +4614,7 @@ function renderHomeTab() {
         <span class="home-metric-sub">${fmtPct(overallPct)} of bid</span>
       </div>
       <div class="home-metric-item">
-        <span class="home-metric-label">Projected</span>
+        <span class="home-metric-label">Project Cost</span>
         <span class="home-metric-value">$${fmt(totalProjected, 0)}</span>
         <span class="home-metric-sub">at current rates</span>
       </div>
@@ -4636,12 +4641,13 @@ function renderHomeTab() {
               <th>Project</th>
               <th>Status</th>
               <th>Progress</th>
-              <th>Contract</th>
-              <th>Bid</th>
+              <th>Contract Value</th>
+              <th>Bid Budget</th>
               <th>Actual</th>
               <th>Variance</th>
-              <th>Projected</th>
-              <th>Profit</th>
+              <th>Project Cost</th>
+              <th>Project Profit</th>
+              <th title="Contract value minus actual cost. Final once the job is complete.">Actual Profit</th>
               <th></th>
             </tr></thead>
             <tbody>${projectTableRows}</tbody>
@@ -7695,11 +7701,11 @@ function renderBidFooter(projId, opts = {}) {
       let barHTML =
         `<div style="display:flex;gap:1.4rem;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:0.55rem 1rem;flex-wrap:wrap;margin-bottom:0.25rem">
            ${fmet('Contract Value', contractVal ? '$'+fmt(contractVal) : '—', 'var(--blue)')}
-           ${fmet('Bid Cost', totalBid ? '$'+fmt(totalBid) : '—', '#86efac')}
+           ${fmet('Bid Budget', totalBid ? '$'+fmt(totalBid) : '—', '#86efac')}
            ${fmet('Actual Cost', totalActual ? '$'+fmt(totalActual) : '—', 'var(--yellow)')}
-           ${fmet('Projected Cost', (totalBid || totalProj) ? '$'+fmt(totalProj) : '—', projCol)}
+           ${fmet('Project Cost', (totalBid || totalProj) ? '$'+fmt(totalProj) : '—', projCol)}
            <div style="width:1px;height:30px;background:var(--border);align-self:center"></div>
-           ${fmet('Profit', profitDisp, profitCol)}
+           ${fmet('Project Profit', profitDisp, profitCol)}
          </div>`;
       const sqft = parseFloat(p['sqft']) || 0;
       if (sqft > 0) {
@@ -16542,9 +16548,9 @@ async function exportJobSummary(projId, opts = {}) {
   const profitPct   = (profitVal !== null && contractVal) ? ` (${(profitVal / contractVal * 100).toFixed(1)}%)` : '';
   const finBarHTML = `<div class="sum-bar">
     <div class="sum-metric"><div class="sum-label">Contract Value</div><div class="sum-val">${contractVal ? '$' + fmt(contractVal) : dash}</div></div>
-    <div class="sum-metric"><div class="sum-label">Bid Cost</div><div class="sum-val">${grandBid ? '$' + fmt(grandBid) : dash}</div></div>
+    <div class="sum-metric"><div class="sum-label">Bid Budget</div><div class="sum-val">${grandBid ? '$' + fmt(grandBid) : dash}</div></div>
     <div class="sum-sep"></div>
-    <div class="sum-metric"><div class="sum-label">Profit (Contract − Actual)</div><div class="sum-val ${profitCls}">${profitVal === null ? dash : money(profitVal) + profitPct}</div></div>
+    <div class="sum-metric"><div class="sum-label">Actual Profit</div><div class="sum-val ${profitCls}">${profitVal === null ? dash : money(profitVal) + profitPct}</div></div>
   </div>`;
 
   const workBarHTML = `<div class="sum-bar">
@@ -16820,11 +16826,11 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   const profitPct   = (profitVal !== null && contractVal) ? ` (${(profitVal / contractVal * 100).toFixed(1)}%)` : '';
   const finBarHTML = `<div class="sqft-bar">
       <div class="sqft-metric"><div class="sqft-label">Contract Value</div><div class="sqft-val">${contractVal ? '$'+fmt(contractVal) : dash}</div></div>
-      <div class="sqft-metric"><div class="sqft-label">Bid Cost</div><div class="sqft-val">${grandBid ? '$'+fmt(grandBid) : dash}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Bid Budget</div><div class="sqft-val">${grandBid ? '$'+fmt(grandBid) : dash}</div></div>
       <div class="sqft-metric"><div class="sqft-label">Actual Cost</div><div class="sqft-val sqft-actual">${grandActual ? '$'+fmt(grandActual) : dash}</div></div>
-      <div class="sqft-metric"><div class="sqft-label">Projected Cost</div><div class="sqft-val">${(grandBid || grandProj) ? '$'+fmt(grandProj) : dash}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Project Cost</div><div class="sqft-val">${(grandBid || grandProj) ? '$'+fmt(grandProj) : dash}</div></div>
       <div class="sqft-sep"></div>
-      <div class="sqft-metric"><div class="sqft-label">Profit</div><div class="sqft-val ${profitCls}">${profitTxt}${profitPct}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Project Profit</div><div class="sqft-val ${profitCls}">${profitTxt}${profitPct}</div></div>
     </div>`;
 
   const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -17028,6 +17034,10 @@ function renderFinancials() {
       // profit of "-$cost" would read as a loss on a job that simply hasn't
       // had its contract keyed in yet.
       profit: contract ? contract - projected : null,
+      // Realised profit — contract minus what has actually been spent. Needs
+      // real spend as well as a contract: contract-minus-nothing would post a
+      // barely-started job as pure margin.
+      actProfit: (contract && actual) ? contract - actual : null,
     };
   });
 
@@ -17054,8 +17064,10 @@ function renderFinancials() {
   };
 
   const body = rows.map(r => {
-    const pct = (r.profit !== null && r.contract)
-      ? ` <span style="font-size:0.7em;opacity:0.8">(${(r.profit / r.contract * 100).toFixed(1)}%)</span>` : '';
+    const _pctOf = v => (v !== null && r.contract)
+      ? ` <span style="font-size:0.7em;opacity:0.8">(${(v / r.contract * 100).toFixed(1)}%)</span>` : '';
+    const pct    = _pctOf(r.profit);
+    const actPct = _pctOf(r.actProfit);
     return `<tr onclick="goToProject('${r.id}')" style="cursor:pointer">
       <td>
         <div class="pt-name">${esc(r.name)}</div>
@@ -17068,6 +17080,7 @@ function renderFinancials() {
       <td class="pt-num" style="color:var(--yellow)">${money(r.actual)}</td>
       <td class="pt-num">${money(r.projected)}</td>
       <td class="pt-num" style="${profCol(r.profit)}">${r.profit === null ? '—' : signed(r.profit) + pct}</td>
+      <td class="pt-num" style="${profCol(r.actProfit)}">${r.actProfit === null ? '—' : signed(r.actProfit) + actPct}</td>
     </tr>`;
   }).join('');
 
@@ -17079,6 +17092,12 @@ function renderFinancials() {
   const totContract  = withContract.reduce((s, r) => s + r.contract, 0);
   const totProfitPct = totContract ? ` <span style="font-size:0.7em;opacity:0.8">(${(totProfit / totContract * 100).toFixed(1)}%)</span>` : '';
   const noContract   = rows.length - withContract.length;
+  // Actual Profit needs spend as well as a contract, so it totals its own
+  // subset rather than borrowing the projected-profit one.
+  const withSpend     = rows.filter(r => r.actProfit !== null);
+  const totActProfit  = withSpend.reduce((s, r) => s + r.actProfit, 0);
+  const totActBase    = withSpend.reduce((s, r) => s + r.contract, 0);
+  const totActPct     = totActBase ? ` <span style="font-size:0.7em;opacity:0.8">(${(totActProfit / totActBase * 100).toFixed(1)}%)</span>` : '';
 
   el.innerHTML = `
     <p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${rows.length} job${rows.length === 1 ? '' : 's'})</span></p>
@@ -17088,11 +17107,12 @@ function renderFinancials() {
           <th>Job Name</th>
           <th>Job #</th>
           <th>Status</th>
-          <th>Contract</th>
-          <th>Bid</th>
+          <th>Contract Value</th>
+          <th>Bid Budget</th>
           <th>Actual</th>
-          <th title="Estimated final cost — never less than what has already been spent">Projected</th>
-          <th title="Contract minus projected final cost">Profit</th>
+          <th title="Estimated final cost — never less than what has already been spent">Project Cost</th>
+          <th title="Contract minus projected final cost">Project Profit</th>
+          <th title="Contract value minus actual cost. Final once the job is complete.">Actual Profit</th>
         </tr></thead>
         <tbody>${body}</tbody>
         <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
@@ -17104,11 +17124,14 @@ function renderFinancials() {
           <td class="pt-num" style="color:var(--yellow)">${money(sum('actual'))}</td>
           <td class="pt-num">${money(sum('projected'))}</td>
           <td class="pt-num" style="${profCol(totProfit)}">${signed(totProfit)}${totProfitPct}</td>
+          <td class="pt-num" style="${profCol(totActProfit)}">${withSpend.length ? signed(totActProfit) + totActPct : '—'}</td>
         </tr></tfoot>
       </table>
     </div>
     <p style="font-size:0.72rem;color:var(--muted);margin-top:0.6rem;line-height:1.5">
-      Profit is contract minus <strong>projected</strong> final cost, matching the project pages.
+      Project Profit is contract value minus <strong>projected</strong> final cost, matching the project pages.
+      Actual Profit is contract value minus cost <strong>spent so far</strong> — it is the final figure once a job is complete,
+      and reads high on jobs that have barely started.
       ${noContract ? `${noContract} job${noContract === 1 ? ' has' : 's have'} no contract amount, so ${noContract === 1 ? 'it is' : 'they are'} excluded from the profit total.` : ''}
     </p>`;
 }

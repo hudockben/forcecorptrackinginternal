@@ -69,16 +69,17 @@ function render(file, projects) {
   return host.innerHTML;
 }
 
-// A bid line whose actual equals its bid and is complete, so its projection is
-// exactly its actual — keeps the arithmetic in the expectations obvious.
-const line = (cost, actual) => ({
-  cost_code: 'CC', sub_code: 'S1', quantity: 1, unit_cost: cost,
-  _actual: actual, _rqty: 1, _done: true,
-});
+// A complete bid line projects at exactly its actual, which keeps the
+// arithmetic in most expectations obvious. rqty/done are overridable so a job
+// can be left mid-flight, where Project Profit and Actual Profit diverge.
 const job = (o) => ({
   id: o.id, 'project-name': o.name, 'job-number': o.job, status: o.status,
   'contract-amount': o.contract,
-  bidItems: [line(o.bid, o.actual)],
+  bidItems: [{
+    cost_code: 'CC', sub_code: 'S1', quantity: 1, unit_cost: o.bid,
+    _actual: o.actual, _rqty: o.rqty === undefined ? 1 : o.rqty,
+    _done: o.done === undefined ? true : o.done,
+  }],
   dailyRows: [{ cost_code: 'CC', sub_code: 'S1', cost: o.actual }],
 });
 
@@ -86,6 +87,12 @@ const JOBS = [
   job({ id: 'a', name: 'Franklin Regional Tennis Court', job: '1042', status: 'Active',   contract: 479312.32, bid: 375931.05, actual: 261562.30 }),
   job({ id: 'b', name: 'Saint Edmunds Field',            job: '1039', status: 'Complete', contract: 210000,    bid: 180000,    actual: 195000 }),
   job({ id: 'c', name: 'No Contract Yet',                job: '1044', status: 'Active',   contract: 0,         bid: 50000,     actual: 12000 }),
+  // A quarter of the quantity down: projects to $400,000 against $100,000 spent,
+  // so the two profit columns must not agree.
+  job({ id: 'd', name: 'Half Built Job',                 job: '1001', status: 'Active',   contract: 1000000,   bid: 500000,    actual: 100000, rqty: 0.25, done: false }),
+  // Contract signed, nothing spent — the case that would read as pure margin
+  // if Actual Profit were contract minus zero.
+  job({ id: 'e', name: 'Not Started Job',                job: '1002', status: 'Active',   contract: 800000,    bid: 600000,    actual: 0,      rqty: 0,    done: false }),
 ];
 
 for (const file of FILES) {
@@ -98,12 +105,14 @@ for (const file of FILES) {
     return html.slice(start, html.indexOf('</tr>', i));
   };
 
-  console.log('\n[every job is listed with the requested columns]');
-  assert('the header names the columns that were asked for',
-    ['Job Name', 'Job #', 'Status', 'Contract', 'Bid', 'Actual', 'Profit']
-      .every(h => html.includes(`<th>${h}</th>`) || html.includes(`>${h}</th>`)));
-  assert('all three jobs appear', JOBS.every(j => html.includes(j['project-name'])));
-  assert('the count is shown in the heading', html.includes('(3 jobs)'));
+  console.log('\n[every job is listed with the agreed column names]');
+  assert('the header uses the agreed vocabulary',
+    ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Project Cost', 'Project Profit', 'Actual Profit']
+      .every(h => html.includes(`>${h}</th>`)));
+  assert('  the old names are gone',
+    !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>/.test(html));
+  assert('every job appears', JOBS.every(j => html.includes(j['project-name'])));
+  assert('the count is shown in the heading', html.includes('(5 jobs)'));
 
   console.log('\n[a job in progress]');
   const a = rowOf('Franklin Regional Tennis Court');
@@ -125,16 +134,32 @@ for (const file of FILES) {
   console.log('\n[a job with no contract amount]');
   const c = rowOf('No Contract Yet');
   assert('its costs are still listed', c.includes('$12,000.00') && c.includes('$50,000.00'));
-  assert('profit is blank rather than a fabricated loss',
+  assert('neither profit is a fabricated loss',
     !c.includes('-$12,000.00'), c);
   assert('the table says why it is excluded from the total',
     html.includes('no contract amount'));
 
+  console.log('\n[the two profit columns are different numbers]');
+  const d = rowOf('Half Built Job');
+  assert('a quarter-built job projects $400,000', d.includes('$400,000.00'), d);
+  assert('Project Profit is contract minus projected ($600,000)', d.includes('$600,000.00'), d);
+  assert('Actual Profit is contract minus spend to date ($900,000)', d.includes('$900,000.00'), d);
+
+  console.log('\n[a signed job that has not started]');
+  const e = rowOf('Not Started Job');
+  assert('it still projects its bid', e.includes('$600,000.00'));
+  assert('Project Profit is contract minus bid ($200,000)', e.includes('$200,000.00'));
+  assert('Actual Profit stays blank rather than posting the contract as margin',
+    !e.includes('$800,000.00</span>') && !/\(100\.0%\)/.test(e), e);
+
   console.log('\n[totals]');
-  assert('contract total sums every job',   html.includes('$689,312.32'));
-  assert('actual total sums every job',     html.includes('$468,562.30'));
-  assert('profit total covers only jobs with a contract',
-    html.includes('$232,750.02'), 'expected 217,750.02 + 15,000.00');
+  assert('contract total sums every job',   html.includes('$2,489,312.32'));
+  assert('actual total sums every job',     html.includes('$568,562.30'));
+  assert('project cost total sums every job', html.includes('$1,468,562.30'));
+  assert('Project Profit total covers only jobs with a contract',
+    html.includes('$1,032,750.02'), 'expected 217,750.02 + 15,000 + 600,000 + 200,000');
+  assert('Actual Profit total covers only jobs with a contract AND spend',
+    html.includes('$1,132,750.02'), 'expected 217,750.02 + 15,000 + 900,000');
 
   console.log('\n[ordering and behaviour]');
   assert('live jobs sort above finished ones',
@@ -142,8 +167,9 @@ for (const file of FILES) {
   assert('  newest job number first among live jobs',
     html.indexOf('No Contract Yet') < html.indexOf('Franklin Regional'));
   assert('rows open the project', html.includes(`goToProject('a')`));
-  assert('the profit basis is stated on screen',
-    /Profit is contract minus <strong>projected<\/strong> final cost/.test(html));
+  assert('both profit bases are stated on screen',
+    /Project Profit is contract value minus <strong>projected<\/strong> final cost/.test(html)
+    && /Actual Profit is contract value minus cost <strong>spent so far<\/strong>/.test(html));
 
   console.log('\n[empty state]');
   assert('no projects renders an empty state, not a broken table',
@@ -163,6 +189,31 @@ for (const file of FILES) {
   assert('switching to it renders', /if \(tab === 'financials'\) renderFinancials\(\);/.test(src));
   assert('restricted roles do not get it',
     /'financials'\]/.test(src) || /!perm\.visibleTabs\.has\('financials'\)/.test(src));
+}
+
+// ── Home tab projects table ─────────────────────────────────────────────────
+// Same figures, same names, and one more column than before. A header added
+// without its matching cell (or vice versa) slides every column one to the
+// left from that point on, which is silent and looks like wrong data.
+console.log('\n══════════ home tab projects table ══════════');
+for (const file of FILES) {
+  const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const thead = src.slice(src.indexOf('<table class="proj-table">'), src.indexOf('<tbody>${projectTableRows}'));
+  const row   = src.slice(src.indexOf(`return \`<tr onclick="goToProject('\${p.id}')">`), src.indexOf('</tr>`;\n  }).join'));
+
+  console.log(`\n[${file}]`);
+  assert('the header uses the agreed vocabulary',
+    ['Contract Value', 'Bid Budget', 'Project Cost', 'Project Profit', 'Actual Profit']
+      .every(h => thead.includes(`>${h}</th>`)), thead);
+  assert('  the old names are gone',
+    !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>/.test(thead));
+  assert('  Actual Profit sits after Project Profit',
+    thead.indexOf('Project Profit') < thead.indexOf('Actual Profit'));
+  const ths = (thead.match(/<th[ >]/g) || []).length;
+  const tds = (row.match(/<td[ >]/g) || []).length;
+  assert(`every header has a cell under it (${ths} headers, ${tds} cells)`, ths === tds);
+  assert('the new cell renders the actual-profit figure',
+    /\$\{actProfitTxt\}/.test(row) && /\$\{actProfitStyle\}/.test(row));
 }
 
 // The divisions that have no bid items or analytics tab are out of scope.
