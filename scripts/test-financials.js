@@ -58,7 +58,9 @@ function loadFinancials(file, projects) {
   const code = CHAIN.map(n => extractFunction(src, n)).join('\n\n') + '\n\n' + src.slice(start, end);
 
   const bar = { innerHTML: '' }, table = { innerHTML: '' };
-  const captured = { csv: null, print: null, alerts: [], download: null };
+  // rowCost counts how often the per-project cost walk runs, which is how the
+  // cost of a re-render is measured below.
+  const captured = { csv: null, print: null, alerts: [], download: null, rowCost: 0 };
 
   const api = new Function(
     'projectsList', 'document', 'window', 'alert', 'Blob', 'URL',
@@ -72,7 +74,7 @@ function loadFinancials(file, projects) {
        selected: () => [...finSelected],
        toggleRow: finToggleRow, toggleAll: finToggleAll, clearSelection: finClearSelection,
        rows: _financialsRows, filtered: _financialsFiltered, active: _financialsActive,
-       totals: _financialsTotals,
+       totals: _financialsTotals, renderTable: _renderFinancialsTable,
      };`
   )(
     projects,
@@ -84,7 +86,7 @@ function loadFinancials(file, projects) {
     m => captured.alerts.push(m),
     function (parts) { captured.csv = parts.join(''); },
     { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} },
-    r => r.cost || 0,
+    r => { captured.rowCost++; return r.cost || 0; },
     (n, d = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }),
     s => String(s || '').replace(/"/g, '&quot;'),
     (b, id) => (b._actual || 0),
@@ -383,6 +385,40 @@ for (const file of FILES) {
     plainSel.html().includes('>Totals</td>') && !plainSel.html().includes('>Selected</td>'));
   assert('  and no clear-selection control is offered',
     !/finClearSelection\(\)/.test(plainSel.html()));
+
+  console.log('  — a keystroke costs one row build —');
+  // Building the rows walks every project's bid items and daily rows and runs
+  // the cost projection on each. The search box re-renders on every keystroke,
+  // so the table must build them once, not once per helper that needs them.
+  const perf = loadFinancials(file, JOBS);
+  perf.renderFinancials();
+  perf.captured.rowCost = 0;
+  perf.rows();
+  const oneBuild = perf.captured.rowCost;
+  assert('building the rows costs something measurable', oneBuild > 0);
+  perf.captured.rowCost = 0;
+  perf.setFilters({ q: 'fra', status: '' });
+  perf.renderTable();
+  assert('a re-render builds the rows exactly once',
+    perf.captured.rowCost === oneBuild,
+    `${perf.captured.rowCost} vs ${oneBuild} for a single build`);
+
+  console.log('  — a tick on a job that no longer exists —');
+  // Left in the set, it would keep the table in selection mode reporting a
+  // hidden job with no row to untick and no way to reach it.
+  const stale = loadFinancials(file, JOBS);
+  stale.select(['a', 'ghost-id-that-was-deleted']);
+  stale.renderFinancials();
+  assert('the stale tick is dropped', !stale.selected().includes('ghost-id-that-was-deleted'));
+  assert('  the real one is kept', stale.selected().includes('a'));
+  assert('  and no phantom hidden job is reported',
+    !/other selected job/.test(stale.html()), stale.html().slice(-300));
+  const allStale = loadFinancials(file, JOBS);
+  allStale.select(['ghost-1', 'ghost-2']);
+  allStale.renderFinancials();
+  assert('a selection of only stale ticks falls back to no selection at all',
+    allStale.selected().length === 0 && allStale.html().includes('(5 jobs)')
+    && allStale.html().includes('>Totals</td>'), 'must not strand the table in selection mode');
 
   console.log('  — status colours —');
   // There is no 'Active' status in this app. The set is Bidding / Awarded /

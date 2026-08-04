@@ -17026,10 +17026,12 @@ function _financialsRows() {
   return rows;
 }
 
-function _financialsFiltered() {
+// Takes an already-computed row set when the caller has one — building it is
+// the expensive part and the search box re-renders on every keystroke.
+function _financialsFiltered(rows) {
   const q  = (finFilters.q || '').trim().toLowerCase();
   const st = finFilters.status || '';
-  return _financialsRows().filter(r =>
+  return (rows || _financialsRows()).filter(r =>
     (!st || r.status === st) &&
     (!q  || r.name.toLowerCase().includes(q) || String(r.job).toLowerCase().includes(q))
   );
@@ -17041,8 +17043,8 @@ const _finFiltered = () => !!((finFilters.q || '').trim() || finFilters.status);
    any are ticked, otherwise everything the filters leave. Ticks are intersected
    with the filters rather than overriding them, so the figures always describe
    rows that are actually on screen. */
-function _financialsActive() {
-  const shown = _financialsFiltered();
+function _financialsActive(rows) {
+  const shown = _financialsFiltered(rows);
   return finSelected.size ? shown.filter(r => finSelected.has(r.id)) : shown;
 }
 
@@ -17132,8 +17134,14 @@ function _renderFinancialsTable() {
   if (!el) return;
 
   const all  = _financialsRows();
-  const rows = _financialsFiltered();
-  const act  = _financialsActive();
+  // A tick on a job that has since been deleted would keep the table in
+  // selection mode, reporting a hidden job with no row to untick.
+  if (finSelected.size) {
+    const live = new Set(all.map(r => r.id));
+    finSelected.forEach(id => { if (!live.has(id)) finSelected.delete(id); });
+  }
+  const rows = _financialsFiltered(all);
+  const act  = _financialsActive(all);
   const selShown = rows.filter(r => finSelected.has(r.id)).length;
 
   if (!all.length) { el.innerHTML = '<div class="home-empty">No projects yet.</div>'; return; }
