@@ -236,5 +236,61 @@ for (const file of FILES) {
   }
 }
 
+// ── Construction-schedule completion ────────────────────────────────────────
+// Completion is no longer cosmetic: it settles a line's projection at its
+// actual. tracker and kiewit both derive it from their Construction Schedule,
+// so both have to read that schedule the same way. paving has no construction
+// schedule at all — its completion is the Schedule-tab flag alone.
+console.log('\n══════════ construction-schedule completion ══════════');
+for (const file of ['tracker.html', 'kiewit-pinetree.html']) {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const mod = new Function(
+    `${extractFunction(src, '_bidCsKey')}
+     ${extractFunction(src, '_csCompletionSet')}
+     return { _csCompletionSet, _bidCsKey };`)();
+  const set = rows => mod._csCompletionSet({ rows });
+  const has = (s, cc, sc) => s.has(mod._bidCsKey(cc, sc));
+
+  console.log(`\n[${file}]`);
+  assert('a sub code whose only task is Complete counts as done',
+    has(set([{ kind: 'task', code: 'CC', subcode: 'S1', status: 'Complete' }]), 'CC', 'S1'));
+  assert('100% counts as done even without the status',
+    has(set([{ kind: 'task', code: 'CC', subcode: 'S1', status: 'In Progress', pct: 100 }]), 'CC', 'S1'));
+  assert('a half-finished second task keeps the sub code open',
+    !has(set([
+      { kind: 'task', code: 'CC', subcode: 'S1', status: 'Complete' },
+      { kind: 'task', code: 'CC', subcode: 'S1', status: 'In Progress', pct: 40 },
+    ]), 'CC', 'S1'));
+  assert('  order does not matter',
+    !has(set([
+      { kind: 'task', code: 'CC', subcode: 'S1', status: 'In Progress', pct: 40 },
+      { kind: 'task', code: 'CC', subcode: 'S1', status: 'Complete' },
+    ]), 'CC', 'S1'));
+  assert('matching ignores case and surrounding space',
+    has(set([{ kind: 'task', code: ' cc ', subcode: ' s1 ', status: 'Complete' }]), 'CC', 'S1'));
+  assert('non-task rows are ignored',
+    set([{ kind: 'milestone', code: 'CC', subcode: 'S1', status: 'Complete' }]).size === 0);
+  assert('tasks with no sub code are ignored',
+    set([{ kind: 'task', code: 'CC', subcode: '', status: 'Complete' }]).size === 0);
+  assert('a missing or empty schedule yields no completions',
+    mod._csCompletionSet(null).size === 0 && set([]).size === 0);
+}
+
+// The wiring itself: a schedule that is never loaded leaves completion cold,
+// which is what made the home page and the bid view disagree.
+console.log('\n[the completion cache is actually populated]');
+for (const file of ['tracker.html', 'kiewit-pinetree.html']) {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  assert(`${file} warms every project's completion in one batch`,
+    /async function _loadAllBidCsCompletion\(\)/.test(src) && /apiBatchGet\(ids\.map\(_csKey\)\)/.test(src));
+  assert(`  ${file} calls it during init`, /await _loadAllBidCsCompletion\(\);/.test(src));
+  assert(`  ${file} refreshes it when a bid view opens`, /_loadBidCsCompletion\(projId\);/.test(src));
+}
+{
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'paving.html'), 'utf8');
+  assert('paving has no construction schedule, so nothing to warm',
+    !/conschedule/.test(src) && !/_loadAllBidCsCompletion/.test(src));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

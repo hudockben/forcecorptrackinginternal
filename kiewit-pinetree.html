@@ -2529,6 +2529,7 @@
   <div style="display:flex;align-items:center;gap:1rem;padding:0.75rem 1.25rem;border-bottom:1px solid var(--border);background:var(--surface);">
     <button class="btn btn-ghost" onclick="closeBidView()">&#8592; Back</button>
     <span id="bid-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
+    <span id="bid-fs-offbid" style="display:none;color:#fbbf24;font-size:0.78rem;font-weight:600;cursor:help;margin-left:0.5rem;white-space:nowrap;"></span>
     <div style="margin-left:auto;display:flex;gap:0.5rem">
       <button class="btn btn-ghost" id="bid-fs-email">&#9993; Email</button>
       <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
@@ -7412,15 +7413,52 @@ function toggleBidItemComplete(projId, biId) {
   renderBidTable(projId);
 }
 
-/* ── Bid sub-code completion (Schedule tab flag) ───────────────────────────
-   A bid sub code is treated as complete when it's flagged via the Schedule
-   tab's "Mark Complete" button (bi.is_complete). _bidCsComplete mirrors the
-   tracker build for a Construction Schedule source; this division has no
-   construction schedule, so the set stays empty and completion is driven by
-   the Schedule tab flag alone. */
-const _bidCsComplete = {};
+/* ── Bid sub-code completion (Schedule tab flag OR Construction Schedule task) ──
+   A bid sub code is treated as complete when it's flagged via the Schedule tab's
+   "Mark Complete" button (bi.is_complete) OR its matching Construction Schedule
+   task(s) are all marked Complete. The construction schedule lives under a
+   separate, async-loaded key (_csKey), so its completion is cached per project:
+   warmed for every project after load, and refreshed when a bid view opens. */
+const _bidCsComplete = {};   // projId -> Set of "costcode||subcode" (normalized) complete in the Construction Schedule
 function _bidCsKey(cc, sc) {
   return (cc || '').trim().toLowerCase() + '||' + (sc || '').trim().toLowerCase();
+}
+function _csCompletionSet(data) {
+  // A sub code counts as complete only when every construction task carrying it
+  // is Complete (or 100%) — a half-finished second task on the same sub code
+  // keeps it open. Tasks without a sub code are ignored.
+  const seen = new Map();   // key -> all-tasks-complete-so-far
+  if (data && Array.isArray(data.rows)) {
+    data.rows.forEach(r => {
+      if (!r || r.kind !== 'task') return;
+      const sc = (r.subcode || '').trim();
+      if (!sc) return;
+      const key  = _bidCsKey(r.code, sc);
+      const done = r.status === 'Complete' || (parseFloat(r.pct) || 0) >= 100;
+      seen.set(key, seen.has(key) ? (seen.get(key) && done) : done);
+    });
+  }
+  const set = new Set();
+  seen.forEach((allDone, key) => { if (allDone) set.add(key); });
+  return set;
+}
+async function _loadBidCsCompletion(projId) {
+  if (!projId) return;
+  const data = await apiGet(_csKey(projId));
+  _bidCsComplete[projId] = _csCompletionSet(data);
+  if (bidViewProjId === projId) renderBidTable(projId);   // re-render now that CS completion is known
+}
+
+/* Warm the completion cache for every project in one batched request.
+   Projected cost settles a completed line at its actual instead of
+   extrapolating it, so a cold cache made the home page read higher than the
+   same project's bid view — which had loaded the schedule on open. Both now
+   start from the same information. Called once, after loadProjects(). */
+async function _loadAllBidCsCompletion() {
+  const ids = (projectsList || []).map(p => p && p.id).filter(Boolean);
+  if (!ids.length) return;
+  const values = await apiBatchGet(ids.map(_csKey));
+  ids.forEach(id => { _bidCsComplete[id] = _csCompletionSet(values[_csKey(id)]); });
 }
 function bidItemComplete(b, projId) {
   if (!b) return false;
@@ -7510,6 +7548,29 @@ function offBidForProject(projIdOrProj) {
     .sort((a, b) => b.actual - a.actual);
   const total = codes.reduce((s, c) => s + c.actual, 0);
   return { total, codes };
+}
+
+// Populate the ⚠ off-bid badge in the fullscreen bid view header. Hover shows
+// the offending codes. No-op when the badge element isn't present.
+function _renderBidOffBidBadge(projId) {
+  const el = document.getElementById('bid-fs-offbid');
+  if (!el) return;
+  const info = offBidForProject(projId);
+  if (!info || info.total <= 0.005) {
+    el.style.display = 'none';
+    el.textContent  = '';
+    el.removeAttribute('title');
+    return;
+  }
+  const lines = info.codes.slice(0, 12)
+    .map(c => `  ${c.cost_code || '(blank)'}${c.sub_code ? ' / ' + c.sub_code : ''}: $${fmt(c.actual)}`)
+    .join('\n');
+  const more = info.codes.length > 12 ? `\n  …and ${info.codes.length - 12} more` : '';
+  el.textContent = `⚠ $${fmt(info.total)} off-bid`;
+  el.title = `$${fmt(info.total)} in daily costs aren't matching any bid line, so they don't show against a bid item above.\n`
+    + `They are still counted in the project's actual and projected cost.\n`
+    + `Usually the cost code / sub code spelling or case doesn't match the bid line. Check these:\n${lines}${more}`;
+  el.style.display = '';
 }
 
 // A finished project's projected cost is simply what it cost — nothing is left
@@ -8813,6 +8874,7 @@ function renderBidTable(projId, opts = {}) {
   if (items.length === 0) {
     tbody.innerHTML = `<tr><td colspan="${COLS}" style="text-align:center;color:var(--muted);padding:1rem 0">${readonly ? 'No bid items.' : 'No bid items yet — click <strong>+ Add Item</strong> to start.'}</td></tr>`;
     renderBidFooter(projId, opts);
+    if (bidViewProjId === projId) _renderBidOffBidBadge(projId);
     return;
   }
 
@@ -8999,7 +9061,7 @@ function renderBidTable(projId, opts = {}) {
   if (scroller && savedScroll) scroller.scrollTop = savedScroll;
 
   renderBidFooter(projId, opts);
-  if (bidViewProjId === projId) _updateBidFilterButtons();
+  if (bidViewProjId === projId) { _updateBidFilterButtons(); _renderBidOffBidBadge(projId); }
 }
 
 function projectCardHTML(p) {
@@ -17929,6 +17991,7 @@ function openBidView(projId) {
   document.getElementById('bid-fs-tfoot').id = 'bfoot-' + projId;
   document.getElementById('bid-fullscreen').style.display = 'flex';
   renderBidTable(projId);
+  _loadBidCsCompletion(projId);   // refresh construction-schedule completion (async), then re-render
 }
 
 function closeBidView() {
@@ -19679,6 +19742,10 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
 
   // Replay any writes that were persisted to WAL but never confirmed
   _walReplay().then(() => _walStartPeriodicSync());
+
+  // Needs the project ids, so it can't join the batch above. One request, and
+  // projected cost reads the same on the home page as inside a project.
+  await _loadAllBidCsCompletion();
 
   // Defer visible-tab renders so the browser can paint first
   setTimeout(() => {

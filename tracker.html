@@ -7678,6 +7678,18 @@ async function _loadBidCsCompletion(projId) {
   _bidCsComplete[projId] = _csCompletionSet(data);
   if (bidViewProjId === projId) renderBidTable(projId);   // re-render now that CS completion is known
 }
+
+/* Warm the completion cache for every project in one batched request.
+   Projected cost settles a completed line at its actual instead of
+   extrapolating it, so a cold cache made the home page read higher than the
+   same project's bid view — which had loaded the schedule on open. Both now
+   start from the same information. Called once, after loadProjects(). */
+async function _loadAllBidCsCompletion() {
+  const ids = (projectsList || []).map(p => p && p.id).filter(Boolean);
+  if (!ids.length) return;
+  const values = await apiBatchGet(ids.map(_csKey));
+  ids.forEach(id => { _bidCsComplete[id] = _csCompletionSet(values[_csKey(id)]); });
+}
 function bidItemComplete(b, projId) {
   if (!b) return false;
   if (b.is_complete) return true;                          // Schedule tab flag
@@ -9116,6 +9128,7 @@ function _renderBidOffBidBadge(projId) {
   const more = info.codes.length > 12 ? `\n  …and ${info.codes.length - 12} more` : '';
   el.textContent = `⚠ $${fmt(info.total)} off-bid`;
   el.title = `$${fmt(info.total)} in daily costs aren't matching any bid line, so they don't show against a bid item above.\n`
+    + `They are still counted in the project's actual and projected cost.\n`
     + `Usually the cost code / sub code spelling or case doesn't match the bid line. Check these:\n${lines}${more}`;
   el.style.display = '';
 }
@@ -21601,6 +21614,10 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
 
   // Replay any writes that were persisted to WAL but never confirmed
   _walReplay().then(() => _walStartPeriodicSync());
+
+  // Needs the project ids, so it can't join the batch above. One request, and
+  // projected cost reads the same on the home page as inside a project.
+  await _loadAllBidCsCompletion();
 
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
   if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
