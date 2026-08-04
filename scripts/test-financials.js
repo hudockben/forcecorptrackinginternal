@@ -171,6 +171,28 @@ for (const file of FILES) {
     /Project Profit is contract value minus <strong>projected<\/strong> final cost/.test(html)
     && /Actual Profit is contract value minus cost <strong>spent so far<\/strong>/.test(html));
 
+  console.log('\n[a total with nothing to total is unknown, not zero]');
+  // Rendering "$0.00" in profit-green across a portfolio where no job carries
+  // a contract asserts break-even on figures nobody has entered yet.
+  const noneHtml = render(file, [
+    job({ id: 'x', name: 'Unpriced One', job: '900', status: 'Active', contract: 0, bid: 1000, actual: 500 }),
+    job({ id: 'y', name: 'Unpriced Two', job: '901', status: 'Active', contract: 0, bid: 2000, actual: 900 }),
+  ]);
+  const foot = noneHtml.slice(noneHtml.indexOf('<tfoot>'));
+  assert('neither profit total claims $0.00 when no job has a contract',
+    !/\$0\.00/.test(foot), foot);
+  assert('  both dash instead', (foot.match(/—/g) || []).length >= 2);
+  assert('  and the cost columns still total',
+    foot.includes('$3,000.00') && foot.includes('$1,400.00'));
+  // The spend-only exclusion is separate from the contract-only one.
+  const noSpendHtml = render(file, [
+    job({ id: 'z', name: 'Signed Not Started', job: '902', status: 'Active', contract: 500000, bid: 400000, actual: 0, rqty: 0, done: false }),
+  ]);
+  const noSpendFoot = noSpendHtml.slice(noSpendHtml.indexOf('<tfoot>'));
+  assert('Project Profit still totals when a job has a contract but no spend',
+    noSpendFoot.includes('$100,000.00'), noSpendFoot);
+  assert('  while Actual Profit dashes', /—/.test(noSpendFoot));
+
   console.log('\n[empty state]');
   assert('no projects renders an empty state, not a broken table',
     /No projects yet/.test(render(file, [])));
@@ -214,6 +236,13 @@ for (const file of FILES) {
   assert(`every header has a cell under it (${ths} headers, ${tds} cells)`, ths === tds);
   assert('the new cell renders the actual-profit figure',
     /\$\{actProfitTxt\}/.test(row) && /\$\{actProfitStyle\}/.test(row));
+  // The formula lives here as well as in renderFinancials, so it can drift.
+  // Both guards matter: no contract means no revenue to subtract from, and no
+  // spend means a signed-but-unstarted job would post its contract as margin.
+  assert('Actual Profit is contract minus actual, guarded on both',
+    /const actProfit\s*=\s*\(contractVal && actual\)\s*\?\s*contractVal - actual\s*:\s*null;/.test(src));
+  assert('  Project Profit still subtracts projected, not actual',
+    /const profit\s*=\s*contractVal \? contractVal - projCost : null;/.test(src));
 }
 
 // The divisions that have no bid items or analytics tab are out of scope.
