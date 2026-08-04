@@ -47,16 +47,16 @@ function extractFunction(src, name) {
 function aggregate(file, projects) {
   const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   const home = extractFunction(src, 'renderHomeTab');
-  const from = home.indexOf('  let totalBid = 0');
-  const to   = home.indexOf('  const overallPct =');
+  const from = home.indexOf('  let ipCount = 0');
+  // Stops before getAllDailyRows() and the PO counts, which are unrelated to
+  // the money figures and would need stubbing for nothing.
+  const to   = home.indexOf('  const allDaily');
   if (from < 0 || to < 0) throw new Error(`aggregation block not found in ${file}`);
-  const derivedEnd = home.indexOf('const money0 =', to);
-  if (derivedEnd < 0) throw new Error(`derived figures not found in ${file}`);
-  const block = home.slice(from, home.indexOf('\n', derivedEnd));
+  const block = home.slice(from, to);
 
   return new Function('projectsList', 'dailyRowCost', 'projIsDone', 'projectedCostForProject', 'fmt',
     `${block}
-     return { ipCount, ipContract, ipBid, ipActual, ipProjected, ipProfit, ipProfitBase,
+     return { ipCount, ipContract, ipBid, ipActual, ipProfit, ipProfitBase,
               doneActProfit, doneCount, ipVariance, ipPct };`
   )(
     projects,
@@ -151,6 +151,31 @@ for (const file of FILES) {
   }
   // The old subtitle counted bid ITEMS with an Active status, so 55 projects
   // reported 149 active. There is no project status called Active at all.
+  // Nine cards do not fit one flex row on most screens, and the values are
+  // nowrap + ellipsis over min-width:0 — without wrapping the money gets cut
+  // off mid-number, which on a financial strip reads as a different figure.
+  const strip = src.slice(src.indexOf('.home-metric-strip {'), src.indexOf('.home-metric-label {'));
+  assert('the strip wraps rather than squeezing the figures',
+    /\.home-metric-strip\s*\{[^}]*flex-wrap:\s*wrap/.test(strip), strip.slice(0, 160));
+  assert('  and each card keeps a readable width',
+    /\.home-metric-item\s*\{[^}]*flex:\s*1 1 \d+px/.test(strip));
+  const cards = (src.match(/<div class="home-metric-item/g) || []).length;
+  assert(`  ${cards} cards are on the strip`, cards >= LABELS.length);
+
+  // The old portfolio-wide totals fed nothing after the rebuild, but the loop
+  // still projected a cost for every project to compute them.
+  const home = extractFunction(src, 'renderHomeTab');
+  for (const dead of ['totalBid', 'totalActual', 'totalProjected', 'overallPct', 'overClass', 'ipProjected']) {
+    assert(`  ${dead} is gone rather than computed and ignored`, !new RegExp(`\\b${dead}\\b`).test(home));
+  }
+  // Scoped to the aggregation loop — the projects table below it projects
+  // costs too, legitimately, for its own rows.
+  const agg = home.slice(home.indexOf('  let ipCount = 0'), home.indexOf('  const allDaily'));
+  assert('  the aggregation projects a cost only where one is read',
+    (agg.match(/projectedCostForProject\(/g) || []).length === 1
+    && /if \(projContract\) \{ ipProfit \+= projContract - projectedCostForProject\(p\)/.test(agg),
+    `${(agg.match(/projectedCostForProject\(/g) || []).length} calls in the loop`);
+
   assert('the old bid-item "N active" subtitle is gone',
     !/home-metric-sub">\$\{statusCounts\.Active \|\| 0\} active/.test(src));
   assert('  and Active Projects counts projects whose status is In Progress',
