@@ -1093,6 +1093,84 @@
       color: var(--muted);
     }
 
+    /* ── Job ticker ── */
+    .job-ticker {
+      display: flex;
+      align-items: stretch;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      margin-bottom: 1.25rem;
+      overflow: hidden;
+      height: 2.3rem;
+    }
+    .job-ticker-label {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0 0.8rem;
+      font-size: 0.58rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: var(--surface2);
+      border-right: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .job-ticker-live {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: tick-pulse 2s ease-in-out infinite;
+    }
+    @keyframes tick-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.2 } }
+    .job-ticker-viewport { flex: 1; min-width: 0; overflow: hidden; }
+    .job-ticker-track {
+      display: flex;
+      align-items: stretch;
+      height: 100%;
+      width: max-content;
+      /* The track holds the job list twice over, so sliding it exactly half its
+         width lands the copy where the original started — no visible seam. */
+      animation: tick-scroll var(--tick-duration, 60s) linear infinite;
+    }
+    .job-ticker:hover .job-ticker-track { animation-play-state: paused; }
+    @keyframes tick-scroll { from { transform: translateX(0) } to { transform: translateX(-50%) } }
+    .tick-seq { display: flex; align-items: stretch; }
+    .tick-item {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0 0.95rem;
+      border-right: 1px solid var(--border);
+      white-space: nowrap;
+      cursor: pointer;
+      font-variant-numeric: tabular-nums;
+    }
+    .tick-item:hover { background: var(--surface2); }
+    .tick-state { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+    .tick-sym   { font-weight: 700; font-size: 0.76rem; }
+    .tick-price { font-size: 0.76rem; color: var(--text); }
+    .tick-basis { font-size: 0.55rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+    .tick-chg   { font-size: 0.72rem; font-weight: 600; }
+    .tick-chg.up   { color: var(--green); }
+    .tick-chg.down { color: var(--red); }
+    .tick-chg.flat { color: var(--muted); }
+    @media (prefers-reduced-motion: reduce) {
+      /* No auto-scroll means the second copy is dead weight — drop it and let
+         the reader swipe the single list instead. */
+      .job-ticker-track { animation: none; }
+      .job-ticker-viewport { overflow-x: auto; }
+      .tick-seq.tick-dupe { display: none; }
+    }
+    @media (max-width: 768px) {
+      .job-ticker { height: 2.1rem; }
+      .job-ticker-label { padding: 0 0.55rem; font-size: 0.52rem; letter-spacing: 0.1em; }
+      .tick-item { padding: 0 0.7rem; gap: 0.3rem; }
+    }
+
     /* ── Project table ── */
     .proj-table-wrap { overflow-x: auto; margin-bottom: 2rem; }
     .proj-table {
@@ -4523,20 +4601,80 @@ function renderHomeTab() {
   const thisWeek   = allDaily.filter(r => r.date >= weekAgo).length;
   const atRiskCt   = statusCounts['At Risk'] || 0;
 
-  // ── Budget variance alerts — projects where actual > bid * 1.10 ──
-  const overBudgetProjects = projectsList
-    .filter(p => {
-      const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
-      const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
-      const actual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
-      return bid > 0 && actual > bid * 1.10;
-    })
+  // ── Job ticker — every in-progress / awarded job on one running tape ──
+  // This replaces the collapsed budget alert. That alert only spoke up once a
+  // job was already 10% over and then hid the detail behind a dropdown; the
+  // tape lists the whole active book, so a job trending hot shows red before it
+  // crosses any threshold and the healthy ones stay visible too.
+  const TICKER_STATUSES = ['In Progress', 'Awarded'];
+  const tickerJobs = projectsList
+    .filter(p => TICKER_STATUSES.includes(p['status'] || ''))
     .map(p => {
-      const _eb    = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
-      const bid    = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
-      const actual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
-      return { id: p.id, name: p['project-name'] || 'Untitled', pct: ((actual / bid - 1) * 100).toFixed(1), over: actual - bid };
-    });
+      const _eb      = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+      const bid      = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
+      const actual   = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
+      const projCost = projectedCostForProject(p);
+      const contract = projectContract(p);
+      const name     = p['project-name'] || 'Untitled Project';
+      const jobNo    = String(p['job-number'] || '').trim();
+      // The job name as entered is what people call the job, so the tape carries
+      // it verbatim. Only a runaway name gets clipped, so no single entry can
+      // swallow the strip.
+      const sym      = name.length > 30 ? name.slice(0, 29).trimEnd() + '…' : name;
+      // "Price" is the money the job carries, "change" is how the projected cost
+      // is tracking against the bid budget — under budget ticks up, over ticks down.
+      return {
+        id: p.id, name, sym, jobNo, status: p['status'] || '',
+        price: contract || bid,
+        basis: contract ? '' : bid ? 'bid' : '',
+        chg:   bid > 0 ? (bid - projCost) / bid * 100 : null,
+        bid, actual, projCost, contract
+      };
+    })
+    // In progress before awarded, then biggest money first — the tape leads with
+    // the jobs actually burning budget today.
+    .sort((a, b) => (a.status === b.status ? b.price - a.price
+                                           : a.status === 'In Progress' ? -1 : 1));
+
+  // Ticker prices read better compact — a tape is scanned, not studied.
+  const tickMoney = v => !v ? '—'
+    : v >= 1e6 ? '$' + (v / 1e6).toFixed(2) + 'M'
+    : v >= 1e3 ? '$' + (v / 1e3).toFixed(1) + 'K'
+    : '$' + fmt(v, 0);
+
+  const tickerItemHTML = j => {
+    const dir    = j.chg === null ? 'flat' : j.chg > 0.05 ? 'up' : j.chg < -0.05 ? 'down' : 'flat';
+    const arrow  = dir === 'up' ? '▲' : dir === 'down' ? '▼' : '▬';
+    const chgTxt = j.chg === null ? 'no budget' : Math.abs(j.chg).toFixed(1) + '%';
+    // Same colour the status badges use elsewhere, so the dot reads as a status.
+    const dot    = statusTextColor(j.status);
+    const tip    = `${j.name}${j.jobNo ? ' · Job ' + j.jobNo : ''} — ${j.status}\nBid budget $${fmt(j.bid)} · Actual $${fmt(j.actual)} · Projected $${fmt(j.projCost)}`
+                 + (j.contract ? ` · Contract $${fmt(j.contract)}` : '')
+                 + (j.chg === null ? '' : `\n${j.chg >= 0 ? 'Under' : 'Over'} bid budget by $${fmt(Math.abs(j.bid - j.projCost))}`);
+    return `<span class="tick-item" title="${esc(tip)}" onclick="goToProject('${j.id}')">
+      <span class="tick-state" style="background:${dot}"></span>
+      <span class="tick-sym">${esc(j.sym)}</span>
+      <span class="tick-price">${tickMoney(j.price)}</span>
+      ${j.basis ? `<span class="tick-basis">${j.basis}</span>` : ''}
+      <span class="tick-chg ${dir}">${arrow} ${chgTxt}</span>
+    </span>`;
+  };
+
+  // A short book would leave a blank gap trailing the loop, so repeat the list
+  // until it is long enough to span the strip before doubling it for the scroll.
+  const tickerSeq = tickerJobs.length
+    ? Array.from({ length: Math.ceil(12 / tickerJobs.length) }, () => tickerJobs.map(tickerItemHTML).join('')).join('')
+    : '';
+  const tickerHTML = tickerJobs.length === 0 ? '' : `
+    <div class="job-ticker" style="--tick-duration:${Math.max(30, tickerJobs.length * 6)}s">
+      <span class="job-ticker-label" title="Every in-progress and awarded job. The dollar figure is contract value, or bid budget where there is no contract. The arrow is projected cost against bid budget — up is under, down is over."><span class="job-ticker-live"></span>Active Jobs</span>
+      <div class="job-ticker-viewport">
+        <div class="job-ticker-track">
+          <span class="tick-seq">${tickerSeq}</span>
+          <span class="tick-seq tick-dupe" aria-hidden="true">${tickerSeq}</span>
+        </div>
+      </div>
+    </div>`;
 
   // ── Status bar widths ──
   const statusTotal = Object.values(statusCounts).reduce((a, b) => a + b, 0) || 1;
@@ -4819,23 +4957,7 @@ function renderHomeTab() {
   document.getElementById('home-content').innerHTML = `
   <div class="home-wrap">
 
-    ${overBudgetProjects.length ? `
-    <div id="home-budget-alert" data-expanded="0" style="background:rgba(239,68,68,0.06);border-left:3px solid var(--red);border-radius:0 4px 4px 0;margin-bottom:1.25rem;font-size:0.77rem">
-      <div style="display:flex;align-items:center;gap:0.6rem;padding:0.45rem 0.9rem;cursor:pointer;user-select:none" onclick="
-        const wrap = document.getElementById('home-budget-alert');
-        const exp = wrap.dataset.expanded==='1';
-        wrap.dataset.expanded = exp ? '0' : '1';
-        wrap.querySelector('#home-alert-detail').style.display = exp ? 'none' : 'flex';
-        wrap.querySelector('.alert-chevron').style.transform = exp ? 'rotate(-90deg)' : 'rotate(0deg)';
-      ">
-        <span style="color:var(--red);font-weight:600;flex-shrink:0">⚠ Budget Alert</span>
-        <span style="color:var(--muted);font-size:0.75rem">${overBudgetProjects.length} project${overBudgetProjects.length > 1 ? 's' : ''} over budget</span>
-        <span class="alert-chevron" style="color:var(--muted);font-size:0.65rem;transition:transform 0.15s;transform:rotate(-90deg)">▼</span>
-      </div>
-      <div id="home-alert-detail" style="display:none;padding:0.25rem 0.9rem 0.5rem;flex-wrap:wrap;gap:0.15rem 0;flex-direction:column">
-        <span style="color:var(--muted)">${overBudgetProjects.map(p => `${esc(p.name)} <strong style="color:var(--red)">+${p.pct}%</strong> <span style="font-size:0.68rem">($${fmt(p.over)} over)</span>`).join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</span>
-      </div>
-    </div>` : ''}
+    ${tickerHTML}
 
     <div class="home-metric-strip">
       <div class="home-metric-item">
