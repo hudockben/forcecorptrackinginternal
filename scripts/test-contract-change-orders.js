@@ -113,13 +113,30 @@ assert('updateProjectField re-derives on contract edits',
   !!updField && /contract-amount' \|\| field === 'contract-value'[\s\S]+syncRevisedContract/.test(updField[0]));
 
 console.log('\n[structural — project card badges]');
-const cardFn = SRC.match(/function projectCardHTML\(p\)[\s\S]+?\n\}\n/);
+const badgeFn = SRC.match(/function projectBadgesHTML\(p\)[\s\S]+?\n\}\n/);
+assert('badges split into projectBadgesHTML', !!badgeFn);
 assert('card contract badge uses projectContract',
-  !!cardFn && /const contractValue = projectContract\(p\);/.test(cardFn[0]));
+  !!badgeFn && /const contractValue = projectContract\(p\);/.test(badgeFn[0]));
 assert('card bid badge includes bid-item COs',
-  !!cardFn && /_cardEffQty[\s\S]+qty_delta/.test(cardFn[0]));
+  !!badgeFn && /_cardEffQty[\s\S]+qty_delta/.test(badgeFn[0]));
 assert('card shows a CO badge when there are contract COs',
-  !!cardFn && /ccoTotal \? `<span class="proj-badge/.test(cardFn[0]));
+  !!badgeFn && /ccoTotal \? `<span class="proj-badge/.test(badgeFn[0]));
+assert('projectCardHTML renders the shared badge row',
+  /<div class="proj-card-badges">\$\{projectBadgesHTML\(p\)\}/.test(SRC));
+
+// A change order that doesn't repaint the header reads as "nothing happened".
+// Rebuilding the whole card is not an option — it would collapse the open one.
+const refreshFn = SRC.match(/function refreshProjectBadges\(projId\)[\s\S]+?\n\}/);
+assert('refreshProjectBadges targets just the badge row',
+  !!refreshFn && /\.proj-card-badges`\)/.test(refreshFn[0]) && !/renderProjectsTab/.test(refreshFn[0]));
+assert('refreshProjectBadges escapes the id selector',
+  !!refreshFn && /CSS\.escape\(projId\)/.test(refreshFn[0]));
+for (const fn of ['syncRevisedContract', '_addCO', '_removeCO']) {
+  const m = SRC.match(new RegExp(`function ${fn}\\([^)]*\\)[\\s\\S]+?\\n\\}\\n`));
+  assert(`${fn} repaints the badges`, !!m && /refreshProjectBadges\(projId\)/.test(m[0]));
+}
+assert('editing a contract field repaints the badges',
+  !!updField && /refreshProjectBadges\(id\)/.test(updField[0]));
 
 console.log('\n[structural — Job Summary Report]');
 const jsFn = SRC.match(/async function exportJobSummary\(projId, opts = \{\}\)[\s\S]+?\n\}\n\nfunction exportBidPDF/);
@@ -161,12 +178,14 @@ const block = extractBlock(SRC, 'function contractCOs(p) {', 'function showContr
 const projects = {};
 let saveCalls = 0;
 let coFieldRenders = 0;
+let badgeRepaints = 0;
 let uidSeq = 0;
 
 const ctx = {
   getProj:               id => projects[id],
   saveProject:           () => { saveCalls++; },
   renderContractCOField: () => { coFieldRenders++; },
+  refreshProjectBadges:  () => { badgeRepaints++; },
   document:              { getElementById: () => null },   // detached — no card in the DOM
   esc:                   s => String(s || ''),
   fmt:                   n => String(n),
@@ -212,6 +231,7 @@ addCO('e', { date: '2026-03-02', number: 'CO-1', amount: 8500, note: 'Extra base
 assert('one CO → revised = original + CO', projects.e['revised-amount'] === '132394',
   projects.e['revised-amount']);
 assert('adding a CO saves the project',    saveCalls === 1, String(saveCalls));
+assert('adding a CO repaints the badges',  badgeRepaints === 1, String(badgeRepaints));
 
 addCO('e', { date: '2026-03-19', number: 'CO-2', amount: 2150.75, note: 'Added striping' });
 assert('two COs accumulate',               projects.e['revised-amount'] === '134544.75',

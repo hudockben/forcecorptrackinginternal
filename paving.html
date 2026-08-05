@@ -7361,8 +7361,9 @@ function updateProjectField(id, field, value) {
   // Revised = original + change orders. Editing the original has to carry
   // that through, or the revised figure silently goes stale. saveProject
   // already ran above, so this pass only rewrites the derived field.
-  if ((field === 'contract-amount' || field === 'contract-value') && contractCOs(p).length) {
-    syncRevisedContract(id);
+  if (field === 'contract-amount' || field === 'contract-value' || field === 'revised-amount') {
+    if (contractCOs(p).length) syncRevisedContract(id);   // also repaints the badges
+    else refreshProjectBadges(id);
   }
 }
 
@@ -7508,6 +7509,7 @@ function syncRevisedContract(projId) {
     revEl.style.color = cos.length ? 'var(--blue)' : '';
   }
   renderContractCOField(projId);
+  refreshProjectBadges(projId);
   saveProject(projId);
 }
 
@@ -7692,6 +7694,7 @@ function _addCO(projId, biId) {
   saveProject(projId);
   showCOModal(projId, biId);
   renderBidTable(projId);
+  refreshProjectBadges(projId);   // the Bid badge counts change orders
 }
 function _removeCO(projId, biId, coId) {
   const p = getProj(projId); if (!p) return;
@@ -7700,6 +7703,7 @@ function _removeCO(projId, biId, coId) {
   saveProject(projId);
   showCOModal(projId, biId);
   renderBidTable(projId);
+  refreshProjectBadges(projId);   // the Bid badge counts change orders
 }
 function toggleBidItemComplete(projId, biId) {
   const p = getProj(projId); if (!p) return;
@@ -9333,9 +9337,10 @@ function renderBidTable(projId, opts = {}) {
   if (bidViewProjId === projId) { _updateBidFilterButtons(); _renderBidOffBidBadge(projId); }
 }
 
-function projectCardHTML(p) {
-  const name   = p['project-name'] || 'Untitled Project';
-  const meta   = [p['job-number'], p['client']].filter(Boolean).join(' · ');
+// The card header's money badges. Split out of projectCardHTML so a change
+// order can repaint them in place — rebuilding the whole card would collapse
+// whichever one the user has open.
+function projectBadgesHTML(p) {
   const status = p['status'] || '';
   // Effective bid qty — base plus this item's change orders — so the badge
   // matches the Bid Items footer instead of quietly ignoring added scope.
@@ -9343,11 +9348,33 @@ function projectCardHTML(p) {
   const totalBid      = (p.bidItems||[]).reduce((s,b)=>s+_cardEffQty(b)*(parseFloat(b.unit_cost)||0),0);
   // Sum ALL daily rows so PO-inserted rows (no cost code) are included in the badge
   const totalActual   = (p.dailyRows||[]).reduce((s,r)=>s+dailyRowCost(r),0);
-  // Same read order the rest of the app uses, so contract change orders
-  // (which land in 'revised-amount') move this badge too.
+  // Same read the rest of the app uses, so contract change orders move this
+  // badge too.
   const contractValue = projectContract(p);
   const ccoTotal      = contractCOTotal(p);
   const diff          = totalBid - totalActual;
+  return `
+      <span class="proj-badge ${statusBadgeClass(status)}" id="pcb-${p.id}">${esc(status)}</span>
+      ${contractValue ? `<span class="proj-badge badge-awarded" title="${ccoTotal ? `Original $${fmt(originalContract(p),0)} ${ccoTotal >= 0 ? '+' : '−'} $${fmt(Math.abs(ccoTotal),0)} in change orders` : 'Contract amount'}">Contract $${fmt(contractValue,0)}</span>` : ''}
+      ${ccoTotal ? `<span class="proj-badge ${ccoTotal >= 0 ? 'badge-in-progress' : 'badge-on-hold'}" style="border:1px solid currentColor;background:transparent" title="${contractCOs(p).length} contract change order${contractCOs(p).length === 1 ? '' : 's'}">CO ${ccoTotal >= 0 ? '+' : '−'}$${fmt(Math.abs(ccoTotal),0)}</span>` : ''}
+      ${totalBid ? `<span class="proj-badge badge-default">Bid $${fmt(totalBid,0)}</span>` : ''}
+      ${totalActual ? `<span class="proj-badge ${(!totalBid||diff>=0)?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
+      ${contractValue && totalActual ? (()=>{ const profit=contractValue-totalActual; const pct=(profit/contractValue*100).toFixed(1); return `<span class="proj-badge ${profit>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${profit>=0?'$'+fmt(profit,0)+' profit':'$'+fmt(Math.abs(profit),0)+' loss'} (${pct}%)</span>`; })() : (totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff,0)+' under bid':'$'+fmt(Math.abs(diff),0)+' over bid'}</span>` : '')}`;
+}
+
+// Repaint just the badge row. Used after a change order so the header's
+// Contract / CO / profit figures follow the edit immediately instead of
+// waiting for the next full projects render.
+function refreshProjectBadges(projId) {
+  const p = getProj(projId); if (!p) return;
+  const host = document.querySelector(`#pcard-${CSS.escape(projId)} .proj-card-badges`);
+  if (host) host.innerHTML = projectBadgesHTML(p);
+}
+
+function projectCardHTML(p) {
+  const name   = p['project-name'] || 'Untitled Project';
+  const meta   = [p['job-number'], p['client']].filter(Boolean).join(' · ');
+  const totalBid      = (p.bidItems||[]).reduce((s,b)=>s+((parseFloat(b.quantity)||0)+(b.change_orders||[]).reduce((x,co)=>x+(parseFloat(co.qty_delta)||0),0))*(parseFloat(b.unit_cost)||0),0);
   const uniqueDates = new Set((p.dailyRows||[]).map(r => r.date).filter(Boolean));
 
   const makeOpt = (vals, sel) => vals.map(v => `<option value="${v}" ${sel===v?'selected':''}>${v||'— select —'}</option>`).join('');
@@ -9358,13 +9385,7 @@ function projectCardHTML(p) {
       <div class="proj-card-name" id="pcn-${p.id}">${esc(name)}</div>
       <div class="proj-card-meta" id="pcm-${p.id}">${esc(meta)}</div>
     </div>
-    <div class="proj-card-badges">
-      <span class="proj-badge ${statusBadgeClass(status)}" id="pcb-${p.id}">${esc(status)}</span>
-      ${contractValue ? `<span class="proj-badge badge-awarded" title="${ccoTotal ? `Original $${fmt(originalContract(p),0)} ${ccoTotal >= 0 ? '+' : '−'} $${fmt(Math.abs(ccoTotal),0)} in change orders` : 'Contract amount'}">Contract $${fmt(contractValue,0)}</span>` : ''}
-      ${ccoTotal ? `<span class="proj-badge ${ccoTotal >= 0 ? 'badge-in-progress' : 'badge-on-hold'}" style="border:1px solid currentColor;background:transparent" title="${contractCOs(p).length} contract change order${contractCOs(p).length === 1 ? '' : 's'}">CO ${ccoTotal >= 0 ? '+' : '−'}$${fmt(Math.abs(ccoTotal),0)}</span>` : ''}
-      ${totalBid ? `<span class="proj-badge badge-default">Bid $${fmt(totalBid,0)}</span>` : ''}
-      ${totalActual ? `<span class="proj-badge ${(!totalBid||diff>=0)?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
-      ${contractValue && totalActual ? (()=>{ const profit=contractValue-totalActual; const pct=(profit/contractValue*100).toFixed(1); return `<span class="proj-badge ${profit>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${profit>=0?'$'+fmt(profit,0)+' profit':'$'+fmt(Math.abs(profit),0)+' loss'} (${pct}%)</span>`; })() : (totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff,0)+' under bid':'$'+fmt(Math.abs(diff),0)+' over bid'}</span>` : '')}
+    <div class="proj-card-badges">${projectBadgesHTML(p)}
     </div>
     <span style="width:1px;background:var(--border);align-self:stretch;margin:0 0.35rem;flex-shrink:0"></span>
     ${perm.canDeleteProject ? `<button class="btn" style="font-size:0.75rem;padding:0.3rem 0.85rem;background:#166534;color:#fff;border:1px solid #16a34a;" onclick="event.stopPropagation();openBidView('${p.id}')">Bid Items &#8594;</button>` : ''}
