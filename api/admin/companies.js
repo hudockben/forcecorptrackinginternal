@@ -4,10 +4,19 @@ const { neon } = require('@neondatabase/serverless');
 
 const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive'];
 
+/**
+ * The shared admin secret, read from the X-Admin-Secret header or the request
+ * body — never the query string, where it would be recorded in access logs,
+ * browser history and any outbound Referer.
+ */
+function adminSecretFrom(req) {
+  return req.headers['x-admin-secret'] || (req.body && req.body.adminSecret) || '';
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Secret');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -15,7 +24,7 @@ module.exports = async (req, res) => {
 
   // GET — list all companies
   if (req.method === 'GET') {
-    const { adminSecret } = req.query;
+    const adminSecret = adminSecretFrom(req);
     if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
       return res.status(403).json({ error: 'Forbidden' });
     }
@@ -33,7 +42,8 @@ module.exports = async (req, res) => {
 
   // POST — create or update a company
   if (req.method === 'POST') {
-    const { adminSecret, code, name, allowed_divisions } = req.body || {};
+    const adminSecret = adminSecretFrom(req);
+    const { code, name, allowed_divisions } = req.body || {};
 
     if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
       return res.status(403).json({ error: 'Forbidden' });

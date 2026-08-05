@@ -276,7 +276,7 @@ document.getElementById('auth-btn').addEventListener('click', async () => {
   if (!secret) return;
 
   // Test the secret by hitting the companies list endpoint
-  const r = await fetch(`/api/admin/companies?adminSecret=${encodeURIComponent(secret)}`);
+  const r = await fetch('/api/admin/companies', { headers: { 'X-Admin-Secret': secret } });
   if (r.status === 403) {
     showResult('auth-result', 'Invalid admin secret.', false);
     return;
@@ -298,7 +298,7 @@ document.getElementById('secret-input').addEventListener('keydown', e => {
 async function loadCompanies() {
   const el = document.getElementById('companies-list');
   el.innerHTML = '<div class="empty">Loading…</div>';
-  const r = await fetch(`/api/admin/companies?adminSecret=${encodeURIComponent(ADMIN_SECRET)}`);
+  const r = await fetch('/api/admin/companies', { headers: { 'X-Admin-Secret': ADMIN_SECRET } });
   const data = await r.json();
   if (!data.companies || !data.companies.length) {
     el.innerHTML = '<div class="empty">No companies yet.</div>';
@@ -345,7 +345,7 @@ document.getElementById('refresh-cos-btn').addEventListener('click', loadCompani
 async function loadUsers() {
   const el = document.getElementById('users-list');
   el.innerHTML = '<div class="empty">Loading…</div>';
-  const r = await fetch(`/api/admin/users?adminSecret=${encodeURIComponent(ADMIN_SECRET)}`);
+  const r = await fetch('/api/admin/users', { headers: { 'X-Admin-Secret': ADMIN_SECRET } });
   const data = await r.json();
   if (!data.users || !data.users.length) {
     el.innerHTML = '<div class="empty">No users yet.</div>';

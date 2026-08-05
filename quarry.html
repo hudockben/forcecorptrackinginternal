@@ -8455,8 +8455,15 @@ ${sections}
       }
 
       heartbeat();
+      // The heartbeat keeps running while the tab is hidden — a backgrounded
+      // window still means the user is signed in, and stopping it would drop
+      // them off everyone else's online list. The read below is skipped
+      // instead: there is no visible list to update.
       setInterval(heartbeat, HEARTBEAT_MS);
-      setInterval(async () => renderOnline(await presenceGet()), POLL_MS);
+      setInterval(async () => {
+        if (document.visibilityState === 'hidden') return;
+        renderOnline(await presenceGet());
+      }, POLL_MS);
     })();
   </script>
 

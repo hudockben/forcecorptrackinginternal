@@ -4060,7 +4060,34 @@
         if (!_isEditing()) renderCompanyInfo();
       }
 
-      setInterval(() => Promise.allSettled([pollBillingEntries(), pollCompanies(), pollQuarryDaily(), pollKiewitLabor()]), POLL_MS);
+      // Background polling stands down when the tab is hidden — a window left
+      // open has nothing to render, so every request it makes is wasted — and
+      // once the session is over, when the timers could only produce 401s.
+      // _pollCycleBusy keeps one cycle from overlapping the next: setInterval
+      // fires on a fixed schedule no matter how long the previous cycle took,
+      // so a slow cycle used to be joined by the following one and under load
+      // they stacked without limit.
+      let _pollCycleBusy = false;
+      function _pollsSuspended() {
+        return document.visibilityState === 'hidden' || !localStorage.getItem('fct_token');
+      }
+
+      async function pollAll() {
+        if (_pollCycleBusy || _pollsSuspended()) return;
+        _pollCycleBusy = true;
+        try {
+          await Promise.allSettled([pollBillingEntries(), pollCompanies(), pollQuarryDaily(), pollKiewitLabor()]);
+        } finally {
+          _pollCycleBusy = false;
+        }
+      }
+
+      setInterval(pollAll, POLL_MS);
+      // Coming back to a tab that stood down should not wait out a full interval.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') pollAll();
+      });
+
     })();
 
     /* ═══════════════════════════════════════════

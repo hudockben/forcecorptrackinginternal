@@ -11,7 +11,14 @@
 
 'use strict';
 
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+/**
+ * Local development server. Not deployed: everything under api/ is built into
+ * the serverless bundle, and this file serves /api/data/:key with no auth and
+ * calls app.listen() at module load, neither of which belongs in production.
+ * Run with: npm --prefix api start
+ */
+
+require('dotenv').config({ path: require('path').join(__dirname, '../api/.env') });
 
 const express = require('express');
 const path    = require('path');
@@ -38,54 +45,54 @@ app.use(express.static(path.join(__dirname, '..')));
 // ── Routes ─────────────────────────────────────────────────────────────────
 
 /** Daily rows — scalable per-row storage */
-app.all('/api/daily-rows', require('./daily-rows'));
+app.all('/api/daily-rows', require('../api/daily-rows'));
 
 /** Trucking entries */
-app.all('/api/trucking', require('./trucking'));
+app.all('/api/trucking', require('../api/trucking'));
 
 /** Truck division tracking + lists */
-app.all('/api/truck-division', require('./truck-division'));
+app.all('/api/truck-division', require('../api/truck-division'));
 
 /** Purchase orders + delivery lines */
-app.all('/api/purchase-orders', require('./purchase-orders'));
+app.all('/api/purchase-orders', require('../api/purchase-orders'));
 
 /** Dust control entries */
-app.all('/api/dust-rows', require('./dust-rows'));
+app.all('/api/dust-rows', require('../api/dust-rows'));
 
 /** Dust control config (settings + lists) */
-app.all('/api/dust-config', require('./dust-config'));
+app.all('/api/dust-config', require('../api/dust-config'));
 
 /** Timesheet entries — field submissions + payroll review */
-app.all('/api/timesheet-entries',       require('./timesheet-entries'));
-app.all('/api/timesheet-jobs',          require('./timesheet-jobs'));
-app.all('/api/timesheet-job-costcodes', require('./timesheet-job-costcodes'));
-app.all('/api/timesheet-supervisors',   require('./timesheet-supervisors'));
-app.all('/api/timesheet-audit-log',     require('./timesheet-audit-log'));
+app.all('/api/timesheet-entries',       require('../api/timesheet-entries'));
+app.all('/api/timesheet-jobs',          require('../api/timesheet-jobs'));
+app.all('/api/timesheet-job-costcodes', require('../api/timesheet-job-costcodes'));
+app.all('/api/timesheet-supervisors',   require('../api/timesheet-supervisors'));
+app.all('/api/timesheet-audit-log',     require('../api/timesheet-audit-log'));
 
 /** Company board */
-app.all('/api/board', require('./board'));
+app.all('/api/board', require('../api/board'));
 
 /** Deadlines */
-app.all('/api/deadlines', require('./deadlines'));
+app.all('/api/deadlines', require('../api/deadlines'));
 
 /** Sync JSON blobs → normalized tables */
-app.post('/api/admin/sync-db', require('./admin/sync-db'));
+app.post('/api/admin/sync-db', require('../api/admin/sync-db'));
 
 /** Report email sender + saved recipient groups */
-app.all('/api/email/send-report',       require('./email/send-report'));
-app.all('/api/email/recipient-groups',  require('./email/recipient-groups'));
+app.all('/api/email/send-report',       require('../api/email/send-report'));
+app.all('/api/email/recipient-groups',  require('../api/email/recipient-groups'));
 
 /** AI schedule analysis */
-app.post('/api/ai/schedule-analysis', require('./ai/schedule-analysis'));
+app.post('/api/ai/schedule-analysis', require('../api/ai/schedule-analysis'));
 
 /** AI conflict resolution suggestions */
-app.post('/api/ai/conflict-resolve', require('./ai/conflict-resolve'));
+app.post('/api/ai/conflict-resolve', require('../api/ai/conflict-resolve'));
 
 /** AI sub-code production estimate (Schedule Estimator "fill in the blanks") */
-app.post('/api/ai/estimate-subcode', require('./ai/estimate-subcode'));
+app.post('/api/ai/estimate-subcode', require('../api/ai/estimate-subcode'));
 
 /** Debug / diagnostics */
-app.get('/api/debug', require('./debug'));
+app.get('/api/debug', require('../api/debug'));
 
 /** Liveness / health check */
 app.get('/api/health', (_req, res) => {
