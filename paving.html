@@ -1052,8 +1052,8 @@
     /* ── Metric strip ── */
     .home-metric-strip {
       display: flex;
-      /* Nine cards will not fit one row on most screens, and the values are
-         nowrap + ellipsis, so without wrapping the money gets cut mid-number. */
+      /* The strip's cards will not fit one row on most screens, and the values
+         are nowrap + ellipsis, so without wrapping the money gets cut mid-number. */
       flex-wrap: wrap;
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -4393,10 +4393,17 @@ function renderHomeTab() {
   const weekAgo = _localDateStr(new Date(today - 7 * 24 * 60 * 60 * 1000));
 
   // ── Cross-project aggregates (sum from each project's own data) ──
-  // In-progress work drives every headline figure but the last. Actual Profit
-  // is what finished work returned, so it totals the completed jobs instead.
+  // The strip covers the live book: work in progress, and work awarded but not
+  // yet started. Awarded jobs are totalled apart from the in-progress ones
+  // rather than merged into them, because the widening is not safe for every
+  // figure. An awarded job carries a contract and a bid budget but has spent
+  // nothing against either, so rolling it into Actual Spend or Total Variance
+  // would report the company further under budget every time it won a job —
+  // those two watch live work burn its budget, so they stay on live work.
+  // Actual Profit is what finished work returned, so it totals completed jobs.
   let ipCount = 0, ipContract = 0, ipBid = 0, ipActual = 0;
   let ipProfit = 0, ipProfitBase = 0, doneActProfit = 0, doneCount = 0;
+  let awCount = 0, awContract = 0, awBid = 0, awProfit = 0, awProfitBase = 0;
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
 
   projectsList.forEach(p => {
@@ -4413,6 +4420,14 @@ function renderHomeTab() {
       // one there is no revenue to subtract the cost from. Projecting a cost is
       // the expensive part of this loop, so it is only done where it is read.
       if (projContract) { ipProfit += projContract - projectedCostForProject(p); ipProfitBase += projContract; }
+    } else if ((p['status'] || '') === 'Awarded') {
+      // Won, not started. With nothing spent against it yet its projected cost
+      // is still the bid budget, so the profit it contributes is the margin the
+      // job was bid at — the same figure, read forward instead of in flight.
+      awCount++;
+      awContract += projContract;
+      awBid      += projBid;
+      if (projContract) { awProfit += projContract - projectedCostForProject(p); awProfitBase += projContract; }
     } else if (projIsDone(p) && projContract && projActual) {
       // Realised profit needs both a contract and real spend behind it.
       doneActProfit += projContract - projActual;
@@ -4427,12 +4442,30 @@ function renderHomeTab() {
   const ipVariance = ipBid - ipActual;
   const ipPct      = ipBid ? (ipActual / ipBid) * 100 : 0;
   const ipOverClass = ipPct >= 100 ? 'red' : ipPct >= 85 ? 'yellow' : 'green';
+  // The book — in progress plus awarded — for the figures that still mean the
+  // same thing over work that has not broken ground.
+  const bookCount      = ipCount + awCount;
+  const bookContract   = ipContract + awContract;
+  const bookBid        = ipBid + awBid;
+  const bookProfit     = ipProfit + awProfit;
+  const bookProfitBase = ipProfitBase + awProfitBase;
   const money0 = v => (v < 0 ? '-$' : '$') + fmt(Math.abs(v), 0);
   const posNeg = v => 'color:var(--' + (v >= 0 ? 'green' : 'red') + ')';
   const allDaily   = getAllDailyRows();
   const openPOs    = purchaseOrders.filter(p => p.status === 'pending').length;
-  const thisWeek   = allDaily.filter(r => r.date >= weekAgo).length;
   const atRiskCt   = statusCounts['At Risk'] || 0;
+  // At Risk takes a slot on the strip only when it has something to report. It
+  // used to share a card with a count of the week's daily entries, shown
+  // whenever nothing was at risk — a figure that measured how much got typed in
+  // rather than how the work is going, sitting on a strip that is otherwise all
+  // money. Dropping it costs nothing: the entries themselves are a click away
+  // under Cost Tracking, and Recent Activity below already shows the latest.
+  const atRiskHTML = atRiskCt === 0 ? '' : `
+      <div class="home-metric-item">
+        <span class="home-metric-label">At Risk</span>
+        <span class="home-metric-value" style="color:var(--red)">${atRiskCt}</span>
+        <span class="home-metric-sub">${atRiskCt === 1 ? 'item needs' : 'items need'} attention</span>
+      </div>`;
 
   // ── Job ticker — every in-progress / awarded job on one running tape ──
   // This replaces the collapsed budget alert. That alert only spoke up once a
@@ -4793,35 +4826,40 @@ function renderHomeTab() {
     ${tickerHTML}
 
     <div class="home-metric-strip">
-      <div class="home-metric-item">
+      <div class="home-metric-item" title="Jobs in progress, plus jobs awarded and not yet started, of ${projectsList.length} projects.">
         <span class="home-metric-label">Active Projects</span>
-        <span class="home-metric-value" style="color:var(--blue)">${ipCount}</span>
-        <span class="home-metric-sub">in progress of ${projectsList.length}</span>
+        <span class="home-metric-value" style="color:var(--blue)">${bookCount}</span>
+        <span class="home-metric-sub">${awCount ? `${ipCount} in progress · ${awCount} awarded` : `in progress of ${projectsList.length}`}</span>
       </div>
-      <div class="home-metric-item">
+      <div class="home-metric-item" title="Contract value on jobs in progress ($${fmt(ipContract, 0)}) and on awarded jobs ($${fmt(awContract, 0)}).">
         <span class="home-metric-label">Total Contract Value</span>
-        <span class="home-metric-value" style="color:var(--blue)">$${fmt(ipContract, 0)}</span>
-        <span class="home-metric-sub">in progress jobs</span>
+        <span class="home-metric-value" style="color:var(--blue)">$${fmt(bookContract, 0)}</span>
+        <span class="home-metric-sub">${awCount ? 'in progress + awarded' : 'in progress jobs'}</span>
       </div>
-      <div class="home-metric-item">
+      <div class="home-metric-item" title="Contract value already won but not started — the work sitting in front of the crews.">
+        <span class="home-metric-label">Awarded Backlog</span>
+        <span class="home-metric-value"${awContract ? ` style="color:${statusTextColor('Awarded')}"` : ''}>$${fmt(awContract, 0)}</span>
+        <span class="home-metric-sub">${awCount ? `${awCount} awarded job${awCount === 1 ? '' : 's'} not started` : 'nothing awarded'}</span>
+      </div>
+      <div class="home-metric-item" title="Bid budget on jobs in progress ($${fmt(ipBid, 0)}) and on awarded jobs ($${fmt(awBid, 0)}).">
         <span class="home-metric-label">Total Bid Budget</span>
-        <span class="home-metric-value" style="color:var(--green)">$${fmt(ipBid, 0)}</span>
-        <span class="home-metric-sub">in progress jobs</span>
+        <span class="home-metric-value" style="color:var(--green)">$${fmt(bookBid, 0)}</span>
+        <span class="home-metric-sub">${awCount ? 'in progress + awarded' : 'in progress jobs'}</span>
       </div>
-      <div class="home-metric-item">
+      <div class="home-metric-item" title="Spend on the jobs in progress, against their $${fmt(ipBid, 0)} bid budget. Awarded work is left out — nothing has been spent on it, so its budget would only dilute the percentage.">
         <span class="home-metric-label">Total Actual Spend</span>
         <span class="home-metric-value" style="color:var(--${ipOverClass})">$${fmt(ipActual, 0)}</span>
-        <span class="home-metric-sub">${fmtPct(ipPct)} of bid budget</span>
+        <span class="home-metric-sub">${fmtPct(ipPct)} of in-progress budget</span>
       </div>
-      <div class="home-metric-item">
+      <div class="home-metric-item" title="Bid budget less actual spend on the jobs in progress. Awarded work is left out — an untouched budget would read here as money saved.">
         <span class="home-metric-label">Total Variance</span>
         <span class="home-metric-value" style="${posNeg(ipVariance)}">${money0(ipVariance)}</span>
-        <span class="home-metric-sub">${ipVariance >= 0 ? 'under' : 'over'} bid budget</span>
+        <span class="home-metric-sub">${ipVariance >= 0 ? 'under' : 'over'} budget · in progress</span>
       </div>
-      <div class="home-metric-item">
+      <div class="home-metric-item" title="Contract value less projected cost: $${fmt(ipProfit, 0)} from jobs in progress, $${fmt(awProfit, 0)} from awarded jobs at the margin they were bid at.">
         <span class="home-metric-label">Total Projected Profit</span>
-        <span class="home-metric-value" style="${posNeg(ipProfit)}">${money0(ipProfit)}</span>
-        <span class="home-metric-sub">${ipProfitBase ? fmtPct(ipProfit / ipProfitBase * 100) + ' margin' : 'in progress jobs'}</span>
+        <span class="home-metric-value" style="${posNeg(bookProfit)}">${money0(bookProfit)}</span>
+        <span class="home-metric-sub">${bookProfitBase ? fmtPct(bookProfit / bookProfitBase * 100) + ' margin' : awCount ? 'in progress + awarded' : 'in progress jobs'}</span>
       </div>
       <div class="home-metric-item">
         <span class="home-metric-label">Total Actual Profit</span>
@@ -4834,11 +4872,7 @@ function renderHomeTab() {
         <span class="home-metric-value"${openPOs > 0 ? ' style="color:var(--yellow)"' : ''}>${openPOs}</span>
         <span class="home-metric-sub">pending approval</span>
       </div>
-      <div class="home-metric-item">
-        <span class="home-metric-label">${atRiskCt > 0 ? 'At Risk' : 'This Week'}</span>
-        <span class="home-metric-value"${atRiskCt > 0 ? ' style="color:var(--red)"' : ''}>${atRiskCt > 0 ? atRiskCt : thisWeek}</span>
-        <span class="home-metric-sub">${atRiskCt > 0 ? 'items need attention' : 'daily entries'}</span>
-      </div>
+      ${atRiskHTML}
     </div>
 
     ${invSectionHTML}
