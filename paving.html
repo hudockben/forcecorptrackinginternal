@@ -1071,7 +1071,6 @@
       min-width: 0;
     }
     .home-metric-item:last-child { border-right: none; }
-    .home-metric-item.clickable:hover { background: var(--surface2); cursor: pointer; }
     .home-metric-label {
       font-size: 0.58rem;
       letter-spacing: 0.14em;
@@ -4452,7 +4451,6 @@ function renderHomeTab() {
   const money0 = v => (v < 0 ? '-$' : '$') + fmt(Math.abs(v), 0);
   const posNeg = v => 'color:var(--' + (v >= 0 ? 'green' : 'red') + ')';
   const allDaily   = getAllDailyRows();
-  const openPOs    = purchaseOrders.filter(p => p.status === 'pending').length;
   const atRiskCt   = statusCounts['At Risk'] || 0;
   // At Risk takes a slot on the strip only when it has something to report. It
   // used to share a card with a count of the week's daily entries, shown
@@ -4865,12 +4863,6 @@ function renderHomeTab() {
         <span class="home-metric-label">Total Actual Profit</span>
         <span class="home-metric-value" style="${posNeg(doneActProfit)}">${money0(doneActProfit)}</span>
         <span class="home-metric-sub">${doneCount} completed job${doneCount === 1 ? '' : 's'}</span>
-      </div>
-      <div class="home-metric-item${openPOs > 0 ? ' clickable' : ''}"
-        ${openPOs > 0 ? `onclick="poFilters={status:new Set(['pending'])};document.querySelector('.tab-btn[data-tab=po]').click()"` : ''}>
-        <span class="home-metric-label">Open POs</span>
-        <span class="home-metric-value"${openPOs > 0 ? ' style="color:var(--yellow)"' : ''}>${openPOs}</span>
-        <span class="home-metric-sub">pending approval</span>
       </div>
       ${atRiskHTML}
     </div>
@@ -10050,6 +10042,26 @@ function _poFieldVal(po, field) {
   return String(po[field] ?? '');
 }
 
+/** Is the table currently narrowed to nothing but the pending orders? */
+function poPendingOnly() {
+  return !!poFilters.status && poFilters.status.size === 1 && poFilters.status.has('pending');
+}
+
+/**
+ * The pending count is the filter as well as the number. It used to be a card
+ * on the Home strip that jumped here and applied this filter — the count and
+ * the queue it describes sat on different tabs, and the only way back to every
+ * status was Clear Filters, which also threw away the search and every other
+ * column filter. Clicking it here narrows the table to the queue; clicking it
+ * again widens it back, leaving the rest of the filters alone.
+ */
+function togglePOPending() {
+  if (poPendingOnly()) delete poFilters.status;
+  else poFilters.status = new Set(['pending']);
+  poPage = 0;
+  renderPOTab();
+}
+
 function applyPOFilters() {
   const q = poSearch.trim().toLowerCase();
   return purchaseOrders.filter(po => {
@@ -10325,10 +10337,25 @@ function renderPOTab() {
 
   const hasFilters = Object.keys(poFilters).length > 0 || poSearch;
 
+  // Nothing waiting means nothing to say — the chip is a queue, not a metric,
+  // so it stays off the toolbar when the queue is empty.
+  const pendingPOs  = purchaseOrders.filter(po => po.status === 'pending').length;
+  const pendingOn   = poPendingOnly();
+  const pendingChip = pendingPOs === 0 ? '' : `
+          <button class="btn" onclick="togglePOPending()"
+            title="${pendingOn ? 'Showing only the orders waiting on approval — click to show every status again'
+                               : 'Show only the orders waiting on approval'}"
+            style="font-size:0.72rem;padding:0.2rem 0.6rem;border:1px solid rgba(234,179,8,0.4);
+                   background:${pendingOn ? 'var(--yellow)' : 'rgba(234,179,8,0.12)'};
+                   color:${pendingOn ? '#1a1a26' : 'var(--yellow)'}">${pendingPOs} pending approval</button>`;
+
   root.innerHTML = `
     <div style="padding:1.5rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem">
-        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Purchase Orders</span>
+        <div style="display:flex;align-items:center;gap:0.6rem">
+          <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Purchase Orders</span>
+          ${pendingChip}
+        </div>
         <div style="display:flex;gap:0.5rem;align-items:center">
           ${hasFilters ? `<button class="btn" onclick="poFilters={};poSearch='';poPage=0;renderPOTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
           <button class="btn" onclick="exportPOCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#1d4ed8;color:#fff">&#8595; Export CSV</button>

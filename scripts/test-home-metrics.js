@@ -22,6 +22,10 @@
  *   means anything once a job is done; totalling it over live work would
  *   report a margin against costs that have not finished landing.
  *
+ * The last block checks the two figures that have left the strip: the weekly
+ * daily-entry count, dropped, and the pending-PO count, which moved to the
+ * Purchase Orders tab and is exercised there.
+ *
  * The aggregation is lifted out of renderHomeTab() and run over fixtures, so
  * these check the arithmetic rather than the markup around it.
  */
@@ -271,10 +275,11 @@ for (const file of FILES) {
   assert(`  ${cards} cards are on the strip`, cards >= LABELS.length);
 
   // The old portfolio-wide totals fed nothing after the rebuild, but the loop
-  // still projected a cost for every project to compute them. thisWeek joined
-  // them when the daily-entry count came off the strip.
+  // still projected a cost for every project to compute them. thisWeek and
+  // openPOs joined them when their two cards left the strip.
   const home = extractFunction(src, 'renderHomeTab');
-  for (const dead of ['totalBid', 'totalActual', 'totalProjected', 'overallPct', 'overClass', 'ipProjected', 'thisWeek']) {
+  for (const dead of ['totalBid', 'totalActual', 'totalProjected', 'overallPct', 'overClass',
+                      'ipProjected', 'thisWeek', 'openPOs']) {
     assert(`  ${dead} is gone rather than computed and ignored`, !new RegExp(`\\b${dead}\\b`).test(home));
   }
   // Scoped to the aggregation loop — the projects table below it projects
@@ -295,6 +300,16 @@ for (const file of FILES) {
     /const atRiskHTML = atRiskCt === 0 \? '' :/.test(home)
     && /home-metric-label">At Risk<\/span>/.test(home));
 
+  // Open POs counted a queue that lives two tabs away, and its card was the
+  // only clickable one on the strip — a card that navigated rather than
+  // reported. The count moved to the queue; the hover rule went with it.
+  assert('the pending-PO count is off the strip',
+    !/home-metric-label">Open POs</.test(src));
+  assert('  and it turns up on the Purchase Orders tab instead',
+    /\$\{pendingPOs\} pending approval/.test(extractFunction(src, 'renderPOTab')));
+  assert('  with no clickable-card rule left over',
+    !/home-metric-item\.clickable/.test(src));
+
   assert('the old bid-item "N active" subtitle is gone',
     !/home-metric-sub">\$\{statusCounts\.Active \|\| 0\} active/.test(src));
   assert('  and Active Projects counts projects whose status is In Progress',
@@ -304,6 +319,46 @@ for (const file of FILES) {
   assert('  plus the ones whose status is Awarded, on their own branch',
     /\} else if \(\(p\['status'\] \|\| ''\) === 'Awarded'\) \{/.test(agg)
     && /\n\s*awCount\+\+;/.test(agg));
+}
+
+// ── Where the pending-PO count went ──────────────────────────────────────────
+// On the strip it was a number that navigated: clicking it jumped to the
+// Purchase Orders tab and replaced poFilters wholesale. On the tab it is the
+// number and the filter at once, so it has to leave the tab's other filters
+// standing — including on the way back out.
+console.log('\n══════════ the pending-PO chip ══════════');
+function poChip(file, filters) {
+  const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const code = extractFunction(src, 'poPendingOnly') + '\n' + extractFunction(src, 'togglePOPending');
+  return new Function('poFilters', 'poPage', 'renderPOTab',
+    `${code}\nreturn { only: poPendingOnly, toggle: togglePOPending };`
+  )(filters, 0, () => {});
+}
+
+for (const file of FILES) {
+  console.log(`\n[${file}]`);
+  // A filter on another column, to prove the chip does not clear the board.
+  const filters = { supplier: new Set(['Acme']) };
+  const chip = poChip(file, filters);
+
+  assert('reads as off while no status filter is set', !chip.only());
+  chip.toggle();
+  assert('clicking it narrows the table to the pending orders',
+    chip.only() && filters.status.has('pending') && filters.status.size === 1);
+  assert('  without disturbing the other column filters', filters.supplier.has('Acme'));
+  chip.toggle();
+  assert('clicking it again widens the table back',
+    !chip.only() && !('status' in filters));
+  assert('  and still leaves the other column filters standing', filters.supplier.has('Acme'));
+
+  // Clear Filters was the only way back before, and it took the search and
+  // every other column filter with it.
+  filters.status = new Set(['pending', 'approved']);
+  assert('a status filter wider than pending does not read as the pending view',
+    !chip.only());
+  chip.toggle();
+  assert('  and clicking from there narrows to pending rather than clearing',
+    chip.only() && filters.status.size === 1);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
