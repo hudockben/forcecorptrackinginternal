@@ -16832,57 +16832,65 @@ async function exportJobSummary(projId, opts = {}) {
   const ccoTotal = contractCOTotal(p);
   const origCon  = originalContract(p);
 
-  let coRowsHTML = '';
-  if (ccos.length) {
-    coRowsHTML += `<tr class="group-hdr"><td colspan="5"><strong>Contract Change Orders</strong> <span style="font-weight:400;color:#777">(billed to the owner — these move the contract amount)</span></td></tr>`;
-    ccos.forEach(co => {
+  // Two separate tables, not one. A single shared "Amount" column invited
+  // reading a revenue figure and a cost figure as if they were the same
+  // measure — they are struck at different rates and only coincide by
+  // accident. Each table carries its own column names and its own total.
+  const contractCOTable = ccos.length ? `
+  <h4 class="co-sub">Contract Change Orders <span class="co-hint">— revenue: what the owner is billed</span></h4>
+  <table>
+    <thead><tr>
+      <th>Date</th><th>CO #</th><th>Description</th><th class="num">Amount Billed</th>
+    </tr></thead>
+    <tbody>${ccos.map(co => {
       const amt = parseFloat(co.amount) || 0;
-      coRowsHTML += `<tr>
+      return `<tr>
         <td class="src">${esc(co.date) || dash}</td>
         <td>${esc(co.number) || dash}</td>
         <td>${esc(co.note) || dash}</td>
-        <td class="num">${dash}</td>
         <td class="num ${amt >= 0 ? 'under' : 'over'}">${money(amt)}</td>
       </tr>`;
-    });
-    coRowsHTML += `<tr class="subtotal">
-      <td colspan="4"><em>Contract Change Orders — Subtotal</em></td>
+    }).join('')}
+    <tr class="totals">
+      <td colspan="3">Net Contract Change</td>
       <td class="num ${ccoTotal >= 0 ? 'under' : 'over'}">${money(ccoTotal)}</td>
-    </tr>`;
-  }
-  if (qtyCORows.length) {
-    coRowsHTML += `<tr class="group-hdr"><td colspan="5"><strong>Bid Item Quantity Change Orders</strong> <span style="font-weight:400;color:#777">(scope added or removed — these move the bid budget, not the contract)</span></td></tr>`;
-    qtyCORows.forEach(({ co, item, uc }) => {
-      const d     = parseFloat(co.qty_delta) || 0;
+    </tr></tbody>
+  </table>
+  <p class="note">Already included in the Revised Contract above: ${origCon ? '$' + fmt(origCon) : '$0'} original ${ccoTotal >= 0 ? '+' : '−'} $${fmt(Math.abs(ccoTotal))} = $${fmt(origCon + ccoTotal)}.</p>` : '';
+
+  // The unit cost column is what makes the dollar figure checkable — without
+  // it the number looks conjured, since it is struck at the bid item's cost
+  // rate rather than at whatever rate the owner was credited.
+  const qtyCOTable = qtyCORows.length ? `
+  <h4 class="co-sub">Bid Item Quantity Change Orders <span class="co-hint">— cost: scope added to or removed from the budget</span></h4>
+  <table>
+    <thead><tr>
+      <th>Date</th><th>Cost / Sub Code</th><th>Description</th>
+      <th class="num">Qty &Delta;</th><th class="num">Unit Cost</th><th class="num">Bid Cost &Delta;</th>
+    </tr></thead>
+    <tbody>${qtyCORows.map(({ co, item, uc }) => {
+      const d      = parseFloat(co.qty_delta) || 0;
       const impact = d * uc;
-      const code  = [item.cost_code, item.sub_code].filter(Boolean).join(' / ');
-      coRowsHTML += `<tr>
+      const code   = [item.cost_code, item.sub_code].filter(Boolean).join(' / ');
+      return `<tr>
         <td class="src">${esc(co.date) || dash}</td>
         <td>${esc(code) || dash}</td>
         <td>${esc(co.note) || dash}</td>
         <td class="num ${d >= 0 ? 'under' : 'over'}">${d >= 0 ? '+' : '−'}${qfmt(Math.abs(d))}${item.unit ? ' ' + esc(item.unit) : ''}</td>
+        <td class="num">${uc ? '$' + fmt(uc) : dash}</td>
         <td class="num actual">${impact ? money(impact) : dash}</td>
       </tr>`;
-    });
-    coRowsHTML += `<tr class="subtotal">
-      <td colspan="4"><em>Quantity Change Orders — Bid Cost Impact</em></td>
-      <td class="num actual">${money(coQtyCostImpact)}</td>
-    </tr>`;
-  }
-  const coSectionHTML = coRowsHTML ? `
-  <h3>Change Orders</h3>
-  <table>
-    <thead><tr>
-      <th>Date</th><th>CO # / Cost Code</th><th>Description</th>
-      <th class="num">Qty &Delta;</th><th class="num">Amount</th>
-    </tr></thead>
-    <tbody>${coRowsHTML}
+    }).join('')}
     <tr class="totals">
-      <td colspan="4">Net Contract Change</td>
-      <td class="num ${ccoTotal >= 0 ? 'under' : 'over'}">${ccos.length ? money(ccoTotal) : '$0.00'}</td>
+      <td colspan="5">Net Bid Cost Change</td>
+      <td class="num actual">${money(coQtyCostImpact)}</td>
     </tr></tbody>
   </table>
-  <p class="note">Contract change orders adjust the amount billed to the owner and are already included in the Revised Contract above. Quantity change orders adjust bid quantities and are already included in every Bid Qty and Bid Cost figure; their dollar column is the added or removed <strong>cost</strong>, not revenue.</p>` : '';
+  <p class="note">Already included in every Bid Qty and Bid Cost figure above. Struck at each bid item's <strong>unit cost</strong>, so this is cost off the budget — not a credit to the owner, and it will not match the contract change order unless the two rates happen to agree.</p>` : '';
+
+  const coSectionHTML = (contractCOTable || qtyCOTable)
+    ? `<h3>Change Orders</h3>${contractCOTable}${qtyCOTable}`
+    : '';
 
   // ── Financial summary bar ─────────────────────────────────────────
   const contractVal = projectContract(p);
@@ -16972,6 +16980,8 @@ async function exportJobSummary(projId, opts = {}) {
     tr.jobrow td.src { color: #92400e; }
     /* base + CO breakdown printed under an effective bid qty */
     .co-line { font-size: 7.5px; font-weight: 400; color: #6b7280; margin-top: 1px; white-space: nowrap; }
+    h4.co-sub { font-size: 10px; font-weight: 700; margin: 10px 0 4px; color: #333; }
+    h4.co-sub .co-hint { font-weight: 400; color: #777; }
     /* ── Schedule page ─────────────────────────────────────────────────
        The job's timeline and Gantt chart on a sheet of their own. The vars
        feed the shared Gantt renderer, which is written against the app's

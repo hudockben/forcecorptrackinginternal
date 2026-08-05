@@ -149,6 +149,23 @@ assert('section injected into the report body',/\$\{coSectionHTML\}/.test(js));
 assert('lists contract COs',                   /Contract Change Orders/.test(js));
 assert('lists bid-item quantity COs',          /Bid Item Quantity Change Orders/.test(js));
 assert('reports qty CO cost impact',           /coQtyCostImpact/.test(js));
+
+// Revenue and cost must never share a column. They are struck at different
+// rates — the bid item's unit cost vs whatever the owner was credited — so a
+// shared "Amount" heading reads as a contradiction on any job where the two
+// rates differ, which is most of them.
+assert('contract and quantity COs are separate tables',
+  /const contractCOTable/.test(js) && /const qtyCOTable/.test(js));
+assert('revenue column is named Amount Billed',   /<th class="num">Amount Billed<\/th>/.test(js));
+assert('cost column is named Bid Cost .Delta;',   /<th class="num">Bid Cost &Delta;<\/th>/.test(js));
+assert('no shared generic Amount column',         !/<th class="num">Amount<\/th>/.test(js));
+// Without the rate the dollar figure is unverifiable by eye.
+assert('quantity table shows the unit cost it was struck at',
+  /<th class="num">Unit Cost<\/th>/.test(js) && /\$' \+ fmt\(uc\)/.test(js));
+assert('each table totals only its own measure',
+  /Net Contract Change[\s\S]{0,200}money\(ccoTotal\)/.test(js) &&
+  /Net Bid Cost Change[\s\S]{0,200}money\(coQtyCostImpact\)/.test(js));
+assert('the two tables warn they need not agree', /unless the two rates happen to agree/.test(js));
 assert('splits Original / CO / Revised in the fin bar',
   /Original Contract[\s\S]+Change Orders \(\$\{ccos\.length\}\)[\s\S]+Revised Contract/.test(js));
 assert('keeps the single Contract Value metric when there are no COs',
