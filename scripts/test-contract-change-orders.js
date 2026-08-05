@@ -113,13 +113,30 @@ assert('updateProjectField re-derives on contract edits',
   !!updField && /contract-amount' \|\| field === 'contract-value'[\s\S]+syncRevisedContract/.test(updField[0]));
 
 console.log('\n[structural — project card badges]');
-const cardFn = SRC.match(/function projectCardHTML\(p\)[\s\S]+?\n\}\n/);
+const badgeFn = SRC.match(/function projectBadgesHTML\(p\)[\s\S]+?\n\}\n/);
+assert('badges split into projectBadgesHTML', !!badgeFn);
 assert('card contract badge uses projectContract',
-  !!cardFn && /const contractValue = projectContract\(p\);/.test(cardFn[0]));
+  !!badgeFn && /const contractValue = projectContract\(p\);/.test(badgeFn[0]));
 assert('card bid badge includes bid-item COs',
-  !!cardFn && /_cardEffQty[\s\S]+qty_delta/.test(cardFn[0]));
+  !!badgeFn && /_cardEffQty[\s\S]+qty_delta/.test(badgeFn[0]));
 assert('card shows a CO badge when there are contract COs',
-  !!cardFn && /ccoTotal \? `<span class="proj-badge/.test(cardFn[0]));
+  !!badgeFn && /ccoTotal \? `<span class="proj-badge/.test(badgeFn[0]));
+assert('projectCardHTML renders the shared badge row',
+  /<div class="proj-card-badges">\$\{projectBadgesHTML\(p\)\}/.test(SRC));
+
+// A change order that doesn't repaint the header reads as "nothing happened".
+// Rebuilding the whole card is not an option — it would collapse the open one.
+const refreshFn = SRC.match(/function refreshProjectBadges\(projId\)[\s\S]+?\n\}/);
+assert('refreshProjectBadges targets just the badge row',
+  !!refreshFn && /\.proj-card-badges`\)/.test(refreshFn[0]) && !/renderProjectsTab/.test(refreshFn[0]));
+assert('refreshProjectBadges escapes the id selector',
+  !!refreshFn && /CSS\.escape\(projId\)/.test(refreshFn[0]));
+for (const fn of ['syncRevisedContract', '_addCO', '_removeCO']) {
+  const m = SRC.match(new RegExp(`function ${fn}\\([^)]*\\)[\\s\\S]+?\\n\\}\\n`));
+  assert(`${fn} repaints the badges`, !!m && /refreshProjectBadges\(projId\)/.test(m[0]));
+}
+assert('editing a contract field repaints the badges',
+  !!updField && /refreshProjectBadges\(id\)/.test(updField[0]));
 
 console.log('\n[structural — Job Summary Report]');
 const jsFn = SRC.match(/async function exportJobSummary\(projId, opts = \{\}\)[\s\S]+?\n\}\n\nfunction exportBidPDF/);
@@ -132,6 +149,23 @@ assert('section injected into the report body',/\$\{coSectionHTML\}/.test(js));
 assert('lists contract COs',                   /Contract Change Orders/.test(js));
 assert('lists bid-item quantity COs',          /Bid Item Quantity Change Orders/.test(js));
 assert('reports qty CO cost impact',           /coQtyCostImpact/.test(js));
+
+// Revenue and cost must never share a column. They are struck at different
+// rates — the bid item's unit cost vs whatever the owner was credited — so a
+// shared "Amount" heading reads as a contradiction on any job where the two
+// rates differ, which is most of them.
+assert('contract and quantity COs are separate tables',
+  /const contractCOTable/.test(js) && /const qtyCOTable/.test(js));
+assert('revenue column is named Amount Billed',   /<th class="num">Amount Billed<\/th>/.test(js));
+assert('cost column is named Bid Cost .Delta;',   /<th class="num">Bid Cost &Delta;<\/th>/.test(js));
+assert('no shared generic Amount column',         !/<th class="num">Amount<\/th>/.test(js));
+// Without the rate the dollar figure is unverifiable by eye.
+assert('quantity table shows the unit cost it was struck at',
+  /<th class="num">Unit Cost<\/th>/.test(js) && /\$' \+ fmt\(uc\)/.test(js));
+assert('each table totals only its own measure',
+  /Net Contract Change[\s\S]{0,200}money\(ccoTotal\)/.test(js) &&
+  /Net Bid Cost Change[\s\S]{0,200}money\(coQtyCostImpact\)/.test(js));
+assert('the two tables warn they need not agree', /unless the two rates happen to agree/.test(js));
 assert('splits Original / CO / Revised in the fin bar',
   /Original Contract[\s\S]+Change Orders \(\$\{ccos\.length\}\)[\s\S]+Revised Contract/.test(js));
 assert('keeps the single Contract Value metric when there are no COs',
@@ -161,12 +195,14 @@ const block = extractBlock(SRC, 'function contractCOs(p) {', 'function showContr
 const projects = {};
 let saveCalls = 0;
 let coFieldRenders = 0;
+let badgeRepaints = 0;
 let uidSeq = 0;
 
 const ctx = {
   getProj:               id => projects[id],
   saveProject:           () => { saveCalls++; },
   renderContractCOField: () => { coFieldRenders++; },
+  refreshProjectBadges:  () => { badgeRepaints++; },
   document:              { getElementById: () => null },   // detached — no card in the DOM
   esc:                   s => String(s || ''),
   fmt:                   n => String(n),
@@ -212,6 +248,7 @@ addCO('e', { date: '2026-03-02', number: 'CO-1', amount: 8500, note: 'Extra base
 assert('one CO → revised = original + CO', projects.e['revised-amount'] === '132394',
   projects.e['revised-amount']);
 assert('adding a CO saves the project',    saveCalls === 1, String(saveCalls));
+assert('adding a CO repaints the badges',  badgeRepaints === 1, String(badgeRepaints));
 
 addCO('e', { date: '2026-03-19', number: 'CO-2', amount: 2150.75, note: 'Added striping' });
 assert('two COs accumulate',               projects.e['revised-amount'] === '134544.75',
