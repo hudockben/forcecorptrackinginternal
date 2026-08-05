@@ -3,12 +3,21 @@
 const { neon }  = require('@neondatabase/serverless');
 const bcrypt    = require('bcryptjs');
 
+/**
+ * The shared admin secret, read from the X-Admin-Secret header or the request
+ * body — never the query string, where it would be recorded in access logs,
+ * browser history and any outbound Referer.
+ */
+function adminSecretFrom(req) {
+  return req.headers['x-admin-secret'] || (req.body && req.body.adminSecret) || '';
+}
+
 const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive'];
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Secret');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -16,7 +25,8 @@ module.exports = async (req, res) => {
 
   // GET — list users for a company (or all users)
   if (req.method === 'GET') {
-    const { adminSecret, companyCode } = req.query;
+    const { companyCode } = req.query;
+    const adminSecret = adminSecretFrom(req);
     if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
       return res.status(403).json({ error: 'Forbidden' });
     }
@@ -41,8 +51,8 @@ module.exports = async (req, res) => {
 
   // POST — create or update a user
   if (req.method === 'POST') {
+    const adminSecret = adminSecretFrom(req);
     const {
-      adminSecret,
       companyCode,
       username,
       password,
@@ -111,7 +121,8 @@ module.exports = async (req, res) => {
 
   // DELETE — remove a user by id
   if (req.method === 'DELETE') {
-    const { adminSecret, id } = req.body || {};
+    const adminSecret = adminSecretFrom(req);
+    const { id } = req.body || {};
     if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
       return res.status(403).json({ error: 'Forbidden' });
     }

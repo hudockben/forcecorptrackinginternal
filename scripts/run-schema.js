@@ -1,9 +1,14 @@
 /**
  * One-time script: applies neon-schema.sql to the Neon database.
- * Run with: node api/run-schema.js
+ * Run with: node scripts/run-schema.js
+ *
+ * Lives outside api/ deliberately: every file under api/ is deployed as a
+ * serverless function, and this one applies schema DDL at module load. In
+ * api/ it was reachable as an unauthenticated GET /api/run-schema that ran
+ * the whole schema and locked tables on each hit.
  */
 'use strict';
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+require('dotenv').config({ path: require('path').join(__dirname, '../api/.env') });
 const { neon } = require('@neondatabase/serverless');
 const fs = require('fs');
 const path = require('path');

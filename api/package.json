@@ -2,10 +2,10 @@
   "name": "forcecorptracking-api",
   "version": "1.0.0",
   "description": "ForceCorpTracking backend API — persists data to Neon (PostgreSQL)",
-  "main": "server.js",
+  "main": "../scripts/dev-server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node ../scripts/dev-server.js",
+    "dev": "node --watch ../scripts/dev-server.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

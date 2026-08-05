@@ -3262,7 +3262,13 @@ if (fctDivision !== 'turf') {
   window.location.replace('divisions.html');
 }
 
+let _loggingOut = false;
 function logout() {
+  // Concurrent pollers all 401 within the same tick when a token expires, and
+  // each one called this. Latch so presence removal and the redirect happen
+  // once instead of once per in-flight request.
+  if (_loggingOut) return;
+  _loggingOut = true;
   // Remove self from presence before leaving
   _presenceRemoveSelf().finally(() => {
     localStorage.removeItem('fct_token');
@@ -3758,12 +3764,17 @@ function drDeleteBySubCode(subCode) {
       ).join('');
   }
 
-  // Kick off immediately then poll
+  // Kick off immediately then poll. The heartbeat keeps running while the tab
+  // is hidden — a backgrounded window still means the user is signed in, and
+  // stopping it would drop them off everyone else's online list after
+  // STALE_MS. It is one small write a minute; the reads below are what stop.
   heartbeat();
-  setInterval(heartbeat, HEARTBEAT_MS);
+  setInterval(() => { if (!_fctSessionOver()) heartbeat(); }, HEARTBEAT_MS);
 
-  // Also refresh display more frequently so stale users disappear promptly
+  // Also refresh display more frequently so stale users disappear promptly.
+  // Skipped while hidden: there is no visible list to update.
   setInterval(async () => {
+    if (_fctPollsSuspended()) return;
     try {
       const data = (await apiGet(PRESENCE_KEY)) || {};
       renderOnline(data);
@@ -3841,6 +3852,23 @@ const perm = (() => {
    Replaces localStorage with server-backed persistence.
 ═══════════════════════════════════════════ */
 const API_BASE = '/api';
+
+/** True once the session is over — token cleared, or logout() has started. */
+function _fctSessionOver() {
+  return _loggingOut || !localStorage.getItem('fct_token');
+}
+
+/**
+ * True when background polling should stand down.
+ *
+ * A hidden tab has nothing to render, so every request it makes is wasted; a
+ * window left open overnight used to poll until it was closed. And once the
+ * session is over the timers could only produce 401s, each of which called
+ * logout() again.
+ */
+function _fctPollsSuspended() {
+  return document.visibilityState === 'hidden' || _fctSessionOver();
+}
 
 async function apiGet(key) {
   try {
@@ -22117,6 +22145,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   const LISTS_POLL_MS = 60_000;
 
   async function pollLists() {
+    if (_fctPollsSuspended()) return;
     try {
       let saved = await apiGet('fct_lists');
       if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
@@ -22164,17 +22193,51 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (activeTab === 'cost') renderCostTable();
   }
 
+  // Signature — ids plus the _ts stamp — of the index this tab last acted on.
+  function _indexSig(ids, ts) {
+    return ids.slice().sort().join(',') + '|' + (ts || 0);
+  }
+  let _lastIndexSig = null;
+
   async function _pollProjects() {
     const _raw = await apiGet('fct_projects_index');
     const index = Array.isArray(_raw) ? _raw : (Array.isArray(_raw?.ids) ? _raw.ids : null);
     if (!Array.isArray(index)) return;
-    const incomingTs = _raw?._ts || 0;
-    const curIds = projectsList.map(p => p.id).slice().sort().join(',');
-    const newIds = index.slice().sort().join(',');
-    const tsChanged = incomingTs && incomingTs !== _lastProjIndexTs;
-    if (curIds === newIds && index.length > 0 && !tsChanged) return;
+    // Seed from the state boot's loadProjects() already established, so an
+    // unchanged index does not read as a change on the very first tick.
+    if (_lastIndexSig === null) {
+      _lastIndexSig = _indexSig(projectsList.map(p => p.id), _lastProjIndexTs);
+    }
+    const sig = _indexSig(index, _raw?._ts);
+    // The old guard compared the server index against projectsList. Those two
+    // diverge permanently the moment one project blob goes missing, because
+    // loadProjects() drops an id it cannot fetch a blob for while the index
+    // keeps listing it — so the guard was false on every tick and ran
+    // loadProjects() every 60s forever. That is eight-plus requests a tick,
+    // two of them full daily-rows reads. scripts/test-poll-convergence.js
+    // replays the old guard over that state: 12 reloads in 12 ticks.
+    //
+    // Comparing the index against the last index we acted on instead means
+    // only a real change on the server triggers a reload.
+    if (sig === _lastIndexSig) return;
     if (_isEditing()) return;
+    _lastIndexSig = sig;
+    const polledTs = _raw?._ts || 0;
     await loadProjects();
+    // loadProjects() sets _lastProjIndexTs from the index it fetched, so a
+    // value that no longer matches the one we polled means its recovery pass
+    // rewrote the index. Adopt what it wrote — otherwise this tab reads its
+    // own write back as a remote change next tick, and with two tabs open
+    // that self-trigger bounced between them and neither ever settled.
+    //
+    // When it did not rewrite, the signature recorded above still describes
+    // the server's index. Deliberately not re-deriving from projectsList
+    // here: a project whose blob is missing is dropped from the list but
+    // stays in the index, and adopting the shorter list would leave the two
+    // permanently unequal — the very mismatch this guard exists to end.
+    if (_lastProjIndexTs !== polledTs) {
+      _lastIndexSig = _indexSig(projectsList.map(p => p.id), _lastProjIndexTs);
+    }
     if (activeTab === 'home') renderHomeTab();
     if (activeTab === 'info') renderProjectInfoComputed();
   }
@@ -22266,25 +22329,45 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
 
   // Board and deadlines live on the home tab; refresh them more frequently
   async function _pollHomeFeeds() {
+    if (_fctPollsSuspended()) return;
     if (activeTab !== 'home') return;
     loadBoard();
     loadDeadlines();
   }
 
+  // One cycle at a time. setInterval fires on a fixed schedule no matter how
+  // long the previous cycle took, so a cycle that outran POLL_MS used to be
+  // joined by the next one, and under load they stacked without limit — each
+  // overlapping run issuing its own full fan-out.
+  let _pollCycleBusy = false;
+
   async function _pollAll() {
-    await Promise.allSettled([
-      _pollCostRows(),
-      _pollPurchaseOrders(),
-      _pollTrucking(),
-      _pollInventory(),
-      _pollCrm(),
-      _pollSoe(),
-      _pollProjects(),
-    ]);
+    if (_pollCycleBusy || _fctPollsSuspended()) return;
+    _pollCycleBusy = true;
+    try {
+      await Promise.allSettled([
+        _pollCostRows(),
+        _pollPurchaseOrders(),
+        _pollTrucking(),
+        _pollInventory(),
+        _pollCrm(),
+        _pollSoe(),
+        _pollProjects(),
+      ]);
+    } finally {
+      _pollCycleBusy = false;
+    }
   }
 
   setInterval(_pollAll,      POLL_MS);
   setInterval(_pollHomeFeeds, BOARD_MS);
+
+  // Coming back to a tab that stood down should not wait out a full interval.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || _fctSessionOver()) return;
+    _pollAll();
+    _pollHomeFeeds();
+  });
 })();
 
 /* ═══════════════════════════════════════════
@@ -26145,7 +26228,9 @@ async function _luciusFetchMapboxToken() {
     return MAPBOX_TOKEN;
   }
   try {
-    const res = await fetch('/api/config/mapbox');
+    const res = await fetch('/api/config/mapbox', {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
     const data = await res.json();
     MAPBOX_TOKEN = data.token || '';
     console.log('[lucius] Mapbox token from server:', MAPBOX_TOKEN ? 'present' : 'empty');

@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "node api/run-schema.js",
+  "buildCommand": "node scripts/run-schema.js",
   "outputDirectory": ".",
   "functions": {
     "api/**/*.js": {
@@ -9,9 +9,19 @@
   },
   "headers": [
     {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "same-origin" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains" },
+        { "key": "Permissions-Policy", "value": "geolocation=(), microphone=(), camera=()" }
+      ]
+    },
+    {
       "source": "/:path*.html",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=300, stale-while-revalidate=600" }
+        { "key": "Cache-Control", "value": "private, max-age=300, stale-while-revalidate=600" }
       ]
     },
     {
