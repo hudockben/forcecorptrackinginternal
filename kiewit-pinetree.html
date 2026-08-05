@@ -4432,7 +4432,7 @@ function renderHomeTab() {
       const bid      = (p.bidItems||[]).reduce((s,b) => s + _eb(b) * (parseFloat(b.unit_cost)||0), 0);
       const actual   = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
       const projCost = projectedCostForProject(p);
-      const contract = projectContract(p);
+      const contract = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
       const name     = p['project-name'] || 'Untitled Project';
       const jobNo    = String(p['job-number'] || '').trim();
       // The job name as entered is what people call the job, so the tape carries
