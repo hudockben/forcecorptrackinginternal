@@ -1123,7 +1123,7 @@
     }
     .tick-item:hover { background: var(--surface2); }
     .tick-state { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
-    .tick-sym   { font-weight: 700; font-size: 0.76rem; letter-spacing: 0.06em; }
+    .tick-sym   { font-weight: 700; font-size: 0.76rem; }
     .tick-price { font-size: 0.76rem; color: var(--text); }
     .tick-basis { font-size: 0.55rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
     .tick-chg   { font-size: 0.72rem; font-weight: 600; }
@@ -4434,16 +4434,15 @@ function renderHomeTab() {
       const projCost = projectedCostForProject(p);
       const contract = projectContract(p);
       const name     = p['project-name'] || 'Untitled Project';
-      // A job number already reads like a ticker symbol, so use it when there is
-      // one and fall back to the leading word of the project name.
       const jobNo    = String(p['job-number'] || '').trim();
-      const sym      = (jobNo && jobNo.length <= 8)
-        ? jobNo.toUpperCase()
-        : ((name.toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').trim().split(/\s+/)[0] || 'JOB').slice(0, 6));
+      // The job name as entered is what people call the job, so the tape carries
+      // it verbatim. Only a runaway name gets clipped, so no single entry can
+      // swallow the strip.
+      const sym      = name.length > 30 ? name.slice(0, 29).trimEnd() + '…' : name;
       // "Price" is the money the job carries, "change" is how the projected cost
       // is tracking against the bid budget — under budget ticks up, over ticks down.
       return {
-        id: p.id, name, sym, status: p['status'] || '',
+        id: p.id, name, sym, jobNo, status: p['status'] || '',
         price: contract || bid,
         basis: contract ? '' : bid ? 'bid' : '',
         chg:   bid > 0 ? (bid - projCost) / bid * 100 : null,
@@ -4467,7 +4466,7 @@ function renderHomeTab() {
     const chgTxt = j.chg === null ? 'no budget' : Math.abs(j.chg).toFixed(1) + '%';
     // Same colour the status badges use elsewhere, so the dot reads as a status.
     const dot    = statusTextColor(j.status);
-    const tip    = `${j.name} — ${j.status}\nBid budget $${fmt(j.bid)} · Actual $${fmt(j.actual)} · Projected $${fmt(j.projCost)}`
+    const tip    = `${j.name}${j.jobNo ? ' · Job ' + j.jobNo : ''} — ${j.status}\nBid budget $${fmt(j.bid)} · Actual $${fmt(j.actual)} · Projected $${fmt(j.projCost)}`
                  + (j.contract ? ` · Contract $${fmt(j.contract)}` : '')
                  + (j.chg === null ? '' : `\n${j.chg >= 0 ? 'Under' : 'Over'} bid budget by $${fmt(Math.abs(j.bid - j.projCost))}`);
     return `<span class="tick-item" title="${esc(tip)}" onclick="goToProject('${j.id}')">
@@ -4486,7 +4485,7 @@ function renderHomeTab() {
     : '';
   const tickerHTML = tickerJobs.length === 0 ? '' : `
     <div class="job-ticker" style="--tick-duration:${Math.max(30, tickerJobs.length * 6)}s">
-      <span class="job-ticker-label"><span class="job-ticker-live"></span>Active Jobs</span>
+      <span class="job-ticker-label" title="Every in-progress and awarded job. The dollar figure is contract value, or bid budget where there is no contract. The arrow is projected cost against bid budget — up is under, down is over."><span class="job-ticker-live"></span>Active Jobs</span>
       <div class="job-ticker-viewport">
         <div class="job-ticker-track">
           <span class="tick-seq">${tickerSeq}</span>
