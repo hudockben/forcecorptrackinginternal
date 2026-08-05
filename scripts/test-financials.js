@@ -50,12 +50,26 @@ function extractFunction(src, name) {
 // The whole Financials block — filter state, table, export and print all live
 // together — plus the real projection chain it depends on, over a stub DOM.
 const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'statusBadgeClass'];
+
+// paving.html routes every contract read through projectContract(), which
+// folds in contract change orders; the other division files still inline the
+// fallback chain. Pull the real helpers in where they exist so this exercises
+// production code either way.
+const CONTRACT_HELPERS = ['contractCOs', 'contractCOTotal', 'originalContract', 'revisedContract', 'projectContract'];
+function contractHelperCode(src) {
+  if (!src.includes('function projectContract(')) {
+    return `function projectContract(p) { return parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0; }`;
+  }
+  return CONTRACT_HELPERS.map(n => extractFunction(src, n)).join('\n');
+}
+
 function loadFinancials(file, projects) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   const start = src.indexOf('/* ── Financials ───');
   const end   = src.indexOf('function renderSubCodePerf');
   if (start < 0 || end < 0) throw new Error(`Financials block not found in ${file}`);
-  const code = CHAIN.map(n => extractFunction(src, n)).join('\n\n') + '\n\n' + src.slice(start, end);
+  const code = contractHelperCode(src) + '\n\n'
+             + CHAIN.map(n => extractFunction(src, n)).join('\n\n') + '\n\n' + src.slice(start, end);
 
   const bar = { innerHTML: '' }, table = { innerHTML: '' };
   // rowCost counts how often the per-project cost walk runs, which is how the

@@ -4325,7 +4325,7 @@ function renderHomeTab() {
     const _effBidQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
     const projBid    = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b) * (parseFloat(b.unit_cost)||0), 0);
     const projActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
-    const projContract = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+    const projContract = projectContract(p);
     if ((p['status'] || '') === 'In Progress') {
       ipCount++;
       ipContract  += projContract;
@@ -4533,7 +4533,7 @@ function renderHomeTab() {
       : projCost > bid ? 'color:var(--red)'
       : projCost > bid * 0.85 ? 'color:var(--yellow)'
       : 'color:var(--green)';
-    const contractVal   = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+    const contractVal   = projectContract(p);
     const contractTxt   = contractVal ? '$' + fmt(contractVal) : '—';
     const profit        = contractVal ? contractVal - projCost : null;
     const profitTxt     = profit !== null ? (profit >= 0 ? '$' + fmt(profit) : '-$' + fmt(Math.abs(profit))) : '—';
@@ -7358,6 +7358,12 @@ function updateProjectField(id, field, value) {
   if (metaEl)  metaEl.textContent  = [p['job-number'], p['client']].filter(Boolean).join(' · ');
   if (badgeEl) { badgeEl.className = 'proj-badge ' + statusBadgeClass(p['status']); badgeEl.textContent = p['status'] || ''; }
   if (field === 'status') renderBidTable(id);
+  // Revised = original + change orders. Editing the original has to carry
+  // that through, or the revised figure silently goes stale. saveProject
+  // already ran above, so this pass only rewrites the derived field.
+  if ((field === 'contract-amount' || field === 'contract-value') && contractCOs(p).length) {
+    syncRevisedContract(id);
+  }
 }
 
 function selectAllProjectAssignment(projId, field, names, btn) {
@@ -7443,6 +7449,181 @@ function updateBidItem(projId, itemId, field, value) {
   const bidTot = qty * uc;
   const calcEl = document.getElementById('bic-' + itemId);
   if (calcEl) calcEl.textContent = bidTot ? '$' + fmt(bidTot) : '—';
+  renderBidFooter(projId);
+}
+
+/* ── Contract change orders (project level) ──────────────────────────
+   Two different things share the name "change order" in this app:
+
+     • Bid-item change orders (showCOModal below) move QUANTITY. They
+       change what the job will cost us — bid budget, variance, % complete.
+     • Contract change orders (here) move the CONTRACT — what the owner is
+       billed. They change revenue.
+
+   Only bid-item COs existed before, which meant adding scope raised
+   projected cost while contract stayed flat, so the job's profit *fell*
+   every time work was added. These close that gap: Revised Contract
+   Amount is derived as original + the sum of the contract COs, and every
+   contract lookup in the app already reads 'revised-amount' first. */
+// Read-only view. Kept pure because the render paths ask for it on every
+// project in the list, and a helper that initialised as a side effect
+// would stamp an empty array onto every blob the app has ever loaded.
+function contractCOs(p) {
+  return Array.isArray(p && p['contract-cos']) ? p['contract-cos'] : [];
+}
+function contractCOTotal(p) {
+  return contractCOs(p).reduce((s, co) => s + (parseFloat(co.amount) || 0), 0);
+}
+// The contract before any change orders. Mirrors the app-wide read order
+// minus 'revised-amount', which is the figure derived from these two.
+// 'contract-value' is included because it is the field on the Project
+// Details grid that most jobs are actually keyed into.
+function originalContract(p) {
+  return parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+}
+function revisedContract(p) {
+  return originalContract(p) + contractCOTotal(p);
+}
+// The one contract figure every screen should quote. With change orders on
+// the job it is derived live rather than trusting 'revised-amount', so a
+// report can never print a stale figure if that cached field falls behind.
+// With no COs it is the untouched legacy chain.
+function projectContract(p) {
+  if (!p) return 0;
+  if (contractCOs(p).length) return revisedContract(p);
+  return parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+}
+// Write original + COs into 'revised-amount'. With no COs left the field
+// is cleared so the original contract stands on its own again and the
+// fallback chain behaves exactly as it did before this feature.
+function syncRevisedContract(projId) {
+  const p = getProj(projId); if (!p) return;
+  const cos = contractCOs(p);
+  p['revised-amount'] = cos.length ? String(Math.round(revisedContract(p) * 100) / 100) : '';
+  const revEl = document.getElementById('revamt-' + projId);
+  if (revEl) {
+    revEl.value = p['revised-amount'];
+    revEl.disabled = cos.length > 0;
+    revEl.title = cos.length ? 'Derived from the original contract plus change orders' : '';
+    revEl.style.color = cos.length ? 'var(--blue)' : '';
+  }
+  renderContractCOField(projId);
+  saveProject(projId);
+}
+
+// The read-only summary + list that sits next to Revised Contract Amount.
+// Re-rendered in place so adding a CO doesn't require rebuilding the card.
+function renderContractCOField(projId) {
+  const host = document.getElementById('cco-field-' + projId);
+  const p = getProj(projId);
+  if (!host || !p) return;
+  const cos   = contractCOs(p);
+  const total = contractCOTotal(p);
+  const col   = total > 0 ? 'var(--green)' : total < 0 ? 'var(--red)' : 'var(--muted)';
+  // One line per CO — the cell is a narrow grid column, so the note lives
+  // in the modal and on the report rather than being truncated here.
+  const list  = cos.length
+    ? `<div style="margin-top:0.4rem;display:flex;flex-direction:column;gap:0.2rem">${cos.map(co => {
+        const amt = parseFloat(co.amount) || 0;
+        return `<div style="display:flex;gap:0.5rem;font-size:0.7rem;color:var(--muted);align-items:baseline;justify-content:space-between" title="${esc(co.note || '')}">
+          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(co.date || '')} &middot; <span style="color:var(--text);font-weight:600">${esc(co.number || 'CO')}</span></span>
+          <span style="font-weight:700;white-space:nowrap;color:${amt >= 0 ? 'var(--green)' : 'var(--red)'}">${amt >= 0 ? '+' : '−'}$${fmt(Math.abs(amt))}</span>
+        </div>`;
+      }).join('')}</div>`
+    : '';
+  host.innerHTML = `
+    <label>Contract Change Orders</label>
+    <div style="display:flex;gap:0.5rem;align-items:center;justify-content:space-between">
+      <span style="display:flex;gap:0.4rem;align-items:baseline;min-width:0">
+        <span style="font-weight:700;font-size:0.95rem;color:${col};white-space:nowrap">${cos.length ? `${total >= 0 ? '+' : '−'}$${fmt(Math.abs(total))}` : '—'}</span>
+        <span style="font-size:0.7rem;color:var(--muted);white-space:nowrap">${cos.length ? `${cos.length} CO${cos.length === 1 ? '' : 's'}` : 'none'}</span>
+      </span>
+      <button style="flex-shrink:0;font-size:0.7rem;font-weight:600;padding:0.25rem 0.7rem;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer"
+        onclick="showContractCOModal('${projId}')">${cos.length ? 'Manage' : '+ Add'}</button>
+    </div>${list}`;
+}
+
+function showContractCOModal(projId) {
+  const p = getProj(projId); if (!p) return;
+  const cos      = contractCOs(p);
+  const orig     = originalContract(p);
+  const total    = contractCOTotal(p);
+  const revised  = orig + total;
+  const money    = v => (v >= 0 ? '$' + fmt(v) : '-$' + fmt(Math.abs(v)));
+  const coRows = cos.length
+    ? cos.map(co => `<tr>
+        <td style="font-size:0.8rem;padding:0.25rem 0.4rem;white-space:nowrap">${esc(co.date || '')}</td>
+        <td style="font-size:0.8rem;padding:0.25rem 0.4rem;font-weight:600">${esc(co.number || '')}</td>
+        <td style="font-size:0.8rem;text-align:right;padding:0.25rem 0.4rem;font-weight:700;color:${(parseFloat(co.amount)||0) >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${(parseFloat(co.amount)||0) >= 0 ? '+' : '-'}$${fmt(Math.abs(parseFloat(co.amount)||0))}</td>
+        <td style="font-size:0.8rem;padding:0.25rem 0.4rem;color:var(--muted)">${esc(co.note || '')}</td>
+        <td style="padding:0.25rem 0.4rem"><button class="del-btn" onclick="_removeContractCO('${projId}','${co.id}')">✕</button></td>
+      </tr>`).join('')
+    : `<tr><td colspan="5" style="color:var(--muted);font-size:0.8rem;text-align:center;padding:0.75rem">No contract change orders yet</td></tr>`;
+  const existing = document.getElementById('cco-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'cco-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.5rem;min-width:520px;max-width:700px;width:92%">
+      <div style="font-weight:700;font-size:1rem;margin-bottom:0.2rem">Contract Change Orders — ${esc(p['project-name'] || 'Project')}</div>
+      <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.35rem">
+        Original: <strong style="color:var(--text)">${orig ? '$' + fmt(orig) : '—'}</strong> &nbsp;+&nbsp;
+        CO: <strong style="color:${total >= 0 ? 'var(--green)' : 'var(--red)'}">${cos.length ? money(total) : '$0.00'}</strong> &nbsp;=&nbsp;
+        Revised Contract: <strong style="color:var(--blue)">${(orig || total) ? '$' + fmt(revised) : '—'}</strong>
+      </div>
+      <div style="font-size:0.7rem;color:var(--muted);margin-bottom:1rem;font-style:italic">
+        Enter the dollar amount billed to the owner. Use a negative amount for deducted scope.
+        Quantity changes to the work itself belong on the bid item's own CO button.
+      </div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:1rem;background:var(--surface2);border-radius:6px;overflow:hidden">
+        <thead><tr style="font-size:0.7rem;color:var(--muted);border-bottom:1px solid var(--border)">
+          <th style="text-align:left;padding:0.3rem 0.4rem">Date</th>
+          <th style="text-align:left;padding:0.3rem 0.4rem">CO #</th>
+          <th style="text-align:right;padding:0.3rem 0.4rem">Amount</th>
+          <th style="text-align:left;padding:0.3rem 0.4rem">Description</th>
+          <th></th>
+        </tr></thead>
+        <tbody>${coRows}</tbody>
+      </table>
+      <div style="display:grid;grid-template-columns:130px 90px 110px 1fr auto;gap:0.4rem;margin-bottom:1rem;align-items:center">
+        <input id="cco-date-${projId}" type="date" value="${_localDateStr()}"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.4rem;font-size:0.8rem">
+        <input id="cco-num-${projId}" type="text" placeholder="CO #"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.4rem;font-size:0.8rem">
+        <input id="cco-amt-${projId}" type="number" step="any" placeholder="±$ amount"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.4rem;font-size:0.8rem">
+        <input id="cco-note-${projId}" type="text" placeholder="Description / reason"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.3rem 0.4rem;font-size:0.8rem">
+        <button class="btn btn-primary" style="font-size:0.8rem;white-space:nowrap" onclick="_addContractCO('${projId}')">+ Add</button>
+      </div>
+      <div style="display:flex;justify-content:flex-end">
+        <button class="btn btn-ghost" onclick="document.getElementById('cco-modal').remove()">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+function _addContractCO(projId) {
+  const p = getProj(projId); if (!p) return;
+  const date = document.getElementById('cco-date-' + projId).value;
+  const num  = document.getElementById('cco-num-' + projId).value.trim();
+  const amt  = parseFloat(document.getElementById('cco-amt-' + projId).value);
+  const note = document.getElementById('cco-note-' + projId).value.trim();
+  if (!date || isNaN(amt)) { alert('Enter a valid date and dollar amount (use a negative amount for deducted scope).'); return; }
+  if (!Array.isArray(p['contract-cos'])) p['contract-cos'] = [];
+  p['contract-cos'].push({ id: uid(), date, number: num, amount: amt, note });
+  syncRevisedContract(projId);
+  showContractCOModal(projId);
+  renderBidFooter(projId);
+}
+
+function _removeContractCO(projId, coId) {
+  const p = getProj(projId); if (!p) return;
+  p['contract-cos'] = contractCOs(p).filter(co => co.id !== coId);
+  syncRevisedContract(projId);
+  showContractCOModal(projId);
   renderBidFooter(projId);
 }
 
@@ -7746,7 +7927,7 @@ function renderBidFooter(projId, opts = {}) {
   if (bidViewProjId === projId) {
     const sqftBar = document.getElementById('bid-fs-sqft-bar');
     if (sqftBar) {
-      const contractVal = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+      const contractVal = projectContract(p);
       const profit      = contractVal ? contractVal - totalProj : null;   // Contract - Projected final cost
       const profitCol   = profit === null ? 'var(--muted)' : profit >= 0 ? 'var(--green)' : 'var(--red)';
       const profitTxt   = profit === null ? '—' : (profit >= 0 ? '$'+fmt(profit) : '-$'+fmt(Math.abs(profit)));
@@ -7758,9 +7939,18 @@ function renderBidFooter(projId, opts = {}) {
            <span style="font-size:0.6rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted)">${label}</span>
            <span style="font-weight:700;font-size:0.98rem;color:${col}">${val}</span>
          </div>`;
+      // Split the contract into original + change orders once a job has any,
+      // so the number on the Bid Items page shows where it came from.
+      const ccoTotal = contractCOTotal(p);
+      const ccoCount = contractCOs(p).length;
+      const contractMets = ccoCount
+        ? fmet('Original Contract', originalContract(p) ? '$'+fmt(originalContract(p)) : '—', 'var(--blue)')
+          + fmet(`Change Orders (${ccoCount})`, (ccoTotal >= 0 ? '+$' : '-$') + fmt(Math.abs(ccoTotal)), ccoTotal >= 0 ? 'var(--green)' : 'var(--red)')
+          + fmet('Revised Contract', contractVal ? '$'+fmt(contractVal) : '—', 'var(--blue)')
+        : fmet('Contract Value', contractVal ? '$'+fmt(contractVal) : '—', 'var(--blue)');
       let barHTML =
         `<div style="display:flex;gap:1.4rem;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:0.55rem 1rem;flex-wrap:wrap;margin-bottom:0.25rem">
-           ${fmet('Contract Value', contractVal ? '$'+fmt(contractVal) : '—', 'var(--blue)')}
+           ${contractMets}
            ${fmet('Bid Budget', totalBid ? '$'+fmt(totalBid) : '—', '#86efac')}
            ${fmet('Actual Cost', totalActual ? '$'+fmt(totalActual) : '—', 'var(--yellow)')}
            ${fmet('Projected Cost', (totalBid || totalProj) ? '$'+fmt(totalProj) : '—', projCol)}
@@ -9147,10 +9337,16 @@ function projectCardHTML(p) {
   const name   = p['project-name'] || 'Untitled Project';
   const meta   = [p['job-number'], p['client']].filter(Boolean).join(' · ');
   const status = p['status'] || '';
-  const totalBid      = (p.bidItems||[]).reduce((s,b)=>s+(parseFloat(b.quantity)||0)*(parseFloat(b.unit_cost)||0),0);
+  // Effective bid qty — base plus this item's change orders — so the badge
+  // matches the Bid Items footer instead of quietly ignoring added scope.
+  const _cardEffQty   = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
+  const totalBid      = (p.bidItems||[]).reduce((s,b)=>s+_cardEffQty(b)*(parseFloat(b.unit_cost)||0),0);
   // Sum ALL daily rows so PO-inserted rows (no cost code) are included in the badge
   const totalActual   = (p.dailyRows||[]).reduce((s,r)=>s+dailyRowCost(r),0);
-  const contractValue = parseFloat(p['contract-value']) || 0;
+  // Same read order the rest of the app uses, so contract change orders
+  // (which land in 'revised-amount') move this badge too.
+  const contractValue = projectContract(p);
+  const ccoTotal      = contractCOTotal(p);
   const diff          = totalBid - totalActual;
   const uniqueDates = new Set((p.dailyRows||[]).map(r => r.date).filter(Boolean));
 
@@ -9164,7 +9360,8 @@ function projectCardHTML(p) {
     </div>
     <div class="proj-card-badges">
       <span class="proj-badge ${statusBadgeClass(status)}" id="pcb-${p.id}">${esc(status)}</span>
-      ${contractValue ? `<span class="proj-badge badge-awarded">Contract $${fmt(contractValue,0)}</span>` : ''}
+      ${contractValue ? `<span class="proj-badge badge-awarded" title="${ccoTotal ? `Original $${fmt(originalContract(p),0)} ${ccoTotal >= 0 ? '+' : '−'} $${fmt(Math.abs(ccoTotal),0)} in change orders` : 'Contract amount'}">Contract $${fmt(contractValue,0)}</span>` : ''}
+      ${ccoTotal ? `<span class="proj-badge ${ccoTotal >= 0 ? 'badge-in-progress' : 'badge-on-hold'}" style="border:1px solid currentColor;background:transparent" title="${contractCOs(p).length} contract change order${contractCOs(p).length === 1 ? '' : 's'}">CO ${ccoTotal >= 0 ? '+' : '−'}$${fmt(Math.abs(ccoTotal),0)}</span>` : ''}
       ${totalBid ? `<span class="proj-badge badge-default">Bid $${fmt(totalBid,0)}</span>` : ''}
       ${totalActual ? `<span class="proj-badge ${(!totalBid||diff>=0)?'badge-awarded':'badge-on-hold'}">Actual $${fmt(totalActual,0)}</span>` : ''}
       ${contractValue && totalActual ? (()=>{ const profit=contractValue-totalActual; const pct=(profit/contractValue*100).toFixed(1); return `<span class="proj-badge ${profit>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${profit>=0?'$'+fmt(profit,0)+' profit':'$'+fmt(Math.abs(profit),0)+' loss'} (${pct}%)</span>`; })() : (totalBid && totalActual ? `<span class="proj-badge ${diff>=0?'badge-in-progress':'badge-on-hold'}" style="border:1px solid currentColor;background:transparent">${diff>=0?'$'+fmt(diff,0)+' under bid':'$'+fmt(Math.abs(diff),0)+' over bid'}</span>` : '')}
@@ -9309,10 +9506,21 @@ function projectCardHTML(p) {
       <div class="info-grid">
         <div class="info-field"><label>Original Contract Amount</label>
           <input type="number" value="${esc(p['contract-amount']||'')}" placeholder="0.00" step="any" min="0"
-            oninput="updateProjectField('${p.id}','contract-amount',this.value)"></div>
+            oninput="updateProjectField('${p.id}','contract-amount',this.value)">
+          ${!p['contract-amount'] && parseFloat(p['contract-value']) ? `<span style="font-size:0.68rem;color:var(--muted);margin-top:0.25rem;display:block">Blank — using the $${fmt(parseFloat(p['contract-value']))} Contract Value above as the original.</span>` : ''}</div>
+        <div class="info-field" id="cco-field-${p.id}"></div>
         <div class="info-field"><label>Revised Contract Amount</label>
-          <input type="number" value="${esc(p['revised-amount']||'')}" placeholder="0.00" step="any" min="0"
-            oninput="updateProjectField('${p.id}','revised-amount',this.value)"></div>
+          ${(() => {
+            // Rendered from the live derivation, not the cached field, so a
+            // blob whose 'revised-amount' fell out of sync can't display a
+            // contract that disagrees with the change orders beside it.
+            const _cos = contractCOs(p);
+            const _val = _cos.length ? String(Math.round(revisedContract(p) * 100) / 100) : (p['revised-amount'] || '');
+            return `<input type="number" id="revamt-${p.id}" value="${esc(_val)}" placeholder="0.00" step="any" min="0"
+              ${_cos.length ? 'disabled title="Derived from the original contract plus change orders" style="color:var(--blue)"' : ''}
+              oninput="updateProjectField('${p.id}','revised-amount',this.value)">
+            ${_cos.length ? `<span style="font-size:0.68rem;color:var(--muted);margin-top:0.25rem;display:block">$${fmt(originalContract(p))} original ${contractCOTotal(p) >= 0 ? '+' : '−'} $${fmt(Math.abs(contractCOTotal(p)))} in change orders</span>` : ''}`;
+          })()}</div>
         <div class="info-field"><label>Retention %</label>
           <input type="number" value="${esc(p['retention']||'')}" placeholder="10" step="any" min="0" max="100"
             oninput="updateProjectField('${p.id}','retention',this.value)"></div>
@@ -9415,7 +9623,7 @@ function renderProjectsTab() {
         : 'No projects yet. Click <strong>+ Add Project</strong> to get started.'}</div>`;
 
   // Populate bid tables, daily tables, and PO sections after DOM is built
-  pageItems.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); renderProjectPOs(p.id); });
+  pageItems.forEach(p => { renderBidTable(p.id); renderDailyTable(p.id); renderProjectPOs(p.id); renderContractCOField(p.id); });
 }
 
 function renderProjectInfoComputed() { renderProjectsTab(); }
@@ -16458,16 +16666,20 @@ async function exportJobSummary(projId, opts = {}) {
     if (!groups[cc]) { groups[cc] = []; groupOrder.push(cc); }
     groups[cc].push(b);
   });
-  const _effQty = b => (parseFloat(b.quantity) || 0) +
-    (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+  const _coDelta = b => (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+  const _effQty  = b => (parseFloat(b.quantity) || 0) + _coDelta(b);
 
   let bidRowsHTML = '';
   let grandBid = 0, mappedActual = 0;
+  let coQtyCostImpact = 0;              // $ the qty change orders added to the budget
+  const qtyCORows = [];                 // flat list for the Change Orders section
   groupOrder.forEach(cc => {
     const gItems = groups[cc];
     bidRowsHTML += `<tr class="group-hdr"><td colspan="7"><strong>${esc(cc) || '(No Code)'}</strong></td></tr>`;
     let gBid = 0, gActual = 0;
     gItems.forEach(b => {
+      const baseQty = parseFloat(b.quantity) || 0;
+      const coDelta = _coDelta(b);
       const bidQty = _effQty(b);
       const uc     = parseFloat(b.unit_cost) || 0;
       const bidTot = bidQty * uc;
@@ -16475,10 +16687,17 @@ async function exportJobSummary(projId, opts = {}) {
       const actual = actualForBidItem(b, projId);
       const varc   = bidTot - actual;
       gBid += bidTot; gActual += actual;
+      coQtyCostImpact += coDelta * uc;
+      (b.change_orders || []).forEach(co => qtyCORows.push({ co, item: b, uc }));
+      // Same base + CO = effective breakdown the Bid Items page shows, so
+      // the printed Bid Qty isn't an unexplained number.
+      const coLine = coDelta
+        ? `<div class="co-line">${qfmt(baseQty)} base ${coDelta > 0 ? '+' : '−'} ${qfmt(Math.abs(coDelta))} CO</div>`
+        : '';
       bidRowsHTML += `<tr>
         <td class="sub">${esc(b.sub_code) || dash}${b.description ? `<span class="desc"> — ${esc(b.description)}</span>` : ''}</td>
         <td class="ctr">${esc(b.unit || '')}</td>
-        <td class="num">${bidQty ? qfmt(bidQty) : dash}</td>
+        <td class="num">${bidQty ? qfmt(bidQty) : dash}${coLine}</td>
         <td class="num">${rqty ? qfmt(rqty) : dash}</td>
         <td class="num">${bidTot ? '$' + fmt(bidTot) : dash}</td>
         <td class="num actual">${actual ? '$' + fmt(actual) : dash}</td>
@@ -16584,13 +16803,81 @@ async function exportJobSummary(projId, opts = {}) {
     else equipCost += c.equip_total;
   });
 
+  // ── Change orders ─────────────────────────────────────────────────
+  // Contract COs move revenue; the bid-item COs collected above move
+  // quantity (and so cost). Both are reported, and both are called out
+  // separately so nobody reads a quantity change as a billable one.
+  const ccos     = contractCOs(p);
+  const ccoTotal = contractCOTotal(p);
+  const origCon  = originalContract(p);
+
+  let coRowsHTML = '';
+  if (ccos.length) {
+    coRowsHTML += `<tr class="group-hdr"><td colspan="5"><strong>Contract Change Orders</strong> <span style="font-weight:400;color:#777">(billed to the owner — these move the contract amount)</span></td></tr>`;
+    ccos.forEach(co => {
+      const amt = parseFloat(co.amount) || 0;
+      coRowsHTML += `<tr>
+        <td class="src">${esc(co.date) || dash}</td>
+        <td>${esc(co.number) || dash}</td>
+        <td>${esc(co.note) || dash}</td>
+        <td class="num">${dash}</td>
+        <td class="num ${amt >= 0 ? 'under' : 'over'}">${money(amt)}</td>
+      </tr>`;
+    });
+    coRowsHTML += `<tr class="subtotal">
+      <td colspan="4"><em>Contract Change Orders — Subtotal</em></td>
+      <td class="num ${ccoTotal >= 0 ? 'under' : 'over'}">${money(ccoTotal)}</td>
+    </tr>`;
+  }
+  if (qtyCORows.length) {
+    coRowsHTML += `<tr class="group-hdr"><td colspan="5"><strong>Bid Item Quantity Change Orders</strong> <span style="font-weight:400;color:#777">(scope added or removed — these move the bid budget, not the contract)</span></td></tr>`;
+    qtyCORows.forEach(({ co, item, uc }) => {
+      const d     = parseFloat(co.qty_delta) || 0;
+      const impact = d * uc;
+      const code  = [item.cost_code, item.sub_code].filter(Boolean).join(' / ');
+      coRowsHTML += `<tr>
+        <td class="src">${esc(co.date) || dash}</td>
+        <td>${esc(code) || dash}</td>
+        <td>${esc(co.note) || dash}</td>
+        <td class="num ${d >= 0 ? 'under' : 'over'}">${d >= 0 ? '+' : '−'}${qfmt(Math.abs(d))}${item.unit ? ' ' + esc(item.unit) : ''}</td>
+        <td class="num actual">${impact ? money(impact) : dash}</td>
+      </tr>`;
+    });
+    coRowsHTML += `<tr class="subtotal">
+      <td colspan="4"><em>Quantity Change Orders — Bid Cost Impact</em></td>
+      <td class="num actual">${money(coQtyCostImpact)}</td>
+    </tr>`;
+  }
+  const coSectionHTML = coRowsHTML ? `
+  <h3>Change Orders</h3>
+  <table>
+    <thead><tr>
+      <th>Date</th><th>CO # / Cost Code</th><th>Description</th>
+      <th class="num">Qty &Delta;</th><th class="num">Amount</th>
+    </tr></thead>
+    <tbody>${coRowsHTML}
+    <tr class="totals">
+      <td colspan="4">Net Contract Change</td>
+      <td class="num ${ccoTotal >= 0 ? 'under' : 'over'}">${ccos.length ? money(ccoTotal) : '$0.00'}</td>
+    </tr></tbody>
+  </table>
+  <p class="note">Contract change orders adjust the amount billed to the owner and are already included in the Revised Contract above. Quantity change orders adjust bid quantities and are already included in every Bid Qty and Bid Cost figure; their dollar column is the added or removed <strong>cost</strong>, not revenue.</p>` : '';
+
   // ── Financial summary bar ─────────────────────────────────────────
-  const contractVal = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+  const contractVal = projectContract(p);
   const profitVal   = contractVal ? contractVal - grandActual : null;
   const profitCls   = profitVal === null ? '' : profitVal >= 0 ? 'sqft-under' : 'sqft-over';
   const profitPct   = (profitVal !== null && contractVal) ? ` (${(profitVal / contractVal * 100).toFixed(1)}%)` : '';
+  // With change orders on the job the single "Contract Value" figure hides
+  // where the number came from, so the original and the CO total are split
+  // out beside it.
+  const contractMetrics = ccos.length
+    ? `<div class="sum-metric"><div class="sum-label">Original Contract</div><div class="sum-val">${origCon ? '$' + fmt(origCon) : dash}</div></div>
+       <div class="sum-metric"><div class="sum-label">Change Orders (${ccos.length})</div><div class="sum-val ${ccoTotal >= 0 ? 'sqft-under' : 'sqft-over'}">${money(ccoTotal)}</div></div>
+       <div class="sum-metric"><div class="sum-label">Revised Contract</div><div class="sum-val">${contractVal ? '$' + fmt(contractVal) : dash}</div></div>`
+    : `<div class="sum-metric"><div class="sum-label">Contract Value</div><div class="sum-val">${contractVal ? '$' + fmt(contractVal) : dash}</div></div>`;
   const finBarHTML = `<div class="sum-bar">
-    <div class="sum-metric"><div class="sum-label">Contract Value</div><div class="sum-val">${contractVal ? '$' + fmt(contractVal) : dash}</div></div>
+    ${contractMetrics}
     <div class="sum-metric"><div class="sum-label">Bid Budget</div><div class="sum-val">${grandBid ? '$' + fmt(grandBid) : dash}</div></div>
     <div class="sum-sep"></div>
     <div class="sum-metric"><div class="sum-label">Actual Profit</div><div class="sum-val ${profitCls}">${profitVal === null ? dash : money(profitVal) + profitPct}</div></div>
@@ -16662,6 +16949,8 @@ async function exportJobSummary(projId, opts = {}) {
     tr.subtotal td { background: #d9e2ea; font-weight: 700; font-style: italic; font-size: 10px; border-top: 1.5px solid #64748b; border-bottom: 1px solid #94a3b8; }
     tr.totals td { font-weight: 800; font-size: 11px; background: #f9f9f9; border-top: 2px solid #999; }
     tr.jobrow td.src { color: #92400e; }
+    /* base + CO breakdown printed under an effective bid qty */
+    .co-line { font-size: 7.5px; font-weight: 400; color: #6b7280; margin-top: 1px; white-space: nowrap; }
     /* ── Schedule page ─────────────────────────────────────────────────
        The job's timeline and Gantt chart on a sheet of their own. The vars
        feed the shared Gantt renderer, which is written against the app's
@@ -16722,6 +17011,7 @@ async function exportJobSummary(projId, opts = {}) {
     </tr></tbody>
   </table>
   <p class="note">Purchases include formal POs plus material entered directly on job rows. Rows tagged “Job row” were not entered through the Purchase Order tab.</p>
+  ${coSectionHTML}
 
   <div class="sched-page">
     ${mastheadHTML}
@@ -16864,7 +17154,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   })() : '';
 
   // Financial roll-up: contract value + profit (Contract - Projected final cost)
-  const contractVal = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+  const contractVal = projectContract(p);
   const profitVal   = contractVal ? contractVal - grandProj : null;
   const profitCls   = profitVal === null ? '' : profitVal >= 0 ? 'sqft-under' : 'sqft-over';
   const profitTxt   = profitVal === null ? dash : (profitVal >= 0 ? '$'+fmt(profitVal) : '-$'+fmt(Math.abs(profitVal)));
@@ -17073,7 +17363,7 @@ function _financialsRows() {
     + (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
 
   const rows = (projectsList || []).map(p => {
-    const contract  = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+    const contract  = projectContract(p);
     const bid       = (p.bidItems  || []).reduce((s, b) => s + _eb(b) * (parseFloat(b.unit_cost) || 0), 0);
     const actual    = (p.dailyRows || []).reduce((s, r) => s + dailyRowCost(r), 0);
     const projected = projectedCostForProject(p);

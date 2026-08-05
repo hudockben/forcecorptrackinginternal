@@ -42,6 +42,18 @@ function extractFunction(src, name) {
   throw new Error(`${name} is not closed`);
 }
 
+// paving.html routes every contract read through projectContract(), which
+// folds in contract change orders; the other division files still inline the
+// fallback chain. Pull the real helpers in where they exist so this exercises
+// production code either way.
+const CONTRACT_HELPERS = ['contractCOs', 'contractCOTotal', 'originalContract', 'revisedContract', 'projectContract'];
+function contractHelperCode(src) {
+  if (!src.includes('function projectContract(')) {
+    return `function projectContract(p) { return parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0; }`;
+  }
+  return CONTRACT_HELPERS.map(n => extractFunction(src, n)).join('\n');
+}
+
 // The strip's aggregation lives inside renderHomeTab, between the totals
 // declaration and the derived percentages. Lift that span and run it.
 function aggregate(file, projects) {
@@ -55,7 +67,8 @@ function aggregate(file, projects) {
   const block = home.slice(from, to);
 
   return new Function('projectsList', 'dailyRowCost', 'projIsDone', 'projectedCostForProject', 'fmt',
-    `${block}
+    `${contractHelperCode(src)}
+     ${block}
      return { ipCount, ipContract, ipBid, ipActual, ipProfit, ipProfitBase,
               doneActProfit, doneCount, ipVariance, ipPct };`
   )(
