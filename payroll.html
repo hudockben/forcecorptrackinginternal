@@ -1254,44 +1254,50 @@
       top: 0;
     }
     .bulk-days td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
-    /* Per-day override cells. Compact enough that a crew-sized day table still
-       reads as a table rather than a stack of forms. */
-    .bulk-days td.edit { padding: 0.2rem 0.35rem; }
-    .bulk-days td.edit input {
-      width: 100%;
-      /* Floors so a narrow screen scrolls the table (it already has overflow:
-         auto) instead of crushing these down to unusable slivers. */
-      min-width: 68px;
-      padding: 0.25rem 0.4rem;
-      font-size: 0.74rem;
+    /* Per-day override cells. Everything in a machine row is a flex item, so
+       none of them may carry width:100% — that makes each one's basis the whole
+       cell, which pushed the later controls past the edge and put a horizontal
+       scrollbar under the table. Sizing is flex basis + min-width:0 so they
+       shrink to fit instead. */
+    .bulk-days td.edit { padding: 0.2rem 0.35rem; width: 40%; }
+    .bulk-days td.edit input,
+    .bulk-days td.edit select {
+      min-width: 0;
+      padding: 0.22rem 0.35rem;
+      font-size: 0.72rem;
       background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 4px;
       color: var(--text);
     }
     /* A day can carry more than one machine — drove the truck in, ran the
-       roller on site — so the cell holds a stack of name/hours pairs. */
+       roller on site — so the cell holds a stack of name/leg/hours rows. */
     .bulk-days td.edit .eq-stack { display: flex; flex-direction: column; gap: 0.25rem; }
     .bulk-days td.edit .eq-item  { display: flex; gap: 0.25rem; align-items: center; }
-    .bulk-days td.edit input.eq-name { min-width: 118px; flex: 1 1 auto; }
-    .bulk-days td.edit input.eq-hrs  { min-width: 54px; max-width: 66px; flex: 0 0 auto; }
+    /* The name is the only part that flexes; a small basis keeps it from
+       demanding the row, and it still gets whatever space is left over. */
+    .bulk-days td.edit input.eq-name { flex: 1 1 88px; }
+    .bulk-days td.edit input.eq-hrs  { flex: 0 0 44px; text-align: right; }
     .bulk-days td.edit select.eq-leg {
-      flex: 0 0 auto; min-width: 66px; padding: 0.25rem 0.3rem; font-size: 0.7rem;
-      background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--muted);
+      flex: 0 0 62px; font-size: 0.68rem; color: var(--muted);
     }
     .bulk-days td.edit select.eq-leg:focus { outline: none; border-color: var(--accent); }
     .bulk-days td.edit .eq-del {
       background: none; border: none; color: var(--muted); cursor: pointer;
-      font-size: 0.95rem; line-height: 1; padding: 0 0.15rem; flex: 0 0 auto;
+      font-size: 0.95rem; line-height: 1; padding: 0; flex: 0 0 12px;
     }
     .bulk-days td.edit .eq-del:hover { color: var(--red); }
     .bulk-days td.edit .eq-add {
       align-self: flex-start; background: none; border: 1px dashed var(--border);
       border-radius: 4px; color: var(--muted); cursor: pointer;
-      font-size: 0.68rem; padding: 0.18rem 0.45rem;
+      font-size: 0.66rem; padding: 0.15rem 0.4rem;
     }
     .bulk-days td.edit .eq-add:hover { color: var(--text); border-color: var(--accent); }
     .bulk-days td.edit input::placeholder { color: var(--muted); opacity: 0.75; }
+    /* Tighter padding to pay for the extra column, and a width hint on the
+       machine cell only — th:last-child would also hit the read-only quarry
+       and trucking day tables, where the last column is Total h. */
+    .bulk-days th, .bulk-days td { padding: 0.3rem 0.45rem; }
     .bulk-days td.edit input.num { text-align: right; font-variant-numeric: tabular-nums; }
     .bulk-days td.edit input:focus { outline: none; border-color: var(--accent); }
     .bulk-days td.edit input.bad  { border-color: var(--red); }

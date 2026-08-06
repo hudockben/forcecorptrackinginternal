@@ -364,6 +364,28 @@ console.log('\n[machines that would be dropped]');
 }
 sandbox.bulkGroups = groups;
 
+// ── The cell's layout ──
+// Everything in a machine row is a flex item. width:100% on one makes its basis
+// the whole cell, which shoves the later controls past the edge and puts a
+// horizontal scrollbar under the table — the controls then cannot shrink back
+// because of their min-width floors.
+console.log('\n[machine cell layout]');
+{
+  // Anchored to the first selector, not the comment above it: the block
+  // explains the width:100% hazard in prose, and a grep that included the prose
+  // would match its own documentation and fail on correct CSS.
+  const css = src.slice(src.indexOf('.bulk-days td.edit {'),
+                        src.indexOf('.bulk-days td.edit input::placeholder'))
+                 .replace(/\/\*[\s\S]*?\*\//g, '');
+  assert('no flex item in a machine row is width:100%', !/width:\s*100%/.test(css));
+  assert('the inputs can shrink (min-width:0)',          /min-width:\s*0/.test(css));
+  assert('only the name flexes, on a small basis',       /input\.eq-name\s*\{\s*flex:\s*1 1 \d+px/.test(css));
+  assert('the leg picker is fixed and narrow',           /select\.eq-leg\s*\{[\s\S]{0,40}flex:\s*0 0 6\dpx/.test(css));
+  assert('the hours box is fixed and narrow',            /input\.eq-hrs\s*\{\s*flex:\s*0 0 4\dpx/.test(css));
+  // th:last-child would also hit the read-only quarry/trucking day tables.
+  assert('the width hint is scoped to the editable cell', !/th:last-child/.test(css));
+}
+
 // ── The rendered table ──
 console.log('\n[day table]');
 const html = sandbox.bulkDaysTable(g, 0);
