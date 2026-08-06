@@ -1453,6 +1453,14 @@
       <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
     </div>
 
+    <!-- ── Approved tab: re-pull rates onto already-injected cost rows ── -->
+    <div class="bulk" id="rateBar">
+      <div class="bulk-count" id="rateBarNote">
+        Rates and equipment costs are copied onto cost tracking when time is approved.
+      </div>
+      <button class="btn-approve alt" id="refreshRatesBtn" onclick="refreshRates()">Refresh Rates</button>
+    </div>
+
     <!-- ── Payroll-cycle quick ranges (only on Reports tab) ── -->
     <div class="quick-ranges" id="quickRanges" style="display:none">
       <span class="qr-label">Weekly:</span>
@@ -1741,6 +1749,7 @@
       const auditWrap  = document.getElementById('auditLogWrap');
       const anaWrap    = document.getElementById('analyticsWrap');
       const bulkBar    = document.getElementById('bulkBar');
+      const rateBar    = document.getElementById('rateBar');
       const quick      = document.getElementById('quickRanges');
       const anaQuick   = document.getElementById('analyticsRanges');
 
@@ -1750,6 +1759,7 @@
       if (auditWrap)  auditWrap.style.display  = 'none';
       if (anaWrap)    anaWrap.style.display    = 'none';
       if (bulkBar)    bulkBar.classList.remove('open');
+      if (rateBar)    rateBar.classList.remove('open');
       if (quick)      quick.style.display      = 'none';
       if (anaQuick)   anaQuick.style.display   = 'none';
 
@@ -1769,6 +1779,9 @@
         // pending or approved
         if (tableWrap) tableWrap.style.display = '';
         if (tab !== 'pending') selectedIds.clear();
+        // Refreshing rates only means anything for time that is already
+        // approved — pending time picks them up when it is approved.
+        if (rateBar && tab === 'approved') rateBar.classList.add('open');
       }
 
       // Always refetch on tab switch so a new submission shows up immediately
@@ -3204,6 +3217,58 @@
       renderRows();
       renderStats();
       if (errors) alert(`${errors} approval(s) failed. Refresh and retry.`);
+    }
+
+    // ── Refresh rates on already-approved time ────────────────────────────
+    // The pay rate, job class and equipment price are copied onto the cost
+    // tracking row at the moment of approval. Time approved before a rate was
+    // filled in on Manage Lists keeps its zeros, and the only way to correct it
+    // was to un-approve and re-approve one entry at a time. This re-pulls them
+    // for every approved entry in the current date range.
+    async function refreshRates() {
+      const btn = document.getElementById('refreshRatesBtn');
+      const note = document.getElementById('rateBarNote');
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const scope = (from && to) ? `${from} → ${to}` : 'all approved time';
+      if (!confirm(
+        `Re-pull pay rates, job classes and equipment costs for approved time in ${scope}?\n\n` +
+        `This updates the cost tracking rows already posted to the division tabs. ` +
+        `Hours, cost codes and equipment are not changed.\n\n` +
+        `It applies TODAY'S rates from Manage Lists. If anyone has had a raise since ` +
+        `this work was approved, their old jobs will be restated at the new rate.`
+      )) return;
+
+      const params = new URLSearchParams({ action: 'refresh-rates' });
+      if (from && to) { params.set('from', from); params.set('to', to); }
+      btn.disabled = true;
+      const prevLabel = btn.textContent;
+      btn.textContent = 'Refreshing…';
+      try {
+        const res = await fetch('/api/timesheet-entries?' + params.toString(), {
+          method: 'POST', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Refresh failed');
+
+        const bits = [`Updated ${j.updated} of ${j.scanned} cost row${j.scanned === 1 ? '' : 's'}.`];
+        // Name who could not be resolved — that is a roster gap the supervisor
+        // can actually fix, not a failure of the refresh.
+        if (j.unresolved && j.unresolved.length) {
+          bits.push(
+            `No match on Manage Lists for ${j.unresolved.map(u => `${u.username} (${u.rows})`).join(', ')} — ` +
+            `add them to the employee list with a rate, then run this again.`
+          );
+        }
+        if (j.hitLimit) bits.push('Stopped at the 1000-row cap — narrow the date range and run it again.');
+        note.textContent = bits.join(' ');
+        if (j.updated) applyFilters();
+      } catch (err) {
+        note.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prevLabel;
+      }
     }
 
     // ── Edit modal ────────────────────────────────────────────────────────

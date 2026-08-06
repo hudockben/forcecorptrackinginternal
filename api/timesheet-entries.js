@@ -270,6 +270,59 @@ async function entryJson(sql, companyCode, row, extra) {
 // Round to 0.01 to match NUMERIC(14,4) without surprising precision drift.
 function _r2(n) { return Math.round(Number(n) * 100) / 100; }
 
+// ── Roster lookup ─────────────────────────────────────────────────────────
+// The roster blob stores display names ("Zach Brewer"); the timesheet carries
+// whatever the field employee signs in as, and companies build logins
+// differently — "mowery" (surname), "zachbrewer" (first+last), "brewerzach"
+// (last+first), "zbrewer" (initial+last). This used to try the name verbatim
+// and then a " surname" suffix, which covers only the first of those; every
+// other shape fell through and the injected row got no job class and a $0 rate.
+//
+// Forms are tried in descending confidence, and a stage only counts when
+// exactly one roster entry matches it — an ambiguous crew must never silently
+// inherit someone else's pay rate.
+function _rosterKey(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+function matchRosterEmployee(blobEmps, employeeName) {
+  const login = _rosterKey(employeeName);
+  if (!login) return null;
+  const cand = (Array.isArray(blobEmps) ? blobEmps : [])
+    .filter(e => e && typeof e === 'object' && String(e.name || '').trim());
+  const wordsOf = e => String(e.name).trim().split(/\s+/).map(_rosterKey).filter(Boolean);
+  const only = list => (list.length === 1 ? list[0] : null);
+
+  // 1. the roster name IS the login, punctuation and case aside
+  const exact = cand.filter(e => _rosterKey(e.name) === login);
+  if (exact.length) return exact[0];
+
+  // 2. the login is the name's words run together, either way round
+  const joined = cand.filter(e => {
+    const w = wordsOf(e);
+    if (w.length < 2) return false;
+    return w.join('') === login
+        || [...w].reverse().join('') === login
+        || (w[0] + w[w.length - 1]) === login
+        || (w[w.length - 1] + w[0]) === login;
+  });
+  if (only(joined)) return joined[0];
+
+  // 3. the login is the surname on its own
+  const surname = cand.filter(e => {
+    const w = wordsOf(e);
+    return w.length > 1 && w[w.length - 1] === login;
+  });
+  if (only(surname)) return surname[0];
+
+  // 4. first initial + surname, either way round
+  const initial = cand.filter(e => {
+    const w = wordsOf(e);
+    if (w.length < 2 || !w[0]) return false;
+    return (w[0][0] + w[w.length - 1]) === login
+        || (w[w.length - 1] + w[0][0]) === login;
+  });
+  return only(initial);
+}
+
 /**
  * Normalize one split row from the request body. Returns { row, error }.
  * Each row contributes either labor_hours (>0) and/or equip_hours (>0).
@@ -349,6 +402,84 @@ function validateSplit(rawSplit, entry) {
   return { rows };
 }
 
+// ── Cost sources ──────────────────────────────────────────────────────────
+// Every money field on an injected row comes from the same two places: the
+// division's list blob (pay rates, job classes, equipment prices) and the
+// project blob (prevailing wage or not). Resolving them through one builder
+// means the approval path and the backfill path can never drift apart — a fix
+// to the name matching or the equipment fallback lands in both at once.
+//
+// The normalized employees/projects tables are NOT usable here:
+// sync-normalized.js drops prevailing_wage, prevailing_rate and
+// non_prevailing_rate on the way through. equipment_list does keep unit_cost,
+// so it serves as the fallback the payroll dropdown needs.
+const _eqKey = s => String(s == null ? '' : s).trim().toLowerCase();
+
+async function buildCostResolver(sql, companyCode, division, equipmentNames) {
+  const listsKey  = `${companyCode}:${DIVISION_LISTS_KEY[division] || 'fct_lists'}`;
+  const listsRows = await sql`SELECT value FROM app_data WHERE key = ${listsKey}`;
+  const listsBlob = listsRows.length ? listsRows[0].value : null;
+  const blobEmps      = listsBlob && Array.isArray(listsBlob.employees) ? listsBlob.employees : [];
+  const blobEquipment = listsBlob && Array.isArray(listsBlob.equipment) ? listsBlob.equipment : [];
+
+  const eqCostByName = new Map();
+  for (const eq of blobEquipment) {
+    if (eq && typeof eq === 'object' && eq.name) {
+      eqCostByName.set(_eqKey(eq.name), Number(eq.unit_cost) || 0);
+    }
+  }
+  // Only pay for the extra read when something needs it: a name the blob does
+  // not know, or one it knows only at zero.
+  const wanted = [...new Set((equipmentNames || []).filter(Boolean).map(_eqKey))];
+  if (wanted.some(k => !(eqCostByName.get(k) > 0))) {
+    try {
+      const eqRows = await sql`
+        SELECT name, unit_cost FROM equipment_list
+        WHERE company_code = ${companyCode} AND active = TRUE
+      `;
+      for (const eq of eqRows) {
+        // A real price beats a missing one and beats a zero — equipment priced
+        // at 0 in one list and properly in the other is a gap in that list, not
+        // a machine that runs for free.
+        const k = _eqKey(eq.name);
+        const cost = Number(eq.unit_cost) || 0;
+        if (cost > 0 && !(eqCostByName.get(k) > 0)) eqCostByName.set(k, cost);
+      }
+    } catch (err) {
+      console.warn('[timesheet-entries] equipment_list cost lookup failed:', err.message);
+    }
+  }
+
+  return {
+    employeeFor: username => matchRosterEmployee(blobEmps, username),
+    equipCostFor: name => (name ? (eqCostByName.get(_eqKey(name)) || 0) : 0),
+    rateFor: (emp, isPrevailingWage) => (emp
+      ? (Number(isPrevailingWage ? emp.prevailing_rate : emp.non_prevailing_rate) || 0)
+      : 0),
+  };
+}
+
+// Prevailing-wage flag for a set of jobs in one division, in a single read.
+// Paving projects live under fct_paving_project_<id>, turf under
+// fct_project_<id> — the division-aware prefix is what makes a paving
+// prevailing-wage job resolve its flag, and thus its rate, correctly.
+async function prevailingWageByJob(sql, companyCode, division, jobIds) {
+  const prefix = PW_PROJECT_PREFIX[division] || 'fct_project_';
+  const ids = [...new Set((jobIds || []).filter(Boolean).map(String))];
+  const flags = new Map();
+  if (!ids.length) return flags;
+  const rows = await sql`
+    SELECT key, value FROM app_data
+    WHERE key = ANY(${ids.map(id => `${companyCode}:${prefix}${id}`)})
+  `;
+  const byKey = new Map(rows.map(r => [r.key, r.value]));
+  for (const id of ids) {
+    const blob = byKey.get(`${companyCode}:${prefix}${id}`);
+    flags.set(id, !!(blob && blob.prevailing_wage === true));
+  }
+  return flags;
+}
+
 /**
  * Insert split rows into daily_tracking. The caller is responsible for first
  * deleting any prior injected rows for this entry (resplit case) — this
@@ -365,65 +496,27 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   const workDate = safeDate(entry.work_date)
     || (entry.work_date instanceof Date ? entry.work_date.toISOString().slice(0, 10) : null);
 
-  // Pre-fill auto-derivable fields from the same source the cost tracking
-  // page reads when the user picks an employee/equipment manually: the
-  // app_data blobs. The normalized projects/employees/equipment_list
-  // tables drop `prevailing_wage`, `prevailing_rate`, and
-  // `non_prevailing_rate` during the sync-normalized.js mirror, so they're
-  // unreliable for auto-fill. Lookups are best-effort — a missing blob or
-  // a name that doesn't resolve leaves the value at its previous default
-  // (null/0).
-  // Paving projects live under fct_paving_project_<id>, turf under
-  // fct_project_<id> — use the division-aware prefix (same map the list view
-  // uses) so paving prevailing-wage jobs resolve their flag, and thus the
-  // prevailing vs non-prevailing labor rate, correctly.
-  const projKey = `${companyCode}:${PW_PROJECT_PREFIX[division] || 'fct_project_'}${entry.job_id}`;
-  const projRows = await sql`SELECT value FROM app_data WHERE key = ${projKey}`;
-  const projBlob = projRows.length ? projRows[0].value : null;
-  const isPrevailingWage = !!(projBlob && projBlob.prevailing_wage === true);
+  // Auto-fill from the same source the cost tracking page reads when a user
+  // picks an employee or equipment by hand. Lookups are best-effort — a
+  // missing blob or a name that doesn't resolve leaves the value at its
+  // default (null/0) rather than failing the approval.
+  const pwFlags = await prevailingWageByJob(sql, companyCode, division, [entry.job_id]);
+  const isPrevailingWage = !!pwFlags.get(String(entry.job_id));
 
-  const listsKey = `${companyCode}:${DIVISION_LISTS_KEY[division] || 'fct_lists'}`;
-  const listsRows = await sql`SELECT value FROM app_data WHERE key = ${listsKey}`;
-  const listsBlob = listsRows.length ? listsRows[0].value : null;
-  const blobEmps = listsBlob && Array.isArray(listsBlob.employees) ? listsBlob.employees : [];
-  const blobEquipment = listsBlob && Array.isArray(listsBlob.equipment) ? listsBlob.equipment : [];
-
-  // Login usernames are typically the last name only ("Mowery") while the
-  // roster stores full names ("Lucas Mowery"). Try exact match first, then
-  // last-word match — but only accept the suffix match when unambiguous.
-  const empLogin = (employeeName || '').trim().toLowerCase();
-  let emp = null;
-  if (empLogin) {
-    emp = blobEmps.find(
-      e => e && typeof e === 'object'
-        && String(e.name || '').trim().toLowerCase() === empLogin,
-    ) || null;
-    if (!emp) {
-      const needle = ' ' + empLogin;
-      const suffixMatches = blobEmps.filter(
-        e => e && typeof e === 'object'
-          && String(e.name || '').trim().toLowerCase().endsWith(needle),
-      );
-      if (suffixMatches.length === 1) emp = suffixMatches[0];
-    }
-  }
+  const resolver = await buildCostResolver(
+    sql, companyCode, division, splitRows.map(r => r.equipment),
+  );
+  const emp      = resolver.employeeFor(employeeName);
   const jobClass = (emp && emp.job_class) || null;
-  const empRate  = emp
-    ? (Number(isPrevailingWage ? emp.prevailing_rate : emp.non_prevailing_rate) || 0)
-    : 0;
+  const empRate  = resolver.rateFor(emp, isPrevailingWage);
+  // Prefer the roster's own spelling so the injected row carries the name the
+  // cost tracking tab shows everywhere else, not the raw login.
   const employeeLabel = (emp && emp.name) || employeeName;
-
-  const eqCostByName = new Map();
-  for (const eq of blobEquipment) {
-    if (eq && typeof eq === 'object' && eq.name) {
-      eqCostByName.set(String(eq.name), Number(eq.unit_cost) || 0);
-    }
-  }
 
   for (let i = 0; i < splitRows.length; i++) {
     const r = splitRows[i];
     const rowId = `ts${entry.id}-${baseStamp}-${i}-${Math.floor(Math.random() * 1e6)}`;
-    const eqUnitCost = r.equipment ? (eqCostByName.get(r.equipment) || 0) : 0;
+    const eqUnitCost = resolver.equipCostFor(r.equipment);
     await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
@@ -1509,6 +1602,126 @@ module.exports = async (req, res) => {
       return res.json(await entryJson(sql, companyCode, updated, { removed_split_rows: removed }));
     }
 
+    // ── POST ?action=refresh-rates — re-resolve money on injected rows ──
+    // The rate, job class and equipment price are copied onto an injected row
+    // at approval time, so a row approved while a rate was missing from the
+    // lists — or while the roster lookup could not match the login — keeps its
+    // zeros forever. Un-approving and re-approving fixes one entry; this fixes
+    // every approved entry in a date range in place.
+    //
+    // It only ever touches the four fields the approval derives, and never
+    // hours, cost codes, equipment names or anything a supervisor can edit in
+    // the division tab. A row whose employee still does not resolve is left
+    // exactly as it is and reported back, so the answer is "add this person to
+    // Manage Lists" rather than a silently zeroed rate.
+    if (req.method === 'POST' && req.query.action === 'refresh-rates') {
+      if (!canAdmin) {
+        return res.status(403).json({ error: 'Payroll admin access is required' });
+      }
+      const from = safeDate(req.query.from);
+      const to   = safeDate(req.query.to);
+      // Bounded so one call cannot outrun the serverless timeout. The caller
+      // is told when it hit the cap so it can narrow the range.
+      const SCAN_LIMIT = 1000;
+
+      const scanRows = (from && to)
+        ? await sql`
+            SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
+                   dt.equipment, dt.equip_unit_cost,
+                   te.username, te.job_id
+            FROM daily_tracking dt
+            JOIN timesheet_entries te
+              ON te.id = dt.timesheet_entry_id AND te.company_code = dt.company_code
+            WHERE dt.company_code = ${companyCode}
+              AND dt.timesheet_entry_id IS NOT NULL
+              AND te.status = 'approved'
+              AND te.work_date >= ${from} AND te.work_date <= ${to}
+            ORDER BY dt.row_id
+            LIMIT ${SCAN_LIMIT}
+          `
+        : await sql`
+            SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
+                   dt.equipment, dt.equip_unit_cost,
+                   te.username, te.job_id
+            FROM daily_tracking dt
+            JOIN timesheet_entries te
+              ON te.id = dt.timesheet_entry_id AND te.company_code = dt.company_code
+            WHERE dt.company_code = ${companyCode}
+              AND dt.timesheet_entry_id IS NOT NULL
+              AND te.status = 'approved'
+            ORDER BY dt.row_id
+            LIMIT ${SCAN_LIMIT}
+          `;
+
+      // One resolver and one prevailing-wage read per division, not per row.
+      const byDivision = new Map();
+      for (const r of scanRows) {
+        const d = r.division || 'turf';
+        if (!byDivision.has(d)) byDivision.set(d, []);
+        byDivision.get(d).push(r);
+      }
+
+      let updated = 0;
+      const unresolved = new Map();   // login → how many rows it left behind
+      for (const [division, rows] of byDivision) {
+        const resolver = await buildCostResolver(
+          sql, companyCode, division, rows.map(r => r.equipment),
+        );
+        const pwFlags = await prevailingWageByJob(
+          sql, companyCode, division, rows.map(r => r.job_id),
+        );
+
+        for (const r of rows) {
+          const emp = resolver.employeeFor(r.username);
+          if (!emp) {
+            unresolved.set(r.username, (unresolved.get(r.username) || 0) + 1);
+            continue;
+          }
+          const rate      = resolver.rateFor(emp, !!pwFlags.get(String(r.job_id)));
+          const eqCost    = resolver.equipCostFor(r.equipment);
+          // job_class is one of the fields a supervisor may re-categorize in
+          // the division tab, so only fill it when it is still empty — never
+          // overwrite a deliberate change. rate, employee and the equipment
+          // price are locked over there, so they are ours to correct.
+          const jobClass  = String(r.job_class || '').trim() ? r.job_class : (emp.job_class || null);
+          // Never trade a price we have for one we could not resolve.
+          const nextEqCost = eqCost > 0 ? eqCost : (Number(r.equip_unit_cost) || 0);
+
+          const same = Number(r.rate) === rate
+            && String(r.employee || '') === String(emp.name || '')
+            && String(r.job_class || '') === String(jobClass || '')
+            && Number(r.equip_unit_cost) === nextEqCost;
+          if (same) continue;
+
+          await sql`
+            UPDATE daily_tracking
+            SET employee        = ${emp.name},
+                job_class       = ${jobClass},
+                rate            = ${rate},
+                equip_unit_cost = ${nextEqCost},
+                updated_at      = NOW()
+            WHERE row_id = ${r.row_id} AND company_code = ${companyCode}
+              AND timesheet_entry_id IS NOT NULL
+          `;
+          updated++;
+        }
+      }
+
+      await writeAudit(
+        sql, companyCode, payload, 0, 'ADMIN_EDIT',
+        { refresh_rates: true, scanned: scanRows.length, updated }, null,
+      );
+      return res.json({
+        ok: true,
+        scanned: scanRows.length,
+        updated,
+        hitLimit: scanRows.length === SCAN_LIMIT,
+        unresolved: [...unresolved.entries()]
+          .map(([username, rows]) => ({ username, rows }))
+          .sort((a, b) => b.rows - a.rows),
+      });
+    }
+
     // ── GET ?action=split&id=N — fetch existing injected rows ────────────
     // Used by the payroll modal when re-editing the split for an already
     // approved entry.
@@ -1689,6 +1902,8 @@ module.exports = async (req, res) => {
 // Internal helpers exposed for unit testing only (scripts/test-trucking-injection.js).
 // Not part of the HTTP contract — do not depend on these from other endpoints.
 module.exports._test = {
+  matchRosterEmployee,
+  insertSplitRows,
   removeSplitRows,
   truckingRowIdPrefix,
   matchTruckingDriver,
