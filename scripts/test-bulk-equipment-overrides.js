@@ -75,6 +75,7 @@ vm.runInContext([
   'bulkRowEquipCommit(idx, entryId, itemIdx) {',
   'bulkRowLeg(idx, entryId, itemIdx, value) {',
   'bulkBadEquipHours() {',
+  'bulkDroppedMachines() {',
   'bulkDaysTable(g, idx) {',
   'buildBulkBody(g, e) {',
 ].map(grab).join('\n\n'), sandbox);
@@ -322,6 +323,45 @@ console.log('\n[half-filled slot]');
     inherited.length === 1 && inherited[0].equipment === 'Skid Steer' && inherited[0].equip_hours === 3);
 }
 sandbox.bulkGroups = groups;
+sandbox.bulkGroups = groups;
+
+// ── A machine with no hours must not vanish ──
+// Only the first machine on a leg can be a bare tag: it rides that leg's labor
+// row. Anything after it needs hours, because the server rejects a row with
+// neither labor nor equipment hours — so without a check it was typed into the
+// table and then silently never recorded.
+console.log('\n[machines that would be dropped]');
+{
+  const day = entry('cip', 9, 9.5);          // no travel hours
+  const { groups: g7 } = sandbox.buildBulkGroups([day]);
+  const gd = g7[0];
+  sandbox.bulkGroups = g7;
+  gd.template.cost_code = 'CC1';
+
+  sandbox.bulkRowSet(0, day.id, 0, 'equipment', '224 Roller');
+  sandbox.bulkRowSet(0, day.id, 0, 'equip_hours', '7.5');
+  sandbox.bulkRowAddMachine(0, day.id);
+  sandbox.bulkRowSet(0, day.id, 1, 'equipment', 'Pickup Truck');   // hours left blank
+
+  const dropped = sandbox.bulkDroppedMachines();
+  assert('a second machine with no hours is caught before the run',
+    dropped.length === 1 && dropped[0].equipment === 'Pickup Truck');
+  assert('and the message names the day',  /cip/.test(dropped[0].who));
+
+  sandbox.bulkRowSet(0, day.id, 1, 'equip_hours', '2');
+  assert('giving it hours clears the block', sandbox.bulkDroppedMachines().length === 0);
+  assert('and it then actually posts',
+    sandbox.buildBulkBody(gd, day).split.some(r => r.equipment === 'Pickup Truck' && r.equip_hours === 2));
+
+  // The FIRST machine on a leg is allowed to be a tag with no cost — it rides
+  // the labor row, so nothing is lost.
+  sandbox.bulkRowRemoveMachine(0, day.id, 1);
+  sandbox.bulkRowSet(0, day.id, 0, 'equip_hours', '');
+  assert('a lone machine with no hours is still allowed as a tag',
+    sandbox.bulkDroppedMachines().length === 0);
+  assert('and it still reaches the labor row',
+    sandbox.buildBulkBody(gd, day).split[0].equipment === '224 Roller');
+}
 sandbox.bulkGroups = groups;
 
 // ── The rendered table ──

@@ -4833,6 +4833,36 @@
       return bad;
     }
 
+    // A machine only reaches the server if there is a row to put it on. The
+    // first machine on a leg rides that leg's labor row, so it can be a bare
+    // tag with no hours; anything after it needs hours of its own, because a
+    // row with neither labor nor equipment hours is rejected. Without this
+    // check those machines were typed into the table and then silently
+    // disappeared somewhere between it and the approval.
+    function bulkDroppedMachines() {
+      const dropped = [];
+      for (const g of bulkGroups) {
+        if (g.type !== 'split') continue;
+        for (const e of g.entries) {
+          const work    = bulkR2(e.computed_hours);
+          const travel  = bulkR2(e.travel_hours);
+          const machines = bulkRowEffective(g, e);
+          const workM   = machines.filter(m => m.leg !== 'travel');
+          const travelM = machines.filter(m => m.leg === 'travel');
+          const extras  = [
+            ...(work   > 0 ? workM.slice(1)   : workM),
+            ...(travel > 0 ? travelM.slice(1) : travelM),
+          ];
+          for (const m of extras) {
+            if (m.equipment && !(m.equip_hours > 0)) {
+              dropped.push({ who: `${e.username} · ${prettyDate(e.work_date)}`, equipment: m.equipment });
+            }
+          }
+        }
+      }
+      return dropped;
+    }
+
     // Cost code drives the sub-code list, so committing one repaints the group.
     function bulkCostCode(idx, value) {
       const g = bulkGroups[idx];
@@ -5133,6 +5163,16 @@
         msg.textContent = 'Equipment hours must be between 0 and 24 — check ' +
           badHours.slice(0, 3).map(b => b.who).join('; ') +
           (badHours.length > 3 ? `; and ${badHours.length - 3} more` : '');
+        return;
+      }
+
+      // Stop rather than let a machine somebody typed in go unrecorded.
+      const dropped = bulkDroppedMachines();
+      if (dropped.length) {
+        msg.classList.add('error');
+        msg.textContent = 'Give these machines hours, or remove them — otherwise they are not recorded: ' +
+          dropped.slice(0, 3).map(d => `${d.equipment} (${d.who})`).join('; ') +
+          (dropped.length > 3 ? `; and ${dropped.length - 3} more` : '');
         return;
       }
 
