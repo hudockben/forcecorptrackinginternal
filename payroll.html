@@ -1233,7 +1233,7 @@
     }
     .bulk-days {
       margin-top: 0.7rem;
-      max-height: 160px;
+      max-height: 240px;
       overflow: auto;
       border: 1px solid var(--border);
       border-radius: 5px;
@@ -1254,6 +1254,26 @@
       top: 0;
     }
     .bulk-days td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+    /* Per-day override cells. Compact enough that a crew-sized day table still
+       reads as a table rather than a stack of forms. */
+    .bulk-days td.edit { padding: 0.2rem 0.35rem; }
+    .bulk-days td.edit input {
+      width: 100%;
+      /* Floors so a narrow screen scrolls the table (it already has overflow:
+         auto) instead of crushing these down to unusable slivers. */
+      min-width: 68px;
+      padding: 0.25rem 0.4rem;
+      font-size: 0.74rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+    }
+    .bulk-days td.edit.eq input { min-width: 118px; }
+    .bulk-days td.edit input::placeholder { color: var(--muted); opacity: 0.75; }
+    .bulk-days td.edit input.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .bulk-days td.edit input:focus { outline: none; border-color: var(--accent); }
+    .bulk-days td.edit input.bad  { border-color: var(--red); }
 
     /* ── Mobile ── */
     @media (max-width: 800px) {
@@ -4441,8 +4461,13 @@
             job_label: e.job_label || '',
             entries: [],
             ccList: [], eqList: [], _loaded: false,
+            // Per-day overrides, keyed by entry id: { equipment, equip_hours }.
+            // Blank in either field means "inherit the group template", so a
+            // crew can share one machine, or one operator can be singled out,
+            // without splitting the group.
+            perRow: {},
             template: {
-              cost_code: '', sub_code: '', equipment: '',
+              cost_code: '', sub_code: '', equipment: '', equip_hours: '',
               equipmentName: '', taskName: '', rate: '', hourlyRate: '',
               haul_fee: '', division_col: '',
             },
@@ -4550,6 +4575,91 @@
       g.template[field] = value;
       updateBulkRunBtn();
     }
+    // ── Per-day overrides ────────────────────────────────────────────────
+    // The group fields set what the whole crew shares; these set what one
+    // person did. Stored on the group (not the entry) so a repaint — picking a
+    // cost code re-renders the card — puts every value back where it was.
+    function _bulkRowCell(g, entryId) {
+      if (!g.perRow) g.perRow = {};
+      const key = String(entryId);
+      // _autoHours marks hours this modal filled in rather than the supervisor:
+      // they belong to the machine that triggered them and go when it goes.
+      return g.perRow[key] || (g.perRow[key] = { equipment: '', equip_hours: '', _autoHours: false });
+    }
+
+    // What actually gets sent for one day: its own override if set, else the
+    // group's. Equipment hours only mean anything with a machine attached, so
+    // they collapse to 0 when no equipment resolves.
+    function bulkRowEffective(g, e) {
+      const cell = (g.perRow || {})[String(e.id)] || {};
+      const equipment = String(cell.equipment || '').trim() ||
+                        String(g.template.equipment || '').trim();
+      const hoursRaw  = String(cell.equip_hours || '').trim() ||
+                        String(g.template.equip_hours || '').trim();
+      return { equipment, equip_hours: equipment ? bulkR2(hoursRaw) : 0 };
+    }
+
+    function bulkRowSet(idx, entryId, field, value) {
+      const g = bulkGroups[idx];
+      if (!g) return;
+      const cell = _bulkRowCell(g, entryId);
+      cell[field] = value;
+      // Clearing the machine has to clear the hours that were filled in for it.
+      // Otherwise the row falls back to the crew's equipment while keeping
+      // hours nobody typed, and bills that machine for a day it never worked.
+      if (field === 'equipment' && !String(value).trim() && cell._autoHours) {
+        cell.equip_hours = '';
+        cell._autoHours  = false;
+        const el = document.getElementById(`blkrow_eh_${idx}_${entryId}`);
+        if (el) el.value = '';
+      }
+      // Touched by hand — the number is the supervisor's from here on.
+      if (field === 'equip_hours') cell._autoHours = false;
+      updateBulkRunBtn();
+    }
+
+    // Naming a machine for one person is only useful with hours behind it, so
+    // fill them in on commit — with that day's own hours, which is what the
+    // operator almost always ran. The group-level field can't do this (its days
+    // have different hours), which is exactly why the override is per row.
+    // Prefilled visibly, so it can be edited or cleared back to a bare tag.
+    function bulkRowEquipCommit(idx, entryId) {
+      const g = bulkGroups[idx];
+      if (!g) return;
+      const cell = _bulkRowCell(g, entryId);
+      if (!String(cell.equipment || '').trim()) return;
+      if (String(cell.equip_hours || '').trim()) return;
+      const e = g.entries.find(x => String(x.id) === String(entryId));
+      if (!e || bulkR2(e.computed_hours) <= 0) return;   // travel-only day: nothing to copy
+      cell.equip_hours = String(bulkR2(e.computed_hours));
+      cell._autoHours  = true;
+      const el = document.getElementById(`blkrow_eh_${idx}_${entryId}`);
+      if (el) el.value = cell.equip_hours;
+      updateBulkRunBtn();
+    }
+
+    // Equipment hours the server would reject (NaN, negative, over 24). Returns
+    // the offending days so the modal can name them instead of failing one
+    // approve at a time down in the run loop.
+    function bulkBadEquipHours() {
+      const bad = [];
+      for (const g of bulkGroups) {
+        if (g.type !== 'split') continue;
+        const groupRaw = String(g.template.equip_hours || '').trim();
+        if (groupRaw !== '' && !(Number(groupRaw) >= 0 && Number(groupRaw) <= 24)) {
+          bad.push({ g, who: 'the group equipment hours' });
+          continue;
+        }
+        for (const e of g.entries) {
+          const raw = String((g.perRow[String(e.id)] || {}).equip_hours || '').trim();
+          if (raw === '') continue;
+          const n = Number(raw);
+          if (!(n >= 0 && n <= 24)) bad.push({ g, who: `${e.username} · ${prettyDate(e.work_date)}` });
+        }
+      }
+      return bad;
+    }
+
     // Cost code drives the sub-code list, so committing one repaints the group.
     function bulkCostCode(idx, value) {
       const g = bulkGroups[idx];
@@ -4560,24 +4670,64 @@
       updateBulkRunBtn();
     }
 
-    function bulkDaysTable(g) {
-      const rows = g.entries.map(e => {
+    function bulkDaysTable(g, idx) {
+      // Split groups get two editable columns so one operator can be given a
+      // machine without it landing on the whole crew. The other group types
+      // have no per-day equipment concept, so they stay read-only.
+      const editable = g.type === 'split';
+      const groupEq  = String(g.template.equipment || '').trim();
+      const groupEh  = String(g.template.equip_hours || '').trim();
+      // Sorted by employee then date so a crew-sized group reads as one block
+      // per person. Display only — g.entries keeps its own order, and each
+      // entry is approved with its own hours regardless.
+      const rows = g.entries.slice().sort((a, b) =>
+        String(a.username || '').localeCompare(String(b.username || '')) ||
+        String(a.work_date || '').localeCompare(String(b.work_date || ''))
+      ).map(e => {
         const w = bulkR2(e.computed_hours), t = bulkR2(e.travel_hours);
+        let extra = '';
+        if (editable) {
+          const cell = (g.perRow || {})[String(e.id)] || {};
+          // escapeJsAttr, not escapeHtml: this lands inside a single-quoted JS
+          // string within an HTML attribute, and escapeHtml's &#39; would be
+          // decoded back into a quote before the JS is parsed.
+          const eid  = escapeJsAttr(String(e.id));
+          // Placeholders show what the row inherits from the group, so a blank
+          // cell reads as "same as everyone" rather than "nothing".
+          extra =
+            `<td class="edit eq"><input type="text" list="blk_equipment_${idx}" ` +
+              `value="${escapeHtml(cell.equipment || '')}" ` +
+              `placeholder="${escapeHtml(groupEq || '— none —')}" autocomplete="off" ` +
+              `oninput="bulkRowSet(${idx},'${eid}','equipment',this.value)" ` +
+              `onchange="bulkRowEquipCommit(${idx},'${eid}')"></td>` +
+            `<td class="edit"><input type="number" class="num" min="0" max="24" step="0.25" ` +
+              `id="blkrow_eh_${idx}_${eid}" value="${escapeHtml(cell.equip_hours || '')}" ` +
+              `placeholder="${escapeHtml(groupEh || '0')}" ` +
+              `oninput="bulkRowSet(${idx},'${eid}','equip_hours',this.value)"></td>`;
+        }
         return `<tr><td>${escapeHtml(e.username || '')}</td>` +
                `<td>${escapeHtml(prettyDate(e.work_date))}</td>` +
                `<td class="num">${num2(w)}</td>` +
                `<td class="num">${t ? num2(t) : '—'}</td>` +
-               `<td class="num">${num2(w + t)}</td></tr>`;
+               `<td class="num">${num2(w + t)}</td>${extra}</tr>`;
       }).join('');
+      const extraHead = editable ? `<th>Equipment</th><th>Equip h</th>` : '';
       return `<div class="bulk-days"><table><thead><tr>` +
              `<th>Employee</th><th>Date</th><th>Work h</th><th>Travel h</th><th>Total h</th>` +
-             `</tr></thead><tbody>${rows}</tbody></table></div>`;
+             `${extraHead}</tr></thead><tbody>${rows}</tbody></table></div>`;
     }
 
     function bulkGroupCard(g, idx) {
       const days = g.entries.length;
       const hrs  = g.entries.reduce((s, e) => s + bulkR2(e.computed_hours) + bulkR2(e.travel_hours), 0);
-      const metaHrs = `${days} ${days === 1 ? 'day' : 'days'} · ${num2(hrs)} h`;
+      // A group is keyed on the JOB, not the employee, so one card routinely
+      // covers a whole crew — everyone on this job gets the cost code below,
+      // each with their own hours and their own rate. Lead with the head count
+      // so that reads off the card instead of having to be counted out of the
+      // day table underneath it.
+      const crew = new Set(g.entries.map(e => e.username || '')).size;
+      const metaHrs = `${crew > 1 ? `${crew} employees · ` : ''}` +
+                      `${days} ${days === 1 ? 'day' : 'days'} · ${num2(hrs)} h`;
       let badgeClass, badgeText, title, meta, fields;
 
       if (g.type === 'split') {
@@ -4600,13 +4750,17 @@
             <div class="bulk-field"><span>Sub Code</span>
               ${_bulkList(idx, 'sub_code', g.template.sub_code, subOpts, subOpts.length ? 'Select or type…' : '—')}
             </div>
-            <div class="bulk-field"><span>Equipment <span style="text-transform:none;font-weight:400">(optional)</span></span>
+            <div class="bulk-field"><span>Equipment <span style="text-transform:none;font-weight:400">(whole crew)</span></span>
               ${_bulkList(idx, 'equipment', g.template.equipment, eqOpts, '— none —')}
+            </div>
+            <div class="bulk-field"><span>Equip h <span style="text-transform:none;font-weight:400">(whole crew)</span></span>
+              ${_bulkNum(idx, 'equip_hours', g.template.equip_hours, '0')}
             </div>
           </div>
           <div class="bulk-note">All work hours post to this cost code; any day with travel hours gets a
-            matching travel row at the same code. Equipment is tagged without equipment-hours — open a single
-            day to set those.</div>`;
+            matching travel row at the same code. Equipment here goes to everyone below — to give a machine to
+            one operator instead, leave it blank and fill in that person's row in the table. Picking equipment
+            on a row fills its hours with the hours worked; clear them for a tag with no cost.</div>`;
       } else if (g.type === 'quarry' && g.activity === 'crushing') {
         badgeClass = 'quarry'; badgeText = 'Quarry Crushing';
         title = quarryLocationLabel(g.entries[0]) || g.job_label || 'Quarry'; meta = metaHrs;
@@ -4651,7 +4805,7 @@
           <span class="bulk-group-meta">${escapeHtml(meta)}</span>
         </div>
         ${fields}
-        ${bulkDaysTable(g)}
+        ${bulkDaysTable(g, idx)}
       </div>`;
     }
 
@@ -4702,10 +4856,19 @@
         const travel = bulkR2(e.travel_hours);
         const cc = String(g.template.cost_code || '').trim();
         const sc = String(g.template.sub_code || '').trim();
-        const eq = String(g.template.equipment || '').trim();
+        // This day's machine — its own override if it has one, else the crew's.
+        const { equipment: eq, equip_hours: eh } = bulkRowEffective(g, e);
         const rows = [];
-        if (work   > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: eq, labor_hours: work,   equip_hours: 0, is_travel: false });
-        if (travel > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: '', labor_hours: travel, equip_hours: 0, is_travel: true });
+        // Travel never carries the equipment: the machine did not ride along.
+        if (work   > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: eq, labor_hours: work,   equip_hours: eh, is_travel: false });
+        if (travel > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: '', labor_hours: travel, equip_hours: 0,  is_travel: true });
+        // A travel-only day has no work row to hang a machine on. Give it its
+        // own row rather than silently dropping the assignment — labor 0 is
+        // fine here, the server only requires labor OR equipment hours, and
+        // the hours total it checks counts labor alone.
+        if (work <= 0 && eq && eh > 0) {
+          rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: eq, labor_hours: 0, equip_hours: eh, is_travel: false });
+        }
         return { split: rows };
       }
       if (g.type === 'quarry') {
@@ -4744,6 +4907,17 @@
         msg.classList.add('error');
         msg.textContent = 'Pick a cost code or sub code for: ' +
           notReady.map(g => g.job_label || prettyDiv(g.division)).join(', ');
+        return;
+      }
+
+      // Catch out-of-range equipment hours here rather than letting the run
+      // loop fail one approve at a time — the supervisor gets told which day.
+      const badHours = bulkBadEquipHours();
+      if (badHours.length) {
+        msg.classList.add('error');
+        msg.textContent = 'Equipment hours must be between 0 and 24 — check ' +
+          badHours.slice(0, 3).map(b => b.who).join('; ') +
+          (badHours.length > 3 ? `; and ${badHours.length - 3} more` : '');
         return;
       }
 
