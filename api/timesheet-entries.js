@@ -283,16 +283,31 @@ function _r2(n) { return Math.round(Number(n) * 100) / 100; }
 // inherit someone else's pay rate.
 function _rosterKey(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
+// Doubled letters are where these two systems disagree in practice: the roster
+// reads "Matt Shufstall" while the login is "shuffstallmatt", or "Kevin
+// Cippolini" while the login is "cipollini". Collapsing runs of the same letter
+// on BOTH sides bridges that. It is a normalization, not a fuzzy match — every
+// stage below still has to hit exactly, and still has to hit exactly once, so
+// this cannot start handing one person another's pay rate.
+function _collapseDoubles(s) { return String(s).replace(/(.)\1+/g, '$1'); }
+
 function matchRosterEmployee(blobEmps, employeeName) {
-  const login = _rosterKey(employeeName);
-  if (!login) return null;
   const cand = (Array.isArray(blobEmps) ? blobEmps : [])
     .filter(e => e && typeof e === 'object' && String(e.name || '').trim());
-  const wordsOf = e => String(e.name).trim().split(/\s+/).map(_rosterKey).filter(Boolean);
+  // Exact spellings first across every stage; only if nothing lands anywhere
+  // do we retry the whole cascade with doubled letters collapsed.
+  return _matchRoster(cand, employeeName, _rosterKey)
+      || _matchRoster(cand, employeeName, s => _collapseDoubles(_rosterKey(s)));
+}
+
+function _matchRoster(cand, employeeName, key) {
+  const login = key(employeeName);
+  if (!login) return null;
+  const wordsOf = e => String(e.name).trim().split(/\s+/).map(key).filter(Boolean);
   const only = list => (list.length === 1 ? list[0] : null);
 
   // 1. the roster name IS the login, punctuation and case aside
-  const exact = cand.filter(e => _rosterKey(e.name) === login);
+  const exact = cand.filter(e => key(e.name) === login);
   if (exact.length) return exact[0];
 
   // 2. the login is the name's words run together, either way round
@@ -320,7 +335,27 @@ function matchRosterEmployee(blobEmps, employeeName) {
     return (w[0][0] + w[w.length - 1]) === login
         || (w[w.length - 1] + w[0][0]) === login;
   });
-  return only(initial);
+  if (only(initial)) return initial[0];
+
+  // 5. surname exact, first name shortened — "shuffstallmatt" against a roster
+  // that spells him "Matthew Shuffstall". The surname has to match in full and
+  // the leftover has to be the start of the first name, at least two letters of
+  // it, so this cannot reach past the initial-only case above.
+  const shortened = cand.filter(e => {
+    const w = wordsOf(e);
+    if (w.length < 2 || !w[0]) return false;
+    const first = w[0], last = w[w.length - 1];
+    if (login.startsWith(last)) {
+      const rest = login.slice(last.length);
+      return rest.length >= 2 && first.startsWith(rest);
+    }
+    if (login.endsWith(last)) {
+      const rest = login.slice(0, login.length - last.length);
+      return rest.length >= 2 && first.startsWith(rest);
+    }
+    return false;
+  });
+  return only(shortened);
 }
 
 /**
@@ -452,6 +487,12 @@ async function buildCostResolver(sql, companyCode, division, equipmentNames) {
 
   return {
     employeeFor: username => matchRosterEmployee(blobEmps, username),
+    // The names this division's list actually holds, so a "no match" can say
+    // whether the person is absent or just spelled differently.
+    rosterNames: () => blobEmps
+      .map(e => (e && typeof e === 'object' ? String(e.name || '').trim() : ''))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b)),
     equipCostFor: name => (name ? (eqCostByName.get(_eqKey(name)) || 0) : 0),
     rateFor: (emp, isPrevailingWage) => (emp
       ? (Number(isPrevailingWage ? emp.prevailing_rate : emp.non_prevailing_rate) || 0)
@@ -1662,11 +1703,20 @@ module.exports = async (req, res) => {
       }
 
       let updated = 0;
-      const unresolved = new Map();   // login → how many rows it left behind
+      // Keyed on login AND division: the same person can submit into more than
+      // one, and each division has its own list. Collapsing them onto one entry
+      // sent you to fix a list that was only part of the problem.
+      const unresolved = new Map();   // "login\0division" → { username, division, rows }
+      // Which roster each division actually searched. "No match" means one of
+      // two very different things — the person is missing from that division's
+      // list, or they are in it under a name the login does not resolve to —
+      // and the answer is useless without seeing the names.
+      const rosters = {};
       for (const [division, rows] of byDivision) {
         const resolver = await buildCostResolver(
           sql, companyCode, division, rows.map(r => r.equipment),
         );
+        rosters[division] = resolver.rosterNames();
         const pwFlags = await prevailingWageByJob(
           sql, companyCode, division, rows.map(r => r.job_id),
         );
@@ -1674,7 +1724,10 @@ module.exports = async (req, res) => {
         for (const r of rows) {
           const emp = resolver.employeeFor(r.username);
           if (!emp) {
-            unresolved.set(r.username, (unresolved.get(r.username) || 0) + 1);
+            const key = `${r.username}\u0000${division}`;
+            const seen = unresolved.get(key) || { username: r.username, division, rows: 0 };
+            seen.rows += 1;
+            unresolved.set(key, seen);
             continue;
           }
           const rate      = resolver.rateFor(emp, !!pwFlags.get(String(r.job_id)));
@@ -1716,9 +1769,13 @@ module.exports = async (req, res) => {
         scanned: scanRows.length,
         updated,
         hitLimit: scanRows.length === SCAN_LIMIT,
-        unresolved: [...unresolved.entries()]
-          .map(([username, rows]) => ({ username, rows }))
-          .sort((a, b) => b.rows - a.rows),
+        unresolved: [...unresolved.values()].sort((a, b) => b.rows - a.rows),
+        // Only the lists that something actually failed against — a clean run
+        // has no reason to ship every division's roster back.
+        rosters: Object.fromEntries(
+          Object.entries(rosters).filter(([d]) =>
+            [...unresolved.values()].some(u => u.division === d)),
+        ),
       });
     }
 

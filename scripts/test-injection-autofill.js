@@ -111,6 +111,44 @@ function rosterTests() {
     matchRosterEmployee([{ name: 'Ana Maria Rio' }], 'rioana').name === 'Ana Maria Rio');
   assert('a one-word roster entry is not mangled',
     matchRosterEmployee([{ name: 'Mowery' }], 'mowery').name === 'Mowery');
+
+  // A login that shortens the first name — the reported case, "shuffstallmatt"
+  // against a roster that spells him "Matthew Shuffstall".
+  const SHUFF = [{ name: 'Matthew Shuffstall', job_class: 'Operator', non_prevailing_rate: 30 }];
+  assert('surname + shortened first name  ("shuffstallmatt")',
+    matchRosterEmployee(SHUFF, 'shuffstallmatt').name === 'Matthew Shuffstall');
+  assert('shortened first name + surname  ("mattshuffstall")',
+    matchRosterEmployee(SHUFF, 'mattshuffstall').name === 'Matthew Shuffstall');
+  assert('the full spelling still matches',
+    matchRosterEmployee(SHUFF, 'shuffstallmatthew').name === 'Matthew Shuffstall');
+  // The shortening has to be a real prefix of the first name, not any leftover.
+  assert('a leftover that is not the first name is refused',
+    matchRosterEmployee(SHUFF, 'shuffstallbob') === null);
+  assert('a one-letter leftover does not reach the prefix rule',
+    matchRosterEmployee([{ name: 'Matthew Shuffstall' }, { name: 'Marcus Shuffstall' }], 'shuffstallm') === null);
+  assert('two Shuffstalls with the same short name are refused',
+    matchRosterEmployee([{ name: 'Matthew Shuffstall' }, { name: 'Matteo Shuffstall' }], 'shuffstallmatt') === null);
+  assert('a shortened name still loses to an exact match elsewhere',
+    matchRosterEmployee([{ name: 'Matthew Shuffstall' }, { name: 'Matt Shuffstall' }], 'shuffstallmatt').name === 'Matt Shuffstall');
+
+  // Doubled letters are where the roster and the logins actually disagree on
+  // this rollout — both of these are real.
+  assert('roster drops a doubled letter  ("Matt Shufstall" / shuffstallmatt)',
+    matchRosterEmployee([{ name: 'Matt Shufstall' }], 'shuffstallmatt').name === 'Matt Shufstall');
+  assert('login drops a doubled letter   ("Kevin Cippolini" / cipollini)',
+    matchRosterEmployee([{ name: 'Kevin Cippolini' }], 'cipollini').name === 'Kevin Cippolini');
+  assert('and with the first name too    ("Kevin Cippolini" / cipollinikevin)',
+    matchRosterEmployee([{ name: 'Kevin Cippolini' }], 'cipollinikevin').name === 'Kevin Cippolini');
+
+  // The collapse is a last resort and stays as strict as every stage above it.
+  assert('an exact spelling elsewhere still wins over a collapsed one',
+    matchRosterEmployee([{ name: 'Matt Shufstall' }, { name: 'Matt Shuffstall' }], 'shuffstallmatt').name === 'Matt Shuffstall');
+  // Two people whose names differ only by a doubled letter, and a login that
+  // matches neither exactly — so the collapse is what they both land on.
+  assert('two names that collapse alike are refused, not guessed',
+    matchRosterEmployee([{ name: 'Matt Shufstall' }, { name: 'Matt Shuffstall' }], 'shufffstallmatt') === null);
+  assert('collapsing does not invent a match out of nothing',
+    matchRosterEmployee([{ name: 'Matt Shufstall' }], 'someoneelse') === null);
 }
 
 // ── 2) The injected row's money fields ──────────────────────────────────────
@@ -327,10 +365,39 @@ async function refreshTests() {
     assert('an unmatched login is left alone entirely', updates.length === 0);
     assert('and is reported so the roster gap is visible',
       res.body.unresolved.length === 1 && res.body.unresolved[0].username === 'ghostuser');
+    // "No match" is two different problems — absent from the list, or in it
+    // under another spelling — and the report has to let you tell them apart.
+    assert('the report names the division that was searched',
+      res.body.unresolved[0].division === 'turf');
+    assert('and hands back that list so the spelling can be compared',
+      Array.isArray(res.body.rosters.turf) && res.body.rosters.turf.includes('Zach Brewer'));
   }
   {
     const { updates } = await run([row({ equipment: 'Mystery Machine', equip_unit_cost: 55 })]);
     assert('an unresolvable machine keeps the price it has', updates[0].equip_unit_cost === 55);
+  }
+  {
+    // The same person can submit into more than one division, and each division
+    // keeps its own list. Reporting them as one entry sent you to fix a list
+    // that was only part of the problem — and the row count did not add up when
+    // you re-ran it.
+    const { res } = await run([
+      row({ row_id: 'ts1-a', division: 'turf',   username: 'ghost', employee: 'ghost' }),
+      row({ row_id: 'ts2-a', division: 'paving', username: 'ghost', employee: 'ghost' }),
+      row({ row_id: 'ts3-a', division: 'paving', username: 'ghost', employee: 'ghost' }),
+    ]);
+    assert('one unresolved entry per division, not per person',
+      res.body.unresolved.length === 2);
+    assert('each carries its own division and count',
+      res.body.unresolved.some(u => u.division === 'paving' && u.rows === 2) &&
+      res.body.unresolved.some(u => u.division === 'turf'   && u.rows === 1));
+    assert('every failing division hands back its list',
+      Object.keys(res.body.rosters).sort().join(',') === 'paving,turf');
+  }
+  {
+    const { res } = await run([row()]);   // resolves fine
+    assert('a clean run ships no rosters at all',
+      Object.keys(res.body.rosters).length === 0);
   }
   {
     const { updates } = await run([row()], { prevailingWage: true });

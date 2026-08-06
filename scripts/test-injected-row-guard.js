@@ -255,6 +255,14 @@ function structuralChecks(file) {
     /const rows = Array\.isArray\(body && body\.rows\) \? body\.rows : null;/.test(src));
   assert('focus refresh survives a WAL replay failure',
     /Promise\.resolve\(_walReplay\(\)\)\.catch\(\(\) => \{\}\)\.then\(_drRefreshOnFocus\)/.test(src));
+  // api/lib/auth.js defaults a MISSING division to 'turf'. A project-scoped
+  // reload that omits it therefore asks turf for paving's rows, gets an empty
+  // answer, and — now that an empty snapshot is authoritative — wipes a table
+  // that had just loaded correctly. Every daily-rows call must be scoped.
+  assert('the project reload sends its division',
+    /daily-rows\?division=\$\{DIVISION\}&projectId=/.test(src));
+  assert('no daily-rows call is left unscoped',
+    !/daily-rows\?projectId=/.test(src));
   assert('daily view refreshes when the tab regains focus',
     /function _drRefreshOnFocus\(\)/.test(src) && /window\.addEventListener\('focus', _drRefreshOnFocus\)/.test(src));
 }
@@ -293,6 +301,7 @@ async function behaviouralChecks(file) {
     const sandbox = {
       console,
       API_BASE: '/api',
+      DIVISION: 'paving',   // the reload is division-scoped; a bare projectId asks turf
       fctToken: 't',
       dailyViewProjId: 'p1',
       projectsList: [proj],
