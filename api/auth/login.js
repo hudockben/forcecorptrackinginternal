@@ -87,7 +87,15 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { companyCode, username, password } = req.body || {};
+  const { username, password } = req.body || {};
+
+  // A single-tenant deployment sets DEFAULT_COMPANY_CODE and callers may then
+  // omit companyCode entirely — the sign-in page hides the field for exactly
+  // this reason. An explicit code in the body still wins, so a second company
+  // keeps working. With the env var unset the field stays required as before.
+  const companyCode = String(
+    (req.body && req.body.companyCode) || process.env.DEFAULT_COMPANY_CODE || ''
+  ).trim();
 
   if (!companyCode || !username || !password) {
     return res.status(400).json({ error: 'companyCode, username, and password are required' });
@@ -114,7 +122,7 @@ module.exports = async (req, res) => {
         FROM users u
         JOIN companies c ON c.code = u.company_code
         WHERE LOWER(u.username)     = LOWER(${username.trim()})
-          AND LOWER(u.company_code) = LOWER(${companyCode.trim()})
+          AND LOWER(u.company_code) = LOWER(${companyCode})
       `;
     } catch (colErr) {
       // division_roles column not yet migrated — query without it
@@ -131,7 +139,7 @@ module.exports = async (req, res) => {
         FROM users u
         JOIN companies c ON c.code = u.company_code
         WHERE LOWER(u.username)     = LOWER(${username.trim()})
-          AND LOWER(u.company_code) = LOWER(${companyCode.trim()})
+          AND LOWER(u.company_code) = LOWER(${companyCode})
       `;
       rows.forEach(r => { r.division_roles = null; });
     }
@@ -169,7 +177,7 @@ module.exports = async (req, res) => {
       allowedDivisions = effectiveDivisions(isPlatformAdmin, user.divisions, user.allowed_divisions);
     }
 
-    const cleanCode = companyCode.trim().toUpperCase();
+    const cleanCode = companyCode.toUpperCase();
 
     const token = jwt.sign(
       {

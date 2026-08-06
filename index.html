@@ -338,6 +338,26 @@
       opacity: 0.55;
     }
 
+    /* Stands in for the company-code field once a code has been injected */
+    .co-toggle {
+      display: block;
+      margin: 16px auto 0;
+      padding: 0;
+      text-align: center;
+      background: none;
+      border: none;
+      font-family: var(--mono);
+      font-size: 9.5px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      opacity: 0.55;
+      cursor: pointer;
+      transition: opacity 0.18s, color 0.18s;
+    }
+    .co-toggle:hover { opacity: 1; color: var(--muted-2); }
+    .co-toggle[hidden] { display: none; }
+
     .input-wrap {
       position: relative;
       border: 1px solid var(--line-2);
@@ -572,10 +592,10 @@
 
         <div class="auth-body">
           <div class="auth-title">Sign in</div>
-          <div class="auth-subtitle"><span class="caret">$</span>authenticate --workspace</div>
+          <div class="auth-subtitle"><span class="caret">$</span>authenticate <span id="workspaceTag">--workspace</span></div>
 
           <form id="loginForm" novalidate>
-            <div class="field">
+            <div class="field" id="companyField">
               <div class="field-row">
                 <label for="companyCode">Company Code</label>
                 <span class="field-hint">required</span>
@@ -625,6 +645,8 @@
               <span id="btnLabel">Authenticate</span>
               <span class="arrow">→</span>
             </button>
+
+            <button type="button" class="co-toggle" id="companyToggle" hidden>Use a different company code</button>
           </form>
         </div>
 
@@ -887,7 +909,19 @@
     })();
   </script>
 
-  <!-- ── Auth logic (unchanged) ────────────────────────────────── -->
+  <!-- ── Deployment config ─────────────────────────────────────────
+       DEFAULT_COMPANY_CODE pins this build to one workspace so nobody
+       has to type the code at sign-in. The field stays in the DOM and
+       comes back on demand, so a second tenant is still reachable.
+       Set it to '' to make the field required again for everyone.
+       The API honours a DEFAULT_COMPANY_CODE env var the same way, which
+       covers a browser holding a cached copy of this page.
+  ──────────────────────────────────────────────────────────────────── -->
+  <script>
+    window.DEFAULT_COMPANY_CODE = 'FORCECORP';
+  </script>
+
+  <!-- ── Auth logic ────────────────────────────────────────────── -->
   <script>
     (function () {
       const token = localStorage.getItem('fct_token');
@@ -931,15 +965,66 @@
     }
     function clearError() { errorMsg.classList.remove('visible'); }
 
+    // ── Company code ───────────────────────────────────────────────
+    // The code comes from the page instead of the keyboard. Precedence,
+    // highest first:
+    //   ?company=CODE          one-off override, e.g. a support sign-in
+    //   DEFAULT_COMPANY_CODE   what this deployment is pinned to
+    //   fct_company_code       last code that signed in on this browser,
+    //                          so an unpinned build still only asks once
+    // With none of those the field behaves exactly as it always has.
+    const companyField  = document.getElementById('companyField');
+    const companyInput  = document.getElementById('companyCode');
+    const companyToggle = document.getElementById('companyToggle');
+    const workspaceTag  = document.getElementById('workspaceTag');
+
+    const INJECTED_CODE = String(window.DEFAULT_COMPANY_CODE || '').trim().toUpperCase();
+
+    function revealCompanyField() {
+      companyField.hidden   = false;
+      companyToggle.hidden  = true;
+      companyInput.required = true;
+      workspaceTag.textContent = '--workspace';
+    }
+
+    function pinCompanyCode(code) {
+      companyInput.value    = code;
+      companyField.hidden   = true;
+      companyToggle.hidden  = false;
+      companyInput.required = false;
+      workspaceTag.textContent = '--workspace=' + code;
+    }
+
+    (function initCompanyCode() {
+      const preset = String(
+        new URLSearchParams(location.search).get('company')
+        || INJECTED_CODE
+        || localStorage.getItem('fct_company_code')
+        || ''
+      ).trim().toUpperCase();
+      if (preset) pinCompanyCode(preset);
+    })();
+
+    companyToggle.addEventListener('click', () => {
+      revealCompanyField();
+      companyInput.focus();
+      companyInput.select();
+    });
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       clearError();
 
-      const companyCode = document.getElementById('companyCode').value.trim();
+      const companyCode = (companyInput.value.trim() || INJECTED_CODE).toUpperCase();
       const username    = document.getElementById('username').value.trim();
       const password    = document.getElementById('password').value;
 
-      if (!companyCode || !username || !password) {
+      if (!companyCode) {
+        revealCompanyField();
+        showError('Company code is required.');
+        return;
+      }
+      if (!username || !password) {
         showError('All fields are required.');
         return;
       }
@@ -956,12 +1041,19 @@
 
         const data = await res.json();
         if (!res.ok) {
+          // A pinned code that does not match reads as a wrong password,
+          // with nothing on screen to explain it. Show the field so the
+          // one thing the user cannot currently see becomes editable.
+          if (res.status === 401 && companyField.hidden) revealCompanyField();
           showError(data.error || 'Sign-in failed. Please try again.');
           return;
         }
 
         localStorage.setItem('fct_token', data.token);
         localStorage.setItem('fct_user',  JSON.stringify(data.user));
+        if (data.user && data.user.companyCode) {
+          localStorage.setItem('fct_company_code', data.user.companyCode);
+        }
         window.location.replace('divisions.html');
       } catch {
         showError('Network error — please check your connection.');
