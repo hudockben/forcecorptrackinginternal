@@ -1269,7 +1269,23 @@
       border-radius: 4px;
       color: var(--text);
     }
-    .bulk-days td.edit.eq input { min-width: 118px; }
+    /* A day can carry more than one machine — drove the truck in, ran the
+       roller on site — so the cell holds a stack of name/hours pairs. */
+    .bulk-days td.edit .eq-stack { display: flex; flex-direction: column; gap: 0.25rem; }
+    .bulk-days td.edit .eq-item  { display: flex; gap: 0.25rem; align-items: center; }
+    .bulk-days td.edit input.eq-name { min-width: 118px; flex: 1 1 auto; }
+    .bulk-days td.edit input.eq-hrs  { min-width: 54px; max-width: 66px; flex: 0 0 auto; }
+    .bulk-days td.edit .eq-del {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 0.95rem; line-height: 1; padding: 0 0.15rem; flex: 0 0 auto;
+    }
+    .bulk-days td.edit .eq-del:hover { color: var(--red); }
+    .bulk-days td.edit .eq-add {
+      align-self: flex-start; background: none; border: 1px dashed var(--border);
+      border-radius: 4px; color: var(--muted); cursor: pointer;
+      font-size: 0.68rem; padding: 0.18rem 0.45rem;
+    }
+    .bulk-days td.edit .eq-add:hover { color: var(--text); border-color: var(--accent); }
     .bulk-days td.edit input::placeholder { color: var(--muted); opacity: 0.75; }
     .bulk-days td.edit input.num { text-align: right; font-variant-numeric: tabular-nums; }
     .bulk-days td.edit input:focus { outline: none; border-color: var(--accent); }
@@ -4644,42 +4660,90 @@
     // The group fields set what the whole crew shares; these set what one
     // person did. Stored on the group (not the entry) so a repaint — picking a
     // cost code re-renders the card — puts every value back where it was.
+    // One day can carry several machines — drove the pickup in, ran the roller
+    // on site — so a row holds a list of them, not a single pair.
+    // _autoHours marks hours this modal filled in rather than the supervisor:
+    // they belong to the machine that triggered them and go when it goes.
+    function _blankMachine() {
+      return { equipment: '', equip_hours: '', _autoHours: false };
+    }
+
     function _bulkRowCell(g, entryId) {
       if (!g.perRow) g.perRow = {};
       const key = String(entryId);
-      // _autoHours marks hours this modal filled in rather than the supervisor:
-      // they belong to the machine that triggered them and go when it goes.
-      return g.perRow[key] || (g.perRow[key] = { equipment: '', equip_hours: '', _autoHours: false });
+      if (!g.perRow[key]) g.perRow[key] = { items: [_blankMachine()] };
+      if (!Array.isArray(g.perRow[key].items) || !g.perRow[key].items.length) {
+        g.perRow[key].items = [_blankMachine()];
+      }
+      return g.perRow[key];
+    }
+
+    function _bulkRowItem(g, entryId, itemIdx) {
+      const cell = _bulkRowCell(g, entryId);
+      while (cell.items.length <= itemIdx) cell.items.push(_blankMachine());
+      return cell.items[itemIdx];
+    }
+
+    function bulkRowAddMachine(idx, entryId) {
+      const g = bulkGroups[idx];
+      if (!g) return;
+      _bulkRowCell(g, entryId).items.push(_blankMachine());
+      renderBulkGroups();
+      updateBulkRunBtn();
+    }
+
+    function bulkRowRemoveMachine(idx, entryId, itemIdx) {
+      const g = bulkGroups[idx];
+      if (!g) return;
+      const cell = _bulkRowCell(g, entryId);
+      cell.items.splice(itemIdx, 1);
+      if (!cell.items.length) cell.items.push(_blankMachine());
+      renderBulkGroups();
+      updateBulkRunBtn();
     }
 
     // What actually gets sent for one day: its own override if set, else the
     // group's. Equipment hours only mean anything with a machine attached, so
     // they collapse to 0 when no equipment resolves.
+    // Every machine this day actually posts, its own overrides first and the
+    // crew's only when the row names none. An entry with hours but no machine
+    // means "the crew's machine, for my hours", so it still resolves.
     function bulkRowEffective(g, e) {
-      const cell = (g.perRow || {})[String(e.id)] || {};
-      const equipment = String(cell.equipment || '').trim() ||
-                        String(g.template.equipment || '').trim();
-      const hoursRaw  = String(cell.equip_hours || '').trim() ||
-                        String(g.template.equip_hours || '').trim();
-      return { equipment, equip_hours: equipment ? bulkR2(hoursRaw) : 0 };
+      const cell    = (g.perRow || {})[String(e.id)] || {};
+      const groupEq = String(g.template.equipment || '').trim();
+      const groupEh = String(g.template.equip_hours || '').trim();
+      const items   = (cell.items || []).filter(
+        it => String(it.equipment || '').trim() || String(it.equip_hours || '').trim(),
+      );
+      if (!items.length) {
+        return groupEq ? [{ equipment: groupEq, equip_hours: bulkR2(groupEh) }] : [];
+      }
+      return items
+        .map(it => {
+          const equipment = String(it.equipment || '').trim() || groupEq;
+          if (!equipment) return null;
+          const raw = String(it.equip_hours || '').trim() || (String(it.equipment || '').trim() ? '' : groupEh);
+          return { equipment, equip_hours: bulkR2(raw) };
+        })
+        .filter(Boolean);
     }
 
-    function bulkRowSet(idx, entryId, field, value) {
+    function bulkRowSet(idx, entryId, itemIdx, field, value) {
       const g = bulkGroups[idx];
       if (!g) return;
-      const cell = _bulkRowCell(g, entryId);
-      cell[field] = value;
+      const item = _bulkRowItem(g, entryId, itemIdx);
+      item[field] = value;
       // Clearing the machine has to clear the hours that were filled in for it.
-      // Otherwise the row falls back to the crew's equipment while keeping
+      // Otherwise the entry falls back to the crew's equipment while keeping
       // hours nobody typed, and bills that machine for a day it never worked.
-      if (field === 'equipment' && !String(value).trim() && cell._autoHours) {
-        cell.equip_hours = '';
-        cell._autoHours  = false;
-        const el = document.getElementById(`blkrow_eh_${idx}_${entryId}`);
+      if (field === 'equipment' && !String(value).trim() && item._autoHours) {
+        item.equip_hours = '';
+        item._autoHours  = false;
+        const el = document.getElementById(`blkrow_eh_${idx}_${entryId}_${itemIdx}`);
         if (el) el.value = '';
       }
       // Touched by hand — the number is the supervisor's from here on.
-      if (field === 'equip_hours') cell._autoHours = false;
+      if (field === 'equip_hours') item._autoHours = false;
       updateBulkRunBtn();
     }
 
@@ -4688,18 +4752,24 @@
     // operator almost always ran. The group-level field can't do this (its days
     // have different hours), which is exactly why the override is per row.
     // Prefilled visibly, so it can be edited or cleared back to a bare tag.
-    function bulkRowEquipCommit(idx, entryId) {
+    function bulkRowEquipCommit(idx, entryId, itemIdx) {
       const g = bulkGroups[idx];
       if (!g) return;
       const cell = _bulkRowCell(g, entryId);
-      if (!String(cell.equipment || '').trim()) return;
-      if (String(cell.equip_hours || '').trim()) return;
+      const item = _bulkRowItem(g, entryId, itemIdx);
+      if (!String(item.equipment || '').trim()) return;
+      if (String(item.equip_hours || '').trim()) return;
+      // Only guess for the day's first machine. Once a day carries two, the
+      // hours split between them and this has no way to know how — a pickup
+      // driven in and a roller run on site do not both take the whole day.
+      const otherHasHours = cell.items.some((it, i) => i !== itemIdx && String(it.equip_hours || '').trim());
+      if (otherHasHours) return;
       const e = g.entries.find(x => String(x.id) === String(entryId));
       if (!e || bulkR2(e.computed_hours) <= 0) return;   // travel-only day: nothing to copy
-      cell.equip_hours = String(bulkR2(e.computed_hours));
-      cell._autoHours  = true;
-      const el = document.getElementById(`blkrow_eh_${idx}_${entryId}`);
-      if (el) el.value = cell.equip_hours;
+      item.equip_hours = String(bulkR2(e.computed_hours));
+      item._autoHours  = true;
+      const el = document.getElementById(`blkrow_eh_${idx}_${entryId}_${itemIdx}`);
+      if (el) el.value = item.equip_hours;
       updateBulkRunBtn();
     }
 
@@ -4716,10 +4786,14 @@
           continue;
         }
         for (const e of g.entries) {
-          const raw = String((g.perRow[String(e.id)] || {}).equip_hours || '').trim();
-          if (raw === '') continue;
-          const n = Number(raw);
-          if (!(n >= 0 && n <= 24)) bad.push({ g, who: `${e.username} · ${prettyDate(e.work_date)}` });
+          const items = ((g.perRow || {})[String(e.id)] || {}).items || [];
+          const offending = items.some(it => {
+            const raw = String(it.equip_hours || '').trim();
+            if (raw === '') return false;
+            const n = Number(raw);
+            return !(n >= 0 && n <= 24);
+          });
+          if (offending) bad.push({ g, who: `${e.username} · ${prettyDate(e.work_date)}` });
         }
       }
       return bad;
@@ -4752,23 +4826,37 @@
         const w = bulkR2(e.computed_hours), t = bulkR2(e.travel_hours);
         let extra = '';
         if (editable) {
-          const cell = (g.perRow || {})[String(e.id)] || {};
+          const items = (((g.perRow || {})[String(e.id)] || {}).items || []);
+          const list  = items.length ? items : [{ equipment: '', equip_hours: '' }];
           // escapeJsAttr, not escapeHtml: this lands inside a single-quoted JS
           // string within an HTML attribute, and escapeHtml's &#39; would be
           // decoded back into a quote before the JS is parsed.
-          const eid  = escapeJsAttr(String(e.id));
-          // Placeholders show what the row inherits from the group, so a blank
-          // cell reads as "same as everyone" rather than "nothing".
+          const eid   = escapeJsAttr(String(e.id));
+          // Placeholders show what a blank row inherits from the crew, so an
+          // empty cell reads as "same as everyone" rather than "nothing".
+          const machines = list.map((it, i) => {
+            const canDrop = list.length > 1 || String(it.equipment || '').trim();
+            return `<div class="eq-item">` +
+              `<input type="text" class="eq-name" list="blk_equipment_${idx}" ` +
+                `value="${escapeHtml(it.equipment || '')}" ` +
+                `placeholder="${escapeHtml(i === 0 ? (groupEq || '— none —') : 'add a machine…')}" autocomplete="off" ` +
+                `oninput="bulkRowSet(${idx},'${eid}',${i},'equipment',this.value)" ` +
+                `onchange="bulkRowEquipCommit(${idx},'${eid}',${i})">` +
+              `<input type="number" class="num eq-hrs" min="0" max="24" step="0.25" ` +
+                `id="blkrow_eh_${idx}_${eid}_${i}" value="${escapeHtml(it.equip_hours || '')}" ` +
+                `placeholder="${escapeHtml(i === 0 ? (groupEh || '0') : '0')}" title="Hours on this machine" ` +
+                `oninput="bulkRowSet(${idx},'${eid}',${i},'equip_hours',this.value)">` +
+              (canDrop
+                ? `<button type="button" class="eq-del" title="Remove this machine" ` +
+                  `onclick="bulkRowRemoveMachine(${idx},'${eid}',${i})">&times;</button>`
+                : `<span class="eq-del" style="visibility:hidden">&times;</span>`) +
+            `</div>`;
+          }).join('');
           extra =
-            `<td class="edit eq"><input type="text" list="blk_equipment_${idx}" ` +
-              `value="${escapeHtml(cell.equipment || '')}" ` +
-              `placeholder="${escapeHtml(groupEq || '— none —')}" autocomplete="off" ` +
-              `oninput="bulkRowSet(${idx},'${eid}','equipment',this.value)" ` +
-              `onchange="bulkRowEquipCommit(${idx},'${eid}')"></td>` +
-            `<td class="edit"><input type="number" class="num" min="0" max="24" step="0.25" ` +
-              `id="blkrow_eh_${idx}_${eid}" value="${escapeHtml(cell.equip_hours || '')}" ` +
-              `placeholder="${escapeHtml(groupEh || '0')}" ` +
-              `oninput="bulkRowSet(${idx},'${eid}','equip_hours',this.value)"></td>`;
+            `<td class="edit"><div class="eq-stack">${machines}` +
+              `<button type="button" class="eq-add" ` +
+                `onclick="bulkRowAddMachine(${idx},'${eid}')">+ machine</button>` +
+            `</div></td>`;
         }
         return `<tr><td>${escapeHtml(e.username || '')}</td>` +
                `<td>${escapeHtml(prettyDate(e.work_date))}</td>` +
@@ -4776,7 +4864,7 @@
                `<td class="num">${t ? num2(t) : '—'}</td>` +
                `<td class="num">${num2(w + t)}</td>${extra}</tr>`;
       }).join('');
-      const extraHead = editable ? `<th>Equipment</th><th>Equip h</th>` : '';
+      const extraHead = editable ? `<th>Equipment &amp; hours</th>` : '';
       return `<div class="bulk-days"><table><thead><tr>` +
              `<th>Employee</th><th>Date</th><th>Work h</th><th>Travel h</th><th>Total h</th>` +
              `${extraHead}</tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -4824,8 +4912,10 @@
           </div>
           <div class="bulk-note">All work hours post to this cost code; any day with travel hours gets a
             matching travel row at the same code. Equipment here goes to everyone below — to give a machine to
-            one operator instead, leave it blank and fill in that person's row in the table. Picking equipment
-            on a row fills its hours with the hours worked; clear them for a tag with no cost.</div>`;
+            one operator instead, leave it blank and fill in that person's row in the table. A day can carry
+            more than one machine (drove the pickup in, ran the roller on site): press <strong>+ machine</strong>
+            and give each its own hours. The first machine picked fills its hours with the hours worked; after
+            that you set them, since only you know how the day split.</div>`;
       } else if (g.type === 'quarry' && g.activity === 'crushing') {
         badgeClass = 'quarry'; badgeText = 'Quarry Crushing';
         title = quarryLocationLabel(g.entries[0]) || g.job_label || 'Quarry'; meta = metaHrs;
@@ -4921,18 +5011,26 @@
         const travel = bulkR2(e.travel_hours);
         const cc = String(g.template.cost_code || '').trim();
         const sc = String(g.template.sub_code || '').trim();
-        // This day's machine — its own override if it has one, else the crew's.
-        const { equipment: eq, equip_hours: eh } = bulkRowEffective(g, e);
+        // Every machine this day ran — its own overrides if it has any, else
+        // the crew's. A day can carry several: drove the pickup in, ran the
+        // roller on site.
+        const machines = bulkRowEffective(g, e);
+        const first = machines[0] || { equipment: '', equip_hours: 0 };
         const rows = [];
-        // Travel never carries the equipment: the machine did not ride along.
-        if (work   > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: eq, labor_hours: work,   equip_hours: eh, is_travel: false });
-        if (travel > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: '', labor_hours: travel, equip_hours: 0,  is_travel: true });
-        // A travel-only day has no work row to hang a machine on. Give it its
-        // own row rather than silently dropping the assignment — labor 0 is
-        // fine here, the server only requires labor OR equipment hours, and
-        // the hours total it checks counts labor alone.
-        if (work <= 0 && eq && eh > 0) {
-          rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: eq, labor_hours: 0, equip_hours: eh, is_travel: false });
+        // The first machine rides along on the labor row, so a single-machine
+        // day still posts as one row. Travel never carries equipment — the
+        // machine did not ride along.
+        if (work   > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: first.equipment, labor_hours: work,   equip_hours: first.equip_hours, is_travel: false });
+        if (travel > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: '',              labor_hours: travel, equip_hours: 0,                 is_travel: true });
+        // Everything past the first gets a row of its own — and so does the
+        // first when there is no work row to hang it on (a travel-only day).
+        // Zero labor is fine: the server needs labor OR equipment hours on a
+        // row, and the total it checks counts labor alone, so these do not
+        // disturb the work + travel sum.
+        for (const m of (work > 0 ? machines.slice(1) : machines)) {
+          if (m.equipment && m.equip_hours > 0) {
+            rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: m.equipment, labor_hours: 0, equip_hours: m.equip_hours, is_travel: false });
+          }
         }
         return { split: rows };
       }
