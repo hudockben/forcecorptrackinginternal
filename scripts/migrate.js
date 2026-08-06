@@ -136,6 +136,15 @@ async function migrate() {
   await sql`CREATE INDEX IF NOT EXISTS idx_ts_audit_entry   ON timesheet_audit_log(entry_id, created_at DESC)`;
   console.log('  ✓ timesheet_audit_log');
 
+  // ── daily_tracking: prefix lookup for payroll-injected rows ───────────────
+  // Un-approve / resplit / delete sweep every row a timesheet entry injected —
+  // both the ones still carrying timesheet_entry_id and any that lost it — by
+  // matching the "ts<entryId>-" prefix their row_id always starts with.
+  // text_pattern_ops is what makes LIKE 'ts42-%' index-backed under a non-C
+  // collation; the plain idx_dt_row_id cannot serve it.
+  await sql`CREATE INDEX IF NOT EXISTS idx_dt_row_id_prefix ON daily_tracking(row_id text_pattern_ops)`;
+  console.log('  ✓ daily_tracking row_id prefix index');
+
   console.log('\nAll migrations applied successfully.');
 }
 

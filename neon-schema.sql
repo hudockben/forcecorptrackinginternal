@@ -102,6 +102,12 @@ ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS num_laborers         NUMERIC
 
 CREATE INDEX IF NOT EXISTS idx_dt_company_project ON daily_tracking(company_code, project_id);
 CREATE INDEX IF NOT EXISTS idx_dt_row_id          ON daily_tracking(row_id);
+-- Prefix lookup for "every row payroll injected from timesheet entry N", whose
+-- row_ids all start "ts<N>-". Un-approve/resplit/delete sweep on that prefix as
+-- well as on timesheet_entry_id, so a row that lost its link is still removed.
+-- text_pattern_ops is what makes LIKE 'ts42-%' index-backed under a non-C
+-- collation; the plain idx_dt_row_id above cannot serve it.
+CREATE INDEX IF NOT EXISTS idx_dt_row_id_prefix   ON daily_tracking(row_id text_pattern_ops);
 CREATE INDEX IF NOT EXISTS idx_dt_company_date    ON daily_tracking(company_code, date);
 CREATE INDEX IF NOT EXISTS idx_dt_company_cc      ON daily_tracking(company_code, cost_code, sub_code);
 

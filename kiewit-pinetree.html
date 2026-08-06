@@ -3322,6 +3322,9 @@ async function _walReplay() {
           body
         });
         if (r.status === 401) { _drSaveFail('Session expired'); break; }
+        // A queued write for a row payroll un-approved comes back 409; the
+        // row is gone for good, so retire the entry and drop the local copy.
+        if (r.status === 409) _drDropRowLocally(entry.rowId);
         if (r.ok || r.status === 409) { _walRemove(id); _drSaveOk(); replayed++; }
         else if (r.status >= 400 && r.status < 500) { _walRemove(id); _drSaveFail('Rejected by server'); }
         else { _drSaveFail('Replay failed'); }
@@ -3400,8 +3403,52 @@ async function drGetAll(opts) {
   }
 }
 
+/**
+ * True for a row that payroll owns: one auto-injected into daily_tracking when
+ * a timesheet entry was approved. They carry a timesheet_entry_id, and a
+ * server-minted id of the form "ts<entryId>-…" that survives even when the
+ * link field was lost.
+ *
+ * This tab must never write one back. Un-approving in payroll.html deletes the
+ * injected rows server-side; a tab that was already open still holds them, and
+ * re-POSTing one (or letting the PUT upsert re-create it) puts it back WITHOUT
+ * its timesheet_entry_id — no TS badge, fully editable, immune to the next
+ * un-approve, and double-counted the moment the entry is approved again.
+ * api/daily-rows.js enforces the same rule; this is the near side of it.
+ */
+function _drIsInjectedRow(row) {
+  if (!row) return false;
+  if (row.timesheet_entry_id != null && row.timesheet_entry_id !== '') return true;
+  return /^ts\d+-/.test(String(row.id == null ? '' : row.id));
+}
+
+/**
+ * The server refused a write because the row is gone and payroll owns its id
+ * (HTTP 409) — an un-approve removed it while this tab held it. Drop our copy
+ * too, so cost tracking stops showing labor payroll has already taken back.
+ * Returns the project id the row was removed from, or null.
+ */
+function _drDropRowLocally(rowId) {
+  const sid = String(rowId);
+  let touched = null;
+  (projectsList || []).forEach(p => {
+    if (!Array.isArray(p.dailyRows)) return;
+    const i = p.dailyRows.findIndex(r => String(r.id) === sid);
+    if (i >= 0) { p.dailyRows.splice(i, 1); touched = p.id; }
+  });
+  if (touched) {
+    _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;
+    if (dailyViewProjId === touched) renderDailyTable(touched);
+  }
+  return touched;
+}
+
 /** Insert one row into the DB — WAL-protected with retry + indicator. */
 function drPost(projectId, row) {
+  if (_drIsInjectedRow(row)) {
+    console.warn('[daily-rows] refusing to POST payroll-injected row', row && row.id);
+    return;
+  }
   _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   const walId = 'post_' + row.id;
   _walAdd(walId, { method: 'POST', projectId, row, rowId: row.id });
@@ -3427,7 +3474,14 @@ function drPost(projectId, row) {
 }
 
 /** Insert multiple rows at once (awaitable — used for migration and CSV import). */
-async function drPostBulk(projectId, rows) {
+async function drPostBulk(projectId, allRows) {
+  // Payroll-injected rows never travel back to the server — see _drIsInjectedRow.
+  const rows = (allRows || []).filter(r => !_drIsInjectedRow(r));
+  if (rows.length !== (allRows || []).length) {
+    console.warn('[daily-rows] skipped', (allRows || []).length - rows.length,
+                 'payroll-injected row(s) in bulk POST');
+  }
+  if (!rows.length) return;
   _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   const walIds = rows.map(r => 'post_' + r.id);
   rows.forEach((r, i) => _walAdd(walIds[i], { method: 'POST', projectId, row: r, rowId: r.id }));
@@ -3490,6 +3544,14 @@ function _drPutNow(rowId, row) {
       console.warn('[daily-rows] PUT failed:', r.status);
       if (r.status === 401) _showSaveError(true);
       if (r.status >= 400 && r.status < 500) _walRemove(walId);
+      // 409 = the row was deleted by a payroll un-approve and may not be
+      // re-created from this tab. Retrying can never succeed, so drop it from
+      // memory instead and let the table redraw without it.
+      if (r.status === 409) {
+        _drDropRowLocally(rowId);
+        _drSaveFail('Row un-approved in payroll — removed');
+        return;
+      }
       _drSaveFail('Update failed');
     } else {
       _walRemove(walId);
@@ -3522,10 +3584,36 @@ function _drFlushPending() {
   Object.keys(_drSavePending).forEach(k => delete _drSavePending[k]);
 }
 window.addEventListener('beforeunload', _drFlushPending);
+/**
+ * A supervisor works in two tabs: payroll.html to approve / un-approve, this
+ * one to read the cost. An un-approve deletes the injected rows server-side but
+ * nothing tells this tab, so the removed labor stayed on screen until someone
+ * remembered to press Reload. Re-pull the open Daily Tracking view whenever the
+ * tab comes back to the front — throttled, and never while a cell has focus so
+ * a half-typed edit can't be swapped out from under the user.
+ */
+let _drLastFocusReload = 0;
+function _drRefreshOnFocus() {
+  if (!dailyViewProjId) return;
+  const el = document.activeElement;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return;
+  const now = Date.now();
+  if (now - _drLastFocusReload < 10000) return;
+  _drLastFocusReload = now;
+  reloadDailyRows(dailyViewProjId);
+}
+
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') _drFlushPending();
-  if (document.visibilityState === 'visible') _walReplay();
+  // Replay first: reloadDailyRows treats the server snapshot as the truth for
+  // every row without a queued write, so landing those writes first keeps them
+  // from looking stale.
+  // .catch so a replay failure neither goes unhandled nor blocks the refresh.
+  if (document.visibilityState === 'visible') {
+    Promise.resolve(_walReplay()).catch(() => {}).then(_drRefreshOnFocus);
+  }
 });
+window.addEventListener('focus', _drRefreshOnFocus);
 window.addEventListener('online', () => {
   console.log('[WAL] network restored — replaying pending writes');
   _walReplay();
@@ -5753,18 +5841,25 @@ function _projBlob(p) {
  * re-running is harmless.
  */
 async function _loadAndMigrateDailyRows() {
-  // Step 1 — migrate any projects that still carry embedded rows
-  const toMigrate = projectsList.filter(p => Array.isArray(p.dailyRows) && p.dailyRows.length > 0);
-  for (const p of toMigrate) {
+  // Step 1 — migrate any projects that still carry embedded rows.
+  // Injected rows are excluded: payroll created them and payroll deletes them.
+  // This function re-runs whenever a project-recovery pass restores a project,
+  // by which point p.dailyRows is usually already populated from the DB — so
+  // without the filter, one recovery after an un-approve would re-POST the
+  // deleted rows and resurrect them unlinked.
+  const toMigrate = projectsList
+    .map(p => ({ p, rows: (p.dailyRows || []).filter(r => !_drIsInjectedRow(r)) }))
+    .filter(x => x.rows.length > 0);
+  for (const { p, rows } of toMigrate) {
     try {
-      await drPostBulk(p.id, p.dailyRows);
+      await drPostBulk(p.id, rows);
       // Re-save the blob without the embedded rows
       await fetch(`${API_BASE}/data/fct_kiewit_project_${p.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
         body: JSON.stringify({ value: _projBlob(p) })
       });
-      console.log(`[migrate] moved ${p.dailyRows.length} rows for project ${p.id} to DB`);
+      console.log(`[migrate] moved ${rows.length} rows for project ${p.id} to DB`);
     } catch (err) {
       console.warn(`[migrate] project ${p.id} failed:`, err.message);
       // Keep embedded rows in memory as fallback — they are still usable
@@ -18795,9 +18890,9 @@ function closeDailyView() {
 
 /**
  * Re-fetch daily rows for a project from the server, then re-render.
- * Falls back to the legacy fct_projects blob if the DB has no rows —
- * this recovers entries that were entered before the NOT NULL save bugs
- * were fixed (they lived in the blob but never made it to the DB).
+ * Falls back to the legacy projects blob only when the project has no rows
+ * anywhere — that recovers entries typed before the NOT NULL save bugs were
+ * fixed (they lived in the blob but never made it to the DB).
  */
 async function reloadDailyRows(projId) {
   const p = getProj(projId); if (!p) return;
@@ -18810,9 +18905,19 @@ async function reloadDailyRows(projId) {
     });
     if (r.status === 401) { logout(); return; }
     if (r.ok) {
-      const { rows } = await r.json();
-      if (Array.isArray(rows) && rows.length > 0) {
+      // Only a real array counts as an answer. A malformed body throws to the
+      // outer catch, which leaves memory alone, and any other shape falls
+      // through — neither may be read as "this project has no rows".
+      const body = await r.json();
+      const rows = Array.isArray(body && body.rows) ? body.rows : null;
+      // An empty array IS an answer once this project has rows in memory: every
+      // row was removed server-side, which normally means payroll un-approved
+      // the timesheet entries that injected them. The old `rows.length > 0` gate
+      // fell through to the legacy-blob branch instead, so Reload left the
+      // deleted rows on screen — and worse, re-POSTed them and put the cost back.
+      if (rows && (rows.length > 0 || (Array.isArray(p.dailyRows) && p.dailyRows.length > 0))) {
         p.dailyRows = rows;
+        _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;
         if (dailyViewProjId === projId) renderDailyTable(projId);
         return;
       }

@@ -21,6 +21,23 @@ function parseFloatOrZero(v) {
   return isNaN(f) ? 0 : f;
 }
 
+// Rows auto-injected by a payroll approval carry a server-minted row_id of the
+// form "ts<entryId>-<stamp>-<i>-<rand>" (api/timesheet-entries.js
+// insertSplitRows) alongside the timesheet_entry_id that links them back to the
+// entry. Only that path may create them, and only un-approve / resplit may
+// remove them.
+//
+// A division tab that still holds a deleted injected row in memory — the usual
+// case is payroll un-approving in another tab — would otherwise put it straight
+// back through POST, or through the PUT upsert below. Neither carries
+// timesheet_entry_id, so the row comes back UNLINKED: no TS badge, fully
+// editable, immune to the next un-approve, and double-counted the moment the
+// entry is approved again. Manually-added rows are numeric ids
+// (Date.now() + Math.random()), so the "ts<digits>-" prefix is unambiguous.
+function isInjectedRowId(id) {
+  return /^ts\d+-/.test(String(id == null ? '' : id));
+}
+
 // The Neon HTTP driver returns DATE columns as JavaScript Date objects, not strings.
 // String(dateObj) gives locale-dependent text like "Thu Apr 24 2025 ..." which
 // <input type="date"> cannot parse.  toISOString() always gives YYYY-MM-DDTHH:mm:ss.sssZ.
@@ -215,8 +232,16 @@ module.exports = async (req, res) => {
       const toInsert = rows || (row ? [row] : []);
       if (!toInsert.length) return res.status(400).json({ error: 'row or rows required' });
 
-      await insertRows(sql, projectId, companyCode, division, toInsert);
-      return res.json({ ok: true });
+      // Payroll owns injected rows — see isInjectedRowId. Skip rather than
+      // reject so a legitimate batch (CSV import, offline WAL replay) still
+      // lands the rows it is allowed to write.
+      const clean   = toInsert.filter(r => r && !isInjectedRowId(r.id));
+      const skipped = toInsert.length - clean.length;
+      if (skipped) {
+        console.warn(`[daily-rows] refused ${skipped} payroll-injected row(s) on POST — approve/un-approve owns these`);
+      }
+      if (clean.length) await insertRows(sql, projectId, companyCode, division, clean);
+      return res.json({ ok: true, inserted: clean.length, skipped });
     }
 
     // ── PUT — upsert a single row (insert if missing, update if exists) ──────
@@ -255,6 +280,19 @@ module.exports = async (req, res) => {
             AND timesheet_entry_id IS NOT NULL
         `;
         return res.json({ ok: true, partial: true });
+      }
+
+      // No such row, and the id belongs to payroll: an un-approve deleted it
+      // while this tab still held it in memory. The upsert below would put it
+      // back WITHOUT its timesheet_entry_id, so the un-approved labor would
+      // reappear in cost tracking as an unlinked row nobody can un-approve
+      // again. Refuse, and tell the client the row is gone so it drops its copy
+      // instead of retrying the write forever.
+      if (!existingDt && isInjectedRowId(id)) {
+        return res.status(409).json({
+          error: 'This row was removed when its timesheet entry was un-approved in payroll, so it can no longer be edited here.',
+          removed: true,
+        });
       }
 
       if (projectId) {
@@ -393,3 +431,7 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Database error', detail: err.message });
   }
 };
+
+// Internal helpers exposed for unit testing only (scripts/test-injected-row-guard.js).
+// Not part of the HTTP contract — do not depend on these from other endpoints.
+module.exports._test = { isInjectedRowId };
