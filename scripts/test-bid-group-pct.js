@@ -65,12 +65,16 @@ function extractFunction(src, name) {
 function load(file) {
   const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   const body = `
+    let _proj = null;
+    function setProj(p) { _proj = p; }
+    function getProj() { return _proj; }
     function bidItemComplete(b)      { return !!b.complete; }
     function runningQtyForBidItem(b) { return parseFloat(b.running) || 0; }
     function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     ${extractFunction(src, 'bidGroupPct')}
+    ${extractFunction(src, 'bidProjectPct')}
     ${extractFunction(src, '_bidGroupPctHTML')}
-    return { bidGroupPct, _bidGroupPctHTML };
+    return { bidGroupPct, bidProjectPct, _bidGroupPctHTML, setProj };
   `;
   return new Function(body)();
 }
@@ -92,8 +96,16 @@ const TENNIS_SURFACE = [
 
 for (const file of FILES) {
   console.log(`\n[${file}]`);
-  const { bidGroupPct, _bidGroupPctHTML } = load(file);
+  const { bidGroupPct, bidProjectPct, _bidGroupPctHTML, setProj } = load(file);
   const pctOf = items => bidGroupPct(items, 'p1');
+  // bidProjectPct groups by cost_code itself, so fixtures carry one.
+  const projectPct = groups => {
+    const bidItems = [];
+    Object.entries(groups).forEach(([cc, items]) =>
+      items.forEach(b => bidItems.push(Object.assign({ cost_code: cc }, b))));
+    setProj({ id: 'p1', bidItems });
+    return bidProjectPct('p1');
+  };
 
   // ── Rule 1: every sub code complete → 100% ────────────────────────────────
   const concrete = pctOf(TENNIS_CONCRETE);
@@ -186,11 +198,48 @@ for (const file of FILES) {
   assert('the tooltip escapes into the title attribute safely',
     !/title="[^"]*"[^>]*"/.test(_bidGroupPctHTML(mixed).split('\n')[0]));
 
+  // ── The project roll-up in the summary bar ────────────────────────────────
+  const franklin = projectPct({
+    'Tennis Paving':   TENNIS_PAVING,
+    'Tennis Concrete': TENNIS_CONCRETE,
+    'Tennis Surface Coating/Line': TENNIS_SURFACE,
+  });
+  assert('project percent counts cost codes, not sub codes',
+    franklin.total === 3 && franklin.done === 2, `got ${franklin.done}/${franklin.total}`);
+  assert('  …and lands between its lowest and highest cost code',
+    franklin.pct > 99 && franklin.pct <= 99.9, `got ${franklin.pct}`);
+
+  assert('every cost code signed off → the project reads 100%',
+    projectPct({ A: TENNIS_CONCRETE, B: TENNIS_SURFACE }).pct === 100);
+  assert('one cost code short of signed off → 99.9%, not 100%',
+    projectPct({ A: TENNIS_CONCRETE, B: [{ quantity: 1, unit_cost: 1, running: 1 }] }).pct === 99.9);
+
+  // A cost code whose sub codes are all complete contributes a flat 100 up here
+  // too — rolling straight to the sub codes would re-litigate that and read
+  // lower than the green row on screen.
+  const signedOffLow = projectPct({
+    'Surface Coating': TENNIS_SURFACE,                                  // done at 57.5% of qty
+    'Sitework':        [{ quantity: 100, unit_cost: 472.55, running: 0 }],  // same bid $, untouched
+  });
+  assert('a cost code signed off below its bid qty still contributes 100 to the project',
+    near(signedOffLow.pct, 50, 0.6), `got ${signedOffLow.pct}`);
+
+  const weighted = projectPct({
+    Small: [{ quantity: 100, unit_cost: 10, running: 100 }],   //  $1,000 line, 100% by qty
+    Big:   [{ quantity: 100, unit_cost: 90, running: 0 }],     //  $9,000 line, untouched
+  });
+  assert('cost codes are weighted by bid dollars, not counted evenly',
+    near(weighted.pct, 10), `got ${weighted.pct}`);
+
+  assert('a project with no bid items has nothing to measure → null',
+    projectPct({}) === null);
+
   // ── Wiring: the badge is on the green header row, in both table modes ──────
   const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   const render = extractFunction(src, 'renderBidTable');
-  assert('renderBidTable builds the badge once per group',
-    (render.match(/_bidGroupPctHTML\(bidGroupPct\(visItems, projId\)\)/g) || []).length === 1);
+  assert('renderBidTable rolls each group up once, and reuses it for both rows',
+    (render.match(/const gPct\s+= bidGroupPct\(visItems, projId\);/g) || []).length === 1 &&
+    (render.match(/_bidGroupPctHTML\(gPct\)/g) || []).length === 1);
   assert('  …and drops it into both the editable and readonly headers',
     (render.match(/\$\{gPctHTML\}/g) || []).length === 2);
   assert('  …from the visible sub codes, so it agrees with the group subtotal',
@@ -198,6 +247,47 @@ for (const file of FILES) {
     render.indexOf('const visItems = scFilter') < render.indexOf('// ── Group header ──'));
   assert('the badge styles ship with the page',
     /\.bid-grp-pct\.gp-done/.test(src) && /\.bid-grp-pct-bar i/.test(src));
+
+  /* The group subtotal row repeats the percent in its own QTY COMPLETED cell.
+     The two layouts order their columns differently, so the cell lands in a
+     different slot in each — build the real row and count to it. A miscount
+     prints the percent under Unit Cost, where it still looks like a number. */
+  const totalCellsFor = ro => {
+    const s = render.indexOf('const totalCells = ');
+    const e = render.indexOf('const totalLabel =', s);
+    return new Function('readonly', `
+      const _dashCell = '<td class="bid-calc">—</td>';
+      const gPctCell  = '<td class="bid-calc" data-pct="1">62.5%</td>';
+      const gBidTotal = 1000, gActual = 900, gCumHrs = 10, gProj = 950, gEstHrs = 5;
+      const gDiffCls = 'a', gDiffTxt = 'b', gProjCls = 'c';
+      const fmt = n => String(n), qfmt = n => String(n);
+      ${render.slice(s, e)}
+      return totalCells;`)(ro);
+  };
+  const cellsOf = html => html.split('<td').slice(1);
+  const pctSlot = html => cellsOf(html).findIndex(c => c.startsWith(' class="bid-calc" data-pct'));
+
+  const roCells = cellsOf(totalCellsFor(true));
+  const edCells = cellsOf(totalCellsFor(false));
+  assert('total row: the percent sits under Qty Completed in the readonly table',
+    pctSlot(totalCellsFor(true)) === 4, `slot ${pctSlot(totalCellsFor(true))}`);
+  assert('total row: …and one column earlier in the editable table',
+    pctSlot(totalCellsFor(false)) === 3, `slot ${pctSlot(totalCellsFor(false))}`);
+  assert('total row: the cell count is unchanged, so nothing downstream shifts',
+    roCells.length === 13 && edCells.length === 13 + (/gEstHrs/.test(render) ? 3 : 2),
+    `${roCells.length} readonly / ${edCells.length} editable`);
+  assert('total row: Cost Total still follows the seven leading cells',
+    roCells[7].includes('1000') && edCells[7].includes('1000'));
+
+  // ── Wiring: the project roll-up in the fullscreen summary bar ─────────────
+  const footer = extractFunction(src, 'renderBidFooter');
+  assert('the summary bar computes the project percent from the cost codes',
+    /bidProjectPct\(projId\)/.test(footer));
+  assert('  …and shows it alongside Projected Profit',
+    /fmet\('Project Complete'/.test(footer) &&
+    footer.indexOf("fmet('Projected Profit'") < footer.indexOf("fmet('Project Complete'"));
+  assert('  …with the cost-code count and an explanation on hover',
+    /cost codes<\/span>/.test(footer) && /title="\$\{esc\(gpctTip\)\}"/.test(footer));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

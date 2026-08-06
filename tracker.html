@@ -7997,7 +7997,48 @@ function bidGroupPct(groupItems, projId) {
     pct:   allDone ? 100 : Math.min(raw, 99.9),
     allDone,
     done,
-    total: items.length,
+    total:  items.length,
+    weight: wAll,          // what the project roll-up weighs this cost code by
+  };
+}
+
+/* The whole project rolled up the same way, for the bid view's summary bar:
+   each cost code's percent from bidGroupPct(), weighted by that cost code's bid
+   dollars.
+
+   Rolling the groups up — rather than every sub code at once — is what keeps
+   this number honest against the green rows under it. A cost code whose sub
+   codes are all signed off contributes a flat 100 here too, even where its
+   quantities never reached the bid quantity; going straight to the sub codes
+   would quietly re-litigate that and leave the header reading lower than every
+   group on screen. done/total count cost codes, not sub codes. */
+function bidProjectPct(projId) {
+  const p = getProj(projId); if (!p) return null;
+
+  const groups = new Map();
+  (p.bidItems || []).forEach(b => {
+    const cc = b.cost_code || '';
+    if (!groups.has(cc)) groups.set(cc, []);
+    groups.get(cc).push(b);
+  });
+  const gs = [...groups.values()].map(items => bidGroupPct(items, projId)).filter(Boolean);
+  if (!gs.length) return null;
+
+  let wDone = 0, wAll = 0, done = 0;
+  gs.forEach(g => {
+    if (g.allDone) done++;
+    wDone += g.weight * g.pct;
+    wAll  += g.weight;
+  });
+
+  const allDone = done === gs.length;
+  const raw     = wAll ? wDone / wAll : 0;
+  return {
+    pct:   allDone ? 100 : Math.min(raw, 99.9),
+    allDone,
+    done,
+    total:  gs.length,
+    weight: wAll,
   };
 }
 
@@ -8235,6 +8276,20 @@ function renderBidFooter(projId, opts = {}) {
       const profitPct   = (profit !== null && contractVal) ? ` (${(profit / contractVal * 100).toFixed(1)}%)` : '';
       const profitDisp  = profitTxt + (profitPct ? `<span style="font-size:0.72em;font-weight:400;opacity:0.85">${profitPct}</span>` : '');
       const projCol     = !totalBid ? 'var(--text)' : totalProj > totalBid ? 'var(--red)' : 'var(--green)';
+      // Progress, not money — the same roll-up the green cost-code rows show,
+      // one level up. Sits behind the divider with Projected Profit because it
+      // answers the other half of "where does this job stand".
+      const gpct        = bidProjectPct(projId);
+      const gpctCol     = !gpct ? 'var(--muted)'
+        : gpct.allDone ? '#4ade80' : gpct.pct >= 0.05 ? 'var(--blue)' : 'var(--muted)';
+      const gpctTip     = !gpct ? 'No bid items to measure yet.'
+        : gpct.allDone
+          ? `Every sub code under all ${gpct.total} cost code${gpct.total !== 1 ? 's' : ''} is marked complete.`
+          : `${gpct.done} of ${gpct.total} cost code${gpct.total !== 1 ? 's' : ''} fully signed off. `
+            + `Each cost code contributes the percent on its green header row, weighted by its bid dollars — `
+            + `so the big cost codes move this number most. It reads 100% only once every sub code is marked complete.`;
+      const gpctDisp    = !gpct ? '—'
+        : `${gpct.pct.toFixed(1)}%<span style="font-size:0.72em;font-weight:400;opacity:0.85"> · ${gpct.done}/${gpct.total} cost codes</span>`;
       const fmet = (label, val, col) =>
         `<div style="display:flex;flex-direction:column;gap:1px">
            <span style="font-size:0.6rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted)">${label}</span>
@@ -8248,6 +8303,7 @@ function renderBidFooter(projId, opts = {}) {
            ${fmet('Projected Cost', (totalBid || totalProj) ? '$'+fmt(totalProj) : '—', projCol)}
            <div style="width:1px;height:30px;background:var(--border);align-self:center"></div>
            ${fmet('Projected Profit', profitDisp, profitCol)}
+           ${fmet('Project Complete', `<span title="${esc(gpctTip)}">${gpctDisp}</span>`, gpctCol)}
          </div>`;
       const sqft = parseFloat(p['sqft']) || 0;
       if (sqft > 0) {
@@ -9515,7 +9571,8 @@ function renderBidTable(projId, opts = {}) {
     // filtering the group down to two sub codes and leaving the header speaking
     // for all eight would have the two rows disagreeing with the line above them.
     const visItems = scFilter ? groupItems.filter(b => scFilter.has(b.sub_code || '')) : groupItems;
-    const gPctHTML = _bidGroupPctHTML(bidGroupPct(visItems, projId));
+    const gPct     = bidGroupPct(visItems, projId);
+    const gPctHTML = _bidGroupPctHTML(gPct);
 
     // ── Group header ──
     const hdrTr = document.createElement('tr');
@@ -9670,10 +9727,20 @@ function renderBidTable(projId, opts = {}) {
     const gDiffCls = gDiff >= 0 ? 'bid-under' : 'bid-over';
     const gDiffTxt = gBidTotal ? (gDiff >= 0 ? `$${fmt(gDiff)} under` : `$${fmt(Math.abs(gDiff))} over`) : '—';
     const gProjCls = (gProj - gBidTotal) <= 0 ? 'bid-under' : 'bid-over';
+    // The group's percent complete also lands in its own QTY COMPLETED cell, so
+    // the column reads sub code, sub code, group without the eye leaving it.
+    // The two layouts order their columns differently — the editable table puts
+    // Unit Cost after Qty Completed, the readonly one before Running Qty — so
+    // the cell sits fourth here and fifth there. Miscount and the percent prints
+    // under Unit Cost, which looks like a plausible number.
+    const _dashCell = '<td class="bid-calc">—</td>';
+    const gPctCell  = `<td class="bid-calc"${gPct && gPct.allDone ? ' style="color:#4ade80"' : ''}${
+      gPct ? ` title="${esc(gPct.allDone
+        ? `All ${gPct.total} sub code${gPct.total !== 1 ? 's' : ''} marked complete.`
+        : `${gPct.done} of ${gPct.total} sub codes marked complete; the rest count their qty completed, weighted by bid dollars.`)}"` : ''
+    }>${gPct ? gPct.pct.toFixed(1) + '%' : '—'}</td>`;
     const totalCells = `
-      <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
-      <td class="bid-calc">—</td><td class="bid-calc">—</td>
-      <td class="bid-calc">—</td><td class="bid-calc">—</td>
+      ${_dashCell.repeat(readonly ? 4 : 3)}${gPctCell}${_dashCell.repeat(readonly ? 2 : 3)}
       <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
       <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
       <td class="bid-calc">${gCumHrs ? qfmt(gCumHrs) : '—'}</td>
