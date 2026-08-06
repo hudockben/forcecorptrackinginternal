@@ -279,6 +279,51 @@ for (const file of FILES) {
   assert('total row: Cost Total still follows the seven leading cells',
     roCells[7].includes('1000') && edCells[7].includes('1000'));
 
+  /* The dashboard table declared 13 headers over 14 body cells, so every
+     column past Sub Code sat under the previous header's label and the last
+     had none — which put the group percent under "Running Unit Cost". Header,
+     body, footer and the group header's colspan all have to agree. */
+  const dashThead = src.slice(src.lastIndexOf('<thead>', src.indexOf('<tbody id="dash-btbody-')),
+                              src.indexOf('<tbody id="dash-btbody-'));
+  const roChildTpl = render.slice(render.indexOf('childTr.innerHTML = readonly'),
+                                  render.indexOf(': `<td class="bid-del"'));
+  const tdsIn = s => (s.match(/<td[ >]/g) || []).length;
+  const calcCells = name => {
+    const a = render.indexOf(`const ${name} = \``);
+    return tdsIn(render.slice(a, render.indexOf('`;', a)));
+  };
+  const roBodyCells = tdsIn(roChildTpl) + calcCells('calcCellsA') + calcCells('calcCellsB');
+  assert('dashboard: one header per readonly body cell',
+    (dashThead.match(/<th[ >]/g) || []).length === roBodyCells, `${(dashThead.match(/<th[ >]/g)||[]).length} th / ${roBodyCells} td`);
+  assert('dashboard: the Unit header sits between Sub Code and Bid Qty, matching the row',
+    /Sub Code<\/th>\s*<th[^>]*>Unit<\/th>\s*<th[^>]*>Bid Qty/.test(dashThead));
+  assert('dashboard: the group header colspan matches the real width',
+    new RegExp(`const COLS\\s+= readonly \\? ${roBodyCells} :`).test(render));
+  assert('dashboard: the footer still emits one cell per column',
+    tdsIn(src.slice(src.indexOf('const cells = `'), src.indexOf('`;', src.indexOf('const cells = `')))) === roBodyCells);
+
+  /* The printed and emailed report is built by exportBidPDF — same roll-up, or
+     the PDF disagrees with the page it was printed from. */
+  const pdf = extractFunction(src, 'exportBidPDF');
+  const pdfHeads = (() => {
+    const t = pdf.indexOf('<thead><tr>'), e = pdf.indexOf('</tr></thead>', t);
+    return [...pdf.slice(t, e).matchAll(/<th[^>]*>(.*?)<\/th>/g)].map(m => m[1]);
+  })();
+  assert('report: the cost-code header carries the percent and the done count',
+    /bidGroupPct\(gItems, projId\)/.test(pdf) && /% complete<\/span>/.test(pdf));
+  assert('report: its colspan matches the table width, so there is no phantom column',
+    new RegExp(`<tr class="group-hdr"><td colspan="${pdfHeads.length}">`).test(pdf));
+  assert('report: the group subtotal prints the percent under Qty Completed',
+    pdfHeads[4] === 'Qty Completed' &&
+    /\$\{r\(dash\)\}\$\{r\(dash\)\}\$\{r\(dash\)\}\$\{r\(gPct \? gPct\.pct\.toFixed\(1\) \+ '%' : dash\)\}/.test(pdf));
+  assert('report: the grand totals row prints the project percent in the same column',
+    /\$\{r\(dash\)\}\$\{r\(dash\)\}\$\{r\(dash\)\}\$\{r\(grandPct \? grandPct\.pct\.toFixed\(1\) \+ '%' : dash\)\}/.test(pdf));
+  assert('report: the summary bar shows Project Complete like the screen does',
+    /const grandPct\s+= bidProjectPct\(projId\);/.test(pdf) &&
+    /sqft-label">Project Complete</.test(pdf));
+  assert('report: the project percent is unfiltered, matching the grand totals beside it',
+    !/bidProjectPct\(projId, ?visGroupOrder/.test(pdf));
+
   // ── Wiring: the project roll-up in the fullscreen summary bar ─────────────
   const footer = extractFunction(src, 'renderBidFooter');
   assert('the summary bar computes the project percent from the cost codes',

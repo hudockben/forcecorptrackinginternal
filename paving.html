@@ -5245,6 +5245,7 @@ function renderDashProjectCards() {
                 <table class="bid-table">
                   <thead><tr>
                     <th>Sub Code</th>
+                    <th class="num">Unit</th>
                     <th class="num">Bid Qty</th><th class="num">Unit Cost</th>
                     <th class="num">Running Qty</th><th class="num">Qty Completed</th>
                     <th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
@@ -9414,7 +9415,10 @@ function _bidScrollParent(el) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 15 : 17;
+  // Column count per layout — the readonly dashboard table drops the delete
+  // column and the two date columns. Kept exact: an overshooting colspan on the
+  // group header forces a phantom trailing column onto every other row.
+  const COLS     = readonly ? 14 : 17;
   const p = getProj(projId); if (!p) return;
   const projDone = projIsDone(p);
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
@@ -17420,6 +17424,9 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   const grandActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
   const grandProj   = projectedCostForProject(p);
   const grandHrs    = items.reduce((s,b) => s + cumulativeHoursForBidItem(b, projId), 0);
+  // Whole-project percent complete, always across every cost code — it belongs
+  // with the grand totals above, which are explicitly unfiltered.
+  const grandPct    = bidProjectPct(projId);
 
   // Which groups appear in the report body (may be a subset)
   const visGroupOrder = selectedCostCodes
@@ -17435,7 +17442,15 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
 
   visGroupOrder.forEach(costCode => {
     const gItems = groups[costCode];
-    rowsHTML += `<tr class="group-hdr"><td colspan="17"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
+    // Same roll-up the green cost-code row shows on screen, so the printed and
+    // emailed report doesn't disagree with the page it came from. colspan is
+    // the table's exact width — overshooting it forces a phantom trailing
+    // column onto every other row of the report.
+    const gPct = bidGroupPct(gItems, projId);
+    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong>`
+      + (gPct ? ` <span style="font-weight:400;color:#166534">· ${gPct.pct.toFixed(1)}% complete</span>`
+              + `<span style="font-weight:400;color:#666"> · ${gPct.done}/${gPct.total} sub code${gPct.total !== 1 ? 's' : ''} done</span>` : '')
+      + `</td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
     gItems.forEach(b => {
@@ -17485,9 +17500,11 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     const gDiffCls = gDiff >= 0 ? 'under' : 'over';
     const gDiffTxt = gBid ? (gDiff >= 0 ? `$${fmt(gDiff)} under` : `$${fmt(Math.abs(gDiff))} over`) : dash;
     const gProjCls = (gProj - gBid) <= 0 ? 'under' : 'over';
+    // Qty Completed is the 4th of the seven cells between the label and Cost
+    // Total here (Unit, Bid Qty, Running Qty, Qty Completed, Unit Cost, …).
     rowsHTML += `<tr class="subtotal">
       <td><em>${esc(costCode) || '(No Code)'} — Total</em></td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(gPct ? gPct.pct.toFixed(1) + '%' : dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(gBid ? '$' + fmt(gBid) : dash)}
       ${r(gActual ? '$' + fmt(gActual) : dash, 'actual')}
       ${r(gHrs ? fmt(gHrs) : dash)}
@@ -17536,6 +17553,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
       <div class="sqft-metric"><div class="sqft-label">Projected Cost</div><div class="sqft-val">${(grandBid || grandProj) ? '$'+fmt(grandProj) : dash}</div></div>
       <div class="sqft-sep"></div>
       <div class="sqft-metric"><div class="sqft-label">Projected Profit</div><div class="sqft-val ${profitCls}">${profitTxt}${profitPct}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Project Complete</div><div class="sqft-val">${grandPct ? grandPct.pct.toFixed(1) + '%' : dash}${grandPct ? `<span style="font-size:0.72em;font-weight:400"> · ${grandPct.done}/${grandPct.total} cost codes</span>` : ''}</div></div>
     </div>`;
 
   const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -17585,7 +17603,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     <tbody>${rowsHTML}</tbody>
     <tfoot><tr class="totals">
       <td>${totLabel}</td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(grandPct ? grandPct.pct.toFixed(1) + '%' : dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(grandBid   ? '$' + fmt(grandBid)    : dash)}
       ${r(grandActual ? '$' + fmt(grandActual) : dash, 'actual')}
       ${r(grandHrs   ? fmt(grandHrs)          : dash)}
