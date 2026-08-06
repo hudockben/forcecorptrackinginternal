@@ -19415,7 +19415,13 @@ async function reloadDailyRows(projId) {
   if (btn) { btn.textContent = '↻ Loading…'; btn.disabled = true; }
   try {
     // 1. Try DB first (project-scoped fetch)
-    const r = await fetch(`${API_BASE}/daily-rows?projectId=${encodeURIComponent(projId)}`, {
+    // division MUST be sent: api/lib/auth.js defaults a missing one to 'turf',
+    // so paving and kiewit were asking for turf's rows and getting none back.
+    // That used to be invisible — the old `rows.length > 0` gate treated the
+    // empty answer as a miss and left memory alone — but an empty snapshot is
+    // authoritative now, so it wiped the table a second after it had loaded.
+    const r = await fetch(
+      `${API_BASE}/daily-rows?division=${DIVISION}&projectId=${encodeURIComponent(projId)}`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
     if (r.status === 401) { logout(); return; }
