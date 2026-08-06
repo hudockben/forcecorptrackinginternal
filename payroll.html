@@ -1259,7 +1259,9 @@
     .bulk-days td.edit { padding: 0.2rem 0.35rem; }
     .bulk-days td.edit input {
       width: 100%;
-      min-width: 0;
+      /* Floors so a narrow screen scrolls the table (it already has overflow:
+         auto) instead of crushing these down to unusable slivers. */
+      min-width: 68px;
       padding: 0.25rem 0.4rem;
       font-size: 0.74rem;
       background: var(--bg);
@@ -1267,6 +1269,7 @@
       border-radius: 4px;
       color: var(--text);
     }
+    .bulk-days td.edit.eq input { min-width: 118px; }
     .bulk-days td.edit input::placeholder { color: var(--muted); opacity: 0.75; }
     .bulk-days td.edit input.num { text-align: right; font-variant-numeric: tabular-nums; }
     .bulk-days td.edit input:focus { outline: none; border-color: var(--accent); }
@@ -4577,15 +4580,18 @@
     // person did. Stored on the group (not the entry) so a repaint — picking a
     // cost code re-renders the card — puts every value back where it was.
     function _bulkRowCell(g, entryId) {
+      if (!g.perRow) g.perRow = {};
       const key = String(entryId);
-      return g.perRow[key] || (g.perRow[key] = { equipment: '', equip_hours: '' });
+      // _autoHours marks hours this modal filled in rather than the supervisor:
+      // they belong to the machine that triggered them and go when it goes.
+      return g.perRow[key] || (g.perRow[key] = { equipment: '', equip_hours: '', _autoHours: false });
     }
 
     // What actually gets sent for one day: its own override if set, else the
     // group's. Equipment hours only mean anything with a machine attached, so
     // they collapse to 0 when no equipment resolves.
     function bulkRowEffective(g, e) {
-      const cell = g.perRow[String(e.id)] || {};
+      const cell = (g.perRow || {})[String(e.id)] || {};
       const equipment = String(cell.equipment || '').trim() ||
                         String(g.template.equipment || '').trim();
       const hoursRaw  = String(cell.equip_hours || '').trim() ||
@@ -4596,7 +4602,19 @@
     function bulkRowSet(idx, entryId, field, value) {
       const g = bulkGroups[idx];
       if (!g) return;
-      _bulkRowCell(g, entryId)[field] = value;
+      const cell = _bulkRowCell(g, entryId);
+      cell[field] = value;
+      // Clearing the machine has to clear the hours that were filled in for it.
+      // Otherwise the row falls back to the crew's equipment while keeping
+      // hours nobody typed, and bills that machine for a day it never worked.
+      if (field === 'equipment' && !String(value).trim() && cell._autoHours) {
+        cell.equip_hours = '';
+        cell._autoHours  = false;
+        const el = document.getElementById(`blkrow_eh_${idx}_${entryId}`);
+        if (el) el.value = '';
+      }
+      // Touched by hand — the number is the supervisor's from here on.
+      if (field === 'equip_hours') cell._autoHours = false;
       updateBulkRunBtn();
     }
 
@@ -4614,6 +4632,7 @@
       const e = g.entries.find(x => String(x.id) === String(entryId));
       if (!e || bulkR2(e.computed_hours) <= 0) return;   // travel-only day: nothing to copy
       cell.equip_hours = String(bulkR2(e.computed_hours));
+      cell._autoHours  = true;
       const el = document.getElementById(`blkrow_eh_${idx}_${entryId}`);
       if (el) el.value = cell.equip_hours;
       updateBulkRunBtn();
@@ -4668,12 +4687,15 @@
         const w = bulkR2(e.computed_hours), t = bulkR2(e.travel_hours);
         let extra = '';
         if (editable) {
-          const cell = g.perRow[String(e.id)] || {};
-          const eid  = escapeHtml(String(e.id));
+          const cell = (g.perRow || {})[String(e.id)] || {};
+          // escapeJsAttr, not escapeHtml: this lands inside a single-quoted JS
+          // string within an HTML attribute, and escapeHtml's &#39; would be
+          // decoded back into a quote before the JS is parsed.
+          const eid  = escapeJsAttr(String(e.id));
           // Placeholders show what the row inherits from the group, so a blank
           // cell reads as "same as everyone" rather than "nothing".
           extra =
-            `<td class="edit"><input type="text" list="blk_equipment_${idx}" ` +
+            `<td class="edit eq"><input type="text" list="blk_equipment_${idx}" ` +
               `value="${escapeHtml(cell.equipment || '')}" ` +
               `placeholder="${escapeHtml(groupEq || '— none —')}" autocomplete="off" ` +
               `oninput="bulkRowSet(${idx},'${eid}','equipment',this.value)" ` +

@@ -54,6 +54,7 @@ const sandbox = {
   bulkQuarryRate:     () => 0,
   bulkR2:      n => Math.round((Number(n) || 0) * 100) / 100,
   escapeHtml:  s => String(s),
+  escapeJsAttr: s => String(s),
   prettyDate:  s => s,
   prettyDiv:   s => s,
   num2:        n => Number(n).toFixed(2),
@@ -146,8 +147,40 @@ assert('labor hours still sum to work + travel',
     body.split.reduce((s, r) => s + r.labor_hours, 0) === 2);
 }
 
+// ── Changing your mind ──
+// The auto-filled hours belong to the machine that triggered them. Clearing the
+// machine while the crew has one of its own would otherwise leave the row
+// inheriting the crew machine with hours nobody typed — cost on a job for a day
+// that machine never worked.
+console.log('\n[clearing an override]');
+{
+  const solo = entry('pat', 6, 8);
+  const { groups: g3 } = sandbox.buildBulkGroups([solo]);
+  const gc = g3[0];
+  sandbox.bulkGroups = g3;
+  gc.template.cost_code = 'CC1';
+  gc.template.equipment = 'Skid Steer';      // crew machine, no crew hours
+  sandbox.bulkRowSet(0, solo.id, 'equipment', '320 Excavator');
+  sandbox.bulkRowEquipCommit(0, solo.id);
+  assert('picking a machine fills the hours', gc.perRow[solo.id].equip_hours === '8');
+  sandbox.bulkRowSet(0, solo.id, 'equipment', '');
+  assert('clearing the machine clears the hours it filled', gc.perRow[solo.id].equip_hours === '');
+  const back = sandbox.buildBulkBody(gc, solo);
+  assert('the row falls back to the crew machine with no hours',
+    back.split[0].equipment === 'Skid Steer' && back.split[0].equip_hours === 0);
+
+  // Hours typed by hand are the supervisor's and must survive the same edit.
+  sandbox.bulkRowSet(0, solo.id, 'equipment', 'Roller');
+  sandbox.bulkRowSet(0, solo.id, 'equip_hours', '3');
+  sandbox.bulkRowSet(0, solo.id, 'equipment', '');
+  assert('hand-typed hours are not cleared', gc.perRow[solo.id].equip_hours === '3');
+}
+sandbox.bulkGroups = groups;
+
 // ── Guard rails ──
 console.log('\n[guard rails]');
+assert('a group with no overrides at all does not throw',
+  sandbox.bulkRowEffective({ template: {}, entries: [] }, jamey3).equipment === '');
 g.template.equipment   = '';
 g.template.equip_hours = '';
 sandbox.bulkRowSet(0, 'zach-3', 'equip_hours', '30');
