@@ -250,7 +250,11 @@ function structuralChecks(file) {
   assert('reload no longer gates on rows.length > 0',
     !/const \{ rows \} = await r\.json\(\);\s*\n\s*if \(Array\.isArray\(rows\) && rows\.length > 0\)/.test(src));
   assert('reload accepts an empty snapshot when memory has rows',
-    /if \(rows\.length > 0 \|\| \(Array\.isArray\(p\.dailyRows\) && p\.dailyRows\.length > 0\)\)/.test(src));
+    /if \(rows && \(rows\.length > 0 \|\| \(Array\.isArray\(p\.dailyRows\) && p\.dailyRows\.length > 0\)\)\)/.test(src));
+  assert('reload only treats a real array as an answer',
+    /const rows = Array\.isArray\(body && body\.rows\) \? body\.rows : null;/.test(src));
+  assert('focus refresh survives a WAL replay failure',
+    /Promise\.resolve\(_walReplay\(\)\)\.catch\(\(\) => \{\}\)\.then\(_drRefreshOnFocus\)/.test(src));
   assert('daily view refreshes when the tab regains focus',
     /function _drRefreshOnFocus\(\)/.test(src) && /window\.addEventListener\('focus', _drRefreshOnFocus\)/.test(src));
 }
@@ -302,8 +306,10 @@ async function behaviouralChecks(file) {
       drPostBulk: (id, rows) => { calls.postBulk.push({ id, rows }); },
       apiGet: () => { calls.legacyReads++; return Promise.resolve(scenario.legacyBlob || null); },
       fetch: () => Promise.resolve({
-        ok: true, status: 200,
-        json: () => Promise.resolve({ rows: scenario.serverRows }),
+        ok: scenario.httpOk !== false, status: scenario.httpOk === false ? 500 : 200,
+        json: () => scenario.badBody
+          ? Promise.reject(new SyntaxError('Unexpected token < in JSON'))
+          : Promise.resolve(scenario.bodyOverride || { rows: scenario.serverRows }),
       }),
       document: { getElementById: () => null },
     };
@@ -332,6 +338,25 @@ async function behaviouralChecks(file) {
     const { proj } = await run({ memoryRows: [manual], serverRows: [injected] });
     assert('non-empty snapshot replaces memory',
       proj.dailyRows.length === 1 && proj.dailyRows[0].id === injected.id);
+  }
+
+  // Clearing the table is only ever allowed on a real answer. A body that
+  // cannot be parsed, one served with the wrong shape, and a failed request all
+  // have to leave what is on screen alone — silently emptying a supervisor's
+  // cost tracking because a proxy returned an HTML error page would be worse
+  // than the bug this whole change fixes.
+  {
+    const { proj } = await run({ memoryRows: [injected, manual], serverRows: [], badBody: true });
+    assert('unparseable body leaves the rows alone', proj.dailyRows.length === 2);
+  }
+  {
+    const { proj } = await run({ memoryRows: [injected, manual], serverRows: [],
+                                 bodyOverride: { error: 'nope' } });
+    assert('unexpected body shape leaves the rows alone', proj.dailyRows.length === 2);
+  }
+  {
+    const { proj } = await run({ memoryRows: [injected, manual], serverRows: [], httpOk: false });
+    assert('failed request leaves the rows alone', proj.dailyRows.length === 2);
   }
 
   // The legacy-blob recovery still works for its real case: nothing in the DB

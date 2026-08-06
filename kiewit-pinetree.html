@@ -3598,7 +3598,10 @@ document.addEventListener('visibilitychange', () => {
   // Replay first: reloadDailyRows treats the server snapshot as the truth for
   // every row without a queued write, so landing those writes first keeps them
   // from looking stale.
-  if (document.visibilityState === 'visible') Promise.resolve(_walReplay()).then(_drRefreshOnFocus);
+  // .catch so a replay failure neither goes unhandled nor blocks the refresh.
+  if (document.visibilityState === 'visible') {
+    Promise.resolve(_walReplay()).catch(() => {}).then(_drRefreshOnFocus);
+  }
 });
 window.addEventListener('focus', _drRefreshOnFocus);
 window.addEventListener('online', () => {
@@ -18728,14 +18731,17 @@ async function reloadDailyRows(projId) {
     });
     if (r.status === 401) { logout(); return; }
     if (r.ok) {
-      const rows = await r.json().then(j => Array.isArray(j.rows) ? j.rows : []).catch(() => []);
-      // An empty result is an ANSWER, not a miss, once this project has rows in
-      // memory: every row was removed server-side, which normally means payroll
-      // un-approved the timesheet entries that injected them. The old
-      // `rows.length > 0` gate fell through to the legacy-blob branch instead,
-      // so Reload left the deleted rows on screen — and worse, re-POSTed them
-      // from the blob and put the cost back.
-      if (rows.length > 0 || (Array.isArray(p.dailyRows) && p.dailyRows.length > 0)) {
+      // Only a real array counts as an answer. A malformed body throws to the
+      // outer catch, which leaves memory alone, and any other shape falls
+      // through — neither may be read as "this project has no rows".
+      const body = await r.json();
+      const rows = Array.isArray(body && body.rows) ? body.rows : null;
+      // An empty array IS an answer once this project has rows in memory: every
+      // row was removed server-side, which normally means payroll un-approved
+      // the timesheet entries that injected them. The old `rows.length > 0` gate
+      // fell through to the legacy-blob branch instead, so Reload left the
+      // deleted rows on screen — and worse, re-POSTed them and put the cost back.
+      if (rows && (rows.length > 0 || (Array.isArray(p.dailyRows) && p.dailyRows.length > 0))) {
         p.dailyRows = rows;
         _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;
         if (dailyViewProjId === projId) renderDailyTable(projId);
