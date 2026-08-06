@@ -111,6 +111,25 @@ function rosterTests() {
     matchRosterEmployee([{ name: 'Ana Maria Rio' }], 'rioana').name === 'Ana Maria Rio');
   assert('a one-word roster entry is not mangled',
     matchRosterEmployee([{ name: 'Mowery' }], 'mowery').name === 'Mowery');
+
+  // A login that shortens the first name — the reported case, "shuffstallmatt"
+  // against a roster that spells him "Matthew Shuffstall".
+  const SHUFF = [{ name: 'Matthew Shuffstall', job_class: 'Operator', non_prevailing_rate: 30 }];
+  assert('surname + shortened first name  ("shuffstallmatt")',
+    matchRosterEmployee(SHUFF, 'shuffstallmatt').name === 'Matthew Shuffstall');
+  assert('shortened first name + surname  ("mattshuffstall")',
+    matchRosterEmployee(SHUFF, 'mattshuffstall').name === 'Matthew Shuffstall');
+  assert('the full spelling still matches',
+    matchRosterEmployee(SHUFF, 'shuffstallmatthew').name === 'Matthew Shuffstall');
+  // The shortening has to be a real prefix of the first name, not any leftover.
+  assert('a leftover that is not the first name is refused',
+    matchRosterEmployee(SHUFF, 'shuffstallbob') === null);
+  assert('a one-letter leftover does not reach the prefix rule',
+    matchRosterEmployee([{ name: 'Matthew Shuffstall' }, { name: 'Marcus Shuffstall' }], 'shuffstallm') === null);
+  assert('two Shuffstalls with the same short name are refused',
+    matchRosterEmployee([{ name: 'Matthew Shuffstall' }, { name: 'Matteo Shuffstall' }], 'shuffstallmatt') === null);
+  assert('a shortened name still loses to an exact match elsewhere',
+    matchRosterEmployee([{ name: 'Matthew Shuffstall' }, { name: 'Matt Shuffstall' }], 'shuffstallmatt').name === 'Matt Shuffstall');
 }
 
 // ── 2) The injected row's money fields ──────────────────────────────────────
@@ -327,6 +346,12 @@ async function refreshTests() {
     assert('an unmatched login is left alone entirely', updates.length === 0);
     assert('and is reported so the roster gap is visible',
       res.body.unresolved.length === 1 && res.body.unresolved[0].username === 'ghostuser');
+    // "No match" is two different problems — absent from the list, or in it
+    // under another spelling — and the report has to let you tell them apart.
+    assert('the report names the division that was searched',
+      res.body.unresolved[0].division === 'turf');
+    assert('and hands back that list so the spelling can be compared',
+      Array.isArray(res.body.rosters.turf) && res.body.rosters.turf.includes('Zach Brewer'));
   }
   {
     const { updates } = await run([row({ equipment: 'Mystery Machine', equip_unit_cost: 55 })]);

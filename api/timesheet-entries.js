@@ -320,7 +320,27 @@ function matchRosterEmployee(blobEmps, employeeName) {
     return (w[0][0] + w[w.length - 1]) === login
         || (w[w.length - 1] + w[0][0]) === login;
   });
-  return only(initial);
+  if (only(initial)) return initial[0];
+
+  // 5. surname exact, first name shortened — "shuffstallmatt" against a roster
+  // that spells him "Matthew Shuffstall". The surname has to match in full and
+  // the leftover has to be the start of the first name, at least two letters of
+  // it, so this cannot reach past the initial-only case above.
+  const shortened = cand.filter(e => {
+    const w = wordsOf(e);
+    if (w.length < 2 || !w[0]) return false;
+    const first = w[0], last = w[w.length - 1];
+    if (login.startsWith(last)) {
+      const rest = login.slice(last.length);
+      return rest.length >= 2 && first.startsWith(rest);
+    }
+    if (login.endsWith(last)) {
+      const rest = login.slice(0, login.length - last.length);
+      return rest.length >= 2 && first.startsWith(rest);
+    }
+    return false;
+  });
+  return only(shortened);
 }
 
 /**
@@ -452,6 +472,12 @@ async function buildCostResolver(sql, companyCode, division, equipmentNames) {
 
   return {
     employeeFor: username => matchRosterEmployee(blobEmps, username),
+    // The names this division's list actually holds, so a "no match" can say
+    // whether the person is absent or just spelled differently.
+    rosterNames: () => blobEmps
+      .map(e => (e && typeof e === 'object' ? String(e.name || '').trim() : ''))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b)),
     equipCostFor: name => (name ? (eqCostByName.get(_eqKey(name)) || 0) : 0),
     rateFor: (emp, isPrevailingWage) => (emp
       ? (Number(isPrevailingWage ? emp.prevailing_rate : emp.non_prevailing_rate) || 0)
@@ -1662,11 +1688,17 @@ module.exports = async (req, res) => {
       }
 
       let updated = 0;
-      const unresolved = new Map();   // login → how many rows it left behind
+      const unresolved = new Map();   // login → { rows, division }
+      // Which roster each division actually searched. "No match" means one of
+      // two very different things — the person is missing from that division's
+      // list, or they are in it under a name the login does not resolve to —
+      // and the answer is useless without seeing the names.
+      const rosters = {};
       for (const [division, rows] of byDivision) {
         const resolver = await buildCostResolver(
           sql, companyCode, division, rows.map(r => r.equipment),
         );
+        rosters[division] = resolver.rosterNames();
         const pwFlags = await prevailingWageByJob(
           sql, companyCode, division, rows.map(r => r.job_id),
         );
@@ -1674,7 +1706,9 @@ module.exports = async (req, res) => {
         for (const r of rows) {
           const emp = resolver.employeeFor(r.username);
           if (!emp) {
-            unresolved.set(r.username, (unresolved.get(r.username) || 0) + 1);
+            const seen = unresolved.get(r.username) || { rows: 0, division };
+            seen.rows += 1;
+            unresolved.set(r.username, seen);
             continue;
           }
           const rate      = resolver.rateFor(emp, !!pwFlags.get(String(r.job_id)));
@@ -1717,8 +1751,9 @@ module.exports = async (req, res) => {
         updated,
         hitLimit: scanRows.length === SCAN_LIMIT,
         unresolved: [...unresolved.entries()]
-          .map(([username, rows]) => ({ username, rows }))
+          .map(([username, v]) => ({ username, rows: v.rows, division: v.division }))
           .sort((a, b) => b.rows - a.rows),
+        rosters,
       });
     }
 

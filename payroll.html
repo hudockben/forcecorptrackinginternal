@@ -3276,10 +3276,21 @@
         // Name who could not be resolved — that is a roster gap the supervisor
         // can actually fix, not a failure of the refresh.
         if (j.unresolved && j.unresolved.length) {
-          bits.push(
-            `No match on Manage Lists for ${j.unresolved.map(u => `${u.username} (${u.rows})`).join(', ')} — ` +
-            `add them to the employee list with a rate, then run this again.`
-          );
+          // Naming the division and showing what its list holds turns a dead
+          // end into something actionable: either the person is genuinely
+          // missing, or they are right there under a different spelling.
+          for (const u of j.unresolved) {
+            const names = (j.rosters && j.rosters[u.division]) || [];
+            const shown = names.slice(0, 12).join(', ');
+            const more  = names.length > 12 ? `, +${names.length - 12} more` : '';
+            bits.push(
+              `No match for ${u.username} (${u.rows} row${u.rows === 1 ? '' : 's'}) in ` +
+              `${prettyDiv(u.division)}'s employee list` +
+              (names.length
+                ? `, which holds: ${shown}${more}. Either add them, or check the spelling matches the login.`
+                : ` — that list is empty. Add them with a rate, then run this again.`)
+            );
+          }
         }
         if (j.hitLimit) bits.push('Stopped at the 1000-row cap — narrow the date range and run it again.');
         note.textContent = bits.join(' ');
