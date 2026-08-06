@@ -75,6 +75,7 @@ vm.runInContext([
   'bulkRowEquipCommit(idx, entryId, itemIdx) {',
   'bulkRowLeg(idx, entryId, itemIdx, value) {',
   'bulkTravelCostCode(idx, value) {',
+  'bulkCostCode(idx, value) {',
   'bulkBadEquipHours() {',
   'bulkDroppedMachines() {',
   'bulkDaysTable(g, idx) {',
@@ -417,6 +418,39 @@ console.log('\n[travel books to its own code]');
     truck.is_travel && truck.cost_code === 'Mobilization' && truck.sub_code === 'Travel');
   assert('the roller stays on the work row at the work code',
     withRig.split.some(r => r.equipment === '224 Roller' && !r.is_travel && r.cost_code === 'Silt Sock'));
+}
+sandbox.bulkGroups = groups;
+
+// ── A cost-code change must not orphan the travel sub code ──
+// While the travel leg has no cost code of its own it borrows the work one, so
+// its sub code came from a list that changes when the work cost code changes.
+// Leaving it put paired a sub code from the old cost code with the new one.
+console.log('\n[stale travel sub code]');
+{
+  const day = entry('sam', 3, 7.5, 2);
+  const { groups: g9 } = sandbox.buildBulkGroups([day]);
+  const gs = g9[0];
+  sandbox.bulkGroups = g9;
+
+  sandbox.bulkCostCode(0, 'Silt Sock');
+  gs.template.sub_code        = 'Silt Sock 12inch';
+  gs.template.travel_sub_code = 'Silt Sock 12inch';   // picked off the inherited list
+  sandbox.bulkCostCode(0, 'Mobilization');
+  assert('the work sub code is cleared',            gs.template.sub_code === '');
+  assert('an inherited travel sub code is cleared', gs.template.travel_sub_code === '');
+
+  // A travel leg with its own cost code is independent and must survive.
+  sandbox.bulkTravelCostCode(0, 'Mobilization');
+  gs.template.travel_sub_code = 'Travel';
+  sandbox.bulkCostCode(0, 'Silt Sock');
+  assert('a travel leg with its own code keeps its sub code',
+    gs.template.travel_sub_code === 'Travel' && gs.template.travel_cost_code === 'Mobilization');
+  assert('and it still books there',
+    sandbox.buildBulkBody(gs, day).split[1].sub_code === 'Travel');
+
+  // Picking a travel cost code clears its own sub code, same as the work pair.
+  sandbox.bulkTravelCostCode(0, 'Load Out');
+  assert('changing the travel cost code clears its sub code', gs.template.travel_sub_code === '');
 }
 sandbox.bulkGroups = groups;
 

@@ -4924,6 +4924,11 @@
       if (!g) return;
       g.template.cost_code = value;
       g.template.sub_code  = '';   // sub codes are scoped to a cost code
+      // While the travel leg has no cost code of its own it borrows this one,
+      // so its sub code was picked from the list that just changed underneath
+      // it. Leaving it put paired a sub code from the old cost code with the
+      // new one. A travel leg with its own cost code is independent — leave it.
+      if (!String(g.template.travel_cost_code || '').trim()) g.template.travel_sub_code = '';
       renderBulkGroups();
       updateBulkRunBtn();
     }
