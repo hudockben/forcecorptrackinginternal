@@ -420,6 +420,51 @@ console.log('\n[travel books to its own code]');
 }
 sandbox.bulkGroups = groups;
 
+// ── The single-day split tally reconciles travel, not just the total ──
+// The Travel tick only flags a row; it does not move it to a travel cost code.
+// So ticking it on the wrong row books those hours to the wrong task — and the
+// old tally, which only checked the total, called that "✓ balanced".
+console.log('\n[split tally: travel reconciliation]');
+{
+  const tallyFn = grab('renderSplitTally() {');
+  function tally(rows, entry) {
+    const store = {};
+    const stub = () => ({ textContent: '', style: {}, classList: { add() {}, remove() {} } });
+    const sb = { console, splitRows: rows, splitEntry: entry,
+                 document: { getElementById: id => (store[id] = store[id] || stub()) } };
+    vm.createContext(sb);
+    vm.runInContext(tallyFn, sb);
+    sb.renderSplitTally();
+    return store;
+  }
+  const E = { computed_hours: 7.5, travel_hours: 2 };
+  const drive = ov => Object.assign({ cost_code: 'Mobilization', sub_code: 'Travel', labor_hours: 2 }, ov);
+  const work  = ov => Object.assign({ cost_code: 'Silt Sock', sub_code: '12inch', labor_hours: 7.5 }, ov);
+
+  const wrong = tally([drive({ is_travel: false }), work({ is_travel: true })], E);
+  assert('ticking Travel on the work row is no longer "balanced"',
+    !/balanced/.test(wrong.splitTallyStatus.textContent));
+  assert('and the message says which way it is off',
+    /7\.50 h ticked Travel, entry says 2\.00/.test(wrong.splitTallyStatus.textContent));
+
+  const right = tally([drive({ is_travel: true }), work({ is_travel: false })], E);
+  assert('ticking it on the drive row balances', /balanced/.test(right.splitTallyStatus.textContent));
+
+  const none = tally([work({ labor_hours: 9.5, is_travel: false })], E);
+  assert('an entry with travel and nothing ticked is flagged',
+    /2\.00 h of travel on this entry, 0\.00 ticked/.test(none.splitTallyStatus.textContent));
+
+  const short = tally([work({ labor_hours: 5, is_travel: false })], E);
+  assert('an hours mismatch still wins over the travel message',
+    short.splitTallyStatus.textContent === 'under-allocated');
+
+  const noTravel = tally([{ cost_code: 'A', sub_code: 'B', labor_hours: 8, is_travel: false }],
+                         { computed_hours: 8, travel_hours: 0 });
+  assert('a day with no travel hides the readout and balances',
+    noTravel.splitTravelTally.style.display === 'none' &&
+    /balanced/.test(noTravel.splitTallyStatus.textContent));
+}
+
 // ── The cell's layout ──
 // Everything in a machine row is a flex item. width:100% on one makes its basis
 // the whole cell, which shoves the later controls past the edge and puts a
