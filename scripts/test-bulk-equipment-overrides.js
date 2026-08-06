@@ -73,6 +73,7 @@ vm.runInContext([
   'bulkRowEffective(g, e) {',
   'bulkRowSet(idx, entryId, itemIdx, field, value) {',
   'bulkRowEquipCommit(idx, entryId, itemIdx) {',
+  'bulkRowLeg(idx, entryId, itemIdx, value) {',
   'bulkBadEquipHours() {',
   'bulkDaysTable(g, idx) {',
   'buildBulkBody(g, e) {',
@@ -249,6 +250,78 @@ console.log('\n[two machines in one day]');
   assert('bad hours on any machine are caught', sandbox.bulkBadEquipHours().length === 1);
   sandbox.bulkRowSet(0, day.id, 0, 'equip_hours', '2');
 }
+
+// ── Which leg of the day a machine ran in ──
+// A pickup driven to site and back belongs to the travel hours, not the work
+// hours. Marking it travel puts it on the travel row and takes its hours from
+// the drive, so the day posts two rows rather than three.
+console.log('\n[work leg vs travel leg]');
+{
+  const day = entry('cipollini', 9, 9.5, 2);
+  const { groups: g5 } = sandbox.buildBulkGroups([day]);
+  const gl = g5[0];
+  sandbox.bulkGroups = g5;
+  gl.template.cost_code = 'Paving';
+
+  sandbox.bulkRowSet(0, day.id, 0, 'equipment', '224 Roller');
+  sandbox.bulkRowEquipCommit(0, day.id, 0);
+  sandbox.bulkRowSet(0, day.id, 0, 'equip_hours', '7.5');
+  sandbox.bulkRowAddMachine(0, day.id);
+  sandbox.bulkRowSet(0, day.id, 1, 'equipment', 'Pickup Truck');
+  sandbox.bulkRowLeg(0, day.id, 1, 'travel');
+  assert('a travel machine takes its hours from the drive',
+    gl.perRow[day.id].items[1].equip_hours === '2');
+
+  const body = sandbox.buildBulkBody(gl, day);
+  const workRow   = body.split.find(r => !r.is_travel);
+  const travelRow = body.split.find(r => r.is_travel);
+  assert('the day posts two rows, not three',        body.split.length === 2);
+  assert('the roller stays on the work row',         workRow.equipment === '224 Roller' && workRow.equip_hours === 7.5);
+  assert('the truck rides on the travel row',        travelRow.equipment === 'Pickup Truck' && travelRow.equip_hours === 2);
+  assert('the travel row keeps its own labor hours', travelRow.labor_hours === 2);
+  assert('the labor total is still work + travel',
+    body.split.reduce((s, r) => s + r.labor_hours, 0) === 11.5);
+
+  // Switching back re-guesses from the work leg rather than keeping the drive's.
+  sandbox.bulkRowSet(0, day.id, 1, 'equip_hours', '');
+  sandbox.bulkRowLeg(0, day.id, 1, 'work');
+  assert('switching back to work re-guesses from the work hours',
+    gl.perRow[day.id].items[1].equip_hours === '' || gl.perRow[day.id].items[1].equip_hours === '9.5');
+}
+sandbox.bulkGroups = groups;
+
+// ── A half-filled slot must not summon the crew's machine ──
+// Hours typed into a slot before the machine is picked is an EMPTY slot. Reading
+// it as "the crew's machine, for these hours" put a shared machine onto a day
+// that had already named its own — cost for equipment that was never there.
+console.log('\n[half-filled slot]');
+{
+  const day = entry('dana', 8, 8);
+  const { groups: g6 } = sandbox.buildBulkGroups([day]);
+  const gh = g6[0];
+  sandbox.bulkGroups = g6;
+  gh.template.cost_code = 'CC1';
+  gh.template.equipment = 'Skid Steer';
+  gh.template.equip_hours = '6';
+
+  sandbox.bulkRowSet(0, day.id, 0, 'equipment', '224 Roller');
+  sandbox.bulkRowSet(0, day.id, 0, 'equip_hours', '7.5');
+  sandbox.bulkRowAddMachine(0, day.id);
+  sandbox.bulkRowSet(0, day.id, 1, 'equip_hours', '2');   // hours, no machine yet
+
+  const machines = sandbox.bulkRowEffective(gh, day);
+  assert('only the machine this day named resolves',
+    machines.length === 1 && machines[0].equipment === '224 Roller');
+  assert("the crew's machine is not billed to this day",
+    !sandbox.buildBulkBody(gh, day).split.some(r => r.equipment === 'Skid Steer'));
+
+  // With nothing named, the crew's machine still applies at the day's hours.
+  gh.perRow[day.id] = { items: [{ equipment: '', equip_hours: '3' }] };
+  const inherited = sandbox.bulkRowEffective(gh, day);
+  assert('a day naming nothing still inherits the crew machine',
+    inherited.length === 1 && inherited[0].equipment === 'Skid Steer' && inherited[0].equip_hours === 3);
+}
+sandbox.bulkGroups = groups;
 sandbox.bulkGroups = groups;
 
 // ── The rendered table ──
