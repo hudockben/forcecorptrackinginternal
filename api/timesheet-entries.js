@@ -456,6 +456,32 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   }
 }
 
+// Every daily_tracking row this entry ever injected: the ones still carrying
+// timesheet_entry_id, plus any that lost it.
+//
+// A division tab open during an un-approve still holds the deleted rows in
+// memory, and used to be able to put one back through the plain row API — which
+// carries no timesheet_entry_id, so the row returned unlinked and the next
+// un-approve could no longer see it. api/daily-rows.js now refuses those
+// writes, but rows resurrected before that guard existed are still out there.
+// The row_id encodes the entry id either way ("ts<entryId>-…" from
+// insertSplitRows), so matching on both makes removal self-healing.
+// The trailing dash keeps entry 42 from matching entry 421's rows.
+async function removeSplitRows(sql, companyCode, entryId) {
+  const like = `ts${entryId}-%`;
+  const [{ cnt }] = await sql`
+    SELECT COUNT(*)::int AS cnt FROM daily_tracking
+    WHERE company_code = ${companyCode}
+      AND (timesheet_entry_id = ${entryId} OR row_id LIKE ${like})
+  `;
+  await sql`
+    DELETE FROM daily_tracking
+    WHERE company_code = ${companyCode}
+      AND (timesheet_entry_id = ${entryId} OR row_id LIKE ${like})
+  `;
+  return cnt;
+}
+
 // ── Quarry split helpers (timesheet → fct_quarry_daily/crushing blob) ──────
 // Quarry's cost tracking is a JSON blob per activity, not a table. So the
 // injection is a read-modify-write on the app_data blob (append a row, write
@@ -1278,12 +1304,8 @@ module.exports = async (req, res) => {
           // linger as phantom cost in the division tab (invisible to un-approve,
           // undeletable from the tab) and a retried approve can't double-inject.
           if (splitRows) {
-            try {
-              await sql`
-                DELETE FROM daily_tracking
-                WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
-              `;
-            } catch (cleanupErr) { console.error('[timesheet-entries] split rollback cleanup failed:', cleanupErr.message); }
+            try { await removeSplitRows(sql, companyCode, id); }
+            catch (cleanupErr) { console.error('[timesheet-entries] split rollback cleanup failed:', cleanupErr.message); }
           }
           // Quarry/trucking write the blob before mirroring; if the mirror sync
           // threw, scrub any half-written blob row so it can't linger as a
@@ -1408,12 +1430,9 @@ module.exports = async (req, res) => {
       // Delete the prior injected rows for this entry, then insert the new
       // split. We don't wrap this in a transaction (neon-serverless has
       // limited multi-statement transaction support) — the delete is safe
-      // to retry because it's keyed on timesheet_entry_id, and the insert
-      // is idempotent on row_id.
-      await sql`
-        DELETE FROM daily_tracking
-        WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
-      `;
+      // to retry because it's keyed on the entry, and the insert is
+      // idempotent on row_id.
+      await removeSplitRows(sql, companyCode, id);
       try {
         await insertSplitRows(
           sql, splitRows, existing, existing.division, companyCode, existing.username,
@@ -1455,15 +1474,8 @@ module.exports = async (req, res) => {
         return res.status(409).json({ error: 'Only approved entries can be un-approved' });
       }
 
-      // Count first so the audit log captures it.
-      const [{ cnt }] = await sql`
-        SELECT COUNT(*)::int AS cnt FROM daily_tracking
-        WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
-      `;
-      await sql`
-        DELETE FROM daily_tracking
-        WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
-      `;
+      // Counts as it deletes, so the audit log captures how much cost went away.
+      const cnt = await removeSplitRows(sql, companyCode, id);
       // Quarry stores its injected rows in the fct_quarry_* blobs, not
       // daily_tracking — clear those too so the Daily/Crushing tab reflects
       // the un-approval.
@@ -1644,17 +1656,12 @@ module.exports = async (req, res) => {
       // SET NULL — relying on that would leave the cost rows alive as
       // "manual" rows, which is invisible and surprising. Explicit DELETE
       // keeps payroll deletion symmetric with the approval/un-approval flow.
-      let removedSplitRows = 0;
+      //
+      // The sweep runs whatever the status: a row that lost its link (see
+      // removeSplitRows) can outlive an un-approve, and deleting the entry is
+      // the last chance to take it with them.
+      let removedSplitRows = await removeSplitRows(sql, companyCode, id);
       if (existing.status === 'approved') {
-        const [{ cnt }] = await sql`
-          SELECT COUNT(*)::int AS cnt FROM daily_tracking
-          WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
-        `;
-        removedSplitRows = cnt;
-        await sql`
-          DELETE FROM daily_tracking
-          WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
-        `;
         if (existing.division === 'quarry') {
           removedSplitRows += await removeQuarryRows(sql, companyCode, existing);
         }
@@ -1682,6 +1689,7 @@ module.exports = async (req, res) => {
 // Internal helpers exposed for unit testing only (scripts/test-trucking-injection.js).
 // Not part of the HTTP contract — do not depend on these from other endpoints.
 module.exports._test = {
+  removeSplitRows,
   truckingRowIdPrefix,
   matchTruckingDriver,
   insertTruckingRow,
