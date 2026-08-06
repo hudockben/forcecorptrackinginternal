@@ -130,6 +130,25 @@ function rosterTests() {
     matchRosterEmployee([{ name: 'Matthew Shuffstall' }, { name: 'Matteo Shuffstall' }], 'shuffstallmatt') === null);
   assert('a shortened name still loses to an exact match elsewhere',
     matchRosterEmployee([{ name: 'Matthew Shuffstall' }, { name: 'Matt Shuffstall' }], 'shuffstallmatt').name === 'Matt Shuffstall');
+
+  // Doubled letters are where the roster and the logins actually disagree on
+  // this rollout — both of these are real.
+  assert('roster drops a doubled letter  ("Matt Shufstall" / shuffstallmatt)',
+    matchRosterEmployee([{ name: 'Matt Shufstall' }], 'shuffstallmatt').name === 'Matt Shufstall');
+  assert('login drops a doubled letter   ("Kevin Cippolini" / cipollini)',
+    matchRosterEmployee([{ name: 'Kevin Cippolini' }], 'cipollini').name === 'Kevin Cippolini');
+  assert('and with the first name too    ("Kevin Cippolini" / cipollinikevin)',
+    matchRosterEmployee([{ name: 'Kevin Cippolini' }], 'cipollinikevin').name === 'Kevin Cippolini');
+
+  // The collapse is a last resort and stays as strict as every stage above it.
+  assert('an exact spelling elsewhere still wins over a collapsed one',
+    matchRosterEmployee([{ name: 'Matt Shufstall' }, { name: 'Matt Shuffstall' }], 'shuffstallmatt').name === 'Matt Shuffstall');
+  // Two people whose names differ only by a doubled letter, and a login that
+  // matches neither exactly — so the collapse is what they both land on.
+  assert('two names that collapse alike are refused, not guessed',
+    matchRosterEmployee([{ name: 'Matt Shufstall' }, { name: 'Matt Shuffstall' }], 'shufffstallmatt') === null);
+  assert('collapsing does not invent a match out of nothing',
+    matchRosterEmployee([{ name: 'Matt Shufstall' }], 'someoneelse') === null);
 }
 
 // ── 2) The injected row's money fields ──────────────────────────────────────

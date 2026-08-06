@@ -283,16 +283,31 @@ function _r2(n) { return Math.round(Number(n) * 100) / 100; }
 // inherit someone else's pay rate.
 function _rosterKey(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
+// Doubled letters are where these two systems disagree in practice: the roster
+// reads "Matt Shufstall" while the login is "shuffstallmatt", or "Kevin
+// Cippolini" while the login is "cipollini". Collapsing runs of the same letter
+// on BOTH sides bridges that. It is a normalization, not a fuzzy match — every
+// stage below still has to hit exactly, and still has to hit exactly once, so
+// this cannot start handing one person another's pay rate.
+function _collapseDoubles(s) { return String(s).replace(/(.)\1+/g, '$1'); }
+
 function matchRosterEmployee(blobEmps, employeeName) {
-  const login = _rosterKey(employeeName);
-  if (!login) return null;
   const cand = (Array.isArray(blobEmps) ? blobEmps : [])
     .filter(e => e && typeof e === 'object' && String(e.name || '').trim());
-  const wordsOf = e => String(e.name).trim().split(/\s+/).map(_rosterKey).filter(Boolean);
+  // Exact spellings first across every stage; only if nothing lands anywhere
+  // do we retry the whole cascade with doubled letters collapsed.
+  return _matchRoster(cand, employeeName, _rosterKey)
+      || _matchRoster(cand, employeeName, s => _collapseDoubles(_rosterKey(s)));
+}
+
+function _matchRoster(cand, employeeName, key) {
+  const login = key(employeeName);
+  if (!login) return null;
+  const wordsOf = e => String(e.name).trim().split(/\s+/).map(key).filter(Boolean);
   const only = list => (list.length === 1 ? list[0] : null);
 
   // 1. the roster name IS the login, punctuation and case aside
-  const exact = cand.filter(e => _rosterKey(e.name) === login);
+  const exact = cand.filter(e => key(e.name) === login);
   if (exact.length) return exact[0];
 
   // 2. the login is the name's words run together, either way round
