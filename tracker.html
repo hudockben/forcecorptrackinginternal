@@ -711,6 +711,16 @@
     .bid-group-total.bg-hidden { display: none; }
     .bid-add-sub { background: none; border: 1px solid #2a4a2a; color: #5a9a5a; font-size: 0.68rem; padding: 0.1rem 0.4rem; border-radius: 3px; cursor: pointer; margin-left: 0.8rem; }
     .bid-add-sub:hover { background: #1e3a1e; color: var(--green); }
+    /* Rolled-up percent complete on the cost-code header — see bidGroupPct() */
+    .bid-grp-pct { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: 0.9rem; font-size: 0.68rem; font-weight: 600; vertical-align: middle; white-space: nowrap; }
+    .bid-grp-pct-bar { width: 62px; height: 6px; flex-shrink: 0; border: 1px solid #2a4a2a; border-radius: 3px; background: #0b140b; overflow: hidden; }
+    .bid-grp-pct-bar i { display: block; height: 100%; background: currentColor; transition: width 0.2s; }
+    .bid-grp-pct-val { font-variant-numeric: tabular-nums; }
+    .bid-grp-pct-sub { color: var(--muted); font-weight: 400; font-size: 0.64rem; }
+    .bid-grp-pct.gp-done   { color: #4ade80; }
+    .bid-grp-pct.gp-active { color: var(--blue); }
+    .bid-grp-pct.gp-none   { color: var(--muted); }
+    .bid-grp-pct.gp-none .bid-grp-pct-bar { border-color: #333; background: #141414; }
     .bid-table tfoot tr td {
       background: var(--surface2); font-weight: 700; padding: 0.45rem 0.6rem;
       border: 1px solid var(--border); font-variant-numeric: tabular-nums;
@@ -5402,6 +5412,7 @@ function renderDashProjectCards() {
                 <table class="bid-table">
                   <thead><tr>
                     <th>Sub Code</th>
+                    <th class="num">Unit</th>
                     <th class="num">Bid Qty</th><th class="num">Unit Cost</th>
                     <th class="num">Running Qty</th><th class="num">Qty Completed</th>
                     <th class="num">Running Unit Cost</th><th class="num">Past Avg UC</th>
@@ -7941,6 +7952,118 @@ function bidItemComplete(b, projId) {
   return !!(set && set.has(_bidCsKey(b.cost_code, b.sub_code)));
 }
 
+/* Roll a cost code's sub codes up into one percent complete for the bid view's
+   green group header.
+
+   Each sub code contributes its own progress: 100% when it's marked complete
+   (Schedule tab flag or its Construction Schedule tasks — bidItemComplete()),
+   otherwise the same figure its QTY COMPLETED cell shows, running qty ÷ bid qty.
+   That per-line percent is capped at 100 so one over-run sub code can't push the
+   group past done on the back of lines that haven't started.
+
+   Sub codes are weighted by bid dollars rather than counted evenly. A $67k line
+   at 50% leaves far more work on the table than a $1k line at 50%, and a plain
+   average reads the group as half done either way. A line with no bid dollars
+   has nothing to weigh, so it falls back to a weight of 1 — it still registers,
+   but it can't outvote the lines carrying the money. This is the same roll-up
+   the schedule report already uses for its overall % complete.
+
+   Every sub code complete → exactly 100%, whatever the quantities say. And only
+   that case reads 100: when the quantities are all in but a sub code still isn't
+   signed off, the display holds at 99.9% so "100%" keeps meaning "closed out".
+   Returns null when the group has no sub codes to measure. */
+function bidGroupPct(groupItems, projId) {
+  const items = (groupItems || []).filter(Boolean);
+  if (!items.length) return null;
+
+  let wDone = 0, wAll = 0, done = 0;
+  items.forEach(b => {
+    const bidQty = (parseFloat(b.quantity) || 0)
+      + (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
+    const complete = bidItemComplete(b, projId);
+    if (complete) done++;
+    const itemPct = complete ? 100
+      : bidQty > 0 ? Math.max(0, Math.min(100, runningQtyForBidItem(b, projId) / bidQty * 100))
+      : 0;
+    // abs(): a change order can drive a line's bid negative, and a negative
+    // weight would subtract that line's progress from the group.
+    const w = Math.abs(bidQty * (parseFloat(b.unit_cost) || 0)) || 1;
+    wDone += w * itemPct;
+    wAll  += w;
+  });
+
+  const allDone = done === items.length;
+  const raw     = wAll ? wDone / wAll : 0;
+  return {
+    pct:   allDone ? 100 : Math.min(raw, 99.9),
+    allDone,
+    done,
+    total:  items.length,
+    weight: wAll,          // what the project roll-up weighs this cost code by
+  };
+}
+
+/* The whole project rolled up the same way, for the bid view's summary bar:
+   each cost code's percent from bidGroupPct(), weighted by that cost code's bid
+   dollars.
+
+   Rolling the groups up — rather than every sub code at once — is what keeps
+   this number honest against the green rows under it. A cost code whose sub
+   codes are all signed off contributes a flat 100 here too, even where its
+   quantities never reached the bid quantity; going straight to the sub codes
+   would quietly re-litigate that and leave the header reading lower than every
+   group on screen. done/total count cost codes, not sub codes. */
+function bidProjectPct(projId) {
+  const p = getProj(projId); if (!p) return null;
+
+  const groups = new Map();
+  (p.bidItems || []).forEach(b => {
+    const cc = b.cost_code || '';
+    if (!groups.has(cc)) groups.set(cc, []);
+    groups.get(cc).push(b);
+  });
+  const gs = [...groups.values()].map(items => bidGroupPct(items, projId)).filter(Boolean);
+  if (!gs.length) return null;
+
+  let wDone = 0, wAll = 0, done = 0;
+  gs.forEach(g => {
+    if (g.allDone) done++;
+    wDone += g.weight * g.pct;
+    wAll  += g.weight;
+  });
+
+  const allDone = done === gs.length;
+  const raw     = wAll ? wDone / wAll : 0;
+  return {
+    pct:   allDone ? 100 : Math.min(raw, 99.9),
+    allDone,
+    done,
+    total:  gs.length,
+    weight: wAll,
+  };
+}
+
+/* The percent-complete badge on the bid view's green cost-code header. Shows a
+   fill bar, the group percent, and how many sub codes under it are signed off,
+   so a group reading 80% still says whether that's four done lines or one line
+   most of the way there. */
+function _bidGroupPctHTML(g) {
+  if (!g) return '';
+  const pct = Math.max(0, Math.min(100, g.pct));
+  const cls = g.allDone ? 'gp-done' : pct >= 0.05 ? 'gp-active' : 'gp-none';
+  const tip = g.allDone
+    ? `All ${g.total} sub code${g.total !== 1 ? 's' : ''} under this cost code are marked complete.`
+    : `${g.done} of ${g.total} sub code${g.total !== 1 ? 's' : ''} marked complete. `
+      + `The rest count their qty completed (running qty ÷ bid qty), and every sub code is `
+      + `weighted by its bid dollars — so the big line items move this number most. `
+      + `It reads 100% only once every sub code is marked complete.`;
+  return `<span class="bid-grp-pct ${cls}" title="${esc(tip)}">
+    <span class="bid-grp-pct-bar"><i style="width:${pct.toFixed(1)}%"></i></span>
+    <span class="bid-grp-pct-val">${pct.toFixed(1)}% complete</span>
+    <span class="bid-grp-pct-sub">${g.done}/${g.total} sub code${g.total !== 1 ? 's' : ''} done</span>
+  </span>`;
+}
+
 function actualForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
@@ -8154,6 +8277,20 @@ function renderBidFooter(projId, opts = {}) {
       const profitPct   = (profit !== null && contractVal) ? ` (${(profit / contractVal * 100).toFixed(1)}%)` : '';
       const profitDisp  = profitTxt + (profitPct ? `<span style="font-size:0.72em;font-weight:400;opacity:0.85">${profitPct}</span>` : '');
       const projCol     = !totalBid ? 'var(--text)' : totalProj > totalBid ? 'var(--red)' : 'var(--green)';
+      // Progress, not money — the same roll-up the green cost-code rows show,
+      // one level up. Sits behind the divider with Projected Profit because it
+      // answers the other half of "where does this job stand".
+      const gpct        = bidProjectPct(projId);
+      const gpctCol     = !gpct ? 'var(--muted)'
+        : gpct.allDone ? '#4ade80' : gpct.pct >= 0.05 ? 'var(--blue)' : 'var(--muted)';
+      const gpctTip     = !gpct ? 'No bid items to measure yet.'
+        : gpct.allDone
+          ? `Every sub code under all ${gpct.total} cost code${gpct.total !== 1 ? 's' : ''} is marked complete.`
+          : `${gpct.done} of ${gpct.total} cost code${gpct.total !== 1 ? 's' : ''} fully signed off. `
+            + `Each cost code contributes the percent on its green header row, weighted by its bid dollars — `
+            + `so the big cost codes move this number most. It reads 100% only once every sub code is marked complete.`;
+      const gpctDisp    = !gpct ? '—'
+        : `${gpct.pct.toFixed(1)}%<span style="font-size:0.72em;font-weight:400;opacity:0.85"> · ${gpct.done}/${gpct.total} cost codes</span>`;
       const fmet = (label, val, col) =>
         `<div style="display:flex;flex-direction:column;gap:1px">
            <span style="font-size:0.6rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted)">${label}</span>
@@ -8167,6 +8304,7 @@ function renderBidFooter(projId, opts = {}) {
            ${fmet('Projected Cost', (totalBid || totalProj) ? '$'+fmt(totalProj) : '—', projCol)}
            <div style="width:1px;height:30px;background:var(--border);align-self:center"></div>
            ${fmet('Projected Profit', profitDisp, profitCol)}
+           ${fmet('Project Complete', `<span title="${esc(gpctTip)}">${gpctDisp}</span>`, gpctCol)}
          </div>`;
       const sqft = parseFloat(p['sqft']) || 0;
       if (sqft > 0) {
@@ -9389,7 +9527,11 @@ function _bidScrollParent(el) {
 function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
-  const COLS     = readonly ? 15 : 18;
+  // Column count per layout — the readonly dashboard table drops the delete
+  // column and the two date columns plus the historical estimate. Kept exact:
+  // an overshooting colspan on the group header forces a phantom trailing
+  // column onto every other row.
+  const COLS     = readonly ? 14 : 18;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
 
@@ -9429,6 +9571,14 @@ function renderBidTable(projId, opts = {}) {
     const prefix  = opts.tbodyId ? opts.tbodyId + '-' : '';
     const groupId = 'bg-' + prefix + projId + '-' + costCode.replace(/\W/g, '_') + '_' + groupItems[0].id.slice(0,4);
 
+    // Which sub codes are actually on screen. Computed before the header so the
+    // header's percent complete covers the same lines the group subtotal does —
+    // filtering the group down to two sub codes and leaving the header speaking
+    // for all eight would have the two rows disagreeing with the line above them.
+    const visItems = scFilter ? groupItems.filter(b => scFilter.has(b.sub_code || '')) : groupItems;
+    const gPct     = bidGroupPct(visItems, projId);
+    const gPctHTML = _bidGroupPctHTML(gPct);
+
     // ── Group header ──
     const hdrTr = document.createElement('tr');
     hdrTr.className = 'bid-group-hdr';
@@ -9439,6 +9589,7 @@ function renderBidTable(projId, opts = {}) {
           <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
           <strong>${esc(costCode) || '(No Code)'}</strong>
           <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.75rem">${groupItems.length} sub code${groupItems.length!==1?'s':''}</span>
+          ${gPctHTML}
         </td>`
       : `<td colspan="${COLS}">
           <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
@@ -9446,6 +9597,7 @@ function renderBidTable(projId, opts = {}) {
             onclick="event.stopPropagation()"
             onchange="updateBidGroupCode('${projId}','${escJs(costCode)}',this.value)">
           <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${escJs(costCode)}')">+ Sub Code</button>
+          ${gPctHTML}
           <button class="del-btn" style="float:right;margin-top:0.1rem" title="Delete entire group"
             onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${escJs(costCode)}\\'?'))removeBidGroup('${projId}','${escJs(costCode)}')">✕</button>
         </td>`;
@@ -9464,7 +9616,6 @@ function renderBidTable(projId, opts = {}) {
 
     // ── Child rows ──
     let gBidTotal = 0, gActual = 0, gCumHrs = 0, gEstHrs = 0, gProj = 0;
-    const visItems = scFilter ? groupItems.filter(b => scFilter.has(b.sub_code || '')) : groupItems;
     visItems.forEach(b => {
       const baseBidQty = parseFloat(b.quantity) || 0;
       const coQtyDelta = (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
@@ -9581,10 +9732,20 @@ function renderBidTable(projId, opts = {}) {
     const gDiffCls = gDiff >= 0 ? 'bid-under' : 'bid-over';
     const gDiffTxt = gBidTotal ? (gDiff >= 0 ? `$${fmt(gDiff)} under` : `$${fmt(Math.abs(gDiff))} over`) : '—';
     const gProjCls = (gProj - gBidTotal) <= 0 ? 'bid-under' : 'bid-over';
+    // The group's percent complete also lands in its own QTY COMPLETED cell, so
+    // the column reads sub code, sub code, group without the eye leaving it.
+    // The two layouts order their columns differently — the editable table puts
+    // Unit Cost after Qty Completed, the readonly one before Running Qty — so
+    // the cell sits fourth here and fifth there. Miscount and the percent prints
+    // under Unit Cost, which looks like a plausible number.
+    const _dashCell = '<td class="bid-calc">—</td>';
+    const gPctCell  = `<td class="bid-calc"${gPct && gPct.allDone ? ' style="color:#4ade80"' : ''}${
+      gPct ? ` title="${esc(gPct.allDone
+        ? `All ${gPct.total} sub code${gPct.total !== 1 ? 's' : ''} marked complete.`
+        : `${gPct.done} of ${gPct.total} sub codes marked complete; the rest count their qty completed, weighted by bid dollars.`)}"` : ''
+    }>${gPct ? gPct.pct.toFixed(1) + '%' : '—'}</td>`;
     const totalCells = `
-      <td class="bid-calc">—</td><td class="bid-calc">—</td><td class="bid-calc">—</td>
-      <td class="bid-calc">—</td><td class="bid-calc">—</td>
-      <td class="bid-calc">—</td><td class="bid-calc">—</td>
+      ${_dashCell.repeat(readonly ? 4 : 3)}${gPctCell}${_dashCell.repeat(readonly ? 2 : 3)}
       <td class="bid-calc">${gBidTotal ? '$'+fmt(gBidTotal) : '—'}</td>
       <td class="bid-actual">${gActual ? '$'+fmt(gActual) : '—'}</td>
       <td class="bid-calc">${gCumHrs ? qfmt(gCumHrs) : '—'}</td>
@@ -17451,6 +17612,9 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   const grandActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
   const grandProj   = projectedCostForProject(p);
   const grandHrs    = items.reduce((s,b) => s + cumulativeHoursForBidItem(b, projId), 0);
+  // Whole-project percent complete, always across every cost code — it belongs
+  // with the grand totals above, which are explicitly unfiltered.
+  const grandPct    = bidProjectPct(projId);
 
   // Which groups appear in the report body (may be a subset)
   const visGroupOrder = selectedCostCodes
@@ -17466,7 +17630,15 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
 
   visGroupOrder.forEach(costCode => {
     const gItems = groups[costCode];
-    rowsHTML += `<tr class="group-hdr"><td colspan="17"><strong>${esc(costCode) || '(No Code)'}</strong></td></tr>`;
+    // Same roll-up the green cost-code row shows on screen, so the printed and
+    // emailed report doesn't disagree with the page it came from. colspan is
+    // the table's exact width — overshooting it forces a phantom trailing
+    // column onto every other row of the report.
+    const gPct = bidGroupPct(gItems, projId);
+    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong>`
+      + (gPct ? ` <span style="font-weight:400;color:#166534">· ${gPct.pct.toFixed(1)}% complete</span>`
+              + `<span style="font-weight:400;color:#666"> · ${gPct.done}/${gPct.total} sub code${gPct.total !== 1 ? 's' : ''} done</span>` : '')
+      + `</td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
     gItems.forEach(b => {
@@ -17515,9 +17687,11 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     const gDiffCls = gDiff >= 0 ? 'under' : 'over';
     const gDiffTxt = gBid ? (gDiff >= 0 ? `$${fmt(gDiff)} under` : `$${fmt(Math.abs(gDiff))} over`) : dash;
     const gProjCls = (gProj - gBid) <= 0 ? 'under' : 'over';
+    // Qty Completed is the 4th of the seven cells between the label and Cost
+    // Total here (Unit, Bid Qty, Running Qty, Qty Completed, Unit Cost, …).
     rowsHTML += `<tr class="subtotal">
       <td><em>${esc(costCode) || '(No Code)'} — Total</em></td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(gPct ? gPct.pct.toFixed(1) + '%' : dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(gBid ? '$' + fmt(gBid) : dash)}
       ${r(gActual ? '$' + fmt(gActual) : dash, 'actual')}
       ${r(gHrs ? fmt(gHrs) : dash)}
@@ -17566,6 +17740,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
       <div class="sqft-metric"><div class="sqft-label">Projected Cost</div><div class="sqft-val">${(grandBid || grandProj) ? '$'+fmt(grandProj) : dash}</div></div>
       <div class="sqft-sep"></div>
       <div class="sqft-metric"><div class="sqft-label">Projected Profit</div><div class="sqft-val ${profitCls}">${profitTxt}${profitPct}</div></div>
+      <div class="sqft-metric"><div class="sqft-label">Project Complete</div><div class="sqft-val">${grandPct ? grandPct.pct.toFixed(1) + '%' : dash}${grandPct ? `<span style="font-size:0.72em;font-weight:400"> · ${grandPct.done}/${grandPct.total} cost codes</span>` : ''}</div></div>
     </div>`;
 
   const _html = `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -17615,7 +17790,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     <tbody>${rowsHTML}</tbody>
     <tfoot><tr class="totals">
       <td>${totLabel}</td>
-      ${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}${r(dash)}
+      ${r(dash)}${r(dash)}${r(dash)}${r(grandPct ? grandPct.pct.toFixed(1) + '%' : dash)}${r(dash)}${r(dash)}${r(dash)}
       ${r(grandBid   ? '$' + fmt(grandBid)    : dash)}
       ${r(grandActual ? '$' + fmt(grandActual) : dash, 'actual')}
       ${r(grandHrs   ? fmt(grandHrs)          : dash)}
