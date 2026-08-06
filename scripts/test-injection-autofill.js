@@ -31,11 +31,22 @@ const path   = require('path');
 const Module = require('module');
 
 let CURRENT_SQL = null;
+// Set to override the identity the handler sees on the next call — used to
+// prove a non-admin cannot reach the backfill.
+let NEXT_AUTH = null;
+const ADMIN = { companyCode: 'FCT', userId: 1, username: 'admin', payrollAdmin: true };
 const origLoad = Module._load;
 Module._load = function (request) {
   if (request === '@neondatabase/serverless') return { neon: () => CURRENT_SQL };
   if (request === './lib/auth') {
-    return { requireAuth: () => null, requireDivision: () => null, hasDivisionAccess: () => true };
+    return {
+      requireAuth: () => NEXT_AUTH || ADMIN,
+      requireDivision: () => null,
+      // Mirror the real gate: payroll admin is what canAdmin is built from
+      // (hasDivisionAccess(payload, 'payroll')). A stub that always says yes
+      // would let the permission test pass without a permission check.
+      hasDivisionAccess: (p, area) => (area === 'payroll' ? !!(p && p.payrollAdmin) : true),
+    };
   }
   return origLoad.apply(this, arguments);
 };
@@ -110,12 +121,15 @@ function makeSql({ equipmentBlob = [], equipmentTable = [], prevailingWage = fal
   const sql = (strings, ...values) => {
     const q = strings.join(' ').replace(/\s+/g, ' ').trim();
     log.push({ q, values });
+    // The division list blob — a single-key read.
     if (q.startsWith('SELECT value FROM app_data')) {
-      const key = String(values[0]);
-      if (key.includes('fct_lists')) {
-        return Promise.resolve([{ value: { employees: ROSTER, equipment: equipmentBlob } }]);
-      }
-      return Promise.resolve([{ value: { prevailing_wage: prevailingWage } }]);
+      return Promise.resolve([{ value: { employees: ROSTER, equipment: equipmentBlob } }]);
+    }
+    // Project blobs — batched with key = ANY(...) so one read covers every job
+    // in the set. Mirrors prevailingWageByJob's actual query.
+    if (q.startsWith('SELECT key, value FROM app_data')) {
+      const keys = Array.isArray(values[0]) ? values[0] : [];
+      return Promise.resolve(keys.map(k => ({ key: k, value: { prevailing_wage: prevailingWage } })));
     }
     if (q.includes('FROM equipment_list')) return Promise.resolve(equipmentTable);
     return Promise.resolve([]);
@@ -229,9 +243,102 @@ async function injectionTests() {
   }
 }
 
+// ── 3) The backfill: POST ?action=refresh-rates ─────────────────────────────
+// Rates land on a cost row at approval time, so time approved before a rate
+// existed keeps its zeros. This re-pulls them in place. What it must NOT do is
+// as important as what it does: never overwrite a field the supervisor owns,
+// never trade a real value for one it could not resolve, and never guess a rate
+// for a login it cannot match.
+async function refreshTests() {
+  console.log('\n[POST ?action=refresh-rates]');
+  const handler = require(path.resolve(__dirname, '..', 'api', 'timesheet-entries.js'));
+
+  function run(rows, { equipmentTable = [], prevailingWage = false } = {}) {
+    const updates = [];
+    CURRENT_SQL = (strings, ...values) => {
+      const q = strings.join(' ').replace(/\s+/g, ' ').trim();
+      if (q.startsWith('SELECT value FROM app_data')) {
+        return Promise.resolve([{ value: { employees: ROSTER, equipment: [] } }]);
+      }
+      if (q.startsWith('SELECT key, value FROM app_data')) {
+        return Promise.resolve((values[0] || []).map(k => ({ key: k, value: { prevailing_wage: prevailingWage } })));
+      }
+      if (q.includes('FROM equipment_list'))   return Promise.resolve(equipmentTable);
+      if (q.includes('FROM daily_tracking dt')) return Promise.resolve(rows);
+      if (q.startsWith('UPDATE daily_tracking')) {
+        updates.push({ employee: values[0], job_class: values[1], rate: values[2], equip_unit_cost: values[3], row_id: values[4] });
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    };
+    const res = {
+      statusCode: 200, body: null,
+      setHeader() {}, status(c) { this.statusCode = c; return this; },
+      json(b) { this.body = b; return this; }, end() { return this; },
+    };
+    return handler({ method: 'POST', query: { action: 'refresh-rates' }, body: {} }, res)
+      .then(() => ({ res, updates }));
+  }
+
+  const row = over => Object.assign({
+    row_id: 'ts99-a-0-1', division: 'turf', employee: 'brewerzach', job_class: null,
+    rate: 0, equipment: '', equip_unit_cost: 0, username: 'brewerzach', job_id: 'J1',
+  }, over);
+
+  {
+    const { res, updates } = await run([row({ equipment: 'Pickup Truck' })],
+      { equipmentTable: [{ name: 'Pickup Truck', unit_cost: 18.75 }] });
+    assert('a zeroed row is repaired', updates.length === 1);
+    assert('the roster name replaces the login', updates[0].employee === 'Zach Brewer');
+    assert('the job class is filled in',         updates[0].job_class === 'Operator');
+    assert('the rate is filled in',              updates[0].rate === 32.5);
+    assert('the equipment price is filled in',   updates[0].equip_unit_cost === 18.75);
+    assert('the response reports the work',      res.body.scanned === 1 && res.body.updated === 1);
+  }
+  {
+    const { updates } = await run([row({ employee: 'Zach Brewer', job_class: 'Operator', rate: 32.5 })]);
+    assert('a row already correct is not rewritten', updates.length === 0);
+  }
+  {
+    // job_class is supervisor-editable in the division tab (see
+    // INJECTED_EDITABLE_FIELDS) — a deliberate re-categorization must survive.
+    const { updates } = await run([row({ job_class: 'Flagger' })]);
+    assert('a supervisor-set job class is preserved', updates[0].job_class === 'Flagger');
+    assert('but the rate is still corrected',         updates[0].rate === 32.5);
+  }
+  {
+    const { res, updates } = await run([row({ username: 'ghostuser', employee: 'ghostuser' })]);
+    assert('an unmatched login is left alone entirely', updates.length === 0);
+    assert('and is reported so the roster gap is visible',
+      res.body.unresolved.length === 1 && res.body.unresolved[0].username === 'ghostuser');
+  }
+  {
+    const { updates } = await run([row({ equipment: 'Mystery Machine', equip_unit_cost: 55 })]);
+    assert('an unresolvable machine keeps the price it has', updates[0].equip_unit_cost === 55);
+  }
+  {
+    const { updates } = await run([row()], { prevailingWage: true });
+    assert('a prevailing-wage job backfills the prevailing rate', updates[0].rate === 58);
+  }
+  {
+    const { res } = await run([]);
+    assert('an empty range is a clean no-op', res.body.ok && res.body.scanned === 0 && res.body.updated === 0);
+  }
+  {
+    // Non-admins must not be able to rewrite cost data.
+    const denied = { statusCode: 200, body: null, setHeader() {},
+      status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; }, end() { return this; } };
+    NEXT_AUTH = { companyCode: 'FCT', userId: 2, username: 'field', payrollAdmin: false };
+    await handler({ method: 'POST', query: { action: 'refresh-rates' }, body: {} }, denied);
+    NEXT_AUTH = null;
+    assert('a non-admin is refused', denied.statusCode === 403);
+  }
+}
+
 (async () => {
   rosterTests();
   await injectionTests();
+  await refreshTests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => { console.error('FATAL', err); process.exit(1); });
