@@ -74,6 +74,8 @@ vm.runInContext([
   'bulkRowSet(idx, entryId, itemIdx, field, value) {',
   'bulkRowEquipCommit(idx, entryId, itemIdx) {',
   'bulkRowLeg(idx, entryId, itemIdx, value) {',
+  'bulkTravelCostCode(idx, value) {',
+  'bulkCostCode(idx, value) {',
   'bulkBadEquipHours() {',
   'bulkDroppedMachines() {',
   'bulkDaysTable(g, idx) {',
@@ -363,6 +365,139 @@ console.log('\n[machines that would be dropped]');
     sandbox.buildBulkBody(gd, day).split[0].equipment === '224 Roller');
 }
 sandbox.bulkGroups = groups;
+
+// ── A second cost/sub code for the travel leg ──
+// The drive is its own task — Mobilization / Travel — while the work books to
+// the job's code. The single-day modal has always allowed that; bulk forced
+// both legs onto one code, which is the whole reason a crew day had to be
+// approved one person at a time.
+console.log('\n[travel books to its own code]');
+{
+  const day = u => entry(u, 3, 7.5, 2);
+  const gang = ['forcecaden', 'shuffstallmatt', 'cipollini'].map(day);
+  const { groups: g8 } = sandbox.buildBulkGroups(gang);
+  const gt = g8[0];
+  sandbox.bulkGroups = g8;
+  gt.template.cost_code        = 'Silt Sock';
+  gt.template.sub_code         = 'Silt Sock 12inch';
+  gt.template.travel_cost_code = 'Mobilization';
+  gt.template.travel_sub_code  = 'Travel';
+
+  const bodies = gang.map(e => sandbox.buildBulkBody(gt, e));
+  assert('every day in the crew gets both rows', bodies.every(b => b.split.length === 2));
+  assert('work books to the task for all of them',
+    bodies.every(b => b.split[0].cost_code === 'Silt Sock' && b.split[0].sub_code === 'Silt Sock 12inch'));
+  assert('travel books to its own code for all of them',
+    bodies.every(b => b.split[1].is_travel && b.split[1].cost_code === 'Mobilization' && b.split[1].sub_code === 'Travel'));
+  assert('the hours check is untouched',
+    bodies.every(b => b.split.reduce((s, r) => s + r.labor_hours, 0) === 9.5));
+
+  // Blank has to keep meaning what it meant before the fields existed.
+  gt.template.travel_cost_code = '';
+  gt.template.travel_sub_code  = '';
+  const back = sandbox.buildBulkBody(gt, gang[0]);
+  assert('blank travel codes fall back to the work codes',
+    back.split[1].cost_code === 'Silt Sock' && back.split[1].sub_code === 'Silt Sock 12inch');
+
+  // Only one of the two set is still a valid thing to ask for.
+  gt.template.travel_cost_code = 'Mobilization';
+  const half = sandbox.buildBulkBody(gt, gang[0]);
+  assert('a travel cost code alone keeps the work sub code',
+    half.split[1].cost_code === 'Mobilization' && half.split[1].sub_code === 'Silt Sock 12inch');
+
+  // A machine on the travel leg belongs to the travel task, not the work one.
+  gt.template.travel_sub_code = 'Travel';
+  sandbox.bulkRowSet(0, gang[0].id, 0, 'equipment', '224 Roller');
+  sandbox.bulkRowSet(0, gang[0].id, 0, 'equip_hours', '7.5');
+  sandbox.bulkRowAddMachine(0, gang[0].id);
+  sandbox.bulkRowSet(0, gang[0].id, 1, 'equipment', 'Pickup Truck');
+  sandbox.bulkRowLeg(0, gang[0].id, 1, 'travel');
+  const withRig = sandbox.buildBulkBody(gt, gang[0]);
+  const truck = withRig.split.find(r => r.equipment === 'Pickup Truck');
+  assert('the truck rides the travel row at the travel code',
+    truck.is_travel && truck.cost_code === 'Mobilization' && truck.sub_code === 'Travel');
+  assert('the roller stays on the work row at the work code',
+    withRig.split.some(r => r.equipment === '224 Roller' && !r.is_travel && r.cost_code === 'Silt Sock'));
+}
+sandbox.bulkGroups = groups;
+
+// ── A cost-code change must not orphan the travel sub code ──
+// While the travel leg has no cost code of its own it borrows the work one, so
+// its sub code came from a list that changes when the work cost code changes.
+// Leaving it put paired a sub code from the old cost code with the new one.
+console.log('\n[stale travel sub code]');
+{
+  const day = entry('sam', 3, 7.5, 2);
+  const { groups: g9 } = sandbox.buildBulkGroups([day]);
+  const gs = g9[0];
+  sandbox.bulkGroups = g9;
+
+  sandbox.bulkCostCode(0, 'Silt Sock');
+  gs.template.sub_code        = 'Silt Sock 12inch';
+  gs.template.travel_sub_code = 'Silt Sock 12inch';   // picked off the inherited list
+  sandbox.bulkCostCode(0, 'Mobilization');
+  assert('the work sub code is cleared',            gs.template.sub_code === '');
+  assert('an inherited travel sub code is cleared', gs.template.travel_sub_code === '');
+
+  // A travel leg with its own cost code is independent and must survive.
+  sandbox.bulkTravelCostCode(0, 'Mobilization');
+  gs.template.travel_sub_code = 'Travel';
+  sandbox.bulkCostCode(0, 'Silt Sock');
+  assert('a travel leg with its own code keeps its sub code',
+    gs.template.travel_sub_code === 'Travel' && gs.template.travel_cost_code === 'Mobilization');
+  assert('and it still books there',
+    sandbox.buildBulkBody(gs, day).split[1].sub_code === 'Travel');
+
+  // Picking a travel cost code clears its own sub code, same as the work pair.
+  sandbox.bulkTravelCostCode(0, 'Load Out');
+  assert('changing the travel cost code clears its sub code', gs.template.travel_sub_code === '');
+}
+sandbox.bulkGroups = groups;
+
+// ── The single-day split tally reconciles travel, not just the total ──
+// The Travel tick only flags a row; it does not move it to a travel cost code.
+// So ticking it on the wrong row books those hours to the wrong task — and the
+// old tally, which only checked the total, called that "✓ balanced".
+console.log('\n[split tally: travel reconciliation]');
+{
+  const tallyFn = grab('renderSplitTally() {');
+  function tally(rows, entry) {
+    const store = {};
+    const stub = () => ({ textContent: '', style: {}, classList: { add() {}, remove() {} } });
+    const sb = { console, splitRows: rows, splitEntry: entry,
+                 document: { getElementById: id => (store[id] = store[id] || stub()) } };
+    vm.createContext(sb);
+    vm.runInContext(tallyFn, sb);
+    sb.renderSplitTally();
+    return store;
+  }
+  const E = { computed_hours: 7.5, travel_hours: 2 };
+  const drive = ov => Object.assign({ cost_code: 'Mobilization', sub_code: 'Travel', labor_hours: 2 }, ov);
+  const work  = ov => Object.assign({ cost_code: 'Silt Sock', sub_code: '12inch', labor_hours: 7.5 }, ov);
+
+  const wrong = tally([drive({ is_travel: false }), work({ is_travel: true })], E);
+  assert('ticking Travel on the work row is no longer "balanced"',
+    !/balanced/.test(wrong.splitTallyStatus.textContent));
+  assert('and the message says which way it is off',
+    /7\.50 h ticked Travel, entry says 2\.00/.test(wrong.splitTallyStatus.textContent));
+
+  const right = tally([drive({ is_travel: true }), work({ is_travel: false })], E);
+  assert('ticking it on the drive row balances', /balanced/.test(right.splitTallyStatus.textContent));
+
+  const none = tally([work({ labor_hours: 9.5, is_travel: false })], E);
+  assert('an entry with travel and nothing ticked is flagged',
+    /2\.00 h of travel on this entry, 0\.00 ticked/.test(none.splitTallyStatus.textContent));
+
+  const short = tally([work({ labor_hours: 5, is_travel: false })], E);
+  assert('an hours mismatch still wins over the travel message',
+    short.splitTallyStatus.textContent === 'under-allocated');
+
+  const noTravel = tally([{ cost_code: 'A', sub_code: 'B', labor_hours: 8, is_travel: false }],
+                         { computed_hours: 8, travel_hours: 0 });
+  assert('a day with no travel hides the readout and balances',
+    noTravel.splitTravelTally.style.display === 'none' &&
+    /balanced/.test(noTravel.splitTallyStatus.textContent));
+}
 
 // ── The cell's layout ──
 // Everything in a machine row is a flex item. width:100% on one makes its basis

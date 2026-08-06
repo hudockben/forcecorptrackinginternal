@@ -1565,6 +1565,8 @@
           <span>Allocated: <span class="tally-num" id="splitAllocated">0.00</span> h</span>
           <span>Required: <span class="tally-num" id="splitRequired">0.00</span> h</span>
           <span>Remaining: <span class="tally-num" id="splitRemaining">0.00</span> h</span>
+          <span id="splitTravelTally" style="display:none">Travel: <span class="tally-num" id="splitTravelAlloc">0.00</span>
+            / <span class="tally-num" id="splitTravelReq">0.00</span> h</span>
           <span class="tally-status" id="splitTallyStatus">—</span>
         </div>
       </div>
@@ -1579,7 +1581,8 @@
               <th>Equipment</th>
               <th style="width:90px">Labor h</th>
               <th style="width:90px">Equip h</th>
-              <th style="width:60px;text-align:center">Travel</th>
+              <th style="width:60px;text-align:center"
+                  title="Marks this row as travel time. It does not change the cost code — put the travel code on the row itself.">Travel</th>
               <th style="width:50px"></th>
             </tr>
           </thead>
@@ -4006,15 +4009,36 @@
       document.getElementById('splitAllocated').textContent = allocated.toFixed(2);
       document.getElementById('splitRequired').textContent  = required.toFixed(2);
       document.getElementById('splitRemaining').textContent = remaining.toFixed(2);
+      // The total balancing on its own is not enough. The entry declares how
+      // much of the day was travel, and the rows ticked Travel have to add up
+      // to that — otherwise the flag lands on the wrong row and its hours book
+      // to the wrong task, which balances perfectly and is still wrong.
+      const travelMarked = Math.round(
+        splitRows.filter(r => r.is_travel)
+                 .reduce((s, r) => s + (Number(r.labor_hours) || 0), 0) * 100) / 100;
+      const travelOff = Math.abs(travelMarked - travel) >= 0.005;
+      const tw = document.getElementById('splitTravelTally');
+      if (tw) {
+        tw.style.display = travel > 0 || travelMarked > 0 ? '' : 'none';
+        document.getElementById('splitTravelAlloc').textContent = travelMarked.toFixed(2);
+        document.getElementById('splitTravelReq').textContent   = travel.toFixed(2);
+        tw.style.color = travelOff ? 'var(--red)' : '';
+      }
       const tally = document.getElementById('splitTally');
       const status = document.getElementById('splitTallyStatus');
       tally.classList.remove('ok', 'bad');
-      if (Math.abs(remaining) < 0.005) {
-        tally.classList.add('ok'); status.textContent = '✓ balanced';
-      } else if (remaining > 0) {
-        tally.classList.add('bad'); status.textContent = 'under-allocated';
+      if (Math.abs(remaining) >= 0.005) {
+        tally.classList.add('bad');
+        status.textContent = remaining > 0 ? 'under-allocated' : 'over-allocated';
+      } else if (travelOff) {
+        // Hours add up, so this stays saveable — some crews may not care to
+        // flag travel at all — but it must not read as ✓ when it is not.
+        tally.classList.add('bad');
+        status.textContent = travelMarked > travel
+          ? `${travelMarked.toFixed(2)} h ticked Travel, entry says ${travel.toFixed(2)}`
+          : `${travel.toFixed(2)} h of travel on this entry, ${travelMarked.toFixed(2)} ticked`;
       } else {
-        tally.classList.add('bad'); status.textContent = 'over-allocated';
+        tally.classList.add('ok'); status.textContent = '✓ balanced';
       }
     }
 
@@ -4571,6 +4595,10 @@
             perRow: {},
             template: {
               cost_code: '', sub_code: '', equipment: '', equip_hours: '',
+              // The drive is usually its own task — Mobilization / Travel —
+              // while the work books to the job's actual code. Blank means
+              // "same as the work", which is how this behaved before.
+              travel_cost_code: '', travel_sub_code: '',
               equipmentName: '', taskName: '', rate: '', hourlyRate: '',
               haul_fee: '', division_col: '',
             },
@@ -4880,12 +4908,27 @@
       return dropped;
     }
 
+    // Same for the travel leg's own code — its sub codes hang off it.
+    function bulkTravelCostCode(idx, value) {
+      const g = bulkGroups[idx];
+      if (!g) return;
+      g.template.travel_cost_code = value;
+      g.template.travel_sub_code  = '';
+      renderBulkGroups();
+      updateBulkRunBtn();
+    }
+
     // Cost code drives the sub-code list, so committing one repaints the group.
     function bulkCostCode(idx, value) {
       const g = bulkGroups[idx];
       if (!g) return;
       g.template.cost_code = value;
       g.template.sub_code  = '';   // sub codes are scoped to a cost code
+      // While the travel leg has no cost code of its own it borrows this one,
+      // so its sub code was picked from the list that just changed underneath
+      // it. Leaving it put paired a sub code from the old cost code with the
+      // new one. A travel leg with its own cost code is independent — leave it.
+      if (!String(g.template.travel_cost_code || '').trim()) g.template.travel_sub_code = '';
       renderBulkGroups();
       updateBulkRunBtn();
     }
@@ -4979,6 +5022,12 @@
         const ccCodes = (g.ccList || []).map(c => c.cost_code);
         const found   = (g.ccList || []).find(c => c.cost_code === g.template.cost_code);
         const subOpts = found ? (found.sub_codes || []) : [];
+        // The travel leg can book to its own code, so its sub codes come from
+        // whichever cost code IT names — falling back to the work one.
+        const tFound  = (g.ccList || []).find(c => c.cost_code ===
+                          (String(g.template.travel_cost_code || '').trim() || g.template.cost_code));
+        const travelSubOpts = tFound ? (tFound.sub_codes || []) : [];
+        const anyTravel = g.entries.some(e => bulkR2(e.travel_hours) > 0);
         const eqOpts  = g.eqList || [];
         const ccPh    = g._loaded ? 'Select or type…' : 'Loading…';
         badgeClass = 'split'; badgeText = prettyDiv(g.division);
@@ -5002,8 +5051,21 @@
               ${_bulkNum(idx, 'equip_hours', g.template.equip_hours, '0')}
             </div>
           </div>
-          <div class="bulk-note">All work hours post to this cost code; any day with travel hours gets a
-            matching travel row at the same code. Equipment here goes to everyone below — to give a machine to
+          ${!anyTravel ? '' : `
+          <div class="bulk-fields" style="margin-top:0.7rem">
+            <div class="bulk-field"><span>Travel Cost Code <span style="text-transform:none;font-weight:400">(optional)</span></span>
+              <input type="text" list="blk_cc_${idx}" value="${escapeHtml(g.template.travel_cost_code || '')}"
+                     placeholder="${escapeHtml(g.template.cost_code || 'same as above')}" autocomplete="off"
+                     oninput="bulkSet(${idx},'travel_cost_code',this.value)"
+                     onchange="bulkTravelCostCode(${idx}, this.value)">
+            </div>
+            <div class="bulk-field"><span>Travel Sub Code <span style="text-transform:none;font-weight:400">(optional)</span></span>
+              ${_bulkList(idx, 'travel_sub_code', g.template.travel_sub_code, travelSubOpts,
+                          g.template.sub_code || 'same as above')}
+            </div>
+          </div>`}
+          <div class="bulk-note">All work hours post to the cost code above. Any day with travel hours gets its
+            own row — at the travel code when you set one, otherwise at the same code as the work. Equipment here goes to everyone below — to give a machine to
             one operator instead, leave it blank and fill in that person's row in the table. A day can carry
             more than one machine (drove the pickup in, ran the roller on site): press <strong>+ machine</strong>
             and give each its own hours. The first machine picked fills its hours with the hours worked; after
@@ -5103,6 +5165,10 @@
         const travel = bulkR2(e.travel_hours);
         const cc = String(g.template.cost_code || '').trim();
         const sc = String(g.template.sub_code || '').trim();
+        // The drive can book to its own task. Blank falls back to the work
+        // codes, which is exactly what this did before the fields existed.
+        const tcc = String(g.template.travel_cost_code || '').trim() || cc;
+        const tsc = String(g.template.travel_sub_code  || '').trim() || sc;
         // Every machine this day ran — its own overrides if it has any, else
         // the crew's. A day can carry several: drove the pickup in, ran the
         // roller on site.
@@ -5115,8 +5181,8 @@
         // Each leg's first machine rides along on that leg's labor row, so the
         // ordinary day — one machine on site, a truck for the drive — still
         // posts as the same two rows it always did.
-        if (work   > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: firstWork.equipment,   labor_hours: work,   equip_hours: firstWork.equip_hours,   is_travel: false });
-        if (travel > 0) rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: firstTravel.equipment, labor_hours: travel, equip_hours: firstTravel.equip_hours, is_travel: true });
+        if (work   > 0) rows.push({ cost_code: cc,  sub_code: sc,  quantity: 0, equipment: firstWork.equipment,   labor_hours: work,   equip_hours: firstWork.equip_hours,   is_travel: false });
+        if (travel > 0) rows.push({ cost_code: tcc, sub_code: tsc, quantity: 0, equipment: firstTravel.equipment, labor_hours: travel, equip_hours: firstTravel.equip_hours, is_travel: true });
         // Anything past a leg's first machine gets a row of its own — and so
         // does the first when that leg has no labor row to hang it on. Zero
         // labor is fine: the server needs labor OR equipment hours on a row,
@@ -5128,7 +5194,10 @@
         ];
         for (const m of extras) {
           if (m.equipment && m.equip_hours > 0) {
-            rows.push({ cost_code: cc, sub_code: sc, quantity: 0, equipment: m.equipment, labor_hours: 0, equip_hours: m.equip_hours, is_travel: m.leg === 'travel' });
+            const onTravel = m.leg === 'travel';
+            rows.push({ cost_code: onTravel ? tcc : cc, sub_code: onTravel ? tsc : sc,
+                        quantity: 0, equipment: m.equipment, labor_hours: 0,
+                        equip_hours: m.equip_hours, is_travel: onTravel });
           }
         }
         return { split: rows };
