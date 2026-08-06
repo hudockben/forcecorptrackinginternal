@@ -4561,7 +4561,13 @@
     }
 
     function bulkDaysTable(g) {
-      const rows = g.entries.map(e => {
+      // Sorted by employee then date so a crew-sized group reads as one block
+      // per person. Display only — g.entries keeps its own order, and each
+      // entry is approved with its own hours regardless.
+      const rows = g.entries.slice().sort((a, b) =>
+        String(a.username || '').localeCompare(String(b.username || '')) ||
+        String(a.work_date || '').localeCompare(String(b.work_date || ''))
+      ).map(e => {
         const w = bulkR2(e.computed_hours), t = bulkR2(e.travel_hours);
         return `<tr><td>${escapeHtml(e.username || '')}</td>` +
                `<td>${escapeHtml(prettyDate(e.work_date))}</td>` +
@@ -4577,7 +4583,14 @@
     function bulkGroupCard(g, idx) {
       const days = g.entries.length;
       const hrs  = g.entries.reduce((s, e) => s + bulkR2(e.computed_hours) + bulkR2(e.travel_hours), 0);
-      const metaHrs = `${days} ${days === 1 ? 'day' : 'days'} · ${num2(hrs)} h`;
+      // A group is keyed on the JOB, not the employee, so one card routinely
+      // covers a whole crew — everyone on this job gets the cost code below,
+      // each with their own hours and their own rate. Lead with the head count
+      // so that reads off the card instead of having to be counted out of the
+      // day table underneath it.
+      const crew = new Set(g.entries.map(e => e.username || '')).size;
+      const metaHrs = `${crew > 1 ? `${crew} employees · ` : ''}` +
+                      `${days} ${days === 1 ? 'day' : 'days'} · ${num2(hrs)} h`;
       let badgeClass, badgeText, title, meta, fields;
 
       if (g.type === 'split') {
