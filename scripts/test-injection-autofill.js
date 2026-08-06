@@ -377,6 +377,29 @@ async function refreshTests() {
     assert('an unresolvable machine keeps the price it has', updates[0].equip_unit_cost === 55);
   }
   {
+    // The same person can submit into more than one division, and each division
+    // keeps its own list. Reporting them as one entry sent you to fix a list
+    // that was only part of the problem — and the row count did not add up when
+    // you re-ran it.
+    const { res } = await run([
+      row({ row_id: 'ts1-a', division: 'turf',   username: 'ghost', employee: 'ghost' }),
+      row({ row_id: 'ts2-a', division: 'paving', username: 'ghost', employee: 'ghost' }),
+      row({ row_id: 'ts3-a', division: 'paving', username: 'ghost', employee: 'ghost' }),
+    ]);
+    assert('one unresolved entry per division, not per person',
+      res.body.unresolved.length === 2);
+    assert('each carries its own division and count',
+      res.body.unresolved.some(u => u.division === 'paving' && u.rows === 2) &&
+      res.body.unresolved.some(u => u.division === 'turf'   && u.rows === 1));
+    assert('every failing division hands back its list',
+      Object.keys(res.body.rosters).sort().join(',') === 'paving,turf');
+  }
+  {
+    const { res } = await run([row()]);   // resolves fine
+    assert('a clean run ships no rosters at all',
+      Object.keys(res.body.rosters).length === 0);
+  }
+  {
     const { updates } = await run([row()], { prevailingWage: true });
     assert('a prevailing-wage job backfills the prevailing rate', updates[0].rate === 58);
   }

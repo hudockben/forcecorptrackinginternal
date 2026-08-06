@@ -1703,7 +1703,10 @@ module.exports = async (req, res) => {
       }
 
       let updated = 0;
-      const unresolved = new Map();   // login → { rows, division }
+      // Keyed on login AND division: the same person can submit into more than
+      // one, and each division has its own list. Collapsing them onto one entry
+      // sent you to fix a list that was only part of the problem.
+      const unresolved = new Map();   // "login\0division" → { username, division, rows }
       // Which roster each division actually searched. "No match" means one of
       // two very different things — the person is missing from that division's
       // list, or they are in it under a name the login does not resolve to —
@@ -1721,9 +1724,10 @@ module.exports = async (req, res) => {
         for (const r of rows) {
           const emp = resolver.employeeFor(r.username);
           if (!emp) {
-            const seen = unresolved.get(r.username) || { rows: 0, division };
+            const key = `${r.username}\u0000${division}`;
+            const seen = unresolved.get(key) || { username: r.username, division, rows: 0 };
             seen.rows += 1;
-            unresolved.set(r.username, seen);
+            unresolved.set(key, seen);
             continue;
           }
           const rate      = resolver.rateFor(emp, !!pwFlags.get(String(r.job_id)));
@@ -1765,10 +1769,13 @@ module.exports = async (req, res) => {
         scanned: scanRows.length,
         updated,
         hitLimit: scanRows.length === SCAN_LIMIT,
-        unresolved: [...unresolved.entries()]
-          .map(([username, v]) => ({ username, rows: v.rows, division: v.division }))
-          .sort((a, b) => b.rows - a.rows),
-        rosters,
+        unresolved: [...unresolved.values()].sort((a, b) => b.rows - a.rows),
+        // Only the lists that something actually failed against — a clean run
+        // has no reason to ship every division's roster back.
+        rosters: Object.fromEntries(
+          Object.entries(rosters).filter(([d]) =>
+            [...unresolved.values()].some(u => u.division === d)),
+        ),
       });
     }
 
