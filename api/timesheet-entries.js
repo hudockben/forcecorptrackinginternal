@@ -270,6 +270,59 @@ async function entryJson(sql, companyCode, row, extra) {
 // Round to 0.01 to match NUMERIC(14,4) without surprising precision drift.
 function _r2(n) { return Math.round(Number(n) * 100) / 100; }
 
+// ── Roster lookup ─────────────────────────────────────────────────────────
+// The roster blob stores display names ("Zach Brewer"); the timesheet carries
+// whatever the field employee signs in as, and companies build logins
+// differently — "mowery" (surname), "zachbrewer" (first+last), "brewerzach"
+// (last+first), "zbrewer" (initial+last). This used to try the name verbatim
+// and then a " surname" suffix, which covers only the first of those; every
+// other shape fell through and the injected row got no job class and a $0 rate.
+//
+// Forms are tried in descending confidence, and a stage only counts when
+// exactly one roster entry matches it — an ambiguous crew must never silently
+// inherit someone else's pay rate.
+function _rosterKey(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+function matchRosterEmployee(blobEmps, employeeName) {
+  const login = _rosterKey(employeeName);
+  if (!login) return null;
+  const cand = (Array.isArray(blobEmps) ? blobEmps : [])
+    .filter(e => e && typeof e === 'object' && String(e.name || '').trim());
+  const wordsOf = e => String(e.name).trim().split(/\s+/).map(_rosterKey).filter(Boolean);
+  const only = list => (list.length === 1 ? list[0] : null);
+
+  // 1. the roster name IS the login, punctuation and case aside
+  const exact = cand.filter(e => _rosterKey(e.name) === login);
+  if (exact.length) return exact[0];
+
+  // 2. the login is the name's words run together, either way round
+  const joined = cand.filter(e => {
+    const w = wordsOf(e);
+    if (w.length < 2) return false;
+    return w.join('') === login
+        || [...w].reverse().join('') === login
+        || (w[0] + w[w.length - 1]) === login
+        || (w[w.length - 1] + w[0]) === login;
+  });
+  if (only(joined)) return joined[0];
+
+  // 3. the login is the surname on its own
+  const surname = cand.filter(e => {
+    const w = wordsOf(e);
+    return w.length > 1 && w[w.length - 1] === login;
+  });
+  if (only(surname)) return surname[0];
+
+  // 4. first initial + surname, either way round
+  const initial = cand.filter(e => {
+    const w = wordsOf(e);
+    if (w.length < 2 || !w[0]) return false;
+    return (w[0][0] + w[w.length - 1]) === login
+        || (w[w.length - 1] + w[0][0]) === login;
+  });
+  return only(initial);
+}
+
 /**
  * Normalize one split row from the request body. Returns { row, error }.
  * Each row contributes either labor_hours (>0) and/or equip_hours (>0).
@@ -388,42 +441,58 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   const blobEmps = listsBlob && Array.isArray(listsBlob.employees) ? listsBlob.employees : [];
   const blobEquipment = listsBlob && Array.isArray(listsBlob.equipment) ? listsBlob.equipment : [];
 
-  // Login usernames are typically the last name only ("Mowery") while the
-  // roster stores full names ("Lucas Mowery"). Try exact match first, then
-  // last-word match — but only accept the suffix match when unambiguous.
-  const empLogin = (employeeName || '').trim().toLowerCase();
-  let emp = null;
-  if (empLogin) {
-    emp = blobEmps.find(
-      e => e && typeof e === 'object'
-        && String(e.name || '').trim().toLowerCase() === empLogin,
-    ) || null;
-    if (!emp) {
-      const needle = ' ' + empLogin;
-      const suffixMatches = blobEmps.filter(
-        e => e && typeof e === 'object'
-          && String(e.name || '').trim().toLowerCase().endsWith(needle),
-      );
-      if (suffixMatches.length === 1) emp = suffixMatches[0];
-    }
-  }
+  const emp = matchRosterEmployee(blobEmps, employeeName);
   const jobClass = (emp && emp.job_class) || null;
   const empRate  = emp
     ? (Number(isPrevailingWage ? emp.prevailing_rate : emp.non_prevailing_rate) || 0)
     : 0;
+  // Prefer the roster's own spelling so the injected row carries the name the
+  // cost tracking tab shows everywhere else, not the raw login.
   const employeeLabel = (emp && emp.name) || employeeName;
 
+  // Equipment unit cost. The division's list blob is the first source — it is
+  // what the tracking tab itself reads when someone picks equipment by hand.
+  // But the payroll modal offers a wider set: api/equipment.js serves the
+  // equipment_list table, and the split modal adds whatever the project has in
+  // assigned_equipment. A machine that is offerable but missing from the blob
+  // used to resolve to a silent $0. Fall back to the table for those, and
+  // compare on a normalized name so a stray space or a capital letter cannot
+  // zero the cost either.
+  const eqKey = s => String(s == null ? '' : s).trim().toLowerCase();
   const eqCostByName = new Map();
   for (const eq of blobEquipment) {
     if (eq && typeof eq === 'object' && eq.name) {
-      eqCostByName.set(String(eq.name), Number(eq.unit_cost) || 0);
+      eqCostByName.set(eqKey(eq.name), Number(eq.unit_cost) || 0);
+    }
+  }
+  // Only pay for the extra read when something actually needs it: a name the
+  // blob doesn't know, or one it knows only at zero.
+  const needsTableLookup = splitRows.some(
+    r => r.equipment && !(eqCostByName.get(eqKey(r.equipment)) > 0),
+  );
+  if (needsTableLookup) {
+    try {
+      const eqRows = await sql`
+        SELECT name, unit_cost FROM equipment_list
+        WHERE company_code = ${companyCode} AND active = TRUE
+      `;
+      for (const eq of eqRows) {
+        // A real cost beats a missing one and beats a zero — equipment priced
+        // at 0 in one list and properly in the other is a gap in the list, not
+        // a machine that runs for free.
+        const k = eqKey(eq.name);
+        const cost = Number(eq.unit_cost) || 0;
+        if (cost > 0 && !(eqCostByName.get(k) > 0)) eqCostByName.set(k, cost);
+      }
+    } catch (err) {
+      console.warn('[timesheet-entries] equipment_list cost lookup failed:', err.message);
     }
   }
 
   for (let i = 0; i < splitRows.length; i++) {
     const r = splitRows[i];
     const rowId = `ts${entry.id}-${baseStamp}-${i}-${Math.floor(Math.random() * 1e6)}`;
-    const eqUnitCost = r.equipment ? (eqCostByName.get(r.equipment) || 0) : 0;
+    const eqUnitCost = r.equipment ? (eqCostByName.get(eqKey(r.equipment)) || 0) : 0;
     await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
@@ -1689,6 +1758,8 @@ module.exports = async (req, res) => {
 // Internal helpers exposed for unit testing only (scripts/test-trucking-injection.js).
 // Not part of the HTTP contract — do not depend on these from other endpoints.
 module.exports._test = {
+  matchRosterEmployee,
+  insertSplitRows,
   removeSplitRows,
   truckingRowIdPrefix,
   matchTruckingDriver,
