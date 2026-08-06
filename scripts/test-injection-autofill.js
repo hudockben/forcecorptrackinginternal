@@ -142,7 +142,7 @@ function makeSql({ equipmentBlob = [], equipmentTable = [], prevailingWage = fal
     // Column order in insertSplitRows' INSERT.
     return {
       row_id: v[0], project_id: v[1], company_code: v[2], division: v[3], date: v[4],
-      employee: v[6], cost_code: v[7], sub_code: v[8], job_class: v[9],
+      field_type: v[5], employee: v[6], cost_code: v[7], sub_code: v[8], job_class: v[9],
       rate: v[10], labor_hours: v[11], equipment: v[12],
       equip_unit_cost: v[13], equip_hours: v[14],
     };
@@ -180,6 +180,22 @@ async function injectionTests() {
     assert('an unmatched login still injects the row', !!r);
     assert('an unmatched login keeps the login as the label', r.employee === 'ghost');
     assert('an unmatched login gets rate 0, not a wrong rate', r.rate === 0 && r.job_class === null);
+  }
+
+  // is_travel is validated on the way in and read back out of field_type by the
+  // resplit modal (GET ?action=split). The injection wrote field_type as null,
+  // so the flag never survived: reopening Edit Split showed the travel row as
+  // ordinary work, and nothing in cost tracking could tell travel apart.
+  console.log('\n[insertSplitRows — the travel flag]');
+  {
+    const sql = makeSql();
+    await insertSplitRows(sql, [splitRow({ is_travel: true, labor_hours: 2 })], ENTRY, 'turf', 'FCT', 'brewerzach');
+    assert('a travel row is stored as field_type Travel', sql.inserted().field_type === 'Travel');
+  }
+  {
+    const sql = makeSql();
+    await insertSplitRows(sql, [splitRow()], ENTRY, 'turf', 'FCT', 'brewerzach');
+    assert('an ordinary row leaves field_type unset', sql.inserted().field_type === null);
   }
 
   console.log('\n[insertSplitRows — equipment]');

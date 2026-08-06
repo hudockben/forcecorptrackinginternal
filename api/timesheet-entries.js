@@ -530,7 +530,7 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${companyCode},
         ${division},
         ${workDate},
-        ${null},
+        ${r.is_travel ? 'Travel' : null},
         ${employeeLabel},
         ${r.cost_code || null},
         ${r.sub_code || null},
