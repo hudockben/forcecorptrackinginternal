@@ -74,6 +74,7 @@ vm.runInContext([
   'bulkRowSet(idx, entryId, itemIdx, field, value) {',
   'bulkRowEquipCommit(idx, entryId, itemIdx) {',
   'bulkRowLeg(idx, entryId, itemIdx, value) {',
+  'bulkTravelCostCode(idx, value) {',
   'bulkBadEquipHours() {',
   'bulkDroppedMachines() {',
   'bulkDaysTable(g, idx) {',
@@ -361,6 +362,61 @@ console.log('\n[machines that would be dropped]');
     sandbox.bulkDroppedMachines().length === 0);
   assert('and it still reaches the labor row',
     sandbox.buildBulkBody(gd, day).split[0].equipment === '224 Roller');
+}
+sandbox.bulkGroups = groups;
+
+// ── A second cost/sub code for the travel leg ──
+// The drive is its own task — Mobilization / Travel — while the work books to
+// the job's code. The single-day modal has always allowed that; bulk forced
+// both legs onto one code, which is the whole reason a crew day had to be
+// approved one person at a time.
+console.log('\n[travel books to its own code]');
+{
+  const day = u => entry(u, 3, 7.5, 2);
+  const gang = ['forcecaden', 'shuffstallmatt', 'cipollini'].map(day);
+  const { groups: g8 } = sandbox.buildBulkGroups(gang);
+  const gt = g8[0];
+  sandbox.bulkGroups = g8;
+  gt.template.cost_code        = 'Silt Sock';
+  gt.template.sub_code         = 'Silt Sock 12inch';
+  gt.template.travel_cost_code = 'Mobilization';
+  gt.template.travel_sub_code  = 'Travel';
+
+  const bodies = gang.map(e => sandbox.buildBulkBody(gt, e));
+  assert('every day in the crew gets both rows', bodies.every(b => b.split.length === 2));
+  assert('work books to the task for all of them',
+    bodies.every(b => b.split[0].cost_code === 'Silt Sock' && b.split[0].sub_code === 'Silt Sock 12inch'));
+  assert('travel books to its own code for all of them',
+    bodies.every(b => b.split[1].is_travel && b.split[1].cost_code === 'Mobilization' && b.split[1].sub_code === 'Travel'));
+  assert('the hours check is untouched',
+    bodies.every(b => b.split.reduce((s, r) => s + r.labor_hours, 0) === 9.5));
+
+  // Blank has to keep meaning what it meant before the fields existed.
+  gt.template.travel_cost_code = '';
+  gt.template.travel_sub_code  = '';
+  const back = sandbox.buildBulkBody(gt, gang[0]);
+  assert('blank travel codes fall back to the work codes',
+    back.split[1].cost_code === 'Silt Sock' && back.split[1].sub_code === 'Silt Sock 12inch');
+
+  // Only one of the two set is still a valid thing to ask for.
+  gt.template.travel_cost_code = 'Mobilization';
+  const half = sandbox.buildBulkBody(gt, gang[0]);
+  assert('a travel cost code alone keeps the work sub code',
+    half.split[1].cost_code === 'Mobilization' && half.split[1].sub_code === 'Silt Sock 12inch');
+
+  // A machine on the travel leg belongs to the travel task, not the work one.
+  gt.template.travel_sub_code = 'Travel';
+  sandbox.bulkRowSet(0, gang[0].id, 0, 'equipment', '224 Roller');
+  sandbox.bulkRowSet(0, gang[0].id, 0, 'equip_hours', '7.5');
+  sandbox.bulkRowAddMachine(0, gang[0].id);
+  sandbox.bulkRowSet(0, gang[0].id, 1, 'equipment', 'Pickup Truck');
+  sandbox.bulkRowLeg(0, gang[0].id, 1, 'travel');
+  const withRig = sandbox.buildBulkBody(gt, gang[0]);
+  const truck = withRig.split.find(r => r.equipment === 'Pickup Truck');
+  assert('the truck rides the travel row at the travel code',
+    truck.is_travel && truck.cost_code === 'Mobilization' && truck.sub_code === 'Travel');
+  assert('the roller stays on the work row at the work code',
+    withRig.split.some(r => r.equipment === '224 Roller' && !r.is_travel && r.cost_code === 'Silt Sock'));
 }
 sandbox.bulkGroups = groups;
 
