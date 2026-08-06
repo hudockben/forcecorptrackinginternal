@@ -3234,7 +3234,9 @@
       if (!confirm(
         `Re-pull pay rates, job classes and equipment costs for approved time in ${scope}?\n\n` +
         `This updates the cost tracking rows already posted to the division tabs. ` +
-        `Hours, cost codes and equipment are not changed.`
+        `Hours, cost codes and equipment are not changed.\n\n` +
+        `It applies TODAY'S rates from Manage Lists. If anyone has had a raise since ` +
+        `this work was approved, their old jobs will be restated at the new rate.`
       )) return;
 
       const params = new URLSearchParams({ action: 'refresh-rates' });
