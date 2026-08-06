@@ -456,6 +456,29 @@
     }
     .analytics-dropdown-wrap:hover .analytics-dropdown-menu { display: block; }
 
+    /* ── Schedules dropdown ── */
+    .schedules-dropdown-wrap {
+      position: relative;
+      display: flex;
+      align-items: stretch;
+    }
+    .schedules-dropdown-wrap .tab-btn { margin-left: 0; }
+    .schedules-dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 6px 6px;
+      min-width: 210px;
+      z-index: 300;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    }
+    .schedules-dropdown-wrap:hover .schedules-dropdown-menu,
+    .schedules-dropdown-wrap.open .schedules-dropdown-menu { display: block; }
+
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
@@ -2261,6 +2284,24 @@
       /* Show mobile-only tab */
       .tab-btn[data-tab="mob-entry"] { display: flex !important; }
 
+      /* The tab bar scrolls horizontally here, which would clip an absolutely
+         positioned menu — so the Schedules dropdown flattens back into plain
+         inline tabs on mobile instead of hiding behind a hover menu. */
+      #schedules-tab-btn { display: none !important; }
+      .schedules-dropdown-wrap,
+      .schedules-dropdown-menu { display: contents !important; }
+      .schedules-dropdown-menu .admin-dropdown-item {
+        width: auto;
+        flex-shrink: 0;
+        padding: 0.65rem 1.1rem;
+        font-size: 0.8rem;
+        letter-spacing: 0.06em;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+      }
+      .schedules-dropdown-menu .admin-dropdown-item:hover { background: none; }
+      .schedules-dropdown-menu .admin-dropdown-item.active { border-bottom-color: var(--green); }
+
       .tab-bar { overflow-x: auto; -webkit-overflow-scrolling: touch; gap: 0; padding: 0; }
       .tab-btn { flex-shrink: 0; padding: 0.65rem 1.1rem; font-size: 0.8rem; }
 
@@ -2489,8 +2530,13 @@
   <button class="tab-btn"        data-tab="mob-entry" style="display:none">&#128221; Daily Entry<span id="mob-entry-badge" style="display:none;background:var(--green-dim);color:#fff;border-radius:10px;font-size:0.62rem;padding:0.05rem 0.38rem;margin-left:0.35rem;font-weight:700;vertical-align:middle"></span></button>
   <button class="tab-btn"        data-tab="cost">Cost Tracking</button>
   <button class="tab-btn"        data-tab="info">Project Dashboard</button>
-  <button class="tab-btn"        data-tab="schedule">&#128197; Schedule</button>
-  <button class="tab-btn"        data-tab="construction">&#127959; Construction Schedule</button>
+  <div class="schedules-dropdown-wrap">
+    <button class="tab-btn" id="schedules-tab-btn">&#128197; Schedules ▾</button>
+    <div class="schedules-dropdown-menu">
+      <button class="admin-dropdown-item" id="schedules-item-schedule"     onclick="schedulesSwitchTab('schedule')">&#128197; Schedule</button>
+      <button class="admin-dropdown-item" id="schedules-item-construction" onclick="schedulesSwitchTab('construction')">&#127959; Construction Schedule</button>
+    </div>
+  </div>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
   <button class="tab-btn"        data-tab="inventory">Infill Inventory</button>
@@ -4011,6 +4057,22 @@ const perm = (() => {
       if (wrap) wrap.style.display = 'none';
     }
 
+    // Hide schedules dropdown items this role cannot see
+    const schedulesItems = ['schedule', 'construction'];
+    schedulesItems.forEach(t => {
+      const item = document.getElementById('schedules-item-' + t);
+      if (item && !perm.visibleTabs.has(t)) item.style.display = 'none';
+    });
+    // Hide the entire Schedules dropdown if no items are accessible
+    const anySchedulesVisible = schedulesItems.some(t => perm.visibleTabs.has(t));
+    if (!anySchedulesVisible) {
+      const wrap = document.querySelector('.schedules-dropdown-wrap');
+      if (wrap) wrap.style.display = 'none';
+      // The wrapper flattens to display:contents on mobile, so hide the button too
+      const btn = document.getElementById('schedules-tab-btn');
+      if (btn) btn.style.display = 'none';
+    }
+
     // Activate the first visible tab
     const firstTab = [...perm.visibleTabs][0];
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -4466,6 +4528,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     }
     activeTab = btn.dataset.tab;
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.admin-dropdown-item').forEach(i => i.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p =>
       p.classList.toggle('active', p.id === 'tab-' + activeTab));
     renderHeaderActions();
@@ -4475,8 +4538,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'po')       renderPOTab();
     if (activeTab === 'trucking')  renderTruckingTab();
     if (activeTab === 'inventory') renderInventoryTab();
-    if (activeTab === 'schedule')   renderScheduleTab();
-    if (activeTab === 'construction') renderConstructionSchedule();
     if (activeTab === 'mob-entry')  renderMobileEntryForm();
   });
 });
@@ -4518,6 +4579,39 @@ function analyticsSwitchTab(tab) {
   if (tab === 'calc')     renderTurfCalculator();
   if (tab === 'schedest') renderScheduleEstimator();
 }
+
+/* Schedule and Construction Schedule live under the Schedules dropdown — same
+   panels and renderers as before, just reached from the menu instead of their
+   own top-level tab buttons. */
+function schedulesSwitchTab(tab) {
+  if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const schedBtn = document.getElementById('schedules-tab-btn');
+  if (schedBtn) schedBtn.classList.add('active');
+  document.querySelectorAll('.admin-dropdown-item').forEach(item => {
+    item.classList.toggle('active', item.id === 'schedules-item-' + tab);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-' + tab));
+  const wrap = document.querySelector('.schedules-dropdown-wrap');
+  if (wrap) wrap.classList.remove('open');
+  renderHeaderActions();
+  if (tab === 'schedule')     renderScheduleTab();
+  if (tab === 'construction') renderConstructionSchedule();
+}
+
+/* Tapping the Schedules button opens the menu on touch devices, where there
+   is no hover to trigger it. */
+(function () {
+  const btn  = document.getElementById('schedules-tab-btn');
+  const wrap = document.querySelector('.schedules-dropdown-wrap');
+  if (!btn || !wrap) return;
+  btn.addEventListener('click', e => { e.stopPropagation(); wrap.classList.toggle('open'); });
+  document.addEventListener('click', e => {
+    if (!wrap.contains(e.target)) wrap.classList.remove('open');
+  });
+})();
 
 function adminSwitchTab(tab) {
   if (activeTab === 'cost') { pvPreview.active = false; pvPreview.rate = 0; _pvUpdateBanner(); }
