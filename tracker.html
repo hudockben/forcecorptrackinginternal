@@ -4077,9 +4077,16 @@ const perm = (() => {
     const firstTab = [...perm.visibleTabs][0];
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    const firstBtn = document.querySelector(`.tab-btn[data-tab="${firstTab}"]`);
+    // A schedule entry has no top-level button of its own, so highlight the
+    // Schedules dropdown instead — plus its menu item, which is what shows in
+    // place of the dropdown on mobile.
+    const firstItem  = document.getElementById('schedules-item-' + firstTab);
+    const firstBtn   = firstItem
+      ? document.getElementById('schedules-tab-btn')
+      : document.querySelector(`.tab-btn[data-tab="${firstTab}"]`);
     const firstPanel = document.getElementById(`tab-${firstTab}`);
-    if (firstBtn)  firstBtn.classList.add('active');
+    if (firstBtn)   firstBtn.classList.add('active');
+    if (firstItem)  firstItem.classList.add('active');
     if (firstPanel) firstPanel.classList.add('active');
   }
 })();
@@ -4602,12 +4609,15 @@ function schedulesSwitchTab(tab) {
 }
 
 /* Tapping the Schedules button opens the menu on touch devices, where there
-   is no hover to trigger it. */
+   is no hover to trigger it. On a mouse, :hover already shows the menu, so the
+   pointer leaving has to clear this flag too — otherwise a click on the button
+   latches it open and the menu stays up after the pointer moves away. */
 (function () {
   const btn  = document.getElementById('schedules-tab-btn');
   const wrap = document.querySelector('.schedules-dropdown-wrap');
   if (!btn || !wrap) return;
   btn.addEventListener('click', e => { e.stopPropagation(); wrap.classList.toggle('open'); });
+  wrap.addEventListener('mouseleave', () => wrap.classList.remove('open'));
   document.addEventListener('click', e => {
     if (!wrap.contains(e.target)) wrap.classList.remove('open');
   });
@@ -22701,6 +22711,8 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   if (activeTab === 'po') renderPOTab();
   if (activeTab === 'trucking') renderTruckingTab();
   if (activeTab === 'inventory') renderInventoryTab();
+  if (activeTab === 'schedule') renderScheduleTab();
+  if (activeTab === 'construction') renderConstructionSchedule();
   renderHeaderActions();
 })();
 
