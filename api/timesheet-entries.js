@@ -3,11 +3,13 @@
  * Timesheet entries — field-employee time submissions.
  *
  *   GET    /api/timesheet-entries                       — list entries
- *     Field user  → only their own rows
- *     Payroll admin → all company rows (filter via query params)
+ *     Defaults to the caller's OWN rows, for every caller including payroll
+ *     admins. Reading past your own time is an explicit opt-in, so a page that
+ *     forgets to scope shows too little rather than the whole company.
  *     Query: ?status=draft|submitted|approved
  *            ?from=YYYY-MM-DD&to=YYYY-MM-DD
- *            ?user_id=N      (admin only)
+ *            ?user_id=N      (admin only — one named user)
+ *            ?scope=all      (admin only — every user in the company)
  *            ?division=X     (admin only — filter by which division was worked)
  *
  *   POST   /api/timesheet-entries                       — create draft
@@ -1219,8 +1221,11 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
-    // ── GET ────────────────────────────────────────────────────────────────
-    if (req.method === 'GET') {
+    // ── GET (list) ─────────────────────────────────────────────────────────
+    // Guarded on `!action` so the action-specific GETs further down (?action=
+    // split) are reachable — this branch would otherwise swallow them and hand
+    // back an entry list the caller never asked for.
+    if (req.method === 'GET' && !req.query.action) {
       const q = req.query || {};
       // Status filter accepts a single value, the combined sentinel
       // "submitted_approved" (payroll's default view), or '' for all.
@@ -1233,7 +1238,30 @@ module.exports = async (req, res) => {
 
       const fromF = safeDate(q.from) || '1900-01-01';
       const toF   = safeDate(q.to)   || '9999-12-31';
-      const userF = canAdmin ? safeInt(q.user_id) : userId;
+
+      // Whose rows come back. The default is ALWAYS the caller's own — a
+      // company-wide read is an explicit opt-in, never something a request
+      // falls into by omission. That default used to be inverted for anyone
+      // holding payroll access, so a supervisor who also submits their own
+      // time saw the whole company's entries under "My Recent Entries" on
+      // timesheet.html (which sends no user_id and renders no employee name,
+      // so other people's days looked indistinguishable from their own).
+      //   ?user_id=N   one named user   (admin only)
+      //   ?scope=all   the whole company (admin only — payroll.html's review grid)
+      // A non-admin asking for either is quietly scoped to themselves rather
+      // than 403'd: there is nothing to reveal, so there is nothing to refuse.
+      const askedUser   = safeInt(q.user_id);
+      const companyWide = canAdmin && askedUser == null && q.scope === 'all';
+
+      let userF = null;
+      if (!companyWide) {
+        userF = canAdmin && askedUser != null ? askedUser : safeInt(userId);
+        // A token carrying no user id owns no rows, and letting a null filter
+        // fall through here would hand back the company — the exact shape of
+        // the bug above. Fail closed and make them sign in again.
+        if (userF == null) return res.status(401).json({ error: 'Unauthorized — please log in' });
+      }
+
       const divF  = canAdmin && VALID_DIVISIONS.includes(q.division) ? q.division : '';
 
       let rows;

@@ -1921,6 +1921,9 @@
 
       const params = new URLSearchParams();
       params.set('status', 'submitted_approved');
+      // Review grid = everyone's time. The endpoint defaults to the caller's
+      // own rows, so this opt-in is what makes it company-wide.
+      params.set('scope', 'all');
       if (from)     params.set('from',     from);
       if (to)       params.set('to',       to);
       if (division) params.set('division', division);
