@@ -4423,12 +4423,15 @@ function schedulesSwitchTab(tab) {
 }
 
 /* Tapping the Schedules button opens the menu on touch devices, where there
-   is no hover to trigger it. */
+   is no hover to trigger it. On a mouse, :hover already shows the menu, so the
+   pointer leaving has to clear this flag too — otherwise a click on the button
+   latches it open and the menu stays up after the pointer moves away. */
 (function () {
   const btn  = document.getElementById('schedules-tab-btn');
   const wrap = document.querySelector('.schedules-dropdown-wrap');
   if (!btn || !wrap) return;
   btn.addEventListener('click', e => { e.stopPropagation(); wrap.classList.toggle('open'); });
+  wrap.addEventListener('mouseleave', () => wrap.classList.remove('open'));
   document.addEventListener('click', e => {
     if (!wrap.contains(e.target)) wrap.classList.remove('open');
   });
