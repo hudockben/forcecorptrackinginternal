@@ -942,13 +942,7 @@
     async function editEntry(id) {
       const e = entriesCache.find(x => x.id === id);
       if (!e) return;
-      editingId = id;
-      document.getElementById('formTitle').textContent = 'Edit Draft';
-      const badge = document.getElementById('formBadge');
-      badge.textContent = 'draft';
-      badge.className = 'badge badge-draft';
-      badge.style.display = '';
-      document.getElementById('row-delete').style.display = '';
+      markAsDraft(id);
 
       setType(e.entry_type);
       if (e.entry_type === 'daily') {
@@ -1131,13 +1125,7 @@
         const saved = await writeEntry(data);
         msg.textContent = 'Saved as draft.';
         msg.classList.add('success');
-        editingId = saved.id;
-        document.getElementById('formTitle').textContent = 'Edit Draft';
-        const badge = document.getElementById('formBadge');
-        badge.textContent = 'draft';
-        badge.className = 'badge badge-draft';
-        badge.style.display = '';
-        document.getElementById('row-delete').style.display = '';
+        markAsDraft(saved.id);
         await loadEntries();
       } catch (err) {
         msg.textContent = err.message;
@@ -1159,21 +1147,52 @@
       btn.disabled = true;
       try {
         const saved = await writeEntry(data);
+        // Adopt the row we just created BEFORE the submit leg runs. Without
+        // this, a submit that failed left editingId null with the form still
+        // full, so pressing Submit again POSTed a second draft instead of
+        // retrying this one — that is how one day's work lands on the list
+        // several times over. Now a retry PUTs the same row.
+        markAsDraft(saved.id);
         const res2 = await fetch('/api/timesheet-entries?action=submit&id=' + encodeURIComponent(saved.id), {
           method: 'POST', headers: authHeaders(),
         });
         const j2 = await res2.json();
-        if (!res2.ok || !j2.ok) throw new Error(j2.error || 'Submit failed');
+        if (!res2.ok || !j2.ok) {
+          const e = new Error(j2.error || 'Submit failed');
+          // 409 = the day is already covered by another entry. That is not a
+          // retry — pressing Submit again can only fail the same way, and the
+          // server's message already says to drop this draft instead.
+          e.noRetry = res2.status === 409;
+          throw e;
+        }
         msg.textContent = 'Submitted ✓';
         msg.classList.add('success');
         resetForm();
         await loadEntries();
       } catch (err) {
-        msg.textContent = err.message;
+        // Say where the work went. "Submit failed" over a form that still
+        // looks unsaved is what makes people press the button again.
+        msg.textContent = (editingId && !err.noRetry)
+          ? `${err.message} — your entry is saved as a draft below; press Submit to try again.`
+          : err.message;
         msg.classList.add('error');
+        await loadEntries();
       } finally {
         btn.disabled = false;
       }
+    }
+
+    // Put the form into "editing an existing draft" state — titled, badged,
+    // deletable, and pinned to `id` so the next write updates that row rather
+    // than creating another one.
+    function markAsDraft(id) {
+      editingId = id;
+      document.getElementById('formTitle').textContent = 'Edit Draft';
+      const badge = document.getElementById('formBadge');
+      badge.textContent = 'draft';
+      badge.className = 'badge badge-draft';
+      badge.style.display = '';
+      document.getElementById('row-delete').style.display = '';
     }
 
     async function deleteDraft() {

@@ -197,9 +197,71 @@ async function actionRoutingTests() {
     Array.isArray(res.body && res.body.split), JSON.stringify(res.body).slice(0, 80));
 }
 
+// The other half of what was on the screen: four identical submitted rows for
+// one day. The client used to forget the draft it had just created whenever
+// the submit leg failed, so every retry posted another row. Submit is the gate
+// into payroll, so it is where the second one has to be refused.
+async function duplicateSubmitTests() {
+  console.log('\n[POST ?action=submit — duplicate gate]');
+
+  const DRAFT = {
+    id: 500, company_code: 'FCT', user_id: 7, username: 'strickallen',
+    entry_type: 'daily', work_date: '2025-07-29', status: 'draft',
+    division: 'paving', job_id: '26019', job_label: 'Punxsy Storage Lot',
+    start_time: '07:00', end_time: '16:30', computed_hours: 9.5,
+  };
+
+  async function submit(dupeRows, draft = DRAFT) {
+    NEXT_AUTH = FIELD;
+    let updated = false;
+    CURRENT_SQL = (strings) => {
+      const q = strings.join('?').replace(/\s+/g, ' ').trim();
+      if (q.startsWith('SELECT * FROM timesheet_entries')) return Promise.resolve([draft]);
+      if (q.includes('JOIN timesheet_entries b'))          return Promise.resolve(dupeRows);
+      if (q.startsWith('UPDATE timesheet_entries')) {
+        updated = true;
+        return Promise.resolve([Object.assign({}, draft, { status: 'submitted' })]);
+      }
+      return Promise.resolve([]);
+    };
+    const res = {
+      statusCode: 200, body: null,
+      setHeader() {}, status(c) { this.statusCode = c; return this; },
+      json(b) { this.body = b; return this; }, end() { return this; },
+    };
+    await handler({ method: 'POST', query: { action: 'submit', id: '500' }, body: {} }, res);
+    return { res, updated };
+  }
+
+  {
+    const { res, updated } = await submit([]);
+    assert('a first submit goes through', updated && res.statusCode === 200);
+  }
+  {
+    const { res, updated } = await submit([{ id: 499, status: 'submitted' }]);
+    assert('a second identical submit is refused', res.statusCode === 409);
+    assert('and the row is left as a draft', !updated);
+    assert('the error names what already covers the day',
+      /already have a submitted entry for this day, job and times/.test(res.body.error), res.body.error);
+    assert('and points at the row', res.body.duplicate_of === '499');
+  }
+  {
+    const { res } = await submit([{ id: 499, status: 'approved' }]);
+    assert('an already-approved twin blocks it too',
+      res.statusCode === 409 && /approved entry/.test(res.body.error));
+  }
+  {
+    const off = Object.assign({}, DRAFT, { entry_type: 'time_off', time_off_type: 'vacation' });
+    const { res } = await submit([{ id: 498, status: 'submitted' }], off);
+    assert('time off gets its own wording',
+      res.statusCode === 409 && /time-off entry for this day/.test(res.body.error), res.body.error);
+  }
+}
+
 (async () => {
   await scopeTests();
   await actionRoutingTests();
+  await duplicateSubmitTests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => { console.error(err); process.exit(1); });

@@ -1348,6 +1348,47 @@ module.exports = async (req, res) => {
         return res.status(403).json({ error: 'Timesheet access is required' });
       }
 
+      // Submit is the gate into payroll, so it is where a double-submit has to
+      // stop. A retry that lost track of its draft posts a second row instead
+      // of reusing the first, and once both are submitted nothing on the card
+      // tells them apart — same day, same job, same clock, twice. There is no
+      // reading of that other than one day of work counted twice, so refuse it
+      // here and point at the row that already covers it.
+      //
+      // Matched entirely in SQL against the row being submitted (no values
+      // round-tripped through JS) so a DATE never crosses a timezone on its way
+      // out and back. A split shift is not caught by this — different clock —
+      // and neither are two jobs on one day, which is the point.
+      const [dupe] = await sql`
+        SELECT b.id, b.status FROM timesheet_entries a
+        JOIN timesheet_entries b
+          ON  b.company_code = a.company_code
+          AND b.user_id      = a.user_id
+          AND b.entry_type   = a.entry_type
+          AND b.work_date    = a.work_date
+          AND b.id          <> a.id
+          AND (b.status = 'submitted' OR b.status = 'approved')
+          AND (
+                (a.entry_type = 'daily'
+                  AND b.division   IS NOT DISTINCT FROM a.division
+                  AND b.job_id     IS NOT DISTINCT FROM a.job_id
+                  AND b.start_time IS NOT DISTINCT FROM a.start_time
+                  AND b.end_time   IS NOT DISTINCT FROM a.end_time)
+             OR (a.entry_type = 'time_off'
+                  AND b.time_off_type IS NOT DISTINCT FROM a.time_off_type)
+          )
+        WHERE a.id = ${id} AND a.company_code = ${companyCode}
+        LIMIT 1
+      `;
+      if (dupe) {
+        return res.status(409).json({
+          error: existing.entry_type === 'time_off'
+            ? `You already have a ${dupe.status} time-off entry for this day. Delete this draft instead of submitting it again.`
+            : `You already have a ${dupe.status} entry for this day, job and times. Delete this draft instead of submitting it again.`,
+          duplicate_of: String(dupe.id),
+        });
+      }
+
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status = 'submitted', submitted_at = NOW(), updated_at = NOW()
