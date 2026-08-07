@@ -113,7 +113,17 @@ function truckingRowIdPrefix(entryId) { return `tst-${entryId}-`; }
 
 function safeDate(v) {
   if (!v) return null;
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  // A DATE column comes back from the driver as a Date at LOCAL midnight, so
+  // toISOString() — which converts to UTC — moves the day backwards anywhere
+  // east of Greenwich. Read the local components instead: the value has no
+  // time-of-day to lose, and the answer no longer depends on where the process
+  // is running. (Vercel runs UTC, so this only ever bit dev and self-hosting.)
+  if (v instanceof Date) {
+    const y  = v.getFullYear();
+    const mo = String(v.getMonth() + 1).padStart(2, '0');
+    const d  = String(v.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${d}`;
+  }
   const s = String(v).slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
@@ -1996,17 +2006,20 @@ module.exports = async (req, res) => {
       // "manual" rows, which is invisible and surprising. Explicit DELETE
       // keeps payroll deletion symmetric with the approval/un-approval flow.
       //
-      // The sweep runs whatever the status: a row that lost its link (see
-      // removeSplitRows) can outlive an un-approve, and deleting the entry is
-      // the last chance to take it with them.
+      // Every sweep keys on the entry's DIVISION, never on its status. An
+      // injected row can outlive the thing that should have removed it — a
+      // daily_tracking row that lost its link (see removeSplitRows), or a
+      // quarry/trucking row whose blob rewrite landed while its mirror delete
+      // threw — and either way the entry is left reading 'submitted' with
+      // cost still posted against it. Deleting the entry is the last chance to
+      // catch those, so the status must not be what decides whether to look.
+      // Costs nothing on the other divisions, which never match the prefix.
       let removedSplitRows = await removeSplitRows(sql, companyCode, id);
-      if (existing.status === 'approved') {
-        if (existing.division === 'quarry') {
-          removedSplitRows += await removeQuarryRows(sql, companyCode, existing);
-        }
-        if (existing.division === 'trucking') {
-          removedSplitRows += await removeTruckingRows(sql, companyCode, existing);
-        }
+      if (existing.division === 'quarry') {
+        removedSplitRows += await removeQuarryRows(sql, companyCode, existing);
+      }
+      if (existing.division === 'trucking') {
+        removedSplitRows += await removeTruckingRows(sql, companyCode, existing);
       }
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;
       await writeAudit(

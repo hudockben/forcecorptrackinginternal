@@ -1,9 +1,16 @@
 #!/usr/bin/env node
 'use strict';
+// Anywhere east of Greenwich a DATE read back from the driver used to lose a
+// day on its way through safeDate. Pin the clock there so the assertion below
+// actually discriminates instead of passing by geography. Set before anything
+// touches a Date.
+process.env.TZ = 'Europe/Berlin';
 /**
- * GET /api/timesheet-entries — whose rows come back.
+ * api/timesheet-entries.js — scoping, routing, and the guards around them.
  *
- * Run: node scripts/test-timesheet-entry-scope.js
+ * Run: node scripts/test-timesheet-entries.js
+ * (scripts/test-timesheet-entries-sql.js drives the same handler against a
+ * real PostgreSQL; this one needs no database.)
  *
  * timesheet.html's "My Recent Entries" sends no user_id — it asks for a status
  * and a date window and trusts the endpoint to scope the rest. The endpoint
@@ -258,10 +265,100 @@ async function duplicateSubmitTests() {
   }
 }
 
+// A DATE column arrives from the driver as a JS Date at LOCAL midnight.
+// Converting that to UTC to slice the day off moves it backwards for any
+// runtime east of Greenwich — the entry a worker filed on the 29th reads as
+// the 28th, and the injected cost row lands on the wrong day with it.
+async function dateRoundTripTests() {
+  console.log('\n[work_date round-trip (TZ=Europe/Berlin)]');
+
+  const berlin = new Date(2026, 6, 29);   // local midnight, July 29
+  const sane = berlin.toISOString().slice(0, 10) === '2026-07-28';
+  if (!sane) {
+    console.log('  ! runtime ignored TZ — this assertion cannot discriminate here');
+  }
+
+  NEXT_AUTH = FIELD;
+  CURRENT_SQL = (strings) => {
+    const q = strings.join('?').replace(/\s+/g, ' ').trim();
+    if (q.startsWith('SELECT * FROM timesheet_entries')) {
+      return Promise.resolve([{
+        id: 900, company_code: 'FCT', user_id: 7, username: 'strickallen',
+        entry_type: 'daily', work_date: berlin, status: 'submitted',
+        division: 'paving', job_id: '26019', start_time: '07:00', end_time: '16:30',
+      }]);
+    }
+    return Promise.resolve([]);
+  };
+  const res = {
+    statusCode: 200, body: null,
+    setHeader() {}, status(c) { this.statusCode = c; return this; },
+    json(b) { this.body = b; return this; }, end() { return this; },
+  };
+  await handler({ method: 'GET', query: {}, body: {} }, res);
+
+  assert('a DATE at local midnight keeps its day',
+    res.body.entries[0].work_date === '2026-07-29', res.body.entries[0].work_date);
+}
+
+// Un-approve rewrites the blob, then mirrors the delete. If the mirror throws,
+// a quarry/trucking row outlives the un-approve on an entry that now reads
+// 'submitted'. Deleting the entry is the last chance to take it along, so the
+// sweep keys on the entry's division rather than on its status.
+async function deleteSweepTests() {
+  console.log('\n[DELETE sweeps injected rows whatever the status]');
+
+  async function del(entry) {
+    NEXT_AUTH = ADMIN;
+    let sweptTrucking = false, sweptQuarry = false;
+    CURRENT_SQL = (strings, ...values) => {
+      const q = strings.join('?').replace(/\s+/g, ' ').trim();
+      if (q.startsWith('SELECT * FROM timesheet_entries')) return Promise.resolve([entry]);
+      if (q.includes('FROM daily_tracking'))               return Promise.resolve([{ cnt: 0 }]);
+      // Reading a division's blob is the tell that its sweep ran. The key is a
+      // bound value, not part of the template, so match on the values.
+      if (q.startsWith('SELECT value FROM app_data')) {
+        const key = String(values[0] || '');
+        if (key.includes('truck_division')) sweptTrucking = true;
+        if (key.includes('quarry'))         sweptQuarry   = true;
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    };
+    const res = {
+      statusCode: 200, body: null,
+      setHeader() {}, status(c) { this.statusCode = c; return this; },
+      json(b) { this.body = b; return this; }, end() { return this; },
+    };
+    await handler({ method: 'DELETE', query: { id: String(entry.id) }, body: {} }, res);
+    return { res, sweptTrucking, sweptQuarry };
+  }
+
+  const base = {
+    id: 700, company_code: 'FCT', user_id: 7, username: 'strickallen',
+    entry_type: 'daily', work_date: '2026-07-29', job_id: 'x',
+  };
+  {
+    const { res, sweptTrucking } = await del(Object.assign({}, base, { division: 'trucking', status: 'submitted' }));
+    assert('a submitted trucking entry still gets swept', sweptTrucking, `HTTP ${res.statusCode}`);
+  }
+  {
+    const { sweptQuarry } = await del(Object.assign({}, base, { division: 'quarry', status: 'submitted' }));
+    assert('a submitted quarry entry still gets swept', sweptQuarry);
+  }
+  {
+    const { sweptTrucking, sweptQuarry } = await del(Object.assign({}, base, { division: 'paving', status: 'draft' }));
+    assert('a paving draft sweeps neither — nothing to find there',
+      !sweptTrucking && !sweptQuarry);
+  }
+}
+
 (async () => {
   await scopeTests();
   await actionRoutingTests();
   await duplicateSubmitTests();
+  await dateRoundTripTests();
+  await deleteSweepTests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => { console.error(err); process.exit(1); });

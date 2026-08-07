@@ -2676,6 +2676,26 @@
       }
     }
 
+    // What the action column alone cannot say. An un-approve is logged
+    // ADMIN_EDIT — the audit table's CHECK constraint has no UNAPPROVE — so on
+    // screen it read exactly like payroll correcting somebody's hours, even
+    // though it also pulled the posted cost rows back out of the division tab.
+    // The changes payload has always carried the difference; it just never got
+    // past the CSV export. Reads whatever is already stored, so entries logged
+    // before this become legible too.
+    function auditChangeNote(ev) {
+      const c = ev && ev.changes;
+      if (!c || typeof c !== 'object') return '';
+      const n = (v, one, many) => `${v} ${v === 1 ? one : many}`;
+      const bits = [];
+      if (c.unapprove) bits.push('un-approved');
+      if (c.split_row_count   != null) bits.push(`${n(c.split_row_count, 'cost row', 'cost rows')} posted`);
+      if (c.removed_split_rows != null) bits.push(`${n(c.removed_split_rows, 'cost row', 'cost rows')} removed`);
+      if (c.quarry_activity)   bits.push(`quarry · ${c.quarry_activity}`);
+      if (c.trucking_injected) bits.push('truck tracking row posted');
+      return escapeHtml(bits.join(' · '));
+    }
+
     function renderAuditLog() {
       const wrap = document.getElementById('auditLogWrap');
       const userQ = (document.getElementById('flt-user').value || '').toLowerCase().trim();
@@ -2735,8 +2755,10 @@
           if (snap.travel_to_shop_hours != null && Number(snap.travel_to_shop_hours) > 0) detailBits.push(`${Number(snap.travel_to_shop_hours).toFixed(2)}h to shop`);
           if (snap.travel_hours != null && Number(snap.travel_hours) > 0) detailBits.push(`+${Number(snap.travel_hours).toFixed(2)} h travel`);
         }
-        const detail = detailBits.length
-          ? `<div class="audit-row-detail">${detailBits.join(' · ')}</div>`
+        const note = auditChangeNote(ev);
+        const detailLine = [detailBits.join(' · '), note].filter(Boolean).join(' — ');
+        const detail = detailLine
+          ? `<div class="audit-row-detail">${detailLine}</div>`
           : '';
         return `
           <tr>
