@@ -3,11 +3,13 @@
  * Timesheet entries — field-employee time submissions.
  *
  *   GET    /api/timesheet-entries                       — list entries
- *     Field user  → only their own rows
- *     Payroll admin → all company rows (filter via query params)
+ *     Defaults to the caller's OWN rows, for every caller including payroll
+ *     admins. Reading past your own time is an explicit opt-in, so a page that
+ *     forgets to scope shows too little rather than the whole company.
  *     Query: ?status=draft|submitted|approved
  *            ?from=YYYY-MM-DD&to=YYYY-MM-DD
- *            ?user_id=N      (admin only)
+ *            ?user_id=N      (admin only — one named user)
+ *            ?scope=all      (admin only — every user in the company)
  *            ?division=X     (admin only — filter by which division was worked)
  *
  *   POST   /api/timesheet-entries                       — create draft
@@ -111,7 +113,17 @@ function truckingRowIdPrefix(entryId) { return `tst-${entryId}-`; }
 
 function safeDate(v) {
   if (!v) return null;
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  // A DATE column comes back from the driver as a Date at LOCAL midnight, so
+  // toISOString() — which converts to UTC — moves the day backwards anywhere
+  // east of Greenwich. Read the local components instead: the value has no
+  // time-of-day to lose, and the answer no longer depends on where the process
+  // is running. (Vercel runs UTC, so this only ever bit dev and self-hosting.)
+  if (v instanceof Date) {
+    const y  = v.getFullYear();
+    const mo = String(v.getMonth() + 1).padStart(2, '0');
+    const d  = String(v.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${d}`;
+  }
   const s = String(v).slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
@@ -1219,8 +1231,11 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
-    // ── GET ────────────────────────────────────────────────────────────────
-    if (req.method === 'GET') {
+    // ── GET (list) ─────────────────────────────────────────────────────────
+    // Guarded on `!action` so the action-specific GETs further down (?action=
+    // split) are reachable — this branch would otherwise swallow them and hand
+    // back an entry list the caller never asked for.
+    if (req.method === 'GET' && !req.query.action) {
       const q = req.query || {};
       // Status filter accepts a single value, the combined sentinel
       // "submitted_approved" (payroll's default view), or '' for all.
@@ -1233,7 +1248,30 @@ module.exports = async (req, res) => {
 
       const fromF = safeDate(q.from) || '1900-01-01';
       const toF   = safeDate(q.to)   || '9999-12-31';
-      const userF = canAdmin ? safeInt(q.user_id) : userId;
+
+      // Whose rows come back. The default is ALWAYS the caller's own — a
+      // company-wide read is an explicit opt-in, never something a request
+      // falls into by omission. That default used to be inverted for anyone
+      // holding payroll access, so a supervisor who also submits their own
+      // time saw the whole company's entries under "My Recent Entries" on
+      // timesheet.html (which sends no user_id and renders no employee name,
+      // so other people's days looked indistinguishable from their own).
+      //   ?user_id=N   one named user   (admin only)
+      //   ?scope=all   the whole company (admin only — payroll.html's review grid)
+      // A non-admin asking for either is quietly scoped to themselves rather
+      // than 403'd: there is nothing to reveal, so there is nothing to refuse.
+      const askedUser   = safeInt(q.user_id);
+      const companyWide = canAdmin && askedUser == null && q.scope === 'all';
+
+      let userF = null;
+      if (!companyWide) {
+        userF = canAdmin && askedUser != null ? askedUser : safeInt(userId);
+        // A token carrying no user id owns no rows, and letting a null filter
+        // fall through here would hand back the company — the exact shape of
+        // the bug above. Fail closed and make them sign in again.
+        if (userF == null) return res.status(401).json({ error: 'Unauthorized — please log in' });
+      }
+
       const divF  = canAdmin && VALID_DIVISIONS.includes(q.division) ? q.division : '';
 
       let rows;
@@ -1318,6 +1356,47 @@ module.exports = async (req, res) => {
       }
       if (!canSubmit) {
         return res.status(403).json({ error: 'Timesheet access is required' });
+      }
+
+      // Submit is the gate into payroll, so it is where a double-submit has to
+      // stop. A retry that lost track of its draft posts a second row instead
+      // of reusing the first, and once both are submitted nothing on the card
+      // tells them apart — same day, same job, same clock, twice. There is no
+      // reading of that other than one day of work counted twice, so refuse it
+      // here and point at the row that already covers it.
+      //
+      // Matched entirely in SQL against the row being submitted (no values
+      // round-tripped through JS) so a DATE never crosses a timezone on its way
+      // out and back. A split shift is not caught by this — different clock —
+      // and neither are two jobs on one day, which is the point.
+      const [dupe] = await sql`
+        SELECT b.id, b.status FROM timesheet_entries a
+        JOIN timesheet_entries b
+          ON  b.company_code = a.company_code
+          AND b.user_id      = a.user_id
+          AND b.entry_type   = a.entry_type
+          AND b.work_date    = a.work_date
+          AND b.id          <> a.id
+          AND (b.status = 'submitted' OR b.status = 'approved')
+          AND (
+                (a.entry_type = 'daily'
+                  AND b.division   IS NOT DISTINCT FROM a.division
+                  AND b.job_id     IS NOT DISTINCT FROM a.job_id
+                  AND b.start_time IS NOT DISTINCT FROM a.start_time
+                  AND b.end_time   IS NOT DISTINCT FROM a.end_time)
+             OR (a.entry_type = 'time_off'
+                  AND b.time_off_type IS NOT DISTINCT FROM a.time_off_type)
+          )
+        WHERE a.id = ${id} AND a.company_code = ${companyCode}
+        LIMIT 1
+      `;
+      if (dupe) {
+        return res.status(409).json({
+          error: existing.entry_type === 'time_off'
+            ? `You already have a ${dupe.status} time-off entry for this day. Delete this draft instead of submitting it again.`
+            : `You already have a ${dupe.status} entry for this day, job and times. Delete this draft instead of submitting it again.`,
+          duplicate_of: String(dupe.id),
+        });
       }
 
       const [updated] = await sql`
@@ -1927,17 +2006,20 @@ module.exports = async (req, res) => {
       // "manual" rows, which is invisible and surprising. Explicit DELETE
       // keeps payroll deletion symmetric with the approval/un-approval flow.
       //
-      // The sweep runs whatever the status: a row that lost its link (see
-      // removeSplitRows) can outlive an un-approve, and deleting the entry is
-      // the last chance to take it with them.
+      // Every sweep keys on the entry's DIVISION, never on its status. An
+      // injected row can outlive the thing that should have removed it — a
+      // daily_tracking row that lost its link (see removeSplitRows), or a
+      // quarry/trucking row whose blob rewrite landed while its mirror delete
+      // threw — and either way the entry is left reading 'submitted' with
+      // cost still posted against it. Deleting the entry is the last chance to
+      // catch those, so the status must not be what decides whether to look.
+      // Costs nothing on the other divisions, which never match the prefix.
       let removedSplitRows = await removeSplitRows(sql, companyCode, id);
-      if (existing.status === 'approved') {
-        if (existing.division === 'quarry') {
-          removedSplitRows += await removeQuarryRows(sql, companyCode, existing);
-        }
-        if (existing.division === 'trucking') {
-          removedSplitRows += await removeTruckingRows(sql, companyCode, existing);
-        }
+      if (existing.division === 'quarry') {
+        removedSplitRows += await removeQuarryRows(sql, companyCode, existing);
+      }
+      if (existing.division === 'trucking') {
+        removedSplitRows += await removeTruckingRows(sql, companyCode, existing);
       }
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;
       await writeAudit(
