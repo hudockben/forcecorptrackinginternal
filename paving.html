@@ -10202,8 +10202,12 @@ function deletePO(id) {
   if (oldProj) renderProjectPOs(oldProj);
 }
 
-// Sync all of a PO's lines to their daily rows after a header field changes
-function _syncPOHeaderToLines(po) {
+// Sync all of a PO's lines to their daily rows after a header field changes.
+// The cost/sub code pair only rides along when the PO's own codes are what
+// changed (syncCodes). Editing an unrelated header field — title, supplier,
+// date, status — used to stamp the PO's codes onto the daily row as well,
+// silently undoing any re-categorization a supervisor had made there.
+function _syncPOHeaderToLines(po, syncCodes) {
   if (!po.project_id) return;
   const proj = getProj(po.project_id);
   if (!proj) return;
@@ -10213,9 +10217,11 @@ function _syncPOHeaderToLines(po) {
     if (!r) return;
     r.material  = po.title    || '';
     r.supplier  = po.supplier || '';
-    r.cost_code = po.cost_code|| '';
-    r.sub_code  = po.sub_code || '';
     r.po_num    = po.po_number|| '';
+    if (syncCodes) {
+      r.cost_code = po.cost_code|| '';
+      r.sub_code  = po.sub_code || '';
+    }
     drPutNow(r.id, r);
   });
   renderDailyTable(po.project_id);
@@ -10816,7 +10822,8 @@ function _handlePOEvent(e) {
     po.cost_code = cc || '';
     po.sub_code  = sc || '';
     savePurchaseOrders();
-    _syncPOHeaderToLines(po);
+    // The codes themselves changed here, so they do propagate to the rows.
+    _syncPOHeaderToLines(po, true);
     if (po.project_id) renderProjectPOs(po.project_id);
     return;
   }
@@ -10881,7 +10888,8 @@ function _handlePOEvent(e) {
     if (oldProj)       renderProjectPOs(oldProj);
     if (po.project_id) renderProjectPOs(po.project_id);
   } else {
-    // title / supplier / date_created changes — push to daily rows
+    // title / supplier / date_created changes — push to daily rows, but leave
+    // the row's cost/sub code alone: nothing about them changed here.
     _syncPOHeaderToLines(po);
     if (po.project_id) renderProjectPOs(po.project_id);
   }
@@ -16558,25 +16566,34 @@ document.addEventListener('mouseup', () => {
   if (endIdx <= srcIdx) return;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById('daily-tbody-' + projId);
-  for (let i = srcIdx + 1; i <= endIdx; i++) {
+  // data-i indexes p.dailyRows, and a column filter hides rows without
+  // renumbering the rest — so the indices on screen have gaps in them. Walking
+  // the numeric range would write to every hidden row caught between the two
+  // visible ends. Collect the targets from the DOM instead, which is exactly
+  // the set the drag highlighted on the way down.
+  const targets = [];
+  if (tbody) {
+    [...tbody.children].forEach(tr => {
+      const m = tr.querySelector(`[data-proj="${projId}"][data-f]`);
+      if (!m) return;
+      const ri = parseInt(m.dataset.i, 10);
+      if (ri > srcIdx && ri <= endIdx) targets.push({ i: ri, tr });
+    });
+  }
+  targets.forEach(({ i, tr }) => {
     const row = (p.dailyRows || [])[i];
-    if (!row) continue;
+    if (!row) return;
     // Auto-injected rows: only allow fill-drag for whitelisted fields
     // (cost_code / sub_code / job_class / quantity). Locked fields can't be
     // bulk-overwritten by a drag — those changes must come from payroll.
     const isInj = row.timesheet_entry_id != null && row.timesheet_entry_id !== '';
-    if (isInj && !INJECTED_EDITABLE_FIELDS.has(field)) continue;
+    if (isInj && !INJECTED_EDITABLE_FIELDS.has(field)) return;
     row[field] = value;
     drPutNow(row.id, row);
-    if (tbody) {
-      const tr = [...tbody.children].find(r => r.querySelector(`[data-i="${i}"]`));
-      if (tr) {
-        const el = tr.querySelector(`[data-f="${field}"]`);
-        if (el) el.value = value;
-        renderDailyCalcCells(projId, i);
-      }
-    }
-  }
+    const el = tr.querySelector(`[data-f="${field}"]`);
+    if (el) el.value = value;
+    renderDailyCalcCells(projId, i);
+  });
 });
 
 /* ══════════════════════════════════════════════
