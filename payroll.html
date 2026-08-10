@@ -532,6 +532,10 @@
       cursor: not-allowed;
     }
     .btn-excel:disabled:hover { background: transparent; }
+    /* Breaking travel into its two legs takes the report to 12 columns, which
+       is wider than the card on a laptop screen. Scroll it sideways rather
+       than letting the status column fall off the edge. */
+    .report-scroll { overflow-x: auto; }
     .report table {
       width: 100%;
       border-collapse: collapse;
@@ -539,7 +543,7 @@
     }
     .report thead th {
       text-align: left;
-      padding: 0.6rem 0.7rem;
+      padding: 0.6rem 0.45rem;
       font-size: 0.62rem;
       text-transform: uppercase;
       letter-spacing: 0.09em;
@@ -549,7 +553,7 @@
       white-space: nowrap;
     }
     .report tbody td {
-      padding: 0.65rem 0.7rem;
+      padding: 0.65rem 0.45rem;
       border-bottom: 1px solid rgba(42,42,58,0.6);
       font-variant-numeric: tabular-nums;
     }
@@ -648,8 +652,12 @@
 
     /* ── Print: hide everything except the active report / audit log ── */
     @media print {
-      @page { margin: 0.5in; }
+      /* Landscape: the hours report runs 12 columns wide once travel is split
+         into its legs, and the audit log is wider still. */
+      @page { size: landscape; margin: 0.4in; }
       body { background: white !important; color: black !important; }
+      /* On paper there is nothing to scroll — let the table print in full. */
+      .report-scroll { overflow: visible !important; }
       header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
       .modal-backdrop, .btn-print { display: none !important; }
       main { max-width: none !important; padding: 0 !important; }
@@ -667,7 +675,22 @@
       }
       .report-title { color: #000 !important; font-size: 14pt; }
       .report-sub   { color: #555 !important; }
-      .report table { font-size: 10pt; }
+      /* 12 columns across a landscape page — 10pt overflowed the sheet and
+         Chrome clipped the status column off the right edge. */
+      .report table { font-size: 8pt; }
+      /* Headers and pills are sized in rem, so they don't follow the table's
+         point size — shrink them here too or they set the width floor. */
+      .report thead th {
+        font-size: 0.5rem !important;
+        letter-spacing: 0.05em !important;
+        padding: 0.5rem 0.28rem !important;
+      }
+      .report tbody td, .report tr.total td { padding: 0.4rem 0.28rem !important; }
+      .report .pill {
+        font-size: 0.5rem !important;
+        letter-spacing: 0.06em !important;
+        padding: 0.12rem 0.3rem !important;
+      }
       .report thead th {
         background: #f3f3f3 !important;
         color: #000 !important;
@@ -681,6 +704,9 @@
         background: #f7f7f7 !important;
         border-top: 2px solid #000 !important;
       }
+      /* The totals row lives in <tfoot>, so the tbody rule above never reached
+         it — on paper it printed near-white on near-white. */
+      .report tfoot td { color: #000 !important; }
       .pill-pending { background: #fde68a !important; color: #6b3a00 !important; }
       .pill-clear   { background: #d1fae5 !important; color: #064e3b !important; }
       .report tr.has-pending td.name::before { color: #b45309 !important; }
@@ -2015,6 +2041,8 @@
         if (!byUser.has(u)) byUser.set(u, {
           username:      u,
           workHours:     0,
+          travelToSite:  0,
+          travelToShop:  0,
           travelHours:   0,
           pwHours:       0,
           stdHours:      0,
@@ -2035,6 +2063,12 @@
           if (e.status === 'submitted' || e.status === 'approved') {
             acc.workHours   += work;
             acc.travelHours += travel;
+            // The two legs behind that travel figure, as entered on the
+            // timesheet. An entry saved with only the sum contributes nothing
+            // here, so the legs can add to less than travelHours — travelHours
+            // stays the authoritative number.
+            acc.travelToSite += Number(e.travel_to_site_hours || 0);
+            acc.travelToShop += Number(e.travel_to_shop_hours || 0);
             // Split the day's hours by the job's prevailing-wage flag so
             // payroll can see prevailing vs standard hours per worker. Only
             // an explicit true counts as prevailing; false and null (the
@@ -2055,6 +2089,8 @@
       // Totals
       const tot = rows.reduce((acc, r) => ({
         workHours:     acc.workHours     + r.workHours,
+        travelToSite:  acc.travelToSite  + r.travelToSite,
+        travelToShop:  acc.travelToShop  + r.travelToShop,
         travelHours:   acc.travelHours   + r.travelHours,
         pwHours:       acc.pwHours        + r.pwHours,
         stdHours:      acc.stdHours       + r.stdHours,
@@ -2062,7 +2098,7 @@
         approvedHours: acc.approvedHours + r.approvedHours,
         pendingOff:    acc.pendingOff    + r.pendingOff,
         approvedOff:   acc.approvedOff   + r.approvedOff,
-      }), { workHours: 0, travelHours: 0, pwHours: 0, stdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
+      }), { workHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0, pwHours: 0, stdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
 
       // Header subtitle
       const scopeBits = [];
@@ -2123,6 +2159,8 @@
           <tr class="emp-row${hasPending ? ' has-pending' : ''}${expanded ? ' expanded' : ''}" data-user="${userAttr}" onclick="toggleReportRow(this)" title="Click to ${expanded ? 'collapse' : 'expand'} this employee's entries">
             <td class="name"><span class="exp-caret">▸</span>${escapeHtml(r.username)}</td>
             <td class="num">${r.workHours.toFixed(2)}</td>
+            <td class="num">${r.travelToSite.toFixed(2)}</td>
+            <td class="num">${r.travelToShop.toFixed(2)}</td>
             <td class="num">${r.travelHours.toFixed(2)}</td>
             <td class="num">${total.toFixed(2)}</td>
             <td class="num num-pw">${r.pwHours.toFixed(2)}</td>
@@ -2133,7 +2171,7 @@
             <td>${status}</td>
           </tr>
           <tr class="report-detail" data-user="${userAttr}"${expanded ? '' : ' hidden'}>
-            <td colspan="10">${reportDetailHtml(r.entries)}</td>
+            <td colspan="12">${reportDetailHtml(r.entries)}</td>
           </tr>
         `;
       }).join('');
@@ -2156,17 +2194,20 @@
               <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
             </div>
           </div>
+          <div class="report-scroll">
           <table>
             <thead>
               <tr>
                 <th>Employee</th>
                 <th style="text-align:right">Hours</th>
-                <th style="text-align:right">Travel</th>
+                <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel&nbsp;to&nbsp;Site</th>
+                <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
+                <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
                 <th style="text-align:right">Total</th>
                 <th class="th-pw" style="text-align:right">Prevailing&nbsp;Hrs</th>
                 <th style="text-align:right">Standard&nbsp;Hrs</th>
-                <th style="text-align:right">Pending Hours</th>
-                <th style="text-align:right">Approved Hours</th>
+                <th style="text-align:right">Pending&nbsp;Hrs</th>
+                <th style="text-align:right">Approved&nbsp;Hrs</th>
                 <th>Time Off</th>
                 <th>Status</th>
               </tr>
@@ -2176,6 +2217,8 @@
               <tr class="total">
                 <td class="name">Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})</td>
                 <td class="num">${tot.workHours.toFixed(2)}</td>
+                <td class="num">${tot.travelToSite.toFixed(2)}</td>
+                <td class="num">${tot.travelToShop.toFixed(2)}</td>
                 <td class="num">${tot.travelHours.toFixed(2)}</td>
                 <td class="num">${totalAll.toFixed(2)}</td>
                 <td class="num num-pw">${tot.pwHours.toFixed(2)}</td>
@@ -2189,6 +2232,7 @@
               </tr>
             </tfoot>
           </table>
+          </div>
         </div>
       `;
     }
@@ -2634,9 +2678,9 @@
     // Sheet 1 — one row per employee, mirroring the on-screen report table.
     function reportSummarySheetXml(model) {
       const { rows, tot, scopeLine, gen, companyName } = model;
-      const headers = ['Employee', 'Work Hours', 'Travel Hours', 'Total Hours',
-        'Prevailing Hrs', 'Standard Hrs', 'Pending Hours', 'Approved Hours',
-        'Time Off', 'Status'];
+      const headers = ['Employee', 'Work Hours', 'Travel to Site', 'Travel to Shop',
+        'Travel Hours', 'Total Hours', 'Prevailing Hrs', 'Standard Hrs',
+        'Pending Hours', 'Approved Hours', 'Time Off', 'Status'];
       const HEADER_ROW = 6;
 
       const sheet = [
@@ -2645,7 +2689,7 @@
         [cTxt(scopeLine, XS.sub)],
         [cTxt(`Generated ${gen}`, XS.sub)],
         [],
-        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 7) ? XS.headNum : XS.head)),
+        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 9) ? XS.headNum : XS.head)),
       ];
 
       for (const r of rows) {
@@ -2656,6 +2700,8 @@
         sheet.push([
           cTxt(r.username,      XS.text),
           cNum(r.workHours,     XS.num),
+          cNum(r.travelToSite,  XS.num),
+          cNum(r.travelToShop,  XS.num),
           cNum(r.travelHours,   XS.num),
           cNum(total,           XS.num),
           cNum(r.pwHours,       XS.numPw),
@@ -2671,6 +2717,8 @@
       sheet.push([
         cTxt(`Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})`, XS.totText),
         cNum(tot.workHours,     XS.totNum),
+        cNum(tot.travelToSite,  XS.totNum),
+        cNum(tot.travelToShop,  XS.totNum),
         cNum(tot.travelHours,   XS.totNum),
         cNum(totalAll,          XS.totNum),
         cNum(tot.pwHours,       XS.totPw),
@@ -2682,10 +2730,10 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [26, 11, 12, 11, 14, 13, 13, 15, 26, 20],
+        colWidths: [26, 11, 13, 13, 12, 11, 14, 13, 13, 15, 26, 20],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:J${HEADER_ROW + rows.length}`,
+        autoFilterRef: `A${HEADER_ROW}:L${HEADER_ROW + rows.length}`,
       });
     }
 
