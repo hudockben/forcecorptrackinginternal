@@ -1320,6 +1320,16 @@
       renderCompanyInfo();
     }
 
+    // Mirror of DUST_IC_SOURCES in api/lib/ic-sources.js — this page is static
+    // and cannot require it. scripts/test-ic-sources.js fails if the two lists
+    // drift apart, so a new dust tab has to be added in both places.
+    const DUST_IC_SOURCES = ['dust', 'dust-other-billing', 'dust-ees-other'];
+
+    // The dust sources whose intercompany amount IS the stored total. Dust
+    // tracking is the exception: its IC figure is recomputed from vehicle
+    // totals and the customer's UB rate rather than read off the row.
+    const DUST_FLAT_TOTAL_SOURCES = ['dust-other-billing', 'dust-ees-other'];
+
     function switchCiDiv(div) {
       ciDivFilter = div;
       document.getElementById('ciSubTruck').className     = 'ci-subtab-btn' + (div === 'trucking'           ? ' st-truck' : '');
@@ -2794,7 +2804,7 @@
     // Treat dust tracking and dust other-billing as a single dust bucket
     // for top-level dashboards/analytics aggregations.
     function _isDustSrc(e) {
-      return e && (e.source === 'dust' || e.source === 'dust-other-billing' || e.source === 'dust-ees-other');
+      return !!e && DUST_IC_SOURCES.includes(e.source);
     }
 
     function renderAnalytics() {
@@ -2816,7 +2826,7 @@
 
       function icAmt(e) {
         // Other-billing rows already store the full per-row total at time of send.
-        if (e.source === 'dust-other-billing' || e.source === 'dust-ees-other') return parseFloat(e.total) || 0;
+        if (DUST_FLAT_TOTAL_SOURCES.includes(e.source)) return parseFloat(e.total) || 0;
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
         // Dust tracking: use stored per-vehicle totals (actual rates) + current UB rate.
         return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
@@ -3124,7 +3134,7 @@
       const dustEntries  = yrEntries.filter(_isDustSrc);
 
       function icAmt(e) {
-        if (e.source === 'dust-other-billing' || e.source === 'dust-ees-other') return parseFloat(e.total) || 0;
+        if (DUST_FLAT_TOTAL_SOURCES.includes(e.source)) return parseFloat(e.total) || 0;
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
         return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
              + (parseFloat(e.gallons_ub) || 0) * dustUbRateFor(e.company_name);
