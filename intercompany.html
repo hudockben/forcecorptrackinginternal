@@ -2229,30 +2229,39 @@
       }
 
       // ── EES Other section ──────────────────────────────────────────────
-      // Hours-based rather than material-based: these rows come from approved
-      // dust timesheet entries on the EES Pre Loading / Washing jobs, and only
-      // the ones marked Billable reach this page at all.
+      // Hours are the point of this tab, not money. Every approved EES row
+      // arrives here — Pre Loading and Washing, Billable and Non-Billable —
+      // because the hours are what has to be collected and accounted for.
+      // Only a Billable row carries a rate, so revenue is the secondary
+      // figure and a Non-Billable row contributes hours at a zero total.
+      const eesIsBillable = e => String(e && e.billing || '').trim().toLowerCase() === 'billable';
+
       function buildEesSection(divRows, sectionId) {
-        const colSpan = 5; // Month | Jobs | Hours | Revenue | IC Total
+        const colSpan = 6; // Month | Jobs | Billable hrs | Non-billable hrs | Total hours | Revenue
 
         const byMonth = {};
         divRows.forEach(e => {
           const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
           const mIdx = isNaN(mRaw) ? -1 : mRaw;
           const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, total: 0, entries: [] };
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, billHrs: 0, nonBillHrs: 0, total: 0, entries: [] };
+          const hrs = parseFloat(e.total_hours) || 0;
           byMonth[mKey].jobs++;
-          byMonth[mKey].hours += parseFloat(e.total_hours) || 0;
-          byMonth[mKey].total += parseFloat(e.total)       || 0;
+          byMonth[mKey].hours += hrs;
+          if (eesIsBillable(e)) byMonth[mKey].billHrs    += hrs;
+          else                  byMonth[mKey].nonBillHrs += hrs;
+          byMonth[mKey].total += parseFloat(e.total) || 0;
           byMonth[mKey].entries.push(e);
         });
         const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
 
-        const totJobs = divRows.length;
-        const totHrs  = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
-        const totRev  = divRows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
+        const totJobs    = divRows.length;
+        const totHrs     = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totBillHrs = divRows.filter(eesIsBillable).reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totNonHrs  = totHrs - totBillHrs;
+        const totRev     = divRows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
 
-        const detailHead = `<th>Date</th><th>Driver</th><th>Unit</th><th>Customer</th><th>Location</th><th>Name</th><th>Job #</th><th class="r">Start</th><th class="r">End</th><th class="r">Hours</th><th class="r">$ / hr</th><th class="r ic-val">Total</th><th></th>`;
+        const detailHead = `<th>Date</th><th>Driver</th><th>Unit</th><th>Customer</th><th>Location</th><th>Name</th><th>Job #</th><th>Billing</th><th class="r">Start</th><th class="r">End</th><th class="r ic-val">Hours</th><th class="r">$ / hr</th><th class="r">Total</th><th></th>`;
 
         const monthRows = sortedMonths.map((m, mi) => {
           const detId  = `${sectionId}-m${mi}`;
@@ -2271,11 +2280,12 @@
               <td>${escT(e.location   || '—')}</td>
               <td>${escT(e.name       || '—')}</td>
               <td>${escT(e.job_number || '—')}</td>
+              <td${eesIsBillable(e) ? '' : ' style="color:var(--muted)"'}>${escT(e.billing || '—')}</td>
               <td class="r">${escT(e.actual_start || '—')}</td>
               <td class="r">${escT(e.actual_end   || '—')}</td>
-              <td class="r">${hrs  > 0 ? fmtH(hrs)   : '—'}</td>
-              <td class="r">${rate > 0 ? fmt$(rate)  : '—'}</td>
-              <td class="r ic-val">${fmt$(tot)}</td>
+              <td class="r ic-val">${hrs  > 0 ? fmtH(hrs)  : '—'}</td>
+              <td class="r">${rate > 0 ? fmt$(rate) : '—'}</td>
+              <td class="r">${tot  > 0 ? fmt$(tot)  : '—'}</td>
               <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
             </tr>`;
           }).join('');
@@ -2284,9 +2294,10 @@
             <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
               <td><span class="ci-month-arrow">▶</span>${m.label}</td>
               <td class="r">${m.jobs}</td>
-              <td class="r">${fmtH(m.hours)}</td>
-              <td class="r">${fmt$(m.total)}</td>
-              <td class="r ic-val">${fmt$(m.total)}</td>
+              <td class="r">${m.billHrs    > 0 ? fmtH(m.billHrs)    : '—'}</td>
+              <td class="r">${m.nonBillHrs > 0 ? fmtH(m.nonBillHrs) : '—'}</td>
+              <td class="r ic-val">${fmtH(m.hours)}</td>
+              <td class="r">${m.total > 0 ? fmt$(m.total) : '—'}</td>
             </tr>
             <tr class="ci-mdet-row" id="${detId}">
               <td colspan="${colSpan}" class="ci-mdet-inner">
@@ -2304,8 +2315,10 @@
             <span class="ci-div-label dust">EES Other</span>
             <div class="ci-div-stats">
               <div class="ci-div-stat"><strong>${totJobs}</strong> job${totJobs === 1 ? '' : 's'}</div>
-              <div class="ci-div-stat"><strong>${fmtH(totHrs)}</strong> hours</div>
-              <div class="ci-div-stat ic-val"><strong>${fmt$(totRev)}</strong> IC</div>
+              <div class="ci-div-stat ic-val"><strong>${fmtH(totHrs)}</strong> hours</div>
+              <div class="ci-div-stat"><strong>${fmtH(totBillHrs)}</strong> billable</div>
+              <div class="ci-div-stat"><strong>${fmtH(totNonHrs)}</strong> non-billable</div>
+              ${totRev > 0 ? `<div class="ci-div-stat"><strong>${fmt$(totRev)}</strong> billed</div>` : ''}
             </div>
           </div>
           <table class="ci-month-table">
@@ -2313,9 +2326,10 @@
               <tr>
                 <th>Month</th>
                 <th class="r">Jobs</th>
-                <th class="r">Hours</th>
-                <th class="r">Revenue</th>
-                <th class="r ic-val">IC Total</th>
+                <th class="r">Billable Hrs</th>
+                <th class="r">Non-Billable Hrs</th>
+                <th class="r ic-val">Total Hours</th>
+                <th class="r">Billed</th>
               </tr>
             </thead>
             <tbody>
@@ -2323,9 +2337,10 @@
               <tr class="ci-month-total">
                 <td>Total</td>
                 <td class="r">${totJobs}</td>
-                <td class="r">${fmtH(totHrs)}</td>
-                <td class="r">${fmt$(totRev)}</td>
-                <td class="r ic-val">${fmt$(totRev)}</td>
+                <td class="r">${totBillHrs > 0 ? fmtH(totBillHrs) : '—'}</td>
+                <td class="r">${totNonHrs  > 0 ? fmtH(totNonHrs)  : '—'}</td>
+                <td class="r ic-val">${fmtH(totHrs)}</td>
+                <td class="r">${totRev > 0 ? fmt$(totRev) : '—'}</td>
               </tr>
             </tbody>
           </table>
@@ -2356,7 +2371,16 @@
                 : buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`))
           : '';
 
-        const icStatCard = `
+        // EES Other is collected in hours, not dollars — most of its rows are
+        // Non-Billable by design, so a currency figure here would read as "this
+        // customer owes nothing" when the point is how much time was spent.
+        const icStatCard = isEesFilter
+          ? `
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val ic-val">${fmtH(totHours)}</div>
+                <div class="ci-co-stat-lbl">IC Hours</div>
+              </div>`
+          : `
               <div class="ci-co-stat">
                 <div class="ci-co-stat-val ic-val">${fmt$(totIcRev)}</div>
                 <div class="ci-co-stat-lbl">Intercompany</div>
@@ -2749,9 +2773,48 @@
       rowEl.classList.toggle('open', open);
     }
 
+    // Entries that reached here from a division's auto-sync are recreated by
+    // that division on its next reconcile — the division owns the row, and
+    // "not in the blob" is exactly the signal it uses to decide something is
+    // new. Deleting one here therefore has to be recorded, or it silently
+    // comes back. The division checks this list and leaves a suppressed row
+    // alone, showing "Removed in IC" against it instead of a sent stamp, so a
+    // removal is visible on both sides rather than quietly dropping billing.
+    const IC_REMOVED_KEY = 'fct_intercompany_removed_entries';
+
+    async function _suppressIcEntry(entry) {
+      if (!entry || !entry.source_id) return;   // hand-added rows aren't owned by a division
+      try {
+        const r = await fetch(`${API_BASE}/data/${IC_REMOVED_KEY}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) return;
+        const body = await r.json();
+        const cur  = Array.isArray(body && body.value) ? body.value : [];
+        const key  = `${entry.source || ''}|${entry.source_id}`;
+        if (cur.some(t => `${t.source || ''}|${t.source_id}` === key)) return;
+        cur.push({
+          source: entry.source || '', source_id: entry.source_id,
+          company_name: entry.company_name || '', actual_date: entry.actual_date || '',
+          removed_at: new Date().toISOString(),
+        });
+        await fetch(`${API_BASE}/data/${IC_REMOVED_KEY}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ value: cur, baseUpdatedAt: body.updated_at || null })
+        });
+      } catch (err) {
+        console.error('[suppressIcEntry]', err.message);
+      }
+    }
+
     async function deleteIcEntry(id) {
       if (!confirm('Remove this billing entry?')) return;
+      const entry = icBillingEntries.find(e => e.id === id) || null;
       icBillingEntries = icBillingEntries.filter(e => e.id !== id);
+      // Record BEFORE the blob write: if the division syncs in between, the
+      // suppression is already in place and the row is not recreated.
+      await _suppressIcEntry(entry);
       try {
         const r = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           method: 'PUT',

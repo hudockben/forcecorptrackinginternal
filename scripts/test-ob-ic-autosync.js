@@ -51,11 +51,14 @@ const harness = new Function(`
   let obRows = [];
   const obDeletedIds = new Set();
   const user = { username: 'tester' };
+  let _suppressed = new Set();
+  function icIsSuppressed(source, sourceId) { return _suppressed.has(source + '|' + sourceId); }
   ${extractFn('round2')}
   ${extractFn('obCalc')}
   ${extractFn('_icObEntrySig')}
   ${extractFn('_reconcileObBilling')}
-  return function run(rows, deleted, entries, coByName) {
+  return function run(rows, deleted, entries, coByName, suppressed) {
+    _suppressed = new Set(suppressed || []);
     obRows = rows;
     obDeletedIds.clear();
     (deleted || []).forEach(id => obDeletedIds.add(id));
@@ -194,6 +197,43 @@ console.log('\n[stale delete — a queued id that is back in obRows is not a del
   assert('stale delete dequeued', res.handledDeletes.includes('ob-1') && res.remainingDeletes.includes('ob-1'));
 }
 
+console.log('\n[a row deleted in Intercompany stays deleted]');
+{
+  // Dust owns these rows, so "absent from the blob" is what the reconciler
+  // reads as "new" — without the suppression list a deletion over in
+  // Intercompany is undone on the next sync, seconds later.
+  const entries = [foreign()];
+  const res = harness([obRow()], [], entries, CO, ['dust-other-billing|ob-1']);
+  assert('not recreated', obEntries(entries).length === 0);
+  assert('no write triggered', res.changed === false);
+  assert('foreign entry untouched', entries.length === 1);
+}
+
+console.log('\n[suppression is per row, and per source]');
+{
+  const entries = [];
+  // A suppression recorded against a different row must not silence this one…
+  harness([obRow({ id: 'ob-1' })], [], entries, CO, ['dust-other-billing|ob-2']);
+  assert('a different row still syncs', obEntries(entries).length === 1);
+  // …nor one recorded against the same id under another source.
+  const other = [];
+  harness([obRow({ id: 'ob-1' })], [], other, CO, ['dust|ob-1', 'dust-ees-other|ob-1']);
+  assert('another source\'s suppression does not apply', obEntries(other).length === 1);
+}
+
+console.log('\n[suppression never removes an entry that is already there]');
+{
+  // Only creation is suppressed. An entry that exists keeps being maintained,
+  // so a stale suppression can't quietly stop a live row from updating.
+  const entries = [];
+  harness([obRow()], [], entries, CO);
+  const sentAt = entries[0].sent_at;
+  const res = harness([obRow({ price_per_unit: '3.00' })], [], entries, CO, ['dust-other-billing|ob-1']);
+  assert('entry still present', obEntries(entries).length === 1);
+  assert('and still updated', entries[0].total === 680 && res.changed === true);
+  assert('sent_at preserved', entries[0].sent_at === sentAt);
+}
+
 console.log('\n[no mass-delete — a failed/empty OB load must not wipe IC]');
 {
   const entries = [foreign()];
@@ -312,6 +352,7 @@ function buildRuntime() {
     store: {
       fct_intercompany_companies: [ACME],
       fct_intercompany_billing_entries: [],
+      fct_intercompany_removed_entries: [],
     },
     // Server-side updated_at per key, driving the optimistic-concurrency check.
     stamps: { fct_intercompany_billing_entries: '2026-07-01T00:00:00.000Z' },
@@ -337,6 +378,14 @@ function buildRuntime() {
     let obRows = [];
     const obDeletedIds = new Set();
     const obIcSent = new Map();
+    const IC_REMOVED_KEY = 'fct_intercompany_removed_entries';
+    let _icSuppressed = new Set();
+    function icIsSuppressed(source, sourceId) { return _icSuppressed.has(source + '|' + sourceId); }
+    async function _loadIcSuppressions() {
+      const list = await apiGet(IC_REMOVED_KEY);
+      if (!Array.isArray(list)) return;
+      _icSuppressed = new Set(list.filter(t => t && t.source_id).map(t => (t.source || '') + '|' + t.source_id));
+    }
     const user  = { username: 'tester' };
     const token = 'tok';
     // Both consts exist in dust.html (IC_BILLING_KEY for the tracking sync's

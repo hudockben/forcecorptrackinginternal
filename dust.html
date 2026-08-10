@@ -1021,6 +1021,10 @@
       display: block; font-size: 0.55rem; font-weight: 700; letter-spacing: 0.05em;
       color: #22c55e; margin-top: 0.18rem; white-space: nowrap;
     }
+    /* Deleted on the Intercompany side. Muted rather than red: it's a
+       deliberate act over there, not an error here — but it has to be visible
+       or the row silently stops being billed. */
+    .ic-sent-chip.ic-removed-chip { color: var(--muted); }
 
     /* Cells owned by the timesheet, not by the tab. Shown plainly so it's
        obvious they can't be typed into — payroll is the source of truth and
@@ -2503,6 +2507,32 @@
     const IC_MAX_CONFLICT_RETRIES = 3;
     let _icConflictRetries = 0;
 
+    // Rows an Intercompany user deleted. Dust owns these rows, so "absent from
+    // the blob" is what every reconciler below reads as "new" — without this
+    // list a deletion over there is undone within seconds and looks like the
+    // page ignored it. A suppressed row is left alone and shows "Removed in IC"
+    // in place of its sent stamp, so the removal is visible here rather than
+    // quietly dropping the billing.
+    const IC_REMOVED_KEY = 'fct_intercompany_removed_entries';
+    let _icSuppressed = new Set();
+
+    function _icSuppressKey(source, sourceId) { return `${source}|${sourceId}`; }
+    function icIsSuppressed(source, sourceId) {
+      return _icSuppressed.has(_icSuppressKey(source, sourceId));
+    }
+
+    async function _loadIcSuppressions() {
+      try {
+        const list = await apiGet(IC_REMOVED_KEY);
+        if (!Array.isArray(list)) return;
+        const next = new Set();
+        list.forEach(t => {
+          if (t && t.source_id) next.add(_icSuppressKey(t.source || '', t.source_id));
+        });
+        _icSuppressed = next;
+      } catch { /* non-fatal — worst case a removed row reappears */ }
+    }
+
     // Reconcile every dust row into `entries` (MUTATED in place):
     //  • create an entry for a newly-billable row (stamped sent_at = now),
     //  • keep an existing entry in sync when a dust-owned field changed
@@ -2582,6 +2612,8 @@
             changed = true;
           }
           sentNow.push({ id: row.id, sentAt });
+        } else if (icIsSuppressed('dust', row.id)) {
+          continue;   // deleted in Intercompany — leave it deleted
         } else if (dustJobKeys.has(_icJobKey(entry))) {
           continue;   // same physical job already represented; IC would collapse a dup
         } else {
@@ -2602,6 +2634,7 @@
       if (_icSyncRunning) { _icDustQueued = true; return; }
       _icSyncRunning = true;
       try {
+        await _loadIcSuppressions();
         const coData = await apiGet('fct_intercompany_companies');
         const coList = Array.isArray(coData) ? coData : [];
         if (!coList.length) return;              // no companies to match → nothing to do
@@ -3393,7 +3426,9 @@
         const invSt    = row.inv_status || '';
         const badge    = invBadgeHtml(row);
         const icTs     = icSentAt(row);
-        const icChip   = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
+        const icChip   = icIsSuppressed('dust', row.id)
+          ? '<span class="ic-sent-chip ic-removed-chip">⊘ Removed in IC</span>'
+          : (icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '');
         const invPanel = `
           <div class="inv-panel">
             <div class="inv-field">
@@ -6491,7 +6526,9 @@
             `<option value="${esc(name)}"${row.mu===name?' selected':''}>${esc(name)}</option>`).join('');
 
         const icTs   = obIcSent.get(row.id) || '';
-        const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
+        const icChip = icIsSuppressed('dust-other-billing', row.id)
+          ? '<span class="ic-sent-chip ic-removed-chip">⊘ Removed in IC</span>'
+          : (icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '');
 
         const icPanel = `
           <div class="inv-panel">
@@ -6728,6 +6765,8 @@
             changed = true;
           }
           sentNow.push({ id: row.id, sentAt });
+        } else if (icIsSuppressed('dust-other-billing', row.id)) {
+          continue;   // deleted in Intercompany — leave it deleted
         } else {
           entries.unshift(entry);
           bySourceId.set(row.id, entry);
@@ -6744,6 +6783,7 @@
       if (_icSyncRunning) { _icObQueued = true; return; }
       _icSyncRunning = true;
       try {
+        await _loadIcSuppressions();
         const coData = await apiGet('fct_intercompany_companies');
         const coList = Array.isArray(coData) ? coData : [];
 
@@ -7067,7 +7107,9 @@
         const row = eeRows[idx];
         const c   = eeCalc(row);
         const icTs   = eeIcSent.get(row.id) || '';
-        const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
+        const icChip = icIsSuppressed('dust-ees-other', row.id)
+          ? '<span class="ic-sent-chip ic-removed-chip">⊘ Removed in IC</span>'
+          : (icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '');
         const billable = eeIsBillable(row);
         const act = row.activity ? ` — ${row.activity}` : '';
 
@@ -7141,8 +7183,11 @@
     /* ── EES Other → Intercompany auto-sync ──────────────────────────────
        Same reconcile model as Dust Tracking and Other Billing. Two rules are
        specific to this tab:
-         • only a Billable row with a real total is mirrored — every row here
-           starts Non-Billable, so nothing bills anyone by accident;
+         • HOURS are what this tab exists to collect, so every row with real
+           hours is mirrored whether it is Billable or not. A Non-Billable row
+           carries its hours with a zero total: it shows up in Intercompany to
+           be counted, and moves no money. Only the rate turns hours into a
+           figure, and only a Billable row has one;
          • a row that disappears (payroll un-approved or deleted the timesheet
            entry) has its entry pulled. That is safe here, unlike the other
            tabs, ONLY because a failed blob read leaves eeLoaded false and the
@@ -7185,8 +7230,10 @@
         const c    = eeCalc(row);
         const prev = bySourceId.get(row.id);
 
-        if (!(c.total > 0)) {
-          // Non-Billable, or no rate yet. Void anything already sent.
+        // Gate on hours, not money — a Non-Billable row has no total by
+        // definition and must still reach Intercompany. A row with no hours
+        // has nothing to collect, so anything already sent is voided.
+        if (!(c.hrs > 0)) {
           if (prev) {
             const i = entries.indexOf(prev);
             if (i !== -1) { entries.splice(i, 1); changed = true; }
@@ -7229,6 +7276,8 @@
             changed = true;
           }
           sentNow.push({ id: row.id, sentAt });
+        } else if (icIsSuppressed('dust-ees-other', row.id)) {
+          continue;   // deleted in Intercompany — leave it deleted
         } else {
           entries.unshift(entry);
           bySourceId.set(row.id, entry);
@@ -7247,6 +7296,7 @@
       if (_icSyncRunning) { _icEesQueued = true; return; }
       _icSyncRunning = true;
       try {
+        await _loadIcSuppressions();
         const coData = await apiGet('fct_intercompany_companies');
         const coList = Array.isArray(coData) ? coData : [];
         const coByName = new Map();
