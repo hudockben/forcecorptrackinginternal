@@ -6072,6 +6072,7 @@
     let obRows       = [];
     let obFilters    = {};
     let obSaveTimer  = null;
+    let obSaving     = false;
     let obYear       = String(new Date().getFullYear());
     const obExpanded = new Set();
     const obIcSent   = new Map(); // row.id → sent_at
@@ -6107,8 +6108,10 @@
     }
 
     async function obSave(opts = {}) {
+      obSaving = true;
       try { return await apiPut(OB_KEY, obRows, opts); }
       catch { return false; }
+      finally { obSaving = false; }
     }
 
     function obScheduleSave() {
@@ -6122,6 +6125,15 @@
         setSaveState(ok ? 'saved' : 'error');
         setTimeout(() => setSaveState(''), 3000);
       }, 900);
+    }
+
+    // Local OB state the server hasn't acked yet: an open debounce window, a
+    // save in flight, or a delete still queued for Intercompany. The 60s poller
+    // must stand down while any of these hold, or it replaces obRows with a
+    // server snapshot that predates them — silently resurrecting a just-deleted
+    // row or discarding edits the debounce hasn't flushed.
+    function obHasPendingSave() {
+      return obSaveTimer != null || obSaving || obDeletedIds.size > 0;
     }
 
     function obAddRow() {
@@ -6502,6 +6514,11 @@
       // row that no longer exists.
       for (const id of obDeletedIds) {
         handledDeletes.push(id);
+        // A queued id that is somehow back in obRows (a poll that raced the
+        // save, another device re-adding it) is not a deletion. Dropping the
+        // entry here would only see it recreated below with a fresh sent_at,
+        // losing the original timestamp and any IC-side invoice/payment dates.
+        if (obRows.some(r => r && r.id === id)) continue;
         const prev = bySourceId.get(id);
         if (!prev) continue;
         const i = entries.indexOf(prev);
@@ -7363,11 +7380,17 @@
 
       async function pollObRows() {
         try {
-          // Same protection as pollDustRows — never replace the in-memory
-          // array while the user could have unsaved edits.
-          if (_isEditing()) return;
+          // Same protection as pollDustRows — never replace the in-memory array
+          // while the user could have unsaved edits. _isEditing() alone is not
+          // enough: deleting a row leaves focus on a <button>, so the 900ms
+          // debounce would run "not editing" and the poll could restore the row
+          // it just removed — which the debounced save then wrote back.
+          if (_isEditing() || obHasPendingSave()) return;
           const incoming = await apiGet(OB_KEY);
           if (!Array.isArray(incoming)) return;
+          // Re-check after the round-trip: the user may have edited or deleted
+          // while it was in flight, which would make `incoming` stale.
+          if (_isEditing() || obHasPendingSave()) return;
           if (JSON.stringify(incoming) === JSON.stringify(obRows)) return;
           obRows = incoming;
           const obPanel = document.getElementById('tab-other-billing');

@@ -173,6 +173,27 @@ console.log('\n[delete — explicit id queue removes the entry]');
   assert('foreign entry survived', entries.length === 1 && entries[0].id === 'tr-entry');
 }
 
+console.log('\n[stale delete — a queued id that is back in obRows is not a deletion]');
+{
+  // A poll racing the save (or another device re-adding the row) can put a
+  // queued id back into obRows. Honouring the delete would drop the entry and
+  // immediately recreate it below with a fresh sent_at — losing the original
+  // timestamp and any Intercompany-side invoice/payment dates on it.
+  const entries = [];
+  harness([obRow()], [], entries, CO);
+  const originalSentAt = entries[0].sent_at;
+  entries[0].invoice_sent_date     = '2026-07-20';
+  entries[0].payment_received_date = '2026-08-01';
+
+  const res = harness([obRow()], ['ob-1'], entries, CO);   // queued, yet still present
+  assert('entry kept', obEntries(entries).length === 1);
+  assert('no needless write', res.changed === false);
+  assert('original sent_at intact', entries[0].sent_at === originalSentAt);
+  assert('IC invoice date intact', entries[0].invoice_sent_date === '2026-07-20');
+  assert('IC payment date intact', entries[0].payment_received_date === '2026-08-01');
+  assert('stale delete dequeued', res.handledDeletes.includes('ob-1') && res.remainingDeletes.includes('ob-1'));
+}
+
 console.log('\n[no mass-delete — a failed/empty OB load must not wipe IC]');
 {
   const entries = [foreign()];
@@ -461,6 +482,106 @@ const obIn = state => state.store.fct_intercompany_billing_entries.filter(e => e
     assert('only one PUT total', state.puts.length === 1);
     assert('exactly one entry, no duplicate', obIn(state).length === 1);
     assert('queue drained', api.obQueued() === false);
+  }
+
+  // ── The 60s poller must not undo unsaved local state ────────────────────
+  // pollObRows replaces obRows wholesale from the server. Guarding only on
+  // _isEditing() is not enough: obDeleteRow leaves focus on a <button>, so
+  // during the 900ms save debounce the poll saw "not editing", restored the
+  // deleted row from the server snapshot, and the debounced save then wrote
+  // that restored list back — the delete silently reverted.
+  function buildPoller(serverRows) {
+    const state = { server: serverRows, editing: false, gate: null, renders: 0, syncs: 0 };
+    const api = new Function('state', `
+      let obRows = [];
+      let obSaveTimer = null;
+      let obSaving = false;
+      const obDeletedIds = new Set();
+      const OB_KEY = 'dust_other_billing_rows';
+      const document = { getElementById: () => null };
+      const _isEditing = () => state.editing;
+      const obRenderTable = () => { state.renders++; };
+      const autoSyncObIntercompany = () => { state.syncs++; };
+      async function apiGet() {
+        if (state.gate) { const g = state.gate; state.gate = null; await g; }
+        return JSON.parse(JSON.stringify(state.server));
+      }
+      ${extractFn('obHasPendingSave')}
+      ${extractFn('pollObRows')}
+      return {
+        poll: pollObRows,
+        rows: () => obRows,
+        setRows: r => { obRows = r; },
+        setTimer: v => { obSaveTimer = v; },
+        setSaving: v => { obSaving = v; },
+        queueDelete: id => obDeletedIds.add(id),
+        clearDeletes: () => obDeletedIds.clear(),
+        pending: () => obHasPendingSave(),
+      };
+    `)(state);
+    return { state, api };
+  }
+
+  const rowA = { id: 'ob-a', date: '2026-07-14', customer: 'Acme Materials' };
+  const rowB = { id: 'ob-b', date: '2026-07-15', customer: 'Acme Materials' };
+
+  console.log('\n[poller — a delete mid-debounce is not resurrected]');
+  {
+    const { api } = buildPoller([rowA, rowB]);   // server still has both
+    api.setRows([rowA]);                         // user deleted B locally
+    api.queueDelete('ob-b');
+    api.setTimer(1);                             // 900ms debounce still open
+    assert('pending save detected', api.pending() === true);
+    await api.poll();
+    assert('obRows untouched', JSON.stringify(api.rows()) === JSON.stringify([rowA]));
+    assert('deleted row stayed deleted', !api.rows().some(r => r.id === 'ob-b'));
+  }
+
+  console.log('\n[poller — a queued delete alone is enough to stand down]');
+  {
+    const { api } = buildPoller([rowA, rowB]);
+    api.setRows([rowA]);
+    api.queueDelete('ob-b');                     // debounce already fired…
+    api.setTimer(null);                          // …but IC hasn't been told yet
+    assert('still counted as pending', api.pending() === true);
+    await api.poll();
+    assert('obRows untouched', !api.rows().some(r => r.id === 'ob-b'));
+  }
+
+  console.log('\n[poller — a save in flight blocks the overwrite]');
+  {
+    const { api } = buildPoller([rowA, rowB]);
+    api.setRows([rowA]);
+    api.setSaving(true);
+    assert('in-flight save detected', api.pending() === true);
+    await api.poll();
+    assert('obRows untouched', !api.rows().some(r => r.id === 'ob-b'));
+  }
+
+  console.log('\n[poller — a delete that lands mid-flight still wins]');
+  {
+    const { api, state } = buildPoller([rowA, rowB]);
+    api.setRows([rowA, rowB]);
+    let release;
+    state.gate = new Promise(r => { release = r; });
+    const p = api.poll();                        // stalls inside apiGet
+    await flush();
+    api.setRows([rowA]);                         // user deletes B during the round-trip
+    api.queueDelete('ob-b');
+    api.setTimer(1);
+    release();
+    await p;
+    assert('stale snapshot discarded', !api.rows().some(r => r.id === 'ob-b'));
+  }
+
+  console.log('\n[poller — still picks up genuine remote changes]');
+  {
+    const { api, state } = buildPoller([rowA, rowB]);
+    api.setRows([rowA]);                         // another device added B
+    assert('nothing pending', api.pending() === false);
+    await api.poll();
+    assert('remote row adopted', api.rows().some(r => r.id === 'ob-b'));
+    assert('table re-rendered / sync kicked', state.syncs === 1);
   }
 
   console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'} — ${passed} passed, ${failed} failed`);

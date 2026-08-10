@@ -1075,7 +1075,11 @@ async function buildIntercompanyTile(sql, companyCode) {
       SELECT COALESCE(SUM(total), 0)::float AS v
         FROM intercompany_billing_entries
        WHERE company_code = ${companyCode}
-         AND source = 'dust'
+         -- Dust Control bills from two tabs: tracking rows ('dust') and the
+         -- Other Billing grid ('dust-other-billing'). Counting only the first
+         -- understates dust and leaves trucking + dust short of the tile's
+         -- own unsourced AR/top-customer figures, which include both.
+         AND source IN ('dust', 'dust-other-billing')
          AND (qb_invoice IS NULL OR TRIM(qb_invoice) = '')
     `;
     return rows[0]?.v ?? 0;
