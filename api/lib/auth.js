@@ -25,6 +25,11 @@ const SHARED_KEY_PREFIXES = [
 const CROSS_DIVISION_KEYS = new Set([
   'fct_intercompany_billing_entries',
   'fct_intercompany_companies',
+  // Entries an intercompany user deleted. The source divisions must READ this
+  // to know not to recreate a removed row — without the carve-out their GET
+  // 403s, the list reads as empty, and every deletion is silently undone on
+  // the next sync, which is exactly the behaviour it exists to prevent.
+  'fct_intercompany_removed_entries',
 ]);
 const CROSS_DIVISION_CONTRIBUTORS = ['trucking', 'dust', 'paving', 'intercompany'];
 

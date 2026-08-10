@@ -2783,29 +2783,41 @@
     const IC_REMOVED_KEY = 'fct_intercompany_removed_entries';
 
     async function _suppressIcEntry(entry) {
-      if (!entry || !entry.source_id) return;   // hand-added rows aren't owned by a division
-      try {
-        const r = await fetch(`${API_BASE}/data/${IC_REMOVED_KEY}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (!r.ok) return;
-        const body = await r.json();
-        const cur  = Array.isArray(body && body.value) ? body.value : [];
-        const key  = `${entry.source || ''}|${entry.source_id}`;
-        if (cur.some(t => `${t.source || ''}|${t.source_id}` === key)) return;
-        cur.push({
-          source: entry.source || '', source_id: entry.source_id,
-          company_name: entry.company_name || '', actual_date: entry.actual_date || '',
-          removed_at: new Date().toISOString(),
-        });
-        await fetch(`${API_BASE}/data/${IC_REMOVED_KEY}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ value: cur, baseUpdatedAt: body.updated_at || null })
-        });
-      } catch (err) {
-        console.error('[suppressIcEntry]', err.message);
+      if (!entry || !entry.source_id) return false;   // hand-added rows aren't owned by a division
+      const key = `${entry.source || ''}|${entry.source_id}`;
+      // Version-checked, and retried on conflict rather than dropped: two people
+      // clearing entries at once would otherwise lose the second suppression
+      // silently, and that row would quietly come back on the next sync.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const r = await fetch(`${API_BASE}/data/${IC_REMOVED_KEY}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!r.ok) return false;
+          const body = await r.json();
+          const cur  = Array.isArray(body && body.value) ? body.value : [];
+          if (cur.some(t => `${t.source || ''}|${t.source_id}` === key)) return true;
+          cur.push({
+            source: entry.source || '', source_id: entry.source_id,
+            company_name: entry.company_name || '', actual_date: entry.actual_date || '',
+            removed_at: new Date().toISOString(),
+          });
+          const w = await fetch(`${API_BASE}/data/${IC_REMOVED_KEY}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ value: cur, baseUpdatedAt: body.updated_at || null })
+          });
+          if (w.ok) return true;
+          if (w.status !== 409) return false;
+          let stale = false;
+          try { const b = await w.json(); stale = !!b && b.error === 'Conflict'; } catch { /* fatal */ }
+          if (!stale) return false;   // the wipe guard, which no retry clears
+        } catch (err) {
+          console.error('[suppressIcEntry]', err.message);
+          return false;
+        }
       }
+      return false;
     }
 
     async function deleteIcEntry(id) {
@@ -2813,8 +2825,13 @@
       const entry = icBillingEntries.find(e => e.id === id) || null;
       icBillingEntries = icBillingEntries.filter(e => e.id !== id);
       // Record BEFORE the blob write: if the division syncs in between, the
-      // suppression is already in place and the row is not recreated.
-      await _suppressIcEntry(entry);
+      // suppression is already in place and the row is not recreated. If it
+      // could not be recorded, say so — the row would silently return, and the
+      // user is entitled to know the delete will not hold.
+      if (entry && entry.source_id && !(await _suppressIcEntry(entry))) {
+        _showSaveError(false,
+          'Removed here, but this row is owned by its division and could not be marked as removed — it may come back on the next sync. Try again, or delete it in the division tab.');
+      }
       try {
         const r = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           method: 'PUT',

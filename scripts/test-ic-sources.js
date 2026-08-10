@@ -136,6 +136,55 @@ console.log('\n[the normalized mirror keeps what each source carries]');
   assert('lazily-added columns are in neon-schema.sql too', lazyOnly.length === 0, lazyOnly.join(', '));
 }
 
+console.log('\n[the divisions can actually reach the shared keys]');
+{
+  // A key the source divisions cannot read is worse than a missing feature:
+  // the GET 403s, the client's catch swallows it, the list reads as empty and
+  // the behaviour silently reverts to what it replaced. That is exactly what
+  // happened to the removed-entries list — recorded by intercompany, never
+  // seen by dust, so every deletion was undone again on the next sync.
+  const auth = require(root('api/lib/auth.js'));
+  const pages = { 'dust.html': 'dust', 'trucking.html': 'trucking' };
+
+  for (const [page, division] of Object.entries(pages)) {
+    const src = read(page);
+    // Every fct_intercompany* key this division's page touches.
+    const keys = new Set((src.match(/'fct_intercompany[a-z_]*'/g) || []).map(k => k.slice(1, -1)));
+    assert(`${page} references at least one intercompany key`, keys.size > 0);
+    for (const k of keys) {
+      assert(`${division} may use ${k}`, auth.isCrossDivisionKey(k),
+        'not in CROSS_DIVISION_KEYS — the division will 403 and fail silently');
+    }
+  }
+
+  assert('the removed-entries list is reachable',
+    auth.isCrossDivisionKey('fct_intercompany_removed_entries'));
+  assert('the contributors include the dust and trucking divisions',
+    ['dust', 'trucking', 'intercompany'].every(d => auth.CROSS_DIVISION_CONTRIBUTORS.includes(d)),
+    JSON.stringify(auth.CROSS_DIVISION_CONTRIBUTORS));
+}
+
+console.log('\n[a deletion in intercompany is honoured by every owning division]');
+{
+  // Each page that auto-syncs into the blob recreates rows from its own data,
+  // so each has to consult the removed list or it undoes the deletion.
+  for (const f of ['dust.html', 'trucking.html']) {
+    const src = read(f);
+    assert(`${f} loads the removed list`, /_loadIcSuppressions\(\)/.test(src));
+    assert(`${f} loads it before reconciling`,
+      /await _loadIcSuppressions\(\);[\s\S]{0,200}apiGet\('fct_intercompany_companies'\)|await _loadIcSuppressions\(\);[\s\S]{0,200}tdGet\('fct_intercompany_companies'\)/.test(src));
+    // The create branch specifically — matching the function's mere existence
+    // would pass with the check removed from the one place it matters.
+    assert(`${f} skips creating a suppressed row`, /else if \(icIsSuppressed\(/.test(src),
+      'icIsSuppressed is defined but not consulted before creating an entry');
+  }
+  // …once per dust source, since each has its own reconciler.
+  const dust = read('dust.html');
+  for (const s of DUST_IC_SOURCES) {
+    assert(`dust.html honours suppression for '${s}'`, dust.includes(`icIsSuppressed('${s}'`));
+  }
+}
+
 console.log('\n[every writer of the shared blob uses the version check]');
 {
   // The blob has no transaction: trucking and the dust tabs all read-modify-write

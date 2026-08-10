@@ -749,6 +749,30 @@
     const IC_MAX_CONFLICT_RETRIES = 3;
     let _icConflictRetries = 0;
 
+    // Rows an Intercompany user deleted. Trucking owns these rows, so "absent
+    // from the blob" is what the reconciler reads as "new" — without this list
+    // a deletion over there is undone on the next sync and looks like the page
+    // ignored it. Only creation is suppressed: an entry that still exists keeps
+    // being maintained, so a stale record can't freeze a live row.
+    const IC_REMOVED_KEY = 'fct_intercompany_removed_entries';
+    let _icSuppressed = new Set();
+
+    function icIsSuppressed(sourceId) { return _icSuppressed.has(`trucking|${sourceId}`); }
+
+    async function _loadIcSuppressions() {
+      try {
+        const r = await fetch(`${API_BASE}/data/${IC_REMOVED_KEY}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok) return;
+        const { value } = await r.json();
+        if (!Array.isArray(value)) return;
+        _icSuppressed = new Set(
+          value.filter(t => t && t.source_id).map(t => `${t.source || ''}|${t.source_id}`)
+        );
+      } catch { /* non-fatal — worst case a removed row reappears */ }
+    }
+
     // Reconcile every truck row into `entries` (MUTATED in place):
     //  • create an entry for a newly-billable row (stamped sent_at = now),
     //  • keep an existing entry in sync when a trucking-owned field changed
@@ -824,6 +848,8 @@
             changed = true;
           }
           sentNow.push({ id: row.id, sentAt });
+        } else if (icIsSuppressed(row.id)) {
+          continue;   // deleted in Intercompany — leave it deleted
         } else {
           entries.unshift(entry);
           bySourceId.set(row.id, entry);
@@ -863,6 +889,7 @@
       if (_icAutoSyncRunning) { _icAutoSyncQueued = true; return; }
       _icAutoSyncRunning = true;
       try {
+        await _loadIcSuppressions();
         const companies = await tdGet('fct_intercompany_companies');
         const coList = Array.isArray(companies) ? companies : [];
         if (!coList.length) return;              // nothing to match against
