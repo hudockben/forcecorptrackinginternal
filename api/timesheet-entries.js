@@ -47,8 +47,10 @@
  *     autofilled from the entry (driver, date, start/end, hours, customer ←
  *     job_label, comments ← notes) and appended to the dust_ees_other_rows
  *     blob, with its id prefixed "tse-<entryId>-". Unit / location / name / job
- *     number / billing / rate are left for the dust office; billing defaults to
- *     Non-Billable, and only Billable rows reach Intercompany.
+ *     number / billing come from the timesheet's own EES fields; only the
+ *     billing rate is left for the dust office. Approving also clears any
+ *     Intercompany removal recorded against the row, so re-approving puts
+ *     previously-deleted work back rather than being overruled by it.
  *
  *   POST   /api/timesheet-entries?action=resplit&id=N   — replace injected rows
  *     Payroll-admin only, row must already be 'approved'. Same body shape as
@@ -1135,7 +1137,38 @@ async function insertEesOtherRow(sql, companyCode, entry) {
   const next = arr.filter(r => !isMine(r));
   next.push(row);
   await writeBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB, next);
+
+  // Non-fatal: a failure here leaves the row suppressed, which the tab shows
+  // as "Removed in IC" rather than hiding — whereas throwing would roll back
+  // an otherwise-good approval over a secondary concern.
+  try {
+    await clearIcSuppression(sql, companyCode, 'dust-ees-other', row.id);
+  } catch (err) {
+    console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
+  }
   return row;
+}
+
+// Removals recorded by an intercompany user (see _suppressIcEntry in
+// intercompany.html). A suppressed row is not recreated by the division that
+// owns it, which is what makes a deletion over there stick.
+const IC_REMOVED_BLOB = 'fct_intercompany_removed_entries';
+
+/**
+ * Drop any intercompany removal recorded against one row. Returns the count.
+ *
+ * Approving is a deliberate statement that this work counts, so it undoes an
+ * earlier removal rather than being silently overruled by it. This matters
+ * here and nowhere else because the EES row id is stable across re-approval:
+ * without this the row would stay suppressed forever, never bill again, and
+ * leave the tab showing "Removed in IC" with no way back.
+ */
+async function clearIcSuppression(sql, companyCode, source, sourceId) {
+  const arr  = await readBlobArray(sql, companyCode, IC_REMOVED_BLOB);
+  const next = arr.filter(t => !(t && t.source === source && t.source_id === sourceId));
+  if (next.length === arr.length) return 0;
+  await writeBlobArray(sql, companyCode, IC_REMOVED_BLOB, next);
+  return arr.length - next.length;
 }
 
 /**
@@ -2229,6 +2262,7 @@ module.exports._test = {
   removeEesOtherRows,
   eesOtherRowIdPrefix,
   eesOtherHasInjectedRow,
+  clearIcSuppression,
   removeTruckingRows,
   truckingHasInjectedRow,
   truckingSplitForEntry,

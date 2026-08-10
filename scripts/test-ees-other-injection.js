@@ -213,6 +213,62 @@ function entry(over = {}) {
     assert('and gates on the EES job', /isEesJob\(existing\.job_id\)/.test(guard));
   }
 
+  console.log('\n[approving puts back work that Intercompany had removed]');
+  {
+    const { clearIcSuppression } = TS._test;
+    const REMOVED = 'ACME:fct_intercompany_removed_entries';
+    const suppressions = () => store.get(REMOVED) || [];
+
+    store.clear();
+    const row = await insertEesOtherRow(sql, 'ACME', entry({ id: 501 }));
+
+    // Someone clears it in Intercompany, then payroll re-approves the entry.
+    store.set(REMOVED, [
+      { source: 'dust-ees-other', source_id: row.id },
+      { source: 'dust-ees-other', source_id: 'tse-999-row' },   // another entry
+      { source: 'dust-other-billing', source_id: row.id },      // same id, other tab
+      { source: 'trucking', source_id: 'tr-1' },
+    ]);
+    await insertEesOtherRow(sql, 'ACME', entry({ id: 501, computed_hours: 3 }));
+
+    const left = suppressions();
+    assert('this row is no longer suppressed',
+      !left.some(t => t.source === 'dust-ees-other' && t.source_id === row.id));
+    assert('another entry stays suppressed',
+      left.some(t => t.source === 'dust-ees-other' && t.source_id === 'tse-999-row'));
+    assert('the same id under another source is untouched',
+      left.some(t => t.source === 'dust-other-billing' && t.source_id === row.id));
+    assert('an unrelated division is untouched',
+      left.some(t => t.source === 'trucking' && t.source_id === 'tr-1'));
+    assert('nothing else was dropped', left.length === 3, `${left.length} left`);
+  }
+
+  console.log('\n[clearing is a no-op when there is nothing to clear]');
+  {
+    const { clearIcSuppression } = TS._test;
+    const REMOVED = 'ACME:fct_intercompany_removed_entries';
+    store.clear();
+    assert('no list at all', (await clearIcSuppression(sql, 'ACME', 'dust-ees-other', 'x')) === 0);
+    store.set(REMOVED, [{ source: 'trucking', source_id: 'tr-1' }]);
+    assert('no matching row', (await clearIcSuppression(sql, 'ACME', 'dust-ees-other', 'x')) === 0);
+    assert('list untouched', (store.get(REMOVED) || []).length === 1);
+    assert('reports what it removed',
+      (await clearIcSuppression(sql, 'ACME', 'trucking', 'tr-1')) === 1);
+    assert('and removed it', (store.get(REMOVED) || []).length === 0);
+  }
+
+  console.log('\n[un-approving does not clear a removal]');
+  {
+    // Only approving is the deliberate "this counts" signal. Un-approve just
+    // takes the row away; the removal stays recorded for if it comes back.
+    const REMOVED = 'ACME:fct_intercompany_removed_entries';
+    store.clear();
+    const row = await insertEesOtherRow(sql, 'ACME', entry({ id: 501 }));
+    store.set(REMOVED, [{ source: 'dust-ees-other', source_id: row.id }]);
+    await removeEesOtherRows(sql, 'ACME', { id: 501 });
+    assert('removal still recorded', (store.get(REMOVED) || []).length === 1);
+  }
+
   // ── The routing gate, read out of the shipped source ────────────────────
   // Only a dust entry on a standing EES job injects. This is the whole point
   // of the feature: an ordinary dust customer entry must still inject nowhere.
