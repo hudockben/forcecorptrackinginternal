@@ -140,8 +140,17 @@ module.exports = async (req, res) => {
   const scopedKey = `${payload.companyCode}:${key}`;
 
   if (req.method === 'GET') {
-    const rows = await sql`SELECT value FROM app_data WHERE key = ${scopedKey}`;
-    return res.json({ value: rows.length ? rows[0].value : null });
+    // updated_at is returned so a caller doing a read-modify-write can hand it
+    // back as `baseUpdatedAt` on the PUT and have the write rejected if anyone
+    // else changed the blob in between. Purely additive — callers that ignore
+    // it keep the previous last-writer-wins behaviour.
+    const rows = await sql`SELECT value, updated_at FROM app_data WHERE key = ${scopedKey}`;
+    return res.json({
+      value:      rows.length ? rows[0].value : null,
+      updated_at: rows.length && rows[0].updated_at
+        ? new Date(rows[0].updated_at).toISOString()
+        : null,
+    });
   }
 
   if (req.method === 'PUT') {
@@ -170,6 +179,31 @@ module.exports = async (req, res) => {
     let _obOldValue = null;
     if (key === 'dust_other_billing_rows') {
       _obOldValue = await _loadPrev();
+    }
+
+    // Optimistic concurrency. Shared blobs (above all the intercompany billing
+    // list, which trucking and both dust tabs read-modify-write) had no way to
+    // detect a concurrent writer: whoever PUT last silently erased the other's
+    // entries. A caller that passes the `updated_at` it read gets a 409 instead
+    // of overwriting a newer value, and can re-read and retry. Omitting the
+    // field keeps the old last-writer-wins behaviour, so no existing caller
+    // changes behaviour.
+    if (req.body.baseUpdatedAt !== undefined && req.body.baseUpdatedAt !== null) {
+      const base = Date.parse(req.body.baseUpdatedAt);
+      if (isNaN(base)) {
+        return res.status(400).json({ error: '`baseUpdatedAt` must be an ISO timestamp' });
+      }
+      const cur = await sql`SELECT updated_at FROM app_data WHERE key = ${scopedKey}`;
+      const curTs = cur.length && cur[0].updated_at ? new Date(cur[0].updated_at).getTime() : null;
+      // Compare instants, not strings — the driver may hand back a Date and the
+      // client always sends the ISO form, so the two never match textually.
+      if (curTs === null || curTs !== base) {
+        return res.status(409).json({
+          error: 'Conflict',
+          detail: `"${key}" changed since it was read. Re-read and retry.`,
+          updated_at: curTs === null ? null : new Date(curTs).toISOString(),
+        });
+      }
     }
 
     // Bulk-wipe protection: refuse to overwrite a non-trivial existing

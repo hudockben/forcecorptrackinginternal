@@ -2291,8 +2291,19 @@
      *    wipes history (or IC-side invoice/payment dates) on un-enrollment.
      *  - Reflects sent-state in the UI only after the PUT actually persists.
      */
-    let _icAutoSyncRunning = false;
-    let _icAutoSyncQueued  = false;
+    // One writer at a time across BOTH dust auto-syncs. Tracking and Other
+    // Billing reconcile into the same shared billing blob, and the blob has no
+    // compare-and-swap, so two overlapping read-modify-writes would silently
+    // drop whichever landed first. A single running flag plus a per-source
+    // queue serialises them: the finisher drains whatever is pending.
+    let _icSyncRunning = false;
+    let _icDustQueued  = false;
+    let _icObQueued    = false;
+
+    function _drainIcQueue() {
+      if (_icDustQueued) { _icDustQueued = false; autoSyncIntercompanyDust(); return; }
+      if (_icObQueued)   { _icObQueued   = false; autoSyncObIntercompany();   return; }
+    }
 
     // Signature of the value-bearing fields dust owns — lets us detect when a
     // row's IC entry actually needs rewriting without churning on sent_at / id
@@ -2356,6 +2367,8 @@
     // conflates a failed read (non-200 / network error / bad JSON) with a
     // genuinely empty blob — treating a failed read as empty would let us
     // overwrite the whole shared blob and wipe every other division's billing.
+    // Returns { entries, updatedAt } — updatedAt is handed back on the write so
+    // the server can reject it if anyone else changed the blob in between.
     async function _readIcBilling() {
       try {
         const r = await fetch(`/api/data/${IC_BILLING_KEY}`, { headers: { 'Authorization': `Bearer ${token}` } });
@@ -2364,9 +2377,46 @@
         const body = await r.json();
         const v = body ? body.value : null;
         if (v != null && !Array.isArray(v)) return null;   // unexpected shape
-        return Array.isArray(v) ? v : [];                   // 200 + null ⇒ genuinely empty
+        return {
+          entries:   Array.isArray(v) ? v : [],             // 200 + null ⇒ genuinely empty
+          updatedAt: body ? (body.updated_at || null) : null,
+        };
       } catch { return null; }
     }
+
+    // Write the shared billing blob back, refusing to land on top of a value
+    // written since we read it (trucking.html and the two dust syncs all
+    // read-modify-write this one blob). Returns { ok, conflict }; on conflict
+    // the caller re-queues itself and reconciles onto the newer value.
+    //
+    // An empty result needs ?force=1: the backend refuses a plain empty-array
+    // PUT as bulk-wipe protection, so without it a genuine "everything was
+    // voided" would silently fail and stale figures would linger in IC.
+    async function _writeIcBilling(entries, baseUpdatedAt) {
+      const qs = entries.length === 0 ? '?force=1' : '';
+      try {
+        const r = await fetch(`/api/data/${IC_BILLING_KEY}${qs}`, {
+          method: 'PUT',
+          headers: AUTH_HDR(),
+          body: JSON.stringify({ value: entries, baseUpdatedAt }),
+        });
+        if (r.status === 401) { signOut(); return { ok: false, conflict: false }; }
+        if (r.status === 409) {
+          // The endpoint returns 409 for two unrelated reasons: a stale base
+          // (worth retrying onto the newer value) and its bulk-wipe guard
+          // (retrying just fails again the same way). Only the first is a race.
+          let stale = false;
+          try { const b = await r.json(); stale = !!b && b.error === 'Conflict'; } catch { /* treat as fatal */ }
+          return { ok: false, conflict: stale };
+        }
+        return { ok: r.ok, conflict: false };
+      } catch { return { ok: false, conflict: false }; }
+    }
+
+    // A conflict means someone else won the race; we re-read and retry rather
+    // than overwrite. Bounded so a persistently busy blob can't spin forever.
+    const IC_MAX_CONFLICT_RETRIES = 3;
+    let _icConflictRetries = 0;
 
     // Reconcile every dust row into `entries` (MUTATED in place):
     //  • create an entry for a newly-billable row (stamped sent_at = now),
@@ -2464,8 +2514,8 @@
     async function autoSyncIntercompanyDust() {
       // Coalesce: if a sync is already in flight, remember to run once more
       // after it finishes rather than piling up concurrent read-modify-writes.
-      if (_icAutoSyncRunning) { _icAutoSyncQueued = true; return; }
-      _icAutoSyncRunning = true;
+      if (_icSyncRunning) { _icDustQueued = true; return; }
+      _icSyncRunning = true;
       try {
         const coData = await apiGet('fct_intercompany_companies');
         const coList = Array.isArray(coData) ? coData : [];
@@ -2484,7 +2534,7 @@
         // + PUT on the common steady-state where nothing IC-relevant changed.
         const probe = await _readIcBilling();
         if (probe == null) return;
-        if (!_reconcileDustBilling(probe, coByName).changed) return;
+        if (!_reconcileDustBilling(probe.entries, coByName).changed) return;
 
         // Re-read immediately before writing and reconcile onto the FRESH blob,
         // so Intercompany-side edits (invoice/payment dates), hard-deletes, and
@@ -2492,30 +2542,26 @@
         // than clobbered by a stale snapshot. (A residual last-writer-wins window
         // remains between this read and the PUT — the shared blob has no
         // compare-and-swap; that is a platform limitation, not specific to dust.)
-        const entries = await _readIcBilling();
-        if (entries == null) return;
+        const fresh = await _readIcBilling();
+        if (fresh == null) return;
+        const entries = fresh.entries;
         const { changed, sentNow, clearNow } = _reconcileDustBilling(entries, coByName);
         if (!changed) return;
 
-        let ok;
-        if (entries.length === 0) {
-          // Every dust entry was voided and nothing else remained, so the blob
-          // should be empty. The backend refuses a plain empty-array PUT (its
-          // bulk-wipe guard), so force this intentional clear or the void silently
-          // fails and stale positive figures would linger in IC.
-          try {
-            const r = await fetch(`/api/data/${IC_BILLING_KEY}?force=1`, {
-              method: 'PUT', headers: AUTH_HDR(), body: JSON.stringify({ value: entries }),
-            });
-            ok = r.ok;
-          } catch { ok = false; }
-        } else {
-          ok = await apiPut(IC_BILLING_KEY, entries);
+        const { ok, conflict } = await _writeIcBilling(entries, fresh.updatedAt);
+
+        // Somebody else wrote between our read and our write. Re-queue so the
+        // drain reconciles onto their value instead of clobbering it.
+        if (conflict && _icConflictRetries < IC_MAX_CONFLICT_RETRIES) {
+          _icConflictRetries++;
+          _icDustQueued = true;
+          return;
         }
 
         // Only reflect sent-state in the UI once the blob actually persisted,
         // so a failed PUT never leaves a chip claiming a row reached IC.
         if (ok) {
+          _icConflictRetries = 0;
           sentNow.forEach(({ id, sentAt }) => icSentMapDust.set(id, sentAt));
           clearNow.forEach(id => icSentMapDust.delete(id));
           refreshIcChips(sentNow.map(s => s.id));
@@ -2523,8 +2569,8 @@
         }
       } catch { /* non-fatal — the next save or poll retries */ }
       finally {
-        _icAutoSyncRunning = false;
-        if (_icAutoSyncQueued) { _icAutoSyncQueued = false; autoSyncIntercompanyDust(); }
+        _icSyncRunning = false;
+        _drainIcQueue();
       }
     }
 
@@ -6061,6 +6107,7 @@
     let obRows       = [];
     let obFilters    = {};
     let obSaveTimer  = null;
+    let obSaving     = false;
     let obYear       = String(new Date().getFullYear());
     const obExpanded = new Set();
     const obIcSent   = new Map(); // row.id → sent_at
@@ -6096,18 +6143,32 @@
     }
 
     async function obSave(opts = {}) {
+      obSaving = true;
       try { return await apiPut(OB_KEY, obRows, opts); }
       catch { return false; }
+      finally { obSaving = false; }
     }
 
     function obScheduleSave() {
       setSaveState('saving');
       clearTimeout(obSaveTimer);
       obSaveTimer = setTimeout(async () => {
+        obSaveTimer = null;
         const ok = await obSave();
+        // Mirror qualifying rows into Intercompany Billing automatically.
+        if (ok) autoSyncObIntercompany();
         setSaveState(ok ? 'saved' : 'error');
         setTimeout(() => setSaveState(''), 3000);
       }, 900);
+    }
+
+    // Local OB state the server hasn't acked yet: an open debounce window, a
+    // save in flight, or a delete still queued for Intercompany. The 60s poller
+    // must stand down while any of these hold, or it replaces obRows with a
+    // server snapshot that predates them — silently resurrecting a just-deleted
+    // row or discarding edits the debounce hasn't flushed.
+    function obHasPendingSave() {
+      return obSaveTimer != null || obSaving || obDeletedIds.size > 0;
     }
 
     function obAddRow() {
@@ -6137,7 +6198,11 @@
 
     function obDeleteRow(idx) {
       if (!confirm('Delete this row?')) return;
-      obRows.splice(idx, 1);
+      const [removed] = obRows.splice(idx, 1);
+      // Queue the id so the next sync pulls this row's Intercompany entry.
+      // Explicit ids (rather than "no longer in obRows") keep a failed or
+      // partial OB load from ever mass-deleting IC history.
+      if (removed && removed.id) { _queueObDelete(removed.id); obIcSent.delete(removed.id); }
       obRenderTable();
       obScheduleSave();
     }
@@ -6344,16 +6409,10 @@
         const icPanel = `
           <div class="inv-panel">
             <div class="inv-field" style="align-self:flex-end">
-              <label>&nbsp;</label>
-              <div style="display:flex;flex-direction:column;gap:0.28rem">
-                <div style="display:flex;align-items:center;gap:0.5rem">
-                  <button id="ic-ob-btn-${idx}" onclick="sendObToIntercompany(${idx})"
-                    style="padding:0.3rem 0.75rem;font-size:0.72rem;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer;white-space:nowrap">
-                    &#8644; Intercompany Billing
-                  </button>
-                  <span id="ic-ob-status-${idx}" style="font-size:0.7rem;font-weight:600;min-width:1em"></span>
-                </div>
-                <span id="ic-ob-ts-${idx}" style="font-size:0.63rem;color:#22c55e;font-weight:600;letter-spacing:0.02em">${icTs ? fmtSentAt(icTs) : ''}</span>
+              <label>Intercompany Billing</label>
+              <div style="display:flex;flex-direction:column;gap:0.2rem">
+                <span style="font-size:0.72rem;color:var(--muted);white-space:nowrap">&#8644; Auto-sends to Intercompany</span>
+                <span id="ic-ob-ts-${idx}" style="font-size:0.63rem;font-weight:600;letter-spacing:0.02em;color:${icTs ? '#22c55e' : 'var(--muted)'}">${icTs ? fmtSentAt(icTs) : ((row.customer && c.total > 0) ? 'Awaiting sync — check Intercompany company list' : 'Needs customer &amp; total')}</span>
               </div>
             </div>
           </div>`;
@@ -6421,44 +6480,143 @@
       document.getElementById('ob-tot-grand').textContent = totGrand ? money(totGrand) : '—';
     }
 
-    async function sendObToIntercompany(idx) {
-      const row = obRows[idx];
-      if (!row) return;
-
-      const btn    = document.getElementById('ic-ob-btn-' + idx);
-      const status = document.getElementById('ic-ob-status-' + idx);
-      if (btn) btn.disabled = true;
-      if (status) { status.style.color = 'var(--muted)'; status.textContent = 'Checking…'; }
-
-      const IC_CO_KEY = 'fct_intercompany_companies';
-
+    /**
+     * Auto-send Other Billing rows to Intercompany Billing.
+     *
+     * Replaces the old manual "⇄ Intercompany Billing" button: every OB row
+     * that (a) names a customer present in the Intercompany company list under
+     * the 'dust' division and (b) has a real total is mirrored into the shared
+     * Intercompany billing blob automatically — no click required. Same model
+     * the Dust Tracking tab already uses (see autoSyncIntercompanyDust).
+     *
+     * Entries are keyed by source_id (the OB row id), so a row is created
+     * exactly once — stamped with a sent_at timestamp — and then kept in sync
+     * on later edits while preserving that original timestamp. That timestamp
+     * is what the "⇄ IC" chip under the row total shows.
+     *
+     * Unlike Dust Tracking there is no physical-job-key pass here: Intercompany
+     * dedups 'dust-other-billing' entries purely by (source, source_id) — see
+     * loadBillingEntries() in intercompany.html — so the row id IS the identity
+     * and two OB rows that look alike are deliberately two billable rows.
+     *
+     * Safeguards:
+     *  - Never writes on a failed/partial billing-blob read (that would wipe
+     *    every other division's entries from the shared blob).
+     *  - Voids a previously-synced entry when its row is edited down to a zero
+     *    total, so IC never bills a figure the row no longer has.
+     *  - Removes the entry for a row deleted here, driven off an explicit
+     *    deleted-id set rather than "absent from obRows" — a failed or partial
+     *    OB load can therefore never mass-delete Intercompany history.
+     *  - Leaves entries whose customer is no longer enrolled untouched — never
+     *    wipes history (or IC-side invoice/payment dates) on un-enrollment.
+     *  - Reflects sent-state in the UI only after the PUT actually persists.
+     */
+    // OB rows deleted locally whose Intercompany entry hasn't been pulled yet.
+    // Persisted, because the window between the delete and the sync landing is
+    // exactly when a tab gets closed — an in-memory-only set would forget the
+    // delete and leave the entry billing forever, with nothing on the dust side
+    // left to point at it. Survives the reload, drains on the next sync.
+    const OB_DELETED_KEY = 'fct_dust_ob_deleted_ids';
+    const obDeletedIds = new Set((() => {
       try {
-        const coData = await apiGet(IC_CO_KEY);
-        const coList = Array.isArray(coData) ? coData : [];
-        const coName = (row.customer || '').trim().toLowerCase();
-        const matched = coList.find(c => c.name.trim().toLowerCase() === coName
-          && (c.divisions || []).includes('dust'));
+        const raw = JSON.parse(localStorage.getItem(OB_DELETED_KEY) || '[]');
+        return Array.isArray(raw) ? raw.filter(id => typeof id === 'string') : [];
+      } catch { return []; }
+    })());
 
+    function _persistObDeletedIds() {
+      try {
+        if (obDeletedIds.size) localStorage.setItem(OB_DELETED_KEY, JSON.stringify([...obDeletedIds]));
+        else                   localStorage.removeItem(OB_DELETED_KEY);
+      } catch { /* storage full or blocked — the in-memory set still works */ }
+    }
+
+    function _queueObDelete(id)    { obDeletedIds.add(id);    _persistObDeletedIds(); }
+    function _dequeueObDeletes(ids) {
+      if (!ids || !ids.length) return;
+      ids.forEach(id => obDeletedIds.delete(id));
+      _persistObDeletedIds();
+    }
+
+    // Signature of the value-bearing fields Other Billing owns — lets us detect
+    // when a row's IC entry actually needs rewriting without churning on
+    // sent_at / id / sent_by or on Intercompany-side fields we don't manage
+    // (invoice_sent_date, payment_received_date).
+    function _icObEntrySig(e) {
+      return JSON.stringify([
+        e.company_id, e.company_name, e.actual_date, e.total,
+        e.driver, e.truck_number, e.trailer_number,
+        e.destination, e.state, e.material,
+        e.gallons_bags, e.price_per_unit, e.material_total,
+        e.trucking_hrs, e.trucking_rate, e.trucking_total,
+        e.inv_number, e.comments,
+      ]);
+    }
+
+    // Reconcile every OB row into `entries` (MUTATED in place). Returns what
+    // changed so the caller can update the UI after a good write.
+    function _reconcileObBilling(entries, coByName) {
+      // First-wins per source_id, matching Intercompany's own dedup order, so
+      // we never update a copy IC is about to discard as a duplicate.
+      const bySourceId = new Map();
+      entries.forEach(e => {
+        if (e.source === 'dust-other-billing' && e.source_id && !bySourceId.has(e.source_id)) {
+          bySourceId.set(e.source_id, e);
+        }
+      });
+
+      let changed = false;
+      const sentNow        = [];   // {id, sentAt}
+      const clearNow       = [];   // ids whose entry we voided
+      const handledDeletes = [];   // queued deletes this pass accounted for
+
+      // Rows deleted on the dust side: pull their entry so IC stops billing a
+      // row that no longer exists.
+      for (const id of obDeletedIds) {
+        handledDeletes.push(id);
+        // A queued id that is somehow back in obRows (a poll that raced the
+        // save, another device re-adding it) is not a deletion. Dropping the
+        // entry here would only see it recreated below with a fresh sent_at,
+        // losing the original timestamp and any IC-side invoice/payment dates.
+        if (obRows.some(r => r && r.id === id)) continue;
+        const prev = bySourceId.get(id);
+        if (!prev) continue;
+        const i = entries.indexOf(prev);
+        if (i !== -1) { entries.splice(i, 1); changed = true; }
+        bySourceId.delete(id);
+        clearNow.push(id);
+      }
+
+      for (const row of obRows) {
+        if (!row || !row.id) continue;
+        const c    = obCalc(row);
+        const prev = bySourceId.get(row.id);
+
+        if (!(c.total > 0)) {
+          // Row is no longer billable (qty/rates cleared). Void any stale entry
+          // so IC never bills a figure the row no longer has.
+          if (prev) {
+            const i = entries.indexOf(prev);
+            if (i !== -1) { entries.splice(i, 1); changed = true; }
+            bySourceId.delete(row.id);
+            clearNow.push(row.id);
+          }
+          continue;
+        }
+
+        const matched = coByName.get((row.customer || '').trim().toLowerCase());
         if (!matched) {
-          if (status) { status.style.color = 'var(--red)'; status.textContent = 'Customer not in Intercompany list.'; }
-          setTimeout(() => { if (status) status.textContent = ''; }, 3500);
-          if (btn) btn.disabled = false;
-          return;
+          // Customer isn't enrolled in IC dust billing. Don't create an entry —
+          // and don't delete an existing one either: it was valid when sent, and
+          // un-enrolling a company at the IC level shouldn't retroactively wipe
+          // its history (or any IC-side invoice/payment dates on it).
+          continue;
         }
 
-        const existing = await apiGet(OB_IC_KEY);
-        let entries = Array.isArray(existing) ? existing : [];
-
-        if (obIcSent.get(row.id) || entries.some(x => x.source === 'dust-other-billing' && x.source_id === row.id)) {
-          if (status) { status.style.color = '#f59e0b'; status.textContent = 'Already sent.'; }
-          setTimeout(() => { if (status) status.textContent = ''; }, 2500);
-          if (btn) btn.disabled = false;
-          return;
-        }
-
-        const c = obCalc(row);
-        const entry = {
-          id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+        const sentAt = prev?.sent_at || new Date().toISOString();
+        const entry  = {
+          ...(prev || {}),                     // preserve Intercompany-side fields
+          id: prev?.id || (Date.now().toString(36) + Math.random().toString(36).slice(2)),
           source: 'dust-other-billing', source_id: row.id,
           company_id: matched.id, company_name: matched.name,
           actual_date: row.date,
@@ -6471,33 +6629,137 @@
           trucking_hrs: row.trucking_hrs, trucking_rate: row.trucking_rate, trucking_total: c.trkTotal,
           inv_number: row.inv_number,
           comments: row.comments,
-          sent_at: new Date().toISOString(),
-          sent_by: (user?.username) || ''
+          sent_at: sentAt,
+          sent_by: (user?.username) || '',
         };
-        entries.unshift(entry);
-        await apiPut(OB_IC_KEY, entries);
 
-        obIcSent.set(row.id, entry.sent_at);
-        const tsEl = document.getElementById('ic-ob-ts-' + idx);
-        if (tsEl) tsEl.textContent = fmtSentAt(entry.sent_at);
+        if (prev) {
+          if (_icObEntrySig(prev) !== _icObEntrySig(entry)) {
+            const i = entries.indexOf(prev);
+            if (i !== -1) entries[i] = entry; else entries.unshift(entry);
+            bySourceId.set(row.id, entry);
+            changed = true;
+          }
+          sentNow.push({ id: row.id, sentAt });
+        } else {
+          entries.unshift(entry);
+          bySourceId.set(row.id, entry);
+          changed = true;
+          sentNow.push({ id: row.id, sentAt });
+        }
+      }
+
+      return { changed, sentNow, clearNow, handledDeletes };
+    }
+
+    async function autoSyncObIntercompany() {
+      // Coalesce against the tracking sync too — both write the same blob.
+      if (_icSyncRunning) { _icObQueued = true; return; }
+      _icSyncRunning = true;
+      try {
+        const coData = await apiGet('fct_intercompany_companies');
+        const coList = Array.isArray(coData) ? coData : [];
+
+        // customer name (lowercased) → matched IC company, restricted to 'dust'.
+        // An empty map is NOT an early exit: voids and deletes are driven by
+        // local state and must still run when no company list came back.
+        const coByName = new Map();
+        coList.forEach(c => {
+          if ((c.divisions || []).includes('dust')) {
+            coByName.set((c.name || '').trim().toLowerCase(), c);
+          }
+        });
+
+        // Probe read: is any write warranted at all? Skips a needless second
+        // read + PUT on the common steady-state where nothing IC-relevant changed.
+        const probe = await _readIcBilling();
+        if (probe == null) return;
+        const probeRes = _reconcileObBilling(probe.entries, coByName);
+        if (!probeRes.changed) {
+          // Nothing to write — any queued deletes had no IC entry to remove.
+          _dequeueObDeletes(probeRes.handledDeletes);
+          return;
+        }
+
+        // Re-read immediately before writing and reconcile onto the FRESH blob,
+        // so Intercompany-side edits (invoice/payment dates), hard-deletes, and
+        // other divisions' writes that landed since the probe are preserved rather
+        // than clobbered by a stale snapshot.
+        const fresh = await _readIcBilling();
+        if (fresh == null) return;
+        const entries = fresh.entries;
+        const { changed, sentNow, clearNow, handledDeletes } = _reconcileObBilling(entries, coByName);
+        if (!changed) { _dequeueObDeletes(handledDeletes); return; }
+
+        const { ok, conflict } = await _writeIcBilling(entries, fresh.updatedAt);
+
+        // Somebody else wrote between our read and our write. Re-queue so the
+        // drain reconciles onto their value instead of clobbering it. The
+        // queued deletes stay queued, so nothing is lost by retrying.
+        if (conflict && _icConflictRetries < IC_MAX_CONFLICT_RETRIES) {
+          _icConflictRetries++;
+          _icObQueued = true;
+          return;
+        }
+
+        // Only reflect sent-state in the UI once the blob actually persisted, so
+        // a failed PUT never leaves a chip claiming a row reached IC — and never
+        // drops a queued delete that didn't land.
+        if (ok) {
+          _icConflictRetries = 0;
+          _dequeueObDeletes(handledDeletes);
+          sentNow.forEach(({ id, sentAt }) => obIcSent.set(id, sentAt));
+          clearNow.forEach(id => obIcSent.delete(id));
+          obRefreshIcChips(sentNow.map(s => s.id));
+          obClearIcChips(clearNow);
+        }
+      } catch { /* non-fatal — the next save or poll retries */ }
+      finally {
+        _icSyncRunning = false;
+        _drainIcQueue();
+      }
+    }
+
+    // Refresh the "⇄ IC" chip (in the total cell) and the expanded-panel
+    // timestamp for the given row ids in place — no full re-render, so it never
+    // disrupts a row the user is mid-edit on.
+    function obRefreshIcChips(rowIds) {
+      rowIds.forEach(id => {
+        const idx = obRows.findIndex(r => r && r.id === id);
+        if (idx === -1) return;
+        const ts = obIcSent.get(id);
+        if (!ts) return;
         const totalCell = document.querySelector(`#obTbody tr[data-idx="${idx}"] td.calc.cw-inv`);
         if (totalCell) {
           let chip = totalCell.querySelector('.ic-sent-chip');
           if (!chip) { chip = document.createElement('span'); chip.className = 'ic-sent-chip'; totalCell.appendChild(chip); }
-          chip.textContent = `⇄ IC ${fmtSentAt(entry.sent_at)}`;
+          chip.textContent = `⇄ IC ${fmtSentAt(ts)}`;
         }
-        if (status) { status.style.color = '#22c55e'; status.textContent = 'Sent ✓'; }
-        setTimeout(() => { if (status) status.textContent = ''; }, 3000);
-      } catch (err) {
-        if (status) { status.style.color = 'var(--red)'; status.textContent = 'Error — try again.'; }
-        setTimeout(() => { if (status) status.textContent = ''; }, 3500);
-      }
-
-      if (btn) btn.disabled = false;
+        const tsEl = document.getElementById('ic-ob-ts-' + idx);
+        if (tsEl) { tsEl.textContent = fmtSentAt(ts); tsEl.style.color = '#22c55e'; }
+      });
     }
 
-    // Load Other Billing rows in the background after main init
-    obLoad().then(obRenderTable);
+    // Remove the "⇄ IC" chip + reset the panel timestamp for rows whose IC entry
+    // was just voided (row stopped qualifying). Targeted, no full re-render.
+    function obClearIcChips(rowIds) {
+      rowIds.forEach(id => {
+        const idx = obRows.findIndex(r => r && r.id === id);
+        if (idx === -1) return;   // deleted rows have no row left to update
+        const totalCell = document.querySelector(`#obTbody tr[data-idx="${idx}"] td.calc.cw-inv`);
+        if (totalCell) { const chip = totalCell.querySelector('.ic-sent-chip'); if (chip) chip.remove(); }
+        const tsEl = document.getElementById('ic-ob-ts-' + idx);
+        if (tsEl) { tsEl.textContent = 'Needs customer & total'; tsEl.style.color = 'var(--muted)'; }
+      });
+    }
+
+    // Load Other Billing rows in the background after main init, then backfill:
+    // mirror any existing qualifying rows into Intercompany Billing (covers rows
+    // that predate auto-sync and ones whose send never landed).
+    obLoad().then(() => {
+      obRenderTable();
+      autoSyncObIntercompany();
+    });
 
     // Flush pending OB save on unload — keepalive lets the request survive
     // the navigation; without it the browser may cancel it mid-flight.
@@ -7175,17 +7437,26 @@
 
       async function pollObRows() {
         try {
-          // Same protection as pollDustRows — never replace the in-memory
-          // array while the user could have unsaved edits.
-          if (_isEditing()) return;
+          // Same protection as pollDustRows — never replace the in-memory array
+          // while the user could have unsaved edits. _isEditing() alone is not
+          // enough: deleting a row leaves focus on a <button>, so the 900ms
+          // debounce would run "not editing" and the poll could restore the row
+          // it just removed — which the debounced save then wrote back.
+          if (_isEditing() || obHasPendingSave()) return;
           const incoming = await apiGet(OB_KEY);
           if (!Array.isArray(incoming)) return;
+          // Re-check after the round-trip: the user may have edited or deleted
+          // while it was in flight, which would make `incoming` stale.
+          if (_isEditing() || obHasPendingSave()) return;
           if (JSON.stringify(incoming) === JSON.stringify(obRows)) return;
           obRows = incoming;
           const obPanel = document.getElementById('tab-other-billing');
           if (obPanel && obPanel.classList.contains('active')) {
             obRenderTable();
           }
+          // Rows changed under us (another device). Reconcile so the mirror
+          // heals even if the device that made the edit never synced.
+          autoSyncObIntercompany();
         } catch { /* non-fatal */ }
       }
 

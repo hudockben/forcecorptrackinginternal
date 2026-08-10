@@ -500,8 +500,34 @@ async function syncIntercompanyCompanies(sql, companyCode, value) {
 // Handles both trucking entries (haul_fee, task_number, driver …) and
 // dust entries (location, company_man, gallons_ub …).
 // ─────────────────────────────────────────────────────────────────────────────
+// The Other Billing columns post-date the original table, so older databases
+// won't have them. Add them lazily — once per process — the same way the rest
+// of the app evolves this schema, or the insert below fails on those DBs.
+let _icObColsEnsured = false;
+async function _ensureIcObColumns(sql) {
+  if (_icObColsEnsured) return;
+  await sql`
+    ALTER TABLE intercompany_billing_entries
+      ADD COLUMN IF NOT EXISTS truck_number   TEXT,
+      ADD COLUMN IF NOT EXISTS trailer_number TEXT,
+      ADD COLUMN IF NOT EXISTS destination    TEXT,
+      ADD COLUMN IF NOT EXISTS state          TEXT,
+      ADD COLUMN IF NOT EXISTS material       TEXT,
+      ADD COLUMN IF NOT EXISTS gallons_bags   NUMERIC(10,4),
+      ADD COLUMN IF NOT EXISTS price_per_unit NUMERIC(10,4),
+      ADD COLUMN IF NOT EXISTS material_total NUMERIC(10,4),
+      ADD COLUMN IF NOT EXISTS trucking_hrs   NUMERIC(10,4),
+      ADD COLUMN IF NOT EXISTS trucking_rate  NUMERIC(10,4),
+      ADD COLUMN IF NOT EXISTS trucking_total NUMERIC(10,4),
+      ADD COLUMN IF NOT EXISTS comments       TEXT
+  `;
+  _icObColsEnsured = true;
+}
+
 async function syncIntercompanyBillingEntries(sql, companyCode, value) {
   const list = Array.isArray(value) ? value : [];
+
+  await _ensureIcObColumns(sql);
 
   const ids = list.map(e => e && e.id).filter(Boolean);
   if (ids.length) {
@@ -528,6 +554,9 @@ async function syncIntercompanyBillingEntries(sql, companyCode, value) {
         vehicle1, v1_unit, v1_rate, v1_total,
         vehicle2, v2_unit, v2_rate, v2_total,
         gallons_ub, ub_total, inv_number, inv_status,
+        truck_number, trailer_number, destination, state, material,
+        gallons_bags, price_per_unit, material_total,
+        trucking_hrs, trucking_rate, trucking_total, comments,
         updated_at
       ) VALUES (
         ${e.id}, ${companyCode},
@@ -555,6 +584,15 @@ async function syncIntercompanyBillingEntries(sql, companyCode, value) {
         ${safeFloat(e.v2_rate) ?? null}, ${safeFloat(e.v2_total) ?? null},
         ${safeFloat(e.gallons_ub) ?? null}, ${safeFloat(e.ub_total) ?? null},
         ${e.inv_number || null}, ${e.inv_status || null},
+        ${e.truck_number || null}, ${e.trailer_number || null},
+        ${e.destination || null}, ${e.state || null}, ${e.material || null},
+        ${safeFloat(e.gallons_bags)   ?? null},
+        ${safeFloat(e.price_per_unit) ?? null},
+        ${safeFloat(e.material_total) ?? null},
+        ${safeFloat(e.trucking_hrs)   ?? null},
+        ${safeFloat(e.trucking_rate)  ?? null},
+        ${safeFloat(e.trucking_total) ?? null},
+        ${e.comments || null},
         NOW()
       )
       ON CONFLICT (id) DO UPDATE SET
@@ -596,6 +634,18 @@ async function syncIntercompanyBillingEntries(sql, companyCode, value) {
         ub_total          = EXCLUDED.ub_total,
         inv_number        = EXCLUDED.inv_number,
         inv_status        = EXCLUDED.inv_status,
+        truck_number      = EXCLUDED.truck_number,
+        trailer_number    = EXCLUDED.trailer_number,
+        destination       = EXCLUDED.destination,
+        state             = EXCLUDED.state,
+        material          = EXCLUDED.material,
+        gallons_bags      = EXCLUDED.gallons_bags,
+        price_per_unit    = EXCLUDED.price_per_unit,
+        material_total    = EXCLUDED.material_total,
+        trucking_hrs      = EXCLUDED.trucking_hrs,
+        trucking_rate     = EXCLUDED.trucking_rate,
+        trucking_total    = EXCLUDED.trucking_total,
+        comments          = EXCLUDED.comments,
         updated_at        = NOW()
     `;
     intercompany_billing_entries++;

@@ -724,6 +724,21 @@ CREATE TABLE IF NOT EXISTS intercompany_billing_entries (
     ub_total          NUMERIC(10,4),
     inv_number        TEXT,
     inv_status        TEXT,
+    -- Dust "Other Billing" fields (source = 'dust-other-billing'). That grid
+    -- bills material + trucking per load rather than by vehicle-hours, so it
+    -- shares only total / driver / inv_number with the tracking shape above.
+    truck_number      TEXT,
+    trailer_number    TEXT,
+    destination       TEXT,
+    state             TEXT,
+    material          TEXT,
+    gallons_bags      NUMERIC(10,4),
+    price_per_unit    NUMERIC(10,4),
+    material_total    NUMERIC(10,4),
+    trucking_hrs      NUMERIC(10,4),
+    trucking_rate     NUMERIC(10,4),
+    trucking_total    NUMERIC(10,4),
+    comments          TEXT,
     updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
