@@ -328,6 +328,51 @@ function entry(over = {}) {
     assert('un-approve, delete and the edit guard share the gate', gates.length === 3, `found ${gates.length}`);
   }
 
+  console.log('\n[both editors send every field the server would otherwise null]');
+  {
+    // normalizeEntryBody forces the division-specific columns to null whenever
+    // the body omits them, so a page that edits an entry without carrying them
+    // blanks them. payroll.html did exactly that: editing any entry there wiped
+    // the trucking unit/description and every EES detail field, and the next
+    // approval re-injected the row with the holes.
+    const SRC  = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    const NULLED = ['ees_unit', 'ees_customer', 'ees_location', 'ees_name', 'ees_job_number',
+                    'ees_billing', 'truck_unit', 'truck_description'];
+    for (const f of NULLED) {
+      assert(`${f} is nulled when the body omits it`,
+        new RegExp(`${f}\\s*=\\s*(is\\w*|division)[^;]*:\\s*null`).test(SRC)
+        || new RegExp(`${f}:\\s*null`).test(SRC));
+    }
+
+    for (const page of ['timesheet.html', 'payroll.html']) {
+      const html = require('fs').readFileSync(path.resolve(__dirname, '..', page), 'utf8');
+      // The PUT/POST body this page builds for a daily entry.
+      for (const f of NULLED) {
+        assert(`${page} sends ${f}`, new RegExp(`\\b${f}\\s*:`).test(html),
+          'omitted from the save body — the server will null it');
+      }
+    }
+  }
+
+  console.log('\n[payroll reveals the same fields for the same selection]');
+  {
+    // Two places edit an entry. If only one knows which fields belong to an
+    // EES job, the same entry looks different depending on where it is opened.
+    const pay = require('fs').readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
+    const ts  = require('fs').readFileSync(path.resolve(__dirname, '../timesheet.html'), 'utf8');
+    const idsOf = src => {
+      const m = /EES_JOB_IDS = (\[[^\]]*\])/.exec(src) || /EM_EES_JOB_IDS = (\[[^\]]*\])/.exec(src);
+      return m ? JSON.parse(m[1].replace(/'/g, '"')).sort() : null;
+    };
+    const a = idsOf(ts), b = idsOf(pay);
+    assert('timesheet knows the EES jobs', !!a);
+    assert('payroll knows them too', !!b);
+    assert('and they agree', JSON.stringify(a) === JSON.stringify(b), `${JSON.stringify(a)} vs ${JSON.stringify(b)}`);
+    assert('payroll gates on the dust division too', /=== 'dust' && EM_EES_JOB_IDS/.test(pay));
+    assert('payroll re-evaluates when the job changes', /onchange="onEditJobChange\(\)"/.test(pay));
+    assert('payroll re-evaluates when the division changes', /reloadEditJobs[\s\S]{0,400}onEditJobChange\(\)/.test(pay));
+  }
+
   console.log('\n[the two jobs are offered under dust, and only dust]');
   {
     const JOBS = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-jobs.js'), 'utf8');

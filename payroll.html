@@ -3436,7 +3436,30 @@
           </div>
           <div class="full">
             <label>Job</label>
-            <select id="em-job"></select>
+            <select id="em-job" onchange="onEditJobChange()"></select>
+          </div>
+          <!-- Division-specific fields. Shown for the same combinations that
+               reveal them on timesheet.html, and — just as important — always
+               SENT on save: normalizeEntryBody nulls anything the body omits,
+               so a payroll edit that didn't carry them silently blanked them. -->
+          <div class="full" id="em-truck-wrap" style="display:none">
+            <label>Unit</label>
+            <input type="text" id="em-truck-unit" maxlength="100" placeholder="Truck / unit #" />
+          </div>
+          <div class="full" id="em-truck-desc-wrap" style="display:none">
+            <label>Description</label>
+            <textarea id="em-truck-desc" maxlength="2000"></textarea>
+          </div>
+          <div id="em-ees-unit-wrap"  style="display:none"><label>Unit</label><input type="text" id="em-ees-unit" maxlength="100" /></div>
+          <div id="em-ees-cust-wrap"  style="display:none"><label>Customer</label><input type="text" id="em-ees-customer" maxlength="500" /></div>
+          <div id="em-ees-loc-wrap"   style="display:none"><label>Location</label><input type="text" id="em-ees-location" maxlength="500" /></div>
+          <div id="em-ees-name-wrap"  style="display:none"><label>Name</label><input type="text" id="em-ees-name" maxlength="500" /></div>
+          <div id="em-ees-job-wrap"   style="display:none"><label>Job Number</label><input type="text" id="em-ees-job-number" maxlength="100" /></div>
+          <div id="em-ees-bill-wrap"  style="display:none"><label>Billing</label>
+            <select id="em-ees-billing">
+              <option value="Non-Billable">Non-Billable</option>
+              <option value="Billable">Billable</option>
+            </select>
           </div>
           <div>
             <label>Travel Time to Site (hours)</label>
@@ -3501,6 +3524,15 @@
         document.getElementById('em-end').value   = e.end_time   || '';
         document.getElementById('em-lunch').value = e.lunch_break === true ? 'true' : 'false';
         document.getElementById('em-equip').value = e.operated_equipment === true ? 'true' : 'false';
+        document.getElementById('em-truck-unit').value      = e.truck_unit        || '';
+        document.getElementById('em-truck-desc').value      = e.truck_description || '';
+        document.getElementById('em-ees-unit').value        = e.ees_unit       || '';
+        document.getElementById('em-ees-customer').value    = e.ees_customer   || '';
+        document.getElementById('em-ees-location').value    = e.ees_location   || '';
+        document.getElementById('em-ees-name').value        = e.ees_name       || '';
+        document.getElementById('em-ees-job-number').value  = e.ees_job_number || '';
+        document.getElementById('em-ees-billing').value     = e.ees_billing    || 'Non-Billable';
+        onEditJobChange();
         const emSupSel = document.getElementById('em-sup');
         if (e.supervisor_id && !supervisors.some(s => String(s.id) === String(e.supervisor_id))) {
           // Supervisor no longer in the list — keep current value as a synthetic
@@ -3526,6 +3558,29 @@
       const jobSel = document.getElementById('em-job');
       jobSel.innerHTML = '<option value="">— pick —</option>' +
         (jobs || []).map(j => `<option value="${escapeHtml(j.id)}" data-label="${escapeHtml(j.label)}">${escapeHtml(j.label)}</option>`).join('');
+      onEditJobChange();
+    }
+
+    // The two standing EES activities, as minted by api/timesheet-jobs.js.
+    // Kept in step with timesheet.html — both pages reveal the same fields for
+    // the same selection, so an entry looks the same wherever it is edited.
+    const EM_EES_JOB_IDS = ['ees:preloading', 'ees:washing'];
+
+    function emIsEes() {
+      const d = document.getElementById('em-division');
+      const j = document.getElementById('em-job');
+      return !!d && !!j && d.value === 'dust' && EM_EES_JOB_IDS.includes(j.value);
+    }
+
+    function onEditJobChange() {
+      const d = document.getElementById('em-division');
+      if (!d) return;                       // time-off modal has no division
+      const isEes   = emIsEes();
+      const isTruck = d.value === 'trucking';
+      const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+      show('em-truck-wrap', isTruck);
+      show('em-truck-desc-wrap', isTruck);
+      ['unit', 'cust', 'loc', 'name', 'job', 'bill'].forEach(k => show(`em-ees-${k}-wrap`, isEes));
     }
 
     function closeEdit() {
@@ -3590,6 +3645,17 @@
           supervisor_id:   supSel.value,
           supervisor_name: supOpt ? (supOpt.dataset.name || supOpt.textContent) : '',
           notes: document.getElementById('em-notes').value || '',
+          // Always sent. The server nulls whatever the body leaves out, so
+          // omitting these blanked the trucking unit/description and every EES
+          // detail field on any edit made from payroll.
+          truck_unit:        document.getElementById('em-truck-unit').value || '',
+          truck_description: document.getElementById('em-truck-desc').value || '',
+          ees_unit:       document.getElementById('em-ees-unit').value       || '',
+          ees_customer:   document.getElementById('em-ees-customer').value   || '',
+          ees_location:   document.getElementById('em-ees-location').value   || '',
+          ees_name:       document.getElementById('em-ees-name').value       || '',
+          ees_job_number: document.getElementById('em-ees-job-number').value || '',
+          ees_billing:    document.getElementById('em-ees-billing').value    || 'Non-Billable',
         };
       }
 
