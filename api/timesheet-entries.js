@@ -1164,11 +1164,33 @@ const IC_REMOVED_BLOB = 'fct_intercompany_removed_entries';
  * leave the tab showing "Removed in IC" with no way back.
  */
 async function clearIcSuppression(sql, companyCode, source, sourceId) {
-  const arr  = await readBlobArray(sql, companyCode, IC_REMOVED_BLOB);
-  const next = arr.filter(t => !(t && t.source === source && t.source_id === sourceId));
-  if (next.length === arr.length) return 0;
-  await writeBlobArray(sql, companyCode, IC_REMOVED_BLOB, next);
-  return arr.length - next.length;
+  // One statement, deliberately. Reading the list and writing it back would
+  // race the intercompany page recording a removal: it reads [A], the page
+  // writes [A,B], it writes [] — and B is silently gone, so that row quietly
+  // comes back. jsonb_agg rebuilds the array inside the UPDATE, so there is no
+  // window. The EXISTS guard keeps it from touching the row (or updated_at)
+  // when there was nothing to clear.
+  const scoped = `${companyCode}:${IC_REMOVED_BLOB}`;
+  const rows = await sql`
+    UPDATE app_data
+       SET value = COALESCE((
+             SELECT jsonb_agg(t)
+               FROM jsonb_array_elements(value) AS t
+              WHERE NOT (t->>'source' = ${source} AND t->>'source_id' = ${sourceId})
+           ), '[]'::jsonb),
+           updated_at = NOW()
+     WHERE key = ${scoped}
+       AND jsonb_typeof(value) = 'array'
+       AND EXISTS (
+             SELECT 1
+               FROM jsonb_array_elements(value) AS t
+              WHERE t->>'source' = ${source} AND t->>'source_id' = ${sourceId}
+           )
+    RETURNING 1 AS cleared
+  `;
+  // At most one removal exists per (source, source_id) — the writer dedups —
+  // so this is 1 when one was cleared and 0 when there was nothing to clear.
+  return rows.length;
 }
 
 /**

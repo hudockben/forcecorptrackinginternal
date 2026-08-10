@@ -2521,16 +2521,36 @@
       return _icSuppressed.has(_icSuppressKey(source, sourceId));
     }
 
+    // Returns true when the set actually changed, so a caller can repaint the
+    // "Removed in IC" markers. Without that repaint the marker is missing on
+    // first paint — the tabs render before the first sync has fetched this —
+    // and a suppressed row shows no indication at all, which defeats the whole
+    // point of recording the removal rather than hiding it.
     async function _loadIcSuppressions() {
       try {
         const list = await apiGet(IC_REMOVED_KEY);
-        if (!Array.isArray(list)) return;
+        if (!Array.isArray(list)) return false;
         const next = new Set();
         list.forEach(t => {
           if (t && t.source_id) next.add(_icSuppressKey(t.source || '', t.source_id));
         });
+        const changed = next.size !== _icSuppressed.size
+          || [...next].some(k => !_icSuppressed.has(k));
         _icSuppressed = next;
-      } catch { /* non-fatal — worst case a removed row reappears */ }
+        return changed;
+      } catch { return false; }   // non-fatal — worst case a removed row reappears
+    }
+
+    // Repaint a tab whose suppression markers just changed, but never while the
+    // user is mid-edit in it.
+    function _repaintForSuppressions(panelId, render) {
+      const panel = document.getElementById(panelId);
+      if (panel && panel.classList.contains('active') && !_isEditingAnyField()) render();
+    }
+
+    function _isEditingAnyField() {
+      const el = document.activeElement;
+      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
     }
 
     // Reconcile every dust row into `entries` (MUTATED in place):
@@ -2634,7 +2654,7 @@
       if (_icSyncRunning) { _icDustQueued = true; return; }
       _icSyncRunning = true;
       try {
-        await _loadIcSuppressions();
+        if (await _loadIcSuppressions()) _repaintForSuppressions('tab-tracking', renderTable);
         const coData = await apiGet('fct_intercompany_companies');
         const coList = Array.isArray(coData) ? coData : [];
         if (!coList.length) return;              // no companies to match → nothing to do
@@ -6250,6 +6270,9 @@
         const data = await apiGet(OB_KEY);
         obRows = Array.isArray(data) ? data : [];
       } catch { obRows = []; }
+      // Suppressions before the first render, or a removed row paints blank.
+      await _loadIcSuppressions();
+
       // Seed IC sent-map for OB rows from the shared IC blob
       try {
         const ic = await apiGet(OB_IC_KEY);
@@ -6783,7 +6806,7 @@
       if (_icSyncRunning) { _icObQueued = true; return; }
       _icSyncRunning = true;
       try {
-        await _loadIcSuppressions();
+        if (await _loadIcSuppressions()) _repaintForSuppressions('tab-other-billing', obRenderTable);
         const coData = await apiGet('fct_intercompany_companies');
         const coList = Array.isArray(coData) ? coData : [];
 
@@ -6955,6 +6978,9 @@
         eeUpdatedAt = body ? (body.updated_at || null) : null;
         eeLoaded    = true;
       } catch { return false; }
+
+      // Suppressions before the first render, or a removed row paints blank.
+      await _loadIcSuppressions();
 
       // Seed the IC sent-map for EES rows from the shared billing blob.
       try {
@@ -7296,7 +7322,7 @@
       if (_icSyncRunning) { _icEesQueued = true; return; }
       _icSyncRunning = true;
       try {
-        await _loadIcSuppressions();
+        if (await _loadIcSuppressions()) _repaintForSuppressions('tab-ees-other', eeRenderTable);
         const coData = await apiGet('fct_intercompany_companies');
         const coList = Array.isArray(coData) ? coData : [];
         const coByName = new Map();

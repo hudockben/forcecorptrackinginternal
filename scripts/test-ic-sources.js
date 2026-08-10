@@ -171,8 +171,12 @@ console.log('\n[a deletion in intercompany is honoured by every owning division]
   for (const f of ['dust.html', 'trucking.html']) {
     const src = read(f);
     assert(`${f} loads the removed list`, /_loadIcSuppressions\(\)/.test(src));
-    assert(`${f} loads it before reconciling`,
-      /await _loadIcSuppressions\(\);[\s\S]{0,200}apiGet\('fct_intercompany_companies'\)|await _loadIcSuppressions\(\);[\s\S]{0,200}tdGet\('fct_intercompany_companies'\)/.test(src));
+    // Ordering, not call shape: the removed list must be in hand before the
+    // reconcile that decides what to create.
+    const load = src.indexOf('_loadIcSuppressions()');
+    const co   = Math.max(src.indexOf("apiGet('fct_intercompany_companies')"), src.indexOf("tdGet('fct_intercompany_companies')"));
+    assert(`${f} loads it before reconciling`, load !== -1 && co !== -1 && load < co,
+      'the reconcile would run against an empty removed list');
     // The create branch specifically — matching the function's mere existence
     // would pass with the check removed from the one place it matters.
     assert(`${f} skips creating a suppressed row`, /else if \(icIsSuppressed\(/.test(src),
@@ -183,6 +187,33 @@ console.log('\n[a deletion in intercompany is honoured by every owning division]
   for (const s of DUST_IC_SOURCES) {
     assert(`dust.html honours suppression for '${s}'`, dust.includes(`icIsSuppressed('${s}'`));
   }
+}
+
+console.log('\n[a removal is visible the moment a tab paints]');
+{
+  // The marker is what stops a suppression being silent, so it has to be
+  // right on first paint. The tabs render as soon as their rows load — before
+  // any sync has fetched the removed list — so loading it only inside the
+  // sync left a suppressed row showing nothing at all until some unrelated
+  // re-render happened to come along.
+  const dust = read('dust.html');
+
+  for (const [loader, tab] of [['async function eeLoad', 'EES Other'], ['async function obLoad', 'Other Billing']]) {
+    const i = dust.indexOf(loader);
+    assert(`${tab} has a loader`, i !== -1);
+    const body = dust.slice(i, dust.indexOf('\n    }', i));
+    assert(`${tab} loads removals before it paints`, /_loadIcSuppressions\(\)/.test(body),
+      'the first render would show a suppressed row with no marker');
+  }
+
+  // …and when the list changes later, the tab has to be repainted: the sync
+  // only touches the rows it changed, and a suppressed row is by definition
+  // one it did not touch.
+  assert('the loader reports whether it changed', /const changed = next\.size !== _icSuppressed\.size/.test(dust));
+  const repaints = (dust.match(/if \(await _loadIcSuppressions\(\)\) _repaintForSuppressions\(/g) || []).length;
+  assert('every dust sync repaints on a change', repaints === DUST_IC_SOURCES.length,
+    `${repaints} of ${DUST_IC_SOURCES.length} syncs`);
+  assert('a repaint never interrupts an edit', /_repaintForSuppressions\([\s\S]{0,200}!_isEditingAnyField\(\)/.test(dust));
 }
 
 console.log('\n[every writer of the shared blob uses the version check]');

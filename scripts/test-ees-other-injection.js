@@ -42,6 +42,18 @@ Module._load = function (req, parent) {
         store.set(vals[0], JSON.parse(vals[1]));
         return Promise.resolve([]);
       }
+      // Mirrors clearIcSuppression's single UPDATE: rebuild the array without
+      // the matching (source, source_id), and touch nothing when none matches.
+      // Params in template order: source, source_id, key, source, source_id.
+      if (/^UPDATE app_data/.test(q) && /jsonb_array_elements/.test(q)) {
+        const [source, sourceId, key] = vals;
+        const cur = store.get(key);
+        if (!Array.isArray(cur)) return Promise.resolve([]);
+        const next = cur.filter(t => !(t && t.source === source && t.source_id === sourceId));
+        if (next.length === cur.length) return Promise.resolve([]);
+        store.set(key, next);
+        return Promise.resolve([{ cleared: 1 }]);
+      }
       return Promise.resolve([]);
     }};
   }
@@ -255,6 +267,23 @@ function entry(over = {}) {
     assert('reports what it removed',
       (await clearIcSuppression(sql, 'ACME', 'trucking', 'tr-1')) === 1);
     assert('and removed it', (store.get(REMOVED) || []).length === 0);
+  }
+
+  console.log('\n[clearing a removal cannot lose a concurrent one]');
+  {
+    // Read-the-list-then-write-it-back would race the intercompany page
+    // recording a removal — it reads [A], the page writes [A,B], it writes []
+    // and B is silently gone, so that row quietly comes back. One statement
+    // has no such window.
+    const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    const fn = SRC.slice(SRC.indexOf('async function clearIcSuppression'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    assert('does not read the list separately', !/readBlobArray/.test(body));
+    assert('does not write the list back', !/writeBlobArray/.test(body));
+    assert('is a single statement', (body.match(/await sql`/g) || []).length === 1,
+      `${(body.match(/await sql`/g) || []).length} statements`);
+    assert('rebuilds the array in SQL', /jsonb_agg/.test(body));
+    assert('skips the write when nothing matches', /EXISTS/.test(body));
   }
 
   console.log('\n[un-approving does not clear a removal]');
