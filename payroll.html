@@ -634,7 +634,10 @@
       font-variant-numeric: tabular-nums;
       color: var(--text);
     }
-    .report .report-detail-table td.num { text-align: right; }
+    /* Dates and figures stay on one line so the project name is the only
+       column that wraps when the travel legs widen the table. */
+    .report .report-detail-table td.num { text-align: right; white-space: nowrap; }
+    .report .report-detail-table td.date { white-space: nowrap; }
     .report .report-detail-table td.num-pw { color: var(--yellow); }
     .report .report-detail-table tr.detail-total td {
       font-weight: 700;
@@ -2197,16 +2200,25 @@
       const list = (entries || []).slice().sort((a, b) =>
         (a.work_date || '').localeCompare(b.work_date || '') ||
         String(a.created_at || '').localeCompare(String(b.created_at || '')));
-      let sumWork = 0, sumTravel = 0, sumTotal = 0, sumPw = 0;
+      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0, sumTotal = 0, sumPw = 0;
       const lines = list.map(e => {
         const isOff  = e.entry_type === 'time_off';
         const work   = isOff ? 0 : Number(e.computed_hours || 0);
         const travel = isOff ? 0 : Number(e.travel_hours   || 0);
         const total  = work + travel;
+        // Travel is entered on the timesheet as two legs — "Travel Time to
+        // Site" and "Travel Time to Shop" — and stored alongside their sum.
+        // Break the legs back out so payroll can see how the travel figure was
+        // built; the summed Travel and Total columns are unchanged. An entry
+        // saved with only the sum (no legs) shows a dash on both legs rather
+        // than a made-up split.
+        const toSite = isOff ? null : (e.travel_to_site_hours != null ? Number(e.travel_to_site_hours) : null);
+        const toShop = isOff ? null : (e.travel_to_shop_hours != null ? Number(e.travel_to_shop_hours) : null);
         // Per entry, prevailing-wage hours = the whole day's hours when the
         // tied job is prevailing wage, else 0 (matches the aggregate column).
         const pw     = (!isOff && e.prevailing_wage === true) ? total : 0;
         sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw;
+        sumToSite += (toSite || 0); sumToShop += (toShop || 0);
         const division = isOff ? '—' : (prettyDiv(e.division) || '—');
         const project  = isOff ? `Time Off · ${prettyOff(e.time_off_type)}` : (e.job_label || '—');
         const statusPill = e.status === 'approved'
@@ -2214,10 +2226,12 @@
           : '<span class="pill pill-pending">Pending</span>';
         return `
           <tr>
-            <td>${prettyDate(e.work_date)}</td>
+            <td class="date">${prettyDate(e.work_date)}</td>
             <td>${escapeHtml(division)}</td>
             <td>${escapeHtml(project)}</td>
             <td class="num">${isOff ? '—' : work.toFixed(2)}</td>
+            <td class="num">${toSite == null ? '—' : toSite.toFixed(2)}</td>
+            <td class="num">${toShop == null ? '—' : toShop.toFixed(2)}</td>
             <td class="num">${isOff ? '—' : travel.toFixed(2)}</td>
             <td class="num">${isOff ? '—' : total.toFixed(2)}</td>
             <td class="num${pw > 0 ? ' num-pw' : ''}">${isOff ? '—' : pw.toFixed(2)}</td>
@@ -2234,7 +2248,9 @@
               <th>Division</th>
               <th>Project</th>
               <th style="text-align:right">Work</th>
-              <th style="text-align:right">Travel</th>
+              <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel&nbsp;to&nbsp;Site</th>
+              <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
+              <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
               <th style="text-align:right">Total</th>
               <th class="th-pw" style="text-align:right">Prevailing&nbsp;Hrs</th>
               <th>Lunch</th>
@@ -2247,6 +2263,8 @@
             <tr class="detail-total">
               <td colspan="3">Total — ${list.length} ${list.length === 1 ? 'entry' : 'entries'}</td>
               <td class="num">${sumWork.toFixed(2)}</td>
+              <td class="num">${sumToSite.toFixed(2)}</td>
+              <td class="num">${sumToShop.toFixed(2)}</td>
               <td class="num">${sumTravel.toFixed(2)}</td>
               <td class="num">${sumTotal.toFixed(2)}</td>
               <td class="num num-pw">${sumPw.toFixed(2)}</td>
@@ -2676,11 +2694,11 @@
     function reportDetailSheetXml(model) {
       const { rows, scopeLine, gen, companyName } = model;
       const headers = ['Employee', 'Date', 'Type', 'Division', 'Project / Job',
-        'Start', 'End', 'Work Hours', 'Travel Hours', 'Total Hours',
-        'Prevailing Hrs', 'Standard Hrs', 'Lunch Break', 'Operated Equipment',
-        'Supervisor', 'Status', 'Notes'];
+        'Start', 'End', 'Work Hours', 'Travel to Site', 'Travel to Shop',
+        'Travel Hours', 'Total Hours', 'Prevailing Hrs', 'Standard Hrs',
+        'Lunch Break', 'Operated Equipment', 'Supervisor', 'Status', 'Notes'];
       const HEADER_ROW = 4;
-      const NUM_COLS = new Set([7, 8, 9, 10, 11]); // 0-based header indices that are numeric
+      const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13]); // 0-based header indices that are numeric
 
       const sheet = [
         [cTxt('Payroll Hours Report — Entry Detail', XS.title)],
@@ -2690,7 +2708,7 @@
       ];
 
       let n = 0;
-      let sumWork = 0, sumTravel = 0, sumTotal = 0, sumPw = 0, sumStd = 0;
+      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0, sumTotal = 0, sumPw = 0, sumStd = 0;
 
       for (const r of rows) {
         const entries = r.entries.slice().sort((a, b) =>
@@ -2705,9 +2723,15 @@
           // job is prevailing wage — the same split the summary columns use.
           const pw  = isOff ? null : (e.prevailing_wage === true ? total : 0);
           const std = isOff ? null : (e.prevailing_wage === true ? 0 : total);
+          // The two travel legs the timesheet collects, kept alongside their
+          // sum. Null (never itemised) stays an empty cell so it can't be read
+          // as a zero-hour leg.
+          const toSite = isOff ? null : (e.travel_to_site_hours != null ? Number(e.travel_to_site_hours) : null);
+          const toShop = isOff ? null : (e.travel_to_shop_hours != null ? Number(e.travel_to_shop_hours) : null);
           if (!isOff) {
             sumWork += work; sumTravel += travel; sumTotal += total;
             sumPw += pw; sumStd += std;
+            sumToSite += (toSite || 0); sumToShop += (toShop || 0);
           }
           const flag = v => (isOff || v == null) ? '' : (v ? 'Yes' : 'No');
           sheet.push([
@@ -2719,6 +2743,8 @@
             cTxt(isOff ? '' : (e.start_time || ''), XS.text),
             cTxt(isOff ? '' : (e.end_time   || ''), XS.text),
             cNum(work,   XS.num),
+            cNum(toSite, XS.num),
+            cNum(toShop, XS.num),
             cNum(travel, XS.num),
             cNum(total,  XS.num),
             cNum(pw,     XS.numPw),
@@ -2738,6 +2764,8 @@
         cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
         cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
         cNum(sumWork,   XS.totNum),
+        cNum(sumToSite, XS.totNum),
+        cNum(sumToShop, XS.totNum),
         cNum(sumTravel, XS.totNum),
         cNum(sumTotal,  XS.totNum),
         cNum(sumPw,     XS.totPw),
@@ -2747,10 +2775,10 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 12, 11, 14, 13, 12, 18, 20, 11, 40],
+        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 13, 13, 12, 11, 14, 13, 12, 18, 20, 11, 40],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:Q${HEADER_ROW + n}`,
+        autoFilterRef: `A${HEADER_ROW}:S${HEADER_ROW + n}`,
       });
     }
 
