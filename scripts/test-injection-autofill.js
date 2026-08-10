@@ -185,6 +185,16 @@ function makeSql({ equipmentBlob = [], equipmentTable = [], prevailingWage = fal
       equip_unit_cost: v[13], equip_hours: v[14],
     };
   };
+  // Every injected row, in order — a split posts one INSERT per row, and the
+  // travel tests need to compare the work row against the travel row.
+  sql.insertedAll = () => log
+    .filter(e => e.q.startsWith('INSERT INTO daily_tracking'))
+    .map(({ values: v }) => ({
+      row_id: v[0], project_id: v[1], company_code: v[2], division: v[3], date: v[4],
+      field_type: v[5], employee: v[6], cost_code: v[7], sub_code: v[8], job_class: v[9],
+      rate: v[10], labor_hours: v[11], equipment: v[12],
+      equip_unit_cost: v[13], equip_hours: v[14],
+    }));
   sql.equipmentReads = () => log.filter(e => e.q.includes('FROM equipment_list')).length;
   return sql;
 }
@@ -234,6 +244,44 @@ async function injectionTests() {
     const sql = makeSql();
     await insertSplitRows(sql, [splitRow()], ENTRY, 'turf', 'FCT', 'brewerzach');
     assert('an ordinary row leaves field_type unset', sql.inserted().field_type === null);
+  }
+
+  // Prevailing wage pays a premium for time on the work, not for driving to it.
+  // The rate used to be resolved once per entry from the job's flag and stamped
+  // on every row, so travel on a prevailing job was paid the prevailing rate.
+  console.log('\n[insertSplitRows — travel is never paid at the prevailing rate]');
+  {
+    const sql = makeSql({ prevailingWage: true });
+    await insertSplitRows(sql, [
+      splitRow({ labor_hours: 8 }),
+      splitRow({ is_travel: true, sub_code: 'Travel Time', labor_hours: 2 }),
+    ], ENTRY, 'turf', 'FCT', 'brewerzach');
+    const [work, travel] = sql.insertedAll();
+    assert('work on a prevailing job still takes the prevailing rate', work.rate === 58);
+    assert('travel on that same job takes the standard rate',          travel.rate === 32.5);
+    assert('the two rows are priced differently',                      work.rate !== travel.rate);
+  }
+  {
+    const sql = makeSql({ prevailingWage: false });
+    await insertSplitRows(sql, [splitRow({ is_travel: true, labor_hours: 2 })], ENTRY, 'turf', 'FCT', 'brewerzach');
+    assert('travel on a non-prevailing job is unchanged', sql.inserted().rate === 32.5);
+  }
+  {
+    // Paving books travel under sub codes like "19mm - Travel". Those hours are
+    // travel whether or not anyone remembered to tick the box.
+    const sql = makeSql({ prevailingWage: true });
+    await insertSplitRows(sql, [splitRow({ sub_code: '19mm - Travel', labor_hours: 2 })], ENTRY, 'paving', 'FCT', 'brewerzach');
+    assert('a "… - Travel" sub code is travel without the checkbox', sql.inserted().rate === 32.5);
+  }
+  {
+    const sql = makeSql({ prevailingWage: true });
+    await insertSplitRows(sql, [splitRow({ cost_code: 'Travel', sub_code: '', labor_hours: 2 })], ENTRY, 'turf', 'FCT', 'brewerzach');
+    assert('a Travel cost code counts too', sql.inserted().rate === 32.5);
+  }
+  {
+    const sql = makeSql({ prevailingWage: true });
+    await insertSplitRows(sql, [splitRow({ sub_code: 'Paving - Mainline', labor_hours: 8 })], ENTRY, 'paving', 'FCT', 'brewerzach');
+    assert('an ordinary code is not mistaken for travel', sql.inserted().rate === 58);
   }
 
   console.log('\n[insertSplitRows — equipment]');
@@ -375,6 +423,28 @@ async function refreshTests() {
   {
     const { updates } = await run([row({ equipment: 'Mystery Machine', equip_unit_cost: 55 })]);
     assert('an unresolvable machine keeps the price it has', updates[0].equip_unit_cost === 55);
+  }
+
+  // This is also the repair path for travel that was posted at the prevailing
+  // rate before the rule existed: re-running it over the range re-prices those
+  // rows in place, so nothing has to be un-approved and re-approved.
+  {
+    const { updates } = await run([row({ field_type: 'Travel', rate: 58 })], { prevailingWage: true });
+    assert('a posted travel row is re-priced to the standard rate', updates[0].rate === 32.5);
+  }
+  {
+    const { updates } = await run([row({ sub_code: '19mm - Travel', rate: 58 })], { prevailingWage: true });
+    assert('a "… - Travel" sub code is re-priced too', updates[0].rate === 32.5);
+  }
+  {
+    const { updates } = await run([row({ field_type: null, sub_code: 'Mainline', rate: 58, employee: 'Zach Brewer', job_class: 'Operator' })],
+      { prevailingWage: true });
+    assert('work on a prevailing job keeps the prevailing rate', updates.length === 0);
+  }
+  {
+    const { updates } = await run([row({ field_type: 'Travel', rate: 32.5, employee: 'Zach Brewer', job_class: 'Operator' })],
+      { prevailingWage: true });
+    assert('a travel row already at the standard rate is not rewritten', updates.length === 0);
   }
   {
     // The same person can submit into more than one division, and each division

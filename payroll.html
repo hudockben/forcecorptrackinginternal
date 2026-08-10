@@ -4347,6 +4347,20 @@
     }
     bindBackdropClose(document.getElementById('splitBackdrop'), closeSplit);
 
+    // Mirrors isTravelSplitRow in api/timesheet-entries.js — the two must agree,
+    // because that is the rule the row is priced by: travel is paid at the
+    // standard rate even on a prevailing-wage job. The Travel checkbox says so,
+    // and so does the code the hours are booked to (paving books travel under
+    // sub codes like "19mm - Travel").
+    const TRAVEL_CODE_RE = /travel/i;
+
+    function isTravelSplitRow(r) {
+      if (!r) return false;
+      return r.is_travel === true
+        || TRAVEL_CODE_RE.test(String(r.sub_code  || ''))
+        || TRAVEL_CODE_RE.test(String(r.cost_code || ''));
+    }
+
     function _blankSplitRow(isTravel) {
       return {
         cost_code:   '',
@@ -4592,8 +4606,11 @@
       // much of the day was travel, and the rows ticked Travel have to add up
       // to that — otherwise the flag lands on the wrong row and its hours book
       // to the wrong task, which balances perfectly and is still wrong.
+      // A row booked to a travel code counts as travel here whether or not the
+      // box is ticked, the same rule the server prices the row by — paving
+      // books travel under sub codes like "19mm - Travel".
       const travelMarked = Math.round(
-        splitRows.filter(r => r.is_travel)
+        splitRows.filter(isTravelSplitRow)
                  .reduce((s, r) => s + (Number(r.labor_hours) || 0), 0) * 100) / 100;
       const travelOff = Math.abs(travelMarked - travel) >= 0.005;
       const tw = document.getElementById('splitTravelTally');

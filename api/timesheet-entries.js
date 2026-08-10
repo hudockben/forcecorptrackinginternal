@@ -568,6 +568,21 @@ async function prevailingWageByJob(sql, companyCode, division, jobIds) {
   return flags;
 }
 
+// Is this split row travel time? Two things say so and either is enough: the
+// Travel checkbox on the payroll splitting screen, and the code the hours are
+// booked to — paving books travel under sub codes like "19mm - Travel", and
+// those hours are travel whether or not anyone remembered to tick the box.
+// Deciding it here rather than at each call site means the approval and the
+// rate refresh can never disagree about what a row is.
+const TRAVEL_CODE_RE = /travel/i;
+
+function isTravelSplitRow(row) {
+  if (!row) return false;
+  return row.is_travel === true
+    || TRAVEL_CODE_RE.test(String(row.sub_code  || ''))
+    || TRAVEL_CODE_RE.test(String(row.cost_code || ''));
+}
+
 /**
  * Insert split rows into daily_tracking. The caller is responsible for first
  * deleting any prior injected rows for this entry (resplit case) — this
@@ -596,7 +611,12 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   );
   const emp      = resolver.employeeFor(employeeName);
   const jobClass = (emp && emp.job_class) || null;
-  const empRate  = resolver.rateFor(emp, isPrevailingWage);
+  // Travel is not paid at the prevailing rate, even when the job itself is
+  // prevailing wage — the premium is for time on the work, not for driving to
+  // it. So each row is priced by what it is rather than by the job alone:
+  // work at the job's rate, travel always at the employee's standard rate.
+  const workRate   = resolver.rateFor(emp, isPrevailingWage);
+  const travelRate = resolver.rateFor(emp, false);
   // Prefer the roster's own spelling so the injected row carries the name the
   // cost tracking tab shows everywhere else, not the raw login.
   const employeeLabel = (emp && emp.name) || employeeName;
@@ -623,7 +643,7 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${r.cost_code || null},
         ${r.sub_code || null},
         ${jobClass},
-        ${empRate},
+        ${isTravelSplitRow(r) ? travelRate : workRate},
         ${r.labor_hours},
         ${r.equipment || null},
         ${eqUnitCost},
@@ -1963,6 +1983,7 @@ module.exports = async (req, res) => {
         ? await sql`
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
                    dt.equipment, dt.equip_unit_cost,
+                   dt.field_type, dt.cost_code, dt.sub_code,
                    te.username, te.job_id
             FROM daily_tracking dt
             JOIN timesheet_entries te
@@ -1977,6 +1998,7 @@ module.exports = async (req, res) => {
         : await sql`
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
                    dt.equipment, dt.equip_unit_cost,
+                   dt.field_type, dt.cost_code, dt.sub_code,
                    te.username, te.job_id
             FROM daily_tracking dt
             JOIN timesheet_entries te
@@ -2024,7 +2046,16 @@ module.exports = async (req, res) => {
             unresolved.set(key, seen);
             continue;
           }
-          const rate      = resolver.rateFor(emp, !!pwFlags.get(String(r.job_id)));
+          // Same rule the approval applies: travel is paid at the standard
+          // rate whatever the job is, so only work rows can take the
+          // prevailing rate. An already-posted row carries its Travel marker
+          // as field_type; the codes are read too, so a "… - Travel" sub code
+          // counts even where the box was never ticked. This is also what
+          // re-rates travel posted before the rule existed — run it over the
+          // range and those rows correct themselves in place.
+          const travelRow = String(r.field_type || '') === 'Travel'
+            || isTravelSplitRow({ cost_code: r.cost_code, sub_code: r.sub_code });
+          const rate      = resolver.rateFor(emp, !travelRow && !!pwFlags.get(String(r.job_id)));
           const eqCost    = resolver.equipCostFor(r.equipment);
           // job_class is one of the fields a supervisor may re-categorize in
           // the division tab, so only fill it when it is still empty — never
