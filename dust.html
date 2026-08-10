@@ -2367,6 +2367,8 @@
     // conflates a failed read (non-200 / network error / bad JSON) with a
     // genuinely empty blob — treating a failed read as empty would let us
     // overwrite the whole shared blob and wipe every other division's billing.
+    // Returns { entries, updatedAt } — updatedAt is handed back on the write so
+    // the server can reject it if anyone else changed the blob in between.
     async function _readIcBilling() {
       try {
         const r = await fetch(`/api/data/${IC_BILLING_KEY}`, { headers: { 'Authorization': `Bearer ${token}` } });
@@ -2375,9 +2377,46 @@
         const body = await r.json();
         const v = body ? body.value : null;
         if (v != null && !Array.isArray(v)) return null;   // unexpected shape
-        return Array.isArray(v) ? v : [];                   // 200 + null ⇒ genuinely empty
+        return {
+          entries:   Array.isArray(v) ? v : [],             // 200 + null ⇒ genuinely empty
+          updatedAt: body ? (body.updated_at || null) : null,
+        };
       } catch { return null; }
     }
+
+    // Write the shared billing blob back, refusing to land on top of a value
+    // written since we read it (trucking.html and the two dust syncs all
+    // read-modify-write this one blob). Returns { ok, conflict }; on conflict
+    // the caller re-queues itself and reconciles onto the newer value.
+    //
+    // An empty result needs ?force=1: the backend refuses a plain empty-array
+    // PUT as bulk-wipe protection, so without it a genuine "everything was
+    // voided" would silently fail and stale figures would linger in IC.
+    async function _writeIcBilling(entries, baseUpdatedAt) {
+      const qs = entries.length === 0 ? '?force=1' : '';
+      try {
+        const r = await fetch(`/api/data/${IC_BILLING_KEY}${qs}`, {
+          method: 'PUT',
+          headers: AUTH_HDR(),
+          body: JSON.stringify({ value: entries, baseUpdatedAt }),
+        });
+        if (r.status === 401) { signOut(); return { ok: false, conflict: false }; }
+        if (r.status === 409) {
+          // The endpoint returns 409 for two unrelated reasons: a stale base
+          // (worth retrying onto the newer value) and its bulk-wipe guard
+          // (retrying just fails again the same way). Only the first is a race.
+          let stale = false;
+          try { const b = await r.json(); stale = !!b && b.error === 'Conflict'; } catch { /* treat as fatal */ }
+          return { ok: false, conflict: stale };
+        }
+        return { ok: r.ok, conflict: false };
+      } catch { return { ok: false, conflict: false }; }
+    }
+
+    // A conflict means someone else won the race; we re-read and retry rather
+    // than overwrite. Bounded so a persistently busy blob can't spin forever.
+    const IC_MAX_CONFLICT_RETRIES = 3;
+    let _icConflictRetries = 0;
 
     // Reconcile every dust row into `entries` (MUTATED in place):
     //  • create an entry for a newly-billable row (stamped sent_at = now),
@@ -2495,7 +2534,7 @@
         // + PUT on the common steady-state where nothing IC-relevant changed.
         const probe = await _readIcBilling();
         if (probe == null) return;
-        if (!_reconcileDustBilling(probe, coByName).changed) return;
+        if (!_reconcileDustBilling(probe.entries, coByName).changed) return;
 
         // Re-read immediately before writing and reconcile onto the FRESH blob,
         // so Intercompany-side edits (invoice/payment dates), hard-deletes, and
@@ -2503,30 +2542,26 @@
         // than clobbered by a stale snapshot. (A residual last-writer-wins window
         // remains between this read and the PUT — the shared blob has no
         // compare-and-swap; that is a platform limitation, not specific to dust.)
-        const entries = await _readIcBilling();
-        if (entries == null) return;
+        const fresh = await _readIcBilling();
+        if (fresh == null) return;
+        const entries = fresh.entries;
         const { changed, sentNow, clearNow } = _reconcileDustBilling(entries, coByName);
         if (!changed) return;
 
-        let ok;
-        if (entries.length === 0) {
-          // Every dust entry was voided and nothing else remained, so the blob
-          // should be empty. The backend refuses a plain empty-array PUT (its
-          // bulk-wipe guard), so force this intentional clear or the void silently
-          // fails and stale positive figures would linger in IC.
-          try {
-            const r = await fetch(`/api/data/${IC_BILLING_KEY}?force=1`, {
-              method: 'PUT', headers: AUTH_HDR(), body: JSON.stringify({ value: entries }),
-            });
-            ok = r.ok;
-          } catch { ok = false; }
-        } else {
-          ok = await apiPut(IC_BILLING_KEY, entries);
+        const { ok, conflict } = await _writeIcBilling(entries, fresh.updatedAt);
+
+        // Somebody else wrote between our read and our write. Re-queue so the
+        // drain reconciles onto their value instead of clobbering it.
+        if (conflict && _icConflictRetries < IC_MAX_CONFLICT_RETRIES) {
+          _icConflictRetries++;
+          _icDustQueued = true;
+          return;
         }
 
         // Only reflect sent-state in the UI once the blob actually persisted,
         // so a failed PUT never leaves a chip claiming a row reached IC.
         if (ok) {
+          _icConflictRetries = 0;
           sentNow.forEach(({ id, sentAt }) => icSentMapDust.set(id, sentAt));
           clearNow.forEach(id => icSentMapDust.delete(id));
           refreshIcChips(sentNow.map(s => s.id));
@@ -6167,7 +6202,7 @@
       // Queue the id so the next sync pulls this row's Intercompany entry.
       // Explicit ids (rather than "no longer in obRows") keep a failed or
       // partial OB load from ever mass-deleting IC history.
-      if (removed && removed.id) { obDeletedIds.add(removed.id); obIcSent.delete(removed.id); }
+      if (removed && removed.id) { _queueObDelete(removed.id); obIcSent.delete(removed.id); }
       obRenderTable();
       obScheduleSave();
     }
@@ -6476,7 +6511,32 @@
      *    wipes history (or IC-side invoice/payment dates) on un-enrollment.
      *  - Reflects sent-state in the UI only after the PUT actually persists.
      */
-    const obDeletedIds = new Set();   // OB rows deleted locally, IC not yet told
+    // OB rows deleted locally whose Intercompany entry hasn't been pulled yet.
+    // Persisted, because the window between the delete and the sync landing is
+    // exactly when a tab gets closed — an in-memory-only set would forget the
+    // delete and leave the entry billing forever, with nothing on the dust side
+    // left to point at it. Survives the reload, drains on the next sync.
+    const OB_DELETED_KEY = 'fct_dust_ob_deleted_ids';
+    const obDeletedIds = new Set((() => {
+      try {
+        const raw = JSON.parse(localStorage.getItem(OB_DELETED_KEY) || '[]');
+        return Array.isArray(raw) ? raw.filter(id => typeof id === 'string') : [];
+      } catch { return []; }
+    })());
+
+    function _persistObDeletedIds() {
+      try {
+        if (obDeletedIds.size) localStorage.setItem(OB_DELETED_KEY, JSON.stringify([...obDeletedIds]));
+        else                   localStorage.removeItem(OB_DELETED_KEY);
+      } catch { /* storage full or blocked — the in-memory set still works */ }
+    }
+
+    function _queueObDelete(id)    { obDeletedIds.add(id);    _persistObDeletedIds(); }
+    function _dequeueObDeletes(ids) {
+      if (!ids || !ids.length) return;
+      ids.forEach(id => obDeletedIds.delete(id));
+      _persistObDeletedIds();
+    }
 
     // Signature of the value-bearing fields Other Billing owns — lets us detect
     // when a row's IC entry actually needs rewriting without churning on
@@ -6614,10 +6674,10 @@
         // read + PUT on the common steady-state where nothing IC-relevant changed.
         const probe = await _readIcBilling();
         if (probe == null) return;
-        const probeRes = _reconcileObBilling(probe, coByName);
+        const probeRes = _reconcileObBilling(probe.entries, coByName);
         if (!probeRes.changed) {
           // Nothing to write — any queued deletes had no IC entry to remove.
-          probeRes.handledDeletes.forEach(id => obDeletedIds.delete(id));
+          _dequeueObDeletes(probeRes.handledDeletes);
           return;
         }
 
@@ -6625,32 +6685,29 @@
         // so Intercompany-side edits (invoice/payment dates), hard-deletes, and
         // other divisions' writes that landed since the probe are preserved rather
         // than clobbered by a stale snapshot.
-        const entries = await _readIcBilling();
-        if (entries == null) return;
+        const fresh = await _readIcBilling();
+        if (fresh == null) return;
+        const entries = fresh.entries;
         const { changed, sentNow, clearNow, handledDeletes } = _reconcileObBilling(entries, coByName);
-        if (!changed) { handledDeletes.forEach(id => obDeletedIds.delete(id)); return; }
+        if (!changed) { _dequeueObDeletes(handledDeletes); return; }
 
-        let ok;
-        if (entries.length === 0) {
-          // Every entry was voided and nothing else remained, so the blob should
-          // be empty. The backend refuses a plain empty-array PUT (its bulk-wipe
-          // guard), so force this intentional clear or the void silently fails
-          // and stale positive figures would linger in IC.
-          try {
-            const r = await fetch(`/api/data/${OB_IC_KEY}?force=1`, {
-              method: 'PUT', headers: AUTH_HDR(), body: JSON.stringify({ value: entries }),
-            });
-            ok = r.ok;
-          } catch { ok = false; }
-        } else {
-          ok = await apiPut(OB_IC_KEY, entries);
+        const { ok, conflict } = await _writeIcBilling(entries, fresh.updatedAt);
+
+        // Somebody else wrote between our read and our write. Re-queue so the
+        // drain reconciles onto their value instead of clobbering it. The
+        // queued deletes stay queued, so nothing is lost by retrying.
+        if (conflict && _icConflictRetries < IC_MAX_CONFLICT_RETRIES) {
+          _icConflictRetries++;
+          _icObQueued = true;
+          return;
         }
 
         // Only reflect sent-state in the UI once the blob actually persisted, so
         // a failed PUT never leaves a chip claiming a row reached IC — and never
         // drops a queued delete that didn't land.
         if (ok) {
-          handledDeletes.forEach(id => obDeletedIds.delete(id));
+          _icConflictRetries = 0;
+          _dequeueObDeletes(handledDeletes);
           sentNow.forEach(({ id, sentAt }) => obIcSent.set(id, sentAt));
           clearNow.forEach(id => obIcSent.delete(id));
           obRefreshIcChips(sentNow.map(s => s.id));

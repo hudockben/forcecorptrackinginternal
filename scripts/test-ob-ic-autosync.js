@@ -313,9 +313,16 @@ function buildRuntime() {
       fct_intercompany_companies: [ACME],
       fct_intercompany_billing_entries: [],
     },
-    puts: [],            // {key, force, count}
+    // Server-side updated_at per key, driving the optimistic-concurrency check.
+    stamps: { fct_intercompany_billing_entries: '2026-07-01T00:00:00.000Z' },
+    puts: [],            // {key, force, count, base}
+    conflicts: 0,        // PUTs rejected with 409
     failBillingRead: false,
     gate: null,          // set to a promise to stall the first GET
+    // Simulates another writer (trucking.html, another tab) landing a write
+    // between our read and our write: bumps the stamp so our base is stale.
+    bumpOnNextPut: 0,
+    wipeGuard409: false,
     dustSyncCalls: 0,
   };
   const clone = v => JSON.parse(JSON.stringify(v));
@@ -346,11 +353,31 @@ function buildRuntime() {
         if (key === 'fct_intercompany_billing_entries' && state.failBillingRead) {
           return { ok: false, status: 500, json: async () => ({}) };
         }
-        return { ok: true, status: 200, json: async () => ({ value: clone(state.store[key]) }) };
+        return { ok: true, status: 200, json: async () => ({
+          value: clone(state.store[key]),
+          updated_at: state.stamps[key] || null,
+        }) };
       }
-      const value = JSON.parse(init.body).value;
-      state.store[key] = clone(value);
-      state.puts.push({ key, force: String(url).includes('force=1'), count: value.length });
+      const body  = JSON.parse(init.body);
+      const value = body.value;
+      // Another writer sneaks in between our read and our write.
+      if (state.bumpOnNextPut > 0) {
+        state.bumpOnNextPut--;
+        state.stamps[key] = new Date(Date.parse(state.stamps[key]) + 1000).toISOString();
+      }
+      if (state.wipeGuard409) {
+        // The backend's bulk-wipe guard answers 409 too, but for a reason no
+        // retry can clear.
+        state.conflicts++;
+        return { ok: false, status: 409, json: async () => ({ error: 'Refusing to wipe data' }) };
+      }
+      if (body.baseUpdatedAt != null && body.baseUpdatedAt !== state.stamps[key]) {
+        state.conflicts++;
+        return { ok: false, status: 409, json: async () => ({ error: 'Conflict' }) };
+      }
+      state.store[key]  = clone(value);
+      state.stamps[key] = new Date(Date.parse(state.stamps[key] || '2026-07-01T00:00:00.000Z') + 1000).toISOString();
+      state.puts.push({ key, force: String(url).includes('force=1'), count: value.length, base: body.baseUpdatedAt });
       return { ok: true, status: 200 };
     }
     async function apiGet(key) {
@@ -359,16 +386,18 @@ function buildRuntime() {
       const { value } = await r.json();
       return value;
     }
-    async function apiPut(key, value) {
-      const r = await fetch('/api/data/' + key, { method: 'PUT', headers: AUTH_HDR(), body: JSON.stringify({ value }) });
-      return r.ok;
-    }
+
+    const IC_MAX_CONFLICT_RETRIES = 3;
+    let _icConflictRetries = 0;
+    function _persistObDeletedIds() {}
+    function _dequeueObDeletes(ids) { (ids || []).forEach(id => obDeletedIds.delete(id)); }
 
     ${extractFn('round2')}
     ${extractFn('obCalc')}
     ${extractFn('_icObEntrySig')}
     ${extractFn('_reconcileObBilling')}
     ${extractFn('_readIcBilling')}
+    ${extractFn('_writeIcBilling')}
     ${extractFn('_drainIcQueue')}
     ${extractFn('autoSyncObIntercompany')}
     ${extractFn('obRefreshIcChips')}
@@ -382,6 +411,7 @@ function buildRuntime() {
       sentMap: () => [...obIcSent.keys()],
       obQueued: () => _icObQueued,
       lock: v => { _icSyncRunning = v; },
+      retries: () => _icConflictRetries,
     };
   `)(state, clone);
 
@@ -582,6 +612,132 @@ const obIn = state => state.store.fct_intercompany_billing_entries.filter(e => e
     await api.poll();
     assert('remote row adopted', api.rows().some(r => r.id === 'ob-b'));
     assert('table re-rendered / sync kicked', state.syncs === 1);
+  }
+
+  console.log('\n[concurrency — the write carries the value it was based on]');
+  {
+    const { state, api } = buildRuntime();
+    api.setRows([obRow()]);
+    await api.sync();
+    assert('baseUpdatedAt sent', state.puts[0] && state.puts[0].base === '2026-07-01T00:00:00.000Z');
+    assert('no conflict on a quiet blob', state.conflicts === 0);
+  }
+
+  console.log('\n[concurrency — a losing race retries onto the newer value]');
+  {
+    const { state, api } = buildRuntime();
+    api.setRows([obRow()]);
+    state.bumpOnNextPut = 1;              // another writer lands first
+    await api.sync();
+    await flush(8);                       // the drain re-runs the sync
+    assert('the first write was rejected', state.conflicts === 1);
+    assert('the retry landed', state.puts.length === 1);
+    assert('entry present after the retry', obIn(state).length === 1);
+    assert('retry counter reset on success', api.retries() === 0);
+    assert('sent map reflects the landed write', api.sentMap().includes('ob-1'));
+  }
+
+  console.log('\n[concurrency — a permanently busy blob gives up, it does not spin]');
+  {
+    const { state, api } = buildRuntime();
+    api.setRows([obRow()]);
+    state.bumpOnNextPut = 99;             // every write loses
+    await api.sync();
+    await flush(30);
+    assert('bounded at the retry limit', state.conflicts === 4);   // 1 attempt + 3 retries
+    assert('nothing written', state.puts.length === 0);
+    assert('no chip claims it reached IC', api.sentMap().length === 0);
+  }
+
+  console.log('\n[concurrency — a non-version 409 is not retried]');
+  {
+    const { state, api } = buildRuntime();
+    api.setRows([obRow()]);
+    state.wipeGuard409 = true;            // the bulk-wipe guard, not a race
+    await api.sync();
+    await flush(30);
+    assert('tried exactly once', state.conflicts === 1);
+    assert('no retry storm', api.retries() === 0);
+    assert('nothing written', state.puts.length === 0);
+  }
+
+  console.log('\n[concurrency — a force-clear is guarded too]');
+  {
+    const { state, api } = buildRuntime();
+    api.setRows([obRow()]);
+    await api.sync();
+    api.setRows([obRow({ gallons_bags: '', price_per_unit: '', trucking_hrs: '', trucking_rate: '' })]);
+    await api.sync();
+    const last = state.puts[state.puts.length - 1];
+    assert('force=1 still used', last.force === true);
+    assert('and it carries a base stamp', typeof last.base === 'string' && last.base.length > 0);
+  }
+
+  // ── The delete queue has to survive the tab closing ─────────────────────
+  // The gap between deleting a row and the sync landing is measured in
+  // hundreds of milliseconds, and it is exactly when someone closes the tab.
+  // An in-memory-only queue forgets the delete, and the Intercompany entry
+  // then bills forever with nothing on the dust side left to point at it.
+  function extractRange(startText, endFnName) {
+    const start = SRC.indexOf(startText);
+    if (start === -1) throw new Error(`anchor ${startText} not found`);
+    const fn = extractFn(endFnName);
+    return SRC.slice(start, SRC.indexOf(fn) + fn.length);
+  }
+
+  function buildQueue(seed) {
+    const store = new Map(seed ? [[seed[0], seed[1]]] : []);
+    const api = new Function('store', `
+      const localStorage = {
+        getItem:    k => (store.has(k) ? store.get(k) : null),
+        setItem:    (k, v) => { store.set(k, String(v)); },
+        removeItem: k => { store.delete(k); },
+      };
+      ${extractRange('const OB_DELETED_KEY', '_dequeueObDeletes')}
+      return {
+        key: OB_DELETED_KEY,
+        ids: () => [...obDeletedIds],
+        queue: _queueObDelete,
+        dequeue: _dequeueObDeletes,
+      };
+    `)(store);
+    return { store, api };
+  }
+
+  console.log('\n[delete queue — survives a reload]');
+  {
+    const { store, api } = buildQueue();
+    api.queue('ob-1');
+    api.queue('ob-2');
+    assert('written to storage', store.has(api.key));
+    assert('both ids stored', JSON.parse(store.get(api.key)).sort().join() === 'ob-1,ob-2');
+
+    // Reload: a fresh page seeded from the same storage.
+    const reloaded = buildQueue([api.key, store.get(api.key)]);
+    assert('queue restored after reload', reloaded.api.ids().sort().join() === 'ob-1,ob-2');
+  }
+
+  console.log('\n[delete queue — draining clears storage]');
+  {
+    const { store, api } = buildQueue();
+    api.queue('ob-1');
+    api.queue('ob-2');
+    api.dequeue(['ob-1']);
+    assert('remaining id persisted', JSON.parse(store.get(api.key)).join() === 'ob-2');
+    api.dequeue(['ob-2']);
+    assert('emptied queue removes the key', !store.has(api.key));
+    assert('nothing left in memory', api.ids().length === 0);
+  }
+
+  console.log('\n[delete queue — junk in storage cannot break startup]');
+  {
+    const key = 'fct_dust_ob_deleted_ids';
+    for (const junk of ['not json', '{"a":1}', '[1,2,null]', '""']) {
+      const { api } = buildQueue([key, junk]);
+      assert(`survives ${JSON.stringify(junk)}`, Array.isArray(api.ids()) && api.ids().every(id => typeof id === 'string'));
+    }
+    const { api } = buildQueue([key, '["ob-1", 7, null, "ob-2"]']);
+    assert('non-string entries dropped', api.ids().join() === 'ob-1,ob-2');
   }
 
   console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'} — ${passed} passed, ${failed} failed`);

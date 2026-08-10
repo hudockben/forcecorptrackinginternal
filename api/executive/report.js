@@ -329,13 +329,20 @@ async function buildHero(sql, companyCode) {
          + paving.filter(p => projMeetsExecCutoff(p) && !projIsComplete(p)).length;
   });
 
+  // Bucketed by actual_date — the date the work was performed — not by
+  // sent_at, which only records when a row was mirrored into Intercompany.
+  // Those diverge whenever someone enters last month's work today, and a
+  // division switching to auto-sync restamps its whole backlog with sent_at =
+  // now, which under the old query landed every historical row in "this week".
+  // actual_date is also what buildDustTile and the other division tiles use,
+  // so the hero KPI now agrees with the tiles beneath it.
   const revNow = await safeRun('revenue_this_week', async () => {
     const rows = await sql`
       SELECT COALESCE(SUM(total), 0)::float AS v
         FROM intercompany_billing_entries
        WHERE company_code = ${companyCode}
-         AND sent_at >= ${weekStart}
-         AND sent_at <  ${weekEnd}
+         AND actual_date >= ${weekStart}
+         AND actual_date <  ${weekEnd}
     `;
     return rows[0]?.v ?? 0;
   });
@@ -345,8 +352,8 @@ async function buildHero(sql, companyCode) {
       SELECT COALESCE(SUM(total), 0)::float AS v
         FROM intercompany_billing_entries
        WHERE company_code = ${companyCode}
-         AND sent_at >= ${lastWeekStart}
-         AND sent_at <  ${lastWeekEnd}
+         AND actual_date >= ${lastWeekStart}
+         AND actual_date <  ${lastWeekEnd}
     `;
     return rows[0]?.v ?? 0;
   });
