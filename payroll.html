@@ -4351,8 +4351,9 @@
     // because that is the rule the row is priced by: travel is paid at the
     // standard rate even on a prevailing-wage job. The Travel checkbox says so,
     // and so does the code the hours are booked to (paving books travel under
-    // sub codes like "19mm - Travel").
-    const TRAVEL_CODE_RE = /travel/i;
+    // sub codes like "19mm - Travel"). Matched on a word boundary so a
+    // "Form Traveler" code is not mistaken for a drive.
+    const TRAVEL_CODE_RE = /\btravel\b/i;
 
     function isTravelSplitRow(r) {
       if (!r) return false;

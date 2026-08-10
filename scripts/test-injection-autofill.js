@@ -283,6 +283,39 @@ async function injectionTests() {
     await insertSplitRows(sql, [splitRow({ sub_code: 'Paving - Mainline', labor_hours: 8 })], ENTRY, 'paving', 'FCT', 'brewerzach');
     assert('an ordinary code is not mistaken for travel', sql.inserted().rate === 58);
   }
+  {
+    // The one that matters: "travel" matched as a bare substring is inside
+    // "Gravel", and this business codes gravel constantly. Every hour booked
+    // to a gravel code on a prevailing-wage job would have been paid the
+    // standard rate — an underpayment on prevailing work, which is a
+    // compliance problem and not just a reporting one. Hence the word
+    // boundary, and hence this test.
+    for (const code of ['Gravel Haul', '2A Gravel', 'Gravel Base - Place']) {
+      const sql = makeSql({ prevailingWage: true });
+      await insertSplitRows(sql, [splitRow({ sub_code: code, labor_hours: 8 })], ENTRY, 'paving', 'FCT', 'brewerzach');
+      const r = sql.inserted();
+      assert(`"${code}" is work at the prevailing rate`, r.rate === 58);
+      assert(`"${code}" is not marked as travel`,        r.field_type === null);
+    }
+  }
+  {
+    // "Traveler" is a structure in heavy civil, not a drive.
+    const sql = makeSql({ prevailingWage: true });
+    await insertSplitRows(sql, [splitRow({ sub_code: 'Form Traveler - Set', labor_hours: 8 })], ENTRY, 'paving', 'FCT', 'brewerzach');
+    const r = sql.inserted();
+    assert('"Form Traveler" is work, not travel', r.rate === 58);
+    assert('and is not marked as a travel row',   r.field_type === null);
+  }
+  {
+    // The marker and the rate come from one rule, so a row can never be priced
+    // as travel while reading as ordinary work in cost tracking — which is also
+    // what kept the resplit modal's Travel box unticked on reopen.
+    const sql = makeSql({ prevailingWage: true });
+    await insertSplitRows(sql, [splitRow({ sub_code: '19mm - Travel', labor_hours: 2 })], ENTRY, 'paving', 'FCT', 'brewerzach');
+    const r = sql.inserted();
+    assert('a code-marked travel row is stored as field_type Travel', r.field_type === 'Travel');
+    assert('and its rate matches that marker',                        r.rate === 32.5);
+  }
 
   console.log('\n[insertSplitRows — equipment]');
   {

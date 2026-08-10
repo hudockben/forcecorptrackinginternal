@@ -574,7 +574,11 @@ async function prevailingWageByJob(sql, companyCode, division, jobIds) {
 // those hours are travel whether or not anyone remembered to tick the box.
 // Deciding it here rather than at each call site means the approval and the
 // rate refresh can never disagree about what a row is.
-const TRAVEL_CODE_RE = /travel/i;
+//
+// Matched on a word boundary, not as a substring: "Form Traveler" is a
+// structure, not a drive, and paying it at the standard rate on a prevailing
+// job would quietly underpay it. "19mm - Travel" and "Travel Time" still match.
+const TRAVEL_CODE_RE = /\btravel\b/i;
 
 function isTravelSplitRow(row) {
   if (!row) return false;
@@ -638,7 +642,12 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${companyCode},
         ${division},
         ${workDate},
-        ${r.is_travel ? 'Travel' : null},
+        // Stamp the marker from the same rule the rate below is priced by, so
+        // the row's stored classification and its rate can never disagree. A
+        // row booked to a travel code but never ticked used to land with no
+        // marker at all: it read as ordinary work in cost tracking and came
+        // back unticked in the resplit modal.
+        ${isTravelSplitRow(r) ? 'Travel' : null},
         ${employeeLabel},
         ${r.cost_code || null},
         ${r.sub_code || null},
