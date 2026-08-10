@@ -1022,6 +1022,15 @@
       color: #22c55e; margin-top: 0.18rem; white-space: nowrap;
     }
 
+    /* Cells owned by the timesheet, not by the tab. Shown plainly so it's
+       obvious they can't be typed into — payroll is the source of truth and
+       an edit here would silently disagree with the approved entry. */
+    .sheet-table td.ro {
+      padding: 0.3rem 0.45rem; color: var(--muted); font-size: 0.72rem;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sheet-table td.ro:empty::after { content: '—'; }
+
     /* Expandable invoice detail row */
     .inv-row > td { padding: 0; }
     .inv-panel {
@@ -1285,6 +1294,7 @@
     <button class="tab-btn" data-tab="tracking">Dust Control Tracking</button>
     <button class="tab-btn" data-tab="product-cost">Product Cost Tracking</button>
     <button class="tab-btn" data-tab="other-billing">Other Billing</button>
+    <button class="tab-btn" data-tab="ees-other">EES Other</button>
     <button class="tab-btn" data-tab="analytics">Analytics</button>
     <button class="tab-btn" data-tab="reports">Reports</button>
   </nav>
@@ -1786,6 +1796,79 @@
     </div>
 
   </div><!-- /tab-other-billing -->
+
+  <!-- ══════════════════════════════════════════════
+       EES OTHER TAB
+       Rows are created ONLY by payroll approving a dust
+       timesheet entry (api/timesheet-entries.js injects
+       into dust_ees_other_rows). The tab never adds or
+       deletes rows — it fills in the columns the dust
+       office owns, and mirrors Billable rows into
+       Intercompany Billing.
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-ees-other">
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <span style="font-size:0.72rem;color:var(--muted)">
+        Rows arrive automatically when a dust timesheet entry is approved in payroll.
+      </span>
+      <div id="eeYearSelector" class="year-selector"></div>
+      <span class="row-count" id="eeRowCount">0 rows</span>
+    </div>
+
+    <!-- Totals bar -->
+    <div class="totals-bar">
+      <div class="tot-item">
+        <span class="tot-label">Total Hours</span>
+        <span class="tot-val" id="ee-tot-hrs">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Billable Hours</span>
+        <span class="tot-val" id="ee-tot-bill-hrs">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Billable Total</span>
+        <span class="tot-val" id="ee-tot-grand">—</span>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table class="sheet-table">
+        <thead>
+          <tr class="group-row">
+            <th class="cw-expand"></th>
+            <th class="g-entry"  colspan="4">Timesheet</th>
+            <th class="g-v1"     colspan="2">Crew</th>
+            <th class="g-cust"   colspan="4">Job</th>
+            <th class="g-v2"     colspan="2">Billing</th>
+            <th class="g-totals" colspan="1">Notes</th>
+            <th class="g-totals" colspan="1">Totals</th>
+          </tr>
+          <tr class="col-row">
+            <th class="cw-expand"></th>
+            <th class="cw-date">Actual Date<input class="col-filter" type="text" placeholder="filter…" oninput="eeSetFilter('actual_date',this.value)"></th>
+            <th class="cw-unit">Actual Start</th>
+            <th class="cw-unit">Actual End</th>
+            <th class="cw-rate">Actual Hours</th>
+            <th class="cw-cm">Driver<input class="col-filter" type="text" placeholder="filter…" oninput="eeSetFilter('driver',this.value)"></th>
+            <th class="cw-unit">Unit</th>
+            <th class="cw-co">Customer<input class="col-filter" type="text" placeholder="filter…" oninput="eeSetFilter('customer',this.value)"></th>
+            <th class="cw-loc">Location<input class="col-filter" type="text" placeholder="filter…" oninput="eeSetFilter('location',this.value)"></th>
+            <th class="cw-loc">Name<input class="col-filter" type="text" placeholder="filter…" oninput="eeSetFilter('name',this.value)"></th>
+            <th class="cw-unit">Job Number</th>
+            <th class="cw-st">Billing<input class="col-filter" type="text" placeholder="filter…" oninput="eeSetFilter('billing',this.value)"></th>
+            <th class="cw-rate">$ / hr</th>
+            <th class="cw-loc">Comments</th>
+            <th class="cw-inv calc-hdr">Total</th>
+          </tr>
+        </thead>
+        <tbody id="eeTbody"></tbody>
+      </table>
+    </div>
+
+  </div><!-- /tab-ees-other -->
 
   <!-- ══════════════════════════════════════════════
        PRODUCT COST TRACKING TAB
@@ -2299,10 +2382,12 @@
     let _icSyncRunning = false;
     let _icDustQueued  = false;
     let _icObQueued    = false;
+    let _icEesQueued   = false;
 
     function _drainIcQueue() {
       if (_icDustQueued) { _icDustQueued = false; autoSyncIntercompanyDust(); return; }
       if (_icObQueued)   { _icObQueued   = false; autoSyncObIntercompany();   return; }
+      if (_icEesQueued)  { _icEesQueued  = false; autoSyncEesIntercompany();  return; }
     }
 
     // Signature of the value-bearing fields dust owns — lets us detect when a
@@ -6093,6 +6178,8 @@
       ?.addEventListener('click', loadAuditLog);
     document.querySelector('[data-tab="other-billing"]')
       ?.addEventListener('click', obRenderTable);
+    document.querySelector('[data-tab="ees-other"]')
+      ?.addEventListener('click', eeRenderTable);
     document.querySelector('[data-tab="product-cost"]')
       ?.addEventListener('click', pcRenderTable);
 
@@ -6771,6 +6858,462 @@
     window.addEventListener('beforeunload', _flushObOnUnload);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') _flushObOnUnload();
+    });
+
+    /* ═══════════════════════════════════════════
+       EES OTHER — timesheet-fed rows
+       Rows are injected server-side when payroll
+       approves a dust timesheet entry (see
+       insertEesOtherRow in api/timesheet-entries.js).
+       This tab NEVER creates or deletes rows: it fills
+       in the columns the dust office owns and mirrors
+       Billable rows into Intercompany Billing.
+    ═══════════════════════════════════════════ */
+    const EE_KEY    = 'dust_ees_other_rows';
+    const EE_IC_KEY = 'fct_intercompany_billing_entries';
+
+    // Columns this tab owns. Everything else is autofilled from the timesheet
+    // and shown read-only — payroll is the source of truth for those, and an
+    // edit here would silently disagree with the approved entry behind it.
+    const EE_TAB_FIELDS = ['unit', 'location', 'name', 'job_number', 'billing', 'rate'];
+    const EE_BILLING_OPTIONS = ['Non-Billable', 'Billable'];
+
+    let eeRows      = [];
+    let eeFilters   = {};
+    let eeYear      = String(new Date().getFullYear());
+    let eeSaveTimer = null;
+    let eeSaving    = false;
+    let eeUpdatedAt = null;    // blob version this client last read
+    let eeLoaded    = false;   // a genuine successful read has happened
+    const eeIcSent  = new Map();
+
+    function eeIsBillable(row) {
+      return String(row && row.billing || '').trim().toLowerCase() === 'billable';
+    }
+
+    function eeCalc(row) {
+      const hrs  = parseFloat(row.actual_hours) || 0;
+      const rate = parseFloat(row.rate)         || 0;
+      // Only a Billable row carries money. A Non-Billable one still shows its
+      // hours — that is the whole point of tracking it — but never a total,
+      // and never reaches Intercompany.
+      const total = eeIsBillable(row) ? round2(hrs * rate) : 0;
+      return { hrs, rate, total };
+    }
+
+    async function eeLoad() {
+      try {
+        const r = await fetch(`/api/data/${EE_KEY}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (r.status === 401) { signOut(); return false; }
+        if (!r.ok) return false;
+        const body = await r.json();
+        const v = body ? body.value : null;
+        if (v != null && !Array.isArray(v)) return false;
+        eeRows      = Array.isArray(v) ? v : [];
+        eeUpdatedAt = body ? (body.updated_at || null) : null;
+        eeLoaded    = true;
+      } catch { return false; }
+
+      // Seed the IC sent-map for EES rows from the shared billing blob.
+      try {
+        const ic = await apiGet(EE_IC_KEY);
+        eeIcSent.clear();
+        if (Array.isArray(ic)) {
+          ic.forEach(e => {
+            if (e.source === 'dust-ees-other' && e.source_id) eeIcSent.set(e.source_id, e.sent_at || '');
+          });
+        }
+      } catch { /* non-fatal */ }
+      return true;
+    }
+
+    /**
+     * Save the tab-owned columns.
+     *
+     * The server writes this same blob whenever payroll approves a dust entry,
+     * so a plain whole-blob PUT would erase any row injected since we read —
+     * and the row would be gone with no timesheet action able to bring it back.
+     * Instead the write is version-checked: on a conflict we re-read and replay
+     * our field edits onto the server's list by row id. That merge is only safe
+     * because rows are created and destroyed exclusively by payroll, never here.
+     */
+    async function eeSave() {
+      eeSaving = true;
+      try {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const r = await fetch(`/api/data/${EE_KEY}`, {
+            method: 'PUT',
+            headers: AUTH_HDR(),
+            body: JSON.stringify({ value: eeRows, baseUpdatedAt: eeUpdatedAt }),
+          });
+          if (r.status === 401) { signOut(); return false; }
+          if (r.ok) {
+            // Re-read the stamp so the next save builds on this write.
+            try {
+              const g = await fetch(`/api/data/${EE_KEY}`, { headers: { 'Authorization': `Bearer ${token}` } });
+              if (g.ok) { const b = await g.json(); eeUpdatedAt = b ? (b.updated_at || null) : null; }
+            } catch { eeUpdatedAt = null; }
+            return true;
+          }
+          if (r.status !== 409) return false;
+          let stale = false;
+          try { const b = await r.json(); stale = !!b && b.error === 'Conflict'; } catch { /* fatal */ }
+          if (!stale) return false;
+
+          // Someone (payroll, or another tab) wrote first. Take their list and
+          // replay only the columns this tab owns.
+          const mine = new Map(eeRows.map(row => [row.id, row]));
+          const g = await fetch(`/api/data/${EE_KEY}`, { headers: { 'Authorization': `Bearer ${token}` } });
+          if (!g.ok) return false;
+          const b = await g.json();
+          const server = Array.isArray(b && b.value) ? b.value : [];
+          server.forEach(row => {
+            const local = mine.get(row.id);
+            if (local) EE_TAB_FIELDS.forEach(f => { row[f] = local[f]; });
+          });
+          eeRows      = server;
+          eeUpdatedAt = b ? (b.updated_at || null) : null;
+        }
+        return false;
+      } catch { return false; }
+      finally { eeSaving = false; }
+    }
+
+    function eeHasPendingSave() {
+      return eeSaveTimer != null || eeSaving;
+    }
+
+    function eeScheduleSave() {
+      setSaveState('saving');
+      clearTimeout(eeSaveTimer);
+      eeSaveTimer = setTimeout(async () => {
+        eeSaveTimer = null;
+        const ok = await eeSave();
+        if (ok) { eeRenderTable(); autoSyncEesIntercompany(); }
+        setSaveState(ok ? 'saved' : 'error');
+        setTimeout(() => setSaveState(''), 3000);
+      }, 900);
+    }
+
+    function eeSet(idx, field, value) {
+      if (!eeRows[idx]) return;
+      if (!EE_TAB_FIELDS.includes(field)) return;   // timesheet owns the rest
+      eeRows[idx][field] = value;
+      if (field === 'rate' || field === 'billing') {
+        eeRefreshCalcCells(idx);
+        eeRefreshTotals();
+      }
+      eeScheduleSave();
+    }
+
+    function _eeLiveSet(idx, field, value) {
+      if (!eeRows[idx] || !EE_TAB_FIELDS.includes(field)) return;
+      eeRows[idx][field] = value;
+      eeRefreshCalcCells(idx);
+      eeRefreshTotals();
+    }
+
+    function eeSetFilter(field, value) {
+      const v = (value || '').trim().toLowerCase();
+      if (v) eeFilters[field] = v;
+      else   delete eeFilters[field];
+      eeRenderTable();
+    }
+
+    function eeSetYear(y) { eeYear = y; eeRenderYearSelector(); eeRenderTable(); }
+
+    function eeRenderYearSelector() {
+      const years = [...new Set(
+        eeRows.map(r => (r.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
+      )].sort();
+      const el = document.getElementById('eeYearSelector');
+      if (!el) return;
+      if (!years.length) { el.innerHTML = ''; return; }
+      if (eeYear !== 'all' && !years.includes(eeYear)) eeYear = years[years.length - 1];
+      el.innerHTML =
+        `<button class="year-btn${eeYear === 'all' ? ' active' : ''}" onclick="eeSetYear('all')">All</button>` +
+        years.map(y =>
+          `<button class="year-btn${eeYear === y ? ' active' : ''}" onclick="eeSetYear('${y}')">${y}</button>`
+        ).join('');
+    }
+
+    function eeRenderTable() {
+      const tbody = document.getElementById('eeTbody');
+      if (!tbody) return;
+      eeRenderYearSelector();
+
+      const visibleIdxs = eeRows
+        .map((r, i) => i)
+        .filter(i => {
+          const row = eeRows[i];
+          if (eeYear !== 'all' && (row.actual_date || '').slice(0, 4) !== eeYear) return false;
+          return Object.entries(eeFilters).every(([f, v]) =>
+            String(row[f] || '').toLowerCase().includes(v));
+        })
+        .sort((a, b) => String(eeRows[b].actual_date || '').localeCompare(String(eeRows[a].actual_date || '')));
+
+      if (!eeRows.length) {
+        tbody.innerHTML = `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.78rem">
+          No rows yet. A row appears here as soon as payroll approves a dust timesheet entry.
+        </td></tr>`;
+        document.getElementById('eeRowCount').textContent = '0 rows';
+        eeRefreshTotals();
+        return;
+      }
+
+      tbody.innerHTML = visibleIdxs.map(idx => {
+        const row = eeRows[idx];
+        const c   = eeCalc(row);
+        const icTs   = eeIcSent.get(row.id) || '';
+        const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
+        const billOpts = EE_BILLING_OPTIONS.map(o =>
+          `<option value="${esc(o)}"${(row.billing || '') === o ? ' selected' : ''}>${esc(o)}</option>`).join('');
+        const billable = eeIsBillable(row);
+
+        return `<tr data-idx="${idx}">
+          <td class="cw-expand" title="Injected from an approved timesheet entry" style="text-align:center;color:var(--muted);font-size:0.7rem">⇩</td>
+          <td class="cw-date ro">${esc(row.actual_date || '—')}</td>
+          <td class="cw-unit ro">${esc(fmtHHMM(row.actual_start))}</td>
+          <td class="cw-unit ro">${esc(fmtHHMM(row.actual_end))}</td>
+          <td class="cw-rate ro">${c.hrs ? c.hrs.toFixed(2) : '—'}</td>
+          <td class="cw-cm ro">${esc(row.driver || '—')}</td>
+          <td class="cw-unit"><input type="text" value="${esc(row.unit||'')}" oninput="eeSet(${idx},'unit',this.value)"></td>
+          <td class="cw-co ro">${esc(row.customer || '—')}</td>
+          <td class="cw-loc"><input type="text" value="${esc(row.location||'')}" oninput="eeSet(${idx},'location',this.value)"></td>
+          <td class="cw-loc"><input type="text" value="${esc(row.name||'')}" placeholder="IC company…" oninput="eeSet(${idx},'name',this.value)"></td>
+          <td class="cw-unit"><input type="text" value="${esc(row.job_number||'')}" oninput="eeSet(${idx},'job_number',this.value)"></td>
+          <td class="cw-st"><select onchange="eeSet(${idx},'billing',this.value)">${billOpts}</select></td>
+          <td class="cw-rate"><input type="number" step="0.01" min="0" ${billable?'':'disabled'} value="${esc(row.rate||'')}" oninput="_eeLiveSet(${idx},'rate',this.value)" onchange="eeSet(${idx},'rate',this.value)"></td>
+          <td class="cw-loc ro">${esc(row.comments || '')}</td>
+          <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}</td>
+        </tr>`;
+      }).join('');
+
+      const total = eeRows.length, shown = visibleIdxs.length;
+      document.getElementById('eeRowCount').textContent = shown < total
+        ? `${shown} of ${total} row${total !== 1 ? 's' : ''}`
+        : `${total} row${total !== 1 ? 's' : ''}`;
+      eeRefreshTotals();
+    }
+
+    // Timesheet times are stored "HH:MM"; show them the way the timesheet does.
+    function fmtHHMM(v) {
+      const s = String(v || '');
+      const m = /^(\d{1,2}):(\d{2})/.exec(s);
+      if (!m) return s || '—';
+      let h = parseInt(m[1], 10);
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12; if (h === 0) h = 12;
+      return `${h}:${m[2]} ${ampm}`;
+    }
+
+    function eeRefreshCalcCells(idx) {
+      const row = eeRows[idx];
+      if (!row) return;
+      const c  = eeCalc(row);
+      const tr = document.querySelector(`#eeTbody tr[data-idx="${idx}"]`);
+      if (!tr) return;
+      const rateInput = tr.querySelector('td.cw-rate input');
+      if (rateInput) rateInput.disabled = !eeIsBillable(row);
+      const totalCell = tr.querySelector('td.calc.cw-inv');
+      if (totalCell) {
+        const chip = totalCell.querySelector('.ic-sent-chip');
+        totalCell.textContent = c.total ? money(c.total) : '—';
+        totalCell.classList.toggle('empty', !c.total);
+        if (chip) totalCell.appendChild(chip);
+      }
+    }
+
+    function eeRefreshTotals() {
+      let hrs = 0, billHrs = 0, grand = 0;
+      eeRows.forEach(row => {
+        const c = eeCalc(row);
+        hrs += c.hrs;
+        if (eeIsBillable(row)) { billHrs += c.hrs; grand += c.total; }
+      });
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+      set('ee-tot-hrs',      hrs     ? hrs.toFixed(2)     : '—');
+      set('ee-tot-bill-hrs', billHrs ? billHrs.toFixed(2) : '—');
+      set('ee-tot-grand',    grand   ? money(grand)       : '—');
+    }
+
+    /* ── EES Other → Intercompany auto-sync ──────────────────────────────
+       Same reconcile model as Dust Tracking and Other Billing. Two rules are
+       specific to this tab:
+         • only a Billable row with a real total is mirrored — every row here
+           starts Non-Billable, so nothing bills anyone by accident;
+         • a row that disappears (payroll un-approved or deleted the timesheet
+           entry) has its entry pulled. That is safe here, unlike the other
+           tabs, ONLY because a failed blob read leaves eeLoaded false and the
+           sync never runs — so "absent" always means genuinely gone.
+       Intercompany dedups 'dust-ees-other' by (source, source_id), so the row
+       id is the identity and no physical-job key is involved.
+    ─────────────────────────────────────────────────────────────────────── */
+    function _icEesEntrySig(e) {
+      return JSON.stringify([
+        e.company_id, e.company_name, e.actual_date, e.actual_start, e.actual_end,
+        e.total_hours, e.rate, e.total, e.driver, e.unit,
+        e.customer, e.location, e.name, e.job_number, e.billing, e.comments,
+      ]);
+    }
+
+    function _reconcileEesBilling(entries, coByName) {
+      const bySourceId = new Map();
+      entries.forEach(e => {
+        if (e.source === 'dust-ees-other' && e.source_id && !bySourceId.has(e.source_id)) {
+          bySourceId.set(e.source_id, e);
+        }
+      });
+
+      let changed = false;
+      const sentNow  = [];
+      const clearNow = [];
+      const liveIds  = new Set(eeRows.map(r => r && r.id).filter(Boolean));
+
+      // Rows payroll un-approved or deleted: pull their entry.
+      for (const [id, prev] of bySourceId) {
+        if (liveIds.has(id)) continue;
+        const i = entries.indexOf(prev);
+        if (i !== -1) { entries.splice(i, 1); changed = true; }
+        bySourceId.delete(id);
+        clearNow.push(id);
+      }
+
+      for (const row of eeRows) {
+        if (!row || !row.id) continue;
+        const c    = eeCalc(row);
+        const prev = bySourceId.get(row.id);
+
+        if (!(c.total > 0)) {
+          // Non-Billable, or no rate yet. Void anything already sent.
+          if (prev) {
+            const i = entries.indexOf(prev);
+            if (i !== -1) { entries.splice(i, 1); changed = true; }
+            bySourceId.delete(row.id);
+            clearNow.push(row.id);
+          }
+          continue;
+        }
+
+        // The Name column is what points a row at an intercompany company;
+        // fall back to the timesheet's customer when it hasn't been filled in.
+        const key     = (row.name || row.customer || '').trim().toLowerCase();
+        const matched = coByName.get(key);
+        if (!matched) continue;   // not enrolled — never create, never wipe history
+
+        const sentAt = prev?.sent_at || new Date().toISOString();
+        const entry  = {
+          ...(prev || {}),
+          id: prev?.id || (Date.now().toString(36) + Math.random().toString(36).slice(2)),
+          source: 'dust-ees-other', source_id: row.id,
+          company_id: matched.id, company_name: matched.name,
+          actual_date: row.actual_date,
+          actual_start: row.actual_start, actual_end: row.actual_end,
+          total_hours: c.hrs,
+          rate: c.rate,
+          total: c.total,
+          driver: row.driver, unit: row.unit,
+          customer: row.customer, location: row.location, name: row.name,
+          job_number: row.job_number, billing: row.billing,
+          comments: row.comments,
+          sent_at: sentAt,
+          sent_by: (user?.username) || '',
+        };
+
+        if (prev) {
+          if (_icEesEntrySig(prev) !== _icEesEntrySig(entry)) {
+            const i = entries.indexOf(prev);
+            if (i !== -1) entries[i] = entry; else entries.unshift(entry);
+            bySourceId.set(row.id, entry);
+            changed = true;
+          }
+          sentNow.push({ id: row.id, sentAt });
+        } else {
+          entries.unshift(entry);
+          bySourceId.set(row.id, entry);
+          changed = true;
+          sentNow.push({ id: row.id, sentAt });
+        }
+      }
+
+      return { changed, sentNow, clearNow };
+    }
+
+    async function autoSyncEesIntercompany() {
+      // Never reconcile against a row list we aren't sure of — the prune below
+      // treats "absent from eeRows" as un-approved.
+      if (!eeLoaded) return;
+      if (_icSyncRunning) { _icEesQueued = true; return; }
+      _icSyncRunning = true;
+      try {
+        const coData = await apiGet('fct_intercompany_companies');
+        const coList = Array.isArray(coData) ? coData : [];
+        const coByName = new Map();
+        coList.forEach(c => {
+          if ((c.divisions || []).includes('dust')) {
+            coByName.set((c.name || '').trim().toLowerCase(), c);
+          }
+        });
+
+        const probe = await _readIcBilling();
+        if (probe == null) return;
+        if (!_reconcileEesBilling(probe.entries, coByName).changed) return;
+
+        const fresh = await _readIcBilling();
+        if (fresh == null) return;
+        const entries = fresh.entries;
+        const { changed, sentNow, clearNow } = _reconcileEesBilling(entries, coByName);
+        if (!changed) return;
+
+        const { ok, conflict } = await _writeIcBilling(entries, fresh.updatedAt);
+        if (conflict && _icConflictRetries < IC_MAX_CONFLICT_RETRIES) {
+          _icConflictRetries++;
+          _icEesQueued = true;
+          return;
+        }
+
+        if (ok) {
+          _icConflictRetries = 0;
+          sentNow.forEach(({ id, sentAt }) => eeIcSent.set(id, sentAt));
+          clearNow.forEach(id => eeIcSent.delete(id));
+          eeRefreshIcChips(sentNow.map(s => s.id));
+          eeClearIcChips(clearNow);
+        }
+      } catch { /* non-fatal — the next save or poll retries */ }
+      finally {
+        _icSyncRunning = false;
+        _drainIcQueue();
+      }
+    }
+
+    function eeRefreshIcChips(rowIds) {
+      rowIds.forEach(id => {
+        const idx = eeRows.findIndex(r => r && r.id === id);
+        if (idx === -1) return;
+        const ts = eeIcSent.get(id);
+        if (!ts) return;
+        const cell = document.querySelector(`#eeTbody tr[data-idx="${idx}"] td.calc.cw-inv`);
+        if (!cell) return;
+        let chip = cell.querySelector('.ic-sent-chip');
+        if (!chip) { chip = document.createElement('span'); chip.className = 'ic-sent-chip'; cell.appendChild(chip); }
+        chip.textContent = `⇄ IC ${fmtSentAt(ts)}`;
+      });
+    }
+
+    function eeClearIcChips(rowIds) {
+      rowIds.forEach(id => {
+        const idx = eeRows.findIndex(r => r && r.id === id);
+        if (idx === -1) return;
+        const cell = document.querySelector(`#eeTbody tr[data-idx="${idx}"] td.calc.cw-inv`);
+        const chip = cell && cell.querySelector('.ic-sent-chip');
+        if (chip) chip.remove();
+      });
+    }
+
+    // Load in the background after main init, then mirror anything qualifying.
+    eeLoad().then(ok => {
+      eeRenderTable();
+      if (ok) autoSyncEesIntercompany();
     });
 
     /* ═══════════════════════════════════════════
@@ -7457,6 +8000,30 @@
           // Rows changed under us (another device). Reconcile so the mirror
           // heals even if the device that made the edit never synced.
           autoSyncObIntercompany();
+        } catch { /* non-fatal */ }
+      }
+
+      // EES Other rows are injected server-side by payroll approvals, so this
+      // poll is how they show up without a reload — there is no local action
+      // that would otherwise reveal them.
+      async function pollEesRows() {
+        try {
+          if (_isEditing() || eeHasPendingSave()) return;
+          const r = await fetch(`/api/data/${EE_KEY}`, { headers: { 'Authorization': `Bearer ${token}` } });
+          if (!r.ok) return;
+          const body = await r.json();
+          const incoming = body ? body.value : null;
+          if (!Array.isArray(incoming)) return;
+          if (_isEditing() || eeHasPendingSave()) return;
+          const stamp = body.updated_at || null;
+          if (JSON.stringify(incoming) === JSON.stringify(eeRows)) { eeUpdatedAt = stamp; return; }
+          eeRows      = incoming;
+          eeUpdatedAt = stamp;
+          eeLoaded    = true;
+          const panel = document.getElementById('tab-ees-other');
+          if (panel && panel.classList.contains('active')) eeRenderTable();
+          // A new approval (or an un-approval) just landed — mirror it.
+          autoSyncEesIntercompany();
         } catch { /* non-fatal */ }
       }
 
