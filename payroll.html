@@ -2570,7 +2570,8 @@
 
     // rows: array of cell-arrays (one per sheet row, 1-based on output).
     // freezeRow: last frozen row (the header). autoFilterRef: e.g. "A6:J20".
-    function xlsxSheetXml({ colWidths, rows, freezeRow, autoFilterRef }) {
+    // tabSelected marks the sheet the workbook opens on.
+    function xlsxSheetXml({ colWidths, rows, freezeRow, autoFilterRef, tabSelected }) {
       const cols = colWidths
         .map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`)
         .join('');
@@ -2582,7 +2583,7 @@
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
           '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
           `<dimension ref="A1:${colLetter(colWidths.length)}${Math.max(rows.length, 1)}"/>` +
-          `<sheetViews><sheetView showGridLines="0" workbookViewId="0">${pane}</sheetView></sheetViews>` +
+          `<sheetViews><sheetView${tabSelected ? ' tabSelected="1"' : ''} showGridLines="0" workbookViewId="0">${pane}</sheetView></sheetViews>` +
           '<sheetFormatPr defaultRowHeight="15"/>' +
           `<cols>${cols}</cols>` +
           `<sheetData>${rows.map((cells, i) => xlsxRow(i + 1, cells)).join('')}</sheetData>` +
@@ -2614,9 +2615,14 @@
       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
       ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
         '<workbookPr/>' +
+        // Spell the window out rather than leaving it to the reader's default,
+        // so the sheet tabs are always on show — the submissions sheet is no
+        // use to payroll if its tab isn't visible.
+        '<bookViews><workbookView xWindow="0" yWindow="0" windowWidth="24000" windowHeight="14000"' +
+        ' firstSheet="0" activeTab="0" showSheetTabs="1"/></bookViews>' +
         '<sheets>' +
-          '<sheet name="Summary" sheetId="1" r:id="rId1"/>' +
-          '<sheet name="Entry Detail" sheetId="2" r:id="rId2"/>' +
+          '<sheet name="Payroll Summary" sheetId="1" r:id="rId1"/>' +
+          '<sheet name="All Submissions" sheetId="2" r:id="rId2"/>' +
         '</sheets>' +
       '</workbook>';
 
@@ -2676,18 +2682,23 @@
       '</styleSheet>';
 
     // Sheet 1 — one row per employee, mirroring the on-screen report table.
+    // The individual submissions behind these figures are on sheet 2; this
+    // sheet says so in as many words, because a totals-only first screen reads
+    // like the whole export.
     function reportSummarySheetXml(model) {
       const { rows, tot, scopeLine, gen, companyName } = model;
+      const entryCount = rows.reduce((n, r) => n + r.entries.length, 0);
       const headers = ['Employee', 'Work Hours', 'Travel to Site', 'Travel to Shop',
         'Travel Hours', 'Total Hours', 'Prevailing Hrs', 'Standard Hrs',
         'Pending Hours', 'Approved Hours', 'Time Off', 'Status'];
-      const HEADER_ROW = 6;
+      const HEADER_ROW = 7;
 
       const sheet = [
         [cTxt('Payroll Hours Report', XS.title)],
         [cTxt(companyName, XS.bold)],
         [cTxt(scopeLine, XS.sub)],
         [cTxt(`Generated ${gen}`, XS.sub)],
+        [cTxt(`One row per employee — all ${entryCount} ${entryCount === 1 ? 'submission is' : 'submissions are'} itemised on the "All Submissions" sheet`, XS.bold)],
         [],
         headers.map((h, i) => cTxt(h, (i >= 1 && i <= 9) ? XS.headNum : XS.head)),
       ];
@@ -2734,11 +2745,12 @@
         rows: sheet,
         freezeRow: HEADER_ROW,
         autoFilterRef: `A${HEADER_ROW}:L${HEADER_ROW + rows.length}`,
+        tabSelected: true,
       });
     }
 
-    // Sheet 2 — every entry behind the summary, the flat form of the per-employee
-    // breakdown the report rows expand into.
+    // Sheet 2 — every submission behind the summary, one row each: the flat
+    // form of the per-employee breakdown the report rows expand into.
     function reportDetailSheetXml(model) {
       const { rows, scopeLine, gen, companyName } = model;
       const headers = ['Employee', 'Date', 'Type', 'Division', 'Project / Job',
@@ -2749,7 +2761,7 @@
       const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13]); // 0-based header indices that are numeric
 
       const sheet = [
-        [cTxt('Payroll Hours Report — Entry Detail', XS.title)],
+        [cTxt('Payroll Hours Report — All Submissions', XS.title)],
         [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
