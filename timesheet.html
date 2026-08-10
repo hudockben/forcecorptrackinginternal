@@ -438,7 +438,7 @@
           </div>
           <div class="row">
             <label for="f-job">Job</label>
-            <select id="f-job" disabled>
+            <select id="f-job" disabled onchange="onJobChange()">
               <option value="">— pick division first —</option>
             </select>
           </div>
@@ -455,6 +455,46 @@
           <div class="row">
             <label for="f-truck-desc">Description</label>
             <textarea id="f-truck-desc" maxlength="2000" placeholder="What was hauled, route, etc."></textarea>
+          </div>
+        </div>
+
+        <!-- EES-only fields. Shown only when Division = Dust Control AND the job
+             is EES - Pre Loading or EES - Washing. These map straight across to
+             the matching columns of the Dust division's "EES Other" tab when the
+             entry is approved, so what's typed here is what shows up there. -->
+        <div id="eesFields" style="display:none;flex-direction:column;gap:0.85rem">
+          <div class="row-2">
+            <div class="row">
+              <label for="f-ees-unit">Unit</label>
+              <input type="text" id="f-ees-unit" maxlength="100" placeholder="Truck / unit #" />
+            </div>
+            <div class="row">
+              <label for="f-ees-customer">Customer</label>
+              <input type="text" id="f-ees-customer" maxlength="500" placeholder="Customer" />
+            </div>
+          </div>
+          <div class="row-2">
+            <div class="row">
+              <label for="f-ees-location">Location</label>
+              <input type="text" id="f-ees-location" maxlength="500" placeholder="Location" />
+            </div>
+            <div class="row">
+              <label for="f-ees-name">Name</label>
+              <input type="text" id="f-ees-name" maxlength="500" placeholder="Name" />
+            </div>
+          </div>
+          <div class="row-2">
+            <div class="row">
+              <label for="f-ees-job-number">Job Number</label>
+              <input type="text" id="f-ees-job-number" maxlength="100" placeholder="Job #" />
+            </div>
+            <div class="row">
+              <label for="f-ees-billing">Billing</label>
+              <select id="f-ees-billing">
+                <option value="Non-Billable">Non-Billable</option>
+                <option value="Billable">Billable</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -730,6 +770,7 @@
       // Trucking-only Unit + Description fields ride alongside the job picker.
       const truckWrap = document.getElementById('truckingFields');
       if (truckWrap) truckWrap.style.display = (div === 'trucking') ? 'flex' : 'none';
+      onJobChange();
       if (!div) {
         jobSel.innerHTML = '<option value="">— pick division first —</option>';
         jobSel.disabled = true;
@@ -758,6 +799,22 @@
         jobSel.innerHTML = '<option value="">(error loading)</option>';
         jobSel.disabled = true;
       }
+      onJobChange();
+    }
+
+    // The two standing EES activities, as minted by api/timesheet-jobs.js.
+    // Picking either one under Dust Control reveals the EES detail fields that
+    // the division's "EES Other" tab is built from.
+    const EES_JOB_IDS = ['ees:preloading', 'ees:washing'];
+
+    function isEesSelection() {
+      return document.getElementById('f-division').value === 'dust'
+          && EES_JOB_IDS.includes(document.getElementById('f-job').value);
+    }
+
+    function onJobChange() {
+      const wrap = document.getElementById('eesFields');
+      if (wrap) wrap.style.display = isEesSelection() ? 'flex' : 'none';
     }
 
     // ── Entries list ──────────────────────────────────────────────────────
@@ -988,6 +1045,13 @@
         document.getElementById('f-notes').value = e.notes || '';
         document.getElementById('f-truck-unit').value = e.truck_unit || '';
         document.getElementById('f-truck-desc').value = e.truck_description || '';
+        document.getElementById('f-ees-unit').value       = e.ees_unit || '';
+        document.getElementById('f-ees-customer').value   = e.ees_customer || '';
+        document.getElementById('f-ees-location').value   = e.ees_location || '';
+        document.getElementById('f-ees-name').value       = e.ees_name || '';
+        document.getElementById('f-ees-job-number').value = e.ees_job_number || '';
+        document.getElementById('f-ees-billing').value    = e.ees_billing || 'Non-Billable';
+        onJobChange();
       } else {
         offType = e.time_off_type || null;
         document.querySelectorAll('#off-pills .pill').forEach(p => {
@@ -1025,6 +1089,13 @@
       jobSel.disabled = true;
       document.getElementById('f-truck-unit').value = '';
       document.getElementById('f-truck-desc').value = '';
+      document.getElementById('f-ees-unit').value       = '';
+      document.getElementById('f-ees-customer').value   = '';
+      document.getElementById('f-ees-location').value   = '';
+      document.getElementById('f-ees-name').value       = '';
+      document.getElementById('f-ees-job-number').value = '';
+      document.getElementById('f-ees-billing').value    = 'Non-Billable';
+      onJobChange();
       document.getElementById('truckingFields').style.display = 'none';
       document.getElementById('f-travel-to-site').value = '';
       document.getElementById('f-travel-to-shop').value = '';
@@ -1092,6 +1163,8 @@
       // division; the server ignores/nulls them for every other division.
       const truckUnit = div === 'trucking' ? (document.getElementById('f-truck-unit').value || '').trim() : '';
       const truckDesc = div === 'trucking' ? (document.getElementById('f-truck-desc').value || '').trim() : '';
+      const isEes   = isEesSelection();
+      const eesVal  = id => isEes ? (document.getElementById(id).value || '').trim() : '';
       return { data: {
         entry_type: 'daily',
         work_date: d,
@@ -1109,6 +1182,12 @@
         notes: document.getElementById('f-notes').value || '',
         truck_unit: truckUnit,
         truck_description: truckDesc,
+        ees_unit:       eesVal('f-ees-unit'),
+        ees_customer:   eesVal('f-ees-customer'),
+        ees_location:   eesVal('f-ees-location'),
+        ees_name:       eesVal('f-ees-name'),
+        ees_job_number: eesVal('f-ees-job-number'),
+        ees_billing:    isEes ? (document.getElementById('f-ees-billing').value || 'Non-Billable') : '',
       }};
     }
 

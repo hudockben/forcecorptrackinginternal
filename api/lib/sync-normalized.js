@@ -519,7 +519,11 @@ async function _ensureIcObColumns(sql) {
       ADD COLUMN IF NOT EXISTS trucking_hrs   NUMERIC(10,4),
       ADD COLUMN IF NOT EXISTS trucking_rate  NUMERIC(10,4),
       ADD COLUMN IF NOT EXISTS trucking_total NUMERIC(10,4),
-      ADD COLUMN IF NOT EXISTS comments       TEXT
+      ADD COLUMN IF NOT EXISTS comments       TEXT,
+      ADD COLUMN IF NOT EXISTS rate           NUMERIC(10,4),
+      ADD COLUMN IF NOT EXISTS ees_name       TEXT,
+      ADD COLUMN IF NOT EXISTS job_number     TEXT,
+      ADD COLUMN IF NOT EXISTS billing        TEXT
   `;
   _icObColsEnsured = true;
 }
@@ -557,6 +561,7 @@ async function syncIntercompanyBillingEntries(sql, companyCode, value) {
         truck_number, trailer_number, destination, state, material,
         gallons_bags, price_per_unit, material_total,
         trucking_hrs, trucking_rate, trucking_total, comments,
+        rate, ees_name, job_number, billing,
         updated_at
       ) VALUES (
         ${e.id}, ${companyCode},
@@ -593,6 +598,8 @@ async function syncIntercompanyBillingEntries(sql, companyCode, value) {
         ${safeFloat(e.trucking_rate)  ?? null},
         ${safeFloat(e.trucking_total) ?? null},
         ${e.comments || null},
+        ${safeFloat(e.rate) ?? null},
+        ${e.name || null}, ${e.job_number || null}, ${e.billing || null},
         NOW()
       )
       ON CONFLICT (id) DO UPDATE SET
@@ -646,6 +653,10 @@ async function syncIntercompanyBillingEntries(sql, companyCode, value) {
         trucking_rate     = EXCLUDED.trucking_rate,
         trucking_total    = EXCLUDED.trucking_total,
         comments          = EXCLUDED.comments,
+        rate              = EXCLUDED.rate,
+        ees_name          = EXCLUDED.ees_name,
+        job_number        = EXCLUDED.job_number,
+        billing           = EXCLUDED.billing,
         updated_at        = NOW()
     `;
     intercompany_billing_entries++;

@@ -739,6 +739,14 @@ CREATE TABLE IF NOT EXISTS intercompany_billing_entries (
     trucking_rate     NUMERIC(10,4),
     trucking_total    NUMERIC(10,4),
     comments          TEXT,
+    -- Dust "EES Other" fields (source = 'dust-ees-other'). Hours × rate rather
+    -- than material, so it adds a rate plus the job's own identifiers.
+    -- ees_name rather than name: the entry's "Name" column is a job-side label
+    -- and must not be confused with company_name above.
+    rate              NUMERIC(10,4),
+    ees_name          TEXT,
+    job_number        TEXT,
+    billing           TEXT,
     updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
@@ -981,6 +989,18 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_hours         NUME
 -- existing deployments pick them up the next time run-schema executes.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS truck_unit        TEXT;
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS truck_description TEXT;
+
+-- EES-only daily fields. Captured on the timesheet only when the division is
+-- 'dust' AND the job is one of the two standing EES activities (job_id
+-- 'ees:preloading' / 'ees:washing' — see api/timesheet-jobs.js), and carried
+-- straight into the Dust division's "EES Other" tab on payroll approval. The
+-- tab displays these verbatim, so the timesheet is their only source of truth.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_unit       TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_customer   TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_location   TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_name       TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_job_number TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_billing    TEXT;
 
 -- ─────────────────────────────────────────────────
 -- TIMESHEET → DAILY TRACKING bridge

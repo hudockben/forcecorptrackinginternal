@@ -43,7 +43,14 @@
  *     customer ← job_label) and appended to the fct_truck_division blob (and
  *     mirrored to truck_division_entries), with its id prefixed "tst-<entryId>-".
  *     Haul fee and the division column are left blank for the trucking office.
- *     Remaining divisions (dust): legacy behavior (flip status only).
+ *     For dust daily entries NO body is needed either — an "EES Other" row is
+ *     autofilled from the entry (driver, date, start/end, hours, customer ←
+ *     job_label, comments ← notes) and appended to the dust_ees_other_rows
+ *     blob, with its id prefixed "tse-<entryId>-". Unit / location / name / job
+ *     number / billing come from the timesheet's own EES fields; only the
+ *     billing rate is left for the dust office. Approving also clears any
+ *     Intercompany removal recorded against the row, so re-approving puts
+ *     previously-deleted work back rather than being overruled by it.
  *
  *   POST   /api/timesheet-entries?action=resplit&id=N   — replace injected rows
  *     Payroll-admin only, row must already be 'approved'. Same body shape as
@@ -110,6 +117,28 @@ function quarryRowIdPrefix(entryId) { return `tsq-${entryId}-`; }
 // scheme as quarry) so unapprove/delete can find and remove them again.
 const TRUCK_DIVISION_BLOB = 'fct_truck_division';
 function truckingRowIdPrefix(entryId) { return `tst-${entryId}-`; }
+
+// Dust auto-injects into the Dust division's "EES Other" tab — the
+// dust_ees_other_rows app_data blob. Like trucking there are NO payroll-entered
+// fields: every value is autofilled from the timesheet entry, and the tab-owned
+// columns (unit, location, name, job number, billing, rate) are filled in later
+// by the dust office. Rows exist ONLY because a timesheet entry was approved —
+// the tab never creates or deletes them, which is what makes the client's
+// save-merge safe. Tagged by encoding the entry id into the row id, same scheme
+// as quarry and trucking, so unapprove/delete can find them again.
+const DUST_EES_OTHER_BLOB = 'dust_ees_other_rows';
+function eesOtherRowIdPrefix(entryId) { return `tse-${entryId}-`; }
+
+// The two standing EES activities, as encoded by api/timesheet-jobs.js. Only a
+// dust entry on one of these becomes an EES Other row — an ordinary dust
+// customer entry still just flips status, as it always has.
+const EES_JOB_IDS = ['ees:preloading', 'ees:washing'];
+function isEesJob(jobId) { return EES_JOB_IDS.includes(String(jobId || '')); }
+
+// The one column the EES Other tab owns rather than the timesheet: the hourly
+// rate a Billable row bills at. Everything else on the row is timesheet-fed, so
+// a re-injection must preserve this and overwrite the rest.
+const EES_OTHER_TAB_FIELDS = ['rate'];
 
 function safeDate(v) {
   if (!v) return null;
@@ -205,6 +234,12 @@ function dbToEntry(r) {
     time_off_type:       r.time_off_type || '',
     truck_unit:          r.truck_unit || '',
     truck_description:   r.truck_description || '',
+    ees_unit:            r.ees_unit || '',
+    ees_customer:        r.ees_customer || '',
+    ees_location:        r.ees_location || '',
+    ees_name:            r.ees_name || '',
+    ees_job_number:      r.ees_job_number || '',
+    ees_billing:         r.ees_billing || '',
     submitted_at:        r.submitted_at,
     approved_at:         r.approved_at,
     approved_by_user_id: r.approved_by_user_id,
@@ -1046,6 +1081,132 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
 }
 
 /**
+ * Build + inject a single "EES Other" row for an approved dust entry.
+ *
+ * Deletes any prior injected row for this entry first (idempotent — covers a
+ * retried approve or a payroll edit), then appends the new one. Blob-only:
+ * dust_ees_other_rows has no normalized mirror, same as the dust Other Billing
+ * grid it sits beside.
+ *
+ * Autofill mirrors the timesheet entry exactly: driver ← employee, actual_date
+ * ← work_date, actual_start/end ← start/end, actual_hours ← the (lunch-deducted)
+ * computed hours, customer ← job_label, comments ← notes. Unit / location /
+ * name / job number / billing / rate are left for the dust office and preserved
+ * across re-injection. Billing defaults to Non-Billable so a row never bills
+ * anybody by accident — Intercompany only picks up rows marked Billable.
+ */
+async function insertEesOtherRow(sql, companyCode, entry) {
+  const hhmm     = v => String(v || '').slice(0, 5);
+  const workDate = safeDate(entry.work_date) || '';
+  const customer = safeStr(entry.job_label, 500) || safeStr(entry.job_id, 500) || '';
+
+  const prefix = eesOtherRowIdPrefix(entry.id);
+  const arr    = await readBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB);
+  const isMine = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
+  const prev   = arr.find(isMine) || null;
+
+  const row = {
+    // Stable, not stamped with Date.now(): there is only ever one row per
+    // entry, and Intercompany keys its billing entry off this id. A fresh id on
+    // every re-injection would orphan that entry — the reconciler would drop it
+    // (losing its sent_at and any Intercompany-side invoice/payment dates) and
+    // mint a replacement. Re-injecting is now genuinely idempotent.
+    id:            `${prefix}row`,
+    actual_date:   workDate,
+    actual_start:  hhmm(entry.start_time),
+    actual_end:    hhmm(entry.end_time),
+    actual_hours:  _r2(Number(entry.computed_hours) || 0),
+    driver:        entry.username || '',
+    unit:          safeStr(entry.ees_unit, 100)      || '',
+    customer:      safeStr(entry.ees_customer, 500)  || customer,
+    location:      safeStr(entry.ees_location, 500)  || '',
+    name:          safeStr(entry.ees_name, 500)      || '',
+    job_number:    safeStr(entry.ees_job_number, 100) || '',
+    billing:       safeStr(entry.ees_billing, 50)    || 'Non-Billable',
+    activity:      entry.job_id === 'ees:washing' ? 'Washing' : 'Pre Loading',
+    rate:          '',
+    comments:      entry.notes || '',
+  };
+  // Carry over anything the dust office already filled in on the prior row.
+  if (prev) {
+    for (const f of EES_OTHER_TAB_FIELDS) {
+      if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
+    }
+  }
+
+  const next = arr.filter(r => !isMine(r));
+  next.push(row);
+  await writeBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB, next);
+
+  // Non-fatal: a failure here leaves the row suppressed, which the tab shows
+  // as "Removed in IC" rather than hiding — whereas throwing would roll back
+  // an otherwise-good approval over a secondary concern.
+  try {
+    await clearIcSuppression(sql, companyCode, 'dust-ees-other', row.id);
+  } catch (err) {
+    console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
+  }
+  return row;
+}
+
+// Removals recorded by an intercompany user (see _suppressIcEntry in
+// intercompany.html). A suppressed row is not recreated by the division that
+// owns it, which is what makes a deletion over there stick.
+const IC_REMOVED_BLOB = 'fct_intercompany_removed_entries';
+
+/**
+ * Drop any intercompany removal recorded against one row. Returns the count.
+ *
+ * Approving is a deliberate statement that this work counts, so it undoes an
+ * earlier removal rather than being silently overruled by it. This matters
+ * here and nowhere else because the EES row id is stable across re-approval:
+ * without this the row would stay suppressed forever, never bill again, and
+ * leave the tab showing "Removed in IC" with no way back.
+ */
+async function clearIcSuppression(sql, companyCode, source, sourceId) {
+  // One statement, deliberately. Reading the list and writing it back would
+  // race the intercompany page recording a removal: it reads [A], the page
+  // writes [A,B], it writes [] — and B is silently gone, so that row quietly
+  // comes back. jsonb_agg rebuilds the array inside the UPDATE, so there is no
+  // window. The EXISTS guard keeps it from touching the row (or updated_at)
+  // when there was nothing to clear.
+  const scoped = `${companyCode}:${IC_REMOVED_BLOB}`;
+  const rows = await sql`
+    UPDATE app_data
+       SET value = COALESCE((
+             SELECT jsonb_agg(t)
+               FROM jsonb_array_elements(value) AS t
+              WHERE NOT (t->>'source' = ${source} AND t->>'source_id' = ${sourceId})
+           ), '[]'::jsonb),
+           updated_at = NOW()
+     WHERE key = ${scoped}
+       AND jsonb_typeof(value) = 'array'
+       AND EXISTS (
+             SELECT 1
+               FROM jsonb_array_elements(value) AS t
+              WHERE t->>'source' = ${source} AND t->>'source_id' = ${sourceId}
+           )
+    RETURNING 1 AS cleared
+  `;
+  // At most one removal exists per (source, source_id) — the writer dedups —
+  // so this is 1 when one was cleared and 0 when there was nothing to clear.
+  return rows.length;
+}
+
+/**
+ * Remove every EES Other row injected from this entry. Returns the count.
+ */
+async function removeEesOtherRows(sql, companyCode, entry) {
+  const prefix    = eesOtherRowIdPrefix(entry.id);
+  const arr       = await readBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB);
+  const isMine    = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
+  const removed   = arr.filter(isMine);
+  if (!removed.length) return 0;
+  await writeBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB, arr.filter(r => !isMine(r)));
+  return removed.length;
+}
+
+/**
  * Remove every Truck Tracking row injected from this entry — from both the
  * fct_truck_division blob and the truck_division_entries mirror. Returns the
  * count removed.
@@ -1062,6 +1223,14 @@ async function removeTruckingRows(sql, companyCode, entry) {
     await sql`DELETE FROM truck_division_entries WHERE company_code = ${companyCode} AND id = ANY(${removedIds})`;
   }
   return removed.length;
+}
+
+// True when an approved dust entry still has its injected EES Other row. Used by
+// the PUT guard so an approved entry can't be edited out from under the tab.
+async function eesOtherHasInjectedRow(sql, companyCode, entry) {
+  const prefix = eesOtherRowIdPrefix(entry.id);
+  const arr    = await readBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB);
+  return arr.some(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
 }
 
 // True when an approved trucking entry still has an injected Truck Tracking row.
@@ -1133,6 +1302,12 @@ function normalizeEntryBody(body) {
         time_off_type,
         truck_unit:           null,
         truck_description:    null,
+        ees_unit:             null,
+        ees_customer:         null,
+        ees_location:         null,
+        ees_name:             null,
+        ees_job_number:       null,
+        ees_billing:          null,
       },
     };
   }
@@ -1186,6 +1361,17 @@ function normalizeEntryBody(body) {
   const truck_unit        = division === 'trucking' ? safeStr(body.truck_unit, 100)        : null;
   const truck_description = division === 'trucking' ? safeStr(body.truck_description, 2000) : null;
 
+  // EES-only extras, captured only for a dust entry on one of the two standing
+  // EES jobs. Forced to null everywhere else so a stray value can't leak across
+  // divisions (same rule the trucking extras follow).
+  const isEes = division === 'dust' && isEesJob(job_id);
+  const ees_unit       = isEes ? safeStr(body.ees_unit, 100)       : null;
+  const ees_customer   = isEes ? safeStr(body.ees_customer, 500)   : null;
+  const ees_location   = isEes ? safeStr(body.ees_location, 500)   : null;
+  const ees_name       = isEes ? safeStr(body.ees_name, 500)       : null;
+  const ees_job_number = isEes ? safeStr(body.ees_job_number, 100) : null;
+  const ees_billing    = isEes ? (safeStr(body.ees_billing, 50) || 'Non-Billable') : null;
+
   return {
     data: {
       entry_type,
@@ -1207,6 +1393,12 @@ function normalizeEntryBody(body) {
       time_off_type:      null,
       truck_unit,
       truck_description,
+      ees_unit,
+      ees_customer,
+      ees_location,
+      ees_name,
+      ees_job_number,
+      ees_billing,
     },
   };
 }
@@ -1320,7 +1512,8 @@ module.exports = async (req, res) => {
           lunch_break, operated_equipment,
           supervisor_id, supervisor_name,
           notes, time_off_type,
-          truck_unit, truck_description
+          truck_unit, truck_description,
+          ees_unit, ees_customer, ees_location, ees_name, ees_job_number, ees_billing
         ) VALUES (
           ${companyCode}, ${userId}, ${username}, ${data.entry_type}, ${data.work_date}, 'draft',
           ${data.division}, ${data.job_id}, ${data.job_label},
@@ -1329,7 +1522,9 @@ module.exports = async (req, res) => {
           ${data.lunch_break}, ${data.operated_equipment},
           ${data.supervisor_id}, ${data.supervisor_name},
           ${data.notes}, ${data.time_off_type},
-          ${data.truck_unit}, ${data.truck_description}
+          ${data.truck_unit}, ${data.truck_description},
+          ${data.ees_unit}, ${data.ees_customer}, ${data.ees_location},
+          ${data.ees_name}, ${data.ees_job_number}, ${data.ees_billing}
         )
         RETURNING *
       `;
@@ -1450,6 +1645,12 @@ module.exports = async (req, res) => {
       const needsTrucking =
         existing.entry_type === 'daily' &&
         existing.division === 'trucking';
+      // Dust injects an autofilled "EES Other" row. Nothing is entered on the
+      // payroll side — every value comes from the timesheet entry itself.
+      const needsEesOther =
+        existing.entry_type === 'daily' &&
+        existing.division === 'dust' &&
+        isEesJob(existing.job_id);
 
       let splitRows = null;
       if (needsSplit) {
@@ -1492,7 +1693,7 @@ module.exports = async (req, res) => {
         RETURNING *
       `;
 
-      if (splitRows || quarryInject || needsTrucking) {
+      if (splitRows || quarryInject || needsTrucking || needsEesOther) {
         try {
           if (splitRows) {
             await insertSplitRows(
@@ -1502,8 +1703,10 @@ module.exports = async (req, res) => {
             await insertQuarryRow(
               sql, companyCode, updated, quarryInject.activity, quarryInject.fields,
             );
-          } else {
+          } else if (needsTrucking) {
             await insertTruckingRow(sql, companyCode, updated, truckingInject || {});
+          } else {
+            await insertEesOtherRow(sql, companyCode, updated);
           }
         } catch (injErr) {
           // Rollback the approval so payroll sees the row as pending again
@@ -1531,6 +1734,10 @@ module.exports = async (req, res) => {
             try { await removeTruckingRows(sql, companyCode, updated); }
             catch (cleanupErr) { console.error('[timesheet-entries] trucking rollback cleanup failed:', cleanupErr.message); }
           }
+          if (needsEesOther) {
+            try { await removeEesOtherRows(sql, companyCode, updated); }
+            catch (cleanupErr) { console.error('[timesheet-entries] EES Other rollback cleanup failed:', cleanupErr.message); }
+          }
           await sql`
             UPDATE timesheet_entries
             SET status              = 'submitted',
@@ -1551,7 +1758,8 @@ module.exports = async (req, res) => {
         sql, companyCode, payload, id, 'APPROVE',
         splitRows ? { split_row_count: splitRows.length }
           : quarryInject ? { quarry_activity: quarryInject.activity }
-          : needsTrucking ? { trucking_injected: true } : null,
+          : needsTrucking ? { trucking_injected: true }
+          : needsEesOther ? { ees_other_injected: true } : null,
         dbToEntry(updated),
       );
       return res.json(await entryJson(sql, companyCode, updated));
@@ -1703,7 +1911,14 @@ module.exports = async (req, res) => {
       if (existing.division === 'trucking') {
         removedTrucking = await removeTruckingRows(sql, companyCode, existing);
       }
-      const removed = cnt + removedQuarry + removedTrucking;
+      // Dust stores its injected rows in the dust_ees_other_rows blob — clear
+      // those so the EES Other tab reflects the un-approval. The dust auto-sync
+      // then pulls any Intercompany entry the row had created.
+      let removedEesOther = 0;
+      if (existing.division === 'dust' && isEesJob(existing.job_id)) {
+        removedEesOther = await removeEesOtherRows(sql, companyCode, existing);
+      }
+      const removed = cnt + removedQuarry + removedTrucking + removedEesOther;
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status              = 'submitted',
@@ -1938,6 +2153,13 @@ module.exports = async (req, res) => {
         if (existing.division === 'trucking') {
           if (await truckingHasInjectedRow(sql, companyCode, existing)) injected += 1;
         }
+        // Same rule for EES: the tab shows the entry's hours and times verbatim,
+        // so editing an approved entry without re-injecting would leave the tab
+        // — and any Intercompany figure built from it — quietly disagreeing with
+        // the timesheet.
+        if (existing.division === 'dust' && isEesJob(existing.job_id)) {
+          if (await eesOtherHasInjectedRow(sql, companyCode, existing)) injected += 1;
+        }
         if (injected > 0) {
           return res.status(409).json({
             error: 'This entry has cost tracking rows injected from approval. Un-approve it first, edit, then re-approve with a fresh split.',
@@ -1970,6 +2192,12 @@ module.exports = async (req, res) => {
           time_off_type      = ${data.time_off_type},
           truck_unit         = ${data.truck_unit},
           truck_description  = ${data.truck_description},
+          ees_unit           = ${data.ees_unit},
+          ees_customer       = ${data.ees_customer},
+          ees_location       = ${data.ees_location},
+          ees_name           = ${data.ees_name},
+          ees_job_number     = ${data.ees_job_number},
+          ees_billing        = ${data.ees_billing},
           updated_at         = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -2021,6 +2249,11 @@ module.exports = async (req, res) => {
       if (existing.division === 'trucking') {
         removedSplitRows += await removeTruckingRows(sql, companyCode, existing);
       }
+      // Keyed on the division+job the same way the other sweeps are, so a row
+      // that outlived its entry still gets caught when the entry is deleted.
+      if (existing.division === 'dust' && isEesJob(existing.job_id)) {
+        removedSplitRows += await removeEesOtherRows(sql, companyCode, existing);
+      }
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;
       await writeAudit(
         sql, companyCode, payload, id, 'DELETE',
@@ -2047,6 +2280,11 @@ module.exports._test = {
   truckingRowIdPrefix,
   matchTruckingDriver,
   insertTruckingRow,
+  insertEesOtherRow,
+  removeEesOtherRows,
+  eesOtherRowIdPrefix,
+  eesOtherHasInjectedRow,
+  clearIcSuppression,
   removeTruckingRows,
   truckingHasInjectedRow,
   truckingSplitForEntry,

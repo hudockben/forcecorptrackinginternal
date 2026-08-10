@@ -909,6 +909,7 @@
       <button class="ci-subtab-btn st-truck" id="ciSubTruck"     onclick="switchCiDiv('trucking')">Trucking</button>
       <button class="ci-subtab-btn"          id="ciSubDust"      onclick="switchCiDiv('dust')">Dust Control</button>
       <button class="ci-subtab-btn"          id="ciSubDustOther" onclick="switchCiDiv('dust-other-billing')">Dust — Other Billing</button>
+      <button class="ci-subtab-btn"          id="ciSubDustEes"   onclick="switchCiDiv('dust-ees-other')">EES Other</button>
       <button class="ci-subtab-btn"          id="ciSubQuarry"    onclick="switchCiDiv('quarry')">Quarry</button>
       <button class="ci-subtab-btn"          id="ciSubKiewit"    onclick="switchCiDiv('kiewit')">Kiewit Pinetree</button>
     </div>
@@ -1319,12 +1320,24 @@
       renderCompanyInfo();
     }
 
+    // Mirror of DUST_IC_SOURCES in api/lib/ic-sources.js — this page is static
+    // and cannot require it. scripts/test-ic-sources.js fails if the two lists
+    // drift apart, so a new dust tab has to be added in both places.
+    const DUST_IC_SOURCES = ['dust', 'dust-other-billing', 'dust-ees-other'];
+
+    // The dust sources whose intercompany amount IS the stored total. Dust
+    // tracking is the exception: its IC figure is recomputed from vehicle
+    // totals and the customer's UB rate rather than read off the row.
+    const DUST_FLAT_TOTAL_SOURCES = ['dust-other-billing', 'dust-ees-other'];
+
     function switchCiDiv(div) {
       ciDivFilter = div;
       document.getElementById('ciSubTruck').className     = 'ci-subtab-btn' + (div === 'trucking'           ? ' st-truck' : '');
       document.getElementById('ciSubDust').className      = 'ci-subtab-btn' + (div === 'dust'               ? ' st-dust'  : '');
       const obBtn = document.getElementById('ciSubDustOther');
       if (obBtn) obBtn.className = 'ci-subtab-btn' + (div === 'dust-other-billing' ? ' st-dust'   : '');
+      const eeBtn = document.getElementById('ciSubDustEes');
+      if (eeBtn) eeBtn.className = 'ci-subtab-btn' + (div === 'dust-ees-other'     ? ' st-dust'   : '');
       const qBtn  = document.getElementById('ciSubQuarry');
       if (qBtn)  qBtn.className  = 'ci-subtab-btn' + (div === 'quarry'             ? ' st-quarry' : '');
       const kBtn  = document.getElementById('ciSubKiewit');
@@ -1822,9 +1835,11 @@
       if (!entries.length) {
         const divLabel = ciDivFilter === 'dust'               ? 'Dust Control'
                        : ciDivFilter === 'dust-other-billing' ? 'Dust — Other Billing'
+                       : ciDivFilter === 'dust-ees-other'     ? 'EES Other'
                        : 'Trucking';
         const hint = ciDivFilter === 'dust'               ? 'dust control invoice panel'
                    : ciDivFilter === 'dust-other-billing' ? 'dust other billing row'
+                   : ciDivFilter === 'dust-ees-other'     ? 'EES Other row marked Billable'
                    : 'truck tracking row';
         const hasAnyDiv = icBillingEntries.some(e => (e.source || 'trucking') === ciDivFilter);
         body.innerHTML = `<div class="ci-empty">
@@ -2213,7 +2228,127 @@
         </div>`;
       }
 
-      const isObFilter = ciDivFilter === 'dust-other-billing';
+      // ── EES Other section ──────────────────────────────────────────────
+      // Hours are the point of this tab, not money. Every approved EES row
+      // arrives here — Pre Loading and Washing, Billable and Non-Billable —
+      // because the hours are what has to be collected and accounted for.
+      // Only a Billable row carries a rate, so revenue is the secondary
+      // figure and a Non-Billable row contributes hours at a zero total.
+      const eesIsBillable = e => String(e && e.billing || '').trim().toLowerCase() === 'billable';
+
+      function buildEesSection(divRows, sectionId) {
+        const colSpan = 6; // Month | Jobs | Billable hrs | Non-billable hrs | Total hours | Revenue
+
+        const byMonth = {};
+        divRows.forEach(e => {
+          const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
+          const mIdx = isNaN(mRaw) ? -1 : mRaw;
+          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, billHrs: 0, nonBillHrs: 0, total: 0, entries: [] };
+          const hrs = parseFloat(e.total_hours) || 0;
+          byMonth[mKey].jobs++;
+          byMonth[mKey].hours += hrs;
+          if (eesIsBillable(e)) byMonth[mKey].billHrs    += hrs;
+          else                  byMonth[mKey].nonBillHrs += hrs;
+          byMonth[mKey].total += parseFloat(e.total) || 0;
+          byMonth[mKey].entries.push(e);
+        });
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+
+        const totJobs    = divRows.length;
+        const totHrs     = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totBillHrs = divRows.filter(eesIsBillable).reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
+        const totNonHrs  = totHrs - totBillHrs;
+        const totRev     = divRows.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
+
+        const detailHead = `<th>Date</th><th>Driver</th><th>Unit</th><th>Customer</th><th>Location</th><th>Name</th><th>Job #</th><th>Billing</th><th class="r">Start</th><th class="r">End</th><th class="r ic-val">Hours</th><th class="r">$ / hr</th><th class="r">Total</th><th></th>`;
+
+        const monthRows = sortedMonths.map((m, mi) => {
+          const detId  = `${sectionId}-m${mi}`;
+          const sorted = [...m.entries].sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''));
+
+          const entryRows = sorted.map(e => {
+            const eid  = escT(e.id || '');
+            const hrs  = parseFloat(e.total_hours) || 0;
+            const rate = parseFloat(e.rate)        || 0;
+            const tot  = parseFloat(e.total)       || (hrs * rate);
+            return `<tr>
+              <td>${e.actual_date || '—'}</td>
+              <td>${escT(e.driver     || '—')}</td>
+              <td>${escT(e.unit       || '—')}</td>
+              <td>${escT(e.customer   || '—')}</td>
+              <td>${escT(e.location   || '—')}</td>
+              <td>${escT(e.name       || '—')}</td>
+              <td>${escT(e.job_number || '—')}</td>
+              <td${eesIsBillable(e) ? '' : ' style="color:var(--muted)"'}>${escT(e.billing || '—')}</td>
+              <td class="r">${escT(e.actual_start || '—')}</td>
+              <td class="r">${escT(e.actual_end   || '—')}</td>
+              <td class="r ic-val">${hrs  > 0 ? fmtH(hrs)  : '—'}</td>
+              <td class="r">${rate > 0 ? fmt$(rate) : '—'}</td>
+              <td class="r">${tot  > 0 ? fmt$(tot)  : '—'}</td>
+              <td><button class="ci-del-btn" onclick="deleteIcEntry('${eid}')" title="Delete entry">✕</button></td>
+            </tr>`;
+          }).join('');
+
+          return `
+            <tr class="ci-month-row" onclick="toggleMonthDetail('${detId}', this)">
+              <td><span class="ci-month-arrow">▶</span>${m.label}</td>
+              <td class="r">${m.jobs}</td>
+              <td class="r">${m.billHrs    > 0 ? fmtH(m.billHrs)    : '—'}</td>
+              <td class="r">${m.nonBillHrs > 0 ? fmtH(m.nonBillHrs) : '—'}</td>
+              <td class="r ic-val">${fmtH(m.hours)}</td>
+              <td class="r">${m.total > 0 ? fmt$(m.total) : '—'}</td>
+            </tr>
+            <tr class="ci-mdet-row" id="${detId}">
+              <td colspan="${colSpan}" class="ci-mdet-inner">
+                <table class="ci-detail-table">
+                  <thead><tr>${detailHead}</tr></thead>
+                  <tbody>${entryRows}</tbody>
+                </table>
+              </td>
+            </tr>`;
+        }).join('');
+
+        return `
+        <div class="ci-div-section">
+          <div class="ci-div-header">
+            <span class="ci-div-label dust">EES Other</span>
+            <div class="ci-div-stats">
+              <div class="ci-div-stat"><strong>${totJobs}</strong> job${totJobs === 1 ? '' : 's'}</div>
+              <div class="ci-div-stat ic-val"><strong>${fmtH(totHrs)}</strong> hours</div>
+              <div class="ci-div-stat"><strong>${fmtH(totBillHrs)}</strong> billable</div>
+              <div class="ci-div-stat"><strong>${fmtH(totNonHrs)}</strong> non-billable</div>
+              ${totRev > 0 ? `<div class="ci-div-stat"><strong>${fmt$(totRev)}</strong> billed</div>` : ''}
+            </div>
+          </div>
+          <table class="ci-month-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th class="r">Jobs</th>
+                <th class="r">Billable Hrs</th>
+                <th class="r">Non-Billable Hrs</th>
+                <th class="r ic-val">Total Hours</th>
+                <th class="r">Billed</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${monthRows}
+              <tr class="ci-month-total">
+                <td>Total</td>
+                <td class="r">${totJobs}</td>
+                <td class="r">${totBillHrs > 0 ? fmtH(totBillHrs) : '—'}</td>
+                <td class="r">${totNonHrs  > 0 ? fmtH(totNonHrs)  : '—'}</td>
+                <td class="r ic-val">${fmtH(totHrs)}</td>
+                <td class="r">${totRev > 0 ? fmt$(totRev) : '—'}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`;
+      }
+
+      const isObFilter  = ciDivFilter === 'dust-other-billing';
+      const isEesFilter = ciDivFilter === 'dust-ees-other';
 
       const galSummaryHtml = ciDivFilter === 'dust' ? buildDustGallonsSummary(entries) : '';
 
@@ -2224,17 +2359,28 @@
         const totRev     = co.rows.reduce((s, e) => s + (parseFloat(e.total)       || 0), 0);
         const totIcRev   = ciDivFilter === 'trucking'
           ? totHours * icTruckRate
-          : isObFilter
+          : (isObFilter || isEesFilter)
             ? totRev
             : co.rows.reduce((s, e) => s + (parseFloat(e.v1_total)||0) + (parseFloat(e.v2_total)||0) + (parseFloat(e.gallons_ub)||0) * dustUbRateFor(e.company_name), 0);
 
         const divSections = co.rows.length
           ? (isObFilter
               ? buildObSection(co.rows, `ci-det-${idx}`)
-              : buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`))
+              : isEesFilter
+                ? buildEesSection(co.rows, `ci-det-${idx}`)
+                : buildDivSection(co.rows, ciDivFilter, `ci-det-${idx}`))
           : '';
 
-        const icStatCard = `
+        // EES Other is collected in hours, not dollars — most of its rows are
+        // Non-Billable by design, so a currency figure here would read as "this
+        // customer owes nothing" when the point is how much time was spent.
+        const icStatCard = isEesFilter
+          ? `
+              <div class="ci-co-stat">
+                <div class="ci-co-stat-val ic-val">${fmtH(totHours)}</div>
+                <div class="ci-co-stat-lbl">IC Hours</div>
+              </div>`
+          : `
               <div class="ci-co-stat">
                 <div class="ci-co-stat-val ic-val">${fmt$(totIcRev)}</div>
                 <div class="ci-co-stat-lbl">Intercompany</div>
@@ -2627,9 +2773,65 @@
       rowEl.classList.toggle('open', open);
     }
 
+    // Entries that reached here from a division's auto-sync are recreated by
+    // that division on its next reconcile — the division owns the row, and
+    // "not in the blob" is exactly the signal it uses to decide something is
+    // new. Deleting one here therefore has to be recorded, or it silently
+    // comes back. The division checks this list and leaves a suppressed row
+    // alone, showing "Removed in IC" against it instead of a sent stamp, so a
+    // removal is visible on both sides rather than quietly dropping billing.
+    const IC_REMOVED_KEY = 'fct_intercompany_removed_entries';
+
+    async function _suppressIcEntry(entry) {
+      if (!entry || !entry.source_id) return false;   // hand-added rows aren't owned by a division
+      const key = `${entry.source || ''}|${entry.source_id}`;
+      // Version-checked, and retried on conflict rather than dropped: two people
+      // clearing entries at once would otherwise lose the second suppression
+      // silently, and that row would quietly come back on the next sync.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const r = await fetch(`${API_BASE}/data/${IC_REMOVED_KEY}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!r.ok) return false;
+          const body = await r.json();
+          const cur  = Array.isArray(body && body.value) ? body.value : [];
+          if (cur.some(t => `${t.source || ''}|${t.source_id}` === key)) return true;
+          cur.push({
+            source: entry.source || '', source_id: entry.source_id,
+            company_name: entry.company_name || '', actual_date: entry.actual_date || '',
+            removed_at: new Date().toISOString(),
+          });
+          const w = await fetch(`${API_BASE}/data/${IC_REMOVED_KEY}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ value: cur, baseUpdatedAt: body.updated_at || null })
+          });
+          if (w.ok) return true;
+          if (w.status !== 409) return false;
+          let stale = false;
+          try { const b = await w.json(); stale = !!b && b.error === 'Conflict'; } catch { /* fatal */ }
+          if (!stale) return false;   // the wipe guard, which no retry clears
+        } catch (err) {
+          console.error('[suppressIcEntry]', err.message);
+          return false;
+        }
+      }
+      return false;
+    }
+
     async function deleteIcEntry(id) {
       if (!confirm('Remove this billing entry?')) return;
+      const entry = icBillingEntries.find(e => e.id === id) || null;
       icBillingEntries = icBillingEntries.filter(e => e.id !== id);
+      // Record BEFORE the blob write: if the division syncs in between, the
+      // suppression is already in place and the row is not recreated. If it
+      // could not be recorded, say so — the row would silently return, and the
+      // user is entitled to know the delete will not hold.
+      if (entry && entry.source_id && !(await _suppressIcEntry(entry))) {
+        _showSaveError(false,
+          'Removed here, but this row is owned by its division and could not be marked as removed — it may come back on the next sync. Try again, or delete it in the division tab.');
+      }
       try {
         const r = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           method: 'PUT',
@@ -2682,7 +2884,7 @@
     // Treat dust tracking and dust other-billing as a single dust bucket
     // for top-level dashboards/analytics aggregations.
     function _isDustSrc(e) {
-      return e && (e.source === 'dust' || e.source === 'dust-other-billing');
+      return !!e && DUST_IC_SOURCES.includes(e.source);
     }
 
     function renderAnalytics() {
@@ -2704,7 +2906,7 @@
 
       function icAmt(e) {
         // Other-billing rows already store the full per-row total at time of send.
-        if (e.source === 'dust-other-billing') return parseFloat(e.total) || 0;
+        if (DUST_FLAT_TOTAL_SOURCES.includes(e.source)) return parseFloat(e.total) || 0;
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
         // Dust tracking: use stored per-vehicle totals (actual rates) + current UB rate.
         return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
@@ -3012,7 +3214,7 @@
       const dustEntries  = yrEntries.filter(_isDustSrc);
 
       function icAmt(e) {
-        if (e.source === 'dust-other-billing') return parseFloat(e.total) || 0;
+        if (DUST_FLAT_TOTAL_SOURCES.includes(e.source)) return parseFloat(e.total) || 0;
         if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
         return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
              + (parseFloat(e.gallons_ub) || 0) * dustUbRateFor(e.company_name);
@@ -3101,7 +3303,7 @@
           const invVal = esc(r.invoice_sent_date || '');
           const payVal = esc(r.payment_received_date || '');
           const amt    = icAmt(r);
-          const src    = r.source === 'dust-other-billing' ? 'Dust OB' : (_isDustSrc(r) ? 'Dust' : 'Truck');
+          const src    = r.source === 'dust-other-billing' ? 'Dust OB' : r.source === 'dust-ees-other' ? 'EES' : (_isDustSrc(r) ? 'Dust' : 'Truck');
           const srcCls = _isDustSrc(r) ? 'dust' : 'trucking';
           return '<tr>'
             + '<td><span class="icd-dot ' + dotCls + '"></span><span style="font-size:0.67rem;color:var(--muted)">' + stLbl + '</span></td>'
@@ -3141,7 +3343,7 @@
 
       const recentHtml = recent.length
         ? recent.map(r => {
-            const src    = r.source === 'dust-other-billing' ? 'Dust OB' : (_isDustSrc(r) ? 'Dust' : 'Truck');
+            const src    = r.source === 'dust-other-billing' ? 'Dust OB' : r.source === 'dust-ees-other' ? 'EES' : (_isDustSrc(r) ? 'Dust' : 'Truck');
             const srcCls = _isDustSrc(r) ? 'dust' : 'trucking';
             return '<div class="icd-feed-row">'
               + '<span class="icd-feed-dot"></span>'

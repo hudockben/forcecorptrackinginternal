@@ -15,6 +15,7 @@
 
 const { neon }                          = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
+const { DUST_IC_SOURCES } = require('../lib/ic-sources');
 
 // "Active" mirrors tracker.html's isDone() inverse: anything whose
 // status is NOT 'complete' or 'closed' (case-insensitive) counts as
@@ -1082,11 +1083,11 @@ async function buildIntercompanyTile(sql, companyCode) {
       SELECT COALESCE(SUM(total), 0)::float AS v
         FROM intercompany_billing_entries
        WHERE company_code = ${companyCode}
-         -- Dust Control bills from two tabs: tracking rows ('dust') and the
-         -- Other Billing grid ('dust-other-billing'). Counting only the first
-         -- understates dust and leaves trucking + dust short of the tile's
-         -- own unsourced AR/top-customer figures, which include both.
-         AND source IN ('dust', 'dust-other-billing')
+         -- Dust Control bills from several tabs, each under its own source
+         -- tag. Listing them by hand here is what twice left this figure short
+         -- of the tile's own AR and top-customer numbers, which filter on
+         -- nothing and so count every one. The list now lives in one place.
+         AND source = ANY(${DUST_IC_SOURCES})
          AND (qb_invoice IS NULL OR TRIM(qb_invoice) = '')
     `;
     return rows[0]?.v ?? 0;
