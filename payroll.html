@@ -2069,12 +2069,15 @@
             // stays the authoritative number.
             acc.travelToSite += Number(e.travel_to_site_hours || 0);
             acc.travelToShop += Number(e.travel_to_shop_hours || 0);
-            // Split the day's hours by the job's prevailing-wage flag so
-            // payroll can see prevailing vs standard hours per worker. Only
-            // an explicit true counts as prevailing; false and null (the
-            // divisions with no prevailing-wage concept) both fall to standard.
-            if (e.prevailing_wage === true) acc.pwHours  += h;
-            else                            acc.stdHours += h;
+            // Split the day's hours by the rate they are paid at. Travel is
+            // never paid at the prevailing rate, so only the work hours on a
+            // prevailing-wage job count as prevailing; the travel on that same
+            // job falls to standard along with everything else. Only an
+            // explicit true counts as prevailing — false and null (the
+            // divisions with no prevailing-wage concept) are standard.
+            // Prevailing + standard still add up to the day's total.
+            if (e.prevailing_wage === true) { acc.pwHours += work; acc.stdHours += travel; }
+            else                            { acc.stdHours += h; }
           }
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
@@ -2204,8 +2207,8 @@
                 <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
                 <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
                 <th style="text-align:right">Total</th>
-                <th class="th-pw" style="text-align:right">Prevailing&nbsp;Hrs</th>
-                <th style="text-align:right">Standard&nbsp;Hrs</th>
+                <th class="th-pw" style="text-align:right" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing&nbsp;Hrs</th>
+                <th style="text-align:right" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard&nbsp;Hrs</th>
                 <th style="text-align:right">Pending&nbsp;Hrs</th>
                 <th style="text-align:right">Approved&nbsp;Hrs</th>
                 <th>Time Off</th>
@@ -2258,9 +2261,10 @@
         // than a made-up split.
         const toSite = isOff ? null : (e.travel_to_site_hours != null ? Number(e.travel_to_site_hours) : null);
         const toShop = isOff ? null : (e.travel_to_shop_hours != null ? Number(e.travel_to_shop_hours) : null);
-        // Per entry, prevailing-wage hours = the whole day's hours when the
-        // tied job is prevailing wage, else 0 (matches the aggregate column).
-        const pw     = (!isOff && e.prevailing_wage === true) ? total : 0;
+        // Per entry, prevailing hours = the work hours when the tied job is
+        // prevailing wage, else 0. Travel is excluded — it isn't paid at the
+        // prevailing rate — which matches the aggregate column.
+        const pw     = (!isOff && e.prevailing_wage === true) ? work : 0;
         sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw;
         sumToSite += (toSite || 0); sumToShop += (toShop || 0);
         const division = isOff ? '—' : (prettyDiv(e.division) || '—');
@@ -2296,7 +2300,7 @@
               <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
               <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
               <th style="text-align:right">Total</th>
-              <th class="th-pw" style="text-align:right">Prevailing&nbsp;Hrs</th>
+              <th class="th-pw" style="text-align:right" title="Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.">Prevailing&nbsp;Hrs</th>
               <th>Lunch</th>
               <th>Equipment</th>
               <th>Status</th>
@@ -2688,8 +2692,10 @@
     function reportSummarySheetXml(model) {
       const { rows, tot, scopeLine, gen, companyName } = model;
       const entryCount = rows.reduce((n, r) => n + r.entries.length, 0);
+      // Spreadsheets have no tooltips, so the prevailing/standard columns spell
+      // out the travel treatment in the header itself.
       const headers = ['Employee', 'Work Hours', 'Travel to Site', 'Travel to Shop',
-        'Travel Hours', 'Total Hours', 'Prevailing Hrs', 'Standard Hrs',
+        'Travel Hours', 'Total Hours', 'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
         'Pending Hours', 'Approved Hours', 'Time Off', 'Status'];
       const HEADER_ROW = 7;
 
@@ -2741,7 +2747,7 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [26, 11, 13, 13, 12, 11, 14, 13, 13, 15, 26, 20],
+        colWidths: [26, 11, 13, 13, 12, 11, 16, 17, 13, 15, 26, 20],
         rows: sheet,
         freezeRow: HEADER_ROW,
         autoFilterRef: `A${HEADER_ROW}:L${HEADER_ROW + rows.length}`,
@@ -2755,7 +2761,7 @@
       const { rows, scopeLine, gen, companyName } = model;
       const headers = ['Employee', 'Date', 'Type', 'Division', 'Project / Job',
         'Start', 'End', 'Work Hours', 'Travel to Site', 'Travel to Shop',
-        'Travel Hours', 'Total Hours', 'Prevailing Hrs', 'Standard Hrs',
+        'Travel Hours', 'Total Hours', 'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
         'Lunch Break', 'Operated Equipment', 'Supervisor', 'Status', 'Notes'];
       const HEADER_ROW = 4;
       const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13]); // 0-based header indices that are numeric
@@ -2781,8 +2787,10 @@
           const total  = isOff ? null : work + travel;
           // Per entry, prevailing hours are the whole day's hours when the tied
           // job is prevailing wage — the same split the summary columns use.
-          const pw  = isOff ? null : (e.prevailing_wage === true ? total : 0);
-          const std = isOff ? null : (e.prevailing_wage === true ? 0 : total);
+          // Travel is never prevailing-rate, so prevailing hours are the work
+          // hours on a prevailing job; its travel drops into standard.
+          const pw  = isOff ? null : (e.prevailing_wage === true ? work : 0);
+          const std = isOff ? null : (total - pw);
           // The two travel legs the timesheet collects, kept alongside their
           // sum. Null (never itemised) stays an empty cell so it can't be read
           // as a zero-hour leg.
@@ -2835,7 +2843,7 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 13, 13, 12, 11, 14, 13, 12, 18, 20, 11, 40],
+        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 13, 13, 12, 11, 16, 17, 12, 18, 20, 11, 40],
         rows: sheet,
         freezeRow: HEADER_ROW,
         autoFilterRef: `A${HEADER_ROW}:S${HEADER_ROW + n}`,
