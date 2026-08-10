@@ -2069,12 +2069,15 @@
             // stays the authoritative number.
             acc.travelToSite += Number(e.travel_to_site_hours || 0);
             acc.travelToShop += Number(e.travel_to_shop_hours || 0);
-            // Split the day's hours by the job's prevailing-wage flag so
-            // payroll can see prevailing vs standard hours per worker. Only
-            // an explicit true counts as prevailing; false and null (the
-            // divisions with no prevailing-wage concept) both fall to standard.
-            if (e.prevailing_wage === true) acc.pwHours  += h;
-            else                            acc.stdHours += h;
+            // Split the day's hours by the rate they are paid at. Travel is
+            // never paid at the prevailing rate, so only the work hours on a
+            // prevailing-wage job count as prevailing; the travel on that same
+            // job falls to standard along with everything else. Only an
+            // explicit true counts as prevailing — false and null (the
+            // divisions with no prevailing-wage concept) are standard.
+            // Prevailing + standard still add up to the day's total.
+            if (e.prevailing_wage === true) { acc.pwHours += work; acc.stdHours += travel; }
+            else                            { acc.stdHours += h; }
           }
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
@@ -2204,8 +2207,8 @@
                 <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
                 <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
                 <th style="text-align:right">Total</th>
-                <th class="th-pw" style="text-align:right">Prevailing&nbsp;Hrs</th>
-                <th style="text-align:right">Standard&nbsp;Hrs</th>
+                <th class="th-pw" style="text-align:right" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing&nbsp;Hrs</th>
+                <th style="text-align:right" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard&nbsp;Hrs</th>
                 <th style="text-align:right">Pending&nbsp;Hrs</th>
                 <th style="text-align:right">Approved&nbsp;Hrs</th>
                 <th>Time Off</th>
@@ -2258,9 +2261,10 @@
         // than a made-up split.
         const toSite = isOff ? null : (e.travel_to_site_hours != null ? Number(e.travel_to_site_hours) : null);
         const toShop = isOff ? null : (e.travel_to_shop_hours != null ? Number(e.travel_to_shop_hours) : null);
-        // Per entry, prevailing-wage hours = the whole day's hours when the
-        // tied job is prevailing wage, else 0 (matches the aggregate column).
-        const pw     = (!isOff && e.prevailing_wage === true) ? total : 0;
+        // Per entry, prevailing hours = the work hours when the tied job is
+        // prevailing wage, else 0. Travel is excluded — it isn't paid at the
+        // prevailing rate — which matches the aggregate column.
+        const pw     = (!isOff && e.prevailing_wage === true) ? work : 0;
         sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw;
         sumToSite += (toSite || 0); sumToShop += (toShop || 0);
         const division = isOff ? '—' : (prettyDiv(e.division) || '—');
@@ -2296,7 +2300,7 @@
               <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
               <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
               <th style="text-align:right">Total</th>
-              <th class="th-pw" style="text-align:right">Prevailing&nbsp;Hrs</th>
+              <th class="th-pw" style="text-align:right" title="Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.">Prevailing&nbsp;Hrs</th>
               <th>Lunch</th>
               <th>Equipment</th>
               <th>Status</th>
@@ -2570,7 +2574,8 @@
 
     // rows: array of cell-arrays (one per sheet row, 1-based on output).
     // freezeRow: last frozen row (the header). autoFilterRef: e.g. "A6:J20".
-    function xlsxSheetXml({ colWidths, rows, freezeRow, autoFilterRef }) {
+    // tabSelected marks the sheet the workbook opens on.
+    function xlsxSheetXml({ colWidths, rows, freezeRow, autoFilterRef, tabSelected }) {
       const cols = colWidths
         .map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`)
         .join('');
@@ -2582,7 +2587,7 @@
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
           '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
           `<dimension ref="A1:${colLetter(colWidths.length)}${Math.max(rows.length, 1)}"/>` +
-          `<sheetViews><sheetView showGridLines="0" workbookViewId="0">${pane}</sheetView></sheetViews>` +
+          `<sheetViews><sheetView${tabSelected ? ' tabSelected="1"' : ''} showGridLines="0" workbookViewId="0">${pane}</sheetView></sheetViews>` +
           '<sheetFormatPr defaultRowHeight="15"/>' +
           `<cols>${cols}</cols>` +
           `<sheetData>${rows.map((cells, i) => xlsxRow(i + 1, cells)).join('')}</sheetData>` +
@@ -2614,9 +2619,14 @@
       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
       ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
         '<workbookPr/>' +
+        // Spell the window out rather than leaving it to the reader's default,
+        // so the sheet tabs are always on show — the submissions sheet is no
+        // use to payroll if its tab isn't visible.
+        '<bookViews><workbookView xWindow="0" yWindow="0" windowWidth="24000" windowHeight="14000"' +
+        ' firstSheet="0" activeTab="0" showSheetTabs="1"/></bookViews>' +
         '<sheets>' +
-          '<sheet name="Summary" sheetId="1" r:id="rId1"/>' +
-          '<sheet name="Entry Detail" sheetId="2" r:id="rId2"/>' +
+          '<sheet name="Payroll Summary" sheetId="1" r:id="rId1"/>' +
+          '<sheet name="All Submissions" sheetId="2" r:id="rId2"/>' +
         '</sheets>' +
       '</workbook>';
 
@@ -2676,18 +2686,25 @@
       '</styleSheet>';
 
     // Sheet 1 — one row per employee, mirroring the on-screen report table.
+    // The individual submissions behind these figures are on sheet 2; this
+    // sheet says so in as many words, because a totals-only first screen reads
+    // like the whole export.
     function reportSummarySheetXml(model) {
       const { rows, tot, scopeLine, gen, companyName } = model;
+      const entryCount = rows.reduce((n, r) => n + r.entries.length, 0);
+      // Spreadsheets have no tooltips, so the prevailing/standard columns spell
+      // out the travel treatment in the header itself.
       const headers = ['Employee', 'Work Hours', 'Travel to Site', 'Travel to Shop',
-        'Travel Hours', 'Total Hours', 'Prevailing Hrs', 'Standard Hrs',
+        'Travel Hours', 'Total Hours', 'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
         'Pending Hours', 'Approved Hours', 'Time Off', 'Status'];
-      const HEADER_ROW = 6;
+      const HEADER_ROW = 7;
 
       const sheet = [
         [cTxt('Payroll Hours Report', XS.title)],
         [cTxt(companyName, XS.bold)],
         [cTxt(scopeLine, XS.sub)],
         [cTxt(`Generated ${gen}`, XS.sub)],
+        [cTxt(`One row per employee — all ${entryCount} ${entryCount === 1 ? 'submission is' : 'submissions are'} itemised on the "All Submissions" sheet`, XS.bold)],
         [],
         headers.map((h, i) => cTxt(h, (i >= 1 && i <= 9) ? XS.headNum : XS.head)),
       ];
@@ -2730,26 +2747,27 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [26, 11, 13, 13, 12, 11, 14, 13, 13, 15, 26, 20],
+        colWidths: [26, 11, 13, 13, 12, 11, 16, 17, 13, 15, 26, 20],
         rows: sheet,
         freezeRow: HEADER_ROW,
         autoFilterRef: `A${HEADER_ROW}:L${HEADER_ROW + rows.length}`,
+        tabSelected: true,
       });
     }
 
-    // Sheet 2 — every entry behind the summary, the flat form of the per-employee
-    // breakdown the report rows expand into.
+    // Sheet 2 — every submission behind the summary, one row each: the flat
+    // form of the per-employee breakdown the report rows expand into.
     function reportDetailSheetXml(model) {
       const { rows, scopeLine, gen, companyName } = model;
       const headers = ['Employee', 'Date', 'Type', 'Division', 'Project / Job',
         'Start', 'End', 'Work Hours', 'Travel to Site', 'Travel to Shop',
-        'Travel Hours', 'Total Hours', 'Prevailing Hrs', 'Standard Hrs',
+        'Travel Hours', 'Total Hours', 'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
         'Lunch Break', 'Operated Equipment', 'Supervisor', 'Status', 'Notes'];
       const HEADER_ROW = 4;
       const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13]); // 0-based header indices that are numeric
 
       const sheet = [
-        [cTxt('Payroll Hours Report — Entry Detail', XS.title)],
+        [cTxt('Payroll Hours Report — All Submissions', XS.title)],
         [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
@@ -2769,8 +2787,10 @@
           const total  = isOff ? null : work + travel;
           // Per entry, prevailing hours are the whole day's hours when the tied
           // job is prevailing wage — the same split the summary columns use.
-          const pw  = isOff ? null : (e.prevailing_wage === true ? total : 0);
-          const std = isOff ? null : (e.prevailing_wage === true ? 0 : total);
+          // Travel is never prevailing-rate, so prevailing hours are the work
+          // hours on a prevailing job; its travel drops into standard.
+          const pw  = isOff ? null : (e.prevailing_wage === true ? work : 0);
+          const std = isOff ? null : (total - pw);
           // The two travel legs the timesheet collects, kept alongside their
           // sum. Null (never itemised) stays an empty cell so it can't be read
           // as a zero-hour leg.
@@ -2823,7 +2843,7 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 13, 13, 12, 11, 14, 13, 12, 18, 20, 11, 40],
+        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 13, 13, 12, 11, 16, 17, 12, 18, 20, 11, 40],
         rows: sheet,
         freezeRow: HEADER_ROW,
         autoFilterRef: `A${HEADER_ROW}:S${HEADER_ROW + n}`,
@@ -4327,6 +4347,21 @@
     }
     bindBackdropClose(document.getElementById('splitBackdrop'), closeSplit);
 
+    // Mirrors isTravelSplitRow in api/timesheet-entries.js — the two must agree,
+    // because that is the rule the row is priced by: travel is paid at the
+    // standard rate even on a prevailing-wage job. The Travel checkbox says so,
+    // and so does the code the hours are booked to (paving books travel under
+    // sub codes like "19mm - Travel"). Matched on a word boundary so a
+    // "Form Traveler" code is not mistaken for a drive.
+    const TRAVEL_CODE_RE = /\btravel\b/i;
+
+    function isTravelSplitRow(r) {
+      if (!r) return false;
+      return r.is_travel === true
+        || TRAVEL_CODE_RE.test(String(r.sub_code  || ''))
+        || TRAVEL_CODE_RE.test(String(r.cost_code || ''));
+    }
+
     function _blankSplitRow(isTravel) {
       return {
         cost_code:   '',
@@ -4572,8 +4607,11 @@
       // much of the day was travel, and the rows ticked Travel have to add up
       // to that — otherwise the flag lands on the wrong row and its hours book
       // to the wrong task, which balances perfectly and is still wrong.
+      // A row booked to a travel code counts as travel here whether or not the
+      // box is ticked, the same rule the server prices the row by — paving
+      // books travel under sub codes like "19mm - Travel".
       const travelMarked = Math.round(
-        splitRows.filter(r => r.is_travel)
+        splitRows.filter(isTravelSplitRow)
                  .reduce((s, r) => s + (Number(r.labor_hours) || 0), 0) * 100) / 100;
       const travelOff = Math.abs(travelMarked - travel) >= 0.005;
       const tw = document.getElementById('splitTravelTally');
