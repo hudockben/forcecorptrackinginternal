@@ -127,10 +127,16 @@ function truckingRowIdPrefix(entryId) { return `tst-${entryId}-`; }
 const DUST_EES_OTHER_BLOB = 'dust_ees_other_rows';
 function eesOtherRowIdPrefix(entryId) { return `tse-${entryId}-`; }
 
-// Fields the EES Other tab owns. An injection that replaces an existing row
-// (a re-approve, or a payroll edit of the underlying entry) must not blank the
-// values the dust office already typed in, so they are carried across.
-const EES_OTHER_TAB_FIELDS = ['unit', 'location', 'name', 'job_number', 'billing', 'rate'];
+// The two standing EES activities, as encoded by api/timesheet-jobs.js. Only a
+// dust entry on one of these becomes an EES Other row — an ordinary dust
+// customer entry still just flips status, as it always has.
+const EES_JOB_IDS = ['ees:preloading', 'ees:washing'];
+function isEesJob(jobId) { return EES_JOB_IDS.includes(String(jobId || '')); }
+
+// The one column the EES Other tab owns rather than the timesheet: the hourly
+// rate a Billable row bills at. Everything else on the row is timesheet-fed, so
+// a re-injection must preserve this and overwrite the rest.
+const EES_OTHER_TAB_FIELDS = ['rate'];
 
 function safeDate(v) {
   if (!v) return null;
@@ -226,6 +232,12 @@ function dbToEntry(r) {
     time_off_type:       r.time_off_type || '',
     truck_unit:          r.truck_unit || '',
     truck_description:   r.truck_description || '',
+    ees_unit:            r.ees_unit || '',
+    ees_customer:        r.ees_customer || '',
+    ees_location:        r.ees_location || '',
+    ees_name:            r.ees_name || '',
+    ees_job_number:      r.ees_job_number || '',
+    ees_billing:         r.ees_billing || '',
     submitted_at:        r.submitted_at,
     approved_at:         r.approved_at,
     approved_by_user_id: r.approved_by_user_id,
@@ -1098,12 +1110,13 @@ async function insertEesOtherRow(sql, companyCode, entry) {
     actual_end:    hhmm(entry.end_time),
     actual_hours:  _r2(Number(entry.computed_hours) || 0),
     driver:        entry.username || '',
-    unit:          '',
-    customer,
-    location:      '',
-    name:          '',
-    job_number:    '',
-    billing:       'Non-Billable',
+    unit:          safeStr(entry.ees_unit, 100)      || '',
+    customer:      safeStr(entry.ees_customer, 500)  || customer,
+    location:      safeStr(entry.ees_location, 500)  || '',
+    name:          safeStr(entry.ees_name, 500)      || '',
+    job_number:    safeStr(entry.ees_job_number, 100) || '',
+    billing:       safeStr(entry.ees_billing, 50)    || 'Non-Billable',
+    activity:      entry.job_id === 'ees:washing' ? 'Washing' : 'Pre Loading',
     rate:          '',
     comments:      entry.notes || '',
   };
@@ -1221,6 +1234,12 @@ function normalizeEntryBody(body) {
         time_off_type,
         truck_unit:           null,
         truck_description:    null,
+        ees_unit:             null,
+        ees_customer:         null,
+        ees_location:         null,
+        ees_name:             null,
+        ees_job_number:       null,
+        ees_billing:          null,
       },
     };
   }
@@ -1274,6 +1293,17 @@ function normalizeEntryBody(body) {
   const truck_unit        = division === 'trucking' ? safeStr(body.truck_unit, 100)        : null;
   const truck_description = division === 'trucking' ? safeStr(body.truck_description, 2000) : null;
 
+  // EES-only extras, captured only for a dust entry on one of the two standing
+  // EES jobs. Forced to null everywhere else so a stray value can't leak across
+  // divisions (same rule the trucking extras follow).
+  const isEes = division === 'dust' && isEesJob(job_id);
+  const ees_unit       = isEes ? safeStr(body.ees_unit, 100)       : null;
+  const ees_customer   = isEes ? safeStr(body.ees_customer, 500)   : null;
+  const ees_location   = isEes ? safeStr(body.ees_location, 500)   : null;
+  const ees_name       = isEes ? safeStr(body.ees_name, 500)       : null;
+  const ees_job_number = isEes ? safeStr(body.ees_job_number, 100) : null;
+  const ees_billing    = isEes ? (safeStr(body.ees_billing, 50) || 'Non-Billable') : null;
+
   return {
     data: {
       entry_type,
@@ -1295,6 +1325,12 @@ function normalizeEntryBody(body) {
       time_off_type:      null,
       truck_unit,
       truck_description,
+      ees_unit,
+      ees_customer,
+      ees_location,
+      ees_name,
+      ees_job_number,
+      ees_billing,
     },
   };
 }
@@ -1408,7 +1444,8 @@ module.exports = async (req, res) => {
           lunch_break, operated_equipment,
           supervisor_id, supervisor_name,
           notes, time_off_type,
-          truck_unit, truck_description
+          truck_unit, truck_description,
+          ees_unit, ees_customer, ees_location, ees_name, ees_job_number, ees_billing
         ) VALUES (
           ${companyCode}, ${userId}, ${username}, ${data.entry_type}, ${data.work_date}, 'draft',
           ${data.division}, ${data.job_id}, ${data.job_label},
@@ -1417,7 +1454,9 @@ module.exports = async (req, res) => {
           ${data.lunch_break}, ${data.operated_equipment},
           ${data.supervisor_id}, ${data.supervisor_name},
           ${data.notes}, ${data.time_off_type},
-          ${data.truck_unit}, ${data.truck_description}
+          ${data.truck_unit}, ${data.truck_description},
+          ${data.ees_unit}, ${data.ees_customer}, ${data.ees_location},
+          ${data.ees_name}, ${data.ees_job_number}, ${data.ees_billing}
         )
         RETURNING *
       `;
@@ -1542,7 +1581,8 @@ module.exports = async (req, res) => {
       // payroll side — every value comes from the timesheet entry itself.
       const needsEesOther =
         existing.entry_type === 'daily' &&
-        existing.division === 'dust';
+        existing.division === 'dust' &&
+        isEesJob(existing.job_id);
 
       let splitRows = null;
       if (needsSplit) {
@@ -1807,7 +1847,7 @@ module.exports = async (req, res) => {
       // those so the EES Other tab reflects the un-approval. The dust auto-sync
       // then pulls any Intercompany entry the row had created.
       let removedEesOther = 0;
-      if (existing.division === 'dust') {
+      if (existing.division === 'dust' && isEesJob(existing.job_id)) {
         removedEesOther = await removeEesOtherRows(sql, companyCode, existing);
       }
       const removed = cnt + removedQuarry + removedTrucking + removedEesOther;
@@ -2077,6 +2117,12 @@ module.exports = async (req, res) => {
           time_off_type      = ${data.time_off_type},
           truck_unit         = ${data.truck_unit},
           truck_description  = ${data.truck_description},
+          ees_unit           = ${data.ees_unit},
+          ees_customer       = ${data.ees_customer},
+          ees_location       = ${data.ees_location},
+          ees_name           = ${data.ees_name},
+          ees_job_number     = ${data.ees_job_number},
+          ees_billing        = ${data.ees_billing},
           updated_at         = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -2128,7 +2174,9 @@ module.exports = async (req, res) => {
       if (existing.division === 'trucking') {
         removedSplitRows += await removeTruckingRows(sql, companyCode, existing);
       }
-      if (existing.division === 'dust') {
+      // Keyed on the division+job the same way the other sweeps are, so a row
+      // that outlived its entry still gets caught when the entry is deleted.
+      if (existing.division === 'dust' && isEesJob(existing.job_id)) {
         removedSplitRows += await removeEesOtherRows(sql, companyCode, existing);
       }
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;

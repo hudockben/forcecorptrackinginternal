@@ -982,6 +982,18 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_hours         NUME
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS truck_unit        TEXT;
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS truck_description TEXT;
 
+-- EES-only daily fields. Captured on the timesheet only when the division is
+-- 'dust' AND the job is one of the two standing EES activities (job_id
+-- 'ees:preloading' / 'ees:washing' — see api/timesheet-jobs.js), and carried
+-- straight into the Dust division's "EES Other" tab on payroll approval. The
+-- tab displays these verbatim, so the timesheet is their only source of truth.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_unit       TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_customer   TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_location   TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_name       TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_job_number TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_billing    TEXT;
+
 -- ─────────────────────────────────────────────────
 -- TIMESHEET → DAILY TRACKING bridge
 -- daily_tracking.timesheet_entry_id links a cost-tracking row back to the

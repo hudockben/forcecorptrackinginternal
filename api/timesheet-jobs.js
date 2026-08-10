@@ -145,6 +145,17 @@ async function truckingJobs(sql, companyCode) {
   return jobs;
 }
 
+// Two standing EES activities that aren't customer companies — they're the
+// recurring pre-load / wash work. Encoded like quarry's activities so payroll
+// approval can tell them apart from an ordinary dust customer and route the
+// approved hours into the Dust division's "EES Other" tab. Picking one of
+// these in the timesheet also reveals the EES detail fields (unit, customer,
+// location, name, job number, billing) that the tab is built from.
+const EES_JOBS = [
+  { id: 'ees:preloading', label: 'EES - Pre Loading' },
+  { id: 'ees:washing',    label: 'EES - Washing' },
+];
+
 async function dustJobs(sql, companyCode) {
   // Dust "jobs" are customer companies (dust_companies). Locations live in a
   // separate table but field users typically pick the company; locations can
@@ -154,7 +165,8 @@ async function dustJobs(sql, companyCode) {
     WHERE company_code = ${companyCode}
     ORDER BY name ASC
   `;
-  return rows.map(r => ({ id: r.id, label: r.name }));
+  // EES first — they're picked far more often than any one customer.
+  return [...EES_JOBS, ...rows.map(r => ({ id: r.id, label: r.name }))];
 }
 
 async function quarryJobs(sql, companyCode) {

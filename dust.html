@@ -6872,11 +6872,13 @@
     const EE_KEY    = 'dust_ees_other_rows';
     const EE_IC_KEY = 'fct_intercompany_billing_entries';
 
-    // Columns this tab owns. Everything else is autofilled from the timesheet
-    // and shown read-only — payroll is the source of truth for those, and an
-    // edit here would silently disagree with the approved entry behind it.
-    const EE_TAB_FIELDS = ['unit', 'location', 'name', 'job_number', 'billing', 'rate'];
-    const EE_BILLING_OPTIONS = ['Non-Billable', 'Billable'];
+    // The only column this tab owns. Every other value is captured on the
+    // timesheet (the EES fields that appear when Pre Loading / Washing is
+    // picked) and is shown read-only here — payroll is the source of truth, and
+    // an edit here would silently disagree with the approved entry behind it.
+    // The rate is the exception: it exists solely to price a Billable row for
+    // Intercompany, and the timesheet has nowhere to put it.
+    const EE_TAB_FIELDS = ['rate'];
 
     let eeRows      = [];
     let eeFilters   = {};
@@ -7066,24 +7068,25 @@
         const c   = eeCalc(row);
         const icTs   = eeIcSent.get(row.id) || '';
         const icChip = icTs ? `<span class="ic-sent-chip">⇄ IC ${fmtSentAt(icTs)}</span>` : '';
-        const billOpts = EE_BILLING_OPTIONS.map(o =>
-          `<option value="${esc(o)}"${(row.billing || '') === o ? ' selected' : ''}>${esc(o)}</option>`).join('');
         const billable = eeIsBillable(row);
+        const act = row.activity ? ` — ${row.activity}` : '';
 
         return `<tr data-idx="${idx}">
-          <td class="cw-expand" title="Injected from an approved timesheet entry" style="text-align:center;color:var(--muted);font-size:0.7rem">⇩</td>
-          <td class="cw-date ro">${esc(row.actual_date || '—')}</td>
+          <td class="cw-expand" title="From an approved timesheet entry${esc(act)}" style="text-align:center;color:var(--muted);font-size:0.7rem">⇩</td>
+          <td class="cw-date ro">${esc(row.actual_date || '')}</td>
           <td class="cw-unit ro">${esc(fmtHHMM(row.actual_start))}</td>
           <td class="cw-unit ro">${esc(fmtHHMM(row.actual_end))}</td>
-          <td class="cw-rate ro">${c.hrs ? c.hrs.toFixed(2) : '—'}</td>
-          <td class="cw-cm ro">${esc(row.driver || '—')}</td>
-          <td class="cw-unit"><input type="text" value="${esc(row.unit||'')}" oninput="eeSet(${idx},'unit',this.value)"></td>
-          <td class="cw-co ro">${esc(row.customer || '—')}</td>
-          <td class="cw-loc"><input type="text" value="${esc(row.location||'')}" oninput="eeSet(${idx},'location',this.value)"></td>
-          <td class="cw-loc"><input type="text" value="${esc(row.name||'')}" placeholder="IC company…" oninput="eeSet(${idx},'name',this.value)"></td>
-          <td class="cw-unit"><input type="text" value="${esc(row.job_number||'')}" oninput="eeSet(${idx},'job_number',this.value)"></td>
-          <td class="cw-st"><select onchange="eeSet(${idx},'billing',this.value)">${billOpts}</select></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" ${billable?'':'disabled'} value="${esc(row.rate||'')}" oninput="_eeLiveSet(${idx},'rate',this.value)" onchange="eeSet(${idx},'rate',this.value)"></td>
+          <td class="cw-rate ro">${c.hrs ? c.hrs.toFixed(2) : ''}</td>
+          <td class="cw-cm ro">${esc(row.driver || '')}</td>
+          <td class="cw-unit ro">${esc(row.unit || '')}</td>
+          <td class="cw-co ro">${esc(row.customer || '')}</td>
+          <td class="cw-loc ro">${esc(row.location || '')}</td>
+          <td class="cw-loc ro">${esc(row.name || '')}</td>
+          <td class="cw-unit ro">${esc(row.job_number || '')}</td>
+          <td class="cw-st ro"${billable ? ' style="color:#22c55e"' : ''}>${esc(row.billing || '')}</td>
+          <td class="cw-rate">${billable
+            ? `<input type="number" step="0.01" min="0" value="${esc(row.rate||'')}" oninput="_eeLiveSet(${idx},'rate',this.value)" onchange="eeSet(${idx},'rate',this.value)">`
+            : '<span class="ro" style="display:block">—</span>'}</td>
           <td class="cw-loc ro">${esc(row.comments || '')}</td>
           <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}</td>
         </tr>`;
@@ -7113,8 +7116,6 @@
       const c  = eeCalc(row);
       const tr = document.querySelector(`#eeTbody tr[data-idx="${idx}"]`);
       if (!tr) return;
-      const rateInput = tr.querySelector('td.cw-rate input');
-      if (rateInput) rateInput.disabled = !eeIsBillable(row);
       const totalCell = tr.querySelector('td.calc.cw-inv');
       if (totalCell) {
         const chip = totalCell.querySelector('.ic-sent-chip');
@@ -7935,10 +7936,15 @@
           const newKeyMap = new Map();
           const newLocMap = new Map();
           const newObMap  = new Map();
+          const newEesMap = new Map();
           value.forEach(e => {
             const ts  = e.sent_at || '';
             if (e.source === 'dust-other-billing' && e.source_id) {
               newObMap.set(e.source_id, ts);
+              return;
+            }
+            if (e.source === 'dust-ees-other' && e.source_id) {
+              newEesMap.set(e.source_id, ts);
               return;
             }
             if (e.source !== 'dust') return;
@@ -7956,6 +7962,16 @@
               }
             }
           });
+          // Refresh the EES sent map the same way, so a sync from another
+          // device shows up here without waiting for a local edit.
+          const eeCur = JSON.stringify([...eeIcSent].sort());
+          const eeNxt = JSON.stringify([...newEesMap].sort());
+          if (eeCur !== eeNxt) {
+            eeIcSent.clear();
+            for (const [k, v] of newEesMap) eeIcSent.set(k, v);
+            const eePanel = document.getElementById('tab-ees-other');
+            if (eePanel && eePanel.classList.contains('active') && !_isEditing()) eeRenderTable();
+          }
           // Refresh OB sent map (cheap) and re-render OB tab if visible
           const obCur = JSON.stringify([...obIcSent].sort());
           const obNxt = JSON.stringify([...newObMap].sort());
@@ -8043,7 +8059,7 @@
         if (_pollCycleBusy || _pollsSuspended()) return;
         _pollCycleBusy = true;
         try {
-          await Promise.allSettled([pollDustConfig(), pollDustRows(), pollIcSentMap(), pollObRows()]);
+          await Promise.allSettled([pollDustConfig(), pollDustRows(), pollIcSentMap(), pollObRows(), pollEesRows()]);
         } finally {
           _pollCycleBusy = false;
         }

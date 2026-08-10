@@ -324,6 +324,7 @@ function buildRuntime() {
     bumpOnNextPut: 0,
     wipeGuard409: false,
     dustSyncCalls: 0,
+    eesSyncCalls: 0,
   };
   const clone = v => JSON.parse(JSON.stringify(v));
 
@@ -331,6 +332,8 @@ function buildRuntime() {
     let _icSyncRunning = false;
     let _icDustQueued  = false;
     let _icObQueued    = false;
+    let _icEesQueued   = false;
+    function autoSyncEesIntercompany() { state.eesSyncCalls++; }
     let obRows = [];
     const obDeletedIds = new Set();
     const obIcSent = new Map();
