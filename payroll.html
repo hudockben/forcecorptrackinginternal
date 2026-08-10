@@ -514,6 +514,24 @@
       font-family: inherit;
     }
     .btn-print:hover { filter: brightness(1.1); }
+    /* Report header action cluster — Excel export sits to the left of Print. */
+    .report-actions {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .btn-excel {
+      background: transparent;
+      color: var(--green);
+      border: 1px solid rgba(34, 197, 94, 0.5);
+    }
+    .btn-excel:hover { background: rgba(34, 197, 94, 0.12); filter: none; }
+    .btn-excel:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .btn-excel:disabled:hover { background: transparent; }
     .report table {
       width: 100%;
       border-collapse: collapse;
@@ -1978,8 +1996,10 @@
     }
 
     // ── Report tab ───────────────────────────────────────────────────────
-    function renderReport() {
-      const wrap = document.getElementById('reportWrap');
+    // Aggregation for the Reports tab. Kept separate from the rendering so the
+    // on-screen table and the Excel export are built from one set of numbers —
+    // the workbook can never drift from what payroll is looking at.
+    function buildReportModel() {
       const from = document.getElementById('flt-from').value;
       const to   = document.getElementById('flt-to').value;
       const div  = document.getElementById('flt-division').value;
@@ -2055,6 +2075,13 @@
       });
       const companyName = (user && (user.companyName || user.companyCode)) || '';
 
+      return { rows, tot, scopeLine, gen, companyName };
+    }
+
+    function renderReport() {
+      const wrap = document.getElementById('reportWrap');
+      const { rows, tot, scopeLine, gen, companyName } = buildReportModel();
+
       // Empty state
       if (!rows.length) {
         wrap.innerHTML = `
@@ -2064,7 +2091,10 @@
                 <div class="report-title">Payroll Hours Report</div>
                 <div class="report-sub">${escapeHtml(scopeLine)}<br/>${escapeHtml(companyName)} · Generated ${escapeHtml(gen)}</div>
               </div>
-              <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
+              <div class="report-actions">
+                <button class="btn-print btn-excel" disabled title="Nothing to export — no timesheet entries in this range">&#8681; Export to Excel</button>
+                <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
+              </div>
             </div>
             <div class="report-empty">No timesheet entries in this range.</div>
           </div>
@@ -2118,7 +2148,10 @@
                 Generated ${escapeHtml(gen)}
               </div>
             </div>
-            <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
+            <div class="report-actions">
+              <button class="btn-print btn-excel" onclick="exportReportExcel()" title="Download this report as an Excel workbook (.xlsx) — summary plus a per-entry detail sheet">&#8681; Export to Excel</button>
+              <button class="btn-print" onclick="printReport()">Print / Save PDF</button>
+            </div>
           </div>
           <table>
             <thead>
@@ -2311,16 +2344,441 @@
       return '﻿' + lines.join('\r\n');
     }
 
-    function downloadFile(filename, content, mime) {
-      const blob = new Blob([content], { type: mime });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
+    function downloadBlob(filename, blob) {
+      const url = URL.createObjectURL(blob);
+      const a   = document.createElement('a');
       a.href = url;
       a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+    }
+
+    function downloadFile(filename, content, mime) {
+      downloadBlob(filename, new Blob([content], { type: mime }));
+    }
+
+    // ── Excel export (Reports tab) ───────────────────────────────────────
+    // Writes a genuine .xlsx with no external library. An .xlsx is just a ZIP
+    // of XML parts, and the handful this report needs — workbook, styles, two
+    // worksheets — are small enough to emit by hand. Entries go in with the
+    // ZIP "store" method so there is no deflate implementation to carry; a
+    // payroll cycle's workbook is a few tens of KB even uncompressed. Doing it
+    // this way keeps the page a single self-contained file with no CDN
+    // dependency, which is what every other export here already assumes.
+    const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+    const CRC32_TABLE = (() => {
+      const t = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        t[i] = c >>> 0;
+      }
+      return t;
+    })();
+
+    function crc32(bytes) {
+      let c = 0xFFFFFFFF;
+      for (let i = 0; i < bytes.length; i++) c = CRC32_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+      return (c ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    // Build a ZIP archive from [{ name, data: Uint8Array }] using the "store"
+    // (uncompressed) method. Returns a Blob ready to hand to downloadBlob.
+    function zipStore(files) {
+      const enc     = new TextEncoder();
+      const chunks  = [];
+      const central = [];
+      let offset = 0;
+
+      const now = new Date();
+      const dosTime = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xFFFF;
+      const dosDate = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xFFFF;
+
+      for (const f of files) {
+        const nameBytes = enc.encode(f.name);
+        const crc  = crc32(f.data);
+        const size = f.data.length;
+
+        const local = new Uint8Array(30 + nameBytes.length);
+        const lv = new DataView(local.buffer);
+        lv.setUint32(0,  0x04034b50, true);      // local file header signature
+        lv.setUint16(4,  20, true);              // version needed to extract
+        lv.setUint16(6,  0x0800, true);          // flags: UTF-8 file names
+        lv.setUint16(8,  0, true);               // compression method: store
+        lv.setUint16(10, dosTime, true);
+        lv.setUint16(12, dosDate, true);
+        lv.setUint32(14, crc, true);
+        lv.setUint32(18, size, true);            // compressed size
+        lv.setUint32(22, size, true);            // uncompressed size
+        lv.setUint16(26, nameBytes.length, true);
+        local.set(nameBytes, 30);
+        chunks.push(local, f.data);
+
+        const cd = new Uint8Array(46 + nameBytes.length);
+        const cv = new DataView(cd.buffer);
+        cv.setUint32(0,  0x02014b50, true);      // central directory signature
+        cv.setUint16(4,  20, true);              // version made by
+        cv.setUint16(6,  20, true);              // version needed to extract
+        cv.setUint16(8,  0x0800, true);
+        cv.setUint16(10, 0, true);
+        cv.setUint16(12, dosTime, true);
+        cv.setUint16(14, dosDate, true);
+        cv.setUint32(16, crc, true);
+        cv.setUint32(20, size, true);
+        cv.setUint32(24, size, true);
+        cv.setUint16(28, nameBytes.length, true);
+        cv.setUint32(42, offset, true);          // offset of the local header
+        cd.set(nameBytes, 46);
+        central.push(cd);
+
+        offset += local.length + size;
+      }
+
+      const cdSize = central.reduce((n, c) => n + c.length, 0);
+      const end = new Uint8Array(22);
+      const ev = new DataView(end.buffer);
+      ev.setUint32(0,  0x06054b50, true);        // end of central directory
+      ev.setUint16(8,  files.length, true);      // entries on this disk
+      ev.setUint16(10, files.length, true);      // entries total
+      ev.setUint32(12, cdSize, true);
+      ev.setUint32(16, offset, true);
+
+      return new Blob(chunks.concat(central, [end]), { type: XLSX_MIME });
+    }
+
+    function xmlEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+        // Control characters cannot be represented in XML 1.0 — strip them
+        // rather than hand Excel a workbook it refuses to open.
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+    }
+
+    function colLetter(n) {
+      let s = '';
+      while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = (n - r - 1) / 26; }
+      return s;
+    }
+
+    // Excel stores dates as days since 1899-12-30 (the 1900 leap-year bug is
+    // baked into the epoch). Parse the ISO date's own fields rather than going
+    // through the local-time Date parser so a work date never slips a day.
+    function excelDateSerial(iso) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+      if (!m) return null;
+      return Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) + 25569;
+    }
+
+    // Style indices into the cellXfs list in XLSX_STYLES below.
+    const XS = {
+      title:   1, sub:     2, bold:  3,
+      head:    4, headNum: 5,
+      text:    6, num:     7, numPw: 8, date: 9,
+      totText: 10, totNum: 11, totPw: 12,
+    };
+
+    // Cell shorthands. `s` is a style index; a null/blank number renders as an
+    // empty (but still styled) cell so time-off rows don't post phantom zeros.
+    const cTxt = (v, s) => ({ t: 's', v, s });
+    const cNum = (v, s) => ({ t: 'n', v, s });
+
+    function xlsxRow(rowNum, cells) {
+      const out = [];
+      for (let i = 0; i < cells.length; i++) {
+        const c = cells[i];
+        if (c == null) continue;
+        const ref = colLetter(i + 1) + rowNum;
+        const st  = c.s ? ` s="${c.s}"` : '';
+        if (c.t === 'n') {
+          const v = Number(c.v);
+          if (c.v == null || c.v === '' || !isFinite(v)) { out.push(`<c r="${ref}"${st}/>`); continue; }
+          out.push(`<c r="${ref}"${st}><v>${Math.round(v * 1e6) / 1e6}</v></c>`);
+        } else {
+          const v = c.v == null ? '' : String(c.v);
+          if (!v) { out.push(`<c r="${ref}"${st}/>`); continue; }
+          out.push(`<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`);
+        }
+      }
+      return `<row r="${rowNum}">${out.join('')}</row>`;
+    }
+
+    // rows: array of cell-arrays (one per sheet row, 1-based on output).
+    // freezeRow: last frozen row (the header). autoFilterRef: e.g. "A6:J20".
+    function xlsxSheetXml({ colWidths, rows, freezeRow, autoFilterRef }) {
+      const cols = colWidths
+        .map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`)
+        .join('');
+      const pane = freezeRow
+        ? `<pane ySplit="${freezeRow}" topLeftCell="A${freezeRow + 1}" activePane="bottomLeft" state="frozen"/>` +
+          `<selection pane="bottomLeft" activeCell="A${freezeRow + 1}" sqref="A${freezeRow + 1}"/>`
+        : '';
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+          '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
+          `<dimension ref="A1:${colLetter(colWidths.length)}${Math.max(rows.length, 1)}"/>` +
+          `<sheetViews><sheetView showGridLines="0" workbookViewId="0">${pane}</sheetView></sheetViews>` +
+          '<sheetFormatPr defaultRowHeight="15"/>' +
+          `<cols>${cols}</cols>` +
+          `<sheetData>${rows.map((cells, i) => xlsxRow(i + 1, cells)).join('')}</sheetData>` +
+          (autoFilterRef ? `<autoFilter ref="${autoFilterRef}"/>` : '') +
+          '<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>' +
+          '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>' +
+        '</worksheet>';
+    }
+
+    const XLSX_CONTENT_TYPES =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+        '<Default Extension="xml" ContentType="application/xml"/>' +
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+      '</Types>';
+
+    const XLSX_ROOT_RELS =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+      '</Relationships>';
+
+    const XLSX_WORKBOOK =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
+      ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+        '<workbookPr/>' +
+        '<sheets>' +
+          '<sheet name="Summary" sheetId="1" r:id="rId1"/>' +
+          '<sheet name="Entry Detail" sheetId="2" r:id="rId2"/>' +
+        '</sheets>' +
+      '</workbook>';
+
+    const XLSX_WORKBOOK_RELS =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>' +
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+      '</Relationships>';
+
+    // Colours are spelled out as explicit ARGB rather than theme references so
+    // the workbook needs no theme part. numFmtId 2 is the built-in "0.00".
+    const XLSX_STYLES =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+        '<numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/></numFmts>' +
+        '<fonts count="6">' +
+          '<font><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="16"/><color rgb="FF1F2A44"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><sz val="10"/><color rgb="FF6B7280"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="11"/><color rgb="FF8A5A00"/><name val="Calibri"/><family val="2"/></font>' +
+        '</fonts>' +
+        '<fills count="5">' +
+          '<fill><patternFill patternType="none"/></fill>' +
+          '<fill><patternFill patternType="gray125"/></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FF1F2A44"/><bgColor indexed="64"/></patternFill></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FFFFF4D6"/><bgColor indexed="64"/></patternFill></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FFEDEFF3"/><bgColor indexed="64"/></patternFill></fill>' +
+        '</fills>' +
+        '<borders count="3">' +
+          '<border><left/><right/><top/><bottom/><diagonal/></border>' +
+          '<border><left/><right/><top/><bottom style="hair"><color rgb="FFC9CEDA"/></bottom><diagonal/></border>' +
+          '<border><left/><right/><top style="thin"><color rgb="FF9AA1AE"/></top><bottom/><diagonal/></border>' +
+        '</borders>' +
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+        '<cellXfs count="13">' +
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+          '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+          '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+          '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+          '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1">' +
+            '<alignment horizontal="left" vertical="center" wrapText="1"/></xf>' +
+          '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1">' +
+            '<alignment horizontal="right" vertical="center" wrapText="1"/></xf>' +
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>' +
+          '<xf numFmtId="2" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+          '<xf numFmtId="2" fontId="5" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+          '<xf numFmtId="0" fontId="1" fillId="4" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="2" fontId="1" fillId="4" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="2" fontId="5" fillId="3" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+        '</cellXfs>' +
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+      '</styleSheet>';
+
+    // Sheet 1 — one row per employee, mirroring the on-screen report table.
+    function reportSummarySheetXml(model) {
+      const { rows, tot, scopeLine, gen, companyName } = model;
+      const headers = ['Employee', 'Work Hours', 'Travel Hours', 'Total Hours',
+        'Prevailing Hrs', 'Standard Hrs', 'Pending Hours', 'Approved Hours',
+        'Time Off', 'Status'];
+      const HEADER_ROW = 6;
+
+      const sheet = [
+        [cTxt('Payroll Hours Report', XS.title)],
+        [cTxt(companyName, XS.bold)],
+        [cTxt(scopeLine, XS.sub)],
+        [cTxt(`Generated ${gen}`, XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 7) ? XS.headNum : XS.head)),
+      ];
+
+      for (const r of rows) {
+        const total = r.pendingHours + r.approvedHours;
+        const off = (r.pendingOff || r.approvedOff)
+          ? `${r.pendingOff} pending / ${r.approvedOff} approved`
+          : '—';
+        sheet.push([
+          cTxt(r.username,      XS.text),
+          cNum(r.workHours,     XS.num),
+          cNum(r.travelHours,   XS.num),
+          cNum(total,           XS.num),
+          cNum(r.pwHours,       XS.numPw),
+          cNum(r.stdHours,      XS.num),
+          cNum(r.pendingHours,  XS.num),
+          cNum(r.approvedHours, XS.num),
+          cTxt(off,             XS.text),
+          cTxt(r.pendingHours > 0.001 ? `${r.pendingHours.toFixed(2)} h pending` : 'All approved', XS.text),
+        ]);
+      }
+
+      const totalAll = tot.pendingHours + tot.approvedHours;
+      sheet.push([
+        cTxt(`Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})`, XS.totText),
+        cNum(tot.workHours,     XS.totNum),
+        cNum(tot.travelHours,   XS.totNum),
+        cNum(totalAll,          XS.totNum),
+        cNum(tot.pwHours,       XS.totPw),
+        cNum(tot.stdHours,      XS.totNum),
+        cNum(tot.pendingHours,  XS.totNum),
+        cNum(tot.approvedHours, XS.totNum),
+        cTxt(`${tot.pendingOff} pending / ${tot.approvedOff} approved`, XS.totText),
+        cTxt(tot.pendingHours > 0.001 ? `${tot.pendingHours.toFixed(2)} h still pending` : 'All approved', XS.totText),
+      ]);
+
+      return xlsxSheetXml({
+        colWidths: [26, 11, 12, 11, 14, 13, 13, 15, 26, 20],
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:J${HEADER_ROW + rows.length}`,
+      });
+    }
+
+    // Sheet 2 — every entry behind the summary, the flat form of the per-employee
+    // breakdown the report rows expand into.
+    function reportDetailSheetXml(model) {
+      const { rows, scopeLine, gen, companyName } = model;
+      const headers = ['Employee', 'Date', 'Type', 'Division', 'Project / Job',
+        'Start', 'End', 'Work Hours', 'Travel Hours', 'Total Hours',
+        'Prevailing Hrs', 'Standard Hrs', 'Lunch Break', 'Operated Equipment',
+        'Supervisor', 'Status', 'Notes'];
+      const HEADER_ROW = 4;
+      const NUM_COLS = new Set([7, 8, 9, 10, 11]); // 0-based header indices that are numeric
+
+      const sheet = [
+        [cTxt('Payroll Hours Report — Entry Detail', XS.title)],
+        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
+      ];
+
+      let n = 0;
+      let sumWork = 0, sumTravel = 0, sumTotal = 0, sumPw = 0, sumStd = 0;
+
+      for (const r of rows) {
+        const entries = r.entries.slice().sort((a, b) =>
+          (a.work_date || '').localeCompare(b.work_date || '') ||
+          String(a.created_at || '').localeCompare(String(b.created_at || '')));
+        for (const e of entries) {
+          const isOff  = e.entry_type === 'time_off';
+          const work   = isOff ? null : Number(e.computed_hours || 0);
+          const travel = isOff ? null : Number(e.travel_hours   || 0);
+          const total  = isOff ? null : work + travel;
+          // Per entry, prevailing hours are the whole day's hours when the tied
+          // job is prevailing wage — the same split the summary columns use.
+          const pw  = isOff ? null : (e.prevailing_wage === true ? total : 0);
+          const std = isOff ? null : (e.prevailing_wage === true ? 0 : total);
+          if (!isOff) {
+            sumWork += work; sumTravel += travel; sumTotal += total;
+            sumPw += pw; sumStd += std;
+          }
+          const flag = v => (isOff || v == null) ? '' : (v ? 'Yes' : 'No');
+          sheet.push([
+            cTxt(r.username, XS.text),
+            cNum(excelDateSerial(e.work_date), XS.date),
+            cTxt(isOff ? 'Time Off' : 'Daily', XS.text),
+            cTxt(isOff ? '' : prettyDiv(e.division), XS.text),
+            cTxt(isOff ? `Time Off · ${prettyOff(e.time_off_type)}` : (e.job_label || ''), XS.text),
+            cTxt(isOff ? '' : (e.start_time || ''), XS.text),
+            cTxt(isOff ? '' : (e.end_time   || ''), XS.text),
+            cNum(work,   XS.num),
+            cNum(travel, XS.num),
+            cNum(total,  XS.num),
+            cNum(pw,     XS.numPw),
+            cNum(std,    XS.num),
+            cTxt(flag(e.lunch_break),        XS.text),
+            cTxt(flag(e.operated_equipment), XS.text),
+            cTxt(e.supervisor_name || '',    XS.text),
+            cTxt(e.status === 'approved' ? 'Approved' : 'Pending', XS.text),
+            cTxt(e.notes || '', XS.text),
+          ]);
+          n++;
+        }
+      }
+
+      sheet.push([
+        cTxt(`Total — ${n} ${n === 1 ? 'entry' : 'entries'}`, XS.totText),
+        cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
+        cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
+        cNum(sumWork,   XS.totNum),
+        cNum(sumTravel, XS.totNum),
+        cNum(sumTotal,  XS.totNum),
+        cNum(sumPw,     XS.totPw),
+        cNum(sumStd,    XS.totNum),
+        cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
+        cTxt('', XS.totText), cTxt('', XS.totText),
+      ]);
+
+      return xlsxSheetXml({
+        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 12, 11, 14, 13, 12, 18, 20, 11, 40],
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:Q${HEADER_ROW + n}`,
+      });
+    }
+
+    // Downloads the Reports tab as an .xlsx built from the same model the
+    // on-screen table renders, so the workbook always matches the current
+    // date range, division, supervisor and employee filters.
+    function exportReportExcel() {
+      const model = buildReportModel();
+      if (!model.rows.length) {
+        alert('No timesheet entries in this range to export.');
+        return;
+      }
+      const enc = new TextEncoder();
+      const files = [
+        { name: '[Content_Types].xml',        data: enc.encode(XLSX_CONTENT_TYPES) },
+        { name: '_rels/.rels',                data: enc.encode(XLSX_ROOT_RELS) },
+        { name: 'xl/workbook.xml',            data: enc.encode(XLSX_WORKBOOK) },
+        { name: 'xl/_rels/workbook.xml.rels', data: enc.encode(XLSX_WORKBOOK_RELS) },
+        { name: 'xl/styles.xml',              data: enc.encode(XLSX_STYLES) },
+        { name: 'xl/worksheets/sheet1.xml',   data: enc.encode(reportSummarySheetXml(model)) },
+        { name: 'xl/worksheets/sheet2.xml',   data: enc.encode(reportDetailSheetXml(model)) },
+      ];
+
+      const companyCode = String((user && user.companyCode) || '').replace(/[^A-Za-z0-9_-]/g, '') || 'payroll';
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const range = (from && to) ? `${from}_${to}` : ymd(new Date());
+      downloadBlob(`payroll-hours-${companyCode}-${range}.xlsx`, zipStore(files));
     }
 
     // ── Analytics tab ────────────────────────────────────────────────────
