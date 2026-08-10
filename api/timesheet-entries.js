@@ -1104,7 +1104,12 @@ async function insertEesOtherRow(sql, companyCode, entry) {
   const prev   = arr.find(isMine) || null;
 
   const row = {
-    id:            `${prefix}${Date.now()}`,
+    // Stable, not stamped with Date.now(): there is only ever one row per
+    // entry, and Intercompany keys its billing entry off this id. A fresh id on
+    // every re-injection would orphan that entry — the reconciler would drop it
+    // (losing its sent_at and any Intercompany-side invoice/payment dates) and
+    // mint a replacement. Re-injecting is now genuinely idempotent.
+    id:            `${prefix}row`,
     actual_date:   workDate,
     actual_start:  hhmm(entry.start_time),
     actual_end:    hhmm(entry.end_time),
@@ -1163,6 +1168,14 @@ async function removeTruckingRows(sql, companyCode, entry) {
     await sql`DELETE FROM truck_division_entries WHERE company_code = ${companyCode} AND id = ANY(${removedIds})`;
   }
   return removed.length;
+}
+
+// True when an approved dust entry still has its injected EES Other row. Used by
+// the PUT guard so an approved entry can't be edited out from under the tab.
+async function eesOtherHasInjectedRow(sql, companyCode, entry) {
+  const prefix = eesOtherRowIdPrefix(entry.id);
+  const arr    = await readBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB);
+  return arr.some(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
 }
 
 // True when an approved trucking entry still has an injected Truck Tracking row.
@@ -2085,6 +2098,13 @@ module.exports = async (req, res) => {
         if (existing.division === 'trucking') {
           if (await truckingHasInjectedRow(sql, companyCode, existing)) injected += 1;
         }
+        // Same rule for EES: the tab shows the entry's hours and times verbatim,
+        // so editing an approved entry without re-injecting would leave the tab
+        // — and any Intercompany figure built from it — quietly disagreeing with
+        // the timesheet.
+        if (existing.division === 'dust' && isEesJob(existing.job_id)) {
+          if (await eesOtherHasInjectedRow(sql, companyCode, existing)) injected += 1;
+        }
         if (injected > 0) {
           return res.status(409).json({
             error: 'This entry has cost tracking rows injected from approval. Un-approve it first, edit, then re-approve with a fresh split.',
@@ -2208,6 +2228,7 @@ module.exports._test = {
   insertEesOtherRow,
   removeEesOtherRows,
   eesOtherRowIdPrefix,
+  eesOtherHasInjectedRow,
   removeTruckingRows,
   truckingHasInjectedRow,
   truckingSplitForEntry,

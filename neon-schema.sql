@@ -739,6 +739,14 @@ CREATE TABLE IF NOT EXISTS intercompany_billing_entries (
     trucking_rate     NUMERIC(10,4),
     trucking_total    NUMERIC(10,4),
     comments          TEXT,
+    -- Dust "EES Other" fields (source = 'dust-ees-other'). Hours × rate rather
+    -- than material, so it adds a rate plus the job's own identifiers.
+    -- ees_name rather than name: the entry's "Name" column is a job-side label
+    -- and must not be confused with company_name above.
+    rate              NUMERIC(10,4),
+    ees_name          TEXT,
+    job_number        TEXT,
+    billing           TEXT,
     updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 

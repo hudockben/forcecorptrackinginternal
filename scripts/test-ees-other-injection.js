@@ -134,7 +134,10 @@ function entry(over = {}) {
     // Payroll corrects the entry and re-approves.
     const row = await insertEesOtherRow(sql, 'ACME', entry({ computed_hours: 2, ees_unit: 'T-12' }));
     assert('still exactly one row', rows().length === 1);
-    assert('a fresh row id', row.id !== first.id || true);
+    // The id must NOT change. Intercompany keys its billing entry off it, so a
+    // fresh id per injection would orphan that entry — dropped and replaced,
+    // losing its sent_at and any Intercompany-side invoice/payment dates.
+    assert('row id is stable across re-approval', row.id === first.id, `${first.id} → ${row.id}`);
     assert('corrected hours applied', rows()[0].actual_hours === 2);
     assert('newly typed unit applied', rows()[0].unit === 'T-12');
   }
@@ -179,6 +182,37 @@ function entry(over = {}) {
     assert('removing again is a no-op', (await removeEesOtherRows(sql, 'ACME', { id: 501 })) === 0);
   }
 
+  console.log('\n[entry ids that share a prefix stay separate]');
+  {
+    // With a stable id the trailing dash is what keeps entry 50 from matching
+    // entry 501's row — "tse-501-row".startsWith("tse-50-") must be false.
+    store.clear();
+    await insertEesOtherRow(sql, 'ACME', entry({ id: 50 }));
+    await insertEesOtherRow(sql, 'ACME', entry({ id: 501 }));
+    assert('two distinct rows', rows().length === 2);
+    const n = await removeEesOtherRows(sql, 'ACME', { id: 50 });
+    assert('removing 50 removes exactly one', n === 1);
+    assert('501 survived', rows().length === 1 && String(rows()[0].id).startsWith(eesOtherRowIdPrefix(501)));
+  }
+
+  console.log('\n[an approved entry cannot be edited out from under the tab]');
+  {
+    const { eesOtherHasInjectedRow } = TS._test;
+    store.clear();
+    assert('no row → nothing to guard', (await eesOtherHasInjectedRow(sql, 'ACME', { id: 501 })) === false);
+    await insertEesOtherRow(sql, 'ACME', entry({ id: 501 }));
+    assert('injected row is detected', (await eesOtherHasInjectedRow(sql, 'ACME', { id: 501 })) === true);
+    assert('a different entry is not', (await eesOtherHasInjectedRow(sql, 'ACME', { id: 502 })) === false);
+    await removeEesOtherRows(sql, 'ACME', { id: 501 });
+    assert('un-approving clears the guard', (await eesOtherHasInjectedRow(sql, 'ACME', { id: 501 })) === false);
+
+    // …and the PUT handler must actually consult it, under the same gate.
+    const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    const guard = SRC.slice(SRC.indexOf('injected cost rows, refuse'), SRC.indexOf('injected_row_count'));
+    assert('the edit guard counts EES rows', /eesOtherHasInjectedRow/.test(guard));
+    assert('and gates on the EES job', /isEesJob\(existing\.job_id\)/.test(guard));
+  }
+
   // ── The routing gate, read out of the shipped source ────────────────────
   // Only a dust entry on a standing EES job injects. This is the whole point
   // of the feature: an ordinary dust customer entry must still inject nowhere.
@@ -206,7 +240,7 @@ function entry(over = {}) {
     // The gate must be identical everywhere it appears, or a row outlives the
     // entry that made it (approve injects, un-approve/delete miss it).
     const gates = SRC.match(/existing\.division === 'dust' && isEesJob\(existing\.job_id\)/g) || [];
-    assert('un-approve and delete use the same gate', gates.length === 2, `found ${gates.length}`);
+    assert('un-approve, delete and the edit guard share the gate', gates.length === 3, `found ${gates.length}`);
   }
 
   console.log('\n[the two jobs are offered under dust, and only dust]');
