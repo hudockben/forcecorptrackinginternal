@@ -227,8 +227,14 @@ async function apiTests() {
 
 const HTML = fs.readFileSync(path.resolve(__dirname, '..', 'timesheet.html'), 'utf8');
 
-function loadPage() {
+function loadPage(opts = {}) {
   const byId = new Map();
+  // Recorded traffic, and a valve: while `hold` is set, every write parks so a
+  // test can get two button handlers in flight at once.
+  const net = { calls: [], parked: [], hold: false, jobs: opts.jobs || {}, jobHold: null, n: 0 };
+  net.release = () => net.parked.splice(0).forEach(r => r());
+  net.writes = () => net.calls.filter(c => c.method !== 'GET' && !/action=submit/.test(c.url));
+  net.creates = () => net.writes().filter(c => !/[?&]id=/.test(c.url));
 
   const makeClassList = () => {
     const s = new Set();
@@ -286,7 +292,20 @@ function loadPage() {
     // init() only fills today's date and fetches; the tests drive the form
     // directly, so keep it from racing them.
     queueMicrotask: () => {},
-    fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, entries: [], jobs: [], supervisors: [] }) }),
+    fetch: async (url, o = {}) => {
+      const method = o.method || 'GET';
+      const call = { method, url: String(url) };
+      net.calls.push(call);
+      if (/timesheet-jobs/.test(call.url)) {
+        const division = (call.url.match(/division=([^&]*)/) || [])[1] || '';
+        if (net.jobHold && net.jobHold[division]) await new Promise(r => net.jobHold[division].push(r));
+        return { ok: true, status: 200, json: async () => ({ jobs: net.jobs[division] || [] }) };
+      }
+      if (net.hold && method !== 'GET') await new Promise(r => net.parked.push(r));
+      return { ok: true, status: 200, json: async () => ({
+        ok: true, entries: [], supervisors: [], entry: { id: 'row' + (++net.n) },
+      }) };
+    },
     confirm: () => true,
     console,
   };
@@ -296,6 +315,7 @@ function loadPage() {
     ;return {
       buildPayloads, addSplit, setSeg, updateHours, blockOrder, blockName,
       splitLabel, resetForm, bel, draftGroupFor,
+      saveDraft, submitEntry, onDivisionChange,
       setEntriesCache: v => { entriesCache = v; },
       state: () => ({ groupId: currentGroupId, blocks: blockOrder() }),
     };`;
@@ -303,8 +323,10 @@ function loadPage() {
   // eslint-disable-next-line no-new-func
   const run = new Function(...names, script + exposed);
   const api = run(...names.map(n => sandbox[n]));
-  return { api, document, byId };
+  return { api, document, byId, net };
 }
+
+const tick = () => new Promise(r => setImmediate(r));
 
 // Point a <select> at one option, the way a tap on the picker would.
 function pick(sel, value, label) {
@@ -564,6 +586,71 @@ function pageTests() {
   }
 }
 
+// ── Concurrency ────────────────────────────────────────────────────────────
+// Two ways the form could write the same day twice. Both are about the gap
+// between pressing a button and the row coming back with an id.
+
+async function concurrencyTests() {
+  console.log('\n[timesheet.html — the same day cannot be written twice]');
+  {
+    // Save Draft and Submit are different buttons, so disabling one never
+    // stopped the other. A block is pinned to its row only when its write
+    // returns, so a Submit landing during a Save found nothing pinned and
+    // posted every job a second time — a duplicate day, per job, into payroll.
+    const { api, document: doc, net } = loadPage();
+    georgesDay(api, doc);
+    net.hold = true;
+    const saving = api.saveDraft();
+    const submitting = api.submitEntry();
+    await tick();
+    net.hold = false;
+    net.release();
+    await Promise.all([saving, submitting]);
+
+    eq('each job is created exactly once', net.creates().length, 2);
+    assert('and the second press is refused rather than queued behind the first',
+      net.writes().length === 2, JSON.stringify(net.writes().map(c => c.method + ' ' + c.url)));
+  }
+  {
+    // The same window, on one button: the guard is the flag, not the disable.
+    const { api, document: doc, net } = loadPage();
+    georgesDay(api, doc);
+    net.hold = true;
+    const a = api.submitEntry();
+    const b = api.submitEntry();
+    await tick();
+    net.hold = false;
+    net.release();
+    await Promise.all([a, b]);
+    eq('a double-tapped Submit creates two rows, not four', net.creates().length, 2);
+  }
+
+  console.log('\n[timesheet.html — a slow job list cannot land on the wrong division]');
+  {
+    // Two divisions picked in quick succession. The first load is held open,
+    // so it answers LAST — and used to win, leaving paving's jobs listed under
+    // Turf. Picking one then submits a turf day against a paving project.
+    const { api, net } = loadPage({
+      jobs: { paving: [{ id: 'P1', label: 'Punxsy Storage Lot' }],
+              turf:   [{ id: '26041', label: 'Franklin Regional — Tennis Court' }] },
+    });
+    net.jobHold = { paving: [] };
+
+    api.bel(0, 'division').value = 'paving';
+    const slow = api.onDivisionChange(0);          // parks on the held fetch
+    await tick();
+    api.bel(0, 'division').value = 'turf';
+    const fast = api.onDivisionChange(0);          // answers immediately
+    await fast;
+    net.jobHold.paving.splice(0).forEach(r => r()); // now let paving answer
+    await slow;
+
+    const html = api.bel(0, 'job').innerHTML;
+    assert('the picker lists the division actually chosen', /26041/.test(html), html);
+    assert('and not the one that was abandoned', !/P1/.test(html), html);
+  }
+}
+
 // ── Drift guard ────────────────────────────────────────────────────────────
 // Block 0 is static markup and the extra blocks are built by splitBlockHtml().
 // A per-job field added to one and not the other is silent data loss — the
@@ -596,6 +683,7 @@ function driftTests() {
 (async () => {
   await apiTests();
   pageTests();
+  await concurrencyTests();
   driftTests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

@@ -946,6 +946,10 @@
     // that row goes with it — leaving it behind would put hours on a job the
     // worker just took off their day.
     async function removeSplit(i) {
+      // Not while the form is mid-write: the payload list being written was
+      // built before this click, so the block would be deleted here and
+      // re-created a moment later by a write already on its way.
+      if (formWriting) return;
       const savedId = editingIds[i];
       if (savedId && !confirm('Remove this job? The draft entry saved for it will be deleted.')) return;
 
@@ -1133,9 +1137,20 @@
       document.getElementById('f-off-supervisor').innerHTML = opts;
     }
 
+    // Which job load is the current one, per block. Two divisions picked in
+    // quick succession are two loads in flight, and whichever answers LAST used
+    // to win — leaving the job picker listing one division's jobs while the
+    // division picker beside it reads another. Pick from that list and the
+    // entry goes in as, say, a turf day on a paving project, which approval
+    // then injects into turf's cost tracking. So each load takes a ticket and
+    // drops its result if a newer one has been issued since.
+    let jobLoadToken = {};   // block index → id of that block's newest load
+
     async function onDivisionChange(i = 0) {
       const div = bel(i, 'division').value;
       const jobSel = bel(i, 'job');
+      const token = jobLoadToken[i] = (jobLoadToken[i] || 0) + 1;
+      const stale = () => jobLoadToken[i] !== token || !document.getElementById(bid(i, 'job'));
       // Trucking-only Unit + Description fields ride alongside the job picker.
       const truckWrap = bel(i, 'truckingFields');
       if (truckWrap) truckWrap.style.display = (div === 'trucking') ? 'flex' : 'none';
@@ -1155,6 +1170,9 @@
           const data = await res.json();
           jobsCache[div] = Array.isArray(data.jobs) ? data.jobs : [];
         }
+        // A newer pick is already loading (or the block has been removed) —
+        // leave the picker to whoever owns it now.
+        if (stale()) return;
         const jobs = jobsCache[div];
         if (!jobs.length) {
           jobSel.innerHTML = '<option value="">(no active jobs)</option>';
@@ -1165,9 +1183,11 @@
           jobs.map(j => `<option value="${escapeHtml(j.id)}" data-label="${escapeHtml(j.label)}">${escapeHtml(j.label)}</option>`).join('');
         jobSel.disabled = false;
       } catch (err) {
+        if (stale()) return;
         jobSel.innerHTML = '<option value="">(error loading)</option>';
         jobSel.disabled = true;
       }
+      if (stale()) return;
       onJobChange(i);
     }
 
@@ -1748,14 +1768,35 @@
     // The rows this form is currently sitting on. Empty = nothing written yet.
     function savedIds() { return Object.values(editingIds).filter(Boolean); }
 
+    // One write at a time, across ALL of the buttons that write. A block is
+    // only pinned to its row once its write comes back, so a Save still in
+    // flight when Submit is pressed finds nothing pinned and posts every block
+    // a second time. Disabling one button never covered it — the presses are on
+    // different buttons — and the window is as long as the whole day takes to
+    // write, which on a split is one round trip per job.
+    let formWriting = false;
+    function beginWrite() {
+      if (formWriting) return false;
+      formWriting = true;
+      for (const id of ['btn-save', 'btn-submit', 'btn-add-split']) {
+        document.getElementById(id).disabled = true;
+      }
+      return true;
+    }
+    function endWrite() {
+      formWriting = false;
+      document.getElementById('btn-save').disabled = false;
+      document.getElementById('btn-submit').disabled = false;
+      renderSplitChrome();   // re-enables the add button unless we're at the cap
+    }
+
     async function saveDraft() {
       const { list, error } = buildPayloads();
       const msg = document.getElementById('formMsg');
       msg.className = 'msg';
       if (error) { msg.textContent = error; msg.classList.add('error'); return; }
+      if (!beginWrite()) return;
 
-      const btn = document.getElementById('btn-save');
-      btn.disabled = true;
       try {
         for (const item of list) await writeEntry(item.data, item.block);
         msg.textContent = list.length > 1
@@ -1769,7 +1810,7 @@
         msg.classList.add('error');
         await loadEntries();
       } finally {
-        btn.disabled = false;
+        endWrite();
       }
     }
 
@@ -1783,9 +1824,8 @@
         ? `Submit ${list.length} entries — one for each job? You won't be able to edit them after this — only an admin can.`
         : "Submit this entry? You won't be able to edit it after this — only an admin can.";
       if (!confirm(confirmText)) return;
+      if (!beginWrite()) return;
 
-      const btn = document.getElementById('btn-submit');
-      btn.disabled = true;
       try {
         // Write every block out as a draft first. Each write adopts the row it
         // just created BEFORE anything else runs — without that, a submit that
@@ -1861,7 +1901,7 @@
         msg.classList.add('error');
         await loadEntries();
       } finally {
-        btn.disabled = false;
+        endWrite();
       }
     }
 
@@ -1883,20 +1923,25 @@
       if (!confirm(ids.length > 1
         ? `Delete all ${ids.length} draft entries for this day? This cannot be undone.`
         : 'Delete this draft entry? This cannot be undone.')) return;
+      if (!beginWrite()) return;
       const failed = [];
-      for (const rowId of ids) {
-        try {
-          const res = await fetch('/api/timesheet-entries?id=' + encodeURIComponent(rowId), {
-            method: 'DELETE', headers: authHeaders(),
-          });
-          const j = await res.json();
-          if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
-        } catch (err) {
-          failed.push(err.message);
+      try {
+        for (const rowId of ids) {
+          try {
+            const res = await fetch('/api/timesheet-entries?id=' + encodeURIComponent(rowId), {
+              method: 'DELETE', headers: authHeaders(),
+            });
+            const j = await res.json();
+            if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+          } catch (err) {
+            failed.push(err.message);
+          }
         }
+        resetForm();
+        await loadEntries();
+      } finally {
+        endWrite();
       }
-      resetForm();
-      await loadEntries();
       if (failed.length) {
         const msg = document.getElementById('formMsg');
         msg.className = 'msg error';
