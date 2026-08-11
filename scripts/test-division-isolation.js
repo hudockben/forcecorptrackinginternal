@@ -90,7 +90,7 @@ const legacyEmpty = {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 console.log('\n[ALL_DIVISIONS]');
-const EXPECTED_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll'];
+const EXPECTED_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin'];
 assert('contains exactly the canonical divisions',
   ALL_DIVISIONS.length === EXPECTED_DIVISIONS.length &&
   EXPECTED_DIVISIONS.every(d => ALL_DIVISIONS.includes(d)));
@@ -99,6 +99,8 @@ assert('includes paving',          ALL_DIVISIONS.includes('paving'));
 assert('includes intercompany',    ALL_DIVISIONS.includes('intercompany'));
 assert('includes timesheet',       ALL_DIVISIONS.includes('timesheet'));
 assert('includes payroll',         ALL_DIVISIONS.includes('payroll'));
+assert('includes fuel',            ALL_DIVISIONS.includes('fuel'));
+assert('includes fuel_admin',      ALL_DIVISIONS.includes('fuel_admin'));
 
 console.log('\n[normalizeDivision]');
 assert('normalizes case',           normalizeDivision('PAVING') === 'paving');
@@ -107,6 +109,11 @@ assert('rejects unknown',           normalizeDivision('foo') === null);
 assert('rejects empty',             normalizeDivision('') === null);
 assert('rejects null',              normalizeDivision(null) === null);
 assert('accepts trucking',          normalizeDivision('trucking') === 'trucking');
+// fuel_admin is the first division key carrying an underscore — the character
+// class in normalizeDivision has to keep it, or the key silently becomes
+// 'fueladmin' and stops matching anything.
+assert('keeps the underscore',      normalizeDivision('fuel_admin') === 'fuel_admin');
+assert('accepts FUEL_ADMIN',        normalizeDivision('FUEL_ADMIN') === 'fuel_admin');
 assert('rejects sql injection',     normalizeDivision("paving'; DROP--") === null);
 
 console.log('\n[hasDivisionAccess — paving-only user]');

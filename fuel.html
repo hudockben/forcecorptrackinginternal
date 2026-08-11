@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f59e0b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='10' height='18' rx='1.5'/><line x1='3' y1='9' x2='13' y2='9'/><path d='M13 8h3.5a1.5 1.5 0 0 1 1.5 1.5V17a2 2 0 0 0 3 0v-6l-2.5-3'/></svg>" />
+  <title>Fuel — Submit Fuel</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #14141d;
+      --surface2:  #1c1c28;
+      --border:    #2a2a3a;
+      --accent:    #f59e0b;
+      --accent-d:  #d97706;
+      --text:      #e8e8ee;
+      --muted:     #888;
+      --red:       #ef4444;
+      --green:     #22c55e;
+      --blue:      #60a5fa;
+    }
+
+    html, body { height: 100%; overscroll-behavior-y: none; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.4;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.9rem 1rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      padding-top: calc(0.9rem + env(safe-area-inset-top, 0));
+    }
+    .brand {
+      font-size: 0.65rem;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .header-right { display: flex; align-items: center; gap: 0.6rem; }
+    .user-chip { font-size: 0.72rem; color: var(--muted); }
+    .user-chip strong { color: var(--text); font-weight: 600; }
+    .icon-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 0.5rem 0.7rem;
+      border-radius: 6px;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .icon-btn:active { color: var(--text); border-color: #555; }
+
+    main {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    /* ── Section card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+    .card-title {
+      font-size: 0.66rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .card-sub { font-size: 0.78rem; color: var(--muted); }
+
+    /* ── Form fields ── */
+    .row { display: flex; flex-direction: column; gap: 0.35rem; }
+    .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; }
+    label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    /* The parenthetical on the meter labels is guidance, not part of the field
+       name — it reads as shouting in the label's uppercase, and it is the one
+       instruction on this form that stops a correct entry being refused. */
+    label .note {
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 400;
+      color: var(--muted);
+    }
+    input, select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1rem;
+      padding: 0.85rem 0.8rem;
+      font-family: inherit;
+      outline: none;
+      min-height: 48px;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+    select {
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'><polyline points='6 9 12 15 18 9'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 0.6rem center;
+      background-size: 18px;
+      padding-right: 2rem;
+    }
+    /* A field the submit check called out. Cleared the moment it's filled, so
+       the form never keeps shouting about something already put right. */
+    input.bad, select.bad { border-color: var(--red); }
+
+    /* A box the form fills in for you. Reads as an answer rather than as a
+       question — flat, in the accent colour, and visibly not typeable, so
+       nobody stands at a pump trying to correct a number the tank supplied. */
+    input[readonly] {
+      background: var(--surface2);
+      color: var(--accent);
+      font-weight: 700;
+      border-style: dashed;
+    }
+    /* Says where the gallons figure came from. It changes as the meters are
+       filled in, which is the only signal that the box above stopped being
+       something to type in. */
+    .field-note {
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .field-note.auto { color: var(--accent); }
+
+    /* Gallons is the answer to the two readings above it, so it is given the
+       weight of one: a bigger figure than an ordinary field, in a block that
+       sits slightly proud of the form rather than in the run of questions. */
+    .gallons-row {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.8rem 0.85rem;
+      gap: 0.45rem;
+    }
+    .gallons-row input {
+      font-size: 1.35rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    /* The card the row sits on is already surface2, so the read-only fill
+       from the rule above would leave the box invisible against it. */
+    .gallons-row input[readonly] { background: var(--bg); }
+
+    /* ── Action buttons ── */
+    .btn-row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+    .btn {
+      flex: 1;
+      min-height: 50px;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      font-family: inherit;
+    }
+    .btn-primary { background: var(--accent); color: #201400; }
+    .btn-primary:active { background: var(--accent-d); }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:active { background: var(--border); }
+    .btn-danger {
+      background: rgba(239,68,68,0.12);
+      color: var(--red);
+      border: 1px solid rgba(239,68,68,0.3);
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Status badges ── */
+    .badge {
+      display: inline-block;
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.55rem;
+      border-radius: 4px;
+    }
+    .badge-draft     { background: rgba(136,136,136,0.15); color: var(--muted); }
+    .badge-submitted { background: rgba(96,165,250,0.15);  color: var(--blue); }
+    .badge-approved  { background: rgba(34,197,94,0.15);   color: var(--green); }
+
+    /* ── Entries list ── */
+    .entry {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .entry + .entry { margin-top: 0.6rem; }
+    .entry.draft { cursor: pointer; }
+    .entry.draft:active { background: var(--surface2); }
+    .entry-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem;
+    }
+    .entry-date { font-size: 0.95rem; font-weight: 700; color: var(--text); }
+    .entry-meta { font-size: 0.8rem; color: var(--muted); line-height: 1.45; }
+    .entry-gal {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .entry-empty {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+      padding: 1.5rem 1rem;
+    }
+    .entry-audit {
+      font-size: 0.7rem;
+      color: var(--muted);
+      padding-top: 0.45rem;
+      margin-top: 0.2rem;
+      border-top: 1px dashed var(--border);
+      line-height: 1.4;
+    }
+
+    /* ── Toast / inline message ── */
+    .msg { font-size: 0.85rem; min-height: 1.2em; padding: 0.1rem 0.2rem; }
+    .msg.error   { color: var(--red); }
+    .msg.success { color: var(--green); }
+
+    /* ── No-access screen ── */
+    .no-access { max-width: 420px; margin: 4rem auto; padding: 2rem 1.25rem; text-align: center; }
+    .no-access h2 { font-size: 1.3rem; color: var(--text); margin-bottom: 0.6rem; }
+    .no-access p  { font-size: 0.9rem; color: var(--muted); margin-bottom: 1.5rem; }
+
+    .hidden { display: none !important; }
+
+    @media (min-width: 720px) {
+      main { padding: 1.5rem; }
+      .row-2 { gap: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">Fuel</div>
+    <div class="header-right">
+      <div class="user-chip" id="userChip"></div>
+      <button class="icon-btn" id="switchBtn" style="display:none" onclick="goToDivisions()">Switch</button>
+      <button class="icon-btn" onclick="signOut()">Sign Out</button>
+    </div>
+  </header>
+
+  <main id="mainContent">
+
+    <!-- ── Entry form ── -->
+    <section class="card" id="formCard">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="card-title" id="formTitle">New Fuel Entry</div>
+        <span class="badge" id="formBadge" style="display:none"></span>
+      </div>
+
+      <div class="row">
+        <label for="f-date">Date</label>
+        <input type="date" id="f-date" />
+      </div>
+
+      <div class="row">
+        <label for="f-employee">Employee</label>
+        <select id="f-employee">
+          <option value="">— pick —</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <label for="f-fuel-card">Fuel Card Used</label>
+        <select id="f-fuel-card">
+          <option value="">— pick —</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <label for="f-fuel-type">Fuel Type</label>
+        <select id="f-fuel-type">
+          <option value="">— pick —</option>
+        </select>
+      </div>
+
+      <div class="row-2">
+        <div class="row">
+          <label for="f-mileage">Mileage</label>
+          <input type="number" id="f-mileage" inputmode="decimal" min="0" step="0.1" placeholder="0" />
+        </div>
+        <div class="row">
+          <label for="f-truck-number">Truck Number</label>
+          <input type="number" id="f-truck-number" inputmode="numeric" min="0" step="1" placeholder="0" />
+        </div>
+      </div>
+
+      <div class="row">
+        <label for="f-beginning-meter">Beginning Meter Reading <span class="note">(0 if not Force Fuel)</span></label>
+        <input type="number" id="f-beginning-meter" inputmode="decimal" min="0" step="0.1" placeholder="0"
+               oninput="updateGallons()" onchange="updateGallons()" />
+      </div>
+
+      <div class="row">
+        <label for="f-ending-meter">Ending Meter Reading <span class="note">(0 if not Force Fuel)</span></label>
+        <input type="number" id="f-ending-meter" inputmode="decimal" min="0" step="0.1" placeholder="0"
+               oninput="updateGallons()" onchange="updateGallons()" />
+      </div>
+
+      <!-- Gallons comes straight after the two readings it is worked out
+           from, so the number appears directly under the boxes that changed
+           it. It was above them, which meant a driver entering meter readings
+           watched a figure update off the top of their screen — and read as a
+           question whose answer was three fields further down. -->
+      <div class="row gallons-row" id="gallonsRow">
+        <label for="f-gallons">Gallons</label>
+        <input type="number" id="f-gallons" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
+               oninput="onGallonsTyped()" />
+        <div class="field-note" id="gallonsNote"></div>
+      </div>
+
+      <div class="row">
+        <label for="f-fueling-site">Fueling Site</label>
+        <input type="text" id="f-fueling-site" maxlength="200" placeholder="Where it was fueled" />
+      </div>
+
+      <div class="row-2">
+        <div class="row">
+          <label for="f-city">City Fueled</label>
+          <input type="text" id="f-city" maxlength="120" placeholder="City" />
+        </div>
+        <div class="row">
+          <label for="f-state">State</label>
+          <select id="f-state">
+            <option value="">— pick —</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <label for="f-tank-number">Tank Number</label>
+        <input type="number" id="f-tank-number" inputmode="numeric" min="0" step="1" placeholder="0" />
+      </div>
+
+      <div class="msg" id="formMsg"></div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" id="btn-reset"  onclick="resetFormAction()">Reset</button>
+        <button class="btn btn-secondary" id="btn-save"   onclick="saveDraft()">Save Draft</button>
+        <button class="btn btn-primary"   id="btn-submit" onclick="submitEntry()">Submit</button>
+      </div>
+      <div class="btn-row" id="row-delete" style="display:none">
+        <button class="btn btn-danger" id="btn-delete-draft" onclick="deleteDraft()">Delete Draft</button>
+      </div>
+    </section>
+
+    <!-- ── Past entries ── -->
+    <section class="card">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:0.6rem;flex-wrap:wrap">
+        <div class="card-title">My Recent Fuel Entries</div>
+        <div id="entriesScope" class="card-sub" style="font-size:0.72rem"></div>
+      </div>
+      <div id="entriesList"><div class="entry-empty">Loading…</div></div>
+      <div style="text-align:center">
+        <button id="toggleScopeBtn" class="btn btn-secondary"
+          style="display:none;font-size:0.78rem;padding:0.55rem 1.2rem;flex:0 0 auto"
+          onclick="toggleScope()">Show older entries</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── No-access fallback ── -->
+  <div id="noAccess" class="no-access hidden">
+    <h2>No Fuel Access</h2>
+    <p>Your account doesn't have permission to submit fuel entries. Ask a company admin to grant you Fuel Submissions access.</p>
+    <button class="btn btn-secondary" style="max-width:240px;margin:0 auto" onclick="goToDivisions()">Back to Divisions</button>
+  </div>
+
+  <script>
+    // ── Auth + access guard ────────────────────────────────────────────────
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) window.location.replace('index.html');
+
+    const isPlatformAdmin  = Boolean(user && user.isPlatformAdmin);
+    const allowedDivisions = Array.isArray(user && user.allowedDivisions) ? user.allowedDivisions : [];
+    const hasFuel          = isPlatformAdmin || allowedDivisions.includes('fuel');
+    const otherDivisions   = allowedDivisions.filter(d => d !== 'fuel');
+
+    if (!hasFuel) {
+      document.getElementById('mainContent').classList.add('hidden');
+      document.getElementById('noAccess').classList.remove('hidden');
+    } else {
+      if (isPlatformAdmin || otherDivisions.length > 0) {
+        document.getElementById('switchBtn').style.display = '';
+      }
+      document.getElementById('userChip').innerHTML = `<strong>${escapeHtml(user.username)}</strong>`;
+      // Deferred to a microtask so the `let` declarations further down finish
+      // their TDZ before init() / loadEntries() read them.
+      queueMicrotask(init);
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    // ── Option lists ───────────────────────────────────────────────────────
+    // Copies of api/lib/fuel-options.js, which is canonical. This is a static
+    // page with no build step, so it cannot require() them —
+    // scripts/test-fuel-submissions.js reads these arrays back out of this
+    // file and fails if they have drifted. The server refuses a submit whose
+    // card or state is not on its own list, so a value that lives only here
+    // is one a worker can pick and then be refused for picking.
+    const FUEL_CARDS = ['Guttman', 'Satterlee', 'Wex', 'Bulk Fuel – No card'];
+    const FUEL_TYPES = ['Diesel', 'Off Road Diesel', 'On Road', 'Gas'];
+    const US_STATES = [
+      { code: 'AL', name: 'Alabama' },        { code: 'AK', name: 'Alaska' },
+      { code: 'AZ', name: 'Arizona' },        { code: 'AR', name: 'Arkansas' },
+      { code: 'CA', name: 'California' },     { code: 'CO', name: 'Colorado' },
+      { code: 'CT', name: 'Connecticut' },    { code: 'DE', name: 'Delaware' },
+      { code: 'DC', name: 'District of Columbia' },
+      { code: 'FL', name: 'Florida' },        { code: 'GA', name: 'Georgia' },
+      { code: 'HI', name: 'Hawaii' },         { code: 'ID', name: 'Idaho' },
+      { code: 'IL', name: 'Illinois' },       { code: 'IN', name: 'Indiana' },
+      { code: 'IA', name: 'Iowa' },           { code: 'KS', name: 'Kansas' },
+      { code: 'KY', name: 'Kentucky' },       { code: 'LA', name: 'Louisiana' },
+      { code: 'ME', name: 'Maine' },          { code: 'MD', name: 'Maryland' },
+      { code: 'MA', name: 'Massachusetts' },  { code: 'MI', name: 'Michigan' },
+      { code: 'MN', name: 'Minnesota' },      { code: 'MS', name: 'Mississippi' },
+      { code: 'MO', name: 'Missouri' },       { code: 'MT', name: 'Montana' },
+      { code: 'NE', name: 'Nebraska' },       { code: 'NV', name: 'Nevada' },
+      { code: 'NH', name: 'New Hampshire' },  { code: 'NJ', name: 'New Jersey' },
+      { code: 'NM', name: 'New Mexico' },     { code: 'NY', name: 'New York' },
+      { code: 'NC', name: 'North Carolina' }, { code: 'ND', name: 'North Dakota' },
+      { code: 'OH', name: 'Ohio' },           { code: 'OK', name: 'Oklahoma' },
+      { code: 'OR', name: 'Oregon' },         { code: 'PA', name: 'Pennsylvania' },
+      { code: 'RI', name: 'Rhode Island' },   { code: 'SC', name: 'South Carolina' },
+      { code: 'SD', name: 'South Dakota' },   { code: 'TN', name: 'Tennessee' },
+      { code: 'TX', name: 'Texas' },          { code: 'UT', name: 'Utah' },
+      { code: 'VT', name: 'Vermont' },        { code: 'VA', name: 'Virginia' },
+      { code: 'WA', name: 'Washington' },     { code: 'WV', name: 'West Virginia' },
+      { code: 'WI', name: 'Wisconsin' },      { code: 'WY', name: 'Wyoming' },
+    ];
+
+    // ── The form, as data ──────────────────────────────────────────────────
+    // Every field is required at submit. The order is the order they are asked
+    // for, which is also the order the "still needed" message names them in.
+    const FIELDS = [
+      { key: 'work_date',         id: 'f-date',             label: 'Date' },
+      { key: 'employee_username', id: 'f-employee',         label: 'Employee' },
+      { key: 'fuel_card',         id: 'f-fuel-card',        label: 'Fuel Card Used' },
+      { key: 'fuel_type',         id: 'f-fuel-type',        label: 'Fuel Type' },
+      { key: 'mileage',           id: 'f-mileage',          label: 'Mileage' },
+      { key: 'truck_number',      id: 'f-truck-number',     label: 'Truck Number' },
+      { key: 'beginning_meter',   id: 'f-beginning-meter',  label: 'Beginning Meter Reading' },
+      { key: 'ending_meter',      id: 'f-ending-meter',     label: 'Ending Meter Reading' },
+      { key: 'gallons',           id: 'f-gallons',          label: 'Gallons' },
+      { key: 'fueling_site',      id: 'f-fueling-site',     label: 'Fueling Site' },
+      { key: 'city_fueled',       id: 'f-city',             label: 'City Fueled' },
+      { key: 'state',             id: 'f-state',            label: 'State' },
+      { key: 'tank_number',       id: 'f-tank-number',      label: 'Tank Number' },
+    ];
+
+    function el(id) { return document.getElementById(id); }
+    function val(id) { const e = el(id); return e ? e.value : ''; }
+
+    // ── State ──────────────────────────────────────────────────────────────
+    let employees    = [];
+    let entriesCache = [];
+    let editingId    = null;    // id of the draft row this form is sitting on
+    // The last gallons figure the driver typed by hand. Kept so that filling
+    // in the meters — which takes the box over — and then clearing them again
+    // gives them their number back instead of a blank.
+    let manualGallons = '';
+
+    // ── Gallons off the meter ──────────────────────────────────────────────
+    // Copy of gallonsFromMeters() in api/fuel-submissions.js, which is
+    // canonical and recomputes this on every write.
+    // scripts/test-fuel-submissions.js runs both against the same table of
+    // readings and fails if they disagree — a page that computed a different
+    // figure from the server would show the driver one number and store
+    // another.
+    //
+    // On a Force Fuel tank the meter IS the gallons counter, so the
+    // difference between the readings is the fill. Everything else — a card
+    // purchase with both meters at 0, a rolled-over meter reading lower than
+    // it started, two identical readings — returns null and leaves gallons as
+    // something to type in.
+    function gallonsFromMeters(begin, end) {
+      if (begin == null || end == null) return null;
+      const b = Number(begin), e = Number(end);
+      if (!Number.isFinite(b) || !Number.isFinite(e)) return null;
+      if (e <= b) return null;
+      return Math.round((e - b) * 100) / 100;
+    }
+
+    function numOrNull(raw) {
+      if (raw === '' || raw == null) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    // Called on every keystroke in the gallons box — but only while it is
+    // still a box to type in. Once the meters have taken it over its value is
+    // the tank's, not the driver's, and remembering it as manual would put a
+    // metered figure back on screen the moment they cleared the meters.
+    function onGallonsTyped() {
+      if (!el('f-gallons').readOnly) manualGallons = val('f-gallons');
+    }
+
+    // Point the gallons box at whichever source currently owns it, and say
+    // which one that is. Runs on every meter keystroke and after anything
+    // that fills the form (loading a draft, resetting it). The box sits
+    // directly beneath the two readings, so the figure and the note both land
+    // where the driver is already looking.
+    function updateGallons() {
+      const b    = numOrNull(val('f-beginning-meter'));
+      const e    = numOrNull(val('f-ending-meter'));
+      const auto = gallonsFromMeters(b, e);
+      const box  = el('f-gallons');
+      const note = el('gallonsNote');
+
+      if (auto != null) {
+        box.readOnly = true;
+        box.value    = auto.toFixed(2);
+        box.classList.remove('bad');
+        note.className   = 'field-note auto';
+        note.textContent = `Calculated from the tank meter — ${e} minus ${b}. Change a reading above to change it.`;
+        return;
+      }
+
+      // Handing the box back. Restore whatever the driver last typed rather
+      // than leaving the tank's last figure sitting there looking typed-in.
+      if (box.readOnly) {
+        box.readOnly = false;
+        box.value    = manualGallons;
+      }
+      note.className = 'field-note';
+
+      if (b != null && e != null && e < b) {
+        // The meter rolled over or was replaced. The difference is negative
+        // and means nothing, so the driver has to say what actually went in.
+        note.textContent = 'The ending meter is below the beginning one, so gallons can’t be calculated — type them in.';
+      } else if (b === 0 && e === 0) {
+        note.textContent = 'Not a Force Fuel tank (both meters read 0) — type the gallons from the receipt.';
+      } else if (b != null && e != null && e === b) {
+        note.textContent = 'Both meter readings are the same, so nothing was pumped — check the readings, or type the gallons in.';
+      } else {
+        note.textContent = 'Filled in from the tank meter once both readings are entered.';
+      }
+    }
+
+    async function init() {
+      el('f-date').value = todayStr();
+      renderStaticOptions();
+      // Clear a field's error outline as soon as it stops being empty, so the
+      // form isn't still marking something the worker has already filled in.
+      for (const f of FIELDS) {
+        const node = el(f.id);
+        if (!node) continue;
+        const clear = () => { if (node.value !== '') node.classList.remove('bad'); };
+        node.addEventListener('input',  clear);
+        node.addEventListener('change', clear);
+      }
+      updateGallons();
+      await Promise.all([loadEmployees(), loadEntries()]);
+    }
+
+    function renderStaticOptions() {
+      el('f-fuel-card').innerHTML = '<option value="">— pick —</option>' +
+        FUEL_CARDS.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+      el('f-fuel-type').innerHTML = '<option value="">— pick —</option>' +
+        FUEL_TYPES.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+      // Value is the 2-letter code; the picker shows the whole name, which is
+      // what someone scrolling a phone list can actually find.
+      el('f-state').innerHTML = '<option value="">— pick —</option>' +
+        US_STATES.map(s => `<option value="${s.code}">${escapeHtml(s.name)}</option>`).join('');
+    }
+
+    function todayStr() {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm   = String(d.getMonth() + 1).padStart(2, '0');
+      const dd   = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    // ── Employee picker ────────────────────────────────────────────────────
+    async function loadEmployees() {
+      try {
+        const res  = await fetch('/api/fuel-employees', { headers: authHeaders() });
+        const data = await res.json();
+        employees = Array.isArray(data.employees) ? data.employees : [];
+      } catch { employees = []; }
+      el('f-employee').innerHTML = '<option value="">— pick —</option>' +
+        employees.map(e => `<option value="${escapeHtml(e.username)}">${escapeHtml(e.username)}</option>`).join('');
+      // Default to the person signed in — they are usually fuelling their own
+      // truck — while leaving the picker free to name someone else. Skipped
+      // while a draft is open, which has its own answer already loaded.
+      if (!editingId) {
+        const mine = employees.find(e => (e.username || '').toLowerCase() === String(user.username || '').toLowerCase());
+        if (mine) el('f-employee').value = mine.username;
+      }
+    }
+
+    // ── Build a payload from the form ──────────────────────────────────────
+    // Everything on screen, blanks included. A draft is allowed to be
+    // half-finished, so this never refuses anything — submitCheck() is what
+    // decides whether the form is complete enough to send in.
+    function buildPayload() {
+      const data = {};
+      for (const f of FIELDS) data[f.key] = val(f.id);
+      return data;
+    }
+
+    // The fields still empty, in form order. A number field holding "0" is
+    // FILLED — both meter readings are documented as "0 if not Force Fuel",
+    // so a truthiness test here would refuse a correctly-answered form and
+    // point at a box with a 0 sitting in it.
+    function emptyFields() {
+      return FIELDS.filter(f => val(f.id) === '');
+    }
+
+    function markEmpty(list) {
+      for (const f of FIELDS) {
+        const node = el(f.id);
+        if (node) node.classList.toggle('bad', list.includes(f));
+      }
+    }
+
+    // ── Entries list ───────────────────────────────────────────────────────
+    // Default window is the last 30 days so a driver isn't scrolling months of
+    // fill-ups. Drafts always load whatever their date, so an unfinished entry
+    // can never quietly fall out of the window and become invisible.
+    let scopeUnbounded = false;
+
+    function recentWindow() {
+      const to   = new Date();
+      const from = new Date();
+      from.setDate(to.getDate() - 30);
+      return { from, to };
+    }
+
+    function ymd(d) {
+      const y  = d.getFullYear();
+      const m  = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${dd}`;
+    }
+
+    // Fetch one slice of the list. Resolves to { entries } or { error } and
+    // never throws, so one broken slice can't blank the whole list.
+    async function fetchSlice(url, label) {
+      try {
+        const res = await fetch(url, { headers: authHeaders() });
+        let body = null;
+        try { body = await res.json(); } catch { /* non-JSON body */ }
+        if (!res.ok) {
+          const msg = (body && body.error) || `HTTP ${res.status}`;
+          console.error(`[fuel] ${label} failed:`, msg, body);
+          return { error: msg };
+        }
+        return { entries: Array.isArray(body && body.entries) ? body.entries : [] };
+      } catch (err) {
+        console.error(`[fuel] ${label} threw:`, err);
+        return { error: err && err.message ? err.message : 'network error' };
+      }
+    }
+
+    async function loadEntries() {
+      const list  = document.getElementById('entriesList');
+      const scope = document.getElementById('entriesScope');
+      const btn   = document.getElementById('toggleScopeBtn');
+      list.innerHTML = '<div class="entry-empty">Loading…</div>';
+
+      let entries = [];
+      const failures = [];
+
+      if (scopeUnbounded) {
+        const r = await fetchSlice('/api/fuel-submissions', 'all-entries');
+        if (r.error) failures.push(r.error); else entries = r.entries;
+        scope.textContent = 'All entries';
+        if (btn) { btn.textContent = 'Show recent only'; btn.style.display = ''; }
+      } else {
+        const { from, to } = recentWindow();
+        const fromS = ymd(from), toS = ymd(to);
+        const [draftsR, recentR] = await Promise.all([
+          fetchSlice('/api/fuel-submissions?status=draft', 'drafts'),
+          fetchSlice(`/api/fuel-submissions?status=submitted_approved&from=${fromS}&to=${toS}`, 'recent'),
+        ]);
+        const byId = new Map();
+        if (draftsR.error) failures.push(`drafts: ${draftsR.error}`);
+        else for (const e of draftsR.entries) byId.set(e.id, e);
+        if (recentR.error) failures.push(`recent: ${recentR.error}`);
+        else for (const e of recentR.entries) if (!byId.has(e.id)) byId.set(e.id, e);
+        entries = Array.from(byId.values());
+        scope.textContent = `${fmtScopeDate(from)} – ${fmtScopeDate(to)} (+ all drafts)`;
+        if (btn) { btn.textContent = 'Show older entries'; btn.style.display = ''; }
+      }
+
+      entries.sort((a, b) => (b.work_date || '').localeCompare(a.work_date || ''));
+      entriesCache = entries;
+
+      try {
+        renderEntries();
+      } catch (err) {
+        console.error('[fuel] renderEntries threw:', err);
+        failures.push(`render: ${err && err.message ? err.message : 'render error'}`);
+      }
+
+      if (failures.length) {
+        const note = `<div class="entry-empty">Couldn't load some entries (${escapeHtml(failures.join('; '))}).</div>`;
+        if (!entriesCache.length) list.innerHTML = note;
+        else list.insertAdjacentHTML('beforeend', note);
+      }
+    }
+
+    function fmtScopeDate(d) {
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+
+    function toggleScope() {
+      scopeUnbounded = !scopeUnbounded;
+      loadEntries();
+    }
+
+    function renderEntries() {
+      const list = document.getElementById('entriesList');
+      if (!entriesCache.length) {
+        list.innerHTML = '<div class="entry-empty">No fuel entries yet. Use the form above to submit your first one.</div>';
+        return;
+      }
+      list.innerHTML = entriesCache.map(e => {
+        const isDraft = e.status === 'draft';
+        const where   = [e.fueling_site, [e.city_fueled, e.state].filter(Boolean).join(', ')]
+          .filter(Boolean).map(escapeHtml).join(' · ');
+        const what    = [
+          e.truck_number != null ? `Truck ${e.truck_number}` : '',
+          e.fuel_type || '',
+          e.fuel_card || '',
+        ].filter(Boolean).map(escapeHtml).join(' · ');
+        const meta  = [what, where].filter(Boolean).join('<br />') || '—';
+        // A draft with nothing in the gallons box shows no number at all,
+        // rather than a 0 that reads as "none was put in".
+        const gal   = e.gallons != null ? `${Number(e.gallons).toFixed(2)} gal` : '';
+        const audit = entryAuditLine(e);
+        return `
+          <div class="entry ${isDraft ? 'draft' : ''}" ${isDraft ? `onclick="editEntry('${e.id}')"` : ''}>
+            <div class="entry-head">
+              <div class="entry-date">${prettyDate(e.work_date)}</div>
+              <span class="badge badge-${e.status}">${e.status}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:flex-end">
+              <div class="entry-meta">${meta}</div>
+              ${gal ? `<div class="entry-gal">${gal}</div>` : ''}
+            </div>
+            ${audit ? `<div class="entry-audit">${audit}</div>` : ''}
+          </div>`;
+      }).join('');
+    }
+
+    function entryAuditLine(e) {
+      if (!e || e.status === 'draft') return '';
+      const bits = [];
+      const sub = fmtTs(e.submitted_at);
+      const app = fmtTs(e.approved_at);
+      if (sub) bits.push(`Submitted ${sub}`);
+      if (e.status === 'approved' && app) bits.push(`Approved ${app} by ${escapeHtml(e.approved_by_name || '—')}`);
+      return bits.join(' · ');
+    }
+
+    function fmtTs(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    }
+
+    function prettyDate(s) {
+      if (!s) return '';
+      const d = new Date(s + 'T00:00:00');
+      return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    // ── Edit a draft ───────────────────────────────────────────────────────
+    function editEntry(id) {
+      const e = entriesCache.find(x => x.id === id);
+      if (!e) return;
+      if (blockedByWrite('open that draft')) return;
+      resetForm();
+      editingId = e.id;
+
+      for (const f of FIELDS) {
+        const node = el(f.id);
+        if (!node) continue;
+        const v = e[f.key];
+        node.value = (v == null) ? '' : String(v);
+      }
+      // A username that has since been removed from the company would blank
+      // the picker and quietly rewrite who fuelled. Keep it as its own option
+      // so the draft still shows what was reported.
+      const empSel = el('f-employee');
+      if (e.employee_username && ![...empSel.options].some(o => o.value === e.employee_username)) {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = e.employee_username;
+        opt.selected = true;
+        empSel.appendChild(opt);
+      }
+
+      // Only a gallons figure the driver typed counts as theirs to get back.
+      // Seeding this from a metered row would hand them the tank's number as
+      // if they had typed it the moment they cleared a meter reading.
+      const metered = gallonsFromMeters(numOrNull(val('f-beginning-meter')), numOrNull(val('f-ending-meter')));
+      manualGallons = metered == null ? val('f-gallons') : '';
+      updateGallons();
+
+      markEmpty([]);
+      markAsDraft();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function resetFormAction() {
+      if (blockedByWrite('reset the form')) return;
+      resetForm();
+    }
+
+    function resetForm() {
+      editingId = null;
+      document.getElementById('formTitle').textContent = 'New Fuel Entry';
+      document.getElementById('formBadge').style.display = 'none';
+      document.getElementById('row-delete').style.display = 'none';
+      for (const f of FIELDS) { const node = el(f.id); if (node) node.value = ''; }
+      manualGallons = '';
+      updateGallons();
+      markEmpty([]);
+      el('f-date').value = todayStr();
+      const mine = employees.find(e => (e.username || '').toLowerCase() === String(user.username || '').toLowerCase());
+      if (mine) el('f-employee').value = mine.username;
+      document.getElementById('formMsg').textContent = '';
+    }
+
+    function markAsDraft() {
+      document.getElementById('formTitle').textContent = 'Edit Draft';
+      const badge = document.getElementById('formBadge');
+      badge.textContent = 'draft';
+      badge.className = 'badge badge-draft';
+      badge.style.display = '';
+      document.getElementById('row-delete').style.display = '';
+    }
+
+    // ── Save / submit / delete ─────────────────────────────────────────────
+    // One write at a time, across every button that writes. A Save still in
+    // flight when Submit is pressed finds nothing pinned and posts the entry a
+    // second time; disabling one button never covered that, because the two
+    // presses are on different buttons.
+    let formWriting = false;
+    const WRITE_BUTTONS = ['btn-save', 'btn-submit', 'btn-reset', 'btn-delete-draft'];
+    function beginWrite() {
+      if (formWriting) return false;
+      formWriting = true;
+      for (const id of WRITE_BUTTONS) { const b = el(id); if (b) b.disabled = true; }
+      return true;
+    }
+    function endWrite() {
+      formWriting = false;
+      for (const id of WRITE_BUTTONS) { const b = el(id); if (b) b.disabled = false; }
+    }
+    function blockedByWrite(what) {
+      if (!formWriting) return false;
+      const msg = document.getElementById('formMsg');
+      msg.className = 'msg error';
+      msg.textContent = `Still saving — ${what} once it finishes.`;
+      return true;
+    }
+
+    // Write the form out as a draft row, creating it the first time and
+    // updating it after. Adopting the row id here means a later failure
+    // retries the same row instead of posting a duplicate.
+    async function writeDraft(data) {
+      const url = editingId
+        ? '/api/fuel-submissions?id=' + encodeURIComponent(editingId)
+        : '/api/fuel-submissions';
+      const res = await fetch(url, {
+        method: editingId ? 'PUT' : 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify(data),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+      editingId = j.entry.id;
+      return j.entry;
+    }
+
+    async function saveDraft() {
+      const msg = document.getElementById('formMsg');
+      msg.className = 'msg';
+      // The date is the one thing a row cannot exist without, so it is the one
+      // thing a draft still has to have. Everything else can wait.
+      if (val('f-date') === '') {
+        msg.textContent = 'Pick a date before saving.';
+        msg.classList.add('error');
+        markEmpty(FIELDS.filter(f => f.id === 'f-date'));
+        return;
+      }
+      if (!beginWrite()) return;
+      try {
+        await writeDraft(buildPayload());
+        const short = emptyFields().length;
+        msg.textContent = short
+          ? `Saved as draft — ${short} field${short === 1 ? '' : 's'} still to fill in.`
+          : 'Saved as draft.';
+        msg.classList.add('success');
+        markAsDraft();
+        await loadEntries();
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.classList.add('error');
+        await loadEntries();
+      } finally {
+        endWrite();
+      }
+    }
+
+    async function submitEntry() {
+      const msg = document.getElementById('formMsg');
+      msg.className = 'msg';
+
+      const empty = emptyFields();
+      markEmpty(empty);
+      if (empty.length) {
+        msg.textContent = `Fill in every field before submitting — still needed: ${empty.map(f => f.label).join(', ')}.`;
+        msg.classList.add('error');
+        const first = el(empty[0].id);
+        if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+
+      if (!confirm("Submit this fuel entry? You won't be able to edit it after this — only an admin can.")) return;
+      if (!beginWrite()) return;
+
+      try {
+        // Written out as a draft first, then submitted. The write adopts its
+        // row before anything else runs, so a submit that fails leaves the
+        // form pinned to that row — pressing Submit again retries it instead
+        // of posting the same fill-up a second time.
+        await writeDraft(buildPayload());
+        const res = await fetch('/api/fuel-submissions?action=submit&id=' + encodeURIComponent(editingId), {
+          method: 'POST', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Submit failed');
+        resetForm();
+        msg.className = 'msg success';
+        msg.textContent = 'Submitted ✓';
+        await loadEntries();
+      } catch (err) {
+        // Say where the work went. "Submit failed" over a form that still
+        // looks unsaved is what makes people press the button again.
+        msg.className = 'msg error';
+        msg.textContent = editingId
+          ? `${err.message} — saved as a draft below; press Submit to try again.`
+          : err.message;
+        if (editingId) markAsDraft();
+        await loadEntries();
+      } finally {
+        endWrite();
+      }
+    }
+
+    async function deleteDraft() {
+      if (!editingId) return;
+      if (!confirm('Delete this draft fuel entry? This cannot be undone.')) return;
+      if (blockedByWrite('delete') || !beginWrite()) return;
+      const msg = document.getElementById('formMsg');
+      try {
+        const res = await fetch('/api/fuel-submissions?id=' + encodeURIComponent(editingId), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+        resetForm();
+        await loadEntries();
+      } catch (err) {
+        msg.className = 'msg error';
+        msg.textContent = `${err.message} — the draft is still in the list below.`;
+        await loadEntries();
+      } finally {
+        endWrite();
+      }
+    }
+
+    function authHeaders(json) {
+      const h = { Authorization: `Bearer ${token}` };
+      if (json) h['Content-Type'] = 'application/json';
+      return h;
+    }
+
+    function goToDivisions() { window.location.replace('divisions.html'); }
+    function signOut() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+  </script>
+</body>
+</html>
