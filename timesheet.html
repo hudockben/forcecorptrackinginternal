@@ -676,12 +676,12 @@
       <div class="msg" id="formMsg"></div>
 
       <div class="btn-row">
-        <button class="btn btn-secondary" id="btn-reset" onclick="resetForm()">Reset</button>
+        <button class="btn btn-secondary" id="btn-reset" onclick="resetFormAction()">Reset</button>
         <button class="btn btn-secondary" id="btn-save"  onclick="saveDraft()">Save Draft</button>
         <button class="btn btn-primary"   id="btn-submit"onclick="submitEntry()">Submit</button>
       </div>
       <div class="btn-row" id="row-delete" style="display:none">
-        <button class="btn btn-danger" onclick="deleteDraft()">Delete Draft</button>
+        <button class="btn btn-danger" id="btn-delete-draft" onclick="deleteDraft()">Delete Draft</button>
       </div>
     </section>
 
@@ -949,7 +949,7 @@
       // Not while the form is mid-write: the payload list being written was
       // built before this click, so the block would be deleted here and
       // re-created a moment later by a write already on its way.
-      if (formWriting) return;
+      if (blockedByWrite('remove that job')) return;
       const savedId = editingIds[i];
       if (savedId && !confirm('Remove this job? The draft entry saved for it will be deleted.')) return;
 
@@ -1470,12 +1470,7 @@
       // Not while the form is writing. resetForm() below clears editingIds,
       // and a write loop that loses those mid-flight stops recognising the
       // rows it already created — so it posts the rest of the day again.
-      if (formWriting) {
-        const busy = document.getElementById('formMsg');
-        busy.className = 'msg error';
-        busy.textContent = 'Still saving — try that again in a moment.';
-        return;
-      }
+      if (blockedByWrite('open that draft')) return;
       const token = ++editToken;
       resetForm();
 
@@ -1549,6 +1544,14 @@
         document.getElementById('f-off-notes').value = e.notes || '';
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // The Reset button. resetForm() itself is called from inside the write
+    // paths (after a successful submit, after a delete), so the guard lives
+    // here rather than in resetForm — those callers are the write.
+    function resetFormAction() {
+      if (blockedByWrite('reset the form')) return;
+      resetForm();
     }
 
     function resetForm() {
@@ -1799,19 +1802,39 @@
     // different buttons — and the window is as long as the whole day takes to
     // write, which on a split is one round trip per job.
     let formWriting = false;
+    // Everything that would disturb a write in progress. Reset and Delete
+    // Draft belong here as much as Save and Submit do: both clear editingIds,
+    // and a write loop that loses those mid-flight stops recognising the rows
+    // it already created, so it posts the rest of the day a second time.
+    const WRITE_BUTTONS = ['btn-save', 'btn-submit', 'btn-add-split', 'btn-reset', 'btn-delete-draft'];
     function beginWrite() {
       if (formWriting) return false;
       formWriting = true;
-      for (const id of ['btn-save', 'btn-submit', 'btn-add-split']) {
-        document.getElementById(id).disabled = true;
+      for (const id of WRITE_BUTTONS) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = true;
       }
       return true;
     }
     function endWrite() {
       formWriting = false;
-      document.getElementById('btn-save').disabled = false;
-      document.getElementById('btn-submit').disabled = false;
-      renderSplitChrome();   // re-enables the add button unless we're at the cap
+      for (const id of WRITE_BUTTONS) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = false;
+      }
+      renderSplitChrome();   // re-disables the add button if we're at the cap
+    }
+
+    // Guard for an action the user asked for that a write in progress makes
+    // unsafe. Disabling the buttons covers the ordinary case; this covers the
+    // press that lands in the same tick, and says what happened — a confirmed
+    // "delete this draft" that quietly does nothing reads as data loss.
+    function blockedByWrite(what) {
+      if (!formWriting) return false;
+      const msg = document.getElementById('formMsg');
+      msg.className = 'msg error';
+      msg.textContent = `Still saving — ${what} once it finishes.`;
+      return true;
     }
 
     async function saveDraft() {
@@ -1947,7 +1970,7 @@
       if (!confirm(ids.length > 1
         ? `Delete all ${ids.length} draft entries for this day? This cannot be undone.`
         : 'Delete this draft entry? This cannot be undone.')) return;
-      if (!beginWrite()) return;
+      if (blockedByWrite('delete') || !beginWrite()) return;
       const failed = [];
       try {
         for (const rowId of ids) {

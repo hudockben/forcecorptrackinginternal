@@ -325,6 +325,9 @@ function loadPage(opts = {}) {
     ;return {
       buildPayloads, addSplit, setSeg, updateHours, blockOrder, blockName,
       splitLabel, resetForm, bel, draftGroupFor, editEntry,
+      // Defensive: lets the harness load a build that predates the guard, so
+      // these tests can be run against it to prove they catch its absence.
+      resetFormAction: typeof resetFormAction === 'function' ? resetFormAction : null,
       saveDraft, submitEntry, onDivisionChange,
       setEntriesCache: v => { entriesCache = v; },
       state: () => ({ groupId: currentGroupId, blocks: blockOrder() }),
@@ -709,6 +712,42 @@ async function concurrencyTests() {
     assert('and the save still reports its own result',
       /Saved 2 draft entries/.test(doc.getElementById('formMsg').textContent),
       JSON.stringify(doc.getElementById('formMsg').textContent));
+  }
+
+  {
+    // Reset and Delete Draft clear editingIds exactly like loading a draft
+    // does, so a write in flight loses track of the rows it already made and
+    // posts the rest of the day again. Every button that can do that has to be
+    // shut for the duration, not just the two that start a write.
+    const { api, document: doc, net } = loadPage();
+    georgesDay(api, doc);
+    await api.saveDraft();
+    const pinned = net.creates().length;
+
+    net.hold = true;
+    const saving = api.saveDraft();
+    await tick();
+    for (const id of ['btn-save', 'btn-submit', 'btn-add-split', 'btn-reset', 'btn-delete-draft']) {
+      const el = doc.getElementById(id);
+      assert(`${id} is shut while the form writes`, !!el && el.disabled === true,
+        el ? 'still enabled' : 'no such button');
+    }
+    assert('the Reset button routes through a guarded action',
+      typeof api.resetFormAction === 'function', 'resetFormAction is missing');
+    if (typeof api.resetFormAction === 'function') api.resetFormAction();   // same-tick press
+    assert('a Reset in the same tick is refused, and says so',
+      /still saving/i.test(doc.getElementById('formMsg').textContent),
+      JSON.stringify(doc.getElementById('formMsg').textContent));
+    net.hold = false;
+    net.release();
+    await saving;
+
+    eq('so the re-save creates nothing new', net.creates().length, pinned);
+    for (const id of ['btn-save', 'btn-submit', 'btn-reset', 'btn-delete-draft']) {
+      const el = doc.getElementById(id);
+      assert(`${id} works again once the save lands`, !!el && el.disabled === false,
+        el ? 'still disabled' : 'no such button');
+    }
   }
 
   console.log('\n[timesheet.html — a slow job list cannot land on the wrong division]');
