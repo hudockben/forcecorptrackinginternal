@@ -10,11 +10,12 @@
  * job, so payroll reviews and approves them exactly as if he had submitted
  * twice. Three things have to hold for that to be worth anything:
  *
- *   1. The day-level answers are applied ONCE across the group. Travel is one
- *      round trip — the drive out on the first job, the drive back on the last
- *      — and lunch is one 30-minute deduction, taken off the first job. Copy
- *      either onto every row and the company pays a second commute and the
- *      worker loses a second half hour, per extra job, silently.
+ *   1. The day-level answers are applied ONCE across the group. Lunch is one
+ *      30-minute deduction, taken off the first job; copy it onto every row
+ *      and the worker loses a second half hour per extra job, silently. Travel
+ *      is per leg — the drive out, the drive to each later job, the drive home
+ *      — and only the drive home is shared, so no leg is paid twice and the
+ *      drive between jobs is not lost.
  *   2. Every job keeps its OWN job, clock, equipment answer and division
  *      extras. A split that shares those is just a duplicate.
  *   3. The rows stay tied together (split_group_id / index / count), and stay
@@ -324,7 +325,7 @@ function loadPage(opts = {}) {
   const exposed = `
     ;return {
       buildPayloads, addSplit, setSeg, updateHours, blockOrder, blockName,
-      splitLabel, resetForm, bel, draftGroupFor, editEntry,
+      splitLabel, resetForm, bel, draftGroupFor, editEntry, updateTravelHours,
       // Defensive: lets the harness load a build that predates the guard, so
       // these tests can be run against it to prove they catch its absence.
       resetFormAction: typeof resetFormAction === 'function' ? resetFormAction : null,
@@ -348,8 +349,14 @@ function pick(sel, value, label) {
   sel.value = value;
 }
 
-function setBlock(api, i, { division, jobId, jobLabel, start, end, equip }) {
+function setBlock(api, i, { division, jobId, jobLabel, start, end, equip, travelIn }) {
   api.bel(i, 'division').value = division;
+  if (travelIn !== undefined) {
+    const leg = api.bel(i, 'travel-in');
+    assert(`job block ${i} offers a travel field`, !!leg,
+      'no travel input on this job block — the drive to it cannot be recorded');
+    if (leg) leg.value = travelIn;
+  }
   pick(api.bel(i, 'job'), jobId, jobLabel);
   api.bel(i, 'start').value = start;
   api.bel(i, 'end').value   = end;
@@ -375,8 +382,9 @@ function georgesDay(api, doc) {
   const second = api.blockOrder()[1];
   setBlock(api, second, {
     division: 'turf', jobId: '26042', jobLabel: 'Franklin Regional — Multi Field',
-    start: '12:00', end: '16:00', equip: false,
+    start: '12:00', end: '16:00', equip: false, travelIn: '0.25',
   });
+  api.updateTravelHours();
   return second;
 }
 
@@ -400,10 +408,15 @@ function pageTests() {
     eq('and its own equipment answer',
       [a.data.operated_equipment, b.data.operated_equipment], [true, false]);
 
-    eq('the drive out is booked to the first job only',
-      [a.data.travel_to_site_hours, b.data.travel_to_site_hours], ['0.5', '']);
-    eq('the drive back to the last job only — the round trip is paid once',
+    // A split day is shop → job A → job B → shop, so there are THREE legs, not
+    // two. Each job carries the drive that got the worker to it; only the last
+    // carries the drive home, so no leg is ever paid twice.
+    eq('each job carries the drive that got them to it',
+      [a.data.travel_to_site_hours, b.data.travel_to_site_hours], ['0.5', '0.25']);
+    eq('the drive home belongs to the last job alone',
       [a.data.travel_to_shop_hours, b.data.travel_to_shop_hours], ['', '0.75']);
+    eq('and the readout adds up every leg of the day',
+      doc.getElementById('f-travel-hours').textContent, '1.50');
     eq('lunch is deducted once, from the first job',
       [a.data.lunch_break, b.data.lunch_break], [true, false]);
 

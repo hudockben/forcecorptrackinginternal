@@ -563,12 +563,12 @@
 
         <div class="row-2">
           <div class="row">
-            <label for="f-travel-to-site">Travel Time to Site (hours)</label>
+            <label for="f-travel-to-site" id="lbl-travel-to-site">Travel Time to Site (hours)</label>
             <input type="number" inputmode="decimal" min="0" max="24" step="0.25" placeholder="0"
                    id="f-travel-to-site" oninput="updateTravelHours()" onchange="updateTravelHours()" />
           </div>
           <div class="row">
-            <label for="f-travel-to-shop">Travel Time to Shop (hours)</label>
+            <label for="f-travel-to-shop" id="lbl-travel-to-shop">Travel Time to Shop (hours)</label>
             <input type="number" inputmode="decimal" min="0" max="24" step="0.25" placeholder="0"
                    id="f-travel-to-shop" oninput="updateTravelHours()" onchange="updateTravelHours()" />
           </div>
@@ -790,6 +790,7 @@
       'ees-name':       'f-ees-name',
       'ees-job-number': 'f-ees-job-number',
       'ees-billing':    'f-ees-billing',
+      'travel-in':      'f-travel-to-site',
       'start':          'f-start',
       'end':            'f-end',
       'hours':          'f-hours',
@@ -873,6 +874,12 @@
                 </select>
               </div>
             </div>
+          </div>
+
+          <div class="row">
+            <label for="s${i}-travel-in">Travel Time to This Job (hours)</label>
+            <input type="number" inputmode="decimal" min="0" max="24" step="0.25" placeholder="0"
+                   id="s${i}-travel-in" oninput="updateTravelHours()" onchange="updateTravelHours()" />
           </div>
 
           <div class="row-2">
@@ -999,12 +1006,22 @@
       addBtn.disabled = order.length >= MAX_JOB_BLOCKS;
       addBtn.textContent = split ? '+ Add another job' : '+ Split time to another job';
 
+      // The drive out is the first job's; each later job carries the drive
+      // from the one before it; the drive home is the last job's. Rewording
+      // the first field says so — otherwise "to Site" reads as though it were
+      // the only drive on a day that had three.
+      document.getElementById('lbl-travel-to-site').textContent =
+        split ? 'Travel Time to First Job (hours)' : 'Travel Time to Site (hours)';
+      // The drive to the shop needs no rewording — it can only be from the
+      // last job — and a longer label here wraps past its neighbour and drags
+      // the two inputs out of line.
+
       const hint = document.getElementById('splitHint');
       hint.style.display = split ? '' : 'none';
       hint.textContent = split
         ? `Each job is submitted as its own entry (${order.length} in total), so payroll sees them separately. `
-          + 'Date, travel, lunch, supervisor and notes cover the whole day: travel is counted once for the round '
-          + 'trip, and any lunch deduction comes off the first job.'
+          + 'Date, lunch, supervisor and notes cover the whole day, and any lunch deduction comes off the first '
+          + 'job. Travel is per leg: the drive out, the drive to each later job, and the drive home.'
         : '';
 
       document.getElementById('dayTotalRow').style.display = split ? '' : 'none';
@@ -1112,15 +1129,19 @@
 
     // Travel is logged as two decimal-hour legs (to-site + to-shop). The
     // displayed total is just the sum — no lunch deduction applies.
-    function parseTravelLeg(id) {
-      const raw = document.getElementById(id).value;
+    function parseTravelLeg(el) {
+      const raw = el ? el.value : '';
       if (raw === '' || raw == null) return 0;
       const n = Number(raw);
       if (!Number.isFinite(n) || n < 0) return 0;
       return Math.min(n, 24);
     }
+    // Every leg of the day: the drive out to the first job, the drive between
+    // each pair of jobs, and the drive home from the last. A day on one job
+    // has only the first and last, which is what this always showed.
     function updateTravelHours() {
-      const total = parseTravelLeg('f-travel-to-site') + parseTravelLeg('f-travel-to-shop');
+      const total = blockOrder().reduce((s, i) => s + parseTravelLeg(bel(i, 'travel-in')), 0)
+                  + parseTravelLeg(document.getElementById('f-travel-to-shop'));
       document.getElementById('f-travel-hours').textContent = total.toFixed(2);
     }
 
@@ -1457,6 +1478,8 @@
       bel(i, 'ees-job-number').value = e.ees_job_number || '';
       bel(i, 'ees-billing').value    = e.ees_billing || 'Non-Billable';
       onJobChange(i);
+      bel(i, 'travel-in').value = e.travel_to_site_hours != null ? e.travel_to_site_hours : '';
+      updateTravelHours();
       bel(i, 'start').value = e.start_time || '';
       bel(i, 'end').value   = e.end_time   || '';
       if (e.operated_equipment === true || e.operated_equipment === false) setSeg('equip', e.operated_equipment, i);
@@ -1481,11 +1504,9 @@
         currentGroupId = group.length > 1 ? (first.split_group_id || null) : null;
 
         document.getElementById('f-date').value = first.work_date || '';
-        // Travel is one round trip for the day: the drive out is stored on the
-        // first job, the drive back on the last. Read them from the same ends.
-        document.getElementById('f-travel-to-site').value = first.travel_to_site_hours != null ? first.travel_to_site_hours : '';
+        // The drive home is the only shared leg, and it lives on the last job.
+        // Each job's own inbound drive is restored by fillBlockFromEntry.
         document.getElementById('f-travel-to-shop').value = last.travel_to_shop_hours != null ? last.travel_to_shop_hours : '';
-        updateTravelHours();
         // Lunch rides on the first job, for the same reason.
         if (first.lunch_break === true || first.lunch_break === false) setSeg('lunch', first.lunch_break);
         else clearSeg('lunch');
@@ -1658,8 +1679,8 @@
       const supOpt = supSel.options[supSel.selectedIndex];
       const supName = supOpt ? supOpt.dataset.name || supOpt.textContent : '';
       // Travel legs are optional decimal hours. Empty inputs are sent as
-      // empty strings; the API treats them as null.
-      const travelToSite = document.getElementById('f-travel-to-site').value;
+      // empty strings; the API treats them as null. The drive home is the one
+      // shared leg — there is only one of it, however many jobs the day had.
       const travelToShop = document.getElementById('f-travel-to-shop').value;
       const notes = document.getElementById('f-notes').value || '';
 
@@ -1730,10 +1751,11 @@
             job_label: b.jobLabel,
             start_time: b.start,
             end_time:   b.end,
-            // One round trip, not one per job: the drive out belongs to the
-            // first job of the day and the drive back to the last. Sending
-            // both on every row would pay the same travel two or three times.
-            travel_to_site_hours: pos === 0 ? travelToSite : '',
+            // Each job carries the drive that got the worker TO it: from the
+            // shop for the first, from the previous job for the rest. The
+            // drive home belongs to the last job and to no other, so it is
+            // never paid more than once however many jobs the day had.
+            travel_to_site_hours: bel(b.i, 'travel-in').value,
             travel_to_shop_hours: pos === blocks.length - 1 ? travelToShop : '',
             // Same reasoning for lunch: one break, deducted once, from the
             // first job. The others record that no break fell inside them.
