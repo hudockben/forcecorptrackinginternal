@@ -641,6 +641,104 @@
     .ifta-yes { color: var(--green); font-weight: 700; }
     .ifta-no  { color: var(--muted); }
 
+    /* ── Vehicle × month table ── */
+    .rep-block th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    .rep-block th.sortable:hover { color: var(--text); }
+    .rep-block th.sorted { color: var(--accent); }
+    .vm-table tbody tr.vm-row { cursor: pointer; }
+    .vm-table tbody tr.vm-row:hover td { background: rgba(255,255,255,0.03); }
+    .vm-table tbody tr.vm-row.open td { background: rgba(251,113,133,0.06); }
+    .vm-caret { color: var(--muted); width: 22px; text-align: center; }
+    .vm-table tbody tr.vm-row.open .vm-caret { color: var(--accent); }
+    /* A zero in a card column is noise — every truck is absent from most
+       accounts. A middot says "nothing here" without competing with the
+       figures that are actually being checked. */
+    .vm-table td.nil { color: #444; }
+    .vm-table td.has-gal { color: var(--text); font-weight: 600; }
+    .vm-detail > td { background: var(--bg); padding: 0.85rem 1rem !important; }
+    .vm-detail-head {
+      font-size: 0.74rem;
+      color: var(--muted);
+      margin-bottom: 0.55rem;
+      letter-spacing: 0.02em;
+    }
+    .vm-fills { width: 100%; border-collapse: collapse; font-size: 0.76rem; }
+    .vm-fills thead th {
+      padding: 0.35rem 0.5rem;
+      font-size: 0.56rem;
+      background: transparent;
+      border-bottom: 1px solid var(--border);
+    }
+    .vm-fills tbody td {
+      padding: 0.4rem 0.5rem;
+      border-bottom: 1px solid rgba(42,42,58,0.5);
+    }
+
+    /* ── Statement match ── */
+    .match-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 0.7rem;
+      align-items: end;
+      margin-bottom: 0.7rem;
+    }
+    @media (max-width: 900px) { .match-controls { grid-template-columns: 1fr; } }
+    #mt-paste {
+      width: 100%;
+      min-height: 120px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.6rem 0.7rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem;
+      line-height: 1.5;
+      outline: none;
+      resize: vertical;
+    }
+    #mt-paste:focus { border-color: var(--accent); }
+    .match-summary {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.7rem;
+      margin: 0.85rem 0;
+    }
+    @media (max-width: 900px) { .match-summary { grid-template-columns: repeat(2, 1fr); } }
+    .match-tile {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 0.75rem;
+    }
+    .match-tile .k {
+      font-size: 0.58rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .match-tile .v {
+      font-size: 1.25rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      margin-top: 0.15rem;
+    }
+    .match-tile.ok    .v { color: var(--green); }
+    .match-tile.off   .v { color: #fb923c; }
+    .match-tile.miss  .v { color: var(--red); }
+    .row-ok   td.verdict { color: var(--green); }
+    .row-off  td.verdict { color: #fb923c; font-weight: 700; }
+    .row-miss td.verdict { color: var(--red); font-weight: 700; }
+    tr.row-off > td:first-child  { box-shadow: inset 3px 0 0 0 #fb923c; }
+    tr.row-miss > td:first-child { box-shadow: inset 3px 0 0 0 var(--red); }
+    .match-note {
+      font-size: 0.74rem;
+      color: var(--muted);
+      line-height: 1.5;
+      margin-top: 0.5rem;
+    }
+
     /* ── Vehicles tab ── */
     .veh-form {
       background: var(--surface);
@@ -844,6 +942,44 @@
 
     <!-- ── Report container (Reports tab) ── -->
     <div id="reportWrap" style="display:none"></div>
+
+    <!-- ── Statement match (Reports tab) ──
+         Deliberately static markup with only its RESULTS re-rendered: the
+         textarea holds a pasted statement, and rebuilding the block around it
+         on every sort of the table above would throw that away. -->
+    <div id="matchWrap" style="display:none">
+      <div class="rep-block">
+        <div class="rep-title">Match a Fuel Account Statement</div>
+        <div class="rep-sub">
+          Paste a Guttman or Wex statement and this lines it up against what the field reported,
+          truck by truck, over the date range above. Transaction-level exports are fine — lines for
+          the same truck are added together. One line per row: the truck number and the gallons
+          figure, separated by tabs, commas or spaces. Anything else on the line is ignored.
+        </div>
+        <div class="match-controls">
+          <div class="filter-field">
+            <label for="mt-card">Account</label>
+            <select id="mt-card"></select>
+          </div>
+          <div class="filter-field">
+            <label for="mt-gallons-col">Which number is the gallons</label>
+            <select id="mt-gallons-col">
+              <option value="last">The last number on the line</option>
+              <option value="1">The 1st number after the truck</option>
+              <option value="2">The 2nd number after the truck</option>
+              <option value="3">The 3rd number after the truck</option>
+            </select>
+          </div>
+          <div class="filter-actions">
+            <button class="btn-filter" onclick="runStatementMatch()">Match</button>
+            <button class="btn-clear"  onclick="clearStatementMatch()">Clear</button>
+          </div>
+        </div>
+        <textarea id="mt-paste" spellcheck="false"
+          placeholder="412&#9;320.50&#10;412&#9;180.00&#10;77&#9;95.25&#10;&#10;…or paste the whole statement export, headers and all."></textarea>
+        <div id="matchResults"></div>
+      </div>
+    </div>
 
     <!-- ── Vehicles container (Vehicles tab) ── -->
     <div id="vehiclesWrap" style="display:none">
@@ -1204,6 +1340,12 @@
         FUEL_CARDS.map(c => `<option value="${escAttr(c)}">${escapeHtml(c)}</option>`).join('');
       el('flt-type').innerHTML = '<option value="">All</option>' +
         FUEL_TYPES.map(t => `<option value="${escAttr(t)}">${escapeHtml(t)}</option>`).join('');
+      // The statement match runs against one account at a time — Guttman and
+      // Wex lead because those are the two that get balanced.
+      el('mt-card').innerHTML = CARD_COLUMN_ORDER
+        .filter(c => c !== '(none)')
+        .map(c => `<option value="${escAttr(c)}">${escapeHtml(c)}</option>`).join('') +
+        '<option value="">All accounts together</option>';
 
       renderModalOptions();
       resetVehicleForm();
@@ -1259,6 +1401,7 @@
       el('auditLogWrap').style.display = tab === 'auditlog'  ? '' : 'none';
       el('reportWrap').style.display   = tab === 'reports'   ? '' : 'none';
       el('reportRanges').style.display = tab === 'reports'   ? '' : 'none';
+      el('matchWrap').style.display    = tab === 'reports'   ? '' : 'none';
       el('vehiclesWrap').style.display = tab === 'vehicles'  ? '' : 'none';
       el('bulkBar').classList.toggle('open', isGrid);
 
@@ -1925,6 +2068,75 @@
     function n2(v) { return (Number(v) || 0).toFixed(2); }
     function n1(v) { return (Number(v) || 0).toFixed(1); }
 
+    // "YYYY-MM" off a work_date, read as written. Parsing it into a Date
+    // first would put an entry dated the 1st into the previous month for
+    // anyone west of Greenwich — the whole point of this key is which
+    // statement the fill-up belongs on.
+    function monthOf(workDate) {
+      const s = String(workDate || '');
+      return /^\d{4}-\d{2}/.test(s) ? s.slice(0, 7) : '(no date)';
+    }
+
+    function monthLabel(key) {
+      if (!/^\d{4}-\d{2}$/.test(key)) return key;
+      const [y, mo] = key.split('-').map(Number);
+      return new Date(y, mo - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+    }
+
+    // The two accounts the month is balanced against come first; the rest
+    // follow the order the field form offers them.
+    const CARD_COLUMN_ORDER = ['Guttman', 'Wex']
+      .concat(FUEL_CARDS.filter(c => c !== 'Guttman' && c !== 'Wex'))
+      .concat(['(none)']);
+
+    // How the vehicle-by-month table is sorted, and which of its rows are
+    // open. Held outside the render so re-sorting or opening a row doesn't
+    // lose the other.
+    let vmSort = { col: 'truck', dir: 1 };
+    const vmOpen = new Set();
+
+    function sortVehicleMonth(col) {
+      if (vmSort.col === col) vmSort.dir = -vmSort.dir;
+      // Numbers are most useful biggest-first on the first click; a truck
+      // number or a month is most useful in its own order.
+      else vmSort = { col, dir: (col === 'truck' || col === 'month') ? 1 : -1 };
+      renderReport();
+    }
+
+    function toggleVehicleMonth(key) {
+      if (vmOpen.has(key)) vmOpen.delete(key); else vmOpen.add(key);
+      renderReport();
+    }
+
+    function vehicleMonthRows(m) {
+      const rows = [...m.byVehicleMonth.values()];
+      const dir  = vmSort.dir;
+      rows.sort((a, b) => {
+        let d = 0;
+        switch (vmSort.col) {
+          case 'truck':
+            // A fill-up with no truck number can't be balanced against
+            // anything, so it sits at the bottom whichever way this sorts.
+            if (a.truck == null && b.truck == null) d = 0;
+            else if (a.truck == null) return 1;
+            else if (b.truck == null) return -1;
+            else d = a.truck - b.truck;
+            break;
+          case 'month':   d = String(a.month).localeCompare(String(b.month)); break;
+          case 'gallons': d = a.gallons - b.gallons; break;
+          case 'entries': d = a.entries - b.entries; break;
+          default:
+            // A card column.
+            d = (a.byCard.get(vmSort.col) || 0) - (b.byCard.get(vmSort.col) || 0);
+        }
+        if (d !== 0) return d * dir;
+        // Ties settle on truck then month so the table never reorders itself
+        // between two renders of the same data.
+        return (a.truck || 0) - (b.truck || 0) || String(a.month).localeCompare(String(b.month));
+      });
+      return rows;
+    }
+
     function setReportRange(kind) {
       const now = new Date();
       const y   = now.getFullYear();
@@ -1997,8 +2209,18 @@
         from: val('flt-from'), to: val('flt-to'),
         status: val('rep-status') || 'approved',
         count: entries.length,
+        rows: entries,
         gallons: 0, iftaGallons: 0, nonIftaGallons: 0, unmatchedGallons: 0,
         byState: new Map(), byVehicle: new Map(), byCard: new Map(), byType: new Map(),
+        // The unit the office actually balances in: one truck, one month.
+        // Keyed "<truck>|<YYYY-MM>", carrying a per-card split because
+        // Guttman and Wex are reconciled against separate statements.
+        byVehicleMonth: new Map(),
+        cardsPresent: [],
+        // Which months the range actually caught. A statement covers one, so
+        // the match warns rather than quietly comparing a month's billing
+        // against a quarter of fuel.
+        months: [...new Set(entries.map(e => monthOf(e.work_date)))].sort(),
         tanks: new Map(),
         meterFlagged: [],
         exceptions: [],
@@ -2039,6 +2261,32 @@
         cRow.entries++; cRow.gallons += g;
         m.byCard.set(card, cRow);
 
+        // Truck × month, split by card. The whole balancing job is comparing
+        // one of these cells against one line of a Guttman or Wex statement,
+        // so the report is built in that shape rather than leaving the office
+        // to re-derive it from a single gallons total.
+        const month = monthOf(e.work_date);
+        const vmKey = `${tKey}|${month}`;
+        const vmRow = m.byVehicleMonth.get(vmKey) || {
+          key: vmKey, truck: e.truck_number, month, vehicle: v || null,
+          entries: 0, gallons: 0, byCard: new Map(),
+          states: new Set(), types: new Set(),
+          minMileage: null, maxMileage: null,
+          fills: [],
+        };
+        vmRow.entries++; vmRow.gallons += g;
+        vmRow.byCard.set(card, (vmRow.byCard.get(card) || 0) + g);
+        if (e.state)     vmRow.states.add(e.state);
+        if (e.fuel_type) vmRow.types.add(e.fuel_type);
+        if (Number.isFinite(mi)) {
+          if (vmRow.minMileage == null || mi < vmRow.minMileage) vmRow.minMileage = mi;
+          if (vmRow.maxMileage == null || mi > vmRow.maxMileage) vmRow.maxMileage = mi;
+        }
+        // Kept so a cell that doesn't agree with the statement can be opened
+        // to the fill-ups behind it without another round trip.
+        vmRow.fills.push(e);
+        m.byVehicleMonth.set(vmKey, vmRow);
+
         const type = e.fuel_type || '(none)';
         const fRow = m.byType.get(type) || { key: type, entries: 0, gallons: 0 };
         fRow.entries++; fRow.gallons += g;
@@ -2060,6 +2308,14 @@
           m.tanks.set(key, t);
         }
       }
+
+      // The card columns the vehicle-by-month table gets. Guttman and Wex
+      // lead because those are the two statements the month is balanced
+      // against; the rest follow in the order the form offers them, so the
+      // columns don't reshuffle from one month to the next.
+      const seen = new Set(m.byCard.keys());
+      m.cardsPresent = CARD_COLUMN_ORDER.filter(c => seen.has(c))
+        .concat([...seen].filter(c => !CARD_COLUMN_ORDER.includes(c)).sort());
 
       // A tank meter runs forward without resetting, so the fills recorded
       // against it should account for the whole distance it travelled. What
@@ -2117,6 +2373,147 @@
       return [...map.values()].sort((a, b) => b.gallons - a.gallons);
     }
 
+    /**
+     * Vehicle × month, split by fuel account — the table the month is
+     * balanced from.
+     *
+     * A Guttman statement and a Wex statement each list a truck number and a
+     * gallons figure for the month, so those are the two things a row here
+     * has to put side by side without any arithmetic in between. A single
+     * gallons total per truck would leave the office re-deriving the split by
+     * hand, which is the work this is supposed to remove.
+     *
+     * Every row opens onto the fill-ups behind it, because the moment a cell
+     * doesn't agree with a statement the next question is always which fill-up
+     * is wrong, and that answer should not be another screen away.
+     */
+    function vehicleMonthBlockHtml(m) {
+      const rows  = vehicleMonthRows(m);
+      const cards = m.cardsPresent;
+      const arrow = col => vmSort.col === col ? (vmSort.dir > 0 ? ' ▲' : ' ▼') : '';
+      const th = (col, label, cls) =>
+        `<th class="sortable ${cls || ''}${vmSort.col === col ? ' sorted' : ''}"
+             onclick="sortVehicleMonth('${escJsAttr(col)}')"
+             title="Sort by ${escAttr(label)}">${escapeHtml(label)}${arrow(col)}</th>`;
+
+      // Column totals, so the foot of each card column is the figure to check
+      // against that account's statement total for the range.
+      const cardTotals = new Map();
+      for (const r of rows) {
+        for (const [c, g] of r.byCard) cardTotals.set(c, (cardTotals.get(c) || 0) + g);
+      }
+
+      const colCount = 4 + cards.length + 3;
+
+      return `
+        <div class="rep-block">
+          <div class="rep-title">By Vehicle &amp; Month</div>
+          <div class="rep-sub">
+            One row per truck per month, which is the unit a fuel account statement is read in.
+            Each account has its own column — compare the Guttman and Wex columns straight against
+            those statements. Click a heading to sort, click a row to open the fill-ups behind it.
+            Odometer span is the highest mileage reported in the month minus the lowest: it comes off
+            the fill-ups, not a trip log, so it under-counts any distance driven between the last fill
+            of one month and the first of the next.
+          </div>
+          <table class="vm-table">
+            <thead>
+              <tr>
+                <th style="width:22px"></th>
+                ${th('truck', 'Truck', 'num')}
+                ${th('month', 'Month')}
+                <th>Vehicle</th>
+                ${cards.map(c => th(c, c, 'num')).join('')}
+                ${th('gallons', 'Total Gallons', 'num')}
+                ${th('entries', 'Fill-ups', 'num')}
+                <th class="num">Odometer Span</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(r => {
+                const v    = r.vehicle;
+                const open = vmOpen.has(r.key);
+                const span = (r.minMileage != null && r.maxMileage != null)
+                  ? n1(r.maxMileage - r.minMileage) : '—';
+                return `
+                <tr class="vm-row ${open ? 'open' : ''} ${v ? '' : 'exception'}" onclick="toggleVehicleMonth('${escJsAttr(r.key)}')">
+                  <td class="vm-caret">${open ? '▾' : '▸'}</td>
+                  <td class="num" style="font-weight:700">${r.truck != null ? r.truck : '—'}</td>
+                  <td>${escapeHtml(monthLabel(r.month))}</td>
+                  <td>${v
+                        ? escapeHtml([v.model_year, v.make].filter(Boolean).join(' ') || v.vin || '—')
+                        : '<span class="off">not on the vehicle list</span>'}</td>
+                  ${cards.map(c => {
+                    const g = r.byCard.get(c);
+                    return `<td class="num ${g ? 'has-gal' : 'nil'}">${g ? n2(g) : '·'}</td>`;
+                  }).join('')}
+                  <td class="num" style="font-weight:700">${n2(r.gallons)}</td>
+                  <td class="num">${r.entries}</td>
+                  <td class="num">${span}</td>
+                </tr>
+                ${open ? `
+                <tr class="vm-detail">
+                  <td colspan="${colCount}">
+                    ${vehicleMonthDetailHtml(r)}
+                  </td>
+                </tr>` : ''}`;
+              }).join('')}
+              <tr class="total">
+                <td></td>
+                <td colspan="3">Total — ${rows.length} truck-month${rows.length === 1 ? '' : 's'}</td>
+                ${cards.map(c => `<td class="num">${n2(cardTotals.get(c) || 0)}</td>`).join('')}
+                <td class="num">${n2(m.gallons)}</td>
+                <td class="num">${m.count}</td>
+                <td class="num"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    // The fill-ups behind one truck-month, oldest first — the order a
+    // statement lists them in, so the two can be read side by side.
+    function vehicleMonthDetailHtml(r) {
+      const fills = [...r.fills].sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
+      const v = r.vehicle;
+      const head = v
+        ? `Truck ${r.truck} · ${escapeHtml([v.model_year, v.make].filter(Boolean).join(' ') || '—')}`
+          + (v.vin ? ` · VIN ${escapeHtml(v.vin)}` : '')
+          + (v.ifta ? ` · IFTA ${escapeHtml(v.ifta_sticker || '(no sticker)')}` : ' · not IFTA')
+        : `Truck ${r.truck != null ? r.truck : '—'} — not on the vehicle list, so nothing is known about it`;
+      return `
+        <div class="vm-detail-head">${head}</div>
+        <table class="vm-fills">
+          <thead>
+            <tr>
+              <th>Date</th><th>Employee</th><th>Account</th><th>Fuel</th>
+              <th class="num">Gallons</th><th class="num">Mileage</th>
+              <th>Site</th><th>City / State</th><th class="num">Tank</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${fills.map(e => `
+              <tr>
+                <td>${prettyDate(e.work_date)}</td>
+                <td>${escapeHtml(e.employee_username || '—')}</td>
+                <td>${escapeHtml(e.fuel_card || '—')}</td>
+                <td>${escapeHtml(e.fuel_type || '—')}</td>
+                <td class="num" style="font-weight:700">${num(e.gallons, 2)}${
+                  gallonsFromMeters(e.beginning_meter, e.ending_meter) != null
+                    ? '<span class="auto-chip" title="Calculated from the tank meter readings.">auto</span>' : ''}</td>
+                <td class="num">${num(e.mileage, 1)}</td>
+                <td>${escapeHtml(e.fueling_site || '—')}</td>
+                <td>${escapeHtml([e.city_fueled, e.state].filter(Boolean).join(', ') || '—')}</td>
+                <td class="num">${e.tank_number != null ? e.tank_number : '—'}</td>
+                <td><span class="badge badge-${e.status}">${e.status}</span></td>
+                <td class="td-actions">
+                  <button class="row-btn edit" onclick="event.stopPropagation(); openEdit('${escJsAttr(e.id)}')">Edit</button>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
     function renderReport() {
       const m = reportModel;
       const wrap = el('reportWrap');
@@ -2140,11 +2537,6 @@
       }
 
       const stateRows = [...m.byState.values()].sort((a, b) => String(a.key).localeCompare(String(b.key)));
-      const vehRows   = [...m.byVehicle.values()].sort((a, b) => {
-        if (a.truck == null) return 1;
-        if (b.truck == null) return -1;
-        return a.truck - b.truck;
-      });
       const tankRows  = [...m.tanks.values()].sort((a, b) => a.tank - b.tank);
 
       wrap.innerHTML = `
@@ -2204,46 +2596,7 @@
             </table>
           </div>
 
-          <div class="rep-block">
-            <div class="rep-title">By Vehicle</div>
-            <div class="rep-sub">Odometer span is the highest mileage reported in this range minus the lowest — it comes off the fill-ups, not a trip log, so it under-counts any distance driven between the last fill of one month and the first of the next.</div>
-            <table>
-              <thead>
-                <tr>
-                  <th class="num">Truck</th><th>VIN</th><th>Year / Make</th>
-                  <th>IFTA</th><th>Sticker</th>
-                  <th class="num">Fill-ups</th><th class="num">Gallons</th>
-                  <th class="num">Odometer Span</th><th>States</th><th>Fuel</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${vehRows.map(r => {
-                  const v = r.vehicle;
-                  const span = (r.minMileage != null && r.maxMileage != null)
-                    ? n1(r.maxMileage - r.minMileage) : '—';
-                  return `
-                  <tr class="${v ? '' : 'exception'}">
-                    <td class="num" style="font-weight:700">${r.truck != null ? r.truck : '—'}</td>
-                    <td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.72rem">${escapeHtml(v && v.vin ? v.vin : '—')}</td>
-                    <td>${v ? escapeHtml([v.model_year, v.make].filter(Boolean).join(' ')) || '—' : '<span class="off">not on the vehicle list</span>'}</td>
-                    <td class="${v && v.ifta ? 'ifta-yes' : 'ifta-no'}">${v ? (v.ifta ? 'Yes' : 'No') : '—'}</td>
-                    <td>${escapeHtml(v && v.ifta_sticker ? v.ifta_sticker : '—')}</td>
-                    <td class="num">${r.entries}</td>
-                    <td class="num">${n2(r.gallons)}</td>
-                    <td class="num">${span}</td>
-                    <td>${escapeHtml([...r.states].sort().join(', ')) || '—'}</td>
-                    <td>${escapeHtml([...r.types].sort().join(', ')) || '—'}</td>
-                  </tr>`;
-                }).join('')}
-                <tr class="total">
-                  <td colspan="5">Total</td>
-                  <td class="num">${m.count}</td>
-                  <td class="num">${n2(m.gallons)}</td>
-                  <td class="num"></td><td></td><td></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          ${vehicleMonthBlockHtml(m)}
 
           <div class="rep-block">
             <div class="rep-title">Tank Balance</div>
@@ -2304,6 +2657,283 @@
         </div>`;
     }
 
+    // ── Statement match ────────────────────────────────────────────────────
+    // The balancing job itself: our gallons for a truck in a month against the
+    // account's, one line each, difference in between.
+    let matchResult = null;
+
+    // Every truck number this company knows about — off the roster and off
+    // the fuel entries themselves, because a truck can be reported against
+    // before anyone adds it to the roster. Used to pick the truck number out
+    // of a statement line rather than guessing at column positions: a line
+    // reading "07/15/2026, 412, 84.50" has three numbers on it, and only one
+    // of them is a truck we have ever seen.
+    function knownTruckNumbers() {
+      const s = new Set();
+      for (const v of vehicles) if (v.truck_number != null) s.add(Number(v.truck_number));
+      if (reportModel) {
+        for (const e of reportModel.rows) if (e.truck_number != null) s.add(Number(e.truck_number));
+      }
+      return s;
+    }
+
+    /**
+     * Read a pasted statement into { truck → gallons }.
+     *
+     * Statements arrive in whatever shape the account's export happens to
+     * produce, so this reads them by content rather than by column: pull every
+     * number off the line, take the one we recognise as a truck, and take the
+     * gallons from what is left by the rule the user picked. Lines with no
+     * numbers on them — headers, page furniture, a total at the bottom — are
+     * counted and reported rather than silently dropped, because a statement
+     * that half-parsed is worse than one that didn't.
+     */
+    function parseStatement(text, gallonsPick, knownTrucks) {
+      const byTruck  = new Map();
+      const skipped  = [];
+      let lines = 0;
+
+      for (const raw of String(text || '').split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) continue;
+        lines++;
+
+        // The total at the foot of a statement is the one line that must not
+        // be read as data. "Total, 412.00" would otherwise land on truck 412
+        // — a number we recognise — and quietly double it.
+        if (/^\s*(grand\s+)?(total|subtotal|sum|balance)\b/i.test(line)) { skipped.push(line); continue; }
+
+        // A comma inside quotes is a thousands separator, not a column break —
+        // "1,234.50" is one number and splitting it produces two wrong ones.
+        const flat = line.replace(/"([^"]*)"/g, (_, inner) => inner.replace(/,/g, ''));
+
+        // Tabs, commas, semicolons and pipes are separators; failing those,
+        // fall back to whitespace so a plain two-column paste still reads.
+        let cells = flat.split(/\t|,|;|\|/).map(c => c.trim()).filter(c => c !== '');
+        if (cells.length < 2) cells = flat.split(/\s+/).filter(Boolean);
+
+        const nums = [];
+        for (const c of cells) {
+          // Strip the things a money or gallons column carries: currency,
+          // thousands separators, a trailing unit.
+          const cleaned = c.replace(/[$,\s]/g, '').replace(/(gal|gals|gallons)$/i, '');
+          if (/^-?\d+(\.\d+)?$/.test(cleaned)) nums.push(Number(cleaned));
+        }
+        if (!nums.length) { skipped.push(line); continue; }
+
+        // The truck: one we recognise, or failing that the first whole number
+        // on the line. Recognising it first is what makes a date column
+        // harmless.
+        let truckIdx = nums.findIndex(n => Number.isInteger(n) && knownTrucks.has(n));
+        if (truckIdx < 0) truckIdx = nums.findIndex(n => Number.isInteger(n) && n >= 0);
+        if (truckIdx < 0) { skipped.push(line); continue; }
+        const truck = nums[truckIdx];
+
+        const rest = nums.slice(0, truckIdx).concat(nums.slice(truckIdx + 1));
+        let gallons;
+        if (gallonsPick === 'last') gallons = rest.length ? rest[rest.length - 1] : undefined;
+        else                        gallons = rest[Number(gallonsPick) - 1];
+        if (gallons == null || !Number.isFinite(gallons)) { skipped.push(line); continue; }
+
+        byTruck.set(truck, Math.round(((byTruck.get(truck) || 0) + gallons) * 100) / 100);
+      }
+
+      return { byTruck, skipped, lines };
+    }
+
+    /**
+     * Our gallons against theirs, per truck.
+     *
+     * Three outcomes matter and they are kept apart: a figure that agrees, a
+     * figure that doesn't, and a truck that only one side has heard of. The
+     * last is the one worth surfacing loudest — a truck on the statement with
+     * no fuel entry behind it is fuel nobody reported, and a truck we reported
+     * that the account has never billed is usually a wrong truck number.
+     */
+    function matchStatement(model, card, statement) {
+      const ours = new Map();
+      const fills = new Map();
+      for (const e of model.rows) {
+        if (card && (e.fuel_card || '') !== card) continue;
+        if (e.truck_number == null) continue;
+        const t = Number(e.truck_number);
+        ours.set(t, Math.round(((ours.get(t) || 0) + (Number(e.gallons) || 0)) * 100) / 100);
+        fills.set(t, (fills.get(t) || 0) + 1);
+      }
+
+      const trucks = new Set([...ours.keys(), ...statement.byTruck.keys()]);
+      const rows = [];
+      for (const t of trucks) {
+        const o = ours.has(t) ? ours.get(t) : null;
+        const s = statement.byTruck.has(t) ? statement.byTruck.get(t) : null;
+        let verdict;
+        if (o == null)      verdict = 'not-in-ours';
+        else if (s == null) verdict = 'not-on-statement';
+        // A hundredth of a gallon is rounding, not a discrepancy.
+        else if (Math.abs(o - s) < 0.005) verdict = 'match';
+        else verdict = 'variance';
+        rows.push({
+          truck: t, ours: o, statement: s,
+          difference: (o != null && s != null) ? Math.round((o - s) * 100) / 100 : null,
+          fills: fills.get(t) || 0,
+          verdict,
+        });
+      }
+
+      // Worst first: what needs doing should not have to be scrolled to.
+      const rank = { variance: 0, 'not-in-ours': 1, 'not-on-statement': 2, match: 3 };
+      rows.sort((a, b) => (rank[a.verdict] - rank[b.verdict])
+        || (Math.abs(b.difference || 0) - Math.abs(a.difference || 0))
+        || (a.truck - b.truck));
+
+      const sum = (f) => rows.filter(f).reduce((n, r) => n + 1, 0);
+      return {
+        card, rows,
+        oursTotal:      [...ours.values()].reduce((a, b) => a + b, 0),
+        statementTotal: [...statement.byTruck.values()].reduce((a, b) => a + b, 0),
+        matched:        sum(r => r.verdict === 'match'),
+        variances:      rows.filter(r => r.verdict === 'variance'),
+        notInOurs:      rows.filter(r => r.verdict === 'not-in-ours'),
+        notOnStatement: rows.filter(r => r.verdict === 'not-on-statement'),
+        skipped: statement.skipped,
+        lines: statement.lines,
+      };
+    }
+
+    function runStatementMatch() {
+      const out = el('matchResults');
+      if (!reportModel) {
+        out.innerHTML = '<div class="rep-empty">Build a report first — the match runs against the range above.</div>';
+        return;
+      }
+      const text = val('mt-paste');
+      if (!text.trim()) {
+        out.innerHTML = '<div class="rep-empty">Paste a statement above, then press Match.</div>';
+        return;
+      }
+      const parsed = parseStatement(text, val('mt-gallons-col'), knownTruckNumbers());
+      if (!parsed.byTruck.size) {
+        out.innerHTML = `<div class="rep-empty">Couldn't read a truck number and a gallons figure off any of those
+          ${parsed.lines} line${parsed.lines === 1 ? '' : 's'}. Check that each row has the truck number and the
+          gallons on it, and try a different answer to "which number is the gallons".</div>`;
+        return;
+      }
+      matchResult = matchStatement(reportModel, val('mt-card'), parsed);
+      renderStatementMatch();
+    }
+
+    function clearStatementMatch() {
+      el('mt-paste').value = '';
+      el('matchResults').innerHTML = '';
+      matchResult = null;
+    }
+
+    function renderStatementMatch() {
+      const r = matchResult;
+      const out = el('matchResults');
+      if (!r) { out.innerHTML = ''; return; }
+
+      const diffTotal = Math.round((r.oursTotal - r.statementTotal) * 100) / 100;
+      const balanced  = Math.abs(diffTotal) < 0.005;
+      const label = v => ({
+        match: 'agrees', variance: 'off',
+        'not-in-ours': 'no fuel entry', 'not-on-statement': 'not billed',
+      })[v] || v;
+      const cls = v => ({
+        match: 'row-ok', variance: 'row-off',
+        'not-in-ours': 'row-miss', 'not-on-statement': 'row-miss',
+      })[v] || '';
+
+      // The single mistake that makes every line of this table wrong at once:
+      // a one-month statement matched against a range that isn't one month.
+      // Nothing about the output would look broken — every truck would simply
+      // read as a variance, in the direction of us having bought more.
+      const months = (reportModel && reportModel.months) || [];
+      const spanWarning = months.length > 1
+        ? `<div class="flag-banner">Careful — this range covers
+             <strong>${escapeHtml(months.map(monthLabel).join(', '))}</strong>, and a statement is usually
+             one month. Set the range above to a single month before reading anything into these figures.</div>`
+        : '';
+
+      out.innerHTML = `
+        ${spanWarning}
+        <div class="match-summary">
+          <div class="match-tile ${balanced ? 'ok' : 'off'}">
+            <div class="k">${escapeHtml(r.card || 'All accounts')} — difference</div>
+            <div class="v">${diffTotal > 0 ? '+' : ''}${n2(diffTotal)}</div>
+          </div>
+          <div class="match-tile"><div class="k">We reported</div><div class="v">${n2(r.oursTotal)}</div></div>
+          <div class="match-tile"><div class="k">Statement says</div><div class="v">${n2(r.statementTotal)}</div></div>
+          <div class="match-tile ${r.variances.length || r.notInOurs.length || r.notOnStatement.length ? 'off' : 'ok'}">
+            <div class="k">Trucks to look at</div>
+            <div class="v">${r.variances.length + r.notInOurs.length + r.notOnStatement.length}</div>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th class="num">Truck</th>
+              <th class="num">We reported</th>
+              <th class="num">Statement</th>
+              <th class="num">Difference</th>
+              <th class="num">Fill-ups</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${r.rows.map(row => `
+              <tr class="${cls(row.verdict)}">
+                <td class="num" style="font-weight:700">${row.truck}</td>
+                <td class="num">${row.ours != null ? n2(row.ours) : '—'}</td>
+                <td class="num">${row.statement != null ? n2(row.statement) : '—'}</td>
+                <td class="num verdict">${row.difference != null
+                    ? (row.difference > 0 ? '+' : '') + n2(row.difference) : '—'}</td>
+                <td class="num">${row.fills || '—'}</td>
+                <td class="verdict">${label(row.verdict)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+
+        <div class="match-note">
+          Read ${r.lines} line${r.lines === 1 ? '' : 's'}${r.skipped.length
+            ? `, ${r.skipped.length} of which had no truck number and gallons figure on them
+               (headers and totals usually don't — first was “${escapeHtml(r.skipped[0].slice(0, 60))}”)`
+            : ''}.
+          <strong>${r.matched}</strong> truck${r.matched === 1 ? '' : 's'} agree.
+          ${r.variances.length ? `<strong>${r.variances.length}</strong> differ — open that truck's row in
+            <em>By Vehicle &amp; Month</em> above to see the fill-ups behind the figure. ` : ''}
+          ${r.notInOurs.length ? `<strong>${r.notInOurs.length}</strong> ${r.notInOurs.length === 1 ? 'is' : 'are'} on the
+            statement with no fuel entry behind ${r.notInOurs.length === 1 ? 'it' : 'them'} — fuel nobody reported. ` : ''}
+          ${r.notOnStatement.length ? `<strong>${r.notOnStatement.length}</strong> ${r.notOnStatement.length === 1 ? 'was' : 'were'}
+            reported but not billed on this account — usually a truck number typed wrong, or fuel put on a different card. ` : ''}
+          <button class="qr-btn" style="margin-top:0.5rem" onclick="exportMatchCsv()">Export this match</button>
+        </div>`;
+    }
+
+    function exportMatchCsv() {
+      const r = matchResult;
+      if (!r) return;
+      const rows = [];
+      const push = (...cells) => rows.push(cells.map(csvEscape).join(','));
+      push('Fuel Account Match');
+      push('Account', r.card || 'All accounts');
+      push('Range', `${(reportModel && reportModel.from) || 'start'} to ${(reportModel && reportModel.to) || 'today'}`);
+      push('We reported', n2(r.oursTotal));
+      push('Statement says', n2(r.statementTotal));
+      push('Difference', n2(r.oursTotal - r.statementTotal));
+      push('');
+      push('Truck', 'We reported', 'Statement', 'Difference', 'Fill-ups', 'Verdict');
+      for (const row of r.rows) {
+        push(row.truck,
+             row.ours != null ? n2(row.ours) : '',
+             row.statement != null ? n2(row.statement) : '',
+             row.difference != null ? n2(row.difference) : '',
+             row.fills || '', row.verdict);
+      }
+      downloadCsv(rows.join('\n'), `fuel-match-${(r.card || 'all').replace(/[^\w]+/g, '-').toLowerCase()}.csv`);
+    }
+
     // One file, every section, blank line between each — the shape a
     // spreadsheet opens cleanly and an auditor can read top to bottom.
     function exportReportCsv() {
@@ -2330,24 +2960,25 @@
       push('Total', m.count, n2(m.gallons), n2(m.iftaGallons));
       push('');
 
-      push('By Vehicle');
-      push('Truck', 'VIN', 'Year', 'Make', 'IFTA', 'IFTA Sticker',
-           'Fill-ups', 'Gallons', 'Odometer Span', 'States', 'Fuel Types', 'On Vehicle List');
-      const vehRows = [...m.byVehicle.values()].sort((a, b) => {
-        if (a.truck == null) return 1;
-        if (b.truck == null) return -1;
-        return a.truck - b.truck;
-      });
-      for (const r of vehRows) {
+      // One row per truck per month with a column per account — the sheet the
+      // office works the statements against, exported in the same shape it is
+      // read on screen so a column can be pasted straight beside a statement.
+      push('By Vehicle & Month');
+      push('Truck', 'Month', 'VIN', 'Year', 'Make', 'IFTA', 'IFTA Sticker',
+           ...m.cardsPresent, 'Total Gallons', 'Fill-ups', 'Odometer Span',
+           'States', 'Fuel Types', 'On Vehicle List');
+      for (const r of vehicleMonthRows(m)) {
         const v = r.vehicle;
         push(
           r.truck != null ? r.truck : '',
+          r.month,
           v && v.vin ? v.vin : '',
           v && v.model_year != null ? v.model_year : '',
           v && v.make ? v.make : '',
           v ? (v.ifta ? 'Yes' : 'No') : '',
           v && v.ifta_sticker ? v.ifta_sticker : '',
-          r.entries, n2(r.gallons),
+          ...m.cardsPresent.map(c => r.byCard.has(c) ? n2(r.byCard.get(c)) : ''),
+          n2(r.gallons), r.entries,
           (r.minMileage != null && r.maxMileage != null) ? n1(r.maxMileage - r.minMileage) : '',
           [...r.states].sort().join(' '),
           [...r.types].sort().join(' '),

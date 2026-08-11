@@ -200,18 +200,41 @@ function liftFn(src, name, file) {
   throw new Error(`${file}: could not find the end of ${name}()`);
 }
 
-function loadBuildReportModel(filters) {
+function liftConst(src, name, file) {
+  const re = new RegExp(`^\\s{0,6}const ${name} = ([\\s\\S]*?);\\n`, 'm');
+  const m = re.exec(src);
+  if (!m) throw new Error(`${file} no longer declares ${name}`);
+  return m[0];
+}
+
+// Everything the report is built out of, lifted whole from the page so the
+// tests exercise the code that actually ships rather than a copy of it.
+function loadReportFns(filters) {
   const file = 'fuel-admin.html';
   const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   return new Function('FILTERS', `
     function val(id) { return FILTERS[id] || ''; }
-    ${liftFn(src, 'gallonsFromMeters', file)}
-    ${liftFn(src, 'meterFlagged',      file)}
-    ${liftFn(src, 'n2',                file)}
-    ${liftFn(src, 'n1',                file)}
-    ${liftFn(src, 'buildReportModel',  file)}
-    return buildReportModel;
+    let vmSort = { col: 'truck', dir: 1 };
+    ${liftConst(src, 'FUEL_CARDS',        file)}
+    ${liftConst(src, 'CARD_COLUMN_ORDER', file)}
+    ${liftFn(src, 'gallonsFromMeters',  file)}
+    ${liftFn(src, 'meterFlagged',       file)}
+    ${liftFn(src, 'n2',                 file)}
+    ${liftFn(src, 'n1',                 file)}
+    ${liftFn(src, 'monthOf',            file)}
+    ${liftFn(src, 'buildReportModel',   file)}
+    ${liftFn(src, 'vehicleMonthRows',   file)}
+    ${liftFn(src, 'parseStatement',     file)}
+    ${liftFn(src, 'matchStatement',     file)}
+    return {
+      buildReportModel, vehicleMonthRows, parseStatement, matchStatement, monthOf,
+      setSort: (col, dir) => { vmSort = { col, dir }; },
+    };
   `)(filters);
+}
+
+function loadBuildReportModel(filters) {
+  return loadReportFns(filters).buildReportModel;
 }
 
 function entry(o) {
@@ -365,11 +388,255 @@ function reportTests() {
   }
 }
 
+// ── 4. Vehicle × month, and matching a statement to it ──────────────────────
+const FILTERS = { 'flt-from': '2026-06-01', 'flt-to': '2026-07-31', 'rep-status': 'approved' };
+
+const FLEET = [
+  { id: '1', truck_number: 412, vin: '1FUJGLDR8CSBP1234', model_year: 2019, make: 'Freightliner',
+    ifta: true, ifta_sticker: 'PA-9981', active: true },
+  { id: '2', truck_number: 77,  vin: 'CAT0D6TXYZ12345', model_year: 2015, make: 'Caterpillar',
+    ifta: false, ifta_sticker: null, active: true },
+];
+
+// Two months, two accounts, one truck on both — the shape the office
+// actually balances.
+const FLEET_ENTRIES = [
+  entry({ work_date: '2026-06-10', truck_number: 412, fuel_card: 'Guttman', gallons: 100, mileage: 100000 }),
+  entry({ work_date: '2026-06-24', truck_number: 412, fuel_card: 'Wex',     gallons: 60,  mileage: 100400 }),
+  entry({ work_date: '2026-07-05', truck_number: 412, fuel_card: 'Guttman', gallons: 120, mileage: 101000 }),
+  entry({ work_date: '2026-07-19', truck_number: 412, fuel_card: 'Guttman', gallons: 80,  mileage: 101600 }),
+  entry({ work_date: '2026-07-08', truck_number: 77,  fuel_card: 'Wex',     gallons: 45 }),
+  entry({ work_date: '2026-07-21', truck_number: 999, fuel_card: 'Guttman', gallons: 33 }),
+];
+
+function vehicleMonthTests() {
+  console.log('\n[By vehicle and month]');
+  const fns = loadReportFns(FILTERS);
+  const m   = fns.buildReportModel(FLEET_ENTRIES, FLEET);
+
+  console.log('\n  the month key');
+  assert('is read off the string, not through a Date',
+    fns.monthOf('2026-07-01') === '2026-07', fns.monthOf('2026-07-01'));
+  assert('and an entry with no date is its own bucket',
+    fns.monthOf('') === '(no date)');
+
+  console.log('\n  rows');
+  assert('one row per truck per month', m.byVehicleMonth.size === 4, String(m.byVehicleMonth.size));
+  {
+    const june = m.byVehicleMonth.get('412|2026-06');
+    const july = m.byVehicleMonth.get('412|2026-07');
+    assert('truck 412 has a June row and a July row', Boolean(june && july));
+    assert("June's two fills are kept apart from July's",
+      june.entries === 2 && july.entries === 2);
+    assert('and their gallons do not run together',
+      june.gallons === 160 && july.gallons === 200,
+      `${june.gallons} / ${july.gallons}`);
+  }
+
+  console.log('\n  the card split — the whole point of the block');
+  {
+    const july = m.byVehicleMonth.get('412|2026-07');
+    assert('July Guttman is its own figure', july.byCard.get('Guttman') === 200,
+      String(july.byCard.get('Guttman')));
+    assert('and July has nothing on Wex',    july.byCard.get('Wex') === undefined);
+    const june = m.byVehicleMonth.get('412|2026-06');
+    assert('June splits across both accounts',
+      june.byCard.get('Guttman') === 100 && june.byCard.get('Wex') === 60,
+      `${june.byCard.get('Guttman')} / ${june.byCard.get('Wex')}`);
+  }
+  {
+    // Column order has to be stable, or the sheet reshuffles month to month.
+    assert('Guttman and Wex lead the card columns',
+      m.cardsPresent[0] === 'Guttman' && m.cardsPresent[1] === 'Wex',
+      m.cardsPresent.join(', '));
+  }
+
+  console.log('\n  drill-down');
+  {
+    const july = m.byVehicleMonth.get('412|2026-07');
+    assert('the fills behind a cell are kept with it', july.fills.length === 2);
+    assert('and they are the right ones',
+      july.fills.every(e => e.work_date.startsWith('2026-07') && e.truck_number === 412));
+    assert('the odometer span is within the month only',
+      july.maxMileage - july.minMileage === 600, String(july.maxMileage - july.minMileage));
+  }
+
+  console.log('\n  sorting');
+  {
+    fns.setSort('truck', 1);
+    const byTruck = fns.vehicleMonthRows(m).map(r => `${r.truck}|${r.month}`);
+    assert('truck order puts 77 before 412 before 999',
+      byTruck[0].startsWith('77|') && byTruck[byTruck.length - 1].startsWith('999|'),
+      byTruck.join(' '));
+
+    fns.setSort('gallons', -1);
+    const byGal = fns.vehicleMonthRows(m);
+    assert('gallons descending leads with the biggest', byGal[0].gallons === 200, String(byGal[0].gallons));
+
+    fns.setSort('Guttman', -1);
+    const byCard = fns.vehicleMonthRows(m);
+    assert('a card column sorts on that card alone',
+      byCard[0].byCard.get('Guttman') === 200, String(byCard[0].byCard.get('Guttman')));
+
+    // A fill-up with no truck number can't be balanced against anything, so
+    // it belongs at the bottom whichever way the table is sorted.
+    const withOrphan = fns.buildReportModel(
+      FLEET_ENTRIES.concat([entry({ work_date: '2026-07-02', truck_number: null, gallons: 500 })]), FLEET);
+    for (const dir of [1, -1]) {
+      fns.setSort('truck', dir);
+      const rows = fns.vehicleMonthRows(withOrphan);
+      assert(`a row with no truck number sorts last (dir ${dir})`,
+        rows[rows.length - 1].truck == null, String(rows[rows.length - 1].truck));
+    }
+    fns.setSort('truck', 1);
+  }
+}
+
+function statementTests() {
+  console.log('\n[Reading a pasted statement]');
+  const fns   = loadReportFns(FILTERS);
+  const known = new Set([412, 77]);
+  const P = (text, pick = 'last') => fns.parseStatement(text, pick, known);
+
+  {
+    const r = P('412\t320.50\n77\t95.25');
+    assert('a plain two-column paste reads',
+      r.byTruck.get(412) === 320.5 && r.byTruck.get(77) === 95.25,
+      JSON.stringify([...r.byTruck]));
+  }
+  {
+    const r = P('412 320.50\n77 95.25');
+    assert('so does one separated by spaces', r.byTruck.get(412) === 320.5);
+  }
+  {
+    // Transaction-level exports are the common case — one line per fill-up.
+    const r = P('412,07/15/2026,Diesel,84.50\n412,07/22/2026,Diesel,90.00');
+    assert('lines for the same truck are added up', r.byTruck.get(412) === 174.5,
+      String(r.byTruck.get(412)));
+  }
+  {
+    // A date in the first column would be read as a truck number if the
+    // parser went by position. Recognising a truck we know is what stops it.
+    const r = P('07/15/2026,412,84.50');
+    assert('a leading date column does not become the truck number',
+      r.byTruck.size === 1 && r.byTruck.get(412) === 84.5, JSON.stringify([...r.byTruck]));
+  }
+  {
+    const r = P('Vehicle,Gallons\n412,84.50\nTotal,84.50');
+    assert('a header line is skipped', r.byTruck.get(412) === 84.5, JSON.stringify([...r.byTruck]));
+    assert('the header and the total are both reported, not silently dropped',
+      r.skipped.length === 2, JSON.stringify(r.skipped));
+  }
+  {
+    // The one line that must never be read as data: a total whose figure
+    // happens to be a truck number we recognise would otherwise land on that
+    // truck and double it, and the row would look entirely ordinary.
+    const r = P('412,84.50\nTotal,412.00');
+    assert('a total line is not mistaken for a truck',
+      r.byTruck.size === 1 && r.byTruck.get(412) === 84.5, JSON.stringify([...r.byTruck]));
+    const g = P('412,84.50\nGrand Total,412.00');
+    assert('nor is a grand total', g.byTruck.get(412) === 84.5, JSON.stringify([...g.byTruck]));
+  }
+  {
+    // Gallons then dollars. "Last number" gets it wrong, which is exactly why
+    // the picker is there — and the fix has to be one dropdown, not a re-export.
+    const line = '412,84.50,312.45';
+    assert('the last number is taken by default', P(line).byTruck.get(412) === 312.45);
+    assert('and the picker moves it to the right column',
+      P(line, '1').byTruck.get(412) === 84.5, String(P(line, '1').byTruck.get(412)));
+  }
+  {
+    const r = P('412,"1,234.50"');
+    assert('a quoted thousands separator survives the split',
+      r.byTruck.get(412) === 1234.5, String(r.byTruck.get(412)));
+  }
+  {
+    const r = P('412,$312.45\n77,84.5 gal');
+    assert('currency and unit suffixes are stripped',
+      r.byTruck.get(412) === 312.45 && r.byTruck.get(77) === 84.5,
+      JSON.stringify([...r.byTruck]));
+  }
+  {
+    // A truck missing from the roster still has to match — that is the
+    // condition the report is meant to surface, not swallow.
+    const r = P('999\t50');
+    assert('an unknown truck number still reads', r.byTruck.get(999) === 50);
+  }
+  {
+    const r = P('no numbers here at all\n');
+    assert('a paste with nothing in it yields nothing', r.byTruck.size === 0);
+  }
+
+  console.log('\n[Matching it against what the field reported]');
+  const m = fns.buildReportModel(FLEET_ENTRIES, FLEET);
+  // The match works over whatever the report range caught, NOT one month —
+  // across June and July here, truck 412 bought 100 + 120 + 80 = 300 gal on
+  // Guttman, and 999 another 33.
+  {
+    // The statement agrees on 412, has never heard of 999, and bills a truck
+    // 55 we have no entry for at all.
+    const statement = fns.parseStatement('412,300\n55,75', 'last', known);
+    const r = fns.matchStatement(m, 'Guttman', statement);
+    const by = new Map(r.rows.map(x => [x.truck, x]));
+
+    assert('a truck that agrees is marked as agreeing', by.get(412).verdict === 'match');
+    assert('a truck on the statement with no fuel entry is flagged',
+      by.get(55).verdict === 'not-in-ours', by.get(55).verdict);
+    assert('a truck we reported that was never billed is flagged',
+      by.get(999).verdict === 'not-on-statement', by.get(999).verdict);
+    assert('our total is the range total for that account alone',
+      Math.round(r.oursTotal * 100) / 100 === 333, String(r.oursTotal));
+    assert("and theirs is the statement's", r.statementTotal === 375, String(r.statementTotal));
+  }
+  {
+    const statement = fns.parseStatement('412,304.5', 'last', known);
+    const r = fns.matchStatement(m, 'Guttman', statement);
+    const t412 = r.rows.find(x => x.truck === 412);
+    assert('a figure that differs is a variance', t412.verdict === 'variance');
+    assert('and the difference is ours minus theirs', t412.difference === -4.5, String(t412.difference));
+    assert('with the fill-up count beside it', t412.fills === 3, String(t412.fills));
+    assert('variances sort to the top', r.rows[0].truck === 412, String(r.rows[0].truck));
+  }
+  {
+    // Rounding is not a discrepancy.
+    const statement = fns.parseStatement('412,300.001', 'last', known);
+    const r = fns.matchStatement(m, 'Guttman', statement);
+    assert('a hundredth of a gallon still agrees',
+      r.rows.find(x => x.truck === 412).verdict === 'match');
+  }
+  {
+    // Which is exactly why the range matters: a one-month statement against a
+    // two-month range makes every truck read as a variance, in the direction
+    // of us having bought more, and nothing about the output looks broken.
+    // The model has to carry the months so the page can say so.
+    assert('the model knows the range spans two months',
+      m.months.join(',') === '2026-06,2026-07', m.months.join(','));
+    const oneMonth = fns.buildReportModel(
+      FLEET_ENTRIES.filter(e => e.work_date.startsWith('2026-07')), FLEET);
+    assert('and knows when it does not', oneMonth.months.join(',') === '2026-07', oneMonth.months.join(','));
+    const julyOnly = fns.matchStatement(oneMonth, 'Guttman',
+      fns.parseStatement('412,200', 'last', known));
+    assert('narrowed to July, the same statement balances',
+      julyOnly.rows.find(x => x.truck === 412).verdict === 'match');
+  }
+  {
+    // The account filter has to bite, or a Wex statement gets matched against
+    // Guttman's gallons and every line reads as a variance.
+    const statement = fns.parseStatement('412,60\n77,45', 'last', known);
+    const r = fns.matchStatement(m, 'Wex', statement);
+    assert('matching Wex counts only Wex fuel',
+      r.rows.every(x => x.verdict === 'match'), JSON.stringify(r.rows.map(x => [x.truck, x.verdict])));
+    assert('and its total is Wex alone', r.oursTotal === 105, String(r.oursTotal));
+  }
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 (async () => {
   normalizeTests();
   await routingTests();
   reportTests();
+  vehicleMonthTests();
+  statementTests();
 
   console.log('\n────────────────────────────────────────');
   console.log(`  ${passed} passed, ${failed} failed`);
