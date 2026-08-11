@@ -76,6 +76,10 @@ vm.runInContext([
   'bulkRowLeg(idx, entryId, itemIdx, value) {',
   'bulkTravelCostCode(idx, value) {',
   'bulkCostCode(idx, value) {',
+  // Both validators below name the offending day through this, so it has to
+  // come across with them — a split day puts two rows with the same worker and
+  // date in one group, and it is what tells them apart.
+  'bulkDayLabel(g, e) {',
   'bulkBadEquipHours() {',
   'bulkDroppedMachines() {',
   'bulkDaysTable(g, idx) {',
@@ -460,7 +464,13 @@ sandbox.bulkGroups = groups;
 // old tally, which only checked the total, called that "✓ balanced".
 console.log('\n[split tally: travel reconciliation]');
 {
-  const tallyFn = grab('renderSplitTally() {');
+  // The tally asks isTravelSplitRow which rows are the drive, so it has to come
+  // across too. Without it every assertion below died on a ReferenceError
+  // before reaching its check — the whole travel-reconciliation section had
+  // been passing vacuously since the tally started consulting it.
+  const travelRe = src.match(/const TRAVEL_CODE_RE = [^\n]+/);
+  if (!travelRe) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
+  const tallyFn = [travelRe[0], grab('isTravelSplitRow(r) {'), grab('renderSplitTally() {')].join('\n\n');
   function tally(rows, entry) {
     const store = {};
     const stub = () => ({ textContent: '', style: {}, classList: { add() {}, remove() {} } });
@@ -478,15 +488,20 @@ console.log('\n[split tally: travel reconciliation]');
   const wrong = tally([drive({ is_travel: false }), work({ is_travel: true })], E);
   assert('ticking Travel on the work row is no longer "balanced"',
     !/balanced/.test(wrong.splitTallyStatus.textContent));
+  // 9.50, not 7.50: the drive is booked to a "Travel" sub code, so it counts as
+  // travel alongside the mis-ticked work row — the same rule the server prices
+  // the rows by. The message says "booked as", because only 7.50 is ticked.
   assert('and the message says which way it is off',
-    /7\.50 h ticked Travel, entry says 2\.00/.test(wrong.splitTallyStatus.textContent));
+    /9\.50 h booked as Travel, entry says 2\.00/.test(wrong.splitTallyStatus.textContent),
+    wrong.splitTallyStatus.textContent);
 
   const right = tally([drive({ is_travel: true }), work({ is_travel: false })], E);
   assert('ticking it on the drive row balances', /balanced/.test(right.splitTallyStatus.textContent));
 
   const none = tally([work({ labor_hours: 9.5, is_travel: false })], E);
   assert('an entry with travel and nothing ticked is flagged',
-    /2\.00 h of travel on this entry, 0\.00 ticked/.test(none.splitTallyStatus.textContent));
+    /2\.00 h of travel on this entry, 0\.00 booked as Travel/.test(none.splitTallyStatus.textContent),
+    none.splitTallyStatus.textContent);
 
   const short = tally([work({ labor_hours: 5, is_travel: false })], E);
   assert('an hours mismatch still wins over the travel message',
@@ -534,6 +549,53 @@ assert('a repaint keeps the override in state',         g.perRow['jamey-3'].item
 const readOnly = sandbox.bulkDaysTable({ ...g, type: 'quarry', perRow: {} }, 0);
 assert('non-split groups stay read-only',
   !/<th>Equipment/.test(readOnly) && !/<input/.test(readOnly));
+
+// ── payroll.html and the server must call the same rows Travel ─────────────
+// isTravelSplitRow exists twice: here, deciding what the tally counts, and in
+// api/timesheet-entries.js, deciding what rate the row is paid at. They were
+// split apart yesterday and nothing held them together — and the whole point
+// of the second copy is that a row cannot be counted as travel in one place
+// and priced as work in the other. Compared by behaviour, not by text, so a
+// rewrite that keeps the rule is fine and one that changes it is not.
+console.log('\n[the two isTravelSplitRow implementations agree]');
+{
+  const apiSrc = fs.readFileSync(path.resolve(__dirname, '..', 'api', 'timesheet-entries.js'), 'utf8');
+
+  function lift(text, label) {
+    const re = text.match(/const TRAVEL_CODE_RE = [^\n]+/);
+    const i  = text.indexOf('function isTravelSplitRow');
+    assert(`${label} still defines TRAVEL_CODE_RE and isTravelSplitRow`, !!re && i >= 0);
+    if (!re || i < 0) return null;
+    // Both copies close at their own indent; take to the first line that is
+    // just a closing brace.
+    const end = text.indexOf('\n}', i) >= 0 && text.indexOf('\n}', i) < text.indexOf('\n    }', i)
+      ? text.indexOf('\n}', i) + 2
+      : text.indexOf('\n    }', i) + 6;
+    const sb = { console };
+    vm.createContext(sb);
+    vm.runInContext(`${re[0]}\n${text.slice(i, end)}`, sb);
+    return sb.isTravelSplitRow;
+  }
+
+  const mine   = lift(src, 'payroll.html');
+  const server = lift(apiSrc, 'api/timesheet-entries.js');
+  if (mine && server) {
+    const cases = [
+      ['ticked outright',            { is_travel: true,  cost_code: 'Silt Sock', sub_code: '12inch' }],
+      ['untouched work row',         { is_travel: false, cost_code: 'Silt Sock', sub_code: '12inch' }],
+      ['paving travel sub code',     { is_travel: false, cost_code: '19mm',      sub_code: '19mm - Travel' }],
+      ['travel in the cost code',    { is_travel: false, cost_code: 'Travel Time', sub_code: '' }],
+      ['gravel is not travel',       { is_travel: false, cost_code: '2A Gravel', sub_code: 'Gravel Base' }],
+      ['a Form Traveler is not one', { is_travel: false, cost_code: 'Form Traveler', sub_code: '' }],
+      ['nothing at all',             {}],
+      ['no row',                     null],
+    ];
+    for (const [label, row] of cases) {
+      assert(`  ${label}: both say ${mine(row) ? 'travel' : 'work'}`,
+        mine(row) === server(row), `payroll ${mine(row)} vs server ${server(row)}`);
+    }
+  }
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

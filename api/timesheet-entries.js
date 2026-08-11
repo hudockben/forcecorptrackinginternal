@@ -15,6 +15,9 @@
  *   POST   /api/timesheet-entries                       — create draft
  *     Body matches entry shape; status forced to 'draft'.
  *     Field-user only (requires divisionRoles.timesheet access).
+ *     A day split across two jobs is TWO of these calls, one per job, sharing a
+ *     split_group_id (see normalizeSplitTag) — there is no multi-job entry
+ *     shape, so payroll reviews each job as its own ordinary entry.
  *
  *   PUT    /api/timesheet-entries?id=N                  — update entry
  *     Field user  → own row, only if status='draft'
@@ -240,6 +243,11 @@ function dbToEntry(r) {
     ees_name:            r.ees_name || '',
     ees_job_number:      r.ees_job_number || '',
     ees_billing:         r.ees_billing || '',
+    // Split-day tag. Set only when this row was submitted as one job of a
+    // multi-job day (see normalizeSplitTag); null on every ordinary entry.
+    split_group_id:      r.split_group_id || '',
+    split_index:         r.split_index != null ? Number(r.split_index) : null,
+    split_count:         r.split_count != null ? Number(r.split_count) : null,
     submitted_at:        r.submitted_at,
     approved_at:         r.approved_at,
     approved_by_user_id: r.approved_by_user_id,
@@ -629,6 +637,18 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
     const r = splitRows[i];
     const rowId = `ts${entry.id}-${baseStamp}-${i}-${Math.floor(Math.random() * 1e6)}`;
     const eqUnitCost = resolver.equipCostFor(r.equipment);
+    // Stamp the marker from the same rule the rate below is priced by, so the
+    // row's stored classification and its rate can never disagree. A row booked
+    // to a travel code but never ticked used to land with no marker at all: it
+    // read as ordinary work in cost tracking and came back unticked in the
+    // resplit modal.
+    //
+    // This has to sit OUT here. A `//` line inside a sql`` template is not a
+    // comment — the tag only sees text, and it is shipped to Postgres, which
+    // has no `//` comment syntax. Written inside the statement it made every
+    // turf/paving/kiewit approval fail to parse.
+    const isTravel  = isTravelSplitRow(r);
+    const fieldType = isTravel ? 'Travel' : null;
     await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
@@ -642,17 +662,12 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${companyCode},
         ${division},
         ${workDate},
-        // Stamp the marker from the same rule the rate below is priced by, so
-        // the row's stored classification and its rate can never disagree. A
-        // row booked to a travel code but never ticked used to land with no
-        // marker at all: it read as ordinary work in cost tracking and came
-        // back unticked in the resplit modal.
-        ${isTravelSplitRow(r) ? 'Travel' : null},
+        ${fieldType},
         ${employeeLabel},
         ${r.cost_code || null},
         ${r.sub_code || null},
         ${jobClass},
-        ${isTravelSplitRow(r) ? travelRate : workRate},
+        ${isTravel ? travelRate : workRate},
         ${r.labor_hours},
         ${r.equipment || null},
         ${eqUnitCost},
@@ -1296,6 +1311,44 @@ async function writeAudit(sql, companyCode, payload, entryId, action, changes, s
   }
 }
 
+// ── Split-day tag ─────────────────────────────────────────────────────────
+// One day spent on two jobs is submitted from timesheet.html as one form and
+// arrives here as two ordinary POSTs, each carrying the same split_group_id and
+// its own 1-based split_index. Nothing in this file branches on the tag — a
+// split row approves, injects, edits and deletes exactly like any other entry.
+// It exists so both clients can print "Split 1/2" instead of showing two
+// unrelated-looking entries for the same person on the same day.
+//
+// Kept out of normalizeEntryBody deliberately, because the two callers need
+// different behavior when the body says nothing about the tag: a POST is
+// creating a row so "absent" means "not a split", while a PUT is editing one
+// and "absent" must mean "leave it alone". payroll.html's admin edit form sends
+// no split fields at all, and if that silently cleared the tag, correcting a
+// typo on one half of a split would break its pairing with the other half.
+//
+// Returns null when the body carries no split keys (caller decides), or the
+// resolved triple otherwise. Anything malformed, out of range, or describing a
+// group of one resolves to all-nulls rather than an error: the tag is a display
+// aid, and a bad one is never worth refusing a day's work over.
+const SPLIT_GROUP_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_SPLIT_COUNT = 20;
+
+function normalizeSplitTag(body) {
+  const b = (body && typeof body === 'object') ? body : {};
+  const has = k => Object.prototype.hasOwnProperty.call(b, k);
+  if (!has('split_group_id') && !has('split_index') && !has('split_count')) return null;
+
+  const none = { split_group_id: null, split_index: null, split_count: null };
+  const gid = safeStr(b.split_group_id, 64);
+  if (!gid || !SPLIT_GROUP_RE.test(gid)) return none;
+  const count = safeInt(b.split_count);
+  const index = safeInt(b.split_index);
+  if (count == null || index == null) return none;
+  if (count < 2 || count > MAX_SPLIT_COUNT) return none;
+  if (index < 1 || index > count) return none;
+  return { split_group_id: gid, split_index: index, split_count: count };
+}
+
 function normalizeEntryBody(body) {
   const entry_type = body.entry_type === 'time_off' ? 'time_off' : 'daily';
 
@@ -1532,6 +1585,12 @@ module.exports = async (req, res) => {
       const { data, error } = normalizeEntryBody(req.body || {});
       if (error) return res.status(400).json({ error });
 
+      // Absent split keys on a create mean "not a split". Time off is never
+      // split — there is no job to split it across.
+      const split = (data.entry_type === 'time_off')
+        ? { split_group_id: null, split_index: null, split_count: null }
+        : (normalizeSplitTag(req.body) || { split_group_id: null, split_index: null, split_count: null });
+
       const inserted = await sql`
         INSERT INTO timesheet_entries (
           company_code, user_id, username, entry_type, work_date, status,
@@ -1542,7 +1601,8 @@ module.exports = async (req, res) => {
           supervisor_id, supervisor_name,
           notes, time_off_type,
           truck_unit, truck_description,
-          ees_unit, ees_customer, ees_location, ees_name, ees_job_number, ees_billing
+          ees_unit, ees_customer, ees_location, ees_name, ees_job_number, ees_billing,
+          split_group_id, split_index, split_count
         ) VALUES (
           ${companyCode}, ${userId}, ${username}, ${data.entry_type}, ${data.work_date}, 'draft',
           ${data.division}, ${data.job_id}, ${data.job_label},
@@ -1553,7 +1613,8 @@ module.exports = async (req, res) => {
           ${data.notes}, ${data.time_off_type},
           ${data.truck_unit}, ${data.truck_description},
           ${data.ees_unit}, ${data.ees_customer}, ${data.ees_location},
-          ${data.ees_name}, ${data.ees_job_number}, ${data.ees_billing}
+          ${data.ees_name}, ${data.ees_job_number}, ${data.ees_billing},
+          ${split.split_group_id}, ${split.split_index}, ${split.split_count}
         )
         RETURNING *
       `;
@@ -2211,6 +2272,16 @@ module.exports = async (req, res) => {
       const { data, error } = normalizeEntryBody(req.body || {});
       if (error) return res.status(400).json({ error });
 
+      // Absent split keys on an edit mean "leave the tag as it is" — see
+      // normalizeSplitTag. Changing an entry to time off drops it either way.
+      const split = (data.entry_type === 'time_off')
+        ? { split_group_id: null, split_index: null, split_count: null }
+        : (normalizeSplitTag(req.body) || {
+            split_group_id: existing.split_group_id || null,
+            split_index:    existing.split_index != null ? Number(existing.split_index) : null,
+            split_count:    existing.split_count != null ? Number(existing.split_count) : null,
+          });
+
       const [updated] = await sql`
         UPDATE timesheet_entries SET
           entry_type         = ${data.entry_type},
@@ -2238,6 +2309,9 @@ module.exports = async (req, res) => {
           ees_name           = ${data.ees_name},
           ees_job_number     = ${data.ees_job_number},
           ees_billing        = ${data.ees_billing},
+          split_group_id     = ${split.split_group_id},
+          split_index        = ${split.split_index},
+          split_count        = ${split.split_count},
           updated_at         = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -2314,6 +2388,7 @@ module.exports = async (req, res) => {
 // Internal helpers exposed for unit testing only (scripts/test-trucking-injection.js).
 // Not part of the HTTP contract — do not depend on these from other endpoints.
 module.exports._test = {
+  normalizeSplitTag,
   matchRosterEmployee,
   insertSplitRows,
   removeSplitRows,

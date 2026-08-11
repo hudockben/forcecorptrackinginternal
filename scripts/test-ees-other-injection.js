@@ -310,6 +310,20 @@ function entry(over = {}) {
     assert('covers pre loading and washing',
       ids.includes('ees:preloading') && ids.includes('ees:washing') && ids.length === 2, JSON.stringify(ids));
 
+    // timesheet.html keeps its own copy — it decides whether to SHOW the EES
+    // fields at all. The two lists have to name the same jobs: drift one way
+    // and the page collects EES detail the server will discard, drift the
+    // other and the server injects a row with every EES column blank. The
+    // page is static and cannot require the module, so this is the only thing
+    // holding them together.
+    const PAGE = require('fs').readFileSync(path.resolve(__dirname, '../timesheet.html'), 'utf8');
+    const pm = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(PAGE);
+    assert('timesheet.html declares EES_JOB_IDS too', !!pm);
+    const pageIds = pm ? JSON.parse(pm[1].replace(/'/g, '"')) : [];
+    assert('and names exactly the same jobs as the server',
+      JSON.stringify(pageIds) === JSON.stringify(ids),
+      `page ${JSON.stringify(pageIds)} vs server ${JSON.stringify(ids)}`);
+
     const isEesJob = id => ids.includes(String(id || ''));
     const needsEesOther = e =>
       e.entry_type === 'daily' && e.division === 'dust' && isEesJob(e.job_id);

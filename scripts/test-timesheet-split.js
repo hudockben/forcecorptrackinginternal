@@ -1,0 +1,912 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * Splitting one day across more than one job.
+ *
+ * Run: node scripts/test-timesheet-split.js   (no database, no server)
+ *
+ * George works the tennis court in the morning and the multi-field after
+ * lunch. He fills timesheet.html in ONCE and the page writes one entry per
+ * job, so payroll reviews and approves them exactly as if he had submitted
+ * twice. Three things have to hold for that to be worth anything:
+ *
+ *   1. The day-level answers are applied ONCE across the group. Lunch is one
+ *      30-minute deduction, taken off the first job; copy it onto every row
+ *      and the worker loses a second half hour per extra job, silently. Travel
+ *      is per leg — the drive out, the drive to each later job, the drive home
+ *      — and only the drive home is shared, so no leg is paid twice and the
+ *      drive between jobs is not lost.
+ *   2. Every job keeps its OWN job, clock, equipment answer and division
+ *      extras. A split that shares those is just a duplicate.
+ *   3. The rows stay tied together (split_group_id / index / count), and stay
+ *      tied together through an admin edit from payroll.html — which sends no
+ *      split fields at all, so a PUT that "helpfully" cleared them would break
+ *      the pairing the first time anyone fixed a typo.
+ *
+ * The API half stubs the neon driver and the auth module at require time. The
+ * page half runs timesheet.html's real script against a small DOM stand-in, so
+ * the payload assertions are made against the code that actually ships.
+ */
+
+const path   = require('path');
+const fs     = require('fs');
+const Module = require('module');
+
+let passed = 0, failed = 0;
+function assert(label, cond, detail) {
+  if (cond) { passed++; console.log(`  ✓ ${label}`); }
+  else      { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
+}
+function eq(label, actual, expected) {
+  assert(label, JSON.stringify(actual) === JSON.stringify(expected),
+    `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+}
+
+// ── API side ───────────────────────────────────────────────────────────────
+
+const FIELD = { companyCode: 'FCT', userId: 7,  username: 'oakesgeorge' };
+const ADMIN = { companyCode: 'FCT', userId: 42, username: 'office', payrollAdmin: true };
+
+let CURRENT_SQL = null;
+let NEXT_AUTH   = FIELD;
+const origLoad = Module._load;
+Module._load = function (request) {
+  if (request === '@neondatabase/serverless') return { neon: () => CURRENT_SQL };
+  if (request === './lib/auth') {
+    return {
+      requireAuth: () => NEXT_AUTH,
+      requireDivision: () => null,
+      // Mirror the real gate: only a payroll admin may edit a submitted row.
+      hasDivisionAccess: (p, area) => (area === 'payroll' ? !!(p && p.payrollAdmin) : true),
+    };
+  }
+  if (request === './lib/sync-normalized') return { syncForKey: async () => {} };
+  return origLoad.apply(this, arguments);
+};
+
+const handler = require(path.resolve(__dirname, '..', 'api', 'timesheet-entries.js'));
+const { normalizeSplitTag } = handler._test;
+
+// A daily entry body as timesheet.html sends it.
+function dailyBody(extra) {
+  return Object.assign({
+    entry_type: 'daily',
+    work_date: '2026-08-10',
+    division: 'turf',
+    job_id: '26041',
+    job_label: 'Franklin Regional — Tennis Court',
+    start_time: '07:00',
+    end_time: '11:00',
+    lunch_break: true,
+    operated_equipment: true,
+    supervisor_id: 3,
+    supervisor_name: 'Zach Brewer',
+    notes: '',
+  }, extra || {});
+}
+
+// A stored row as the driver hands it back.
+function dbRow(extra) {
+  return Object.assign({
+    id: 501, company_code: 'FCT', user_id: 7, username: 'oakesgeorge',
+    entry_type: 'daily', work_date: '2026-08-10', status: 'draft',
+    division: 'turf', job_id: '26041', job_label: 'Franklin Regional — Tennis Court',
+    start_time: '07:00', end_time: '11:00', computed_hours: 3.5,
+    split_group_id: null, split_index: null, split_count: null,
+  }, extra || {});
+}
+
+/**
+ * Drive one write through the handler. `existing` is the row a PUT reads back
+ * before updating. Returns the response plus the values bound to the INSERT or
+ * UPDATE, keyed by the three split columns.
+ */
+async function write(method, query, body, existing, auth = FIELD) {
+  const captured = { insert: null, update: null };
+  NEXT_AUTH = auth;
+
+  CURRENT_SQL = (strings, ...values) => {
+    const q = strings.join('?').replace(/\s+/g, ' ').trim();
+    // The value bound immediately after the fragment ending in `name = ` (an
+    // UPDATE) or at the position of `name` in the column list (an INSERT).
+    const afterEquals = name => {
+      const i = strings.findIndex(s => new RegExp(`\\b${name}\\s*=\\s*$`).test(s));
+      return i === -1 ? undefined : values[i];
+    };
+    if (/^INSERT INTO timesheet_entries/.test(q)) {
+      // Column list and VALUES list are positional; split_* are the last three.
+      captured.insert = {
+        split_group_id: values[values.length - 3],
+        split_index:    values[values.length - 2],
+        split_count:    values[values.length - 1],
+      };
+      return Promise.resolve([dbRow(Object.assign({}, body, captured.insert))]);
+    }
+    if (/^UPDATE timesheet_entries SET/.test(q)) {
+      captured.update = {
+        split_group_id: afterEquals('split_group_id'),
+        split_index:    afterEquals('split_index'),
+        split_count:    afterEquals('split_count'),
+      };
+      return Promise.resolve([dbRow(Object.assign({}, existing, captured.update))]);
+    }
+    if (/^SELECT \* FROM timesheet_entries/.test(q)) return Promise.resolve(existing ? [existing] : []);
+    return Promise.resolve([]);
+  };
+
+  const res = {
+    statusCode: 200, body: null,
+    setHeader() {}, status(c) { this.statusCode = c; return this; },
+    json(b) { this.body = b; return this; }, end() { return this; },
+  };
+  await handler({ method, query, body }, res);
+  return { res, captured };
+}
+
+async function apiTests() {
+  console.log('\n[normalizeSplitTag]');
+  assert('a body with no split keys returns null, so the caller decides',
+    normalizeSplitTag({ work_date: '2026-08-10' }) === null);
+  eq('a well-formed tag comes through intact',
+    normalizeSplitTag({ split_group_id: 'gk1x9a', split_index: 2, split_count: 2 }),
+    { split_group_id: 'gk1x9a', split_index: 2, split_count: 2 });
+  eq('a group of one is not a split',
+    normalizeSplitTag({ split_group_id: 'gk1x9a', split_index: 1, split_count: 1 }),
+    { split_group_id: null, split_index: null, split_count: null });
+  eq('an index past the end of the group is dropped rather than stored',
+    normalizeSplitTag({ split_group_id: 'gk1x9a', split_index: 3, split_count: 2 }),
+    { split_group_id: null, split_index: null, split_count: null });
+  eq('a group id outside [A-Za-z0-9_-] is refused',
+    normalizeSplitTag({ split_group_id: "g'; DROP TABLE", split_index: 1, split_count: 2 }),
+    { split_group_id: null, split_index: null, split_count: null });
+  eq('and so is a group larger than the cap',
+    normalizeSplitTag({ split_group_id: 'gk1x9a', split_index: 1, split_count: 99 }),
+    { split_group_id: null, split_index: null, split_count: null });
+  eq('an explicitly cleared tag clears it',
+    normalizeSplitTag({ split_group_id: null, split_index: null, split_count: null }),
+    { split_group_id: null, split_index: null, split_count: null });
+
+  console.log('\n[POST — creating the rows of a split day]');
+  {
+    const { res, captured } = await write('POST', {},
+      dailyBody({ split_group_id: 'gk1x9a', split_index: 2, split_count: 2 }));
+    assert('the write succeeds', res.statusCode === 200 && res.body.ok === true,
+      JSON.stringify(res.body));
+    eq('the tag is stored as sent', captured.insert,
+      { split_group_id: 'gk1x9a', split_index: 2, split_count: 2 });
+    assert('and comes back on the entry so the page can badge it',
+      res.body.entry.split_group_id === 'gk1x9a' &&
+      res.body.entry.split_index === 2 &&
+      res.body.entry.split_count === 2, JSON.stringify(res.body.entry));
+  }
+  {
+    const { captured } = await write('POST', {}, dailyBody());
+    eq('an ordinary entry stores no tag', captured.insert,
+      { split_group_id: null, split_index: null, split_count: null });
+  }
+  {
+    const { captured } = await write('POST', {}, {
+      entry_type: 'time_off', work_date: '2026-08-10', time_off_type: 'sick',
+      supervisor_id: 3, supervisor_name: 'Zach Brewer',
+      split_group_id: 'gk1x9a', split_index: 1, split_count: 2,
+    });
+    eq('time off is never a split, whatever the body says', captured.insert,
+      { split_group_id: null, split_index: null, split_count: null });
+  }
+
+  console.log('\n[PUT — an admin edit must not break the pairing]');
+  {
+    // Exactly what payroll.html's saveEdit sends: no split fields at all.
+    const existing = dbRow({ status: 'submitted', split_group_id: 'gk1x9a', split_index: 1, split_count: 2 });
+    const { res, captured } = await write('PUT', { id: '501' }, dailyBody(), existing, ADMIN);
+    assert('the edit succeeds', res.statusCode === 200, JSON.stringify(res.body));
+    eq('a body with no split keys leaves the tag exactly as it was', captured.update,
+      { split_group_id: 'gk1x9a', split_index: 1, split_count: 2 });
+  }
+  {
+    const existing = dbRow({ split_group_id: 'gk1x9a', split_index: 1, split_count: 2 });
+    const { captured } = await write('PUT', { id: '501' },
+      dailyBody({ split_group_id: 'gk1x9a', split_index: 1, split_count: 3 }), existing);
+    eq('an explicit tag wins — re-saving a day with a third job re-counts it', captured.update,
+      { split_group_id: 'gk1x9a', split_index: 1, split_count: 3 });
+  }
+  {
+    const existing = dbRow({ split_group_id: 'gk1x9a', split_index: 1, split_count: 2 });
+    const { captured } = await write('PUT', { id: '501' }, {
+      entry_type: 'time_off', work_date: '2026-08-10', time_off_type: 'sick',
+      supervisor_id: 3, supervisor_name: 'Zach Brewer',
+    }, existing);
+    eq('turning a split row into time off drops the tag with the job', captured.update,
+      { split_group_id: null, split_index: null, split_count: null });
+  }
+}
+
+// ── Page side ──────────────────────────────────────────────────────────────
+// timesheet.html's script, run against a DOM stand-in. Only what the script
+// actually touches is implemented: ids, values, text, classes, and enough of
+// <select> to read the picked option's label.
+
+const HTML = fs.readFileSync(path.resolve(__dirname, '..', 'timesheet.html'), 'utf8');
+
+function loadPage(opts = {}) {
+  const byId = new Map();
+  // Recorded traffic, and a valve: while `hold` is set, every write parks so a
+  // test can get two button handlers in flight at once.
+  const net = { calls: [], parked: [], hold: false, jobs: opts.jobs || {}, jobHold: null, n: 0 };
+  net.release = () => net.parked.splice(0).forEach(r => r());
+  net.writes = () => net.calls.filter(c => c.method !== 'GET' && !/action=submit/.test(c.url));
+  net.creates = () => net.writes().filter(c => !/[?&]id=/.test(c.url));
+
+  const makeClassList = () => {
+    const s = new Set();
+    return {
+      add: (...c) => c.forEach(x => s.add(x)),
+      remove: (...c) => c.forEach(x => s.delete(x)),
+      toggle: (c, on) => (on ? s.add(c) : s.delete(c)),
+      contains: c => s.has(c),
+    };
+  };
+
+  function makeEl(tag, id) {
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(), id,
+      parentElement: null,
+      value: '', textContent: '', innerHTML: '', disabled: false,
+      dataset: {}, style: {}, classList: makeClassList(),
+      options: [], selectedIndex: -1,
+      // Only the two Yes/No pills are ever queried, and only for their buttons.
+      querySelectorAll: () => (/seg-(lunch|equip)$/.test(id || '')
+        ? [{ dataset: { val: 'true' }, classList: makeClassList() },
+           { dataset: { val: 'false' }, classList: makeClassList() }]
+        : []),
+      // A <select> that is handed an already-selected <option> adopts it, the
+      // way a browser does. editEntry relies on that to show a job or a
+      // supervisor that has since dropped off the active list.
+      appendChild(child) {
+        this.options.push(child);
+        if (child) child.parentElement = this;
+        if (child && child.selected) {
+          this.value = child.value;
+          this.selectedIndex = this.options.length - 1;
+        }
+        return child;
+      },
+      insertAdjacentHTML(_pos, html) { registerIds(html); },
+      // Enough to see where a moved node ended up: it is no longer a child of
+      // wherever it was, which is all the assertions below need.
+      insertAdjacentElement(_pos, el) { if (el) el.parentElement = this.parentElement; },
+      remove() { byId.delete(this.id); },
+      scrollIntoView() {},
+    };
+    return el;
+  }
+
+  // Every id in a chunk of markup becomes an element. The page only ever
+  // reaches for fields by id, so this is the whole of what it needs.
+  function registerIds(html) {
+    const re = /<(\w+)\b[^>]*\bid="([^"]+)"/g;
+    let m;
+    while ((m = re.exec(html))) if (!byId.has(m[2])) byId.set(m[2], makeEl(m[1], m[2]));
+  }
+  registerIds(HTML);
+
+  const document = {
+    getElementById: id => byId.get(id) || null,
+    querySelectorAll: () => [],
+    createElement: tag => makeEl(tag, ''),
+  };
+
+  const sandbox = {
+    document,
+    window: { location: { replace() {} }, scrollTo() {} },
+    localStorage: {
+      getItem: k => (k === 'fct_token' ? 'tok'
+        : k === 'fct_user' ? JSON.stringify({ username: 'oakesgeorge', allowedDivisions: ['timesheet'] })
+        : null),
+      removeItem() {},
+    },
+    // init() only fills today's date and fetches; the tests drive the form
+    // directly, so keep it from racing them.
+    queueMicrotask: () => {},
+    fetch: async (url, o = {}) => {
+      const method = o.method || 'GET';
+      const call = { method, url: String(url) };
+      net.calls.push(call);
+      if (/timesheet-jobs/.test(call.url)) {
+        const division = (call.url.match(/division=([^&]*)/) || [])[1] || '';
+        if (net.jobHold && net.jobHold[division]) await new Promise(r => net.jobHold[division].push(r));
+        return { ok: true, status: 200, json: async () => ({ jobs: net.jobs[division] || [] }) };
+      }
+      if (net.hold && method !== 'GET') await new Promise(r => net.parked.push(r));
+      return { ok: true, status: 200, json: async () => ({
+        ok: true, entries: [], supervisors: [], entry: { id: 'row' + (++net.n) },
+      }) };
+    },
+    confirm: () => true,
+    console,
+  };
+
+  const script = HTML.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const exposed = `
+    ;return {
+      buildPayloads, addSplit, setSeg, updateHours, blockOrder, blockName,
+      splitLabel, resetForm, bel, draftGroupFor, editEntry, updateTravelHours,
+      // Defensive: lets the harness load a build that predates the guard, so
+      // these tests can be run against it to prove they catch its absence.
+      resetFormAction: typeof resetFormAction === 'function' ? resetFormAction : null,
+      saveDraft, submitEntry, onDivisionChange,
+      setEntriesCache: v => { entriesCache = v; },
+      state: () => ({ groupId: currentGroupId, blocks: blockOrder() }),
+    };`;
+  const names = Object.keys(sandbox);
+  // eslint-disable-next-line no-new-func
+  const run = new Function(...names, script + exposed);
+  const api = run(...names.map(n => sandbox[n]));
+  return { api, document, byId, net };
+}
+
+const tick = () => new Promise(r => setImmediate(r));
+
+// Point a <select> at one option, the way a tap on the picker would.
+function pick(sel, value, label) {
+  sel.options = [{ value, textContent: label, dataset: { label } }];
+  sel.selectedIndex = 0;
+  sel.value = value;
+}
+
+function setBlock(api, i, { division, jobId, jobLabel, start, end, equip, travelIn }) {
+  api.bel(i, 'division').value = division;
+  if (travelIn !== undefined) {
+    const leg = api.bel(i, 'travel-in');
+    assert(`job block ${i} offers a travel field`, !!leg,
+      'no travel input on this job block — the drive to it cannot be recorded');
+    if (leg) leg.value = travelIn;
+  }
+  pick(api.bel(i, 'job'), jobId, jobLabel);
+  api.bel(i, 'start').value = start;
+  api.bel(i, 'end').value   = end;
+  api.setSeg('equip', equip, i);
+  api.updateHours(i);
+}
+
+// George's day: tennis court in the morning, multi-field after lunch, half an
+// hour each way in the truck.
+function georgesDay(api, doc) {
+  doc.getElementById('f-date').value = '2026-08-10';
+  doc.getElementById('f-travel-to-site').value = '0.5';
+  doc.getElementById('f-travel-to-shop').value = '0.75';
+  pick(doc.getElementById('f-supervisor'), '3', 'Zach Brewer');
+  doc.getElementById('f-notes').value = 'Moved to the multi-field after lunch.';
+  api.setSeg('lunch', true);
+
+  setBlock(api, 0, {
+    division: 'turf', jobId: '26041', jobLabel: 'Franklin Regional — Tennis Court',
+    start: '07:00', end: '11:30', equip: true,
+  });
+  api.addSplit();
+  const second = api.blockOrder()[1];
+  setBlock(api, second, {
+    division: 'turf', jobId: '26042', jobLabel: 'Franklin Regional — Multi Field',
+    start: '12:00', end: '16:00', equip: false, travelIn: '0.25',
+  });
+  api.updateTravelHours();
+  return second;
+}
+
+function pageTests() {
+  console.log('\n[timesheet.html — one form, one entry per job]');
+
+  {
+    const { api, document: doc } = loadPage();
+    georgesDay(api, doc);
+    const { list, error } = api.buildPayloads();
+    assert('the form builds without complaint', !error, error);
+    assert('two jobs produce two entries', list && list.length === 2,
+      `got ${list && list.length}`);
+
+    const [a, b] = list;
+    eq('each entry carries its own job',
+      [a.data.job_id, b.data.job_id], ['26041', '26042']);
+    eq('and its own clock',
+      [a.data.start_time, a.data.end_time, b.data.start_time, b.data.end_time],
+      ['07:00', '11:30', '12:00', '16:00']);
+    eq('and its own equipment answer',
+      [a.data.operated_equipment, b.data.operated_equipment], [true, false]);
+
+    // A split day is shop → job A → job B → shop, so there are THREE legs, not
+    // two. Each job carries the drive that got the worker to it; only the last
+    // carries the drive home, so no leg is ever paid twice.
+    eq('each job carries the drive that got them to it',
+      [a.data.travel_to_site_hours, b.data.travel_to_site_hours], ['0.5', '0.25']);
+    eq('the drive home belongs to the last job alone',
+      [a.data.travel_to_shop_hours, b.data.travel_to_shop_hours], ['', '0.75']);
+    eq('and the readout adds up every leg of the day',
+      doc.getElementById('f-travel-hours').textContent, '1.50');
+    eq('lunch is deducted once, from the first job',
+      [a.data.lunch_break, b.data.lunch_break], [true, false]);
+
+    eq('the date is the same day for both',
+      [a.data.work_date, b.data.work_date], ['2026-08-10', '2026-08-10']);
+    eq('so is the supervisor',
+      [a.data.supervisor_name, b.data.supervisor_name], ['Zach Brewer', 'Zach Brewer']);
+    assert('and the note rides on both, since payroll reads them one at a time',
+      a.data.notes === b.data.notes && a.data.notes.startsWith('Moved to'));
+
+    assert('both rows share one group id',
+      a.data.split_group_id && a.data.split_group_id === b.data.split_group_id,
+      `${a.data.split_group_id} vs ${b.data.split_group_id}`);
+    eq('numbered in order, with the size of the group',
+      [a.data.split_index, a.data.split_count, b.data.split_index, b.data.split_count],
+      [1, 2, 2, 2]);
+
+    // The displayed hours are what the server will compute: 4.5 gross less the
+    // 30-minute lunch on the first job, 4.0 on the second.
+    eq('the first job shows its hours net of lunch',
+      doc.getElementById('f-hours').textContent, '4.00');
+    eq('the second shows its own, undeducted',
+      api.bel(api.blockOrder()[1], 'hours').textContent, '4.00');
+    eq('and the day total adds them up',
+      doc.getElementById('f-day-hours').textContent, '8.00');
+  }
+
+  {
+    const { api, document: doc } = loadPage();
+    doc.getElementById('f-date').value = '2026-08-10';
+    doc.getElementById('f-travel-to-site').value = '0.5';
+    doc.getElementById('f-travel-to-shop').value = '0.75';
+    pick(doc.getElementById('f-supervisor'), '3', 'Zach Brewer');
+    api.setSeg('lunch', true);
+    setBlock(api, 0, {
+      division: 'turf', jobId: '26041', jobLabel: 'Franklin Regional — Tennis Court',
+      start: '07:00', end: '15:30', equip: true,
+    });
+    const { list, error } = api.buildPayloads();
+    assert('an ordinary one-job day still builds', !error, error);
+    assert('as exactly one entry', list.length === 1);
+    eq('carrying both travel legs and the lunch answer, as it always has',
+      [list[0].data.travel_to_site_hours, list[0].data.travel_to_shop_hours, list[0].data.lunch_break],
+      ['0.5', '0.75', true]);
+    eq('and no split tag',
+      [list[0].data.split_group_id, list[0].data.split_index, list[0].data.split_count],
+      [null, null, null]);
+  }
+
+  console.log('\n[timesheet.html — what it refuses]');
+
+  {
+    const { api, document: doc } = loadPage();
+    georgesDay(api, doc);
+    // Second job left on the first job's clock.
+    const second = api.blockOrder()[1];
+    api.bel(second, 'start').value = '10:00';
+    api.bel(second, 'end').value   = '14:00';
+    const { list, error } = api.buildPayloads();
+    assert('two jobs booked over the same hours are refused', !list && !!error, JSON.stringify(list));
+    assert('and the message names both', /First job and Second job/.test(error || ''), error);
+  }
+  {
+    const { api, document: doc } = loadPage();
+    georgesDay(api, doc);
+    const second = api.blockOrder()[1];
+    api.bel(second, 'start').value = '12:00';
+    api.bel(second, 'end').value   = '11:00';   // overnight — 23 hours
+    const { list, error } = api.buildPayloads();
+    assert('a day adding up to more than 24 hours is refused', !list && !!error, JSON.stringify(list));
+    assert('and says so in hours', /more than one day/.test(error || ''), error);
+  }
+  {
+    // A night shift that runs into the morning and then picks up a second job
+    // is a real day, and the overlap check must not refuse it just because the
+    // second job's clock reads earlier than the first's.
+    const { api, document: doc } = loadPage();
+    georgesDay(api, doc);
+    api.bel(0, 'start').value = '22:00';
+    api.bel(0, 'end').value   = '02:00';
+    const second = api.blockOrder()[1];
+    api.bel(second, 'start').value = '03:00';
+    api.bel(second, 'end').value   = '06:00';
+    const { list, error } = api.buildPayloads();
+    assert('a shift crossing midnight can still be split', !!list && !error, error);
+    eq('and both jobs keep their own clock',
+      list.map(x => `${x.data.start_time}-${x.data.end_time}`), ['22:00-02:00', '03:00-06:00']);
+  }
+  {
+    const { api, document: doc } = loadPage();
+    georgesDay(api, doc);
+    const second = api.blockOrder()[1];
+    pick(api.bel(second, 'job'), '', '');
+    const { error } = api.buildPayloads();
+    assert('a missing field says WHICH job is missing it',
+      /^Second job: pick a job\./.test(error || ''), error);
+  }
+  {
+    // A start equal to its end is 0 hours. It has to be caught HERE, not by
+    // the server: the earlier jobs are written out as drafts before the bad
+    // one is ever sent, so a server-side refusal leaves half a day saved and
+    // a message that can't say which job is wrong.
+    //
+    // It also cannot be left to overlappingBlocks, which reads a zero-length
+    // span differently depending on where the other jobs sit — after them it
+    // slips through, inside one it reads as an overlap.
+    const { api, document: doc } = loadPage();
+    georgesDay(api, doc);
+    const second = api.blockOrder()[1];
+    api.bel(second, 'start').value = '12:00';   // sits after the first job
+    api.bel(second, 'end').value   = '12:00';
+    const after = api.buildPayloads();
+    assert('a zero-hour job after the others is refused', !after.list && !!after.error, JSON.stringify(after.list));
+    assert('and named', /^Second job: start and end times are the same/.test(after.error || ''), after.error);
+
+    api.bel(0, 'start').value = '10:00';        // now it sits inside the first job
+    api.bel(0, 'end').value   = '14:00';
+    const inside = api.buildPayloads();
+    assert('a zero-hour job inside another is refused the same way',
+      /^Second job: start and end times are the same/.test(inside.error || ''), inside.error);
+  }
+  {
+    const { api, document: doc } = loadPage();
+    doc.getElementById('f-date').value = '2026-08-10';
+    pick(doc.getElementById('f-supervisor'), '3', 'Zach Brewer');
+    api.setSeg('lunch', false);
+    setBlock(api, 0, {
+      division: 'turf', jobId: '26041', jobLabel: 'Franklin Regional — Tennis Court',
+      start: '07:00', end: '07:00', equip: true,
+    });
+    const { list, error } = api.buildPayloads();
+    assert('a one-job day of 0 hours is refused too', !list && !!error, JSON.stringify(list));
+    assert('in the plain wording', /^Start and end times are the same/.test(error || ''), error);
+  }
+  {
+    const { api, document: doc } = loadPage();
+    doc.getElementById('f-date').value = '2026-08-10';
+    pick(doc.getElementById('f-supervisor'), '3', 'Zach Brewer');
+    api.setSeg('lunch', false);
+    setBlock(api, 0, {
+      division: 'turf', jobId: '', jobLabel: '',
+      start: '07:00', end: '15:30', equip: true,
+    });
+    const { error } = api.buildPayloads();
+    eq('a one-job day keeps the plain wording it always had', error, 'Pick a job.');
+  }
+
+  console.log('\n[timesheet.html — the drive home sits after the last job]');
+  {
+    // Every job block asks how the worker got TO it. The drive away is the
+    // day's one shared leg, and parked at the top beside the drive out it
+    // reads as part of the FIRST job — so the last job block appears to ask
+    // how they arrived and never how they left. It moves below the blocks,
+    // which is where it happens.
+    const { api, document: doc } = loadPage();
+    const homeRow = doc.getElementById('row-travel-to-shop');
+    const total   = doc.getElementById('travelTotalRow');
+    const slot    = doc.getElementById('travelHomeSlot');
+    const lbl     = id => doc.getElementById(id).textContent;
+
+    // Anchored first, so a form without the field fails as that rather than
+    // as a crash somewhere further down.
+    assert('the form has a drive-home row and somewhere to move it to',
+      !!homeRow && !!total && !!slot, `row ${!!homeRow}, total ${!!total}, slot ${!!slot}`);
+
+    if (homeRow && total && slot) {
+      assert('on a one-job day it stays beside the drive out', homeRow.parentElement !== slot);
+
+      georgesDay(api, doc);
+      assert('splitting moves it below the job blocks', homeRow.parentElement === slot);
+      assert('and takes the running travel total with it', total.parentElement === slot,
+        'left up top it sits under the first leg announcing the whole day');
+      eq('both now read as day-wide',
+        [lbl('lbl-travel-to-site'), lbl('lbl-travel-total')],
+        ['Travel Time to First Job (hours)', 'All jobs — travel hours']);
+
+      api.resetForm();
+      assert('and back on a one-job day it returns', homeRow.parentElement !== slot);
+      assert('with the total', total.parentElement !== slot);
+      eq('under the plain labels again',
+        [lbl('lbl-travel-to-site'), lbl('lbl-travel-total')],
+        ['Travel Time to Site (hours)', 'Travel hours']);
+    }
+  }
+
+  console.log('\n[timesheet.html — form housekeeping]');
+  {
+    const { api, document: doc } = loadPage();
+    georgesDay(api, doc);
+    assert('the day total is shown once the day is split',
+      doc.getElementById('dayTotalRow').style.display === '');
+    api.resetForm();
+    eq('Reset takes the extra jobs off the form', api.blockOrder(), [0]);
+    assert('and forgets the group they were tied together with',
+      api.state().groupId === null);
+    assert('and hides the day total again',
+      doc.getElementById('dayTotalRow').style.display === 'none');
+  }
+  console.log('\n[timesheet.html — re-opening a split day]');
+  {
+    const { api } = loadPage();
+    const draft = (id, idx, extra) => Object.assign({
+      id, entry_type: 'daily', status: 'draft',
+      split_group_id: 'gk1x9a', split_index: idx, split_count: 2,
+    }, extra || {});
+    const one = draft('501', 1), two = draft('502', 2);
+    api.setEntriesCache([two, one]);   // list order is newest-first, not split order
+
+    eq('tapping either draft pulls the whole day back, in job order',
+      api.draftGroupFor(one).map(x => x.id), ['501', '502']);
+    eq('from either end', api.draftGroupFor(two).map(x => x.id), ['501', '502']);
+
+    // Half the day already went through — only the draft is still editable.
+    api.setEntriesCache([Object.assign({}, one, { status: 'submitted' }), two]);
+    eq('a sibling that is already submitted is left alone',
+      api.draftGroupFor(two).map(x => x.id), ['502']);
+
+    api.setEntriesCache([{ id: '600', entry_type: 'daily', status: 'draft', split_group_id: '' }]);
+    eq('and an ordinary draft is just itself',
+      api.draftGroupFor({ id: '600', entry_type: 'daily', status: 'draft', split_group_id: '' }).map(x => x.id),
+      ['600']);
+  }
+
+  {
+    const { api } = loadPage();
+    eq('an entry with no tag gets no badge', api.splitLabel({ split_group_id: '' }), '');
+    eq('a tagged entry is badged with its position',
+      api.splitLabel({ split_group_id: 'gk1x9a', split_index: 2, split_count: 2 }), 'Split 2/2');
+    eq('a group of one is not badged',
+      api.splitLabel({ split_group_id: 'gk1x9a', split_index: 1, split_count: 1 }), '');
+  }
+}
+
+// ── Concurrency ────────────────────────────────────────────────────────────
+// Two ways the form could write the same day twice. Both are about the gap
+// between pressing a button and the row coming back with an id.
+
+async function concurrencyTests() {
+  console.log('\n[timesheet.html — the same day cannot be written twice]');
+  {
+    // Save Draft and Submit are different buttons, so disabling one never
+    // stopped the other. A block is pinned to its row only when its write
+    // returns, so a Submit landing during a Save found nothing pinned and
+    // posted every job a second time — a duplicate day, per job, into payroll.
+    const { api, document: doc, net } = loadPage();
+    georgesDay(api, doc);
+    net.hold = true;
+    const saving = api.saveDraft();
+    const submitting = api.submitEntry();
+    await tick();
+    net.hold = false;
+    net.release();
+    await Promise.all([saving, submitting]);
+
+    eq('each job is created exactly once', net.creates().length, 2);
+    assert('and the second press is refused rather than queued behind the first',
+      net.writes().length === 2, JSON.stringify(net.writes().map(c => c.method + ' ' + c.url)));
+  }
+  {
+    // The same window, on one button: the guard is the flag, not the disable.
+    const { api, document: doc, net } = loadPage();
+    georgesDay(api, doc);
+    net.hold = true;
+    const a = api.submitEntry();
+    const b = api.submitEntry();
+    await tick();
+    net.hold = false;
+    net.release();
+    await Promise.all([a, b]);
+    eq('a double-tapped Submit creates two rows, not four', net.creates().length, 2);
+  }
+
+  console.log('\n[timesheet.html — loading a draft cannot collide with other work]');
+  {
+    // Two draft cards tapped in quick succession. Loading a draft waits on that
+    // job's list, and everything it touches is shared — the date, the
+    // supervisor, the blocks, and editingIds, which decides which rows the next
+    // save updates. Both halves used to land, leaving a form made of two
+    // different days; saving it then wrote one day's date over the other day's
+    // row, moving a job to a date nobody worked it.
+    const { api, document: doc, net } = loadPage({
+      jobs: { turf: [{ id: '26041', label: 'Tennis Court' },
+                     { id: '26042', label: 'Multi Field' },
+                     { id: '26043', label: 'Baseball Diamond' }] },
+    });
+    const draft = (id, o) => Object.assign({
+      id, entry_type: 'daily', status: 'draft', work_date: '2026-08-10',
+      division: 'turf', start_time: '07:00', end_time: '11:00',
+      lunch_break: false, operated_equipment: true,
+      supervisor_id: 3, supervisor_name: 'Zach Brewer', notes: '',
+      split_group_id: '', split_index: null, split_count: null,
+    }, o);
+    api.setEntriesCache([
+      draft('A1', { job_id: '26041', job_label: 'Tennis Court',
+                    split_group_id: 'gA', split_index: 1, split_count: 2 }),
+      draft('A2', { job_id: '26042', job_label: 'Multi Field', start_time: '12:00', end_time: '16:00',
+                    split_group_id: 'gA', split_index: 2, split_count: 2 }),
+      draft('B1', { job_id: '26043', job_label: 'Baseball Diamond', work_date: '2026-08-09' }),
+    ]);
+
+    net.jobHold = { turf: [] };            // hold the job list so A stalls mid-load
+    const loadingA = api.editEntry('A1');
+    await tick();
+    const loadingB = api.editEntry('B1');  // second tap supersedes it
+    net.jobHold.turf.splice(0).forEach(r => r());
+    net.jobHold = null;
+    await Promise.all([loadingA, loadingB]);
+
+    eq('the form holds one day, not two half-loaded ones', api.blockOrder().length, 1);
+    eq('showing the day that was tapped last', doc.getElementById('f-date').value, '2026-08-09');
+    const { list } = api.buildPayloads();
+    eq('and a save would touch that one row only', list.map(x => x.data.job_id), ['26043']);
+    eq('leaving the other day\'s job out of it entirely',
+      list.filter(x => x.data.job_id === '26042').length, 0);
+  }
+  {
+    // Tapping a card mid-save clears the pins the write loop is still using, so
+    // the blocks it had not reached yet post themselves a second time.
+    const { api, document: doc, net } = loadPage();
+    georgesDay(api, doc);
+    await api.saveDraft();                       // both blocks now pinned
+    const pinned = net.creates().length;
+    eq('the day starts out as two rows', pinned, 2);
+
+    api.setEntriesCache([{ id: 'Z1', entry_type: 'daily', status: 'draft',
+      work_date: '2026-08-09', division: 'turf', job_id: '26041', job_label: 'Tennis Court',
+      start_time: '07:00', end_time: '11:00', lunch_break: false, operated_equipment: true,
+      supervisor_id: 3, supervisor_name: 'Zach Brewer', split_group_id: '' }]);
+
+    net.hold = true;
+    const saving = api.saveDraft();
+    await tick();
+    await api.editEntry('Z1');                   // must be refused while writing
+    // Checked here, mid-write: once the save lands it reports its own result
+    // over the top, which is the message that should be left standing.
+    assert('the tap is answered rather than silently dropped',
+      /still saving/i.test(doc.getElementById('formMsg').textContent),
+      JSON.stringify(doc.getElementById('formMsg').textContent));
+    net.hold = false;
+    net.release();
+    await saving;
+
+    eq('a re-save creates nothing new', net.creates().length, pinned);
+    assert('and the save still reports its own result',
+      /Saved 2 draft entries/.test(doc.getElementById('formMsg').textContent),
+      JSON.stringify(doc.getElementById('formMsg').textContent));
+  }
+
+  {
+    // Reset and Delete Draft clear editingIds exactly like loading a draft
+    // does, so a write in flight loses track of the rows it already made and
+    // posts the rest of the day again. Every button that can do that has to be
+    // shut for the duration, not just the two that start a write.
+    const { api, document: doc, net } = loadPage();
+    georgesDay(api, doc);
+    await api.saveDraft();
+    const pinned = net.creates().length;
+
+    net.hold = true;
+    const saving = api.saveDraft();
+    await tick();
+    for (const id of ['btn-save', 'btn-submit', 'btn-add-split', 'btn-reset', 'btn-delete-draft']) {
+      const el = doc.getElementById(id);
+      assert(`${id} is shut while the form writes`, !!el && el.disabled === true,
+        el ? 'still enabled' : 'no such button');
+    }
+    assert('the Reset button routes through a guarded action',
+      typeof api.resetFormAction === 'function', 'resetFormAction is missing');
+    if (typeof api.resetFormAction === 'function') api.resetFormAction();   // same-tick press
+    assert('a Reset in the same tick is refused, and says so',
+      /still saving/i.test(doc.getElementById('formMsg').textContent),
+      JSON.stringify(doc.getElementById('formMsg').textContent));
+    net.hold = false;
+    net.release();
+    await saving;
+
+    eq('so the re-save creates nothing new', net.creates().length, pinned);
+    for (const id of ['btn-save', 'btn-submit', 'btn-reset', 'btn-delete-draft']) {
+      const el = doc.getElementById(id);
+      assert(`${id} works again once the save lands`, !!el && el.disabled === false,
+        el ? 'still disabled' : 'no such button');
+    }
+  }
+
+  console.log('\n[timesheet.html — a slow job list cannot land on the wrong division]');
+  {
+    // Two divisions picked in quick succession. The first load is held open,
+    // so it answers LAST — and used to win, leaving paving's jobs listed under
+    // Turf. Picking one then submits a turf day against a paving project.
+    const { api, net } = loadPage({
+      jobs: { paving: [{ id: 'P1', label: 'Punxsy Storage Lot' }],
+              turf:   [{ id: '26041', label: 'Franklin Regional — Tennis Court' }] },
+    });
+    net.jobHold = { paving: [] };
+
+    api.bel(0, 'division').value = 'paving';
+    const slow = api.onDivisionChange(0);          // parks on the held fetch
+    await tick();
+    api.bel(0, 'division').value = 'turf';
+    const fast = api.onDivisionChange(0);          // answers immediately
+    await fast;
+    net.jobHold.paving.splice(0).forEach(r => r()); // now let paving answer
+    await slow;
+
+    const html = api.bel(0, 'job').innerHTML;
+    assert('the picker lists the division actually chosen', /26041/.test(html), html);
+    assert('and not the one that was abandoned', !/P1/.test(html), html);
+  }
+}
+
+// ── payroll.html — naming a day when two rows look identical ───────────────
+// Bulk approve groups by project, so a worker who split one day across the
+// same job twice has two rows in one group sharing name, date and job. Its
+// validation messages point at a day by name and date, which named both of
+// them: "check bobd · Aug 10" with two bobd · Aug 10 rows on screen.
+
+function payrollDayLabelTests() {
+  console.log('\n[payroll.html — a message can name one of two identical-looking days]');
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'payroll.html'), 'utf8');
+
+  const fn = src.match(/function bulkDayLabel\(g, e\) \{[\s\S]*?\n {4}\}/);
+  assert('bulkDayLabel is where the naming lives', !!fn);
+  if (!fn) return;
+  // Pure apart from prettyDate, so it runs standalone with that stubbed.
+  // eslint-disable-next-line no-new-func
+  const bulkDayLabel = new Function('prettyDate', `${fn[0]}; return bulkDayLabel;`)(d => d);
+
+  const morning   = { id: '4', username: 'bobd', work_date: '2026-08-10', start_time: '07:00', end_time: '11:00' };
+  const afternoon = { id: '5', username: 'bobd', work_date: '2026-08-10', start_time: '12:00', end_time: '16:00' };
+  const zach      = { id: '3', username: 'brewerzach', work_date: '2026-08-10', start_time: '07:00', end_time: '15:30' };
+
+  const split = { entries: [morning, afternoon] };
+  eq('the two halves of one split day are told apart by their clock',
+    [bulkDayLabel(split, morning), bulkDayLabel(split, afternoon)],
+    ['bobd · 2026-08-10 07:00–11:00', 'bobd · 2026-08-10 12:00–16:00']);
+
+  const crew = { entries: [morning, zach] };
+  eq('a day with no twin in its group reads plainly, as it always has',
+    bulkDayLabel(crew, morning), 'bobd · 2026-08-10');
+  eq('and so does a different worker on the same date',
+    bulkDayLabel(crew, zach), 'brewerzach · 2026-08-10');
+
+  // Both message sites must go through it, or the ambiguity comes straight back.
+  const inline = (src.match(/who: `\$\{e\.username\} · \$\{prettyDate/g) || []).length;
+  eq('no bulk message builds the label inline any more', inline, 0);
+  assert('both bulk validators use the helper',
+    (src.match(/who: bulkDayLabel\(g, e\)/g) || []).length === 2,
+    `${(src.match(/who: bulkDayLabel\(g, e\)/g) || []).length} call sites`);
+}
+
+// ── Drift guard ────────────────────────────────────────────────────────────
+// Block 0 is static markup and the extra blocks are built by splitBlockHtml().
+// A per-job field added to one and not the other is silent data loss — the
+// worker fills it in on their first job and it never appears on the second, or
+// the split block collects a value buildPayloads never reads.
+
+function driftTests() {
+  console.log('\n[timesheet.html — the split block mirrors block 0]');
+
+  const idMap = HTML.match(/const BLOCK0_IDS = \{([\s\S]*?)\n {4}\};/);
+  assert('BLOCK0_IDS is where the field list lives', !!idMap);
+  if (!idMap) return;
+  const keys = [...idMap[1].matchAll(/'([^']+)':\s*'[^']+'/g)].map(m => m[1]);
+  assert('and it names every per-job field', keys.length >= 16, `${keys.length} keys`);
+
+  const tmpl = HTML.match(/function splitBlockHtml\(i\) \{([\s\S]*?)\n {4}\}/);
+  assert('splitBlockHtml is where the extra blocks are built', !!tmpl);
+  if (!tmpl) return;
+  const missing = keys.filter(k => !tmpl[1].includes(`s\${i}-${k}`));
+  eq('every field block 0 has, the split block has too', missing, []);
+
+  // The other half of the rule: day-level answers must NOT be repeated per
+  // job. A second lunch question is a second lunch deduction.
+  const dayLevel = ['f-date', 'f-travel-to-site', 'f-travel-to-shop', 'seg-lunch', 'f-supervisor', 'f-notes'];
+  const repeated = dayLevel.filter(f => tmpl[1].includes(f.replace(/^f-/, '')) && /date|travel|lunch|supervisor|notes/.test(f)
+    && new RegExp(`s\\$\\{i\\}-${f.replace(/^f-/, '')}\\b`).test(tmpl[1]));
+  eq('and no day-level field is asked for twice', repeated, []);
+}
+
+(async () => {
+  await apiTests();
+  pageTests();
+  await concurrencyTests();
+  payrollDayLabelTests();
+  driftTests();
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})().catch(err => { console.error(err); process.exit(1); });

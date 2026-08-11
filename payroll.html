@@ -888,6 +888,25 @@
     .pw-no  { background: rgba(136,136,136,0.15); color: var(--muted); }
     .pw-na  { color: var(--muted); }
 
+    /* ── Split-day chip ──
+       This entry is one job of a day the worker split across several. Same
+       pill shape as prevailing wage; blue keeps amber for prevailing wage and
+       green for the Yes/No flags, so two entries for one person on one date
+       read as a deliberate split rather than a double submission. */
+    .split-chip {
+      display: inline-block;
+      margin-left: 0.4rem;
+      font-size: 0.56rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.42rem;
+      border-radius: 4px;
+      white-space: nowrap;
+      background: rgba(96,165,250,0.16);
+      color: var(--blue);
+    }
+
     /* ── Per-day Yes/No flags (lunch break, operated equipment) ──
        Same pill shape as prevailing wage, but green/grey rather than amber so
        amber stays reserved for prevailing wage. */
@@ -3390,11 +3409,32 @@
     // surfaces. Plain arithmetic (median + spread), not an LLM call, so it's
     // instant, free, and deterministic. Tune HOURS_MISMATCH_THRESHOLD below.
     const HOURS_MISMATCH_THRESHOLD = 1.5;   // hours of deviation from the median
+    // "Split 1/2" for an entry the worker submitted as one job of a multi-job
+    // day, '' for an ordinary entry. split_count is the size of the group at
+    // submission time — it describes how the day was reported, so it stays put
+    // even if a sibling is later deleted.
+    function splitLabel(e) {
+      if (!e || !e.split_group_id) return '';
+      const idx = Number(e.split_index), cnt = Number(e.split_count);
+      if (!Number.isFinite(idx) || !Number.isFinite(cnt) || cnt < 2) return '';
+      return `Split ${idx}/${cnt}`;
+    }
+    function splitTitle(e) {
+      return `Job ${e.split_index} of ${e.split_count} on this day — the worker split their time across `
+        + `${e.split_count} jobs in one submission. Approve each one on its own; together they make up the day.`;
+    }
+
     function computeHoursMismatchFlags(entries) {
       // Group daily entries by job + date; keep each entry AND who booked it.
       const groups = new Map();               // key -> [{id, hours, person}]
       for (const e of entries) {
         if (e.entry_type !== 'daily') continue;
+        // A split day is deliberately short on each of its jobs — half a day on
+        // the tennis court is not a mismatch against a crew who spent all day
+        // there. Left in, it would both raise a false flag on the split row and
+        // drag the crew median down for everyone else on that job, so a split
+        // entry sits the comparison out entirely.
+        if (e.split_group_id) continue;
         const h = Number(e.computed_hours);
         if (!Number.isFinite(h) || h <= 0) continue;   // need real on-site hours
         const jobKey = (e.job_id != null && e.job_id !== '')
@@ -3525,6 +3565,11 @@
           : 'Daily';
         const division = e.entry_type === 'time_off' ? '—' : prettyDiv(e.division);
         const job      = e.entry_type === 'time_off' ? '—' : (e.job_label || '—');
+        // One job of a day the worker split across several. Without this, two
+        // entries for the same person on the same date look like a mis-submit.
+        const splitChip = splitLabel(e)
+          ? `<span class="split-chip" title="${escapeHtml(splitTitle(e))}">${escapeHtml(splitLabel(e))}</span>`
+          : '';
         const travelLegs = [];
         if (e.entry_type === 'daily' && e.travel_to_site_hours != null && Number(e.travel_to_site_hours) > 0) {
           travelLegs.push(`${Number(e.travel_to_site_hours).toFixed(2)}h to site`);
@@ -3564,9 +3609,16 @@
             <td>${prettyDate(e.work_date)}</td>
             <td>${type}</td>
             <td>${escapeHtml(division)}</td>
-            <td>${escapeHtml(job)}</td>
+            <td>${escapeHtml(job)}${splitChip}</td>
             <td>${prevailingWageHtml(e)}</td>
-            <td>${dayFlagHtml(e, 'lunch_break', 'Took a lunch break (30 min deducted)', 'No lunch break taken')}</td>
+            <td>${dayFlagHtml(e, 'lunch_break',
+                  'Took a lunch break (30 min deducted)',
+                  // On a split day the one deduction is taken on the first job,
+                  // so the later rows honestly read No — say why, or it looks
+                  // like the crew ate on some jobs and not others.
+                  Number(e.split_index) > 1
+                    ? `No break inside this job's hours — the day's 30-minute lunch deduction is taken on job 1 of this split`
+                    : 'No lunch break taken')}</td>
             <td>${dayFlagHtml(e, 'operated_equipment', 'Operated equipment this day', 'Did not operate equipment')}</td>
             <td>${timeCell}</td>
             <td class="${hoursFlag ? 'hours-mismatch' : ''}" style="font-variant-numeric:tabular-nums">${hours}${hoursMarker}</td>
@@ -3907,6 +3959,20 @@
       const appWhen = fmtTimestamp(e.approved_at);
       if (subWhen) histRows.push(`<div><strong style="color:var(--blue)">Submitted</strong> ${escapeHtml(subWhen)} by <strong>${escapeHtml(e.username || '—')}</strong></div>`);
       if (appWhen) histRows.push(`<div><strong style="color:var(--green)">Approved</strong> ${escapeHtml(appWhen)} by <strong>${escapeHtml(e.approved_by_name || '—')}</strong></div>`);
+      // Say so before the times are edited: this is one job of a split day, and
+      // the sibling rows hold the rest of it. Moving this one's clock without
+      // looking at them is how a split day ends up overlapping itself.
+      if (splitLabel(e)) {
+        const siblings = allEntries.filter(x =>
+          x.split_group_id === e.split_group_id && x.id !== e.id);
+        const others = siblings
+          .map(x => `${escapeHtml(x.job_label || x.job_id || '—')} ${escapeHtml(`${x.start_time || ''}–${x.end_time || ''}`)}`)
+          .join(', ');
+        histRows.push(
+          `<div><strong style="color:var(--blue)">${escapeHtml(splitLabel(e))}</strong> — `
+          + `one job of a ${Number(e.split_count)}-job day${others ? `, alongside ${others}` : ''}. `
+          + 'Each is approved on its own.</div>');
+      }
       if (histRows.length) {
         hist.style.display = '';
         hist.style.background = 'var(--surface2)';
@@ -4631,9 +4697,12 @@
         // Hours add up, so this stays saveable — some crews may not care to
         // flag travel at all — but it must not read as ✓ when it is not.
         tally.classList.add('bad');
+        // "booked as Travel", not "ticked": a row counts here when its cost or
+        // sub code says travel too, so a figure the supervisor cannot find any
+        // ticks behind is not a number they can act on.
         status.textContent = travelMarked > travel
-          ? `${travelMarked.toFixed(2)} h ticked Travel, entry says ${travel.toFixed(2)}`
-          : `${travel.toFixed(2)} h of travel on this entry, ${travelMarked.toFixed(2)} ticked`;
+          ? `${travelMarked.toFixed(2)} h booked as Travel, entry says ${travel.toFixed(2)}`
+          : `${travel.toFixed(2)} h of travel on this entry, ${travelMarked.toFixed(2)} booked as Travel`;
       } else {
         tally.classList.add('ok'); status.textContent = '✓ balanced';
       }
@@ -5449,6 +5518,21 @@
       updateBulkRunBtn();
     }
 
+    // Which day a message is pointing at. A worker who split their day across
+    // one job twice — morning, then back after lunch — has two rows in the same
+    // group sharing name, date AND job, so name-and-date names both of them and
+    // "check bobd · Aug 10" tells a supervisor nothing about which row to fix.
+    // The clock is added only when there is genuinely a twin to tell apart, so
+    // the ordinary one-row day reads exactly as it always has.
+    function bulkDayLabel(g, e) {
+      const base = `${e.username} · ${prettyDate(e.work_date)}`;
+      const twin = g.entries.some(x =>
+        x.id !== e.id && x.username === e.username && x.work_date === e.work_date);
+      return twin && e.start_time && e.end_time
+        ? `${base} ${e.start_time}–${e.end_time}`
+        : base;
+    }
+
     // Equipment hours the server would reject (NaN, negative, over 24). Returns
     // the offending days so the modal can name them instead of failing one
     // approve at a time down in the run loop.
@@ -5469,7 +5553,7 @@
             const n = Number(raw);
             return !(n >= 0 && n <= 24);
           });
-          if (offending) bad.push({ g, who: `${e.username} · ${prettyDate(e.work_date)}` });
+          if (offending) bad.push({ g, who: bulkDayLabel(g, e) });
         }
       }
       return bad;
@@ -5497,7 +5581,7 @@
           ];
           for (const m of extras) {
             if (m.equipment && !(m.equip_hours > 0)) {
-              dropped.push({ who: `${e.username} · ${prettyDate(e.work_date)}`, equipment: m.equipment });
+              dropped.push({ who: bulkDayLabel(g, e), equipment: m.equipment });
             }
           }
         }

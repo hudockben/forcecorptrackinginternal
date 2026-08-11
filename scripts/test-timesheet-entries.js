@@ -31,6 +31,7 @@ process.env.TZ = 'Europe/Berlin';
  */
 
 const path   = require('path');
+const fs     = require('fs');
 const Module = require('module');
 
 const FIELD = { companyCode: 'FCT', userId: 7,  username: 'strickallen', payrollAdmin: false };
@@ -353,12 +354,71 @@ async function deleteSweepTests() {
   }
 }
 
+// ── Statements this file ships must be parseable SQL ──────────────────────
+// A `//` line inside a sql`` template is not a comment. The tag only ever sees
+// text, so the line is shipped to Postgres — which has no `//` comment syntax
+// — and the statement fails to parse. One explanatory comment written inside
+// the daily_tracking INSERT took out turf, paving and kiewit approval
+// wholesale: every approve threw, hit the injection catch, and rolled itself
+// back with "failed to write cost tracking rows". It reads exactly like a
+// working comment in the editor, which is what makes it worth a test.
+function sqlSyntaxTests() {
+  console.log('\n[api — sql`` templates are valid SQL]');
+  const apiDir = path.resolve(__dirname, '..', 'api');
+  const files = [];
+  (function walk(dir) {
+    for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (d.name === 'node_modules') continue;
+      const p = path.join(dir, d.name);
+      if (d.isDirectory()) walk(p);
+      else if (d.name.endsWith('.js')) files.push(p);
+    }
+  })(apiDir);
+  assert('the api directory was found and walked', files.length > 10, `${files.length} files`);
+
+  // Every sql`...` template, matched non-greedily from the tag to the closing
+  // backtick. Checked across the whole of api/, not just this endpoint: the
+  // mistake is invisible on review anywhere it is made.
+  const offenders = [];
+  for (const f of files) {
+    const src = fs.readFileSync(f, 'utf8');
+    const re = /sql`([\s\S]*?)`/g;
+    let m;
+    while ((m = re.exec(src))) {
+      const startLine = src.slice(0, m.index).split('\n').length;
+      m[1].split('\n').forEach((line, k) => {
+        if (/^\s*\/\//.test(line)) {
+          offenders.push(`${path.relative(apiDir, f)}:${startLine + k + 1} ${line.trim().slice(0, 50)}`);
+        }
+      });
+    }
+  }
+  assert('no // comment is embedded in a SQL statement anywhere in api/',
+    offenders.length === 0, offenders.join(' | '));
+
+  const src = fs.readFileSync(path.join(apiDir, 'timesheet-entries.js'), 'utf8');
+
+  // The daily_tracking INSERT is the one that got bitten; check it is also
+  // internally consistent, since a stray line there shifts every value by one.
+  const ins = src.match(/INSERT INTO daily_tracking \(([\s\S]*?)\)\s*VALUES \(([\s\S]*?)\)\s*\n\s*ON CONFLICT/);
+  assert('the daily_tracking INSERT is still findable', !!ins);
+  if (ins) {
+    const cols = ins[1].split(',').map(s => s.trim()).filter(Boolean);
+    const vals = ins[2].split(',').map(s => s.trim()).filter(Boolean);
+    assert('its column list and VALUES list are the same length',
+      cols.length === vals.length, `${cols.length} columns vs ${vals.length} values`);
+    assert('and every value is a bound placeholder, not bare text',
+      vals.every(v => v.startsWith('${')), vals.filter(v => !v.startsWith('${')).join(' | '));
+  }
+}
+
 (async () => {
   await scopeTests();
   await actionRoutingTests();
   await duplicateSubmitTests();
   await dateRoundTripTests();
   await deleteSweepTests();
+  sqlSyntaxTests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => { console.error(err); process.exit(1); });
