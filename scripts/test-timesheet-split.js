@@ -776,6 +776,46 @@ async function concurrencyTests() {
   }
 }
 
+// ── payroll.html — naming a day when two rows look identical ───────────────
+// Bulk approve groups by project, so a worker who split one day across the
+// same job twice has two rows in one group sharing name, date and job. Its
+// validation messages point at a day by name and date, which named both of
+// them: "check bobd · Aug 10" with two bobd · Aug 10 rows on screen.
+
+function payrollDayLabelTests() {
+  console.log('\n[payroll.html — a message can name one of two identical-looking days]');
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'payroll.html'), 'utf8');
+
+  const fn = src.match(/function bulkDayLabel\(g, e\) \{[\s\S]*?\n {4}\}/);
+  assert('bulkDayLabel is where the naming lives', !!fn);
+  if (!fn) return;
+  // Pure apart from prettyDate, so it runs standalone with that stubbed.
+  // eslint-disable-next-line no-new-func
+  const bulkDayLabel = new Function('prettyDate', `${fn[0]}; return bulkDayLabel;`)(d => d);
+
+  const morning   = { id: '4', username: 'bobd', work_date: '2026-08-10', start_time: '07:00', end_time: '11:00' };
+  const afternoon = { id: '5', username: 'bobd', work_date: '2026-08-10', start_time: '12:00', end_time: '16:00' };
+  const zach      = { id: '3', username: 'brewerzach', work_date: '2026-08-10', start_time: '07:00', end_time: '15:30' };
+
+  const split = { entries: [morning, afternoon] };
+  eq('the two halves of one split day are told apart by their clock',
+    [bulkDayLabel(split, morning), bulkDayLabel(split, afternoon)],
+    ['bobd · 2026-08-10 07:00–11:00', 'bobd · 2026-08-10 12:00–16:00']);
+
+  const crew = { entries: [morning, zach] };
+  eq('a day with no twin in its group reads plainly, as it always has',
+    bulkDayLabel(crew, morning), 'bobd · 2026-08-10');
+  eq('and so does a different worker on the same date',
+    bulkDayLabel(crew, zach), 'brewerzach · 2026-08-10');
+
+  // Both message sites must go through it, or the ambiguity comes straight back.
+  const inline = (src.match(/who: `\$\{e\.username\} · \$\{prettyDate/g) || []).length;
+  eq('no bulk message builds the label inline any more', inline, 0);
+  assert('both bulk validators use the helper',
+    (src.match(/who: bulkDayLabel\(g, e\)/g) || []).length === 2,
+    `${(src.match(/who: bulkDayLabel\(g, e\)/g) || []).length} call sites`);
+}
+
 // ── Drift guard ────────────────────────────────────────────────────────────
 // Block 0 is static markup and the extra blocks are built by splitBlockHtml().
 // A per-job field added to one and not the other is silent data loss — the
@@ -809,6 +849,7 @@ function driftTests() {
   await apiTests();
   pageTests();
   await concurrencyTests();
+  payrollDayLabelTests();
   driftTests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

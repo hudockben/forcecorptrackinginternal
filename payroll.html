@@ -5515,6 +5515,21 @@
       updateBulkRunBtn();
     }
 
+    // Which day a message is pointing at. A worker who split their day across
+    // one job twice — morning, then back after lunch — has two rows in the same
+    // group sharing name, date AND job, so name-and-date names both of them and
+    // "check bobd · Aug 10" tells a supervisor nothing about which row to fix.
+    // The clock is added only when there is genuinely a twin to tell apart, so
+    // the ordinary one-row day reads exactly as it always has.
+    function bulkDayLabel(g, e) {
+      const base = `${e.username} · ${prettyDate(e.work_date)}`;
+      const twin = g.entries.some(x =>
+        x.id !== e.id && x.username === e.username && x.work_date === e.work_date);
+      return twin && e.start_time && e.end_time
+        ? `${base} ${e.start_time}–${e.end_time}`
+        : base;
+    }
+
     // Equipment hours the server would reject (NaN, negative, over 24). Returns
     // the offending days so the modal can name them instead of failing one
     // approve at a time down in the run loop.
@@ -5535,7 +5550,7 @@
             const n = Number(raw);
             return !(n >= 0 && n <= 24);
           });
-          if (offending) bad.push({ g, who: `${e.username} · ${prettyDate(e.work_date)}` });
+          if (offending) bad.push({ g, who: bulkDayLabel(g, e) });
         }
       }
       return bad;
@@ -5563,7 +5578,7 @@
           ];
           for (const m of extras) {
             if (m.equipment && !(m.equip_hours > 0)) {
-              dropped.push({ who: `${e.username} · ${prettyDate(e.work_date)}`, equipment: m.equipment });
+              dropped.push({ who: bulkDayLabel(g, e), equipment: m.equipment });
             }
           }
         }
