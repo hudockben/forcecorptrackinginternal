@@ -4697,9 +4697,12 @@
         // Hours add up, so this stays saveable — some crews may not care to
         // flag travel at all — but it must not read as ✓ when it is not.
         tally.classList.add('bad');
+        // "booked as Travel", not "ticked": a row counts here when its cost or
+        // sub code says travel too, so a figure the supervisor cannot find any
+        // ticks behind is not a number they can act on.
         status.textContent = travelMarked > travel
-          ? `${travelMarked.toFixed(2)} h ticked Travel, entry says ${travel.toFixed(2)}`
-          : `${travel.toFixed(2)} h of travel on this entry, ${travelMarked.toFixed(2)} ticked`;
+          ? `${travelMarked.toFixed(2)} h booked as Travel, entry says ${travel.toFixed(2)}`
+          : `${travel.toFixed(2)} h of travel on this entry, ${travelMarked.toFixed(2)} booked as Travel`;
       } else {
         tally.classList.add('ok'); status.textContent = '✓ balanced';
       }

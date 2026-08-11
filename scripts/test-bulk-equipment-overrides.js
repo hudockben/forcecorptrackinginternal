@@ -76,6 +76,10 @@ vm.runInContext([
   'bulkRowLeg(idx, entryId, itemIdx, value) {',
   'bulkTravelCostCode(idx, value) {',
   'bulkCostCode(idx, value) {',
+  // Both validators below name the offending day through this, so it has to
+  // come across with them — a split day puts two rows with the same worker and
+  // date in one group, and it is what tells them apart.
+  'bulkDayLabel(g, e) {',
   'bulkBadEquipHours() {',
   'bulkDroppedMachines() {',
   'bulkDaysTable(g, idx) {',
@@ -460,7 +464,13 @@ sandbox.bulkGroups = groups;
 // old tally, which only checked the total, called that "✓ balanced".
 console.log('\n[split tally: travel reconciliation]');
 {
-  const tallyFn = grab('renderSplitTally() {');
+  // The tally asks isTravelSplitRow which rows are the drive, so it has to come
+  // across too. Without it every assertion below died on a ReferenceError
+  // before reaching its check — the whole travel-reconciliation section had
+  // been passing vacuously since the tally started consulting it.
+  const travelRe = src.match(/const TRAVEL_CODE_RE = [^\n]+/);
+  if (!travelRe) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
+  const tallyFn = [travelRe[0], grab('isTravelSplitRow(r) {'), grab('renderSplitTally() {')].join('\n\n');
   function tally(rows, entry) {
     const store = {};
     const stub = () => ({ textContent: '', style: {}, classList: { add() {}, remove() {} } });
@@ -478,15 +488,20 @@ console.log('\n[split tally: travel reconciliation]');
   const wrong = tally([drive({ is_travel: false }), work({ is_travel: true })], E);
   assert('ticking Travel on the work row is no longer "balanced"',
     !/balanced/.test(wrong.splitTallyStatus.textContent));
+  // 9.50, not 7.50: the drive is booked to a "Travel" sub code, so it counts as
+  // travel alongside the mis-ticked work row — the same rule the server prices
+  // the rows by. The message says "booked as", because only 7.50 is ticked.
   assert('and the message says which way it is off',
-    /7\.50 h ticked Travel, entry says 2\.00/.test(wrong.splitTallyStatus.textContent));
+    /9\.50 h booked as Travel, entry says 2\.00/.test(wrong.splitTallyStatus.textContent),
+    wrong.splitTallyStatus.textContent);
 
   const right = tally([drive({ is_travel: true }), work({ is_travel: false })], E);
   assert('ticking it on the drive row balances', /balanced/.test(right.splitTallyStatus.textContent));
 
   const none = tally([work({ labor_hours: 9.5, is_travel: false })], E);
   assert('an entry with travel and nothing ticked is flagged',
-    /2\.00 h of travel on this entry, 0\.00 ticked/.test(none.splitTallyStatus.textContent));
+    /2\.00 h of travel on this entry, 0\.00 booked as Travel/.test(none.splitTallyStatus.textContent),
+    none.splitTallyStatus.textContent);
 
   const short = tally([work({ labor_hours: 5, is_travel: false })], E);
   assert('an hours mismatch still wins over the travel message',
