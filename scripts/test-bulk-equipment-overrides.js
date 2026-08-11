@@ -550,5 +550,52 @@ const readOnly = sandbox.bulkDaysTable({ ...g, type: 'quarry', perRow: {} }, 0);
 assert('non-split groups stay read-only',
   !/<th>Equipment/.test(readOnly) && !/<input/.test(readOnly));
 
+// ── payroll.html and the server must call the same rows Travel ─────────────
+// isTravelSplitRow exists twice: here, deciding what the tally counts, and in
+// api/timesheet-entries.js, deciding what rate the row is paid at. They were
+// split apart yesterday and nothing held them together — and the whole point
+// of the second copy is that a row cannot be counted as travel in one place
+// and priced as work in the other. Compared by behaviour, not by text, so a
+// rewrite that keeps the rule is fine and one that changes it is not.
+console.log('\n[the two isTravelSplitRow implementations agree]');
+{
+  const apiSrc = fs.readFileSync(path.resolve(__dirname, '..', 'api', 'timesheet-entries.js'), 'utf8');
+
+  function lift(text, label) {
+    const re = text.match(/const TRAVEL_CODE_RE = [^\n]+/);
+    const i  = text.indexOf('function isTravelSplitRow');
+    assert(`${label} still defines TRAVEL_CODE_RE and isTravelSplitRow`, !!re && i >= 0);
+    if (!re || i < 0) return null;
+    // Both copies close at their own indent; take to the first line that is
+    // just a closing brace.
+    const end = text.indexOf('\n}', i) >= 0 && text.indexOf('\n}', i) < text.indexOf('\n    }', i)
+      ? text.indexOf('\n}', i) + 2
+      : text.indexOf('\n    }', i) + 6;
+    const sb = { console };
+    vm.createContext(sb);
+    vm.runInContext(`${re[0]}\n${text.slice(i, end)}`, sb);
+    return sb.isTravelSplitRow;
+  }
+
+  const mine   = lift(src, 'payroll.html');
+  const server = lift(apiSrc, 'api/timesheet-entries.js');
+  if (mine && server) {
+    const cases = [
+      ['ticked outright',            { is_travel: true,  cost_code: 'Silt Sock', sub_code: '12inch' }],
+      ['untouched work row',         { is_travel: false, cost_code: 'Silt Sock', sub_code: '12inch' }],
+      ['paving travel sub code',     { is_travel: false, cost_code: '19mm',      sub_code: '19mm - Travel' }],
+      ['travel in the cost code',    { is_travel: false, cost_code: 'Travel Time', sub_code: '' }],
+      ['gravel is not travel',       { is_travel: false, cost_code: '2A Gravel', sub_code: 'Gravel Base' }],
+      ['a Form Traveler is not one', { is_travel: false, cost_code: 'Form Traveler', sub_code: '' }],
+      ['nothing at all',             {}],
+      ['no row',                     null],
+    ];
+    for (const [label, row] of cases) {
+      assert(`  ${label}: both say ${mine(row) ? 'travel' : 'work'}`,
+        mine(row) === server(row), `payroll ${mine(row)} vs server ${server(row)}`);
+    }
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
