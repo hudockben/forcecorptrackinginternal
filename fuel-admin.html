@@ -189,6 +189,8 @@
     .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .tab.approved.active { color: var(--green); border-bottom-color: var(--green); }
     .tab.auditlog.active { color: var(--yellow); border-bottom-color: var(--yellow); }
+    .tab.reports.active  { color: var(--blue);  border-bottom-color: var(--blue); }
+    .tab.vehicles.active { color: var(--amber); border-bottom-color: var(--amber); }
     .tab-count {
       display: inline-block;
       font-size: 0.7rem;
@@ -530,6 +532,188 @@
     .modal-msg.error   { color: var(--red); }
     .modal-msg.success { color: var(--green); }
 
+    /* ── Quick ranges (Reports tab) ── */
+    .quick-ranges {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.65rem 1rem;
+    }
+    .qr-label {
+      font-size: 0.62rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .qr-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 0.35rem 0.7rem;
+      border-radius: 5px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .qr-btn:hover { color: var(--text); border-color: #555; }
+    .qr-spacer { flex: 1; }
+    .qr-select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.35rem 0.5rem;
+      border-radius: 5px;
+      font-size: 0.75rem;
+      font-family: inherit;
+    }
+
+    /* ── Report blocks ── */
+    .rep-grid { display: grid; gap: 1rem; grid-template-columns: repeat(12, 1fr); }
+    .rep-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+      grid-column: span 12;
+      overflow-x: auto;
+    }
+    .rep-block.half { grid-column: span 6; }
+    @media (max-width: 900px) { .rep-block.half { grid-column: span 12; } }
+    .rep-title {
+      font-size: 0.66rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 0.3rem;
+    }
+    .rep-sub { font-size: 0.74rem; color: var(--muted); margin-bottom: 0.8rem; line-height: 1.45; }
+    .rep-block table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .rep-block thead th {
+      text-align: left;
+      padding: 0.5rem 0.65rem;
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      background: transparent;
+    }
+    .rep-block tbody td {
+      padding: 0.55rem 0.65rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      font-variant-numeric: tabular-nums;
+    }
+    .rep-block td.name { font-weight: 600; font-variant-numeric: normal; }
+    .rep-block th.num, .rep-block td.num { text-align: right; }
+    .rep-block tr.total td {
+      border-top: 2px solid var(--border);
+      font-weight: 700;
+      color: var(--text);
+      background: var(--surface2);
+    }
+    .rep-empty { color: var(--muted); font-size: 0.82rem; padding: 0.6rem 0; }
+    .rep-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.85rem; grid-column: span 12; }
+    @media (max-width: 900px) { .rep-stats { grid-template-columns: repeat(2, 1fr); } }
+    .rep-head {
+      grid-column: span 12;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .rep-head h2 { font-size: 1.05rem; font-weight: 700; }
+    .rep-head .range { font-size: 0.8rem; color: var(--muted); }
+
+    /* A figure that has to be looked at before the month is sent. Amber, the
+       same colour the meter flag uses, because it is the same kind of thing:
+       worth checking, not necessarily wrong. */
+    td.off { color: #fb923c; font-weight: 700; }
+    .rep-block tbody tr.exception > td:first-child { box-shadow: inset 3px 0 0 0 #fb923c; }
+    .ifta-yes { color: var(--green); font-weight: 700; }
+    .ifta-no  { color: var(--muted); }
+
+    /* ── Vehicles tab ── */
+    .veh-form {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 0.7rem;
+      align-items: end;
+    }
+    @media (max-width: 900px) { .veh-form { grid-template-columns: repeat(2, 1fr); } }
+    .veh-form .full { grid-column: 1 / -1; }
+    .veh-form label {
+      display: block;
+      font-size: 0.62rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+    .veh-form input[type=text],
+    .veh-form input[type=number] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.65rem;
+      border-radius: 5px;
+      font-size: 0.85rem;
+      font-family: inherit;
+      outline: none;
+    }
+    .veh-form input:focus { border-color: var(--accent); }
+    .veh-form input.bad { border-color: var(--red); }
+    .veh-check {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.82rem;
+      color: var(--text);
+      cursor: pointer;
+      padding-bottom: 0.5rem;
+    }
+    .veh-check input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
+    .veh-actions { display: flex; gap: 0.5rem; align-items: center; }
+    .veh-msg { font-size: 0.8rem; min-height: 1.1em; }
+    .veh-msg.error   { color: var(--red); }
+    .veh-msg.success { color: var(--green); }
+
+    /* ── Print ── */
+    @media print {
+      header, .filters, .tabs, .stats, .bulk, .quick-ranges,
+      .table-wrap, .audit-wrap, #vehiclesWrap, .modal-backdrop { display: none !important; }
+      body { background: #fff; color: #000; font-size: 10pt; }
+      main { max-width: none; padding: 0; }
+      .rep-block {
+        background: #fff;
+        border: 1px solid #999;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .rep-title, .rep-sub, .rep-block thead th { color: #333; }
+      .rep-block tbody td { border-bottom: 1px solid #ccc; }
+      .rep-block tr.total td { background: #eee; color: #000; }
+      .stat, .rep-stats .stat { background: #fff; border: 1px solid #999; }
+      .stat-value, .stat.gallons .stat-value, .stat.submitted .stat-value,
+      .stat.approved .stat-value { color: #000; }
+      .rep-head h2, .rep-head .range { color: #000; }
+      td.off { color: #000; text-decoration: underline; }
+    }
+
     /* ── No-access screen ── */
     .no-access { max-width: 460px; margin: 5rem auto; padding: 2rem 1.25rem; text-align: center; }
     .no-access h2 { font-size: 1.3rem; margin-bottom: 0.6rem; }
@@ -619,6 +803,12 @@
       <button class="tab approved" data-tab="approved" onclick="switchTab('approved')">
         Approved <span class="tab-count" id="tab-approved-count">0</span>
       </button>
+      <button class="tab reports" data-tab="reports" onclick="switchTab('reports')">
+        Reports
+      </button>
+      <button class="tab vehicles" data-tab="vehicles" onclick="switchTab('vehicles')">
+        Vehicles <span class="tab-count" id="tab-vehicles-count">0</span>
+      </button>
       <button class="tab auditlog" data-tab="auditlog" onclick="switchTab('auditlog')">
         Audit Log
       </button>
@@ -631,6 +821,102 @@
       <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
       <div class="bulk-spacer"></div>
       <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
+    </div>
+
+    <!-- ── Reports tab: month picker + what the report counts ── -->
+    <div class="quick-ranges" id="reportRanges" style="display:none">
+      <span class="qr-label">Month:</span>
+      <button class="qr-btn" onclick="setReportRange('this_month')">This Month</button>
+      <button class="qr-btn" onclick="setReportRange('last_month')">Last Month</button>
+      <span class="qr-label" style="margin-left:0.5rem">Quarter:</span>
+      <button class="qr-btn" onclick="setReportRange('this_quarter')">This Quarter</button>
+      <button class="qr-btn" onclick="setReportRange('last_quarter')">Last Quarter</button>
+      <button class="qr-btn" onclick="setReportRange('ytd')">Year to Date</button>
+      <div class="qr-spacer"></div>
+      <span class="qr-label">Counts:</span>
+      <select class="qr-select" id="rep-status" onchange="loadReport()">
+        <option value="approved">Approved only</option>
+        <option value="submitted_approved">Approved + awaiting review</option>
+      </select>
+      <button class="qr-btn" onclick="exportReportCsv()">Export CSV</button>
+      <button class="qr-btn" onclick="window.print()">Print</button>
+    </div>
+
+    <!-- ── Report container (Reports tab) ── -->
+    <div id="reportWrap" style="display:none"></div>
+
+    <!-- ── Vehicles container (Vehicles tab) ── -->
+    <div id="vehiclesWrap" style="display:none">
+      <div class="veh-form">
+        <div>
+          <label for="v-truck">Truck Number</label>
+          <input type="number" id="v-truck" min="0" step="1" placeholder="412" />
+        </div>
+        <div style="grid-column:span 2">
+          <label for="v-vin">VIN</label>
+          <input type="text" id="v-vin" maxlength="32" placeholder="1FUJGLDR8CSBP1234" />
+        </div>
+        <div>
+          <label for="v-year">Year</label>
+          <input type="number" id="v-year" min="1900" max="2100" step="1" placeholder="2019" />
+        </div>
+        <div>
+          <label for="v-make">Make</label>
+          <input type="text" id="v-make" maxlength="80" placeholder="Freightliner" />
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <label class="veh-check">
+            <input type="checkbox" id="v-ifta" onchange="onIftaToggle()" /> IFTA
+          </label>
+        </div>
+        <div style="grid-column:span 2">
+          <label for="v-sticker">IFTA Sticker Number</label>
+          <input type="text" id="v-sticker" maxlength="60" placeholder="Tick IFTA first" disabled />
+        </div>
+        <div style="grid-column:span 2">
+          <label for="v-notes">Notes <span style="text-transform:none;font-weight:400">(optional)</span></label>
+          <input type="text" id="v-notes" maxlength="500" placeholder="" />
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <label class="veh-check">
+            <input type="checkbox" id="v-active" checked /> In service
+          </label>
+        </div>
+        <div class="veh-actions">
+          <button class="btn-filter" id="v-save" onclick="saveVehicle()">Add Vehicle</button>
+          <button class="btn-clear" id="v-cancel" style="display:none" onclick="resetVehicleForm()">Cancel</button>
+        </div>
+        <div class="veh-msg full" id="v-msg"></div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:0.75rem;margin:0.85rem 0 0.5rem">
+        <label class="veh-check" style="padding:0">
+          <input type="checkbox" id="v-show-inactive" onchange="renderVehicles()" /> Show retired trucks
+        </label>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="num">Truck</th>
+              <th>VIN</th>
+              <th class="num">Year</th>
+              <th>Make</th>
+              <th>IFTA</th>
+              <th>Sticker</th>
+              <th>Notes</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="vehicleBody">
+            <tr class="empty-row"><td colspan="9">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- ── Audit log container ── -->
@@ -918,7 +1204,10 @@
         FUEL_TYPES.map(t => `<option value="${escAttr(t)}">${escapeHtml(t)}</option>`).join('');
 
       renderModalOptions();
-      await loadEmployees();
+      resetVehicleForm();
+      // The vehicle list is small and the report can't be built without it,
+      // so it is fetched up front rather than on the way into a tab.
+      await Promise.all([loadEmployees(), loadVehicles()]);
       await applyFilters();
     }
 
@@ -956,14 +1245,25 @@
     }
 
     // ── Tabs ───────────────────────────────────────────────────────────────
+    // The two that render the submissions grid. Everything else swaps the
+    // grid out for its own panel.
+    const GRID_TABS = ['pending', 'approved'];
+
     function switchTab(tab) {
       activeTab = tab;
       document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-      const isAudit = tab === 'auditlog';
-      el('tableWrap').style.display     = isAudit ? 'none' : '';
-      el('auditLogWrap').style.display  = isAudit ? '' : 'none';
-      el('bulkBar').classList.toggle('open', !isAudit);
-      if (isAudit) { loadAuditLog(); return; }
+      const isGrid = GRID_TABS.includes(tab);
+      el('tableWrap').style.display    = isGrid              ? '' : 'none';
+      el('auditLogWrap').style.display = tab === 'auditlog'  ? '' : 'none';
+      el('reportWrap').style.display   = tab === 'reports'   ? '' : 'none';
+      el('reportRanges').style.display = tab === 'reports'   ? '' : 'none';
+      el('vehiclesWrap').style.display = tab === 'vehicles'  ? '' : 'none';
+      el('bulkBar').classList.toggle('open', isGrid);
+
+      if (tab === 'auditlog') { loadAuditLog(); return; }
+      if (tab === 'reports')  { loadReport();   return; }
+      if (tab === 'vehicles') { renderVehicles(); return; }
+
       // Selections belong to the tab they were made on — carrying them across
       // would let "Approve Selected" act on rows that are no longer on screen.
       selected.clear();
@@ -1000,7 +1300,10 @@
       selected.clear();
       renderStats();
       renderRows();
+      // The filter bar drives every tab, so Apply has to refresh whichever
+      // one is actually on screen — not just the grid behind it.
       if (activeTab === 'auditlog') loadAuditLog();
+      if (activeTab === 'reports')  loadReport();
     }
 
     function clearFilters() {
@@ -1432,6 +1735,652 @@
         </div>`;
     }
 
+    // ── Vehicles ───────────────────────────────────────────────────────────
+    // Always fetched complete, retired trucks included. A truck taken out of
+    // service in March still bought fuel in February, and a report that
+    // couldn't see it would file those gallons as belonging to no vehicle.
+    // The "Show retired" box filters the TABLE, never the list itself.
+    let vehicles         = [];
+    let editingVehicleId = null;
+
+    function vehicleIndex() {
+      const m = new Map();
+      for (const v of vehicles) m.set(String(v.truck_number), v);
+      return m;
+    }
+
+    async function loadVehicles() {
+      try {
+        const res  = await fetch('/api/fuel-vehicles?include_inactive=1', { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        vehicles = Array.isArray(data.vehicles) ? data.vehicles : [];
+      } catch (err) {
+        vehicles = [];
+        const body = el('vehicleBody');
+        if (body) body.innerHTML = `<tr class="empty-row"><td colspan="9">Couldn't load the vehicle list — ${escapeHtml(err.message)}</td></tr>`;
+        return;
+      }
+      renderVehicles();
+    }
+
+    function renderVehicles() {
+      const body = el('vehicleBody');
+      if (!body) return;
+      const showRetired = el('v-show-inactive').checked;
+      const list = showRetired ? vehicles : vehicles.filter(v => v.active);
+      el('tab-vehicles-count').textContent = vehicles.filter(v => v.active).length;
+
+      if (!list.length) {
+        body.innerHTML = `<tr class="empty-row"><td colspan="9">${
+          vehicles.length ? 'No trucks in service — tick "Show retired trucks" to see the rest.'
+                          : 'No trucks yet. Add one above so fuel entries can be matched to a vehicle.'
+        }</td></tr>`;
+        return;
+      }
+
+      body.innerHTML = list.map(v => `
+        <tr>
+          <td class="num" style="font-weight:700">${v.truck_number}</td>
+          <td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.74rem">${escapeHtml(v.vin || '—')}</td>
+          <td class="num">${v.model_year != null ? v.model_year : '—'}</td>
+          <td>${escapeHtml(v.make || '—')}</td>
+          <td class="${v.ifta ? 'ifta-yes' : 'ifta-no'}">${v.ifta ? 'Yes' : 'No'}</td>
+          <td>${v.ifta
+                ? (v.ifta_sticker
+                    ? escapeHtml(v.ifta_sticker)
+                    : '<span class="meter-flag" title="An IFTA vehicle with no sticker number will show up in the report exceptions.">missing</span>')
+                : '—'}</td>
+          <td>${escapeHtml(v.notes || '—')}</td>
+          <td>${v.active
+                ? '<span class="badge badge-approved">in service</span>'
+                : '<span class="badge badge-draft">retired</span>'}</td>
+          <td class="td-actions">
+            <button class="row-btn edit"   onclick="editVehicle('${escJsAttr(v.id)}')">Edit</button>
+            <button class="row-btn delete" onclick="deleteVehicle('${escJsAttr(v.id)}')">Delete</button>
+          </td>
+        </tr>`).join('');
+    }
+
+    // The sticker number only means anything on an IFTA vehicle, so the box
+    // follows the tick — and empties when it is cleared, rather than leaving a
+    // number behind on a truck that is no longer running under it.
+    function onIftaToggle() {
+      const on = el('v-ifta').checked;
+      const s  = el('v-sticker');
+      s.disabled    = !on;
+      s.placeholder = on ? 'Sticker number' : 'Tick IFTA first';
+      if (!on) { s.value = ''; s.classList.remove('bad'); }
+    }
+
+    function resetVehicleForm() {
+      editingVehicleId = null;
+      for (const id of ['v-truck', 'v-vin', 'v-year', 'v-make', 'v-sticker', 'v-notes']) {
+        const n = el(id);
+        if (n) { n.value = ''; n.classList.remove('bad'); }
+      }
+      el('v-ifta').checked   = false;
+      el('v-active').checked = true;
+      onIftaToggle();
+      el('v-truck').disabled = false;
+      el('v-save').textContent = 'Add Vehicle';
+      el('v-cancel').style.display = 'none';
+      el('v-msg').textContent = '';
+      el('v-msg').className = 'veh-msg full';
+    }
+
+    function editVehicle(id) {
+      const v = vehicles.find(x => x.id === id);
+      if (!v) return;
+      editingVehicleId = id;
+      el('v-truck').value   = v.truck_number != null ? String(v.truck_number) : '';
+      el('v-vin').value     = v.vin || '';
+      el('v-year').value    = v.model_year != null ? String(v.model_year) : '';
+      el('v-make').value    = v.make || '';
+      el('v-ifta').checked  = v.ifta === true;
+      onIftaToggle();
+      el('v-sticker').value = v.ifta_sticker || '';
+      el('v-notes').value   = v.notes || '';
+      el('v-active').checked = v.active !== false;
+      el('v-save').textContent = `Save Truck ${v.truck_number}`;
+      el('v-cancel').style.display = '';
+      el('v-msg').textContent = '';
+      el('v-msg').className = 'veh-msg full';
+      el('v-truck').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    async function saveVehicle() {
+      const msg = el('v-msg');
+      msg.className = 'veh-msg full';
+      const truck = el('v-truck');
+      truck.classList.remove('bad');
+      if (val('v-truck') === '') {
+        truck.classList.add('bad');
+        msg.textContent = 'A truck number is required — it is what ties fuel entries to this vehicle.';
+        msg.classList.add('error');
+        return;
+      }
+
+      const body = {
+        truck_number: val('v-truck'),
+        vin:          val('v-vin'),
+        model_year:   val('v-year'),
+        make:         val('v-make'),
+        ifta:         el('v-ifta').checked,
+        ifta_sticker: val('v-sticker'),
+        active:       el('v-active').checked,
+        notes:        val('v-notes'),
+      };
+      if (editingVehicleId) body.id = editingVehicleId;
+
+      const btn = el('v-save');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/fuel-vehicles', {
+          method: 'POST', headers: authHeaders(true), body: JSON.stringify(body),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        const saved = j.vehicle;
+        const wasEdit = Boolean(editingVehicleId) || vehicles.some(v => v.id === saved.id);
+        resetVehicleForm();
+        await loadVehicles();
+        msg.className = 'veh-msg full success';
+        msg.textContent = `Truck ${saved.truck_number} ${wasEdit ? 'updated' : 'added'}.`;
+      } catch (err) {
+        msg.className = 'veh-msg full error';
+        msg.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function deleteVehicle(id) {
+      const v = vehicles.find(x => x.id === id);
+      if (!v) return;
+      if (!confirm(`Remove truck ${v.truck_number} from the vehicle list?\n\n`
+        + 'Fuel entries for it are kept — they just stop matching a vehicle, and show up '
+        + 'in the report exceptions until the truck is added back. '
+        + 'To take a truck out of service without that, edit it and untick "In service".')) return;
+      try {
+        const res = await fetch('/api/fuel-vehicles?id=' + encodeURIComponent(id), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+        if (editingVehicleId === id) resetVehicleForm();
+        await loadVehicles();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    // ── Reports ────────────────────────────────────────────────────────────
+    // The monthly fuel balance: what was bought, by whom, in which state, on
+    // which card, out of which tank — and everything that doesn't add up.
+    let reportModel = null;
+
+    function n2(v) { return (Number(v) || 0).toFixed(2); }
+    function n1(v) { return (Number(v) || 0).toFixed(1); }
+
+    function setReportRange(kind) {
+      const now = new Date();
+      const y   = now.getFullYear();
+      const m   = now.getMonth();
+      let from, to;
+      // Day 0 of the following month is the last day of this one, so this
+      // needs no month-length table and gets February right on its own.
+      switch (kind) {
+        case 'this_month':   from = new Date(y, m, 1);         to = new Date(y, m + 1, 0); break;
+        case 'last_month':   from = new Date(y, m - 1, 1);     to = new Date(y, m, 0);     break;
+        case 'this_quarter': { const q = Math.floor(m / 3);
+                               from = new Date(y, q * 3, 1);   to = new Date(y, q * 3 + 3, 0); break; }
+        case 'last_quarter': { const q = Math.floor(m / 3) - 1;
+                               const qy = q < 0 ? y - 1 : y;
+                               const qq = (q + 4) % 4;
+                               from = new Date(qy, qq * 3, 1); to = new Date(qy, qq * 3 + 3, 0); break; }
+        case 'ytd':          from = new Date(y, 0, 1);         to = now; break;
+        default: return;
+      }
+      el('flt-from').value = ymd(from);
+      el('flt-to').value   = ymd(to);
+      loadReport();
+    }
+
+    async function loadReport() {
+      const wrap = el('reportWrap');
+      wrap.innerHTML = '<div class="rep-block"><div class="rep-empty">Building the report…</div></div>';
+
+      const params = new URLSearchParams();
+      params.set('scope', 'all');
+      // Approved only by default: the balance that gets sent out should be
+      // built from figures somebody has actually checked.
+      params.set('status', val('rep-status') || 'approved');
+      if (val('flt-from'))     params.set('from', val('flt-from'));
+      if (val('flt-to'))       params.set('to', val('flt-to'));
+      if (val('flt-employee')) params.set('employee', val('flt-employee'));
+      if (val('flt-card'))     params.set('fuel_card', val('flt-card'));
+      if (val('flt-type'))     params.set('fuel_type', val('flt-type'));
+
+      let entries = [];
+      try {
+        const res  = await fetch('/api/fuel-submissions?' + params.toString(), { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        entries = Array.isArray(data.entries) ? data.entries : [];
+      } catch (err) {
+        wrap.innerHTML = `<div class="rep-block"><div class="rep-empty">Couldn't build the report — ${escapeHtml(err.message)}</div></div>`;
+        return;
+      }
+      if (!vehicles.length) await loadVehicles();
+      reportModel = buildReportModel(entries, vehicles);
+      renderReport();
+    }
+
+    /**
+     * Roll the entries up every way the monthly balance needs them.
+     *
+     * The vehicle list is what makes this a report rather than a list of
+     * fill-ups: a fuel entry carries a truck NUMBER, and IFTA wants to know
+     * the vehicle behind it and whether that vehicle is IFTA-qualified at
+     * all. Fuel bought for a truck that isn't on the list can't be attributed,
+     * so it is counted separately and named in the exceptions rather than
+     * quietly folded into a total.
+     */
+    function buildReportModel(entries, vehicleList) {
+      const byTruck = new Map();
+      for (const v of vehicleList) byTruck.set(String(v.truck_number), v);
+
+      const m = {
+        from: val('flt-from'), to: val('flt-to'),
+        status: val('rep-status') || 'approved',
+        count: entries.length,
+        gallons: 0, iftaGallons: 0, nonIftaGallons: 0, unmatchedGallons: 0,
+        byState: new Map(), byVehicle: new Map(), byCard: new Map(), byType: new Map(),
+        tanks: new Map(),
+        meterFlagged: [],
+        exceptions: [],
+      };
+
+      for (const e of entries) {
+        const g    = Number(e.gallons) || 0;
+        const v    = e.truck_number != null ? byTruck.get(String(e.truck_number)) : null;
+        const ifta = Boolean(v && v.ifta);
+        m.gallons += g;
+        if (!v) m.unmatchedGallons += g;
+        if (ifta) m.iftaGallons += g; else m.nonIftaGallons += g;
+        if (meterFlagged(e)) m.meterFlagged.push(e);
+
+        const st = e.state || '(none)';
+        const sRow = m.byState.get(st) || { key: st, entries: 0, gallons: 0, ifta: 0 };
+        sRow.entries++; sRow.gallons += g; if (ifta) sRow.ifta += g;
+        m.byState.set(st, sRow);
+
+        const tKey = e.truck_number != null ? String(e.truck_number) : '(none)';
+        const vRow = m.byVehicle.get(tKey) || {
+          key: tKey, truck: e.truck_number, vehicle: v || null,
+          entries: 0, gallons: 0, states: new Set(), types: new Set(),
+          minMileage: null, maxMileage: null,
+        };
+        vRow.entries++; vRow.gallons += g;
+        if (e.state)     vRow.states.add(e.state);
+        if (e.fuel_type) vRow.types.add(e.fuel_type);
+        const mi = Number(e.mileage);
+        if (Number.isFinite(mi)) {
+          if (vRow.minMileage == null || mi < vRow.minMileage) vRow.minMileage = mi;
+          if (vRow.maxMileage == null || mi > vRow.maxMileage) vRow.maxMileage = mi;
+        }
+        m.byVehicle.set(tKey, vRow);
+
+        const card = e.fuel_card || '(none)';
+        const cRow = m.byCard.get(card) || { key: card, entries: 0, gallons: 0 };
+        cRow.entries++; cRow.gallons += g;
+        m.byCard.set(card, cRow);
+
+        const type = e.fuel_type || '(none)';
+        const fRow = m.byType.get(type) || { key: type, entries: 0, gallons: 0 };
+        fRow.entries++; fRow.gallons += g;
+        m.byType.set(type, fRow);
+
+        // Tank balance. Only metered fills belong here — a card purchase
+        // never touched a tank, and counting it would make every tank look
+        // short by exactly the fuel that was never in it.
+        const metered = gallonsFromMeters(e.beginning_meter, e.ending_meter);
+        if (metered != null && e.tank_number != null) {
+          const key = String(e.tank_number);
+          const t = m.tanks.get(key) || {
+            key, tank: e.tank_number, fills: 0, gallons: 0, minBegin: null, maxEnd: null,
+          };
+          t.fills++; t.gallons += metered;
+          const b = Number(e.beginning_meter), x = Number(e.ending_meter);
+          if (t.minBegin == null || b < t.minBegin) t.minBegin = b;
+          if (t.maxEnd   == null || x > t.maxEnd)   t.maxEnd   = x;
+          m.tanks.set(key, t);
+        }
+      }
+
+      // A tank meter runs forward without resetting, so the fills recorded
+      // against it should account for the whole distance it travelled. What
+      // is left over is fuel that came out of the tank with no entry behind
+      // it — which is the single most useful number on this page.
+      for (const t of m.tanks.values()) {
+        t.span       = (t.maxEnd != null && t.minBegin != null) ? Math.round((t.maxEnd - t.minBegin) * 100) / 100 : null;
+        t.difference = t.span != null ? Math.round((t.span - t.gallons) * 100) / 100 : null;
+        t.balanced   = t.difference != null && Math.abs(t.difference) < 0.01;
+      }
+
+      // ── Exceptions: everything to settle before the month goes out ──
+      for (const row of m.byVehicle.values()) {
+        if (row.truck == null) {
+          m.exceptions.push({
+            kind: 'No truck number',
+            detail: `${row.entries} entr${row.entries === 1 ? 'y' : 'ies'}, ${n2(row.gallons)} gal with no truck number on them.`,
+          });
+        } else if (!row.vehicle) {
+          m.exceptions.push({
+            kind: `Truck ${row.truck} not on the vehicle list`,
+            detail: `${row.entries} entr${row.entries === 1 ? 'y' : 'ies'}, ${n2(row.gallons)} gal that can't be attributed to a vehicle. Add it under Vehicles.`,
+          });
+        }
+      }
+      for (const v of vehicleList) {
+        if (v.ifta && !v.ifta_sticker && m.byVehicle.has(String(v.truck_number))) {
+          m.exceptions.push({
+            kind: `Truck ${v.truck_number} has no IFTA sticker number`,
+            detail: 'It is flagged IFTA and bought fuel in this range, so the filing needs its sticker number.',
+          });
+        }
+      }
+      for (const t of m.tanks.values()) {
+        if (!t.balanced && t.difference != null) {
+          m.exceptions.push({
+            kind: `Tank ${t.tank} is out by ${n2(t.difference)} gal`,
+            detail: t.difference > 0
+              ? `The meter moved ${n2(t.span)} gal but only ${n2(t.gallons)} gal was reported — a fill is probably missing.`
+              : `${n2(t.gallons)} gal was reported against a meter that only moved ${n2(t.span)} gal — check for a repeated or overlapping reading.`,
+          });
+        }
+      }
+      if (m.meterFlagged.length) {
+        m.exceptions.push({
+          kind: `${m.meterFlagged.length} entr${m.meterFlagged.length === 1 ? 'y reads' : 'ies read'} an ending meter below the beginning`,
+          detail: 'Legitimate if a meter rolled over or was replaced — worth confirming before the figures go out.',
+        });
+      }
+
+      return m;
+    }
+
+    function sortedRows(map) {
+      return [...map.values()].sort((a, b) => b.gallons - a.gallons);
+    }
+
+    function renderReport() {
+      const m = reportModel;
+      const wrap = el('reportWrap');
+      if (!m) { wrap.innerHTML = ''; return; }
+
+      const rangeLabel = `${m.from || 'start'} to ${m.to || 'today'}`;
+      const statusLabel = m.status === 'approved'
+        ? 'Approved entries only'
+        : 'Approved and awaiting review';
+
+      if (!m.count) {
+        wrap.innerHTML = `
+          <div class="rep-grid">
+            <div class="rep-head">
+              <h2>Fuel Balance</h2>
+              <div class="range">${escapeHtml(rangeLabel)} · ${escapeHtml(statusLabel)}</div>
+            </div>
+            <div class="rep-block"><div class="rep-empty">No fuel entries in this range.</div></div>
+          </div>`;
+        return;
+      }
+
+      const stateRows = [...m.byState.values()].sort((a, b) => String(a.key).localeCompare(String(b.key)));
+      const vehRows   = [...m.byVehicle.values()].sort((a, b) => {
+        if (a.truck == null) return 1;
+        if (b.truck == null) return -1;
+        return a.truck - b.truck;
+      });
+      const tankRows  = [...m.tanks.values()].sort((a, b) => a.tank - b.tank);
+
+      wrap.innerHTML = `
+        <div class="rep-grid">
+          <div class="rep-head">
+            <h2>Fuel Balance</h2>
+            <div class="range">${escapeHtml(rangeLabel)} · ${escapeHtml(statusLabel)}</div>
+          </div>
+
+          <div class="rep-stats">
+            <div class="stat"><div class="stat-label">Fill-ups</div><div class="stat-value">${m.count}</div></div>
+            <div class="stat gallons"><div class="stat-label">Total Gallons</div><div class="stat-value">${n2(m.gallons)}</div></div>
+            <div class="stat approved"><div class="stat-label">IFTA Gallons</div><div class="stat-value">${n2(m.iftaGallons)}</div></div>
+            <div class="stat"><div class="stat-label">Non-IFTA Gallons</div><div class="stat-value">${n2(m.nonIftaGallons)}</div></div>
+          </div>
+
+          ${m.exceptions.length ? `
+          <div class="rep-block">
+            <div class="rep-title" style="color:#fb923c">Before this month goes out — ${m.exceptions.length} to settle</div>
+            <div class="rep-sub">Everything here either can't be attributed to a vehicle or doesn't add up. None of it blocks the report; all of it changes the figures if left.</div>
+            <table>
+              <thead><tr><th>What</th><th>Why it matters</th></tr></thead>
+              <tbody>
+                ${m.exceptions.map(x => `
+                  <tr class="exception">
+                    <td class="name">${escapeHtml(x.kind)}</td>
+                    <td>${escapeHtml(x.detail)}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>` : `
+          <div class="rep-block">
+            <div class="rep-title" style="color:var(--green)">Nothing outstanding</div>
+            <div class="rep-sub">Every fill-up matches a vehicle, every IFTA truck has a sticker number, and every tank meter accounts for the fuel reported against it.</div>
+          </div>`}
+
+          <div class="rep-block">
+            <div class="rep-title">Gallons by State</div>
+            <div class="rep-sub">Where the fuel was bought — the purchase side of an IFTA filing. The IFTA column counts only vehicles flagged IFTA on the Vehicles tab.</div>
+            <table>
+              <thead><tr><th>State</th><th class="num">Fill-ups</th><th class="num">Gallons</th><th class="num">IFTA Gallons</th></tr></thead>
+              <tbody>
+                ${stateRows.map(r => `
+                  <tr>
+                    <td class="name">${escapeHtml(r.key)}</td>
+                    <td class="num">${r.entries}</td>
+                    <td class="num">${n2(r.gallons)}</td>
+                    <td class="num">${n2(r.ifta)}</td>
+                  </tr>`).join('')}
+                <tr class="total">
+                  <td>Total</td>
+                  <td class="num">${m.count}</td>
+                  <td class="num">${n2(m.gallons)}</td>
+                  <td class="num">${n2(m.iftaGallons)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="rep-block">
+            <div class="rep-title">By Vehicle</div>
+            <div class="rep-sub">Odometer span is the highest mileage reported in this range minus the lowest — it comes off the fill-ups, not a trip log, so it under-counts any distance driven between the last fill of one month and the first of the next.</div>
+            <table>
+              <thead>
+                <tr>
+                  <th class="num">Truck</th><th>VIN</th><th>Year / Make</th>
+                  <th>IFTA</th><th>Sticker</th>
+                  <th class="num">Fill-ups</th><th class="num">Gallons</th>
+                  <th class="num">Odometer Span</th><th>States</th><th>Fuel</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${vehRows.map(r => {
+                  const v = r.vehicle;
+                  const span = (r.minMileage != null && r.maxMileage != null)
+                    ? n1(r.maxMileage - r.minMileage) : '—';
+                  return `
+                  <tr class="${v ? '' : 'exception'}">
+                    <td class="num" style="font-weight:700">${r.truck != null ? r.truck : '—'}</td>
+                    <td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.72rem">${escapeHtml(v && v.vin ? v.vin : '—')}</td>
+                    <td>${v ? escapeHtml([v.model_year, v.make].filter(Boolean).join(' ')) || '—' : '<span class="off">not on the vehicle list</span>'}</td>
+                    <td class="${v && v.ifta ? 'ifta-yes' : 'ifta-no'}">${v ? (v.ifta ? 'Yes' : 'No') : '—'}</td>
+                    <td>${escapeHtml(v && v.ifta_sticker ? v.ifta_sticker : '—')}</td>
+                    <td class="num">${r.entries}</td>
+                    <td class="num">${n2(r.gallons)}</td>
+                    <td class="num">${span}</td>
+                    <td>${escapeHtml([...r.states].sort().join(', ')) || '—'}</td>
+                    <td>${escapeHtml([...r.types].sort().join(', ')) || '—'}</td>
+                  </tr>`;
+                }).join('')}
+                <tr class="total">
+                  <td colspan="5">Total</td>
+                  <td class="num">${m.count}</td>
+                  <td class="num">${n2(m.gallons)}</td>
+                  <td class="num"></td><td></td><td></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="rep-block">
+            <div class="rep-title">Tank Balance</div>
+            <div class="rep-sub">Bulk tanks only — a card purchase never touched one. The meter runs forward without resetting, so the fills recorded against a tank should account for the whole distance its meter moved. What's left over came out of the tank with no entry behind it.</div>
+            ${tankRows.length ? `
+            <table>
+              <thead>
+                <tr><th class="num">Tank</th><th class="num">Fills</th><th class="num">Gallons Reported</th>
+                    <th class="num">Meter Span</th><th class="num">Difference</th><th>Meter Range</th></tr>
+              </thead>
+              <tbody>
+                ${tankRows.map(t => `
+                  <tr class="${t.balanced ? '' : 'exception'}">
+                    <td class="num" style="font-weight:700">${t.tank}</td>
+                    <td class="num">${t.fills}</td>
+                    <td class="num">${n2(t.gallons)}</td>
+                    <td class="num">${t.span != null ? n2(t.span) : '—'}</td>
+                    <td class="num ${t.balanced ? '' : 'off'}">${t.difference != null ? n2(t.difference) : '—'}</td>
+                    <td>${t.minBegin != null ? `${n1(t.minBegin)} → ${n1(t.maxEnd)}` : '—'}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>` : '<div class="rep-empty">No metered tank fills in this range — everything here was bought on a card.</div>'}
+          </div>
+
+          <div class="rep-block half">
+            <div class="rep-title">By Fuel Card</div>
+            <div class="rep-sub">Balance each of these against the card statement for the month.</div>
+            <table>
+              <thead><tr><th>Card</th><th class="num">Fill-ups</th><th class="num">Gallons</th></tr></thead>
+              <tbody>
+                ${sortedRows(m.byCard).map(r => `
+                  <tr>
+                    <td class="name">${escapeHtml(r.key)}</td>
+                    <td class="num">${r.entries}</td>
+                    <td class="num">${n2(r.gallons)}</td>
+                  </tr>`).join('')}
+                <tr class="total"><td>Total</td><td class="num">${m.count}</td><td class="num">${n2(m.gallons)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="rep-block half">
+            <div class="rep-title">By Fuel Type</div>
+            <div class="rep-sub">Off-road diesel is dyed and not highway-taxable — it is kept apart from the on-road totals here for that reason.</div>
+            <table>
+              <thead><tr><th>Type</th><th class="num">Fill-ups</th><th class="num">Gallons</th></tr></thead>
+              <tbody>
+                ${sortedRows(m.byType).map(r => `
+                  <tr>
+                    <td class="name">${escapeHtml(r.key)}</td>
+                    <td class="num">${r.entries}</td>
+                    <td class="num">${n2(r.gallons)}</td>
+                  </tr>`).join('')}
+                <tr class="total"><td>Total</td><td class="num">${m.count}</td><td class="num">${n2(m.gallons)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>`;
+    }
+
+    // One file, every section, blank line between each — the shape a
+    // spreadsheet opens cleanly and an auditor can read top to bottom.
+    function exportReportCsv() {
+      const m = reportModel;
+      if (!m || !m.count) { alert('Nothing to export — build a report with entries in it first.'); return; }
+      const rows = [];
+      const push = (...cells) => rows.push(cells.map(csvEscape).join(','));
+
+      push('Fuel Balance');
+      push('Range', `${m.from || 'start'} to ${m.to || 'today'}`);
+      push('Counts', m.status === 'approved' ? 'Approved entries only' : 'Approved and awaiting review');
+      push('Fill-ups', m.count);
+      push('Total gallons', n2(m.gallons));
+      push('IFTA gallons', n2(m.iftaGallons));
+      push('Non-IFTA gallons', n2(m.nonIftaGallons));
+      push('Gallons on trucks not in the vehicle list', n2(m.unmatchedGallons));
+      push('');
+
+      push('Gallons by State');
+      push('State', 'Fill-ups', 'Gallons', 'IFTA Gallons');
+      for (const r of [...m.byState.values()].sort((a, b) => String(a.key).localeCompare(String(b.key)))) {
+        push(r.key, r.entries, n2(r.gallons), n2(r.ifta));
+      }
+      push('Total', m.count, n2(m.gallons), n2(m.iftaGallons));
+      push('');
+
+      push('By Vehicle');
+      push('Truck', 'VIN', 'Year', 'Make', 'IFTA', 'IFTA Sticker',
+           'Fill-ups', 'Gallons', 'Odometer Span', 'States', 'Fuel Types', 'On Vehicle List');
+      const vehRows = [...m.byVehicle.values()].sort((a, b) => {
+        if (a.truck == null) return 1;
+        if (b.truck == null) return -1;
+        return a.truck - b.truck;
+      });
+      for (const r of vehRows) {
+        const v = r.vehicle;
+        push(
+          r.truck != null ? r.truck : '',
+          v && v.vin ? v.vin : '',
+          v && v.model_year != null ? v.model_year : '',
+          v && v.make ? v.make : '',
+          v ? (v.ifta ? 'Yes' : 'No') : '',
+          v && v.ifta_sticker ? v.ifta_sticker : '',
+          r.entries, n2(r.gallons),
+          (r.minMileage != null && r.maxMileage != null) ? n1(r.maxMileage - r.minMileage) : '',
+          [...r.states].sort().join(' '),
+          [...r.types].sort().join(' '),
+          v ? 'Yes' : 'No',
+        );
+      }
+      push('');
+
+      push('Tank Balance');
+      push('Tank', 'Fills', 'Gallons Reported', 'Meter Span', 'Difference', 'Meter From', 'Meter To');
+      for (const t of [...m.tanks.values()].sort((a, b) => a.tank - b.tank)) {
+        push(t.tank, t.fills, n2(t.gallons), t.span != null ? n2(t.span) : '',
+             t.difference != null ? n2(t.difference) : '',
+             t.minBegin != null ? n1(t.minBegin) : '', t.maxEnd != null ? n1(t.maxEnd) : '');
+      }
+      push('');
+
+      push('By Fuel Card');
+      push('Card', 'Fill-ups', 'Gallons');
+      for (const r of sortedRows(m.byCard)) push(r.key, r.entries, n2(r.gallons));
+      push('');
+
+      push('By Fuel Type');
+      push('Type', 'Fill-ups', 'Gallons');
+      for (const r of sortedRows(m.byType)) push(r.key, r.entries, n2(r.gallons));
+      push('');
+
+      push('Exceptions');
+      push('What', 'Why it matters');
+      if (!m.exceptions.length) push('None', 'Everything matched and balanced.');
+      for (const x of m.exceptions) push(x.kind, x.detail);
+
+      downloadCsv(rows.join('\n'), `fuel-balance-${m.from || 'start'}-to-${m.to || 'end'}.csv`);
+    }
+
     // ── CSV export ─────────────────────────────────────────────────────────
     function csvEscape(v) {
       const s = v == null ? '' : String(v);
@@ -1458,11 +2407,18 @@
           e.status, e.submitted_at || '', e.approved_at || '', e.approved_by_name || '', e.username || '',
         ].map(csvEscape).join(','));
       }
-      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      downloadCsv(lines.join('\n'), `fuel-${activeTab}-${val('flt-from') || 'start'}-to-${val('flt-to') || 'end'}.csv`);
+    }
+
+    function downloadCsv(text, filename) {
+      // A BOM so Excel opens it as UTF-8 — without it "Bulk Fuel – No card"
+      // arrives with its en dash mangled, and that string is a stored value
+      // the office matches on.
+      const blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' });
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href = url;
-      a.download = `fuel-${activeTab}-${val('flt-from') || 'start'}-to-${val('flt-to') || 'end'}.csv`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

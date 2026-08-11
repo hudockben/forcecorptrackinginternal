@@ -101,7 +101,7 @@ async function call(method, query, body, auth) {
 
 async function seed() {
   const q = (t, v) => client.query(t, v);
-  await q(`TRUNCATE fuel_submissions, fuel_audit_log RESTART IDENTITY CASCADE`);
+  await q(`TRUNCATE fuel_submissions, fuel_audit_log, fuel_vehicles RESTART IDENTITY CASCADE`);
   await q(`DELETE FROM users WHERE id IN (7, 11, 42)`);
   await q(`INSERT INTO companies (code, name) VALUES ('FCT','Force Corp') ON CONFLICT (code) DO NOTHING`);
   await q(`INSERT INTO users (id, company_code, username, password_hash, role)
@@ -344,6 +344,78 @@ async function run() {
 
     const gone = await call('DELETE', { id }, null, ADMIN);
     assert('deleting it twice is a 404', gone.statusCode === 404);
+  }
+
+  console.log('\n[the vehicle roster]');
+  {
+    // Driven through the real handler, against the real unique index — the
+    // upsert below is the whole reason that index exists, and a mock can't
+    // tell you whether ON CONFLICT actually has a constraint to catch.
+    const vehicles = require(path.resolve(__dirname, '..', 'api', 'fuel-vehicles.js'));
+    async function vcall(method, query, body, auth) {
+      AUTH = auth;
+      const res = {
+        statusCode: 200, body: null,
+        setHeader() {}, status(c) { this.statusCode = c; return this; },
+        json(b) { this.body = b; return this; }, end() { return this; },
+      };
+      await vehicles({ method, query: query || {}, body: body || {} }, res);
+      return res;
+    }
+
+    const added = await vcall('POST', {}, {
+      truck_number: '412', vin: ' 1fujgldr8csbp1234 ', model_year: '2019',
+      make: 'Freightliner', ifta: true, ifta_sticker: 'PA-9981',
+    }, ADMIN);
+    assert('a vehicle is added', added.statusCode === 200 && added.body.ok, JSON.stringify(added.body));
+    assert('the VIN is stored upper-case and unspaced',
+      added.body.vehicle.vin === '1FUJGLDR8CSBP1234', added.body.vehicle.vin);
+    assert('and it is in service by default', added.body.vehicle.active === true);
+
+    // The same truck added a second time must fold into the first row, not
+    // create a second — two rows for one truck double every gallon it burned
+    // in the by-vehicle totals.
+    const again = await vcall('POST', {}, {
+      truck_number: '412', vin: '1FUJGLDR8CSBP1234', model_year: '2020',
+      make: 'Freightliner', ifta: true, ifta_sticker: 'PA-1000',
+    }, ADMIN);
+    assert('adding the same truck number updates it', again.statusCode === 200, JSON.stringify(again.body));
+    assert('and does not mint a second row', again.body.vehicle.id === added.body.vehicle.id,
+      `${again.body.vehicle.id} vs ${added.body.vehicle.id}`);
+    assert('with the new details applied', again.body.vehicle.model_year === 2020 &&
+      again.body.vehicle.ifta_sticker === 'PA-1000');
+
+    const second = await vcall('POST', {}, { truck_number: '77', ifta: false, ifta_sticker: 'STALE' }, ADMIN);
+    assert('a non-IFTA vehicle drops the sticker on the way in',
+      second.body.vehicle.ifta_sticker === null, String(second.body.vehicle.ifta_sticker));
+
+    const collide = await vcall('POST', {}, { id: second.body.vehicle.id, truck_number: '412' }, ADMIN);
+    assert('moving truck 77 onto 412 is refused', collide.statusCode === 409, JSON.stringify(collide.body));
+
+    const retired = await vcall('POST', {}, {
+      id: second.body.vehicle.id, truck_number: '77', active: false,
+    }, ADMIN);
+    assert('a truck can be retired without deleting it', retired.body.vehicle.active === false);
+
+    const listed = await vcall('GET', {}, null, ADMIN);
+    assert('the default list hides retired trucks',
+      listed.body.vehicles.length === 1 && listed.body.vehicles[0].truck_number === 412,
+      JSON.stringify(listed.body.vehicles.map(v => v.truck_number)));
+
+    const listedAll = await vcall('GET', { include_inactive: '1' }, null, ADMIN);
+    assert('include_inactive brings it back',
+      listedAll.body.vehicles.map(v => v.truck_number).join(',') === '77,412',
+      JSON.stringify(listedAll.body.vehicles.map(v => v.truck_number)));
+
+    const removed = await vcall('DELETE', { id: second.body.vehicle.id }, null, ADMIN);
+    assert('a vehicle can be deleted', removed.statusCode === 200);
+
+    // Deleting a truck must not touch the fuel bought for it — those entries
+    // record what a driver reported, and the report surfaces them as
+    // unmatched rather than having them disappear.
+    const stillThere = await client.query(
+      `SELECT COUNT(*)::int AS n FROM fuel_submissions WHERE company_code = 'FCT' AND truck_number = 77`);
+    assert('and its fuel entries are left alone', stillThere.rows[0].n > 0, String(stillThere.rows[0].n));
   }
 
   console.log('\n[audit trail]');

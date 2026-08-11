@@ -1142,6 +1142,44 @@ CREATE INDEX IF NOT EXISTS idx_fuel_audit_company ON fuel_audit_log(company_code
 CREATE INDEX IF NOT EXISTS idx_fuel_audit_entry   ON fuel_audit_log(entry_id, created_at DESC);
 
 -- ─────────────────────────────────────────────────
+-- FUEL VEHICLES
+-- The truck roster behind Fuel Admin's Vehicles tab, and what makes the
+-- monthly fuel report reportable: a fuel_submissions row carries a truck
+-- NUMBER, and IFTA wants a VIN, a licence year and make, and the sticker
+-- the vehicle is running under. truck_number is the join between the two,
+-- which is why it is required here even though it is the one field the
+-- office doesn't think of as vehicle detail — a vehicle with no truck
+-- number can never be matched to the fuel bought for it.
+--
+-- Unique per company on truck_number for the same reason: two rows for
+-- one truck would double every gallon it burned in the by-vehicle totals.
+-- The number is reused when a truck is replaced, so the row is EDITED
+-- rather than duplicated, and `active` retires one without deleting the
+-- history that points at it.
+--
+-- ifta is the flag that decides whether a vehicle's fuel belongs in the
+-- IFTA purchase totals at all. Off-road equipment burns dyed fuel that is
+-- not highway-taxable, and rolling it into a filing overstates the credit.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fuel_vehicles (
+    id            BIGSERIAL PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    truck_number  INTEGER       NOT NULL,
+    vin           TEXT,
+    model_year    INTEGER,
+    make          TEXT,
+    ifta          BOOLEAN       NOT NULL DEFAULT FALSE,
+    ifta_sticker  TEXT,
+    active        BOOLEAN       NOT NULL DEFAULT TRUE,
+    notes         TEXT,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fuel_vehicle_truck
+  ON fuel_vehicles(company_code, truck_number);
+
+-- ─────────────────────────────────────────────────
 -- REPORT RECIPIENT GROUPS
 -- Saved email distribution lists for the "Email Report" button on
 -- the Executive, Turf, and Paving reports. Company-scoped (visible

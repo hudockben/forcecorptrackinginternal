@@ -73,6 +73,7 @@ app.all('/api/timesheet-audit-log',     require('../api/timesheet-audit-log'));
 app.all('/api/fuel-submissions', require('../api/fuel-submissions'));
 app.all('/api/fuel-employees',   require('../api/fuel-employees'));
 app.all('/api/fuel-audit-log',   require('../api/fuel-audit-log'));
+app.all('/api/fuel-vehicles',    require('../api/fuel-vehicles'));
 
 /** Company board */
 app.all('/api/board', require('../api/board'));
