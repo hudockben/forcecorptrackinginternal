@@ -257,7 +257,17 @@ function loadPage(opts = {}) {
         ? [{ dataset: { val: 'true' }, classList: makeClassList() },
            { dataset: { val: 'false' }, classList: makeClassList() }]
         : []),
-      appendChild(child) { this.options.push(child); return child; },
+      // A <select> that is handed an already-selected <option> adopts it, the
+      // way a browser does. editEntry relies on that to show a job or a
+      // supervisor that has since dropped off the active list.
+      appendChild(child) {
+        this.options.push(child);
+        if (child && child.selected) {
+          this.value = child.value;
+          this.selectedIndex = this.options.length - 1;
+        }
+        return child;
+      },
       insertAdjacentHTML(_pos, html) { registerIds(html); },
       remove() { byId.delete(this.id); },
       scrollIntoView() {},
@@ -314,7 +324,7 @@ function loadPage(opts = {}) {
   const exposed = `
     ;return {
       buildPayloads, addSplit, setSeg, updateHours, blockOrder, blockName,
-      splitLabel, resetForm, bel, draftGroupFor,
+      splitLabel, resetForm, bel, draftGroupFor, editEntry,
       saveDraft, submitEntry, onDivisionChange,
       setEntriesCache: v => { entriesCache = v; },
       state: () => ({ groupId: currentGroupId, blocks: blockOrder() }),
@@ -623,6 +633,82 @@ async function concurrencyTests() {
     net.release();
     await Promise.all([a, b]);
     eq('a double-tapped Submit creates two rows, not four', net.creates().length, 2);
+  }
+
+  console.log('\n[timesheet.html — loading a draft cannot collide with other work]');
+  {
+    // Two draft cards tapped in quick succession. Loading a draft waits on that
+    // job's list, and everything it touches is shared — the date, the
+    // supervisor, the blocks, and editingIds, which decides which rows the next
+    // save updates. Both halves used to land, leaving a form made of two
+    // different days; saving it then wrote one day's date over the other day's
+    // row, moving a job to a date nobody worked it.
+    const { api, document: doc, net } = loadPage({
+      jobs: { turf: [{ id: '26041', label: 'Tennis Court' },
+                     { id: '26042', label: 'Multi Field' },
+                     { id: '26043', label: 'Baseball Diamond' }] },
+    });
+    const draft = (id, o) => Object.assign({
+      id, entry_type: 'daily', status: 'draft', work_date: '2026-08-10',
+      division: 'turf', start_time: '07:00', end_time: '11:00',
+      lunch_break: false, operated_equipment: true,
+      supervisor_id: 3, supervisor_name: 'Zach Brewer', notes: '',
+      split_group_id: '', split_index: null, split_count: null,
+    }, o);
+    api.setEntriesCache([
+      draft('A1', { job_id: '26041', job_label: 'Tennis Court',
+                    split_group_id: 'gA', split_index: 1, split_count: 2 }),
+      draft('A2', { job_id: '26042', job_label: 'Multi Field', start_time: '12:00', end_time: '16:00',
+                    split_group_id: 'gA', split_index: 2, split_count: 2 }),
+      draft('B1', { job_id: '26043', job_label: 'Baseball Diamond', work_date: '2026-08-09' }),
+    ]);
+
+    net.jobHold = { turf: [] };            // hold the job list so A stalls mid-load
+    const loadingA = api.editEntry('A1');
+    await tick();
+    const loadingB = api.editEntry('B1');  // second tap supersedes it
+    net.jobHold.turf.splice(0).forEach(r => r());
+    net.jobHold = null;
+    await Promise.all([loadingA, loadingB]);
+
+    eq('the form holds one day, not two half-loaded ones', api.blockOrder().length, 1);
+    eq('showing the day that was tapped last', doc.getElementById('f-date').value, '2026-08-09');
+    const { list } = api.buildPayloads();
+    eq('and a save would touch that one row only', list.map(x => x.data.job_id), ['26043']);
+    eq('leaving the other day\'s job out of it entirely',
+      list.filter(x => x.data.job_id === '26042').length, 0);
+  }
+  {
+    // Tapping a card mid-save clears the pins the write loop is still using, so
+    // the blocks it had not reached yet post themselves a second time.
+    const { api, document: doc, net } = loadPage();
+    georgesDay(api, doc);
+    await api.saveDraft();                       // both blocks now pinned
+    const pinned = net.creates().length;
+    eq('the day starts out as two rows', pinned, 2);
+
+    api.setEntriesCache([{ id: 'Z1', entry_type: 'daily', status: 'draft',
+      work_date: '2026-08-09', division: 'turf', job_id: '26041', job_label: 'Tennis Court',
+      start_time: '07:00', end_time: '11:00', lunch_break: false, operated_equipment: true,
+      supervisor_id: 3, supervisor_name: 'Zach Brewer', split_group_id: '' }]);
+
+    net.hold = true;
+    const saving = api.saveDraft();
+    await tick();
+    await api.editEntry('Z1');                   // must be refused while writing
+    // Checked here, mid-write: once the save lands it reports its own result
+    // over the top, which is the message that should be left standing.
+    assert('the tap is answered rather than silently dropped',
+      /still saving/i.test(doc.getElementById('formMsg').textContent),
+      JSON.stringify(doc.getElementById('formMsg').textContent));
+    net.hold = false;
+    net.release();
+    await saving;
+
+    eq('a re-save creates nothing new', net.creates().length, pinned);
+    assert('and the save still reports its own result',
+      /Saved 2 draft entries/.test(doc.getElementById('formMsg').textContent),
+      JSON.stringify(doc.getElementById('formMsg').textContent));
   }
 
   console.log('\n[timesheet.html — a slow job list cannot land on the wrong division]');

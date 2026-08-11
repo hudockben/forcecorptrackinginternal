@@ -1418,11 +1418,23 @@
       return group.sort((a, b) => (Number(a.split_index) || 0) - (Number(b.split_index) || 0));
     }
 
+    // Which load of the form is the current one. Loading a draft is async — it
+    // waits on that job's list — and everything it touches is shared: the date,
+    // the supervisor, the blocks, and editingIds, which decides WHICH rows the
+    // next save updates. Tapping a second card before the first finished used
+    // to leave both halfway in, and a save then wrote one day's shared fields
+    // over the other day's row: a job silently moved to the wrong date. So each
+    // load takes a ticket and stops the moment a newer one is issued.
+    let editToken = 0;
+
     // Fill one job block from an entry: division, job, the division-specific
     // extras, the clock and the equipment answer.
     async function fillBlockFromEntry(i, e) {
+      const token = editToken;
       bel(i, 'division').value = e.division || '';
       await onDivisionChange(i);
+      // Superseded while the job list was loading, or the block is gone.
+      if (token !== editToken || !bel(i, 'job')) return;
       const jobSel = bel(i, 'job');
       if (e.job_id && ![...jobSel.options].some(o => String(o.value) === String(e.job_id))) {
         // Job no longer in the active list — keep it as a synthetic option so
@@ -1455,6 +1467,16 @@
     async function editEntry(id) {
       const e = entriesCache.find(x => x.id === id);
       if (!e) return;
+      // Not while the form is writing. resetForm() below clears editingIds,
+      // and a write loop that loses those mid-flight stops recognising the
+      // rows it already created — so it posts the rest of the day again.
+      if (formWriting) {
+        const busy = document.getElementById('formMsg');
+        busy.className = 'msg error';
+        busy.textContent = 'Still saving — try that again in a moment.';
+        return;
+      }
+      const token = ++editToken;
       resetForm();
 
       setType(e.entry_type);
@@ -1477,12 +1499,14 @@
         editingIds[0] = first.id;
         loadedTags[0] = splitTagOf(first);
         await fillBlockFromEntry(0, first);
+        if (token !== editToken) return;
         for (const g of group.slice(1)) {
           const i = addJobBlock(false);
           if (i == null) break;
           editingIds[i] = g.id;
           loadedTags[i] = splitTagOf(g);
           await fillBlockFromEntry(i, g);
+          if (token !== editToken) return;
         }
         renderSplitChrome();
 
