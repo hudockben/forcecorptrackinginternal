@@ -250,6 +250,7 @@ function loadPage(opts = {}) {
   function makeEl(tag, id) {
     const el = {
       tagName: String(tag || 'div').toUpperCase(), id,
+      parentElement: null,
       value: '', textContent: '', innerHTML: '', disabled: false,
       dataset: {}, style: {}, classList: makeClassList(),
       options: [], selectedIndex: -1,
@@ -263,6 +264,7 @@ function loadPage(opts = {}) {
       // supervisor that has since dropped off the active list.
       appendChild(child) {
         this.options.push(child);
+        if (child) child.parentElement = this;
         if (child && child.selected) {
           this.value = child.value;
           this.selectedIndex = this.options.length - 1;
@@ -270,6 +272,9 @@ function loadPage(opts = {}) {
         return child;
       },
       insertAdjacentHTML(_pos, html) { registerIds(html); },
+      // Enough to see where a moved node ended up: it is no longer a child of
+      // wherever it was, which is all the assertions below need.
+      insertAdjacentElement(_pos, el) { if (el) el.parentElement = this.parentElement; },
       remove() { byId.delete(this.id); },
       scrollIntoView() {},
     };
@@ -562,6 +567,44 @@ function pageTests() {
     });
     const { error } = api.buildPayloads();
     eq('a one-job day keeps the plain wording it always had', error, 'Pick a job.');
+  }
+
+  console.log('\n[timesheet.html — the drive home sits after the last job]');
+  {
+    // Every job block asks how the worker got TO it. The drive away is the
+    // day's one shared leg, and parked at the top beside the drive out it
+    // reads as part of the FIRST job — so the last job block appears to ask
+    // how they arrived and never how they left. It moves below the blocks,
+    // which is where it happens.
+    const { api, document: doc } = loadPage();
+    const homeRow = doc.getElementById('row-travel-to-shop');
+    const total   = doc.getElementById('travelTotalRow');
+    const slot    = doc.getElementById('travelHomeSlot');
+    const lbl     = id => doc.getElementById(id).textContent;
+
+    // Anchored first, so a form without the field fails as that rather than
+    // as a crash somewhere further down.
+    assert('the form has a drive-home row and somewhere to move it to',
+      !!homeRow && !!total && !!slot, `row ${!!homeRow}, total ${!!total}, slot ${!!slot}`);
+
+    if (homeRow && total && slot) {
+      assert('on a one-job day it stays beside the drive out', homeRow.parentElement !== slot);
+
+      georgesDay(api, doc);
+      assert('splitting moves it below the job blocks', homeRow.parentElement === slot);
+      assert('and takes the running travel total with it', total.parentElement === slot,
+        'left up top it sits under the first leg announcing the whole day');
+      eq('both now read as day-wide',
+        [lbl('lbl-travel-to-site'), lbl('lbl-travel-total')],
+        ['Travel Time to First Job (hours)', 'All jobs — travel hours']);
+
+      api.resetForm();
+      assert('and back on a one-job day it returns', homeRow.parentElement !== slot);
+      assert('with the total', total.parentElement !== slot);
+      eq('under the plain labels again',
+        [lbl('lbl-travel-to-site'), lbl('lbl-travel-total')],
+        ['Travel Time to Site (hours)', 'Travel hours']);
+    }
   }
 
   console.log('\n[timesheet.html — form housekeeping]');

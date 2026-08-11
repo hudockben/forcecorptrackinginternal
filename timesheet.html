@@ -561,21 +561,21 @@
           </div>
         </div>
 
-        <div class="row-2">
+        <div class="row-2" id="row-travel-pair">
           <div class="row">
             <label for="f-travel-to-site" id="lbl-travel-to-site">Travel Time to Site (hours)</label>
             <input type="number" inputmode="decimal" min="0" max="24" step="0.25" placeholder="0"
                    id="f-travel-to-site" oninput="updateTravelHours()" onchange="updateTravelHours()" />
           </div>
-          <div class="row">
+          <div class="row" id="row-travel-to-shop">
             <label for="f-travel-to-shop" id="lbl-travel-to-shop">Travel Time to Shop (hours)</label>
             <input type="number" inputmode="decimal" min="0" max="24" step="0.25" placeholder="0"
                    id="f-travel-to-shop" oninput="updateTravelHours()" onchange="updateTravelHours()" />
           </div>
         </div>
 
-        <div class="computed">
-          <span class="label">Travel hours</span>
+        <div class="computed" id="travelTotalRow">
+          <span class="label" id="lbl-travel-total">Travel hours</span>
           <span class="value" id="f-travel-hours">0.00</span>
         </div>
 
@@ -621,6 +621,12 @@
              Blocks are built by splitBlockHtml() — keep the fields there in
              step with the per-job fields above. -->
         <div id="splitBlocks" style="display:flex;flex-direction:column;gap:0.85rem"></div>
+
+        <!-- Where the drive home goes once the day has more than one job: after
+             the last of them, which is where it happens. renderSplitChrome
+             moves the real field in and out of here — it is moved, not copied,
+             so there is only ever one drive home to fill in. -->
+        <div id="travelHomeSlot"></div>
 
         <div class="computed" id="dayTotalRow" style="display:none">
           <span class="label">All jobs — site hours</span>
@@ -1012,6 +1018,32 @@
       // the only drive on a day that had three.
       document.getElementById('lbl-travel-to-site').textContent =
         split ? 'Travel Time to First Job (hours)' : 'Travel Time to Site (hours)';
+
+      // And move the drive home to where it happens. Sitting up here beside
+      // the drive out, it reads as part of the FIRST job — so the last job
+      // block appears to ask how the worker got there and never how they
+      // left. Moved below the blocks it lands after the job it belongs to,
+      // and the form runs in the order the day did. The node is moved, so
+      // there is still only one of it and anything typed in survives the trip.
+      const homeRow  = document.getElementById('row-travel-to-shop');
+      const homeSlot = document.getElementById('travelHomeSlot');
+      const pair     = document.getElementById('row-travel-pair');
+      const wantHome = split ? homeSlot : pair;
+      if (homeRow.parentElement !== wantHome) wantHome.appendChild(homeRow);
+      // The running travel total goes with it. Left up top it sits directly
+      // under a box reading 0.5 while announcing 1.50 — the two later legs
+      // are not on screen yet, so the number looks wrong. Beside the day's
+      // site hours, under the last leg, it reads as the day total it is.
+      const travelTotal = document.getElementById('travelTotalRow');
+      if (split) {
+        if (travelTotal.parentElement !== homeSlot) homeSlot.appendChild(travelTotal);
+      } else if (travelTotal.parentElement === homeSlot) {
+        pair.insertAdjacentElement('afterend', travelTotal);
+      }
+      document.getElementById('lbl-travel-total').textContent =
+        split ? 'All jobs — travel hours' : 'Travel hours';
+      // With the drive home gone, the pair would leave a hole in its grid.
+      pair.style.gridTemplateColumns = split ? '1fr' : '';
       // The drive to the shop needs no rewording — it can only be from the
       // last job — and a longer label here wraps past its neighbour and drags
       // the two inputs out of line.
