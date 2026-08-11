@@ -637,6 +637,18 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
     const r = splitRows[i];
     const rowId = `ts${entry.id}-${baseStamp}-${i}-${Math.floor(Math.random() * 1e6)}`;
     const eqUnitCost = resolver.equipCostFor(r.equipment);
+    // Stamp the marker from the same rule the rate below is priced by, so the
+    // row's stored classification and its rate can never disagree. A row booked
+    // to a travel code but never ticked used to land with no marker at all: it
+    // read as ordinary work in cost tracking and came back unticked in the
+    // resplit modal.
+    //
+    // This has to sit OUT here. A `//` line inside a sql`` template is not a
+    // comment — the tag only sees text, and it is shipped to Postgres, which
+    // has no `//` comment syntax. Written inside the statement it made every
+    // turf/paving/kiewit approval fail to parse.
+    const isTravel  = isTravelSplitRow(r);
+    const fieldType = isTravel ? 'Travel' : null;
     await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
@@ -650,17 +662,12 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${companyCode},
         ${division},
         ${workDate},
-        // Stamp the marker from the same rule the rate below is priced by, so
-        // the row's stored classification and its rate can never disagree. A
-        // row booked to a travel code but never ticked used to land with no
-        // marker at all: it read as ordinary work in cost tracking and came
-        // back unticked in the resplit modal.
-        ${isTravelSplitRow(r) ? 'Travel' : null},
+        ${fieldType},
         ${employeeLabel},
         ${r.cost_code || null},
         ${r.sub_code || null},
         ${jobClass},
-        ${isTravelSplitRow(r) ? travelRate : workRate},
+        ${isTravel ? travelRate : workRate},
         ${r.labor_hours},
         ${r.equipment || null},
         ${eqUnitCost},
