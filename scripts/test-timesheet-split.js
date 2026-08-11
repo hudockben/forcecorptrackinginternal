@@ -442,6 +442,22 @@ function pageTests() {
     assert('and says so in hours', /more than one day/.test(error || ''), error);
   }
   {
+    // A night shift that runs into the morning and then picks up a second job
+    // is a real day, and the overlap check must not refuse it just because the
+    // second job's clock reads earlier than the first's.
+    const { api, document: doc } = loadPage();
+    georgesDay(api, doc);
+    api.bel(0, 'start').value = '22:00';
+    api.bel(0, 'end').value   = '02:00';
+    const second = api.blockOrder()[1];
+    api.bel(second, 'start').value = '03:00';
+    api.bel(second, 'end').value   = '06:00';
+    const { list, error } = api.buildPayloads();
+    assert('a shift crossing midnight can still be split', !!list && !error, error);
+    eq('and both jobs keep their own clock',
+      list.map(x => `${x.data.start_time}-${x.data.end_time}`), ['22:00-02:00', '03:00-06:00']);
+  }
+  {
     const { api, document: doc } = loadPage();
     georgesDay(api, doc);
     const second = api.blockOrder()[1];
@@ -449,6 +465,43 @@ function pageTests() {
     const { error } = api.buildPayloads();
     assert('a missing field says WHICH job is missing it',
       /^Second job: pick a job\./.test(error || ''), error);
+  }
+  {
+    // A start equal to its end is 0 hours. It has to be caught HERE, not by
+    // the server: the earlier jobs are written out as drafts before the bad
+    // one is ever sent, so a server-side refusal leaves half a day saved and
+    // a message that can't say which job is wrong.
+    //
+    // It also cannot be left to overlappingBlocks, which reads a zero-length
+    // span differently depending on where the other jobs sit — after them it
+    // slips through, inside one it reads as an overlap.
+    const { api, document: doc } = loadPage();
+    georgesDay(api, doc);
+    const second = api.blockOrder()[1];
+    api.bel(second, 'start').value = '12:00';   // sits after the first job
+    api.bel(second, 'end').value   = '12:00';
+    const after = api.buildPayloads();
+    assert('a zero-hour job after the others is refused', !after.list && !!after.error, JSON.stringify(after.list));
+    assert('and named', /^Second job: start and end times are the same/.test(after.error || ''), after.error);
+
+    api.bel(0, 'start').value = '10:00';        // now it sits inside the first job
+    api.bel(0, 'end').value   = '14:00';
+    const inside = api.buildPayloads();
+    assert('a zero-hour job inside another is refused the same way',
+      /^Second job: start and end times are the same/.test(inside.error || ''), inside.error);
+  }
+  {
+    const { api, document: doc } = loadPage();
+    doc.getElementById('f-date').value = '2026-08-10';
+    pick(doc.getElementById('f-supervisor'), '3', 'Zach Brewer');
+    api.setSeg('lunch', false);
+    setBlock(api, 0, {
+      division: 'turf', jobId: '26041', jobLabel: 'Franklin Regional — Tennis Court',
+      start: '07:00', end: '07:00', equip: true,
+    });
+    const { list, error } = api.buildPayloads();
+    assert('a one-job day of 0 hours is refused too', !list && !!error, JSON.stringify(list));
+    assert('in the plain wording', /^Start and end times are the same/.test(error || ''), error);
   }
   {
     const { api, document: doc } = loadPage();

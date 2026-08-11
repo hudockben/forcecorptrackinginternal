@@ -966,6 +966,14 @@
           });
           const j = await res.json();
           if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+          // The stored group just lost a member, so the tags this form was
+          // loaded with no longer describe the day. Drop them and let the next
+          // save re-tag from what is actually on screen — otherwise deleting
+          // the second job of a saved pair leaves the first still badged
+          // "Split 1/2", pointing payroll at a job that no longer exists.
+          // splitTagFor falls back to these only for a lone block, so a group
+          // that still has two or more jobs just re-numbers itself.
+          loadedTags = {};
           await loadEntries();
         } catch (err) {
           msg.textContent = `Removed from the form, but its saved draft could not be deleted (${err.message}). Delete it from the list below.`;
@@ -1629,6 +1637,16 @@
         const start = bel(i, 'start').value;
         const end   = bel(i, 'end').value;
         if (!start || !end) return { error: at(i, 'Pick start and end times.') };
+        // A start equal to its end is 0 hours. The server refuses it too, but
+        // only after the earlier blocks have already been written out as
+        // drafts, and its message can't say which job is wrong. Catching it
+        // here keeps a bad clock from leaving half a day saved, and is what
+        // lets overlappingBlocks below assume every span has real length —
+        // a zero-length span slips past that check when it sits after the
+        // other jobs, and reads as an overlap when it sits inside one.
+        if (spanMinutes(start, end) <= 0) {
+          return { error: at(i, 'Start and end times are the same — that comes to 0 hours.') };
+        }
         if (equipVals[i] == null) return { error: at(i, 'Operated equipment? Yes or No.') };
         blocks.push({ i, div, jobId, jobLabel, start, end, equip: equipVals[i] });
       }
@@ -1698,14 +1716,25 @@
     // First pair of blocks whose on-site spans overlap, or null. Each span is
     // laid out on a single timeline in minutes; an end that reads earlier than
     // its start is an overnight shift and runs past midnight, the same way
-    // spanMinutes() treats it. Equal start and end is a zero-length span — it
-    // overlaps nothing here and the server rejects it as 0 hours.
+    // spanMinutes() treats it. Every span has real length by the time this
+    // runs — buildPayloads rejects a start equal to its end first, because a
+    // zero-length span both slips this check and trips it, depending only on
+    // where the other jobs happen to sit.
+    //
+    // Deliberately not exhaustive once a block runs past midnight: 22:00–02:00
+    // followed by 01:00–03:00 is not flagged, because a block on the same
+    // work_date reading 01:00 could equally be that morning, before the night
+    // shift began. Nothing on the form says which, so guessing would refuse
+    // real days to catch a rare one. This is the same latitude the field has
+    // always had submitting two entries by hand; what it does catch is the
+    // mistake splitting actually invites — the second job left sitting on the
+    // first one's clock.
     function overlappingBlocks(blocks) {
       const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
       const spans = blocks.map(b => {
         const s = toMin(b.start);
         const e = toMin(b.end);
-        return { b, s, e: e >= s ? e : e + 24 * 60 };
+        return { b, s, e: e > s ? e : e + 24 * 60 };
       });
       for (let x = 0; x < spans.length; x++) {
         for (let y = x + 1; y < spans.length; y++) {
