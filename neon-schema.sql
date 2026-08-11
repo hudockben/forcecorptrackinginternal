@@ -1002,6 +1002,24 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_name       TEXT;
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_job_number TEXT;
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ees_billing    TEXT;
 
+-- Split-day tagging. A field worker who spends one day on two jobs submits ONE
+-- form on timesheet.html and the page posts one row per job — same date,
+-- supervisor and notes, each with its own job, clock and equipment answer — so
+-- payroll reviews and approves them exactly as if they had been submitted
+-- separately. These three columns are the only thing tying them back together:
+-- a shared group id (minted client-side, one per submission) plus this row's
+-- 1-based position and the size of the group, which is what lets both
+-- timesheet.html and payroll.html show a "Split 1/2" marker.
+--
+-- Nothing downstream branches on them: approval, injection, editing and
+-- deletion all treat a split row as an ordinary entry. NULL group id = not a
+-- split, which is every entry submitted before this existed.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS split_group_id TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS split_index    SMALLINT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS split_count    SMALLINT;
+
+CREATE INDEX IF NOT EXISTS idx_ts_split_group ON timesheet_entries(company_code, split_group_id);
+
 -- ─────────────────────────────────────────────────
 -- TIMESHEET → DAILY TRACKING bridge
 -- daily_tracking.timesheet_entry_id links a cost-tracking row back to the
